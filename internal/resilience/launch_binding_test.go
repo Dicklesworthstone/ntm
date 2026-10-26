@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -246,7 +247,7 @@ func TestAgentLaunchSpecReplayPreservesConfiguredCommandAndProfile(t *testing.T)
 		t.Fatal(err)
 	}
 	inside := "AGENT_MAIL_PROJECT=" + tmux.ShellQuote(original.AgentMailProject) + " " + original.Command
-	want := tmux.ShellQuote(caam) + " shallow-spawn 'original-profile' -- sh -c " + tmux.ShellQuote(inside)
+	want := tmux.ShellQuote(caam) + " shallow-spawn 'original-profile' -- /bin/sh -c " + tmux.ShellQuote(inside)
 	if prepared != want {
 		t.Fatalf("saved launch settings changed:\n got %s\nwant %s", prepared, want)
 	}
@@ -416,5 +417,79 @@ func TestAgentLaunchSpecPreparationRechecksSavedPersonaPrompt(t *testing.T) {
 	}
 	if _, err := plan.Prepare(context.Background(), t.TempDir(), "restored", 1); err == nil || !strings.Contains(err.Error(), "changed since") {
 		t.Fatalf("launch accepted changed prompt after preflight: %v", err)
+	}
+}
+
+func TestAgentLaunchSpecPinsCAAMAndShellBeforeRecoveryPATH(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("saved CAAM replay requires a POSIX shell")
+	}
+	for _, configured := range []string{"caam", "./trusted/caam"} {
+		t.Run(configured, func(t *testing.T) {
+			root := t.TempDir()
+			t.Chdir(root)
+			trusted := filepath.Join(root, "trusted")
+			replacement := filepath.Join(root, "replacement")
+			for _, directory := range []string{trusted, replacement} {
+				if err := os.Mkdir(directory, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			preflightLog := filepath.Join(root, "preflight")
+			executedLog := filepath.Join(root, "executed")
+			t.Setenv("NTM_PINNED_CAAM_PREFLIGHT", preflightLog)
+			t.Setenv("NTM_PINNED_CAAM_EXECUTED", executedLog)
+			const trustedScript = `#!/bin/sh
+set -eu
+[ "$1" = shallow-spawn ] && [ "$2" = saved-profile ] || exit 51
+if [ "$3" = --print-env ]; then
+  printf trusted-preflight > "$NTM_PINNED_CAAM_PREFLIGHT"
+  exit 0
+fi
+[ "$3" = -- ] || exit 52
+printf trusted-launch > "$NTM_PINNED_CAAM_EXECUTED"
+shift 3
+exec "$@"
+`
+			const replacementScript = "#!/bin/sh\nprintf replacement-selected > \"$NTM_PINNED_CAAM_EXECUTED\"\nexit 53\n"
+			for path, script := range map[string]string{
+				filepath.Join(trusted, "caam"):     trustedScript,
+				filepath.Join(replacement, "caam"): replacementScript,
+				filepath.Join(replacement, "sh"):   replacementScript,
+			} {
+				if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("PATH", trusted)
+			cfg := config.Default()
+			cfg.Integrations.CAAM.BinaryPath = configured
+			spec := tmux.AgentLaunchSpec{
+				Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentCodex,
+				Command: "printf agent-launched", CAAMProfile: "saved-profile",
+			}
+			plan, err := PreflightAgentLaunchSpec(t.Context(), cfg, spec, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if data, err := os.ReadFile(preflightLog); err != nil || string(data) != "trusted-preflight" {
+				t.Fatalf("expected preflight of the original CAAM executable: %s, %v", data, err)
+			}
+			// Recovery supplies a different PATH and the destination cwd may
+			// differ too. Neither may change the preflighted launch tools.
+			t.Setenv("PATH", replacement)
+			t.Chdir(replacement)
+			command, err := plan.Prepare(t.Context(), root, "recovered", 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			output, err := exec.CommandContext(t.Context(), "/bin/sh", "-c", command).CombinedOutput()
+			if err != nil || string(output) != "agent-launched" {
+				t.Fatalf("recovery PATH redirected the saved wrapper: %v, %s", err, output)
+			}
+			if data, err := os.ReadFile(executedLog); err != nil || string(data) != "trusted-launch" {
+				t.Fatalf("executed a different CAAM or shell after preflight: %s, %v", data, err)
+			}
+		})
 	}
 }

@@ -146,7 +146,7 @@ type RestartPaneOptions struct {
 	// for one selected agent pane. Values are runtime-only: never serialize
 	// them, put them in a launch command, or infer them from ambient state.
 	Environment map[string]string `json:"-"`
-	Deps      *RestartPaneDependencies
+	Deps        *RestartPaneDependencies
 	// Recovery is an internal, single-pane native-session recovery request.
 	// It is not populated by robot flags and cannot be combined with prompts,
 	// assignments, or model/argument overrides.

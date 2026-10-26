@@ -530,11 +530,11 @@ printf '%s\000' "$@" > "$root/agent-argv"
 	}
 	keys := []string{"AGENT_MAIL_AGENT", "BEADS_DIR", "BV_ROBOT_NOT_READY_LABELS", "PATH", "ZAI_SEAT_ROLE"}
 	environment := map[string]string{
-		"AGENT_MAIL_AGENT":           "private-recovery-agent",
-		"BEADS_DIR":                  filepath.Join(root, "private beads' directory"),
+		"AGENT_MAIL_AGENT":          "private-recovery-agent",
+		"BEADS_DIR":                 filepath.Join(root, "private beads' directory"),
 		"BV_ROBOT_NOT_READY_LABELS": "private-label,operator-gated",
-		"PATH":                       "/usr/bin:/bin:/private-recovery-path",
-		"ZAI_SEAT_ROLE":              "private-role'; $(touch " + tmux.ShellQuote(filepath.Join(root, "injected")) + ") literal suffix",
+		"PATH":                      "/usr/bin:/bin:/private-recovery-path",
+		"ZAI_SEAT_ROLE":             "private-role'; $(touch " + tmux.ShellQuote(filepath.Join(root, "injected")) + ") literal suffix",
 	}
 	wantEnvironment := make([]string, len(keys))
 	for i, key := range keys {
@@ -596,7 +596,7 @@ printf '%s\000' "$@" > "$root/agent-argv"
 	})
 	t.Cleanup(func() { SetRestartPaneIdentityHook(nil) })
 	opts.Deps = &RestartPaneDependencies{
-		ListPanes: func(context.Context, string) ([]tmux.Pane, error) { return panes, nil },
+		ListPanes:    func(context.Context, string) ([]tmux.Pane, error) { return panes, nil },
 		LoadManifest: func(string) (*resilience.SpawnManifest, error) { return nil, os.ErrNotExist },
 		ReadLaunchSpec: func(context.Context, string) (*tmux.AgentLaunchSpec, error) {
 			if mode == "missing-spec" {

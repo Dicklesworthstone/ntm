@@ -135,6 +135,29 @@ func (spec *AgentLaunchSpec) ValidateReplayWithEnvironment(expected AgentType, e
 	if err := ValidateLaunchEnvironment(environment); err != nil {
 		return err
 	}
+	for _, managed := range []struct {
+		name   string
+		active bool
+	}{
+		{"AGENT_MAIL_PROJECT", spec.AgentMailProject != ""},
+		{"CLAUDE_CONFIG_DIR", spec.ClaudeIsolateCredentials},
+		{"CLAUDE_CODE_OAUTH_TOKEN", spec.ClaudeIsolateCredentials},
+	} {
+		if _, supplied := environment[managed.name]; supplied && managed.active {
+			return fmt.Errorf("recovery environment key %s conflicts with saved launch isolation or project settings", managed.name)
+		}
+	}
+	if spec.CAAMProfile != "" {
+		for name := range environment {
+			conflict := name == "HOME" || name == "SHALLOW_PROFILE" || name == "CODEX_HOME" || name == "CLAUDE_CONFIG_DIR" || name == "GEMINI_HOME"
+			for _, prefix := range []string{"CAAM_", "SHALLOW_", "XDG_", "OPENAI_", "CODEX_API_", "CLAUDE_CODE_", "ANTHROPIC_"} {
+				conflict = conflict || strings.HasPrefix(name, prefix)
+			}
+			if conflict {
+				return fmt.Errorf("recovery environment key %s conflicts with the saved account profile; restore it through the profile manager", name)
+			}
+		}
+	}
 	required := make(map[string]bool, len(spec.OmittedEnv))
 	var missing []string
 	for _, name := range spec.OmittedEnv {

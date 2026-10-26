@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -170,15 +171,15 @@ func prepareLaunchCommand(
 	// of it inherits the profile's HOME. Passing it bare would either fail to
 	// exec an env assignment or, worse, run the part after `&&` OUTSIDE the
 	// profile while the restart reported the affinity as preserved.
-	return wrapLaunchBindingCommand(binary, binding, command), LaunchAffinityPreserved, nil
+	return wrapLaunchBindingCommand(binary, binding, "sh", command), LaunchAffinityPreserved, nil
 }
 
-func wrapLaunchBindingCommand(binary string, binding *LaunchBinding, command string) string {
+func wrapLaunchBindingCommand(binary string, binding *LaunchBinding, shell, command string) string {
 	if binding == nil {
 		return command
 	}
 	return tmux.ShellQuote(binary) + " shallow-spawn " + tmux.ShellQuote(binding.Identifier) +
-		" -- sh -c " + tmux.ShellQuote(command)
+		" -- " + shell + " -c " + tmux.ShellQuote(command)
 }
 
 // AgentLaunchPlan holds a validated snapshot of a pane's durable launch inputs.
@@ -245,9 +246,22 @@ func preflightAgentLaunchSpec(ctx context.Context, cfg *config.Config, spec tmux
 		plan.binding = &LaunchBinding{
 			Provider: string(spec.AgentType.Canonical()), Launcher: caamLaunchBinding, Identifier: spec.CAAMProfile,
 		}
-		plan.caamBinary = caamBinaryPath(plan.caamBinary)
+		// Pin the executable that passes preflight: an explicit recovery PATH
+		// must not select another caam or shell after the pane is respawned.
+		binary, err := exec.LookPath(caamBinaryPath(plan.caamBinary))
+		if err != nil {
+			return nil, fmt.Errorf("resolve saved CAAM executable: %w", err)
+		}
+		plan.caamBinary, err = filepath.Abs(binary)
+		if err != nil {
+			return nil, errors.New("cannot resolve absolute saved CAAM executable")
+		}
+		shell, err := os.Stat("/bin/sh")
+		if err != nil || !shell.Mode().IsRegular() || shell.Mode().Perm()&0111 == 0 {
+			return nil, errors.New("saved CAAM replay requires an executable /bin/sh")
+		}
 		preflightCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		_, _, err := PrepareLaunchCommand(preflightCtx, string(spec.AgentType), plan.caamBinary, plan.binding, spec.Command)
+		_, _, err = PrepareLaunchCommand(preflightCtx, string(spec.AgentType), plan.caamBinary, plan.binding, spec.Command)
 		cancel()
 		if err != nil {
 			return nil, err
@@ -331,7 +345,7 @@ func (plan *AgentLaunchPlan) Prepare(ctx context.Context, projectDir, session st
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	return wrapLaunchBindingCommand(plan.caamBinary, plan.binding, command), nil
+	return wrapLaunchBindingCommand(plan.caamBinary, plan.binding, "/bin/sh", command), nil
 }
 
 // PrepareAgentLaunchSpec is the shared replay path for operations that do not

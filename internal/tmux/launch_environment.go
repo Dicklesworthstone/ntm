@@ -44,7 +44,7 @@ func ValidateLaunchEnvironment(environment map[string]string) error {
 			"UID", "EUID", "PPID", "BASHPID", "GROUPS", "DIRSTACK", "FUNCNAME", "PIPESTATUS",
 			"RANDOM", "SRANDOM", "SECONDS", "LINENO", "HISTCMD", "HISTSIZE", "HISTFILESIZE",
 			"OPTIND", "OPTERR", "TMOUT", "MAILCHECK", "COLUMNS", "LINES", "SHLVL", "EPOCHSECONDS", "EPOCHREALTIME",
-			"_", "TMUX", "TMUX_PANE":
+			"_", "PWD", "OLDPWD", "TMUX", "TMUX_PANE":
 			return fmt.Errorf("recovery environment key %s is reserved by the shell or pane transport", name)
 		}
 		if len(value) > maxLaunchEnvironmentValue {
@@ -120,9 +120,13 @@ func NewLaunchEnvironment(ctx context.Context, environment map[string]string) (*
 		return nil, errors.New("cannot create private recovery environment directory")
 	}
 	launch := &LaunchEnvironment{
-		directory: directory,
-		pipe: filepath.Join(directory, "launch"),
+		directory:   directory,
+		pipe:        filepath.Join(directory, "launch"),
 		environment: make(map[string]string, len(environment)),
+	}
+	if _, err := SanitizePaneCommand("/bin/sh -p " + ShellQuote(launch.pipe)); err != nil {
+		_ = launch.Close()
+		return nil, errors.New("private recovery environment path cannot be safely delivered to a pane")
 	}
 	if err := createFIFO(launch.pipe); err != nil {
 		_ = launch.Close()

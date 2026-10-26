@@ -123,6 +123,31 @@ func TestReadRestartEnvironmentPrivateSnapshot(t *testing.T) {
 	}
 }
 
+func TestRestartEnvironmentRejectsOtherRobotSurface(t *testing.T) {
+	root := t.TempDir()
+	args, err := json.Marshal([]string{"--robot-version", "--restart-env-file=" + filepath.Join(root, "unused")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestRobotProcessContractHelper$")
+	cmd.Dir = root
+	cmd.Env = envWithOverrides(os.Environ(), "HOME="+root, "XDG_CONFIG_HOME="+root,
+		"NTM_CONFIG=", "NTM_NO_COLOR=1", "NTM_ROBOT_FORMAT=", "NTM_OUTPUT_FORMAT=", "TOON_DEFAULT_FORMAT=", "NTM_ROBOT_VERBOSITY=",
+		"NTM_ROBOT_CONTRACT_ARGS="+string(args))
+	output, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("unused recovery input exit=%v output=%s", err, output)
+	}
+	var response robot.RobotResponse
+	if err := json.Unmarshal(output, &response); err != nil {
+		t.Fatalf("invalid robot error: %v; output=%s", err, output)
+	}
+	if response.Success || response.ErrorCode != robot.ErrCodeInvalidFlag || !strings.Contains(response.Error, "--restart-env-file is only supported") {
+		t.Fatalf("unused recovery input was not rejected: %s", output)
+	}
+}
+
 func TestReadRestartEnvironmentRejectsUnsafeInputWithoutEcho(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("recovery file permissions require POSIX modes")
