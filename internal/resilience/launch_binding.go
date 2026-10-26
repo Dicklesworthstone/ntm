@@ -73,6 +73,21 @@ func canonicalLaunchProvider(provider string) string {
 	return string(agentpkg.AgentType(provider).Canonical())
 }
 
+// CAAM's provider names differ from NTM's short metadata aliases. Keep the
+// stored binding unchanged and translate only at the launcher boundary.
+func caamLaunchProvider(provider string) string {
+	switch kind := agentpkg.AgentType(provider).Canonical(); kind {
+	case agentpkg.AgentTypeClaudeCode:
+		return "claude"
+	case agentpkg.AgentTypeCodex:
+		return "codex"
+	case agentpkg.AgentTypeGemini:
+		return "gemini"
+	default:
+		return string(kind)
+	}
+}
+
 func (binding *LaunchBinding) displayName() string {
 	if binding == nil {
 		return "unknown"
@@ -121,7 +136,9 @@ func caamBinaryPath(configured string) string {
 }
 
 func preflightCAAMLaunchBinding(ctx context.Context, binary string, binding *LaunchBinding) error {
-	cmd := exec.CommandContext(ctx, binary, "shallow-spawn", binding.Identifier, "--print-env")
+	// A profile name can be recreated for another provider. CAAM checks
+	// --tool against its live profile metadata before printing or launching.
+	cmd := exec.CommandContext(ctx, binary, "shallow-spawn", "--tool", caamLaunchProvider(binding.Provider), binding.Identifier, "--print-env")
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	return cmd.Run()
@@ -179,7 +196,9 @@ func wrapLaunchBindingCommand(binary string, binding *LaunchBinding, shell, comm
 	if binding == nil {
 		return command
 	}
-	return tmux.ShellQuote(binary) + " shallow-spawn " + tmux.ShellQuote(binding.Identifier) +
+	// Repeat the provider constraint at execution: preflight cannot authorize
+	// a profile whose provider changes before the saved command is launched.
+	return tmux.ShellQuote(binary) + " shallow-spawn --tool " + tmux.ShellQuote(caamLaunchProvider(binding.Provider)) + " " + tmux.ShellQuote(binding.Identifier) +
 		" -- " + shell + " -c " + tmux.ShellQuote(command)
 }
 

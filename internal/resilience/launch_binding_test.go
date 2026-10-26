@@ -77,7 +77,7 @@ func TestPrepareLaunchCommandPreservesCreationProfile(t *testing.T) {
 	if gotBinary != "/opt/caam" || gotIdentifier != "profile-a" {
 		t.Fatalf("preflight used binary=%q profile=%q, want /opt/caam profile-a", gotBinary, gotIdentifier)
 	}
-	if !strings.Contains(command, "shallow-spawn") || !strings.Contains(command, "profile-a") ||
+	if !strings.Contains(command, "shallow-spawn --tool 'claude'") || !strings.Contains(command, "profile-a") ||
 		strings.Contains(command, "profile-b") || !strings.HasSuffix(command, " -- sh -c 'claude --model opus'") {
 		t.Fatalf("prepared command did not preserve profile-a: %q", command)
 	}
@@ -104,7 +104,7 @@ func TestPrepareLaunchCommandRunsWholeShellCommandInsideProfile(t *testing.T) {
 	if affinity != LaunchAffinityPreserved {
 		t.Fatalf("affinity = %q, want %q", affinity, LaunchAffinityPreserved)
 	}
-	want := "'caam' shallow-spawn 'profile-a' -- sh -c " + tmux.ShellQuote(original)
+	want := "'caam' shallow-spawn --tool 'codex' 'profile-a' -- sh -c " + tmux.ShellQuote(original)
 	if command != want {
 		t.Fatalf("prepared command = %q, want %q", command, want)
 	}
@@ -169,6 +169,114 @@ func TestPrepareLaunchCommandRejectsProviderMismatchBeforePreflight(t *testing.T
 	)
 	if err == nil || !strings.Contains(err.Error(), "profile-a") || calls != 0 {
 		t.Fatalf("error=%v preflight calls=%d, want named mismatch before preflight", err, calls)
+	}
+}
+
+func TestAgentLaunchSpecCAAMProviderIsCheckedAtEveryLaunch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("recording CAAM executable requires a POSIX shell")
+	}
+	for _, provider := range []struct{ alias, tool string }{
+		{"claude-code", "claude"},
+		{"codex-cli", "codex"},
+		{"gmi", "gemini"},
+		{"antigravity", "agy"},
+	} {
+		for _, mode := range []string{"matching", "mismatch-before-preflight", "changed-after-preflight"} {
+			t.Run(provider.alias+"/"+mode, func(t *testing.T) {
+				root := t.TempDir()
+				profile := filepath.Join(root, "profile-provider")
+				executed := filepath.Join(root, "executed")
+				toolLog := filepath.Join(root, "tools")
+				t.Setenv("NTM_CAAM_TEST_PROFILE", profile)
+				t.Setenv("NTM_CAAM_TEST_EXECUTED", executed)
+				t.Setenv("NTM_CAAM_TEST_TOOLS", toolLog)
+				otherProvider := "claude"
+				if provider.tool == otherProvider {
+					otherProvider = "codex"
+				}
+				actualProvider := provider.tool
+				if mode == "mismatch-before-preflight" {
+					actualProvider = otherProvider
+				}
+				if err := os.WriteFile(profile, []byte(actualProvider+"\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				// Model CAAM's existing-profile contract: --tool is optional,
+				// but when present its provider must match before --print-env
+				// or exec. Accepting omission makes the old bug observable.
+				const script = `#!/bin/sh
+set -eu
+[ "$1" = shallow-spawn ] || exit 51
+shift
+want=''
+if [ "$1" = --tool ]; then want="$2"; shift 2; fi
+[ "$1" = saved-profile ] || exit 52
+shift
+IFS= read -r actual < "$NTM_CAAM_TEST_PROFILE"
+printf '%s\n' "$want" >> "$NTM_CAAM_TEST_TOOLS"
+if [ -n "$want" ] && [ "$want" != "$actual" ]; then exit 53; fi
+if [ "$1" = --print-env ]; then
+  printf 'HOME=/private-profile-home\n'
+  exit 0
+fi
+[ "$1" = -- ] || exit 54
+shift
+: > "$NTM_CAAM_TEST_EXECUTED"
+export NTM_CAAM_TEST_ACTUAL="$actual"
+exec "$@"
+`
+				caam := filepath.Join(root, "caam with spaces")
+				if err := os.WriteFile(caam, []byte(script), 0700); err != nil {
+					t.Fatal(err)
+				}
+				cfg := config.Default()
+				cfg.Integrations.CAAM.BinaryPath = caam
+				spec := tmux.AgentLaunchSpec{
+					Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentType(provider.alias),
+					Command: `printf '%s' "$NTM_CAAM_TEST_ACTUAL"; printf '|%s' 'quoted value'`, CAAMProfile: "saved-profile",
+				}
+				plan, err := PreflightAgentLaunchSpec(t.Context(), cfg, spec, root)
+				if mode == "mismatch-before-preflight" {
+					if err == nil || plan != nil {
+						t.Fatal("a different provider's profile passed saved-launch preflight")
+					}
+					if _, err := os.Stat(executed); !errors.Is(err, os.ErrNotExist) {
+						t.Fatal("failed profile preflight launched the configured command")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if mode == "changed-after-preflight" {
+					if err := os.WriteFile(profile, []byte(otherProvider+"\n"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				command, err := plan.Prepare(t.Context(), root, "recovered", 2)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(plan.spec, spec) {
+					t.Fatal("launcher provider mapping changed the durable saved specification")
+				}
+				output, runErr := exec.CommandContext(t.Context(), "/bin/sh", "-c", command).CombinedOutput()
+				if mode == "changed-after-preflight" {
+					if runErr == nil {
+						t.Fatal("a changed profile provider launched the saved command")
+					}
+					if _, err := os.Stat(executed); !errors.Is(err, os.ErrNotExist) {
+						t.Fatal("saved command ran under the replacement provider's profile")
+					}
+				} else if runErr != nil || string(output) != provider.tool+"|quoted value" {
+					t.Fatalf("matching profile lost its provider or command quoting: output=%q error=%v", output, runErr)
+				}
+				if calls, err := os.ReadFile(toolLog); err != nil || string(calls) != strings.Repeat(provider.tool+"\n", 2) {
+					t.Fatalf("preflight and execution did not enforce the same provider: calls=%q error=%v", calls, err)
+				}
+			})
+		}
 	}
 }
 
@@ -251,7 +359,7 @@ func TestAgentLaunchSpecReplayPreservesConfiguredCommandAndProfile(t *testing.T)
 		t.Fatal(err)
 	}
 	inside := "AGENT_MAIL_PROJECT=" + tmux.ShellQuote(original.AgentMailProject) + " " + original.Command
-	want := tmux.ShellQuote(caam) + " shallow-spawn 'original-profile' -- /bin/sh -c " + tmux.ShellQuote(inside)
+	want := tmux.ShellQuote(caam) + " shallow-spawn --tool 'codex' 'original-profile' -- /bin/sh -c " + tmux.ShellQuote(inside)
 	if prepared != want {
 		t.Fatalf("saved launch settings changed:\n got %s\nwant %s", prepared, want)
 	}
@@ -259,7 +367,7 @@ func TestAgentLaunchSpecReplayPreservesConfiguredCommandAndProfile(t *testing.T)
 		t.Fatal("CAAM launch preview differs from the prepared command")
 	}
 	calls, err := os.ReadFile(log)
-	if err != nil || strings.TrimSpace(string(calls)) != "shallow-spawn original-profile --print-env" {
+	if err != nil || strings.TrimSpace(string(calls)) != "shallow-spawn --tool codex original-profile --print-env" {
 		t.Fatalf("expected exactly one saved-profile resolver call: %s, %v", calls, err)
 	}
 }
@@ -589,14 +697,14 @@ func TestAgentLaunchSpecPinsCAAMAndShellBeforeRecoveryPATH(t *testing.T) {
 			t.Setenv("NTM_PINNED_CAAM_EXECUTED", executedLog)
 			const trustedScript = `#!/bin/sh
 set -eu
-[ "$1" = shallow-spawn ] && [ "$2" = saved-profile ] || exit 51
-if [ "$3" = --print-env ]; then
+[ "$1" = shallow-spawn ] && [ "$2" = --tool ] && [ "$3" = codex ] && [ "$4" = saved-profile ] || exit 51
+if [ "$5" = --print-env ]; then
   printf trusted-preflight > "$NTM_PINNED_CAAM_PREFLIGHT"
   exit 0
 fi
-[ "$3" = -- ] || exit 52
+[ "$5" = -- ] || exit 52
 printf trusted-launch > "$NTM_PINNED_CAAM_EXECUTED"
-shift 3
+shift 5
 exec "$@"
 `
 			const replacementScript = "#!/bin/sh\nprintf replacement-selected > \"$NTM_PINNED_CAAM_EXECUTED\"\nexit 53\n"

@@ -787,6 +787,7 @@ func TestGetRestartPaneExplicitEnvironmentRecovery(t *testing.T) {
 		"stale-before-respawn", "stale-after-respawn", "stale-after-identity", "stale-after-metadata", "stale-spec-after-metadata", "stale-after-readiness",
 		"long-command", "long-managed-command",
 		"cwd-whitespace", "cwd-whitespace-ordinary", "cwd-trailing-control", "cwd-empty",
+		"profile-provider-mismatch",
 	} {
 		for _, dryRun := range []bool{false, true} {
 			t.Run(mode+"/dry-run="+strconv.FormatBool(dryRun), func(t *testing.T) {
@@ -952,6 +953,31 @@ pwd -P > "$root/agent-working-directory"
 		wantEnvironment[4] = ""
 	case "model-override":
 		opts.Model = "replacement/model@low"
+	case "profile-provider-mismatch":
+		// The saved Codex profile name now resolves to a Claude profile.
+		// CAAM accepts an unconstrained name, but --tool must reject this
+		// before either dry-run or actual recovery reaches pane mutation.
+		saved.CAAMProfile = "saved-profile"
+		caam := filepath.Join(root, "wrong-provider-caam")
+		const script = `#!/bin/sh
+set -eu
+[ "$1" = shallow-spawn ] || exit 51
+shift
+if [ "$1" = --tool ]; then
+  [ "$2" = claude ] || exit 52
+  shift 2
+fi
+[ "$1" = saved-profile ] || exit 53
+shift
+if [ "$1" = --print-env ]; then exit 0; fi
+[ "$1" = -- ] || exit 54
+shift
+exec "$@"
+`
+		if err := os.WriteFile(caam, []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+		opts.Config.Integrations.CAAM.BinaryPath = caam
 	case "ordinary", "long-command", "long-managed-command", "cwd-whitespace-ordinary":
 		saved.OmittedEnv = nil
 		opts.Environment = nil

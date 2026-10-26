@@ -18,7 +18,7 @@ func TestRestartAgentReplaysLatestPaneLaunchSpec(t *testing.T) {
 	project := t.TempDir()
 	worktree := t.TempDir()
 	caam := filepath.Join(project, "caam")
-	if err := os.WriteFile(caam, []byte("#!/bin/sh\n[ \"$1\" = shallow-spawn ] && [ \"$3\" = --print-env ] || exit 2\ncase \"$2\" in profile-current|profile-next) exit 0;; *) exit 3;; esac\n"), 0700); err != nil {
+	if err := os.WriteFile(caam, []byte("#!/bin/sh\n[ \"$1\" = shallow-spawn ] && [ \"$2\" = --tool ] && [ \"$3\" = claude ] && [ \"$5\" = --print-env ] || exit 2\ncase \"$4\" in profile-current|profile-next) exit 0;; *) exit 3;; esac\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	cfg := config.Default()
