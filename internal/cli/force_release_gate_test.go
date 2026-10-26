@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,109 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
 )
+
+func TestForceReleaseCommandUsesSessionProjectPolicy(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		cwdPolicy  string
+		project    string
+		homePolicy string
+		wantError  string
+	}{
+		{name: "target denies despite permissive cwd", cwdPolicy: "auto", project: "never", wantError: "disabled by policy"},
+		{name: "target permits despite restrictive cwd", cwdPolicy: "never", project: "auto"},
+		{name: "unrelated malformed cwd is ignored", cwdPolicy: "malformed", project: "auto"},
+		{name: "malformed target is refused", cwdPolicy: "auto", project: "malformed", wantError: "loading policy"},
+		{name: "missing target policy needs approval", cwdPolicy: "auto", wantError: "requires approval"},
+		{name: "target approval is retained", cwdPolicy: "auto", project: "approval", wantError: "requires approval"},
+		{name: "home denial retains precedence", cwdPolicy: "auto", project: "auto", homePolicy: "never", wantError: "disabled by policy"},
+		{name: "home permission retains precedence", cwdPolicy: "never", project: "never", homePolicy: "auto"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resetFlags()
+			t.Cleanup(resetFlags)
+			isolateSessionAgentStorage(t)
+			isolateOverseerSessionProbe(t)
+			projectsBase := canonicalTempDir(t)
+			const session = "policy-session"
+			project := filepath.Join(projectsBase, session)
+			if err := os.MkdirAll(project, 0700); err != nil {
+				t.Fatal(err)
+			}
+			saveSessionAgentForTest(t, session, project, "RedStone")
+			oldCfg := cfg
+			cfg = &config.Config{ProjectsBase: projectsBase}
+			t.Cleanup(func() { cfg = oldCfg })
+			cwd := canonicalTempDir(t)
+			t.Chdir(cwd)
+			writePolicy := func(root, mode string) {
+				t.Helper()
+				if mode == "" {
+					return
+				}
+				path := filepath.Join(root, ".ntm", "policy.yaml")
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					t.Fatal(err)
+				}
+				data := "version: 1\nautomation:\n  force_release: " + mode + "\n"
+				if mode == "malformed" {
+					data = "automation: [\n"
+				}
+				if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writePolicy(cwd, test.cwdPolicy)
+			writePolicy(project, test.project)
+			writePolicy(os.Getenv("HOME"), test.homePolicy)
+			stub := newMailStub(t, nil)
+			t.Cleanup(stub.Close)
+			stub.reservations = []agentmail.FileReservation{{
+				ID: 17, ProjectID: 1, AgentName: "BlueLake", PathPattern: "internal/worker.go",
+				CreatedTS: agentmail.FlexTime{Time: time.Now().Add(-time.Hour)},
+				ExpiresTS: agentmail.FlexTime{Time: time.Now().Add(time.Hour)}, Exclusive: true,
+			}}
+			t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+			t.Setenv("NTM_USER", "alice")
+			t.Setenv("PATH", t.TempDir())
+			cmd := newLocksForceReleaseCmd()
+			cmd.SetArgs([]string{session, "17", "--yes", "--note", "holder stopped"})
+			_, err := captureStdout(t, func() error { return cmd.ExecuteContext(t.Context()) })
+			if test.wantError == "" {
+				if err != nil || len(stub.forceReleaseCalls) != 1 {
+					t.Fatalf("target policy did not authorize release: error=%v calls=%+v", err, stub.forceReleaseCalls)
+				}
+				if call := stub.forceReleaseCalls[0]; call.Project != project || call.Agent != "RedStone" {
+					t.Fatalf("release escaped selected project or actor: %+v", call)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantError) || len(stub.forceReleaseCalls) != 0 {
+				t.Fatalf("target policy did not block release: error=%v calls=%+v", err, stub.forceReleaseCalls)
+			}
+			if test.project == "malformed" && (stub.ensureCalled != 0 || len(stub.listCalls) != 0) {
+				t.Fatal("malformed target policy reached Agent Mail")
+			}
+			if test.wantError == "requires approval" {
+				engine, store, err := getApprovalEngine()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer store.Close()
+				pending, err := engine.ListPending(t.Context())
+				if err != nil || len(pending) != 1 {
+					t.Fatalf("pending approvals=%+v error=%v", pending, err)
+				}
+				var resource struct {
+					Operation approval.ForceReleaseOperation `json:"operation"`
+				}
+				if err := json.Unmarshal([]byte(pending[0].Resource), &resource); err != nil || resource.Operation.ProjectKey != project || resource.Operation.AgentName != "RedStone" {
+					t.Fatalf("approval lost selected project identity: %+v error=%v", resource, err)
+				}
+			}
+		})
+	}
+}
 
 func TestForceReleaseGatePolicyModesNeedNoApprovalStore(t *testing.T) {
 	for _, mode := range []string{"never", "auto"} {
@@ -34,6 +138,7 @@ func TestForceReleaseGatePolicyModesNeedNoApprovalStore(t *testing.T) {
 func TestRunForceReleaseApprovalLifecycle(t *testing.T) {
 	resetFlags()
 	isolateSessionAgentStorage(t)
+	isolateOverseerSessionProbe(t)
 	projectsBase := canonicalTempDir(t)
 	projectKey := filepath.Join(projectsBase, "approval-session")
 	if err := os.MkdirAll(projectKey, 0o755); err != nil {

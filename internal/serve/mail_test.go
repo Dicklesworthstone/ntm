@@ -408,6 +408,177 @@ func TestReservationRequestProjectValidationAndPermissions(t *testing.T) {
 	}
 }
 
+func TestReservationForceReleaseUsesSelectedProjectPolicy(t *testing.T) {
+	policyFor := func(mode string) string {
+		return "version: 1\nautomation:\n  force_release: " + mode + "\n"
+	}
+	for _, tc := range []struct {
+		name, cwdPolicy, projectPolicy, homePolicy string
+		explicit                                   bool
+		wantStatus, wantReleases                   int
+		wantApproval                               bool
+		wantError                                  string
+	}{
+		{"explicit_never", policyFor("auto"), policyFor("never"), "", true, http.StatusForbidden, 0, false, "automation.force_release=never"},
+		{"explicit_auto", policyFor("never"), policyFor("auto"), "", true, http.StatusOK, 1, false, ""},
+		{"configured_never", policyFor("auto"), policyFor("never"), "", false, http.StatusForbidden, 0, false, "automation.force_release=never"},
+		{"configured_auto", policyFor("never"), policyFor("auto"), "", false, http.StatusOK, 1, false, ""},
+		{"malformed_selected_policy", policyFor("auto"), "automation: [", "", true, http.StatusForbidden, 0, false, "cannot load policy"},
+		{"selected_approval", policyFor("auto"), policyFor("approval"), "", true, http.StatusForbidden, 0, true, "requires approval"},
+		{"missing_selected_policy_uses_default", policyFor("auto"), "", "", true, http.StatusForbidden, 0, true, "requires approval"},
+		{"home_never_takes_precedence", policyFor("auto"), policyFor("auto"), policyFor("never"), true, http.StatusForbidden, 0, false, "automation.force_release=never"},
+		{"home_auto_takes_precedence", policyFor("never"), policyFor("never"), policyFor("auto"), true, http.StatusOK, 1, false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("NTM_USER", "alice")
+			cwd, err := ResolveProjectDir(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			project, err := ResolveProjectDir(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for dir, contents := range map[string]string{cwd: tc.cwdPolicy, project: tc.projectPolicy, home: tc.homePolicy} {
+				if contents == "" {
+					continue
+				}
+				if err := os.MkdirAll(filepath.Join(dir, ".ntm"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, ".ntm", "policy.yaml"), []byte(contents), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Chdir(cwd)
+			srv, store := setupTestServer(t)
+			var calls, releases atomic.Int32
+			client := newReservationProjectClient(t, map[string]int{cwd: 1, project: 2}, func(tool, selected string) {
+				calls.Add(1)
+				if selected != project {
+					t.Errorf("policy-gated %s reached project %q instead of %q", tool, selected, project)
+				}
+				if tool == "force_release_file_reservation" {
+					releases.Add(1)
+				}
+			})
+			selectedDefault := project
+			path := "/api/v1/reservations/17/force-release"
+			if tc.explicit {
+				selectedDefault = cwd
+				path += "?project=" + url.QueryEscape(project)
+			}
+			patchReservationProject(t, srv, selectedDefault, client)
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"agent_name":"RedStone","note":"holder crashed"}`))
+			req.Header.Set("Idempotency-Key", "selected-project-policy")
+			rec := httptest.NewRecorder()
+			srv.Router().ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus || releases.Load() != int32(tc.wantReleases) {
+				t.Fatalf("selected project gate: %d %s, releases=%d; want status=%d releases=%d", rec.Code, rec.Body, releases.Load(), tc.wantStatus, tc.wantReleases)
+			}
+			if tc.wantError != "" && !strings.Contains(rec.Body.String(), tc.wantError) {
+				t.Fatalf("gate error lost cause %q: %s", tc.wantError, rec.Body)
+			}
+			if tc.wantStatus != http.StatusOK && !tc.wantApproval && calls.Load() != 0 {
+				t.Fatalf("refusing policy reached Agent Mail %d times", calls.Load())
+			}
+			if tc.wantApproval {
+				var body map[string]interface{}
+				if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+					t.Fatal(err)
+				}
+				approval, err := store.GetApproval(forceReleaseResponseApprovalID(t, body))
+				if err != nil || approval == nil || approval.Status != state.ApprovalPending {
+					t.Fatalf("selected project approval was not persisted: %+v, %v", approval, err)
+				}
+				var resource struct {
+					Operation struct {
+						ProjectKey string `json:"project_key"`
+					} `json:"operation"`
+				}
+				if err := json.Unmarshal([]byte(approval.Resource), &resource); err != nil || resource.Operation.ProjectKey != project {
+					t.Fatalf("policy and approval selected different projects: %s, %v", approval.Resource, err)
+				}
+				requireReservationProjectEvent(t, srv, "approval.requested", project)
+			}
+			if srv.projectDirSnapshot() != selectedDefault {
+				t.Fatal("request policy selection changed the server default")
+			}
+			if actual, err := os.Getwd(); err != nil || actual != cwd {
+				t.Fatalf("request policy selection changed the process directory: %q, %v", actual, err)
+			}
+		})
+	}
+}
+
+func TestReservationForceReleaseConcurrentProjectPoliciesAndReplay(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	projects := make(map[string]int)
+	policies := make(map[string]string)
+	for i, mode := range []string{"auto", "never"} {
+		project, err := ResolveProjectDir(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(project, ".ntm"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(project, ".ntm", "policy.yaml"), []byte("version: 1\nautomation:\n  force_release: "+mode+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		projects[project], policies[mode] = i+1, project
+	}
+	t.Chdir(policies["auto"])
+	srv := New(Config{ProjectDir: policies["auto"]})
+	defer srv.Stop()
+	var releases atomic.Int32
+	srv.mailClient = newReservationProjectClient(t, projects, func(tool, project string) {
+		if project != policies["auto"] {
+			t.Errorf("forbidden project's policy reached upstream %s: %q", tool, project)
+		}
+		if tool == "force_release_file_reservation" {
+			releases.Add(1)
+		}
+	})
+	post := func(project string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/reservations/17/force-release?project="+url.QueryEscape(project), strings.NewReader(`{"agent_name":"RedStone"}`))
+		req.Header.Set("Idempotency-Key", "same-force-release-policy-key")
+		rec := httptest.NewRecorder()
+		srv.Router().ServeHTTP(rec, req)
+		return rec
+	}
+	var wg sync.WaitGroup
+	for mode, project := range policies {
+		for i := 0; i < 3; i++ {
+			wg.Go(func() {
+				want := http.StatusForbidden
+				if mode == "auto" {
+					want = http.StatusOK
+				}
+				rec := post(project)
+				if rec.Code != want {
+					t.Errorf("concurrent %s project gate: %d %s; want %d", mode, rec.Code, rec.Body, want)
+				}
+			})
+		}
+	}
+	wg.Wait()
+	if releases.Load() != 1 {
+		t.Fatalf("concurrent project policies released %d leases, want one approved-by-policy attempt", releases.Load())
+	}
+	if rec := post(policies["auto"]); rec.Code != http.StatusOK || rec.Header().Get("X-Idempotent-Replay") != "true" {
+		t.Fatalf("successful project release did not replay: %d %s", rec.Code, rec.Body)
+	}
+	if rec := post(policies["never"]); rec.Code != http.StatusForbidden || rec.Header().Get("X-Idempotent-Replay") != "" {
+		t.Fatalf("forbidden project reused another project's receipt: %d %s", rec.Code, rec.Body)
+	}
+	if srv.projectDirSnapshot() != policies["auto"] {
+		t.Fatal("concurrent policy selection changed the server default")
+	}
+}
+
 func TestReservationForceReleaseProjectApprovalIsolation(t *testing.T) {
 	setForceReleasePolicy(t, "approval")
 	t.Setenv("NTM_USER", "alice")

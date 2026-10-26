@@ -1110,7 +1110,7 @@ func runForceRelease(ctx context.Context, session string, reservationID int, not
 		return err
 	}
 	projectKey = agentmail.CanonicalProjectKey(projectKey)
-	pol, err := policy.LoadOrDefault()
+	pol, err := policy.LoadForProject(projectKey)
 	if err != nil {
 		return forceReleaseGateError(session, reservationID, fmt.Errorf("loading policy for force-release gate: %w", err))
 	}

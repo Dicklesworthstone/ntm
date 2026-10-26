@@ -1879,7 +1879,16 @@ func (s *Server) handleForceReleaseReservation(w http.ResponseWriter, r *http.Re
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "agent_name is required", nil, reqID)
 		return
 	}
-	pol, err := policy.LoadOrDefault()
+	// The lease's project also owns its policy. A server may serve projects
+	// whose force-release settings differ from its working directory; loading
+	// the cwd policy here could silently authorize a release the target forbids.
+	projectKey := s.mailProjectKey(r)
+	var pol *policy.Policy
+	if projectKey == "" {
+		pol, err = policy.LoadOrDefault()
+	} else {
+		pol, err = policy.LoadForProject(projectKey)
+	}
 	if err != nil {
 		slog.Error("force-release policy load failed", "request_id", reqID, "error", err)
 		writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden, "cannot load policy for force-release gate; see server logs", nil, reqID)
@@ -1890,7 +1899,7 @@ func (s *Server) handleForceReleaseReservation(w http.ResponseWriter, r *http.Re
 	// changed server selection nor an agent_name body field can redirect an
 	// approval to a different project, requester, or Agent Mail actor.
 	operation := approvalpkg.ForceReleaseOperation{
-		ProjectKey:    agentmail.CanonicalProjectKey(s.mailProjectKey(r)),
+		ProjectKey:    agentmail.CanonicalProjectKey(projectKey),
 		ReservationID: reservationID, RequestedBy: approvalIdentity(r),
 		AgentName: req.AgentName, Note: req.Note, NotifyPrevious: req.NotifyPrevious,
 	}
