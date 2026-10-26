@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -49,6 +51,17 @@ func TestNewArchiver(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects negative file size limit", func(t *testing.T) {
+		_, err := NewArchiver(ArchiverOptions{
+			SessionName:  "test-session",
+			OutputDir:    tmpDir,
+			MaxFileBytes: -1,
+		})
+		if err == nil || !strings.Contains(err.Error(), "maximum archive file bytes") {
+			t.Fatalf("NewArchiver() error = %v, want file size validation error", err)
+		}
+	})
+
 	t.Run("creates archiver with defaults", func(t *testing.T) {
 		a, err := NewArchiver(ArchiverOptions{
 			SessionName: "test-session",
@@ -67,6 +80,9 @@ func TestNewArchiver(t *testing.T) {
 		}
 		if a.linesPerCapture != DefaultLinesPerCapture {
 			t.Errorf("linesPerCapture = %d, want %d", a.linesPerCapture, DefaultLinesPerCapture)
+		}
+		if a.maxFileBytes != DefaultMaxFileBytes {
+			t.Errorf("maxFileBytes = %d, want %d", a.maxFileBytes, DefaultMaxFileBytes)
 		}
 	})
 
@@ -268,6 +284,380 @@ func TestArchiver_RunRejectsInvalidInterval(t *testing.T) {
 	}
 }
 
+func TestArchiver_RotatesAtCompleteRecordBoundary(t *testing.T) {
+	dir := t.TempDir()
+	record := ArchiveRecord{
+		Session: "rotation", Pane: "cc_2", PaneIndex: 2, Agent: "cc",
+		Timestamp: time.Unix(100, 0).UTC(), Content: "quoted \"text\"\nUnicode: 世界", Lines: 2, Sequence: 1,
+	}
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit := int64(2 * (len(encoded) + 1))
+	callbacks := 0
+	a, err := NewArchiver(ArchiverOptions{
+		SessionName: "rotation", OutputDir: dir, MaxFileBytes: limit,
+		OnRecord: func(*ArchiveRecord) { callbacks++ },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	first := a.file
+	for seq := 1; seq <= 3; seq++ {
+		record.Sequence = seq
+		if err := a.writeRecord(&record); err != nil {
+			t.Fatalf("write record %d: %v", seq, err)
+		}
+		if seq == 2 && a.file != first {
+			t.Fatal("rotated before reaching the exact byte limit")
+		}
+	}
+	if a.file == first {
+		t.Fatal("a third record did not rotate the full chunk")
+	}
+	if _, err := first.Stat(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("old descriptor is still usable after rotation: %v", err)
+	}
+	if callbacks != 3 || a.Stats().TotalRecords != 3 {
+		t.Fatalf("records = %d, callbacks = %d, want 3 each", a.Stats().TotalRecords, callbacks)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, records := readArchiveChunks(t, dir)
+	if len(files) != 2 || len(records) != 3 {
+		t.Fatalf("files = %d, records = %d, want 2 files with 3 records", len(files), len(records))
+	}
+	for _, path := range files {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Size() > limit {
+			t.Errorf("chunk %s has %d bytes, limit %d", path, info.Size(), limit)
+		}
+	}
+	for i, got := range records {
+		if got.Sequence != i+1 || got.Content != record.Content || got.Pane != record.Pane {
+			t.Errorf("record %d changed across rotation: %+v", i, got)
+		}
+	}
+}
+
+func TestArchiver_RotationPreservesOversizedRecord(t *testing.T) {
+	dir := t.TempDir()
+	a, err := NewArchiver(ArchiverOptions{SessionName: "large", OutputDir: dir, MaxFileBytes: 512})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	record := ArchiveRecord{Session: "large", Content: strings.Repeat("界", 1024), Sequence: 1}
+	if err := a.writeRecord(&record); err != nil {
+		t.Fatal(err)
+	}
+	first := a.file
+	if a.fileBytes <= a.maxFileBytes {
+		t.Fatal("test record must exceed the per-chunk limit")
+	}
+	record.Content, record.Sequence = "next", 2
+	if err := a.writeRecord(&record); err != nil {
+		t.Fatal(err)
+	}
+	if a.file == first {
+		t.Fatal("next record was appended to the oversized record's chunk")
+	}
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, records := readArchiveChunks(t, dir)
+	if len(files) != 2 || len(records) != 2 {
+		t.Fatalf("files = %d, records = %d, want two intact records in two chunks", len(files), len(records))
+	}
+	if records[0].Content != strings.Repeat("界", 1024) || records[1].Content != "next" {
+		t.Fatal("rotation truncated or duplicated an oversized record")
+	}
+}
+
+func TestArchiver_RetriesPartialWriteAtConfirmedBoundary(t *testing.T) {
+	dir := t.TempDir()
+	callbacks := 0
+	a, err := NewArchiver(ArchiverOptions{
+		SessionName: "partial", OutputDir: dir,
+		OnRecord: func(*ArchiveRecord) { callbacks++ },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	record := ArchiveRecord{Session: "partial", Content: "first complete record", Sequence: 1}
+	if err := a.writeRecord(&record); err != nil {
+		t.Fatal(err)
+	}
+	confirmedBytes := a.fileBytes
+	writeErr := errors.New("injected disk-full write")
+	a.writeFile = func(file *os.File, data []byte) (int, error) {
+		n, err := file.Write(data[:len(data)/2])
+		if err != nil {
+			return n, err
+		}
+		return n, writeErr
+	}
+	record.Content, record.Sequence = "record retried after a partial append", 2
+	if err := a.writeRecord(&record); !errors.Is(err, writeErr) {
+		t.Fatalf("write error = %v, want injected failure", err)
+	}
+	info, err := a.file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != confirmedBytes || a.fileBytes != confirmedBytes || a.Stats().TotalRecords != 1 || callbacks != 1 {
+		t.Fatalf("partial write advanced the committed boundary: size=%d bytes=%d records=%d callbacks=%d", info.Size(), a.fileBytes, a.Stats().TotalRecords, callbacks)
+	}
+	a.writeFile = nil
+	if err := a.writeRecord(&record); err != nil {
+		t.Fatalf("retry after repaired partial write: %v", err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, records := readArchiveChunks(t, dir)
+	if len(files) != 1 || len(records) != 2 || callbacks != 2 {
+		t.Fatalf("files=%d records=%d callbacks=%d, want one chunk and exactly two successful records", len(files), len(records), callbacks)
+	}
+	if records[0].Content != "first complete record" || records[1].Content != record.Content || records[1].Sequence != 2 {
+		t.Fatalf("retry overwrote an earlier record or left a partial line: %+v", records)
+	}
+}
+
+func TestArchiver_RefusesWritesAfterFailedPartialRollback(t *testing.T) {
+	dir := t.TempDir()
+	a, err := NewArchiver(ArchiverOptions{SessionName: "failed-rollback", OutputDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	path := a.file.Name()
+	a.writeFile = func(file *os.File, data []byte) (int, error) {
+		n, err := file.Write(data[:len(data)/2])
+		if err != nil {
+			return n, err
+		}
+		return n, errors.Join(io.ErrShortWrite, file.Close())
+	}
+	record := ArchiveRecord{Session: "failed-rollback", Content: "incomplete record", Sequence: 1}
+	err = a.writeRecord(&record)
+	if err == nil || !strings.Contains(err.Error(), "restoring archive record boundary") {
+		t.Fatalf("expected a failed rollback error, got %v", err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.writeFile = func(*os.File, []byte) (int, error) {
+		t.Fatal("a later write reached the damaged chunk")
+		return 0, nil
+	}
+	if err := a.writeRecord(&record); err == nil || !strings.Contains(err.Error(), "restoring archive record boundary") {
+		t.Fatalf("damaged archive accepted another write: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(before) || a.Stats().TotalRecords != 0 {
+		t.Fatalf("failed rollback modified the damaged chunk: records=%d error=%v", a.Stats().TotalRecords, err)
+	}
+}
+
+func TestArchiver_RotatesOnDateChange(t *testing.T) {
+	dir := t.TempDir()
+	a, err := NewArchiver(ArchiverOptions{SessionName: "daily", OutputDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	record := ArchiveRecord{Session: "daily", Content: "before midnight", Sequence: 1}
+	if err := a.writeRecord(&record); err != nil {
+		t.Fatal(err)
+	}
+	first := a.file
+	// Make the current file belong to yesterday without waiting for midnight.
+	a.fileDate = time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	record.Content, record.Sequence = "after midnight", 2
+	if err := a.writeRecord(&record); err != nil {
+		t.Fatal(err)
+	}
+	if a.file == first {
+		t.Fatal("date change did not rotate the archive")
+	}
+	if _, err := first.Stat(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("previous day's descriptor is still open: %v", err)
+	}
+	if !strings.Contains(filepath.Base(a.file.Name()), "_"+time.Now().Format("2006-01-02")+"_") {
+		t.Fatalf("new archive is not dated today: %s", a.file.Name())
+	}
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, records := readArchiveChunks(t, dir)
+	if len(files) != 2 || len(records) != 2 || records[0].Content != "before midnight" || records[1].Content != "after midnight" {
+		t.Fatalf("date rotation changed archived content: files=%v records=%+v", files, records)
+	}
+}
+
+func TestArchiver_RestartNeverReopensRetiredChunks(t *testing.T) {
+	dir := t.TempDir()
+	legacyPath := filepath.Join(dir, "restart_"+time.Now().Format("2006-01-02")+".jsonl")
+	legacy := []byte("existing archive, owned by an earlier monitor\n")
+	if err := os.WriteFile(legacyPath, legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for i := 0; i < 2; i++ {
+		a, err := NewArchiver(ArchiverOptions{SessionName: "restart", OutputDir: dir})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = a.Close() })
+		paths = append(paths, a.file.Name())
+		if err := a.writeRecord(&ArchiveRecord{Session: "restart", Content: "new monitor", Sequence: i + 1}); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if paths[0] == paths[1] || paths[0] == legacyPath || paths[1] == legacyPath {
+		t.Fatalf("archive restart reused a previous pathname: %v", paths)
+	}
+	data, err := os.ReadFile(legacyPath)
+	if err != nil || string(data) != string(legacy) {
+		t.Fatalf("legacy archive changed: %q, %v", data, err)
+	}
+	first, err := os.ReadFile(paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record ArchiveRecord
+	if err := json.Unmarshal(first, &record); err != nil || record.Sequence != 1 {
+		t.Fatalf("retired chunk was modified by restart: %q, %v", first, err)
+	}
+}
+
+// Exercise the same resident capture loop used by internal-monitor, with a
+// real tmux subprocess boundary and real files. A failed handoff must neither
+// lose the pending output nor advance its sequence/callback before retry.
+func TestArchiver_RunRetriesFailedRotationWithoutLosingCapture(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("tmux capture fixture uses a POSIX shell")
+	}
+	dir := t.TempDir()
+	capturePath := filepath.Join(dir, "capture.txt")
+	tmuxPath := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(tmuxPath, []byte("#!/bin/sh\nif [ \"$1\" != capture-pane ]; then exit 9; fi\ncat \"$NTM_ARCHIVE_TEST_CAPTURE\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", tmuxPath)
+	t.Setenv("NTM_ARCHIVE_TEST_CAPTURE", capturePath)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	callbacks := 0
+	archiveDir := filepath.Join(dir, "archive")
+	movedDir := filepath.Join(dir, "archive-unavailable")
+	a, err := NewArchiver(ArchiverOptions{
+		SessionName: "live-rotation", OutputDir: archiveDir, MaxFileBytes: 1,
+		Interval: 5 * time.Millisecond,
+		OnRecord: func(*ArchiveRecord) {
+			callbacks++
+			if callbacks == 2 {
+				cancel()
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	first := a.file
+	observations := 0
+	var preservedAfterFailure bool
+	a.getPanes = func(ctx context.Context, _ string) ([]tmux.Pane, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		observations++
+		content := "first line"
+		if observations >= 2 {
+			content += "\nsecond line"
+		}
+		if observations == 2 {
+			if err := os.Rename(archiveDir, movedDir); err != nil {
+				return nil, err
+			}
+		}
+		if observations == 3 {
+			a.mu.RLock()
+			state := a.paneStates[2]
+			preservedAfterFailure = state != nil && state.Sequence == 1 && state.LastContent == "first line" && a.totalRecords == 1 && a.file == first && callbacks == 1
+			a.mu.RUnlock()
+			if err := os.Rename(movedDir, archiveDir); err != nil {
+				return nil, err
+			}
+		}
+		if err := os.WriteFile(capturePath, []byte(content), 0600); err != nil {
+			return nil, err
+		}
+		return []tmux.Pane{{ID: "%2", Index: 2, Type: tmux.AgentClaude}}, nil
+	}
+	if err := a.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() = %v, want cancellation after two successful captures", err)
+	}
+	if observations != 3 || !preservedAfterFailure {
+		t.Fatalf("rotation failure consumed a capture: observations=%d, state preserved=%v", observations, preservedAfterFailure)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, records := readArchiveChunks(t, archiveDir)
+	if len(files) != 2 || len(records) != 2 || callbacks != 2 {
+		t.Fatalf("files=%d records=%d callbacks=%d, want two each", len(files), len(records), callbacks)
+	}
+	if records[0].Content != "first line" || records[1].Content != "second line" || records[0].Sequence != 1 || records[1].Sequence != 2 {
+		t.Fatalf("retried capture lost, duplicated, or changed sequence: %+v", records)
+	}
+	if _, err := first.Stat(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("successful retry left the old descriptor open: %v", err)
+	}
+}
+
+func readArchiveChunks(t *testing.T, dir string) ([]string, []ArchiveRecord) {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var records []ArchiveRecord
+	for _, path := range files {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(data) > 0 && data[len(data)-1] != '\n' {
+			t.Fatalf("chunk %s ends inside a JSONL record", path)
+		}
+		decoder := json.NewDecoder(strings.NewReader(string(data)))
+		for {
+			var record ArchiveRecord
+			if err := decoder.Decode(&record); errors.Is(err, io.EOF) {
+				break
+			} else if err != nil {
+				t.Fatalf("invalid JSONL chunk %s: %v", path, err)
+			}
+			records = append(records, record)
+		}
+	}
+	return files, records
+}
+
 func TestFindNewContent(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -459,6 +849,9 @@ func TestDefaultArchiverOptions(t *testing.T) {
 	}
 	if opts.LinesPerCapture != DefaultLinesPerCapture {
 		t.Errorf("LinesPerCapture = %d, want %d", opts.LinesPerCapture, DefaultLinesPerCapture)
+	}
+	if opts.MaxFileBytes != DefaultMaxFileBytes {
+		t.Errorf("MaxFileBytes = %d, want %d", opts.MaxFileBytes, DefaultMaxFileBytes)
 	}
 }
 
@@ -854,7 +1247,7 @@ func TestArchiver_FileNamingConvention(t *testing.T) {
 	}
 	defer a.Close()
 
-	// Check file naming follows expected pattern: {session}_{date}.jsonl
+	// Each writer owns a unique chunk: {session}_{date}_{time}-{unique}.jsonl.
 	pattern := filepath.Join(tmpDir, sessionName+"_*.jsonl")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
@@ -871,9 +1264,12 @@ func TestArchiver_FileNamingConvention(t *testing.T) {
 		t.Errorf("Filename %q should start with %q", filename, expectedPrefix)
 	}
 
-	datePart := strings.TrimSuffix(strings.TrimPrefix(filename, expectedPrefix), ".jsonl")
-	if len(datePart) != 10 { // YYYY-MM-DD
-		t.Errorf("Date part %q should be 10 characters (YYYY-MM-DD)", datePart)
+	datePart, uniquePart, ok := strings.Cut(strings.TrimPrefix(filename, expectedPrefix), "_")
+	if _, err := time.Parse("2006-01-02", datePart); err != nil {
+		t.Errorf("Date part %q should use YYYY-MM-DD: %v", datePart, err)
+	}
+	if !ok || !strings.HasSuffix(uniquePart, ".jsonl") || !strings.Contains(uniquePart, "-") {
+		t.Errorf("Filename %q must include a unique chunk suffix", filename)
 	}
 
 	t.Logf("ARCHIVE_TEST: File naming | Session=%s | Filename=%s | DatePart=%s",

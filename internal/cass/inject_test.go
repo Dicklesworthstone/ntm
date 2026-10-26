@@ -320,6 +320,9 @@ func TestExtractSessionName(t *testing.T) {
 	}{
 		{"simple path", "sessions/my-session.jsonl", "my-session"},
 		{"nested path", "/data/2026/01/29/my-project.jsonl", "my-project"},
+		{"daily ntm archive", "/archive/my-project_2026-10-25.jsonl", "my-project"},
+		{"rotated ntm archive", "/archive/my-project_2026-10-25_201530.123456789-1234.jsonl", "my-project"},
+		{"dated session in ntm chunk", "/archive/my-project_2026-01-28_2026-10-25_201530.123456789-1234.jsonl", "my-project_2026-01-28"},
 		{"json extension", "path/to/data.json", "data"},
 		{"no extension", "path/to/session", "session"},
 		{"empty path", "", ""},

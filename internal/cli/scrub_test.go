@@ -7,6 +7,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/Dicklesworthstone/ntm/internal/startup"
 )
 
 func TestRedactionAllowlistEnvironmentCommands(t *testing.T) {
@@ -17,8 +21,13 @@ func TestRedactionAllowlistEnvironmentCommands(t *testing.T) {
 			t.Run(command+"/"+source, func(t *testing.T) {
 				resetFlags()
 				t.Cleanup(resetFlags)
+				startup.ResetConfig()
+				t.Cleanup(startup.ResetConfig)
 				dir := t.TempDir()
+				t.Chdir(dir)
+				t.Setenv("HOME", dir)
 				t.Setenv("XDG_CONFIG_HOME", dir)
+				t.Setenv("NTM_CONFIG", "")
 				t.Setenv("NTM_REDACTION_ALLOWLIST", "")
 				if err := os.Unsetenv("NTM_REDACTION_ALLOWLIST"); err != nil {
 					t.Fatal(err)
@@ -48,6 +57,12 @@ func TestRedactionAllowlistEnvironmentCommands(t *testing.T) {
 				oldCfg, oldCfgFile := cfg, cfgFile
 				cfg = nil
 				t.Cleanup(func() { cfg, cfgFile = oldCfg, oldCfgFile })
+				// Each case models a fresh process, including fresh command-local
+				// slice flags and the production configuration-loading hook.
+				commandRoot := &cobra.Command{Use: "ntm", PersistentPreRunE: rootCmd.PersistentPreRunE}
+				commandRoot.PersistentFlags().StringVar(&cfgFile, "config", "", "config file")
+				commandRoot.PersistentFlags().BoolVar(&jsonOutput, "json", false, "JSON output")
+				commandRoot.AddCommand(newScrubCmd(), newRedactCmd())
 				args := []string{"--config", configPath}
 				if command == "scrub" {
 					args = append(args, "scrub", "--path", artifact, "--format", "json")
@@ -55,8 +70,8 @@ func TestRedactionAllowlistEnvironmentCommands(t *testing.T) {
 					args = append(args, "redact", "preview", "--file", artifact, "--json")
 				}
 				out, err := captureStdout(t, func() error {
-					rootCmd.SetArgs(args)
-					return rootCmd.Execute()
+					commandRoot.SetArgs(args)
+					return commandRoot.Execute()
 				})
 				if err != nil {
 					t.Fatalf("command failed: %v\n%s", err, out)

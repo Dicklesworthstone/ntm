@@ -16,6 +16,7 @@ import (
 	"unicode"
 
 	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/archive"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 )
 
@@ -530,8 +531,12 @@ func ExtractSessionName(path string) string {
 	if filename == "" {
 		return ""
 	}
-	filename = strings.TrimSuffix(filename, ".jsonl")
-	filename = strings.TrimSuffix(filename, ".json")
+	if session, _, ok := archive.ParseFilename(filename); ok {
+		filename = session
+	} else {
+		filename = strings.TrimSuffix(filename, ".jsonl")
+		filename = strings.TrimSuffix(filename, ".json")
+	}
 	// Source labels are emitted in prompts and send receipts too. Redact
 	// before truncating so a shortened credential cannot evade detection.
 	// Keep the original path on the hit for identity and project ranking.

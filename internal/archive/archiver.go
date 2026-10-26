@@ -6,10 +6,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
-	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -27,7 +29,33 @@ const (
 
 	// DefaultLinesPerCapture is how many lines to capture per interval.
 	DefaultLinesPerCapture = 500
+
+	// DefaultMaxFileBytes bounds each archive chunk. A single larger record
+	// is kept intact in its own chunk rather than splitting a JSONL record.
+	DefaultMaxFileBytes int64 = 64 * 1024 * 1024
 )
+
+var archiveFilenamePattern = regexp.MustCompile(`^(.+)_(\d{4}-\d{2}-\d{2})(?:_(\d{6}\.\d{9})-\d+)?\.jsonl$`)
+
+// ParseFilename identifies both historical daily archives and bounded chunks.
+// The date/time suffix is anchored at the end so date-like session names keep
+// their full identity. Timestamps use the writer's local calendar convention.
+func ParseFilename(name string) (string, time.Time, bool) {
+	matches := archiveFilenamePattern.FindStringSubmatch(name)
+	if len(matches) != 4 {
+		return "", time.Time{}, false
+	}
+	layout, value := "2006-01-02", matches[2]
+	if matches[3] != "" {
+		layout += "_150405.000000000"
+		value += "_" + matches[3]
+	}
+	ts, err := time.ParseInLocation(layout, value, time.Local)
+	if err != nil {
+		return "", time.Time{}, false
+	}
+	return matches[1], ts, true
+}
 
 // ArchiveRecord represents a single CASS-compatible archive entry.
 type ArchiveRecord struct {
@@ -60,11 +88,15 @@ type Archiver struct {
 	paneStates      map[int]*PaneState // Keyed by pane index
 	mu              sync.RWMutex
 	file            *os.File
-	encoder         *json.Encoder
+	fileDate        string
+	fileBytes       int64
+	maxFileBytes    int64
+	writeErr        error
 	started         time.Time
 	totalRecords    int
 	onRecord        func(*ArchiveRecord) // Optional callback for testing
 	getPanes        func(context.Context, string) ([]tmux.Pane, error)
+	writeFile       func(*os.File, []byte) (int, error)
 }
 
 // ArchiverOptions configures the Archiver.
@@ -73,6 +105,7 @@ type ArchiverOptions struct {
 	OutputDir       string
 	Interval        time.Duration
 	LinesPerCapture int
+	MaxFileBytes    int64                // Zero uses DefaultMaxFileBytes; negative values are invalid.
 	OnRecord        func(*ArchiveRecord) // Callback when record is written
 }
 
@@ -83,6 +116,7 @@ func DefaultArchiverOptions(sessionName string) ArchiverOptions {
 		OutputDir:       util.ExpandPath(DefaultOutputDir),
 		Interval:        DefaultInterval,
 		LinesPerCapture: DefaultLinesPerCapture,
+		MaxFileBytes:    DefaultMaxFileBytes,
 	}
 }
 
@@ -100,11 +134,17 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 	if opts.LinesPerCapture < 0 {
 		return nil, fmt.Errorf("lines per capture must be non-negative")
 	}
+	if opts.MaxFileBytes < 0 {
+		return nil, fmt.Errorf("maximum archive file bytes must be non-negative")
+	}
 	if opts.Interval == 0 {
 		opts.Interval = DefaultInterval
 	}
 	if opts.LinesPerCapture == 0 {
 		opts.LinesPerCapture = DefaultLinesPerCapture
+	}
+	if opts.MaxFileBytes == 0 {
+		opts.MaxFileBytes = DefaultMaxFileBytes
 	}
 
 	// Ensure output directory exists
@@ -112,27 +152,24 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 		return nil, fmt.Errorf("creating archive directory: %w", err)
 	}
 
-	// Create archive file (one per session, append mode)
-	filename := fmt.Sprintf("%s_%s.jsonl", util.SanitizeFilename(opts.SessionName), time.Now().Format("2006-01-02"))
-	filePath := filepath.Join(opts.OutputDir, filename)
-
-	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return nil, fmt.Errorf("opening archive file: %w", err)
-	}
-
-	return &Archiver{
+	a := &Archiver{
 		sessionName:     opts.SessionName,
 		outputDir:       opts.OutputDir,
 		interval:        opts.Interval,
 		linesPerCapture: opts.LinesPerCapture,
 		paneStates:      make(map[int]*PaneState),
-		file:            f,
-		encoder:         json.NewEncoder(f),
+		maxFileBytes:    opts.MaxFileBytes,
 		started:         time.Now(),
 		onRecord:        opts.OnRecord,
 		getPanes:        tmux.GetPanesContext,
-	}, nil
+	}
+	file, err := a.openChunk(a.started)
+	if err != nil {
+		return nil, fmt.Errorf("opening archive file: %w", err)
+	}
+	a.file = file
+	a.fileDate = a.started.Format("2006-01-02")
+	return a, nil
 }
 
 // Run starts the archive loop. It blocks until the context is cancelled.
@@ -238,13 +275,6 @@ func (a *Archiver) capturePane(ctx context.Context, pane tmux.Pane) error {
 		return nil
 	}
 
-	// Update state
-	state.LastHash = contentHash
-	state.LastContent = content
-	state.LastCapture = time.Now()
-	state.Sequence++
-	state.TotalLines += countLines(newContent)
-
 	// Create record
 	paneName := fmt.Sprintf("%s_%d", pane.Type, pane.Index)
 	record := &ArchiveRecord{
@@ -256,22 +286,105 @@ func (a *Archiver) capturePane(ctx context.Context, pane tmux.Pane) error {
 		Timestamp: time.Now().UTC(),
 		Content:   newContent,
 		Lines:     countLines(newContent),
-		Sequence:  state.Sequence,
+		Sequence:  state.Sequence + 1,
 	}
 
 	// Write record
 	if err := a.writeRecord(record); err != nil {
 		return fmt.Errorf("writing record: %w", err)
 	}
+	// A failed write or rotation must not consume this capture. The next
+	// interval retries the still-unarchived content with the same sequence.
+	state.LastHash = contentHash
+	state.LastContent = content
+	state.LastCapture = record.Timestamp
+	state.Sequence = record.Sequence
+	state.TotalLines += record.Lines
 
 	return nil
 }
 
-// writeRecord writes an archive record to the JSONL file.
+// openChunk creates a file owned exclusively by this writer. Never append to
+// an earlier chunk: monitor restarts must not make a retired file live again.
+func (a *Archiver) openChunk(now time.Time) (*os.File, error) {
+	pattern := fmt.Sprintf("%s_%s-*.jsonl", util.SanitizeFilename(a.sessionName), now.Format("2006-01-02_150405.000000000"))
+	return os.CreateTemp(a.outputDir, pattern)
+}
+
+// rotateChunk hands the writer over at a complete-record boundary. The old
+// file stays open if preparing the successor fails. Once the handoff is
+// logged, no further write by this archiver can reach the previous file.
+// The caller holds a.mu.
+func (a *Archiver) rotateChunk(now time.Time) error {
+	if err := a.file.Sync(); err != nil {
+		return fmt.Errorf("syncing previous archive chunk: %w", err)
+	}
+	next, err := a.openChunk(now)
+	if err != nil {
+		return fmt.Errorf("opening next archive chunk: %w", err)
+	}
+	previous := a.file
+	previousBytes := a.fileBytes
+	closeErr := previous.Close()
+	// Close invalidates the previous descriptor even when it returns an error.
+	// Keep the prepared successor so the next capture can retry safely.
+	a.file = next
+	a.fileDate = now.Format("2006-01-02")
+	a.fileBytes = 0
+	if closeErr != nil {
+		return fmt.Errorf("closing previous archive chunk %s: %w", previous.Name(), closeErr)
+	}
+	slog.Info("archive file rotated", "session", a.sessionName,
+		"closed_path", previous.Name(), "closed_bytes", previousBytes, "active_path", next.Name())
+	return nil
+}
+
+// writeRecord writes one complete JSONL record, rotating before it would
+// exceed the current chunk's budget. The capture loop holds a.mu.
 func (a *Archiver) writeRecord(record *ArchiveRecord) error {
-	if err := a.encoder.Encode(record); err != nil {
+	if a.file == nil {
+		return os.ErrClosed
+	}
+	if a.writeErr != nil {
+		return a.writeErr
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
 		return err
 	}
+	data = append(data, '\n')
+	now := time.Now()
+	if now.Format("2006-01-02") != a.fileDate ||
+		(a.fileBytes > 0 && int64(len(data)) > a.maxFileBytes-a.fileBytes) {
+		if err := a.rotateChunk(now); err != nil {
+			return err
+		}
+	}
+	var n int
+	if a.writeFile != nil {
+		n, err = a.writeFile(a.file, data)
+	} else {
+		n, err = a.file.Write(data)
+	}
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		if n > 0 {
+			// A partial append (for example ENOSPC) is not a JSONL record.
+			// Only this writer owns the unique chunk, so remove just this
+			// uncommitted attempt before allowing the capture to retry.
+			truncateErr := a.file.Truncate(a.fileBytes)
+			_, seekErr := a.file.Seek(a.fileBytes, io.SeekStart)
+			if rollbackErr := errors.Join(truncateErr, seekErr); rollbackErr != nil {
+				// Never append another record to an unrepairable partial line.
+				a.writeErr = errors.Join(err, fmt.Errorf("restoring archive record boundary: %w", rollbackErr))
+				return a.writeErr
+			}
+		}
+		return err
+	}
+	a.fileBytes += int64(n)
 	a.totalRecords++
 
 	// Call optional callback
@@ -284,6 +397,12 @@ func (a *Archiver) writeRecord(record *ArchiveRecord) error {
 
 // flush syncs the archive file.
 func (a *Archiver) flush() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.flushLocked()
+}
+
+func (a *Archiver) flushLocked() error {
 	if a.file != nil {
 		return a.file.Sync()
 	}
@@ -296,13 +415,10 @@ func (a *Archiver) Close() error {
 	defer a.mu.Unlock()
 
 	if a.file != nil {
-		if err := a.flush(); err != nil {
-			// Log but continue to close file
-			slog.Warn("archive flush on close error", "session", a.sessionName, "error", err)
-		}
-		err := a.file.Close()
+		flushErr := a.flushLocked()
+		closeErr := a.file.Close()
 		a.file = nil
-		return err
+		return errors.Join(flushErr, closeErr)
 	}
 	return nil
 }

@@ -388,6 +388,28 @@ Crash/restart/rate-limit notifications are controlled by `[resilience]`
 (`notify_on_crash`, `notify_on_max_restarts`, `[resilience.rate_limit] notify`),
 not by `[alerts]`.
 
+### Bounded Background Archives
+
+**Status: Shipped** — the resident session monitor writes incremental agent
+output to `~/.ntm/archive/` for CASS indexing. Each writer creates unique JSONL
+chunks named `{session}_{date}_{time}-{unique}.jsonl`; starting another monitor
+never reopens an earlier chunk.
+
+The producer rotates before a record would push the current chunk beyond
+64 MiB, and before writing the first new record of another local calendar day.
+One capture larger than 64 MiB is preserved as a single intact JSONL record in
+its own chunk; the following record starts a new chunk. Rotation preserves the
+per-pane incremental capture state and sequence numbers, and does not restart
+agent panes or reset monitor health state.
+
+A handoff syncs the old file, prepares the successor, and closes the old file
+before logging `archive file rotated` with `closed_path`, `closed_bytes`, and
+`active_path`. The `closed_path` is no longer writable by that monitor and can
+be moved or compressed by an external retention job. If preparing the next
+chunk fails, the pending capture stays uncommitted and is retried on the next
+capture interval. NTM does not automatically delete archived chunks. Do not
+rename or copy/truncate the active chunk to rotate it externally.
+
 ### API Design
 
 **Robot Mode:**

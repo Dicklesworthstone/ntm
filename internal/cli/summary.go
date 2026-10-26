@@ -81,7 +81,6 @@ type summaryFileInfo struct {
 }
 
 var summaryFilenameRegex = regexp.MustCompile(`^(?P<session>.+)-(?P<ts>\d{8}-\d{6})\.json$`)
-var archiveFilenameRegex = regexp.MustCompile(`^(?P<session>.+)_(?P<date>\d{4}-\d{2}-\d{2})\.jsonl$`)
 
 func runSummary(ctx context.Context, args []string, sinceStr, format string, recent, regenerate, sinceSet bool) error {
 	sessionArg := ""
@@ -183,8 +182,8 @@ func runSummary(ctx context.Context, args []string, sinceStr, format string, rec
 	// oracle for the --since window: content the archive proves is older
 	// than the cutoff is trimmed from the capture.
 	outputs := collectSummaryAgentOutputs(panes, tmux.CapturePaneOutput, nil)
-	if archivePath, _, archiveErr := findArchiveFile(session); archiveErr == nil && archivePath != "" {
-		outputs = trimOutputsToSinceWindow(outputs, archivePath, time.Now().Add(-since), archivePaneAliases(panes))
+	if archivePaths, _, archiveErr := findArchiveFiles(session); archiveErr == nil && len(archivePaths) > 0 {
+		outputs = trimOutputsToSinceWindow(outputs, archivePaths, time.Now().Add(-since), archivePaneAliases(panes))
 	}
 
 	opts := summary.Options{
@@ -446,11 +445,11 @@ func regenerateSummaryFromArchive(ctx context.Context, sessionArg string, format
 		}
 	}
 
-	archiveFile, sessionName, err := findArchiveFile(searchSession)
+	archiveFiles, sessionName, err := findArchiveFiles(searchSession)
 	if err != nil {
 		return err
 	}
-	if archiveFile == "" {
+	if len(archiveFiles) == 0 {
 		return fmt.Errorf("no archived output found")
 	}
 
@@ -464,7 +463,7 @@ func regenerateSummaryFromArchive(ctx context.Context, sessionArg string, format
 		}
 	}
 
-	outputs, err := loadArchiveOutputs(archiveFile, cutoff)
+	outputs, err := loadArchiveOutputs(archiveFiles, cutoff)
 	if err != nil {
 		return err
 	}
@@ -523,25 +522,30 @@ func writeSummaryFile(projectDir, session string, sum *summary.SessionSummary) e
 	return nil
 }
 
-func findArchiveFile(session string) (string, string, error) {
+// findArchiveFiles returns every chunk for the selected session in write-time
+// order. A rotation boundary must not hide earlier work from regeneration or
+// remove the pre-cutoff evidence used by a live --since summary.
+func findArchiveFiles(session string) ([]string, string, error) {
 	files, err := listArchiveFiles()
 	if err != nil {
-		return "", "", err
+		return nil, "", err
 	}
 	if len(files) == 0 {
-		return "", "", nil
+		return nil, "", nil
 	}
 
 	if session == "" {
-		return files[0].Path, files[0].Session, nil
+		session = files[0].Session
 	}
 
-	for _, f := range files {
+	var paths []string
+	for i := len(files) - 1; i >= 0; i-- {
+		f := files[i]
 		if f.Session == session {
-			return f.Path, f.Session, nil
+			paths = append(paths, f.Path)
 		}
 	}
-	return "", "", nil
+	return paths, session, nil
 }
 
 func listArchiveFiles() ([]archiveFileInfo, error) {
@@ -563,7 +567,7 @@ func listArchiveFiles() ([]archiveFileInfo, error) {
 		if entry.IsDir() {
 			continue
 		}
-		session, ts, ok := parseArchiveFilename(entry.Name())
+		session, ts, ok := archive.ParseFilename(entry.Name())
 		if !ok {
 			continue
 		}
@@ -582,60 +586,43 @@ func listArchiveFiles() ([]archiveFileInfo, error) {
 	}
 
 	sort.Slice(files, func(i, j int) bool {
+		if files[i].Timestamp.Equal(files[j].Timestamp) {
+			return files[i].Path > files[j].Path
+		}
 		return files[i].Timestamp.After(files[j].Timestamp)
 	})
 
 	return files, nil
 }
 
-func parseArchiveFilename(name string) (string, time.Time, bool) {
-	matches := archiveFilenameRegex.FindStringSubmatch(name)
-	if len(matches) != 3 {
-		return "", time.Time{}, false
-	}
-	session := matches[1]
-	ts, err := time.Parse("2006-01-02", matches[2])
-	if err != nil {
-		return session, time.Time{}, true
-	}
-	return session, ts, true
-}
-
 // loadArchiveOutputs aggregates archived pane content into per-pane agent
 // outputs. A non-zero cutoff excludes records whose timestamp falls before
 // it; records without a timestamp cannot be dated and are kept.
-func loadArchiveOutputs(path string, cutoff time.Time) ([]summary.AgentOutput, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	dec := json.NewDecoder(file)
+func loadArchiveOutputs(paths []string, cutoff time.Time) ([]summary.AgentOutput, error) {
 	paneBuilders := make(map[string]*strings.Builder)
 	paneTypes := make(map[string]string)
-	for {
-		var record archive.ArchiveRecord
-		if err := dec.Decode(&record); err != nil {
-			if err == io.EOF {
-				break
+	for _, path := range paths {
+		err := readArchiveRecords(path, func(record archive.ArchiveRecord) {
+			if record.Content == "" || (!cutoff.IsZero() && !record.Timestamp.IsZero() && record.Timestamp.Before(cutoff)) {
+				return
 			}
-			return nil, err
-		}
-		if record.Content == "" {
-			continue
-		}
-		if !cutoff.IsZero() && !record.Timestamp.IsZero() && record.Timestamp.Before(cutoff) {
-			continue
-		}
-		builder := paneBuilders[record.Pane]
-		if builder == nil {
-			builder = &strings.Builder{}
-			paneBuilders[record.Pane] = builder
-		}
-		builder.WriteString(record.Content)
-		if record.Agent != "" {
-			paneTypes[record.Pane] = record.Agent
+			builder := paneBuilders[record.Pane]
+			if builder == nil {
+				builder = &strings.Builder{}
+				paneBuilders[record.Pane] = builder
+			}
+			// Incremental captures need a line boundary even when neither
+			// captured fragment includes its trailing newline.
+			if builder.Len() > 0 && builder.String()[builder.Len()-1] != '\n' && record.Content[0] != '\n' {
+				builder.WriteByte('\n')
+			}
+			builder.WriteString(record.Content)
+			if record.Agent != "" {
+				paneTypes[record.Pane] = record.Agent
+			}
+		})
+		if err != nil {
+			return nil, fmt.Errorf("reading archive %s: %w", path, err)
 		}
 	}
 
@@ -658,6 +645,26 @@ func loadArchiveOutputs(path string, cutoff time.Time) ([]summary.AgentOutput, e
 		})
 	}
 	return outputs, nil
+}
+
+func readArchiveRecords(path string, visit func(archive.ArchiveRecord)) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	dec := json.NewDecoder(file)
+	for {
+		var record archive.ArchiveRecord
+		if err := dec.Decode(&record); err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+		visit(record)
+	}
 }
 
 func collectSummaryAgentOutputs(
@@ -708,31 +715,24 @@ func archivePaneAliases(panes []tmux.Pane) map[string]string {
 // Archive rows key panes by "<type>_<index>" while outputs carry tmux pane
 // IDs; aliases bridges the two (an AgentID lookup is still honoured for
 // callers whose archives are keyed by pane ID).
-func trimOutputsToSinceWindow(outputs []summary.AgentOutput, archivePath string, cutoff time.Time, aliases map[string]string) []summary.AgentOutput {
+func trimOutputsToSinceWindow(outputs []summary.AgentOutput, archivePaths []string, cutoff time.Time, aliases map[string]string) []summary.AgentOutput {
 	if cutoff.IsZero() || len(outputs) == 0 {
 		return outputs
 	}
 
-	file, err := os.Open(archivePath)
-	if err != nil {
-		return outputs
-	}
-	defer file.Close()
-
 	// Last pre-cutoff record content per pane.
-	staleMarkers := make(map[string]string)
-	dec := json.NewDecoder(file)
-	for {
-		var record archive.ArchiveRecord
-		if err := dec.Decode(&record); err != nil {
-			break
-		}
-		if record.Content == "" || record.Timestamp.IsZero() {
-			continue
-		}
-		if record.Timestamp.Before(cutoff) {
-			staleMarkers[record.Pane] = record.Content
-		}
+	staleMarkers := make(map[string]archive.ArchiveRecord)
+	for _, path := range archivePaths {
+		// Trimming is best effort: only successfully decoded timestamped
+		// records can prove that captured content precedes the cutoff.
+		_ = readArchiveRecords(path, func(record archive.ArchiveRecord) {
+			if record.Content == "" || record.Timestamp.IsZero() || !record.Timestamp.Before(cutoff) {
+				return
+			}
+			if previous, ok := staleMarkers[record.Pane]; !ok || !record.Timestamp.Before(previous.Timestamp) {
+				staleMarkers[record.Pane] = record
+			}
+		})
 	}
 	if len(staleMarkers) == 0 {
 		return outputs
@@ -745,7 +745,7 @@ func trimOutputsToSinceWindow(outputs []summary.AgentOutput, archivePath string,
 		if !ok {
 			rawMarker = staleMarkers[aliases[trimmed[i].AgentID]]
 		}
-		marker := strings.TrimRight(rawMarker, "\n")
+		marker := strings.TrimRight(rawMarker.Content, "\n")
 		if marker == "" {
 			continue
 		}
