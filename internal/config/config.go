@@ -747,7 +747,10 @@ type AgentConfig struct {
 	// ClaudeTokenFile points at a file holding a non-rotating setup token
 	// minted with `claude setup-token`. Isolation alone leaves panes with no
 	// credential; this supplies the static one they all read. Kept OUTSIDE
-	// the config dir on purpose so it is never linked into a pane.
+	// the config dir on purpose so it is never linked into a pane. Without
+	// it, each pane logs in itself and ntm keeps that login across restarts.
+	// With it, a pane that already holds its own login does not launch,
+	// because Claude Code would prefer the login over this token.
 	ClaudeTokenFile string `toml:"claude_token_file"`
 }
 

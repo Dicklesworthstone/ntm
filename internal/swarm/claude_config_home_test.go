@@ -265,8 +265,9 @@ func TestProvisionPaneConfig_RemovesCredentialLinksFromAnExistingPaneDir(t *test
 // Code writes to CLAUDE_CONFIG_DIR/.credentials.json with its own refresh
 // token, so deleting it logs that pane out (and a copy the pane has already
 // refreshed holds the only live token of its login). Re-provisioning keeps
-// every such file byte for byte, still provisions the rest of the dir, and the
-// launch stops with an error that names each file instead of proceeding.
+// every such file byte for byte and still provisions the rest of the dir.
+// Only the pane's own .credentials.json is accepted; every other
+// credential-named file stops the launch with an error that names it.
 func TestProvisionPaneConfig_KeepsAndReportsRealCredentialFiles(t *testing.T) {
 	useFileCredentialStore(t)
 	claudeHomeWithCredentialCopies(t)
@@ -276,13 +277,18 @@ func TestProvisionPaneConfig_KeepsAndReportsRealCredentialFiles(t *testing.T) {
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	files := map[string]string{
-		".credentials.json":        `{"claudeAiOauth":{"refreshToken":"pane-own-login"}}`,
-		".credentials.json.tmp.99": `{"claudeAiOauth":{"refreshToken":"pane-refresh-in-flight"}}`,
-		"credential-helper.sh":     "#!/bin/sh\necho not a claude credential\n",
+	ownLogin := map[string]string{".credentials.json": paneOwnLoginContent}
+	reported := map[string]string{
+		".credentials.json.tmp.99":   `{"claudeAiOauth":{"refreshToken":"pane-refresh-in-flight"}}`,
+		".credentials.json.bak-1024": `{"claudeAiOauth":{"refreshToken":"pane-backup"}}`,
+		"credential-helper.sh":       "#!/bin/sh\necho not a claude credential\n",
 	}
-	for name, content := range files {
-		writeFile(t, filepath.Join(target, name), content)
+	files := map[string]string{}
+	for _, group := range []map[string]string{ownLogin, reported} {
+		for name, content := range group {
+			files[name] = content
+			writeFile(t, filepath.Join(target, name), content)
+		}
 	}
 
 	if _, err := p.ProvisionPaneConfig("proj", "1"); err != nil {
@@ -310,9 +316,14 @@ func TestProvisionPaneConfig_KeepsAndReportsRealCredentialFiles(t *testing.T) {
 	if err == nil {
 		t.Fatal("ProvisionClaudeIsolation launched a pane whose config dir holds real credential files")
 	}
-	for name := range files {
+	for name := range reported {
 		if !strings.Contains(err.Error(), name+" (file)") {
 			t.Errorf("launch error does not name %s as a file: %v", name, err)
+		}
+	}
+	for name := range ownLogin {
+		if strings.Contains(err.Error(), name+" (file)") {
+			t.Errorf("launch error reports the pane's own login %s as exposed: %v", name, err)
 		}
 	}
 	for name, want := range files {
@@ -690,6 +701,286 @@ func TestProvisionPaneConfig_KeepsAndReportsAHardLinkedCredential(t *testing.T) 
 	if isolated {
 		t.Error("CredentialIsolated = true while the operator's credential is hard-linked into the pane dir")
 	}
+}
+
+// paneOwnLoginContent stands for what a login inside a pane writes: a
+// credential whose refresh token appears nowhere in the operator's config dir.
+const paneOwnLoginContent = `{"claudeAiOauth":{"refreshToken":"pane-own-login"}}`
+
+func isolationConfig(tokenFile string) *config.Config {
+	return &config.Config{Agents: config.AgentConfig{ClaudeIsolateCredentials: true, ClaudeTokenFile: tokenFile}}
+}
+
+// With no claude_token_file a pane authenticates by logging in inside it, and
+// Claude Code writes that login to CLAUDE_CONFIG_DIR/.credentials.json. Its
+// refresh-token chain is the pane's alone, so the pane is isolated. Every
+// restart used to stop on it; it must survive re-provisioning byte for byte
+// and the launch must go ahead, restart after restart.
+func TestProvisionClaudeIsolation_LaunchesWithThePanesOwnLogin(t *testing.T) {
+	useFileCredentialStore(t)
+	claudeHomeWithCredentialCopies(t)
+	project := t.TempDir()
+	cfg := isolationConfig("")
+
+	env, err := ProvisionClaudeIsolation(cfg, project, "proj", 1)
+	if err != nil {
+		t.Fatalf("first launch: %v", err)
+	}
+	configDir := env.Vars[ClaudeConfigDirEnvVar]
+	login := filepath.Join(configDir, ".credentials.json")
+	writeFile(t, login, paneOwnLoginContent) // the user logs in inside the pane
+
+	for restart := 1; restart <= 2; restart++ {
+		env, err := ProvisionClaudeIsolation(cfg, project, "proj", 1)
+		if err != nil {
+			t.Fatalf("restart %d refused the pane's own login: %v", restart, err)
+		}
+		if env.Vars[ClaudeConfigDirEnvVar] != configDir || len(env.SecretAssignments) != 0 {
+			t.Fatalf("restart %d launch env = %+v, want CLAUDE_CONFIG_DIR=%s and no token", restart, env, configDir)
+		}
+		if got, err := os.ReadFile(login); err != nil || string(got) != paneOwnLoginContent {
+			t.Fatalf("restart %d changed the pane's login: %q, err=%v", restart, got, err)
+		}
+	}
+	if _, err := os.Readlink(filepath.Join(configDir, "settings.json")); err != nil {
+		t.Errorf("settings.json is not linked next to the pane's login: %v", err)
+	}
+	isolated, err := NewClaudeConfigProvisioner(project).CredentialIsolated("proj", "1")
+	if err != nil || !isolated {
+		t.Errorf("CredentialIsolated = %v, %v for a pane holding only its own login", isolated, err)
+	}
+}
+
+// Claude Code prefers a .credentials.json over CLAUDE_CODE_OAUTH_TOKEN, so
+// with a setup token configured the pane's own login would silently replace
+// the credential the operator chose. The launch stops and says which file
+// overrides which setting, and nothing is deleted.
+func TestProvisionClaudeIsolation_RefusesThePanesOwnLoginWhenATokenFileIsConfigured(t *testing.T) {
+	useFileCredentialStore(t)
+	home, _, _ := claudeHomeWithCredentialCopies(t)
+	tokenFile := filepath.Join(home, "claude-setup.token")
+	writeFile(t, tokenFile, "sk-ant-oat-test")
+	project := t.TempDir()
+	p := NewClaudeConfigProvisioner(project)
+	configDir := p.ConfigPath("proj", "3")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	login := filepath.Join(configDir, ".credentials.json")
+	writeFile(t, login, paneOwnLoginContent)
+
+	_, err := ProvisionClaudeIsolation(isolationConfig(tokenFile), project, "proj", 3)
+	if err == nil {
+		t.Fatal("ProvisionClaudeIsolation launched with a setup token that the pane's own login overrides")
+	}
+	for _, want := range []string{"pane 3", "session proj", login, "claude_token_file", tokenFile} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("launch error does not mention %q: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "pane-own-login") || strings.Contains(err.Error(), "sk-ant-oat-test") {
+		t.Errorf("launch error leaks credential contents: %v", err)
+	}
+	if got, err := os.ReadFile(login); err != nil || string(got) != paneOwnLoginContent {
+		t.Errorf("the refused launch changed the pane's login: %q, err=%v", got, err)
+	}
+	isolated, err := p.CredentialIsolated("proj", "3")
+	if err != nil || !isolated {
+		t.Errorf("CredentialIsolated = %v, %v; the pane's own login is isolated even when the launch is refused", isolated, err)
+	}
+}
+
+// A .credentials.json that is the operator's credential under another name
+// shares its refresh token and rejoins the rotation race even though it is a
+// regular file in the pane dir. A hard link is one file with two names; a byte
+// copy holds the same token; an operator credential entry that links to the
+// pane's file makes the operator refresh it too; and a hard link to another
+// pane's login puts two panes on one refresh chain. Each is refused, named,
+// kept, and never quoted.
+func TestProvisionClaudeIsolation_RefusesACredentialsJSONSharedWithAnotherCredential(t *testing.T) {
+	useFileCredentialStore(t)
+	cases := []struct {
+		name  string
+		place func(t *testing.T, source string, p *ClaudeConfigProvisioner, login string)
+	}{
+		{"hard link to the operator credential", func(t *testing.T, source string, _ *ClaudeConfigProvisioner, login string) {
+			if err := os.Link(filepath.Join(source, ".credentials.json"), login); err != nil {
+				t.Skipf("hard links unsupported here: %v", err)
+			}
+		}},
+		{"byte copy of the operator credential", func(t *testing.T, source string, _ *ClaudeConfigProvisioner, login string) {
+			data, err := os.ReadFile(filepath.Join(source, ".credentials.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, login, string(data))
+		}},
+		{"byte copy of an operator credential backup", func(t *testing.T, source string, _ *ClaudeConfigProvisioner, login string) {
+			const backup = `{"claudeAiOauth":{"refreshToken":"rt-backup-only"}}`
+			writeFile(t, filepath.Join(source, ".credentials.json.bak-20261003"), backup)
+			writeFile(t, login, backup)
+		}},
+		{"operator credential entry linked to the pane's file", func(t *testing.T, source string, _ *ClaudeConfigProvisioner, login string) {
+			// One file, one link, but the operator reads and refreshes it
+			// through ~/.claude too. The source entry must be followed.
+			writeFile(t, login, `{"claudeAiOauth":{"refreshToken":"rt-shared-through-link"}}`)
+			if err := os.Symlink(login, filepath.Join(source, ".credentials.json.pane")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"hard link to another pane's login", func(t *testing.T, _ string, p *ClaudeConfigProvisioner, login string) {
+			other := p.ConfigPath("proj", "2")
+			if err := os.MkdirAll(other, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			otherLogin := filepath.Join(other, ".credentials.json")
+			writeFile(t, otherLogin, `{"claudeAiOauth":{"refreshToken":"rt-pane-two"}}`)
+			if err := os.Link(otherLogin, login); err != nil {
+				t.Skipf("hard links unsupported here: %v", err)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, source, credentials := claudeHomeWithCredentialCopies(t)
+			p := NewClaudeConfigProvisioner(t.TempDir())
+			configDir := p.ConfigPath("proj", "1")
+			if err := os.MkdirAll(configDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			login := filepath.Join(configDir, ".credentials.json")
+			tc.place(t, source, p, login)
+			paths := []string{login}
+			for _, name := range credentials {
+				paths = append(paths, filepath.Join(source, name))
+			}
+			before := map[string]string{}
+			for _, path := range paths {
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				before[path] = string(data)
+			}
+
+			_, err := ProvisionClaudeIsolation(isolationConfig(""), p.BaseDir, "proj", 1)
+			if err == nil || !strings.Contains(err.Error(), ".credentials.json (file)") {
+				t.Fatalf("ProvisionClaudeIsolation error = %v, want a refusal naming .credentials.json", err)
+			}
+			for _, secret := range []string{"rt-secret", "rt-backup-only", "rt-shared-through-link", "rt-pane-two"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Errorf("launch error leaks credential contents (%s): %v", secret, err)
+				}
+			}
+			isolated, err := p.CredentialIsolated("proj", "1")
+			if err != nil || isolated {
+				t.Errorf("CredentialIsolated = %v, %v, want false", isolated, err)
+			}
+			for path, want := range before {
+				if got, err := os.ReadFile(path); err != nil || string(got) != want {
+					t.Errorf("%s changed: %q, err=%v", path, got, err)
+				}
+			}
+		})
+	}
+}
+
+// When an operator credential cannot be read, ntm cannot tell whether the
+// pane's file is a copy of it. Unverified is not isolated: the launch stops
+// and names what could not be checked, and the pane's file is kept.
+func TestProvisionClaudeIsolation_RefusesAnOwnLoginItCannotVerify(t *testing.T) {
+	useFileCredentialStore(t)
+	if os.Geteuid() == 0 {
+		t.Skip("root reads files regardless of their mode")
+	}
+	_, source, _ := claudeHomeWithCredentialCopies(t)
+	// Same size as the pane's file, so only its bytes could tell them apart.
+	unreadable := filepath.Join(source, ".credentials.json.bak-locked")
+	writeFile(t, unreadable, strings.Repeat("x", len(paneOwnLoginContent)))
+	if err := os.Chmod(unreadable, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unreadable, 0o600) })
+
+	p := NewClaudeConfigProvisioner(t.TempDir())
+	configDir := p.ConfigPath("proj", "1")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	login := filepath.Join(configDir, ".credentials.json")
+	writeFile(t, login, paneOwnLoginContent)
+
+	_, err := ProvisionClaudeIsolation(isolationConfig(""), p.BaseDir, "proj", 1)
+	if err == nil {
+		t.Fatal("ProvisionClaudeIsolation launched although the pane's login could not be compared with an operator credential")
+	}
+	for _, want := range []string{"own Claude login", unreadable} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("launch error does not mention %q: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "pane-own-login") {
+		t.Errorf("launch error leaks credential contents: %v", err)
+	}
+	if got, err := os.ReadFile(login); err != nil || string(got) != paneOwnLoginContent {
+		t.Errorf("the refused launch changed the pane's login: %q, err=%v", got, err)
+	}
+}
+
+// .credentials.json as a directory or a symlink is not a login Claude Code
+// wrote, and is handled as before: a directory is kept and refused, and a
+// symlink counts as exposed until re-provisioning removes it (never its
+// target). The link points at a file that would pass every check on its own,
+// so judging the target instead of the entry would wrongly accept it.
+func TestProvisionClaudeIsolation_CredentialsJSONDirectoryOrSymlinkIsNotALogin(t *testing.T) {
+	useFileCredentialStore(t)
+
+	t.Run("directory", func(t *testing.T) {
+		claudeHomeWithCredentialCopies(t)
+		p := NewClaudeConfigProvisioner(t.TempDir())
+		credentialDir := filepath.Join(p.ConfigPath("proj", "1"), ".credentials.json")
+		if err := os.MkdirAll(credentialDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(credentialDir, "token.json"), paneOwnLoginContent)
+
+		_, err := ProvisionClaudeIsolation(isolationConfig(""), p.BaseDir, "proj", 1)
+		if err == nil || !strings.Contains(err.Error(), ".credentials.json (directory)") {
+			t.Fatalf("ProvisionClaudeIsolation error = %v, want a refusal naming the .credentials.json directory", err)
+		}
+		if got, err := os.ReadFile(filepath.Join(credentialDir, "token.json")); err != nil || string(got) != paneOwnLoginContent {
+			t.Errorf("the .credentials.json directory was modified: %q, err=%v", got, err)
+		}
+	})
+
+	t.Run("symlink", func(t *testing.T) {
+		claudeHomeWithCredentialCopies(t)
+		p := NewClaudeConfigProvisioner(t.TempDir())
+		configDir := p.ConfigPath("proj", "1")
+		if err := os.MkdirAll(configDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		elsewhere := filepath.Join(t.TempDir(), "login.json")
+		writeFile(t, elsewhere, paneOwnLoginContent)
+		link := filepath.Join(configDir, ".credentials.json")
+		if err := os.Symlink(elsewhere, link); err != nil {
+			t.Fatal(err)
+		}
+
+		isolated, err := p.CredentialIsolated("proj", "1")
+		if err != nil || isolated {
+			t.Fatalf("CredentialIsolated = %v, %v with a .credentials.json symlink in the pane dir, want false", isolated, err)
+		}
+		if _, err := ProvisionClaudeIsolation(isolationConfig(""), p.BaseDir, "proj", 1); err != nil {
+			t.Fatalf("ProvisionClaudeIsolation: %v", err)
+		}
+		if _, err := os.Lstat(link); !os.IsNotExist(err) {
+			t.Errorf("re-provisioning kept the .credentials.json symlink (lstat err=%v)", err)
+		}
+		if got, err := os.ReadFile(elsewhere); err != nil || string(got) != paneOwnLoginContent {
+			t.Errorf("removing the link disturbed its target: %q, err=%v", got, err)
+		}
+	})
 }
 
 // A claude-homes/<session> link to a directory outside claude-homes makes that
