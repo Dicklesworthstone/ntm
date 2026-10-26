@@ -2902,6 +2902,14 @@ func codexTranscriptBrowsing(capture string) bool {
 	return false
 }
 
+// ComposerVisibleForDelivery reports whether a capture positively shows a
+// live marker-based composer, excluding startup dialogs and transcript
+// browsing. Empty captures and agent types without a known marker return
+// false. Held draft text is allowed; this check does not establish emptiness.
+func ComposerVisibleForDelivery(capture string, agentType AgentType) bool {
+	return composerVisibleForDelivery(capture, composerMarkersForAgent(agentType))
+}
+
 // composerVisibleForDelivery reports whether the capture POSITIVELY shows a
 // live composer rather than dialog chrome reusing the marker glyph. Only the
 // BOTTOM-MOST marker line counts — the composer is bottom-pinned in every

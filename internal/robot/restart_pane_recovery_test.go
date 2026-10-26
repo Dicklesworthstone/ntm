@@ -451,8 +451,15 @@ func TestRestartReadinessRequiresCurrentCodexUI(t *testing.T) {
 	}{
 		{"banner only", "codex", "OpenAI Codex starting\n", false},
 		{"shell prompt", "codex", "$\n", false},
+		{"update dialog", "codex", "OpenAI Codex\nCodex update available!\n› 1. Update now\n  2. Skip\nPress enter to continue\n", false},
+		{"trust dialog", "cod", "Do you trust the contents of this directory?\n› 1. Yes, continue\n  2. No, quit\n", false},
+		{"ultra numbered menu", "codex-cli", "Choose a model\n» 1) Codex\n  2) Cancel\n", false},
+		{"unnumbered dialog chrome", "codex", "› Yes, continue\nPress Enter to Continue\n", false},
+		{"transcript browsing", "codex", "› an earlier prompt\nBrowsing transcript · ↵ rewind · esc back\n", false},
 		{"composer", "cod", "OpenAI Codex\n› Ask Codex to do anything\n", true},
 		{"ultra composer", "codex-cli", "» Ask Codex to do anything\n", true},
+		{"composer after dismissed dialog", "codex", "› 1. Update now\nPress enter to continue\n› Ask Codex to do anything\n", true},
+		{"held draft composer", "codex", "» keep this unsubmitted draft\n", true},
 		{"working", "codex", "• Working (12s • esc to interrupt)\n", true},
 		{"other provider unchanged", "claude", "Claude Code v1.2.3\n", true},
 	} {
@@ -497,12 +504,13 @@ func TestRestartPSForegroundRequiresMatchingTerminalAndRunningState(t *testing.T
 // Exercise the production observer through the public restart operation.
 // The stopped case is the real failure: the private FIFO shell has printed
 // the Codex startup banner but stops before any provider is launched.
+// A running provider showing a startup dialog is also not ready for a prompt.
 func TestRealRestartReadinessRequiresRunningForegroundProcess(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("real tmux fixture requires POSIX process control")
 	}
 	testutil.RequireTmuxThrottled(t)
-	for _, mode := range []string{"direct-agent", "exec-agent", "fifo-wrapper", "stopped-fifo", "stopped-fifo-with-prompt", "banner-helper"} {
+	for _, mode := range []string{"direct-agent", "exec-agent", "fifo-wrapper", "stopped-fifo", "stopped-fifo-with-prompt", "banner-helper", "startup-dialog"} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
 			session := fmt.Sprintf("ntm-restart-readiness-%d", time.Now().UnixNano())
@@ -537,9 +545,10 @@ func TestRealRestartReadinessRequiresRunningForegroundProcess(t *testing.T) {
 				command = "printf 'OpenAI Codex\\n› Ask Codex to do anything\\n'; exec /bin/cat"
 			}
 			stopped := strings.HasPrefix(mode, "stopped-fifo")
-			unready := stopped || mode == "banner-helper"
+			unready := stopped || mode == "banner-helper" || mode == "startup-dialog"
 			stoppedPath := filepath.Join(root, "stopped.pid")
 			neverStarted := filepath.Join(root, "must-not-start")
+			dialogInput := filepath.Join(root, "dialog-input")
 			if mode == "fifo-wrapper" {
 				// The extra command keeps the wrapper shell alive while cat,
 				// our accepting provider stand-in, owns the same foreground tty.
@@ -547,6 +556,12 @@ func TestRealRestartReadinessRequiresRunningForegroundProcess(t *testing.T) {
 			}
 			if mode == "banner-helper" {
 				command = "printf 'OpenAI Codex starting\\n'; /bin/sleep 30; printf unexpected > " + tmux.ShellQuote(neverStarted)
+			}
+			if mode == "startup-dialog" {
+				// A live foreground provider owns the tty, but its next Enter
+				// would select a menu item. Record any mistakenly delivered input.
+				command = "printf 'OpenAI Codex starting\\nCodex update available!\\n› 1. Update now\\n  2. Skip\\n  Press enter to continue\\n'; /bin/cat > " +
+					tmux.ShellQuote(dialogInput) + "; printf unexpected > " + tmux.ShellQuote(neverStarted)
 			}
 			if stopped {
 				command = "printf 'OpenAI Codex starting\\n'; printf '%s\\n' \"$$\" > " + tmux.ShellQuote(stoppedPath) +
@@ -577,7 +592,7 @@ func TestRealRestartReadinessRequiresRunningForegroundProcess(t *testing.T) {
 				t.Fatal(err)
 			}
 			opts := RestartPaneOptions{Session: session, Panes: []string{pane.ID}, Config: config.Default(), Environment: environment}
-			if mode == "stopped-fifo-with-prompt" || mode == "banner-helper" {
+			if mode == "stopped-fifo-with-prompt" || mode == "banner-helper" || mode == "startup-dialog" {
 				opts.Prompt = "UNEXPECTED_RESTART_PROMPT"
 			}
 			ctx := t.Context()
@@ -612,15 +627,23 @@ func TestRealRestartReadinessRequiresRunningForegroundProcess(t *testing.T) {
 						t.Fatalf("launch wrapper is not stopped: state=%s err=%v", state, err)
 					}
 				} else if candidate, err := observeRestartForegroundProcess(t.Context(), pane.ID, replacement); err != nil || candidate <= 0 {
-					t.Fatalf("fixture helper stopped before banner refusal was exercised: candidate=%d err=%v", candidate, err)
+					t.Fatalf("fixture foreground process stopped before readiness refusal was exercised: candidate=%d err=%v", candidate, err)
 				}
 				if _, err := os.Stat(neverStarted); !errors.Is(err, os.ErrNotExist) {
-					t.Fatalf("stopped launch continued unexpectedly: %v", err)
+					t.Fatalf("unready launch continued unexpectedly: %v", err)
 				}
 				capture, err := tmux.CapturePaneVisibleContext(t.Context(), pane.ID)
 				if err != nil || !strings.Contains(capture, "OpenAI Codex starting") ||
 					strings.Contains(capture, "UNEXPECTED_RESTART_PROMPT") {
-					t.Fatalf("stopped fixture lost banner or received prompt: capture=%q err=%v", capture, err)
+					t.Fatalf("unready fixture lost banner or received prompt: capture=%q err=%v", capture, err)
+				}
+				if mode == "startup-dialog" {
+					if !strings.Contains(capture, "› 1. Update now") || !strings.Contains(capture, "Press enter to continue") {
+						t.Fatalf("fixture did not remain at its startup dialog: %q", capture)
+					}
+					if received, err := os.ReadFile(dialogInput); err != nil || len(received) != 0 {
+						t.Fatalf("startup dialog received terminal input: bytes=%d err=%v", len(received), err)
+					}
 				}
 				return
 			}

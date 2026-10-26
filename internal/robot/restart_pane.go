@@ -2497,7 +2497,7 @@ func waitForPaneAgentReadyWithContext(
 			// A Codex startup banner can be printed before a wrapper finishes
 			// initialization. Require the current composer or live working
 			// chrome while the same foreground process surrounds the capture.
-			outputReady = tmux.InspectComposer(captured, tmux.AgentCodex).MarkerVisible || agent.CodexActivelyWorking(captured, 0)
+			outputReady = tmux.ComposerVisibleForDelivery(captured, tmux.AgentCodex) || agent.CodexActivelyWorking(captured, 0)
 		}
 		ready := captureErr == nil && outputReady && beforePID > 0 && beforePID == afterPID
 		if ready {

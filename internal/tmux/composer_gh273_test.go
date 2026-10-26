@@ -32,8 +32,6 @@ const (
 // and accepting it made a robot send's Enter select "Update now" and
 // self-update the agent out from under the session.
 func TestComposerVisibleForDelivery_CodexGlyphsAndDialogs(t *testing.T) {
-	markers := composerMarkersForAgent(AgentCodex)
-
 	cases := []struct {
 		name    string
 		capture string
@@ -42,18 +40,58 @@ func TestComposerVisibleForDelivery_CodexGlyphsAndDialogs(t *testing.T) {
 		{"ultra idle composer (») is ready", codexUltraIdleFrame, true},
 		{"xhigh idle composer (›) is still ready", codexXhighIdleFrame, true},
 		{"update dialog is NOT a ready composer", codexUpdateDialogFrame, false},
+		{"trust dialog is not a ready composer", "Do you trust the contents of this directory?\n› 1. Yes, continue\n  2. No, quit\n", false},
 		{"empty ultra composer with no hint", "transcript\n» \n  footer\n", true},
 		{"numbered option under » cursor rejected", "» 1. Replace current goal  Set the new objective and start it now\n  2. Keep current goal\n", false},
+		{"parenthesized menu option rejected", "Select a model\n› 2) Codex\n  3) Cancel\n", false},
 		{"press-enter chrome below marker rejected", "some dialog\n› Yes, continue\n\nPress enter to continue\n", false},
+		{"press-enter chrome on marker rejected", "» Press Enter to Continue\n", false},
+		{"live transcript browsing rejected", "› an earlier prompt\nBrowsing transcript · ↵ rewind · esc back\n", false},
 		{"no marker at all", "plain shell\n$ \n", false},
 		{"transcript mentions options but live composer below wins", "  1. first thing to do\n  2. second thing\n› Ask Codex to do anything\n", true},
+		{"dismissed dialog above live composer is ready", codexUpdateDialogFrame + codexUltraIdleFrame, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := composerVisibleForDelivery(tc.capture, markers); got != tc.want {
-				t.Errorf("composerVisibleForDelivery() = %v, want %v\ncapture:\n%s", got, tc.want, tc.capture)
+			if got := ComposerVisibleForDelivery(tc.capture, AgentCodex); got != tc.want {
+				t.Errorf("ComposerVisibleForDelivery() = %v, want %v\ncapture:\n%s", got, tc.want, tc.capture)
 			}
 		})
+	}
+}
+
+func TestComposerVisibleForDelivery_AgentTypesAndDrafts(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		agentType AgentType
+		capture   string
+		want      bool
+	}{
+		{"cod alias", AgentType("cod"), codexXhighIdleFrame, true},
+		{"codex-cli alias", AgentType("codex-cli"), codexUltraIdleFrame, true},
+		{"alias preserves dialog refusal", AgentType("codex-cli"), codexUpdateDialogFrame, false},
+		{"empty capture", AgentCodex, "", false},
+		{"empty type", AgentType(""), codexXhighIdleFrame, false},
+		{"unknown type", AgentType("unsupported"), codexXhighIdleFrame, false},
+		{"type without composer marker", AgentGemini, codexXhighIdleFrame, false},
+		{"other provider composer", AgentClaude, "❯ keep this draft\n", true},
+		{"other provider does not adopt Codex marker", AgentClaude, codexXhighIdleFrame, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ComposerVisibleForDelivery(tc.capture, tc.agentType); got != tc.want {
+				t.Fatalf("ComposerVisibleForDelivery(%q) = %v, want %v", tc.agentType, got, tc.want)
+			}
+		})
+	}
+
+	// Readiness establishes that the composer owns the keyboard. It must not
+	// redefine InspectComposer's separate evidence that a draft is still held.
+	capture := "OpenAI Codex\n» keep this unsubmitted draft\n"
+	if !ComposerVisibleForDelivery(capture, AgentCodex) {
+		t.Fatal("a held draft hid the live composer")
+	}
+	if state := InspectComposer(capture, AgentCodex); !state.MarkerVisible || !state.HoldsText {
+		t.Fatalf("held-draft inspection changed: %+v", state)
 	}
 }
 
