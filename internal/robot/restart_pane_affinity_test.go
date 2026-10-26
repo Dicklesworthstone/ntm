@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,9 +16,282 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
+	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+func TestRestartPanePreflightRejectsChangedEvidence(t *testing.T) {
+	for _, change := range []string{"stable", "missing", "duplicate", "physical-id", "pid", "window", "index", "type", "foreground", "dead", "service", "rotation", "spec", "cwd", "list-error", "spec-error", "cwd-error", "display-title"} {
+		t.Run(change, func(t *testing.T) {
+			pane := tmux.Pane{ID: "%7", PID: 111, Index: 2, WindowIndex: 1, NTMIndex: 3,
+				Type: tmux.AgentCodex, Title: "session__cod_3_saved", Command: "zsh"}
+			spec := tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentCodex,
+				Command: "codex --model saved", Model: "saved"}
+			preflight := &RestartPanePreflight{session: "session", targets: []restartPaneSnapshot{{pane: pane, launchSpec: cloneRestartLaunchSpec(&spec), workingDir: "/original"}}}
+			current := pane
+			liveSpec, liveDir := spec, "/original"
+			panes := []tmux.Pane{current}
+			switch change {
+			case "missing":
+				panes = nil
+			case "duplicate":
+				panes = append(panes, current)
+			case "physical-id":
+				panes[0].ID = "%8"
+			case "pid":
+				panes[0].PID++
+			case "window":
+				panes[0].WindowIndex++
+			case "index":
+				panes[0].Index++
+			case "type":
+				panes[0].Type = tmux.AgentClaude
+			case "foreground":
+				panes[0].Command = "codex"
+			case "dead":
+				panes[0].Dead = true
+			case "service":
+				panes[0].Service = "build-server"
+			case "rotation":
+				panes[0].RotationToken = "another-owner"
+			case "spec":
+				liveSpec.Command = "codex --model private-changed-command"
+			case "cwd":
+				liveDir = "/private-changed-directory"
+			case "display-title":
+				panes[0].Title = "Provider status updated normally"
+				panes[0].NTMIndex, panes[0].Variant = 0, ""
+			}
+			deps := RestartPaneDependencies{
+				ListPanes: func(context.Context, string) ([]tmux.Pane, error) {
+					if change == "list-error" {
+						return nil, errors.New("topology unavailable")
+					}
+					return panes, nil
+				},
+				ReadLaunchSpec: func(context.Context, string) (*tmux.AgentLaunchSpec, error) {
+					if change == "spec-error" {
+						return nil, errors.New("metadata unavailable")
+					}
+					return &liveSpec, nil
+				},
+				PaneWorkingDir: func(context.Context, string) (string, error) {
+					if change == "cwd-error" {
+						return "", errors.New("directory unavailable")
+					}
+					return liveDir, nil
+				},
+			}
+			err := preflight.observe(t.Context(), deps)
+			wantOK := change == "stable" || change == "display-title"
+			if (err == nil) != wantOK {
+				t.Fatalf("preflight observation error=%v, want success=%t", err, wantOK)
+			}
+			if err != nil && (strings.Contains(err.Error(), "private-changed-command") || strings.Contains(err.Error(), "private-changed-directory")) {
+				t.Fatalf("changed launch input leaked into refusal: %v", err)
+			}
+		})
+	}
+}
+
+func TestRestartPaneReplacementKeepsOwnedPIDAndAcceptsProviderTransitions(t *testing.T) {
+	for _, change := range []string{"shell", "provider-started", "foreign-pid", "foreground-takeover", "spec-changed", "foreign-rotation", "missing"} {
+		t.Run(change, func(t *testing.T) {
+			original := tmux.Pane{ID: "%7", PID: 111, Index: 1, NTMIndex: 1, Type: tmux.AgentCodex, Title: "session__cod_1", Command: "codex"}
+			spec := tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentCodex, Command: "codex --model saved"}
+			preflight := &RestartPanePreflight{session: "session", targets: []restartPaneSnapshot{{pane: original, launchSpec: cloneRestartLaunchSpec(&spec), workingDir: "/original"}}}
+			current := original
+			current.PID, current.Command = 222, "zsh"
+			current.Title, current.NTMIndex = "Fresh shell prompt", 0
+			liveSpec := spec
+			requireShell := true
+			panes := []tmux.Pane{current}
+			switch change {
+			case "provider-started":
+				panes[0].Command, panes[0].Title = "codex", "Provider's normal task title"
+				requireShell = false
+			case "foreign-pid":
+				panes[0].PID = 333
+			case "foreground-takeover":
+				panes[0].Command = "codex"
+			case "spec-changed":
+				liveSpec.Command = "codex --model unrelated"
+			case "foreign-rotation":
+				panes[0].RotationToken = "other-owner"
+			case "missing":
+				panes = nil
+			}
+			deps := RestartPaneDependencies{
+				ListPanes:      func(context.Context, string) ([]tmux.Pane, error) { return panes, nil },
+				ReadLaunchSpec: func(context.Context, string) (*tmux.AgentLaunchSpec, error) { return &liveSpec, nil },
+				PaneWorkingDir: func(context.Context, string) (string, error) { return "/original", nil },
+			}
+			err := preflight.observeReplacement(t.Context(), deps, "%7", 222, requireShell, &spec)
+			wantOK := change == "shell" || change == "provider-started"
+			if (err == nil) != wantOK {
+				t.Fatalf("replacement observation error=%v, want success=%t", err, wantOK)
+			}
+		})
+	}
+}
+
+func TestRestartPanePreflightDoesNotAliasOrExposeLaunchInputs(t *testing.T) {
+	pane := tmux.Pane{ID: "%7", PID: 111, Index: 1, NTMIndex: 1, Type: tmux.AgentCodex, Command: "zsh", Tags: []string{"original"}}
+	spec := tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentCodex,
+		Command: "codex --custom private-original-command", OmittedEnv: []string{"REQUIRED_KEY"}}
+	deps := restartPaneDeps(&RestartPaneDependencies{
+		LoadManifest:   func(string) (*resilience.SpawnManifest, error) { return nil, os.ErrNotExist },
+		ReadLaunchSpec: func(context.Context, string) (*tmux.AgentLaunchSpec, error) { return &spec, nil },
+		PaneWorkingDir: func(context.Context, string) (string, error) { return t.TempDir(), nil },
+	})
+	plan, err := prepareRestartLaunchPlan(t.Context(), "session", []tmux.Pane{pane}, false, config.Default(), restartLaunchOverride{}, deps, map[string]string{"REQUIRED_KEY": "private-runtime-value"})
+	defer plan.close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Command, spec.OmittedEnv[0], pane.Tags[0] = "codex --model changed", "CHANGED_KEY", "changed"
+	if plan.Preflight.targets[0].launchSpec.Command != "codex --custom private-original-command" || plan.Preflight.targets[0].launchSpec.OmittedEnv[0] != "REQUIRED_KEY" || plan.Preflight.targets[0].pane.Tags[0] != "original" {
+		t.Fatal("mutable caller state changed the completed preflight")
+	}
+	response, err := json.Marshal(RestartPaneOutput{Preflight: plan.Preflight})
+	if err != nil {
+		t.Fatal(err)
+	}
+	options, err := json.Marshal(RestartPaneOptions{Preflight: plan.Preflight})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(response)+string(options), "Preflight") {
+		t.Fatal("opaque preflight appeared in robot JSON")
+	}
+	for _, private := range []string{"private-original-command", "private-runtime-value", "REQUIRED_KEY", "targets"} {
+		if strings.Contains(string(response)+string(options)+fmt.Sprintf("%+v %#v", plan.Preflight, plan.Preflight), private) {
+			t.Fatalf("opaque preflight exposed private metadata or values containing %q", private)
+		}
+	}
+}
+
+func TestRestartAssignmentFenceKeepsTheVerifiedReplacement(t *testing.T) {
+	for _, change := range []string{"stable", "unarmed", "pid", "spec", "observation-pid", "different-delivery-target", "delivery-replacement"} {
+		t.Run(change, func(t *testing.T) {
+			original := tmux.Pane{ID: "%7", PID: 111, Index: 1, Type: tmux.AgentCodex, Command: "zsh"}
+			current := original
+			current.PID, current.Command = 222, "codex"
+			spec := tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentCodex, Command: "codex --model preserved"}
+			liveSpec := spec
+			preflight := &RestartPanePreflight{session: "session", targets: []restartPaneSnapshot{{pane: original, launchSpec: cloneRestartLaunchSpec(&spec), workingDir: "/original"}}}
+			deliveries := 0
+			type contextMarker struct{}
+			ctx := context.WithValue(t.Context(), contextMarker{}, "original-context")
+			fence := &restartAssignmentFence{preflight: preflight, target: "%7", pid: 222, spec: spec}
+			fence.deps = RestartPaneDependencies{
+				ListPanes:      func(context.Context, string) ([]tmux.Pane, error) { return []tmux.Pane{current}, nil },
+				ReadLaunchSpec: func(context.Context, string) (*tmux.AgentLaunchSpec, error) { return &liveSpec, nil },
+				PaneWorkingDir: func(context.Context, string) (string, error) { return "/original", nil },
+				ObserveSession: func(context.Context, string) (statuspkg.SessionObservation, error) {
+					observed := current
+					if change == "observation-pid" {
+						observed.PID = 333
+					}
+					return statuspkg.SessionObservation{Session: "session", Panes: []statuspkg.PaneObservation{{Pane: observed.Ref(), Metadata: observed}}}, nil
+				},
+				DispatchDeliverer: dispatchsvc.DelivererFunc(func(guarded context.Context, delivery dispatchsvc.Delivery) error {
+					deliveries++
+					if guarded == ctx || guarded.Value(contextMarker{}) != "original-context" || guarded.Err() != nil {
+						t.Fatal("assignment delivery did not retain the caller context under its pane guard")
+					}
+					if delivery.Target.Ref.ID != "%7" || delivery.Target.Pane.PID != 222 {
+						t.Fatal("assignment delivered to a different pane process")
+					}
+					if change == "delivery-replacement" {
+						current.PID = 333
+					}
+					return nil
+				}),
+			}
+			delivery := dispatchsvc.Delivery{Session: "session", Target: dispatchsvc.Target{Ref: current.Ref(), Pane: current, AgentType: current.Type}}
+			switch change {
+			case "unarmed":
+				fence.preflight = nil
+			case "pid":
+				current.PID = 333
+			case "spec":
+				liveSpec.Command = "codex --model unrelated"
+			case "different-delivery-target":
+				delivery.Target.Ref.ID = "%8"
+			}
+			if change != "unarmed" {
+				_, err := fence.listPanes(ctx, "session")
+				wantError := change == "pid" || change == "spec"
+				if (err != nil) != wantError {
+					t.Fatalf("fenced topology error=%v, want error=%t", err, wantError)
+				}
+			}
+			_, observationErr := fence.observeSession(ctx, "session")
+			wantObservationError := change != "stable" && change != "different-delivery-target" && change != "delivery-replacement"
+			if (observationErr != nil) != wantObservationError {
+				t.Fatalf("fenced observation error=%v, want error=%t", observationErr, wantObservationError)
+			}
+			if change == "observation-pid" {
+				// A refused observation must not be used to reach the delivery
+				// stage; the caller stops before claiming or submitting work.
+				return
+			}
+			err := fence.Deliver(ctx, delivery)
+			if change == "stable" {
+				if err != nil || deliveries != 1 {
+					t.Fatalf("verified assignment delivery error=%v calls=%d", err, deliveries)
+				}
+			} else if change == "delivery-replacement" {
+				if err == nil || deliveries != 1 || dispatchsvc.IsGuaranteedNoDeliveryActuation(err) {
+					t.Fatalf("post-delivery replacement was incorrectly reported: error=%v calls=%d", err, deliveries)
+				}
+			} else if err == nil || deliveries != 0 || !dispatchsvc.IsGuaranteedNoDeliveryActuation(err) {
+				t.Fatalf("changed assignment target was not refused before delivery: error=%v calls=%d", err, deliveries)
+			}
+		})
+	}
+}
+
+func TestRestartDeliveryPreflightBoundsEveryPaneBeforeMutation(t *testing.T) {
+	long := "printf '%s' '" + strings.Repeat("x", 6000) + "'"
+	plan := restartLaunchPlan{Commands: map[string]string{"1": long, "2": long, "3": "codex"}}
+	defer plan.close()
+	if err := plan.prepareDelivery(t.Context(), "session", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.handoffs) != 2 || plan.handoffs["1"] == nil || plan.handoffs["2"] == nil || plan.handoffs["1"] == plan.handoffs["2"] || plan.handoffs["3"] != nil {
+		t.Fatal("long pane launches did not receive independent handoffs while the ordinary launch stayed direct")
+	}
+	if plan.DeliveryCommands["1"] != long || plan.DeliveryCommands["2"] != long || plan.DeliveryCommands["3"] != "codex" {
+		t.Fatal("delivery preflight changed the launch commands")
+	}
+}
+
+func TestRestartDeliveryPreflightRefusesRemoteLongLaunch(t *testing.T) {
+	original := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("not-contacted.invalid")
+	t.Cleanup(func() { tmux.DefaultClient = original })
+	plan := restartLaunchPlan{Commands: map[string]string{"1": "codex --arg '" + strings.Repeat("x", 6000) + "'"}}
+	defer plan.close()
+	err := plan.prepareDelivery(t.Context(), "session", nil)
+	if err == nil || !strings.Contains(err.Error(), "tmux host") || len(plan.handoffs) != 0 {
+		t.Fatalf("remote long launch preflight error=%v, handoffs=%d", err, len(plan.handoffs))
+	}
+}
+
+func TestRestartDeliveryPreflightRejectsInvalidPreparedCommand(t *testing.T) {
+	for _, command := range []string{"", "private-launcher\npath codex", strings.Repeat("x", 6000) + "\r"} {
+		plan := restartLaunchPlan{Commands: map[string]string{"1": command}}
+		err := plan.prepareDelivery(t.Context(), "session", nil)
+		plan.close()
+		if err == nil || len(plan.handoffs) != 0 || strings.Contains(err.Error(), "private-launcher") {
+			t.Fatalf("invalid final command was not refused safely in preflight: error=%v handoffs=%d", err, len(plan.handoffs))
+		}
+	}
+}
 
 func TestPrepareRestartLaunchPlanPreservesBoundProfile(t *testing.T) {
 	pane := tmux.Pane{
@@ -311,7 +585,14 @@ set -eu
 printf '%s\n' "$1" >> "$NTM_RESTART_SPEC_TEST_ROOT/calls"
 case "$1" in
   has-session) ;;
+  if-shell)
+    if [ -f "$NTM_RESTART_SPEC_TEST_ROOT/respawned" ]; then pid=222; else pid=111; fi
+    case "$5" in *"#{pane_pid},$pid}"*) ;; *) printf 'ntm_pane_identity_changed\n'; exit 0 ;; esac
+    eval "set -- $6"
+    exec "$0" "$@"
+    ;;
   display-message)
+    case "$*" in *'@ntm_agent_type'*) printf '[cc]\n'; exit 0 ;; esac
     if [ -f "$NTM_RESTART_SPEC_TEST_ROOT/respawned" ]; then
       if [ "$NTM_RESTART_SPEC_TEST_MODE" = 'unverified-respawn' ]; then exit 55; fi
       printf '222\n'
@@ -367,17 +648,27 @@ func TestGetRestartPaneMetadataTransportHelper(t *testing.T) {
 	t.Cleanup(func() { SetRestartPaneIdentityHook(nil) })
 	deps := &RestartPaneDependencies{
 		ListPanes: func(context.Context, string) ([]tmux.Pane, error) {
-			return []tmux.Pane{{ID: "%7", Index: 1, NTMIndex: 1, Type: tmux.AgentClaude, Command: "claude"}}, nil
+			pane := tmux.Pane{ID: "%7", PID: 111, Index: 1, NTMIndex: 1, Type: tmux.AgentClaude, Command: "claude"}
+			if _, err := os.Stat(filepath.Join(root, "respawned")); err == nil {
+				pane.PID, pane.Command = 222, "sh"
+			}
+			return []tmux.Pane{pane}, nil
 		},
 		LoadManifest: func(string) (*resilience.SpawnManifest, error) { return nil, os.ErrNotExist },
 		ReadLaunchSpec: func(context.Context, string) (*tmux.AgentLaunchSpec, error) {
+			if recorded != nil {
+				return cloneRestartLaunchSpec(recorded), nil
+			}
 			copy := saved
 			return &copy, nil
 		},
 		PaneWorkingDir: func(context.Context, string) (string, error) { return root, nil },
-		SetLaunchSpec: func(_ context.Context, target string, spec tmux.AgentLaunchSpec) error {
+		SetLaunchSpec: func(_ context.Context, target string, expectedPID int, spec tmux.AgentLaunchSpec) error {
 			if target != "%7" {
 				t.Fatalf("metadata target=%q", target)
+			}
+			if expectedPID != 222 {
+				t.Fatalf("metadata replacement PID=%d, want 222", expectedPID)
 			}
 			if _, err := os.Stat(filepath.Join(root, "respawned")); err != nil {
 				t.Fatal("metadata changed before old process was replaced")
@@ -437,7 +728,9 @@ func TestGetRestartPaneExplicitEnvironmentRecovery(t *testing.T) {
 	for _, mode := range []string{
 		"reported", "empty-value", "model-override", "ordinary", "missing", "partial", "unknown",
 		"invalid-name", "nul-value", "multiline-value", "implicit", "multiple-targets", "native-recovery",
-		"non-agent", "missing-spec", "delivery-failure",
+		"non-agent", "missing-spec", "invalid-directory", "delivery-failure",
+		"stale-before-respawn", "stale-after-respawn", "stale-after-identity", "stale-after-metadata", "stale-spec-after-metadata", "stale-after-readiness",
+		"long-command", "long-managed-command",
 	} {
 		for _, dryRun := range []bool{false, true} {
 			t.Run(mode+"/dry-run="+strconv.FormatBool(dryRun), func(t *testing.T) {
@@ -446,13 +739,21 @@ func TestGetRestartPaneExplicitEnvironmentRecovery(t *testing.T) {
 				const script = `#!/bin/sh
 set -eu
 root="$NTM_RESTART_ENV_TEST_ROOT"
-printf '%s\n' "$*" >> "$root/calls"
+if [ "$1" = if-shell ]; then printf '%s\n' "$1" >> "$root/calls"; else printf '%s\n' "$*" >> "$root/calls"; fi
 case "$1" in
   -V) printf 'tmux 3.4\n' ;;
   has-session) ;;
+  if-shell)
+    if [ -f "$root/respawned" ]; then pid="$NTM_RESTART_ENV_TEST_NEW_PID"; else pid=2000000001; fi
+    if [ -f "$root/foreign-pid" ]; then pid=$((pid + 1)); fi
+    case "$5" in *"#{pane_pid},$pid}"*) ;; *) printf 'ntm_pane_identity_changed\n'; exit 0 ;; esac
+    eval "set -- $6"
+    exec "$0" "$@"
+    ;;
   display-message)
+    case "$*" in *'@ntm_agent_type'*) printf '[cod]\n'; exit 0 ;; esac
     if [ -f "$root/respawned" ]; then
-      printf '%s\n' "$NTM_RESTART_ENV_TEST_NEW_PID"
+      if [ -f "$root/foreign-pid" ]; then printf '%s\n' "$((NTM_RESTART_ENV_TEST_NEW_PID + 1))"; else printf '%s\n' "$NTM_RESTART_ENV_TEST_NEW_PID"; fi
     else
       printf '2000000001\n'
     fi
@@ -522,6 +823,7 @@ set -eu
 root="$NTM_RESTART_ENV_TEST_ROOT"
 printf '%s\000' "${AGENT_MAIL_AGENT-}" "${BEADS_DIR-}" "${BV_ROBOT_NOT_READY_LABELS-}" "${PATH-}" "${ZAI_SEAT_ROLE-}" > "$root/agent-environment"
 printf '%s\000' "$@" > "$root/agent-argv"
+printf '%s' "${AGENT_MAIL_PROJECT-}" > "$root/agent-mail-project"
 : > "$root/agent-launched"
 `
 	agentPath := filepath.Join(root, "codex")
@@ -554,7 +856,8 @@ printf '%s\000' "$@" > "$root/agent-argv"
 		Model:   "saved/model", ReasoningEffort: "high", Persona: "reviewer", OmittedEnv: keys}
 	opts := RestartPaneOptions{Session: "session", Panes: []string{"%7"}, DryRun: dryRun,
 		Config: config.Default(), ProjectDir: root, Environment: environment}
-	wantPreflight := mode == "reported" || mode == "empty-value" || mode == "model-override" || mode == "ordinary" || mode == "delivery-failure"
+	ordinary := mode == "ordinary" || mode == "long-command" || mode == "long-managed-command"
+	wantPreflight := mode == "reported" || mode == "empty-value" || mode == "model-override" || ordinary || mode == "delivery-failure" || strings.HasPrefix(mode, "stale-after-") || mode == "stale-spec-after-metadata"
 	panes := []tmux.Pane{pane}
 	switch mode {
 	case "empty-value":
@@ -562,9 +865,15 @@ printf '%s\000' "$@" > "$root/agent-argv"
 		wantEnvironment[4] = ""
 	case "model-override":
 		opts.Model = "replacement/model@low"
-	case "ordinary":
+	case "ordinary", "long-command", "long-managed-command":
 		saved.OmittedEnv = nil
 		opts.Environment = nil
+		if mode == "long-command" {
+			saved.Command += " --payload " + tmux.ShellQuote(strings.Repeat("x", 6000))
+		}
+		if mode == "long-managed-command" {
+			saved.AgentMailProject = "/" + strings.Repeat("managed-project/", 100)
+		}
 	case "missing":
 		opts.Environment = nil
 	case "partial":
@@ -593,27 +902,77 @@ printf '%s\000' "$@" > "$root/agent-argv"
 	identityRefreshed := false
 	SetRestartPaneIdentityHook(func(context.Context, string, []RestartedAgentPane) {
 		identityRefreshed = true
+		if mode == "stale-after-identity" {
+			if err := os.WriteFile(filepath.Join(root, "foreign-pid"), nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
 	})
 	t.Cleanup(func() { SetRestartPaneIdentityHook(nil) })
+	listCalls := 0
 	opts.Deps = &RestartPaneDependencies{
-		ListPanes:    func(context.Context, string) ([]tmux.Pane, error) { return panes, nil },
+		ListPanes: func(context.Context, string) ([]tmux.Pane, error) {
+			listCalls++
+			current := append([]tmux.Pane(nil), panes...)
+			if mode == "stale-before-respawn" && listCalls > 1 {
+				current[0].PID++
+			}
+			if _, err := os.Stat(filepath.Join(root, "respawned")); err == nil {
+				current[0].PID, current[0].Command = os.Getpid(), "sh"
+				if mode == "stale-after-respawn" {
+					current[0].PID++
+				}
+				if _, err := os.Stat(filepath.Join(root, "agent-launched")); err == nil {
+					current[0].Command = "codex"
+					current[0].Title, current[0].NTMIndex = "Provider task title", 0
+					if mode == "stale-after-readiness" {
+						current[0].PID++
+					}
+				}
+			}
+			if _, err := os.Stat(filepath.Join(root, "foreign-pid")); err == nil {
+				current[0].PID++
+			}
+			return current, nil
+		},
 		LoadManifest: func(string) (*resilience.SpawnManifest, error) { return nil, os.ErrNotExist },
 		ReadLaunchSpec: func(context.Context, string) (*tmux.AgentLaunchSpec, error) {
 			if mode == "missing-spec" {
 				return nil, nil
 			}
+			if recorded != nil {
+				if mode == "stale-spec-after-metadata" {
+					other := *recorded
+					other.Command = "codex --model unrelated"
+					return &other, nil
+				}
+				return cloneRestartLaunchSpec(recorded), nil
+			}
 			copy := saved
 			return &copy, nil
 		},
-		PaneWorkingDir: func(context.Context, string) (string, error) { return root, nil },
-		SetLaunchSpec: func(_ context.Context, target string, spec tmux.AgentLaunchSpec) error {
+		PaneWorkingDir: func(context.Context, string) (string, error) {
+			if mode == "invalid-directory" {
+				return filepath.Join(root, "invalid\ndirectory"), nil
+			}
+			return root, nil
+		},
+		SetLaunchSpec: func(_ context.Context, target string, expectedPID int, spec tmux.AgentLaunchSpec) error {
 			if target != "%7" {
 				t.Fatalf("metadata target = %q", target)
+			}
+			if expectedPID != os.Getpid() {
+				t.Fatalf("metadata replacement PID=%d, want %d", expectedPID, os.Getpid())
 			}
 			if _, err := os.Stat(filepath.Join(root, "respawned")); err != nil {
 				t.Fatal("metadata changed before respawn")
 			}
 			recorded = &spec
+			if mode == "stale-after-metadata" {
+				if err := os.WriteFile(filepath.Join(root, "foreign-pid"), nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			data, err := json.Marshal(spec)
 			if err != nil {
 				return err
@@ -688,10 +1047,24 @@ printf '%s\000' "$@" > "$root/agent-argv"
 		}
 		return
 	}
+	if strings.HasPrefix(mode, "stale-after-") || mode == "stale-spec-after-metadata" {
+		if out.Success || len(out.Restarted) != 1 || len(out.Failed) == 0 || out.AgentRelaunched["2"] {
+			t.Fatalf("changed replacement was reported as successfully relaunched: mode=%s output=%+v calls=%s", mode, out, calls)
+		}
+		if mode == "stale-after-respawn" || mode == "stale-after-identity" {
+			if recorded != nil {
+				t.Fatal("stale replacement had its launch metadata overwritten")
+			}
+		}
+		if mode != "stale-after-readiness" && (strings.Contains(calls, "send-keys") || strings.Contains(calls, "load-buffer")) {
+			t.Fatalf("launch input reached a changed replacement: %s", calls)
+		}
+		return
+	}
 	if !identityRefreshed || recorded == nil || !reflect.DeepEqual(recorded.OmittedEnv, saved.OmittedEnv) {
 		t.Fatal("restart lost identity refresh or durable environment omission markers")
 	}
-	if err := recorded.ValidateReplay(tmux.AgentCodex); (err == nil) != (mode == "ordinary") {
+	if err := recorded.ValidateReplay(tmux.AgentCodex); (err == nil) != ordinary {
 		t.Fatal("recovery changed whether future unattended replay requires explicit environment")
 	}
 	if mode == "delivery-failure" {
@@ -703,11 +1076,23 @@ printf '%s\000' "$@" > "$root/agent-argv"
 	if !out.Success || !out.AgentRelaunched["2"] || !out.ProcessAlive["2"] || len(out.Restarted) != 1 {
 		t.Fatalf("replacement agent was not relaunched: %+v", out)
 	}
-	if mode != "ordinary" {
+	if !ordinary {
 		got := strings.Split(string(read("agent-environment")), "\x00")
 		want := append(wantEnvironment, "")
 		if !reflect.DeepEqual(got, want) {
 			t.Fatal("replacement did not receive the exact explicit environment")
+		}
+	}
+	if mode == "long-command" || mode == "long-managed-command" {
+		launcher := string(read("delivered-command"))
+		if len(launcher) > tmux.MaxTypedLaunchCommandBytes || !strings.HasPrefix(launcher, "/bin/sh -p ") {
+			t.Fatal("long launch was typed into the interactive shell instead of using the private handoff")
+		}
+		if mode == "long-command" && !strings.Contains(string(read("agent-argv")), strings.Repeat("x", 6000)) {
+			t.Fatal("private handoff truncated the long saved argument")
+		}
+		if mode == "long-managed-command" && string(read("agent-mail-project")) != saved.AgentMailProject {
+			t.Fatal("private handoff did not preserve the full managed environment prefix")
 		}
 	}
 	if mode == "model-override" {

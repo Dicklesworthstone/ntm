@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -209,6 +210,12 @@ func preflightAgentLaunchSpec(ctx context.Context, cfg *config.Config, spec tmux
 	if err := spec.ValidateReplay(spec.AgentType); err != nil {
 		return nil, err
 	}
+	// The directory is part of the eventual pane input too. Validate the
+	// assembled command during read-only preflight so a dry run cannot accept
+	// a launch that would be rejected only after its pane has been replaced.
+	if _, err := tmux.BuildPaneCommand(projectDir, spec.Command); err != nil {
+		return nil, fmt.Errorf("preflight agent launch command: %w", err)
+	}
 	if err := verifyAgentSystemPrompt(spec); err != nil {
 		return nil, err
 	}
@@ -313,6 +320,17 @@ func verifyAgentSystemPrompt(spec tmux.AgentLaunchSpec) error {
 // the original specification on the pane; persisting this prepared command
 // would nest account wrappers and reuse a predecessor's private configuration.
 func (plan *AgentLaunchPlan) Prepare(ctx context.Context, projectDir, session string, paneIndex int) (string, error) {
+	return plan.prepare(ctx, projectDir, session, paneIndex, true)
+}
+
+// Preview renders the same launch text as Prepare without provisioning private
+// configuration. Recovery uses it to validate the complete command and select
+// its transport before replacing a pane, including during a dry run.
+func (plan *AgentLaunchPlan) Preview(ctx context.Context, projectDir, session string, paneIndex int) (string, error) {
+	return plan.prepare(ctx, projectDir, session, paneIndex, false)
+}
+
+func (plan *AgentLaunchPlan) prepare(ctx context.Context, projectDir, session string, paneIndex int, provision bool) (string, error) {
 	if plan == nil {
 		return "", errors.New("agent launch plan is required")
 	}
@@ -333,9 +351,13 @@ func (plan *AgentLaunchPlan) Prepare(ctx context.Context, projectDir, session st
 	}
 	command := plan.spec.Command
 	if plan.spec.ClaudeIsolateCredentials {
-		env, err := swarm.ProvisionClaudeIsolation(plan.cfg, projectDir, session, paneIndex)
-		if err != nil {
-			return "", fmt.Errorf("provisioning saved Claude credential isolation: %w", err)
+		env := swarm.NewClaudeConfigProvisioner(projectDir).EnvForPane(session, strconv.Itoa(paneIndex), plan.cfg.Agents.ClaudeTokenFile)
+		if provision {
+			var err error
+			env, err = swarm.ProvisionClaudeIsolation(plan.cfg, projectDir, session, paneIndex)
+			if err != nil {
+				return "", fmt.Errorf("provisioning saved Claude credential isolation: %w", err)
+			}
 		}
 		command = env.ApplyToCommand(command)
 	}

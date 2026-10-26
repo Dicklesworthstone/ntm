@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
@@ -1988,6 +1989,10 @@ func escapeTrailingSemicolon(payload string) string {
 // SendKeysWithDelayContext sends keys with caller cancellation covering every
 // tmux subprocess and the delay before Enter.
 func (c *Client) SendKeysWithDelayContext(ctx context.Context, target, keys string, enter bool, enterDelay time.Duration) error {
+	return c.sendKeysWithDelayContext(ctx, target, keys, enter, enterDelay, c.RunSilentContext, paneMutationGuardFromContext(ctx) != nil)
+}
+
+func (c *Client) sendKeysWithDelayContext(ctx context.Context, target, keys string, enter bool, enterDelay time.Duration, run func(context.Context, ...string) error, parsedCommand bool) error {
 	if ctx == nil {
 		return errors.New("tmux send context is required")
 	}
@@ -1996,9 +2001,18 @@ func (c *Client) SendKeysWithDelayContext(ctx context.Context, target, keys stri
 	}
 	// Send large payloads in chunks to avoid ARG_MAX limits or tmux buffer issues
 	const chunkSize = 4096
+	sendLiteral := func(payload string) error {
+		// A conditional command is parsed from a quoted tmux command string.
+		// Only direct argv needs the trailing-semicolon escape described above;
+		// applying it inside quotes would add a literal backslash to the pane.
+		if !parsedCommand {
+			payload = escapeTrailingSemicolon(payload)
+		}
+		return run(ctx, "send-keys", "-t", ExactTarget(target), "-l", "--", payload)
+	}
 
 	if len(keys) <= chunkSize {
-		if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "-l", "--", escapeTrailingSemicolon(keys)); err != nil {
+		if err := sendLiteral(keys); err != nil {
 			return err
 		}
 	} else {
@@ -2019,7 +2033,7 @@ func (c *Client) SendKeysWithDelayContext(ctx context.Context, target, keys stri
 			}
 
 			chunk := keys[start:end]
-			if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "-l", "--", escapeTrailingSemicolon(chunk)); err != nil {
+			if err := sendLiteral(chunk); err != nil {
 				return err
 			}
 			start = end
@@ -2035,7 +2049,7 @@ func (c *Client) SendKeysWithDelayContext(ctx context.Context, target, keys stri
 		}
 		// Use "Enter" instead of "C-m" (Ctrl+M) because some TUIs (e.g., Codex)
 		// distinguish between the Enter key and the carriage return control character.
-		return c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "Enter")
+		return run(ctx, "send-keys", "-t", ExactTarget(target), "Enter")
 	}
 	return nil
 }
@@ -2185,6 +2199,10 @@ func (c *Client) SendBufferContext(ctx context.Context, target, content string, 
 // SendBufferWithDelayContext sends content using the buffer mechanism with
 // cancellation covering load, paste, delay, and Enter.
 func (c *Client) SendBufferWithDelayContext(ctx context.Context, target, content string, enter bool, enterDelay time.Duration) error {
+	return c.sendBufferWithDelayContext(ctx, target, content, enter, enterDelay, c.RunSilentContext)
+}
+
+func (c *Client) sendBufferWithDelayContext(ctx context.Context, target, content string, enter bool, enterDelay time.Duration, run func(context.Context, ...string) error) error {
 	if ctx == nil {
 		return errors.New("tmux buffer send context is required")
 	}
@@ -2211,7 +2229,7 @@ func (c *Client) SendBufferWithDelayContext(ctx context.Context, target, content
 
 	// Paste the buffer into the target pane
 	// -p = paste from buffer, -d = delete buffer after pasting, -b = buffer name
-	if err := c.RunSilentContext(ctx, "paste-buffer", "-p", "-d", "-b", bufferName, "-t", ExactTarget(target)); err != nil {
+	if err := run(ctx, "paste-buffer", "-p", "-d", "-b", bufferName, "-t", ExactTarget(target)); err != nil {
 		// Cleanup uses its own short context because the delivery context may be
 		// canceled. It can only delete the private buffer; it never submits Enter.
 		c.cleanupBuffer(bufferName)
@@ -2222,7 +2240,7 @@ func (c *Client) SendBufferWithDelayContext(ctx context.Context, target, content
 		if err := waitForSendDelay(ctx, enterDelay); err != nil {
 			return err
 		}
-		return c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "Enter")
+		return run(ctx, "send-keys", "-t", ExactTarget(target), "Enter")
 	}
 	return nil
 }
@@ -2306,6 +2324,39 @@ func (c *Client) SendKeysForAgent(target, keys string, enter bool, agentType Age
 // with caller cancellation.
 func (c *Client) SendKeysForAgentContext(ctx context.Context, target, keys string, enter bool, agentType AgentType) error {
 	return c.SendKeysForAgentWithDelayContext(ctx, target, keys, enter, DefaultEnterDelay, agentType)
+}
+
+// SendKeysForAgentIfCurrentContext delivers only while its pane process still
+// has the expected identity and is unclaimed. Launches additionally require a
+// foreground shell. Every chunk or paste and the final Enter is checked in
+// tmux's queue, including after the Enter delay.
+func (c *Client) SendKeysForAgentIfCurrentContext(ctx context.Context, target, keys string, enter bool, agentType AgentType, expectedPID int, requireShell bool) error {
+	return c.sendKeysForAgentIfCurrentContext(ctx, target, keys, enter, DefaultEnterDelay, agentType, expectedPID, requireShell)
+}
+
+func (c *Client) sendKeysForAgentIfCurrentContext(ctx context.Context, target, keys string, enter bool, enterDelay time.Duration, agentType AgentType, expectedPID int, requireShell bool) error {
+	if err := validatePhysicalPaneTarget(ctx, target); err != nil {
+		return err
+	}
+	if expectedPID <= 0 {
+		return errors.New("guarded pane send requires a positive expected PID")
+	}
+	if requireShell && len(keys) > MaxTypedLaunchCommandBytes {
+		return errors.New("prepared launch exceeds the terminal input limit; use a preflighted private handoff")
+	}
+	mode := paneMutationAny
+	if requireShell {
+		mode = paneMutationShell
+	} else if kind := ParsePaneAgentTypeOption(string(agentType)); kind != AgentUnknown && kind != AgentUser {
+		mode = paneMutationAgent
+	}
+	run := func(runCtx context.Context, args ...string) error {
+		return c.runPaneMutationIfCurrentContext(runCtx, target, expectedPID, mode, args...)
+	}
+	if needsBufferSend(agentType, keys) {
+		return c.sendBufferWithDelayContext(ctx, target, keys, enter, enterDelay, run)
+	}
+	return c.sendKeysWithDelayContext(ctx, target, keys, enter, enterDelay, run, true)
 }
 
 // SendKeysForAgentWithDelayContext sends keys using the appropriate mechanism
@@ -2436,8 +2487,32 @@ func SendKeysForAgentDoubleEnterContext(ctx context.Context, target, keys string
 // SendKeysForAgentDoubleEnterContext runs the double-Enter submission protocol
 // on this client with caller cancellation.
 func (c *Client) SendKeysForAgentDoubleEnterContext(ctx context.Context, target, keys string, agentType AgentType) error {
+	return c.sendKeysForAgentDoubleEnterContext(ctx, target, keys, agentType,
+		func() error { return c.SendKeysForAgentWithDelayContext(ctx, target, keys, false, 0, agentType) },
+		func() error { return c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "Enter") })
+}
+
+// SendKeysForAgentDoubleEnterIfCurrentContext keeps the replacement-process
+// fence through staging and both prompt submissions. Provider-specific staging
+// checks are identical to ordinary double-Enter delivery.
+func (c *Client) SendKeysForAgentDoubleEnterIfCurrentContext(ctx context.Context, target, keys string, agentType AgentType, expectedPID int) error {
+	mode := paneMutationAny
+	if kind := ParsePaneAgentTypeOption(string(agentType)); kind != AgentUnknown && kind != AgentUser {
+		mode = paneMutationAgent
+	}
+	return c.sendKeysForAgentDoubleEnterContext(ctx, target, keys, agentType,
+		func() error {
+			return c.sendKeysForAgentIfCurrentContext(ctx, target, keys, false, 0, agentType, expectedPID, false)
+		},
+		func() error {
+			return c.runPaneMutationIfCurrentContext(ctx, target, expectedPID, mode,
+				"send-keys", "-t", ExactTarget(target), "Enter")
+		})
+}
+
+func (c *Client) sendKeysForAgentDoubleEnterContext(ctx context.Context, target, keys string, agentType AgentType, sendText, sendEnter func() error) error {
 	// Send the text without pressing Enter
-	if err := c.SendKeysForAgentWithDelayContext(ctx, target, keys, false, 0, agentType); err != nil {
+	if err := sendText(); err != nil {
 		return err
 	}
 	if err := waitForSendDelay(ctx, DoubleEnterFirstDelay); err != nil {
@@ -2449,14 +2524,14 @@ func (c *Client) SendKeysForAgentDoubleEnterContext(ctx context.Context, target,
 		}
 	}
 	// First Enter
-	if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "Enter"); err != nil {
+	if err := sendEnter(); err != nil {
 		return err
 	}
 	if err := waitForSendDelay(ctx, DoubleEnterSecondDelay); err != nil {
 		return err
 	}
 	// Second Enter
-	if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "Enter"); err != nil {
+	if err := sendEnter(); err != nil {
 		return err
 	}
 	return nil
@@ -3671,11 +3746,20 @@ func SanitizePaneCommand(cmd string) (string, error) {
 // BuildPaneCommand constructs a safe cd+command string for execution inside a
 // tmux pane, rejecting commands with unsafe control characters.
 func BuildPaneCommand(projectDir, agentCommand string) (string, error) {
+	for _, r := range projectDir {
+		if unicode.IsControl(r) {
+			return "", errors.New("pane launch working directory contains control characters")
+		}
+	}
 	safeCommand, err := SanitizePaneCommand(agentCommand)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("cd %s && %s", ShellQuote(projectDir), safeCommand), nil
+	command := fmt.Sprintf("cd %s && %s", ShellQuote(projectDir), safeCommand)
+	if _, err := SanitizePaneCommand(command); err != nil {
+		return "", errors.New("pane launch working directory contains control characters")
+	}
+	return command, nil
 }
 
 // AttachOrSwitch attaches to a session or switches if already in tmux
@@ -4198,6 +4282,17 @@ func (c *Client) SetPaneAgentTypeContext(ctx context.Context, paneID string, age
 		return fmt.Errorf("agent type %q is not a known agent type", agentType)
 	}
 	return c.RunSilentContext(ctx, "set-option", "-p", "-t", ExactTarget(paneID), PaneAgentTypeOption, string(recorded))
+}
+
+// SetPaneAgentTypeIfCurrentContext records the type only on the preflighted
+// replacement shell, without relabeling a concurrently respawned or claimed pane.
+func (c *Client) SetPaneAgentTypeIfCurrentContext(ctx context.Context, paneID string, expectedPID int, agentType AgentType) error {
+	recorded := ParsePaneAgentTypeOption(string(agentType))
+	if recorded == AgentUnknown {
+		return errors.New("guarded pane identity requires a known agent type")
+	}
+	return c.runPaneMutationIfCurrentContext(ctx, paneID, expectedPID, paneMutationShell,
+		"set-option", "-p", "-t", ExactTarget(paneID), PaneAgentTypeOption, string(recorded))
 }
 
 // SetPaneAgentType records the agent type on a pane (default client).

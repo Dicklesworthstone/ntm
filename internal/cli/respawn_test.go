@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -242,6 +244,7 @@ case "$1" in
     ;;
   display-message)
     case "$*" in
+      *@ntm_agent_type*) printf '[cod]\n' ;;
       *pane_pid*) printf '222\n' ;;
       *) printf '%s\n' "$NTM_RESTART_CLI_ROOT" ;;
     esac
@@ -251,7 +254,13 @@ case "$1" in
       *@ntm_agent_launch*) cat "$NTM_RESTART_CLI_ROOT/spec" ;;
     esac
     ;;
-  respawn-pane) printf 'fixture refused mutation\n' >&2; exit 71 ;;
+  respawn-pane) : > "$NTM_RESTART_CLI_ROOT/mutation-boundary"; exit 71 ;;
+  if-shell)
+    case "${6:-}" in
+      *respawn-pane*) : > "$NTM_RESTART_CLI_ROOT/mutation-boundary"; exit 71 ;;
+      *) exit 72 ;;
+    esac
+    ;;
 esac
 `
 				if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
@@ -325,7 +334,7 @@ esac
 				if err != nil {
 					t.Fatal(err)
 				}
-				mutated := strings.Contains(string(calls), "respawn-pane ")
+				mutated := strings.Contains(string(calls), "respawn-pane")
 				if mutated != (mode == "complete-real") {
 					t.Fatalf("mutation=%t mode=%s calls=%s", mutated, mode, calls)
 				}
@@ -333,8 +342,10 @@ esac
 				if strings.Contains(combined, secret) {
 					t.Fatal("recovery value leaked to output or tmux argv")
 				}
-				if mode == "complete-real" && !strings.Contains(combined, "fixture refused mutation") {
-					t.Fatal("valid recovery request did not reach intended mutation boundary")
+				if mode == "complete-real" {
+					if _, err := os.Stat(filepath.Join(root, "mutation-boundary")); err != nil {
+						t.Fatal("valid recovery request did not reach intended mutation boundary")
+					}
 				}
 				if surface == "robot" {
 					var output robot.RestartPaneOutput
@@ -349,6 +360,223 @@ esac
 					}
 				} else if wantSuccess && !strings.Contains(stdout.String(), "Would restart 1 pane(s)") {
 					t.Fatalf("human preview omitted successful preflight: %s", stdout.String())
+				}
+			})
+		}
+	}
+}
+
+// The operator confirms a preflighted recovery, not whichever process a logical
+// selector happens to name later. Change the live fixture while the real CLI is
+// blocked at its confirmation prompt, then prove no stale recovery can mutate
+// a pane or deliver the original pane's environment to a replacement.
+func TestRespawnRevalidatesConfirmedRecovery(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("recording tmux executable requires a POSIX shell")
+	}
+	const secret = "ntm-confirmed-recovery-secret-marker"
+	for _, withEnvironment := range []bool{false, true} {
+		for _, change := range []string{"unchanged", "pane-replaced", "pane-moved", "process-changed", "launch-changed", "directory-changed"} {
+			t.Run(fmt.Sprintf("environment=%t/%s", withEnvironment, change), func(t *testing.T) {
+				root := t.TempDir()
+				binary := filepath.Join(root, "tmux")
+				const script = `#!/bin/sh
+set -eu
+root="$NTM_RESPAWN_CONFIRM_ROOT"
+printf '%s\n' "$*" >> "$root/calls"
+change=unchanged
+if [ -f "$root/confirmed-change" ]; then
+  change="$NTM_RESPAWN_CONFIRM_CHANGE"
+fi
+pane='%7'
+pid=222
+window=2
+case "$change" in
+  pane-replaced) pane='%8' ;;
+  pane-moved) window=3 ;;
+  process-changed) pid=333 ;;
+esac
+case "$1" in
+  -V) printf 'tmux 3.4\n' ;;
+  has-session) ;;
+  list-sessions) printf 'recovery_NTM_SEP_2_NTM_SEP_0_NTM_SEP_today\n' ;;
+  list-panes)
+    printf '%%0_NTM_SEP_0_NTM_SEP_recovery__user_0_NTM_SEP_zsh_NTM_SEP_100_NTM_SEP_30_NTM_SEP_0_NTM_SEP_111_NTM_SEP_0_NTM_SEP_user\n'
+    printf '%s_NTM_SEP_0_NTM_SEP_notes_NTM_SEP_zsh_NTM_SEP_100_NTM_SEP_30_NTM_SEP_1_NTM_SEP_%s_NTM_SEP_%s_NTM_SEP_codex\n' "$pane" "$pid" "$window"
+    if [ "$change" = pane-moved ]; then
+      printf '%%8_NTM_SEP_0_NTM_SEP_replacement_NTM_SEP_zsh_NTM_SEP_100_NTM_SEP_30_NTM_SEP_0_NTM_SEP_444_NTM_SEP_2_NTM_SEP_codex\n'
+    fi
+    ;;
+  display-message)
+    case "$*" in
+      *@ntm_agent_type*) printf '[cod]\n' ;;
+      *pane_pid*)
+        case "$change:$*" in
+          pane-moved:*%8*) printf '444\n' ;;
+          *) printf '%s\n' "$pid" ;;
+        esac
+        ;;
+      *pane_current_command*) printf 'zsh\n' ;;
+      *)
+        if [ "$change" = directory-changed ]; then
+          printf '%s\n' "$root/moved"
+        else
+          printf '%s\n' "$root"
+        fi
+        ;;
+    esac
+    ;;
+  show-options)
+    case "$*" in
+      *@ntm_agent_launch*)
+        case "$*" in
+          *%8*) cat "$root/spec-replacement" ;;
+          *)
+            if [ "$change" = launch-changed ]; then
+              cat "$root/spec-changed"
+            else
+              cat "$root/spec"
+            fi
+            ;;
+        esac
+        ;;
+    esac
+    ;;
+  respawn-pane) : > "$root/mutation-boundary"; exit 71 ;;
+  if-shell)
+    case "${6:-}" in
+      *respawn-pane*) : > "$root/mutation-boundary"; exit 71 ;;
+      *) exit 72 ;;
+    esac
+    ;;
+esac
+`
+				if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(filepath.Join(root, "moved"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				spec := tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentCodex, Command: "codex --model saved/model", Model: "saved/model"}
+				if withEnvironment {
+					spec.OmittedEnv = []string{"ZAI_SEAT_ROLE"}
+				}
+				for _, name := range []string{"spec", "spec-changed", "spec-replacement"} {
+					launch := spec
+					paneID := "%7"
+					if name == "spec-changed" {
+						launch.Command = "codex --model replacement/model"
+						launch.Model = "replacement/model"
+					}
+					if name == "spec-replacement" {
+						paneID = "%8"
+					}
+					record, err := json.Marshal(map[string]any{"pane_id": paneID, "spec": launch})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(root, name), []byte(base64.StdEncoding.EncodeToString(record)), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				configPath := filepath.Join(root, "config.toml")
+				if err := os.WriteFile(configPath, []byte("[agent_mail]\nenabled = false\n[cleanup]\nauto_clean_on_startup = false\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				args := []string{"--config=" + configPath, "respawn", "recovery", "--panes=2.0"}
+				if withEnvironment {
+					data, err := json.Marshal(map[string]string{"ZAI_SEAT_ROLE": secret})
+					if err != nil {
+						t.Fatal(err)
+					}
+					path := filepath.Join(root, "recovery.json")
+					if err := os.WriteFile(path, data, 0600); err != nil {
+						t.Fatal(err)
+					}
+					args = append(args, "--restart-env-file="+path)
+				}
+				rawArgs, err := json.Marshal(args)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRobotProcessContractHelper$")
+				cmd.Dir = root
+				cmd.Env = envWithOverrides(os.Environ(),
+					"HOME="+root, "XDG_CONFIG_HOME="+filepath.Join(root, "config"), "XDG_DATA_HOME="+filepath.Join(root, "data"),
+					"NTM_TEST_TMUX_ENV_OWNED=1", "NTM_TMUX_BINARY="+binary, "NTM_RESPAWN_CONFIRM_ROOT="+root,
+					"NTM_RESPAWN_CONFIRM_CHANGE="+change, "NTM_ROBOT_CONTRACT_ARGS="+string(rawArgs),
+					"NTM_NO_COLOR=1", "NTM_CONFIG=", "NTM_ROBOT_FORMAT=", "NTM_OUTPUT_FORMAT=", "TOON_DEFAULT_FORMAT=", "NTM_ROBOT_VERBOSITY=")
+				stdin, err := cmd.StdinPipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer stdin.Close()
+				stdoutPipe, err := cmd.StdoutPipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				var stdout, stderr bytes.Buffer
+				cmd.Stderr = &stderr
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					cancel()
+					_ = cmd.Wait()
+				}()
+				reader := bufio.NewReader(stdoutPipe)
+				for !strings.Contains(stdout.String(), "[y/N]:") {
+					part, readErr := reader.ReadString(':')
+					stdout.WriteString(part)
+					if readErr != nil {
+						waitErr := cmd.Wait()
+						t.Fatalf("respawn did not reach confirmation: read=%v process=%v stdout=%s stderr=%s", readErr, waitErr, stdout.String(), stderr.String())
+					}
+				}
+				// The first shared preflight is complete and the CLI is blocked
+				// reading confirmation. Change only the live target evidence.
+				if err := os.WriteFile(filepath.Join(root, "confirmed-change"), []byte(change), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := io.WriteString(stdin, "y\n"); err != nil {
+					t.Fatal(err)
+				}
+				if err := stdin.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := io.Copy(&stdout, reader); err != nil {
+					t.Fatal(err)
+				}
+				runErr := cmd.Wait()
+				if runErr == nil {
+					t.Fatalf("expected stale-preflight refusal or fixture mutation error; stdout=%s stderr=%s", stdout.String(), stderr.String())
+				}
+				if ctx.Err() != nil {
+					t.Fatalf("confirmed recovery timed out: stdout=%s stderr=%s", stdout.String(), stderr.String())
+				}
+				calls, err := os.ReadFile(filepath.Join(root, "calls"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				mutated := strings.Contains(string(calls), "respawn-pane")
+				if mutated != (change == "unchanged") {
+					t.Fatalf("mutation=%t for %s: calls=%s stdout=%s stderr=%s", mutated, change, calls, stdout.String(), stderr.String())
+				}
+				for _, operation := range []string{"send-keys", "load-buffer", "paste-buffer", "set-option"} {
+					if strings.Contains(string(calls), operation) {
+						t.Fatalf("unconfirmed recovery reached %q: %s", operation, calls)
+					}
+				}
+				combined := stdout.String() + stderr.String() + string(calls)
+				if strings.Contains(combined, secret) {
+					t.Fatal("recovery value leaked across confirmation or into diagnostics")
+				}
+				if change == "unchanged" {
+					if _, err := os.Stat(filepath.Join(root, "mutation-boundary")); err != nil {
+						t.Fatal("stable preflight did not reach the intended mutation boundary")
+					}
 				}
 			})
 		}

@@ -560,6 +560,12 @@ func VerifyAgentSubmission(ctx context.Context, target, message string, agentTyp
 		return nil
 	}
 	if err != nil {
+		// A lifecycle fence refusing a rescue key is an authoritative loss of
+		// the target, not an inconclusive screen capture. Preserve the failure
+		// so restart/assignment cannot report delivery to a replacement pane.
+		if errors.Is(err, tmux.ErrPaneIdentityChanged) {
+			return err
+		}
 		if errors.Is(err, tmux.ErrCodexTranscriptBrowsing) {
 			return fmt.Errorf("pane %s: %w", target, err)
 		}

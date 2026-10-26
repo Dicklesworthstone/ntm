@@ -217,6 +217,21 @@ func validatePhysicalPaneTarget(ctx context.Context, paneID string) error {
 // binds the record to its physical pane, preventing inherited or copied options
 // from being mistaken for the launch metadata of another pane.
 func (c *Client) SetPaneLaunchSpecContext(ctx context.Context, paneID string, spec AgentLaunchSpec) error {
+	return c.setPaneLaunchSpecContext(ctx, paneID, spec, c.RunSilentContext)
+}
+
+// SetPaneLaunchSpecIfCurrentContext publishes replay metadata only to the
+// expected replacement shell, keeping a competing respawn or claim untouched.
+func (c *Client) SetPaneLaunchSpecIfCurrentContext(ctx context.Context, paneID string, expectedPID int, spec AgentLaunchSpec) error {
+	if expectedPID <= 0 {
+		return errors.New("guarded pane mutation requires a positive expected PID")
+	}
+	return c.setPaneLaunchSpecContext(ctx, paneID, spec, func(runCtx context.Context, args ...string) error {
+		return c.runPaneMutationIfCurrentContext(runCtx, paneID, expectedPID, paneMutationShell, args...)
+	})
+}
+
+func (c *Client) setPaneLaunchSpecContext(ctx context.Context, paneID string, spec AgentLaunchSpec, run func(context.Context, ...string) error) error {
 	if err := validatePhysicalPaneTarget(ctx, paneID); err != nil {
 		return err
 	}
@@ -229,11 +244,14 @@ func (c *Client) SetPaneLaunchSpecContext(ctx context.Context, paneID string, sp
 		return errors.New("cannot encode pane launch record")
 	}
 	encoded := base64.StdEncoding.EncodeToString(data)
-	if err := c.RunSilentContext(ctx, "set-option", "-p", "-t", ExactTarget(paneID), PaneLaunchSpecOption, encoded); err != nil {
+	if err := run(ctx, "set-option", "-p", "-t", ExactTarget(paneID), PaneLaunchSpecOption, encoded); err != nil {
 		// A CommandError includes the payload in argv. Do not expose the saved
 		// launch command through diagnostic strings; keep cancellation testable.
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if errors.Is(err, ErrPaneIdentityChanged) {
+			return err
 		}
 		return fmt.Errorf("cannot persist agent launch specification for pane %s (%s)", paneID, ClassifyCommandError(err).Kind)
 	}

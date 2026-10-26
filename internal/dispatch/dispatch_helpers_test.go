@@ -40,9 +40,14 @@ func installTrustDialogTMUX(t *testing.T, capture string) (screen, log string) {
 	binary := filepath.Join(dir, "tmux")
 	if err := os.WriteFile(binary, []byte(`#!/bin/sh
 printf '%s\n' "$*" >> "$NTM_TEST_TRUST_LOG"
+if [ "$1" = if-shell ] && [ "${NTM_TEST_PANE_CHANGED:-}" = 1 ]; then
+  printf 'ntm_pane_identity_changed\n'
+  exit 0
+fi
 case " $* " in
   *" display-message "*)
     case "$*" in
+      *"@ntm_agent_type"*) printf '[cod]\n' ;;
       *"@ntm_rotation_token"*) printf '[%s]\n' "${NTM_TEST_ROTATION_TOKEN:-}" ;;
     esac
     ;;
@@ -71,6 +76,7 @@ esac
 	t.Setenv("NTM_TEST_COMPOSER_AFTER_ESCAPE", "")
 	t.Setenv("NTM_TEST_COMPOSER_AFTER_CLEAR", "")
 	t.Setenv("NTM_TEST_ROTATION_TOKEN", "")
+	t.Setenv("NTM_TEST_PANE_CHANGED", "")
 	original := tmux.DefaultClient
 	tmux.DefaultClient = tmux.NewClient("")
 	t.Cleanup(func() { tmux.DefaultClient = original })
@@ -334,5 +340,40 @@ func TestCodexSubmissionVerificationNeverRewindsTranscript(t *testing.T) {
 	}
 	if strings.Contains(string(commands), "send-keys") {
 		t.Fatalf("submission verification sent a key into history:\n%s", commands)
+	}
+}
+
+func TestAgentSubmissionVerificationPreservesRestartIdentityRefusal(t *testing.T) {
+	const message = "review the next task"
+	for _, tc := range []struct {
+		kind    tmux.AgentType
+		capture string
+	}{
+		{tmux.AgentCodex, "› " + message + "\n47% context left\n"},
+		{tmux.AgentClaude, "❯ " + message + "\n"},
+	} {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			_, log := installTrustDialogTMUX(t, tc.capture)
+			t.Setenv("NTM_TEST_PANE_CHANGED", "1")
+			ctx, err := tmux.WithPaneMutationGuard(t.Context(), "%12", 123)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := VerifyAgentSubmission(ctx, "%12", message, tc.kind, 120); !errors.Is(err, tmux.ErrPaneIdentityChanged) {
+				t.Fatalf("submission verifier hid restart ownership loss: %v", err)
+			}
+			calls, err := os.ReadFile(log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(calls), "if-shell -F") {
+				t.Fatal("regression did not reach guarded rescue-key delivery")
+			}
+			for _, call := range strings.Split(string(calls), "\n") {
+				if strings.HasPrefix(call, "send-keys ") {
+					t.Fatal("submission verifier sent an unguarded rescue key")
+				}
+			}
+		})
 	}
 }

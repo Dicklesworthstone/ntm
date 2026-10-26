@@ -242,6 +242,10 @@ func TestAgentLaunchSpecReplayPreservesConfiguredCommandAndProfile(t *testing.T)
 	// Mutating the source inputs after preflight cannot change the saved plan.
 	spec.Command = "different-agent"
 	cfg.Integrations.CAAM.BinaryPath = "/missing-caam"
+	preview, err := plan.Preview(t.Context(), dir, "recovered", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
 	prepared, err := plan.Prepare(context.Background(), dir, "recovered", 2)
 	if err != nil {
 		t.Fatal(err)
@@ -250,6 +254,9 @@ func TestAgentLaunchSpecReplayPreservesConfiguredCommandAndProfile(t *testing.T)
 	want := tmux.ShellQuote(caam) + " shallow-spawn 'original-profile' -- /bin/sh -c " + tmux.ShellQuote(inside)
 	if prepared != want {
 		t.Fatalf("saved launch settings changed:\n got %s\nwant %s", prepared, want)
+	}
+	if preview != prepared {
+		t.Fatal("CAAM launch preview differs from the prepared command")
 	}
 	calls, err := os.ReadFile(log)
 	if err != nil || strings.TrimSpace(string(calls)) != "shallow-spawn original-profile --print-env" {
@@ -292,9 +299,22 @@ func TestAgentLaunchSpecPreflightDoesNotProvisionOrLeakCredentials(t *testing.T)
 	if _, err := os.Stat(privateDir); !os.IsNotExist(err) {
 		t.Fatalf("read-only preflight provisioned credential state: %v", err)
 	}
+	preview, err := plan.Preview(t.Context(), projectDir, "restored", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(preview, token) {
+		t.Fatal("launch preview exposed the credential value")
+	}
+	if _, err := os.Stat(privateDir); !os.IsNotExist(err) {
+		t.Fatalf("launch preview provisioned credential state: %v", err)
+	}
 	prepared, err := plan.Prepare(context.Background(), projectDir, "restored", 2)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if preview != prepared {
+		t.Fatal("Claude launch preview differs from the prepared command")
 	}
 	if !strings.Contains(prepared, "CLAUDE_CONFIG_DIR="+tmux.ShellQuote(privateDir)) ||
 		!strings.Contains(prepared, tmux.ShellQuote(tokenFile)) || !strings.HasSuffix(prepared, spec.Command) {
@@ -331,6 +351,38 @@ func TestAgentLaunchSpecPreflightRejectsUnavailableInputs(t *testing.T) {
 			cfg.Integrations.CAAM.BinaryPath = "/bin/false"
 			if _, err := PreflightAgentLaunchSpec(context.Background(), cfg, spec, t.TempDir()); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("preflight error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestAgentLaunchSpecPreflightValidatesWorkingDirectoryBeforeProvisioning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("tmux launch directories require a POSIX filesystem")
+	}
+	for _, name := range []string{"ordinary path with 'quotes' and $literal", "private\ndirectory", "private\rdirectory", "private\tdirectory", "private\x1bdirectory", "private\x7fdirectory", "private\u0085directory"} {
+		t.Run(fmt.Sprintf("%q", name), func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), name)
+			if err := os.Mkdir(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			spec := tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentCodex, Command: "codex --model saved"}
+			_, err := PreflightAgentLaunchSpec(t.Context(), nil, spec, dir)
+			if name == "ordinary path with 'quotes' and $literal" {
+				if err != nil {
+					t.Fatalf("safe quoted directory was rejected: %v", err)
+				}
+			} else {
+				if err == nil || !strings.Contains(err.Error(), "preflight agent launch command") {
+					t.Fatalf("unsafe directory was not rejected before launch: %v", err)
+				}
+				if strings.Contains(err.Error(), name) {
+					t.Fatalf("directory contents leaked into preflight diagnostic: %q", err)
+				}
+			}
+			entries, readErr := os.ReadDir(dir)
+			if readErr != nil || len(entries) != 0 {
+				t.Fatalf("read-only preflight provisioned files: %v, %v", entries, readErr)
 			}
 		})
 	}

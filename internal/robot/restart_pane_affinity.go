@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
@@ -22,15 +23,261 @@ type restartLaunchPlan struct {
 	Replay      map[string]*resilience.AgentLaunchPlan
 	Directories map[string]string
 	Indices     map[string]int
-	// The single-pane handoff contains runtime values only. Its FIFO carries
-	// bytes in memory and is closed for successful, failed, and dry-run plans.
-	environment *tmux.LaunchEnvironment
+	Preflight   *RestartPanePreflight
+	// DeliveryCommands are exact, read-only previews of the eventual input.
+	// Per-pane handoffs carry runtime values or long commands only in memory.
+	// They are closed for successful, failed, and dry-run restart plans.
+	DeliveryCommands map[string]string
+	handoffs         map[string]*tmux.LaunchEnvironment
+}
+
+// RestartPanePreflight binds an in-memory preview to the physical panes and
+// launch inputs that were observed. It is deliberately opaque and must never
+// be serialized: callers may carry it from confirmation to execution, but may
+// not turn a stale logical selector into permission to restart another pane.
+type RestartPanePreflight struct {
+	session string
+	targets []restartPaneSnapshot
+}
+
+type restartPaneSnapshot struct {
+	pane       tmux.Pane
+	launchSpec *tmux.AgentLaunchSpec
+	workingDir string
+}
+
+func (*RestartPanePreflight) String() string   { return "RestartPanePreflight{redacted}" }
+func (*RestartPanePreflight) GoString() string { return "RestartPanePreflight{redacted}" }
+
+func cloneRestartPane(pane tmux.Pane) tmux.Pane {
+	pane.Tags = append([]string(nil), pane.Tags...)
+	return pane
+}
+
+func cloneRestartLaunchSpec(spec *tmux.AgentLaunchSpec) *tmux.AgentLaunchSpec {
+	if spec == nil {
+		return nil
+	}
+	copy := *spec
+	if spec.OmittedEnv != nil {
+		copy.OmittedEnv = append([]string{}, spec.OmittedEnv...)
+	}
+	return &copy
+}
+
+// Process and topology evidence must still describe the original target. A
+// foreground change matters even when the shell PID is unchanged: another
+// recovery may have started a new agent in that shell during preflight.
+func restartPaneSnapshotMatches(expected, current tmux.Pane) bool {
+	return expected.ID != "" && expected.ID == current.ID && expected.PID > 0 && expected.PID == current.PID &&
+		expected.Index == current.Index && expected.WindowIndex == current.WindowIndex &&
+		restartPaneAgentType(expected) == restartPaneAgentType(current) &&
+		expected.Command == current.Command && expected.Dead == current.Dead &&
+		expected.Service == current.Service && expected.ServiceManager == current.ServiceManager &&
+		expected.RotationToken == current.RotationToken
+}
+
+func (expected restartPaneSnapshot) matches(current tmux.Pane) bool {
+	return restartPaneSnapshotMatches(expected.pane, current) &&
+		(expected.launchSpec != nil || expected.pane.Variant == current.Variant)
+}
+
+func (preflight *RestartPanePreflight) selectTargets(session string, panes []tmux.Pane) ([]tmux.Pane, error) {
+	if preflight == nil || preflight.session != session || len(preflight.targets) == 0 {
+		return nil, errors.New("restart preflight does not match the selected session")
+	}
+	byID := make(map[string]tmux.Pane, len(panes))
+	for _, pane := range panes {
+		if _, duplicate := byID[pane.ID]; duplicate {
+			return nil, errors.New("restart pane observation contains duplicate physical identities")
+		}
+		byID[pane.ID] = pane
+	}
+	targets := make([]tmux.Pane, 0, len(preflight.targets))
+	for _, expected := range preflight.targets {
+		current, exists := byID[expected.pane.ID]
+		if !exists {
+			return nil, fmt.Errorf("restart pane %s is no longer present in the selected session", expected.pane.ID)
+		}
+		if !expected.matches(current) {
+			return nil, fmt.Errorf("restart pane %s identity changed since preflight", expected.pane.ID)
+		}
+		targets = append(targets, cloneRestartPane(current))
+	}
+	return targets, nil
+}
+
+func (preflight *RestartPanePreflight) compare(current *RestartPanePreflight) error {
+	if preflight == nil || current == nil || preflight.session != current.session || len(preflight.targets) != len(current.targets) {
+		return errors.New("restart targets changed since preflight")
+	}
+	for i, expected := range preflight.targets {
+		observed := current.targets[i]
+		if !expected.matches(observed.pane) {
+			return fmt.Errorf("restart pane %s identity changed since preflight", expected.pane.ID)
+		}
+		if !reflect.DeepEqual(expected.launchSpec, observed.launchSpec) {
+			return fmt.Errorf("restart pane %s launch specification changed since preflight", expected.pane.ID)
+		}
+		if expected.workingDir != observed.workingDir {
+			return fmt.Errorf("restart pane %s working directory changed since preflight", expected.pane.ID)
+		}
+	}
+	return nil
+}
+
+func (preflight *RestartPanePreflight) observe(ctx context.Context, deps RestartPaneDependencies) error {
+	panes, err := deps.ListPanes(ctx, preflight.session)
+	if err != nil {
+		return fmt.Errorf("recheck restart pane identities: %w", err)
+	}
+	if _, err := preflight.selectTargets(preflight.session, panes); err != nil {
+		return err
+	}
+	for _, expected := range preflight.targets {
+		if err := expected.observeLaunch(ctx, deps); err != nil {
+			return err
+		}
+	}
+	return ctx.Err()
+}
+
+func (preflight *RestartPanePreflight) target(paneID string) (restartPaneSnapshot, error) {
+	for _, expected := range preflight.targets {
+		if expected.pane.ID == paneID {
+			return expected, nil
+		}
+	}
+	return restartPaneSnapshot{}, errors.New("restart target is not part of the preflighted physical panes")
+}
+
+func (expected restartPaneSnapshot) observeBeforeRespawn(ctx context.Context, session string, deps RestartPaneDependencies) error {
+	preflight := &RestartPanePreflight{session: session, targets: []restartPaneSnapshot{expected}}
+	return preflight.observe(ctx, deps)
+}
+
+// observeReplacement keeps every later lifecycle stage bound to the exact
+// shell created by this restart. The expected PID is never adopted from a fresh
+// lookup: a newer process belongs to another lifecycle operation. Tmux repeats
+// the PID/ownership guard in the same command queue as each actual mutation.
+func (preflight *RestartPanePreflight) observeReplacement(ctx context.Context, deps RestartPaneDependencies, paneID string, expectedPID int, requireShell bool, published *tmux.AgentLaunchSpec) error {
+	panes, err := deps.ListPanes(ctx, preflight.session)
+	if err != nil {
+		return fmt.Errorf("recheck replacement pane %s: %w", paneID, err)
+	}
+	return preflight.observeReplacementPanes(ctx, deps, panes, paneID, expectedPID, requireShell, published)
+}
+
+func (preflight *RestartPanePreflight) observeReplacementPanes(ctx context.Context, deps RestartPaneDependencies, panes []tmux.Pane, paneID string, expectedPID int, requireShell bool, published *tmux.AgentLaunchSpec) error {
+	expected, err := preflight.target(paneID)
+	if err != nil {
+		return err
+	}
+	if expectedPID <= 0 || expectedPID == expected.pane.PID {
+		return fmt.Errorf("restart pane %s has no verified replacement process", paneID)
+	}
+	found := false
+	for _, pane := range panes {
+		if pane.ID == paneID {
+			if found {
+				return errors.New("replacement pane observation contains duplicate physical identities")
+			}
+			found = true
+		}
+	}
+	for _, current := range panes {
+		if current.ID != paneID {
+			continue
+		}
+		expected.pane.PID = expectedPID
+		expected.pane.Command = current.Command
+		expected.pane.Dead = false
+		if published != nil {
+			expected.launchSpec = cloneRestartLaunchSpec(published)
+			// Publication canonicalizes aliases and omits an empty key list.
+			// Compare the record that SetPaneLaunchSpec actually writes.
+			expected.launchSpec.AgentType = expected.launchSpec.AgentType.Canonical()
+			expected.launchSpec.OmittedEnv = append([]string(nil), published.OmittedEnv...)
+		}
+		if !expected.matches(current) || current.IsServicePane() || current.RotationToken != "" {
+			return fmt.Errorf("restart pane %s replacement identity changed", paneID)
+		}
+		if requireShell && !current.RunsBareShell() {
+			return fmt.Errorf("restart pane %s is no longer at the replacement shell; launch was withheld", paneID)
+		}
+		return expected.observeLaunch(ctx, deps)
+	}
+	return fmt.Errorf("restart pane %s replacement is no longer present in the selected session", paneID)
+}
+
+func (expected restartPaneSnapshot) observeLaunch(ctx context.Context, deps RestartPaneDependencies) error {
+	if !restartTargetIsAgent(restartPaneAgentType(expected.pane)) {
+		return nil
+	}
+	spec, err := deps.ReadLaunchSpec(ctx, expected.pane.ID)
+	if err != nil {
+		return fmt.Errorf("recheck restart pane %s launch specification: %w", expected.pane.ID, err)
+	}
+	if !reflect.DeepEqual(expected.launchSpec, spec) {
+		return fmt.Errorf("restart pane %s launch specification changed since preflight", expected.pane.ID)
+	}
+	if expected.workingDir != "" {
+		dir, err := deps.PaneWorkingDir(ctx, expected.pane.ID)
+		if err != nil {
+			return fmt.Errorf("recheck restart pane %s working directory: %w", expected.pane.ID, err)
+		}
+		if dir != expected.workingDir {
+			return fmt.Errorf("restart pane %s working directory changed since preflight", expected.pane.ID)
+		}
+	}
+	return ctx.Err()
 }
 
 func (plan *restartLaunchPlan) close() {
-	if plan.environment != nil {
-		_ = plan.environment.Close()
+	for _, handoff := range plan.handoffs {
+		_ = handoff.Close()
 	}
+}
+
+// prepareDelivery belongs to the destructive restart path. Other lifecycle
+// operations reuse launch composition while retaining their existing shell;
+// they must not create or leak unused restart-only FIFO handoffs.
+func (plan *restartLaunchPlan) prepareDelivery(ctx context.Context, session string, environment map[string]string) error {
+	plan.DeliveryCommands = make(map[string]string, len(plan.Commands))
+	plan.handoffs = make(map[string]*tmux.LaunchEnvironment)
+	for key, command := range plan.Commands {
+		if replay := plan.Replay[key]; replay != nil {
+			var err error
+			command, err = replay.Preview(ctx, plan.Directories[key], session, plan.Indices[key])
+			if err == nil {
+				command, err = tmux.BuildPaneCommand(plan.Directories[key], command)
+			}
+			if err != nil {
+				return fmt.Errorf("preflight pane %s launch delivery: %w", key, err)
+			}
+		}
+		if strings.TrimSpace(command) == "" {
+			return fmt.Errorf("preflight pane %s launch delivery: command is empty", key)
+		}
+		if _, err := tmux.SanitizePaneCommand(command); err != nil {
+			return fmt.Errorf("preflight pane %s launch delivery: command contains control characters", key)
+		}
+		plan.DeliveryCommands[key] = command
+		if len(environment) == 0 && len(command) <= tmux.MaxTypedLaunchCommandBytes {
+			continue
+		}
+		handoff, err := tmux.NewLaunchEnvironment(ctx, environment)
+		if err != nil {
+			return fmt.Errorf("preflight pane %s private launch handoff: %w; run recovery on the tmux host when the saved launch needs a private handoff", key, err)
+		}
+		plan.handoffs[key] = handoff
+	}
+	if len(plan.Commands) > 0 {
+		if err := tmux.DefaultClient.PreflightRestartShellContext(ctx); err != nil {
+			return fmt.Errorf("preflight replacement shell: %w", err)
+		}
+	}
+	return ctx.Err()
 }
 
 func prepareRestartLaunchPlan(
@@ -50,6 +297,7 @@ func prepareRestartLaunchPlan(
 		Replay:      make(map[string]*resilience.AgentLaunchPlan),
 		Directories: make(map[string]string),
 		Indices:     make(map[string]int),
+		Preflight:   &RestartPanePreflight{session: session, targets: make([]restartPaneSnapshot, len(panes))},
 	}
 	if environment != nil {
 		if len(panes) != 1 || !restartTargetIsAgent(restartPaneAgentType(panes[0])) {
@@ -70,7 +318,8 @@ func prepareRestartLaunchPlan(
 	if cfg != nil {
 		caamBinary = cfg.Integrations.CAAM.BinaryPath
 	}
-	for _, pane := range panes {
+	for paneIndex, pane := range panes {
+		plan.Preflight.targets[paneIndex].pane = cloneRestartPane(pane)
 		resolvedType := restartPaneAgentType(pane)
 		if !restartTargetIsAgent(resolvedType) {
 			continue
@@ -80,6 +329,7 @@ func prepareRestartLaunchPlan(
 		if err != nil {
 			return plan, fmt.Errorf("read pane %s launch specification: %w", key, err)
 		}
+		plan.Preflight.targets[paneIndex].launchSpec = cloneRestartLaunchSpec(saved)
 		if saved != nil {
 			if err := saved.Validate(tmux.AgentType(resolvedType)); err != nil {
 				return plan, fmt.Errorf("validate pane %s launch specification: %w", key, err)
@@ -98,6 +348,7 @@ func prepareRestartLaunchPlan(
 			if !filepath.IsAbs(dir) {
 				return plan, fmt.Errorf("pane %s has no absolute working directory for saved launch replay", key)
 			}
+			plan.Preflight.targets[paneIndex].workingDir = dir
 			// Only this execution copy may omit the markers, after the explicit
 			// values have satisfied every saved requirement. Specs retains the
 			// original markers for durable publication; automatic replay still
@@ -162,14 +413,6 @@ func prepareRestartLaunchPlan(
 			return plan, fmt.Errorf("record pane %s relaunch command: %w", key, err)
 		}
 		plan.Specs[key] = spec
-	}
-	if len(environment) > 0 {
-		// Exercise the same transport preflight in dry-run and real execution,
-		// before any pane is killed. The FIFO is empty until Send is invoked.
-		plan.environment, err = tmux.NewLaunchEnvironment(ctx, environment)
-		if err != nil {
-			return plan, fmt.Errorf("preflight restart environment handoff: %w", err)
-		}
 	}
 	return plan, nil
 }

@@ -1,10 +1,398 @@
 package tmux
 
 import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
+
+func waitGuardedTestPane(t *testing.T, session string, accept func(Pane) bool) Pane {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		panes, err := GetPanesContext(t.Context(), session)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(panes) == 1 && accept(panes[0]) {
+			return panes[0]
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pane did not reach the expected guarded-test state: %+v", panes)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestGuardedPaneMutationsRejectInvalidInputs(t *testing.T) {
+	client := NewClient("")
+	spec := AgentLaunchSpec{Version: AgentLaunchSpecVersion, AgentType: AgentCodex, Command: "codex"}
+	for _, target := range []string{"", "session:0.1", "%7;kill-server", "%7\n"} {
+		if err := client.RespawnPaneIfCurrentContext(t.Context(), target, 1, true, "", false); err == nil {
+			t.Fatalf("unsafe guarded target %q accepted", target)
+		}
+	}
+	for _, pid := range []int{0, -1} {
+		for _, err := range []error{
+			client.RespawnPaneIfCurrentContext(t.Context(), "%7", pid, true, "", false),
+			client.SetPaneLaunchSpecIfCurrentContext(t.Context(), "%7", pid, spec),
+			client.SetPaneAgentTypeIfCurrentContext(t.Context(), "%7", pid, AgentCodex),
+			client.SendKeysForAgentIfCurrentContext(t.Context(), "%7", "true", true, AgentCodex, pid, true),
+		} {
+			if err == nil || !strings.Contains(err.Error(), "positive expected PID") {
+				t.Fatalf("invalid expected PID reached tmux: %v", err)
+			}
+		}
+	}
+	for _, directory := range []string{"relative", "/private\npath", "/private\tpath"} {
+		if err := client.RespawnPaneIfCurrentContext(t.Context(), "%7", 1, true, directory, false); err == nil || strings.Contains(err.Error(), directory) {
+			t.Fatalf("unsafe working directory did not fail before mutation: %v", err)
+		}
+	}
+	oversized := strings.Repeat("private-value", MaxTypedLaunchCommandBytes)
+	if err := client.SendKeysForAgentIfCurrentContext(t.Context(), "%7", oversized, true, AgentCodex, 1, true); err == nil || !strings.Contains(err.Error(), "terminal input limit") || strings.Contains(err.Error(), "private-value") {
+		t.Fatalf("oversized launch did not fail before contacting tmux: %v", err)
+	}
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := client.PreflightRestartShellContext(canceled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled shell preflight returned %v", err)
+	}
+}
+
+func TestRealGuardedPaneMutationsRefuseChangedIdentityAndOwners(t *testing.T) {
+	session := createTestSession(t)
+	pane := waitGuardedTestPane(t, session, func(p Pane) bool { return p.PID > 0 && p.IdleShell() })
+	spec := AgentLaunchSpec{Version: AgentLaunchSpecVersion, AgentType: AgentCodex, Command: "codex --model retained-model"}
+	marker := filepath.Join(t.TempDir(), "must-not-launch")
+	launch := "printf rejected > " + ShellQuote(marker)
+	assertRefused := func(pid int) {
+		t.Helper()
+		operations := []struct {
+			name string
+			run  func() error
+		}{
+			{"respawn", func() error {
+				return DefaultClient.RespawnPaneIfCurrentContext(t.Context(), pane.ID, pid, true, "", true)
+			}},
+			{"launch metadata", func() error { return DefaultClient.SetPaneLaunchSpecIfCurrentContext(t.Context(), pane.ID, pid, spec) }},
+			{"agent type", func() error {
+				return DefaultClient.SetPaneAgentTypeIfCurrentContext(t.Context(), pane.ID, pid, AgentCodex)
+			}},
+			{"literal launch", func() error {
+				return DefaultClient.SendKeysForAgentIfCurrentContext(t.Context(), pane.ID, launch, true, AgentCodex, pid, true)
+			}},
+			{"buffered launch", func() error {
+				return DefaultClient.SendKeysForAgentIfCurrentContext(t.Context(), pane.ID, launch, true, AgentClaude, pid, true)
+			}},
+		}
+		for _, operation := range operations {
+			if err := operation.run(); !errors.Is(err, ErrPaneIdentityChanged) {
+				t.Fatalf("%s did not refuse the changed/claimed pane: %v", operation.name, err)
+			}
+		}
+		current := waitGuardedTestPane(t, session, func(p Pane) bool { return p.PID > 0 })
+		if current.PID != pane.PID {
+			t.Fatal("a refused operation replaced the pane process")
+		}
+		if stored, err := ReadPaneLaunchSpecContext(t.Context(), pane.ID); err != nil || stored != nil {
+			t.Fatalf("a refused operation published launch metadata: stored=%v error=%v", stored != nil, err)
+		}
+		if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("a refused operation delivered a launch command")
+		}
+	}
+	assertRefused(pane.PID + 1000000)
+	for _, option := range []string{PaneOptionRotationToken, PaneOptionNTMService, PaneOptionACFSService} {
+		if err := DefaultClient.RunSilentContext(t.Context(), "set-option", "-p", "-t", pane.ID, option, "claimed"); err != nil {
+			t.Fatal(err)
+		}
+		assertRefused(pane.PID)
+		if err := DefaultClient.RunSilentContext(t.Context(), "set-option", "-p", "-u", "-t", pane.ID, option); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := DefaultClient.SetPaneLaunchSpecIfCurrentContext(t.Context(), pane.ID, pane.PID, spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := DefaultClient.SetPaneAgentTypeIfCurrentContext(t.Context(), pane.ID, pane.PID, AgentCodex); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := ReadPaneLaunchSpecContext(t.Context(), pane.ID)
+	if err != nil || stored == nil || stored.Command != spec.Command {
+		t.Fatalf("matching-pane publication did not persist the saved launch: %v", err)
+	}
+	// Explicit adoption is authoritative even when a prior supervisor's
+	// service tag remains. Preserve the same precedence as GetPanes.
+	if err := DefaultClient.RunSilentContext(t.Context(), "set-option", "-p", "-t", pane.ID, PaneOptionACFSService, "retained-service"); err != nil {
+		t.Fatal(err)
+	}
+	adopted := waitGuardedTestPane(t, session, func(p Pane) bool { return p.Type == AgentCodex })
+	if adopted.IsServicePane() {
+		t.Fatal("fixture is not an explicitly adopted agent")
+	}
+	if err := DefaultClient.SetPaneLaunchSpecIfCurrentContext(t.Context(), pane.ID, pane.PID, spec); err != nil {
+		t.Fatalf("guard rejected explicit adoption over a retained service tag: %v", err)
+	}
+}
+
+func TestRealGuardedRespawnUsesFreshShellOnlyForAgentRecovery(t *testing.T) {
+	session := createTestSession(t)
+	pane := waitGuardedTestPane(t, session, func(p Pane) bool { return p.PID > 0 && p.IdleShell() })
+	// A pane restored with an explicit provider command retains that argv.
+	// sleep models a direct, non-shell provider without requiring a live CLI.
+	if err := DefaultClient.RunSilentContext(t.Context(), "respawn-pane", "-k", "-t", pane.ID, "/bin/sleep", "30"); err != nil {
+		t.Fatal(err)
+	}
+	direct := waitGuardedTestPane(t, session, func(p Pane) bool { return p.Command == "sleep" })
+	if err := DefaultClient.RespawnPaneIfCurrentContext(t.Context(), direct.ID, direct.PID, true, "", false); err != nil {
+		t.Fatal(err)
+	}
+	retained := waitGuardedTestPane(t, session, func(p Pane) bool { return p.Command == "sleep" && p.PID != direct.PID })
+	directory := filepath.Join(t.TempDir(), "recovery directory's worktree")
+	if err := os.Mkdir(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := DefaultClient.PreflightRestartShellContext(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := DefaultClient.RespawnPaneIfCurrentContext(t.Context(), retained.ID, retained.PID, true, directory, true); err != nil {
+		t.Fatal(err)
+	}
+	fresh := waitGuardedTestPane(t, session, func(p Pane) bool { return p.PID != retained.PID && p.IdleShell() })
+	path, err := DefaultClient.RunContext(t.Context(), "display-message", "-p", "-t", fresh.ID, "#{pane_current_path}")
+	if err != nil || path != directory {
+		t.Fatalf("fresh shell lost the observed worktree: %q, %v", path, err)
+	}
+	for _, tc := range []struct {
+		name string
+		kind AgentType
+		want string
+	}{
+		{"literal", AgentGemini, "literal ';#{}$HOME\\"},
+		{"buffered", AgentClaude, "buffered ';#{}$HOME\\"},
+		{"long private handoff", AgentGemini, strings.Repeat("λ", 2048) + ";end'"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := filepath.Join(t.TempDir(), "result")
+			// The final semicolon must be data for the tmux parser and remain a
+			// shell terminator; conditional command quoting must not add '\'.
+			command := "printf '%s' " + ShellQuote(tc.want) + " > " + ShellQuote(result) + ";"
+			if len(command) > MaxTypedLaunchCommandBytes {
+				// Reproduce the >4KiB dash line limit through the same private
+				// handoff used by restart preflight, with no environment values.
+				if err := DefaultClient.SendKeysForAgentIfCurrentContext(t.Context(), fresh.ID, command, true, tc.kind, fresh.PID, true); err == nil {
+					t.Fatal("oversized launch was allowed onto the shell's terminal input")
+				}
+				handoff, err := NewLaunchEnvironment(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = handoff.Close() })
+				if err := handoff.SendIfCurrent(t.Context(), fresh.ID, command, true, tc.kind, fresh.PID); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := DefaultClient.SendKeysForAgentIfCurrentContext(t.Context(), fresh.ID, command, true, tc.kind, fresh.PID, true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				data, err := os.ReadFile(result)
+				if err == nil && string(data) == tc.want {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("guarded %s changed the delivered command or did not execute: %v", tc.name, err)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		})
+	}
+}
+
+func TestRealGuardedSendRechecksPIDBeforeEnter(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		doubleEnter bool
+		exitToShell bool
+	}{
+		{"launch process replaced", false, false},
+		{"prompt process replaced", true, false},
+		{"provider exits to same shell", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session := createTestSession(t)
+			pane := waitGuardedTestPane(t, session, func(p Pane) bool { return p.PID > 0 && p.IdleShell() })
+			if tc.doubleEnter {
+				// cat stands in for an agent that owns the terminal and accepts
+				// a staged prompt, while pane_pid remains the parent shell.
+				if err := DefaultClient.SendKeysContext(t.Context(), pane.ID, "/bin/cat", true); err != nil {
+					t.Fatal(err)
+				}
+				pane = waitGuardedTestPane(t, session, func(p Pane) bool { return p.Command == "cat" })
+			}
+			marker := filepath.Join(t.TempDir(), "must-not-run")
+			command := "printf ntm_staged_guard_marker > " + ShellQuote(marker)
+			result := make(chan error, 1)
+			go func() {
+				if tc.doubleEnter {
+					result <- DefaultClient.SendKeysForAgentDoubleEnterIfCurrentContext(t.Context(), pane.ID, command, AgentCodex, pane.PID)
+					return
+				}
+				result <- DefaultClient.sendKeysForAgentIfCurrentContext(t.Context(), pane.ID, command, true, time.Second, AgentCodex, pane.PID, true)
+			}()
+			deadline := time.Now().Add(800 * time.Millisecond)
+			for {
+				capture, err := DefaultClient.CapturePaneOutputContext(t.Context(), pane.ID, 20)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(capture, "ntm_staged_guard_marker") {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("guarded command was not staged before its Enter delay")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if tc.exitToShell {
+				if err := DefaultClient.RunSilentContext(t.Context(), "send-keys", "-t", pane.ID, "C-c"); err != nil {
+					t.Fatal(err)
+				}
+				idle := waitGuardedTestPane(t, session, func(p Pane) bool { return p.IdleShell() })
+				if idle.PID != pane.PID {
+					t.Fatal("test did not preserve the parent shell PID")
+				}
+			} else {
+				if err := DefaultClient.RespawnPaneIfCurrentContext(t.Context(), pane.ID, pane.PID, true, "", true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case err := <-result:
+				if !errors.Is(err, ErrPaneIdentityChanged) {
+					t.Fatalf("Enter did not refuse the replacement process: %v", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("guarded send did not return after the pane changed")
+			}
+			if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("a stale Enter executed the staged launch")
+			}
+		})
+	}
+}
+
+func TestPaneMutationGuardRejectsUnboundTargetsAndCancellation(t *testing.T) {
+	guarded, err := WithPaneMutationGuard(t.Context(), "%7", 123)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := NewClient("")
+	for _, args := range [][]string{
+		{"send-keys", "Enter"},
+		{"send-keys", "-t", "%8", "Enter"},
+		{"paste-buffer", "-b", "private", "-t", "%8"},
+		{"send-keys", "-t", "%7", "-t", "%8", "Enter"},
+	} {
+		if err := client.RunSilentContext(guarded, args...); err == nil || !strings.Contains(err.Error(), "guarded pane input") {
+			t.Fatalf("unbound mutation reached tmux: %v", err)
+		}
+	}
+	if _, err := WithPaneMutationGuard(guarded, "%8", 123); err == nil {
+		t.Fatal("a nested helper replaced the guarded pane binding")
+	}
+	canceled, cancel := context.WithCancel(guarded)
+	cancel()
+	if err := client.RunSilentContext(canceled, "send-keys", "-t", "%7", "Enter"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("guard swallowed caller cancellation: %v", err)
+	}
+}
+
+func TestRealPaneMutationGuardProtectsSharedSendAndRescueKeys(t *testing.T) {
+	session := createTestSession(t)
+	pane := waitGuardedTestPane(t, session, func(p Pane) bool { return p.PID > 0 && p.IdleShell() })
+	if err := DefaultClient.SendKeysContext(t.Context(), pane.ID, "/bin/cat", true); err != nil {
+		t.Fatal(err)
+	}
+	pane = waitGuardedTestPane(t, session, func(p Pane) bool { return p.Command == "cat" })
+	guarded, err := WithPaneMutationGuard(t.Context(), pane.ID, pane.PID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The normal send API still works through the scoped guard while the
+	// provider owns the pane; its conditional quoting must preserve ';'.
+	if err := DefaultClient.SendKeysForAgentContext(guarded, pane.ID, "ntm_context_guard;", false, AgentGemini); err != nil {
+		t.Fatal(err)
+	}
+	if err := DefaultClient.RunSilentContext(t.Context(), "send-keys", "-t", pane.ID, "C-c"); err != nil {
+		t.Fatal(err)
+	}
+	idle := waitGuardedTestPane(t, session, func(p Pane) bool { return p.IdleShell() })
+	if idle.PID != pane.PID {
+		t.Fatal("provider exit did not preserve the shell identity")
+	}
+	marker := filepath.Join(t.TempDir(), "unguarded-still-works")
+	command := "printf safe > " + ShellQuote(marker)
+	for _, attempt := range []func() error{
+		func() error {
+			return DefaultClient.SendKeysForAgentContext(guarded, pane.ID, command, true, AgentCodex)
+		},
+		func() error { return DefaultClient.SendKeyNameContext(guarded, pane.ID, "Enter") },
+		func() error { return DefaultClient.RunSilentContext(guarded, "send-keys", "-t", pane.ID, "Escape") },
+		func() error {
+			return DefaultClient.RunSilentContext(guarded, "paste-buffer", "-b", "not-loaded", "-t", pane.ID)
+		},
+	} {
+		if err := attempt(); !errors.Is(err, ErrPaneIdentityChanged) {
+			t.Fatalf("shared protocol input escaped the pane guard: %v", err)
+		}
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("guarded prompt executed in the bare shell")
+	}
+	// The scope is explicit: ordinary shell callers retain their behavior.
+	if err := DefaultClient.SendKeysContext(t.Context(), pane.ID, command, true); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if data, err := os.ReadFile(marker); err == nil && string(data) == "safe" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("an opt-in guard changed ordinary shell delivery")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestRealLaunchEnvironmentGuardRefusesChangedPane(t *testing.T) {
+	session := createTestSession(t)
+	pane := waitGuardedTestPane(t, session, func(p Pane) bool { return p.PID > 0 && p.IdleShell() })
+	launch, err := NewLaunchEnvironment(t.Context(), map[string]string{"API_TOKEN": "private-never-delivered"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = launch.Close() })
+	if err := launch.SendIfCurrent(t.Context(), pane.ID, "true", true, AgentCodex, pane.PID+1000000); !errors.Is(err, ErrPaneIdentityChanged) {
+		t.Fatalf("FIFO launcher did not preserve identity refusal: %v", err)
+	}
+	if _, err := os.Stat(launch.directory); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("refused FIFO launch left its private handoff behind")
+	}
+	capture, err := DefaultClient.CapturePaneOutputContext(t.Context(), pane.ID, 20)
+	if err != nil || strings.Contains(capture, launch.pipe) || strings.Contains(capture, "private-never-delivered") {
+		t.Fatalf("refused FIFO launcher reached the pane: %v", err)
+	}
+}
 
 func TestRealPaneRotationQuarantineOwnershipAndTopology(t *testing.T) {
 	skipIfNoTmux(t)

@@ -165,6 +165,10 @@ func runRespawn(ctx context.Context, session string, force bool, panesFlag strin
 	// alone only restores the pane's default command (the login shell).
 	fmt.Printf("Restarting %d pane(s) (relaunching agent CLIs)...\n", len(preflight.WouldAffect))
 	opts.DryRun = false
+	// Preserve the exact physical panes and launch evidence that the operator
+	// reviewed. A logical selector may identify a different pane by the time
+	// confirmation returns; the engine must reject changed recovery targets.
+	opts.Preflight = preflight.Preflight
 	out, err := robot.GetRestartPaneContext(ctx, opts)
 	if err != nil {
 		return err

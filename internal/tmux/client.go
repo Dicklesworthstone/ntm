@@ -8,15 +8,22 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 )
 
 // ErrCircuitOpen is returned when the circuit breaker is open (tmux
 // has failed too many times consecutively and we are in backoff).
 var ErrCircuitOpen = errors.New("tmux circuit breaker open: too many consecutive failures, backing off")
+
+// ErrPaneIdentityChanged means a pane no longer satisfies the process identity
+// and ownership checked by a lifecycle operation. No guarded mutation ran.
+var ErrPaneIdentityChanged = errors.New("pane process identity or ownership changed")
 
 // CommandErrorKind is the stable category for a tmux command failure.
 type CommandErrorKind string
@@ -502,8 +509,63 @@ func (c *Client) RunSilent(args ...string) error {
 
 // RunSilentContext executes a tmux command with cancellation support, ignoring stdout.
 func (c *Client) RunSilentContext(ctx context.Context, args ...string) error {
+	if guard := paneMutationGuardFromContext(ctx); guard != nil && isPaneInputCommand(args) {
+		target := ""
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--" {
+				break
+			}
+			if args[i] == "-t" {
+				if target != "" || i+1 >= len(args) {
+					return fmt.Errorf("guarded pane input requires one exact target: %w", ErrPaneIdentityChanged)
+				}
+				i++
+				target = args[i]
+			}
+		}
+		if target != guard.target {
+			return fmt.Errorf("guarded pane input cannot target another or implicit pane: %w", ErrPaneIdentityChanged)
+		}
+		return c.runPaneMutationIfCurrentContext(ctx, guard.target, guard.pid, paneMutationAgent, args...)
+	}
 	_, err := c.RunContext(ctx, args...)
 	return err
+}
+
+type paneMutationGuardContextKey struct{}
+
+type paneMutationGuard struct {
+	target string
+	pid    int
+}
+
+// WithPaneMutationGuard fences shared agent delivery helpers without changing
+// their protocols. Composer cleanup, ordinary sends, and verification/rescue
+// keys all retain the same pane process and live-agent requirement. The scope
+// covers pane input only; buffer loading and read-only observation are unchanged.
+func WithPaneMutationGuard(ctx context.Context, target string, expectedPID int) (context.Context, error) {
+	if err := validatePhysicalPaneTarget(ctx, target); err != nil {
+		return nil, err
+	}
+	if expectedPID <= 0 {
+		return nil, errors.New("guarded pane input requires a positive expected PID")
+	}
+	if existing := paneMutationGuardFromContext(ctx); existing != nil && (existing.target != target || existing.pid != expectedPID) {
+		return nil, errors.New("guarded pane input cannot replace an existing pane binding")
+	}
+	return context.WithValue(ctx, paneMutationGuardContextKey{}, &paneMutationGuard{target: target, pid: expectedPID}), nil
+}
+
+func paneMutationGuardFromContext(ctx context.Context) *paneMutationGuard {
+	if ctx == nil {
+		return nil
+	}
+	guard, _ := ctx.Value(paneMutationGuardContextKey{}).(*paneMutationGuard)
+	return guard
+}
+
+func isPaneInputCommand(args []string) bool {
+	return len(args) > 0 && (args[0] == "send-keys" || args[0] == "paste-buffer")
 }
 
 // IsInstalled checks if tmux is available on the target host
@@ -528,6 +590,178 @@ func (c *Client) RespawnPaneContext(ctx context.Context, target string, kill boo
 		args = append(args, "-k")
 	}
 	return c.RunSilentContext(ctx, args...)
+}
+
+// PreflightRestartShellContext checks the fixed shell used for a two-stage
+// agent restart. It performs no pane mutation and belongs in dry-run preflight
+// as well as immediately before respawn.
+func (c *Client) PreflightRestartShellContext(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("restart shell preflight requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c.Remote != "" {
+		out, err := c.RunContext(ctx, "if-shell", "/bin/sh -p -c 'test -f /bin/sh && test -x /bin/sh'",
+			"display-message -p ntm_restart_shell_ready", "display-message -p ntm_restart_shell_unavailable")
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return errors.New("cannot verify remote restart shell")
+		}
+		if out != "ntm_restart_shell_ready" {
+			return errors.New("agent restart requires an executable /bin/sh")
+		}
+		return nil
+	}
+	info, err := os.Stat("/bin/sh")
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+		return errors.New("agent restart requires an executable /bin/sh")
+	}
+	return nil
+}
+
+// RespawnPaneIfCurrentContext replaces only the process that the caller
+// preflighted. The comparison and respawn share tmux's command queue, so another
+// client cannot replace the pane between a separate PID read and this mutation.
+// Agent callers request freshShell to prevent tmux from rerunning a stored
+// direct-provider command before the saved launch can be delivered. Other panes
+// retain ordinary respawn behavior. An observed working directory is preserved.
+func (c *Client) RespawnPaneIfCurrentContext(ctx context.Context, target string, expectedPID int, kill bool, workingDir string, freshShell bool) error {
+	if err := validatePhysicalPaneTarget(ctx, target); err != nil {
+		return err
+	}
+	if expectedPID <= 0 {
+		return errors.New("guarded pane mutation requires a positive expected PID")
+	}
+	if workingDir != "" {
+		if !filepath.IsAbs(workingDir) {
+			return errors.New("guarded respawn requires an absolute working directory")
+		}
+		for _, r := range workingDir {
+			if unicode.IsControl(r) {
+				return errors.New("guarded respawn working directory contains control characters")
+			}
+		}
+	}
+	if freshShell {
+		if err := c.PreflightRestartShellContext(ctx); err != nil {
+			return err
+		}
+	}
+	args := []string{"respawn-pane", "-t", ExactTarget(target)}
+	if kill {
+		args = append(args, "-k")
+	}
+	if workingDir != "" {
+		args = append(args, "-c", workingDir)
+	}
+	if freshShell {
+		// Multiple argv bypass tmux's stored-command and default-shell -c
+		// paths. -p ignores inherited startup/tracing controls; -i keeps the
+		// replacement shell interactive for the saved launch and later input.
+		args = append(args, "/bin/sh", "-p", "-i")
+	}
+	return c.runPaneMutationIfCurrentContext(ctx, target, expectedPID, paneMutationAny, args...)
+}
+
+type paneMutationMode int
+
+const (
+	paneMutationAny paneMutationMode = iota
+	paneMutationShell
+	paneMutationAgent
+)
+
+// runPaneMutationIfCurrentContext evaluates its guard inside the tmux server,
+// immediately before inserting the mutation in the same client command queue.
+// It never uses a shell to interpret the command. The shell-only variant is for
+// publishing and typing a launch into the replacement shell; a foreground agent
+// that starts after the caller's observation must not receive those keystrokes.
+func (c *Client) runPaneMutationIfCurrentContext(ctx context.Context, target string, expectedPID int, mode paneMutationMode, args ...string) error {
+	if err := validatePhysicalPaneTarget(ctx, target); err != nil {
+		return err
+	}
+	if expectedPID <= 0 {
+		return errors.New("guarded pane mutation requires a positive expected PID")
+	}
+	if len(args) == 0 {
+		return errors.New("guarded pane mutation requires a command")
+	}
+	if guard := paneMutationGuardFromContext(ctx); guard != nil && isPaneInputCommand(args) {
+		if target != guard.target || expectedPID != guard.pid || mode == paneMutationShell {
+			return fmt.Errorf("guarded pane input cannot override its agent binding: %w", ErrPaneIdentityChanged)
+		}
+		mode = paneMutationAgent
+	}
+	// Adoption deliberately outranks old service tags. Observe the recorded
+	// type using the same parser as topology, then pin that exact option in
+	// the queued predicate before allowing a retained service tag. This also
+	// supports registered plugin types without duplicating their registry.
+	recorded, err := c.RunContext(ctx, "display-message", "-p", "-t", target, "[#{"+PaneAgentTypeOption+"}]")
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return errors.New("cannot observe guarded pane ownership")
+	}
+	if len(recorded) < 2 || len(recorded) > 258 || recorded[0] != '[' || recorded[len(recorded)-1] != ']' {
+		return errors.New("guarded pane ownership metadata is malformed")
+	}
+	recorded = recorded[1 : len(recorded)-1]
+	for _, r := range recorded {
+		if unicode.IsControl(r) || strings.ContainsRune("#{},", r) {
+			return errors.New("guarded pane ownership metadata cannot be compared safely")
+		}
+	}
+	condition := fmt.Sprintf("#{==:#{pane_pid},%d}", expectedPID)
+	condition = "#{&&:" + condition + ",#{==:#{" + PaneAgentTypeOption + "}," + recorded + "}}"
+	options := []string{PaneOptionRotationToken}
+	if ParsePaneAgentTypeOption(recorded) == AgentUnknown {
+		options = append(options, PaneOptionNTMService, PaneOptionACFSService)
+	}
+	for _, option := range options {
+		condition = "#{&&:" + condition + ",#{==:#{" + option + "},}}"
+	}
+	if mode != paneMutationAny {
+		// Keep the permitted command names aligned with RunsBareShell. tmux
+		// supplies the basename, even when the shell was invoked by full path.
+		shells := make([]string, 0, len(bareShellCommands))
+		for name := range bareShellCommands {
+			shells = append(shells, name)
+		}
+		sort.Strings(shells)
+		shellCondition := "0"
+		for _, name := range shells {
+			shellCondition = "#{||:" + shellCondition + ",#{==:#{pane_current_command}," + name + "}}"
+		}
+		if mode == paneMutationAgent {
+			// A provider exiting to its parent shell does not change pane_pid.
+			// Do not turn a delayed prompt or rescue Enter into shell input.
+			shellCondition = "#{&&:#{!=:#{pane_current_command},},#{==:" + shellCondition + ",0}}"
+		}
+		condition = "#{&&:" + condition + ",#{&&:#{==:#{pane_dead},0}," + shellCondition + "}}"
+	}
+	quoted := make([]string, len(args))
+	for i, arg := range args {
+		quoted[i] = ShellQuote(arg)
+	}
+	out, err := c.RunContext(ctx, "if-shell", "-F", "-t", target, condition,
+		strings.Join(quoted, " "), "display-message -p ntm_pane_identity_changed")
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		// CommandError includes the entire conditional command in argv. Saved
+		// launch text and metadata must not escape through diagnostics.
+		return fmt.Errorf("cannot perform guarded pane mutation (%s)", ClassifyCommandError(err).Kind)
+	}
+	if out != "" {
+		return fmt.Errorf("pane %s: %w", target, ErrPaneIdentityChanged)
+	}
+	return nil
 }
 
 // RespawnPaneContext respawns a pane with cancellation support (default client)

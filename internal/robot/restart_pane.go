@@ -76,6 +76,9 @@ type RestartPaneOutput struct {
 	// to catch soft restarts; a success with an unchanged PID is now
 	// reported as a failure instead of counted as restarted.
 	PaneShellPIDs map[string]RestartPanePIDs `json:"pane_shell_pids,omitempty"`
+	// Preflight is an opaque, ephemeral confirmation token. It carries no
+	// runtime environment values and is never part of robot JSON output.
+	Preflight *RestartPanePreflight `json:"-"`
 }
 
 // RestartPanePIDs carries the shell PID before and after a pane respawn.
@@ -146,7 +149,10 @@ type RestartPaneOptions struct {
 	// for one selected agent pane. Values are runtime-only: never serialize
 	// them, put them in a launch command, or infer them from ambient state.
 	Environment map[string]string `json:"-"`
-	Deps        *RestartPaneDependencies
+	// Preflight binds execution to a previous successful preview. It is used
+	// by the human confirmation flow instead of resolving its selectors again.
+	Preflight *RestartPanePreflight `json:"-"`
+	Deps      *RestartPaneDependencies
 	// Recovery is an internal, single-pane native-session recovery request.
 	// It is not populated by robot flags and cannot be combined with prompts,
 	// assignments, or model/argument overrides.
@@ -275,7 +281,7 @@ type RestartPaneDependencies struct {
 	LoadManifest           func(string) (*resilience.SpawnManifest, error)
 	PrepareLaunchCommand   func(context.Context, string, string, *resilience.LaunchBinding, string) (string, resilience.LaunchAffinity, error)
 	ReadLaunchSpec         func(context.Context, string) (*tmux.AgentLaunchSpec, error)
-	SetLaunchSpec          func(context.Context, string, tmux.AgentLaunchSpec) error
+	SetLaunchSpec          func(context.Context, string, int, tmux.AgentLaunchSpec) error
 	PaneWorkingDir         func(context.Context, string) (string, error)
 }
 
@@ -287,6 +293,81 @@ type restartBeadPreflight struct {
 	Recovery    *assignment.Assignment
 	Request     assignment.AtomicRequest
 	Coordinator *assignment.AtomicCoordinator
+	Fence       *restartAssignmentFence
+}
+
+// The assignment coordinator keeps its existing claim/ledger/dispatch protocol.
+// These restart-only ports become fenced after the new process is verified;
+// the shared delivery implementation receives the same opt-in tmux guard for
+// every composer, prompt, Enter, and submission-rescue mutation.
+type restartAssignmentFence struct {
+	deps      RestartPaneDependencies
+	preflight *RestartPanePreflight
+	target    string
+	pid       int
+	spec      tmux.AgentLaunchSpec
+}
+
+func (fence *restartAssignmentFence) check(ctx context.Context) error {
+	if fence.preflight == nil || fence.target == "" || fence.pid <= 0 {
+		return errors.New("restart assignment has no verified replacement pane")
+	}
+	return fence.preflight.observeReplacement(ctx, fence.deps, fence.target, fence.pid, false, &fence.spec)
+}
+
+func (fence *restartAssignmentFence) listPanes(ctx context.Context, session string) ([]tmux.Pane, error) {
+	panes, err := fence.deps.ListPanes(ctx, session)
+	if err != nil || fence.preflight == nil {
+		return panes, err
+	}
+	if session != fence.preflight.session {
+		return nil, errors.New("restart assignment session changed")
+	}
+	if err := fence.preflight.observeReplacementPanes(ctx, fence.deps, panes, fence.target, fence.pid, false, &fence.spec); err != nil {
+		return nil, err
+	}
+	return panes, nil
+}
+
+func (fence *restartAssignmentFence) observeSession(ctx context.Context, session string) (statuspkg.SessionObservation, error) {
+	if err := fence.check(ctx); err != nil {
+		return statuspkg.SessionObservation{}, err
+	}
+	if session != fence.preflight.session {
+		return statuspkg.SessionObservation{}, errors.New("restart assignment session changed")
+	}
+	observation, err := fence.deps.ObserveSession(ctx, session)
+	if err != nil {
+		return observation, err
+	}
+	pane, found := observation.PaneByID(fence.target)
+	if !found {
+		return observation, errors.New("restart assignment replacement pane is no longer observed")
+	}
+	if err := fence.preflight.observeReplacementPanes(ctx, fence.deps, []tmux.Pane{pane.Metadata}, fence.target, fence.pid, false, &fence.spec); err != nil {
+		return observation, err
+	}
+	return observation, nil
+}
+
+func (fence *restartAssignmentFence) Deliver(ctx context.Context, delivery dispatchsvc.Delivery) error {
+	if delivery.Target.Ref.ID != fence.target || delivery.Target.Pane.PID != fence.pid {
+		return dispatchsvc.GuaranteeNoDeliveryActuation(errors.New("restart assignment delivery target changed"))
+	}
+	if err := fence.check(ctx); err != nil {
+		return dispatchsvc.GuaranteeNoDeliveryActuation(err)
+	}
+	guarded, err := tmux.WithPaneMutationGuard(ctx, fence.target, fence.pid)
+	if err != nil {
+		return dispatchsvc.GuaranteeNoDeliveryActuation(err)
+	}
+	if fence.deps.DispatchDeliverer == nil {
+		return dispatchsvc.GuaranteeNoDeliveryActuation(errors.New("restart assignment delivery transport is unavailable"))
+	}
+	if err := fence.deps.DispatchDeliverer.Deliver(guarded, delivery); err != nil {
+		return err
+	}
+	return fence.check(ctx)
 }
 
 type restartPromptTarget struct {
@@ -296,6 +377,7 @@ type restartPromptTarget struct {
 	ResolvedType string // restartPaneAgentType result: "claude", "codex", ..., "user", "unknown"
 	Variant      string // Model alias (or persona name) parsed from the pane title
 	Width        int    // Real pane width for width-adaptive detectors (bd-eeifh); 0 when unknown
+	ExpectedPID  int    // The replacement shell this operation actually created
 }
 
 // RestartedAgentPane describes an agent pane that was successfully respawned
@@ -476,6 +558,13 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 	// Topology-aware keys (#172): canonical "window.pane" on multi-window sessions.
 	multiWindow := paneSessionIsMultiWindow(panes)
 	targetPanes := selectRestartPaneTargets(panes, paneFilterMap, opts.Type, opts.All)
+	if opts.Preflight != nil {
+		targetPanes, err = opts.Preflight.selectTargets(opts.Session, panes)
+		if err != nil {
+			output.RobotResponse = NewErrorResponse(err, ErrCodePaneNotFound, "Re-run the preview and confirm the current physical panes; no pane was respawned")
+			return output, nil
+		}
+	}
 	if opts.Environment != nil && (len(targetPanes) != 1 || !restartTargetIsAgent(restartPaneAgentType(targetPanes[0]))) {
 		output.RobotResponse = NewErrorResponse(
 			errors.New("restart environment recovery must resolve to exactly one agent pane"),
@@ -574,8 +663,14 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 	}
 	launchPlan, err := prepareRestartLaunchPlan(ctx, opts.Session, targetPanes, multiWindow, restartCfg, launchOverride, deps, opts.Environment)
 	defer launchPlan.close()
+	if err == nil && opts.Preflight != nil {
+		err = opts.Preflight.compare(launchPlan.Preflight)
+	}
 	if err == nil && opts.Recovery != nil {
 		err = prepareNativeRecoveryLaunchPlan(ctx, targetPanes[0], multiWindow, restartCfg, opts.Recovery, &launchPlan)
+	}
+	if err == nil {
+		err = launchPlan.prepareDelivery(ctx, opts.Session, opts.Environment)
 	}
 	if err != nil {
 		output.RobotResponse = NewErrorResponse(
@@ -586,6 +681,11 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 		return output, nil
 	}
 	output.LaunchAffinity = launchPlan.Affinity
+	if err := launchPlan.Preflight.observe(ctx, deps); err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodePaneNotFound, "Restart inputs changed during preflight; inspect the physical panes before retrying; no pane was respawned")
+		return output, nil
+	}
+	output.Preflight = launchPlan.Preflight
 
 	// Dry-run mode
 	if opts.DryRun {
@@ -610,31 +710,19 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 	// Restart targets — track pane IDs for post-restart relaunch/liveness steps.
 	// The helper repeats the batch preflight defensively so no future caller can
 	// accidentally move validation after the first respawn.
-	respawnPane := tmux.RespawnPaneContext
-	observePID := paneShellPIDContext
-	if opts.Recovery != nil {
-		expectedPID := opts.Recovery.ExpectedPane.PID
-		observedBefore := false
-		observePID = func(probeCtx context.Context, target string) (int, error) {
-			pid, err := paneShellPIDContext(probeCtx, target)
-			if !observedBefore {
-				observedBefore = true
-				if err == nil && pid != expectedPID {
-					return 0, errors.New("native recovery pane changed before respawn")
-				}
-			}
-			return pid, err
+	if err := launchPlan.Preflight.observe(ctx, deps); err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodePaneNotFound, "Restart inputs changed before respawn; no pane was respawned")
+		return output, nil
+	}
+	respawnPane := func(respawnCtx context.Context, target string, kill bool) error {
+		expected, err := launchPlan.Preflight.target(target)
+		if err != nil {
+			return err
 		}
-		respawnPane = func(respawnCtx context.Context, target string, kill bool) error {
-			pid, err := paneShellPIDContext(respawnCtx, target)
-			if err != nil {
-				return err
-			}
-			if pid != expectedPID {
-				return errors.New("native recovery pane changed at the respawn boundary")
-			}
-			return tmux.RespawnPaneContext(respawnCtx, target, kill)
+		if err := expected.observeBeforeRespawn(respawnCtx, opts.Session, deps); err != nil {
+			return err
 		}
+		return tmux.DefaultClient.RespawnPaneIfCurrentContext(respawnCtx, target, expected.pane.PID, kill, expected.workingDir, restartTargetIsAgent(restartPaneAgentType(expected.pane)))
 	}
 	restartedPaneInfo, err := respawnRestartPaneTargetsContext(
 		ctx,
@@ -642,7 +730,7 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 		multiWindow,
 		output,
 		respawnPane,
-		observePID,
+		paneShellPIDContext,
 	)
 	if err != nil {
 		if cancelErr := restartPaneCancellationError(ctx, err); cancelErr != nil {
@@ -679,10 +767,19 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 		// construction: the hook must never fail the restart, and it is
 		// invoked exactly once per restart.
 		verifiedRestarts := make([]string, 0, len(output.Restarted))
+		verifiedTargets := make(map[string]bool, len(output.Restarted))
 		for _, paneKey := range output.Restarted {
 			pids := output.PaneShellPIDs[paneKey]
 			if pids.After > 0 && pids.After != pids.Before {
+				info := restartedPaneInfo[paneKey]
+				if restartTargetIsAgent(info.ResolvedType) {
+					if err := launchPlan.Preflight.observeReplacement(ctx, deps, info.Target, pids.After, true, nil); err != nil {
+						appendRestartFailureOnce(output, paneKey, fmt.Sprintf("agent relaunch withheld: %v", err))
+						continue
+					}
+				}
 				verifiedRestarts = append(verifiedRestarts, paneKey)
+				verifiedTargets[paneKey] = true
 			}
 		}
 		notifyRestartPaneIdentityHook(ctx, opts.Session, targetPanes, verifiedRestarts, multiWindow)
@@ -721,6 +818,11 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 				output.AgentRelaunchStatus[paneKey] = RestartAgentRelaunchUnknown
 				continue
 			}
+			if !verifiedTargets[paneKey] {
+				output.AgentRelaunched[paneKey] = false
+				output.AgentRelaunchStatus[paneKey] = RestartAgentRelaunchUnknown
+				continue
+			}
 			if replay := launchPlan.Replay[paneKey]; replay != nil {
 				launchCmd, err = replay.Prepare(ctx, launchPlan.Directories[paneKey], opts.Session, launchPlan.Indices[paneKey])
 				if err == nil {
@@ -733,30 +835,60 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 					continue
 				}
 			}
+			if expected, exists := launchPlan.DeliveryCommands[paneKey]; !exists || expected != launchCmd {
+				appendRestartFailureOnce(output, paneKey, "saved launch preparation changed after delivery preflight; launch was withheld")
+				output.AgentRelaunched[paneKey] = false
+				output.AgentRelaunchStatus[paneKey] = RestartAgentRelaunchFailed
+				continue
+			}
 			// Respawn preserves pane options. Refresh the saved command only
 			// after it has replaced the old process, before delivering the new
 			// launch, so a failed respawn cannot mislabel a still-running agent.
-			if err := deps.SetLaunchSpec(ctx, info.Target, launchPlan.Specs[paneKey]); err != nil {
+			if err := launchPlan.Preflight.observeReplacement(ctx, deps, info.Target, pids.After, true, nil); err != nil {
+				appendRestartFailureOnce(output, paneKey, fmt.Sprintf("agent relaunch withheld: %v", err))
+				output.AgentRelaunched[paneKey] = false
+				output.AgentRelaunchStatus[paneKey] = RestartAgentRelaunchUnknown
+				continue
+			}
+			if err := deps.SetLaunchSpec(ctx, info.Target, pids.After, launchPlan.Specs[paneKey]); err != nil {
 				appendRestartFailureOnce(output, paneKey, fmt.Sprintf("record launch specification after respawn: %v", err))
 				output.AgentRelaunched[paneKey] = false
 				output.AgentRelaunchStatus[paneKey] = RestartAgentRelaunchFailed
 				continue
 			}
-			sendLaunch := tmux.SendKeysForAgentContext
-			if launchPlan.environment != nil {
-				sendLaunch = launchPlan.environment.Send
+			sendLaunch := func(sendCtx context.Context, target, command string, enter bool, agentType tmux.AgentType) error {
+				spec := launchPlan.Specs[paneKey]
+				if err := launchPlan.Preflight.observeReplacement(sendCtx, deps, target, pids.After, true, &spec); err != nil {
+					return err
+				}
+				if handoff := launchPlan.handoffs[paneKey]; handoff != nil {
+					return handoff.SendIfCurrent(sendCtx, target, command, enter, agentType, pids.After)
+				}
+				return tmux.DefaultClient.SendKeysForAgentIfCurrentContext(sendCtx, target, command, enter, agentType, pids.After, true)
+			}
+			setAgentType := func(setCtx context.Context, target string, agentType tmux.AgentType) error {
+				return tmux.DefaultClient.SetPaneAgentTypeIfCurrentContext(setCtx, target, pids.After, agentType)
 			}
 			outcome, phase, lifecycleErr := relaunchRestartPaneAgentContext(
 				ctx,
 				info,
 				launchCmd,
 				restartPaneReadyTimeout,
-				tmux.SetPaneAgentTypeContext,
+				setAgentType,
 				sendLaunch,
 				paneShellPIDContext,
 				waitForPaneAgentReadyContext,
 				process.HasChildAlive,
 			)
+			if lifecycleErr == nil && outcome.Ready {
+				spec := launchPlan.Specs[paneKey]
+				if identityErr := launchPlan.Preflight.observeReplacement(ctx, deps, info.Target, pids.After, false, &spec); identityErr != nil {
+					outcome.Ready = false
+					outcome.ProcessAlive = false
+					outcome.Status = RestartAgentRelaunchUnknown
+					phase, lifecycleErr = "identity verification", identityErr
+				}
+			}
 			agentPaneReady[paneKey] = outcome.Ready
 			output.AgentRelaunched[paneKey] = outcome.Ready
 			output.AgentRelaunchStatus[paneKey] = outcome.Status
@@ -801,15 +933,30 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 		if restartTargetIsAgent(info.ResolvedType) && !agentPaneReady[paneKey] {
 			output.PromptError = fmt.Sprintf("pane %s: agent not ready, assignment not started", paneKey)
 		} else {
-			result, executeErr := executeRestartBeadAfterSafeObservation(
-				ctx,
-				opts.Session,
-				beadPreflight.Request,
-				restartPaneDispatchReadyTimeout,
-				restartPaneReadyPollInterval,
-				deps.ObserveSession,
-				beadPreflight.Coordinator.Execute,
-			)
+			fence := beadPreflight.Fence
+			var result assignment.AtomicResult
+			var executeErr error
+			if fence == nil {
+				executeErr = errors.New("restart assignment replacement fence is unavailable")
+			} else {
+				fence.preflight, fence.target, fence.pid, fence.spec = launchPlan.Preflight, info.Target, info.ExpectedPID, launchPlan.Specs[paneKey]
+				if executeErr = fence.check(ctx); executeErr == nil {
+					result, executeErr = executeRestartBeadAfterSafeObservation(
+						ctx,
+						opts.Session,
+						beadPreflight.Request,
+						restartPaneDispatchReadyTimeout,
+						restartPaneReadyPollInterval,
+						fence.observeSession,
+						func(executeCtx context.Context, request assignment.AtomicRequest) (assignment.AtomicResult, error) {
+							if err := fence.check(executeCtx); err != nil {
+								return assignment.AtomicResult{}, err
+							}
+							return beadPreflight.Coordinator.Execute(executeCtx, request)
+						},
+					)
+				}
+			}
 			if cancelErr := restartPaneCancellationError(ctx, executeErr); cancelErr != nil {
 				appendRestartFailureOnce(output, paneKey, fmt.Sprintf("atomic assignment canceled: %v", cancelErr))
 			}
@@ -832,6 +979,13 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 		// (bd-rf0ka). Both apply only to agent panes: user/unknown panes have
 		// no composer and their shell IS the restored foreground.
 		gate := func(gateCtx context.Context, target restartPromptTarget) (bool, string, error) {
+			var published *tmux.AgentLaunchSpec
+			if spec, exists := launchPlan.Specs[target.Pane]; exists {
+				published = &spec
+			}
+			if err := launchPlan.Preflight.observeReplacement(gateCtx, deps, target.Target, target.ExpectedPID, false, published); err != nil {
+				return false, err.Error(), err
+			}
 			if !restartTargetIsAgent(target.ResolvedType) {
 				return true, "", nil
 			}
@@ -845,16 +999,46 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 			)
 		}
 		verify := func(verifyCtx context.Context, target restartPromptTarget) error {
+			var published *tmux.AgentLaunchSpec
+			if spec, exists := launchPlan.Specs[target.Pane]; exists {
+				published = &spec
+			}
+			if err := launchPlan.Preflight.observeReplacement(verifyCtx, deps, target.Target, target.ExpectedPID, false, published); err != nil {
+				return err
+			}
 			if !restartTargetIsAgent(target.ResolvedType) {
 				return nil
 			}
-			return dispatchsvc.VerifyAgentSubmission(verifyCtx, target.Target, promptToSend, target.AgentType, target.Width)
+			guarded, err := tmux.WithPaneMutationGuard(verifyCtx, target.Target, target.ExpectedPID)
+			if err != nil {
+				return err
+			}
+			if err := dispatchsvc.VerifyAgentSubmission(guarded, target.Target, promptToSend, target.AgentType, target.Width); err != nil {
+				return err
+			}
+			return launchPlan.Preflight.observeReplacement(verifyCtx, deps, target.Target, target.ExpectedPID, false, published)
+		}
+		sendPrompt := func(sendCtx context.Context, target, prompt string, agentType tmux.AgentType) error {
+			for _, info := range promptTargets {
+				if info.Target != target {
+					continue
+				}
+				var published *tmux.AgentLaunchSpec
+				if spec, exists := launchPlan.Specs[info.Pane]; exists {
+					published = &spec
+				}
+				if err := launchPlan.Preflight.observeReplacement(sendCtx, deps, target, info.ExpectedPID, false, published); err != nil {
+					return err
+				}
+				return tmux.DefaultClient.SendKeysForAgentDoubleEnterIfCurrentContext(sendCtx, target, prompt, agentType, info.ExpectedPID)
+			}
+			return errors.New("restart prompt target is not a verified replacement pane")
 		}
 		report, deliveryErr := sendRestartPromptsContext(
 			ctx,
 			promptTargets,
 			promptToSend,
-			tmux.SendKeysForAgentDoubleEnterContext,
+			sendPrompt,
 			gate,
 			verify,
 		)
@@ -929,7 +1113,7 @@ func restartPaneDeps(custom *RestartPaneDependencies) RestartPaneDependencies {
 		LoadManifest:           resilience.LoadManifest,
 		PrepareLaunchCommand:   resilience.PrepareLaunchCommand,
 		ReadLaunchSpec:         tmux.ReadPaneLaunchSpecContext,
-		SetLaunchSpec:          tmux.SetPaneLaunchSpecContext,
+		SetLaunchSpec:          tmux.DefaultClient.SetPaneLaunchSpecIfCurrentContext,
 		PaneWorkingDir:         restartPaneWorkingDirectory,
 	}
 	if custom == nil {
@@ -1176,8 +1360,9 @@ func preflightRestartBead(
 	if policy != nil {
 		redactionConfig = policy.Redaction.ToRedactionLibConfig()
 	}
+	fence := &restartAssignmentFence{deps: deps}
 	dispatchPort := newRobotAtomicPaneDispatchPort(
-		opts.Session, deps.ListPanes, deps.ObserveSession, redactionConfig, deps.DispatchDeliverer, deps.DispatchPacer,
+		opts.Session, fence.listPanes, fence.observeSession, redactionConfig, fence, deps.DispatchPacer,
 	)
 	if _, err := dispatchPort.Preflight(ctx, assignment.DispatchRequest{
 		BeadID: request.BeadID, BeadTitle: request.BeadTitle, Target: request.Target, Pane: request.Pane,
@@ -1200,7 +1385,7 @@ func preflightRestartBead(
 	)
 	return &restartBeadPreflight{
 		Details: details, Prompt: prompt, Policy: policy, Store: store, Recovery: recovery,
-		Request: request, Coordinator: coordinator,
+		Request: request, Coordinator: coordinator, Fence: fence,
 	}, nil
 }
 
@@ -1491,6 +1676,9 @@ func validateRestartBeadTargets(targets []tmux.Pane) error {
 func validateRestartPaneTargets(targets []tmux.Pane) error {
 	for _, pane := range targets {
 		resolvedType := restartPaneAgentType(pane)
+		if pane.RotationToken != "" || pane.IsServicePane() {
+			return fmt.Errorf("pane %s is owned by a rotation or service and cannot be restarted as an agent", pane.Ref().Physical())
+		}
 		if err := agent.AgentType(resolvedType).ValidateAutomatedRelaunch(); err != nil {
 			return fmt.Errorf("pane %s (%s): %w", pane.Ref().Physical(), resolvedType, err)
 		}
@@ -1546,6 +1734,10 @@ func respawnRestartPaneTargetsContext(
 			}
 			continue
 		}
+		if pane.PID > 0 && beforePID != pane.PID {
+			appendRestartFailureOnce(output, paneKey, "pane process changed after restart preflight; respawn was withheld")
+			continue
+		}
 		if err := respawn(ctx, pane.ID, true); err != nil {
 			if cancelErr := restartPaneCancellationError(ctx, err); cancelErr != nil {
 				afterPID, observationErr := observeRestartPanePIDAfterCancellation(ctx, pane.ID, panePID)
@@ -1554,10 +1746,11 @@ func respawnRestartPaneTargetsContext(
 					restartedPaneInfo[paneKey] = restartPromptTarget{
 						Pane:         paneKey,
 						Target:       pane.ID,
-						AgentType:    pane.Type,
+						AgentType:    tmux.AgentType(restartPaneAgentType(pane)).Canonical(),
 						ResolvedType: restartPaneAgentType(pane),
 						Variant:      pane.Variant,
 						Width:        pane.Width,
+						ExpectedPID:  afterPID,
 					}
 					appendRestartFailureOnce(output, paneKey, fmt.Sprintf(
 						"respawn changed pane PID from %d to %d, but the command returned after cancellation and the post-respawn lifecycle is incomplete: %v",
@@ -1614,10 +1807,11 @@ func respawnRestartPaneTargetsContext(
 		restartedPaneInfo[paneKey] = restartPromptTarget{
 			Pane:         paneKey,
 			Target:       pane.ID,
-			AgentType:    pane.Type,
+			AgentType:    tmux.AgentType(restartPaneAgentType(pane)).Canonical(),
 			ResolvedType: restartPaneAgentType(pane),
 			Variant:      pane.Variant,
 			Width:        pane.Width,
+			ExpectedPID:  afterPID,
 		}
 		if err := ctx.Err(); err != nil {
 			appendRestartFailureOnce(output, paneKey, fmt.Sprintf("respawn completed but post-respawn lifecycle was canceled: %v", err))
@@ -1667,6 +1861,9 @@ func relaunchRestartPaneAgentContext(
 			err = errors.New("pane PID is unavailable")
 		}
 		return failed, "PID observation", err
+	}
+	if info.ExpectedPID > 0 && shellPID != info.ExpectedPID {
+		return failed, "PID observation", errors.New("replacement pane process changed before agent launch")
 	}
 	if err := setAgentType(ctx, info.Target, tmux.AgentType(info.ResolvedType).Canonical()); err != nil {
 		return failed, "identity", err

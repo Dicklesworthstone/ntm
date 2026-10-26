@@ -39,11 +39,24 @@ func TestGetRestartPaneNativeRecoveryBoundaries(t *testing.T) {
 			binary := filepath.Join(root, "tmux")
 			const script = `#!/bin/sh
 set -eu
-printf '%s\n' "$*" >> "$NTM_NATIVE_RECOVERY_ROOT/calls"
+if [ "$1" = if-shell ]; then printf '%s\n' "$1" >> "$NTM_NATIVE_RECOVERY_ROOT/calls"; else printf '%s\n' "$*" >> "$NTM_NATIVE_RECOVERY_ROOT/calls"; fi
 case "$1" in
   -V) printf 'tmux 3.4\n' ;;
   has-session) ;;
+  if-shell)
+    if [ -f "$NTM_NATIVE_RECOVERY_ROOT/respawned" ]; then
+      pid="$NTM_NATIVE_RECOVERY_NEW_PID"
+    elif [ "$NTM_NATIVE_RECOVERY_MODE" = 'stale-respawn-boundary' ] && [ -f "$NTM_NATIVE_RECOVERY_ROOT/first-pid-probe" ]; then
+      pid=112
+    else
+      pid=111
+    fi
+    case "$5" in *"#{pane_pid},$pid}"*) ;; *) printf 'ntm_pane_identity_changed\n'; exit 0 ;; esac
+    eval "set -- $6"
+    exec "$0" "$@"
+    ;;
   display-message)
+    case "$*" in *'@ntm_agent_type'*) printf '[cod]\n'; exit 0 ;; esac
     if [ -f "$NTM_NATIVE_RECOVERY_ROOT/respawned" ]; then
       case "$NTM_NATIVE_RECOVERY_MODE" in
         unverified-respawn) exit 55 ;;
@@ -75,6 +88,7 @@ case "$1" in
   send-keys)
     [ -f "$NTM_NATIVE_RECOVERY_ROOT/recorded" ] || exit 53
     [ "$NTM_NATIVE_RECOVERY_MODE" != 'delivery-failure' ] || exit 54
+    : > "$NTM_NATIVE_RECOVERY_ROOT/launched"
     ;;
   load-buffer)
     [ -f "$NTM_NATIVE_RECOVERY_ROOT/recorded" ] || exit 53
@@ -175,6 +189,12 @@ func TestGetRestartPaneNativeRecoveryTransportHelper(t *testing.T) {
 					liveDir = filepath.Dir(root)
 				}
 			}
+			if _, err := os.Stat(filepath.Join(root, "respawned")); err == nil {
+				livePane.PID, livePane.Command = os.Getpid(), "sh"
+				if _, err := os.Stat(filepath.Join(root, "launched")); err == nil {
+					livePane.Command = "codex"
+				}
+			}
 			panes := []tmux.Pane{livePane}
 			if mode == "multiple-targets" {
 				other := pane
@@ -188,13 +208,19 @@ func TestGetRestartPaneNativeRecoveryTransportHelper(t *testing.T) {
 			if mode == "missing-spec" {
 				return nil, nil
 			}
+			if recorded != nil {
+				return cloneRestartLaunchSpec(recorded), nil
+			}
 			copy := liveSpec
 			return &copy, nil
 		},
 		PaneWorkingDir: func(context.Context, string) (string, error) { return liveDir, nil },
-		SetLaunchSpec: func(_ context.Context, target string, spec tmux.AgentLaunchSpec) error {
+		SetLaunchSpec: func(_ context.Context, target string, expectedPID int, spec tmux.AgentLaunchSpec) error {
 			if target != pane.ID {
 				t.Fatalf("recovery metadata retargeted from %s to %s", pane.ID, target)
+			}
+			if expectedPID != os.Getpid() {
+				t.Fatalf("metadata replacement PID=%d, want %d", expectedPID, os.Getpid())
 			}
 			if _, err := os.Stat(filepath.Join(root, "verified-pid")); err != nil {
 				t.Fatal("metadata changed before a new process was positively observed")

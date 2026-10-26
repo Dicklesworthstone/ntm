@@ -2,8 +2,21 @@ package tmux
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
+
+func TestBuildPaneCommandRejectsUnsafeWorkingDirectory(t *testing.T) {
+	for _, directory := range []string{"/work\nprivate-value", "/work\tprivate-value", "/work\x7fprivate-value", "/work\u0085private-value"} {
+		command, err := BuildPaneCommand(directory, "codex\t--model retained-model")
+		if err == nil || command != "" || strings.Contains(err.Error(), "private-value") {
+			t.Fatalf("working directory did not fail with a redacted error: %v", err)
+		}
+	}
+	if _, err := BuildPaneCommand("/work/safe directory", "codex\t--model retained-model"); err != nil {
+		t.Fatalf("command tabs no longer work: %v", err)
+	}
+}
 
 func TestBuildPaneCommand_Security(t *testing.T) {
 	// Test directory with characters that are dangerous in double quotes but safe in single quotes

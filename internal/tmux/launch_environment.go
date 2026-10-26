@@ -16,6 +16,11 @@ import (
 )
 
 const (
+	// MaxTypedLaunchCommandBytes stays below the canonical terminal input
+	// limit of a plain /bin/sh. Longer prepared commands use the same private
+	// FIFO transport even when they have no recovery environment to supply.
+	MaxTypedLaunchCommandBytes = 1024
+
 	maxLaunchEnvironmentKeys  = 256
 	maxLaunchEnvironmentValue = 64 * 1024
 	maxLaunchEnvironmentBytes = 1 << 20
@@ -102,9 +107,8 @@ func NewLaunchEnvironment(ctx context.Context, environment map[string]string) (*
 	if DefaultClient.Remote != "" {
 		return nil, errors.New("explicit environment recovery requires local tmux; run recovery on the remote host")
 	}
-	info, err := os.Stat("/bin/sh")
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
-		return nil, errors.New("explicit environment recovery requires an executable /bin/sh")
+	if err := DefaultClient.PreflightRestartShellContext(ctx); err != nil {
+		return nil, err
 	}
 	base, err := filepath.Abs(os.TempDir())
 	if err != nil {
@@ -124,7 +128,8 @@ func NewLaunchEnvironment(ctx context.Context, environment map[string]string) (*
 		pipe:        filepath.Join(directory, "launch"),
 		environment: make(map[string]string, len(environment)),
 	}
-	if _, err := SanitizePaneCommand("/bin/sh -p " + ShellQuote(launch.pipe)); err != nil {
+	launcher := "/bin/sh -p " + ShellQuote(launch.pipe)
+	if _, err := SanitizePaneCommand(launcher); err != nil || len(launcher) > MaxTypedLaunchCommandBytes {
 		_ = launch.Close()
 		return nil, errors.New("private recovery environment path cannot be safely delivered to a pane")
 	}
@@ -154,6 +159,18 @@ func (launch *LaunchEnvironment) Send(ctx context.Context, target, command strin
 		return errors.New("recovery environment handoff requires an immediate launch")
 	}
 	return launch.send(ctx, target, command, agentType, DefaultClient.SendKeysForAgentContext)
+}
+
+// SendIfCurrent fences the value-free launcher with the replacement pane PID.
+// The environment remains in the private FIFO if the pane changed before any
+// paste, literal chunk, or Enter; no recovery input is typed into that pane.
+func (launch *LaunchEnvironment) SendIfCurrent(ctx context.Context, target, command string, enter bool, agentType AgentType, expectedPID int) error {
+	if !enter {
+		return errors.New("recovery environment handoff requires an immediate launch")
+	}
+	return launch.send(ctx, target, command, agentType, func(sendCtx context.Context, pane, keys string, submit bool, kind AgentType) error {
+		return DefaultClient.SendKeysForAgentIfCurrentContext(sendCtx, pane, keys, submit, kind, expectedPID, true)
+	})
 }
 
 func (launch *LaunchEnvironment) send(ctx context.Context, target, command string, agentType AgentType, send func(context.Context, string, string, bool, AgentType) error) error {
@@ -205,6 +222,9 @@ func (launch *LaunchEnvironment) send(ctx context.Context, target, command strin
 	if err := send(ctx, target, "/bin/sh -p "+ShellQuote(pipe), true, agentType); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if errors.Is(err, ErrPaneIdentityChanged) {
+			return err
 		}
 		return fmt.Errorf("cannot deliver recovery environment launcher (%s)", ClassifyCommandError(err).Kind)
 	}
