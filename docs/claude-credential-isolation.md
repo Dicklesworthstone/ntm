@@ -129,8 +129,10 @@ ntm reads the file only to make that comparison and never logs or prints its
 contents. A file that passes is kept, and with no `claude_token_file`
 configured the pane launches with it, restart after restart.
 
-Everything else is treated as a copy of a credential: a hard link or byte copy
-of `~/.claude/.credentials.json` or one of its backups, any other
+Everything else is treated as a copy of a credential: a hard link or copy
+of `~/.claude/.credentials.json` or one of its backups, or of another pane's
+`.credentials.json` (a copy is the same bytes or the same refresh token, so a
+reformatted copy counts too), any other
 credential-named file or directory, a credential entry in `~/.claude` that is
 a symlink to the pane's file, and on Windows, where ntm does not read a file's
 link count, any `.credentials.json` at all. Claude Code would prefer
@@ -140,8 +142,8 @@ that names each such entry and its kind. Move or delete it yourself, then
 retry. Do not copy a credential into a pane dir to save a login. Once either
 side refreshes, the copy no longer matches `~/.claude` and ntm cannot tell it
 from a login, although it still descends from your refresh-token chain. A copy
-of another pane's `.credentials.json` is not detected either, and it puts both
-panes on one refresh-token chain. Log in separately in each pane, or use a
+of another pane's login stops both panes until one copy is moved, because it
+puts them on one refresh-token chain. Log in separately in each pane, or use a
 setup token.
 
 With a `claude_token_file` configured, a pane's own login is still isolated,

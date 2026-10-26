@@ -792,11 +792,11 @@ func TestProvisionClaudeIsolation_RefusesThePanesOwnLoginWhenATokenFileIsConfigu
 
 // A .credentials.json that is the operator's credential under another name
 // shares its refresh token and rejoins the rotation race even though it is a
-// regular file in the pane dir. A hard link is one file with two names; a byte
-// copy holds the same token; an operator credential entry that links to the
-// pane's file makes the operator refresh it too; and a hard link to another
-// pane's login puts two panes on one refresh chain. Each is refused, named,
-// kept, and never quoted.
+// regular file in the pane dir. A hard link is one file with two names; a copy
+// holds the same token, whether byte for byte or reformatted; an operator
+// credential entry that links to the pane's file makes the operator refresh it
+// too; and a hard link or copy of another pane's login puts two panes on one
+// refresh chain. Each is refused, named, kept, and never quoted.
 func TestProvisionClaudeIsolation_RefusesACredentialsJSONSharedWithAnotherCredential(t *testing.T) {
 	useFileCredentialStore(t)
 	cases := []struct {
@@ -814,6 +814,16 @@ func TestProvisionClaudeIsolation_RefusesACredentialsJSONSharedWithAnotherCreden
 				t.Fatal(err)
 			}
 			writeFile(t, login, string(data))
+		}},
+		{"reformatted copy of the operator credential", func(t *testing.T, _ string, _ *ClaudeConfigProvisioner, login string) {
+			writeFile(t, login, "{\n  \"claudeAiOauth\": {\n    \"refreshToken\": \"rt-secret\"\n  }\n}\n")
+		}},
+		{"copy of the operator credential with a trailing newline", func(t *testing.T, source string, _ *ClaudeConfigProvisioner, login string) {
+			data, err := os.ReadFile(filepath.Join(source, ".credentials.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, login, string(data)+"\n")
 		}},
 		{"byte copy of an operator credential backup", func(t *testing.T, source string, _ *ClaudeConfigProvisioner, login string) {
 			const backup = `{"claudeAiOauth":{"refreshToken":"rt-backup-only"}}`
@@ -838,6 +848,14 @@ func TestProvisionClaudeIsolation_RefusesACredentialsJSONSharedWithAnotherCreden
 			if err := os.Link(otherLogin, login); err != nil {
 				t.Skipf("hard links unsupported here: %v", err)
 			}
+		}},
+		{"reformatted copy of another pane's login", func(t *testing.T, _ string, p *ClaudeConfigProvisioner, login string) {
+			other := p.ConfigPath("other-session", "4")
+			if err := os.MkdirAll(other, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(other, ".credentials.json"), `{"claudeAiOauth":{"refreshToken":"rt-pane-two"}}`)
+			writeFile(t, login, `{ "claudeAiOauth": { "refreshToken": "rt-pane-two" } }`)
 		}},
 	}
 	for _, tc := range cases {
@@ -882,6 +900,32 @@ func TestProvisionClaudeIsolation_RefusesACredentialsJSONSharedWithAnotherCreden
 				}
 			}
 		})
+	}
+}
+
+// A login copied from one pane into another puts both on its refresh chain, so
+// neither counts as isolated until one copy is moved out. A pane holding a
+// login of its own is unaffected by the others.
+func TestCredentialIsolated_ACopiedPaneLoginIsRefusedInBothPanes(t *testing.T) {
+	useFileCredentialStore(t)
+	claudeHomeWithCredentialCopies(t)
+	p := NewClaudeConfigProvisioner(t.TempDir())
+	for pane, login := range map[string]string{
+		"1": `{"claudeAiOauth":{"refreshToken":"rt-copied"}}`,
+		"2": "{\n  \"claudeAiOauth\": {\"refreshToken\": \"rt-copied\"}\n}\n",
+		"3": paneOwnLoginContent,
+	} {
+		dir := p.ConfigPath("proj", pane)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, ".credentials.json"), login)
+	}
+	for pane, want := range map[string]bool{"1": false, "2": false, "3": true} {
+		isolated, err := p.CredentialIsolated("proj", pane)
+		if err != nil || isolated != want {
+			t.Errorf("pane %s: CredentialIsolated = %v, %v, want %v", pane, isolated, err, want)
+		}
 	}
 }
 

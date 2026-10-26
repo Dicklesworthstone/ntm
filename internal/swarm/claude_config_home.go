@@ -2,6 +2,8 @@ package swarm
 
 import (
 	"bytes"
+	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -548,7 +550,9 @@ func credentialNames(entries []os.DirEntry) []string {
 //     name (in ~/.claude, a backup, or another pane dir) shares it;
 //   - it is not the same file as any credential entry
 //     (isClaudeCredentialEntry) in the operator's config dir source;
-//   - its bytes differ from every such entry, so it is not a copy.
+//   - it is not a copy of such an entry, or of another pane's
+//     .credentials.json: neither the same bytes nor the same refresh token
+//     (sameCredential), which also catches a reformatted copy.
 //
 // Anything else is not, including any file on a platform where the link
 // count cannot be read. Once the pane or the operator has refreshed, a copy
@@ -573,18 +577,57 @@ func paneOwnLogin(dir, source string) (bool, error) {
 		return false, err
 	}
 	defer login.Close()
-	matches, err := matchesOperatorCredential(login, opened, source)
+	content, err := io.ReadAll(io.LimitReader(login, maxCredentialBytes+1))
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", path, err)
+	}
+	shared, err := matchesOperatorCredential(content, opened, source)
+	if err != nil || shared {
+		return false, err
+	}
+	shared, err = matchesOtherPaneLogin(content, dir)
 	if err != nil {
 		return false, err
 	}
-	return !matches, nil
+	return !shared, nil
 }
 
-// matchesOperatorCredential reports whether the open file login is the same
-// file as, or holds the same bytes as, any credential entry directly inside
-// the operator's config dir source. Entries that are links are followed to the
-// file they name. A missing source dir has no entries to match.
-func matchesOperatorCredential(login *os.File, info fs.FileInfo, source string) (bool, error) {
+// maxCredentialBytes bounds how much of a credential-named file is read for a
+// comparison. Claude Code's credential is a few hundred bytes; the bound keeps
+// a large file with "credential" in its name from being read whole.
+const maxCredentialBytes = 1 << 20
+
+// sameCredential reports whether two credential files hold the same login:
+// the same bytes, or the same claudeAiOauth.refreshToken in other formatting
+// (pretty-printed, a trailing newline, reordered keys).
+func sameCredential(a, b []byte) bool {
+	if bytes.Equal(a, b) {
+		return true
+	}
+	token := refreshToken(a)
+	return token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(refreshToken(b))) == 1
+}
+
+// refreshToken returns the claudeAiOauth.refreshToken in a Claude credential
+// file, or "" when there is none. It is used only to compare two files.
+func refreshToken(content []byte) string {
+	var credential struct {
+		ClaudeAiOauth struct {
+			RefreshToken string `json:"refreshToken"`
+		} `json:"claudeAiOauth"`
+	}
+	if json.Unmarshal(content, &credential) != nil {
+		return ""
+	}
+	return credential.ClaudeAiOauth.RefreshToken
+}
+
+// matchesOperatorCredential reports whether the pane's login, read as content
+// from the file described by info, is the same file as, or the same
+// credential as, any credential entry directly inside the operator's config
+// dir source. Entries that are links are followed to the file they name. A
+// missing source dir has no entries to match.
+func matchesOperatorCredential(content []byte, info fs.FileInfo, source string) (bool, error) {
 	entries, err := os.ReadDir(source)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -592,8 +635,6 @@ func matchesOperatorCredential(login *os.File, info fs.FileInfo, source string) 
 		}
 		return false, fmt.Errorf("read claude config dir %s: %w", source, err)
 	}
-	var content []byte
-	loaded := false
 	for _, name := range credentialNames(entries) {
 		path := filepath.Join(source, name)
 		operator, err := os.Stat(path)
@@ -606,29 +647,74 @@ func matchesOperatorCredential(login *os.File, info fs.FileInfo, source string) 
 		if os.SameFile(info, operator) {
 			return true, nil
 		}
-		if !operator.Mode().IsRegular() || operator.Size() != info.Size() {
+		if !operator.Mode().IsRegular() {
 			continue
 		}
-		if !loaded {
-			if content, err = io.ReadAll(io.LimitReader(login, info.Size()+1)); err != nil {
-				return false, fmt.Errorf("read %s: %w", login.Name(), err)
-			}
-			loaded = true
-		}
-		operatorContent, err := readAtMost(path, info.Size()+1)
+		operatorContent, err := readAtMost(path, maxCredentialBytes+1)
 		if err != nil {
 			return false, fmt.Errorf("read operator credential %s: %w", path, err)
 		}
-		if bytes.Equal(content, operatorContent) {
+		if sameCredential(content, operatorContent) {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-// readAtMost reads up to limit bytes of the file at path. A file that grew
-// past the size it was compared at cannot match anyway, and the bound keeps a
-// large credential-named file from being read into memory whole.
+// matchesOtherPaneLogin reports whether the login content of the pane config
+// dir paneDir is the same credential as another pane's .credentials.json.
+// Two panes holding one login share its refresh-token chain, which is the
+// GH#237 race. Pane dirs sit two levels below the claude-homes dir
+// (paneConfigRel); only regular files are compared, since ntm removes
+// credential links from pane dirs and refuses any other entry anyway.
+func matchesOtherPaneLogin(content []byte, paneDir string) (bool, error) {
+	paneDir = filepath.Clean(paneDir)
+	homes := filepath.Dir(filepath.Dir(paneDir))
+	sessions, err := os.ReadDir(homes)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read claude homes dir %s: %w", homes, err)
+	}
+	for _, session := range sessions {
+		if !session.IsDir() {
+			continue
+		}
+		panes, err := os.ReadDir(filepath.Join(homes, session.Name()))
+		if err != nil {
+			return false, fmt.Errorf("read claude homes dir %s: %w", filepath.Join(homes, session.Name()), err)
+		}
+		for _, pane := range panes {
+			other := filepath.Join(homes, session.Name(), pane.Name())
+			if !pane.IsDir() || other == paneDir {
+				continue
+			}
+			path := filepath.Join(other, claudeCredentialsFile)
+			info, err := os.Lstat(path)
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					continue
+				}
+				return false, fmt.Errorf("inspect %s: %w", path, err)
+			}
+			if !info.Mode().IsRegular() {
+				continue
+			}
+			otherContent, err := readAtMost(path, maxCredentialBytes+1)
+			if err != nil {
+				return false, fmt.Errorf("read %s: %w", path, err)
+			}
+			if sameCredential(content, otherContent) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// readAtMost reads up to limit bytes of the file at path, so a large
+// credential-named file is never read into memory whole.
 func readAtMost(path string, limit int64) ([]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
