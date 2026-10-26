@@ -157,6 +157,17 @@ type Executor struct {
 	paneLocks  map[string]chan struct{}
 
 	mailClients agentMailClientCache
+
+	// Renewal and explicit release share one owner so a heartbeat cannot
+	// extend a lease while its authored cleanup is settling. The heartbeat
+	// lives only for this execution attempt, including its post-pipeline work.
+	reservationMu         sync.Mutex
+	reservationWG         sync.WaitGroup
+	reservationWake       chan struct{}
+	reservationStop       chan struct{}
+	reservationStopOnce   sync.Once
+	reservationFinalCheck bool  // Captured attempt intent, not its all-done final state.
+	reservationFailure    error // Protected by stateMu; sticky within an attempt.
 }
 
 // acquirePaneLock serializes the full dispatch window against a tmux pane.
@@ -266,6 +277,11 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 
 	e.stateMu.Lock()
 	e.backgroundCommandErrors = nil
+	e.reservationFailure = nil
+	e.reservationWake = make(chan struct{}, 1)
+	e.reservationStop = make(chan struct{})
+	e.reservationStopOnce = sync.Once{}
+	e.reservationFinalCheck = false
 	e.state = &ExecutionState{
 		RunID:         runID,
 		WorkflowID:    workflow.Name,
@@ -349,6 +365,8 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 	e.emitProgress("workflow_start", "", workflowProgressMessage("Starting workflow", workflow), 0)
 
 	// Execute steps in dependency order
+	stopProtection := e.startReservationProtection(ctx, workflow)
+	defer stopProtection()
 	err = e.executeWorkflow(ctx, workflow)
 
 	return e.finishExecution(ctx, workflow, err)
@@ -390,6 +408,11 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 
 	e.stateMu.Lock()
 	e.backgroundCommandErrors = nil
+	e.reservationFailure = nil
+	e.reservationWake = make(chan struct{}, 1)
+	e.reservationStop = make(chan struct{})
+	e.reservationStopOnce = sync.Once{}
+	e.reservationFinalCheck = false
 	e.state = prior
 	if e.state.Steps == nil {
 		e.state.Steps = make(map[string]StepResult)
@@ -516,6 +539,8 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 	e.emitProgress("workflow_start", "", workflowProgressMessage("Resuming workflow", workflow), e.calculateProgress())
 
 	// Execute steps in dependency order
+	stopProtection := e.startReservationProtection(ctx, workflow)
+	defer stopProtection()
 	err := e.executeWorkflow(ctx, workflow)
 
 	return e.finishExecution(ctx, workflow, err)
@@ -890,6 +915,10 @@ scheduler:
 
 // executeStep runs a single step with retry logic
 func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workflow) StepResult {
+	// Releasing an already-expired lease is valid cleanup. Its own identity
+	// check owns admission. Reset this marker for every child so success or
+	// recovery hooks cannot inherit a release parent's exemption.
+	ctx = context.WithValue(ctx, reservationReleaseKey{}, step.FileReservationRelease != nil)
 	result := StepResult{
 		StepID:    step.ID,
 		Status:    StatusPending,

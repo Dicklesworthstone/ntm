@@ -862,8 +862,17 @@ releasing known active leases before resetting acquisition history. If an author
 cancellation or finalization hook already released protection, resuming unfinished
 protected work requires a whole-workflow reset to acquire it again; iteration
 replay cannot retain those released locks. Cleanup-only resume can finish when the
-original IDs have already expired or disappeared. Reservations are not implicitly
-renewed or released on cancellation; use explicit workflow release steps.
+original IDs have already expired or disappeared.
+
+While a pipeline is running, a heartbeat renews its verified reservation IDs
+before expiry, including during long commands, agent waits, and post-pipeline
+work. Independent readback must confirm the original lease identities and an
+extended expiry; a lost renewal reply is accepted only when that readback proves
+protection. Dispatch also checks ownership immediately before sending more work.
+Lost, replaced, expired, or unverifiable protection fails the run and cancels
+active waits and commands. Input already delivered to an external agent cannot
+be recalled. Authored `on_cancel` cleanup still runs; reservations are never
+automatically reacquired or released. Use explicit workflow release steps.
 
 If you instead intend to repeat failed or interrupted agent work, inspect the
 original pane before using `--mode=restart-failed`; that mode still preserves

@@ -156,6 +156,12 @@ func (e *Executor) stopBeforeDispatch(ctx context.Context, result *StepResult) b
 			result.Error = &StepError{Type: "checkpoint", Message: err.Error(), Timestamp: result.FinishedAt}
 			return true
 		}
+		if err := e.reservationProtectionFailure(); err != nil {
+			result.Status = StatusFailed
+			result.FinishedAt = time.Now()
+			result.Error = &StepError{Type: "reservation_protection", Message: err.Error(), Timestamp: result.FinishedAt}
+			return true
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		result.Status = StatusCancelled
@@ -163,6 +169,22 @@ func (e *Executor) stopBeforeDispatch(ctx context.Context, result *StepResult) b
 		result.SkipReason = err.Error()
 		result.FinishedAt = time.Now()
 		return true
+	}
+	release, _ := ctx.Value(reservationReleaseKey{}).(bool)
+	if !cleanup && !release && !e.config.DryRun {
+		if _, err := e.refreshReservationProtection(ctx); err != nil {
+			if ctx.Err() != nil {
+				result.Status = StatusCancelled
+				result.SkipKind, result.SkipReason = SkipKindCancelled, ctx.Err().Error()
+				result.FinishedAt = time.Now()
+				return true
+			}
+			err = e.failReservationProtection(err)
+			result.Status = StatusFailed
+			result.FinishedAt = time.Now()
+			result.Error = &StepError{Type: "reservation_protection", Message: err.Error(), Timestamp: result.FinishedAt}
+			return true
+		}
 	}
 	return false
 }
@@ -187,10 +209,24 @@ func (e *Executor) finishExecution(ctx context.Context, workflow *Workflow, err 
 		}
 	}
 
+	// Normal completion must settle any renewal already sent before it
+	// cancels the heartbeat's readback. Otherwise the last step can finish
+	// between mutation and verification, hiding a failed or unrecorded lease.
+	// External cancellation already reaches the worker's context immediately.
+	e.stopReservationProtection()
+	if e.reservationFinalCheck && ctx.Err() == nil && e.checkpointFailure() == nil && e.reservationProtectionFailure() == nil {
+		// The final step can finish after expiry before a due timer runs.
+		// Verify remaining held IDs before publishing success. The exemption
+		// belongs only to attempts that began as cleanup-only recovery.
+		if _, verifyErr := e.refreshReservationProtection(ctx); verifyErr != nil && ctx.Err() == nil {
+			err = errors.Join(err, e.failReservationProtection(verifyErr))
+		}
+	}
+	protectionErr := e.reservationProtectionFailure()
 	err = joinCheckpointError(err, e.checkpointFailure())
 	// Observe cancellation before stopping normal fire-and-forget commands.
 	// Cancelling their lifetime on successful completion is not a cancelled run.
-	cancelled := ctx.Err() != nil
+	cancelled := ctx.Err() != nil || protectionErr != nil
 	if cancelled {
 		if err == nil {
 			err = ctx.Err()
@@ -203,10 +239,11 @@ func (e *Executor) finishExecution(ctx context.Context, workflow *Workflow, err 
 	err = errors.Join(err, backgroundErr)
 	checkpointErr := e.checkpointFailure()
 	err = joinCheckpointError(err, checkpointErr)
+	err = errors.Join(err, protectionErr)
 
 	status, notification := StatusCompleted, NotifyCompleted
 	switch {
-	case checkpointErr != nil || (err != nil && !cancelled):
+	case checkpointErr != nil || protectionErr != nil || (err != nil && !cancelled):
 		status, notification = StatusFailed, NotifyFailed
 	case cancelled:
 		status, notification = StatusCancelled, NotifyCancelled

@@ -379,7 +379,11 @@ func (e *Executor) saveReservationStep(record ReservationStepState) error {
 	}
 	e.state.ReservationSteps[record.StepID] = cloneReservationStep(record)
 	e.stateMu.Unlock()
-	return e.persistState()
+	if err := e.persistState(); err != nil {
+		return err
+	}
+	e.wakeReservationProtection()
+	return nil
 }
 
 func reservationRecoveryError(stepID string) error {
@@ -398,6 +402,18 @@ func reservationIDSet(ids []int) map[int]bool {
 // somebody now owns the same paths. Cleanup may tolerate absent IDs, but never
 // changed ownership. Renewals may extend expiry without changing identity.
 func (e *Executor) verifyReservationLeases(ctx context.Context, record ReservationStepState, grants []agentmail.FileReservation, allowMissing bool) ([]int, error) {
+	rows, err := e.readReservationLeases(ctx, record, grants, allowMissing)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]int, len(rows))
+	for i, row := range rows {
+		ids[i] = row.ID
+	}
+	return ids, nil
+}
+
+func (e *Executor) readReservationLeases(ctx context.Context, record ReservationStepState, grants []agentmail.FileReservation, allowMissing bool) ([]agentmail.FileReservation, error) {
 	if len(grants) == 0 {
 		return nil, ctx.Err()
 	}
@@ -407,17 +423,19 @@ func (e *Executor) verifyReservationLeases(ctx context.Context, record Reservati
 	}
 	byID := make(map[int]agentmail.FileReservation, len(rows))
 	for _, row := range rows {
+		if _, duplicate := byID[row.ID]; duplicate {
+			return nil, fmt.Errorf("reservation step %q has duplicate live lease ID %d", record.StepID, row.ID)
+		}
 		byID[row.ID] = row
 	}
-	var active []int
+	var active []agentmail.FileReservation
 	now := time.Now()
 	for _, grant := range grants {
 		row, found := byID[grant.ID]
 		if !found && allowMissing {
 			continue
 		}
-		if !found || row.ProjectID != grant.ProjectID || row.AgentName != grant.AgentName || row.PathPattern != grant.PathPattern ||
-			row.Exclusive != grant.Exclusive || row.Reason != grant.Reason || !row.CreatedTS.Equal(grant.CreatedTS.Time) {
+		if !found || !sameReservationLease(row, grant) {
 			return nil, fmt.Errorf("reservation step %q lease %d for %q is absent, changed, expired, or released; restore verified protection or deliberately reset before resuming dependent work", record.StepID, grant.ID, grant.PathPattern)
 		}
 		if row.ReleasedTS != nil || !row.ExpiresTS.After(now) {
@@ -426,9 +444,254 @@ func (e *Executor) verifyReservationLeases(ctx context.Context, record Reservati
 			}
 			return nil, fmt.Errorf("reservation step %q lease %d for %q is expired or released; restore verified protection or deliberately reset before resuming dependent work", record.StepID, grant.ID, grant.PathPattern)
 		}
-		active = append(active, grant.ID)
+		active = append(active, row)
 	}
 	return active, ctx.Err()
+}
+
+// Explicit release has its own identity check and must remain possible after
+// expiry. All other dispatches need currently verified reservation protection.
+type reservationReleaseKey struct{}
+
+func (e *Executor) wakeReservationProtection() {
+	select {
+	case e.reservationWake <- struct{}{}:
+	default:
+	}
+}
+
+func (e *Executor) reservationProtectionFailure() error {
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
+	return e.reservationFailure
+}
+
+func (e *Executor) failReservationProtection(cause error) error {
+	e.stateMu.Lock()
+	first := e.reservationFailure == nil
+	if first {
+		e.reservationFailure = fmt.Errorf("pipeline reservation protection lost or unverified: %w", cause)
+		e.state.Errors = append(e.state.Errors, ExecutionError{
+			Type: "reservation_protection", Message: e.reservationFailure.Error(), Timestamp: time.Now(), Fatal: true,
+		})
+	}
+	err := e.reservationFailure
+	e.stateMu.Unlock()
+	// Stop active waits/commands and let the existing owner join them. There
+	// is no rollback of input already delivered to an external agent.
+	e.Cancel()
+	if first {
+		return errors.Join(err, e.persistState())
+	}
+	return err
+}
+
+// A single heartbeat spans main work and post-pipeline hooks. A new receipt
+// wakes it immediately; thereafter the next expiry determines its deadline.
+// Cancellation joins the worker before Run/Resume returns or is reused.
+func (e *Executor) startReservationProtection(ctx context.Context, workflow *Workflow) func() {
+	if e.config.DryRun {
+		return func() {}
+	}
+	e.stateMu.RLock()
+	e.reservationFinalCheck = !reservationOnlyCleanupRemaining(workflow, e.state)
+	e.stateMu.RUnlock()
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	e.reservationWG.Add(1)
+	go func() {
+		defer e.reservationWG.Done()
+		defer close(done)
+		timer := time.NewTimer(0)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-e.reservationStop:
+				return
+			case <-e.reservationWake:
+			case <-timer.C:
+			}
+			select {
+			case <-e.reservationStop:
+				return
+			default:
+			}
+			// Cleanup-only recovery intentionally tolerates disappeared IDs.
+			// Once main work is complete, a tail made only of releases does
+			// not need a heartbeat to extend protection for already-done work.
+			e.stateMu.RLock()
+			cleanupOnly := reservationOnlyCleanupRemaining(workflow, e.state)
+			e.stateMu.RUnlock()
+			next := 30 * time.Second
+			if !cleanupOnly {
+				var err error
+				next, err = e.refreshReservationProtection(ctx)
+				if err != nil {
+					if ctx.Err() == nil {
+						e.failReservationProtection(err)
+					}
+					return
+				}
+			}
+			timer.Reset(next)
+		}
+	}()
+	return func() {
+		e.stopReservationProtection()
+		cancel()
+		<-done
+	}
+}
+
+func (e *Executor) stopReservationProtection() {
+	e.reservationStopOnce.Do(func() {
+		if e.reservationStop != nil {
+			close(e.reservationStop)
+		}
+	})
+	e.reservationWG.Wait()
+}
+
+func reservationRenewalLead(record ReservationStepState) time.Duration {
+	// Renew before the final third of short leases, with a 30-second lead
+	// for ordinary leases. Avoid overflowing time.Duration for large TTLs.
+	if ttl := record.Request.TTLSeconds; ttl > 0 && ttl < 90 {
+		return time.Duration(ttl) * time.Second / 3
+	}
+	return 30 * time.Second
+}
+
+// refreshReservationProtection never reacquires by path. It serializes with
+// authored release, verifies the original immutable identities, extends only
+// due IDs, and treats independent readback as the authority even if the reply
+// was lost. Fresh expiry evidence is checkpointed before dispatch can proceed.
+func (e *Executor) refreshReservationProtection(ctx context.Context) (time.Duration, error) {
+	e.reservationMu.Lock()
+	defer e.reservationMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	e.stateMu.RLock()
+	var records []ReservationStepState
+	if e.state != nil {
+		for _, record := range e.state.ReservationSteps {
+			if record.Kind == StepKindReservationAcquire && record.Status == reservationHeld {
+				records = append(records, cloneReservationStep(record))
+			}
+		}
+	}
+	e.stateMu.RUnlock()
+	sort.Slice(records, func(i, j int) bool { return records[i].StepID < records[j].StepID })
+	// A slow project must not let another project's earlier lease expire
+	// while this serialized pass is still waiting on its readback. Bound
+	// the whole pass by the earliest captured deadline, not just each RPC.
+	batchBudget := 30 * time.Second
+	for _, record := range records {
+		released := reservationIDSet(record.ReleasedIDs)
+		for _, grant := range record.Granted {
+			if !released[grant.ID] {
+				if remaining := time.Until(grant.ExpiresTS.Time); remaining > 0 && remaining < batchBudget {
+					batchBudget = remaining
+				}
+			}
+		}
+	}
+	ctx, cancelBatch := context.WithTimeout(ctx, batchBudget)
+	defer cancelBatch()
+	next := 30 * time.Second
+	for _, record := range records {
+		if err := validateReservationStep(record.StepID, record); err != nil {
+			return 0, err
+		}
+		released := reservationIDSet(record.ReleasedIDs)
+		var grants []agentmail.FileReservation
+		budget := 30 * time.Second
+		for _, grant := range record.Granted {
+			if !released[grant.ID] {
+				grants = append(grants, grant)
+				if remaining := time.Until(grant.ExpiresTS.Time); remaining < budget {
+					budget = remaining
+				}
+			}
+		}
+		if len(grants) == 0 {
+			continue
+		}
+		// Saved expiry can lag an external renewal (including after resume).
+		// Allow a bounded read to reconcile it, without dispatching new work.
+		if budget <= 0 {
+			budget = 250 * time.Millisecond
+		}
+		readCtx, cancel := context.WithTimeout(ctx, budget)
+		live, err := e.readReservationLeases(readCtx, record, grants, false)
+		cancel()
+		if err != nil {
+			return 0, err
+		}
+		lead := reservationRenewalLead(record)
+		dueIDs := make([]int, 0, len(live))
+		before := make(map[int]time.Time, len(live))
+		budget = 30 * time.Second
+		for _, row := range live {
+			before[row.ID] = row.ExpiresTS.Time
+			if !row.ExpiresTS.After(time.Now().Add(lead)) {
+				dueIDs = append(dueIDs, row.ID)
+			}
+			if remaining := time.Until(row.ExpiresTS.Time); remaining < budget {
+				budget = remaining
+			}
+		}
+		if len(dueIDs) > 0 {
+			seconds := record.Request.TTLSeconds
+			if seconds <= 0 {
+				seconds = 3600
+			}
+			renewCtx, cancel := context.WithTimeout(ctx, budget)
+			_, renewalErr := e.mailClient(record.Request.ProjectKey).RenewReservations(renewCtx, agentmail.RenewReservationsOptions{
+				ProjectKey: record.Request.ProjectKey, AgentName: record.Request.AgentName,
+				ExtendSeconds: seconds, ReservationIDs: dueIDs,
+			})
+			live, err = e.readReservationLeases(renewCtx, record, grants, false)
+			cancel()
+			if err != nil {
+				return 0, errors.Join(renewalErr, err)
+			}
+			due := reservationIDSet(dueIDs)
+			for _, row := range live {
+				if due[row.ID] && (!row.ExpiresTS.After(before[row.ID]) || !row.ExpiresTS.After(time.Now().Add(lead))) {
+					return 0, errors.Join(renewalErr, fmt.Errorf("reservation step %q lease %d renewal did not restore its protection window", record.StepID, row.ID))
+				}
+			}
+		}
+		changed := false
+		for _, row := range live {
+			if deadline, ok := ctx.Deadline(); !ok || row.ExpiresTS.Before(deadline) {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithDeadline(ctx, row.ExpiresTS.Time)
+				defer cancel()
+			}
+			if delay := time.Until(row.ExpiresTS.Add(-lead)); delay < next {
+				next = delay
+			}
+			for i := range record.Granted {
+				if record.Granted[i].ID == row.ID && !record.Granted[i].ExpiresTS.Equal(row.ExpiresTS.Time) {
+					record.Granted[i].ExpiresTS = row.ExpiresTS
+					changed = true
+				}
+			}
+		}
+		if changed {
+			if err := e.saveReservationStep(record); err != nil {
+				return 0, err
+			}
+		}
+	}
+	if next < 10*time.Millisecond {
+		next = 10 * time.Millisecond
+	}
+	return next, ctx.Err()
 }
 
 func resumeResetsReservationStep(state *ExecutionState, opts ResumeOptions, id string) bool {
@@ -537,7 +800,9 @@ func (e *Executor) verifyReservationResume(ctx context.Context, workflow *Workfl
 	if workflow != nil {
 		for _, step := range workflow.Steps {
 			if result, found := state.Steps[step.ID]; !found || shouldRerunStep(result) || resumeResultInFlight(state, step.ID, result) {
-				reopensMain = true
+				if !reservationReleaseOnlyStep(step) {
+					reopensMain = true
+				}
 			}
 		}
 	}
@@ -641,11 +906,34 @@ func reservationOnlyReleaseTail(workflow *Workflow, state *ExecutionState) bool 
 		if result, exists := state.Steps[id]; exists && !shouldRerunStep(result) && !resumeResultInFlight(state, id, result) {
 			continue
 		}
-		if step.FileReservationRelease == nil {
+		if !reservationReleaseOnlyStep(step) {
 			return false
 		}
 	}
 	return true
+}
+
+func reservationReleaseOnlyStep(step Step) bool {
+	return step.FileReservationRelease != nil && len(step.OnSuccess) == 0 && len(step.OnFailure.Fallback) == 0
+}
+
+// A pending release may be the last main step, including after its server
+// response was lost. It must be allowed to reconcile absent original IDs.
+// Ordinary unfinished work and release hooks that dispatch work still require
+// protection, even when all other main steps have already completed.
+func reservationOnlyCleanupRemaining(workflow *Workflow, state *ExecutionState) bool {
+	if workflow == nil || state == nil {
+		return false
+	}
+	for _, step := range workflow.Steps {
+		if result, exists := state.Steps[step.ID]; exists && !shouldRerunStep(result) && !resumeResultInFlight(state, step.ID, result) {
+			continue
+		}
+		if !reservationReleaseOnlyStep(step) {
+			return false
+		}
+	}
+	return reservationOnlyReleaseTail(workflow, state)
 }
 
 func reservationCleanupStep(workflow *Workflow, id string) bool {
@@ -1001,6 +1289,29 @@ func (e *Executor) executeMailInboxCheckStep(ctx context.Context, step *Step, re
 }
 
 func (e *Executor) executeFileReservationReleaseStep(ctx context.Context, step *Step, result StepResult) StepResult {
+	ctx = context.WithValue(ctx, reservationReleaseKey{}, true)
+	e.reservationMu.Lock()
+	defer e.reservationMu.Unlock()
+	// Release excludes heartbeat mutation. Bound that exclusion so a slow
+	// release cannot starve renewal of a different still-active acquisition.
+	budget := 30 * time.Second
+	e.stateMu.RLock()
+	if e.state != nil {
+		for _, acquisition := range e.state.ReservationSteps {
+			if acquisition.Kind != StepKindReservationAcquire || acquisition.Status != reservationHeld {
+				continue
+			}
+			released := reservationIDSet(acquisition.ReleasedIDs)
+			for _, grant := range acquisition.Granted {
+				if remaining := time.Until(grant.ExpiresTS.Time); !released[grant.ID] && remaining > 0 && remaining < budget {
+					budget = remaining
+				}
+			}
+		}
+	}
+	e.stateMu.RUnlock()
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
 	stepHash, err := agentStepHash(step)
 	if err != nil {
 		return failMailStep(result, "recovery", err.Error())

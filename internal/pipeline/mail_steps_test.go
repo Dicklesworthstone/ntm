@@ -1215,7 +1215,15 @@ func (l *reservationLedger) serveReadback(t *testing.T, w http.ResponseWriter, i
 		payload = map[string]interface{}{"id": 1, "slug": "ntm", "human_key": key}
 	case strings.HasPrefix(uri, "resource://file_reservations/"):
 		l.mu.Lock()
-		payload = append([]map[string]interface{}{}, l.rows...)
+		rows := make([]map[string]interface{}, 0, len(l.rows))
+		for _, row := range l.rows {
+			copy := make(map[string]interface{}, len(row))
+			for key, value := range row {
+				copy[key] = value
+			}
+			rows = append(rows, copy)
+		}
+		payload = rows
 		l.mu.Unlock()
 	default:
 		t.Fatalf("unexpected resource read %q", uri)
@@ -1578,14 +1586,29 @@ func TestReservationJournalForceIterationCannotRetainReleasedProtection(t *testi
 }
 
 func TestReservationJournalCleanupOnlyResumeToleratesAbsentIDs(t *testing.T) {
+	for _, phase := range []string{"main", "post_pipeline"} {
+		t.Run(phase, func(t *testing.T) {
+			testReservationCleanupOnlyResume(t, phase)
+		})
+	}
+}
+
+func testReservationCleanupOnlyResume(t *testing.T, phase string) {
+	t.Helper()
 	server, fixture := newReservationJournalFixture(t, "")
 	t.Cleanup(server.Close)
 	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
 	t.Setenv("AGENT_MAIL_TOKEN", "")
 	workflow := reservationJournalWorkflow(false)
-	workflow.PostPipelineSteps = []Step{{ID: "finish-release", FileReservationRelease: &FileReservationReleaseStep{
+	release := Step{ID: "finish-release", FileReservationRelease: &FileReservationReleaseStep{
 		ProjectKey: "/data/projects/ntm", AgentName: "TealCrane", Paths: StringOrList{"a.go"},
-	}}}
+	}}
+	if phase == "main" {
+		release.DependsOn = []string{"reserve"}
+		workflow.Steps = append(workflow.Steps, release)
+	} else {
+		workflow.PostPipelineSteps = []Step{release}
+	}
 	e := newMailStepTestExecutor(t)
 	e.config.RunID = e.state.RunID
 	frozen, path, err := SnapshotWorkflow(t.Context(), e.config.ProjectDir, workflow, "")
@@ -1655,6 +1678,325 @@ func TestReservationJournalConflictingReleaseIdentityCannotHideLostLease(t *test
 	}
 }
 
+func TestReservationProtectionRenewsActiveWork(t *testing.T) {
+	for _, mode := range []string{"success", "lost_reply"} {
+		t.Run(mode, func(t *testing.T) {
+			server, fixture := newReservationJournalFixture(t, "")
+			t.Cleanup(server.Close)
+			t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+			t.Setenv("AGENT_MAIL_TOKEN", "")
+			fixture.renewMode = mode
+			fixture.ledger.grant(999, "other.go", map[string]interface{}{"agent_name": "TealCrane", "exclusive": true, "reason": "other run"})
+			workflow := reservationJournalWorkflow(true)
+			workflow.Steps[0].FileReservationPaths.TTLSeconds = 60
+			workflow.PostPipelineSteps = []Step{reservationProtectionReleaseStep()}
+			cfg := DefaultExecutorConfig("reservation-heartbeat")
+			cfg.ProjectDir, cfg.RunID, cfg.GlobalTimeout = t.TempDir(), "heartbeat-"+mode, 30*time.Second
+			executor := NewExecutor(cfg)
+			fixture.armRenewalDuringInbox(executor)
+			state, err := executor.Run(t.Context(), workflow, nil, nil)
+			if err != nil || state == nil || state.Status != StatusCompleted || state.Steps["gate"].Status != StatusCompleted {
+				t.Fatalf("active work did not survive renewal: state=%+v err=%v", state, err)
+			}
+			if fixture.count("file_reservation_paths") != 1 || fixture.count("renew_file_reservations") != 1 || fixture.count("release_file_reservations") != 1 {
+				t.Fatalf("unexpected acquisition/renewal/release lifecycle: %+v", fixture.requests())
+			}
+			for _, request := range fixture.requests() {
+				if request.name == "renew_file_reservations" && (!reflect.DeepEqual(request.args["file_reservation_ids"], []interface{}{float64(601)}) || request.args["extend_seconds"] != float64(60)) {
+					t.Fatalf("renewal included another run's ID or changed requested TTL: %+v", request)
+				}
+			}
+			saved, err := LoadState(cfg.ProjectDir, cfg.RunID)
+			if err != nil || saved.ReservationSteps["reserve"].Status != reservationReleased || saved.ReservationSteps["reserve"].Granted[0].ExpiresTS.Before(state.StartedAt.Add(time.Minute)) {
+				t.Fatalf("renewal/release evidence was not durable: state=%+v err=%v", saved, err)
+			}
+			fixture.ledger.mu.Lock()
+			remaining := len(fixture.ledger.rows)
+			foreignID := fixture.ledger.rows[0]["id"]
+			fixture.ledger.mu.Unlock()
+			if remaining != 1 || foreignID != 999 {
+				t.Fatalf("another run's lease was changed: remaining=%d id=%v", remaining, foreignID)
+			}
+		})
+	}
+}
+
+func TestReservationProtectionRefusesUnverifiedRenewal(t *testing.T) {
+	for _, mode := range []string{"false_success", "replacement", "unavailable"} {
+		t.Run(mode, func(t *testing.T) {
+			server, fixture := newReservationJournalFixture(t, "")
+			t.Cleanup(server.Close)
+			t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+			t.Setenv("AGENT_MAIL_TOKEN", "")
+			fixture.renewMode = mode
+			workflow := reservationJournalWorkflow(true)
+			workflow.Steps[0].FileReservationPaths.TTLSeconds = 60
+			workflow.Settings.OnError = ErrorActionContinue
+			workflow.Settings.OnCancel = []Step{reservationProtectionReleaseStep()}
+			workflow.Steps = append(workflow.Steps, Step{ID: "after", DependsOn: []string{"gate"}, MailInboxCheck: &MailInboxCheckStep{ProjectKey: "/data/projects/ntm", AgentName: "TealCrane"}})
+			workflow.PostPipelineSteps = []Step{{ID: "tail", MailInboxCheck: &MailInboxCheckStep{ProjectKey: "/data/projects/ntm", AgentName: "TealCrane"}}}
+			cfg := DefaultExecutorConfig("reservation-heartbeat")
+			cfg.ProjectDir, cfg.RunID, cfg.GlobalTimeout = t.TempDir(), "failed-renewal-"+mode, 30*time.Second
+			executor := NewExecutor(cfg)
+			fixture.armRenewalDuringInbox(executor)
+			state, err := executor.Run(t.Context(), workflow, nil, nil)
+			if err == nil || state == nil || state.Status != StatusFailed || !strings.Contains(err.Error(), "reservation protection") {
+				t.Fatalf("unverified renewal was accepted: state=%+v err=%v", state, err)
+			}
+			if fixture.count("fetch_inbox") != 1 || fixture.count("renew_file_reservations") != 1 || fixture.count("file_reservation_paths") != 1 {
+				t.Fatalf("loss of protection allowed more work or reacquisition: %+v", fixture.requests())
+			}
+			if mode == "false_success" && fixture.count("release_file_reservations") != 1 {
+				t.Fatalf("authored cancellation cleanup did not release the original ID: %+v", fixture.requests())
+			}
+			if mode == "replacement" {
+				fixture.ledger.mu.Lock()
+				remaining := len(fixture.ledger.rows)
+				id := fixture.ledger.rows[0]["id"]
+				fixture.ledger.mu.Unlock()
+				if remaining != 1 || id != 777 || fixture.count("release_file_reservations") != 0 {
+					t.Fatalf("cleanup touched a replacement lease: remaining=%d id=%v requests=%+v", remaining, id, fixture.requests())
+				}
+			}
+			saved, loadErr := LoadState(cfg.ProjectDir, cfg.RunID)
+			if loadErr != nil || saved.Status != StatusFailed {
+				t.Fatalf("protection failure not saved: state=%+v err=%v", saved, loadErr)
+			}
+			found := false
+			for _, failure := range saved.Errors {
+				found = found || failure.Fatal && failure.Type == "reservation_protection"
+			}
+			if !found {
+				t.Fatalf("saved state lost the cause of cancellation: %+v", saved.Errors)
+			}
+		})
+	}
+}
+
+func TestReservationProtectionChecksDispatchBetweenHeartbeats(t *testing.T) {
+	server, fixture := newReservationJournalFixture(t, "")
+	t.Cleanup(server.Close)
+	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+	t.Setenv("AGENT_MAIL_TOKEN", "")
+	fixture.inboxAction = func() {
+		fixture.ledger.mu.Lock()
+		fixture.ledger.rows[0]["agent"] = "OrangeFalcon"
+		fixture.ledger.mu.Unlock()
+	}
+	workflow := reservationJournalWorkflow(true)
+	workflow.Steps = append(workflow.Steps, Step{ID: "after", DependsOn: []string{"gate"}, MailInboxCheck: &MailInboxCheckStep{ProjectKey: "/data/projects/ntm", AgentName: "TealCrane"}})
+	workflow.Settings.OnError = ErrorActionContinue
+	cfg := DefaultExecutorConfig("reservation-boundary")
+	cfg.ProjectDir, cfg.RunID = t.TempDir(), "boundary"
+	state, err := RunControlledPipeline(t.Context(), workflow, nil, cfg, nil)
+	if err == nil || state == nil || state.Status != StatusFailed || fixture.count("fetch_inbox") != 1 || fixture.count("renew_file_reservations") != 0 {
+		t.Fatalf("next dispatch trusted stale ownership: state=%+v err=%v requests=%+v", state, err, fixture.requests())
+	}
+}
+
+func TestReservationProtectionResumesRenewalWithoutReacquiring(t *testing.T) {
+	server, fixture := newReservationJournalFixture(t, "")
+	t.Cleanup(server.Close)
+	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+	t.Setenv("AGENT_MAIL_TOKEN", "")
+	fixture.failInbox = true
+	workflow := reservationJournalWorkflow(true)
+	workflow.Steps[0].FileReservationPaths.TTLSeconds = 60
+	cfg := DefaultExecutorConfig("reservation-resume")
+	cfg.ProjectDir, cfg.RunID, cfg.GlobalTimeout = t.TempDir(), "resume-renewal", 30*time.Second
+	initial, err := RunControlledPipeline(t.Context(), workflow, nil, cfg, nil)
+	if err == nil || initial == nil || initial.ReservationSteps["reserve"].Status != reservationHeld {
+		t.Fatalf("initial attempt did not retain lease: state=%+v err=%v", initial, err)
+	}
+	fixture.mu.Lock()
+	fixture.failInbox = false
+	fixture.mu.Unlock()
+	executor := NewExecutor(cfg)
+	fixture.armRenewalDuringInbox(executor)
+	prior, err := LoadState(cfg.ProjectDir, cfg.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := executor.Resume(t.Context(), workflow, prior, nil)
+	if err != nil || resumed == nil || resumed.Status != StatusCompleted || fixture.count("file_reservation_paths") != 1 || fixture.count("renew_file_reservations") != 1 {
+		t.Fatalf("resume did not renew captured ownership: state=%+v err=%v requests=%+v", resumed, err, fixture.requests())
+	}
+	if resumed.ReservationSteps["reserve"].Granted[0].ExpiresTS.Equal(initial.ReservationSteps["reserve"].Granted[0].ExpiresTS.Time) || !resumed.ReservationSteps["reserve"].Granted[0].ExpiresTS.After(time.Now().Add(30*time.Second)) || resumed.Steps["reserve"].Output != initial.Steps["reserve"].Output {
+		t.Fatalf("renewal lost expiry evidence or changed original acquisition output: before=%+v after=%+v", initial.ReservationSteps["reserve"], resumed.ReservationSteps["reserve"])
+	}
+}
+
+func TestReservationProtectionSerializesExplicitRelease(t *testing.T) {
+	server, fixture := newReservationJournalFixture(t, "")
+	t.Cleanup(server.Close)
+	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+	t.Setenv("AGENT_MAIL_TOKEN", "")
+	finishRelease := make(chan struct{})
+	fixture.releaseWait, fixture.releaseStart = finishRelease, make(chan struct{})
+	workflow := reservationJournalWorkflow(false)
+	workflow.Steps[0].FileReservationPaths.TTLSeconds = 60
+	release := reservationProtectionReleaseStep()
+	release.DependsOn = []string{"reserve"}
+	workflow.Steps = append(workflow.Steps, release)
+	cfg := DefaultExecutorConfig("reservation-release")
+	cfg.ProjectDir, cfg.RunID, cfg.GlobalTimeout = t.TempDir(), "release-serialized", 30*time.Second
+	executor := NewExecutor(cfg)
+	type outcome struct {
+		state *ExecutionState
+		err   error
+	}
+	finished := make(chan outcome, 1)
+	go func() {
+		state, err := executor.Run(t.Context(), workflow, nil, nil)
+		finished <- outcome{state, err}
+	}()
+	select {
+	case <-fixture.releaseStart:
+	case result := <-finished:
+		t.Fatalf("release never began: state=%+v err=%v", result.state, result.err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("release did not begin")
+	}
+	// Make the lease due only after release is blocked inside its RPC, then
+	// explicitly start a competing refresh. It must wait for settlement and
+	// never extend the retiring IDs; no short real TTL bounds test scheduling.
+	fixture.makeRenewalDue()
+	probeStarted, probeDone := make(chan struct{}), make(chan error, 1)
+	go func() {
+		close(probeStarted)
+		_, err := executor.refreshReservationProtection(t.Context())
+		probeDone <- err
+	}()
+	<-probeStarted
+	time.Sleep(250 * time.Millisecond)
+	if got := fixture.count("renew_file_reservations"); got != 0 {
+		t.Errorf("heartbeat raced release with %d renewals", got)
+	}
+	close(finishRelease)
+	result := <-finished
+	if err := <-probeDone; err != nil {
+		t.Fatalf("refresh did not observe settled release: %v", err)
+	}
+	if result.err != nil || result.state == nil || result.state.Status != StatusCompleted || fixture.count("renew_file_reservations") != 0 {
+		t.Fatalf("serialized release failed: state=%+v err=%v requests=%+v", result.state, result.err, fixture.requests())
+	}
+}
+
+func TestReservationProtectionLateFailureStillRunsAuthoredCleanup(t *testing.T) {
+	server, fixture := newReservationJournalFixture(t, "")
+	t.Cleanup(server.Close)
+	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+	t.Setenv("AGENT_MAIL_TOKEN", "")
+	workflow := reservationJournalWorkflow(false)
+	workflow.Settings.OnCancel = []Step{reservationProtectionReleaseStep()}
+	e := newMailStepTestExecutor(t)
+	e.graph = NewDependencyGraph(workflow)
+	if result := e.executeStep(t.Context(), &workflow.Steps[0], workflow); result.Status != StatusCompleted {
+		t.Fatalf("initial acquisition: %+v", result)
+	}
+	// Deterministically settle a heartbeat failure only after finalization
+	// starts graceful shutdown, before it cancels or publishes success.
+	e.reservationStop = make(chan struct{})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	e.cancelFn = cancel
+	e.reservationWG.Add(1)
+	go func() {
+		defer e.reservationWG.Done()
+		<-e.reservationStop
+		e.failReservationProtection(errors.New("lease disappeared during finalization"))
+	}()
+	state, err := e.finishExecution(ctx, workflow, nil)
+	if err == nil || state.Status != StatusFailed || fixture.count("release_file_reservations") != 1 || state.ReservationSteps["reserve"].Status != reservationReleased {
+		t.Fatalf("late protection failure skipped or duplicated authored cleanup: state=%+v err=%v requests=%+v", state, err, fixture.requests())
+	}
+}
+
+func TestReservationProtectionReleaseHooksRecheckRemainingLeases(t *testing.T) {
+	server, fixture := newReservationJournalFixture(t, "")
+	t.Cleanup(server.Close)
+	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+	t.Setenv("AGENT_MAIL_TOKEN", "")
+	workflow := reservationJournalWorkflow(false)
+	workflow.Steps[0].FileReservationPaths.Paths = StringOrList{"a.go", "b.go"}
+	e := newMailStepTestExecutor(t)
+	e.graph = NewDependencyGraph(workflow)
+	if result := e.executeStep(t.Context(), &workflow.Steps[0], workflow); result.Status != StatusCompleted {
+		t.Fatalf("initial acquisition: %+v", result)
+	}
+	fixture.releaseAction = func() {
+		fixture.ledger.mu.Lock()
+		fixture.ledger.rows[0]["agent"] = "OrangeFalcon"
+		fixture.ledger.mu.Unlock()
+	}
+	release := reservationProtectionReleaseStep()
+	release.OnSuccess = []Step{{ID: "continue-work", MailInboxCheck: &MailInboxCheckStep{ProjectKey: "/data/projects/ntm", AgentName: "TealCrane"}}}
+	e.executeStep(t.Context(), &release, workflow)
+	if fixture.count("release_file_reservations") != 1 || fixture.count("fetch_inbox") != 0 || e.reservationProtectionFailure() == nil {
+		t.Fatalf("release exemption leaked into a non-release success hook: requests=%+v failure=%v", fixture.requests(), e.reservationProtectionFailure())
+	}
+}
+
+func TestReservationProtectionCancelsAndJoinsActiveCommand(t *testing.T) {
+	server, fixture := newReservationJournalFixture(t, "")
+	t.Cleanup(server.Close)
+	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+	t.Setenv("AGENT_MAIL_TOKEN", "")
+	fixture.renewMode = "false_success"
+	workflow := reservationJournalWorkflow(false)
+	workflow.Steps[0].FileReservationPaths.TTLSeconds = 60
+	workflow.Steps = append(workflow.Steps, Step{ID: "working", DependsOn: []string{"reserve"}, Command: "sleep 30"})
+	workflow.Settings.OnCancel = []Step{reservationProtectionReleaseStep()}
+	cfg := DefaultExecutorConfig("reservation-command")
+	cfg.ProjectDir, cfg.RunID, cfg.GlobalTimeout = t.TempDir(), "cancel-active-command", 30*time.Second
+	executor := NewExecutor(cfg)
+	ctx := context.WithValue(t.Context(), commandStartedTestHookKey{}, func(int) {
+		fixture.makeRenewalDue()
+		executor.wakeReservationProtection()
+	})
+	state, err := executor.Run(ctx, workflow, nil, nil)
+	if err == nil || state == nil || state.Status != StatusFailed || !strings.Contains(err.Error(), "reservation protection") {
+		t.Fatalf("lost lease did not stop the active command: state=%+v err=%v", state, err)
+	}
+	receipt, exists := state.CommandExecutions["working"]
+	if !exists || receipt.Status != commandExecutionSettled || receipt.Result.Status != StatusCancelled || fixture.count("release_file_reservations") != 1 {
+		t.Fatalf("executor returned before command/cleanup settled: receipt=%+v requests=%+v", receipt, fixture.requests())
+	}
+}
+
+func TestReservationProtectionChecksExpiryBeforePublishingSuccess(t *testing.T) {
+	server, fixture := newReservationJournalFixture(t, "")
+	t.Cleanup(server.Close)
+	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+	t.Setenv("AGENT_MAIL_TOKEN", "")
+	workflow := reservationJournalWorkflow(true)
+	workflow.Settings.OnCancel = []Step{reservationProtectionReleaseStep()}
+	cfg := DefaultExecutorConfig("reservation-final-check")
+	cfg.ProjectDir, cfg.RunID = t.TempDir(), "final-expiry"
+	executor := NewExecutor(cfg)
+	fixture.beforeInbox = func() {
+		// The last operation is already admitted. Prevent a periodic tick
+		// from observing expiry, then let it finish with lost protection.
+		executor.stopReservationProtection()
+		fixture.ledger.mu.Lock()
+		fixture.ledger.rows[0]["expires_ts"] = time.Now().Add(-time.Second).UTC().Format(time.RFC3339Nano)
+		fixture.ledger.mu.Unlock()
+	}
+	state, err := executor.Run(t.Context(), workflow, nil, nil)
+	if err == nil || state == nil || state.Status != StatusFailed || !strings.Contains(err.Error(), "reservation protection") {
+		t.Fatalf("last step published success after protection expired: state=%+v err=%v", state, err)
+	}
+	if state.Steps["release"].Status != StatusCompleted || state.ReservationSteps["reserve"].Status != reservationReleased {
+		t.Fatalf("final protection failure skipped authored cleanup: %+v", state)
+	}
+}
+
+func reservationProtectionReleaseStep() Step {
+	return Step{ID: "release", FileReservationRelease: &FileReservationReleaseStep{
+		ProjectKey: "/data/projects/ntm", AgentName: "TealCrane", Paths: StringOrList{"a.go"},
+	}}
+}
+
 func reservationJournalWorkflow(withGate bool) *Workflow {
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "reservation-journal", Steps: []Step{{
 		ID: "reserve", FileReservationPaths: &FileReservationPathsStep{ProjectKey: "/data/projects/ntm", AgentName: "TealCrane", Paths: StringOrList{"a.go"}, Exclusive: true, Reason: "pipeline work"},
@@ -1669,14 +2011,24 @@ func reservationJournalWorkflow(withGate bool) *Workflow {
 }
 
 type reservationJournalFixture struct {
-	mu           sync.Mutex
-	ledger       reservationLedger
-	recorded     []mailRuntimeFixtureRequest
-	mode         string
-	failInbox    bool
-	failReadback bool
-	nextID       int
-	cancelInbox  context.CancelFunc
+	mu            sync.Mutex
+	ledger        reservationLedger
+	recorded      []mailRuntimeFixtureRequest
+	mode          string
+	failInbox     bool
+	failReadback  bool
+	nextID        int
+	cancelInbox   context.CancelFunc
+	renewMode     string
+	renewed       chan struct{}
+	renewOnce     sync.Once
+	inboxWait     <-chan struct{}
+	inboxAction   func()
+	beforeInbox   func()
+	releaseWait   <-chan struct{}
+	releaseStart  chan struct{}
+	releaseOnce   sync.Once
+	releaseAction func()
 }
 
 func (f *reservationJournalFixture) requests() []mailRuntimeFixtureRequest {
@@ -1695,6 +2047,30 @@ func (f *reservationJournalFixture) count(tool string) int {
 	return count
 }
 
+// Make expiry due only after the protected operation is actually active. A
+// generous live deadline keeps host scheduling delays outside the assertion;
+// the operation cannot finish until the real heartbeat renews its lease.
+func (f *reservationJournalFixture) armRenewalDuringInbox(e *Executor) {
+	f.mu.Lock()
+	f.renewed = make(chan struct{})
+	f.inboxWait = f.renewed
+	f.beforeInbox = func() {
+		f.makeRenewalDue()
+		e.wakeReservationProtection()
+	}
+	f.mu.Unlock()
+}
+
+func (f *reservationJournalFixture) makeRenewalDue() {
+	f.ledger.mu.Lock()
+	defer f.ledger.mu.Unlock()
+	for _, row := range f.ledger.rows {
+		if row["id"] == 601 {
+			row["expires_ts"] = time.Now().Add(10 * time.Second).UTC().Format(time.RFC3339Nano)
+		}
+	}
+}
+
 func newReservationJournalFixture(t *testing.T, mode string) (*httptest.Server, *reservationJournalFixture) {
 	t.Helper()
 	fixture := &reservationJournalFixture{mode: mode, nextID: 600, failReadback: mode == "unverified"}
@@ -1711,6 +2087,10 @@ func newReservationJournalFixture(t *testing.T, mode string) (*httptest.Server, 
 		}
 		fixture.mu.Lock()
 		failReadback, failInbox, replyMode, cancelInbox := fixture.failReadback, fixture.failInbox, fixture.mode, fixture.cancelInbox
+		renewMode, inboxWait, inboxAction := fixture.renewMode, fixture.inboxWait, fixture.inboxAction
+		beforeInbox := fixture.beforeInbox
+		releaseWait, releaseStart := fixture.releaseWait, fixture.releaseStart
+		releaseAction := fixture.releaseAction
 		fixture.mu.Unlock()
 		if req.Method == "resources/read" {
 			if failReadback {
@@ -1741,17 +2121,79 @@ func newReservationJournalFixture(t *testing.T, mode string) (*httptest.Server, 
 				fixture.nextID++
 				id := fixture.nextID
 				fixture.mu.Unlock()
-				granted = append(granted, fixture.ledger.grant(id, path, args))
+				grant := fixture.ledger.grant(id, path, args)
+				granted = append(granted, grant)
 			}
 			result = map[string]interface{}{"granted": granted, "conflicts": conflicts}
+		case "renew_file_reservations":
+			ids, _ := args["file_reservation_ids"].([]interface{})
+			if len(ids) == 0 || args["paths"] != nil {
+				t.Errorf("renewal must use exact captured IDs: %+v", args)
+			}
+			seconds, _ := args["extend_seconds"].(float64)
+			fixture.ledger.mu.Lock()
+			for _, value := range ids {
+				id, _ := value.(float64)
+				for _, row := range fixture.ledger.rows {
+					if row["id"] != int(id) || row["agent"] != args["agent_name"] {
+						continue
+					}
+					switch renewMode {
+					case "false_success":
+					case "replacement":
+						row["id"] = 777
+					default:
+						prior, _ := time.Parse(time.RFC3339Nano, row["expires_ts"].(string))
+						row["expires_ts"] = prior.Add(time.Duration(seconds) * time.Second).UTC().Format(time.RFC3339Nano)
+					}
+				}
+			}
+			fixture.ledger.mu.Unlock()
+			if renewMode == "unavailable" {
+				fixture.mu.Lock()
+				fixture.failReadback = true
+				fixture.mu.Unlock()
+			}
+			fixture.renewOnce.Do(func() {
+				if fixture.renewed != nil {
+					close(fixture.renewed)
+				}
+			})
+			result = map[string]interface{}{"renewed": len(ids)}
 		case "release_file_reservations":
+			if releaseStart != nil {
+				fixture.releaseOnce.Do(func() { close(releaseStart) })
+			}
+			if releaseWait != nil {
+				select {
+				case <-releaseWait:
+				case <-r.Context().Done():
+					return
+				}
+			}
 			result = map[string]interface{}{"released": fixture.ledger.release(args)}
+			if releaseAction != nil {
+				releaseAction()
+			}
 			if replyMode == "lost_release" {
 				fixture.mu.Lock()
 				fixture.failReadback = true
 				fixture.mu.Unlock()
 			}
 		case "fetch_inbox":
+			if beforeInbox != nil {
+				beforeInbox()
+			}
+			if inboxWait != nil {
+				select {
+				case <-inboxWait:
+				case <-r.Context().Done():
+					return
+				}
+			}
+			if inboxAction != nil {
+				inboxAction()
+			}
 			if cancelInbox != nil {
 				cancelInbox()
 			}
@@ -1765,7 +2207,7 @@ func newReservationJournalFixture(t *testing.T, mode string) (*httptest.Server, 
 			http.Error(w, "unexpected tool", http.StatusBadRequest)
 			return
 		}
-		if name == "file_reservation_paths" && replyMode == "lost_acquisition" || name == "release_file_reservations" && replyMode == "lost_release" {
+		if name == "file_reservation_paths" && replyMode == "lost_acquisition" || name == "release_file_reservations" && replyMode == "lost_release" || name == "renew_file_reservations" && renewMode == "lost_reply" {
 			conn, _, err := w.(http.Hijacker).Hijack()
 			if err != nil {
 				t.Error(err)
