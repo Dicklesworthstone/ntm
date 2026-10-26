@@ -286,6 +286,184 @@ func TestSavedPiNativeResumeUsesExistingHeaderIdentity(t *testing.T) {
 	}
 }
 
+func TestSavedPiResumePreservesInheritedStoreAcrossSaveLoad(t *testing.T) {
+	for _, source := range []string{"session directory", "agent directory", "default home"} {
+		t.Run(source, func(t *testing.T) {
+			logPath := savedSessionRestoreFixture(t)
+			if err := agentpkg.RegisterPlugin("pi", nil, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PI_CODING_AGENT_SESSION_DIR", "")
+			t.Setenv("PI_CODING_AGENT_DIR", "")
+			directory := t.TempDir()
+			store := filepath.Join(os.Getenv("HOME"), ".pi", "agent", "sessions", "encoded-project")
+			switch source {
+			case "session directory":
+				store = t.TempDir()
+				t.Setenv("PI_CODING_AGENT_SESSION_DIR", store)
+			case "agent directory":
+				agentDir := t.TempDir()
+				store = filepath.Join(agentDir, "sessions", "encoded-project")
+				t.Setenv("PI_CODING_AGENT_DIR", agentDir)
+			}
+			if err := os.MkdirAll(store, 0700); err != nil {
+				t.Fatal(err)
+			}
+			transcript := filepath.Join(store, "renamed-session.jsonl")
+			header, err := json.Marshal(map[string]any{"type": "session", "version": 3, "id": "inherited-pi-id", "cwd": directory, "timestamp": time.Now().UTC().Format(time.RFC3339Nano)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(transcript, append(header, '\n'), 0600); err != nil {
+				t.Fatal(err)
+			}
+			state := &SessionState{Name: "inherited_pi", WorkDir: directory, Version: StateVersion, Panes: []PaneState{{
+				Index: 0, AgentType: "pi", WorkDir: directory,
+				LaunchSpec: &tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: "pi", Command: "pi --session-id inherited-pi-id --model provider/custom --thinking high"},
+			}}}
+			binding := agentsession.NewDiscoverer().ObserveBinding(t.Context(), "pi", directory, 0, time.Now())
+			applyPaneSessionBindings(state.Panes, []agentsession.BindingObservation{binding})
+			if !state.Panes[0].HasFreshSessionBinding() || state.Panes[0].SessionFile != transcript {
+				t.Fatalf("inherited store was not discovered: %+v", binding)
+			}
+			savedPath, err := Save(state, SaveOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(savedPath)
+			if err != nil || info.Mode().Perm()&0077 != 0 {
+				t.Fatalf("private resume reference is not in an owner-only save: %v, %v", info, err)
+			}
+			// A later caller inherits a different store containing the same
+			// authoritative ID/cwd. It must not replace the captured transcript.
+			ambient := t.TempDir()
+			if err := os.WriteFile(filepath.Join(ambient, "collision.jsonl"), append(header, '\n'), 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PI_CODING_AGENT_SESSION_DIR", ambient)
+			t.Setenv("PI_CODING_AGENT_DIR", "")
+			loaded, err := Load(state.Name)
+			if err != nil || loaded.Panes[0].SessionFile != transcript {
+				t.Fatalf("save/load lost the process's exact store: %+v, %v", loaded, err)
+			}
+			public, err := json.Marshal(loaded)
+			if err != nil || strings.Contains(string(public), transcript) || strings.Contains(string(public), "pi_resume_transcripts") {
+				t.Fatalf("public session JSON exposed a private transcript reference: %s, %v", public, err)
+			}
+			result, err := ResumeContext(t.Context(), loaded, AgentCommands{}, ResumeOptions{Name: "resumed_pi", Force: true})
+			if err != nil || result == nil || result.Resumed != 1 {
+				t.Fatalf("resume from a different environment failed: %+v, %v", result, err)
+			}
+			command := result.Panes[0].Command
+			if !strings.Contains(command, "--session "+tmux.ShellQuote(transcript)) || strings.Contains(command, ambient) ||
+				!strings.Contains(command, "--model provider/custom --thinking high") {
+				t.Fatalf("resume substituted a store or changed launch settings: %s", command)
+			}
+			calls, _ := os.ReadFile(logPath)
+			if !strings.Contains(string(calls), "cd "+tmux.ShellQuote(directory)+" && "+command) {
+				t.Fatalf("validated native resume never reached pane dispatch: %s", calls)
+			}
+		})
+	}
+}
+
+func TestSavedPiResumeReferenceFailureCannotFallBackToAmbientStore(t *testing.T) {
+	for _, scenario := range []string{"missing", "wrong id", "wrong cwd", "corrupt"} {
+		t.Run(scenario, func(t *testing.T) {
+			logPath := savedSessionRestoreFixture(t)
+			if err := agentpkg.RegisterPlugin("pi", nil, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			directory, store, ambient := t.TempDir(), t.TempDir(), t.TempDir()
+			transcript := filepath.Join(store, "original.jsonl")
+			header, err := json.Marshal(map[string]any{"type": "session", "version": 3, "id": "saved-pi-id", "cwd": directory})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(ambient, "collision.jsonl"), append(header, '\n'), 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PI_CODING_AGENT_SESSION_DIR", ambient)
+			state := &SessionState{Name: "protect_pi_reference", WorkDir: directory, Panes: []PaneState{{
+				AgentType: "pi", Command: "pi --session-id saved-pi-id", SessionID: "saved-pi-id", SessionFile: transcript,
+				SessionProvider: "pi", SessionFreshness: agentsession.BindingFresh, SessionConfidence: 1,
+			}}}
+			if _, err := Save(state, SaveOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if scenario != "missing" {
+				id, cwd := "saved-pi-id", directory
+				if scenario == "wrong id" {
+					id = "other-pi-id"
+				}
+				if scenario == "wrong cwd" {
+					cwd = t.TempDir()
+				}
+				header, err = json.Marshal(map[string]any{"type": "session", "version": 3, "id": id, "cwd": cwd})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if scenario == "corrupt" {
+					header = []byte("{invalid")
+				}
+				if err := os.WriteFile(transcript, append(header, '\n'), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			loaded, err := Load(state.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ResumeContext(t.Context(), loaded, AgentCommands{}, ResumeOptions{Force: true}); err == nil {
+				t.Fatal("unavailable captured transcript was replaced by another store's session")
+			}
+			calls, _ := os.ReadFile(logPath)
+			if len(calls) != 0 {
+				t.Fatalf("failed pi reference validation touched tmux: %s", calls)
+			}
+		})
+	}
+}
+
+func TestSavedPiResumeStorageRejectsUnboundReferences(t *testing.T) {
+	for _, scenario := range []string{"unknown pane", "duplicate pane", "wrong id", "wrong provider", "relative path", "stale binding"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			pane := PaneState{AgentType: "pi", SessionID: "saved-id", SessionProvider: "pi",
+				SessionFreshness: agentsession.BindingFresh, SessionConfidence: 1}
+			reference := map[string]any{"pane": 0, "session_id": "saved-id", "path": filepath.Join(t.TempDir(), "original.jsonl")}
+			references := []map[string]any{reference}
+			switch scenario {
+			case "unknown pane":
+				reference["pane"] = 1
+			case "duplicate pane":
+				references = append(references, reference)
+			case "wrong id":
+				reference["session_id"] = "other-id"
+			case "wrong provider":
+				pane.AgentType, pane.SessionProvider = "omp", "omp"
+			case "relative path":
+				reference["path"] = "relative.jsonl"
+			case "stale binding":
+				pane.SessionFreshness = agentsession.BindingStale
+			}
+			data, err := json.Marshal(map[string]any{"name": "invalid_pi_reference", "panes": []PaneState{pane}, "pi_resume_transcripts": references})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(StorageDir(), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(StorageDir(), "invalid_pi_reference.json"), data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load("invalid_pi_reference"); err == nil {
+				t.Fatal("private transcript reference was not bound to its saved pi pane")
+			}
+		})
+	}
+}
+
 func TestSavedPiResumeRejectsUnverifiableTranscriptBeforeReplacingSession(t *testing.T) {
 	for _, scenario := range []string{"missing", "wrong cwd", "wrong header id", "corrupt", "duplicate id"} {
 		t.Run(scenario, func(t *testing.T) {

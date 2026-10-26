@@ -110,7 +110,7 @@ type PaneState struct {
 	// not reimplemented here.
 	SessionID            string                        `json:"session_id,omitempty"`       // Provider session id (e.g. Claude UUID)
 	SessionProvider      string                        `json:"session_provider,omitempty"` // casr provider name ("claude", "codex", "gemini")
-	SessionFile          string                        `json:"-"`                          // Process-private discovery path; never serialized
+	SessionFile          string                        `json:"-"`                          // Private resume reference; excluded from public state JSON
 	SessionSource        agentsession.DiscoverySource  `json:"session_source,omitempty"`
 	SessionObservedAt    time.Time                     `json:"session_observed_at,omitempty"`
 	SessionSourceUpdated time.Time                     `json:"session_source_updated_at,omitempty"`

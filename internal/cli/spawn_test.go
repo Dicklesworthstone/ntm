@@ -2160,7 +2160,7 @@ func TestPiManagedSpawnAndAddPreserveDistinctSessionBindings(t *testing.T) {
 				if err != nil || words[len(words)-1].Value != pane.SessionID {
 					t.Fatalf("live pi header differs from recorded launch: %+v, %v", pane, err)
 				}
-				path, err := agentsession.ResolvePiResumeSession(t.Context(), pane.SessionID, pane.LaunchSpec.Command, project)
+				path, err := agentsession.ResolvePiResumeSession(t.Context(), pane.SessionID, pane.LaunchSpec.Command, project, pane.SessionFile)
 				if err != nil || path != filepath.Join(store, pane.SessionID+".jsonl") {
 					t.Fatalf("pi binding cannot resume its own transcript: %q, %v", path, err)
 				}
@@ -2171,13 +2171,31 @@ func TestPiManagedSpawnAndAddPreserveDistinctSessionBindings(t *testing.T) {
 			if _, err := session.Save(captured, session.SaveOptions{}); err != nil {
 				t.Fatal(err)
 			}
+			ambientStore := t.TempDir()
+			for id := range seen {
+				contents, err := os.ReadFile(filepath.Join(store, id+".jsonl"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(ambientStore, id+".jsonl"), contents, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("PI_CODING_AGENT_SESSION_DIR", ambientStore)
 			loaded, err := session.Load(name)
 			if err != nil {
 				t.Fatal(err)
 			}
 			for _, pane := range loaded.Panes {
-				if pane.AgentType == "pi" && (!seen[pane.SessionID] || !pane.HasFreshSessionBinding() || pane.LaunchSpec == nil) {
+				if pane.AgentType != "pi" {
+					continue
+				}
+				if !seen[pane.SessionID] || !pane.HasFreshSessionBinding() || pane.LaunchSpec == nil {
 					t.Fatalf("saved pi pane lost its exact binding: %+v", pane)
+				}
+				path, err := agentsession.ResolvePiResumeSession(t.Context(), pane.SessionID, pane.LaunchSpec.Command, project, pane.SessionFile)
+				if err != nil || path != filepath.Join(store, pane.SessionID+".jsonl") {
+					t.Fatalf("loaded pi pane switched to another environment's transcript: %q, %v", path, err)
 				}
 			}
 		})

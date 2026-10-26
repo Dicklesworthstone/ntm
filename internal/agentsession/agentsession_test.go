@@ -1970,7 +1970,7 @@ func TestResolvePiResumeSessionValidatesExactBindingAndLaunchStore(t *testing.T)
 	now := time.Now()
 	want := writePiTranscript(t, store, "renamed-session.jsonl", "saved-id", cwd, now, now)
 	launch := "PI_CODING_AGENT_SESSION_DIR=" + shellQuote(store) + " pi --no-approve --model 'provider/model' --thinking high"
-	path, err := ResolvePiResumeSession(context.Background(), "saved-id", launch, cwd)
+	path, err := ResolvePiResumeSession(context.Background(), "saved-id", launch, cwd, "")
 	if err != nil || path != want {
 		t.Fatalf("resolve saved pi binding = %q, %v; want %q", path, err, want)
 	}
@@ -1987,20 +1987,48 @@ func TestResolvePiResumeSessionValidatesExactBindingAndLaunchStore(t *testing.T)
 		{"saved-id", "pi --no-session", cwd},
 		{"saved-id", "pi; echo unsafe", cwd},
 	} {
-		if got, err := ResolvePiResumeSession(context.Background(), tc.id, tc.command, tc.cwd); err == nil {
+		if got, err := ResolvePiResumeSession(context.Background(), tc.id, tc.command, tc.cwd, ""); err == nil {
 			t.Errorf("invalid resume %+v resolved to %q", tc, got)
 		}
 	}
 	// An explicit renamed transcript remains usable without any environment
 	// override, but its authoritative header must match the saved binding.
 	direct := "pi --session " + shellQuote(want)
-	if got, err := ResolvePiResumeSession(context.Background(), "saved-id", direct, cwd); err != nil || got != want {
+	if got, err := ResolvePiResumeSession(context.Background(), "saved-id", direct, cwd, ""); err != nil || got != want {
 		t.Fatalf("direct saved transcript = %q, %v", got, err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := ResolvePiResumeSession(ctx, "saved-id", launch, cwd); err != context.Canceled {
+	if _, err := ResolvePiResumeSession(ctx, "saved-id", launch, cwd, ""); err != context.Canceled {
 		t.Fatalf("cancelled preflight = %v", err)
+	}
+}
+
+func TestResolvePiResumeSessionDoesNotSubstituteForCapturedTranscript(t *testing.T) {
+	clearPiSessionEnvironment(t)
+	cwd, original, ambient := t.TempDir(), t.TempDir(), t.TempDir()
+	now := time.Now()
+	captured := writePiTranscript(t, original, "renamed.jsonl", "saved-id", cwd, now, now)
+	writePiTranscript(t, ambient, "same-id-different-store.jsonl", "saved-id", cwd, now, now)
+	t.Setenv("PI_CODING_AGENT_SESSION_DIR", ambient)
+	command := "pi --session-id saved-id --model provider/model --thinking high"
+	if got, err := ResolvePiResumeSession(t.Context(), "saved-id", command, cwd, captured); err != nil || got != captured {
+		t.Fatalf("captured transcript was replaced by ambient store: %q, %v", got, err)
+	}
+	wrongID := writePiTranscript(t, original, "wrong-id.jsonl", "different-id", cwd, now, now)
+	wrongCwd := writePiTranscript(t, original, "wrong-cwd.jsonl", "saved-id", t.TempDir(), now, now)
+	for _, path := range []string{filepath.Join(original, "missing.jsonl"), wrongID, wrongCwd, "relative.jsonl"} {
+		if got, err := ResolvePiResumeSession(t.Context(), "saved-id", command, cwd, path); err == nil {
+			t.Errorf("invalid captured reference %q silently resolved to %q", path, got)
+		}
+	}
+	if got, err := ResolvePiResumeSession(t.Context(), "saved-id", "pi; echo unsafe", cwd, captured); err == nil {
+		t.Errorf("captured reference bypassed launch validation: %q", got)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := ResolvePiResumeSession(ctx, "saved-id", command, cwd, captured); err != context.Canceled {
+		t.Fatalf("captured reference ignored cancellation: %v", err)
 	}
 }
 

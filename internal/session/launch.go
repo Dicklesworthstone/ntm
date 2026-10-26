@@ -92,7 +92,7 @@ func preflightSavedLaunches(ctx context.Context, state *SessionState, cmds Agent
 					// Pi can create a new session for a missing explicit path.
 					// Resolve the saved header ID in the original store before
 					// replacing topology or dispatching a resume command.
-					selector, err = agentsession.ResolvePiResumeSession(ctx, pane.SessionID, command, launch.directory)
+					selector, err = agentsession.ResolvePiResumeSession(ctx, pane.SessionID, command, launch.directory, pane.SessionFile)
 					if err != nil {
 						return nil, fmt.Errorf("saved pane %d.%d pi session: %w", pane.WindowIndex, pane.Index, err)
 					}

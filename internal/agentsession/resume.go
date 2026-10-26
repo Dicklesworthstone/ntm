@@ -411,9 +411,12 @@ func shellQuote(s string) string {
 // ResolvePiResumeSession resolves a saved exact pi identity before any pane is
 // replaced. Pi can create a fresh session for a nonexistent --session path, so
 // a resume launch must point to an existing transcript with the saved header ID
-// and workspace. The returned absolute path is process-private launch input;
-// callers should continue reporting the original saved session ID.
-func ResolvePiResumeSession(ctx context.Context, sessionID, command, workDir string) (string, error) {
+// and workspace. A captured transcriptPath pins the store used by the original
+// process, even when its environment differs from the caller's. If that exact
+// file is unavailable or changed, do not substitute another store's session.
+// The returned absolute path is process-private launch input; callers should
+// continue reporting the original saved session ID.
+func ResolvePiResumeSession(ctx context.Context, sessionID, command, workDir, transcriptPath string) (string, error) {
 	if ctx == nil {
 		return "", errors.New("pi resume requires a context")
 	}
@@ -429,6 +432,20 @@ func ResolvePiResumeSession(ctx context.Context, sessionID, command, workDir str
 	}
 	if _, err := ResumeLaunchCommand("pi", sessionID, command, ResumeLaunchOptions{}); err != nil {
 		return "", err
+	}
+	if transcriptPath != "" {
+		if !filepath.IsAbs(transcriptPath) {
+			return "", errors.New("saved pi transcript reference must be an absolute path")
+		}
+		path := filepath.Clean(transcriptPath)
+		header, ok := readPiSessionHeader(path)
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if !ok || header.ID != sessionID || header.Cwd != workDir {
+			return "", errors.New("saved pi transcript no longer matches its captured identity and workspace")
+		}
+		return path, nil
 	}
 	words, err := shellword.Literal(command)
 	if err != nil {

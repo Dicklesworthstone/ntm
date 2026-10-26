@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
@@ -18,6 +19,50 @@ const (
 	archiveDirName = "archived"
 	fileExtension  = ".json"
 )
+
+// storedSessionState separates private recovery inputs from the public session
+// JSON used by status/show surfaces. Pi's live process can inherit a store from
+// an environment that no longer exists when the save is resumed. Persist the
+// exact discovered transcript in the existing owner-only save, without making
+// transcript paths part of PaneState's public JSON contract.
+type storedSessionState struct {
+	SessionState
+	PiResumeTranscripts []storedPiResumeTranscript `json:"pi_resume_transcripts,omitempty"`
+}
+
+type storedPiResumeTranscript struct {
+	Pane      int    `json:"pane"` // Position in the saved panes array, not a tmux index.
+	SessionID string `json:"session_id"`
+	Path      string `json:"path"`
+}
+
+func (stored *storedSessionState) restorePiResumeTranscripts() error {
+	seen := make(map[int]bool, len(stored.PiResumeTranscripts))
+	for _, reference := range stored.PiResumeTranscripts {
+		if reference.Pane < 0 || reference.Pane >= len(stored.Panes) || seen[reference.Pane] {
+			return fmt.Errorf("saved pi transcript reference has an invalid or duplicate pane")
+		}
+		pane := &stored.Panes[reference.Pane]
+		if agentsession.ResumeProvider(pane.AgentType) != "pi" || pane.SessionProvider != "pi" ||
+			!pane.HasFreshSessionBinding() || reference.SessionID != pane.SessionID || !filepath.IsAbs(reference.Path) {
+			return fmt.Errorf("saved pi transcript reference does not match its pane binding")
+		}
+		seen[reference.Pane] = true
+		pane.SessionFile = filepath.Clean(reference.Path)
+	}
+	return nil
+}
+
+func decodeStoredSession(data []byte) (*SessionState, error) {
+	var stored storedSessionState
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return nil, fmt.Errorf("failed to parse session file: %w", err)
+	}
+	if err := stored.restorePiResumeTranscripts(); err != nil {
+		return nil, err
+	}
+	return &stored.SessionState, nil
+}
 
 // StorageDir returns the path to the session storage directory.
 // Uses ~/.ntm/sessions by default.
@@ -122,8 +167,25 @@ func Save(state *SessionState, opts SaveOptions) (path string, err error) {
 		}
 	}
 
-	// Marshal state
-	data, err := json.MarshalIndent(state, "", "  ")
+	// Only pi requires the exact captured transcript to disambiguate a store
+	// inherited by its process. Other providers retain their existing format.
+	stored := storedSessionState{SessionState: *state}
+	for i, pane := range state.Panes {
+		if agentsession.ResumeProvider(pane.AgentType) == "pi" && pane.SessionFile != "" && pane.HasFreshSessionBinding() {
+			stored.PiResumeTranscripts = append(stored.PiResumeTranscripts, storedPiResumeTranscript{
+				Pane: i, SessionID: pane.SessionID, Path: pane.SessionFile,
+			})
+		}
+	}
+	if len(stored.PiResumeTranscripts) > 0 {
+		// Validate references before writing without mutating the caller's
+		// panes. Saves without private references retain their exact encoding.
+		stored.Panes = append([]PaneState(nil), state.Panes...)
+		if err := stored.restorePiResumeTranscripts(); err != nil {
+			return "", err
+		}
+	}
+	data, err := json.MarshalIndent(stored, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("failed to serialize session state: %w", err)
 	}
@@ -182,13 +244,7 @@ func Load(name string) (state *SessionState, err error) {
 		return nil, fmt.Errorf("failed to read session file: %w", err)
 	}
 
-	var parsed SessionState
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		return nil, fmt.Errorf("failed to parse session file: %w", err)
-	}
-
-	state = &parsed
-	return state, nil
+	return decodeStoredSession(data)
 }
 
 // Delete removes a saved session.
@@ -475,11 +531,7 @@ func loadFrom(path string) (*SessionState, error) {
 	if err != nil {
 		return nil, err
 	}
-	var parsed SessionState
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		return nil, fmt.Errorf("failed to parse session file: %w", err)
-	}
-	return &parsed, nil
+	return decodeStoredSession(data)
 }
 
 // moveFile relocates a file from src to dst, falling back to copy+remove when
