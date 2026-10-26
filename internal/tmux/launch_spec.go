@@ -142,9 +142,11 @@ func (spec *AgentLaunchSpec) ValidateReplayWithEnvironment(expected AgentType, e
 		{"AGENT_MAIL_PROJECT", spec.AgentMailProject != ""},
 		{"CLAUDE_CONFIG_DIR", spec.ClaudeIsolateCredentials},
 		{"CLAUDE_CODE_OAUTH_TOKEN", spec.ClaudeIsolateCredentials},
+		{"CODEX_SYSTEM_PROMPT", spec.SystemPromptFile != "" && spec.AgentType.Canonical() == AgentCodex},
+		{"GEMINI_SYSTEM_MD", spec.SystemPromptFile != "" && spec.AgentType.Canonical() == AgentGemini},
 	} {
 		if _, supplied := environment[managed.name]; supplied && managed.active {
-			return fmt.Errorf("recovery environment key %s conflicts with saved launch isolation or project settings", managed.name)
+			return fmt.Errorf("recovery environment key %s conflicts with saved launch isolation, project, or persona settings", managed.name)
 		}
 	}
 	if spec.CAAMProfile != "" {

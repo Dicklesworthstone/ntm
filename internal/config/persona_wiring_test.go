@@ -152,3 +152,56 @@ func TestGenerateAgentCommandGuardsDroppedPersona(t *testing.T) {
 		t.Fatalf("legacy command with persona: err = %v, want silent-persona-drop refusal", err)
 	}
 }
+
+func TestPinPersonaPromptReaderOnlyChangesManagedSyntax(t *testing.T) {
+	const prompt = "/work/reviewer's prompt.md"
+	legacyPrefix := "CODEX_SYSTEM_PROMPT=\"$(cat " + ShellQuote(prompt) + ")\" "
+	pinnedPrefix := "CODEX_SYSTEM_PROMPT=\"$(/bin/cat " + ShellQuote(prompt) + ")\" "
+	legacySuffix := " --prompt-interactive \"$(cat " + ShellQuote(prompt) + ")\""
+	pinnedSuffix := " --prompt-interactive \"$(/bin/cat " + ShellQuote(prompt) + ")\""
+	codex := "codex --model 'keep;$(literal)' --custom='untouched'"
+	agy := "'/opt/agents/agy-locked' --model 'keep $literal' --dangerously-skip-permissions"
+	for _, tc := range []struct {
+		name, provider, path, command, want string
+	}{
+		{"old Codex", "cod", prompt, legacyPrefix + codex, pinnedPrefix + codex},
+		{"pinned Codex", "codex", prompt, pinnedPrefix + codex, pinnedPrefix + codex},
+		{"old Antigravity", "agy", prompt, agy + legacySuffix, agy + pinnedSuffix},
+		{"pinned Antigravity", "antigravity", prompt, agy + pinnedSuffix, agy + pinnedSuffix},
+		{"ordinary command", "cod", "", codex, codex},
+		{"unbound prompt", "cod", "", legacyPrefix + codex, legacyPrefix + codex},
+		{"different recorded path", "cod", "/work/other.md", legacyPrefix + codex, legacyPrefix + codex},
+		{"different provider", "gmi", prompt, legacyPrefix + codex, legacyPrefix + codex},
+		{"Codex literal lookalike", "cod", prompt, "printf '%s' " + ShellQuote(legacyPrefix+codex), "printf '%s' " + ShellQuote(legacyPrefix+codex)},
+		{"Antigravity literal lookalike", "agy", prompt, "printf '%s' " + ShellQuote(agy+legacySuffix), "printf '%s' " + ShellQuote(agy+legacySuffix)},
+		{"unrelated binary", "agy", prompt, "printf '%s'" + legacySuffix, "printf '%s'" + legacySuffix},
+		{"custom shell wrapper", "agy", prompt, "prepare && " + agy + legacySuffix, "prepare && " + agy + legacySuffix},
+		{"different reader", "cod", prompt, strings.Replace(legacyPrefix+codex, "$(cat ", "$(/custom/cat ", 1), strings.Replace(legacyPrefix+codex, "$(cat ", "$(/custom/cat ", 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := PinPersonaPromptReader(tc.command, tc.provider, tc.path)
+			if err != nil || got != tc.want {
+				t.Fatalf("managed reader normalization = %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestGenerateAgentCommandPinsLegacyPersonaTemplates(t *testing.T) {
+	defaults := DefaultAgentTemplates()
+	for _, tc := range []struct {
+		provider, template string
+	}{
+		{"cod", defaults.Codex},
+		{"agy", defaults.Antigravity},
+	} {
+		for _, source := range []string{tc.template, strings.Replace(tc.template, "$(/bin/cat ", "$(cat ", 1)} {
+			command, err := GenerateAgentCommand(source, AgentTemplateVars{
+				AgentType: tc.provider, Model: "retained-model", SystemPromptFile: "/work/persona.md",
+			})
+			if err != nil || !strings.Contains(command, "$(/bin/cat '/work/persona.md')") || strings.Contains(command, "$(cat ") {
+				t.Fatalf("%s persona template retained a PATH-selected reader: %q, %v", tc.provider, command, err)
+			}
+		}
+	}
+}

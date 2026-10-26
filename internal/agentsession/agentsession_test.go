@@ -262,6 +262,11 @@ func TestResumeLaunchCommandCodexPreparedPersona(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	legacy := strings.Replace(command, "$(/bin/cat ", "$(cat ", 1)
+	legacyResumed, err := ResumeLaunchCommand("codex", "legacy-id", legacy, ResumeLaunchOptions{SystemPromptFile: path})
+	if err != nil || legacyResumed != strings.Replace(command, " codex ", " codex resume 'legacy-id' ", 1) {
+		t.Fatalf("legacy persona reader was not pinned during native resume: %q (%v)", legacyResumed, err)
+	}
 	got, err := ResumeLaunchCommand("codex", "first-id", command, ResumeLaunchOptions{SystemPromptFile: path})
 	if err != nil || got != strings.Replace(command, " codex ", " codex resume 'first-id' ", 1) {
 		t.Fatalf("prepared persona resume lost exact expansion: %q (%v)", got, err)
@@ -276,6 +281,8 @@ func TestResumeLaunchCommandCodexPreparedPersona(t *testing.T) {
 		}
 	}
 	for _, opaque := range []string{
+		`CODEX_SYSTEM_PROMPT="$(/bin/cat '/work/persona.md'; touch /tmp/unexpected)" codex --model custom`,
+		`CODEX_SYSTEM_PROMPT="$(/bin/cat '/other.md')" codex --model custom`,
 		`CODEX_SYSTEM_PROMPT="$(cat '/work/persona.md'; touch /tmp/unexpected)" codex --model custom`,
 		`CODEX_SYSTEM_PROMPT="$(cat '/work/persona.md')" codex --model "$MODEL"`,
 		`CODEX_SYSTEM_PROMPT="$(cat '/other.md')" codex --model custom`,

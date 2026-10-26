@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/shellword"
 )
 
@@ -89,7 +90,12 @@ func ResumeLaunchCommand(provider, sessionID, command string, opts ResumeLaunchO
 		if !filepath.IsAbs(opts.SystemPromptFile) || strings.ContainsAny(opts.SystemPromptFile, "\x00\r\n\t") {
 			return "", errors.New("recorded system prompt must have an absolute literal path")
 		}
-		expected := "CODEX_SYSTEM_PROMPT=\"$(cat " + shellQuote(opts.SystemPromptFile) + ")\" "
+		var err error
+		command, err = config.PinPersonaPromptReader(command, provider, opts.SystemPromptFile)
+		if err != nil {
+			return "", err
+		}
+		expected := "CODEX_SYSTEM_PROMPT=\"$(/bin/cat " + shellQuote(opts.SystemPromptFile) + ")\" "
 		if strings.HasPrefix(command, expected) {
 			prefix, command = expected, strings.TrimPrefix(command, expected)
 		}

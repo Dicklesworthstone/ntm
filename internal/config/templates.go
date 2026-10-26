@@ -3,6 +3,7 @@ package config
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,9 @@ import (
 	"sync"
 	"text/template"
 	"text/template/parse"
+
+	"github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/shellword"
 )
 
 // AgentTemplateVars contains variables available for agent command templates
@@ -408,10 +412,62 @@ func GenerateAgentCommand(tmpl string, vars AgentTemplateVars) (string, error) {
 	}
 
 	result := strings.TrimSpace(buf.String())
+	result, err = PinPersonaPromptReader(result, vars.AgentType, vars.SystemPromptFile)
+	if err != nil {
+		return "", err
+	}
 	if templateReferencesAnyField(t, "ClaudeSettings") {
 		return result, nil
 	}
 	return attachClaudeSettings(result, vars.ClaudeSettings)
+}
+
+// PinPersonaPromptReader pins the reader in NTM's generated persona syntax.
+// The exact recorded path binds the Codex prefix or the final Antigravity
+// argument. Other commands and literal lookalikes are left untouched.
+// Replay callers keep the original durable command and use this result only
+// in their prepared launch, so model, flags and unrelated shell text survive.
+func PinPersonaPromptReader(command, agentType, promptFile string) (string, error) {
+	if promptFile == "" {
+		return command, nil
+	}
+	quotedPath := ShellQuote(promptFile)
+	for _, reader := range []string{"cat", "/bin/cat"} {
+		var pinned string
+		switch agent.AgentType(agentType).Canonical() {
+		case agent.AgentTypeCodex:
+			prefix := "CODEX_SYSTEM_PROMPT=\"$(" + reader + " " + quotedPath + ")\" "
+			if !strings.HasPrefix(command, prefix) {
+				continue
+			}
+			pinned = "CODEX_SYSTEM_PROMPT=\"$(/bin/cat " + quotedPath + ")\" " + strings.TrimPrefix(command, prefix)
+		case agent.AgentTypeAntigravity:
+			suffix := " --prompt-interactive \"$(" + reader + " " + quotedPath + ")\""
+			prefix, ok := strings.CutSuffix(command, suffix)
+			if !ok {
+				continue
+			}
+			// The suffix is a real argument only when it follows a complete
+			// literal direct invocation, not text inside a quote or script.
+			words, err := shellword.Literal(prefix)
+			if err != nil || len(words) == 0 {
+				continue
+			}
+			binary := filepath.Base(words[0].Value)
+			if binary != "agy" && binary != "agy-locked" {
+				continue
+			}
+			pinned = prefix + " --prompt-interactive \"$(/bin/cat " + quotedPath + ")\""
+		default:
+			return command, nil
+		}
+		info, err := os.Stat("/bin/cat")
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+			return "", errors.New("managed persona prompt requires an executable /bin/cat")
+		}
+		return pinned, nil
+	}
+	return command, nil
 }
 
 // attachClaudeSettings appends `--settings <json>` to a rendered launch
@@ -607,7 +663,7 @@ func IsTemplateCommand(cmd string) bool {
 func DefaultAgentTemplates() AgentConfig {
 	return AgentConfig{
 		Claude: `{{memLimitPrefix}} claude --dangerously-skip-permissions{{if .Model}} --model {{shellQuote .Model}}{{end}} --effort {{shellQuote (.ReasoningEffort | default "` + DefaultClaudeReasoningEffort + `")}}{{if .SystemPromptFile}} --system-prompt-file {{shellQuote .SystemPromptFile}}{{end}}`,
-		Codex:  `{{if .SystemPromptFile}}CODEX_SYSTEM_PROMPT="$(cat {{shellQuote .SystemPromptFile}})" {{end}}codex --dangerously-bypass-approvals-and-sandbox -m {{shellQuote (.Model | default "` + DefaultCodexModel + `")}} -c model_reasoning_effort={{shellQuote (.ReasoningEffort | default "` + DefaultCodexReasoningEffort + `")}} -c model_reasoning_summary_format=experimental --search`,
+		Codex:  `{{if .SystemPromptFile}}CODEX_SYSTEM_PROMPT="$(/bin/cat {{shellQuote .SystemPromptFile}})" {{end}}codex --dangerously-bypass-approvals-and-sandbox -m {{shellQuote (.Model | default "` + DefaultCodexModel + `")}} -c model_reasoning_effort={{shellQuote (.ReasoningEffort | default "` + DefaultCodexReasoningEffort + `")}} -c model_reasoning_summary_format=experimental --search`,
 		// Gemini has no --system-prompt flag; the CLI's documented persona
 		// mechanism is the GEMINI_SYSTEM_MD env var, a path whose file contents
 		// REPLACE the core system prompt (getCoreSystemPrompt resolves it via
@@ -625,7 +681,7 @@ func DefaultAgentTemplates() AgentConfig {
 		// via --prompt-interactive ("run an initial prompt interactively and
 		// continue the session") — the bead-designed prepend-to-first-prompt
 		// fallback for CLIs without a true system-prompt mechanism.
-		Antigravity: `{{agyBinary}} --model {{shellQuote .Model}} --dangerously-skip-permissions{{if .SystemPromptFile}} --prompt-interactive "$(cat {{shellQuote .SystemPromptFile}})"{{end}}`,
+		Antigravity: `{{agyBinary}} --model {{shellQuote .Model}} --dangerously-skip-permissions{{if .SystemPromptFile}} --prompt-interactive "$(/bin/cat {{shellQuote .SystemPromptFile}})"{{end}}`,
 		// Grok Build owns its default model selection. NTM only supplies --model
 		// for an explicit/configured override, avoiding stale built-in model IDs.
 		// --always-approve is the official autonomous approval flag exposed by

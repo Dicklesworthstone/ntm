@@ -95,7 +95,7 @@ func ValidateGlobalCredentialLaunchCommand(agentType, command string, opts Resum
 	}
 	if provider == "codex" && opts.SystemPromptFile != "" {
 		// ResumeLaunchCommand already validated this exact NTM-generated form.
-		prefix := "CODEX_SYSTEM_PROMPT=\"$(cat " + shellQuote(opts.SystemPromptFile) + ")\" "
+		prefix := "CODEX_SYSTEM_PROMPT=\"$(/bin/cat " + shellQuote(opts.SystemPromptFile) + ")\" "
 		validated = strings.TrimPrefix(validated, prefix)
 	}
 	words, err := shellword.Literal(validated)

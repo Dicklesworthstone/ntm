@@ -414,6 +414,102 @@ func TestAgentLaunchSpecPreflightVerifiesOriginalPersonaPrompt(t *testing.T) {
 	}
 }
 
+func TestAgentLaunchSpecPersonaReaderIgnoresRecoveryPATH(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("managed persona shell launch requires a Unix shell")
+	}
+	for _, provider := range []struct {
+		name     string
+		kind     tmux.AgentType
+		template func(config.AgentConfig) string
+	}{
+		{"codex", tmux.AgentCodex, func(a config.AgentConfig) string { return a.Codex }},
+		{"agy", tmux.AgentAntigravity, func(a config.AgentConfig) string { return a.Antigravity }},
+	} {
+		for _, legacy := range []bool{false, true} {
+			for _, counterfeit := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/legacy=%v/counterfeit=%v", provider.name, legacy, counterfeit), func(t *testing.T) {
+					root := t.TempDir()
+					bin := filepath.Join(root, "bin")
+					if err := os.Mkdir(bin, 0700); err != nil {
+						t.Fatal(err)
+					}
+					t.Setenv("PATH", bin)
+					const original = "review this code\nliteral 'quotes' $() ; remains prompt text"
+					prompt := filepath.Join(root, "reviewer's prompt.md")
+					if err := os.WriteFile(prompt, []byte(original), 0600); err != nil {
+						t.Fatal(err)
+					}
+					counterfeitLog := filepath.Join(root, "counterfeit-executed")
+					if counterfeit {
+						script := "#!/bin/sh\nprintf used > " + tmux.ShellQuote(counterfeitLog) + "\nprintf counterfeit-persona\n"
+						if err := os.WriteFile(filepath.Join(bin, "cat"), []byte(script), 0700); err != nil {
+							t.Fatal(err)
+						}
+					}
+					providerScript := "#!/bin/sh\nprintf '%s' \"$CODEX_SYSTEM_PROMPT\"\n"
+					if provider.name == "agy" {
+						providerScript = "#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do if [ \"$1\" = --prompt-interactive ]; then shift; printf '%s' \"$1\"; exit; fi; shift; done\n"
+					}
+					if err := os.WriteFile(filepath.Join(bin, provider.name), []byte(providerScript), 0700); err != nil {
+						t.Fatal(err)
+					}
+					command, err := config.GenerateAgentCommand(provider.template(config.DefaultAgentTemplates()), config.AgentTemplateVars{
+						AgentType: string(provider.kind), Model: "retained-model", SystemPromptFile: prompt,
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if legacy {
+						command = strings.Replace(command, "$(/bin/cat ", "$(cat ", 1)
+					}
+					saved := tmux.AgentLaunchSpec{
+						Version: tmux.AgentLaunchSpecVersion, AgentType: provider.kind, Command: command,
+						Persona: "reviewer", SystemPromptFile: prompt, SystemPromptSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(original))),
+						OmittedEnv: []string{"PATH"},
+					}
+					before, err := json.Marshal(saved)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := saved.ValidateReplayWithEnvironment(provider.kind, map[string]string{"PATH": bin}); err != nil {
+						t.Fatal(err)
+					}
+					// The restart engine proves explicit inputs first, then
+					// preflights a private copy without clearing the durable marker.
+					replaySpec := saved
+					replaySpec.OmittedEnv = nil
+					plan, err := PreflightAgentLaunchSpec(t.Context(), nil, replaySpec, root)
+					if err != nil {
+						t.Fatal(err)
+					}
+					preview, err := plan.Preview(t.Context(), root, "recovered", 1)
+					if err != nil {
+						t.Fatal(err)
+					}
+					prepared, err := plan.Prepare(t.Context(), root, "recovered", 1)
+					if err != nil || prepared != preview || !strings.Contains(prepared, "$(/bin/cat ") {
+						t.Fatalf("preview and preparation did not pin the same reader: %q, %q, %v", preview, prepared, err)
+					}
+					after, err := json.Marshal(saved)
+					if err != nil || string(before) != string(after) || plan.spec.Command != command {
+						t.Fatal("reader preparation changed the durable launch specification")
+					}
+					cmd := exec.CommandContext(t.Context(), "/bin/sh", "-p", "-c", prepared)
+					cmd.Env = []string{"PATH=" + bin}
+					output, err := cmd.CombinedOutput()
+					if err != nil || string(output) != original {
+						t.Fatalf("recovered PATH changed the delivered persona: %q, %v", output, err)
+					}
+					if _, err := os.Stat(counterfeitLog); !os.IsNotExist(err) {
+						t.Fatalf("PATH-selected persona reader executed: %v", err)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestAgentLaunchSpecCancellationPreventsProvisioning(t *testing.T) {
 	spec := tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentClaude, Command: "claude"}
 	ctx, cancel := context.WithCancel(context.Background())

@@ -16,6 +16,39 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 )
 
+func TestRecoveryEnvironmentRejectsPersonaCollisions(t *testing.T) {
+	for _, tc := range []struct {
+		kind AgentType
+		key  string
+	}{
+		{AgentType("codex"), "CODEX_SYSTEM_PROMPT"},
+		{AgentType("gemini"), "GEMINI_SYSTEM_MD"},
+	} {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			spec := AgentLaunchSpec{
+				Version: AgentLaunchSpecVersion, AgentType: tc.kind, Command: string(tc.kind),
+				SystemPromptFile: "/work/persona.md", SystemPromptSHA256: strings.Repeat("a", 64),
+				OmittedEnv: []string{tc.key},
+			}
+			for _, value := range []string{"private-recovery-value", ""} {
+				err := spec.ValidateReplayWithEnvironment(tc.kind, map[string]string{tc.key: value})
+				if err == nil || !strings.Contains(err.Error(), tc.key) || strings.Contains(err.Error(), "private-recovery-value") {
+					t.Fatalf("managed persona input was not refused safely: %v", err)
+				}
+			}
+			spec.SystemPromptFile, spec.SystemPromptSHA256 = "", ""
+			if err := spec.ValidateReplayWithEnvironment(tc.kind, map[string]string{tc.key: "explicit-unmanaged-value"}); err != nil {
+				t.Fatalf("unmanaged persona environment was rejected: %v", err)
+			}
+			spec.SystemPromptFile, spec.SystemPromptSHA256 = "/work/persona.md", strings.Repeat("a", 64)
+			spec.AgentType, spec.Command = AgentClaude, "claude"
+			if err := spec.ValidateReplayWithEnvironment(AgentClaude, map[string]string{tc.key: "unrelated-provider-input"}); err != nil {
+				t.Fatalf("unrelated provider environment was rejected: %v", err)
+			}
+		})
+	}
+}
+
 func TestAgentLaunchSpecValidation(t *testing.T) {
 	valid := AgentLaunchSpec{
 		Version: AgentLaunchSpecVersion, AgentType: AgentClaude,

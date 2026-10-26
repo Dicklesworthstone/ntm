@@ -188,6 +188,7 @@ func wrapLaunchBindingCommand(binary string, binding *LaunchBinding, shell, comm
 // entire checkpoint before replacing a session or while reporting a dry run.
 type AgentLaunchPlan struct {
 	spec       tmux.AgentLaunchSpec
+	command    string
 	cfg        *config.Config
 	binding    *LaunchBinding
 	caamBinary string
@@ -219,12 +220,16 @@ func preflightAgentLaunchSpec(ctx context.Context, cfg *config.Config, spec tmux
 	if err := verifyAgentSystemPrompt(spec); err != nil {
 		return nil, err
 	}
+	command, err := config.PinPersonaPromptReader(spec.Command, string(spec.AgentType), spec.SystemPromptFile)
+	if err != nil {
+		return nil, fmt.Errorf("preflight saved persona reader: %w", err)
+	}
 	if spec.ClaudeIsolateCredentials {
 		if err := checkIsolation(); err != nil {
 			return nil, fmt.Errorf("preflight saved Claude credential isolation: %w", err)
 		}
 	}
-	plan := &AgentLaunchPlan{spec: spec}
+	plan := &AgentLaunchPlan{spec: spec, command: command}
 	plan.spec.OmittedEnv = append([]string(nil), spec.OmittedEnv...)
 	if cfg == nil && (spec.ClaudeIsolateCredentials || spec.CAAMProfile != "") {
 		var err error
@@ -268,7 +273,7 @@ func preflightAgentLaunchSpec(ctx context.Context, cfg *config.Config, spec tmux
 			return nil, errors.New("saved CAAM replay requires an executable /bin/sh")
 		}
 		preflightCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		_, _, err = PrepareLaunchCommand(preflightCtx, string(spec.AgentType), plan.caamBinary, plan.binding, spec.Command)
+		_, _, err = PrepareLaunchCommand(preflightCtx, string(spec.AgentType), plan.caamBinary, plan.binding, plan.command)
 		cancel()
 		if err != nil {
 			return nil, err
@@ -349,7 +354,7 @@ func (plan *AgentLaunchPlan) prepare(ctx context.Context, projectDir, session st
 	if err := verifyAgentSystemPrompt(plan.spec); err != nil {
 		return "", err
 	}
-	command := plan.spec.Command
+	command := plan.command
 	if plan.spec.ClaudeIsolateCredentials {
 		env := swarm.NewClaudeConfigProvisioner(projectDir).EnvForPane(session, strconv.Itoa(paneIndex), plan.cfg.Agents.ClaudeTokenFile)
 		if provision {

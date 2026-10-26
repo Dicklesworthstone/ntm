@@ -476,6 +476,7 @@ func TestValidateGlobalCredentialLaunchCommand(t *testing.T) {
 		{name: "Claude memory wrapper", provider: "cc", command: `systemd-run --user --scope -q -p MemoryMax=4096M claude --model example`},
 		{name: "Codex reasoning", provider: "cod", command: `codex --model example -c 'model_reasoning_effort="high"'`},
 		{name: "Codex persona", provider: "codex", command: `CODEX_SYSTEM_PROMPT="$(cat '/work/persona.md')" codex --model example`, prompt: "/work/persona.md"},
+		{name: "Codex pinned persona", provider: "codex", command: `CODEX_SYSTEM_PROMPT="$(/bin/cat '/work/persona.md')" codex --model example`, prompt: "/work/persona.md"},
 		{name: "Codex repeated native resume", provider: "codex", command: `codex resume 'old-id' --model example`},
 		{name: "leading API key", provider: "codex", command: `OPENAI_API_KEY='must-not-be-logged' codex`, wantError: true},
 		{name: "leading safe-looking env", provider: "claude", command: `MODE=private claude`, wantError: true},
