@@ -482,6 +482,161 @@ func TestServerProjectDirScopesMailAtStartup(t *testing.T) {
 	}
 }
 
+// patchProjectDir sends PATCH /api/v1/config through the real router with the
+// given raw project_dir JSON value ("" omits the field) and returns the
+// response code and the project_dir the response reports.
+func patchProjectDir(t *testing.T, srv *Server, rawProjectDir string) (int, string) {
+	t.Helper()
+	body := `{"allowed_origins":["http://localhost:7337"]}`
+	if rawProjectDir != "" {
+		body = `{"project_dir":` + rawProjectDir + `}`
+	}
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodPatch, "/api/v1/config", strings.NewReader(body)))
+	var resp struct {
+		Config struct {
+			ProjectDir string `json:"project_dir"`
+		} `json:"config"`
+	}
+	if rec.Code == http.StatusOK {
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode PATCH response %s: %v", rec.Body, err)
+		}
+	}
+	return rec.Code, resp.Config.ProjectDir
+}
+
+// GH #360: PATCH /api/v1/config ignored an empty project_dir, so once a caller
+// repointed the server-wide project (and with it mail, beads and jobs), only a
+// restart restored the --project-dir value. An explicit "" or null now resets
+// it to the startup project, or to no project when none was given.
+func TestPatchConfigResetsProjectDirToStartupValue(t *testing.T) {
+	canonical := func(dir string) string {
+		t.Helper()
+		resolved, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resolved
+	}
+	startup, other := canonical(t.TempDir()), canonical(t.TempDir())
+	mcp := newMockAgentMailMCPHandler(t, nil)
+	mail := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK) // Agent Mail liveness probe.
+			return
+		}
+		mcp.ServeHTTP(w, r)
+	}))
+	defer mail.Close()
+	t.Setenv("AGENT_MAIL_URL", mail.URL+"/mcp/")
+	t.Setenv("AGENT_MAIL_TOKEN", "")
+
+	srv := New(Config{ProjectDir: startup})
+	defer srv.Stop()
+
+	// GET reports the reset target next to the current project.
+	getRec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/api/v1/config", nil))
+	var getResp struct {
+		ProjectDir        string `json:"project_dir"`
+		StartupProjectDir string `json:"startup_project_dir"`
+	}
+	if err := json.Unmarshal(getRec.Body.Bytes(), &getResp); err != nil || getRec.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/config = %d %s (decode err %v)", getRec.Code, getRec.Body, err)
+	}
+	if getResp.ProjectDir != startup || getResp.StartupProjectDir != startup {
+		t.Fatalf("GET /api/v1/config project_dir=%q startup_project_dir=%q, want both %q", getResp.ProjectDir, getResp.StartupProjectDir, startup)
+	}
+
+	for _, reset := range []string{`""`, `null`} {
+		t.Run("reset with "+reset, func(t *testing.T) {
+			otherJSON, err := json.Marshal(other)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if code, got := patchProjectDir(t, srv, string(otherJSON)); code != http.StatusOK || got != other {
+				t.Fatalf("select other project: %d %q", code, got)
+			}
+			// A PATCH that omits project_dir leaves the selection alone.
+			if code, got := patchProjectDir(t, srv, ""); code != http.StatusOK || got != other {
+				t.Fatalf("PATCH without project_dir changed the project: %d %q, want %q", code, got, other)
+			}
+			if client, err := srv.getMailClient(); err != nil || client == nil || client.ProjectKey() != other {
+				t.Fatalf("mail client not scoped to the selected project: client=%v err=%v", client, err)
+			}
+			srv.mu.Lock()
+			srv.mailUnavailableUntil = time.Now().Add(time.Hour)
+			srv.mu.Unlock()
+
+			if code, got := patchProjectDir(t, srv, reset); code != http.StatusOK || got != startup {
+				t.Fatalf("PATCH project_dir=%s = %d %q, want 200 and the startup project %q", reset, code, got, startup)
+			}
+			if got := srv.projectDirSnapshot(); got != startup {
+				t.Fatalf("server project after reset = %q, want %q", got, startup)
+			}
+			// Mail must follow the reset like any other project change: no
+			// cached client or unavailability verdict for the previous project.
+			if client, err := srv.getMailClient(); err != nil || client == nil || client.ProjectKey() != startup {
+				t.Fatalf("mail client after reset: client=%v err=%v, want project %q", client, err, startup)
+			}
+		})
+	}
+
+	t.Run("non-string value is rejected", func(t *testing.T) {
+		before := srv.projectDirSnapshot()
+		if code, _ := patchProjectDir(t, srv, `42`); code != http.StatusBadRequest {
+			t.Fatalf("PATCH project_dir=42 = %d, want 400", code)
+		}
+		if got := srv.projectDirSnapshot(); got != before {
+			t.Fatalf("rejected PATCH changed the project to %q", got)
+		}
+	})
+
+	t.Run("server started without a project resets to none", func(t *testing.T) {
+		unscoped := New(Config{})
+		defer unscoped.Stop()
+		otherJSON, err := json.Marshal(other)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if code, got := patchProjectDir(t, unscoped, string(otherJSON)); code != http.StatusOK || got != other {
+			t.Fatalf("select other project: %d %q", code, got)
+		}
+		if code, got := patchProjectDir(t, unscoped, `""`); code != http.StatusOK || got != "" {
+			t.Fatalf("reset of an unscoped server = %d %q, want 200 and no project", code, got)
+		}
+		if got := unscoped.projectDirSnapshot(); got != "" {
+			t.Fatalf("unscoped server still points at %q after reset", got)
+		}
+	})
+
+	t.Run("startup project that no longer exists is not restored", func(t *testing.T) {
+		gone := filepath.Join(canonical(t.TempDir()), "gone")
+		if err := os.Mkdir(gone, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		vanishing := New(Config{ProjectDir: gone})
+		defer vanishing.Stop()
+		otherJSON, err := json.Marshal(other)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if code, got := patchProjectDir(t, vanishing, string(otherJSON)); code != http.StatusOK || got != other {
+			t.Fatalf("select other project: %d %q", code, got)
+		}
+		if err := os.Rename(gone, gone+".moved"); err != nil {
+			t.Fatal(err)
+		}
+		if code, _ := patchProjectDir(t, vanishing, `""`); code != http.StatusBadRequest {
+			t.Fatalf("reset to a removed startup project = %d, want 400", code)
+		}
+		if got := vanishing.projectDirSnapshot(); got != other {
+			t.Fatalf("failed reset changed the project to %q, want %q", got, other)
+		}
+	})
+}
+
 func TestValidateConfigDefaults(t *testing.T) {
 	if err := ValidateConfig(Config{}); err != nil {
 		t.Fatalf("ValidateConfig default should succeed, got %v", err)

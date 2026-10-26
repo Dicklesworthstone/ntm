@@ -136,6 +136,10 @@ type Server struct {
 	// probe budget again. Guarded by mu.
 	mailUnavailableUntil time.Time
 	projectDir           string
+	// startupProjectDir is the project the server was started with (Config's
+	// ProjectDir; empty when none was given). It never changes after New. A
+	// configuration PATCH with an empty or null project_dir restores it.
+	startupProjectDir string
 	// pipelineScope is set only on an immutable per-operation execution view.
 	// It pins cwd fallback separately from configured file-workflow access.
 	pipelineScope *pipelineProjectScope
@@ -229,6 +233,8 @@ type Config struct {
 	// ProjectDir is the server-wide project used by mail, beads, and project-scoped
 	// jobs. Nonempty paths must name an existing directory. Empty leaves the
 	// server unscoped until a project is selected through the configuration API.
+	// It is also the value a configuration PATCH with an empty or null
+	// project_dir restores.
 	ProjectDir string
 	EventBus   *events.EventBus
 	StateStore *state.Store
@@ -1248,6 +1254,7 @@ func New(cfg Config) *Server {
 		port:               cfg.Port,
 		publicBaseURL:      cfg.PublicBaseURL,
 		projectDir:         cfg.ProjectDir,
+		startupProjectDir:  cfg.ProjectDir,
 		version:            cfg.Version,
 		eventBus:           cfg.EventBus,
 		stateStore:         cfg.StateStore,
@@ -3083,38 +3090,63 @@ func (s *Server) handleGetConfigV1(w http.ResponseWriter, r *http.Request) {
 	projDir := s.projectDir
 	s.mu.RUnlock()
 
-	// Return safe configuration fields only (no secrets)
+	// Return safe configuration fields only (no secrets). startup_project_dir
+	// is what a PATCH with an empty or null project_dir restores.
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"host":            s.host,
-		"port":            s.port,
-		"auth_mode":       string(s.auth.Mode),
-		"allowed_origins": origins,
-		"public_base_url": s.publicBaseURL,
-		"project_dir":     projDir,
+		"host":                s.host,
+		"port":                s.port,
+		"auth_mode":           string(s.auth.Mode),
+		"allowed_origins":     origins,
+		"public_base_url":     s.publicBaseURL,
+		"project_dir":         projDir,
+		"startup_project_dir": s.startupProjectDir,
 	}, reqID)
 }
 
 // handlePatchConfigV1 handles PATCH /api/v1/config.
 // Updates mutable configuration fields at runtime.
+//
+// project_dir selects the server-wide project. An omitted project_dir leaves
+// it unchanged. A path selects that directory. An empty string or null resets
+// it to the startup project (`--project-dir`), or to no project when the server
+// was started without one, so a PATCH can always be undone without a restart
+// (GH #360). A nonempty target, including the startup project on a reset, must
+// still be an existing directory.
 func (s *Server) handlePatchConfigV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	slog.Info("config patch", "request_id", reqID)
 
 	var req struct {
 		AllowedOrigins []string `json:"allowed_origins,omitempty"`
-		ProjectDir     string   `json:"project_dir,omitempty"`
+		// Raw so that an explicit "" or null (reset) is distinguishable from
+		// an omitted field (unchanged).
+		ProjectDir json.RawMessage `json:"project_dir,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body: "+err.Error(), nil, reqID)
 		return
 	}
-	if req.ProjectDir != "" {
-		projectDir, err := ResolveProjectDir(req.ProjectDir)
-		if err != nil {
+	updateProject, resetProject := len(req.ProjectDir) > 0, false
+	var projectDir string
+	if updateProject {
+		var requested *string
+		if err := json.Unmarshal(req.ProjectDir, &requested); err != nil {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "project_dir must be a string or null", nil, reqID)
+			return
+		}
+		var err error
+		if requested == nil || *requested == "" {
+			resetProject = true
+			// The startup value was validated when the server started; check
+			// it again, since the directory may have been removed since.
+			if projectDir, err = ResolveProjectDir(s.startupProjectDir); err != nil {
+				writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "cannot reset project_dir to the startup project: "+err.Error(), nil, reqID)
+				return
+			}
+		} else if projectDir, err = ResolveProjectDir(*requested); err != nil {
 			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil, reqID)
 			return
 		}
-		req.ProjectDir = projectDir
 	}
 
 	// Apply updates and snapshot the result under the lock so the log
@@ -3123,8 +3155,8 @@ func (s *Server) handlePatchConfigV1(w http.ResponseWriter, r *http.Request) {
 	if req.AllowedOrigins != nil {
 		s.corsAllowedOrigins = req.AllowedOrigins
 	}
-	if req.ProjectDir != "" {
-		s.projectDir = req.ProjectDir
+	if updateProject {
+		s.projectDir = projectDir
 		// Reset mail client so it picks up new project dir
 		s.mailClient = nil
 		// A new project directory invalidates the cached unavailability verdict too.
@@ -3134,7 +3166,7 @@ func (s *Server) handlePatchConfigV1(w http.ResponseWriter, r *http.Request) {
 	currentProjectDir := s.projectDir
 	s.mu.Unlock()
 
-	slog.Info("config updated", "request_id", reqID, "allowed_origins", len(currentOrigins), "project_dir", currentProjectDir)
+	slog.Info("config updated", "request_id", reqID, "allowed_origins", len(currentOrigins), "project_dir", currentProjectDir, "project_dir_reset", resetProject)
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"updated": true,

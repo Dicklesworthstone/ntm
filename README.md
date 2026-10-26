@@ -1052,6 +1052,19 @@ ntm serve
 ```
 
 Set the default project with `ntm serve --project-dir /absolute/project/path`.
+`PATCH /api/v1/config` changes it at runtime for every caller:
+`{"project_dir": "/absolute/other/project"}` selects another project, and
+`{"project_dir": ""}` or `{"project_dir": null}` resets it to the
+`--project-dir` value (no project if the server started without one). Omitting
+`project_dir` leaves it unchanged. `GET /api/v1/config` reports the current
+`project_dir` and the reset target as `startup_project_dir`.
+
+The selection scopes later requests on every project-scoped route, including
+mail, beads, jobs, and pipelines. Jobs and pipeline runs already admitted, and
+mail requests already in flight, keep the project they started with. The
+target must be an existing directory, so a reset returns 400 and changes
+nothing if the startup directory has since been removed.
+
 Agent Mail operations under `/api/v1/mail/` and file reservation operations under
 `/api/v1/reservations` also accept a `project` query parameter, so agents in
 multiple projects can share one server:
