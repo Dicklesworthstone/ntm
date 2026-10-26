@@ -470,6 +470,11 @@ func (e *Executor) branchHasChildEvidence(parent *Step) bool {
 			return true
 		}
 	}
+	for id := range e.state.ReservationSteps {
+		if belongs(id) {
+			return true
+		}
+	}
 	for id := range e.state.ForeachState {
 		if belongs(id) {
 			return true

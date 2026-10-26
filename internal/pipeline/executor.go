@@ -453,7 +453,18 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 		return e.state, joinCheckpointError(fmt.Errorf("workflow has dependency errors: %v", errors[0]), e.persistState())
 	}
 
-	if err := e.applyResumeOptions(workflow, e.config.ResumeOptions); err != nil {
+	resumeErr := e.verifyReservationResume(ctx, workflow, e.config.ResumeOptions)
+	if resumeErr != nil && ctx.Err() != nil && errors.Is(resumeErr, ctx.Err()) {
+		// Cancellation during read-only lease admission is a cancelled
+		// attempt, not failed protection. Run authored cleanup with the
+		// original receipts intact; do not reset or prune their identities.
+		// Concrete ownership and unknown-outcome errors do not match ctx.Err.
+		return e.finishExecution(ctx, workflow, resumeErr)
+	}
+	if resumeErr == nil {
+		resumeErr = e.applyResumeOptions(workflow, e.config.ResumeOptions)
+	}
+	if err := resumeErr; err != nil {
 		e.stateMu.Lock()
 		e.state.Status = StatusFailed
 		e.state.Errors = append(e.state.Errors, ExecutionError{
@@ -1016,6 +1027,11 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 		if send, ok := e.loadMailSend(step.ID); ok && send.Status != mailSendRejected {
 			// A lost response or output parsing failure cannot authorize a
 			// second message carrying the same work to the recipient.
+			break
+		}
+		if reservation, ok := e.loadReservationStep(step.ID); ok && reservation.Status != reservationRejected {
+			// Partial grants, unresolved mutations, and parsing failures are
+			// not permission to acquire new leases or repeat broad releases.
 			break
 		}
 
@@ -3799,6 +3815,12 @@ func (e *Executor) snapshotState() *ExecutionState {
 		snapshot.MailSends = make(map[string]MailSendState, len(e.state.MailSends))
 		for key, record := range e.state.MailSends {
 			snapshot.MailSends[key] = cloneMailSend(record)
+		}
+	}
+	if e.state.ReservationSteps != nil {
+		snapshot.ReservationSteps = make(map[string]ReservationStepState, len(e.state.ReservationSteps))
+		for key, record := range e.state.ReservationSteps {
+			snapshot.ReservationSteps[key] = cloneReservationStep(record)
 		}
 	}
 	e.stateMu.RUnlock()

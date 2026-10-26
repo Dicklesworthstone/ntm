@@ -509,7 +509,7 @@ func RunBackgroundWorker(ctx context.Context, projectDir, requestID string, inpu
 	if req.Resume {
 		// No checkpoint writes before authorization, including policy failures,
 		// EOF and malformed tokens. Recovery reads only under run ownership.
-		workflow, st, cfg, err = prepareBackgroundResume(root, req)
+		workflow, st, cfg, err = prepareBackgroundResume(runCtx, root, req)
 		if err != nil {
 			return err
 		}

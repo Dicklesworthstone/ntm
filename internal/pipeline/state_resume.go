@@ -1355,6 +1355,10 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 		e.stateMu.RUnlock()
 		return err
 	}
+	if err := e.validateReservationResumeLocked(state, opts, workflow); err != nil {
+		e.stateMu.RUnlock()
+		return err
+	}
 	e.stateMu.RUnlock()
 
 	if opts.MaxResumeAge > 0 && !checkpoint.IsZero() && time.Since(checkpoint) > opts.MaxResumeAge {
@@ -1410,6 +1414,15 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 				}
 				e.state.Steps[stepID] = result
 				delete(e.state.MailSends, stepID)
+			}
+		}
+		for stepID := range e.state.ReservationSteps {
+			if resumeResetsReservationStep(e.state, opts, stepID) {
+				if e.state.Steps == nil {
+					e.state.Steps = make(map[string]StepResult)
+				}
+				e.state.Steps[stepID] = StepResult{StepID: stepID, Status: StatusPending}
+				delete(e.state.ReservationSteps, stepID)
 			}
 		}
 		e.stateMu.Unlock()
@@ -1480,6 +1493,9 @@ func (e *Executor) resetSettledOnCancelState(workflow *Workflow) {
 	for id := range e.state.MailSends {
 		collect(id)
 	}
+	for id := range e.state.ReservationSteps {
+		collect(id)
+	}
 	for id := range e.state.ForeachState {
 		collect(id)
 	}
@@ -1492,6 +1508,9 @@ func (e *Executor) resetSettledOnCancelState(workflow *Workflow) {
 		}
 		if record, ok := e.state.MailSends[id]; ok && record.Status != mailSendSending {
 			delete(e.state.MailSends, id)
+		}
+		if record, ok := e.state.ReservationSteps[id]; ok && (record.Status == reservationReleased || record.Status == reservationRejected) {
+			delete(e.state.ReservationSteps, id)
 		}
 		delete(e.state.Steps, id)
 		delete(e.state.ForeachState, id)
@@ -1548,6 +1567,9 @@ func (e *Executor) resetPostPipelineForMainAttempt(workflow *Workflow) {
 	for id := range e.state.MailSends {
 		collect(id)
 	}
+	for id := range e.state.ReservationSteps {
+		collect(id)
+	}
 	for id := range e.state.ForeachState {
 		collect(id)
 	}
@@ -1566,6 +1588,9 @@ func (e *Executor) resetPostPipelineForMainAttempt(workflow *Workflow) {
 		}
 		if record, ok := e.state.MailSends[id]; ok && record.Status != mailSendSending {
 			delete(e.state.MailSends, id)
+		}
+		if record, ok := e.state.ReservationSteps[id]; ok && (record.Status == reservationReleased || record.Status == reservationRejected) {
+			delete(e.state.ReservationSteps, id)
 		}
 		delete(e.state.Steps, id)
 		delete(e.state.ForeachState, id)
@@ -1621,6 +1646,9 @@ func validateForceResumeIteration(workflow *Workflow, state *ExecutionState, opt
 	if _, recorded := state.MailSends[opts.StepID]; recorded {
 		return fmt.Errorf("force-iter step %q has a leaf mail-send receipt; inspect it before an explicit reset", opts.StepID)
 	}
+	if _, recorded := state.ReservationSteps[opts.StepID]; recorded {
+		return fmt.Errorf("force-iter step %q has a leaf reservation receipt; inspect it before an explicit reset", opts.StepID)
+	}
 	for _, step := range workflow.Steps {
 		if iterationIndexFromID(step.ID, opts.StepID+"_iter") >= opts.Iteration {
 			return fmt.Errorf("force-iter namespace for %q overlaps top-level step %q; refusing to discard unrelated work", opts.StepID, step.ID)
@@ -1675,6 +1703,7 @@ func validateForceResumeIteration(workflow *Workflow, state *ExecutionState, opt
 			hasRuntimeCheckpoint(state.AgentDeliveries, consumer) ||
 			hasRuntimeCheckpoint(state.CommandExecutions, consumer) ||
 			hasRuntimeCheckpoint(state.MailSends, consumer) ||
+			hasRuntimeCheckpoint(state.ReservationSteps, consumer) ||
 			hasRuntimeCheckpoint(state.InFlightSteps, consumer) ||
 			hasRuntimeCheckpoint(state.ForeachState, consumer) ||
 			hasRuntimeCheckpoint(state.ParallelState, consumer) {
@@ -1997,6 +2026,7 @@ func (e *Executor) resetResumeState(workflow *Workflow) {
 	e.state.AgentDeliveries = nil
 	e.state.CommandExecutions = nil
 	e.state.MailSends = nil
+	e.state.ReservationSteps = nil
 	e.state.CurrentStep = ""
 	e.state.Errors = nil
 	e.stateMu.Unlock()
@@ -2088,6 +2118,7 @@ func (e *Executor) forceResumeIteration(stepID string, iteration int) {
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.AgentDeliveries, prefix, iteration)...)
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.CommandExecutions, prefix, iteration)...)
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.MailSends, prefix, iteration)...)
+	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.ReservationSteps, prefix, iteration)...)
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.InFlightSteps, prefix, iteration)...)
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.ParallelState, prefix, iteration)...)
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.ForeachState, prefix, iteration)...)
@@ -2312,6 +2343,7 @@ func (e *Executor) verifyForeachItemsFingerprint(stepID, fingerprint string) err
 		hasIterationEntries(e.state.AgentDeliveries, prefix) ||
 		hasIterationEntries(e.state.CommandExecutions, prefix) ||
 		hasIterationEntries(e.state.MailSends, prefix) ||
+		hasIterationEntries(e.state.ReservationSteps, prefix) ||
 		hasIterationEntries(e.state.InFlightSteps, prefix) ||
 		hasIterationEntries(e.state.ForeachState, prefix) ||
 		hasIterationEntries(e.state.ParallelState, prefix)

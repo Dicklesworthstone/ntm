@@ -131,6 +131,8 @@ func TestStepKindClassification(t *testing.T) {
 		{name: "prompt file", step: &Step{PromptFile: "MO.md"}, want: StepKindPrompt},
 		{name: "command", step: &Step{Command: "go test ./..."}, want: StepKindCommand},
 		{name: "mail send", step: &Step{MailSend: validMailSendStep()}, want: StepKindMailSend},
+		{name: "reserve files", step: &Step{FileReservationPaths: &FileReservationPathsStep{}}, want: StepKindReservationAcquire},
+		{name: "release files", step: &Step{FileReservationRelease: &FileReservationReleaseStep{}}, want: StepKindReservationRelease},
 		{name: "template", step: &Step{Template: "review.md"}, want: StepKindTemplate},
 		{name: "parallel flag", step: &Step{Parallel: ParallelSpec{Flag: true}}, want: StepKindParallel},
 		{name: "parallel steps", step: &Step{Parallel: ParallelSpec{Steps: []Step{{ID: "a", Prompt: "a"}}}}, want: StepKindParallel},

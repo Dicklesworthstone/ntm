@@ -846,6 +846,25 @@ failure does not authorize resending delivered mail. Explicit server refusals
 remain eligible for the step's normal retry policy. Interrupted sends from older
 checkpoints without a receipt require the same deliberate replay decision.
 
+Pipeline file reservations retain their resolved request, exact lease identities,
+and partial grant evidence. A lost acquisition response or unverified grant never
+triggers automatic reacquisition. Resume checks that retained protection still
+has the original IDs, owner, paths, mode, and creation identity, with live expiry,
+before dispatching further work. A same-ID renewal is accepted; a replacement
+lease on the same path is not adopted. Release steps for this run's acquisitions
+select only the recorded IDs and verify their disappearance, so another run's
+same-path reservations remain intact. Standalone release steps without acquisition
+evidence retain their explicit path behavior.
+
+Verified partial grants remain available for exact-ID cleanup. Unverified handles
+are inspection evidence, not authority to release somebody else's leases. Finish
+releasing known active leases before resetting acquisition history. If an authored
+cancellation or finalization hook already released protection, resuming unfinished
+protected work requires a whole-workflow reset to acquire it again; iteration
+replay cannot retain those released locks. Cleanup-only resume can finish when the
+original IDs have already expired or disappeared. Reservations are not implicitly
+renewed or released on cancellation; use explicit workflow release steps.
+
 If you instead intend to repeat failed or interrupted agent work, inspect the
 original pane before using `--mode=restart-failed`; that mode still preserves
 completed delivery receipts. Use

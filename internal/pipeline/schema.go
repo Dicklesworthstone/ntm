@@ -1384,6 +1384,7 @@ type ExecutionState struct {
 	AgentDeliveries   map[string]AgentDeliveryState    `json:"agent_deliveries,omitempty"`
 	CommandExecutions map[string]CommandExecutionState `json:"command_executions,omitempty"`
 	MailSends         map[string]MailSendState         `json:"mail_sends,omitempty"`
+	ReservationSteps  map[string]ReservationStepState  `json:"reservation_steps,omitempty"`
 
 	// OutputValidation records the post-run check of Workflow.Outputs (bd-3uqce).
 	// nil when the workflow declared no outputs or validation was skipped (e.g.

@@ -63,7 +63,7 @@ func startDetachedResume(ctx context.Context, projectDir, runID, session string,
 // ownership. Validation uses a private state copy and the executor's existing
 // policy implementation; it neither rewrites the checkpoint nor re-snapshots
 // the workflow, so damaged recovery evidence cannot become newly trusted.
-func prepareBackgroundResume(root string, req backgroundRequest) (*Workflow, *ExecutionState, ExecutorConfig, error) {
+func prepareBackgroundResume(ctx context.Context, root string, req backgroundRequest) (*Workflow, *ExecutionState, ExecutorConfig, error) {
 	cfg := req.Config.executorConfig()
 	fail := func(err error) (*Workflow, *ExecutionState, ExecutorConfig, error) {
 		return nil, nil, cfg, err
@@ -114,6 +114,9 @@ func prepareBackgroundResume(root string, req backgroundRequest) (*Workflow, *Ex
 	checker := NewExecutor(cfg)
 	checker.state = prior
 	checker.state = checker.snapshotState()
+	if err := checker.verifyReservationResume(ctx, workflow, opts); err != nil {
+		return fail(err)
+	}
 	if err := checker.applyResumeOptions(workflow, opts); err != nil {
 		return fail(err)
 	}
