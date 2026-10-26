@@ -152,6 +152,49 @@ func TestExecuteRestartRelaunchesGrokWithGrokCommand(t *testing.T) {
 	}
 }
 
+func TestExecuteRestartRequiresLocalProcessOperations(t *testing.T) {
+	original := tmux.DefaultClient
+	t.Cleanup(func() { tmux.DefaultClient = original })
+	for _, tc := range []struct {
+		name               string
+		remote             bool
+		hardKill, hardOnly bool
+	}{
+		{name: "remote-soft", remote: true},
+		{name: "remote-fallback", remote: true, hardKill: true},
+		{name: "remote-hard-only", remote: true, hardOnly: true},
+		{name: "local-ordinary"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			remote := ""
+			if tc.remote {
+				remote = "operator@remote-fixture"
+			}
+			tmux.DefaultClient = tmux.NewClient(remote)
+			executor := &deterministicSmartRestartExecutor{
+				shellPID: 321, ready: true, readyConfigured: true, childAlive: true,
+			}
+			seq, err := executeRestart(t.Context(), "remote-fixture", 0, 1, "codex", SmartRestartOptions{
+				HardKill: tc.hardKill, HardKillOnly: tc.hardOnly, executor: executor,
+			})
+			if !tc.remote {
+				if err != nil || seq == nil || !seq.AgentLaunched || len(executor.launches) != 1 {
+					t.Fatalf("ordinary local restart was refused: sequence=%+v err=%v", seq, err)
+				}
+				return
+			}
+			var failure *StructuredError
+			if !errors.As(err, &failure) || failure.Code != ErrCodeInvalidFlag || failure.Phase != "preflight" {
+				t.Fatalf("remote smart restart error=%v, want typed preflight refusal", err)
+			}
+			if seq == nil || seq.LaunchAttempted || seq.HardKillUsed || len(executor.mutations) != 0 ||
+				len(executor.observationContextsActive) != 0 {
+				t.Fatalf("remote smart-restart admission occurred after lifecycle work: sequence=%+v mutations=%v observations=%v", seq, executor.mutations, executor.observationContextsActive)
+			}
+		})
+	}
+}
+
 func TestExecuteRestartReportsReadyRootExecAsAlive(t *testing.T) {
 	for _, kind := range []string{"codex", "cc"} {
 		t.Run(kind, func(t *testing.T) {

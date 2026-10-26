@@ -2,12 +2,77 @@ package robot
 
 import (
 	"context"
+	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/process"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+func TestRemoteProcessOperationsRefuseBeforeObservation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("recording command fixture requires a POSIX shell")
+	}
+	root := t.TempDir()
+	calls := filepath.Join(root, "calls")
+	const script = `#!/bin/sh
+printf '%s\n' "$0 $*" >> "$NTM_REMOTE_PROCESS_CONTROL_CALLS"
+exit 79
+`
+	for _, name := range []string{"tmux", "ssh"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("NTM_REMOTE_PROCESS_CONTROL_CALLS", calls)
+	t.Setenv("NTM_TMUX_BINARY", filepath.Join(root, "tmux"))
+	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+	original := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("operator@remote-fixture")
+	t.Cleanup(func() { tmux.DefaultClient = original })
+	assertUnobserved := func(t *testing.T) {
+		t.Helper()
+		if _, err := os.Stat(calls); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("remote process-control refusal crossed a tmux or SSH observation boundary: %v", err)
+		}
+	}
+
+	for _, relaunch := range []bool{false, true} {
+		out, err := GetKillAgent(t.Context(), LifecycleOptions{Session: "remote-fixture", Relaunch: relaunch})
+		if err != nil || out == nil || out.Success || out.ErrorCode != ErrCodeInvalidFlag ||
+			len(out.Results) != 0 || !strings.Contains(out.Error, "without --ssh") {
+			t.Fatalf("kill-agent relaunch=%t response=%+v err=%v", relaunch, out, err)
+		}
+		assertUnobserved(t)
+	}
+
+	seq := &RestartSequence{}
+	result, err := hardKillAgent(t.Context(), "remote-fixture", 0, 1, seq)
+	if !errors.Is(err, errRemoteAgentProcessOperations) || result == nil || result.Success ||
+		result.ShellPID != 0 || result.ChildPID != 0 || seq.ExitMethod != "" {
+		t.Fatalf("direct hard-kill bypassed host admission: result=%+v sequence=%+v err=%v", result, seq, err)
+	}
+	assertUnobserved(t)
+
+	for _, mode := range []string{"soft", "fallback", "hard-only"} {
+		for _, dryRun := range []bool{false, true} {
+			out, err := GetSmartRestart(t.Context(), SmartRestartOptions{
+				Session: "remote-fixture", HardKill: mode == "fallback", HardKillOnly: mode == "hard-only", DryRun: dryRun,
+			})
+			if err != nil || out == nil || out.Success || out.ErrorCode != ErrCodeInvalidFlag ||
+				len(out.Actions) != 0 || out.DryRun != dryRun || !strings.Contains(out.Error, "without --ssh") {
+				t.Fatalf("smart restart mode=%s dryRun=%t response=%+v err=%v", mode, dryRun, out, err)
+			}
+			assertUnobserved(t)
+		}
+	}
+}
 
 // The double-Ctrl+C exit contract (ntm-3lbb): Claude Code treats the pair as
 // "exit" only when the second tap lands roughly 0.1-0.3s after the first —

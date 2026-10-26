@@ -302,6 +302,10 @@ func GetSmartRestart(ctx context.Context, opts SmartRestartOptions) (*SmartResta
 		output.RobotResponse = NewErrorResponse(err, ErrCodeTimeout, "Retry after the cancellation or timeout condition clears")
 		return output, nil
 	}
+	if err := requireLocalAgentProcessOperations(); err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, remoteAgentProcessOperationsHint)
+		return output, nil
+	}
 
 	// Step 1: Pre-check all panes using IsWorking
 	isWorkingOpts := IsWorkingOptions{
@@ -868,6 +872,10 @@ func executeRestart(ctx context.Context, session string, win, pane int, agentTyp
 	}
 	if err := ctx.Err(); err != nil {
 		return seq, err
+	}
+	if err := requireLocalAgentProcessOperations(); err != nil {
+		return seq, newRestartError(ErrCodeInvalidFlag, err.Error(), "preflight", pane, agentType, nil, "").
+			WithRecoveryHint(remoteAgentProcessOperationsHint)
 	}
 	if err := agent.AgentType(agentType).ValidateAutomatedRelaunch(); err != nil {
 		return seq, newRestartError(

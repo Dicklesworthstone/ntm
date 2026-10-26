@@ -1,16 +1,145 @@
 package cli
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
+
+// Exercise the public --ssh dispatcher without supplying any signalable PID.
+// Refused commands may resolve the remote session but must stop before pane or
+// process observation; tmux-native graceful exit remains available.
+func TestRemoteProcessOperationsCLIRefuseBeforePaneObservation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("recording command fixture requires a POSIX shell")
+	}
+	for _, tc := range []struct {
+		name        string
+		args        []string
+		wantSuccess bool
+	}{
+		{name: "kill-agent", args: []string{"--robot-kill-agent=remote-fixture"}},
+		{name: "kill-relaunch", args: []string{"--robot-kill-agent=remote-fixture", "--relaunch"}},
+		{name: "smart-soft", args: []string{"--robot-smart-restart=remote-fixture"}},
+		{name: "smart-soft-dry", args: []string{"--robot-smart-restart=remote-fixture", "--dry-run"}},
+		{name: "smart-fallback", args: []string{"--robot-smart-restart=remote-fixture", "--hard-kill"}},
+		{name: "smart-hard-only", args: []string{"--robot-smart-restart=remote-fixture", "--hard-kill-only"}},
+		{name: "smart-fallback-dry", args: []string{"--robot-smart-restart=remote-fixture", "--hard-kill", "--dry-run"}},
+		{name: "smart-hard-only-dry", args: []string{"--robot-smart-restart=remote-fixture", "--hard-kill-only", "--dry-run"}},
+		{name: "exit-cli", args: []string{"--robot-exit-cli=remote-fixture"}, wantSuccess: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			const localScript = `#!/bin/sh
+set -eu
+root="$NTM_REMOTE_PROCESS_CONTROL_ROOT"
+printf 'local %s\n' "$*" >> "$root/calls"
+if [ "$1" = -V ]; then printf 'tmux 3.4\n'; exit 0; fi
+: > "$root/forbidden"
+exit 79
+`
+			const sshScript = `#!/bin/sh
+set -eu
+root="$NTM_REMOTE_PROCESS_CONTROL_ROOT"
+printf 'ssh %s\n' "$3" >> "$root/calls"
+case "$3" in
+  *list-sessions*) printf 'remote-fixture_NTM_SEP_1_NTM_SEP_0_NTM_SEP_today\n' ;;
+  *has-session*) ;;
+  *list-panes*)
+    if [ "$NTM_REMOTE_PROCESS_CONTROL_MODE" != exit-cli ]; then
+      : > "$root/forbidden"
+      exit 77
+    fi
+    command=codex
+    if [ -f "$root/exit-keys" ] && [ "$(cat "$root/exit-keys")" -ge 2 ]; then command=zsh; fi
+    printf '%%7_NTM_SEP_0_NTM_SEP_remote-fixture__cod_1_NTM_SEP_%s_NTM_SEP_80_NTM_SEP_24_NTM_SEP_0_NTM_SEP_0_NTM_SEP_0_NTM_SEP_codex\n' "$command"
+    ;;
+  *send-keys*)
+    if [ "$NTM_REMOTE_PROCESS_CONTROL_MODE" != exit-cli ]; then
+      : > "$root/forbidden"
+      exit 76
+    fi
+    case "$3" in *C-c*) ;; *) : > "$root/forbidden"; exit 75 ;; esac
+    count=0
+    if [ -f "$root/exit-keys" ]; then count=$(cat "$root/exit-keys"); fi
+    printf '%s' "$((count + 1))" > "$root/exit-keys"
+    ;;
+  *) : > "$root/forbidden"; exit 78 ;;
+esac
+`
+			for name, script := range map[string]string{"tmux": localScript, "ssh": sshScript} {
+				if err := os.WriteFile(filepath.Join(root, name), []byte(script), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			configPath := filepath.Join(root, "config.toml")
+			if err := os.WriteFile(configPath, []byte("[agent_mail]\nenabled = false\n[cleanup]\nauto_clean_on_startup = false\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			args := append([]string{"--config=" + configPath, "--ssh=operator@remote-fixture", "--panes=%7"}, tc.args...)
+			rawArgs, err := json.Marshal(args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRobotProcessContractHelper$")
+			cmd.Dir = root
+			cmd.Env = envWithOverrides(os.Environ(),
+				"HOME="+root, "XDG_CONFIG_HOME="+filepath.Join(root, "config"), "XDG_DATA_HOME="+filepath.Join(root, "data"),
+				"PATH="+root+string(os.PathListSeparator)+os.Getenv("PATH"), "TMUX=",
+				"NTM_TEST_TMUX_ENV_OWNED=1", "NTM_TMUX_BINARY="+filepath.Join(root, "tmux"),
+				"NTM_REMOTE_PROCESS_CONTROL_ROOT="+root, "NTM_REMOTE_PROCESS_CONTROL_MODE="+tc.name,
+				"NTM_NO_COLOR=1", "NTM_CONFIG=", "NTM_ROBOT_FORMAT=", "NTM_OUTPUT_FORMAT=", "TOON_DEFAULT_FORMAT=", "NTM_ROBOT_VERBOSITY=",
+				"NTM_ROBOT_CONTRACT_ARGS="+string(rawArgs))
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			runErr := cmd.Run()
+			if ctx.Err() != nil || (runErr == nil) != tc.wantSuccess {
+				t.Fatalf("success=%t want=%t err=%v context=%v stdout=%s stderr=%s", runErr == nil, tc.wantSuccess, runErr, ctx.Err(), stdout.String(), stderr.String())
+			}
+			var response robot.RobotResponse
+			if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
+				t.Fatalf("decode response: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+			}
+			if response.Success != tc.wantSuccess {
+				t.Fatalf("remote lifecycle response=%+v", response)
+			}
+			if !tc.wantSuccess && (response.ErrorCode != robot.ErrCodeInvalidFlag || !strings.Contains(response.Error, "without --ssh")) {
+				t.Fatalf("remote process control lacked actionable typed refusal: %+v", response)
+			}
+			if _, err := os.Stat(filepath.Join(root, "forbidden")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("remote process control crossed a forbidden observation/mutation boundary: %v", err)
+			}
+			calls, err := os.ReadFile(filepath.Join(root, "calls"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(calls), "list-panes") != tc.wantSuccess {
+				t.Fatalf("pane observation crossed admission or remote exit was blocked: %s", calls)
+			}
+			if tc.wantSuccess {
+				keys, err := os.ReadFile(filepath.Join(root, "exit-keys"))
+				if err != nil || string(keys) != "2" {
+					t.Fatalf("remote exit did not use the SSH keystroke path: keys=%q err=%v", keys, err)
+				}
+			}
+		})
+	}
+}
 
 // TestAgentLifecycleSpawnWorkKill tests the complete agent lifecycle:
 // spawn -> send work -> verify output -> kill -> verify cleanup

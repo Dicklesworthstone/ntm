@@ -196,6 +196,9 @@ func hardKillAgent(ctx context.Context, session string, win, pane int, seq *Rest
 	result := &HardKillResult{
 		KillMethod: "kill_9",
 	}
+	if err := requireLocalAgentProcessOperations(); err != nil {
+		return result, err
+	}
 
 	// Step 1: Get shell PID from tmux
 	shellPID, err := getShellPID(ctx, session, win, pane)

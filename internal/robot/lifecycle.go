@@ -9,6 +9,7 @@ package robot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -73,6 +74,20 @@ const (
 	lifecycleRelaunchBoot  = 10 * time.Second
 	lifecycleChildPIDLimit = 16
 )
+
+var errRemoteAgentProcessOperations = errors.New("agent process inspection and control require local tmux; run this command directly on the tmux host without --ssh")
+
+const remoteAgentProcessOperationsHint = "Remote pane process IDs and sessions cannot be inspected or controlled through local process operations."
+
+// requireLocalAgentProcessOperations prevents remote pane PIDs, or a same-named
+// local session, from being mistaken for local process inspection or control.
+// Tmux-native exit and respawn operations do not require this restriction.
+func requireLocalAgentProcessOperations() error {
+	if tmux.DefaultClient.Remote != "" {
+		return errRemoteAgentProcessOperations
+	}
+	return nil
+}
 
 // resolveLifecycleTargets validates the session and resolves agent-pane
 // targets shared by both lifecycle verbs.
@@ -440,6 +455,10 @@ func GetKillAgent(ctx context.Context, opts LifecycleOptions) (*KillAgentOutput,
 		RobotResponse: NewRobotResponse(true),
 		Session:       strings.TrimSpace(opts.Session),
 		Results:       []LifecyclePaneResult{},
+	}
+	if err := requireLocalAgentProcessOperations(); err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, remoteAgentProcessOperationsHint)
+		return output, nil
 	}
 	targets, multiWindow, failure := resolveLifecycleTargets(ctx, opts, "kill-agent")
 	if failure != nil {
