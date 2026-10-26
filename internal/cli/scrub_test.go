@@ -9,6 +9,75 @@ import (
 	"time"
 )
 
+func TestRedactionAllowlistEnvironmentCommands(t *testing.T) {
+	const fixture = "ANTHROPIC_API_KEY=ecs2a-bogus-not-a-real-key\nCLAUDE_CODE_OAUTH_TOKEN=fixture-never-log-this\npassword=unlisted-fixture-secret\n"
+	const allowlist = "^ANTHROPIC_API_KEY=ecs2a-bogus-not-a-real-key$,^TOKEN=fixture-never-log-this$"
+	for _, command := range []string{"scrub", "preview"} {
+		for _, source := range []string{"none", "TOML", "environment", "empty override"} {
+			t.Run(command+"/"+source, func(t *testing.T) {
+				resetFlags()
+				t.Cleanup(resetFlags)
+				dir := t.TempDir()
+				t.Setenv("XDG_CONFIG_HOME", dir)
+				t.Setenv("NTM_REDACTION_ALLOWLIST", "")
+				if err := os.Unsetenv("NTM_REDACTION_ALLOWLIST"); err != nil {
+					t.Fatal(err)
+				}
+				artifact := filepath.Join(dir, "fixtures.txt")
+				if err := os.WriteFile(artifact, []byte(fixture), 0600); err != nil {
+					t.Fatal(err)
+				}
+				configPath := filepath.Join(dir, "scrub.toml")
+				settings := "[redaction]\nmode = 'redact'\n"
+				wantFindings := 3
+				switch source {
+				case "TOML", "empty override":
+					settings += "allowlist = ['^ANTHROPIC_API_KEY=ecs2a-bogus-not-a-real-key$', '^TOKEN=fixture-never-log-this$']\n"
+					wantFindings = 1
+					if source == "empty override" {
+						t.Setenv("NTM_REDACTION_ALLOWLIST", "")
+						wantFindings = 3
+					}
+				case "environment":
+					t.Setenv("NTM_REDACTION_ALLOWLIST", allowlist)
+					wantFindings = 1
+				}
+				if err := os.WriteFile(configPath, []byte(settings), 0600); err != nil {
+					t.Fatal(err)
+				}
+				oldCfg, oldCfgFile := cfg, cfgFile
+				cfg = nil
+				t.Cleanup(func() { cfg, cfgFile = oldCfg, oldCfgFile })
+				args := []string{"--config", configPath}
+				if command == "scrub" {
+					args = append(args, "scrub", "--path", artifact, "--format", "json")
+				} else {
+					args = append(args, "redact", "preview", "--file", artifact, "--json")
+				}
+				out, err := captureStdout(t, func() error {
+					rootCmd.SetArgs(args)
+					return rootCmd.Execute()
+				})
+				if err != nil {
+					t.Fatalf("command failed: %v\n%s", err, out)
+				}
+				var response struct {
+					Findings []json.RawMessage `json:"findings"`
+				}
+				if err := json.Unmarshal([]byte(out), &response); err != nil {
+					t.Fatalf("decode response: %v\n%s", err, out)
+				}
+				if len(response.Findings) != wantFindings {
+					t.Errorf("findings = %d, want %d\n%s", len(response.Findings), wantFindings, out)
+				}
+				if strings.Contains(out, "unlisted-fixture-secret") {
+					t.Fatal("environment allowlist exposed an unrelated secret")
+				}
+			})
+		}
+	}
+}
+
 func TestScrub_CommandJSONOutputIsRedacted(t *testing.T) {
 	resetFlags()
 

@@ -306,6 +306,14 @@ allowlist = [
 NTM_REDACTION_ALLOWLIST="s k-test-.*,EXAMPLE.*" ntm send ...
 ```
 
+`NTM_REDACTION_ALLOWLIST` replaces the TOML allowlist for that invocation on all
+config-loaded surfaces, including `scrub` and `redact preview`. It is a
+comma-separated list of regular expressions; surrounding whitespace and empty
+entries are ignored. An explicitly empty value clears the configured allowlist,
+while an unset variable preserves it. Use the TOML array for expressions that
+contain commas. Other redaction settings and detection of non-allowlisted
+secrets are unchanged.
+
 ---
 
 ## Test Fixtures

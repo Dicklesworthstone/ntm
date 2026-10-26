@@ -2769,6 +2769,18 @@ func loadWithCWD(path, cwd string) (*Config, error) {
 	// Scanner Env Overrides
 	applyEnvOverrides(&cfg.Scanner)
 
+	// Redaction allowlist overrides TOML, including an explicitly empty value
+	// to restore detection for all secrets. Empty comma-separated entries must
+	// never become regexes: an empty regex would allowlist every match.
+	if allowlist, present := os.LookupEnv("NTM_REDACTION_ALLOWLIST"); present {
+		cfg.Redaction.Allowlist = nil
+		for _, pattern := range strings.Split(allowlist, ",") {
+			if pattern = strings.TrimSpace(pattern); pattern != "" {
+				cfg.Redaction.Allowlist = append(cfg.Redaction.Allowlist, pattern)
+			}
+		}
+	}
+
 	// CASS Env Overrides
 	if enabled := os.Getenv("NTM_CASS_ENABLED"); enabled != "" {
 		cfg.CASS.Enabled = enabled == "1" || enabled == "true"

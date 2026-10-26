@@ -3326,6 +3326,61 @@ func TestDefaultRedactionConfig(t *testing.T) {
 	}
 }
 
+func TestRedactionAllowlistEnvironmentOverride(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		env  *string
+		want []string
+	}{
+		{name: "unset preserves TOML", want: []string{"^configured-fixture$"}},
+		{name: "replaces TOML", env: new("^first-fixture$,^second-fixture$"), want: []string{"^first-fixture$", "^second-fixture$"}},
+		{name: "trims and ignores empty entries", env: new(" , ^first-fixture$ ,, ^second-fixture$ , "), want: []string{"^first-fixture$", "^second-fixture$"}},
+		{name: "explicit empty clears TOML", env: new("")},
+		{name: "separators alone clear TOML", env: new(" , , ")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("NTM_REDACTION_ALLOWLIST", "")
+			if tt.env == nil {
+				if err := os.Unsetenv("NTM_REDACTION_ALLOWLIST"); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				t.Setenv("NTM_REDACTION_ALLOWLIST", *tt.env)
+			}
+			path := createTempConfig(t, `[redaction]
+mode = "block"
+allowlist = ['^configured-fixture$']
+disabled_categories = ["JWT"]
+[redaction.extra_patterns]
+CUSTOM = ['fixture-[a-z]+']
+`)
+			loaded, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(loaded.Redaction.Allowlist, tt.want) {
+				t.Fatalf("allowlist = %#v, want %#v", loaded.Redaction.Allowlist, tt.want)
+			}
+			if loaded.Redaction.Mode != "block" ||
+				!reflect.DeepEqual(loaded.Redaction.DisabledCategories, []string{"JWT"}) ||
+				!reflect.DeepEqual(loaded.Redaction.ExtraPatterns["CUSTOM"], []string{"fixture-[a-z]+"}) {
+				t.Fatalf("allowlist override changed unrelated redaction settings: %#v", loaded.Redaction)
+			}
+		})
+	}
+
+	t.Run("works without a config file", func(t *testing.T) {
+		t.Setenv("NTM_REDACTION_ALLOWLIST", "^environment-fixture$")
+		loaded, err := Load(filepath.Join(t.TempDir(), "absent.toml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(loaded.Redaction.Allowlist, []string{"^environment-fixture$"}) {
+			t.Fatalf("allowlist = %#v", loaded.Redaction.Allowlist)
+		}
+	})
+}
+
 func TestValidateRedactionConfig(t *testing.T) {
 	tests := []struct {
 		name    string
