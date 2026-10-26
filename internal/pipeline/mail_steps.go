@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -20,6 +22,171 @@ type MailSendStep struct {
 	Body        string       `yaml:"body,omitempty" toml:"body,omitempty" json:"body,omitempty"`
 	ThreadID    string       `yaml:"thread_id,omitempty" toml:"thread_id,omitempty" json:"thread_id,omitempty"`
 	AckRequired bool         `yaml:"ack_required,omitempty" toml:"ack_required,omitempty" json:"ack_required,omitempty"`
+}
+
+const (
+	mailSendVersion  = 1
+	mailSendSending  = "sending"
+	mailSendSent     = "sent"
+	mailSendRejected = "rejected"
+)
+
+// MailSendState fences a non-idempotent Agent Mail send through the same
+// checkpoint as the workflow. A missing transport response is not proof that
+// the recipient did not receive the work. The sent result is recorded before
+// scheduler bookkeeping or success hooks can lose its recovery evidence.
+type MailSendState struct {
+	Version    int        `json:"version"`
+	StepID     string     `json:"step_id"`
+	StepHash   string     `json:"step_hash"`
+	Status     string     `json:"status"`
+	StartedAt  time.Time  `json:"started_at"`
+	FinishedAt time.Time  `json:"finished_at,omitempty"`
+	Result     StepResult `json:"result,omitempty"`
+}
+
+func cloneMailSend(record MailSendState) MailSendState {
+	record.Result.ParsedData = cloneInterfaceValue(record.Result.ParsedData)
+	if record.Result.Error != nil {
+		copy := cloneStepErrorValue(*record.Result.Error)
+		record.Result.Error = &copy
+	}
+	return record
+}
+
+func validateMailSend(key string, record MailSendState) error {
+	invalid := func(reason string) error {
+		return fmt.Errorf("invalid mail_send receipt for step %q: %s", key, reason)
+	}
+	digest, err := hex.DecodeString(record.StepHash)
+	if key == "" || record.StepID != key || record.Version != mailSendVersion ||
+		err != nil || len(digest) != sha256.Size || record.StepHash != strings.ToLower(record.StepHash) || record.StartedAt.IsZero() {
+		return invalid("unsupported version or missing execution identity")
+	}
+	switch record.Status {
+	case mailSendSending:
+		if !record.FinishedAt.IsZero() || record.Result.Status != "" {
+			return invalid("unresolved send contains a settled outcome")
+		}
+	case mailSendSent, mailSendRejected:
+		if record.FinishedAt.Before(record.StartedAt) || record.Result.StepID != key || record.Result.FinishedAt.IsZero() ||
+			(record.Result.Status != StatusCompleted && record.Result.Status != StatusFailed && record.Result.Status != StatusCancelled) {
+			return invalid("missing or inconsistent settled result")
+		}
+		if record.Status == mailSendRejected && record.Result.Status == StatusCompleted {
+			return invalid("rejected send reports successful delivery")
+		}
+	default:
+		return invalid("unknown delivery status")
+	}
+	return nil
+}
+
+func (e *Executor) loadMailSend(stepID string) (MailSendState, bool) {
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
+	if e.state == nil {
+		return MailSendState{}, false
+	}
+	record, ok := e.state.MailSends[stepID]
+	return cloneMailSend(record), ok
+}
+
+func (e *Executor) saveMailSend(record MailSendState) error {
+	if err := validateMailSend(record.StepID, record); err != nil {
+		return err
+	}
+	e.stateMu.Lock()
+	if e.state == nil {
+		e.stateMu.Unlock()
+		return fmt.Errorf("cannot save mail_send receipt without execution state")
+	}
+	if e.state.MailSends == nil {
+		e.state.MailSends = make(map[string]MailSendState)
+	}
+	e.state.MailSends[record.StepID] = cloneMailSend(record)
+	e.stateMu.Unlock()
+	return e.persistState()
+}
+
+func uncertainMailSendError(stepID string) error {
+	return fmt.Errorf("mail_send step %q has an unresolved delivery; the recipient may already have received it. Ordinary resume and automatic retries will not send it again. Inspect the recipient inbox and original message before deliberately using --mode=restart-failed (or --keep-state=false for a whole-workflow replay)", stepID)
+}
+
+func resumeResetsMailSend(state *ExecutionState, opts ResumeOptions, stepID string) bool {
+	if !opts.KeepState {
+		return true
+	}
+	switch opts.Mode {
+	case ResumeModeForceIter:
+		return iterationIndexFromID(stepID, opts.StepID+"_iter") >= opts.Iteration
+	case ResumeModeRestartFailed:
+		if record, ok := state.MailSends[stepID]; ok {
+			// Delivery is authoritative even when output parsing failed or
+			// the scheduler never got to record a successful step result.
+			return record.Status != mailSendSent
+		}
+		if _, inFlight := state.InFlightSteps[stepID]; inFlight {
+			return true
+		}
+		if result, ok := state.Steps[stepID]; ok {
+			return shouldRerunStep(result)
+		}
+	}
+	return false
+}
+
+// The caller holds stateMu. Check uncertainty before resume can clear any
+// in-flight markers or run an independent sibling. Legacy interrupted sends
+// have no receipt and require the same deliberate replay decision.
+func (e *Executor) validateMailSendResumeLocked(state *ExecutionState, opts ResumeOptions, workflow *Workflow) error {
+	for id, record := range state.MailSends {
+		if err := validateMailSend(id, record); err != nil {
+			return err
+		}
+		reset := resumeResetsMailSend(state, opts, id)
+		if record.Status == mailSendSending && !reset {
+			return uncertainMailSendError(id)
+		}
+		if reset && opts.KeepState && opts.Mode != ResumeModeForceIter {
+			if err := e.validateLeafReplayScopeLocked(workflow, state, id, StepKindMailSend); err != nil {
+				return err
+			}
+		}
+	}
+	if !opts.KeepState {
+		return nil
+	}
+	graph := e.graph
+	if graph == nil && workflow != nil {
+		graph = NewDependencyGraph(workflow)
+	}
+	resolve, err := resumeRuntimeStepResolver(graph, state)
+	if err != nil {
+		return err
+	}
+	unfinished := make(map[string]bool)
+	for id := range state.InFlightSteps {
+		unfinished[id] = true
+	}
+	for id, result := range state.Steps {
+		if shouldRerunStep(result) {
+			unfinished[id] = true
+		}
+	}
+	for id := range unfinished {
+		if _, recorded := state.MailSends[id]; recorded || resumeResetsMailSend(state, opts, id) {
+			continue
+		}
+		mailSend := state.InFlightSteps[id].Kind == StepKindMailSend
+		if step, ok := resolve(id); ok {
+			mailSend = mailSend || step.MailSend != nil
+		}
+		if mailSend {
+			return uncertainMailSendError(id)
+		}
+	}
+	return nil
 }
 
 // FileReservationPathsStep describes an MCP Agent Mail file reservation
@@ -135,6 +302,24 @@ func (e *Executor) executeMailStep(ctx context.Context, step *Step) StepResult {
 }
 
 func (e *Executor) executeMailSendStep(ctx context.Context, step *Step, result StepResult) StepResult {
+	stepHash, err := agentStepHash(step)
+	if err != nil {
+		return failMailStep(result, "recovery", err.Error())
+	}
+	if prior, ok := e.loadMailSend(step.ID); ok {
+		if err := validateMailSend(step.ID, prior); err != nil {
+			return failMailStep(result, "recovery", err.Error())
+		}
+		if prior.StepHash != stepHash {
+			return failMailStep(result, "recovery", "saved mail_send receipt belongs to a different step definition; restore the original workflow or explicitly reset it")
+		}
+		switch prior.Status {
+		case mailSendSending:
+			return failMailStep(result, "delivery_unknown", uncertainMailSendError(step.ID).Error())
+		case mailSendSent:
+			return prior.Result
+		}
+	}
 	send := step.MailSend
 	projectKey, err := e.resolveMailStepString(ctx, send.ProjectKey)
 	if err != nil {
@@ -161,6 +346,19 @@ func (e *Executor) executeMailSendStep(ctx context.Context, step *Step, result S
 		return failMailStep(result, "substitution", fmt.Sprintf("mail_send thread_id: %v", err))
 	}
 
+	if e.stopBeforeDispatch(ctx, &result) {
+		return result
+	}
+	record := MailSendState{Version: mailSendVersion, StepID: step.ID, StepHash: stepHash, Status: mailSendSending, StartedAt: result.StartedAt}
+	if err := e.saveMailSend(record); err != nil {
+		return failMailStep(result, "checkpoint", err.Error())
+	}
+	if e.stopBeforeDispatch(ctx, &result) {
+		// No request has been made; retain proof that a later attempt may send.
+		record.Status, record.FinishedAt, record.Result = mailSendRejected, time.Now(), result
+		_ = e.saveMailSend(record)
+		return result
+	}
 	client := e.mailClient(projectKey)
 	sent, err := client.SendMessage(ctx, agentmail.SendMessageOptions{
 		ProjectKey:  projectKey,
@@ -172,15 +370,39 @@ func (e *Executor) executeMailSendStep(ctx context.Context, step *Step, result S
 		AckRequired: send.AckRequired,
 	})
 	if err != nil {
-		return failMailStep(result, "agent_mail", fmt.Sprintf("mail_send failed: %v", err))
+		result = failMailStep(result, "agent_mail", fmt.Sprintf("mail_send failed: %v", err))
+		if agentmail.IsToolRejection(err) {
+			// An explicit MCP rejection proves no message was sent. Persist
+			// that proof before permitting the existing step retry policy.
+			record.Status, record.FinishedAt, record.Result = mailSendRejected, time.Now(), result
+			if err := e.saveMailSend(record); err != nil {
+				return failMailStep(result, "checkpoint", err.Error())
+			}
+			return result
+		}
+		return failMailStep(result, "delivery_unknown", fmt.Sprintf("%v: %v", uncertainMailSendError(step.ID), err))
 	}
-
-	return e.completeMailStep(step, result, "mail_send", map[string]interface{}{
+	if sent == nil || sent.Count <= 0 || len(sent.Deliveries) == 0 {
+		return failMailStep(result, "delivery_unknown", fmt.Sprintf("%v: server returned no delivery receipt", uncertainMailSendError(step.ID)))
+	}
+	for _, delivery := range sent.Deliveries {
+		if delivery.Payload == nil || delivery.Payload.ID <= 0 {
+			return failMailStep(result, "delivery_unknown", fmt.Sprintf("%v: server returned an incomplete delivery receipt", uncertainMailSendError(step.ID)))
+		}
+	}
+	result = e.completeMailStep(step, result, "mail_send", map[string]interface{}{
 		"action":    "mail_send",
 		"result":    sent,
 		"sent":      sent.Count,
 		"thread_id": threadID,
 	})
+	// A parsing failure is not a failed send. Preserve it as a sent outcome
+	// so retry/resume cannot resend an already-delivered message to fix parsing.
+	record.Status, record.FinishedAt, record.Result = mailSendSent, time.Now(), result
+	if err := e.saveMailSend(record); err != nil {
+		return failMailStep(result, "checkpoint", err.Error())
+	}
+	return result
 }
 
 func (e *Executor) executeFileReservationPathsStep(ctx context.Context, step *Step, result StepResult) StepResult {

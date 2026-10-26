@@ -465,6 +465,11 @@ func (e *Executor) branchHasChildEvidence(parent *Step) bool {
 			return true
 		}
 	}
+	for id := range e.state.MailSends {
+		if belongs(id) {
+			return true
+		}
+	}
 	for id := range e.state.ForeachState {
 		if belongs(id) {
 			return true

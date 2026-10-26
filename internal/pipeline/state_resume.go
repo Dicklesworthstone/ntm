@@ -457,7 +457,7 @@ func (e *Executor) validateCommandRecovery(workflow *Workflow, state *ExecutionS
 	if err := validateRecoveryWorkflowStep(workflow, state, record.StepID, StepKindCommand, record.StepHash, commandDefinitionHash); err != nil {
 		return err
 	}
-	if err := e.validateCommandReplayScopeLocked(workflow, state, record.StepID); err != nil {
+	if err := e.validateLeafReplayScopeLocked(workflow, state, record.StepID, StepKindCommand); err != nil {
 		return fmt.Errorf("cannot accept output for a command that ordinary resume will not revisit: %w", err)
 	}
 	return nil
@@ -1331,7 +1331,7 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 		}
 		if opts.KeepState && opts.Mode != ResumeModeForceIter &&
 			(record.Result.RerunOnResume || resumeResetsCommandExecution(state, opts, stepID)) {
-			if err := e.validateCommandReplayScopeLocked(workflow, state, stepID); err != nil {
+			if err := e.validateLeafReplayScopeLocked(workflow, state, stepID, StepKindCommand); err != nil {
 				e.stateMu.RUnlock()
 				return err
 			}
@@ -1348,6 +1348,10 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 		return err
 	}
 	if err := e.validateLegacyCommandResumeLocked(state, opts, workflow); err != nil {
+		e.stateMu.RUnlock()
+		return err
+	}
+	if err := e.validateMailSendResumeLocked(state, opts, workflow); err != nil {
 		e.stateMu.RUnlock()
 		return err
 	}
@@ -1393,6 +1397,19 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 				}
 				e.state.Steps[stepID] = result
 				delete(e.state.CommandExecutions, stepID)
+			}
+		}
+		for stepID := range e.state.MailSends {
+			if resumeResetsMailSend(e.state, opts, stepID) {
+				// A failure handler can mark an uncertain send complete. An
+				// explicit replay must reopen the leaf as well as its receipt.
+				result := e.state.Steps[stepID]
+				result.StepID, result.Status = stepID, StatusPending
+				if e.state.Steps == nil {
+					e.state.Steps = make(map[string]StepResult)
+				}
+				e.state.Steps[stepID] = result
+				delete(e.state.MailSends, stepID)
 			}
 		}
 		e.stateMu.Unlock()
@@ -1460,6 +1477,9 @@ func (e *Executor) resetSettledOnCancelState(workflow *Workflow) {
 	for id := range e.state.CommandExecutions {
 		collect(id)
 	}
+	for id := range e.state.MailSends {
+		collect(id)
+	}
 	for id := range e.state.ForeachState {
 		collect(id)
 	}
@@ -1469,6 +1489,9 @@ func (e *Executor) resetSettledOnCancelState(workflow *Workflow) {
 	for id, step := range owned {
 		if record, ok := e.state.CommandExecutions[id]; ok && record.Status == commandExecutionSettled {
 			delete(e.state.CommandExecutions, id)
+		}
+		if record, ok := e.state.MailSends[id]; ok && record.Status != mailSendSending {
+			delete(e.state.MailSends, id)
 		}
 		delete(e.state.Steps, id)
 		delete(e.state.ForeachState, id)
@@ -1522,6 +1545,9 @@ func (e *Executor) resetPostPipelineForMainAttempt(workflow *Workflow) {
 	for id := range e.state.AgentDeliveries {
 		collect(id)
 	}
+	for id := range e.state.MailSends {
+		collect(id)
+	}
 	for id := range e.state.ForeachState {
 		collect(id)
 	}
@@ -1537,6 +1563,9 @@ func (e *Executor) resetPostPipelineForMainAttempt(workflow *Workflow) {
 		}
 		if record, ok := e.state.AgentDeliveries[id]; ok && record.Status == agentDeliveryCompleted {
 			delete(e.state.AgentDeliveries, id)
+		}
+		if record, ok := e.state.MailSends[id]; ok && record.Status != mailSendSending {
+			delete(e.state.MailSends, id)
 		}
 		delete(e.state.Steps, id)
 		delete(e.state.ForeachState, id)
@@ -1588,6 +1617,9 @@ func validateForceResumeIteration(workflow *Workflow, state *ExecutionState, opt
 	}
 	if _, recorded := state.CommandExecutions[opts.StepID]; recorded {
 		return fmt.Errorf("force-iter step %q has a leaf command-execution receipt; inspect it before an explicit reset", opts.StepID)
+	}
+	if _, recorded := state.MailSends[opts.StepID]; recorded {
+		return fmt.Errorf("force-iter step %q has a leaf mail-send receipt; inspect it before an explicit reset", opts.StepID)
 	}
 	for _, step := range workflow.Steps {
 		if iterationIndexFromID(step.ID, opts.StepID+"_iter") >= opts.Iteration {
@@ -1642,6 +1674,7 @@ func validateForceResumeIteration(workflow *Workflow, state *ExecutionState, opt
 		if hasRuntimeCheckpoint(state.Steps, consumer) ||
 			hasRuntimeCheckpoint(state.AgentDeliveries, consumer) ||
 			hasRuntimeCheckpoint(state.CommandExecutions, consumer) ||
+			hasRuntimeCheckpoint(state.MailSends, consumer) ||
 			hasRuntimeCheckpoint(state.InFlightSteps, consumer) ||
 			hasRuntimeCheckpoint(state.ForeachState, consumer) ||
 			hasRuntimeCheckpoint(state.ParallelState, consumer) {
@@ -1781,17 +1814,17 @@ func resumeRuntimeStepResolver(graph *DependencyGraph, state *ExecutionState) (f
 // restart implicitly invalidate dependent work already produced by that
 // container. Existing force-iter and whole-run reset provide those explicit
 // replay scopes. Validate before deleting any launch evidence.
-func (e *Executor) validateCommandReplayScopeLocked(workflow *Workflow, state *ExecutionState, stepID string) error {
+func (e *Executor) validateLeafReplayScopeLocked(workflow *Workflow, state *ExecutionState, stepID, kind string) error {
 	if workflow == nil {
-		return fmt.Errorf("command replay requires its saved workflow")
+		return fmt.Errorf("%s replay requires its saved workflow", kind)
 	}
 	for i := range workflow.Steps {
-		if workflow.Steps[i].ID == stepID && stepKind(&workflow.Steps[i]) == StepKindCommand {
-			return nil // An independently scheduled command.
+		if workflow.Steps[i].ID == stepID && stepKind(&workflow.Steps[i]) == kind {
+			return nil // An independently scheduled leaf.
 		}
 	}
 	refuse := func(container string) error {
-		return fmt.Errorf("cannot replay command %q independently of completed or unscheduled container %q; inspect the old command and its effects, then use --mode=force-iter for a containing top-level iteration or --keep-state=false to deliberately repeat the whole workflow", stepID, container)
+		return fmt.Errorf("cannot replay %s %q independently of completed or unscheduled container %q; inspect the old %s and its effects, then use --mode=force-iter for a containing top-level iteration or --keep-state=false to deliberately repeat the whole workflow", kind, stepID, container, kind)
 	}
 	graph := e.graph
 	if graph == nil {
@@ -1801,7 +1834,7 @@ func (e *Executor) validateCommandReplayScopeLocked(workflow *Workflow, state *E
 	if err != nil {
 		return err
 	}
-	if step, ok := resolve(stepID); !ok || stepKind(step) != StepKindCommand {
+	if step, ok := resolve(stepID); !ok || stepKind(step) != kind {
 		// An unknown or differently typed leaf cannot be independently replayed.
 		return refuse(stepID)
 	}
@@ -1963,6 +1996,7 @@ func (e *Executor) resetResumeState(workflow *Workflow) {
 	e.state.InFlightSteps = nil
 	e.state.AgentDeliveries = nil
 	e.state.CommandExecutions = nil
+	e.state.MailSends = nil
 	e.state.CurrentStep = ""
 	e.state.Errors = nil
 	e.stateMu.Unlock()
@@ -2053,6 +2087,7 @@ func (e *Executor) forceResumeIteration(stepID string, iteration int) {
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.Steps, prefix, iteration)...)
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.AgentDeliveries, prefix, iteration)...)
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.CommandExecutions, prefix, iteration)...)
+	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.MailSends, prefix, iteration)...)
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.InFlightSteps, prefix, iteration)...)
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.ParallelState, prefix, iteration)...)
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.ForeachState, prefix, iteration)...)
@@ -2276,6 +2311,7 @@ func (e *Executor) verifyForeachItemsFingerprint(stepID, fingerprint string) err
 		hasIterationEntries(e.state.Steps, prefix) ||
 		hasIterationEntries(e.state.AgentDeliveries, prefix) ||
 		hasIterationEntries(e.state.CommandExecutions, prefix) ||
+		hasIterationEntries(e.state.MailSends, prefix) ||
 		hasIterationEntries(e.state.InFlightSteps, prefix) ||
 		hasIterationEntries(e.state.ForeachState, prefix) ||
 		hasIterationEntries(e.state.ParallelState, prefix)

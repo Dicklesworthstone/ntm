@@ -63,6 +63,7 @@ const (
 	StepKindUnknown     = "unknown"
 	StepKindPrompt      = "prompt"
 	StepKindCommand     = "command"
+	StepKindMailSend    = "mail_send"
 	StepKindTemplate    = "template"
 	StepKindParallel    = "parallel"
 	StepKindLoop        = "loop"
@@ -138,6 +139,8 @@ func stepKind(step *Step) string {
 		return StepKindPrompt
 	case step.LoopControl != "":
 		return StepKindLoopControl
+	case step.MailSend != nil:
+		return StepKindMailSend
 	default:
 		return StepKindUnknown
 	}

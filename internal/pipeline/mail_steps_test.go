@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestMailSteps_ParseYAMLAndValidate(t *testing.T) {
@@ -405,7 +407,7 @@ func TestExecuteMailStep_DispatchesThroughAgentMail(t *testing.T) {
 	defer server.Close()
 	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
 
-	executor := newMailStepTestExecutor()
+	executor := newMailStepTestExecutor(t)
 	cases := []struct {
 		name   string
 		step   *Step
@@ -683,8 +685,268 @@ func TestExecutorRun_AgentMailStepErrorPath(t *testing.T) {
 	if result.Status != StatusFailed {
 		t.Fatalf("send Status = %q, want failed; result=%+v", result.Status, result)
 	}
-	if result.Error == nil || result.Error.Type != "agent_mail" || !strings.Contains(result.Error.Message, "fixture failure for send_message") {
-		t.Fatalf("send error = %+v, want structured Agent Mail fixture failure", result.Error)
+	if result.Error == nil || result.Error.Type != "delivery_unknown" || !strings.Contains(result.Error.Message, "fixture failure for send_message") {
+		t.Fatalf("send error = %+v, want uncertain delivery with original Agent Mail failure", result.Error)
+	}
+}
+
+func TestMailSendJournalLostResponseDoesNotRetryOrResume(t *testing.T) {
+	server, counts := newMailSendJournalFixture(t, "lost")
+	t.Cleanup(server.Close)
+	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+	t.Setenv("AGENT_MAIL_TOKEN", "")
+	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "mail-lost-response", Steps: []Step{
+		{ID: "send", MailSend: validMailSendStep(), OnError: ErrorActionRetry, RetryCount: 2, RetryDelay: Duration{Duration: time.Millisecond}},
+	}}
+	cfg := DefaultExecutorConfig("mail-journal")
+	cfg.ProjectDir, cfg.RunID = t.TempDir(), "mail-lost-response"
+	state, err := RunControlledPipeline(t.Context(), workflow, nil, cfg, nil)
+	if err == nil || state == nil || state.Status != StatusFailed {
+		t.Fatalf("lost response should fail the workflow: state=%+v err=%v", state, err)
+	}
+	result := state.Steps["send"]
+	if result.Error == nil || result.Error.Type != "delivery_unknown" || result.Attempts != 1 {
+		t.Fatalf("unsafe automatic retry or missing recovery diagnostic: %+v", result)
+	}
+	if calls, delivered := counts(); calls != 1 || delivered != 1 {
+		t.Fatalf("accepted message was retried: calls=%d delivered=%d", calls, delivered)
+	}
+	prior, err := LoadState(cfg.ProjectDir, cfg.RunID)
+	if err != nil || prior.MailSends["send"].Status != mailSendSending {
+		t.Fatalf("missing durable uncertainty: state=%+v err=%v", prior, err)
+	}
+	before, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resumeMailSendJournal(t, cfg, ResumeOptions{}); err == nil || !strings.Contains(err.Error(), "unresolved delivery") {
+		t.Fatalf("ordinary resume must refuse ambiguous delivery: %v", err)
+	}
+	after, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("rejected resume rewrote recovery evidence: %v", err)
+	}
+	if calls, delivered := counts(); calls != 1 || delivered != 1 {
+		t.Fatalf("ordinary resume duplicated mail: calls=%d delivered=%d", calls, delivered)
+	}
+	// Deliberate replay is still available after the operator inspects the
+	// recipient's inbox. Only this explicit choice permits another send.
+	resumed, err := resumeMailSendJournal(t, cfg, ResumeOptions{Mode: ResumeModeRestartFailed})
+	if err != nil || resumed == nil || resumed.Status != StatusCompleted || resumed.MailSends["send"].Status != mailSendSent {
+		t.Fatalf("explicit replay failed: state=%+v err=%v", resumed, err)
+	}
+	if calls, delivered := counts(); calls != 2 || delivered != 2 {
+		t.Fatalf("explicit replay sent an unexpected number of messages: calls=%d delivered=%d", calls, delivered)
+	}
+}
+
+func TestMailSendJournalRestoresReceiptBeforeSchedulerCheckpoint(t *testing.T) {
+	server, requests := newAgentMailRuntimeFixture(t, "")
+	t.Cleanup(server.Close)
+	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+	t.Setenv("AGENT_MAIL_TOKEN", "")
+	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "mail-receipt-recovery", Steps: []Step{
+		{ID: "send", MailSend: validMailSendStep(), OutputVar: "sent", OutputParse: OutputParse{Type: "json"}},
+		{ID: "after", DependsOn: []string{"send"}, MailInboxCheck: &MailInboxCheckStep{ProjectKey: "/data/projects/ntm", AgentName: "${vars.sent_parsed.thread_id}"}},
+	}}
+	e := newMailStepTestExecutor(t)
+	e.config.RunID = e.state.RunID
+	frozen, path, err := SnapshotWorkflow(t.Context(), e.config.ProjectDir, workflow, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.config.WorkflowFile = path
+	e.state.WorkflowID, e.state.WorkflowFile, e.state.Session = workflow.Name, path, e.config.Session
+	e.state.Status, e.state.StartedAt = StatusRunning, time.Now()
+	e.graph = NewDependencyGraph(frozen)
+	// Execute the real leaf lifecycle, stopping at the boundary where its
+	// caller would normally checkpoint Steps and named output variables.
+	first := e.executeStep(t.Context(), &frozen.Steps[0], frozen)
+	if first.Status != StatusCompleted {
+		t.Fatalf("initial send failed: %+v", first)
+	}
+	prior, err := LoadState(e.config.ProjectDir, e.config.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, recorded := prior.Steps["send"]; recorded || prior.MailSends["send"].Status != mailSendSent || prior.InFlightSteps["send"].Kind != StepKindMailSend {
+		t.Fatalf("fixture missed the receipt/scheduler crash window: %+v", prior)
+	}
+	resumed, err := resumeMailSendJournal(t, e.config, ResumeOptions{})
+	if err != nil || resumed == nil || resumed.Status != StatusCompleted {
+		t.Fatalf("receipt recovery failed: state=%+v err=%v", resumed, err)
+	}
+	got := requests()
+	if len(got) != 2 || got[0].name != "send_message" || got[1].name != "fetch_inbox" || got[1].args["agent_name"] != "bd-b5l8d" {
+		t.Fatalf("recovery repeated send or lost its parsed output: %+v", got)
+	}
+	if resumed.Steps["send"].Output != first.Output || resumed.Variables["sent"] != first.Output || !reflect.DeepEqual(resumed.Steps["send"].ParsedData, first.ParsedData) {
+		t.Fatalf("recovery changed original output: before=%+v after=%+v", first, resumed.Steps["send"])
+	}
+}
+
+func TestMailSendJournalCrashIntentAndLegacyStateRefuseReplay(t *testing.T) {
+	for _, journaled := range []bool{false, true} {
+		t.Run(map[bool]string{false: "legacy", true: "journaled"}[journaled], func(t *testing.T) {
+			server, counts := newMailSendJournalFixture(t)
+			t.Cleanup(server.Close)
+			t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+			t.Setenv("AGENT_MAIL_TOKEN", "")
+			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "mail-crash", Steps: []Step{{ID: "send", MailSend: validMailSendStep()}}}
+			e := newMailStepTestExecutor(t)
+			e.config.RunID = e.state.RunID
+			e.state.WorkflowID, e.state.Session = workflow.Name, e.config.Session
+			e.state.Status = StatusRunning
+			e.graph = NewDependencyGraph(workflow)
+			e.markStepInFlight("send", StepKindMailSend, -1)
+			if journaled {
+				hash, err := agentStepHash(&workflow.Steps[0])
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := e.saveMailSend(MailSendState{Version: mailSendVersion, StepID: "send", StepHash: hash, Status: mailSendSending, StartedAt: time.Now()}); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := e.persistState(); err != nil {
+				t.Fatal(err)
+			}
+			prior, err := LoadState(e.config.ProjectDir, e.config.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := NewExecutor(e.config).Resume(t.Context(), workflow, prior, nil); err == nil || !strings.Contains(err.Error(), "unresolved delivery") {
+				t.Fatalf("crash checkpoint silently replayed: %v", err)
+			}
+			if calls, _ := counts(); calls != 0 {
+				t.Fatalf("crash recovery dispatched %d messages", calls)
+			}
+		})
+	}
+}
+
+func TestMailSendJournalDefinitiveRejectionAllowsRetry(t *testing.T) {
+	server, counts := newMailSendJournalFixture(t, "rejected")
+	t.Cleanup(server.Close)
+	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+	t.Setenv("AGENT_MAIL_TOKEN", "")
+	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "mail-rejection", Steps: []Step{
+		{ID: "send", MailSend: validMailSendStep(), OnError: ErrorActionRetry, RetryCount: 2, RetryDelay: Duration{Duration: time.Millisecond}},
+	}}
+	cfg := DefaultExecutorConfig("mail-journal")
+	cfg.ProjectDir, cfg.RunID = t.TempDir(), "mail-rejection"
+	state, err := RunControlledPipeline(t.Context(), workflow, nil, cfg, nil)
+	if err != nil || state == nil || state.Status != StatusCompleted || state.Steps["send"].Attempts != 2 {
+		t.Fatalf("definitive refusal did not permit retry: state=%+v err=%v", state, err)
+	}
+	if calls, delivered := counts(); calls != 2 || delivered != 1 {
+		t.Fatalf("rejection retry duplicated delivery: calls=%d delivered=%d", calls, delivered)
+	}
+}
+
+func TestMailSendJournalParsingFailureNeverResends(t *testing.T) {
+	server, counts := newMailSendJournalFixture(t)
+	t.Cleanup(server.Close)
+	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+	t.Setenv("AGENT_MAIL_TOKEN", "")
+	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "mail-parse-failure", Steps: []Step{
+		{ID: "send", MailSend: validMailSendStep(), OutputParse: OutputParse{Type: "regex", Pattern: "["}, OnError: ErrorActionRetry, RetryCount: 2, RetryDelay: Duration{Duration: time.Millisecond}},
+	}}
+	cfg := DefaultExecutorConfig("mail-journal")
+	cfg.ProjectDir, cfg.RunID = t.TempDir(), "mail-parse-failure"
+	state, err := NewExecutor(cfg).Run(t.Context(), workflow, nil, nil)
+	if err == nil || state == nil || state.Steps["send"].Error == nil || state.Steps["send"].Error.Type != "output_parse" || state.Steps["send"].Attempts != 1 || state.MailSends["send"].Status != mailSendSent {
+		t.Fatalf("parsing failure lost delivery evidence: state=%+v err=%v", state, err)
+	}
+	prior, err := LoadState(cfg.ProjectDir, cfg.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ResumeOptions.Mode = ResumeModeRestartFailed
+	if _, err := NewExecutor(cfg).Resume(t.Context(), workflow, prior, nil); err == nil {
+		t.Fatal("resume unexpectedly repaired the invalid parser")
+	}
+	if calls, delivered := counts(); calls != 1 || delivered != 1 {
+		t.Fatalf("parsing failure resent mail: calls=%d delivered=%d", calls, delivered)
+	}
+}
+
+func resumeMailSendJournal(t *testing.T, cfg ExecutorConfig, opts ResumeOptions) (*ExecutionState, error) {
+	t.Helper()
+	owner, err := AcquireRunControl(t.Context(), cfg.ProjectDir, cfg.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	prior, err := LoadState(cfg.ProjectDir, cfg.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen, valid, err := LoadResumeWorkflow(prior.WorkflowFile)
+	if err != nil || !valid.Valid {
+		t.Fatalf("load saved workflow: err=%v validation=%+v", err, valid)
+	}
+	cfg.WorkflowFile, cfg.ResumeOptions = prior.WorkflowFile, opts
+	return NewExecutor(cfg).Resume(owner.Context(), frozen, prior, nil)
+}
+
+// A lost response occurs after the server has accepted the side effect. An
+// explicit MCP isError result is the only failure modeled as a known refusal.
+func newMailSendJournalFixture(t *testing.T, replies ...string) (*httptest.Server, func() (int, int)) {
+	t.Helper()
+	var mu sync.Mutex
+	calls, delivered := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     interface{} `json:"id"`
+			Params struct {
+				Name      string                 `json:"name"`
+				Arguments map[string]interface{} `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Params.Name != "send_message" {
+			t.Errorf("unexpected mail fixture request: %+v err=%v", request, err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		reply := "success"
+		if calls < len(replies) {
+			reply = replies[calls]
+		}
+		calls++
+		if reply != "rejected" {
+			delivered++
+		}
+		mu.Unlock()
+		if reply == "lost" {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		var result interface{}
+		if reply == "rejected" {
+			result = map[string]interface{}{"isError": true, "content": []map[string]interface{}{{"type": "text", "text": "sender is not registered"}}}
+		} else {
+			args := request.Params.Arguments
+			result = map[string]interface{}{"count": 1, "deliveries": []map[string]interface{}{{
+				"project": args["project_key"], "payload": map[string]interface{}{
+					"id": 101, "from": args["sender_name"], "to": args["to"], "subject": args["subject"], "body_md": args["body_md"], "thread_id": args["thread_id"],
+				},
+			}}}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": request.ID, "result": result}); err != nil {
+			t.Error(err)
+		}
+	}))
+	return server, func() (int, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls, delivered
 	}
 }
 
@@ -696,7 +958,7 @@ func TestExecuteMailStep_DryRunDoesNotCallAgentMail(t *testing.T) {
 	defer server.Close()
 	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
 
-	executor := newMailStepTestExecutor()
+	executor := newMailStepTestExecutor(t)
 	executor.config.DryRun = true
 	result := executor.executeMailStep(context.Background(), &Step{
 		ID:       "notify",
@@ -839,8 +1101,11 @@ func newAgentMailRuntimeFixture(t *testing.T, failTool string) (*httptest.Server
 	return server, snapshot
 }
 
-func newMailStepTestExecutor() *Executor {
-	executor := NewExecutor(DefaultExecutorConfig("mail-step-test"))
+func newMailStepTestExecutor(t *testing.T) *Executor {
+	t.Helper()
+	cfg := DefaultExecutorConfig("mail-step-test")
+	cfg.ProjectDir = t.TempDir()
+	executor := NewExecutor(cfg)
 	executor.state = &ExecutionState{
 		RunID:      "run-mail-step",
 		WorkflowID: "workflow-mail-step",

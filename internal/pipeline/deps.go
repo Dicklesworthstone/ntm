@@ -574,6 +574,9 @@ func (g *DependencyGraph) validatePhaseOwnership(state *ExecutionState) []Depend
 		for id := range state.AgentDeliveries {
 			ids[id] = true
 		}
+		for id := range state.MailSends {
+			ids[id] = true
+		}
 		for id := range state.InFlightSteps {
 			ids[id] = true
 		}

@@ -835,6 +835,17 @@ background command, cleanup or post-pipeline command, or command whose enclosing
 work already completed prevents acceptance. Recorded PIDs are diagnostic only: recovery neither infers completion
 from PID disappearance nor signals a saved process ID.
 
+Pipeline `mail_send` steps also checkpoint their send intent and delivery receipt.
+If a response is lost or the run stops while a send is unresolved, automatic
+retries and ordinary resume refuse to send the message again: the recipient may
+already have received it. Inspect the recipient's inbox and original thread
+before deliberately choosing `--mode=restart-failed` to resend. A saved successful
+receipt restores the original output and parsed variables without another send,
+even if the scheduler's final step checkpoint was lost. A local output-parsing
+failure does not authorize resending delivered mail. Explicit server refusals
+remain eligible for the step's normal retry policy. Interrupted sends from older
+checkpoints without a receipt require the same deliberate replay decision.
+
 If you instead intend to repeat failed or interrupted agent work, inspect the
 original pane before using `--mode=restart-failed`; that mode still preserves
 completed delivery receipts. Use

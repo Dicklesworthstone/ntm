@@ -1013,6 +1013,11 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 			// final outcome. Normal failure policy still handles that result.
 			break
 		}
+		if send, ok := e.loadMailSend(step.ID); ok && send.Status != mailSendRejected {
+			// A lost response or output parsing failure cannot authorize a
+			// second message carrying the same work to the recipient.
+			break
+		}
 
 		if attempt < maxAttempts {
 			// Wait before retry
@@ -3788,6 +3793,12 @@ func (e *Executor) snapshotState() *ExecutionState {
 		snapshot.CommandExecutions = make(map[string]CommandExecutionState, len(e.state.CommandExecutions))
 		for key, record := range e.state.CommandExecutions {
 			snapshot.CommandExecutions[key] = cloneCommandExecution(record)
+		}
+	}
+	if e.state.MailSends != nil {
+		snapshot.MailSends = make(map[string]MailSendState, len(e.state.MailSends))
+		for key, record := range e.state.MailSends {
+			snapshot.MailSends[key] = cloneMailSend(record)
 		}
 	}
 	e.stateMu.RUnlock()
