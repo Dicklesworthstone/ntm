@@ -558,7 +558,7 @@ func (m *Monitor) handleRateLimit(agentState *AgentState, waitSeconds int) {
 
 		// Trigger rotation assistance if enabled
 		if rotateConfig.Enabled && rotateConfig.AutoTrigger {
-			m.triggerRotationAssistance(session, paneIndex, agentType, rotateConfig)
+			m.triggerRotationAssistance(session, paneID, paneIndex, agentType, rotateConfig)
 		}
 	}()
 }
@@ -626,15 +626,20 @@ func (m *Monitor) recordRateLimitSuccess(agentType string) {
 }
 
 // triggerRotationAssistance sends a notification with rotation command or auto-initiates rotation
-func (m *Monitor) triggerRotationAssistance(session string, paneIndex int, agentType string, rotateConfig config.RotationConfig) {
-	rotateCmd := fmt.Sprintf("ntm rotate %s --pane=%d", session, paneIndex)
+func (m *Monitor) triggerRotationAssistance(session, paneID string, paneIndex int, agentType string, rotateConfig config.RotationConfig) {
+	selector, err := tmux.ParsePaneSelector(paneID)
+	if err != nil || selector.Kind != tmux.PaneSelectorID {
+		log.Printf("[resilience] Cannot suggest rotation without a physical pane identity")
+		return
+	}
+	rotateCmd := fmt.Sprintf("ntm rotate %s --pane=%s", session, selector.PaneID)
 
 	log.Printf("[resilience] Suggesting rotation: %s", rotateCmd)
 
 	events.DefaultEmitter().Emit(events.NewWebhookEvent(
 		events.WebhookRotationNeeded,
 		session,
-		fmt.Sprintf("%d", paneIndex),
+		selector.PaneID,
 		agentType,
 		"Rotation recommended",
 		map[string]string{
@@ -798,7 +803,12 @@ func (m *Monitor) suggestManualRespawn(agent *AgentState) {
 	if m.session == "" {
 		return
 	}
-	respawnCmd := fmt.Sprintf("ntm respawn %s --panes=%d", m.session, agent.PaneIndex)
+	selector, err := tmux.ParsePaneSelector(agent.PaneID)
+	if err != nil || selector.Kind != tmux.PaneSelectorID {
+		log.Printf("[resilience] Cannot suggest respawn without a physical pane identity")
+		return
+	}
+	respawnCmd := fmt.Sprintf("ntm respawn %s --panes=%s", m.session, selector.PaneID)
 	log.Printf("[resilience] Suggest manual respawn for %s: %s", agent.PaneID, respawnCmd)
 	displayTmuxMessage(m.session, fmt.Sprintf("⚠️ Agent crashed (pane %d). Run: %s", agent.PaneIndex, respawnCmd))
 }

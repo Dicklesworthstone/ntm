@@ -256,21 +256,183 @@ func TestBuildRateLimitRecommendation_FixCommandFormat(t *testing.T) {
 		},
 	}
 
-	rec := buildRateLimitRecommendation(3, "3", "my-test-session", check)
+	rec := buildRateLimitRecommendation(3, "%7", "my-test-session", check)
 
 	if rec.FixCommand == "" {
 		t.Fatal("FixCommand should not be empty")
 	}
 
-	// Should contain sleep and re-diagnosis command
+	// Retry through an existing surface that accepts the exact pane selector.
 	if rec.Action == "wait" {
-		// Expect: sleep 60 && ntm --robot-diagnose=my-test-session --pane=3
-		if !contains(rec.FixCommand, "sleep 60") {
-			t.Errorf("FixCommand should contain 'sleep 60', got: %s", rec.FixCommand)
+		if rec.FixCommand != "sleep 60 && ntm --robot-agent-health=my-test-session --panes=%7" {
+			t.Errorf("FixCommand does not preserve the physical pane: %s", rec.FixCommand)
 		}
-		if !contains(rec.FixCommand, "my-test-session") {
-			t.Errorf("FixCommand should contain session name, got: %s", rec.FixCommand)
+	}
+}
+
+func TestDiagnoseRecommendationsResolveOriginalPhysicalPane(t *testing.T) {
+	panes := []tmux.Pane{
+		{ID: "%3", Index: 1, WindowIndex: 1, NTMIndex: 17, Type: tmux.AgentClaude},
+		{ID: "%7", Index: 1, WindowIndex: 2, NTMIndex: 99, Type: tmux.AgentCodex},
+	}
+	for _, tc := range []struct {
+		name    string
+		check   *HealthCheck
+		err     error
+		surface string
+	}{
+		{name: "crashed", check: &HealthCheck{HealthState: HealthUnhealthy, ProcessCheck: &ProcessCheckResult{Crashed: true}}, surface: "robot-restart-pane"},
+		{name: "unresponsive", check: &HealthCheck{HealthState: HealthUnhealthy, StallCheck: &StallCheckResult{Stalled: true}}, surface: "robot-interrupt"},
+		{name: "unknown", err: errors.New("health observation unavailable"), surface: "robot-tail"},
+		{name: "degraded", check: &HealthCheck{HealthState: HealthDegraded, StallCheck: &StallCheckResult{Stalled: true}}, surface: "robot-tail"},
+		{name: "unhealthy", check: &HealthCheck{HealthState: HealthUnhealthy}, surface: "robot-tail"},
+		{name: "rate-limited", check: &HealthCheck{HealthState: HealthRateLimited, ErrorCheck: &ErrorCheckResult{RateLimited: true, WaitSeconds: 60}}, surface: "robot-agent-health"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := getDiagnoseWithDependencies(t.Context(), DiagnoseOptions{Session: "project", Pane: -1}, diagnoseDependencies{
+				sessionExists: func(context.Context, string) (bool, error) { return true, nil },
+				listPanes:     func(context.Context, string) ([]tmux.Pane, error) { return panes, nil },
+				projectKey:    func() (string, error) { return "", nil },
+				checkHealth: func(pane tmux.Pane, _ string) (*HealthCheck, error) {
+					if pane.ID == "%7" {
+						return tc.check, tc.err
+					}
+					return &HealthCheck{HealthState: HealthHealthy}, nil
+				},
+			})
+			if err != nil || !out.Success || len(out.Recommendations) != 1 {
+				t.Fatalf("diagnosis=%+v err=%v", out, err)
+			}
+			rec := out.Recommendations[0]
+			if rec.PaneTarget != "%7" {
+				t.Fatalf("recommendation lost physical identity: %+v", rec)
+			}
+			var selector, surface string
+			for _, word := range strings.Fields(rec.FixCommand) {
+				if strings.HasPrefix(word, "--panes=") {
+					selector = strings.TrimPrefix(word, "--panes=")
+				}
+				if strings.HasPrefix(word, "--robot-") {
+					surface, _, _ = strings.Cut(strings.TrimPrefix(word, "--"), "=")
+				}
+			}
+			if surface != tc.surface {
+				t.Fatalf("recommendation command=%q, want %s", rec.FixCommand, tc.surface)
+			}
+			if accepts, known := SurfaceParameterSupport(surface, "panes"); !known || !accepts {
+				t.Fatalf("recommendation invokes a surface that does not accept --panes: %q", rec.FixCommand)
+			}
+			selected, err := tmux.ResolvePaneSelectors(panes, []string{selector}, true)
+			if err != nil || len(selected) != 1 || selected[0].ID != "%7" {
+				t.Fatalf("command %q resolves to %+v err=%v, want only %%7", rec.FixCommand, selected, err)
+			}
+		})
+	}
+}
+
+func TestDiagnoseFilteredRecoveryPreservesScope(t *testing.T) {
+	panes := []tmux.Pane{
+		{ID: "%3", Index: 1, WindowIndex: 0, Type: tmux.AgentClaude},
+		{ID: "%7", Index: 3, WindowIndex: 2, NTMIndex: 99, Type: tmux.AgentCodex},
+	}
+	out, err := getDiagnoseWithDependencies(t.Context(), DiagnoseOptions{Session: "project", Pane: 3}, diagnoseDependencies{
+		sessionExists: func(context.Context, string) (bool, error) { return true, nil },
+		listPanes:     func(context.Context, string) ([]tmux.Pane, error) { return panes, nil },
+		projectKey:    func() (string, error) { return "", nil },
+		checkHealth: func(pane tmux.Pane, _ string) (*HealthCheck, error) {
+			if pane.ID != "%7" {
+				t.Fatalf("filtered diagnosis observed unrelated pane: %+v", pane)
+			}
+			return &HealthCheck{HealthState: HealthUnhealthy, ProcessCheck: &ProcessCheckResult{Crashed: true}}, nil
+		},
+	})
+	if err != nil || !out.Success || len(out.Recommendations) != 1 || out.Recommendations[0].PaneTarget != "%7" {
+		t.Fatalf("filtered diagnosis=%+v err=%v", out, err)
+	}
+	if out.AutoFixCommand != "ntm --robot-diagnose=project --fix --diagnose-pane=3" {
+		t.Fatalf("auto-fix command broadened filtered diagnosis: %q", out.AutoFixCommand)
+	}
+}
+
+func TestDiagnoseFixRetainsPhysicalPaneAfterTopologyChanges(t *testing.T) {
+	for _, action := range []string{"restart", "interrupt"} {
+		for _, missing := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/missing=%t", action, missing), func(t *testing.T) {
+				panes := []tmux.Pane{
+					{ID: "%3", Index: 1, WindowIndex: 1, NTMIndex: 17, Type: tmux.AgentClaude},
+					{ID: "%7", Index: 1, WindowIndex: 2, NTMIndex: 99, Type: tmux.AgentCodex},
+				}
+				deps := diagnoseDependencies{
+					sessionExists: func(context.Context, string) (bool, error) { return true, nil },
+					listPanes:     func(context.Context, string) ([]tmux.Pane, error) { return panes, nil },
+					projectKey:    func() (string, error) { return "", nil },
+					checkHealth: func(pane tmux.Pane, _ string) (*HealthCheck, error) {
+						if pane.ID != "%7" {
+							return &HealthCheck{HealthState: HealthHealthy}, nil
+						}
+						check := &HealthCheck{HealthState: HealthUnhealthy}
+						if action == "restart" {
+							check.ProcessCheck = &ProcessCheckResult{Crashed: true}
+						} else {
+							check.StallCheck = &StallCheckResult{Stalled: true}
+						}
+						return check, nil
+					},
+				}
+				diagnosis, err := getDiagnoseWithDependencies(t.Context(), DiagnoseOptions{Session: "project", Pane: -1}, deps)
+				if err != nil || len(diagnosis.Recommendations) != 1 {
+					t.Fatalf("diagnosis=%+v err=%v", diagnosis, err)
+				}
+				original := panes[1]
+				panes[1] = tmux.Pane{ID: "%8", Index: 1, WindowIndex: 2, NTMIndex: 99, Type: tmux.AgentClaude}
+				if !missing {
+					original.Index, original.WindowIndex = 2, 4
+					panes = append(panes, original)
+				}
+				var actedOn []string
+				deps.restartPane = func(_ context.Context, opts RestartPaneOptions) (*RestartPaneOutput, error) {
+					selected, err := tmux.ResolvePaneSelectors(panes, opts.Panes, true)
+					if err != nil || len(selected) != 1 || selected[0].ID != "%7" {
+						t.Fatalf("restart redirected to replacement: opts=%+v selected=%+v err=%v", opts, selected, err)
+					}
+					actedOn = append(actedOn, selected[0].ID)
+					return &RestartPaneOutput{RobotResponse: NewRobotResponse(true), Restarted: []string{"4.2"}, AgentRelaunched: map[string]bool{"4.2": true}}, nil
+				}
+				deps.sendKeys = func(_ context.Context, target, _ string, _ bool) error {
+					actedOn = append(actedOn, target)
+					return nil
+				}
+				output, returnedErr := captureDiagnoseFixOutput(t, t.Context(), *diagnosis, deps)
+				if missing {
+					if returnedErr == nil || output.Success || len(actedOn) != 0 {
+						t.Fatalf("missing original pane acted on replacement: output=%+v err=%v targets=%v", output, returnedErr, actedOn)
+					}
+				} else if returnedErr != nil || !output.Success || len(actedOn) != 1 || actedOn[0] != "%7" {
+					t.Fatalf("moved original pane was not preserved: output=%+v err=%v targets=%v", output, returnedErr, actedOn)
+				}
+			})
 		}
+	}
+}
+
+func TestDiagnoseFixRefusesMissingPhysicalTargetInMultiWindowSession(t *testing.T) {
+	mutations := 0
+	output, err := captureDiagnoseFixOutput(t, t.Context(), DiagnoseOutput{Recommendations: []DiagnoseRecommendation{
+		{Pane: 1, Action: "restart", AutoFixable: true},
+	}}, diagnoseDependencies{
+		listPanes: func(context.Context, string) ([]tmux.Pane, error) {
+			return []tmux.Pane{
+				{ID: "%3", Index: 1, WindowIndex: 1, Type: tmux.AgentClaude},
+				{ID: "%7", Index: 1, WindowIndex: 2, Type: tmux.AgentCodex},
+			}, nil
+		},
+		restartPane: func(context.Context, RestartPaneOptions) (*RestartPaneOutput, error) {
+			mutations++
+			return nil, errors.New("unexpected restart")
+		},
+	})
+	if err == nil || output.Success || mutations != 0 || len(output.FixAttempts) != 1 || !strings.Contains(output.FixAttempts[0].Message, "physical pane target") {
+		t.Fatalf("incomplete recommendation guessed a target: output=%+v err=%v mutations=%d", output, err, mutations)
 	}
 }
 

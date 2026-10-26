@@ -923,7 +923,7 @@ func executeRestart(ctx context.Context, session string, win, pane int, agentTyp
 					agentType,
 					attemptedActions,
 					"",
-				).WithRecoveryHint(fmt.Sprintf("Try ntm --robot-smart-restart=%s --panes=%d --hard-kill to use kill -9 fallback", session, pane))
+				).WithRecoveryHint(fmt.Sprintf("Try ntm --robot-smart-restart=%s --panes=%d.%d --hard-kill to use kill -9 fallback", session, win, pane))
 				return seq, structErr
 			}
 		}
@@ -958,7 +958,7 @@ func executeRestart(ctx context.Context, session string, win, pane int, agentTyp
 					agentType,
 					attemptedActions,
 					lastOutput,
-				).WithRecoveryHint(fmt.Sprintf("Try ntm --robot-smart-restart=%s --panes=%d --hard-kill, or manually kill the process", session, pane))
+				).WithRecoveryHint(fmt.Sprintf("Try ntm --robot-smart-restart=%s --panes=%d.%d --hard-kill, or manually kill the process", session, win, pane))
 				return seq, structErr
 			}
 			softExitFailed = true

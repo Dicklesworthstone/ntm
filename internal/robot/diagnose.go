@@ -95,6 +95,7 @@ type DiagnoseOptions struct {
 type diagnoseDependencies struct {
 	sessionExists func(context.Context, string) (bool, error)
 	listPanes     func(context.Context, string) ([]tmux.Pane, error)
+	checkHealth   func(tmux.Pane, string) (*HealthCheck, error)
 	restartPane   diagnoseRestartPaneFunc
 	sendKeys      func(context.Context, string, string, bool) error
 	// Build-slot lease check dependencies (ntm-83dz). All are best-effort:
@@ -122,6 +123,7 @@ func defaultDiagnoseDependencies() diagnoseDependencies {
 	return diagnoseDependencies{
 		sessionExists:       tmux.SessionExistsContext,
 		listPanes:           tmux.GetPanesContext,
+		checkHealth:         CheckAgentHealthWithActivity,
 		restartPane:         GetRestartPaneContext,
 		sendKeys:            sendDiagnoseKey,
 		projectKey:          defaultDiagnoseProjectKey,
@@ -138,6 +140,9 @@ func (deps diagnoseDependencies) withDefaults() diagnoseDependencies {
 	}
 	if deps.listPanes == nil {
 		deps.listPanes = defaults.listPanes
+	}
+	if deps.checkHealth == nil {
+		deps.checkHealth = defaults.checkHealth
 	}
 	if deps.restartPane == nil {
 		deps.restartPane = defaults.restartPane
@@ -256,13 +261,13 @@ func getDiagnoseWithDependencies(ctx context.Context, opts DiagnoseOptions, deps
 		panes = filtered
 	}
 
-	// Pane.Index is only unique within a window, so every recommendation carries
-	// a topology-aware target that --fix can act on unambiguously.
-	multiWindow := tmux.PanesSpanMultipleWindows(panes)
-
 	// Analyze each pane
 	for _, pane := range panes {
 		agentType := detectAgentTypeFromPane(pane)
+		// Preserve the observed physical identity in both the recommendation
+		// and its command. Window/pane coordinates can name a replacement by
+		// the time the operator follows the recommendation.
+		paneTarget := pane.Ref().StableKey()
 
 		// Skip user panes unless specifically requested
 		if agentType == "user" && opts.Pane < 0 {
@@ -272,19 +277,19 @@ func getDiagnoseWithDependencies(ctx context.Context, opts DiagnoseOptions, deps
 		output.Summary.TotalPanes++
 
 		// Perform comprehensive health check (the pane PID gives authoritative liveness)
-		check, err := CheckAgentHealthWithActivity(pane, agentType)
+		check, err := deps.checkHealth(pane, agentType)
 		if err != nil {
 			// Error during health check - mark as unknown
 			output.Summary.Unknown++
 			output.Panes.Unknown = append(output.Panes.Unknown, pane.Index)
 			output.Recommendations = append(output.Recommendations, DiagnoseRecommendation{
 				Pane:        pane.Index,
-				PaneTarget:  paneTargetKey(pane, multiWindow),
+				PaneTarget:  paneTarget,
 				Status:      "unknown",
 				Action:      "investigate",
 				Reason:      fmt.Sprintf("Health check failed: %v", err),
 				AutoFixable: false,
-				FixCommand:  fmt.Sprintf("ntm inspect %s --pane=%d", opts.Session, pane.Index),
+				FixCommand:  fmt.Sprintf("ntm --robot-tail=%s --panes=%s --lines=50", opts.Session, paneTarget),
 			})
 			continue
 		}
@@ -301,7 +306,7 @@ func getDiagnoseWithDependencies(ctx context.Context, opts DiagnoseOptions, deps
 			if check.ErrorCheck != nil && check.ErrorCheck.RateLimited {
 				output.Summary.RateLimited++
 				output.Panes.RateLimited = append(output.Panes.RateLimited, pane.Index)
-				rec := buildRateLimitRecommendation(pane.Index, paneTargetKey(pane, multiWindow), opts.Session, check)
+				rec := buildRateLimitRecommendation(pane.Index, paneTarget, opts.Session, check)
 				output.Recommendations = append(output.Recommendations, rec)
 			} else {
 				// Treat as degraded
@@ -312,12 +317,12 @@ func getDiagnoseWithDependencies(ctx context.Context, opts DiagnoseOptions, deps
 				if check.StallCheck != nil && check.StallCheck.Stalled {
 					output.Recommendations = append(output.Recommendations, DiagnoseRecommendation{
 						Pane:        pane.Index,
-						PaneTarget:  paneTargetKey(pane, multiWindow),
+						PaneTarget:  paneTarget,
 						Status:      "stalled",
 						Action:      "investigate",
 						Reason:      check.Reason,
 						AutoFixable: false,
-						FixCommand:  fmt.Sprintf("ntm inspect %s --pane=%d", opts.Session, pane.Index),
+						FixCommand:  fmt.Sprintf("ntm --robot-tail=%s --panes=%s --lines=50", opts.Session, paneTarget),
 					})
 				}
 			}
@@ -325,7 +330,7 @@ func getDiagnoseWithDependencies(ctx context.Context, opts DiagnoseOptions, deps
 		case HealthRateLimited:
 			output.Summary.RateLimited++
 			output.Panes.RateLimited = append(output.Panes.RateLimited, pane.Index)
-			rec := buildRateLimitRecommendation(pane.Index, paneTargetKey(pane, multiWindow), opts.Session, check)
+			rec := buildRateLimitRecommendation(pane.Index, paneTarget, opts.Session, check)
 			output.Recommendations = append(output.Recommendations, rec)
 
 		case HealthUnhealthy:
@@ -335,24 +340,24 @@ func getDiagnoseWithDependencies(ctx context.Context, opts DiagnoseOptions, deps
 				output.Panes.Crashed = append(output.Panes.Crashed, pane.Index)
 				output.Recommendations = append(output.Recommendations, DiagnoseRecommendation{
 					Pane:        pane.Index,
-					PaneTarget:  paneTargetKey(pane, multiWindow),
+					PaneTarget:  paneTarget,
 					Status:      "crashed",
 					Action:      "restart",
 					Reason:      check.Reason,
 					AutoFixable: true,
-					FixCommand:  fmt.Sprintf("ntm --robot-restart-pane=%s --panes=%d", opts.Session, pane.Index),
+					FixCommand:  fmt.Sprintf("ntm --robot-restart-pane=%s --panes=%s", opts.Session, paneTarget),
 				})
 			} else if check.StallCheck != nil && check.StallCheck.Stalled {
 				output.Summary.Unresponsive++
 				output.Panes.Unresponsive = append(output.Panes.Unresponsive, pane.Index)
 				output.Recommendations = append(output.Recommendations, DiagnoseRecommendation{
 					Pane:        pane.Index,
-					PaneTarget:  paneTargetKey(pane, multiWindow),
+					PaneTarget:  paneTarget,
 					Status:      "unresponsive",
 					Action:      "interrupt",
 					Reason:      fmt.Sprintf("Stalled for %d seconds", check.StallCheck.IdleSeconds),
 					AutoFixable: true,
-					FixCommand:  fmt.Sprintf("ntm --robot-interrupt=%s --panes=%d", opts.Session, pane.Index),
+					FixCommand:  fmt.Sprintf("ntm --robot-interrupt=%s --panes=%s", opts.Session, paneTarget),
 				})
 			} else {
 				// Generic unhealthy
@@ -360,12 +365,12 @@ func getDiagnoseWithDependencies(ctx context.Context, opts DiagnoseOptions, deps
 				output.Panes.Unresponsive = append(output.Panes.Unresponsive, pane.Index)
 				output.Recommendations = append(output.Recommendations, DiagnoseRecommendation{
 					Pane:        pane.Index,
-					PaneTarget:  paneTargetKey(pane, multiWindow),
+					PaneTarget:  paneTarget,
 					Status:      "unresponsive",
 					Action:      "investigate",
 					Reason:      check.Reason,
 					AutoFixable: false,
-					FixCommand:  fmt.Sprintf("ntm inspect %s --pane=%d", opts.Session, pane.Index),
+					FixCommand:  fmt.Sprintf("ntm --robot-tail=%s --panes=%s --lines=50", opts.Session, paneTarget),
 				})
 			}
 
@@ -413,6 +418,9 @@ func getDiagnoseWithDependencies(ctx context.Context, opts DiagnoseOptions, deps
 	}
 	if output.AutoFixAvail {
 		output.AutoFixCommand = fmt.Sprintf("ntm --robot-diagnose=%s --fix", opts.Session)
+		if opts.Pane >= 0 {
+			output.AutoFixCommand += fmt.Sprintf(" --diagnose-pane=%d", opts.Pane)
+		}
 	}
 
 	return output, nil
@@ -476,7 +484,7 @@ func buildRateLimitRecommendation(paneIndex int, paneTarget string, session stri
 	if waitSeconds > 0 {
 		rec.Action = "wait"
 		rec.Reason = fmt.Sprintf("Rate limited, wait %d seconds", waitSeconds)
-		rec.FixCommand = fmt.Sprintf("sleep %d && ntm --robot-diagnose=%s --pane=%d", waitSeconds, session, paneIndex)
+		rec.FixCommand = fmt.Sprintf("sleep %d && ntm --robot-agent-health=%s --panes=%s", waitSeconds, session, paneTarget)
 	} else {
 		rec.Action = "wait_or_switch"
 		rec.Reason = "Rate limited, consider switching accounts or waiting"
@@ -543,28 +551,14 @@ func executeDiagnoseFixWithDependencies(ctx context.Context, diag DiagnoseOutput
 	}
 	deps = deps.withDefaults()
 
-	// Pre-fetch panes once so we can look up each recommendation by index
-	// and dispatch tmux ops against the base-index-independent pane ID
-	// (`%N`) rather than the naive `<session>:<paneIdx>` form, which tmux
-	// interprets as a *window* index and breaks on hosts with
-	// `base-index = 1` (#141). Context-aware so callers can cancel a hung
-	// tmux daemon (matches the HTTP `handlePaneInputV1` shape).
+	// Resolve the diagnosis's physical pane identities against current session
+	// membership. Renumbering must not redirect a fix to a replacement pane.
 	fixPanes, fixPanesErr := deps.listPanes(ctx, opts.Session)
 	if fixPanesErr != nil {
 		code, hint, cause := classifyDiagnoseOperationError(ctx, fixPanesErr)
 		fixReport.RobotResponse = NewErrorResponse(fmt.Errorf("failed to list panes: %w", cause), code, hint)
 		fixReport.Summary = "No fixes attempted because pane discovery failed"
 		return encodeTerminalRobotOutput(&fixReport, fixReport.RobotResponse, "robot diagnose fix failed")
-	}
-	// Keyed by the unambiguous target, not the bare index: two windows can each
-	// hold a pane 1, and an index-keyed map silently kept only the last one — so
-	// --fix respawned a pane in the wrong window.
-	fixMultiWindow := tmux.PanesSpanMultipleWindows(fixPanes)
-	paneIDByTarget := map[string]string{}
-	paneTypeByTarget := map[string]tmux.AgentType{}
-	for _, p := range fixPanes {
-		paneIDByTarget[paneTargetKey(p, fixMultiWindow)] = p.ID
-		paneTypeByTarget[paneTargetKey(p, fixMultiWindow)] = p.Type
 	}
 	if err := validateDiagnoseFixTargets(diag, fixPanes); err != nil {
 		fixReport.RobotResponse = NewErrorResponse(err, ErrCodeNotImplemented, agent.GrokPhaseOneCapabilityHint)
@@ -602,10 +596,10 @@ func executeDiagnoseFixWithDependencies(ctx context.Context, diag DiagnoseOutput
 			continue
 		}
 
-		paneTarget, paneFound := paneIDByTarget[diagnoseRecommendationKey(rec)]
-		if !paneFound {
+		pane, targetErr := resolveDiagnoseFixTarget(rec, fixPanes)
+		if targetErr != nil {
 			attempt.Success = false
-			attempt.Message = fmt.Sprintf("Pane %s not found in session %q", diagnoseRecommendationLabel(rec), opts.Session)
+			attempt.Message = fmt.Sprintf("Cannot resolve pane %s in session %q: %v", diagnoseRecommendationLabel(rec), opts.Session, targetErr)
 			failedCount++
 			fixReport.FixAttempts = append(fixReport.FixAttempts, attempt)
 			continue
@@ -614,7 +608,7 @@ func executeDiagnoseFixWithDependencies(ctx context.Context, diag DiagnoseOutput
 		switch rec.Action {
 		case "restart":
 			var restartErr error
-			attempt.Success, attempt.Message, restartErr = executeDiagnoseRestart(ctx, opts.Session, paneTarget, deps.restartPane)
+			attempt.Success, attempt.Message, restartErr = executeDiagnoseRestart(ctx, opts.Session, pane.Ref().StableKey(), deps.restartPane)
 			if attempt.Success {
 				fixedCount++
 			} else {
@@ -627,15 +621,14 @@ func executeDiagnoseFixWithDependencies(ctx context.Context, diag DiagnoseOutput
 		case "interrupt":
 			// Interrupt via the pane ID with the agent's own interrupt key
 			// (Ctrl+C; Escape for omp).
-			paneType := paneTypeByTarget[diagnoseRecommendationKey(rec)]
-			interruptErr := deps.sendKeys(ctx, paneTarget, tmux.InterruptKeyForAgent(paneType), false)
+			interruptErr := deps.sendKeys(ctx, pane.Ref().StableKey(), tmux.InterruptKeyForAgent(pane.Type), false)
 			if interruptErr != nil {
 				attempt.Success = false
 				attempt.Message = fmt.Sprintf("Failed to interrupt: %v", interruptErr)
 				failedCount++
 			} else {
 				attempt.Success = true
-				attempt.Message = fmt.Sprintf("Interrupt sent (%s)", tmux.InterruptKeyLabel(paneType))
+				attempt.Message = fmt.Sprintf("Interrupt sent (%s)", tmux.InterruptKeyLabel(pane.Type))
 				fixedCount++
 			}
 			if cancelErr := diagnoseCancellationError(ctx, interruptErr); cancelErr != nil {
@@ -718,12 +711,9 @@ func diagnoseRecommendationLabel(rec DiagnoseRecommendation) string {
 	return diagnoseRecommendationKey(rec)
 }
 
-// diagnoseRecommendationKey is the map key for a recommendation's pane.
-//
-// GetDiagnose always sets PaneTarget, but a recommendation built by hand or
-// carried over from an older response may not have it. Falling back to the bare
-// index is safe there: paneTargetKey produces exactly that for a single-window
-// session, which is the only topology where an index is unambiguous.
+// diagnoseRecommendationKey returns the recorded target, retaining the numeric
+// pane only as a label for incomplete recommendations. Mutation validates that
+// fallback against the session topology in resolveDiagnoseFixTarget.
 func diagnoseRecommendationKey(rec DiagnoseRecommendation) string {
 	if rec.PaneTarget != "" {
 		return rec.PaneTarget
@@ -731,23 +721,27 @@ func diagnoseRecommendationKey(rec DiagnoseRecommendation) string {
 	return fmt.Sprintf("%d", rec.Pane)
 }
 
-func validateDiagnoseFixTargets(diag DiagnoseOutput, panes []tmux.Pane) error {
-	// Keyed by target, not index: an index-keyed map let one window's pane
-	// overwrite another's, so this validated the wrong pane's agent type — either
-	// letting a grok pane through or blocking a supported one.
-	multiWindow := tmux.PanesSpanMultipleWindows(panes)
-	typesByTarget := make(map[string]string, len(panes))
-	for _, pane := range panes {
-		typesByTarget[paneTargetKey(pane, multiWindow)] = detectAgentTypeFromPane(pane)
+func resolveDiagnoseFixTarget(rec DiagnoseRecommendation, panes []tmux.Pane) (tmux.Pane, error) {
+	if rec.PaneTarget == "" && tmux.PanesSpanMultipleWindows(panes) {
+		return tmux.Pane{}, errors.New("recommendation has no physical pane target; rerun diagnosis")
 	}
+	selected, err := tmux.ResolvePaneSelectors(panes, []string{diagnoseRecommendationKey(rec)}, true)
+	if err != nil {
+		return tmux.Pane{}, err
+	}
+	return selected[0], nil
+}
+
+func validateDiagnoseFixTargets(diag DiagnoseOutput, panes []tmux.Pane) error {
 	for _, rec := range diag.Recommendations {
 		if !rec.AutoFixable || (rec.Action != "restart" && rec.Action != "interrupt") {
 			continue
 		}
-		agentType, ok := typesByTarget[diagnoseRecommendationKey(rec)]
-		if !ok {
+		pane, err := resolveDiagnoseFixTarget(rec, panes)
+		if err != nil {
 			continue
 		}
+		agentType := detectAgentTypeFromPane(pane)
 		if err := agent.AgentType(agentType).ValidateAutomatedRelaunch(); err != nil {
 			return fmt.Errorf("pane %s (%s) diagnose action %q: %w",
 				diagnoseRecommendationLabel(rec), agentType, rec.Action, err)
@@ -825,7 +819,7 @@ func getDiagnoseBriefWithDependencies(ctx context.Context, session string, deps 
 
 		summary.TotalPanes++
 
-		check, err := CheckAgentHealthWithActivity(pane, agentType)
+		check, err := deps.checkHealth(pane, agentType)
 		if err != nil {
 			summary.Unknown++
 			continue

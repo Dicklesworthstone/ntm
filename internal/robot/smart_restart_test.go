@@ -23,6 +23,8 @@ func (f smartRestartPromptDispatcherFunc) Execute(ctx context.Context, req dispa
 type deterministicSmartRestartExecutor struct {
 	launches                  []string
 	mutations                 []string
+	exitErr                   error
+	shellReturned             *bool
 	shellPID                  int
 	shellPIDErr               error
 	ready                     bool
@@ -51,10 +53,13 @@ func (e *cancelAfterSmartRestartLaunchExecutor) sendKeys(ctx context.Context, se
 func (e *deterministicSmartRestartExecutor) exitAgent(_ context.Context, _ string, _, _ int, _ string, seq *RestartSequence) error {
 	e.mutations = append(e.mutations, "exit")
 	seq.ExitMethod = "test_exit"
-	return nil
+	return e.exitErr
 }
 
-func (*deterministicSmartRestartExecutor) waitForShellReturn(context.Context, string, int, int, time.Duration) (bool, string, error) {
+func (e *deterministicSmartRestartExecutor) waitForShellReturn(context.Context, string, int, int, time.Duration) (bool, string, error) {
+	if e.shellReturned != nil {
+		return *e.shellReturned, "", nil
+	}
 	return true, "", nil
 }
 
@@ -67,6 +72,42 @@ func (e *deterministicSmartRestartExecutor) sendKeys(_ context.Context, _ string
 	e.mutations = append(e.mutations, "send-keys")
 	e.launches = append(e.launches, fmt.Sprintf("%d.%d:%s", win, pane, keys))
 	return nil
+}
+
+func TestSmartRestartEscalationHintPreservesWindow(t *testing.T) {
+	panes := []tmux.Pane{
+		{ID: "%3", WindowIndex: 1, Index: 1, NTMIndex: 21, Type: tmux.AgentCodex},
+		{ID: "%7", WindowIndex: 2, Index: 1, NTMIndex: 99, Type: tmux.AgentCodex},
+	}
+	for _, phase := range []string{"soft-exit", "shell-return"} {
+		t.Run(phase, func(t *testing.T) {
+			executor := &deterministicSmartRestartExecutor{}
+			if phase == "soft-exit" {
+				executor.exitErr = errors.New("agent ignored exit")
+			} else {
+				returned := false
+				executor.shellReturned = &returned
+			}
+			_, err := executeRestart(t.Context(), "project", 2, 1, "codex", SmartRestartOptions{executor: executor})
+			var failure *StructuredError
+			if !errors.As(err, &failure) {
+				t.Fatalf("restart failure=%v, want structured escalation", err)
+			}
+			var selector string
+			for _, word := range strings.Fields(failure.RecoveryHint) {
+				if strings.HasPrefix(word, "--panes=") {
+					selector = strings.TrimPrefix(word, "--panes=")
+				}
+			}
+			selected, resolveErr := tmux.ResolvePaneSelectors(panes, []string{selector}, true)
+			if resolveErr != nil || len(selected) != 1 || selected[0].ID != "%7" {
+				t.Fatalf("escalation hint %q resolves to %+v err=%v, want only %%7", failure.RecoveryHint, selected, resolveErr)
+			}
+			if len(executor.launches) != 0 {
+				t.Fatalf("declined restart launched an agent: %v", executor.launches)
+			}
+		})
+	}
 }
 
 // GH#251 phase 2: grok supports automated relaunch, so grok-only and mixed

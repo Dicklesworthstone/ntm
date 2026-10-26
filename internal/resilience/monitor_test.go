@@ -1184,15 +1184,24 @@ func TestHandleCrashSuggestsManualRespawnWhenAutoRestartDisabled(t *testing.T) {
 	cfg.Resilience.AutoRestart = false
 
 	m := NewMonitor("test-session", "/tmp/project", cfg, false)
-	m.RegisterAgent("pane-1", 1, 0, "cc", "opus", "claude")
+	m.RegisterAgent("%41", 1, 0, "cc", "opus", "claude")
 
-	m.handleCrash(context.Background(), m.agents["pane-1"], "test crash")
+	m.handleCrash(context.Background(), m.agents["%41"], "test crash")
 
 	if capturedSession != "test-session" {
 		t.Fatalf("expected session 'test-session', got %s", capturedSession)
 	}
-	if !strings.Contains(capturedMsg, "ntm respawn test-session --panes=1") {
+	if !strings.Contains(capturedMsg, "ntm respawn test-session --panes=%41") {
 		t.Fatalf("expected respawn hint in message, got %q", capturedMsg)
+	}
+	panes := []tmux.Pane{
+		{ID: "%9", WindowIndex: 1, Index: 1, NTMIndex: 12},
+		{ID: "%41", WindowIndex: 3, Index: 1, NTMIndex: 99},
+	}
+	selector := strings.TrimPrefix(strings.Fields(capturedMsg)[len(strings.Fields(capturedMsg))-1], "--panes=")
+	selected, err := tmux.ResolvePaneSelectors(panes, []string{selector}, true)
+	if err != nil || len(selected) != 1 || selected[0].ID != "%41" {
+		t.Fatalf("manual respawn hint targets %+v err=%v, want only %%41", selected, err)
 	}
 }
 
@@ -1439,13 +1448,10 @@ func TestHandleRateLimitTriggersRotationAssistance(t *testing.T) {
 	restore := saveHooks()
 	defer restore()
 
-	var mu sync.Mutex
-	var displayCalled bool
+	var message string
 	setHooksLocked(func() {
 		displayMessageFn = func(session, msg string, durationMs int) error {
-			mu.Lock()
-			displayCalled = true
-			mu.Unlock()
+			message = msg
 			return nil
 		}
 	})
@@ -1456,20 +1462,48 @@ func TestHandleRateLimitTriggersRotationAssistance(t *testing.T) {
 	cfg.Rotation.Enabled = true
 	cfg.Rotation.AutoTrigger = true
 
-	m := NewMonitor("test-session", "/tmp/project", cfg, true)
-	m.RegisterAgent("pane-1", 1, 0, "cc", "opus", "claude")
+	m := NewMonitor("test-session", t.TempDir(), cfg, true)
+	m.RegisterAgent("%41", 1, 0, "cc", "opus", "claude")
 
-	agent := m.agents["pane-1"]
+	agent := m.agents["%41"]
 	m.handleRateLimit(agent, 60)
 
-	// Give async goroutine time to run
-	time.Sleep(100 * time.Millisecond)
+	m.wg.Wait()
+	if !strings.Contains(message, "ntm rotate test-session --pane=%41") {
+		t.Fatalf("rotation assistance lost the physical pane identity: %q", message)
+	}
+	panes := []tmux.Pane{
+		{ID: "%9", WindowIndex: 1, Index: 1, NTMIndex: 12},
+		{ID: "%41", WindowIndex: 3, Index: 1, NTMIndex: 99},
+	}
+	selector := strings.TrimPrefix(strings.Fields(message)[len(strings.Fields(message))-1], "--pane=")
+	selected, err := tmux.ResolvePaneSelectors(panes, []string{selector}, true)
+	if err != nil || len(selected) != 1 || selected[0].ID != "%41" {
+		t.Fatalf("rotation hint targets %+v err=%v, want only %%41", selected, err)
+	}
+}
 
-	mu.Lock()
-	called := displayCalled
-	mu.Unlock()
-	if !called {
-		t.Error("expected tmux message to be displayed for rotation assistance")
+func TestMonitorRecoveryHintsRequirePhysicalPaneIdentity(t *testing.T) {
+	restore := saveHooks()
+	defer restore()
+	messages := 0
+	setHooksLocked(func() {
+		displayMessageFn = func(string, string, int) error {
+			messages++
+			return nil
+		}
+	})
+	cfg := config.Default()
+	cfg.Notifications.Enabled = false
+	m := NewMonitor("test-session", t.TempDir(), cfg, false)
+	for _, paneID := range []string{"", "1", "2.1", "pane-1"} {
+		t.Run(paneID, func(t *testing.T) {
+			m.suggestManualRespawn(&AgentState{PaneID: paneID, PaneIndex: 1})
+			m.triggerRotationAssistance("test-session", paneID, 1, "codex", cfg.Rotation)
+			if messages != 0 {
+				t.Fatal("missing physical identity produced a potentially misdirected recovery hint")
+			}
+		})
 	}
 }
 
@@ -1491,7 +1525,7 @@ func TestTriggerRotationAssistanceWithNotifier(t *testing.T) {
 
 	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 
-	m.triggerRotationAssistance("test-session", 1, "cc", cfg.Rotation)
+	m.triggerRotationAssistance("test-session", "%41", 1, "cc", cfg.Rotation)
 
 	if !displayCalled {
 		t.Error("expected tmux message to be displayed")
@@ -1514,7 +1548,7 @@ func TestTriggerRotationAssistanceEmptySession(t *testing.T) {
 	m := NewMonitor("", "/tmp/project", cfg, true)
 
 	// With empty session, should not call displayTmuxMessage
-	m.triggerRotationAssistance("", 1, "cc", cfg.Rotation)
+	m.triggerRotationAssistance("", "%41", 1, "cc", cfg.Rotation)
 
 	if displayCalled {
 		t.Error("should not display tmux message for empty session")
