@@ -880,6 +880,10 @@ Shell Integration:
 		formatErr := resolveRobotFormat(cfg)
 		verbosityErr := resolveRobotVerbosity(cfg)
 		if robotInvocation, robotCommand := robotInvocationFromArgs(os.Args[1:]); robotInvocation {
+			if cmd.Flags().Changed("restart-env-file") && robotCommand != "robot-restart-pane" {
+				failRobotCommand(errors.New("--restart-env-file is only supported with --robot-restart-pane"), robot.ErrCodeInvalidFlag, "Select one agent pane with --robot-restart-pane and --panes", robotCommand)
+				return
+			}
 			if formatErr != nil {
 				failRobotCommand(formatErr, robot.ErrCodeInvalidFlag, "Use json, toon, or auto", robotCommand)
 				return
@@ -2653,6 +2657,11 @@ Shell Integration:
 			return
 		}
 		if robotRestartPane != "" {
+			environment, err := readRestartEnvironment(robotRestartEnvironmentFile)
+			if err != nil {
+				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use --restart-env-file with a private JSON object of required environment names and string values", "robot-restart-pane")
+				return
+			}
 			session, err := resolveRobotLiveSession(cmd.Context(), robotRestartPane)
 			if err != nil {
 				failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-restart-pane")
@@ -2688,6 +2697,7 @@ Shell Integration:
 				Prompt:        robotRestartPanePrompt,
 				Model:         robotRestartPaneModel,
 				AgentArgs:     robotRestartPaneArgs,
+				Environment:   environment,
 				Config:        cfg,
 				ProjectDir:    projectDir,
 				ConfigPath:    selectedConfigPath(),
@@ -4375,11 +4385,12 @@ var (
 	robotRelationsThreshold float64 // correlation threshold (0.0-1.0)
 
 	// Robot-restart-pane flags
-	robotRestartPane       string // session name for pane restart
-	robotRestartPaneBead   string // bead ID to assign after restart
-	robotRestartPanePrompt string // custom prompt to send after restart
-	robotRestartPaneModel  string // model[@effort] override for the relaunch command (ntm-yusj)
-	robotRestartPaneArgs   string // raw args appended to the relaunch command (ntm-yusj)
+	robotRestartPane            string // session name for pane restart
+	robotRestartPaneBead        string // bead ID to assign after restart
+	robotRestartPanePrompt      string // custom prompt to send after restart
+	robotRestartPaneModel       string // model[@effort] override for the relaunch command (ntm-yusj)
+	robotRestartPaneArgs        string // raw args appended to the relaunch command (ntm-yusj)
+	robotRestartEnvironmentFile string // private file supplying explicit omitted launch environment
 
 	// Robot-probe flags for active pane responsiveness testing (bd-1cu1f)
 	robotProbe           string // session name to probe
@@ -4824,11 +4835,12 @@ func init() {
 	rootCmd.Flags().StringVar(&robotInterruptTimeout, "interrupt-timeout", "10s", "Max wait for ready state after interrupt (e.g., 10s, 5000ms). Ignored with --no-wait")
 
 	// Robot-restart-pane flag
-	rootCmd.Flags().StringVar(&robotRestartPane, "robot-restart-pane", "", "Restart pane processes with tmux respawn-pane -k. Required: SESSION. Optional: --panes, --type, --all, --dry-run, --restart-bead, --restart-prompt, --restart-model, --restart-agent-args. Example: ntm --robot-restart-pane=proj --type=claude")
+	rootCmd.Flags().StringVar(&robotRestartPane, "robot-restart-pane", "", "Restart pane processes with tmux respawn-pane -k. Required: SESSION. Optional: --panes, --type, --all, --dry-run, --restart-bead, --restart-prompt, --restart-model, --restart-agent-args, --restart-env-file. Example: ntm --robot-restart-pane=proj --type=claude")
 	rootCmd.Flags().StringVar(&robotRestartPaneBead, "restart-bead", "", "Assign bead to agent after restart. Fetches info via br show --json, sends prompt. Use with --robot-restart-pane. Example: --restart-bead=bd-abc12")
 	rootCmd.Flags().StringVar(&robotRestartPanePrompt, "restart-prompt", "", "Custom prompt to send after restart. Overrides --restart-bead template. Use with --robot-restart-pane")
 	rootCmd.Flags().StringVar(&robotRestartPaneModel, "restart-model", "", "Relaunch with a model override using the spawn variant grammar (model or model@effort). Use with --robot-restart-pane. Example: --restart-model=gpt-5.6-terra@high")
 	rootCmd.Flags().StringVar(&robotRestartPaneArgs, "restart-agent-args", "", "Raw arguments appended to the relaunch command (last-flag-wins). Use with --robot-restart-pane")
+	rootCmd.Flags().StringVar(&robotRestartEnvironmentFile, "restart-env-file", "", "Private JSON file supplying omitted launch environment for one explicitly selected agent pane. Use with --robot-restart-pane")
 	rootCmd.Flags().StringVar(&robotProbe, "robot-probe", "", "Probe pane responsiveness. Required: SESSION. Example: ntm --robot-probe=proj --panes=1.2,%3")
 	rootCmd.Flags().StringVar(&robotPaneAddress, "robot-pane-address", "", "Per-pane addressing cards: canonical selector, stable %pane_id, topology, and a ready-to-paste tmux target (immune to base-index settings). Required: SESSION. Example: ntm --robot-pane-address=proj")
 	rootCmd.Flags().StringVar(&robotProbeMethod, "probe-method", "", "Probe method: keystroke_echo, interrupt_test, wake_ping (rate-limit liveness: responsiveness + still_rate_limited + tail sample; agent panes only). Used with --robot-probe")

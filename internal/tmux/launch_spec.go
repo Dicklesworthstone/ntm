@@ -120,11 +120,36 @@ func (spec *AgentLaunchSpec) Validate(expected AgentType) error {
 // values are intentionally absent from durable metadata and must be provided by
 // the operator when launching a replacement manually.
 func (spec *AgentLaunchSpec) ValidateReplay(expected AgentType) error {
+	return spec.ValidateReplayWithEnvironment(expected, nil)
+}
+
+// ValidateReplayWithEnvironment admits an explicit, complete set of recovery
+// inputs without changing the durable specification. Nothing is read from the
+// caller's ambient environment, and extra keys are rejected so a typo cannot
+// silently change the replacement's environment. Presence, rather than a
+// nonempty value, distinguishes a supplied value from an unavailable one.
+func (spec *AgentLaunchSpec) ValidateReplayWithEnvironment(expected AgentType, environment map[string]string) error {
 	if err := spec.Validate(expected); err != nil {
 		return err
 	}
-	if len(spec.OmittedEnv) > 0 {
-		return fmt.Errorf("agent launch requires environment values that were not persisted: %s", strings.Join(spec.OmittedEnv, ", "))
+	if err := ValidateLaunchEnvironment(environment); err != nil {
+		return err
+	}
+	required := make(map[string]bool, len(spec.OmittedEnv))
+	var missing []string
+	for _, name := range spec.OmittedEnv {
+		required[name] = true
+		if _, ok := environment[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("agent launch requires environment values that were not persisted: %s", strings.Join(missing, ", "))
+	}
+	for name := range environment {
+		if !required[name] {
+			return fmt.Errorf("recovery environment key %s is not required by the saved launch", name)
+		}
 	}
 	return nil
 }

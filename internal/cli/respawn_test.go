@@ -1,14 +1,22 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/pflag"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -77,64 +85,248 @@ func TestRespawnCommandPropagatesCanceledContext(t *testing.T) {
 	}
 }
 
-func TestRespawnPaneAgentTypePrefersParsedPaneType(t *testing.T) {
-
-	pane := tmux.Pane{
-		Title:   "custom status title",
-		Type:    tmux.AgentCodex,
-		Command: "codex --unsafe-mode",
-	}
-
-	if got := respawnPaneAgentType(pane); got != "codex" {
-		t.Fatalf("respawnPaneAgentType() = %q, want %q", got, "codex")
+func TestRestartEnvironmentFlagsAvailableOnBothSurfaces(t *testing.T) {
+	for name, flag := range map[string]*pflag.Flag{
+		"respawn": newRespawnCmd().Flags().Lookup("restart-env-file"),
+		"robot":   liveRootFlag("restart-env-file"),
+	} {
+		if flag == nil || flag.Value.Type() != "string" || !strings.Contains(flag.Usage, "private") && !strings.Contains(flag.Usage, "Private") {
+			t.Fatalf("%s recovery input flag missing or does not describe private file input", name)
+		}
 	}
 }
 
-func TestSelectRespawnTargetsUsesParsedPaneTypeForFilters(t *testing.T) {
-
-	panes := []tmux.Pane{
-		{ID: "%0", Index: 0, Title: "shell", Type: tmux.AgentUser, Command: "zsh"},
-		{ID: "%1", Index: 1, Title: "build monitor", Type: tmux.AgentClaude, Command: "claude"},
-		{ID: "%2", Index: 2, Title: "notes", Type: tmux.AgentCodex, Command: "codex"},
+func TestReadRestartEnvironmentPrivateSnapshot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("recovery file permissions require POSIX modes")
 	}
-
-	targets := selectRespawnTargets(panes, nil, "codex", false)
-	if len(targets) != 1 {
-		t.Fatalf("selectRespawnTargets() returned %d panes, want 1", len(targets))
+	if values, err := readRestartEnvironment(""); err != nil || values != nil {
+		t.Fatalf("absent input = %v, %v; want nil, nil", values, err)
 	}
-	if targets[0].ID != "%2" {
-		t.Fatalf("selectRespawnTargets() picked %s, want %%2", targets[0].ID)
+	path := filepath.Join(t.TempDir(), "recovery.json")
+	want := map[string]string{"AGENT_MAIL_AGENT": "BlueLake", "BEADS_DIR": "/tmp/project/.beads", "BV_ROBOT_NOT_READY_LABELS": "", "PATH": "/usr/bin:/bin", "ZAI_SEAT_ROLE": "reviewer"}
+	data, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestSelectRespawnTargetsSkipsUserPaneByDefault(t *testing.T) {
-
-	panes := []tmux.Pane{
-		{ID: "%0", Index: 0, Title: "shell", Type: tmux.AgentUser, Command: "zsh"},
-		{ID: "%1", Index: 1, Title: "agent output", Type: tmux.AgentClaude, Command: "claude"},
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
 	}
-
-	targets := selectRespawnTargets(panes, nil, "", false)
-	if len(targets) != 1 {
-		t.Fatalf("selectRespawnTargets() returned %d panes, want 1", len(targets))
-	}
-	if targets[0].ID != "%1" {
-		t.Fatalf("selectRespawnTargets() picked %s, want %%1", targets[0].ID)
+	for _, mode := range []os.FileMode{0600, 0400} {
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		values, err := readRestartEnvironment(path)
+		if err != nil || !reflect.DeepEqual(values, want) {
+			t.Fatalf("mode %o: values = %v, err = %v", mode, values, err)
+		}
 	}
 }
 
-// GH#251 phase 2: Grok Build relaunch is implemented, so mixed batches with
-// grok panes validate like claude/codex batches.
-func TestValidateRespawnTargetsAcceptsGrokInMixedBatch(t *testing.T) {
-	panes := []tmux.Pane{
-		{ID: "%1", Index: 1, Type: tmux.AgentClaude},
-		{ID: "%2", Index: 2, Type: tmux.AgentGrok},
+func TestReadRestartEnvironmentRejectsUnsafeInputWithoutEcho(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("recovery file permissions require POSIX modes")
 	}
-	if err := validateRespawnTargets(panes); err != nil {
-		t.Fatalf("validateRespawnTargets() error = %v, want nil", err)
+	const secret = "private-recovery-input-marker"
+	tests := []struct {
+		name string
+		data string
+		mode os.FileMode
+	}{
+		{name: "group readable", data: `{"TOKEN":"` + secret + `"}`, mode: 0640},
+		{name: "world writable", data: `{"TOKEN":"` + secret + `"}`, mode: 0602},
+		{name: "owner unreadable", data: `{"TOKEN":"` + secret + `"}`, mode: 0200},
+		{name: "empty"},
+		{name: "null", data: `null`},
+		{name: "array", data: `["` + secret + `"]`},
+		{name: "duplicate", data: `{"TOKEN":"` + secret + `","TOKEN":"second"}`},
+		{name: "null value", data: `{"TOKEN":null}`},
+		{name: "number", data: `{"TOKEN":123}`},
+		{name: "object value", data: `{"TOKEN":{"nested":"` + secret + `"}}`},
+		{name: "malformed", data: `{"TOKEN":` + secret + `}`},
+		{name: "trailing", data: `{"TOKEN":"` + secret + `"} {}`},
+		{name: "invalid name", data: `{"TOKEN=` + secret + `":"other"}`},
+		{name: "NUL", data: `{"TOKEN":"` + secret + `\u0000"}`},
+		{name: "shell startup", data: `{"BASH_ENV":"` + secret + `"}`},
+		{name: "invalid utf8", data: "{\"TOKEN\":\"" + secret + "\xff\"}"},
+		{name: "oversized", data: strings.Repeat(" ", maxRestartEnvironmentFileBytes+1)},
 	}
-	if err := validateRespawnTargets(panes[:1]); err != nil {
-		t.Fatalf("supported target unexpectedly rejected: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "recovery.json")
+			mode := tt.mode
+			if mode == 0 {
+				mode = 0600
+			}
+			if err := os.WriteFile(path, []byte(tt.data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, mode); err != nil {
+				t.Fatal(err)
+			}
+			values, err := readRestartEnvironment(path)
+			if err == nil || values != nil {
+				t.Fatalf("unsafe input accepted: returned=%t err=%v", values != nil, err)
+			}
+			if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), path) {
+				t.Fatal("recovery diagnostic exposed input contents or path")
+			}
+		})
+	}
+	root := t.TempDir()
+	file := filepath.Join(root, "private.json")
+	link := filepath.Join(root, "linked.json")
+	if err := os.WriteFile(file, []byte(`{}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(file, link); err != nil {
+		t.Fatal(err)
+	}
+	for name, path := range map[string]string{"symlink": link, "directory": root, "missing": filepath.Join(root, "missing")} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := readRestartEnvironment(path); err == nil {
+				t.Fatal("non-regular recovery input accepted")
+			}
+		})
+	}
+}
+
+// Exercise both public command parsers and their real restart preflight against
+// a recording tmux executable. The fixture refuses actuation so a valid actual
+// request proves it got past preflight without needing a running agent or server.
+func TestRestartEnvironmentCLIRecoveryPreflight(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("recording tmux executable requires a POSIX shell")
+	}
+	const secret = "ntm-cli-recovery-secret-marker"
+	for _, surface := range []string{"human", "robot"} {
+		for _, mode := range []string{"ordinary-dry", "missing-dry", "missing-real", "partial-dry", "complete-dry", "complete-real"} {
+			t.Run(surface+"/"+mode, func(t *testing.T) {
+				root := t.TempDir()
+				binary := filepath.Join(root, "tmux")
+				const script = `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$NTM_RESTART_CLI_ROOT/calls"
+case "$1" in
+  -V) printf 'tmux 3.4\n' ;;
+  has-session) ;;
+  list-sessions) printf 'recovery_NTM_SEP_2_NTM_SEP_0_NTM_SEP_today\n' ;;
+  list-panes)
+    printf '%%0_NTM_SEP_0_NTM_SEP_recovery__user_0_NTM_SEP_zsh_NTM_SEP_100_NTM_SEP_30_NTM_SEP_0_NTM_SEP_111_NTM_SEP_0_NTM_SEP_user\n'
+    printf '%%7_NTM_SEP_0_NTM_SEP_notes_NTM_SEP_zsh_NTM_SEP_100_NTM_SEP_30_NTM_SEP_1_NTM_SEP_222_NTM_SEP_2_NTM_SEP_codex\n'
+    ;;
+  display-message)
+    case "$*" in
+      *pane_pid*) printf '222\n' ;;
+      *) printf '%s\n' "$NTM_RESTART_CLI_ROOT" ;;
+    esac
+    ;;
+  show-options)
+    case "$*" in
+      *@ntm_agent_launch*) cat "$NTM_RESTART_CLI_ROOT/spec" ;;
+    esac
+    ;;
+  respawn-pane) printf 'fixture refused mutation\n' >&2; exit 71 ;;
+esac
+`
+				if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+					t.Fatal(err)
+				}
+				spec := tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentCodex, Command: "codex --model saved/model", Model: "saved/model"}
+				if mode != "ordinary-dry" {
+					spec.OmittedEnv = []string{"AGENT_MAIL_AGENT", "BEADS_DIR", "BV_ROBOT_NOT_READY_LABELS", "PATH", "ZAI_SEAT_ROLE"}
+				}
+				record, err := json.Marshal(map[string]any{"pane_id": "%7", "spec": spec})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(root, "spec"), []byte(base64.StdEncoding.EncodeToString(record)), 0600); err != nil {
+					t.Fatal(err)
+				}
+				configPath := filepath.Join(root, "config.toml")
+				if err := os.WriteFile(configPath, []byte("[agent_mail]\nenabled = false\n[cleanup]\nauto_clean_on_startup = false\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				args := []string{"--config=" + configPath}
+				if surface == "human" {
+					args = append(args, "respawn", "recovery", "--force")
+				} else {
+					args = append(args, "--robot-restart-pane=recovery")
+				}
+				if mode != "ordinary-dry" {
+					args = append(args, "--panes=%7")
+				}
+				if strings.HasSuffix(mode, "-dry") {
+					args = append(args, "--dry-run")
+				}
+				if strings.HasPrefix(mode, "complete-") || mode == "partial-dry" {
+					environment := map[string]string{"AGENT_MAIL_AGENT": "BlueLake", "BEADS_DIR": filepath.Join(root, ".beads"), "BV_ROBOT_NOT_READY_LABELS": "not-ready", "PATH": "/usr/bin:/bin", "ZAI_SEAT_ROLE": secret}
+					if mode == "partial-dry" {
+						delete(environment, "PATH")
+					}
+					data, err := json.Marshal(environment)
+					if err != nil {
+						t.Fatal(err)
+					}
+					inputPath := filepath.Join(root, "recovery.json")
+					if err := os.WriteFile(inputPath, data, 0600); err != nil {
+						t.Fatal(err)
+					}
+					args = append(args, "--restart-env-file="+inputPath)
+				}
+				rawArgs, err := json.Marshal(args)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRobotProcessContractHelper$")
+				cmd.Dir = root
+				cmd.Env = envWithOverrides(os.Environ(),
+					"HOME="+root, "XDG_CONFIG_HOME="+filepath.Join(root, "config"), "XDG_DATA_HOME="+filepath.Join(root, "data"),
+					"NTM_TEST_TMUX_ENV_OWNED=1", "NTM_TMUX_BINARY="+binary, "NTM_RESTART_CLI_ROOT="+root,
+					"NTM_NO_COLOR=1", "NTM_CONFIG=", "NTM_ROBOT_FORMAT=", "NTM_OUTPUT_FORMAT=", "TOON_DEFAULT_FORMAT=", "NTM_ROBOT_VERBOSITY=",
+					"NTM_ROBOT_CONTRACT_ARGS="+string(rawArgs),
+					// Ambient values must never satisfy a missing recovery input.
+					"AGENT_MAIL_AGENT=ambient", "BEADS_DIR="+root, "BV_ROBOT_NOT_READY_LABELS=ambient", "ZAI_SEAT_ROLE="+secret)
+				var stdout, stderr bytes.Buffer
+				cmd.Stdout, cmd.Stderr = &stdout, &stderr
+				runErr := cmd.Run()
+				wantSuccess := mode == "ordinary-dry" || mode == "complete-dry"
+				if (runErr == nil) != wantSuccess {
+					t.Fatalf("success=%t want=%t error=%v stdout=%s stderr=%s", runErr == nil, wantSuccess, runErr, stdout.String(), stderr.String())
+				}
+				calls, err := os.ReadFile(filepath.Join(root, "calls"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				mutated := strings.Contains(string(calls), "respawn-pane ")
+				if mutated != (mode == "complete-real") {
+					t.Fatalf("mutation=%t mode=%s calls=%s", mutated, mode, calls)
+				}
+				combined := stdout.String() + stderr.String() + string(calls)
+				if strings.Contains(combined, secret) {
+					t.Fatal("recovery value leaked to output or tmux argv")
+				}
+				if mode == "complete-real" && !strings.Contains(combined, "fixture refused mutation") {
+					t.Fatal("valid recovery request did not reach intended mutation boundary")
+				}
+				if surface == "robot" {
+					var output robot.RestartPaneOutput
+					if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+						t.Fatalf("robot stdout is not JSON: %v; stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+					}
+					if output.Success != wantSuccess {
+						t.Fatalf("JSON success=%t want=%t", output.Success, wantSuccess)
+					}
+					if wantSuccess && !reflect.DeepEqual(output.WouldAffect, []string{"2.0"}) {
+						t.Fatalf("wrong preview targets: %v", output.WouldAffect)
+					}
+				} else if wantSuccess && !strings.Contains(stdout.String(), "Would restart 1 pane(s)") {
+					t.Fatalf("human preview omitted successful preflight: %s", stdout.String())
+				}
+			})
+		}
 	}
 }
 
@@ -198,7 +390,7 @@ func TestRespawnRequiresSession(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
 
 	// Test respawning a non-existent session should fail
-	err := runRespawn(t.Context(), "nonexistent-session-12345", true, "", "", false, false)
+	err := runRespawn(t.Context(), "nonexistent-session-12345", true, "", "", false, false, "")
 	if err == nil {
 		t.Error("expected error for non-existent session")
 	}
@@ -259,7 +451,7 @@ func TestRespawnDryRun(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Test dry-run mode (should not error and not actually restart)
-	err = runRespawn(t.Context(), sessionName, true, "", "", false, true)
+	err = runRespawn(t.Context(), sessionName, true, "", "", false, true, "")
 	if err != nil {
 		t.Errorf("dry-run respawn failed: %v", err)
 	}
@@ -321,7 +513,7 @@ func TestRespawnWithPaneFilter(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Test respawning specific pane with force flag
-	err = runRespawn(t.Context(), sessionName, true, "1", "", false, false)
+	err = runRespawn(t.Context(), sessionName, true, "1", "", false, false, "")
 	if err != nil {
 		t.Errorf("respawn with pane filter failed: %v", err)
 	}
@@ -339,7 +531,7 @@ func TestRespawnRejectsMalformedPaneSelector(t *testing.T) {
 	defer func() { _ = tmux.KillSession(sessionName) }()
 
 	for _, panes := range []string{"0,0.x", "all", "0,"} {
-		err := runRespawn(t.Context(), sessionName, true, panes, "", false, true)
+		err := runRespawn(t.Context(), sessionName, true, panes, "", false, true, "")
 		if err == nil || !strings.Contains(err.Error(), "invalid pane selector") {
 			t.Fatalf("runRespawn(--panes=%q) error = %v, want an invalid pane selector error", panes, err)
 		}

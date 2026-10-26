@@ -272,7 +272,7 @@ func prepareLifecycleRelaunch(ctx context.Context, session string, panes []tmux.
 	if err != nil {
 		return restartLaunchPlan{}, fmt.Errorf("load relaunch configuration: %w", err)
 	}
-	return prepareRestartLaunchPlan(ctx, session, panes, multiWindow, cfg, restartLaunchOverride{}, restartPaneDeps(nil))
+	return prepareRestartLaunchPlan(ctx, session, panes, multiWindow, cfg, restartLaunchOverride{}, restartPaneDeps(nil), nil)
 }
 
 func lifecyclePaneIdentityMatches(original, refreshed tmux.Pane) bool {

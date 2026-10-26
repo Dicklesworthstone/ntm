@@ -22,6 +22,15 @@ type restartLaunchPlan struct {
 	Replay      map[string]*resilience.AgentLaunchPlan
 	Directories map[string]string
 	Indices     map[string]int
+	// The single-pane handoff contains runtime values only. Its FIFO carries
+	// bytes in memory and is closed for successful, failed, and dry-run plans.
+	environment *tmux.LaunchEnvironment
+}
+
+func (plan *restartLaunchPlan) close() {
+	if plan.environment != nil {
+		_ = plan.environment.Close()
+	}
 }
 
 func prepareRestartLaunchPlan(
@@ -32,6 +41,7 @@ func prepareRestartLaunchPlan(
 	cfg *config.Config,
 	override restartLaunchOverride,
 	deps RestartPaneDependencies,
+	environment map[string]string,
 ) (restartLaunchPlan, error) {
 	plan := restartLaunchPlan{
 		Commands:    make(map[string]string),
@@ -40,6 +50,14 @@ func prepareRestartLaunchPlan(
 		Replay:      make(map[string]*resilience.AgentLaunchPlan),
 		Directories: make(map[string]string),
 		Indices:     make(map[string]int),
+	}
+	if environment != nil {
+		if len(panes) != 1 || !restartTargetIsAgent(restartPaneAgentType(panes[0])) {
+			return plan, errors.New("restart environment recovery requires exactly one agent pane")
+		}
+		if err := tmux.ValidateLaunchEnvironment(environment); err != nil {
+			return plan, err
+		}
 	}
 	manifest, err := deps.LoadManifest(session)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -70,6 +88,9 @@ func prepareRestartLaunchPlan(
 			if err != nil {
 				return plan, fmt.Errorf("compose saved launch for pane %s: %w", key, err)
 			}
+			if err := spec.ValidateReplayWithEnvironment(tmux.AgentType(resolvedType), environment); err != nil {
+				return plan, fmt.Errorf("preflight pane %s saved launch: %w", key, err)
+			}
 			dir, err := deps.PaneWorkingDir(ctx, pane.ID)
 			if err != nil {
 				return plan, fmt.Errorf("observe pane %s working directory: %w", key, err)
@@ -77,7 +98,14 @@ func prepareRestartLaunchPlan(
 			if !filepath.IsAbs(dir) {
 				return plan, fmt.Errorf("pane %s has no absolute working directory for saved launch replay", key)
 			}
-			replay, err := resilience.PreflightAgentLaunchSpec(ctx, cfg, spec, dir)
+			// Only this execution copy may omit the markers, after the explicit
+			// values have satisfied every saved requirement. Specs retains the
+			// original markers for durable publication; automatic replay still
+			// refuses them on the next restart. Runtime values are delivered by
+			// the private handoff prepared below, never by this shell command.
+			replaySpec := spec
+			replaySpec.OmittedEnv = nil
+			replay, err := resilience.PreflightAgentLaunchSpec(ctx, cfg, replaySpec, dir)
 			if err != nil {
 				return plan, fmt.Errorf("preflight pane %s saved launch: %w", key, err)
 			}
@@ -94,6 +122,9 @@ func prepareRestartLaunchPlan(
 				plan.Affinity[key] = resilience.LaunchAffinityPreserved
 			}
 			continue
+		}
+		if environment != nil {
+			return plan, fmt.Errorf("pane %s has no saved launch specification to validate recovery environment against", key)
 		}
 		command, err := restartAgentLaunchCommandWithOverride(cfg, resolvedType, pane.Variant, override)
 		if err != nil {
@@ -131,6 +162,14 @@ func prepareRestartLaunchPlan(
 			return plan, fmt.Errorf("record pane %s relaunch command: %w", key, err)
 		}
 		plan.Specs[key] = spec
+	}
+	if len(environment) > 0 {
+		// Exercise the same transport preflight in dry-run and real execution,
+		// before any pane is killed. The FIFO is empty until Send is invoked.
+		plan.environment, err = tmux.NewLaunchEnvironment(ctx, environment)
+		if err != nil {
+			return plan, fmt.Errorf("preflight restart environment handoff: %w", err)
+		}
 	}
 	return plan, nil
 }
@@ -186,7 +225,10 @@ func restartSavedLaunchSpec(cfg *config.Config, saved tmux.AgentLaunchSpec, reso
 		// avoid claiming descriptive settings that are no longer provable.
 		spec.Model, spec.ModelAlias, spec.ReasoningEffort, spec.Persona = "", "", "", ""
 	}
-	return spec, spec.ValidateReplay(tmux.AgentType(resolvedType))
+	// Replay completeness is checked by prepareRestartLaunchPlan, where the
+	// operator's explicit environment is available. Composition must preserve
+	// the omission markers rather than rejecting or erasing them here.
+	return spec, spec.Validate(tmux.AgentType(resolvedType))
 }
 
 func validateRestartExtraArguments(raw, resolvedType string) error {

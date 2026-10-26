@@ -3,9 +3,12 @@
 package tmux
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"syscall"
+	"time"
 )
 
 // createFIFO creates a named pipe (FIFO) at the given path.
@@ -27,4 +30,56 @@ func createFIFO(path string) error {
 		return fmt.Errorf("create FIFO %q: %w", path, err)
 	}
 	return nil
+}
+
+func openLaunchEnvironmentWriter(ctx context.Context, path string) (*os.File, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		file, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+		if err == nil {
+			info, statErr := file.Stat()
+			if statErr != nil || info.Mode()&os.ModeNamedPipe == 0 {
+				_ = file.Close()
+				return nil, errors.New("recovery environment transport is not a pipe")
+			}
+			return file, nil
+		}
+		if !errors.Is(err, syscall.ENXIO) {
+			return nil, err
+		}
+		if err := waitForSendDelay(ctx, 10*time.Millisecond); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func openLaunchEnvironmentAbort(path string) (*os.File, error) {
+	file, err := os.OpenFile(path, os.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+		_ = file.Close()
+		return nil, errors.New("recovery environment transport is not a pipe")
+	}
+	return file, nil
+}
+
+// OpenLaunchEnvironmentFile avoids following a last-component symlink or
+// blocking on a substituted FIFO while opening an operator-owned recovery file.
+// Callers still verify permissions, size, and identity against their Lstat.
+func OpenLaunchEnvironmentFile(path string) (*os.File, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, errors.New("cannot open private recovery environment file")
+	}
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, errors.New("recovery environment file is not a regular file")
+	}
+	return file, nil
 }

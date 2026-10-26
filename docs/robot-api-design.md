@@ -252,6 +252,54 @@ as complete.
 | `--robot-spawn` with `--spawn-prompt` | Per-agent `prompt_deliveries[]` (`prompt_sent`, `delivered_at`, `error`) and the `stagger.schedule[]` it was paced on | Dispatch evidence after the implied readiness wait, through the same idle-gated dispatch port as robot send. Any `prompt_sent: false` fails the envelope with `PROMPT_SEND_FAILED`; like `--robot-send` without `--track`, it does not prove the agent processed the prompt. |
 | `--robot-exit-cli`, `--robot-kill-agent`, and restart/relaunch paths | Per-pane `results`, including `shell_pid`, `agent_pids`, `shell_preserved`, and `verification_failed`; restart output also includes `pane_shell_pids`, `process_alive`, and relaunch status | Process/lifecycle evidence. `verification_failed` means observation failed, not that a pane was destroyed. A respawn must show a changed `pane_shell_pids.after`; unchanged or absent PID evidence is not a verified restart. |
 
+#### Explicit environment recovery for a saved launch
+
+NTM records the names of operator-supplied launch environment variables, but
+deliberately omits their values from durable launch metadata. A dead agent may
+therefore need explicit recovery input before it can be restarted in place.
+Neither `ntm respawn` nor `--robot-restart-pane` substitutes the current shell's
+environment for those missing values.
+
+Supply `--restart-env-file=PATH` with exactly one explicit `--panes` selector.
+The file must be a private, owner-readable regular file (mode `0600` or `0400`),
+not a symlink. It contains one JSON object with string values and exactly the
+environment names required by that pane's saved launch. For example, a pane
+whose refusal lists the five names below can use:
+
+```json
+{
+  "AGENT_MAIL_AGENT": "BlueLake",
+  "BEADS_DIR": "/work/project/.beads",
+  "BV_ROBOT_NOT_READY_LABELS": "not-ready",
+  "PATH": "/usr/local/bin:/usr/bin:/bin",
+  "ZAI_SEAT_ROLE": "reviewer"
+}
+```
+
+Create the file privately before entering values with an editor or a trusted
+credential provider. Do not put secret values in CLI arguments or shell history.
+The input is JSON data, never sourced as a shell script. NTM rejects duplicate
+names, non-string values, malformed or oversized input, and unsafe environment
+controls. Empty strings are explicit values; an absent key is missing input.
+An unscoped file cannot be applied to a batch of panes because their identities,
+roles, and credentials may differ.
+
+```bash
+ntm respawn myproject --panes=%7 --restart-env-file=/private/recovery.json --dry-run
+ntm respawn myproject --panes=%7 --restart-env-file=/private/recovery.json --force
+
+ntm --robot-restart-pane=myproject --panes=%7 --restart-env-file=/private/recovery.json --dry-run
+ntm --robot-restart-pane=myproject --panes=%7 --restart-env-file=/private/recovery.json
+```
+
+Both dry-run interfaces perform the same launch and environment preflight as
+execution, without respawning the pane. A failed preflight reports failure and
+leaves the pane untouched. Each invocation reads the file once; recovery values
+are not added to saved launch metadata and must be supplied again for a future
+restart. Keep or remove the operator-managed input file according to your own
+credential policy. Existing model, reasoning effort, launcher profile, prompt
+integrity, PID-change verification, and readiness checks still apply.
+
 The durable attention feed mirrors actuation progress as `request`, `outcome`,
 and `verification` events. For tracked sends, the verification event records
 the target set, confirmations, failed and pending targets, timeout state, and one of

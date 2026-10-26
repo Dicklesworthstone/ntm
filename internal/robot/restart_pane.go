@@ -142,6 +142,10 @@ type RestartPaneOptions struct {
 	// AgentArgs are literal arguments appended after the relaunch command for
 	// options the model grammar cannot express. Model/effort use Model above.
 	AgentArgs string
+	// Environment explicitly supplies the saved launch's omitted environment
+	// for one selected agent pane. Values are runtime-only: never serialize
+	// them, put them in a launch command, or infer them from ambient state.
+	Environment map[string]string `json:"-"`
 	Deps      *RestartPaneDependencies
 	// Recovery is an internal, single-pane native-session recovery request.
 	// It is not populated by robot flags and cannot be combined with prompts,
@@ -388,6 +392,7 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 		RestartedAt:   time.Now().UTC(),
 		Restarted:     []string{},
 		Failed:        []RestartError{},
+		DryRun:        opts.DryRun,
 	}
 	if ctx == nil {
 		output.RobotResponse = NewErrorResponse(errors.New("restart-pane context is required"), ErrCodeInternalError, "Retry the command")
@@ -405,6 +410,20 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 	for _, selector := range opts.Panes {
 		if _, err := tmux.ParsePaneSelector(selector); err != nil {
 			output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, "Use comma-separated N, W.P, or %N pane selectors")
+			return output, nil
+		}
+	}
+	if opts.Environment != nil {
+		if len(opts.Panes) != 1 || opts.All || opts.Recovery != nil {
+			output.RobotResponse = NewErrorResponse(
+				errors.New("restart environment recovery requires one explicit pane selector and cannot be combined with --all or native recovery"),
+				ErrCodeInvalidFlag,
+				"Select one agent pane with --panes and supply its required environment using --restart-env-file",
+			)
+			return output, nil
+		}
+		if err := tmux.ValidateLaunchEnvironment(opts.Environment); err != nil {
+			output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, "Supply a private JSON object containing only the saved launch's required environment names")
 			return output, nil
 		}
 	}
@@ -457,6 +476,14 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 	// Topology-aware keys (#172): canonical "window.pane" on multi-window sessions.
 	multiWindow := paneSessionIsMultiWindow(panes)
 	targetPanes := selectRestartPaneTargets(panes, paneFilterMap, opts.Type, opts.All)
+	if opts.Environment != nil && (len(targetPanes) != 1 || !restartTargetIsAgent(restartPaneAgentType(targetPanes[0]))) {
+		output.RobotResponse = NewErrorResponse(
+			errors.New("restart environment recovery must resolve to exactly one agent pane"),
+			ErrCodeInvalidFlag,
+			"Use --panes with the intended physical pane ID or an unambiguous pane selector",
+		)
+		return output, nil
+	}
 
 	if len(targetPanes) == 0 {
 		if opts.Recovery != nil {
@@ -545,7 +572,8 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 			restartCfg = config.Default()
 		}
 	}
-	launchPlan, err := prepareRestartLaunchPlan(ctx, opts.Session, targetPanes, multiWindow, restartCfg, launchOverride, deps)
+	launchPlan, err := prepareRestartLaunchPlan(ctx, opts.Session, targetPanes, multiWindow, restartCfg, launchOverride, deps, opts.Environment)
+	defer launchPlan.close()
 	if err == nil && opts.Recovery != nil {
 		err = prepareNativeRecoveryLaunchPlan(ctx, targetPanes[0], multiWindow, restartCfg, opts.Recovery, &launchPlan)
 	}
@@ -553,7 +581,7 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 		output.RobotResponse = NewErrorResponse(
 			err,
 			ErrCodeInternalError,
-			"Restore the named launcher profile, remove the stale binding, or fix the agent launch template before retrying; no pane was respawned",
+			"Supply omitted environment names with --restart-env-file and one --panes target, or restore the named launcher profile or saved launch dependencies; no pane was respawned",
 		)
 		return output, nil
 	}
@@ -714,13 +742,17 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 				output.AgentRelaunchStatus[paneKey] = RestartAgentRelaunchFailed
 				continue
 			}
+			sendLaunch := tmux.SendKeysForAgentContext
+			if launchPlan.environment != nil {
+				sendLaunch = launchPlan.environment.Send
+			}
 			outcome, phase, lifecycleErr := relaunchRestartPaneAgentContext(
 				ctx,
 				info,
 				launchCmd,
 				restartPaneReadyTimeout,
 				tmux.SetPaneAgentTypeContext,
-				tmux.SendKeysForAgentContext,
+				sendLaunch,
 				paneShellPIDContext,
 				waitForPaneAgentReadyContext,
 				process.HasChildAlive,
