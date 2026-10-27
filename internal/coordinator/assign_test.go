@@ -1331,7 +1331,8 @@ func TestAttemptAssignmentEnrichesPromptAndRecoveryReplaysRecordedPrompt(t *test
 	filter := robot.DefaultFilterConfig()
 	filter.MinRelevance = 0
 	filter.MaxAgeDays = 0
-	c := New("coordinator-prompt-context", t.TempDir(), &agentmail.Client{}, "CoordinatorAgent").
+	projectDir := t.TempDir()
+	c := New("coordinator-prompt-context", projectDir, &agentmail.Client{}, "CoordinatorAgent").
 		WithPromptContext(robot.PromptContextOptions{WithCASS: true, CASSConfig: &query, FilterConfig: &filter})
 
 	refuseDispatch := true
@@ -1362,9 +1363,24 @@ func TestAttemptAssignmentEnrichesPromptAndRecoveryReplaysRecordedPrompt(t *test
 	if first.Success || first.MessageSent || first.CASSInjection == nil || first.CASSInjection.ItemsInjected == 0 {
 		t.Fatalf("first attempt = %+v (cass %+v), want an enriched intent refused before delivery", first, first.CASSInjection)
 	}
+	// Enrichment searches globally and within the project at once
+	// (cass.SearchContext), both over the bead title and labels.
 	cassCalls := readCoordinatorStubLog(t, cassLog)
-	if strings.Count(cassCalls, "search") != 1 || !strings.Contains(cassCalls, "gateway") || strings.Contains(cassCalls, "acknowledge") {
-		t.Fatalf("cass calls = %q, want one search over the bead title and labels", cassCalls)
+	var globalSearches, projectSearches int
+	for _, call := range strings.Split(strings.TrimSpace(cassCalls), "\n") {
+		switch {
+		case !strings.HasPrefix(call, "search ") || !strings.Contains(call, "gateway"):
+			globalSearches = -1
+		case strings.Contains(call, "--workspace="+filepath.Clean(projectDir)+" "):
+			projectSearches++
+		case !strings.Contains(call, "--workspace="):
+			globalSearches++
+		default:
+			globalSearches = -1
+		}
+	}
+	if globalSearches != 1 || projectSearches != 1 {
+		t.Fatalf("cass calls = %q, want one global and one project search over the bead title and labels", cassCalls)
 	}
 
 	store, err := assignmentstore.LoadStoreStrict(c.session)
