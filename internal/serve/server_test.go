@@ -2616,6 +2616,9 @@ func TestHandleGetUpdateCloseClaimBead(t *testing.T) {
 
 	srv, _ := setupTestServer(t)
 	srv.projectDir = t.TempDir()
+	if err := os.Mkdir(filepath.Join(srv.projectDir, ".beads"), 0o700); err != nil {
+		t.Fatalf("create local Beads workspace: %v", err)
+	}
 
 	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/beads/bd-5", nil)
 	getCtx := chi.NewRouteContext()
@@ -2677,6 +2680,103 @@ func TestHandleGetUpdateCloseClaimBead(t *testing.T) {
 	srv.handleClaimBead(claimRec, claimReq)
 	if claimRec.Code != http.StatusOK {
 		t.Fatalf("claim status=%d, want %d", claimRec.Code, http.StatusOK)
+	}
+}
+
+func TestHandleClaimBeadBindsSelectedOrDefaultProject(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub br uses sh")
+	}
+	for _, test := range []struct {
+		name     string
+		explicit bool
+		missing  bool
+		canceled bool
+	}{
+		{name: "unscoped server discovers cwd project"},
+		{name: "explicit project ignores foreign cwd and database", explicit: true},
+		{name: "explicit missing tracker cannot use parent", explicit: true, missing: true},
+		{name: "canceled discovery cannot claim", canceled: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			srv, _ := setupTestServer(t)
+			project, foreign := t.TempDir(), t.TempDir()
+			for _, dir := range []string{project, foreign} {
+				if err := os.Mkdir(filepath.Join(dir, ".beads"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			child := filepath.Join(project, "child")
+			if err := os.Mkdir(child, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			srv.projectDir = ""
+			t.Chdir(child)
+			if test.explicit {
+				srv.projectDir = project
+				t.Chdir(foreign)
+			}
+			if test.missing {
+				srv.projectDir = child
+			}
+			t.Setenv("BEADS_DIR", filepath.Join(foreign, ".beads"))
+			t.Setenv("BEADS_DB", filepath.Join(foreign, ".beads", "beads.db"))
+			calls := filepath.Join(t.TempDir(), "claims")
+			t.Setenv("NTM_TEST_CLAIM_SCOPE", calls)
+			bin := t.TempDir()
+			const script = `#!/bin/sh
+printf '%s\n%s\n%s\n' "$PWD" "$BEADS_DIR" "$*" > "$NTM_TEST_CLAIM_SCOPE"
+if [ -n "${BEADS_DB:-}" ]; then
+  echo 'inherited foreign database reached claim' >&2
+  exit 1
+fi
+case "$*" in
+  '--lock-timeout 5000 update bd-scope --claim --actor ScopeActor --json') ;;
+  *) echo 'unexpected claim command' >&2; exit 2 ;;
+esac
+printf '[{"id":"bd-scope","title":"selected project","status":"in_progress"}]\n'
+`
+			if err := os.WriteFile(filepath.Join(bin, "br"), []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/bd-scope/claim", strings.NewReader(`{"assignee":"ScopeActor"}`))
+			route := chi.NewRouteContext()
+			route.URLParams.Add("id", "bd-scope")
+			ctx := context.WithValue(req.Context(), chi.RouteCtxKey, route)
+			if test.canceled {
+				canceled, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = canceled
+			}
+			req = req.WithContext(ctx)
+			rec := httptest.NewRecorder()
+			srv.handleClaimBead(rec, req)
+			if test.missing || test.canceled {
+				if rec.Code < http.StatusBadRequest {
+					t.Fatalf("unverified claim succeeded: status=%d body=%s", rec.Code, rec.Body.String())
+				}
+				if _, err := os.Stat(calls); !os.IsNotExist(err) {
+					t.Fatalf("unverified claim reached br: %v", err)
+				}
+				return
+			}
+			if rec.Code != http.StatusOK {
+				t.Fatalf("claim status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			canonical, err := filepath.EvalSymlinks(project)
+			if err != nil {
+				t.Fatal(err)
+			}
+			commands, err := os.ReadFile(calls)
+			want := canonical + "\n" + filepath.Join(canonical, ".beads") + "\n--lock-timeout 5000 update bd-scope --claim --actor ScopeActor --json\n"
+			if err != nil || string(commands) != want {
+				t.Fatalf("claim scope=%q err=%v, want %q", commands, err, want)
+			}
+			if !test.explicit && srv.projectDirSnapshot() != "" {
+				t.Fatalf("request changed unscoped server default to %q", srv.projectDirSnapshot())
+			}
+		})
 	}
 }
 

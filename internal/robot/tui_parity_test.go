@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -2750,11 +2751,16 @@ func TestBeadClaimOutputStructure(t *testing.T) {
 }
 
 func TestGetBeadClaimUsesAtomicActorAndIsIdempotent(t *testing.T) {
+	project := t.TempDir()
+	if err := os.Mkdir(filepath.Join(project, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(project)
 	calls := 0
 	deps := &BeadClaimDependencies{
 		ClaimBead: func(_ context.Context, dir, beadID, actor string) (bv.BeadClaimResult, error) {
 			calls++
-			if dir != "" || beadID != "ntm-atomic" || actor != "BlueLake" {
+			if dir != project || beadID != "ntm-atomic" || actor != "BlueLake" {
 				t.Fatalf("claim args dir=%q bead=%q actor=%q", dir, beadID, actor)
 			}
 			return bv.BeadClaimResult{ID: beadID, Title: "Atomic claim", Actor: actor, Status: "in_progress"}, nil
@@ -2772,6 +2778,117 @@ func TestGetBeadClaimUsesAtomicActorAndIsIdempotent(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("claim calls=%d, want 2 idempotent atomic attempts", calls)
+	}
+}
+
+func TestGetBeadClaimBindsDiscoveredProjectBeforeAtomicCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires POSIX shell fixture")
+	}
+	parent := t.TempDir()
+	project := filepath.Join(parent, "selected")
+	child := filepath.Join(project, "src", "nested")
+	missingTracker := filepath.Join(parent, "selected-without-tracker")
+	binDir := filepath.Join(parent, "bin")
+	for _, dir := range []string{
+		filepath.Join(parent, ".beads"),
+		filepath.Join(project, ".beads"),
+		filepath.Join(project, ".ntm"),
+		child,
+		filepath.Join(missingTracker, ".ntm"),
+		binDir,
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, dir := range []string{project, missingTracker} {
+		if err := os.WriteFile(filepath.Join(dir, ".ntm", "config.toml"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	canonicalProject, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(parent, "claims.log")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$NTM_TEST_BEAD_CLAIM_LOG"
+if [ "$PWD" != "$NTM_TEST_BEAD_CLAIM_PROJECT" ]; then
+  printf 'wrong project: %s\n' "$PWD" >&2
+  exit 21
+fi
+if [ "$BEADS_DIR" != "$NTM_TEST_BEAD_CLAIM_PROJECT/.beads" ]; then
+  printf 'wrong Beads directory: %s\n' "$BEADS_DIR" >&2
+  exit 22
+fi
+if [ -n "${BEADS_DB+x}${BD_DB+x}${BD_DATABASE+x}${BEADS_JSONL+x}${BEADS_CACHE_DIR+x}" ]; then
+  printf 'foreign tracker override inherited\n' >&2
+  exit 23
+fi
+if [ "$*" != '--lock-timeout 5000 update ntm-atomic --claim --actor BlueLake --json' ]; then
+  printf 'unexpected claim command: %s\n' "$*" >&2
+  exit 24
+fi
+if [ "$NTM_TEST_BEAD_CLAIM_NO_DB" = 1 ]; then
+  printf 'no beads database found; use '\''br --no-db'\''\n' >&2
+  exit 1
+fi
+printf '%s\n' '[{"id":"ntm-atomic","title":"Atomic claim","status":"in_progress"}]'
+`
+	if err := os.WriteFile(filepath.Join(binDir, "br"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("NTM_TEST_BEAD_CLAIM_LOG", logPath)
+	t.Setenv("NTM_TEST_BEAD_CLAIM_PROJECT", canonicalProject)
+	for _, key := range []string{"BEADS_DIR", "BEADS_DB", "BD_DB", "BD_DATABASE", "BEADS_JSONL", "BEADS_CACHE_DIR"} {
+		t.Setenv(key, filepath.Join(parent, "foreign", key))
+	}
+
+	for _, tc := range []struct {
+		name        string
+		cwd         string
+		noDB        bool
+		wantSuccess bool
+		wantCalls   int
+	}{
+		{name: "project root", cwd: project, wantSuccess: true, wantCalls: 1},
+		{name: "project child", cwd: child, wantSuccess: true, wantCalls: 2},
+		{name: "selected project cannot use parent tracker", cwd: missingTracker, wantCalls: 2},
+		{name: "missing database does not fall back to no-db", cwd: project, noDB: true, wantCalls: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(tc.cwd)
+			if tc.noDB {
+				t.Setenv("NTM_TEST_BEAD_CLAIM_NO_DB", "1")
+			} else {
+				t.Setenv("NTM_TEST_BEAD_CLAIM_NO_DB", "0")
+			}
+			output, err := GetBeadClaim(BeadClaimOptions{BeadID: "ntm-atomic", Assignee: "BlueLake"})
+			if err != nil {
+				t.Fatalf("GetBeadClaim: %v", err)
+			}
+			if output.Success != tc.wantSuccess || output.Claimed != tc.wantSuccess || output.Actor != "BlueLake" {
+				t.Fatalf("output=%+v, want success=%v", output, tc.wantSuccess)
+			}
+			if tc.wantSuccess && (output.Title != "Atomic claim" || output.NewStatus != "in_progress") {
+				t.Fatalf("successful claim output=%+v", output)
+			}
+			if !tc.wantSuccess && output.ErrorCode != ErrCodeInternalError {
+				t.Fatalf("failed claim output=%+v", output)
+			}
+			if tc.noDB && !strings.Contains(output.Error, "no beads database found") {
+				t.Fatalf("missing-database error not preserved: %+v", output)
+			}
+			calls, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Count(string(calls), "\n"); got != tc.wantCalls {
+				t.Fatalf("claim calls=%d, want %d: %s", got, tc.wantCalls, calls)
+			}
+		})
 	}
 }
 

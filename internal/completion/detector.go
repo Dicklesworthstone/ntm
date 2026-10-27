@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/worksource"
 )
 
 // DetectionMethod describes how completion was detected
@@ -60,6 +62,9 @@ type TerminalReconciler func(context.Context, *assignment.Assignment) (bool, err
 
 // DetectionConfig configures the detector behavior
 type DetectionConfig struct {
+	// ProjectDir is the authoritative Beads workspace for completion evidence.
+	// An empty value never authorizes tracker reads from the process directory.
+	ProjectDir              string
 	PollInterval            time.Duration // Interval for bead status polling (default 5s)
 	IdleThreshold           time.Duration // Duration of inactivity to consider complete (default 120s)
 	RetryOnError            bool          // Retry failed checks (default true)
@@ -164,6 +169,23 @@ func NewWithConfig(session string, store *assignment.AssignmentStore, cfg Detect
 	if cfg.CaptureLines <= 0 {
 		cfg.CaptureLines = defaults.CaptureLines
 	}
+	// Bind relative paths once. A later working-directory change must not
+	// redirect completion evidence to another checkout with the same bead ID.
+	var projectErr error
+	cfg.ProjectDir = strings.TrimSpace(cfg.ProjectDir)
+	if cfg.ProjectDir != "" {
+		cfg.ProjectDir, projectErr = filepath.Abs(cfg.ProjectDir)
+		if projectErr == nil {
+			cfg.ProjectDir, projectErr = filepath.EvalSymlinks(cfg.ProjectDir)
+		}
+		if projectErr == nil {
+			var info os.FileInfo
+			info, projectErr = os.Stat(cfg.ProjectDir)
+			if projectErr == nil && !info.IsDir() {
+				projectErr = errors.New("completion project is not a directory")
+			}
+		}
+	}
 	if raw := strings.TrimSpace(os.Getenv("NTM_TEST_COMPLETION_LEASE_DURATION")); raw != "" {
 		if duration, err := time.ParseDuration(raw); err == nil && duration > 0 {
 			cfg.CompletionLeaseDuration = duration
@@ -176,6 +198,9 @@ func NewWithConfig(session string, store *assignment.AssignmentStore, cfg Detect
 		consumerTokenFactory = newCompletionConsumerToken
 	}
 	consumerToken, initializationErr := consumerTokenFactory()
+	if projectErr != nil {
+		initializationErr = errors.Join(initializationErr, fmt.Errorf("resolve completion project: %w", projectErr))
+	}
 	d := &CompletionDetector{
 		Session:           session,
 		Config:            cfg,
@@ -837,6 +862,18 @@ func (d *CompletionDetector) isBrAvailable() bool {
 
 // checkBeadClosed uses br CLI to check if a bead is closed
 func (d *CompletionDetector) checkBeadClosed(ctx context.Context, beadID string) (bool, error) {
+	if ctx == nil {
+		return false, errors.New("completion tracker context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := d.InitializationError(); err != nil {
+		return false, err
+	}
+	if d.Config.ProjectDir == "" {
+		return false, errors.New("completion tracker requires an explicit project directory")
+	}
 	maxRetries := 0
 	if d.Config.RetryOnError {
 		maxRetries = d.Config.MaxRetries
@@ -844,7 +881,7 @@ func (d *CompletionDetector) checkBeadClosed(ctx context.Context, beadID string)
 
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		closed, err := checkBeadClosedOnce(ctx, beadID)
+		closed, err := checkBeadClosedOnce(ctx, d.Config.ProjectDir, beadID)
 		if err == nil {
 			return closed, nil
 		}
@@ -860,10 +897,25 @@ func (d *CompletionDetector) checkBeadClosed(ctx context.Context, beadID string)
 	return false, lastErr
 }
 
-func checkBeadClosedOnce(ctx context.Context, beadID string) (bool, error) {
+func checkBeadClosedOnce(ctx context.Context, projectDir, beadID string) (bool, error) {
+	if ctx == nil {
+		return false, errors.New("completion tracker context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if !filepath.IsAbs(projectDir) {
+		return false, errors.New("completion tracker requires an absolute project directory")
+	}
 	cmd := exec.CommandContext(ctx, "br", "show", beadID, "--json")
+	if err := worksource.BindBeadsCommand(cmd, projectDir); err != nil {
+		return false, fmt.Errorf("bind completion tracker: %w", err)
+	}
 	cmd.WaitDelay = 2 * time.Second
 	output, err := cmd.Output()
+	if contextErr := ctx.Err(); contextErr != nil {
+		return false, contextErr
+	}
 	if err != nil {
 		return false, err
 	}

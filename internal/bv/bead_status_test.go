@@ -1108,6 +1108,152 @@ func TestReleaseBeadClaimLeavesDifferentOwnerAndPreservesTerminalStatus(t *testi
 	}
 }
 
+func TestGuardedBeadMutationsRetainProjectWithForeignTrackerOverrides(t *testing.T) {
+	requireRealBR(t)
+	for _, corruptBeforeRelease := range []bool{false, true} {
+		name := "healthy database"
+		if corruptBeforeRelease {
+			name = "corrupt database recovery"
+		}
+		t.Run(name, func(t *testing.T) {
+			for _, key := range []string{"BEADS_DIR", "BEADS_DB", "BD_DB", "BD_DATABASE", "BEADS_JSONL", "BEADS_CACHE_DIR"} {
+				t.Setenv(key, "")
+			}
+			target, foreign := t.TempDir(), t.TempDir()
+			runRealBR(t, target, "init", "--prefix", "binding", "--quiet")
+			runRealBR(t, foreign, "init", "--prefix", "binding", "--quiet")
+
+			// Keep the ordinary empty database and configure a separate project
+			// database. Binding must preserve metadata rather than hardcode a
+			// default filename or clear the unrelated database's matching ID.
+			initialDatabase := realBRDatabasePath(t, target)
+			data, err := os.ReadFile(initialDatabase)
+			if err != nil {
+				t.Fatal(err)
+			}
+			targetDatabase := filepath.Join(target, ".beads", "project-custom.db")
+			if err := os.WriteFile(targetDatabase, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			metadataPath := filepath.Join(target, ".beads", "metadata.json")
+			metadataBytes, err := os.ReadFile(metadataPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var metadata map[string]any
+			if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
+				t.Fatal(err)
+			}
+			metadata["database"] = "project-custom.db"
+			metadataBytes, err = json.Marshal(metadata)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(metadataPath, metadataBytes, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if got := realBRDatabasePath(t, target); got != targetDatabase {
+				t.Fatalf("configured database=%q, want %q", got, targetDatabase)
+			}
+
+			const actor = "ProjectBoundOwner"
+			claimID := createRealBRBead(t, target, "project-bound acquisition")
+			releaseID := createRealBRBead(t, target, "project-bound terminal release")
+			if _, err := ClaimBead(t.Context(), target, releaseID, actor); err != nil {
+				t.Fatal(err)
+			}
+			runRealBR(t, target, "close", releaseID, "--reason", "target completed", "--json")
+			runRealBR(t, target, "sync", "--flush-only")
+			exported, err := os.ReadFile(filepath.Join(target, ".beads", "issues.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			foreignJSONL := filepath.Join(foreign, ".beads", "issues.jsonl")
+			if err := os.WriteFile(foreignJSONL, exported, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runRealBR(t, foreign, "sync", "--import-only")
+			foreignDatabase := realBRDatabasePath(t, foreign)
+			t.Chdir(foreign)
+			for key, value := range map[string]string{
+				"BEADS_DIR": filepath.Join(foreign, ".beads"),
+				"BEADS_DB":  foreignDatabase, "BD_DB": foreignDatabase, "BD_DATABASE": foreignDatabase,
+				"BEADS_JSONL": foreignJSONL, "BEADS_CACHE_DIR": filepath.Join(foreign, ".beads"),
+			} {
+				t.Setenv(key, value)
+			}
+
+			if result, err := ClaimBeadForAssignment(t.Context(), target, claimID, actor); err != nil || result.ID != claimID {
+				t.Fatalf("project-bound acquisition=%+v err=%v", result, err)
+			}
+			assertAssignmentClaimDatabaseState(t, targetDatabase, claimID, "in_progress", actor)
+			assertAssignmentClaimDatabaseState(t, foreignDatabase, claimID, "open", "")
+			if released, err := ReleaseBeadClaim(t.Context(), target, releaseID, "DifferentOwner"); err != nil || released {
+				t.Fatalf("different-owner cleanup released=%v err=%v", released, err)
+			}
+			assertAssignmentClaimDatabaseState(t, targetDatabase, releaseID, "closed", actor)
+			if corruptBeforeRelease {
+				corruptRealBRIssuesRootPage(t, targetDatabase)
+			}
+			if released, err := ReleaseBeadClaim(t.Context(), target, releaseID, actor); err != nil || !released {
+				t.Fatalf("project-bound cleanup released=%v err=%v", released, err)
+			}
+			assertAssignmentClaimDatabaseState(t, targetDatabase, releaseID, "closed", "")
+			assertAssignmentClaimDatabaseState(t, foreignDatabase, releaseID, "closed", actor)
+			assertAssignmentClaimDatabaseState(t, foreignDatabase, claimID, "open", "")
+			if released, err := ReleaseBeadClaim(t.Context(), target, releaseID, actor); err != nil || released {
+				t.Fatalf("idempotent cleanup released=%v err=%v", released, err)
+			}
+			foreignAfter, err := os.ReadFile(foreignJSONL)
+			if err != nil || !bytes.Equal(foreignAfter, exported) {
+				t.Fatalf("foreign tracker export changed during target cleanup: err=%v", err)
+			}
+			if got, err := os.ReadFile(metadataPath); err != nil || !bytes.Equal(got, metadataBytes) {
+				t.Fatalf("project database routing changed: %s err=%v", got, err)
+			}
+			if os.Getenv("BEADS_DB") != foreignDatabase {
+				t.Fatal("guarded mutation changed process environment")
+			}
+		})
+	}
+}
+
+func TestGuardedBeadMutationsRejectAbsentLocalTracker(t *testing.T) {
+	parent := t.TempDir()
+	if err := os.Mkdir(filepath.Join(parent, ".beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(parent, "child")
+	if err := os.Mkdir(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(parent)
+	for _, dir := range []string{"", child, filepath.Join(parent, "missing")} {
+		for name, mutate := range map[string]func() error{
+			"claim": func() error {
+				_, err := ClaimBead(t.Context(), dir, "binding-same", "Owner")
+				return err
+			},
+			"assignment claim": func() error {
+				_, err := ClaimBeadForAssignment(t.Context(), dir, "binding-same", "Owner")
+				return err
+			},
+			"stale claim": func() error {
+				_, err := ClaimStaleBeadForAssignment(t.Context(), dir, "binding-same", "Owner", time.Now())
+				return err
+			},
+			"release": func() error {
+				_, err := ReleaseBeadClaim(t.Context(), dir, "binding-same", "Owner")
+				return err
+			},
+		} {
+			if err := mutate(); err == nil || (!strings.Contains(err.Error(), "explicit project") && !strings.Contains(err.Error(), "local Beads") && !strings.Contains(err.Error(), "resolve Beads")) {
+				t.Errorf("%s with project %q: err=%v, want local workspace refusal", name, dir, err)
+			}
+		}
+	}
+}
+
 // corruptRealBRIssuesRootPage overwrites the issues table's b-tree root page
 // with a bogus interior-page header so the next UPDATE against issues fails
 // with SQLITE_CORRUPT ("database disk image is malformed (11)") — the exact

@@ -15,6 +15,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 func normalizeSingularBeadPayload(payload interface{}) interface{} {
@@ -530,7 +531,19 @@ func (s *Server) handleClaimBead(w http.ResponseWriter, r *http.Request) {
 	// --assignee plus --status is a blind overwrite that silently steals a bead
 	// another agent already holds, and it also permits br's --no-db fallback,
 	// which cannot provide the transaction at all.
-	claim, err := bv.ClaimBead(r.Context(), s.projectDirSnapshot(), beadID, req.Assignee)
+	projectDir := s.projectDirSnapshot()
+	if projectDir == "" {
+		// Only the unscoped server may discover its current workspace. An
+		// explicit project whose tracker disappeared must never fall back to
+		// a parent or another database inherited through the environment.
+		var err error
+		projectDir, err = util.ResolveProjectDirContext(r.Context(), "")
+		if err != nil {
+			writeBeadsCommandError(w, err, reqID)
+			return
+		}
+	}
+	claim, err := bv.ClaimBead(r.Context(), projectDir, beadID, req.Assignee)
 	if err != nil {
 		if errors.Is(err, bv.ErrBeadAlreadyClaimed) {
 			writeErrorResponse(w, http.StatusConflict, ErrCodeBeadAlreadyClaimed, err.Error(), nil, reqID)

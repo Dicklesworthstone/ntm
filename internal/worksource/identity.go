@@ -62,6 +62,61 @@ func (i Identity) Verify(current Identity) error {
 const maxTrackerBytes int64 = 64 << 20
 const gitProbeTimeout = 2 * time.Second
 
+// ResolveBeadsProjectDir validates an explicit workspace without walking up to
+// an ancestor's tracker. Guarded claims and completion evidence must retain the
+// project selected by their caller, even when the local tracker disappears.
+func ResolveBeadsProjectDir(projectDir string) (string, error) {
+	projectDir = strings.TrimSpace(projectDir)
+	if projectDir == "" {
+		return "", errors.New("Beads workspace requires an explicit project directory")
+	}
+	root, err := filepath.Abs(projectDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve Beads project directory: %w", err)
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve Beads project directory: %w", err)
+	}
+	info, err := os.Stat(filepath.Join(root, ".beads"))
+	if err != nil {
+		return "", fmt.Errorf("inspect local Beads workspace: %w", err)
+	}
+	if !info.IsDir() {
+		return "", errors.New("Beads workspace requires a local .beads directory")
+	}
+	return root, nil
+}
+
+// BindBeadsCommand scopes one subprocess to its authoritative project without
+// changing process cwd or environment. br's inherited database/source overrides
+// otherwise take precedence over cmd.Dir. Its explicit directory override also
+// prevents parent discovery if the workspace disappears before execution.
+// Project-local metadata and explicit routing remain under br's own resolution;
+// in particular, this does not assume the database is named beads.db.
+func BindBeadsCommand(cmd *exec.Cmd, projectDir string) error {
+	if cmd == nil {
+		return errors.New("Beads command is required")
+	}
+	root, err := ResolveBeadsProjectDir(projectDir)
+	if err != nil {
+		return err
+	}
+	cmd.Dir = root
+	environment := cmd.Environ()
+	cmd.Env = make([]string, 0, len(environment)+1)
+	for _, entry := range environment {
+		key, _, _ := strings.Cut(entry, "=")
+		switch strings.ToUpper(key) {
+		case "BEADS_DIR", "BEADS_DB", "BD_DB", "BD_DATABASE", "BEADS_JSONL", "BEADS_CACHE_DIR":
+			continue
+		}
+		cmd.Env = append(cmd.Env, entry)
+	}
+	cmd.Env = append(cmd.Env, "BEADS_DIR="+filepath.Join(root, ".beads"))
+	return nil
+}
+
 // Capture reads a bounded local tracker digest and the local HEAD without
 // mutating the checkout. A missing JSONL export preserves DB-only operation,
 // but unreadable or unstable existing exports fail closed. ProjectDir should

@@ -52,6 +52,87 @@ func captureFixture(t *testing.T, dir string) Identity {
 	return id
 }
 
+func TestBindBeadsCommandPreservesExplicitProjectAndLocalMetadata(t *testing.T) {
+	project, _ := trackerFixture(t)
+	canonical, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadataPath := filepath.Join(project, ".beads", "metadata.json")
+	metadata := []byte(`{"database":"project-custom.db","jsonl_export":"project-custom.jsonl"}`)
+	if err := os.WriteFile(metadataPath, metadata, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	foreign := t.TempDir()
+	t.Chdir(foreign)
+	t.Setenv("BEADS_DB", filepath.Join(foreign, "ambient.db"))
+	cmd := exec.Command("br", "info", "--json")
+	cmd.Env = []string{"PATH=retained-path", "UNRELATED=retained-value", "SYSTEMROOT=retained-systemroot"}
+	for _, key := range []string{"BEADS_DIR", "BEADS_DB", "BD_DB", "BD_DATABASE", "BEADS_JSONL", "BEADS_CACHE_DIR"} {
+		cmd.Env = append(cmd.Env, key+"=foreign", strings.ToLower(key)+"=foreign-lowercase")
+	}
+	if err := BindBeadsCommand(cmd, project); err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Dir != canonical {
+		t.Fatalf("command directory=%q, want selected project %q", cmd.Dir, canonical)
+	}
+	want := map[string]string{
+		"PATH": "retained-path", "UNRELATED": "retained-value", "SYSTEMROOT": "retained-systemroot",
+		"BEADS_DIR": filepath.Join(canonical, ".beads"),
+	}
+	for _, entry := range cmd.Env {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || want[key] != value {
+			t.Fatalf("unexpected scoped environment entry %q", entry)
+		}
+		delete(want, key)
+	}
+	if len(want) != 0 {
+		t.Fatalf("scoped environment lost entries: %v", want)
+	}
+	if len(cmd.Args) != 3 || cmd.Args[1] != "info" || cmd.Args[2] != "--json" {
+		t.Fatalf("binding changed command arguments: %v", cmd.Args)
+	}
+	gotMetadata, err := os.ReadFile(metadataPath)
+	if err != nil || string(gotMetadata) != string(metadata) {
+		t.Fatalf("local database routing changed: %s, %v", gotMetadata, err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil || cwd != foreign || os.Getenv("BEADS_DB") != filepath.Join(foreign, "ambient.db") {
+		t.Fatalf("binding changed process state: cwd=%q err=%v BEADS_DB=%q", cwd, err, os.Getenv("BEADS_DB"))
+	}
+}
+
+func TestResolveBeadsProjectDirRefusesParentFallback(t *testing.T) {
+	parent, _ := trackerFixture(t)
+	child := filepath.Join(parent, "child")
+	if err := os.Mkdir(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	invalid := t.TempDir()
+	if err := os.WriteFile(filepath.Join(invalid, ".beads"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(parent)
+	for _, project := range []string{"", "  ", child, filepath.Join(parent, "missing"), invalid} {
+		if resolved, err := ResolveBeadsProjectDir(project); err == nil {
+			t.Errorf("project %q resolved to %q without a local tracker", project, resolved)
+		}
+		cmd := exec.Command("br", "info", "--json")
+		if err := BindBeadsCommand(cmd, project); err == nil {
+			t.Errorf("command accepted invalid project %q", project)
+		}
+	}
+	canonical, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ResolveBeadsProjectDir("."); err != nil || got != canonical {
+		t.Fatalf("explicit relative project=%q err=%v, want %q", got, err, canonical)
+	}
+}
+
 func TestCaptureTracksContentNotMtime(t *testing.T) {
 	dir, path := trackerFixture(t)
 	before := captureFixture(t, dir)

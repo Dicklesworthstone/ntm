@@ -6931,6 +6931,9 @@ func (w *WatchLoop) Run(ctx context.Context) error {
 		GracefulDegrading: true,
 		CaptureLines:      50,
 	}
+	if w.opts != nil {
+		detectorCfg.ProjectDir = w.opts.ProjectDir
+	}
 	w.detector = completion.NewWithConfig(w.session, w.store, detectorCfg)
 	if err := w.detector.InitializationError(); err != nil {
 		return fmt.Errorf("initialize completion detector: %w", err)

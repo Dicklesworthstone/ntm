@@ -27,6 +27,7 @@ import (
 
 	assignmentstore "github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/sqliteutil"
+	"github.com/Dicklesworthstone/ntm/internal/worksource"
 )
 
 // ErrNotInstalled indicates bv is not available
@@ -840,15 +841,18 @@ func RunBdContext(ctx context.Context, dir string, args ...string) (string, erro
 // runBdContext executes br with the workspace serialization and retry policy
 // used by RunBd. allowNoDB must be false for compare-and-set mutations such as
 // claims because JSONL-only fallback cannot provide the SQLite transaction.
+// These guarded commands also require the caller's exact local workspace:
+// inherited tracker overrides and parent discovery cannot redirect their CAS.
 func runBdContext(parent context.Context, dir string, allowNoDB bool, args ...string) (string, error) {
 	return runBdCommandContext(parent, dir, beadsCommandOptions{
-		allowNoDB: allowNoDB, retryTransient: true,
+		allowNoDB: allowNoDB, retryTransient: true, projectBound: !allowNoDB,
 	}, args...)
 }
 
 type beadsCommandOptions struct {
 	allowNoDB      bool
 	retryTransient bool
+	projectBound   bool
 }
 
 // beadsCommandError retains machine-readable output without changing the
@@ -878,8 +882,16 @@ func runBdCommandContext(parent context.Context, dir string, options beadsComman
 	if err := parent.Err(); err != nil {
 		return "", err
 	}
-	// Normalize dir to ensure consistent cache keys.
-	normalizedDir, err := normalizeTriageDir(dir)
+	// Guarded mutations must validate the literal selected workspace before
+	// any discovery can replace it with a parent's tracker. Generic read
+	// helpers retain their intentional walk-up behavior.
+	var normalizedDir string
+	var err error
+	if options.projectBound {
+		normalizedDir, err = worksource.ResolveBeadsProjectDir(dir)
+	} else {
+		normalizedDir, err = normalizeTriageDir(dir)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -910,6 +922,12 @@ func runBdCommandContext(parent context.Context, dir string, options beadsComman
 		cmd := exec.CommandContext(ctx, "br", args...)
 		cmd.WaitDelay = time.Second // Prevent hanging on open pipes
 		cmd.Dir = dir
+		if options.projectBound {
+			if err := worksource.BindBeadsCommand(cmd, dir); err != nil {
+				cancel()
+				return "", err
+			}
+		}
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
@@ -1451,7 +1469,7 @@ func repairBeadsDatabaseWithDoctor(ctx context.Context, normalizedDir string) er
 	// Do not retry doctor on diagnostic substrings: a completed partial repair
 	// may mention locks in its preservation warnings. Never bypass its repeated
 	// repair guard or remove the backups/verification-failure marker it retains.
-	output, err := runBdCommandContext(ctx, normalizedDir, beadsCommandOptions{}, "doctor", "--repair", "--json")
+	output, err := runBdCommandContext(ctx, normalizedDir, beadsCommandOptions{projectBound: true}, "doctor", "--repair", "--json")
 	if ctx != nil && ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -1773,7 +1791,7 @@ func ClaimBeadForAssignmentWithOperatorGatedLabels(ctx context.Context, dir, bea
 	if actor == "" {
 		return BeadClaimResult{}, errors.New("claim actor is required")
 	}
-	normalizedDir, err := normalizeTriageDir(dir)
+	normalizedDir, err := worksource.ResolveBeadsProjectDir(dir)
 	if err != nil {
 		return BeadClaimResult{}, err
 	}
@@ -1843,7 +1861,7 @@ func ReleaseBeadClaim(ctx context.Context, dir, beadID, actor string) (bool, err
 	if actor == "" {
 		return false, errors.New("claim actor is required")
 	}
-	normalizedDir, err := normalizeTriageDir(dir)
+	normalizedDir, err := worksource.ResolveBeadsProjectDir(dir)
 	if err != nil {
 		return false, err
 	}
@@ -2000,7 +2018,7 @@ func requireBeadsMutationContext(ctx context.Context) error {
 }
 
 func claimBeadNonTerminalMode(ctx context.Context, dir, beadID, actor string, expectedStaleUpdatedAt time.Time, gatedLabels []string) (BeadClaimResult, error) {
-	normalizedDir, err := normalizeTriageDir(dir)
+	normalizedDir, err := worksource.ResolveBeadsProjectDir(dir)
 	if err != nil {
 		return BeadClaimResult{}, err
 	}

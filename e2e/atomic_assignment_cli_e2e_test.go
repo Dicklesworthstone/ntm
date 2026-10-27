@@ -2606,6 +2606,143 @@ func TestE2EAtomicAssignmentWorkingHistoryRetainsClaimAndReservationsBuiltProces
 	fixture.assertMarkerCounts(t, prompt, map[int]int{0: 1, 1: 0})
 }
 
+func TestE2EAtomicAssignmentForeignTrackerCannotCompleteTargetBuiltProcess(t *testing.T) {
+	CommonE2EPrerequisites(t)
+	testutil.RequireTmuxThrottled(t)
+
+	fixture := newAtomicAssignmentCLIFixture(t)
+	mail := newAtomicAssignmentMailStub(fixture.projectDir)
+	defer mail.close()
+	pane := fixture.panes[0]
+	beadID, prompt, before := seedReservedWorkingAssignment(t, fixture, mail, pane,
+		"Completion belongs to its project internal/completion/project_binding.go")
+
+	// Import the real target export into a separate tracker so both projects
+	// have exactly the same bead ID and claim actor, then close ONLY the foreign
+	// copy. A completion lookup in the wrong project must not release the live
+	// target's claim, occupancy, or file reservations.
+	foreignDir := filepath.Join(fixture.root, "foreign-project")
+	if err := os.MkdirAll(foreignDir, 0o700); err != nil {
+		t.Fatalf("create foreign project: %v", err)
+	}
+	fixture.mustBRAt(t, foreignDir, "init", "--prefix=ate2e", "--json")
+	fixture.mustBR(t, "sync", "--flush-only")
+	exported, err := os.ReadFile(filepath.Join(fixture.projectDir, ".beads", "issues.jsonl"))
+	if err != nil {
+		t.Fatalf("read target tracker export: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(foreignDir, ".beads", "issues.jsonl"), exported, 0o600); err != nil {
+		t.Fatalf("copy target export into independent tracker: %v", err)
+	}
+	fixture.mustBRAt(t, foreignDir, "sync", "--import-only")
+	fixture.mustBRAt(t, foreignDir, "close", beadID, "--reason=foreign-project-only", "--json")
+	fixture.assertBeadAt(t, foreignDir, beadID, "closed", before.ClaimActor)
+	fixture.assertBead(t, beadID, "in_progress", before.ClaimActor)
+
+	checks := []struct {
+		name       string
+		cwd        string
+		dbOverride string
+	}{
+		{name: "foreign working directory", cwd: foreignDir},
+		{name: "inherited foreign database", cwd: fixture.projectDir, dbOverride: filepath.Join(foreignDir, ".beads", "beads.db")},
+		{name: "foreign directory and database", cwd: foreignDir, dbOverride: filepath.Join(foreignDir, ".beads", "beads.db")},
+	}
+	for index, check := range checks {
+		if !t.Run(check.name, func(t *testing.T) {
+			tracePATH, tracePath := fixture.armBRInvocationTrace(t)
+			env := mail.env()
+			env["PATH"] = tracePATH
+			env["BEADS_DB"] = check.dbOverride
+			watch := fixture.startCompletionWatchInDir(t, env, 100*time.Millisecond, check.cwd)
+			deadline := time.Now().Add(20 * time.Second)
+			for {
+				current := fixture.readLedgerAssignment(t, beadID)
+				if current.Status != "working" || current.ClearState != "" || current.PendingTerminalStatus != "" ||
+					current.PendingCompletionEventID != "" || current.CompletedAt != nil || current.OccupancyKey != pane.ID ||
+					current.ReservationState != "reserved" || !current.ReservationCompleted ||
+					!reflect.DeepEqual(current.ReservationIDs, before.ReservationIDs) ||
+					!reflect.DeepEqual(current.ReservedPaths, before.ReservedPaths) {
+					stdout, stderr := watch.output(t)
+					t.Fatalf("foreign tracker changed protected target assignment: before=%+v after=%+v stdout=%s stderr=%s",
+						before, current, stdout, stderr)
+				}
+				assertAtomicAssignmentReceiptUnchanged(t, before, current)
+				snapshot := mail.snapshot()
+				if snapshot.ReleaseCalls != 0 || snapshot.ReserveCalls != 1 || len(snapshot.Active) != len(before.ReservationIDs) {
+					t.Fatalf("foreign tracker changed target reservation ownership: %+v", snapshot)
+				}
+
+				trace, err := os.ReadFile(tracePath)
+				if err != nil && !os.IsNotExist(err) {
+					t.Fatalf("read project-bound completion observation trace: %v", err)
+				}
+				reads := 0
+				for _, line := range strings.Split(string(trace), "\n") {
+					if strings.TrimSpace(line) == "show "+beadID+" --json" {
+						reads++
+					}
+				}
+				if reads >= 4 {
+					break
+				}
+				if time.Now().After(deadline) {
+					stdout, stderr := watch.output(t)
+					t.Fatalf("watcher did not reobserve target while foreign tracker was closed: reads=%d trace=%s stdout=%s stderr=%s",
+						reads, trace, stdout, stderr)
+				}
+				time.Sleep(25 * time.Millisecond)
+			}
+			fixture.assertBead(t, beadID, "in_progress", before.ClaimActor)
+			fixture.assertMarkerCounts(t, prompt, map[int]int{0: 1, 1: 0})
+
+			if index == len(checks)-1 {
+				// Keep both misleading ambient sources in place. Only closing the
+				// actual --repo target may now trigger exact terminal cleanup.
+				fixture.mustBR(t, "close", beadID, "--reason=target-project-completed", "--json")
+				deadline = time.Now().Add(20 * time.Second)
+				for {
+					current := fixture.readLedgerAssignment(t, beadID)
+					if current.Status == "completed" && current.ClearState == "" && current.PendingCompletionEventID == "" &&
+						current.CompletionConsumerToken == "" && current.CompletionLeaseExpiresAt == nil {
+						if current.ReservationState != "released" || current.ReservationCompleted || len(current.ReservationIDs) != 0 ||
+							len(current.ReservedPaths) != 0 || current.PendingTerminalStatus != "" {
+							t.Fatalf("target completion did not finish exact cleanup: %+v", current)
+						}
+						assertAtomicAssignmentReceiptUnchanged(t, before, current)
+						break
+					}
+					if time.Now().After(deadline) {
+						stdout, stderr := watch.output(t)
+						t.Fatalf("watcher did not complete the actual target: assignment=%+v stdout=%s stderr=%s", current, stdout, stderr)
+					}
+					time.Sleep(25 * time.Millisecond)
+				}
+				snapshot := mail.snapshot()
+				if snapshot.ReleaseCalls != 1 || !reflect.DeepEqual(snapshot.ReleasedIDs, before.ReservationIDs) || len(snapshot.Active) != 0 {
+					t.Fatalf("target completion did not release only its exact lease IDs once: %+v", snapshot)
+				}
+				fixture.assertBead(t, beadID, "closed", "")
+				fixture.assertBeadAt(t, foreignDir, beadID, "closed", before.ClaimActor)
+			}
+			stdout, stderr := watch.stopClean(t)
+			if unexpected := atomicAssignmentUnexpectedWatchStderr(stderr); unexpected != "" {
+				t.Fatalf("project-bound watcher stderr=%s", unexpected)
+			}
+			wantCompletions := 0
+			if index == len(checks)-1 {
+				wantCompletions = 1
+			}
+			if strings.Count(stdout, "Completion: "+beadID) != wantCompletions || strings.Contains(stdout, "Failed: "+beadID) {
+				t.Fatalf("project-bound watcher reported the wrong outcome: %s", stdout)
+			}
+		}) {
+			return
+		}
+	}
+	fixture.assertMarkerCounts(t, prompt, map[int]int{0: 1, 1: 0})
+}
+
 func TestE2EAtomicCompletionOutboxRestartReplayAckRetryAndFinalAckBuiltProcess(t *testing.T) {
 	CommonE2EPrerequisites(t)
 	testutil.RequireTmuxThrottled(t)
@@ -10858,6 +10995,11 @@ func (f *atomicAssignmentCLIFixture) completionWatchEnv(t *testing.T, overrides 
 
 func (f *atomicAssignmentCLIFixture) startCompletionWatchWithInterval(t *testing.T, env map[string]string, watchInterval time.Duration) *atomicCompletionWatchProcess {
 	t.Helper()
+	return f.startCompletionWatchInDir(t, env, watchInterval, f.projectDir)
+}
+
+func (f *atomicAssignmentCLIFixture) startCompletionWatchInDir(t *testing.T, env map[string]string, watchInterval time.Duration, dir string) *atomicCompletionWatchProcess {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	cmd := exec.CommandContext(ctx, f.ntmPath,
 		"assign", f.session,
@@ -10868,7 +11010,7 @@ func (f *atomicAssignmentCLIFixture) startCompletionWatchWithInterval(t *testing
 		"--auto-reassign=false",
 		"--reserve-files=false",
 	)
-	cmd.Dir = f.projectDir
+	cmd.Dir = dir
 	cmd.Env = atomicAssignmentMergeEnv(f.env, f.completionWatchEnv(t, env))
 	stdout, err := os.CreateTemp(f.root, "completion-watch-stdout-*.log")
 	if err != nil {

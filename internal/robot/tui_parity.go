@@ -4170,7 +4170,21 @@ func GetBeadClaim(opts BeadClaimOptions) (*BeadClaimOutput, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), bv.DefaultTimeout)
 	defer cancel()
-	claim, err := claimBead(ctx, "", opts.BeadID, actor)
+	// This CWD-scoped surface discovers its project once, then passes explicit
+	// authority into the guarded claim. ClaimBead must never rediscover a
+	// different tracker from ambient overrides or a missing selected workspace.
+	projectDir, err := util.ResolveProjectDirContext(ctx, "")
+	if err != nil {
+		return &BeadClaimOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("resolve Beads project: %w", err),
+				ErrCodeInternalError,
+				"Run the command from the intended Beads project"),
+			BeadID: opts.BeadID,
+			Actor:  actor,
+		}, nil
+	}
+	claim, err := claimBead(ctx, projectDir, opts.BeadID, actor)
 	if err != nil {
 		errorCode := ErrCodeInternalError
 		hint := "Inspect the Beads claim error and retry with the same actor"

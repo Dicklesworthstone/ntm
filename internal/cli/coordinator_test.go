@@ -484,7 +484,11 @@ esac
 
 			// The command executes production Beads claim release against a real
 			// SQLite database; only br's process transport is recorded here.
-			databasePath := filepath.Join(f.project, "lost-owner.db")
+			beadsDir := filepath.Join(f.project, ".beads")
+			if err := os.MkdirAll(beadsDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			databasePath := filepath.Join(beadsDir, "lost-owner.db")
 			db, err := sql.Open(sqliteutil.DriverName, sqliteutil.FileDSN(databasePath, "busy_timeout(5000)"))
 			if err != nil {
 				t.Fatal(err)

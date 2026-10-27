@@ -1476,22 +1476,29 @@ func TestMatchFailurePatternsConcurrent(t *testing.T) {
 // dir to PATH for the test, and returns the dir. The fake `br` emits a JSON
 // array whose single object carries the given status, so checkBeadClosed sees
 // the bead as that status. Skips the test if the dir cannot be prepared.
-func installFakeBr(t *testing.T, status string) {
+func installFakeBr(t *testing.T, status string) string {
 	t.Helper()
 	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".beads"), 0o700); err != nil {
+		t.Fatalf("create fake tracker: %v", err)
+	}
 	script := "#!/bin/sh\n" +
 		"# Fake br for tests: always reports a bead with a fixed status.\n" +
-		"printf '%s' '[{\"id\":\"bd-x\",\"status\":\"" + status + "\"}]'\n"
+		"printf '[{\"id\":\"%s\",\"status\":\"" + status + "\"}]' \"$2\"\n"
 	path := dir + "/br"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake br: %v", err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return dir
 }
 
 func installFakeBrScript(t *testing.T, script string) string {
 	t.Helper()
 	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".beads"), 0o700); err != nil {
+		t.Fatalf("create fake tracker: %v", err)
+	}
 	path := dir + "/br"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake br: %v", err)
@@ -1515,6 +1522,7 @@ func TestCheckBeadClosedRetriesTransientCommandFailures(t *testing.T) {
 	t.Setenv("FAKE_BR_ATTEMPT_FILE", attemptFile)
 
 	cfg := DefaultConfig()
+	cfg.ProjectDir = dir
 	cfg.RetryInterval = time.Millisecond
 	cfg.MaxRetries = 2
 	d := NewWithConfig("retry-test", nil, cfg)
@@ -1536,10 +1544,10 @@ func TestCheckBeadClosedRetriesTransientCommandFailures(t *testing.T) {
 }
 
 func TestCheckBeadClosedIgnoresClosedDependents(t *testing.T) {
-	installFakeBrScript(t, "#!/bin/sh\n"+
+	dir := installFakeBrScript(t, "#!/bin/sh\n"+
 		"printf '%s' '[{\"id\":\"bd-open\",\"status\":\"open\",\"dependents\":[{\"id\":\"bd-child\",\"status\":\"closed\"}]}]'\n")
 
-	closed, err := checkBeadClosedOnce(t.Context(), "bd-open")
+	closed, err := checkBeadClosedOnce(t.Context(), dir, "bd-open")
 	if err != nil {
 		t.Fatalf("checkBeadClosedOnce: %v", err)
 	}
@@ -1557,6 +1565,7 @@ func TestCheckBeadClosedCanDisableRetries(t *testing.T) {
 	t.Setenv("FAKE_BR_ATTEMPT_FILE", attemptFile)
 
 	cfg := DefaultConfig()
+	cfg.ProjectDir = dir
 	cfg.RetryOnError = false
 	cfg.RetryInterval = time.Millisecond
 	cfg.MaxRetries = 3
@@ -1571,6 +1580,154 @@ func TestCheckBeadClosedCanDisableRetries(t *testing.T) {
 	}
 	if got := string(attempts); got != "x" {
 		t.Fatalf("br invocations = %q, want one when RetryOnError is false", got)
+	}
+}
+
+func TestCheckBeadClosedUsesBoundProjectDespiteAmbientOverrides(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "target")
+	ambientDir := filepath.Join(root, "ambient")
+	writeStatus := func(dir, status string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(dir, ".beads"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		data := fmt.Sprintf(`[{"id":"bd-shared","status":%q}]`, status)
+		if err := os.WriteFile(filepath.Join(dir, ".beads", "status.json"), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeStatus(projectDir, "in_progress")
+	writeStatus(ambientDir, "closed")
+	// Model br's workspace and database overrides using files with conflicting
+	// status for the same ID. Any surviving ambient override selects "closed".
+	installFakeBrScript(t, `#!/bin/sh
+tracker="${BEADS_DIR:-$PWD/.beads}"
+if [ -n "${beads_dir:-}" ]; then tracker="$beads_dir"; fi
+if [ -n "${BEADS_CACHE_DIR:-}" ]; then tracker="$BEADS_CACHE_DIR"; fi
+if [ -n "${beads_cache_dir:-}" ]; then tracker="$beads_cache_dir"; fi
+source="$tracker/status.json"
+if [ -n "${BEADS_JSONL:-}" ]; then source="$BEADS_JSONL"; fi
+if [ -n "${beads_jsonl:-}" ]; then source="$beads_jsonl"; fi
+if [ -n "${BEADS_DB:-}" ]; then source="$BEADS_DB"; fi
+if [ -n "${beads_db:-}" ]; then source="$beads_db"; fi
+if [ -n "${BD_DATABASE:-}" ]; then source="$BD_DATABASE"; fi
+if [ -n "${bd_database:-}" ]; then source="$bd_database"; fi
+if [ -n "${BD_DB:-}" ]; then source="$BD_DB"; fi
+if [ -n "${bd_db:-}" ]; then source="$bd_db"; fi
+cat "$source"
+`)
+	foreignSource := filepath.Join(ambientDir, ".beads", "status.json")
+	for _, key := range []string{"BEADS_DB", "BD_DB", "BD_DATABASE", "BEADS_JSONL"} {
+		t.Setenv(key, foreignSource)
+		// Windows recognizes these names case-insensitively; filtering must
+		// remove aliases even when the inherited spelling is lowercase.
+		t.Setenv(strings.ToLower(key), foreignSource)
+	}
+	for _, key := range []string{"BEADS_DIR", "BEADS_CACHE_DIR"} {
+		t.Setenv(key, filepath.Join(ambientDir, ".beads"))
+		t.Setenv(strings.ToLower(key), filepath.Join(ambientDir, ".beads"))
+	}
+	t.Chdir(root)
+	cfg := DefaultConfig()
+	cfg.ProjectDir = "target"
+	cfg.RetryOnError = false
+	detector := NewWithConfig("project-bound", nil, cfg)
+	if err := detector.InitializationError(); err != nil {
+		t.Fatal(err)
+	}
+	wantProject, err := filepath.EvalSymlinks(projectDir)
+	if err != nil || detector.Config.ProjectDir != wantProject {
+		t.Fatalf("relative project was not bound once: project=%q want=%q error=%v", detector.Config.ProjectDir, wantProject, err)
+	}
+	t.Chdir(ambientDir)
+	if closed, err := detector.checkBeadClosed(t.Context(), "bd-shared"); err != nil || closed {
+		t.Fatalf("foreign closed record authorized completion of live target: closed=%v error=%v", closed, err)
+	}
+	writeStatus(projectDir, "closed")
+	if closed, err := detector.checkBeadClosed(t.Context(), "bd-shared"); err != nil || !closed {
+		t.Fatalf("target completion was not observed: closed=%v error=%v", closed, err)
+	}
+	wantAmbient, err := filepath.EvalSymlinks(ambientDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cwd, err := os.Getwd(); err != nil || cwd != wantAmbient || os.Getenv("BEADS_DB") != foreignSource {
+		t.Fatalf("scoped command changed process state: cwd=%q error=%v BEADS_DB=%q", cwd, err, os.Getenv("BEADS_DB"))
+	}
+}
+
+func TestCheckBeadClosedRejectsMissingProjectTrackerBeforeCommand(t *testing.T) {
+	commandDir := installFakeBrScript(t, "#!/bin/sh\n"+
+		"printf called > \"$FAKE_BR_CALLED\"\n"+
+		"printf '%s' '[{\"id\":\"bd-shared\",\"status\":\"closed\"}]'\n")
+	called := filepath.Join(commandDir, "called")
+	t.Setenv("FAKE_BR_CALLED", called)
+	parent := t.TempDir()
+	if err := os.Mkdir(filepath.Join(parent, ".beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(parent, "child")
+	if err := os.Mkdir(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	invalid := t.TempDir()
+	if err := os.WriteFile(filepath.Join(invalid, ".beads"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, project string }{
+		{"empty project", ""},
+		{"relative project", "child"},
+		{"parent tracker must not be inherited", child},
+		{"missing project", filepath.Join(parent, "missing")},
+		{"tracker is not a directory", invalid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if closed, err := checkBeadClosedOnce(t.Context(), tc.project, "bd-shared"); err == nil || closed {
+				t.Fatalf("unbound tracker authorized completion: closed=%v error=%v", closed, err)
+			}
+		})
+	}
+	detector := NewWithConfig("unbound-project", nil, DefaultConfig())
+	if closed, err := detector.checkBeadClosed(t.Context(), "bd-shared"); err == nil || closed {
+		t.Fatalf("unconfigured detector fell back to process tracker: closed=%v error=%v", closed, err)
+	}
+	if _, err := os.Stat(called); !os.IsNotExist(err) {
+		t.Fatalf("unbound tracker invoked br: %v", err)
+	}
+}
+
+func TestCheckBeadClosedPreservesCancellationBeforeCommand(t *testing.T) {
+	projectDir := installFakeBrScript(t, "#!/bin/sh\n"+
+		"printf called > \"$FAKE_BR_CALLED\"\n"+
+		"printf '%s' '[{\"id\":\"bd-shared\",\"status\":\"closed\"}]'\n")
+	called := filepath.Join(projectDir, "called")
+	t.Setenv("FAKE_BR_CALLED", called)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if closed, err := checkBeadClosedOnce(ctx, projectDir, "bd-shared"); !errors.Is(err, context.Canceled) || closed {
+		t.Fatalf("canceled read authorized completion: closed=%v error=%v", closed, err)
+	}
+	if closed, err := checkBeadClosedOnce(nil, projectDir, "bd-shared"); err == nil || closed {
+		t.Fatalf("nil-context read authorized completion: closed=%v error=%v", closed, err)
+	}
+	if _, err := os.Stat(called); !os.IsNotExist(err) {
+		t.Fatalf("canceled tracker read invoked br: %v", err)
+	}
+}
+
+func TestNewWithConfigRejectsInvalidProjectDirectory(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "file")
+	if err := os.WriteFile(file, []byte("not a project"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, projectDir := range []string{filepath.Join(root, "missing"), file} {
+		cfg := DefaultConfig()
+		cfg.ProjectDir = projectDir
+		if err := NewWithConfig("invalid-project", nil, cfg).InitializationError(); err == nil {
+			t.Fatalf("invalid project %q did not fail detector initialization", projectDir)
+		}
 	}
 }
 
@@ -1675,7 +1832,7 @@ func TestCompletionPatternRequiresBeadClosedConfirmation(t *testing.T) {
 
 	// Fake br reports the bead as OPEN — so the pattern match must NOT be
 	// trusted as a success.
-	installFakeBr(t, "open")
+	d.Config.ProjectDir = installFakeBr(t, "open")
 	brAvail := true
 	d.brAvailable = &brAvail
 
@@ -1767,7 +1924,7 @@ func TestFailurePatternRequiresCurrentErrorBeforeTerminalReconciliation(t *testi
 			t.Setenv("NTM_TMUX_BINARY", filepath.Join(dir, "tmux"))
 			t.Setenv("NTM_TEST_COMPLETION_TOPOLOGY", filepath.Join(dir, "topology"))
 			t.Setenv("NTM_TEST_COMPLETION_CAPTURE", filepath.Join(dir, "capture"))
-			installFakeBrScript(t, "#!/bin/sh\nprintf '%s' '[{\"id\":\""+beadID+"\",\"status\":\"in_progress\"}]'\n")
+			projectDir := installFakeBrScript(t, "#!/bin/sh\nprintf '%s' '[{\"id\":\""+beadID+"\",\"status\":\"in_progress\"}]'\n")
 
 			store := assignment.NewStore(session)
 			store.Assignments[beadID] = &assignment.Assignment{
@@ -1783,7 +1940,9 @@ func TestFailurePatternRequiresCurrentErrorBeforeTerminalReconciliation(t *testi
 			if err := store.Save(); err != nil {
 				t.Fatalf("seed reserved assignment: %v", err)
 			}
-			detector := NewWithConfig(session, store, DefaultConfig())
+			cfg := DefaultConfig()
+			cfg.ProjectDir = projectDir
+			detector := NewWithConfig(session, store, cfg)
 			available := true
 			detector.brAvailable = &available
 			panes, err := tmux.GetPanesWithActivityContext(t.Context(), session)
@@ -1934,9 +2093,10 @@ func TestIdleTimeoutWithOpenBeadReportsFailed(t *testing.T) {
 	pane := panes[0]
 
 	// Fake br: bead is OPEN (not closed) — an idle timeout here is a stall.
-	installFakeBr(t, "open")
+	projectDir := installFakeBr(t, "open")
 
 	cfg := DefaultConfig()
+	cfg.ProjectDir = projectDir
 	cfg.IdleThreshold = 10 * time.Millisecond
 	cfg.CaptureLines = 50
 	d := NewWithConfig(session, assignment.NewStore(session), cfg)
