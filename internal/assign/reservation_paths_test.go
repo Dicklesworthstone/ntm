@@ -116,6 +116,18 @@ func TestExtractFilePathsBacktickedAndNoFilenamePrefixGlobs(t *testing.T) {
 	}
 }
 
+// ntm#371: URL paths, parent escapes and bare wildcards are never project
+// files, and Agent Mail refuses the whole request if one is sent.
+func TestExtractFilePathsDropsPatternsAgentMailRefuses(t *testing.T) {
+	got := ExtractFilePaths("Wire `/IRRIS.asmx` entries",
+		"Entries for `/IRRIS.asmx` (non-credential args) and GET /api/v1/foo.json.\n"+
+			"Compare ../shared/config.toml and `/srv/app/*.go`; see `**/*` and ** here.\n"+
+			"Edit internal/soap/irris.go.")
+	if want := []string{"internal/soap/irris.go"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ExtractFilePaths() = %v, want %v", got, want)
+	}
+}
+
 // Review of 89b32d9a: the owned section must not under-reserve when it has
 // its own sub-labels, a path on the heading line, or a fenced snippet with
 // "# comment" lines, and a bead whose files are only in prose still reserves
