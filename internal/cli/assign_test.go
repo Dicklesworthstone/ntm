@@ -2008,6 +2008,13 @@ func TestWatchLoopShouldStopUsesFilteredActionableCandidates(t *testing.T) {
 			wantStop: false,
 			wantErr:  true,
 		},
+		{
+			name: "tracker changed during the read keeps watch running",
+			queryErr: fmt.Errorf("%w: load bv --robot-triage: %w", bv.ErrActionablePlanUnverified,
+				fmt.Errorf("%w: tracker or checkout changed", bv.ErrStaleWorkCoordination)),
+			wantStop: false,
+			wantErr:  false,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			calls := 0
@@ -2318,6 +2325,40 @@ func TestWatchLoopRunStopsOnAutomatedAssignmentSafetyErrors(t *testing.T) {
 				t.Fatalf("WatchLoop.Run() error = %v, want safety error %v", err, safetyErr)
 			}
 		})
+	}
+}
+
+func TestWatchLoopRunRetriesAfterWorkSourceChangesDuringScan(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	const session = "watch-stale-scan"
+	loop := NewWatchLoop(session, assignment.NewStore(session), &AutoReassignOptions{
+		Session: session,
+		Quiet:   true,
+	})
+	loop.stopWhenDone = false
+	loop.scanInterval = time.Millisecond
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	scans := 0
+	loop.scanFn = func(context.Context) error {
+		scans++
+		switch scans {
+		case 1:
+			// The shape #370 reported: agents committed while bv was reading.
+			stale := fmt.Errorf("%w: tracker or checkout changed; refresh work before dispatch", bv.ErrStaleWorkCoordination)
+			return fmt.Errorf("automated assignment stopped because actionable work could not be verified: %w",
+				fmt.Errorf("%w: load bv --robot-triage: %w", bv.ErrActionablePlanUnverified, stale))
+		case 3:
+			cancel()
+		}
+		return nil
+	}
+
+	if err := loop.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("WatchLoop.Run() error = %v, want it to keep scanning until canceled", err)
+	}
+	if scans != 3 {
+		t.Fatalf("scans = %d, want 3", scans)
 	}
 }
 

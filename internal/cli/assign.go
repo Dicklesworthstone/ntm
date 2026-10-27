@@ -539,6 +539,15 @@ func isAutomatedAssignmentSafetyError(err error) bool {
 		errors.Is(err, bv.ErrActionableLabelsUnverified)
 }
 
+// isWorkSourceChangeError reports a read refused because the tracker or
+// checkout moved under it (STALE_WORK_COORDINATION). Nothing may be dispatched
+// from that read (#283), but agents in a live swarm close beads and commit all
+// the time, so watch mode skips the cycle and verifies again on its next tick
+// instead of exiting (#370).
+func isWorkSourceChangeError(err error) bool {
+	return errors.Is(err, bv.ErrStaleWorkCoordination)
+}
+
 // prepareResolvedAssignCommand is the policy and webhook preflight shared by
 // every non-clear CLI assignment mode. Clear is intentionally independent of
 // config validity because it only removes durable assignment state.
@@ -832,7 +841,7 @@ func runWatchMode(cmd *cobra.Command, session, projectDir, policyProject string)
 
 	initialOutput, err := getAssignOutputEnhanced(ctx, assignOpts)
 	if err != nil {
-		if isAutomatedAssignmentSafetyError(err) {
+		if isAutomatedAssignmentSafetyError(err) && !isWorkSourceChangeError(err) {
 			return err
 		}
 		watchLoop.logf("Warning: Initial assignment failed: %v", err)
@@ -6994,10 +7003,13 @@ func (w *WatchLoop) Run(ctx context.Context) error {
 				if watchCtx.Err() != nil {
 					return watchCtx.Err()
 				}
-				if isAutomatedAssignmentSafetyError(scanErr) {
+				if isWorkSourceChangeError(scanErr) {
+					w.logf("Ready-work scan dispatched nothing, work changed during the read; verifying again next tick: %v", scanErr)
+				} else if isAutomatedAssignmentSafetyError(scanErr) {
 					return scanErr
+				} else {
+					w.logf("Error during ready-work scan: %v", scanErr)
 				}
-				w.logf("Error during ready-work scan: %v", scanErr)
 			}
 
 			// A scan can be the thing that drains the queue, so honor
@@ -7384,6 +7396,11 @@ func (w *WatchLoop) shouldStop(ctx context.Context) (bool, error) {
 		return getActionableRecommendationsForWatch(ctx, projectDir, 0)
 	})
 	if err != nil {
+		if isWorkSourceChangeError(err) {
+			// Work that could not be verified is not drained work (#370).
+			w.logf("Watch completion check could not verify work, still watching: %v", err)
+			return false, nil
+		}
 		if isAutomatedAssignmentSafetyError(err) {
 			return false, fmt.Errorf("automated assignment stopped because actionable work could not be verified: %w", err)
 		}
