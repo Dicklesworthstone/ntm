@@ -212,16 +212,17 @@ func TestMailNudgeWorkingPaneSkippedAndPublished(t *testing.T) {
 }
 
 // TestMailNudgeFailsClosedForUnsupportedAgentTypes: agent types without a
-// working detector are refused outright.
+// working detector are refused outright. (Gemini has had one since its
+// rotation support; rotation_gemini_test.go covers its unknown frames.)
 func TestMailNudgeFailsClosedForUnsupportedAgentTypes(t *testing.T) {
 	server := newMailInboxServer(t, map[string][]map[string]interface{}{
-		"GemBird": {unreadMessage(1)},
+		"AiderOwl": {unreadMessage(1)},
 	})
 	defer server.Close()
 
-	panes := []tmux.Pane{{ID: "%3", Title: "mailsess__gmi_1", Type: tmux.AgentGemini, Width: 120}}
+	panes := []tmux.Pane{{ID: "%3", Title: "mailsess__aider_1", Type: tmux.AgentAider, Width: 120}}
 	env := newMailNudgeTestEnv(t, server.URL, panes,
-		map[string]string{"mailsess__gmi_1": "GemBird"},
+		map[string]string{"mailsess__aider_1": "AiderOwl"},
 		func(string) (string, error) { return idleCapture, nil })
 
 	decisions := env.mc.runOnce(t.Context())

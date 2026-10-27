@@ -276,7 +276,7 @@ func TestRunCycleRenewsPendingContinuationReservations(t *testing.T) {
 					t.Fatalf("pending owner was not renewed: requests=%+v err=%v", client.renewRequests, runErr)
 				}
 				request := client.renewRequests[0]
-				if !reflect.DeepEqual(request.ReservationIDs, current.ReservationIDs) || request.AgentName != current.AgentName || len(request.Paths) != 0 || request.ProjectKey != c.projectKey {
+				if !reflect.DeepEqual(request.ReservationIDs, current.ReservationIDs) || request.AgentName != current.AgentName || len(request.Paths) != 0 || request.ProjectKey != agentmail.CanonicalProjectKey(c.projectKey) {
 					t.Fatalf("pending renewal widened ownership: %+v", request)
 				}
 			} else if len(client.renewRequests) != 0 || runErr == nil {
@@ -316,7 +316,9 @@ func TestRunCycleRenewsAssignmentReservationsWithAutoAssignOff(t *testing.T) {
 		t.Fatalf("renew requests = %+v", client.renewRequests)
 	}
 	request := client.renewRequests[0]
-	if !reflect.DeepEqual(request.ReservationIDs, []int{941, 942}) || len(request.Paths) != 0 || request.AgentName != "BlueLake" || request.ExtendSeconds != 3600 || request.ProjectKey != c.projectKey {
+	// Reservations are created and renewed under the canonical key (macOS
+	// temp dirs sit behind /var -> /private/var).
+	if !reflect.DeepEqual(request.ReservationIDs, []int{941, 942}) || len(request.Paths) != 0 || request.AgentName != "BlueLake" || request.ExtendSeconds != 3600 || request.ProjectKey != agentmail.CanonicalProjectKey(c.projectKey) {
 		t.Fatalf("renewal widened ownership: %+v", request)
 	}
 	if !client.reservations[2].ExpiresTS.Equal(unrelatedExpiry) {
