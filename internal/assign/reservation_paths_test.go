@@ -128,6 +128,18 @@ func TestExtractFilePathsDropsPatternsAgentMailRefuses(t *testing.T) {
 	}
 }
 
+// ntm#371: Agent Mail also refuses a wildcard pattern of two characters or
+// fewer and one that matches everything once "." segments are dropped, so
+// "A* search", a `.*` regex or `./*` must not reach the request either.
+func TestExtractFilePathsDropsShortAndDotWildcards(t *testing.T) {
+	got := ExtractFilePaths("Implement A* pathfinding",
+		"Use A* with a heuristic, match names against `.*`, and clear `./*` first.\n"+
+			"Edit internal/nav/astar.go.")
+	if want := []string{"internal/nav/astar.go"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ExtractFilePaths() = %v, want %v", got, want)
+	}
+}
+
 // GH#371: endpoint paths and other absolute references in prose are not
 // project-relative reservation patterns. Reject the whole reference without
 // reinterpreting a suffix as a file, while retaining the real edit surface.

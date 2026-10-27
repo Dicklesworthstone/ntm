@@ -148,14 +148,18 @@ func ExtractFilePaths(title, description string) []string {
 
 // isReservablePattern drops candidates Agent Mail refuses outright: an
 // absolute path (often a URL path such as the endpoint `/IRRIS.asmx`), a
-// pattern containing "..", or a glob of nothing but wildcards. One refused
-// pattern fails the whole reservation request, and the assignment with it
-// (#371).
+// pattern containing "..", a wildcard pattern of two characters or fewer
+// (`A*` from "A* search", `.*` from a regex), or a glob of nothing but
+// wildcards once "./" segments are dropped (`./*`). One refused pattern fails
+// the whole reservation request, and the assignment with it (#371).
 func isReservablePattern(path string) bool {
 	if strings.HasPrefix(path, "/") || strings.Contains(path, "..") {
 		return false
 	}
-	return strings.Trim(path, "*/") != ""
+	if len(path) <= 2 && strings.Contains(path, "*") {
+		return false
+	}
+	return strings.Trim(strings.ReplaceAll(path, "./", ""), "*/") != ""
 }
 
 func isPathWordByte(b byte) bool {
