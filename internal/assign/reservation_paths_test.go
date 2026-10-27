@@ -128,6 +128,90 @@ func TestExtractFilePathsDropsPatternsAgentMailRefuses(t *testing.T) {
 	}
 }
 
+// GH#371: endpoint paths and other absolute references in prose are not
+// project-relative reservation patterns. Reject the whole reference without
+// reinterpreting a suffix as a file, while retaining the real edit surface.
+func TestExtractFilePathsRejectsAbsoluteReferences(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		text string
+		want []string
+	}{
+		{
+			name: "SOAP endpoint",
+			text: "Entries for `/IRRIS.asmx` (non-credential args):",
+		},
+		{
+			name: "API endpoint and directory",
+			text: "GET `/api/v1/foo.json` and POST /api/v1/tasks",
+		},
+		{
+			name: "absolute files and dotfiles",
+			text: "Read /tmp/output.json and `/etc/config.yaml` and `/.env`.",
+		},
+		{
+			name: "absolute globs",
+			text: "Routes `/api/**/*.json`, `/*.go`, and /var/log/*",
+		},
+		{
+			name: "full URLs",
+			text: "See https://example.test/api/foo.json and [docs](https://example.test/api/bar.json), or `file:///tmp/output.json`.",
+		},
+		{
+			name: "scheme-relative URLs",
+			text: "See `//example.test/api/foo.json` and //example.test/api/*.json",
+		},
+		{
+			name: "Windows paths",
+			text: "Read `C:/project/client.go`, `C:/project/*.go`, `C:\\project\\client.go`, and `\\\\server\\share\\client.go`.",
+		},
+		{
+			name: "mixed endpoints and project files",
+			text: "For `/IRRIS.asmx` and `/api/v1/foo.json`, update `src/soap/client.go`, fixtures/*.json, .env.local, and internal/api.",
+			want: []string{".env.local", "fixtures/*.json", "internal/api/**/*", "src/soap/client.go"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, input := range []struct{ title, description string }{
+				{title: tc.text},
+				{description: tc.text},
+			} {
+				if got := sortedPaths(ExtractFilePaths(input.title, input.description)); !reflect.DeepEqual(got, tc.want) {
+					t.Errorf("ExtractFilePaths(%q, %q) = %v, want %v", input.title, input.description, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestReservationPathsForAssignmentEndpointsDoNotAuthorizeUnreservedWork(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		description string
+		wantErr     error
+	}{
+		{
+			name:        "only endpoints",
+			description: "Implement `/IRRIS.asmx` and `/api/v1/foo.json`.",
+			wantErr:     ErrNoReservationPaths,
+		},
+		{
+			name:        "owned section with only endpoints",
+			description: "Read src/soap/client.go.\n\n## Owned outputs\n- `/IRRIS.asmx`\n- `/api/v1/*.json`\n",
+			wantErr:     ErrOwnedSectionHasNoPaths,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			paths, err := ReservationPathsForAssignment("Implement service", tc.description)
+			if len(paths) != 0 || !errors.Is(err, tc.wantErr) {
+				t.Fatalf("ReservationPathsForAssignment() = %v, %v; want no paths and %v", paths, err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // Review of 89b32d9a: the owned section must not under-reserve when it has
 // its own sub-labels, a path on the heading line, or a fenced snippet with
 // "# comment" lines, and a bead whose files are only in prose still reserves

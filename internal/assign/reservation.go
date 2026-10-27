@@ -78,7 +78,9 @@ var (
 	validExtRegex    = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9]{0,9}$`)
 )
 
-// ExtractFilePaths extracts file paths from a bead title and description.
+// ExtractFilePaths extracts project-relative file paths from a bead title and
+// description. Absolute references (including URL endpoint paths) are ignored:
+// without a project root they cannot safely be mapped to reservation patterns.
 // Patterns detected:
 // - Explicit paths: src/api/handler.go, lib/utils.ts
 // - Glob patterns: internal/**/*.go, *.json
