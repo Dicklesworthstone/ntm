@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -1694,6 +1695,218 @@ func TestCompletionPatternRequiresBeadClosedConfirmation(t *testing.T) {
 	}
 	if event != nil && !event.IsFailed && event.Method == MethodPatternMatch {
 		t.Fatalf("prompt echo wrongly marked complete: %+v", event)
+	}
+}
+
+// Failure wording in a prompt, old tool output, or a recovering agent's
+// transcript cannot authorize releasing the current assignment's claim and
+// reservations. Exercise the full polling and durable reconciliation path,
+// with fixed tmux captures so no real agent or wall-clock wait is needed.
+func TestFailurePatternRequiresCurrentErrorBeforeTerminalReconciliation(t *testing.T) {
+	const (
+		session = "failure-evidence"
+		beadID  = "bd-failure-evidence"
+	)
+	cases := []struct {
+		name        string
+		output      string
+		wantState   statuspkg.AgentState
+		wantFailure bool
+		idleTimeout bool
+	}{
+		{
+			name: "live work after failed tool output",
+			output: "The previous test failed to connect; retrying it now.\n" +
+				"• Working (4m 51s • esc to interrupt)\n" +
+				"› queued input\n47% context left · ? for shortcuts",
+			wantState: statuspkg.StateWorking,
+		},
+		{
+			name:      "fresh dispatch prompt echo",
+			output:    "Fix the code that failed to load. If blocked by another task, ask for help.\ncodex>",
+			wantState: statuspkg.StateIdle,
+		},
+		{
+			name:      "recovered idle agent with historical fatal output",
+			output:    "Error: fatal connection problem; failed to connect.\nRecovered and ready for input.\ncodex>",
+			wantState: statuspkg.StateIdle,
+		},
+		{
+			name:        "plain inability waits for the idle threshold",
+			output:      "I cannot proceed with this task without more information.\ncodex>",
+			wantState:   statuspkg.StateIdle,
+			idleTimeout: true,
+		},
+		{
+			name:        "current fatal error",
+			output:      "Error: fatal initialization failure; failed to start",
+			wantState:   statuspkg.StateError,
+			wantFailure: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			dir := t.TempDir()
+			topology := strings.Join([]string{
+				"%91", "1", session + "__cod_1", "codex", "120", "50", "1",
+				"1", "4242", "0", "codex", "", "", "0", "[]",
+			}, tmux.FieldSeparator)
+			for name, data := range map[string]string{
+				"topology": topology + "\n",
+				"capture":  tc.output,
+				"tmux": "#!/bin/sh\ncase \"$1\" in\n" +
+					"list-panes) cat \"$NTM_TEST_COMPLETION_TOPOLOGY\" ;;\n" +
+					"capture-pane) cat \"$NTM_TEST_COMPLETION_CAPTURE\" ;;\n" +
+					"*) exit 1 ;;\nesac\n",
+			} {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o700); err != nil {
+					t.Fatalf("write %s fixture: %v", name, err)
+				}
+			}
+			t.Setenv("NTM_TMUX_BINARY", filepath.Join(dir, "tmux"))
+			t.Setenv("NTM_TEST_COMPLETION_TOPOLOGY", filepath.Join(dir, "topology"))
+			t.Setenv("NTM_TEST_COMPLETION_CAPTURE", filepath.Join(dir, "capture"))
+			installFakeBrScript(t, "#!/bin/sh\nprintf '%s' '[{\"id\":\""+beadID+"\",\"status\":\"in_progress\"}]'\n")
+
+			store := assignment.NewStore(session)
+			store.Assignments[beadID] = &assignment.Assignment{
+				BeadID: beadID, BeadTitle: "Keep ownership until verified terminal", Pane: 1,
+				AgentType: "codex", AgentName: "CodexOne", Status: assignment.StatusAssigned,
+				AssignedAt: time.Now().UTC(), IdempotencyKey: "failure-evidence-key",
+				ClaimActor: "CodexOne/failure-evidence-key", DispatchTarget: "%91", OccupancyKey: "%91",
+				DispatchState: assignment.DispatchSent, DispatchReceiptID: "mail-91",
+				ReservationRequired: true, ReservationState: assignment.ReservationReserved,
+				ReservationCompleted: true, ReservationIDs: []int{911},
+				ReservedPaths: []string{"internal/completion/detector.go"},
+			}
+			if err := store.Save(); err != nil {
+				t.Fatalf("seed reserved assignment: %v", err)
+			}
+			detector := NewWithConfig(session, store, DefaultConfig())
+			available := true
+			detector.brAvailable = &available
+			panes, err := tmux.GetPanesWithActivityContext(t.Context(), session)
+			if err != nil || len(panes) != 1 {
+				t.Fatalf("fixture topology: panes=%+v error=%v", panes, err)
+			}
+			observation := detector.observer.ObservePaneCapture(session, panes[0], tc.output, nil)
+			if observation.Current.Status.State != tc.wantState || !statuspkg.ObservationConfidenceIsActionable(observation.Current.Confidence) {
+				t.Fatalf("fixture observation=%+v, want confident %s", observation.Current, tc.wantState)
+			}
+			if detector.matchFailurePatterns(tc.output) == "" {
+				t.Fatal("fixture must contain failure wording")
+			}
+			cleanupCalls := 0
+			detector.SetTerminalReconciler(func(ctx context.Context, current *assignment.Assignment) (bool, error) {
+				cleanupCalls++
+				if current.ClaimActor != "CodexOne/failure-evidence-key" ||
+					!reflect.DeepEqual(current.ReservationIDs, []int{911}) {
+					t.Fatalf("cleanup lost exact ownership: %+v", current)
+				}
+				if _, err := store.RecordClearLeasesReleased(ctx, beadID); err != nil {
+					return false, err
+				}
+				if _, err := store.RecordTerminalClaimReleased(ctx, beadID); err != nil {
+					return false, err
+				}
+				err := store.CompleteTerminalReconciliation(ctx, beadID, current.PendingTerminalStatus, current.PendingTerminalReason)
+				return err == nil, err
+			})
+			events := make(chan CompletionEvent, 1)
+			detector.checkAll(t.Context(), events)
+			current := store.Get(beadID)
+			if tc.wantFailure {
+				if cleanupCalls != 1 || current.Status != assignment.StatusFailed {
+					t.Fatalf("current error did not retire exact assignment: cleanup=%d current=%+v", cleanupCalls, current)
+				}
+				select {
+				case event := <-events:
+					if !event.IsFailed || event.Method != MethodPatternMatch || event.FailReason == "" {
+						t.Fatalf("current error event=%+v", event)
+					}
+				default:
+					t.Fatal("current error did not emit a durable failure event")
+				}
+				return
+			}
+			if cleanupCalls != 0 || current.ClearState != assignment.ClearStateNone ||
+				current.PendingCompletionEventID != "" || current.FailedAt != nil ||
+				current.ClaimActor != "CodexOne/failure-evidence-key" ||
+				!reflect.DeepEqual(current.ReservationIDs, []int{911}) ||
+				!reflect.DeepEqual(current.ReservedPaths, []string{"internal/completion/detector.go"}) ||
+				(current.Status != assignment.StatusAssigned && current.Status != assignment.StatusWorking) {
+				t.Fatalf("unverified failure released active ownership: cleanup=%d current=%+v", cleanupCalls, current)
+			}
+			select {
+			case event := <-events:
+				t.Fatalf("unverified failure emitted terminal event: %+v", event)
+			default:
+			}
+			if tc.idleTimeout {
+				// Age only the inactivity start; the next production poll must
+				// still confirm current idleness and the open tracker status.
+				detector.mu.Lock()
+				activity := detector.activityTracker[assignmentTargetKey(current)]
+				if activity == nil {
+					detector.mu.Unlock()
+					t.Fatal("idle observation did not start the bounded recovery timer")
+				}
+				activity.lastOutputTime = time.Now().Add(-detector.Config.IdleThreshold - time.Second)
+				detector.mu.Unlock()
+				detector.checkAll(t.Context(), events)
+				if cleanupCalls != 1 || store.Get(beadID).Status != assignment.StatusFailed {
+					t.Fatalf("confirmed idle timeout did not retire stalled work: cleanup=%d current=%+v", cleanupCalls, store.Get(beadID))
+				}
+				select {
+				case event := <-events:
+					if !event.IsFailed || event.Method != MethodIdle || !strings.Contains(event.FailReason, "still open") {
+						t.Fatalf("idle timeout event=%+v", event)
+					}
+				default:
+					t.Fatal("idle timeout did not emit a durable failure event")
+				}
+			}
+		})
+	}
+}
+
+func TestConfirmedFailureReasonRejectsUncertainObservations(t *testing.T) {
+	t.Parallel()
+	const output = "Error: fatal startup failure; failed to initialize"
+	base := statuspkg.PaneObservation{Current: statuspkg.StateObservation{
+		Status:     statuspkg.AgentStatus{State: statuspkg.StateError, ErrorType: statuspkg.ErrorCrash},
+		Freshness:  statuspkg.FreshnessFresh,
+		Confidence: 0.95,
+	}}
+	cases := []struct {
+		name   string
+		change func(*statuspkg.PaneObservation)
+	}{
+		{"working", func(o *statuspkg.PaneObservation) { o.Current.Status.State = statuspkg.StateWorking }},
+		{"idle", func(o *statuspkg.PaneObservation) { o.Current.Status.State = statuspkg.StateIdle }},
+		{"unknown", func(o *statuspkg.PaneObservation) { o.Current.Status.State = statuspkg.StateUnknown }},
+		{"no current error", func(o *statuspkg.PaneObservation) { o.Current.Status.ErrorType = statuspkg.ErrorNone }},
+		{"stale", func(o *statuspkg.PaneObservation) { o.Current.Freshness = statuspkg.FreshnessStale }},
+		{"unavailable", func(o *statuspkg.PaneObservation) { o.Current.Freshness = statuspkg.FreshnessUnavailable }},
+		{"capture error", func(o *statuspkg.PaneObservation) { o.Current.Error = "capture unavailable" }},
+		{"low confidence", func(o *statuspkg.PaneObservation) { o.Current.Confidence = 0.5 }},
+		{"invalid confidence", func(o *statuspkg.PaneObservation) { o.Current.Confidence = 2 }},
+		{"rotation in progress", func(o *statuspkg.PaneObservation) { o.Metadata.RotationToken = "rotation-owner" }},
+	}
+	detector := NewWithConfig("confirmed-failure", assignment.NewStore("confirmed-failure"), DefaultConfig())
+	if reason := detector.confirmedFailureReason(output, base); reason == "" {
+		t.Fatal("confident current error did not preserve failure detection")
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			observation := base
+			tc.change(&observation)
+			observation.LastKnown = &base.Current
+			if reason := detector.confirmedFailureReason(output, observation); reason != "" {
+				t.Fatalf("uncertain current evidence used historical error to authorize failure: %q", reason)
+			}
+		})
 	}
 }
 

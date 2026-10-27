@@ -625,8 +625,12 @@ func (d *CompletionDetector) checkAssignment(ctx context.Context, a *assignment.
 		}
 	}
 
-	// 4. Check for failure patterns
-	if reason := d.matchFailurePatterns(output); reason != "" {
+	// 4. Failure wording is diagnostic, not proof that the current turn has
+	// stopped. Prompts and old tool output routinely contain phrases such as
+	// "blocked by" and "failed to" while the agent is still working. Only a
+	// confirmed current error may turn that wording into immediate terminal
+	// cleanup; ambiguous idle text remains subject to the idle threshold below.
+	if reason := d.confirmedFailureReason(output, paneObservation); reason != "" {
 		return &CompletionEvent{
 			Pane:       a.Pane,
 			PaneID:     pane.ID,
@@ -705,6 +709,16 @@ func assignmentObservationShowsWorking(a *assignment.Assignment, observation sta
 		observation.Current.Error == "" &&
 		observation.Current.Status.State == statuspkg.StateWorking &&
 		statuspkg.ObservationConfidenceIsActionable(observation.Current.Confidence)
+}
+
+func (d *CompletionDetector) confirmedFailureReason(output string, observation statuspkg.PaneObservation) string {
+	current := observation.Current
+	if observation.Metadata.RotationToken != "" || current.Freshness != statuspkg.FreshnessFresh ||
+		current.Error != "" || current.Status.State != statuspkg.StateError ||
+		current.Status.ErrorType == statuspkg.ErrorNone || !statuspkg.ObservationConfidenceIsActionable(current.Confidence) {
+		return ""
+	}
+	return d.matchFailurePatterns(output)
 }
 
 // checkIdleWhenSafe starts and advances the inactivity timer only while the

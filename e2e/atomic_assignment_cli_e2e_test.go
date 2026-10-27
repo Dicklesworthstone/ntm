@@ -2496,6 +2496,116 @@ func TestE2EAtomicAssignmentClearFailedBuiltProcess(t *testing.T) {
 	fixture.assertMarkerCounts(t, retainedPrompt, map[int]int{0: 0, 1: 1})
 }
 
+func TestE2EAtomicAssignmentWorkingHistoryRetainsClaimAndReservationsBuiltProcess(t *testing.T) {
+	CommonE2EPrerequisites(t)
+	testutil.RequireTmuxThrottled(t)
+
+	fixture := newAtomicAssignmentCLIFixture(t)
+	mail := newAtomicAssignmentMailStub(fixture.projectDir)
+	defer mail.close()
+	pane := fixture.panes[0]
+	beadID, prompt, before := seedReservedWorkingAssignment(t, fixture, mail, pane,
+		"Active work retains its ownership internal/completion/working_history.go")
+
+	// These are ordinary tool-history lines, followed by the agent's CURRENT
+	// working footer. Matching either sentence must not retire the assignment
+	// or release its protection while the same agent is still doing the work.
+	const workingFrame = "Earlier command failed to fetch a dependency; the retry succeeded.\n" +
+		"The build was blocked by a transient lock, now cleared.\n" +
+		"• Working (4m 51s • esc to interrupt)\n" +
+		"›\n47% context left · ? for shortcuts"
+	fixture.mustTMUX(t, "send-keys", "-t", pane.ID, "-l", workingFrame)
+	fixture.mustTMUX(t, "send-keys", "-t", pane.ID, "Enter")
+	fixture.waitForEndpointMarkerCount(t, pane, "47% context left · ? for shortcuts", 1)
+
+	// Trace the real tracker subprocesses instead of merely sleeping. Only
+	// the watcher receives this wrapper. Several successive reads of the
+	// still-open bead prove the detector completed earlier observation passes.
+	tracePATH, tracePath := fixture.armBRInvocationTrace(t)
+	env := mail.env()
+	env["PATH"] = tracePATH
+	watch := fixture.startCompletionWatch(t, env)
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		current := fixture.readLedgerAssignment(t, beadID)
+		if current.Status != "working" || current.ClearState != "" || current.PendingTerminalStatus != "" ||
+			current.PendingCompletionEventID != "" || current.CompletedAt != nil || current.OccupancyKey != pane.ID ||
+			current.ReservationState != "reserved" || !current.ReservationCompleted ||
+			!reflect.DeepEqual(current.ReservationIDs, before.ReservationIDs) ||
+			!reflect.DeepEqual(current.ReservedPaths, before.ReservedPaths) {
+			stdout, stderr := watch.output(t)
+			t.Fatalf("working history retired or weakened protected assignment: before=%+v after=%+v stdout=%s stderr=%s",
+				before, current, stdout, stderr)
+		}
+		assertAtomicAssignmentReceiptUnchanged(t, before, current)
+		snapshot := mail.snapshot()
+		if snapshot.ReleaseCalls != 0 || snapshot.ReserveCalls != 1 || len(snapshot.Active) != len(before.ReservationIDs) {
+			t.Fatalf("working history changed reservation ownership: %+v", snapshot)
+		}
+
+		trace, err := os.ReadFile(tracePath)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatalf("read completion observation trace: %v", err)
+		}
+		reads := 0
+		for _, line := range strings.Split(string(trace), "\n") {
+			if strings.TrimSpace(line) == "show "+beadID+" --json" {
+				reads++
+			}
+		}
+		if reads >= 4 {
+			break
+		}
+		if time.Now().After(deadline) {
+			stdout, stderr := watch.output(t)
+			t.Fatalf("watcher did not reobserve the protected working bead: reads=%d trace=%s stdout=%s stderr=%s",
+				reads, trace, stdout, stderr)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	fixture.assertBead(t, beadID, "in_progress", before.ClaimActor)
+	fixture.assertMarkerCounts(t, prompt, map[int]int{0: 1, 1: 0})
+
+	// Authoritative tracker completion still wins, even with the same working
+	// footer and historical failure text on screen. Its exact reservations and
+	// claim must be released once, with the delivery receipt retained.
+	fixture.mustBR(t, "close", beadID, "--reason=working-history-completed", "--json")
+	deadline = time.Now().Add(20 * time.Second)
+	for {
+		current := fixture.readLedgerAssignment(t, beadID)
+		if current.Status == "failed" || current.PendingTerminalStatus == "failed" {
+			t.Fatalf("tracker-confirmed completion became a historical-text failure: %+v", current)
+		}
+		if current.Status == "completed" && current.ClearState == "" && current.PendingCompletionEventID == "" &&
+			current.CompletionConsumerToken == "" && current.CompletionLeaseExpiresAt == nil {
+			if current.ReservationState != "released" || current.ReservationCompleted || len(current.ReservationIDs) != 0 ||
+				len(current.ReservedPaths) != 0 || current.PendingTerminalStatus != "" {
+				t.Fatalf("confirmed completion did not finish exact reservation cleanup: %+v", current)
+			}
+			assertAtomicAssignmentReceiptUnchanged(t, before, current)
+			break
+		}
+		if time.Now().After(deadline) {
+			stdout, stderr := watch.output(t)
+			t.Fatalf("watcher did not finish confirmed completion: assignment=%+v stdout=%s stderr=%s", current, stdout, stderr)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	snapshot := mail.snapshot()
+	if snapshot.ReleaseCalls != 1 || !reflect.DeepEqual(snapshot.ReleasedIDs, before.ReservationIDs) || len(snapshot.Active) != 0 {
+		t.Fatalf("confirmed completion did not release only its exact lease IDs once: %+v", snapshot)
+	}
+	fixture.assertBead(t, beadID, "closed", "")
+	stdout, stderr := watch.stopClean(t)
+	if unexpected := atomicAssignmentUnexpectedWatchStderr(stderr); unexpected != "" {
+		t.Fatalf("working-history watcher stderr=%s", unexpected)
+	}
+	if strings.Contains(stdout, "Failed: "+beadID) || strings.Count(stdout, "Completion: "+beadID) != 1 {
+		t.Fatalf("working-history watcher completion outcome = %s", stdout)
+	}
+	fixture.assertMarkerCounts(t, prompt, map[int]int{0: 1, 1: 0})
+}
+
 func TestE2EAtomicCompletionOutboxRestartReplayAckRetryAndFinalAckBuiltProcess(t *testing.T) {
 	CommonE2EPrerequisites(t)
 	testutil.RequireTmuxThrottled(t)
