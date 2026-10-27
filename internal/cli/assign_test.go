@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -33,6 +34,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/sqliteutil"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/worksource"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
@@ -2009,11 +2011,20 @@ func TestWatchLoopShouldStopUsesFilteredActionableCandidates(t *testing.T) {
 			wantErr:  true,
 		},
 		{
-			name: "tracker changed during the read keeps watch running",
-			queryErr: fmt.Errorf("%w: load bv --robot-triage: %w", bv.ErrActionablePlanUnverified,
-				fmt.Errorf("%w: tracker or checkout changed", bv.ErrStaleWorkCoordination)),
+			name:     "tracker changed during the read keeps watch running",
+			queryErr: watchSourceChangeError(),
 			wantStop: false,
 			wantErr:  false,
+		},
+		{
+			name:     "raw stale policy violation fails closed",
+			queryErr: &worksource.StaleError{Reason: "checkout does not match the required ref"},
+			wantErr:  true,
+		},
+		{
+			name:     "malformed tracker export fails closed",
+			queryErr: &worksource.StaleError{Reason: "invalid tracker JSONL", Cause: errors.New("invalid JSON record")},
+			wantErr:  true,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -2300,65 +2311,375 @@ esac
 }
 
 func TestWatchLoopRunStopsOnAutomatedAssignmentSafetyErrors(t *testing.T) {
-	isolateSessionAgentStorage(t)
-	for _, safetyErr := range []error{
-		bv.ErrActionablePlanUnverified,
-		bv.ErrActionableLabelsUnverified,
-		markCLIInvalidInput(errors.New("invalid watch policy")),
+	isolateSourceChangeWatchTests(t)
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{"unverified actionable plan", bv.ErrActionablePlanUnverified},
+		{"unverified labels", bv.ErrActionableLabelsUnverified},
+		{"invalid policy", markCLIInvalidInput(errors.New("invalid watch policy"))},
+		{"raw stale policy violation", &worksource.StaleError{Reason: "checkout does not match the required ref"}},
+		{"malformed tracker", &worksource.StaleError{Reason: "invalid tracker JSONL", Cause: errors.New("invalid JSON record")}},
+		{"unclassified stale error", bv.ErrStaleWorkCoordination},
+		{"canceled scan", context.Canceled},
+		{"expired scan", context.DeadlineExceeded},
+		{"claim conflict", assignment.ErrClaimConflict},
+		{"already claimed bead", bv.ErrBeadAlreadyClaimed},
+		{"occupied target", assignment.ErrTargetOccupied},
+		{"source change and invalid policy", errors.Join(watchSourceChangeError(), markCLIInvalidInput(errors.New("invalid policy")))},
+		{"source change and cancellation", errors.Join(watchSourceChangeError(), context.Canceled)},
+		{"source change and deadline", errors.Join(watchSourceChangeError(), context.DeadlineExceeded)},
+		{"source change and ownership conflict", errors.Join(watchSourceChangeError(), assignment.ErrClaimConflict)},
+		{"source change and independent verification failure", errors.Join(watchSourceChangeError(), errors.New("cannot verify source policy"))},
 	} {
-		t.Run(safetyErr.Error(), func(t *testing.T) {
-			store := assignment.NewStore("watch-safety-failure")
-			loop := NewWatchLoop("watch-safety-failure", store, &AutoReassignOptions{
-				Session: "watch-safety-failure",
-				Quiet:   true,
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				loop := newSourceChangeTestWatchLoop(t)
+				scans := 0
+				loop.scanFn = func(context.Context) error {
+					scans++
+					return fmt.Errorf("unsafe recurring scan: %w", test.err)
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				result := make(chan error, 1)
+				go func() { result <- loop.Run(ctx) }()
+				synctest.Wait()
+				time.Sleep(loop.scanInterval)
+				synctest.Wait()
+				select {
+				case err := <-result:
+					if !errors.Is(err, test.err) {
+						t.Fatalf("WatchLoop.Run() error = %v, want safety error %v", err, test.err)
+					}
+				default:
+					t.Fatal("watcher kept running after a non-retryable failure")
+				}
+				if scans != 1 || loop.deferredSourceChecks != 0 {
+					t.Fatalf("scans=%d deferred=%d; want one failed scan and no deferral", scans, loop.deferredSourceChecks)
+				}
 			})
-			loop.stopWhenDone = false
-			loop.scanInterval = time.Millisecond
-			loop.scanFn = func(context.Context) error {
-				return fmt.Errorf("unsafe recurring scan: %w", safetyErr)
-			}
-
-			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-			defer cancel()
-			err := loop.Run(ctx)
-			if !errors.Is(err, safetyErr) {
-				t.Fatalf("WatchLoop.Run() error = %v, want safety error %v", err, safetyErr)
-			}
 		})
 	}
 }
 
-func TestWatchLoopRunRetriesAfterWorkSourceChangesDuringScan(t *testing.T) {
+// Use the actual verification receipt, not the broad STALE_WORK_COORDINATION
+// sentinel: that sentinel also represents policy violations and malformed data.
+func watchSourceChangeError() error {
+	before := worksource.Identity{
+		ProjectDir: "/watch-project", JSONLPath: "/watch-project/.beads/issues.jsonl",
+		JSONLSHA256: "tracker-before", HeadSHA: "checkout-before",
+	}
+	after := before
+	after.JSONLSHA256 = "tracker-after"
+	after.HeadSHA = "checkout-after"
+	return fmt.Errorf("%w: load bv --robot-triage: %w", bv.ErrActionablePlanUnverified, before.Verify(after))
+}
+
+func isolateSourceChangeWatchTests(t *testing.T) {
+	t.Helper()
 	isolateSessionAgentStorage(t)
-	const session = "watch-stale-scan"
+	previousInterval := assignWatchInterval
+	// Keep completion polling outside these tests' fake-clock window. Their
+	// empty ledgers and injected scans need no tmux, br, or Agent Mail service.
+	assignWatchInterval = 24 * time.Hour
+	t.Cleanup(func() { assignWatchInterval = previousInterval })
+}
+
+func newSourceChangeTestWatchLoop(t *testing.T) *WatchLoop {
+	t.Helper()
+	const session = "watch-source-change"
+	projectDir := t.TempDir()
 	loop := NewWatchLoop(session, assignment.NewStore(session), &AutoReassignOptions{
-		Session: session,
-		Quiet:   true,
+		Session: session, ProjectDir: projectDir, Quiet: true, policyProject: projectDir,
 	})
 	loop.stopWhenDone = false
-	loop.scanInterval = time.Millisecond
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	scans := 0
-	loop.scanFn = func(context.Context) error {
-		scans++
-		switch scans {
-		case 1:
-			// The shape #370 reported: agents committed while bv was reading.
-			stale := fmt.Errorf("%w: tracker or checkout changed; refresh work before dispatch", bv.ErrStaleWorkCoordination)
-			return fmt.Errorf("automated assignment stopped because actionable work could not be verified: %w",
-				fmt.Errorf("%w: load bv --robot-triage: %w", bv.ErrActionablePlanUnverified, stale))
-		case 3:
-			cancel()
-		}
-		return nil
-	}
+	loop.scanInterval = time.Minute
+	return loop
+}
 
-	if err := loop.Run(ctx); !errors.Is(err, context.Canceled) {
-		t.Fatalf("WatchLoop.Run() error = %v, want it to keep scanning until canceled", err)
+func watchSourceDeferralState(loop *WatchLoop) (int, bool) {
+	loop.mu.Lock()
+	defer loop.mu.Unlock()
+	return loop.deferredSourceChecks, loop.sourceCheckDeferred
+}
+
+func TestWatchLoopRunRetriesAfterWorkSourceChangesDuringScan(t *testing.T) {
+	isolateSourceChangeWatchTests(t)
+	synctest.Test(t, func(t *testing.T) {
+		loop := newSourceChangeTestWatchLoop(t)
+		var scans, dispatched atomic.Int32
+		loop.scanFn = func(context.Context) error {
+			if scans.Add(1) == 1 {
+				return watchSourceChangeError()
+			}
+			dispatched.Add(1) // Simulate dispatch only from a successfully verified scan.
+			return nil
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		result := make(chan error, 1)
+		go func() { result <- loop.Run(ctx) }()
+		synctest.Wait()
+		time.Sleep(loop.scanInterval - time.Nanosecond)
+		synctest.Wait()
+		if scans.Load() != 0 {
+			t.Fatalf("scanned %d times before the configured interval", scans.Load())
+		}
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		deferred, pending := watchSourceDeferralState(loop)
+		if scans.Load() != 1 || dispatched.Load() != 0 || deferred != 1 || !pending {
+			t.Fatalf("stale scan: scans=%d dispatched=%d deferred=%d pending=%v", scans.Load(), dispatched.Load(), deferred, pending)
+		}
+		select {
+		case err := <-result:
+			t.Fatalf("watcher exited after transient source change: %v", err)
+		default:
+		}
+		time.Sleep(loop.scanInterval)
+		synctest.Wait()
+		_, pending = watchSourceDeferralState(loop)
+		if scans.Load() != 2 || dispatched.Load() != 1 || pending {
+			t.Fatalf("recovered scan: scans=%d dispatched=%d pending=%v", scans.Load(), dispatched.Load(), pending)
+		}
+		if !strings.Contains(loop.Summary(), "source verification deferred 1 times") {
+			t.Fatalf("deferral missing from operator summary: %s", loop.Summary())
+		}
+		cancel()
+		synctest.Wait()
+		if err := <-result; !errors.Is(err, context.Canceled) {
+			t.Fatalf("WatchLoop.Run() error = %v, want cancellation after recovery", err)
+		}
+	})
+}
+
+func TestWatchLoopRepeatedSourceChangesRemainCancellable(t *testing.T) {
+	isolateSourceChangeWatchTests(t)
+	synctest.Test(t, func(t *testing.T) {
+		loop := newSourceChangeTestWatchLoop(t)
+		var scans atomic.Int32
+		loop.scanFn = func(context.Context) error {
+			scans.Add(1)
+			return watchSourceChangeError()
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		result := make(chan error, 1)
+		go func() { result <- loop.Run(ctx) }()
+		synctest.Wait()
+		for attempt := int32(1); attempt <= 4; attempt++ {
+			time.Sleep(loop.scanInterval - time.Nanosecond)
+			synctest.Wait()
+			if scans.Load() != attempt-1 {
+				t.Fatalf("retried early: scans=%d, want %d", scans.Load(), attempt-1)
+			}
+			time.Sleep(time.Nanosecond)
+			synctest.Wait()
+			deferred, pending := watchSourceDeferralState(loop)
+			if scans.Load() != attempt || deferred != int(attempt) || !pending {
+				t.Fatalf("attempt %d: scans=%d deferred=%d pending=%v", attempt, scans.Load(), deferred, pending)
+			}
+			select {
+			case err := <-result:
+				t.Fatalf("watcher exited on repeated source changes: %v", err)
+			default:
+			}
+		}
+		cancel()
+		synctest.Wait()
+		if err := <-result; !errors.Is(err, context.Canceled) {
+			t.Fatalf("WatchLoop.Run() error = %v, want cancellation during deferral", err)
+		}
+	})
+}
+
+func TestWatchLoopSlowStaleScanWaitsFullIntervalBeforeRetry(t *testing.T) {
+	isolateSourceChangeWatchTests(t)
+	synctest.Test(t, func(t *testing.T) {
+		loop := newSourceChangeTestWatchLoop(t)
+		releaseScan := make(chan struct{})
+		var scans atomic.Int32
+		loop.scanFn = func(ctx context.Context) error {
+			if scans.Add(1) == 1 {
+				select {
+				case <-releaseScan:
+					return watchSourceChangeError()
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			return nil
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		result := make(chan error, 1)
+		go func() { result <- loop.Run(ctx) }()
+		synctest.Wait()
+		time.Sleep(loop.scanInterval)
+		synctest.Wait()
+		// Fail halfway between ticks after several ticks elapsed in flight.
+		// The next attempt must wait a full interval from that failure.
+		time.Sleep(3*loop.scanInterval + loop.scanInterval/2)
+		synctest.Wait()
+		if scans.Load() != 1 {
+			t.Fatalf("slow scan overlapped %d scan attempts", scans.Load())
+		}
+		close(releaseScan)
+		synctest.Wait()
+		if deferred, _ := watchSourceDeferralState(loop); deferred != 1 {
+			t.Fatalf("slow scan was not deferred: %s", loop.Summary())
+		}
+		time.Sleep(loop.scanInterval - time.Nanosecond)
+		synctest.Wait()
+		if scans.Load() != 1 {
+			t.Fatalf("slow stale scan retried before a full interval: scans=%d", scans.Load())
+		}
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		_, pending := watchSourceDeferralState(loop)
+		if scans.Load() != 2 || pending {
+			t.Fatalf("next scheduled scan did not recover: scans=%d pending=%v", scans.Load(), pending)
+		}
+		cancel()
+		synctest.Wait()
+		if err := <-result; !errors.Is(err, context.Canceled) {
+			t.Fatalf("WatchLoop.Run() error = %v, want cancellation", err)
+		}
+	})
+}
+
+func TestWatchLoopStopWhenDoneSkipsCompletionCheckAfterStaleScan(t *testing.T) {
+	isolateSourceChangeWatchTests(t)
+	previousActionable, previousIdle := getActionableRecommendationsForWatch, getIdleAgentsForWatchStop
+	t.Cleanup(func() {
+		getActionableRecommendationsForWatch, getIdleAgentsForWatchStop = previousActionable, previousIdle
+	})
+	synctest.Test(t, func(t *testing.T) {
+		var checks atomic.Int32
+		getActionableRecommendationsForWatch = func(context.Context, string, int) ([]bv.TriageRecommendation, error) {
+			checks.Add(1)
+			return nil, nil
+		}
+		getIdleAgentsForWatchStop = func(context.Context, string, string, bool) ([]assignAgentInfo, error) {
+			return nil, nil
+		}
+		loop := newSourceChangeTestWatchLoop(t)
+		loop.stopWhenDone = true
+		var scans atomic.Int32
+		loop.scanFn = func(context.Context) error {
+			if scans.Add(1) == 1 {
+				return watchSourceChangeError()
+			}
+			return nil
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		result := make(chan error, 1)
+		go func() { result <- loop.Run(ctx) }()
+		synctest.Wait()
+		time.Sleep(loop.scanInterval)
+		synctest.Wait()
+		if scans.Load() != 1 || checks.Load() != 0 {
+			t.Fatalf("stale scan used a completion probe: scans=%d checks=%d", scans.Load(), checks.Load())
+		}
+		select {
+		case err := <-result:
+			t.Fatalf("stale scan ended --stop-when-done: %v", err)
+		default:
+		}
+		time.Sleep(loop.scanInterval)
+		synctest.Wait()
+		select {
+		case err := <-result:
+			if err != nil {
+				t.Fatalf("verified empty queue failed to stop: %v", err)
+			}
+		default:
+			t.Fatal("verified empty queue did not stop the watcher")
+		}
+		if scans.Load() != 2 || checks.Load() != 1 {
+			t.Fatalf("scans=%d completion checks=%d, want 2/1", scans.Load(), checks.Load())
+		}
+	})
+}
+
+func TestWatchLoopShouldStopRequiresVerifiedEmptySnapshot(t *testing.T) {
+	isolateSourceChangeWatchTests(t)
+	previousActionable, previousIdle := getActionableRecommendationsForWatch, getIdleAgentsForWatchStop
+	t.Cleanup(func() {
+		getActionableRecommendationsForWatch, getIdleAgentsForWatchStop = previousActionable, previousIdle
+	})
+	checks, idleChecks := 0, 0
+	getActionableRecommendationsForWatch = func(context.Context, string, int) ([]bv.TriageRecommendation, error) {
+		checks++
+		switch checks {
+		case 1:
+			return nil, watchSourceChangeError()
+		case 2:
+			return []bv.TriageRecommendation{{ID: "ready-after-change", Status: "open"}}, nil
+		default:
+			return nil, nil
+		}
 	}
-	if scans != 3 {
-		t.Fatalf("scans = %d, want 3", scans)
+	getIdleAgentsForWatchStop = func(context.Context, string, string, bool) ([]assignAgentInfo, error) {
+		idleChecks++
+		return nil, nil
+	}
+	loop := newSourceChangeTestWatchLoop(t)
+	for attempt, wantStop := range []bool{false, false, true} {
+		stop, err := loop.shouldStop(t.Context())
+		if err != nil || stop != wantStop {
+			t.Fatalf("completion check %d = %v, %v; want %v, nil", attempt+1, stop, err, wantStop)
+		}
+		if loop.sourceCheckDeferred != (attempt == 0) || loop.deferredSourceChecks != 1 {
+			t.Fatalf("completion check %d lost deferral/recovery evidence: pending=%v deferred=%d", attempt+1, loop.sourceCheckDeferred, loop.deferredSourceChecks)
+		}
+	}
+	if checks != 3 || idleChecks != 1 {
+		t.Fatalf("actionable checks=%d idle checks=%d, want 3/1", checks, idleChecks)
+	}
+}
+
+func TestWatchLoopShouldStopNeverTreatsCancellationAsCompletion(t *testing.T) {
+	isolateSourceChangeWatchTests(t)
+	previousActionable, previousIdle := getActionableRecommendationsForWatch, getIdleAgentsForWatchStop
+	t.Cleanup(func() {
+		getActionableRecommendationsForWatch, getIdleAgentsForWatchStop = previousActionable, previousIdle
+	})
+	for _, phase := range []string{"actionable read cancels", "idle read cancels", "idle read returns cancellation", "idle read returns deadline"} {
+		t.Run(phase, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			getActionableRecommendationsForWatch = func(context.Context, string, int) ([]bv.TriageRecommendation, error) {
+				if phase == "actionable read cancels" {
+					cancel()
+				}
+				return nil, nil
+			}
+			getIdleAgentsForWatchStop = func(context.Context, string, string, bool) ([]assignAgentInfo, error) {
+				switch phase {
+				case "actionable read cancels":
+					t.Error("canceled completion probe continued to idle-agent lookup")
+				case "idle read cancels":
+					cancel()
+				case "idle read returns cancellation":
+					return nil, context.Canceled
+				case "idle read returns deadline":
+					return nil, context.DeadlineExceeded
+				}
+				return nil, nil
+			}
+			wantErr := context.Canceled
+			if phase == "idle read returns deadline" {
+				wantErr = context.DeadlineExceeded
+			}
+			loop := newSourceChangeTestWatchLoop(t)
+			if stop, err := loop.shouldStop(ctx); stop || !errors.Is(err, wantErr) {
+				t.Fatalf("shouldStop() = %v, %v; want false, %v", stop, err, wantErr)
+			}
+		})
 	}
 }
 

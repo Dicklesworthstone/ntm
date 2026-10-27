@@ -126,8 +126,10 @@ func Read(ctx context.Context, project string, policy Policy) (*Snapshot, error)
 	if !identity.Bound() {
 		return nil, stale(policy.Expected, &identity, "canonical Beads JSONL is unavailable", nil)
 	}
-	if policy.Expected != nil && !policy.Expected.SameSource(identity) {
-		return nil, stale(policy.Expected, &identity, "cached work source no longer matches; recollect work before dispatch", nil)
+	if policy.Expected != nil {
+		if err := policy.Expected.Verify(identity); err != nil {
+			return nil, err
+		}
 	}
 	file, err := os.Open(identity.JSONLPath)
 	if err != nil {
@@ -140,11 +142,14 @@ func Read(ctx context.Context, project string, policy Policy) (*Snapshot, error)
 	}
 	digest := sha256.Sum256(data)
 	if hex.EncodeToString(digest[:]) != identity.JSONLSHA256 {
-		return nil, stale(&identity, nil, "tracker changed before eligibility records were read", nil)
+		return nil, sourceChanged(&identity, nil, "tracker changed before eligibility records were read")
 	}
 	current, err := Capture(ctx, project)
-	if err != nil || identity.Verify(current) != nil {
-		return nil, stale(&identity, &current, "source changed while reading eligibility records", err)
+	if err != nil {
+		return nil, stale(&identity, nil, "capture source after reading eligibility records", err)
+	}
+	if err := identity.Verify(current); err != nil {
+		return nil, err
 	}
 	if policy.RequiredRef != "" {
 		ref := strings.TrimSpace(policy.RequiredRef)
@@ -193,6 +198,10 @@ func stale(expected, observed *Identity, reason string, cause error) error {
 		reason += ": " + cause.Error()
 	}
 	return &StaleError{Expected: expected, Observed: observed, Reason: reason, Cause: cause}
+}
+
+func sourceChanged(expected, observed *Identity, reason string) error {
+	return &StaleError{Expected: expected, Observed: observed, Reason: reason, Cause: ErrSourceChanged}
 }
 
 func decodeIssues(ctx context.Context, data []byte) (map[string]issue, error) {

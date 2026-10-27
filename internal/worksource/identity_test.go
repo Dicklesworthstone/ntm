@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -70,7 +71,7 @@ func TestCaptureTracksContentNotMtime(t *testing.T) {
 	if after.JSONLSHA256 != hex.EncodeToString(want[:]) {
 		t.Fatalf("digest = %s", after.JSONLSHA256)
 	}
-	if !before.Bound() || !errors.Is(before.Verify(after), ErrChanged) {
+	if !before.Bound() || !errors.Is(before.Verify(after), ErrChanged) || !errors.Is(before.Verify(after), ErrSourceChanged) {
 		t.Fatal("same-size, same-mtime tracker replacement did not invalidate identity")
 	}
 	// The mismatch is its own remediation receipt: both digests, named.
@@ -110,7 +111,7 @@ func TestCaptureBindsHeadAndAllowsDirtyWork(t *testing.T) {
 	gitFixture(t, dir, "add", "code.go")
 	gitFixture(t, dir, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "code only")
 	after := captureFixture(t, dir)
-	if after.JSONLSHA256 != dirty.JSONLSHA256 || !errors.Is(dirty.Verify(after), ErrChanged) {
+	if after.JSONLSHA256 != dirty.JSONLSHA256 || !errors.Is(dirty.Verify(after), ErrChanged) || !errors.Is(dirty.Verify(after), ErrSourceChanged) {
 		t.Fatal("HEAD-only change failed to invalidate identity")
 	}
 	data, err := os.ReadFile(path)
@@ -164,15 +165,69 @@ func TestCaptureMissingAppearingAndRemovedTracker(t *testing.T) {
 		t.Fatal(err)
 	}
 	present := captureFixture(t, dir)
-	if !present.Bound() || !errors.Is(missing.Verify(present), ErrChanged) {
+	if !present.Bound() || !errors.Is(missing.Verify(present), ErrChanged) || errors.Is(missing.Verify(present), ErrSourceChanged) {
 		t.Fatal("new export did not invalidate identity")
 	}
 	// Rename rather than remove, preserving the fixture's evidence.
 	if err := os.Rename(path, path+".saved"); err != nil {
 		t.Fatal(err)
 	}
-	if !errors.Is(present.Verify(captureFixture(t, dir)), ErrChanged) {
+	if err := present.Verify(captureFixture(t, dir)); !errors.Is(err, ErrChanged) || errors.Is(err, ErrSourceChanged) {
 		t.Fatal("missing export reused a source-bound projection")
+	}
+}
+
+// A fake local Git probe places each mutation at a known point in Capture:
+// after inspecting the export but before opening it, or between HEAD reads.
+// No timing races or sleeps are needed to distinguish movement from failure.
+func TestCaptureClassifiesObservedSourceChanges(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake Git probe uses a POSIX shell")
+	}
+	for _, mode := range []string{"replace", "head", "missing", "invalid-head"} {
+		t.Run(mode, func(t *testing.T) {
+			dir, tracker := trackerFixture(t)
+			if err := os.Mkdir(filepath.Join(dir, ".git"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			bin := t.TempDir()
+			script := `#!/bin/sh
+set -eu
+if [ ! -e "$NTM_CAPTURE_PROBE" ]; then
+  : > "$NTM_CAPTURE_PROBE"
+  case "$NTM_CAPTURE_MODE" in
+    replace)
+      mv "$NTM_CAPTURE_TRACKER" "$NTM_CAPTURE_TRACKER.saved"
+      printf '{"id":"new","status":"open"}\n' > "$NTM_CAPTURE_TRACKER"
+      ;;
+    missing) mv "$NTM_CAPTURE_TRACKER" "$NTM_CAPTURE_TRACKER.saved" ;;
+    invalid-head) printf 'invalid-head\n'; exit 0 ;;
+  esac
+elif [ "$NTM_CAPTURE_MODE" = head ]; then
+  printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n'
+  exit 0
+fi
+printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
+`
+			if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("NTM_CAPTURE_MODE", mode)
+			t.Setenv("NTM_CAPTURE_TRACKER", tracker)
+			t.Setenv("NTM_CAPTURE_PROBE", filepath.Join(t.TempDir(), "probe"))
+			identity, err := Capture(context.Background(), dir)
+			if err == nil || identity.Bound() {
+				t.Fatalf("Capture returned unverified identity %+v with error %v", identity, err)
+			}
+			wantTransient := mode == "replace" || mode == "head"
+			if errors.Is(err, ErrSourceChanged) != wantTransient {
+				t.Fatalf("Capture error %v, transient=%v; want %v", err, errors.Is(err, ErrSourceChanged), wantTransient)
+			}
+			if wantTransient && !errors.Is(err, ErrChanged) {
+				t.Fatalf("transient error lost the STALE_WORK_COORDINATION classification: %v", err)
+			}
+		})
 	}
 }
 

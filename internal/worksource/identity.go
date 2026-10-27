@@ -19,6 +19,12 @@ import (
 // ErrChanged means a projection cannot be attributed to one source revision.
 var ErrChanged = errors.New("STALE_WORK_COORDINATION")
 
+// ErrSourceChanged identifies an observed tracker or HEAD change within the
+// same source. Unlike ErrChanged, it does not include invalid policy, missing
+// sources, malformed exports, or failed verification. A caller may discard the
+// current scan and recollect after this error; it must never dispatch that scan.
+var ErrSourceChanged = errors.New("tracker or checkout changed during verification")
+
 // Identity identifies the bytes and checkout used to produce a projection.
 // Dirty local edits are valid inputs: their actual digest, not their committed
 // version, is recorded. A zero identity denotes a workspace without a JSONL
@@ -41,7 +47,14 @@ func (i Identity) Bound() bool { return i.JSONLSHA256 != "" }
 func (i Identity) Verify(current Identity) error {
 	if i != current {
 		expected, observed := i, current
-		return &StaleError{Expected: &expected, Observed: &observed, Reason: "tracker or checkout changed; refresh work before dispatch"}
+		receipt := &StaleError{Expected: &expected, Observed: &observed, Reason: "tracker or checkout changed; refresh work before dispatch"}
+		// Only content/HEAD movement within a known source is retryable.
+		// Losing a bound export or switching projects cannot silently relax
+		// provenance requirements on the next scan.
+		if i.Bound() && current.Bound() && i.ProjectDir == current.ProjectDir && i.JSONLPath == current.JSONLPath {
+			receipt.Cause = ErrSourceChanged
+		}
+		return receipt
 	}
 	return nil
 }
@@ -108,7 +121,7 @@ func Capture(ctx context.Context, projectDir string) (Identity, error) {
 		return Identity{}, fmt.Errorf("stat work tracker: %w", err)
 	}
 	if !before.Mode().IsRegular() || !os.SameFile(info, before) {
-		return Identity{}, fmt.Errorf("%w: tracker replaced during source capture", ErrChanged)
+		return Identity{}, sourceChanged(nil, nil, "tracker replaced during source capture")
 	}
 	hash := sha256.New()
 	n, err := io.Copy(hash, io.LimitReader(contextReader{ctx, file}, maxTrackerBytes+1))
@@ -123,15 +136,18 @@ func Capture(ctx context.Context, projectDir string) (Identity, error) {
 		return Identity{}, fmt.Errorf("stat work tracker after read: %w", err)
 	}
 	current, err := os.Stat(filepath.Join(root, ".beads", "issues.jsonl"))
-	if err != nil || !os.SameFile(before, current) || n != before.Size() || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
-		return Identity{}, fmt.Errorf("%w: tracker changed during source capture", ErrChanged)
+	if err != nil {
+		return Identity{}, stale(nil, nil, "inspect tracker after source capture", err)
+	}
+	if !os.SameFile(before, current) || n != before.Size() || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
+		return Identity{}, sourceChanged(nil, nil, "tracker changed during source capture")
 	}
 	finalHead, err := readHead(ctx, root)
 	if err != nil {
 		return Identity{}, err
 	}
 	if head != finalHead {
-		return Identity{}, fmt.Errorf("%w: HEAD changed during source capture", ErrChanged)
+		return Identity{}, sourceChanged(nil, nil, "HEAD changed during source capture")
 	}
 	if err := ctx.Err(); err != nil {
 		return Identity{}, err

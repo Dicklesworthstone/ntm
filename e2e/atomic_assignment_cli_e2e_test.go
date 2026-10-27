@@ -5833,6 +5833,163 @@ func TestE2EAtomicAssignmentSameSessionInvalidPolicyIsMutationFreeBuiltProcess(t
 	}
 }
 
+func TestE2EAtomicAssignmentWatchRecoversFromTrackerChangesBuiltProcess(t *testing.T) {
+	CommonE2EPrerequisites(t)
+	testutil.RequireTmuxThrottled(t)
+
+	fixture := newAtomicAssignmentCLIFixture(t)
+	const title = "Watch resumes after tracker changes"
+	beadID := fixture.createBead(t, title)
+	fixture.mustBR(t, "sync", "--flush-only")
+
+	binDir := filepath.Join(fixture.root, "source-change-watch-bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatalf("create source-change watch fixture bin directory: %v", err)
+	}
+	counterPath := filepath.Join(fixture.root, "source-change-triage-count")
+	retryReachedPath := filepath.Join(fixture.root, "verified-retry-reached")
+	releaseRetryPath := filepath.Join(fixture.root, "release-verified-retry")
+	triagePath := filepath.Join(fixture.root, "source-change-triage.json")
+	planPath := filepath.Join(fixture.root, "source-change-plan.json")
+	for path, payload := range map[string]any{
+		triagePath: map[string]any{
+			"triage": map[string]any{"recommendations": []map[string]any{{
+				"id": beadID, "title": title, "type": "task", "status": "open",
+				"priority": 1, "score": 100, "action": "assign", "reasons": []string{}, "labels": []string{},
+			}}},
+		},
+		planPath: map[string]any{
+			"plan": map[string]any{"tracks": []map[string]any{{
+				"track_id": "source-change-watch",
+				"items": []map[string]any{{
+					"id": beadID, "title": title, "status": "open", "priority": 1,
+				}},
+			}}},
+		},
+	} {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("marshal source-change watch payload: %v", err)
+		}
+		if err := os.WriteFile(path, encoded, 0o600); err != nil {
+			t.Fatalf("write source-change watch payload: %v", err)
+		}
+	}
+
+	// The first two triage reads race actual tracker updates after NTM captures
+	// their source identities: once during the initial pass, then in scanDone.
+	// The third read waits for the test to inspect all dispatch side effects.
+	// Its file handshake makes those assertions independent of scan timing.
+	bvScript := strings.Join([]string{
+		"#!/bin/sh",
+		"set -eu",
+		"real_br=" + tmux.ShellQuote(fixture.brPath),
+		"bead_id=" + tmux.ShellQuote(beadID),
+		"counter=" + tmux.ShellQuote(counterPath),
+		"reached=" + tmux.ShellQuote(retryReachedPath),
+		"release=" + tmux.ShellQuote(releaseRetryPath),
+		"triage=" + tmux.ShellQuote(triagePath),
+		"plan=" + tmux.ShellQuote(planPath),
+		`case "$1" in`,
+		`  --robot-triage)`,
+		`    count=0`,
+		`    if [ -e "$counter" ]; then count=$(cat "$counter"); fi`,
+		`    count=$((count + 1))`,
+		`    printf '%s\n' "$count" > "$counter"`,
+		`    if [ "$count" -le 2 ]; then`,
+		`      "$real_br" update "$bead_id" --description="watch source change $count" --json >/dev/null`,
+		`      "$real_br" sync --flush-only >/dev/null`,
+		`    elif [ "$count" -eq 3 ]; then`,
+		`      printf 'retry reached\n' > "$reached"`,
+		`      while [ ! -e "$release" ]; do sleep 0.01; done`,
+		`    fi`,
+		`    cat "$triage" ;;`,
+		`  --robot-plan) cat "$plan" ;;`,
+		`  --robot-insights) printf '%s\n' '{"Cycles":[]}' ;;`,
+		`  *) printf 'unexpected bv args: %s\n' "$*" >&2; exit 64 ;;`,
+		"esac",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(binDir, "bv"), []byte(bvScript), 0o700); err != nil {
+		t.Fatalf("write source-change watch bv fixture: %v", err)
+	}
+	marker := fmt.Sprintf("NTM_WATCH_SOURCE_RECOVERY_%d", time.Now().UnixNano())
+	templatePath := filepath.Join(fixture.projectDir, "source-change-watch-template.txt")
+	if err := os.WriteFile(templatePath, []byte(marker+"::{BEAD_ID}::{TITLE}"), 0o600); err != nil {
+		t.Fatalf("write source-change watch template: %v", err)
+	}
+	prompt := marker + "::" + beadID + "::" + title
+	fixture.primePaneForSafeDispatch(t, 0)
+	fixture.waitForEndpointIdle(t, fixture.panes[0], 6*time.Second, 60*time.Second)
+
+	result := fixture.runNTMInterrupted(t, map[string]string{
+		"PATH": binDir + string(os.PathListSeparator) + atomicAssignmentEnvValue(fixture.env, "PATH"),
+	}, func(pid int) {
+		waitForAtomicAssignmentPath(t, retryReachedPath, pid)
+		counter, err := os.ReadFile(counterPath)
+		if err != nil || strings.TrimSpace(string(counter)) != "3" {
+			t.Fatalf("watch retry triage counter=%q error=%v, want third scan at barrier", counter, err)
+		}
+		fixture.assertBead(t, beadID, "open", "")
+		fixture.assertLedgerReplicasHaveNoAssignment(t, beadID)
+		fixture.assertMarkerCounts(t, marker, map[int]int{0: 0, 1: 0})
+		if err := os.WriteFile(releaseRetryPath, []byte("release\n"), 0o600); err != nil {
+			t.Fatalf("release verified watch retry: %v", err)
+		}
+		fixture.waitForMarkerCount(t, 0, marker, 1)
+		// Pane delivery precedes the durable receipt by a small amount. Wait
+		// for that receipt before interrupting the watcher so cancellation is
+		// exercised while idle, rather than interrupting an assignment commit.
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			ledger, readErr := fixture.readLedger()
+			if readErr == nil {
+				record := ledger.Assignments[beadID]
+				if record != nil && record.DispatchState == "sent" && record.DispatchReceiptID != "" {
+					break
+				}
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("watch did not persist recovered dispatch receipt: ledger=%+v error=%v", ledger, readErr)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	},
+		"assign", fixture.session,
+		"--repo="+fixture.projectDir,
+		"--watch", "--auto", "--strategy=dependency",
+		"--watch-interval=200ms", "--auto-reassign=false",
+		"--limit=1", "--cod-only",
+		"--template=custom", "--template-file="+templatePath,
+		"--reserve-files=false", "--timeout=15s",
+	)
+	if result.exitCode != 0 || len(bytes.TrimSpace(result.stderr)) != 0 {
+		t.Fatalf("source-change watch exit=%d stdout=%s stderr=%s", result.exitCode, result.stdout, result.stderr)
+	}
+	for _, message := range []string{
+		"Deferred initial assignment after tracker or checkout changed",
+		"Deferred ready-work scan after tracker or checkout changed",
+		"STALE_WORK_COORDINATION",
+		"Received interrupt signal, shutting down gracefully",
+		"source verification deferred 2 times",
+	} {
+		if !bytes.Contains(result.stdout, []byte(message)) {
+			t.Fatalf("source-change watch did not report %q: stdout=%s", message, result.stdout)
+		}
+	}
+	fixture.assertMarkerCounts(t, marker, map[int]int{0: 1, 1: 0})
+	record := fixture.readLedgerAssignment(t, beadID)
+	assertAtomicAssignmentRecord(t, record, beadID, prompt, fixture.panes[0], "codex")
+	if record.ClaimAttempts != 1 {
+		t.Fatalf("recovered watch claimed the bead %d times, want once", record.ClaimAttempts)
+	}
+	fixture.assertBead(t, beadID, "in_progress", record.ClaimActor)
+	ledger, err := fixture.readLedger()
+	if err != nil || len(ledger.Assignments) != 1 {
+		t.Fatalf("recovered watch ledger=%+v error=%v, want one assignment", ledger, err)
+	}
+}
+
 func TestE2EAtomicAssignmentWatchStopWhenDoneTreatsGatedQueuesAsDrainedBuiltProcess(t *testing.T) {
 	CommonE2EPrerequisites(t)
 	testutil.RequireTmuxThrottled(t)

@@ -101,7 +101,7 @@ func TestDirtyCheckoutIsAdvisoryAndDoesNotInvalidateIdentity(t *testing.T) {
 	if err := Validate(context.Background(), initial.Identity); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Read(context.Background(), project, Policy{RequireClean: true}); !errors.Is(err, ErrStale) {
+	if _, err := Read(context.Background(), project, Policy{RequireClean: true}); !errors.Is(err, ErrStale) || errors.Is(err, ErrSourceChanged) {
 		t.Fatalf("strict policy accepted dirty checkout: %v", err)
 	}
 }
@@ -117,7 +117,7 @@ func TestDigestMismatchEvenWithSameSizeAndTimestamp(t *testing.T) {
 	}
 	err := Validate(context.Background(), s.Identity)
 	var receipt *StaleError
-	if !errors.Is(err, ErrStale) || !errors.As(err, &receipt) || receipt.Expected.JSONLSHA256 == receipt.Observed.JSONLSHA256 {
+	if !errors.Is(err, ErrStale) || !errors.Is(err, ErrSourceChanged) || !errors.As(err, &receipt) || receipt.Expected.JSONLSHA256 == receipt.Observed.JSONLSHA256 {
 		t.Fatalf("stale digest receipt: %v", err)
 	}
 }
@@ -126,7 +126,7 @@ func TestHeadMismatchWithoutTrackerChanges(t *testing.T) {
 	project := projectFixture(t, sampleJSONL, true)
 	s := readFixture(t, project)
 	runGit(t, project, "commit", "--allow-empty", "-m", "new head")
-	if err := Validate(context.Background(), s.Identity); !errors.Is(err, ErrStale) {
+	if err := Validate(context.Background(), s.Identity); !errors.Is(err, ErrStale) || !errors.Is(err, ErrSourceChanged) {
 		t.Fatalf("old HEAD authorized current work: %v", err)
 	}
 }
@@ -147,7 +147,7 @@ func TestSourceLocationsAreCanonicalAndWorktreeSpecific(t *testing.T) {
 	if s.Identity.SameSource(other.Identity) {
 		t.Fatal("different worktree reused source receipt")
 	}
-	if _, err := Read(context.Background(), worktree, Policy{Expected: &s.Identity}); !errors.Is(err, ErrStale) {
+	if _, err := Read(context.Background(), worktree, Policy{Expected: &s.Identity}); !errors.Is(err, ErrStale) || errors.Is(err, ErrSourceChanged) {
 		t.Fatalf("cross-project receipt: %v", err)
 	}
 }
@@ -164,7 +164,7 @@ func TestStrictRefIsOptInLocalAndRejectsExpressions(t *testing.T) {
 		if ref == "refs/heads/main\n" {
 			continue
 		} // Whitespace trimming is accepted.
-		if _, err := Read(context.Background(), project, Policy{RequiredRef: ref}); !errors.Is(err, ErrStale) {
+		if _, err := Read(context.Background(), project, Policy{RequiredRef: ref}); !errors.Is(err, ErrStale) || errors.Is(err, ErrSourceChanged) {
 			t.Errorf("ref %q: %v", ref, err)
 		}
 	}
@@ -179,7 +179,7 @@ func TestNonGitAndUnbornRepositories(t *testing.T) {
 	if s := readFixture(t, project); s.Identity.HeadSHA != "unborn:refs/heads/main" {
 		t.Fatal("unborn branch lost the existing identity contract")
 	}
-	if _, err := Read(context.Background(), project, Policy{RequireClean: true}); !errors.Is(err, ErrStale) {
+	if _, err := Read(context.Background(), project, Policy{RequireClean: true}); !errors.Is(err, ErrStale) || errors.Is(err, ErrSourceChanged) {
 		t.Fatalf("strict policy accepted uncommitted project: %v", err)
 	}
 }
@@ -188,15 +188,15 @@ func TestSourceErrorsFailClosed(t *testing.T) {
 	for _, data := range []string{"not JSON", "null", "{}", "[]", sampleJSONL + sampleJSONL, "{\"id\":\"x\",\"status\":7}", "{\"id\":\"x\",\"status\":\"open\"} trailing"} {
 		t.Run(data[:min(12, len(data))], func(t *testing.T) {
 			project := projectFixture(t, data, false)
-			if s, err := Read(context.Background(), project, Policy{}); s != nil || !errors.Is(err, ErrStale) {
+			if s, err := Read(context.Background(), project, Policy{}); s != nil || !errors.Is(err, ErrStale) || errors.Is(err, ErrSourceChanged) {
 				t.Fatalf("invalid source became work: %v %+v", err, s)
 			}
 		})
 	}
-	if _, err := Read(context.Background(), t.TempDir(), Policy{}); !errors.Is(err, ErrStale) {
+	if _, err := Read(context.Background(), t.TempDir(), Policy{}); !errors.Is(err, ErrStale) || errors.Is(err, ErrSourceChanged) {
 		t.Fatal(err)
 	}
-	if _, err := Read(context.Background(), "", Policy{}); !errors.Is(err, ErrStale) {
+	if _, err := Read(context.Background(), "", Policy{}); !errors.Is(err, ErrStale) || errors.Is(err, ErrSourceChanged) {
 		t.Fatal(err)
 	}
 	if _, err := Read(nil, "", Policy{}); err == nil {
@@ -212,7 +212,7 @@ func TestCancellationPreservesContextCause(t *testing.T) {
 	project := projectFixture(t, sampleJSONL, true)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := Read(ctx, project, Policy{}); !errors.Is(err, context.Canceled) {
+	if _, err := Read(ctx, project, Policy{}); !errors.Is(err, context.Canceled) || errors.Is(err, ErrSourceChanged) {
 		t.Fatal(err)
 	}
 	if _, err := decodeIssues(ctx, []byte(sampleJSONL)); !errors.Is(err, context.Canceled) {

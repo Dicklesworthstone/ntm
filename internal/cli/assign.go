@@ -41,6 +41,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 	"github.com/Dicklesworthstone/ntm/internal/webhook"
+	"github.com/Dicklesworthstone/ntm/internal/worksource"
 )
 
 var (
@@ -536,16 +537,42 @@ func ensureAuthoritativeAssignmentPolicy(projectDir string, configuredProject *s
 func isAutomatedAssignmentSafetyError(err error) bool {
 	return errors.Is(err, errCLIInvalidInput) ||
 		errors.Is(err, bv.ErrActionablePlanUnverified) ||
-		errors.Is(err, bv.ErrActionableLabelsUnverified)
+		errors.Is(err, bv.ErrActionableLabelsUnverified) ||
+		errors.Is(err, bv.ErrStaleWorkCoordination) ||
+		errors.Is(err, bv.ErrBeadAlreadyClaimed) ||
+		errors.Is(err, assignment.ErrClaimConflict) ||
+		errors.Is(err, assignment.ErrTargetOccupied)
 }
 
-// isWorkSourceChangeError reports a read refused because the tracker or
-// checkout moved under it (STALE_WORK_COORDINATION). Nothing may be dispatched
-// from that read (#283), but agents in a live swarm close beads and commit all
-// the time, so watch mode skips the cycle and verifies again on its next tick
-// instead of exiting (#370).
-func isWorkSourceChangeError(err error) bool {
-	return errors.Is(err, bv.ErrStaleWorkCoordination)
+// isRetryableAssignmentSourceChange accepts only a positively observed source
+// race and its verification wrappers. STALE_WORK_COORDINATION also describes
+// missing exports, malformed JSONL and policy violations, none of which is a
+// reason to keep an automated watcher running. An unrelated joined error (in
+// particular cancellation or an ownership conflict) must not inherit retryability.
+func isRetryableAssignmentSourceChange(err error) bool {
+	if !errors.Is(err, worksource.ErrSourceChanged) {
+		return false
+	}
+	var sourceChangeOnly func(error) bool
+	sourceChangeOnly = func(cause error) bool {
+		switch cause {
+		case worksource.ErrSourceChanged, bv.ErrStaleWorkCoordination, bv.ErrActionablePlanUnverified:
+			return true
+		}
+		if joined, ok := cause.(interface{ Unwrap() []error }); ok {
+			for _, child := range joined.Unwrap() {
+				if !sourceChangeOnly(child) {
+					return false
+				}
+			}
+			return true
+		}
+		if child := errors.Unwrap(cause); child != nil {
+			return sourceChangeOnly(child)
+		}
+		return false
+	}
+	return sourceChangeOnly(err)
 }
 
 // prepareResolvedAssignCommand is the policy and webhook preflight shared by
@@ -839,12 +866,19 @@ func runWatchMode(cmd *cobra.Command, session, projectDir, policyProject string)
 		policyProject:   policyProject,
 	}
 
+	initialScanDeferred := false
 	initialOutput, err := getAssignOutputEnhanced(ctx, assignOpts)
 	if err != nil {
-		if isAutomatedAssignmentSafetyError(err) && !isWorkSourceChangeError(err) {
-			return err
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-		watchLoop.logf("Warning: Initial assignment failed: %v", err)
+		if watchLoop.deferSourceChange("initial assignment", err) {
+			initialScanDeferred = true
+		} else if isAutomatedAssignmentSafetyError(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		} else {
+			watchLoop.logf("Warning: Initial assignment failed: %v", err)
+		}
 	} else if len(initialOutput.Assignments) > 0 {
 		assignOpts.Quiet = assignQuiet // Restore quiet setting for execution
 		if assignDryRun {
@@ -882,7 +916,7 @@ func runWatchMode(cmd *cobra.Command, session, projectDir, policyProject string)
 	}
 
 	// Check stop-when-done before entering watch loop
-	if assignStopWhenDone {
+	if assignStopWhenDone && !initialScanDeferred {
 		stop, err := watchLoop.shouldStop(ctx)
 		if err != nil {
 			return fmt.Errorf("check initial watch completion: %w", err)
@@ -6727,12 +6761,14 @@ type WatchLoop struct {
 	renewCompletionEventFn  func(context.Context, string, string, string, time.Duration) (bool, error)
 
 	// Statistics
-	mu               sync.Mutex
-	totalAssigned    int
-	totalCompleted   int
-	totalFailed      int
-	startTime        time.Time
-	lastAssignmentAt time.Time
+	mu                   sync.Mutex
+	totalAssigned        int
+	totalCompleted       int
+	totalFailed          int
+	startTime            time.Time
+	lastAssignmentAt     time.Time
+	deferredSourceChecks int
+	sourceCheckDeferred  bool
 }
 
 // NewWatchLoop creates a new watch loop for a session
@@ -6793,6 +6829,32 @@ func (w *WatchLoop) logf(format string, args ...interface{}) {
 	timestamp := time.Now().Format("15:04:05")
 	msg := fmt.Sprintf(format, args...)
 	fmt.Printf("[%s] %s\n", timestamp, msg)
+}
+
+// deferSourceChange discards the scan's freshness without discarding its bound
+// source identity. The next scheduled scan must collect and verify authoritative
+// state again; no claim, reservation or dispatch is retried here.
+func (w *WatchLoop) deferSourceChange(phase string, err error) bool {
+	if !isRetryableAssignmentSourceChange(err) {
+		return false
+	}
+	bv.ExpireTriageCache()
+	w.mu.Lock()
+	w.deferredSourceChecks++
+	w.sourceCheckDeferred = true
+	w.mu.Unlock()
+	w.logf("Deferred %s after tracker or checkout changed; refreshing on the next ready-work scan: %v", phase, err)
+	return true
+}
+
+func (w *WatchLoop) sourceCheckRecovered() {
+	w.mu.Lock()
+	deferred := w.sourceCheckDeferred
+	w.sourceCheckDeferred = false
+	w.mu.Unlock()
+	if deferred {
+		w.logf("Work-source verification recovered")
+	}
 }
 
 // Run starts the watch loop and blocks until stopped
@@ -6966,7 +7028,7 @@ func (w *WatchLoop) Run(ctx context.Context) error {
 			}
 
 			// Check stop-when-done condition
-			if w.stopWhenDone {
+			if w.stopWhenDone && !scanInFlight {
 				stop, stopErr := w.shouldStop(watchCtx)
 				if stopErr != nil {
 					return fmt.Errorf("check watch completion: %w", stopErr)
@@ -7003,13 +7065,19 @@ func (w *WatchLoop) Run(ctx context.Context) error {
 				if watchCtx.Err() != nil {
 					return watchCtx.Err()
 				}
-				if isWorkSourceChangeError(scanErr) {
-					w.logf("Ready-work scan dispatched nothing, work changed during the read; verifying again next tick: %v", scanErr)
-				} else if isAutomatedAssignmentSafetyError(scanErr) {
-					return scanErr
-				} else {
-					w.logf("Error during ready-work scan: %v", scanErr)
+				if w.deferSourceChange("ready-work scan", scanErr) {
+					// A slow failed scan may have left a ticker event pending.
+					// Wait a full interval, and never use a failed verification
+					// as evidence that --stop-when-done has drained the queue.
+					ticker.Reset(scanInterval)
+					continue
 				}
+				if isAutomatedAssignmentSafetyError(scanErr) || errors.Is(scanErr, context.Canceled) || errors.Is(scanErr, context.DeadlineExceeded) {
+					return scanErr
+				}
+				w.logf("Error during ready-work scan: %v", scanErr)
+			} else {
+				w.sourceCheckRecovered()
 			}
 
 			// A scan can be the thing that drains the queue, so honor
@@ -7396,16 +7464,21 @@ func (w *WatchLoop) shouldStop(ctx context.Context) (bool, error) {
 		return getActionableRecommendationsForWatch(ctx, projectDir, 0)
 	})
 	if err != nil {
-		if isWorkSourceChangeError(err) {
-			// Work that could not be verified is not drained work (#370).
-			w.logf("Watch completion check could not verify work, still watching: %v", err)
-			return false, nil
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		if w.deferSourceChange("watch completion check", err) {
+			return false, nil // Unverified does not mean empty; retry next scan.
 		}
 		if isAutomatedAssignmentSafetyError(err) {
 			return false, fmt.Errorf("automated assignment stopped because actionable work could not be verified: %w", err)
 		}
 		return false, fmt.Errorf("read actionable work for watch completion: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	w.sourceCheckRecovered()
 	for _, rec := range actionable {
 		if classifyTriageRecForAssignmentForProject(projectDir, rec, nil) == nil {
 			return false, nil // Still have work available
@@ -7418,6 +7491,12 @@ func (w *WatchLoop) shouldStop(ctx context.Context) (bool, error) {
 		agentTypeFilter = w.opts.AgentTypeFilter
 	}
 	idleAgents, err := getIdleAgentsForWatchStop(ctx, w.session, agentTypeFilter, false)
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false, err
+	}
 	if err == nil && len(idleAgents) == 0 {
 		w.logf("Warning: No idle agents available")
 	}
@@ -7440,6 +7519,9 @@ func (w *WatchLoop) Summary() string {
 	}
 	if maintenanceError != "" {
 		suffix += " [reservation maintenance degraded: " + maintenanceError + "]"
+	}
+	if w.deferredSourceChecks > 0 {
+		suffix += fmt.Sprintf(" [source verification deferred %d times]", w.deferredSourceChecks)
 	}
 	return fmt.Sprintf("Watch session: %d assigned, %d completed, %d failed in %v%s",
 		w.totalAssigned, w.totalCompleted, w.totalFailed, duration, suffix)

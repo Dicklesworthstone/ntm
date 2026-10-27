@@ -36,13 +36,19 @@ const TriageCacheTTL = 30 * time.Second
 var ErrStaleWorkCoordination = worksource.ErrChanged
 
 var (
-	triageCache       *TriageResponse
-	triageCacheDir    string
-	triageCacheSource worksource.Identity
-	triageCacheTime   time.Time
-	triageCacheTTL    = TriageCacheTTL
-	triageCacheMu     sync.RWMutex
-	triageRunMu       sync.Mutex
+	triageCache        *TriageResponse
+	triageCacheDir     string
+	triageCacheSource  worksource.Identity
+	triageCacheTime    time.Time
+	triageCacheExpired bool
+	triageCacheTTL     = TriageCacheTTL
+	triageCacheMu      sync.RWMutex
+	triageRunMu        sync.Mutex
+	// Observed source bindings outlive cached data, including a failed first
+	// collection or another project's use of the singleton response cache.
+	// A project that has supplied a canonical export cannot silently become
+	// DB-only later in this process.
+	triageBoundProjects sync.Map // map[canonical project directory]struct{}
 )
 
 func acquireTriageRunLock(ctx context.Context, deadline time.Time, timeout time.Duration) (func(), error) {
@@ -158,7 +164,7 @@ func getTriageContext(ctx context.Context, dir string, timeout time.Duration) (_
 	}
 	// A TTL is a performance policy, not authority to reuse different work.
 	// Check the actual tracker bytes and checkout even during a cache hit.
-	if triageCache != nil && triageCacheDir == normalizedDir && triageCacheSource == source && time.Since(triageCacheTime) < triageCacheTTL {
+	if triageCache != nil && !triageCacheExpired && triageCacheDir == normalizedDir && triageCacheSource == source && time.Since(triageCacheTime) < triageCacheTTL {
 		cached := triageCache
 		triageCacheMu.RUnlock()
 		return cached, nil
@@ -184,7 +190,7 @@ func getTriageContext(ctx context.Context, dir string, timeout time.Duration) (_
 		triageCacheMu.RUnlock()
 		return nil, fmt.Errorf("%w: previously bound tracker export is missing", ErrStaleWorkCoordination)
 	}
-	if triageCache != nil && triageCacheDir == normalizedDir && triageCacheSource == source && time.Since(triageCacheTime) < triageCacheTTL {
+	if triageCache != nil && !triageCacheExpired && triageCacheDir == normalizedDir && triageCacheSource == source && time.Since(triageCacheTime) < triageCacheTTL {
 		cached := triageCache
 		triageCacheMu.RUnlock()
 		return cached, nil
@@ -219,19 +225,30 @@ func getTriageContext(ctx context.Context, dir string, timeout time.Duration) (_
 	triageCacheDir = normalizedDir
 	triageCacheSource = source
 	triageCacheTime = time.Now()
+	triageCacheExpired = false
 	triageCacheMu.Unlock()
 
 	return &resp, nil
 }
 
-// InvalidateTriageCache clears the triage cache.
+// InvalidateTriageCache clears cached data, preserving observed source bindings.
 // Call this when beads data changes (e.g., after br sync --flush-only).
 func InvalidateTriageCache() {
 	triageCacheMu.Lock()
 	triageCache = nil
 	triageCacheDir = ""
 	triageCacheSource = worksource.Identity{}
+	triageCacheExpired = false
 	triageCacheTTL = TriageCacheTTL // Reset to default
+	triageCacheMu.Unlock()
+}
+
+// ExpireTriageCache forces the next read to recollect authoritative work while
+// retaining the last response's source identity, observation time, and TTL.
+// Neither expiration nor invalidation clears observed project bindings.
+func ExpireTriageCache() {
+	triageCacheMu.Lock()
+	triageCacheExpired = true
 	triageCacheMu.Unlock()
 }
 
@@ -586,7 +603,7 @@ func GetNextRecommendation(dir string) (*TriageRecommendation, error) {
 // IsCacheValid checks if the cache is still valid
 func IsCacheValid() bool {
 	triageCacheMu.RLock()
-	valid := triageCache != nil && time.Since(triageCacheTime) < triageCacheTTL
+	valid := triageCache != nil && !triageCacheExpired && time.Since(triageCacheTime) < triageCacheTTL
 	dir, source := triageCacheDir, triageCacheSource
 	triageCacheMu.RUnlock()
 	if !valid {
@@ -608,16 +625,40 @@ func GetCacheAge() time.Duration {
 	return time.Since(triageCacheTime)
 }
 
-// captureTriageSource fails closed on an unreadable existing export. Missing
-// JSONL exports keep the historical DB-only TTL behavior, without claiming a
-// source binding. No caller's cancellation is reclassified as source drift.
+// captureTriageSource fails closed on an unreadable or lost export. A project
+// that has never supplied JSONL keeps the historical DB-only behavior without
+// claiming a source binding. Bindings survive failed collections, cache resets,
+// and reads of other projects. Cancellation is never reclassified as drift.
 func captureTriageSource(ctx context.Context, dir string) (worksource.Identity, error) {
-	source, err := worksource.Capture(ctx, dir)
-	if err == nil {
-		return source, nil
+	if ctx != nil && ctx.Err() != nil {
+		return worksource.Identity{}, ctx.Err()
 	}
+	// Canonicalize the project independently of the export's existence so
+	// losing JSONL cannot hide a binding behind a different symlink spelling.
+	project, err := filepath.Abs(dir)
+	if err == nil {
+		project, err = filepath.EvalSymlinks(project)
+	}
+	if err != nil {
+		if ctx != nil && ctx.Err() != nil {
+			return worksource.Identity{}, ctx.Err()
+		}
+		return worksource.Identity{}, fmt.Errorf("%w: resolve work source project: %w", ErrStaleWorkCoordination, err)
+	}
+	source, err := worksource.Capture(ctx, project)
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return worksource.Identity{}, err
+	}
+	if source.Bound() || errors.Is(err, worksource.ErrSourceChanged) {
+		triageBoundProjects.Store(project, struct{}{})
+	}
+	if err == nil {
+		if !source.Bound() {
+			if _, bound := triageBoundProjects.Load(project); bound {
+				return worksource.Identity{}, fmt.Errorf("%w: previously bound tracker export is missing", ErrStaleWorkCoordination)
+			}
+		}
+		return source, nil
 	}
 	return worksource.Identity{}, fmt.Errorf("%w: cannot verify work source: %w", ErrStaleWorkCoordination, err)
 }
