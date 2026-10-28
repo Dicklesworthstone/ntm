@@ -158,6 +158,12 @@ func TestRealGuardedRespawnUsesFreshShellOnlyForAgentRecovery(t *testing.T) {
 	if err := os.Mkdir(directory, 0700); err != nil {
 		t.Fatal(err)
 	}
+	// tmux reports the shell's resolved cwd; macOS temp dirs sit behind the
+	// /var -> /private/var symlink.
+	wantPath, err := filepath.EvalSymlinks(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := DefaultClient.PreflightRestartShellContext(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +172,7 @@ func TestRealGuardedRespawnUsesFreshShellOnlyForAgentRecovery(t *testing.T) {
 	}
 	fresh := waitGuardedTestPane(t, session, func(p Pane) bool { return p.PID != retained.PID && p.IdleShell() })
 	path, err := DefaultClient.RunContext(t.Context(), "display-message", "-p", "-t", fresh.ID, "#{pane_current_path}")
-	if err != nil || path != directory {
+	if err != nil || path != wantPath {
 		t.Fatalf("fresh shell lost the observed worktree: %q, %v", path, err)
 	}
 	for _, tc := range []struct {

@@ -319,6 +319,9 @@ func TestLaunchEnvironmentFailureBoundaries(t *testing.T) {
 			for i := 0; i < 16; i++ {
 				environment[fmt.Sprintf("API_TOKEN_%d", i)] = strings.Repeat("secret-marker", 4000)
 			}
+			// With the padded command, the script is more than a FIFO holds for a
+			// reader that never reads: 64 KiB on Linux, 1 MiB on macOS.
+			command := "true" + strings.Repeat(" ", 512*1024)
 			launch, err := NewLaunchEnvironment(t.Context(), environment)
 			if err != nil {
 				t.Fatal(err)
@@ -328,7 +331,7 @@ func TestLaunchEnvironmentFailureBoundaries(t *testing.T) {
 			defer cancel()
 			readerOpened := make(chan *os.File, 1)
 			started := time.Now()
-			err = launch.send(ctx, "%7", "true", AgentCodex, func(context.Context, string, string, bool, AgentType) error {
+			err = launch.send(ctx, "%7", command, AgentCodex, func(context.Context, string, string, bool, AgentType) error {
 				if testCase == "sender failure" {
 					return errors.New("secret-marker: diagnostic from an untrusted sender")
 				}
@@ -343,7 +346,10 @@ func TestLaunchEnvironmentFailureBoundaries(t *testing.T) {
 			if err == nil || strings.Contains(err.Error(), "secret-marker") {
 				t.Fatalf("failed transport did not return a redacted error: %v", err)
 			}
-			if testCase != "sender failure" && !errors.Is(err, context.DeadlineExceeded) {
+			// Go does not poll FIFOs on darwin (golang/go#24164), so a full FIFO
+			// fails the write at once instead of waiting out the deadline.
+			failsFast := testCase == "stalled reader" && runtime.GOOS == "darwin"
+			if testCase != "sender failure" && !failsFast && !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("canceled transport returned %v", err)
 			}
 			if time.Since(started) > 2*time.Second {

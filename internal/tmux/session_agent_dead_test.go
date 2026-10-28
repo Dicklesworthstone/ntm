@@ -10,7 +10,9 @@ import (
 // running the real agent as a child (a non-exec'ing wrapper script, a `a && b`
 // command list) is alive; only a shell with nothing under it is dead.
 func TestAgentCLIDeadLooksUnderWrapperShells(t *testing.T) {
-	wrapper := exec.Command("sh", "-c", "sleep 30")
+	// A command list keeps the shell as sleep's parent; bash and zsh exec a
+	// lone -c command in place.
+	wrapper := exec.Command("sh", "-c", "sleep 30; :")
 	if err := wrapper.Start(); err != nil {
 		t.Fatalf("start wrapper: %v", err)
 	}
