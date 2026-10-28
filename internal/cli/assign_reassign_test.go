@@ -1111,6 +1111,30 @@ func readAssignContextStubLog(t *testing.T, path string) string {
 	return string(data)
 }
 
+// assertAssignContextSearches checks one assignment's cass calls. Assignment
+// enrichment prefers the bead's own project, so context search runs the global
+// query plus one scoped to that workspace, both over the bead's text.
+func assertAssignContextSearches(t *testing.T, cassCalls, projectDir string, terms ...string) {
+	t.Helper()
+	searches, scoped := strings.Split(strings.TrimSpace(cassCalls), "\n"), 0
+	for _, call := range searches {
+		if !strings.HasPrefix(call, "search ") {
+			t.Fatalf("cass calls = %q, want only searches", cassCalls)
+		}
+		for _, term := range terms {
+			if !strings.Contains(call, term) {
+				t.Fatalf("cass calls = %q, want every search over the bead (missing %q)", cassCalls, term)
+			}
+		}
+		if strings.Contains(call, " --workspace="+projectDir+" ") {
+			scoped++
+		}
+	}
+	if len(searches) != 2 || scoped != 1 {
+		t.Fatalf("cass calls = %q, want one global and one workspace-scoped search", cassCalls)
+	}
+}
+
 // installAssignContextTracker stubs the tracker with a stateful fake: a claim
 // makes the bead in_progress and owned by its actor, so a fresh assignment
 // and a same-key recovery both pass the atomic eligibility gate.
@@ -1288,9 +1312,7 @@ func TestExecuteAssignmentsEnhancedEnrichesPromptBeforeRecordingIntent(t *testin
 		t.Fatalf("assignment JSON lacks cass_injection: %s (%v)", raw, err)
 	}
 	cassCalls := readAssignContextStubLog(t, cassLog)
-	if strings.Count(cassCalls, "search") != 1 || !strings.Contains(cassCalls, "gateway") || !strings.Contains(cassCalls, "bucket") {
-		t.Fatalf("cass calls = %q, want one search over the bead's title, labels, and description", cassCalls)
-	}
+	assertAssignContextSearches(t, cassCalls, projectDir, "gateway", "bucket")
 	if strings.Contains(cassCalls, "dependencies") {
 		t.Fatalf("cass query carried template boilerplate: %q", cassCalls)
 	}
@@ -1324,7 +1346,8 @@ func TestExecuteAssignmentsEnhancedEnrichesPromptBeforeRecordingIntent(t *testin
 	cfg.CASS.BinaryPath = filepath.Join(t.TempDir(), "no-such-cass")
 	const degradedBead = "ntm-ctx-missing"
 	degraded := execute(degradedBead, false)
-	if degraded.CASSInjection == nil || degraded.CASSInjection.ItemsInjected != 0 || !strings.Contains(degraded.CASSInjection.SkippedReason, "not found") {
+	// Context search reports the cass client's ErrNotInstalled.
+	if degraded.CASSInjection == nil || degraded.CASSInjection.ItemsInjected != 0 || !strings.Contains(degraded.CASSInjection.SkippedReason, "cass is not installed") {
 		t.Fatalf("degraded cass_injection = %+v, want a recorded missing-cass skip", degraded.CASSInjection)
 	}
 	if row := assignContextLedgerRow(t, session, degradedBead); row.PromptSent != expandPromptTemplate(degradedBead, assignContextTitle, "impl", "") {
@@ -1373,9 +1396,7 @@ func TestDirectPaneAssignWithCASSRecoveryReplaysRecordedPrompt(t *testing.T) {
 		t.Fatalf("first attempt cass_injection = %+v, want injected history", cass)
 	}
 	cassCalls := readAssignContextStubLog(t, cassLog)
-	if strings.Count(cassCalls, "search") != 1 || !strings.Contains(cassCalls, "gateway") {
-		t.Fatalf("cass calls = %q, want one search over the bead", cassCalls)
-	}
+	assertAssignContextSearches(t, cassCalls, projectDir, "gateway")
 	pending := assignContextLedgerRow(t, session, beadID)
 	if pending.Status != assignment.StatusClaimed || pending.DispatchState != assignment.DispatchPending ||
 		!strings.Contains(pending.PendingPrompt, assignContextCASSMarker) ||
