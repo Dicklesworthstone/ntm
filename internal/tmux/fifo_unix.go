@@ -55,6 +55,26 @@ func openLaunchEnvironmentWriter(ctx context.Context, path string) (*os.File, er
 	}
 }
 
+// writeLaunchEnvironment writes the whole script, waiting while the FIFO is
+// full. Go polls FIFOs on Linux but not on darwin (golang/go#24164), where a
+// full FIFO returns EAGAIN instead of blocking until the reader drains it.
+func writeLaunchEnvironment(ctx context.Context, writer *os.File, script string) error {
+	for script != "" {
+		n, err := writer.WriteString(script)
+		script = script[n:]
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, syscall.EAGAIN) {
+			return err
+		}
+		if err := waitForSendDelay(ctx, 10*time.Millisecond); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func openLaunchEnvironmentAbort(path string) (*os.File, error) {
 	file, err := os.OpenFile(path, os.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if err != nil {

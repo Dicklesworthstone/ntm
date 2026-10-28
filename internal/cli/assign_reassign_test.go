@@ -1116,22 +1116,34 @@ func readAssignContextStubLog(t *testing.T, path string) string {
 // query plus one scoped to that workspace, both over the bead's text.
 func assertAssignContextSearches(t *testing.T, cassCalls, projectDir string, terms ...string) {
 	t.Helper()
-	searches, scoped := strings.Split(strings.TrimSpace(cassCalls), "\n"), 0
+	searches := strings.Split(strings.TrimSpace(cassCalls), "\n")
+	if len(searches) != 2 {
+		t.Fatalf("cass calls = %q, want one global and one workspace-scoped search", cassCalls)
+	}
+	queries, scoped := make([]string, 0, 2), 0
 	for _, call := range searches {
-		if !strings.HasPrefix(call, "search ") {
+		flags, query, ok := strings.Cut(call, " -- ")
+		if !ok || !strings.HasPrefix(flags, "search ") {
 			t.Fatalf("cass calls = %q, want only searches", cassCalls)
 		}
-		for _, term := range terms {
-			if !strings.Contains(call, term) {
-				t.Fatalf("cass calls = %q, want every search over the bead (missing %q)", cassCalls, term)
+		queries = append(queries, query)
+		if strings.Contains(flags, " --workspace=") {
+			if !strings.Contains(flags+" ", " --workspace="+projectDir+" ") {
+				t.Fatalf("cass calls = %q, want the scoped search in %s", cassCalls, projectDir)
 			}
-		}
-		if strings.Contains(call, " --workspace="+projectDir+" ") {
 			scoped++
 		}
 	}
-	if len(searches) != 2 || scoped != 1 {
+	if scoped != 1 {
 		t.Fatalf("cass calls = %q, want one global and one workspace-scoped search", cassCalls)
+	}
+	if queries[0] != queries[1] {
+		t.Fatalf("cass calls = %q, want both searches over the same text", cassCalls)
+	}
+	for _, term := range terms {
+		if !strings.Contains(queries[0], term) {
+			t.Fatalf("cass calls = %q, want the search over the bead (missing %q)", cassCalls, term)
+		}
 	}
 }
 

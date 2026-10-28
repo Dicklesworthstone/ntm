@@ -19,6 +19,10 @@ func openLaunchEnvironmentWriter(context.Context, string) (*os.File, error) {
 	return nil, errors.New("recovery environment pipes are not supported on Windows")
 }
 
+func writeLaunchEnvironment(context.Context, *os.File, string) error {
+	return errors.New("recovery environment pipes are not supported on Windows")
+}
+
 func openLaunchEnvironmentAbort(string) (*os.File, error) {
 	return nil, errors.New("recovery environment pipes are not supported on Windows")
 }

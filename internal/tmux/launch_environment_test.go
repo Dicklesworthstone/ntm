@@ -346,10 +346,7 @@ func TestLaunchEnvironmentFailureBoundaries(t *testing.T) {
 			if err == nil || strings.Contains(err.Error(), "secret-marker") {
 				t.Fatalf("failed transport did not return a redacted error: %v", err)
 			}
-			// Go does not poll FIFOs on darwin (golang/go#24164), so a full FIFO
-			// fails the write at once instead of waiting out the deadline.
-			failsFast := testCase == "stalled reader" && runtime.GOOS == "darwin"
-			if testCase != "sender failure" && !failsFast && !errors.Is(err, context.DeadlineExceeded) {
+			if testCase != "sender failure" && !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("canceled transport returned %v", err)
 			}
 			if time.Since(started) > 2*time.Second {
@@ -369,6 +366,52 @@ func TestLaunchEnvironmentFailureBoundaries(t *testing.T) {
 				t.Fatal("failed environment handoff was not removed")
 			}
 		})
+	}
+}
+
+// A reader that starts draining late still receives a script larger than the
+// FIFO holds (1 MiB on macOS, where Go reports a full FIFO as EAGAIN).
+func TestLaunchEnvironmentWaitsForSlowReader(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("tmux environment handoff requires Unix FIFOs")
+	}
+	environment := make(map[string]string)
+	for i := 0; i < 16; i++ {
+		environment[fmt.Sprintf("API_TOKEN_%d", i)] = strings.Repeat("slow-reader", 4000)
+	}
+	command := "true" + strings.Repeat(" ", 512*1024)
+	launch, err := NewLaunchEnvironment(t.Context(), environment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = launch.Close() })
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	type readResult struct {
+		data []byte
+		err  error
+	}
+	result := make(chan readResult, 1)
+	err = launch.send(ctx, "%7", command, AgentCodex, func(context.Context, string, string, bool, AgentType) error {
+		go func() {
+			file, err := os.Open(launch.pipe)
+			if err != nil {
+				result <- readResult{nil, err}
+				return
+			}
+			defer file.Close()
+			time.Sleep(200 * time.Millisecond)
+			data, err := io.ReadAll(file)
+			result <- readResult{data, err}
+		}()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("slow reader did not receive the handoff: %v", err)
+	}
+	read := <-result
+	if read.err != nil || len(read.data) <= 1<<20 || !bytes.HasSuffix(read.data, []byte("\n}\n")) {
+		t.Fatalf("reader got %d bytes (%v), want the complete script of more than 1 MiB", len(read.data), read.err)
 	}
 }
 

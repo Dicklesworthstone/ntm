@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -244,7 +243,7 @@ func (launch *LaunchEnvironment) send(ctx context.Context, target, command strin
 	launch.writer = writer
 	launch.mu.Unlock()
 	stopClose := context.AfterFunc(ctx, func() { _ = writer.Close() })
-	_, err = io.WriteString(writer, script.String())
+	err = writeLaunchEnvironment(ctx, writer, script.String())
 	stopClose()
 	_ = writer.Close()
 	if err != nil {
