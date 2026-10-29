@@ -1187,3 +1187,379 @@ func TestJSONCredentialProviderOverlapWithZeroWidthExtraPatterns(t *testing.T) {
 		}
 	}
 }
+
+func assertJSONRawFinding(t *testing.T, input, rawMatch string, category Category) Finding {
+	t.Helper()
+	start := strings.Index(input, rawMatch)
+	if start < 0 {
+		t.Fatal("expected raw match is absent from the test fixture")
+	}
+	result := ScanAndRedact(input, Config{Mode: ModeRedact})
+	if len(result.Findings) != 1 {
+		t.Fatalf("findings=%d, want exactly one %s finding", len(result.Findings), category)
+	}
+	f := result.Findings[0]
+	if f.Category != category || f.Match != rawMatch || f.Start != start || f.End != start+len(rawMatch) {
+		t.Errorf("finding has wrong category, raw match, or byte range: %+v", f)
+	}
+	wantOutput := input[:start] + f.Redacted + input[start+len(rawMatch):]
+	if result.Output != wantOutput {
+		t.Error("redacted output did not replace exactly the original source span")
+	}
+	return f
+}
+
+func TestJSONEscapedContentDetection(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		rawMatch string
+	}{
+		{
+			name:     "quoted logged assignment",
+			input:    `{"message":"PASSWORD=\"synthetic-never-valid-quoted\"","status":"ready"}`,
+			rawMatch: `PASSWORD=\"synthetic-never-valid-quoted\"`,
+		},
+		{
+			name:     "fully encoded keyword and separator",
+			input:    `{"message":"\u0050\u0041\u0053\u0053\u0057\u004f\u0052\u0044\u003dsynthetic-never-valid-encoded","status":"ready"}`,
+			rawMatch: `\u0050\u0041\u0053\u0053\u0057\u004f\u0052\u0044\u003dsynthetic-never-valid-encoded`,
+		},
+		{
+			name:     "encoded separator",
+			input:    `{"message":"PASSWORD\u003dsynthetic-never-valid-separator","status":"ready"}`,
+			rawMatch: `PASSWORD\u003dsynthetic-never-valid-separator`,
+		},
+		{
+			name:     "encoded value",
+			input:    `{"message":"PASSWORD=synthetic\u002dnever\u002dvalid\u002dvalue","status":"ready"}`,
+			rawMatch: `PASSWORD=synthetic\u002dnever\u002dvalid\u002dvalue`,
+		},
+		{
+			name:     "logged nested field",
+			input:    `{"message":"{\"password\":\"synthetic-never-valid-nested\"}","status":"ready"}`,
+			rawMatch: `\"password\":\"synthetic-never-valid-nested\"`,
+		},
+		{
+			name:     "escaped whitespace around assignment",
+			input:    `{"message":"first line\nPASSWORD=synthetic-never-valid-spaces\tpublic","status":"ready"}`,
+			rawMatch: `PASSWORD=synthetic-never-valid-spaces`,
+		},
+		{
+			name:     "database PWD path remains a credential",
+			input:    `{"message":"MYSQL_PWD=\u002fhome\u002fagent\u002fproject","status":"ready"}`,
+			rawMatch: `PWD=\u002fhome\u002fagent\u002fproject`,
+		},
+		{
+			name:     "escaped quote key does not hide message content",
+			input:    `{"not\"password":"\u0050ASSWORD\u003dsynthetic-never-valid-message","status":"ready"}`,
+			rawMatch: `\u0050ASSWORD\u003dsynthetic-never-valid-message`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if !json.Valid([]byte(tc.input)) {
+				t.Fatal("invalid JSON test fixture")
+			}
+			assertJSONRawFinding(t, tc.input, tc.rawMatch, CategoryPassword)
+		})
+	}
+}
+
+func TestJSONEscapedContentRejectsDecodedFalsePositives(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"seven decoded characters", `{"message":"PASSWORD=\u0061\u0062\u0063\u0064\u0065\u0066\u0067"}`},
+		{"decoded whitespace ends a short value", `{"message":"PASSWORD=abc\u0020defg"}`},
+		{"shell PWD path", `{"message":"PWD=\u002fhome\u002fagent\u002fproject"}`},
+		{"shell OLDPWD path", `{"message":"OLDPWD=\u002fhome\u002fagent\u002fproject"}`},
+		{"Windows PWD path", `{"message":"PWD=\u0043\u003a\u005cUsers\u005cagent\u005cproject"}`},
+		{"shell expansion", `{"message":"PWD=\u0024HOME/project"}`},
+		{"star placeholder", `{"message":"PASSWORD=\u002a\u002a\u002a\u002a\u002a\u002a\u002a\u002a"}`},
+		{"redacted placeholder", `{"message":"PASSWORD=\u003credacted\u003e"}`},
+		{"seven surrogate pair runes", `{"message":"PASSWORD=` + strings.Repeat(`\ud83d\ude00`, 7) + `"}`},
+		{"literal backslash u separator", `{"message":"PASSWORD\\u003dsynthetic-never-valid-double"}`},
+		{"nested key is not decoded twice", `{"message":"{\"pass\\u0077ord\":\"synthetic-never-valid-double\"}"}`},
+		{"false key cannot suppress decoded short-value filtering", `{"not\"password":"PASSWORD=\u0061\u0062\u0063\u0064\u0065\u0066\u0067"}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if !json.Valid([]byte(tc.input)) {
+				t.Fatal("invalid JSON test fixture")
+			}
+			output, findings := Redact(tc.input, Config{})
+			if len(findings) != 0 || output != tc.input {
+				t.Errorf("decoded non-credential produced findings: %+v", findings)
+			}
+		})
+	}
+}
+
+func TestJSONEscapedContentUnicodeSourceOffsets(t *testing.T) {
+	tests := []struct {
+		name     string
+		rawValue string
+	}{
+		{"paired surrogates", `\u96ea` + strings.Repeat(`\ud83d\ude00`, 7)},
+		{"unpaired high surrogate", `abcdefg\ud800`},
+		{"unpaired low surrogate", `abcdefg\udc00`},
+		{"unpaired then paired surrogate", `abcdef\ud800\ud83d\ude00`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rawMatch := "PASSWORD=" + tc.rawValue
+			input := `{"message":"raw:雪 escaped:\u96ea paired:\ud83d\ude00 ` + rawMatch + `\tpublic","status":"ready"}`
+			if !json.Valid([]byte(input)) {
+				t.Fatal("invalid JSON test fixture")
+			}
+			assertJSONRawFinding(t, input, rawMatch, CategoryPassword)
+		})
+	}
+}
+
+func TestJSONEncodedCredentialKeysDetection(t *testing.T) {
+	tests := []struct {
+		name     string
+		field    string
+		category Category
+	}{
+		{"password", `"pass\u0077ord":"synthetic-never-valid-password"`, CategoryPassword},
+		{"uppercase password", `"\u0050ASSWORD":"synthetic-never-valid-password"`, CategoryPassword},
+		{"API key", `"api\u005fkey":"syntheticNeverValidApiKey123"`, CategoryGenericAPIKey},
+		{"prefixed token", `"access_\u0074oken":"syntheticNeverValidToken123"`, CategoryGenericSecret},
+		{"AWS key", `"aws_\u0073ecret_access_key":"` + strings.Repeat("Q", 40) + `"`, CategoryAWSSecretKey},
+		{"database PWD path", `"mysql_\u0070wd":"\u002fhome/agent/project"`, CategoryPassword},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `{"status":"ready",` + tc.field + `,"count":2}`
+			if !json.Valid([]byte(input)) {
+				t.Fatal("invalid JSON test fixture")
+			}
+			assertJSONRawFinding(t, input, tc.field, tc.category)
+		})
+	}
+}
+
+func TestJSONEncodedCredentialKeysRejectNonCredentials(t *testing.T) {
+	fields := []string{
+		`"notpass\u0077ord":"synthetic-never-valid-neighbor"`,
+		`"pass\u0077ord_hint":"synthetic-never-valid-neighbor"`,
+		`"not\"password":"synthetic-never-valid-neighbor"`,
+		`"not\u0022password":"synthetic-never-valid-neighbor"`,
+		`"pass\\u0077ord":"synthetic-never-valid-double"`,
+		`"pass\u0077ord":12345678`,
+		`"pass\u0077ord":"\u0061\u0062\u0063\u0064\u0065\u0066\u0067"`,
+		`"pass\u0077ord":"\u003credacted\u003e"`,
+		`"\u0050WD":"\u002fhome/agent/project"`,
+		`"OLD\u0050WD":"\u002fhome/agent/project"`,
+	}
+	for _, field := range fields {
+		input := "{" + field + "}"
+		if !json.Valid([]byte(input)) {
+			t.Fatal("invalid JSON test fixture")
+		}
+		output, findings := Redact(input, Config{})
+		if len(findings) != 0 || output != input {
+			t.Errorf("non-credential key produced findings: %+v", findings)
+		}
+	}
+}
+
+func TestJSONEncodedCredentialKeysJSONLDuplicates(t *testing.T) {
+	first := `"password":"synthetic-never-valid-first"`
+	second := `"pass\u0077ord":"synthetic-never-valid-second"`
+	third := `PASSWORD=\"synthetic-never-valid-third\"`
+	input := "\n{" + first + "," + second + ",\"status\":\"ready\"}\r\n \t\n" + `{"message":"` + third + `"}` + "\n"
+	findings := Scan(input, Config{})
+	if len(findings) != 3 {
+		t.Fatalf("findings=%d, want both duplicate properties and the next record", len(findings))
+	}
+	AddLineInfo(input, findings)
+	for i, want := range []string{first, second, third} {
+		f := findings[i]
+		start := strings.Index(input, want)
+		wantLine := []int{2, 2, 4}[i]
+		if f.Category != CategoryPassword || f.Match != want || f.Start != start || f.End != start+len(want) || f.Line != wantLine {
+			t.Errorf("finding %d has wrong raw source or physical line: %+v", i, f)
+		}
+	}
+	output, _ := Redact(input, Config{})
+	if strings.Contains(output, "synthetic-never-valid") || !strings.Contains(output, `"status":"ready"`) {
+		t.Error("JSONL redaction exposed credential content or consumed a public field")
+	}
+}
+
+func TestJSONEscapedContentPreservesRawInvalidInput(t *testing.T) {
+	assignment := `PASSWORD=\u0061\u0062\u0063\u0064\u0065\u0066\u0067`
+	tests := []struct {
+		name     string
+		input    string
+		rawMatch string
+	}{
+		{"plaintext quoted text", `log message="` + assignment + `"`, assignment + `"`},
+		{"malformed single record", `{"message":"` + assignment + `",`, assignment + `"`},
+		{"malformed pretty document", "{\n\"" + assignment + "\"\nBROKEN\n}", assignment + `"`},
+		{"JSONL with an invalid nonblank line", `{"message":"` + assignment + `"}` + "\nnot-json\n", assignment + `"`},
+		{"invalid JSON escape", `{"message":"PASSWORD=abcdefg\q"}`, `PASSWORD=abcdefg\q"`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if json.Valid([]byte(tc.input)) {
+				t.Fatal("test fixture unexpectedly contains valid whole JSON")
+			}
+			assertJSONRawFinding(t, tc.input, tc.rawMatch, CategoryPassword)
+		})
+	}
+}
+
+func TestJSONEscapedContentAllowlistsAndDisabledCategories(t *testing.T) {
+	provider := "gh" + "p_" + strings.Repeat("q", 40)
+	encodedProvider := `\u0067` + provider[1:]
+	encodedField := `"pass\u0077ord":"synthetic\u002dnever\u002dvalid"`
+	tests := []struct {
+		name         string
+		input        string
+		rawMatch     string
+		logicalMatch string
+		category     Category
+	}{
+		{
+			name:         "quoted assignment",
+			input:        `{"message":"PASSWORD=\"synthetic\u002dnever\u002dvalid\""}`,
+			rawMatch:     `PASSWORD=\"synthetic\u002dnever\u002dvalid\"`,
+			logicalMatch: `PASSWORD="synthetic-never-valid"`,
+			category:     CategoryPassword,
+		},
+		{
+			name:         "provider keeps priority in a logged assignment",
+			input:        `{"message":"token=` + encodedProvider + `"}`,
+			rawMatch:     encodedProvider,
+			logicalMatch: provider,
+			category:     CategoryGitHubToken,
+		},
+		{
+			name:         "encoded property key retains raw value",
+			input:        "{" + encodedField + "}",
+			rawMatch:     encodedField,
+			logicalMatch: `"password":"synthetic\u002dnever\u002dvalid"`,
+			category:     CategoryPassword,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assertJSONRawFinding(t, tc.input, tc.rawMatch, tc.category)
+			for _, allowed := range []string{tc.rawMatch, tc.logicalMatch} {
+				output, findings := Redact(tc.input, Config{Allowlist: []string{"^" + regexp.QuoteMeta(allowed) + "$"}})
+				if len(findings) != 0 || output != tc.input {
+					t.Error("anchored raw or logical allowlist did not suppress the complete match")
+				}
+			}
+			cfg := Config{DisabledCategories: []Category{tc.category}}
+			if tc.category == CategoryGitHubToken {
+				// The lower-priority generic assignment is still eligible when
+				// only the provider category is disabled.
+				cfg.DisabledCategories = append(cfg.DisabledCategories, CategoryGenericSecret)
+			}
+			output, findings := Redact(tc.input, cfg)
+			if len(findings) != 0 || output != tc.input {
+				t.Error("disabled categories were detected in decoded content")
+			}
+		})
+	}
+}
+
+func TestJSONEscapedContentExtraPatternsStayRaw(t *testing.T) {
+	rawMarker := `\u0050ASSWORD`
+	input := `{"message":"` + rawMarker + `\u003dsynthetic-never-valid-custom"}`
+	cfg := Config{
+		DisabledCategories: []Category{CategoryPassword},
+		ExtraPatterns:      map[Category][]string{"CUSTOM_RAW": {regexp.QuoteMeta(rawMarker)}},
+	}
+	findings := Scan(input, cfg)
+	start := strings.Index(input, rawMarker)
+	if len(findings) != 1 || findings[0].Category != "CUSTOM_RAW" || findings[0].Match != rawMarker || findings[0].Start != start || findings[0].End != start+len(rawMarker) {
+		t.Errorf("raw custom pattern was changed or suppressed: %+v", findings)
+	}
+	cfg.ExtraPatterns = map[Category][]string{"CUSTOM_LOGICAL": {regexp.QuoteMeta("PASSWORD=synthetic-never-valid-custom")}}
+	if findings := Scan(input, cfg); len(findings) != 0 {
+		t.Errorf("custom pattern was incorrectly applied to decoded content: %+v", findings)
+	}
+}
+
+func TestJSONEscapedContentNestedFieldPreservesResiduals(t *testing.T) {
+	provider := "gh" + "p_" + strings.Repeat("q", 40)
+	logicalField := `"password":"sensitive-prefix:` + provider + `:sensitive-suffix"`
+	rawField := `\"password\":\"sensitive-prefix:` + provider + `:sensitive-suffix\"`
+	input := `{"message":"{` + rawField + `}","status":"ready"}`
+	output, findings := Redact(input, Config{})
+	if len(findings) != 3 {
+		t.Fatalf("findings=%d, want provider and two residual spans", len(findings))
+	}
+	for _, f := range findings {
+		if f.Match != input[f.Start:f.End] {
+			t.Error("nested field finding lost its original raw range")
+		}
+	}
+	if findings[0].Category != CategoryPassword || findings[1].Category != CategoryGitHubToken || findings[1].Match != provider || findings[2].Category != CategoryPassword {
+		t.Error("nested field changed provider priority or residual categories")
+	}
+	if strings.Contains(output, "sensitive-") || strings.Contains(output, provider) || !strings.Contains(output, `"status":"ready"`) {
+		t.Error("nested field redaction exposed credential content or consumed a public field")
+	}
+	for _, allowed := range []string{rawField, logicalField} {
+		findings := Scan(input, Config{Allowlist: []string{"^" + regexp.QuoteMeta(allowed) + "$"}})
+		if len(findings) != 1 || findings[0].Category != CategoryGitHubToken || findings[0].Match != provider {
+			t.Error("nested residuals did not inherit the original raw and logical field allowlist contexts")
+		}
+	}
+}
+
+func TestJSONEscapedContentQuotedAssignmentPreservesResiduals(t *testing.T) {
+	provider := "gh" + "p_" + strings.Repeat("q", 40)
+	logicalAssignment := `PASSWORD="sensitive-prefix:` + provider + `:sensitive-suffix"`
+	rawAssignment := `PASSWORD=\"sensitive-prefix:` + provider + `:sensitive-suffix\"`
+	input := `{"message":"` + rawAssignment + `","status":"ready"}`
+	if !json.Valid([]byte(input)) {
+		t.Fatal("invalid JSON test fixture")
+	}
+	output, findings := Redact(input, Config{})
+	if len(findings) != 3 {
+		t.Fatalf("findings=%d, want provider and two quoted-value residuals", len(findings))
+	}
+	for i, want := range []string{"sensitive-prefix:", provider, ":sensitive-suffix"} {
+		f := findings[i]
+		category := CategoryPassword
+		if i == 1 {
+			category = CategoryGitHubToken
+		}
+		start := strings.Index(input, want)
+		if f.Category != category || f.Match != want || f.Start != start || f.End != start+len(want) {
+			t.Errorf("finding %d changed provider priority or raw quoted-value bounds: %+v", i, f)
+		}
+	}
+	if strings.Contains(output, "sensitive-") || strings.Contains(output, provider) || !strings.Contains(output, `"status":"ready"`) {
+		t.Error("quoted assignment exposed credential content or consumed a public field")
+	}
+
+	for _, allowed := range []string{rawAssignment, logicalAssignment} {
+		findings := Scan(input, Config{Allowlist: []string{"^" + regexp.QuoteMeta(allowed) + "$"}})
+		if len(findings) != 1 || findings[0].Category != CategoryGitHubToken || findings[0].Match != provider {
+			t.Error("quoted-value residuals lost their full raw or logical assignment allowlist context")
+		}
+	}
+	providerAllowlist := "^" + regexp.QuoteMeta(provider) + "$"
+	output, findings = Redact(input, Config{Allowlist: []string{providerAllowlist}})
+	if len(findings) != 2 || findings[0].Category != CategoryPassword || findings[1].Category != CategoryPassword {
+		t.Error("allowlisting the provider suppressed uncovered password portions")
+	}
+	if strings.Contains(output, "sensitive-") || !strings.Contains(output, provider) {
+		t.Error("provider-only allowlist did not preserve protection of the remaining password")
+	}
+	output, findings = Redact(input, Config{Allowlist: []string{providerAllowlist, "^" + regexp.QuoteMeta(logicalAssignment) + "$"}})
+	if len(findings) != 0 || output != input {
+		t.Error("allowlisting the provider and complete assignment changed the input")
+	}
+}

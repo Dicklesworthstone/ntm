@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -44,6 +45,8 @@ func TestE2E_ScrubQuotedCredentials(t *testing.T) {
 	provider := "gh" + "p_" + strings.Repeat("q", 40)
 	escapedProvider := "gh" + "p_" + strings.Repeat("q", 31) + "\\u0071SECRETL8"
 	compositePassword := "{\"password\":\"left-sensitive " + provider + " right-sensitive\",\"note\":\"public-neighbor\"}\n"
+	embeddedPassword := "{\"message\":\"PASSWORD=\\\"left-sensitive:" + provider + ":right-sensitive\\\"\",\"note\":\"public-neighbor\"}\n"
+	allowlistedAssignments := "{\"message\":\"PASSWORD=\\\"allowlisted-sensitive-control\\\"\",\"note\":\"public-neighbor\"}\n{\"message\":\"PASSWORD=\\\"unlisted-sensitive-secret\\\"\",\"note\":\"public-neighbor\"}\n"
 	cases := []struct {
 		name       string
 		content    string
@@ -52,6 +55,7 @@ func TestE2E_ScrubQuotedCredentials(t *testing.T) {
 		allowlist  string
 		public     string
 		visible    string
+		lines      []int
 	}{
 		{
 			name:       "assignment control",
@@ -108,6 +112,86 @@ func TestE2E_ScrubQuotedCredentials(t *testing.T) {
 			public:    "public-neighbor",
 			visible:   provider,
 		},
+		{
+			name:       "embedded password around provider",
+			content:    embeddedPassword,
+			categories: []string{"PASSWORD", "GITHUB_TOKEN", "PASSWORD"},
+			hidden:     []string{"left-sensitive", "right-sensitive", provider},
+			public:     "public-neighbor",
+			lines:      []int{1, 1, 1},
+		},
+		{
+			name:       "embedded password allowlists only provider",
+			content:    embeddedPassword,
+			categories: []string{"PASSWORD", "PASSWORD"},
+			hidden:     []string{"left-sensitive", "right-sensitive"},
+			allowlist:  "'^" + provider + "$'",
+			public:     "public-neighbor",
+			visible:    provider,
+			lines:      []int{1, 1},
+		},
+		{
+			name:       "embedded quoted assignment",
+			content:    "{\"message\":\"PASSWORD=\\\"embedded-sensitive-head-embedded-sensitive-tail\\\"\",\"note\":\"public-neighbor\"}\n",
+			categories: []string{"PASSWORD"},
+			hidden:     []string{"embedded-sensitive-head", "embedded-sensitive-tail"},
+			public:     "public-neighbor",
+			lines:      []int{1},
+		},
+		{
+			name:       "fully encoded key and separator",
+			content:    "{\"message\":\"\\u0050\\u0041\\u0053\\u0053\\u0057\\u004f\\u0052\\u0044\\u003dfully-encoded-key-secret\",\"note\":\"public-neighbor\"}\n",
+			categories: []string{"PASSWORD"},
+			hidden:     []string{"fully-encoded-key-secret"},
+			public:     "public-neighbor",
+			lines:      []int{1},
+		},
+		{
+			name:       "encoded property with escaped value",
+			content:    "{\"pass\\u0077ord\":\"encoded-sensitive-head\\\"encoded-sensitive-tail\",\"note\":\"public-neighbor\"}\n",
+			categories: []string{"PASSWORD"},
+			hidden:     []string{"encoded-sensitive-head", "encoded-sensitive-tail"},
+			public:     "public-neighbor",
+			lines:      []int{1},
+		},
+		{
+			name:       "physical JSONL lines",
+			content:    "{\"message\":\"harmless first record\",\"note\":\"public-neighbor\"}\n\n{\"message\":\"before\\nPASSWORD=\\\"jsonl-sensitive-first\\\"\\nafter\",\"note\":\"public-neighbor\"}\n{\"pass\\u0077ord\":\"jsonl-sensitive-second\",\"note\":\"public-neighbor\"}\n",
+			categories: []string{"PASSWORD", "PASSWORD"},
+			hidden:     []string{"jsonl-sensitive-first", "jsonl-sensitive-second"},
+			public:     "public-neighbor",
+			lines:      []int{3, 4},
+		},
+		{
+			name:       "raw embedded assignment allowlist",
+			content:    allowlistedAssignments,
+			categories: []string{"PASSWORD"},
+			hidden:     []string{"unlisted-sensitive-secret"},
+			allowlist:  "'^" + regexp.QuoteMeta("PASSWORD=\\\"allowlisted-sensitive-control\\\"") + "$'",
+			public:     "public-neighbor",
+			visible:    "allowlisted-sensitive-control",
+			lines:      []int{2},
+		},
+		{
+			name:       "logical embedded assignment allowlist",
+			content:    allowlistedAssignments,
+			categories: []string{"PASSWORD"},
+			hidden:     []string{"unlisted-sensitive-secret"},
+			allowlist:  "'^" + regexp.QuoteMeta("PASSWORD=\"allowlisted-sensitive-control\"") + "$'",
+			public:     "public-neighbor",
+			visible:    "allowlisted-sensitive-control",
+			lines:      []int{2},
+		},
+		{
+			name: "decoded noncredentials",
+			content: "{\"message\":\"password=\\u0061\\u0062\\u0063\\u0064\\u0065\\u0066\\u0067\",\"note\":\"public-neighbor\"}\n" +
+				"{\"message\":\"PWD=\\u002fhome/user/project\",\"note\":\"public-neighbor\"}\n" +
+				"{\"message\":\"OLDPWD=C:\\\\Users\\\\user\\\\project\",\"note\":\"public-neighbor\"}\n" +
+				"{\"message\":\"password=\\u003credacted\\u003e\",\"note\":\"public-neighbor\"}\n" +
+				"{\"password\\u005fhint\":\"public-neighbor-long\",\"token\\u005fcount\":\"public-count-value\",\"note\":\"public-neighbor\"}\n" +
+				"{\"pass\\u0077ord\\u0022\\u003a\\u0022token\":\"public-neighbor-long\",\"note\":\"public-neighbor\"}\n",
+			public: "public-neighbor",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -159,6 +243,7 @@ func TestE2E_ScrubQuotedCredentials(t *testing.T) {
 						if format == "json" {
 							var response struct {
 								Findings []scrubFinding
+								Output   string
 							}
 							if err := json.Unmarshal(output, &response); err != nil {
 								t.Fatalf("decode response: %v\n%s", err, output)
@@ -173,6 +258,12 @@ func TestE2E_ScrubQuotedCredentials(t *testing.T) {
 								if finding.Start < 0 || finding.End <= finding.Start || finding.End > len(tc.content) || finding.Line < 1 || finding.Column < 1 {
 									t.Errorf("invalid finding coordinates: %+v", finding)
 								}
+								if len(tc.lines) > 0 && finding.Line != tc.lines[i] {
+									t.Errorf("finding %d line=%d, want physical line %d", i, finding.Line, tc.lines[i])
+								}
+							}
+							if command == "preview" && len(tc.categories) == 0 && response.Output != tc.content {
+								t.Error("preview changed an input with no findings")
 							}
 						}
 					})

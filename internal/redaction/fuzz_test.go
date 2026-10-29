@@ -66,6 +66,13 @@ func FuzzScanAndRedact(f *testing.F) {
 
 		// Nested patterns.
 		"outer password=inner password=secret end",
+
+		// JSON source mapping, escaped keys, and provider overlap.
+		"{\"message\":\"PASSWORD=\\\"synthetic-never-valid\\\"\"}",
+		"{\"pass\\u0077ord\":\"synthetic-never-valid\"}",
+		"{\"message\":\"PASSWORD=abcdefg\\ud83d\\ude00\"}",
+		"{\"message\":\"\\\"password\\\":\\\"left-sensitive:" + "gh" + "p_" + strings.Repeat("q", 40) + ":right-sensitive\\\"\"}",
+		"{\"not\\\"password\":\"\\u0050ASSWORD\\u003dsynthetic-never-valid\"}",
 	}
 
 	for _, seed := range seeds {
@@ -100,6 +107,9 @@ func FuzzScanAndRedact(f *testing.F) {
 				}
 				if f.End > len(input) {
 					t.Errorf("mode %s: finding %d has end > input length: end=%d len=%d", mode, i, f.End, len(input))
+				}
+				if f.Start >= 0 && f.End >= f.Start && f.End <= len(input) && f.Match != input[f.Start:f.End] {
+					t.Errorf("mode %s: finding %d does not match its original source range", mode, i)
 				}
 			}
 

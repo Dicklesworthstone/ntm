@@ -10,6 +10,60 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 )
 
+func TestRedactPreview_DecodedJSONCredentials(t *testing.T) {
+	for _, tc := range jsonEscapedCredentialFixtures() {
+		for _, format := range []string{"text", "json"} {
+			t.Run(tc.name+"/"+format, func(t *testing.T) {
+				resetFlags()
+				t.Cleanup(resetFlags)
+				oldCfg := cfg
+				t.Cleanup(func() { cfg = oldCfg })
+				cfg = config.Default()
+				cfg.Redaction.Mode = "off"
+				cfg.Redaction.Allowlist = tc.allowlist
+				jsonOutput = format == "json"
+				cmd := newRedactPreviewCmd()
+				cmd.SetArgs([]string{"--text", tc.content})
+				out, err := captureStdout(t, cmd.Execute)
+				if err != nil {
+					t.Fatalf("preview failed: %v", err)
+				}
+				for _, fragment := range tc.hidden {
+					if strings.Contains(out, fragment) {
+						t.Error("preview exposed a secret fragment")
+					}
+				}
+				if !strings.Contains(out, "public-neighbor") {
+					t.Error("preview removed the neighboring public field")
+				}
+				if tc.visible != "" && !strings.Contains(out, tc.visible) {
+					t.Error("preview did not preserve the explicitly allowlisted assignment")
+				}
+				if format == "json" {
+					var response RedactPreviewResponse
+					if err := json.Unmarshal([]byte(out), &response); err != nil {
+						t.Fatal(err)
+					}
+					if len(response.Findings) != len(tc.lines) {
+						t.Fatalf("findings=%d, want %d", len(response.Findings), len(tc.lines))
+					}
+					for i, finding := range response.Findings {
+						if finding.Category != "PASSWORD" || finding.Line != tc.lines[i] {
+							t.Errorf("finding %d category=%s line=%d, want PASSWORD on physical line %d", i, finding.Category, finding.Line, tc.lines[i])
+						}
+						if finding.Start < 0 || finding.End <= finding.Start || finding.End > len(tc.content) {
+							t.Errorf("finding %d has invalid source offsets", i)
+						}
+					}
+					if len(tc.lines) == 0 && response.Output != tc.content {
+						t.Error("preview changed a decoded noncredential value")
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestRedactPreview_ProviderOverlapValues(t *testing.T) {
 	for _, tc := range jsonCredentialOverlapFixtures() {
 		for _, format := range []string{"text", "json"} {
