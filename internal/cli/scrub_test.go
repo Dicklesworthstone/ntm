@@ -16,12 +16,14 @@ import (
 )
 
 type jsonEscapedCredentialFixture struct {
-	name      string
-	content   string
-	lines     []int
-	hidden    []string
-	allowlist []string
-	visible   string
+	name          string
+	content       string
+	lines         []int
+	sourceMatches []string
+	invalidLines  []int
+	hidden        []string
+	allowlist     []string
+	visible       string
 }
 
 func jsonEscapedCredentialFixtures() []jsonEscapedCredentialFixture {
@@ -81,12 +83,82 @@ func jsonEscapedCredentialFixtures() []jsonEscapedCredentialFixture {
 	}
 }
 
+func jsonMixedRecordCredentialFixtures() []jsonEscapedCredentialFixture {
+	return []jsonEscapedCredentialFixture{
+		{
+			name:          "complete message before truncated tail",
+			content:       "{\"message\":\"PASSWORD=\\\"tail-sensitive-head-tail-sensitive-tail\\\"\",\"note\":\"public-neighbor\"}\n{\"message\":",
+			lines:         []int{1},
+			sourceMatches: []string{"PASSWORD=\\\"tail-sensitive-head-tail-sensitive-tail\\\""},
+			invalidLines:  []int{2},
+			hidden:        []string{"tail-sensitive-head", "tail-sensitive-tail"},
+		},
+		{
+			name:          "encoded key before truncated tail",
+			content:       "{\"pass\\u0077ord\":\"key-tail-sensitive-head\\\"key-tail-sensitive-tail\",\"note\":\"public-neighbor\"}\n{\"message\":",
+			lines:         []int{1},
+			sourceMatches: []string{"\"pass\\u0077ord\":\"key-tail-sensitive-head\\\"key-tail-sensitive-tail\""},
+			invalidLines:  []int{2},
+			hidden:        []string{"key-tail-sensitive-head", "key-tail-sensitive-tail"},
+		},
+		{
+			name: "valid records around invalid lines",
+			content: "INFO public-prefix\n" +
+				"{\"message\":\"PASSWORD=\\\"before-gap-sensitive-head-before-gap-sensitive-tail\\\"\",\"note\":\"public-neighbor\"}\n" +
+				"{\"message\":broken\n" +
+				"{\"pass\\u0077ord\":\"after-gap-sensitive-head\\\"after-gap-sensitive-tail\",\"note\":\"public-neighbor\"}\n",
+			lines: []int{2, 4},
+			sourceMatches: []string{
+				"PASSWORD=\\\"before-gap-sensitive-head-before-gap-sensitive-tail\\\"",
+				"\"pass\\u0077ord\":\"after-gap-sensitive-head\\\"after-gap-sensitive-tail\"",
+			},
+			invalidLines: []int{1, 3},
+			hidden:       []string{"before-gap-sensitive-head", "before-gap-sensitive-tail", "after-gap-sensitive-head", "after-gap-sensitive-tail"},
+		},
+		{
+			name: "raw assignments in mixed records",
+			content: "PASSWORD=plain-sensitive-head-plain-sensitive-tail\n" +
+				"{\"message\":\"PASSWORD=\\\"valid-sensitive-head-valid-sensitive-tail\\\"\",\"note\":\"public-neighbor\"}\n" +
+				"{\"broken\": PASSWORD=malformed-sensitive-head-malformed-sensitive-tail\n" +
+				"{\"pass\\u0077ord\":\"last-sensitive-head\\\"last-sensitive-tail\",\"note\":\"public-neighbor\"}\n",
+			lines: []int{1, 2, 3, 4},
+			sourceMatches: []string{
+				"PASSWORD=plain-sensitive-head-plain-sensitive-tail",
+				"PASSWORD=\\\"valid-sensitive-head-valid-sensitive-tail\\\"",
+				"PASSWORD=malformed-sensitive-head-malformed-sensitive-tail",
+				"\"pass\\u0077ord\":\"last-sensitive-head\\\"last-sensitive-tail\"",
+			},
+			invalidLines: []int{1, 3},
+			hidden:       []string{"plain-sensitive-head", "plain-sensitive-tail", "valid-sensitive-head", "valid-sensitive-tail", "malformed-sensitive-head", "malformed-sensitive-tail", "last-sensitive-head", "last-sensitive-tail"},
+		},
+		{
+			name: "decoded noncredentials in mixed records",
+			content: "INFO public-neighbor\n" +
+				"{\"message\":\"password=\\u0061\\u0062\\u0063\\u0064\\u0065\\u0066\\u0067\",\"note\":\"public-neighbor\"}\n" +
+				"{\"message\":truncated\n" +
+				"{\"message\":\"PWD=\\u002fhome/user/project\",\"note\":\"public-neighbor\"}\n" +
+				"{\"message\":\"password=\\u003credacted\\u003e\",\"note\":\"public-neighbor\"}\n" +
+				"{\"message\":\"OLDPWD=C:\\\\Users\\\\user\\\\project\",\"note\":\"public-neighbor\"}\n",
+			invalidLines: []int{1, 3},
+		},
+	}
+}
+
 func TestScrub_DecodedJSONCredentials(t *testing.T) {
-	for _, tc := range jsonEscapedCredentialFixtures() {
+	for _, tc := range append(jsonEscapedCredentialFixtures(), jsonMixedRecordCredentialFixtures()...) {
 		t.Run(tc.name, func(t *testing.T) {
-			for _, line := range strings.Split(tc.content, "\n") {
-				if strings.TrimSpace(line) != "" && !json.Valid([]byte(line)) {
-					t.Fatal("every nonblank fixture line must be valid JSON")
+			for i, line := range strings.Split(tc.content, "\n") {
+				if strings.TrimSpace(line) == "" {
+					continue
+				}
+				wantValid := true
+				for _, invalidLine := range tc.invalidLines {
+					if invalidLine == i+1 {
+						wantValid = false
+					}
+				}
+				if json.Valid([]byte(line)) != wantValid {
+					t.Fatalf("fixture line %d validity differs from expected %t", i+1, wantValid)
 				}
 			}
 			path := filepath.Join(t.TempDir(), "artifact.jsonl")
@@ -103,6 +175,17 @@ func TestScrub_DecodedJSONCredentials(t *testing.T) {
 			for i, finding := range res.Findings {
 				if finding.Category != redaction.CategoryPassword || finding.Line != tc.lines[i] {
 					t.Errorf("finding %d category=%s line=%d, want PASSWORD on physical line %d", i, finding.Category, finding.Line, tc.lines[i])
+				}
+				if len(tc.sourceMatches) > 0 {
+					wantStart := strings.Index(tc.content, tc.sourceMatches[i])
+					wantEnd := wantStart + len(tc.sourceMatches[i])
+					if wantStart < 0 {
+						t.Fatalf("expected source match %d is absent from fixture", i)
+					}
+					wantColumn := wantStart - strings.LastIndex(tc.content[:wantStart], "\n")
+					if finding.Start != wantStart || finding.End != wantEnd || finding.Column != wantColumn {
+						t.Errorf("finding %d source span=%d:%d column=%d, want %d:%d column=%d", i, finding.Start, finding.End, finding.Column, wantStart, wantEnd, wantColumn)
+					}
 				}
 				for _, fragment := range tc.hidden {
 					if strings.Contains(finding.Preview, fragment) {

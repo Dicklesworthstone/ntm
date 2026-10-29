@@ -200,27 +200,29 @@ type jsonStringToken struct {
 }
 
 // scanJSONEncodedContent also recognizes credentials in serialized log messages
-// and Unicode-escaped property names. Restrict decoding to a valid JSON document
-// or complete JSONL records: shell-quoted text and malformed documents retain
-// their original raw matching behavior.
+// and Unicode-escaped property names. Decode complete JSON records independently
+// so an incomplete log entry does not hide credentials in earlier records.
+// Shell-quoted text and malformed record bytes retain raw matching behavior.
 func scanJSONEncodedContent(input string, disabled []Category, patterns []pattern, matches []match) []match {
-	if !strings.Contains(input, "\\") || !validJSONRecords(input) {
+	if !strings.Contains(input, "\\") {
 		return matches
 	}
 
 	var tokens []jsonStringToken
-	for _, loc := range jsonStringPattern.FindAllStringIndex(input, -1) {
-		token := jsonStringToken{start: loc[0], end: loc[1]}
-		next := skipJSONSpace(input, token.end)
-		token.key = next < len(input) && input[next] == ':'
-		raw := input[token.start:token.end]
-		if strings.Contains(raw, "\\") {
-			if err := json.Unmarshal([]byte(raw), &token.decoded); err != nil {
-				return matches
+	for _, record := range jsonRecordRanges(input) {
+		for _, loc := range jsonStringPattern.FindAllStringIndex(input[record[0]:record[1]], -1) {
+			token := jsonStringToken{start: record[0] + loc[0], end: record[0] + loc[1]}
+			next := skipJSONSpace(input, token.end)
+			token.key = next < record[1] && input[next] == ':'
+			raw := input[token.start:token.end]
+			if strings.Contains(raw, "\\") {
+				if err := json.Unmarshal([]byte(raw), &token.decoded); err != nil {
+					return matches
+				}
+				token.escaped = true
 			}
-			token.escaped = true
+			tokens = append(tokens, token)
 		}
-		tokens = append(tokens, token)
 	}
 
 	// An escaped quote inside a property name must not manufacture a shorter
@@ -316,22 +318,43 @@ func scanJSONEncodedContent(input string, disabled []Category, patterns []patter
 	return append(filtered, decodedMatches...)
 }
 
-func validJSONRecords(input string) bool {
+// jsonRecordRanges returns source spans that can safely be decoded as JSON.
+// A whole document takes precedence over line-oriented parsing. When a log has
+// malformed or incomplete lines, only complete object/array records are decoded;
+// a lone quoted line inside a broken pretty-printed document is not a record.
+// Fully valid JSONL retains support for scalar records as well.
+func jsonRecordRanges(input string) [][2]int {
 	if json.Valid([]byte(input)) {
-		return true
+		return [][2]int{{0, len(input)}}
 	}
-	found := false
+	var records [][2]int
+	allValid := true
+	start := 0
 	for line := range strings.SplitSeq(input, "\n") {
-		line = strings.Trim(line, " \t\r")
-		if line == "" {
+		end := start + len(line)
+		record := strings.Trim(line, " \t\r")
+		if record == "" {
+			start = end + 1
 			continue
 		}
-		if !json.Valid([]byte(line)) {
-			return false
+		if json.Valid([]byte(record)) {
+			records = append(records, [2]int{start, end})
+		} else {
+			allValid = false
 		}
-		found = true
+		start = end + 1
 	}
-	return found
+	if allValid {
+		return records
+	}
+	filtered := records[:0]
+	for _, record := range records {
+		first := skipJSONSpace(input, record[0])
+		if input[first] == '{' || input[first] == '[' {
+			filtered = append(filtered, record)
+		}
+	}
+	return filtered
 }
 
 func skipJSONSpace(input string, pos int) int {

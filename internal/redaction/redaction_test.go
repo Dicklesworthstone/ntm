@@ -1402,7 +1402,6 @@ func TestJSONEscapedContentPreservesRawInvalidInput(t *testing.T) {
 		{"plaintext quoted text", `log message="` + assignment + `"`, assignment + `"`},
 		{"malformed single record", `{"message":"` + assignment + `",`, assignment + `"`},
 		{"malformed pretty document", "{\n\"" + assignment + "\"\nBROKEN\n}", assignment + `"`},
-		{"JSONL with an invalid nonblank line", `{"message":"` + assignment + `"}` + "\nnot-json\n", assignment + `"`},
 		{"invalid JSON escape", `{"message":"PASSWORD=abcdefg\q"}`, `PASSWORD=abcdefg\q"`},
 	}
 	for _, tc := range tests {
@@ -1412,6 +1411,116 @@ func TestJSONEscapedContentPreservesRawInvalidInput(t *testing.T) {
 			}
 			assertJSONRawFinding(t, tc.input, tc.rawMatch, CategoryPassword)
 		})
+	}
+}
+
+func TestJSONLCompleteRecordsSurviveMalformedNeighbors(t *testing.T) {
+	logged := `PASSWORD=\"synthetic-never-valid-complete-record\"`
+	field := `"pass\u0077ord":"synthetic-never-valid-encoded-key"`
+	assignment := "PASSWORD=synthetic-never-valid-raw-assignment"
+	first := `{"message":"` + logged + `","note":"public-neighbor"}`
+	second := `{"status":"ready",` + field + `}`
+	tests := []struct {
+		name    string
+		input   string
+		matches []string
+		lines   []int
+	}{
+		{
+			name:    "incomplete trailing record",
+			input:   first + "\n" + `{"message":`,
+			matches: []string{logged},
+			lines:   []int{1},
+		},
+		{
+			name:    "incomplete leading record",
+			input:   `{"message":` + "\n" + second + "\n",
+			matches: []string{field},
+			lines:   []int{2},
+		},
+		{
+			name:    "interleaved plain text and malformed records",
+			input:   "INFO starting\r\n \t\n" + first + "\r\n" + `{"broken":"\q"}` + "\n" + second + "\nINFO finished",
+			matches: []string{logged, field},
+			lines:   []int{3, 5},
+		},
+		{
+			name:    "ordinary assignments outside JSON still detected",
+			input:   assignment + "\n" + first + "\n" + `{"message":`,
+			matches: []string{assignment, logged},
+			lines:   []int{1, 2},
+		},
+		{
+			name:    "complete array record",
+			input:   "INFO prefix\n[" + second + "]\n" + `{"message":`,
+			matches: []string{field},
+			lines:   []int{2},
+		},
+		{
+			name:    "valid scalar JSONL retains support",
+			input:   `"` + logged + `"` + "\nfalse\n" + second + "\n",
+			matches: []string{logged, field},
+			lines:   []int{1, 3},
+		},
+		{
+			name:    "pretty document takes precedence",
+			input:   "{\n\"records\": [\n" + first + ",\n" + second + "\n]\n}\n",
+			matches: []string{logged, field},
+			lines:   []int{3, 4},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			output, findings := Redact(tc.input, Config{})
+			if len(findings) != len(tc.matches) {
+				t.Fatalf("findings=%d, want %d from complete records and raw assignments", len(findings), len(tc.matches))
+			}
+			AddLineInfo(tc.input, findings)
+			for i, raw := range tc.matches {
+				f := findings[i]
+				start := strings.Index(tc.input, raw)
+				if f.Category != CategoryPassword || f.Match != raw || f.Start != start || f.End != start+len(raw) || f.Line != tc.lines[i] {
+					t.Errorf("finding %d lost its category, raw source span, or physical line: %+v", i, f)
+				}
+			}
+			if strings.Contains(output, "synthetic-never-valid") {
+				t.Error("complete record or ordinary assignment leaked credential bytes")
+			}
+			for _, public := range []string{"public-neighbor", `"status":"ready"`, "INFO starting", "INFO finished", `{"message":`, `{"broken":"\q"}`} {
+				if strings.Contains(tc.input, public) && !strings.Contains(output, public) {
+					t.Errorf("redaction consumed neighboring content %q", public)
+				}
+			}
+		})
+	}
+}
+
+func TestJSONLCompleteRecordsKeepFalsePositiveProtections(t *testing.T) {
+	input := "INFO starting\n" +
+		`{"message":"PASSWORD=\u0061\u0062\u0063\u0064\u0065\u0066\u0067"}` + "\n" +
+		`{"message":"PWD=\u002fhome/agent/project"}` + "\n" +
+		`{"message":"PASSWORD=\u003credacted\u003e"}` + "\n" +
+		`{"not\"password":"public-neighbor-long"}` + "\n" +
+		`{"pass\u0077ord_hint":"public-neighbor-long"}` + "\n" +
+		`{"message":`
+	output, findings := Redact(input, Config{})
+	if len(findings) != 0 || output != input {
+		t.Errorf("malformed neighbors disabled decoded false-positive protections: %+v", findings)
+	}
+}
+
+func TestJSONLCompleteRecordsKeepAllowlistsAndDisabledCategories(t *testing.T) {
+	logged := `PASSWORD=\"synthetic-never-valid-allowlisted\"`
+	input := "INFO starting\n" + `{"message":"` + logged + `"}` + "\n" + `{"message":`
+	for _, allowed := range []string{logged, `PASSWORD="synthetic-never-valid-allowlisted"`} {
+		output, findings := Redact(input, Config{Allowlist: []string{"^" + regexp.QuoteMeta(allowed) + "$"}})
+		if len(findings) != 0 || output != input {
+			t.Error("raw or logical allowlist failed for a complete record in a mixed log")
+		}
+	}
+	output, findings := Redact(input, Config{DisabledCategories: []Category{CategoryPassword}})
+	if len(findings) != 0 || output != input {
+		t.Error("disabled password category was detected in a complete record")
 	}
 }
 

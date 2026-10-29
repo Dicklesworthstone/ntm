@@ -11,7 +11,7 @@ import (
 )
 
 func TestRedactPreview_DecodedJSONCredentials(t *testing.T) {
-	for _, tc := range jsonEscapedCredentialFixtures() {
+	for _, tc := range append(jsonEscapedCredentialFixtures(), jsonMixedRecordCredentialFixtures()...) {
 		for _, format := range []string{"text", "json"} {
 			t.Run(tc.name+"/"+format, func(t *testing.T) {
 				resetFlags()
@@ -53,6 +53,17 @@ func TestRedactPreview_DecodedJSONCredentials(t *testing.T) {
 						}
 						if finding.Start < 0 || finding.End <= finding.Start || finding.End > len(tc.content) {
 							t.Errorf("finding %d has invalid source offsets", i)
+						}
+						if len(tc.sourceMatches) > 0 {
+							wantStart := strings.Index(tc.content, tc.sourceMatches[i])
+							wantEnd := wantStart + len(tc.sourceMatches[i])
+							if wantStart < 0 {
+								t.Fatalf("expected source match %d is absent from fixture", i)
+							}
+							wantColumn := wantStart - strings.LastIndex(tc.content[:wantStart], "\n")
+							if finding.Start != wantStart || finding.End != wantEnd || finding.Column != wantColumn {
+								t.Errorf("finding %d source span=%d:%d column=%d, want %d:%d column=%d", i, finding.Start, finding.End, finding.Column, wantStart, wantEnd, wantColumn)
+							}
 						}
 					}
 					if len(tc.lines) == 0 && response.Output != tc.content {
