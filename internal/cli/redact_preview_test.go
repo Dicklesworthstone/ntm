@@ -6,7 +6,71 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Dicklesworthstone/ntm/internal/config"
 )
+
+func TestRedactPreview_QuotedJSONStrings(t *testing.T) {
+	const input = "{\"password\":\"preview-head\\\"preview-middle\\\\preview-tail with spaces\",\"note\":\"public-neighbor\",\"password_hint\":\"public-hint\"}\n{\"password\":\"second-preview-value\"}\n"
+	for _, line := range strings.Split(strings.TrimSpace(input), "\n") {
+		if !json.Valid([]byte(line)) {
+			t.Fatal("test fixture must contain valid JSONL")
+		}
+	}
+	for _, format := range []string{"text", "json"} {
+		t.Run(format, func(t *testing.T) {
+			resetFlags()
+			t.Cleanup(resetFlags)
+			oldCfg := cfg
+			t.Cleanup(func() { cfg = oldCfg })
+			cfg = config.Default()
+			cfg.Redaction.Mode = "off"
+			jsonOutput = format == "json"
+
+			cmd := newRedactPreviewCmd()
+			cmd.SetArgs([]string{"--text", input})
+			out, err := captureStdout(t, cmd.Execute)
+			if err != nil {
+				t.Fatalf("preview failed: %v", err)
+			}
+			for _, fragment := range []string{"preview-head", "preview-middle", "preview-tail", "with spaces", "second-preview-value"} {
+				if strings.Contains(out, fragment) {
+					t.Error("preview output exposed a secret fragment")
+				}
+			}
+			if !strings.Contains(out, "[REDACTED:PASSWORD:") {
+				t.Error("preview lacks a password placeholder")
+			}
+			for _, public := range []string{"public-neighbor", "public-hint"} {
+				if !strings.Contains(out, public) {
+					t.Errorf("preview removed noncredential field %q", public)
+				}
+			}
+			if format == "json" {
+				var response RedactPreviewResponse
+				if err := json.Unmarshal([]byte(out), &response); err != nil {
+					t.Fatal(err)
+				}
+				if len(response.Findings) != 2 {
+					t.Fatalf("findings=%d, want 2", len(response.Findings))
+				}
+				for i, finding := range response.Findings {
+					if finding.Category != "PASSWORD" || finding.Line != i+1 {
+						t.Errorf("finding %d category=%s line=%d, want PASSWORD on line %d", i, finding.Category, finding.Line, i+1)
+					}
+				}
+				if response.Source != "text" || response.InputLen != len(input) {
+					t.Errorf("source=%q input_len=%d", response.Source, response.InputLen)
+				}
+				if strings.Contains(out, "\"match\"") {
+					t.Error("preview JSON includes raw match data")
+				}
+			} else if !strings.Contains(out, "Findings: 2") {
+				t.Error("text preview should report two findings")
+			}
+		})
+	}
+}
 
 func TestRedactPreview_CommandJSONOutputIsRedacted(t *testing.T) {
 	resetFlags()

@@ -10,8 +10,115 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/startup"
 )
+
+func TestScrub_QuotedCredentialsAndSafePreviews(t *testing.T) {
+	left := strings.Repeat("left-sensitive-fragment-", 8)
+	right := strings.Repeat("right-sensitive-fragment-", 8)
+	cases := []struct {
+		name      string
+		content   string
+		lines     []int
+		hidden    []string
+		allowlist []string
+	}{
+		{
+			name:    "JSON",
+			content: "{\"password\":\"synthetic-never-valid-json-value\",\"note\":\"public-neighbor\"}",
+			lines:   []int{1},
+			hidden:  []string{"synthetic-never-valid-json-value"},
+		},
+		{
+			name:    "JSONL escaped strings",
+			content: "{\"password\":\"jsonl-first-sensitive\"}\n{\"passwd\":\"head-sensitive\\\"quote-sensitive\\\\slash-sensitive with spaces\",\"note\":\"public-neighbor\"}\n",
+			lines:   []int{1, 2},
+			hidden:  []string{"jsonl-first-sensitive", "head-sensitive", "quote-sensitive", "slash-sensitive", "with spaces"},
+		},
+		{
+			name:    "ordinary assignments",
+			content: "PASSWORD=synthetic-never-valid-control-value\npasswd=second-control-value\n",
+			lines:   []int{1, 2},
+			hidden:  []string{"synthetic-never-valid-control-value", "second-control-value"},
+		},
+		{
+			name:    "adjacent long values",
+			content: "{\"password\":\"" + left + "\",\"passwd\":\"" + right + "\",\"note\":\"public-neighbor\"}",
+			lines:   []int{1, 1},
+			hidden:  []string{"left-sensitive-fragment", "right-sensitive-fragment"},
+		},
+		{
+			name:      "allowlisted JSON neighbor",
+			content:   "{\"password\":\"allowlisted-never-valid\"}\n{\"password\":\"blocked-never-valid\"}\n",
+			lines:     []int{2},
+			hidden:    []string{"blocked-never-valid"},
+			allowlist: []string{"allowlisted-never-valid"},
+		},
+		{
+			name:    "placeholders and noncredential fields",
+			content: "{\"password\":\"<redacted>\",\"pwd\":\"/home/user/worktree\",\"password_hint\":\"public-hint-value\",\"token_count\":\"1234567890123456\",\"note\":\"public-neighbor\"}",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "artifact.log")
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			scanCfg := redaction.DefaultConfig()
+			scanCfg.Allowlist = tc.allowlist
+			res := runScrub([]string{path}, nil, scanCfg)
+			if res.FilesScanned != 1 || len(res.Warnings) != 0 {
+				t.Fatalf("files=%d warnings=%v, want one file without warnings", res.FilesScanned, res.Warnings)
+			}
+			if len(res.Findings) != len(tc.lines) {
+				t.Fatalf("findings=%d, want %d", len(res.Findings), len(tc.lines))
+			}
+			for i, finding := range res.Findings {
+				if finding.Category != redaction.CategoryPassword || finding.Line != tc.lines[i] {
+					t.Errorf("finding %d category=%s line=%d, want PASSWORD on line %d", i, finding.Category, finding.Line, tc.lines[i])
+				}
+				if finding.Start < 0 || finding.End <= finding.Start || finding.End > len(tc.content) || finding.Column < 1 {
+					t.Errorf("invalid finding offsets: %+v", finding)
+				}
+				if !strings.Contains(finding.Preview, "[REDACTED:PASSWORD:") {
+					t.Errorf("finding %d preview lacks a password placeholder", i)
+				}
+				for _, fragment := range tc.hidden {
+					if strings.Contains(finding.Preview, fragment) {
+						t.Errorf("finding %d preview exposed a secret fragment", i)
+					}
+				}
+			}
+			encoded, err := json.Marshal(res)
+			if err != nil {
+				t.Fatal(err)
+			}
+			textOutput, err := captureStdout(t, func() error {
+				printScrubText(res)
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, output := range []string{string(encoded), textOutput} {
+				for _, fragment := range tc.hidden {
+					if strings.Contains(output, fragment) {
+						t.Error("scrub output exposed a secret fragment")
+					}
+				}
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != tc.content {
+				t.Error("read-only scrub modified the source artifact")
+			}
+		})
+	}
+}
 
 func TestRedactionAllowlistEnvironmentCommands(t *testing.T) {
 	const fixture = "ANTHROPIC_API_KEY=ecs2a-bogus-not-a-real-key\nCLAUDE_CODE_OAUTH_TOKEN=fixture-never-log-this\npassword=unlisted-fixture-secret\n"
@@ -227,5 +334,72 @@ func TestResolveScrubRootsUsesSelectedConfigDir(t *testing.T) {
 	}
 	if roots[0] != customDir {
 		t.Fatalf("scrub root = %q, want %q", roots[0], customDir)
+	}
+}
+
+func TestScrubPreviewZeroWidthPatternsDoNotExposeCredentials(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		pattern  string
+		fragment string
+	}{
+		{
+			name:     "same start as assignment",
+			input:    "password=unmistakablesensitivevalue",
+			pattern:  `^`,
+			fragment: "unmistakablesensitivevalue",
+		},
+		{
+			name:     "inside long JSON value",
+			input:    `{"password":"` + strings.Repeat("clippedsecret", 12) + `"}`,
+			pattern:  `\b`,
+			fragment: "clippedsecret",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			findings := redaction.Scan(tt.input, redaction.Config{
+				ExtraPatterns: map[redaction.Category][]string{
+					"CUSTOM_ANCHOR": {tt.pattern},
+				},
+			})
+			passwords, anchors := 0, 0
+			for _, finding := range findings {
+				if finding.Category == redaction.CategoryPassword {
+					passwords++
+				}
+				if finding.Start == finding.End {
+					anchors++
+				}
+			}
+			if passwords != 1 || anchors == 0 {
+				t.Fatalf("password findings=%d, zero-width findings=%d; want one password and at least one anchor", passwords, anchors)
+			}
+			for i, finding := range findings {
+				preview := scrubPreview(tt.input, finding, findings)
+				if strings.Contains(preview, tt.fragment) {
+					t.Errorf("preview %d exposed a secret around a zero-width custom finding", i)
+				}
+			}
+		})
+	}
+}
+
+func TestScrubPreviewClippedProviderToken(t *testing.T) {
+	token := "gh" + "p_" + strings.Repeat("q", 90)
+	password := strings.Repeat("rightsecret", 8)
+	input := `{"token":"` + token + `","password":"` + password + `"}`
+	findings := redaction.Scan(input, redaction.Config{})
+	if len(findings) != 2 || findings[0].Category != redaction.CategoryGitHubToken || findings[1].Category != redaction.CategoryPassword {
+		t.Fatalf("expected a GitHub token and a password, got %d findings", len(findings))
+	}
+	for i, finding := range findings {
+		preview := scrubPreview(input, finding, findings)
+		for _, fragment := range []string{strings.Repeat("q", 12), "rightsecret"} {
+			if strings.Contains(preview, fragment) {
+				t.Errorf("preview %d exposed part of a neighboring credential crossing its context boundary", i)
+			}
+		}
 	}
 }

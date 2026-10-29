@@ -226,7 +226,7 @@ func (r *scrubResult) scanFile(path string, cutoff *time.Time, cfg redaction.Con
 	findings := redaction.Scan(content, cfg)
 	redaction.AddLineInfo(content, findings)
 	for _, f := range findings {
-		preview := scrubPreview(content, f, cfg)
+		preview := scrubPreview(content, f, findings)
 		r.Findings = append(r.Findings, scrubFinding{
 			Path:     path,
 			Category: f.Category,
@@ -239,7 +239,7 @@ func (r *scrubResult) scanFile(path string, cutoff *time.Time, cfg redaction.Con
 	}
 }
 
-func scrubPreview(input string, f redaction.Finding, cfg redaction.Config) string {
+func scrubPreview(input string, f redaction.Finding, findings []redaction.Finding) string {
 	const context = 40
 	start := f.Start - context
 	if start < 0 {
@@ -250,8 +250,37 @@ func scrubPreview(input string, f redaction.Finding, cfg redaction.Config) strin
 		end = len(input)
 	}
 
-	snippet := input[start:f.Start] + f.Redacted + input[f.End:end]
-	snippet, _ = redaction.Redact(snippet, cfg)
+	// Use findings from the complete input, including any that cross a preview
+	// boundary. Rescanning a cropped snippet can miss a neighboring secret when
+	// its identifying key or token prefix has fallen outside the context window.
+	// Positive-length findings are disjoint, but custom patterns may also match
+	// zero-width anchors inside them. Search by start, then include the preceding
+	// positive-length finding in case it crosses the left boundary.
+	first := sort.Search(len(findings), func(i int) bool { return findings[i].Start >= start })
+	for first > 0 {
+		first--
+		if findings[first].End > findings[first].Start {
+			break
+		}
+	}
+	var preview strings.Builder
+	pos := start
+	for _, nearby := range findings[first:] {
+		if nearby.Start > end || (nearby.Start == end && nearby.End > nearby.Start) {
+			break
+		}
+		// Do not move backward into a credential already covered by a placeholder.
+		if nearby.End < pos || (nearby.End == pos && nearby.Start < pos) {
+			continue
+		}
+		if nearby.Start > pos {
+			preview.WriteString(input[pos:nearby.Start])
+		}
+		preview.WriteString(nearby.Redacted)
+		pos = min(nearby.End, end)
+	}
+	preview.WriteString(input[pos:end])
+	snippet := preview.String()
 
 	snippet = strings.ReplaceAll(snippet, "\r\n", "\n")
 	snippet = strings.ReplaceAll(snippet, "\n", `\n`)

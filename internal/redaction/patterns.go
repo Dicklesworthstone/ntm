@@ -1,10 +1,12 @@
 package redaction
 
 import (
+	"encoding/json"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 const (
@@ -44,7 +46,10 @@ type pattern struct {
 // that removes known non-credential shapes the regex cannot exclude on
 // its own (Go's RE2 has no look-behind).
 var builtinMatchRejecters = map[Category]func(input string, start, end int) bool{
-	CategoryPassword: rejectNonCredentialPassword,
+	CategoryPassword:      rejectNonCredentialPassword,
+	CategoryAWSSecretKey:  rejectJSONCredentialValue(40, 40, "/+="),
+	CategoryGenericAPIKey: rejectJSONCredentialValue(16, 0, "_-"),
+	CategoryGenericSecret: rejectJSONCredentialValue(16, 0, "/+=_-"),
 }
 
 // defaultPatterns contains all built-in detection patterns.
@@ -68,6 +73,7 @@ var defaultPatterns = []patternDef{
 	{CategoryAWSAccessKey, `AKIA[0-9A-Z]{16}`, 90, []literalRequirement{{anyOf: []string{"AKIA"}}}},
 	{CategoryAWSAccessKey, `ASIA[0-9A-Z]{16}`, 90, []literalRequirement{{anyOf: []string{"ASIA"}}}},
 	{CategoryAWSSecretKey, `(?i)(aws_secret|secret_access_key|secret_key)\s*[=:]\s*["']?[a-zA-Z0-9/+=]{40}["']?`, 90, []literalRequirement{{anyOf: []string{"aws_secret", "secret_access_key", "secret_key"}, ignoreCase: true}}},
+	{CategoryAWSSecretKey, jsonCredentialPattern(`(?:[a-z0-9_]+_)?(?:aws_secret|secret_access_key|secret_key)`), 90, []literalRequirement{{anyOf: []string{"aws_secret", "secret_access_key", "secret_key"}, ignoreCase: true}}},
 
 	// Authentication tokens
 	{CategoryJWT, `eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]+`, 85, []literalRequirement{{anyOf: []string{"eyJ"}}}},
@@ -81,8 +87,54 @@ var defaultPatterns = []patternDef{
 
 	// Generic patterns (lower priority)
 	{CategoryPassword, `(?i)(password|passwd|pwd)\s*[=:]\s*["']?[^\s"']{8,}["']?`, 50, []literalRequirement{{anyOf: []string{"password", "passwd", "pwd"}, ignoreCase: true}}},
+	{CategoryPassword, jsonCredentialPattern(`(?:(?:[a-z0-9_]+_)?(?:password|passwd|pwd)|oldpwd)`), 50, []literalRequirement{{anyOf: []string{"password", "passwd", "pwd"}, ignoreCase: true}}},
 	{CategoryGenericAPIKey, `(?i)([a-z_]*api[_]?key)\s*[=:]\s*["']?[a-zA-Z0-9_-]{16,}["']?`, 40, []literalRequirement{{anyOf: []string{"api_key", "apikey"}, ignoreCase: true}}},
+	{CategoryGenericAPIKey, jsonCredentialPattern(`[a-z_]*api_?key`), 40, []literalRequirement{{anyOf: []string{"api_key", "apikey"}, ignoreCase: true}}},
 	{CategoryGenericSecret, `(?i)(secret|private[_]?key|token)\s*[=:]\s*["']?[a-zA-Z0-9/+=_-]{16,}["']?`, 30, []literalRequirement{{anyOf: []string{"secret", "private_key", "privatekey", "token"}, ignoreCase: true}}},
+	{CategoryGenericSecret, jsonCredentialPattern(`(?:[a-z0-9_]+_)?(?:secret|private_?key|token)`), 30, []literalRequirement{{anyOf: []string{"secret", "private_key", "privatekey", "token"}, ignoreCase: true}}},
+}
+
+// jsonCredentialPattern matches a complete quoted key and string value without
+// consuming adjacent fields. Escape pairs must stay inside the value so an
+// escaped quote cannot leave a secret suffix unredacted. The category's rejecter
+// validates the decoded value; keeping this separate from bare assignments also
+// avoids treating JSON punctuation or non-string fields as credential content.
+func jsonCredentialPattern(key string) string {
+	return `(?i)"` + key + `"\s*:\s*"(?:\\.|[^"\\\r\n])*"`
+}
+
+func decodeJSONCredentialValue(m string) (string, bool) {
+	sep := strings.IndexByte(m, ':')
+	if sep < 0 {
+		return "", false
+	}
+	var value string
+	if err := json.Unmarshal([]byte(m[sep+1:]), &value); err != nil {
+		return "", false
+	}
+	return value, true
+}
+
+// rejectJSONCredentialValue preserves the existing length and alphabet rules
+// for generic/AWS credentials, applied to the complete decoded JSON string.
+// Ordinary assignment matches do not start with a quote and are unchanged.
+func rejectJSONCredentialValue(minLength, maxLength int, punctuation string) func(string, int, int) bool {
+	return func(input string, start, end int) bool {
+		if start < 0 || end > len(input) || start >= end || input[start] != '"' {
+			return false
+		}
+		value, ok := decodeJSONCredentialValue(input[start:end])
+		if !ok || len(value) < minLength || (maxLength > 0 && len(value) > maxLength) {
+			return true
+		}
+		for _, c := range value {
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strings.ContainsRune(punctuation, c) {
+				continue
+			}
+			return true
+		}
+		return false
+	}
 }
 
 // compiledPatterns holds the compiled regex patterns.
@@ -296,8 +348,15 @@ func rejectNonCredentialPassword(input string, start, end int) bool {
 	if sep < 0 {
 		return false
 	}
-	key := strings.TrimSpace(m[:sep])
+	key := strings.Trim(strings.TrimSpace(m[:sep]), `"`)
 	value := strings.Trim(strings.TrimSpace(m[sep+1:]), `"'`)
+	if m[0] == '"' {
+		var ok bool
+		value, ok = decodeJSONCredentialValue(m)
+		if !ok || utf8.RuneCountInString(value) < 8 {
+			return true
+		}
+	}
 
 	if isPasswordPlaceholderValue(value) {
 		return true

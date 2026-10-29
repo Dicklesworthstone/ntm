@@ -1,6 +1,7 @@
 package redaction
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 	"testing"
@@ -829,5 +830,154 @@ func TestConfigDeepCopy_NilFieldsStayNil(t *testing.T) {
 	}
 	if cp.DisabledCategories != nil {
 		t.Errorf("DisabledCategories became non-nil after deep-copy of zero value: %v", cp.DisabledCategories)
+	}
+}
+
+// Issue #372: JSON/JSONL keys have a closing quote before the separator. Each
+// match must include the complete string value, even across escaped quotes.
+func TestJSONCredentialDetection(t *testing.T) {
+	cases := []struct {
+		name     string
+		field    string
+		category Category
+	}{
+		{"password", `"password":"synthetic-never-valid-json-value"`, CategoryPassword},
+		{"passwd", `"passwd":"synthetic-passwd-value"`, CategoryPassword},
+		{"pwd credential", `"pwd":"synthetic-pwd-value"`, CategoryPassword},
+		{"prefixed password", `"DB_PASSWORD":"synthetic-db-password"`, CategoryPassword},
+		{"prefixed pwd path credential", `"MYSQL_PWD":"/hunter2isnotapath"`, CategoryPassword},
+		{"mixed case and whitespace", "\"PaSsWoRd\" \n : \n \"synthetic-mixed-value\"", CategoryPassword},
+		{"escaped quote", `"password":"secret-prefix\"secret-suffix"`, CategoryPassword},
+		{"escaped backslash and slash", `"password":"secret-prefix\\middle\/secret-suffix"`, CategoryPassword},
+		{"escaped controls", `"password":"secret-prefix\n\t\rsecret-suffix"`, CategoryPassword},
+		{"spaces and apostrophe", `"password":"secret prefix isn't public"`, CategoryPassword},
+		{"eight characters", `"password":"1234567\u0061"`, CategoryPassword},
+		{"unicode characters", `"password":"密码密码密码密码"`, CategoryPassword},
+		{"API key", `"api_key":"synthetic_api_value_123"`, CategoryGenericAPIKey},
+		{"prefixed API key", `"SERVICE_APIKEY":"synthetic-api-value-123"`, CategoryGenericAPIKey},
+		{"escaped API key", `"api_key":"synthetic\u005fapi\u005fvalue_123"`, CategoryGenericAPIKey},
+		{"secret", `"secret":"synthetic/secret+value="`, CategoryGenericSecret},
+		{"private key", `"private_key":"synthetic-private-value"`, CategoryGenericSecret},
+		{"token", `"token":"synthetic-token-value"`, CategoryGenericSecret},
+		{"prefixed token", `"access_token":"synthetic-access-value"`, CategoryGenericSecret},
+		{"escaped secret", `"client_secret":"synthetic\/secret\u002bvalue="`, CategoryGenericSecret},
+		{"AWS secret", `"aws_secret":"` + strings.Repeat("X", 40) + `"`, CategoryAWSSecretKey},
+		{"AWS prefixed secret", `"aws_secret_access_key":"` + strings.Repeat("Y", 40) + `"`, CategoryAWSSecretKey},
+		{"AWS escaped secret", `"secret_access_key":"` + strings.Repeat("Z", 36) + `a\/b="`, CategoryAWSSecretKey},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			const before = `{"before":"public-before","auth":{`
+			const after = `},"after":"public-after"}`
+			input := before + tc.field + after
+			if !json.Valid([]byte(input)) {
+				t.Fatal("invalid JSON fixture")
+			}
+			result := ScanAndRedact(input, Config{Mode: ModeRedact})
+			if len(result.Findings) != 1 {
+				t.Fatalf("findings=%d, want 1", len(result.Findings))
+			}
+			f := result.Findings[0]
+			if f.Category != tc.category || f.Match != tc.field {
+				t.Errorf("got %s match %q, want %s match %q", f.Category, f.Match, tc.category, tc.field)
+			}
+			if f.Start != len(before) || f.End != len(before)+len(tc.field) {
+				t.Errorf("unexpected source range [%d:%d]", f.Start, f.End)
+			}
+			if result.Output != before+f.Redacted+after {
+				t.Error("redaction left part of the credential or changed a neighboring field")
+			}
+		})
+	}
+}
+
+func TestJSONCredentialNegativeFields(t *testing.T) {
+	fields := []string{
+		`"password":""`, `"password":"1234567"`, `"password":"12345\u0061"`,
+		`"password":"密码密码"`, `"password":1234567`, `"password":null`,
+		`"password":false`, `"password":{}`, `"password":["public-array-value"]`,
+		`"password_hint":"public-password-description"`, `"notpassword":"public-description"`,
+		`"token_count":"public-token-description"`, `"api_key_name":"public-key-description"`,
+		`"secret_name":"public-secret-description"`, `"private_key_path":"/public/path/to/key"`,
+		`"api_key":"123456789012345"`, `"api_key":"12345678901234\u0061"`,
+		`"api_key":"invalid-key-value!"`, `"token":"invalid.token.value"`,
+		`"secret_access_key":"` + strings.Repeat("a", 39) + `"`,
+		`"secret_access_key":"` + strings.Repeat("a", 41) + `"`,
+		`"password":"<redacted>"`, `"passwd":"\u003cset\u003e"`,
+		`"password":"************"`, `"pwd":"<hidden>"`,
+		`"PWD":"/home/user/project"`, `"OLDPWD":"/home/user/previous"`,
+		`"pwd":"\/home\/user\/project"`, `"pwd":"\u002fhome/user/project"`,
+		`"PWD":"C:\\Users\\user\\project"`, `"OLDPWD":"$HOME/projects/example"`,
+	}
+	for _, field := range fields {
+		t.Run(field, func(t *testing.T) {
+			input := `{` + field + `,"message":"a long harmless neighboring value"}`
+			if !json.Valid([]byte(input)) {
+				t.Fatal("invalid JSON fixture")
+			}
+			result := ScanAndRedact(input, Config{Mode: ModeRedact})
+			if len(result.Findings) != 0 || result.Output != input {
+				t.Errorf("non-credential field produced findings: %+v", result.Findings)
+			}
+		})
+	}
+}
+
+func TestJSONLCredentialsAndAssignments(t *testing.T) {
+	lines := []string{
+		`{"password":"synthetic-first-value","password":"synthetic-second-value"}`,
+		`{"password":"escaped-prefix\"escaped-suffix","status":"ready"}`,
+		`PASSWORD=synthetic-never-valid-control-value`,
+		`passwd: 'synthetic-assignment-value'`,
+		`DB_PWD=synthetic-database-value`,
+	}
+	input := strings.Join(lines, "\n")
+	findings := Scan(input, Config{})
+	AddLineInfo(input, findings)
+	wantLines := []int{1, 1, 2, 3, 4, 5}
+	if len(findings) != len(wantLines) {
+		t.Fatalf("findings=%d, want %d", len(findings), len(wantLines))
+	}
+	for i, f := range findings {
+		if f.Category != CategoryPassword || f.Line != wantLines[i] || input[f.Start:f.End] != f.Match {
+			t.Errorf("finding %d has wrong category, line, or source range: %+v", i, f)
+		}
+	}
+	output, _ := Redact(input, Config{})
+	for _, fragment := range []string{"synthetic-", "escaped-prefix", "escaped-suffix"} {
+		if strings.Contains(output, fragment) {
+			t.Error("redaction exposed a secret fragment")
+		}
+	}
+	if !strings.Contains(output, `"status":"ready"`) {
+		t.Error("redaction consumed the neighboring public field")
+	}
+}
+
+func TestJSONCredentialsPreserveAllowlistAndPriorities(t *testing.T) {
+	provider := "gh" + "p_" + strings.Repeat("q", 40)
+	for _, key := range []string{"password", "api_key", "token"} {
+		input := `{"` + key + `":"` + provider + `"}`
+		findings := Scan(input, Config{})
+		if len(findings) != 1 || findings[0].Category != CategoryGitHubToken || findings[0].Match != provider {
+			t.Fatalf("provider priority changed for %s: %+v", key, findings)
+		}
+		cfg := Config{Allowlist: []string{"^" + regexp.QuoteMeta(provider) + "$"}}
+		if got := Scan(input, cfg); len(got) != 0 {
+			t.Errorf("allowlisted provider exposed lower-priority matches for %s: %+v", key, got)
+		}
+	}
+	const assignment = "TOKEN=fixture-never-log-this"
+	if got := Scan(assignment, Config{Allowlist: []string{"^" + assignment + "$"}}); len(got) != 0 {
+		t.Error("anchored assignment allowlist changed")
+	}
+	const allowedField = `"password":"synthetic-allowed-value"`
+	input := `{` + allowedField + `,"passwd":"synthetic-unlisted-value"}`
+	findings := Scan(input, Config{Allowlist: []string{"^" + regexp.QuoteMeta(allowedField) + "$"}})
+	if len(findings) != 1 || findings[0].Match != `"passwd":"synthetic-unlisted-value"` {
+		t.Errorf("JSON allowlist did not suppress only the intended match: %+v", findings)
+	}
+	if got := Scan(input, Config{DisabledCategories: []Category{CategoryPassword}}); len(got) != 0 {
+		t.Error("disabled password category still reported JSON fields")
 	}
 }
