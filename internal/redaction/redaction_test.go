@@ -1400,7 +1400,7 @@ func TestJSONEscapedContentPreservesRawInvalidInput(t *testing.T) {
 		rawMatch string
 	}{
 		{"plaintext quoted text", `log message="` + assignment + `"`, assignment + `"`},
-		{"malformed single record", `{"message":"` + assignment + `",`, assignment + `"`},
+		{"malformed single record", `{"message":"` + assignment + `",BROKEN`, assignment + `"`},
 		{"malformed pretty document", "{\n\"" + assignment + "\"\nBROKEN\n}", assignment + `"`},
 		{"invalid JSON escape", `{"message":"PASSWORD=abcdefg\q"}`, `PASSWORD=abcdefg\q"`},
 	}
@@ -1882,4 +1882,304 @@ func TestCredentialBodyExactProviderAllowlistsAndRawExtras(t *testing.T) {
 	}
 	input = `{"not\"` + provider + `":"public"}`
 	assertJSONRawFinding(t, input, provider, CategoryGitHubToken)
+}
+
+func TestJSONTruncatedContentDetection(t *testing.T) {
+	logged := `PASSWORD=\"synthetic-never-valid-open-record\"`
+	encodedField := `"pass\u0077ord":"synthetic-never-valid-open-field"`
+	tests := []struct {
+		name, input, rawMatch string
+	}{
+		{"missing object brace", `{"note":"public-neighbor","message":"` + logged + `"`, logged},
+		{"missing brace after encoded key", `{"note":"public-neighbor",` + encodedField, encodedField},
+		{"trailing object comma", `{"message":"` + logged + `",`, logged},
+		{"unfinished later field", `{"message":"` + logged + `","next":"unfinished`, logged},
+		{"unfinished later number", `{"message":"` + logged + `","attempt":1e`, logged},
+		{"large numeric exponent before message", `{"attempt":1e999999,"message":"` + logged + `"`, logged},
+		{"open array", `[{"message":"` + logged + `"},`, logged},
+		{"open nested containers", `{"records":[{"message":"` + logged + `"}`, logged},
+		{"pretty unfinished root", "{\n  \"records\": [\n    {" + encodedField + "}\n", encodedField},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if json.Valid([]byte(tc.input)) {
+				t.Fatal("fixture must be an unfinished JSON container")
+			}
+			assertJSONRawFinding(t, tc.input, tc.rawMatch, CategoryPassword)
+		})
+	}
+}
+
+func TestJSONTruncatedCredentialValues(t *testing.T) {
+	tests := []struct {
+		name, field, rawMatch string
+		category              Category
+	}{
+		{"password", `"password":"synthetic-never-valid-open-password`, "", CategoryPassword},
+		{"encoded password key", `"pass\u0077ord":"synthetic-never-valid-open-password`, "", CategoryPassword},
+		{"database PWD path", `"MYSQL_PWD":"\u002fhome/agent/synthetic-project`, "", CategoryPassword},
+		{"API key", `"api_key":"syntheticNeverValidApiKey123`, "", CategoryGenericAPIKey},
+		{"encoded API key", `"api\u005fkey":"syntheticNeverValidApiKey123`, "", CategoryGenericAPIKey},
+		{"generic secret", `"access_token":"syntheticNeverValidToken123`, "", CategoryGenericSecret},
+		{"AWS secret", `"aws_secret_access_key":"` + strings.Repeat("Q", 40), "", CategoryAWSSecretKey},
+		{"escaped quote and backslash", `"password":"synthetic\"never\\valid`, "", CategoryPassword},
+		{"Unicode and surrogate pairs", `"password":"\u96ea` + strings.Repeat(`\ud83d\ude00`, 7), "", CategoryPassword},
+		{"encoded message assignment", `"message":"\u0050ASSWORD\u003dsynthetic-never-valid-open-message`, `\u0050ASSWORD\u003dsynthetic-never-valid-open-message`, CategoryPassword},
+		{"quoted message assignment", `"message":"PASSWORD=\"synthetic-never-valid-open-message`, `PASSWORD=\"synthetic-never-valid-open-message`, CategoryPassword},
+	}
+	for _, tail := range []string{`\`, `\u`, `\u1`, `\u12`, `\u123`} {
+		tests = append(tests, struct {
+			name, field, rawMatch string
+			category              Category
+		}{"pending field escape " + tail, `"password":"synthetic-never-valid-pending` + tail, "", CategoryPassword})
+		raw := `PASSWORD\u003dsynthetic-never-valid-pending` + tail
+		tests = append(tests, struct {
+			name, field, rawMatch string
+			category              Category
+		}{"pending message escape " + tail, `"message":"` + raw, raw, CategoryPassword})
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `{"note":"public-neighbor",` + tc.field
+			rawMatch := tc.rawMatch
+			if rawMatch == "" {
+				rawMatch = tc.field
+			}
+			assertJSONRawFinding(t, input, rawMatch, tc.category)
+		})
+	}
+}
+
+func TestJSONTruncatedFalsePositiveProtections(t *testing.T) {
+	short := `\u0061\u0062\u0063\u0064\u0065\u0066\u0067`
+	tests := []struct {
+		name, input string
+	}{
+		{"short complete message in prefix", `{"message":"PASSWORD=` + short + `",`},
+		{"short unfinished field", `{"password":"` + short},
+		{"short encoded field", `{"pass\u0077ord":"` + short},
+		{"short unfinished message", `{"message":"PASSWORD=` + short},
+		{"seven surrogate pair runes", `{"password":"` + strings.Repeat(`\ud83d\ude00`, 7)},
+		{"short decoded message before whitespace", `{"message":"PASSWORD=abc\u0020defg`},
+		{"short API key", `{"api_key":"123456789abcdef`},
+		{"short generic secret", `{"token":"123456789abcdef`},
+		{"short AWS secret", `{"aws_secret_access_key":"` + strings.Repeat("Q", 39)},
+		{"long AWS secret", `{"aws_secret_access_key":"` + strings.Repeat("Q", 41)},
+		{"PWD path", `{"PWD":"\u002fhome/agent/project`},
+		{"encoded OLDPWD path", `{"OLD\u0050WD":"\u002fhome/agent/project`},
+		{"logged PWD path", `{"message":"PWD=\u002fhome/agent/project`},
+		{"placeholder", `{"password":"\u003credacted\u003e`},
+		{"placeholder before pending escape", `{"password":"\u003credacted\u003e\u12`},
+		{"PWD before pending escape", `{"PWD":"\u002fhome/agent/project\u12`},
+		{"logged placeholder", `{"message":"PASSWORD=\u003credacted\u003e`},
+		{"star placeholder", `{"password":"********`},
+		{"neighboring key", `{"password_hint":"public-neighbor-long`},
+		{"escaped quote in key", `{"not\"password":"public-neighbor-long`},
+		{"encoded quote in key", `{"not\u0022password":"public-neighbor-long`},
+		{"literal backslash-u key", `{"pass\\u0077ord":"public-neighbor-long`},
+		{"literal backslash-u separator", `{"message":"PASSWORD\\u003dsynthetic-never-valid-literal`},
+		{"unfinished property key", `{"\u0050ASSWORD=synthetic-never-valid-key`},
+		{"complete property key awaiting colon", `{"PASSWORD=\"synthetic-never-valid-key\""`},
+		{"complete encoded property key awaiting colon", `{"\u0050ASSWORD=synthetic-never-valid-key"`},
+		{"unfinished root string", `"\u0050ASSWORD=synthetic-never-valid-scalar`},
+		{"unfinished array string", `["\u0050ASSWORD=synthetic-never-valid-array`},
+		{"non-string password field", `{"password":12345678`},
+	}
+	for _, tail := range []string{`\`, `\u`, `\u1`, `\u12`, `\u123`} {
+		tests = append(tests,
+			struct{ name, input string }{"short field with pending escape " + tail, `{"password":"` + short + tail},
+			struct{ name, input string }{"short message with pending escape " + tail, `{"message":"PASSWORD=` + short + tail},
+		)
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			output, findings := Redact(tc.input, Config{})
+			if len(findings) != 0 || output != tc.input {
+				t.Errorf("unfinished non-credential produced findings: %+v", findings)
+			}
+		})
+	}
+}
+
+func TestJSONTruncatedDoesNotDecodeMalformedInput(t *testing.T) {
+	encoded := `\u0050ASSWORD\u003dsynthetic-never-valid-malformed`
+	for _, input := range []string{
+		`log message="` + encoded,
+		`{"message":"` + encoded + `",BROKEN`,
+		`{"message":"` + encoded + `\q`,
+		`{"message":"` + encoded + `\u12x`,
+		`{"message":"` + encoded + "\tinvalid-control",
+		`{"message":"` + encoded + `" "missing-comma`,
+		`{} {"message":"` + encoded,
+		`{"message":"` + encoded + `"} {`,
+	} {
+		output, findings := Redact(input, Config{})
+		if len(findings) != 0 || output != input {
+			t.Errorf("definite malformed syntax was decoded as an unfinished record: %+v", findings)
+		}
+	}
+	for _, tail := range []string{`\q`, `\u12x`} {
+		raw := `PASSWORD=synthetic-never-valid-raw` + tail
+		assertJSONRawFinding(t, `{"message":"`+raw, raw, CategoryPassword)
+	}
+}
+
+func TestJSONTruncatedJSONLSourceOffsets(t *testing.T) {
+	complete := `"pass\u0077ord":"synthetic-never-valid-complete"`
+	message := `\u0050ASSWORD\u003dsynthetic-never-valid-message\u12`
+	partial := `"pass\u0077ord":"synthetic-never-valid-partial`
+	ordinary := "PASSWORD=synthetic-never-valid-ordinary"
+	input := "INFO start\r\n" + "{" + complete + ",\"note\":\"public-neighbor\"}\r\n" +
+		`{"message":"` + message + "\r\n" + `{"broken":"\q"}` + "\r\n" +
+		"{" + partial + "\r\n" + ordinary + "\nINFO end"
+	output, findings := Redact(input, Config{})
+	wantMatches := []string{complete, message, partial, ordinary}
+	if len(findings) != len(wantMatches) {
+		t.Fatalf("findings=%d, want %d complete and unfinished record credentials", len(findings), len(wantMatches))
+	}
+	AddLineInfo(input, findings)
+	for i, raw := range wantMatches {
+		f := findings[i]
+		start := strings.Index(input, raw)
+		wantLine := []int{2, 3, 5, 6}[i]
+		if f.Category != CategoryPassword || f.Match != raw || f.Start != start || f.End != start+len(raw) || f.Line != wantLine {
+			t.Errorf("finding %d lost its exact raw bytes or physical line: %+v", i, f)
+		}
+	}
+	if strings.Contains(output, "synthetic-never-valid") {
+		t.Error("unfinished JSONL record leaked available credential bytes")
+	}
+	for _, public := range []string{"INFO start", "INFO end", "public-neighbor", `{"broken":"\q"}`} {
+		if !strings.Contains(output, public) {
+			t.Errorf("redaction consumed neighboring content %q", public)
+		}
+	}
+}
+
+func TestJSONTruncatedAllowlistsAndDisabledCategories(t *testing.T) {
+	tests := []struct {
+		name, input, rawMatch, logicalMatch string
+	}{
+		{"partial field", `{"password":"synthetic-never-valid-allowed`, `"password":"synthetic-never-valid-allowed`, `"password":"synthetic-never-valid-allowed`},
+		{"partial encoded field", `{"pass\u0077ord":"synthetic-never-valid-allowed`, `"pass\u0077ord":"synthetic-never-valid-allowed`, `"password":"synthetic-never-valid-allowed`},
+		{"partial encoded message", `{"message":"\u0050ASSWORD=synthetic\u002dnever\u002dvalid`, `\u0050ASSWORD=synthetic\u002dnever\u002dvalid`, `PASSWORD=synthetic-never-valid`},
+		{"complete quoted message", `{"message":"PASSWORD=\"synthetic-never-valid-allowed\""`, `PASSWORD=\"synthetic-never-valid-allowed\"`, `PASSWORD="synthetic-never-valid-allowed"`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assertJSONRawFinding(t, tc.input, tc.rawMatch, CategoryPassword)
+			for _, allowed := range []string{tc.rawMatch, tc.logicalMatch} {
+				output, findings := Redact(tc.input, Config{Allowlist: []string{"^" + regexp.QuoteMeta(allowed) + "$"}})
+				if len(findings) != 0 || output != tc.input {
+					t.Error("raw or logical allowlist did not match the actual unfinished credential span")
+				}
+			}
+			output, findings := Redact(tc.input, Config{DisabledCategories: []Category{CategoryPassword}})
+			if len(findings) != 0 || output != tc.input {
+				t.Error("disabled password category was detected in an unfinished record")
+			}
+		})
+	}
+	field := `"password":"synthetic-never-valid-allowed\u12`
+	input := "{" + field
+	output, findings := Redact(input, Config{Allowlist: []string{"^" + regexp.QuoteMeta(field) + "$"}})
+	if len(findings) != 0 || output != input {
+		t.Error("raw allowlist did not retain pending escape bytes in its source context")
+	}
+	for _, completed := range []string{
+		`"password":"synthetic-never-valid-allowed"`,
+		field + `"`,
+	} {
+		output, findings = Redact(input, Config{Allowlist: []string{"^" + regexp.QuoteMeta(completed) + "$"}})
+		if len(findings) != 1 || findings[0].Match != field || strings.Contains(output, "synthetic") || strings.Contains(output, `\u12`) {
+			t.Error("synthetically completed field leaked into allowlist context")
+		}
+	}
+	raw := `\u0050ASSWORD=synthetic\u002dnever\u002dvalid\u12`
+	input = `{"message":"` + raw
+	output, findings = Redact(input, Config{Allowlist: []string{"^" + regexp.QuoteMeta(raw) + "$"}})
+	if len(findings) != 0 || output != input {
+		t.Error("raw message allowlist did not match all available pending bytes")
+	}
+	output, findings = Redact(input, Config{Allowlist: []string{`^PASSWORD=synthetic-never-valid$`}})
+	if len(findings) != 1 || findings[0].Match != raw || strings.Contains(output, "synthetic") || strings.Contains(output, `\u12`) {
+		t.Error("logical allowlist exempted an unknown unfinished escape suffix")
+	}
+	input = `{"note":"public\u12`
+	cfg := Config{ExtraPatterns: map[Category][]string{"CUSTOM_RAW": {regexp.QuoteMeta(`\u12`)}}}
+	output, findings = Redact(input, cfg)
+	if len(findings) != 1 || findings[0].Category != "CUSTOM_RAW" || findings[0].Match != `\u12` || strings.Contains(output, `\u12`) {
+		t.Error("custom pattern lost raw-input semantics in an unfinished JSON string")
+	}
+}
+
+func TestJSONTruncatedProviderOverlap(t *testing.T) {
+	provider := "gh" + "p_" + strings.Repeat("q", 40)
+	for _, field := range []string{
+		`"password":"sensitive-prefix:` + provider + `:sensitive-suffix\u12`,
+		`"message":"PASSWORD\u003dsensitive-prefix:` + provider + `:sensitive-suffix\u12`,
+	} {
+		input := `{"note":"public-neighbor",` + field
+		output, findings := Redact(input, Config{})
+		if len(findings) != 3 || findings[0].Category != CategoryPassword || findings[1].Category != CategoryGitHubToken || findings[1].Match != provider || findings[2].Category != CategoryPassword {
+			t.Fatalf("provider overlap dropped an unfinished credential span: %+v", findings)
+		}
+		for _, f := range findings {
+			if f.Match != input[f.Start:f.End] {
+				t.Error("unfinished credential residual lost its raw source range")
+			}
+		}
+		if findings[0].Match != "sensitive-prefix:" || findings[2].Match != `:sensitive-suffix\u12` {
+			t.Error("unfinished credential residual included public context or omitted pending bytes")
+		}
+		if strings.Contains(output, "sensitive-") || strings.Contains(output, `\u12`) || !strings.Contains(output, "public-neighbor") {
+			t.Error("unfinished credential redaction exposed a fragment or consumed public text")
+		}
+		output, findings = Redact(input, Config{Allowlist: []string{"^" + regexp.QuoteMeta(provider) + "$"}})
+		if len(findings) != 2 || strings.Contains(output, "sensitive-") || strings.Contains(output, `\u12`) {
+			t.Error("provider-only allowlist exempted an unfinished credential residual")
+		}
+	}
+	for _, tail := range []string{"", `\u12`} {
+		input := `{"password":"` + provider + tail
+		output, findings := Redact(input, Config{Allowlist: []string{"^" + regexp.QuoteMeta(provider) + "$"}})
+		if tail == "" {
+			if len(findings) != 0 || output != input {
+				t.Error("exact-provider allowlist created a public-context residual in an unfinished field")
+			}
+		} else if len(findings) != 1 || findings[0].Category != CategoryPassword || findings[0].Match != tail || strings.Contains(output, tail) {
+			t.Error("allowlisted provider exposed a pending credential escape tail")
+		}
+	}
+}
+
+func TestJSONTruncatedKeepsCrossRecordRawMatches(t *testing.T) {
+	body := strings.Repeat("c3ludGhldGlj", 8)
+	tests := []struct {
+		name, raw, sensitive string
+		category             Category
+	}{
+		{
+			name:      "complete PEM crosses unfinished message record",
+			raw:       "-----BEGIN PRIVATE KEY-----\n" + body + "\n-----END PRIVATE KEY-----",
+			sensitive: body,
+			category:  CategoryPrivateKey,
+		},
+		{
+			name:      "assignment separator crosses unfinished message record",
+			raw:       "PASSWORD\n=synthetic-never-valid-cross-line",
+			sensitive: "synthetic-never-valid-cross-line",
+			category:  CategoryPassword,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `{"note":"public-before","message":"` + tc.raw + "\npublic-after"
+			assertJSONRawFinding(t, input, tc.raw, tc.category)
+			output, _ := Redact(input, Config{})
+			if strings.Contains(output, tc.sensitive) || !strings.Contains(output, "public-before") || !strings.Contains(output, "public-after") {
+				t.Error("decoding an unfinished record discarded a longer raw credential match")
+			}
+		})
+	}
 }

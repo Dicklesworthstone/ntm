@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"regexp"
 	"sort"
 	"strconv"
@@ -207,32 +208,59 @@ type jsonStringToken struct {
 	key        bool
 	escaped    bool
 	decoded    string
+	unfinished bool
+	// An unfinished escape is not decoded or counted toward a minimum length.
+	// decodedEnd is the source boundary of the completely decoded prefix.
+	decodedEnd int
+}
+
+func (t jsonStringToken) contentEnd() int {
+	if t.unfinished {
+		return t.end
+	}
+	return t.end - 1
+}
+
+type jsonRecord struct {
+	start, end  int
+	completeEnd int
+	keyStarts   map[int]bool
+	unfinished  *jsonStringToken
 }
 
 // scanJSONEncodedContent also recognizes credentials in serialized log messages
-// and Unicode-escaped property names. Decode complete JSON records independently
-// so an incomplete log entry does not hide credentials in earlier records.
-// Shell-quoted text and malformed record bytes retain raw matching behavior.
+// and Unicode-escaped property names. Complete records and parser-validated
+// container prefixes are independent, including a final unfinished field value.
+// Shell-quoted text and definite syntax errors retain raw matching behavior.
 func scanJSONEncodedContent(input string, disabled []Category, patterns []pattern, matches []match) []match {
-	if !strings.Contains(input, "\\") {
+	if !strings.Contains(input, `"`) {
 		return matches
 	}
 
 	var tokens []jsonStringToken
+	needsDecoding := false
 	for _, record := range jsonRecordRanges(input) {
-		for _, loc := range jsonStringPattern.FindAllStringIndex(input[record[0]:record[1]], -1) {
-			token := jsonStringToken{start: record[0] + loc[0], end: record[0] + loc[1]}
+		for _, loc := range jsonStringPattern.FindAllStringIndex(input[record.start:record.completeEnd], -1) {
+			token := jsonStringToken{start: record.start + loc[0], end: record.start + loc[1]}
 			next := skipJSONSpace(input, token.end)
-			token.key = next < record[1] && input[next] == ':'
+			token.key = record.keyStarts[token.start] || (next < record.end && input[next] == ':')
 			raw := input[token.start:token.end]
 			if strings.Contains(raw, "\\") {
 				if err := json.Unmarshal([]byte(raw), &token.decoded); err != nil {
 					return matches
 				}
 				token.escaped = true
+				needsDecoding = true
 			}
 			tokens = append(tokens, token)
 		}
+		if record.unfinished != nil {
+			tokens = append(tokens, *record.unfinished)
+			needsDecoding = true
+		}
+	}
+	if !needsDecoding {
+		return matches
 	}
 
 	// An escaped quote inside a property name must not manufacture a shorter
@@ -249,30 +277,44 @@ func scanJSONEncodedContent(input string, disabled []Category, patterns []patter
 
 	protected := make(map[[2]int]bool)
 	for i, key := range tokens {
-		if !key.key || !key.escaped || i+1 == len(tokens) {
+		if !key.key || i+1 == len(tokens) {
 			continue
 		}
 		value := tokens[i+1]
+		if !key.escaped && !value.unfinished {
+			continue
+		}
 		colon := skipJSONSpace(input, key.end)
-		if value.key || skipJSONSpace(input, colon+1) != value.start {
+		if value.key || colon >= len(input) || input[colon] != ':' || skipJSONSpace(input, colon+1) != value.start {
 			continue
 		}
 		// Re-encode the key as data so a quote/colon in its decoded spelling
 		// cannot inject a fictitious credential field into this representation.
-		quotedKey, _ := json.Marshal(key.decoded)
-		normalized := string(quotedKey) + input[key.end:value.end]
+		quotedKey := input[key.start:key.end]
+		if key.escaped {
+			encoded, _ := json.Marshal(key.decoded)
+			quotedKey = string(encoded)
+		}
+		logical := quotedKey + input[key.end:value.end]
+		normalized := logical
+		if value.unfinished {
+			// Close only the fully decoded prefix for the existing validators.
+			// The quote and any unknown escape completion never become source
+			// bytes or allowlist context, nor contribute to credential length.
+			normalized = quotedKey + input[key.end:value.decodedEnd] + `"`
+		}
 		for _, m := range collectMatches(normalized, nil, patterns) {
 			if m.start != 0 || m.end != len(normalized) || !m.jsonField {
 				continue
 			}
-			protected[[2]int{value.start + 1, value.end - 1}] = true
+			protected[[2]int{value.start + 1, value.contentEnd()}] = true
 			if isCategoryDisabled(m.category, disabled) {
 				continue
 			}
-			m.logicalMatch = m.match
+			m.logicalMatch = logical
 			m.start, m.end = key.start, value.end
 			m.match = input[m.start:m.end]
-			m.valueStart, m.valueEnd = value.start+1, value.end-1
+			m.valueStart, m.valueEnd = value.start+1, value.contentEnd()
 			matches = append(matches, m)
 		}
 	}
@@ -311,10 +353,10 @@ func scanJSONEncodedContent(input string, disabled []Category, patterns []patter
 		}
 	}
 	for i, token := range tokens {
-		if token.key || !token.escaped {
+		if token.key || (!token.escaped && !token.unfinished) {
 			continue
 		}
-		isProtected := protected[[2]int{token.start + 1, token.end - 1}]
+		isProtected := protected[[2]int{token.start + 1, token.contentEnd()}]
 		tokenPatterns := patterns
 		if isProtected {
 			// A complete PEM body needs decoded newlines even inside a known
@@ -334,7 +376,10 @@ func scanJSONEncodedContent(input string, disabled []Category, patterns []patter
 	filtered = matches[:0]
 	for _, m := range matches {
 		i := jsonTokenContaining(tokens, m.start)
-		if i >= 0 && decodedTokens[i] {
+		// Only replace raw matches fully represented by the decoded token.
+		// A partial JSONL string may contain the beginning of a raw PEM block
+		// or multiline assignment whose remaining bytes lie in later records.
+		if i >= 0 && decodedTokens[i] && m.end <= tokens[i].end {
 			continue
 		}
 		filtered = append(filtered, m)
@@ -343,28 +388,34 @@ func scanJSONEncodedContent(input string, disabled []Category, patterns []patter
 }
 
 // jsonRecordRanges returns source spans that can safely be decoded as JSON.
-// A whole document takes precedence over line-oriented parsing. When a log has
-// malformed or incomplete lines, only complete object/array records are decoded;
-// a lone quoted line inside a broken pretty-printed document is not a record.
-// Fully valid JSONL retains support for scalar records as well.
-func jsonRecordRanges(input string) [][2]int {
+// Whole documents and open container prefixes take precedence over JSONL.
+// Mixed logs recover object/array records independently. Scalar records retain
+// their existing support only when every nonblank JSONL line is complete.
+func jsonRecordRanges(input string) []jsonRecord {
 	if json.Valid([]byte(input)) {
-		return [][2]int{{0, len(input)}}
+		return []jsonRecord{{start: 0, end: len(input), completeEnd: len(input)}}
 	}
-	var records [][2]int
+	if record, ok := jsonContainerPrefix(input, 0); ok {
+		return []jsonRecord{record}
+	}
+	var records []jsonRecord
 	allValid := true
 	start := 0
 	for line := range strings.SplitSeq(input, "\n") {
 		end := start + len(line)
-		record := strings.Trim(line, " \t\r")
-		if record == "" {
+		// A CRLF record separator is outside an unfinished string value.
+		content := strings.TrimSuffix(line, "\r")
+		if strings.Trim(content, " \t") == "" {
 			start = end + 1
 			continue
 		}
-		if json.Valid([]byte(record)) {
-			records = append(records, [2]int{start, end})
+		if json.Valid([]byte(content)) {
+			records = append(records, jsonRecord{start: start, end: start + len(content), completeEnd: start + len(content)})
 		} else {
 			allValid = false
+			if record, ok := jsonContainerPrefix(content, start); ok {
+				records = append(records, record)
+			}
 		}
 		start = end + 1
 	}
@@ -373,12 +424,117 @@ func jsonRecordRanges(input string) [][2]int {
 	}
 	filtered := records[:0]
 	for _, record := range records {
-		first := skipJSONSpace(input, record[0])
+		first := skipJSONSpace(input, record.start)
 		if input[first] == '{' || input[first] == '[' {
 			filtered = append(filtered, record)
 		}
 	}
 	return filtered
+}
+
+// jsonContainerPrefix accepts only a single unfinished JSON object or array.
+// The standard decoder validates separators, escapes, and nesting; only an EOF
+// with an open container can grant additional detection. Its key/value state is
+// retained because a final property name may not have received its colon yet.
+func jsonContainerPrefix(input string, base int) (jsonRecord, bool) {
+	first := skipJSONSpace(input, 0)
+	if first == len(input) || (input[first] != '{' && input[first] != '[') {
+		return jsonRecord{}, false
+	}
+	record := jsonRecord{start: base, end: base + len(input), completeEnd: base + len(input), keyStarts: make(map[int]bool)}
+	type container struct {
+		kind      json.Delim
+		expectKey bool
+	}
+	var stack []container
+	decoder := json.NewDecoder(strings.NewReader(input))
+	decoder.UseNumber() // Validation must not depend on float64 range.
+	for {
+		before := int(decoder.InputOffset())
+		isKey := len(stack) > 0 && stack[len(stack)-1].kind == '{' && stack[len(stack)-1].expectKey
+		token, err := decoder.Token()
+		if err != nil {
+			if len(stack) == 0 || (err != io.EOF && err != io.ErrUnexpectedEOF) {
+				return jsonRecord{}, false
+			}
+			pos := skipJSONSpace(input, int(decoder.InputOffset()))
+			if err == io.ErrUnexpectedEOF && pos < len(input) && input[pos] == '"' {
+				// Never tokenize inside an unfinished key or array element.
+				record.completeEnd = base + pos
+				previous := pos - 1
+				for previous >= 0 && strings.ContainsRune(" \t\r\n", rune(input[previous])) {
+					previous--
+				}
+				if !isKey && stack[len(stack)-1].kind == '{' && previous >= 0 && input[previous] == ':' {
+					decoded, prefixEnd, ok := decodeJSONPrefixString(input[pos:])
+					if !ok {
+						return jsonRecord{}, false
+					}
+					record.unfinished = &jsonStringToken{
+						start: base + pos, end: record.end, unfinished: true,
+						escaped: strings.Contains(input[pos:], "\\"), decoded: decoded,
+						decodedEnd: base + pos + prefixEnd,
+					}
+				}
+			}
+			return record, true
+		}
+		if delimiter, ok := token.(json.Delim); ok {
+			switch delimiter {
+			case '{', '[':
+				stack = append(stack, container{kind: delimiter, expectKey: delimiter == '{'})
+				if len(stack) > 10000 { // Match encoding/json's document nesting limit.
+					return jsonRecord{}, false
+				}
+			case '}', ']':
+				stack = stack[:len(stack)-1]
+				if len(stack) == 0 {
+					// A complete root was already rejected by json.Valid. Extra
+					// top-level bytes cannot be recovered as its unfinished tail.
+					return jsonRecord{}, false
+				}
+				stack[len(stack)-1].expectKey = stack[len(stack)-1].kind == '{'
+			}
+		} else if isKey {
+			pos := skipJSONSpace(input, before)
+			if pos < len(input) && input[pos] == ',' {
+				pos = skipJSONSpace(input, pos+1)
+			}
+			record.keyStarts[base+pos] = true
+			stack[len(stack)-1].expectKey = false
+		} else if len(stack) > 0 {
+			stack[len(stack)-1].expectKey = stack[len(stack)-1].kind == '{'
+		}
+	}
+}
+
+// decodeJSONPrefixString validates an unfinished string without inventing value
+// characters. A pending backslash or Unicode escape is excluded from decoding;
+// callers may still protect those source bytes after a real credential prefix.
+func decodeJSONPrefixString(raw string) (decoded string, prefixEnd int, ok bool) {
+	prefixEnd = len(raw)
+	if err := json.Unmarshal([]byte(raw+`"`), &decoded); err == nil {
+		return decoded, prefixEnd, true
+	}
+	escape := strings.LastIndexByte(raw, '\\')
+	if escape < 0 {
+		return "", 0, false
+	}
+	tail := raw[escape:]
+	if tail != `\` {
+		if !strings.HasPrefix(tail, `\u`) || len(tail) > 5 {
+			return "", 0, false
+		}
+		for _, c := range tail[2:] {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+				return "", 0, false
+			}
+		}
+	}
+	if err := json.Unmarshal([]byte(raw[:escape]+`"`), &decoded); err != nil {
+		return "", 0, false
+	}
+	return decoded, escape, true
 }
 
 func skipJSONSpace(input string, pos int) int {
@@ -413,7 +569,10 @@ func mapJSONMatches(input string, token jsonStringToken, matches []match) ([]mat
 	sort.Ints(offsets)
 	mapped := make(map[int]int, len(offsets))
 	rawPos, decodedPos := token.start+1, 0
-	rawEnd := token.end - 1
+	rawEnd := token.contentEnd()
+	if token.unfinished {
+		rawEnd = token.decodedEnd
+	}
 	for _, offset := range offsets {
 		if offset < 0 || offset > len(token.decoded) {
 			return nil, false
@@ -462,12 +621,20 @@ func mapJSONMatches(input string, token jsonStringToken, matches []match) ([]mat
 	}
 	for i := range matches {
 		m := &matches[i]
+		extendTail := token.unfinished && token.decodedEnd < token.end &&
+			m.end == len(token.decoded) && m.valueEnd == m.end && m.valueStart < m.valueEnd
 		m.logicalMatch = m.match
 		m.start, m.end = mapped[m.start], mapped[m.end]
-		m.match = input[m.start:m.end]
 		if m.valueStart < m.valueEnd {
 			m.valueStart, m.valueEnd = mapped[m.valueStart], mapped[m.valueEnd]
 		}
+		if extendTail {
+			m.end, m.valueEnd = token.end, token.end
+			// An allowlist for the known decoded prefix cannot authorize the
+			// unknown escape suffix. The actual complete raw span still can.
+			m.logicalMatch = ""
+		}
+		m.match = input[m.start:m.end]
 	}
 	return matches, true
 }

@@ -11,7 +11,9 @@ import (
 )
 
 func TestRedactPreview_DecodedJSONCredentials(t *testing.T) {
-	for _, tc := range append(jsonEscapedCredentialFixtures(), jsonMixedRecordCredentialFixtures()...) {
+	fixtures := append(jsonEscapedCredentialFixtures(), jsonMixedRecordCredentialFixtures()...)
+	fixtures = append(fixtures, jsonPartialRecordCredentialFixtures()...)
+	for _, tc := range fixtures {
 		for _, format := range []string{"text", "json"} {
 			t.Run(tc.name+"/"+format, func(t *testing.T) {
 				resetFlags()
@@ -21,6 +23,9 @@ func TestRedactPreview_DecodedJSONCredentials(t *testing.T) {
 				cfg = config.Default()
 				cfg.Redaction.Mode = "off"
 				cfg.Redaction.Allowlist = tc.allowlist
+				for _, category := range tc.disabled {
+					cfg.Redaction.DisabledCategories = append(cfg.Redaction.DisabledCategories, string(category))
+				}
 				jsonOutput = format == "json"
 				cmd := newRedactPreviewCmd()
 				cmd.SetArgs([]string{"--text", tc.content})

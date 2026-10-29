@@ -24,6 +24,7 @@ type jsonEscapedCredentialFixture struct {
 	invalidLines  []int
 	hidden        []string
 	allowlist     []string
+	disabled      []redaction.Category
 	visible       string
 }
 
@@ -145,8 +146,126 @@ func jsonMixedRecordCredentialFixtures() []jsonEscapedCredentialFixture {
 	}
 }
 
+func jsonPartialRecordCredentialFixtures() []jsonEscapedCredentialFixture {
+	const prefix = "{\"note\":\"public-neighbor\","
+	const partialField = "\"password\":\"partial-sensitive-head-partial-sensitive-tail"
+	const pendingMessage = "PASSWORD=\\\"message-partial-head-message-partial-tail\\u12"
+	const logicalMessagePrefix = "PASSWORD=\"message-partial-head-message-partial-tail"
+	const allowedField = "\"password\":\"allowlisted-sensitive-partial\\u12"
+	const rawShortAssignment = "PASSWORD=\\u0061\\u0062\\u0063\\u0064\\u0065\\u0066\\u0067\""
+	return []jsonEscapedCredentialFixture{
+		{
+			name:          "partial password value",
+			content:       prefix + partialField,
+			lines:         []int{1},
+			sourceMatches: []string{partialField},
+			invalidLines:  []int{1},
+			hidden:        []string{"partial-sensitive-head", "partial-sensitive-tail"},
+		},
+		{
+			name:          "complete encoded message without closing brace",
+			content:       prefix + "\"message\":\"PASSWORD=\\\"missing-brace-sensitive-head-missing-brace-sensitive-tail\\\"\"",
+			lines:         []int{1},
+			sourceMatches: []string{"PASSWORD=\\\"missing-brace-sensitive-head-missing-brace-sensitive-tail\\\""},
+			invalidLines:  []int{1},
+			hidden:        []string{"missing-brace-sensitive-head", "missing-brace-sensitive-tail"},
+		},
+		{
+			name: "partial Unicode credential keys",
+			content: prefix + "\"pass\\u0077ord\":\"closed-key-sensitive-head-closed-key-sensitive-tail\"\n" +
+				prefix + "\"pass\\u0077ord\":\"open-key-sensitive-head\\\"open-key-sensitive-tail\\u12",
+			lines: []int{1, 2},
+			sourceMatches: []string{
+				"\"pass\\u0077ord\":\"closed-key-sensitive-head-closed-key-sensitive-tail\"",
+				"\"pass\\u0077ord\":\"open-key-sensitive-head\\\"open-key-sensitive-tail\\u12",
+			},
+			invalidLines: []int{1, 2},
+			hidden:       []string{"closed-key-sensitive-head", "closed-key-sensitive-tail", "open-key-sensitive-head", "open-key-sensitive-tail", "\\u12"},
+		},
+		{
+			name:          "partial quoted message with pending escape",
+			content:       prefix + "\"message\":\"" + pendingMessage,
+			lines:         []int{1},
+			sourceMatches: []string{pendingMessage},
+			invalidLines:  []int{1},
+			hidden:        []string{"message-partial-head", "message-partial-tail", "\\u12"},
+		},
+		{
+			name:          "pending escape cannot use logical prefix allowlist",
+			content:       prefix + "\"message\":\"" + pendingMessage,
+			lines:         []int{1},
+			sourceMatches: []string{pendingMessage},
+			invalidLines:  []int{1},
+			hidden:        []string{"message-partial-head", "message-partial-tail", "\\u12"},
+			allowlist:     []string{"^" + regexp.QuoteMeta(logicalMessagePrefix) + "$"},
+		},
+		{
+			name: "partial JSONL records preserve physical bounds",
+			content: prefix + "\"password\":\"before-next-sensitive-head\\\"before-next-sensitive-tail\n" +
+				prefix + "\"message\":\"PASSWORD=\\\"complete-middle-sensitive\\\"\"}\n" +
+				prefix + "\"pass\\u0077ord\":\"at-eof-sensitive-head\\\"at-eof-sensitive-tail",
+			lines: []int{1, 2, 3},
+			sourceMatches: []string{
+				"\"password\":\"before-next-sensitive-head\\\"before-next-sensitive-tail",
+				"PASSWORD=\\\"complete-middle-sensitive\\\"",
+				"\"pass\\u0077ord\":\"at-eof-sensitive-head\\\"at-eof-sensitive-tail",
+			},
+			invalidLines: []int{1, 3},
+			hidden:       []string{"before-next-sensitive-head", "before-next-sensitive-tail", "complete-middle-sensitive", "at-eof-sensitive-head", "at-eof-sensitive-tail"},
+		},
+		{
+			name:          "partial message preserves raw multiline assignment",
+			content:       prefix + "\"message\":\"PASSWORD\n=synthetic-never-valid-multiline\npublic-trailer\n",
+			lines:         []int{1},
+			sourceMatches: []string{"PASSWORD\n=synthetic-never-valid-multiline"},
+			invalidLines:  []int{1, 2, 3},
+			hidden:        []string{"synthetic-never-valid-multiline", "never-valid-multiline"},
+			visible:       "public-trailer",
+		},
+		{
+			name: "seven decoded characters with pending escapes",
+			content: prefix + "\"password\":\"abcdefg\\u12\n" +
+				prefix + "\"message\":\"PASSWORD=\\\"abcdefg\\",
+			invalidLines: []int{1, 2},
+		},
+		{
+			name: "partial records preserve noncredential suppression",
+			content: prefix + "\"password\":\"\\u003credacted\\u003e\n" +
+				prefix + "\"pwd\":\"\\u002fhome/agent/project\n" +
+				prefix + "\"message\":\"PASSWORD=\\u0061\\u0062\\u0063\\u0064\\u0065\\u0066\\u0067\"\n" +
+				prefix + "\"message\":\"OLDPWD=C:\\\\Users\\\\agent\\\\project\"\n" +
+				prefix + "\"pass\\u0077ord_hint\":\"public-hint-long",
+			invalidLines: []int{1, 2, 3, 4, 5},
+		},
+		{
+			name:          "invalid syntax retains raw assignment matching",
+			content:       prefix + "\"message\":\"" + rawShortAssignment + ",\"broken\":!}",
+			lines:         []int{1},
+			sourceMatches: []string{rawShortAssignment},
+			invalidLines:  []int{1},
+			hidden:        []string{"\\u0061", "\\u0067"},
+		},
+		{
+			name:         "whole raw partial field allowlist",
+			content:      prefix + allowedField,
+			invalidLines: []int{1},
+			allowlist:    []string{"^" + regexp.QuoteMeta(allowedField) + "$"},
+			visible:      "allowlisted-sensitive-partial",
+		},
+		{
+			name: "partial password category disabled",
+			content: prefix + "\"pass\\u0077ord\":\"disabled-sensitive-partial\\u12\n" +
+				prefix + "\"message\":\"PASSWORD=\\\"disabled-message-sensitive-tail\\u12",
+			invalidLines: []int{1, 2},
+			disabled:     []redaction.Category{redaction.CategoryPassword},
+		},
+	}
+}
+
 func TestScrub_DecodedJSONCredentials(t *testing.T) {
-	for _, tc := range append(jsonEscapedCredentialFixtures(), jsonMixedRecordCredentialFixtures()...) {
+	fixtures := append(jsonEscapedCredentialFixtures(), jsonMixedRecordCredentialFixtures()...)
+	fixtures = append(fixtures, jsonPartialRecordCredentialFixtures()...)
+	for _, tc := range fixtures {
 		t.Run(tc.name, func(t *testing.T) {
 			for i, line := range strings.Split(tc.content, "\n") {
 				if strings.TrimSpace(line) == "" {
@@ -166,7 +285,7 @@ func TestScrub_DecodedJSONCredentials(t *testing.T) {
 			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			res := runScrub([]string{path}, nil, redaction.Config{Allowlist: tc.allowlist})
+			res := runScrub([]string{path}, nil, redaction.Config{Allowlist: tc.allowlist, DisabledCategories: tc.disabled})
 			if res.FilesScanned != 1 || len(res.Warnings) != 0 {
 				t.Fatalf("files=%d warnings=%v, want one file without warnings", res.FilesScanned, res.Warnings)
 			}
@@ -344,6 +463,15 @@ func privateKeyCredentialFixtures() []credentialOutputFixture {
 			lines:         []int{1},
 			sourceMatches: []string{encodedPEM},
 			hidden:        hiddenBody,
+		},
+		{
+			name:          "partial message preserves raw complete PEM body",
+			content:       "{\"note\":\"public-neighbor\",\"message\":\"" + pem + "\npublic-trailer\n",
+			categories:    []redaction.Category{redaction.CategoryPrivateKey},
+			lines:         []int{1},
+			sourceMatches: []string{pem},
+			hidden:        hiddenBody,
+			visible:       "public-trailer",
 		},
 		{
 			name:          "JSONL complete PEM bodies",

@@ -73,6 +73,12 @@ func TestE2E_ScrubQuotedCredentials(t *testing.T) {
 	pemPrefix := encodedProviderPEM[:providerOffset]
 	pemSuffix := encodedProviderPEM[providerOffset+len(google):]
 	hiddenPEMBody := []string{pemHead, pemTail, pemHead[:20], pemTail[len(pemTail)-20:]}
+	const partialRecordPrefix = "{\"note\":\"public-neighbor\","
+	const partialField = "\"password\":\"partial-sensitive-head-partial-sensitive-tail"
+	const pendingMessage = "PASSWORD=\\\"message-partial-head-message-partial-tail\\u12"
+	const logicalMessagePrefix = "PASSWORD=\"message-partial-head-message-partial-tail"
+	const allowedPartialField = "\"password\":\"allowlisted-sensitive-partial\\u12"
+	const rawShortAssignment = "PASSWORD=\\u0061\\u0062\\u0063\\u0064\\u0065\\u0066\\u0067\""
 	cases := []struct {
 		name          string
 		content       string
@@ -193,6 +199,16 @@ func TestE2E_ScrubQuotedCredentials(t *testing.T) {
 			public:        "public-neighbor",
 			lines:         []int{1},
 			sourceMatches: []string{encodedPEM},
+		},
+		{
+			name:          "partial message preserves raw complete PEM body",
+			content:       "{\"note\":\"public-neighbor\",\"message\":\"" + pem + "\npublic-trailer\n",
+			categories:    []string{"PRIVATE_KEY"},
+			hidden:        hiddenPEMBody,
+			public:        "public-neighbor",
+			visible:       "public-trailer",
+			lines:         []int{1},
+			sourceMatches: []string{pem},
 		},
 		{
 			name:          "JSONL complete PEM bodies",
@@ -357,6 +373,119 @@ func TestE2E_ScrubQuotedCredentials(t *testing.T) {
 				"{\"message\":\"password=\\u003credacted\\u003e\",\"note\":\"public-neighbor\"}\n" +
 				"{\"message\":\"OLDPWD=C:\\\\Users\\\\user\\\\project\",\"note\":\"public-neighbor\"}\n",
 			public: "public-neighbor",
+		},
+		{
+			name:          "partial password value",
+			content:       partialRecordPrefix + partialField,
+			categories:    []string{"PASSWORD"},
+			hidden:        []string{"partial-sensitive-head", "partial-sensitive-tail"},
+			public:        "public-neighbor",
+			lines:         []int{1},
+			sourceMatches: []string{partialField},
+		},
+		{
+			name:          "complete encoded message without closing brace",
+			content:       partialRecordPrefix + "\"message\":\"PASSWORD=\\\"missing-brace-sensitive-head-missing-brace-sensitive-tail\\\"\"",
+			categories:    []string{"PASSWORD"},
+			hidden:        []string{"missing-brace-sensitive-head", "missing-brace-sensitive-tail"},
+			public:        "public-neighbor",
+			lines:         []int{1},
+			sourceMatches: []string{"PASSWORD=\\\"missing-brace-sensitive-head-missing-brace-sensitive-tail\\\""},
+		},
+		{
+			name: "partial Unicode credential keys",
+			content: partialRecordPrefix + "\"pass\\u0077ord\":\"closed-key-sensitive-head-closed-key-sensitive-tail\"\n" +
+				partialRecordPrefix + "\"pass\\u0077ord\":\"open-key-sensitive-head\\\"open-key-sensitive-tail\\u12",
+			categories: []string{"PASSWORD", "PASSWORD"},
+			hidden:     []string{"closed-key-sensitive-head", "closed-key-sensitive-tail", "open-key-sensitive-head", "open-key-sensitive-tail", "\\u12"},
+			public:     "public-neighbor",
+			lines:      []int{1, 2},
+			sourceMatches: []string{
+				"\"pass\\u0077ord\":\"closed-key-sensitive-head-closed-key-sensitive-tail\"",
+				"\"pass\\u0077ord\":\"open-key-sensitive-head\\\"open-key-sensitive-tail\\u12",
+			},
+		},
+		{
+			name:          "partial quoted message with pending escape",
+			content:       partialRecordPrefix + "\"message\":\"" + pendingMessage,
+			categories:    []string{"PASSWORD"},
+			hidden:        []string{"message-partial-head", "message-partial-tail", "\\u12"},
+			public:        "public-neighbor",
+			lines:         []int{1},
+			sourceMatches: []string{pendingMessage},
+		},
+		{
+			name:          "pending escape cannot use logical prefix allowlist",
+			content:       partialRecordPrefix + "\"message\":\"" + pendingMessage,
+			categories:    []string{"PASSWORD"},
+			hidden:        []string{"message-partial-head", "message-partial-tail", "\\u12"},
+			allowlist:     strconv.Quote("^" + regexp.QuoteMeta(logicalMessagePrefix) + "$"),
+			public:        "public-neighbor",
+			lines:         []int{1},
+			sourceMatches: []string{pendingMessage},
+		},
+		{
+			name: "partial JSONL records preserve physical bounds",
+			content: partialRecordPrefix + "\"password\":\"before-next-sensitive-head\\\"before-next-sensitive-tail\n" +
+				partialRecordPrefix + "\"message\":\"PASSWORD=\\\"complete-middle-sensitive\\\"\"}\n" +
+				partialRecordPrefix + "\"pass\\u0077ord\":\"at-eof-sensitive-head\\\"at-eof-sensitive-tail",
+			categories: []string{"PASSWORD", "PASSWORD", "PASSWORD"},
+			hidden:     []string{"before-next-sensitive-head", "before-next-sensitive-tail", "complete-middle-sensitive", "at-eof-sensitive-head", "at-eof-sensitive-tail"},
+			public:     "public-neighbor",
+			lines:      []int{1, 2, 3},
+			sourceMatches: []string{
+				"\"password\":\"before-next-sensitive-head\\\"before-next-sensitive-tail",
+				"PASSWORD=\\\"complete-middle-sensitive\\\"",
+				"\"pass\\u0077ord\":\"at-eof-sensitive-head\\\"at-eof-sensitive-tail",
+			},
+		},
+		{
+			name:          "partial message preserves raw multiline assignment",
+			content:       partialRecordPrefix + "\"message\":\"PASSWORD\n=synthetic-never-valid-multiline\npublic-trailer\n",
+			categories:    []string{"PASSWORD"},
+			hidden:        []string{"synthetic-never-valid-multiline", "never-valid-multiline"},
+			public:        "public-neighbor",
+			visible:       "public-trailer",
+			lines:         []int{1},
+			sourceMatches: []string{"PASSWORD\n=synthetic-never-valid-multiline"},
+		},
+		{
+			name: "seven decoded characters with pending escapes",
+			content: partialRecordPrefix + "\"password\":\"abcdefg\\u12\n" +
+				partialRecordPrefix + "\"message\":\"PASSWORD=\\\"abcdefg\\",
+			public: "public-neighbor",
+		},
+		{
+			name: "partial records preserve noncredential suppression",
+			content: partialRecordPrefix + "\"password\":\"\\u003credacted\\u003e\n" +
+				partialRecordPrefix + "\"pwd\":\"\\u002fhome/agent/project\n" +
+				partialRecordPrefix + "\"message\":\"PASSWORD=\\u0061\\u0062\\u0063\\u0064\\u0065\\u0066\\u0067\"\n" +
+				partialRecordPrefix + "\"message\":\"OLDPWD=C:\\\\Users\\\\agent\\\\project\"\n" +
+				partialRecordPrefix + "\"pass\\u0077ord_hint\":\"public-hint-long",
+			public: "public-neighbor",
+		},
+		{
+			name:          "invalid syntax retains raw assignment matching",
+			content:       partialRecordPrefix + "\"message\":\"" + rawShortAssignment + ",\"broken\":!}",
+			categories:    []string{"PASSWORD"},
+			hidden:        []string{"\\u0061", "\\u0067"},
+			public:        "public-neighbor",
+			lines:         []int{1},
+			sourceMatches: []string{rawShortAssignment},
+		},
+		{
+			name:      "whole raw partial field allowlist",
+			content:   partialRecordPrefix + allowedPartialField,
+			allowlist: strconv.Quote("^" + regexp.QuoteMeta(allowedPartialField) + "$"),
+			public:    "public-neighbor",
+			visible:   "allowlisted-sensitive-partial",
+		},
+		{
+			name: "partial password category disabled",
+			content: partialRecordPrefix + "\"pass\\u0077ord\":\"disabled-sensitive-partial\\u12\n" +
+				partialRecordPrefix + "\"message\":\"PASSWORD=\\\"disabled-message-sensitive-tail\\u12",
+			disabled: "'PASSWORD'",
+			public:   "public-neighbor",
 		},
 		{
 			name:       "raw embedded assignment allowlist",
