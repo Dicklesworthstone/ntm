@@ -981,3 +981,209 @@ func TestJSONCredentialsPreserveAllowlistAndPriorities(t *testing.T) {
 		t.Error("disabled password category still reported JSON fields")
 	}
 }
+
+func TestJSONCredentialProviderOverlapRedactsCompleteValue(t *testing.T) {
+	github := "gh" + "p_" + strings.Repeat("q", 40)
+	partialGitHub := "gh" + "p_" + strings.Repeat("q", 31)
+	google := "AI" + "za" + strings.Repeat("q", 35)
+	aws := "AK" + "IA" + strings.Repeat("Q", 16)
+	tests := []struct {
+		name      string
+		key       string
+		rawValue  string
+		category  Category
+		providers map[string]Category
+		fragments []string
+	}{
+		{
+			name: "escaped token suffix", key: "token",
+			rawValue: partialGitHub + `\u0071SECRETL8`, category: CategoryGenericSecret,
+			providers: map[string]Category{partialGitHub: CategoryGitHubToken},
+			fragments: []string{`\u0071`, "SECRETL8"},
+		},
+		{
+			name: "escaped api key suffix", key: "api_key",
+			rawValue: partialGitHub + `\u0071SECRETL8`, category: CategoryGenericAPIKey,
+			providers: map[string]Category{partialGitHub: CategoryGitHubToken},
+			fragments: []string{`\u0071`, "SECRETL8"},
+		},
+		{
+			name: "escaped password suffix", key: "password",
+			rawValue: partialGitHub + `\u0071SECRETL8`, category: CategoryPassword,
+			providers: map[string]Category{partialGitHub: CategoryGitHubToken},
+			fragments: []string{`\u0071`, "SECRETL8"},
+		},
+		{
+			name: "password prefix and suffix", key: "password",
+			rawValue: "sensitive-prefix:" + github + ":sensitive-suffix", category: CategoryPassword,
+			providers: map[string]Category{github: CategoryGitHubToken},
+			fragments: []string{"sensitive-prefix", "sensitive-suffix"},
+		},
+		{
+			name: "escaped password prefix and suffix", key: "password",
+			rawValue: `sensitive-prefix\"` + github + `\\sensitive-suffix`, category: CategoryPassword,
+			providers: map[string]Category{github: CategoryGitHubToken},
+			fragments: []string{"sensitive-prefix", "sensitive-suffix"},
+		},
+		{
+			name: "multiple providers in password", key: "password",
+			rawValue: "sensitive-prefix:" + github + ":sensitive-middle:" + aws + ":sensitive-suffix", category: CategoryPassword,
+			providers: map[string]Category{github: CategoryGitHubToken, aws: CategoryAWSAccessKey},
+			fragments: []string{"sensitive-prefix", "sensitive-middle", "sensitive-suffix"},
+		},
+		{
+			name: "fixed length provider in api key", key: "api_key",
+			rawValue: google + "sensitiveSuffix", category: CategoryGenericAPIKey,
+			providers: map[string]Category{google: CategoryGoogleAPIKey},
+			fragments: []string{"sensitiveSuffix"},
+		},
+		{
+			name: "fixed length provider in aws secret", key: "secret_key",
+			rawValue: google + "Z", category: CategoryAWSSecretKey,
+			providers: map[string]Category{google: CategoryGoogleAPIKey},
+			fragments: []string{"Z"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			field := `"` + tc.key + `":"` + tc.rawValue + `"`
+			input := `{"status":"public",` + field + `,"count":2}`
+			if !json.Valid([]byte(input)) {
+				t.Fatal("invalid JSON test fixture")
+			}
+			result := ScanAndRedact(input, Config{Mode: ModeRedact})
+			for _, fragment := range tc.fragments {
+				if strings.Contains(result.Output, fragment) {
+					t.Errorf("redacted output exposed a credential fragment %q", fragment)
+				}
+			}
+			if !strings.Contains(result.Output, `"status":"public"`) || !strings.Contains(result.Output, `"count":2`) {
+				t.Error("redaction consumed a neighboring public field")
+			}
+			residuals := 0
+			for _, f := range result.Findings {
+				if f.Match != input[f.Start:f.End] {
+					t.Errorf("finding no longer identifies its raw source range: %+v", f)
+				}
+				if f.Category == tc.category {
+					residuals++
+				}
+			}
+			if residuals == 0 {
+				t.Error("missing lower-priority credential portions outside the provider match")
+			}
+			for provider, category := range tc.providers {
+				found := false
+				for _, f := range result.Findings {
+					if f.Category == category && f.Match == provider {
+						found = true
+						start := strings.Index(input, provider)
+						if f.Start != start || f.End != start+len(provider) {
+							t.Error("provider finding offsets changed")
+						}
+					}
+				}
+				if !found {
+					t.Errorf("missing original %s provider finding", category)
+				}
+			}
+		})
+	}
+}
+
+func TestJSONCredentialProviderOverlapAllowlistsAndDisabledCategories(t *testing.T) {
+	provider := "gh" + "p_" + strings.Repeat("q", 31)
+	suffix := `\u0071SECRETL8`
+	field := `"token":"` + provider + suffix + `"`
+	input := `{` + field + `}`
+	providerAllowlist := "^" + regexp.QuoteMeta(provider) + "$"
+	fieldAllowlist := "^" + regexp.QuoteMeta(field) + "$"
+	tests := []struct {
+		name          string
+		cfg           Config
+		wantProvider  bool
+		wantResiduals bool
+	}{
+		{name: "default", wantProvider: true, wantResiduals: true},
+		{name: "partial provider allowed", cfg: Config{Allowlist: []string{providerAllowlist}}, wantResiduals: true},
+		{name: "original field allowed", cfg: Config{Allowlist: []string{fieldAllowlist}}, wantProvider: true},
+		{name: "provider and field allowed", cfg: Config{Allowlist: []string{providerAllowlist, fieldAllowlist}}},
+		{name: "residual alone is not the allowlist context", cfg: Config{Allowlist: []string{"^" + regexp.QuoteMeta(suffix) + "$"}}, wantProvider: true, wantResiduals: true},
+		{name: "generic category disabled", cfg: Config{DisabledCategories: []Category{CategoryGenericSecret}}, wantProvider: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			output, findings := Redact(input, tc.cfg)
+			var hasProvider, hasResiduals bool
+			for _, f := range findings {
+				switch f.Category {
+				case CategoryGitHubToken:
+					hasProvider = true
+					if f.Match != provider {
+						t.Error("provider match changed")
+					}
+				case CategoryGenericSecret:
+					hasResiduals = true
+					if f.Match != suffix || input[f.Start:f.End] != suffix {
+						t.Error("residual no longer identifies the raw escaped suffix")
+					}
+				}
+			}
+			if hasProvider != tc.wantProvider || hasResiduals != tc.wantResiduals {
+				t.Errorf("provider=%v, residuals=%v; want provider=%v, residuals=%v", hasProvider, hasResiduals, tc.wantProvider, tc.wantResiduals)
+			}
+			if tc.wantResiduals && strings.Contains(output, "SECRETL8") {
+				t.Error("redaction exposed a residual despite the selected allowlist")
+			}
+			if !tc.wantProvider && !tc.wantResiduals && output != input {
+				t.Error("allowlisted input changed")
+			}
+		})
+	}
+
+	for _, input := range []string{`{"token":"` + provider + `"}`, "token=" + provider} {
+		findings := Scan(input, Config{})
+		if len(findings) != 1 || findings[0].Category != CategoryGitHubToken || findings[0].Match != provider {
+			t.Error("a complete provider value no longer has exactly its original provider finding")
+		}
+		output, findings := Redact(input, Config{Allowlist: []string{providerAllowlist}})
+		if len(findings) != 0 || output != input {
+			t.Error("anchored allowlist changed for a complete provider value")
+		}
+	}
+}
+
+func TestJSONCredentialProviderOverlapWithZeroWidthExtraPatterns(t *testing.T) {
+	provider := "gh" + "p_" + strings.Repeat("q", 40)
+	for _, input := range []string{
+		"password=sensitive-never-valid-value",
+		`{"password":"sensitive-prefix:` + provider + `:sensitive-suffix"}`,
+	} {
+		cfg := Config{
+			Mode:          ModeRedact,
+			ExtraPatterns: map[Category][]string{"CUSTOM_ANCHOR": {`^`, `\b`, `$`}},
+		}
+		result := ScanAndRedact(input, cfg)
+		anchors := 0
+		for _, f := range result.Findings {
+			if f.Start == f.End {
+				anchors++
+			}
+			if f.Match != input[f.Start:f.End] {
+				t.Error("finding source range changed with zero-width patterns")
+			}
+		}
+		if anchors == 0 {
+			t.Fatal("test did not retain zero-width matches")
+		}
+		for _, fragment := range []string{"sensitive", strings.Repeat("q", 8)} {
+			if strings.Contains(result.Output, fragment) {
+				t.Error("zero-width pattern caused a credential fragment to remain in ScanAndRedact output")
+			}
+		}
+		output, findings := Redact(input, cfg)
+		if output != result.Output || len(findings) != len(result.Findings) {
+			t.Error("Redact and ScanAndRedact differ with zero-width patterns")
+		}
+	}
+}

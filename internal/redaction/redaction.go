@@ -80,6 +80,12 @@ type match struct {
 	start    int
 	end      int
 	priority int
+	// JSON value bounds are set only for validated built-in credential fields.
+	// They let lower-priority fields retain value bytes a provider did not cover.
+	jsonValueStart int
+	jsonValueEnd   int
+	// Residual value matches retain the original field's allowlist context.
+	allowlistSource string
 }
 
 // scan finds all sensitive content in input.
@@ -113,13 +119,20 @@ func scan(input string, allowlist []*regexp.Regexp, disabled []Category, extra [
 			}
 			matchStr := input[loc[0]:loc[1]]
 
-			allMatches = append(allMatches, match{
+			m := match{
 				category: p.category,
 				match:    matchStr,
 				start:    loc[0],
 				end:      loc[1],
 				priority: p.priority,
-			})
+			}
+			if p.reject != nil {
+				if start, end, ok := jsonCredentialValueBounds(matchStr); ok {
+					m.jsonValueStart = loc[0] + start
+					m.jsonValueEnd = loc[0] + end
+				}
+			}
+			allMatches = append(allMatches, m)
 		}
 	}
 
@@ -133,7 +146,11 @@ func scan(input string, allowlist []*regexp.Regexp, disabled []Category, extra [
 	if len(allowlist) > 0 {
 		var filtered []match
 		for _, m := range deduplicated {
-			if !isAllowlisted(m.match, allowlist) {
+			allowlistSource := m.match
+			if m.allowlistSource != "" {
+				allowlistSource = m.allowlistSource
+			}
+			if !isAllowlisted(allowlistSource, allowlist) {
 				filtered = append(filtered, m)
 			}
 		}
@@ -141,6 +158,24 @@ func scan(input string, allowlist []*regexp.Regexp, disabled []Category, extra [
 	}
 
 	return deduplicated
+}
+
+// jsonCredentialValueBounds identifies the raw string interior of an already
+// validated built-in JSON credential match. Bare assignments and user-supplied
+// patterns do not receive these bounds.
+func jsonCredentialValueBounds(m string) (start, end int, ok bool) {
+	if len(m) < 2 || m[0] != '"' {
+		return 0, 0, false
+	}
+	sep := strings.IndexByte(m, ':')
+	if sep < 0 {
+		return 0, 0, false
+	}
+	value := strings.TrimLeft(m[sep+1:], " \t\r\n")
+	if len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+		return 0, 0, false
+	}
+	return len(m) - len(value) + 1, len(m) - 1, true
 }
 
 // deduplicateMatches removes overlapping matches, preferring higher priority.
@@ -180,6 +215,12 @@ func deduplicateMatches(matches []match) []match {
 
 		if !overlaps {
 			result = append(result, m)
+		} else if m.jsonValueStart < m.jsonValueEnd {
+			// A provider pattern can cover only the prefix of a JSON string,
+			// particularly when an escape interrupts the provider's raw regex.
+			// Preserve its category and exact match, but also redact every
+			// uncovered byte of the validated credential value.
+			result = append(result, uncoveredJSONValueMatches(m, result)...)
 		}
 	}
 
@@ -189,6 +230,49 @@ func deduplicateMatches(matches []match) []match {
 	})
 
 	return result
+}
+
+func uncoveredJSONValueMatches(m match, kept []match) []match {
+	fragments := []match{{
+		category:        m.category,
+		start:           m.jsonValueStart,
+		end:             m.jsonValueEnd,
+		priority:        m.priority,
+		allowlistSource: m.match,
+	}}
+	for _, other := range kept {
+		if other.start == other.end {
+			continue // Zero-width patterns do not protect any credential bytes.
+		}
+		if other.end <= m.jsonValueStart || other.start >= m.jsonValueEnd {
+			continue
+		}
+		var remaining []match
+		for _, fragment := range fragments {
+			if fragment.end <= other.start || fragment.start >= other.end {
+				remaining = append(remaining, fragment)
+				continue
+			}
+			if fragment.start < other.start {
+				left := fragment
+				left.end = other.start
+				remaining = append(remaining, left)
+			}
+			if other.end < fragment.end {
+				right := fragment
+				right.start = other.end
+				remaining = append(remaining, right)
+			}
+		}
+		fragments = remaining
+		if len(fragments) == 0 {
+			break
+		}
+	}
+	for i := range fragments {
+		fragments[i].match = m.match[fragments[i].start-m.start : fragments[i].end-m.start]
+	}
+	return fragments
 }
 
 // generatePlaceholder creates a redaction placeholder for a match.

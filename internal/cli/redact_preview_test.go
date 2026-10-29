@@ -10,6 +10,60 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 )
 
+func TestRedactPreview_ProviderOverlapValues(t *testing.T) {
+	for _, tc := range jsonCredentialOverlapFixtures() {
+		for _, format := range []string{"text", "json"} {
+			t.Run(tc.name+"/"+format, func(t *testing.T) {
+				resetFlags()
+				t.Cleanup(resetFlags)
+				oldCfg := cfg
+				t.Cleanup(func() { cfg = oldCfg })
+				cfg = config.Default()
+				cfg.Redaction.Mode = "off"
+				cfg.Redaction.Allowlist = tc.allowlist
+				jsonOutput = format == "json"
+
+				cmd := newRedactPreviewCmd()
+				cmd.SetArgs([]string{"--text", tc.content})
+				out, err := captureStdout(t, cmd.Execute)
+				if err != nil {
+					t.Fatalf("preview failed: %v", err)
+				}
+				for _, fragment := range tc.hidden {
+					if strings.Contains(out, fragment) {
+						t.Error("preview exposed a secret fragment")
+					}
+				}
+				if !strings.Contains(out, "public-neighbor") {
+					t.Error("preview removed the neighboring public field")
+				}
+				if tc.visible != "" && !strings.Contains(out, tc.visible) {
+					t.Error("preview did not preserve the explicitly allowlisted provider")
+				}
+				for _, category := range tc.categories {
+					if !strings.Contains(out, "[REDACTED:"+string(category)+":") {
+						t.Errorf("preview lacks a %s placeholder", category)
+					}
+				}
+				if format == "json" {
+					var response RedactPreviewResponse
+					if err := json.Unmarshal([]byte(out), &response); err != nil {
+						t.Fatal(err)
+					}
+					if len(response.Findings) != len(tc.categories) {
+						t.Fatalf("findings=%d, want %d", len(response.Findings), len(tc.categories))
+					}
+					for i, finding := range response.Findings {
+						if finding.Category != tc.categories[i] {
+							t.Errorf("finding %d category=%s, want %s", i, finding.Category, tc.categories[i])
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestRedactPreview_QuotedJSONStrings(t *testing.T) {
 	const input = "{\"password\":\"preview-head\\\"preview-middle\\\\preview-tail with spaces\",\"note\":\"public-neighbor\",\"password_hint\":\"public-hint\"}\n{\"password\":\"second-preview-value\"}\n"
 	for _, line := range strings.Split(strings.TrimSpace(input), "\n") {

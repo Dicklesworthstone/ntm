@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,108 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/startup"
 )
+
+type jsonCredentialOverlapFixture struct {
+	name       string
+	content    string
+	categories []redaction.Category
+	hidden     []string
+	allowlist  []string
+	visible    string
+}
+
+func jsonCredentialOverlapFixtures() []jsonCredentialOverlapFixture {
+	provider := "gh" + "p_" + strings.Repeat("q", 40)
+	escaped := "gh" + "p_" + strings.Repeat("q", 31) + "\\u0071SECRETL8"
+	composite := "{\"password\":\"left-sensitive " + provider + " right-sensitive\",\"note\":\"public-neighbor\"}"
+	exact := "{\"password\":\"" + provider + "\",\"note\":\"public-neighbor\"}"
+	return []jsonCredentialOverlapFixture{
+		{
+			name:       "escaped provider suffix",
+			content:    "{\"token\":\"" + escaped + "\",\"note\":\"public-neighbor\"}",
+			categories: []redaction.Category{redaction.CategoryGitHubToken, redaction.CategoryGenericSecret},
+			hidden:     []string{strings.Repeat("q", 31), "SECRETL8"},
+		},
+		{
+			name:       "password around provider",
+			content:    composite,
+			categories: []redaction.Category{redaction.CategoryPassword, redaction.CategoryGitHubToken, redaction.CategoryPassword},
+			hidden:     []string{"left-sensitive", "right-sensitive", provider},
+		},
+		{
+			name:       "allowlisted provider inside password",
+			content:    composite,
+			categories: []redaction.Category{redaction.CategoryPassword, redaction.CategoryPassword},
+			hidden:     []string{"left-sensitive", "right-sensitive"},
+			allowlist:  []string{"^" + regexp.QuoteMeta(provider) + "$"},
+			visible:    provider,
+		},
+		{
+			name:       "exact provider value",
+			content:    exact,
+			categories: []redaction.Category{redaction.CategoryGitHubToken},
+			hidden:     []string{provider},
+		},
+		{
+			name:      "allowlisted exact provider value",
+			content:   exact,
+			allowlist: []string{"^" + regexp.QuoteMeta(provider) + "$"},
+			visible:   provider,
+		},
+	}
+}
+
+func TestScrub_ProviderOverlapPreviews(t *testing.T) {
+	for _, tc := range jsonCredentialOverlapFixtures() {
+		t.Run(tc.name, func(t *testing.T) {
+			if !json.Valid([]byte(tc.content)) {
+				t.Fatal("fixture must be valid JSON")
+			}
+			path := filepath.Join(t.TempDir(), "artifact.json")
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			res := runScrub([]string{path}, nil, redaction.Config{Allowlist: tc.allowlist})
+			if res.FilesScanned != 1 || len(res.Warnings) != 0 {
+				t.Fatalf("files=%d warnings=%v, want one file without warnings", res.FilesScanned, res.Warnings)
+			}
+			if len(res.Findings) != len(tc.categories) {
+				t.Fatalf("findings=%d, want %d", len(res.Findings), len(tc.categories))
+			}
+			for i, finding := range res.Findings {
+				if finding.Category != tc.categories[i] {
+					t.Errorf("finding %d category=%s, want %s", i, finding.Category, tc.categories[i])
+				}
+				for _, fragment := range tc.hidden {
+					if strings.Contains(finding.Preview, fragment) {
+						t.Errorf("finding %d preview exposed a secret fragment", i)
+					}
+				}
+			}
+			encoded, err := json.Marshal(res)
+			if err != nil {
+				t.Fatal(err)
+			}
+			textOutput, err := captureStdout(t, func() error {
+				printScrubText(res)
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, output := range []string{string(encoded), textOutput} {
+				for _, fragment := range tc.hidden {
+					if strings.Contains(output, fragment) {
+						t.Error("scrub output exposed a secret fragment")
+					}
+				}
+				if len(tc.categories) > 0 && !strings.Contains(output, "public-neighbor") {
+					t.Error("scrub previews removed the neighboring public field")
+				}
+			}
+		})
+	}
+}
 
 func TestScrub_QuotedCredentialsAndSafePreviews(t *testing.T) {
 	left := strings.Repeat("left-sensitive-fragment-", 8)
