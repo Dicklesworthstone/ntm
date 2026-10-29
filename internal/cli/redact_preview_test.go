@@ -76,7 +76,16 @@ func TestRedactPreview_DecodedJSONCredentials(t *testing.T) {
 }
 
 func TestRedactPreview_ProviderOverlapValues(t *testing.T) {
-	for _, tc := range jsonCredentialOverlapFixtures() {
+	testRedactPreviewCredentialOutputs(t, jsonCredentialOverlapFixtures())
+}
+
+func TestRedactPreview_PrivateKeyBodies(t *testing.T) {
+	testRedactPreviewCredentialOutputs(t, privateKeyCredentialFixtures())
+}
+
+func testRedactPreviewCredentialOutputs(t *testing.T, fixtures []credentialOutputFixture) {
+	t.Helper()
+	for _, tc := range fixtures {
 		for _, format := range []string{"text", "json"} {
 			t.Run(tc.name+"/"+format, func(t *testing.T) {
 				resetFlags()
@@ -86,6 +95,9 @@ func TestRedactPreview_ProviderOverlapValues(t *testing.T) {
 				cfg = config.Default()
 				cfg.Redaction.Mode = "off"
 				cfg.Redaction.Allowlist = tc.allowlist
+				for _, category := range tc.disabled {
+					cfg.Redaction.DisabledCategories = append(cfg.Redaction.DisabledCategories, string(category))
+				}
 				jsonOutput = format == "json"
 
 				cmd := newRedactPreviewCmd()
@@ -103,7 +115,7 @@ func TestRedactPreview_ProviderOverlapValues(t *testing.T) {
 					t.Error("preview removed the neighboring public field")
 				}
 				if tc.visible != "" && !strings.Contains(out, tc.visible) {
-					t.Error("preview did not preserve the explicitly allowlisted provider")
+					t.Error("preview did not preserve the explicitly allowlisted credential")
 				}
 				for _, category := range tc.categories {
 					if !strings.Contains(out, "[REDACTED:"+string(category)+":") {
@@ -122,6 +134,23 @@ func TestRedactPreview_ProviderOverlapValues(t *testing.T) {
 						if finding.Category != tc.categories[i] {
 							t.Errorf("finding %d category=%s, want %s", i, finding.Category, tc.categories[i])
 						}
+						if len(tc.lines) > 0 && finding.Line != tc.lines[i] {
+							t.Errorf("finding %d line=%d, want physical line %d", i, finding.Line, tc.lines[i])
+						}
+						if len(tc.sourceMatches) > 0 {
+							wantStart := strings.Index(tc.content, tc.sourceMatches[i])
+							wantEnd := wantStart + len(tc.sourceMatches[i])
+							if wantStart < 0 {
+								t.Fatalf("expected source match %d is absent from fixture", i)
+							}
+							wantColumn := wantStart - strings.LastIndex(tc.content[:wantStart], "\n")
+							if finding.Start != wantStart || finding.End != wantEnd || finding.Column != wantColumn {
+								t.Errorf("finding %d source span=%d:%d column=%d, want %d:%d column=%d", i, finding.Start, finding.End, finding.Column, wantStart, wantEnd, wantColumn)
+							}
+						}
+					}
+					if len(tc.categories) == 0 && response.Output != tc.content {
+						t.Error("preview changed an explicitly allowlisted input")
 					}
 				}
 			})

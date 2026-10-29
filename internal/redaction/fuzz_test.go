@@ -73,6 +73,9 @@ func FuzzScanAndRedact(f *testing.F) {
 		"{\"message\":\"PASSWORD=abcdefg\\ud83d\\ude00\"}",
 		"{\"message\":\"\\\"password\\\":\\\"left-sensitive:" + "gh" + "p_" + strings.Repeat("q", 40) + ":right-sensitive\\\"\"}",
 		"{\"not\\\"password\":\"\\u0050ASSWORD\\u003dsynthetic-never-valid\"}",
+		"INFO prefix\n{\"pass\\u0077ord\":\"synthetic-never-valid\"}\n{\"message\":",
+		"{\"message\":\"PASSWORD=left-sensitive:" + "gh" + "p_" + strings.Repeat("q", 40) + ":right-sensitive\"}",
+		"{\"private_key\":\"-----BEGIN PRIVATE KEY-----\\n" + strings.Repeat("U1lOVEhFVElD", 5) + "\\n-----END PRIVATE KEY-----\"}",
 	}
 
 	for _, seed := range seeds {

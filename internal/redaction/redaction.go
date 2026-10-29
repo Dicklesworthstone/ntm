@@ -84,11 +84,13 @@ type match struct {
 	start    int
 	end      int
 	priority int
-	// JSON value bounds are set for validated built-in credential fields and
-	// quoted assignments discovered inside decoded JSON message content.
-	// They let lower-priority fields retain value bytes a provider did not cover.
-	jsonValueStart int
-	jsonValueEnd   int
+	// Built-in sensitive value bounds retain bytes that a more specific
+	// overlapping provider did not cover, excluding public assignment context.
+	valueStart int
+	valueEnd   int
+	// Only actual JSON fields qualify for field normalization and decoded-value
+	// suppression; standalone provider spans are not JSON field evidence.
+	jsonField bool
 	// Residual value matches retain the original field's allowlist context.
 	allowlistSource string
 	// JSON-encoded matches can also be allowlisted by their logical content.
@@ -160,11 +162,19 @@ func collectMatches(input string, disabled []Category, patterns []pattern) []mat
 				end:      loc[1],
 				priority: p.priority,
 			}
-			if p.reject != nil {
+			switch {
+			case p.protectWholeMatch:
+				m.valueStart, m.valueEnd = m.start, m.end
+			case p.reject != nil:
 				if start, end, ok := jsonCredentialValueBounds(matchStr); ok {
-					m.jsonValueStart = loc[0] + start
-					m.jsonValueEnd = loc[0] + end
+					m.valueStart, m.valueEnd = loc[0]+start, loc[0]+end
+					m.jsonField = true
+				} else if start, end, ok := assignmentValueBounds(matchStr); ok {
+					m.valueStart, m.valueEnd = loc[0]+start, loc[0]+end
 				}
+			case p.builtin && p.category == CategoryBearerToken:
+				value := strings.TrimLeft(matchStr[len("bearer"):], " \t\r\n\f")
+				m.valueStart, m.valueEnd = m.end-len(value), m.end
 			}
 			matches = append(matches, m)
 		}
@@ -230,7 +240,7 @@ func scanJSONEncodedContent(input string, disabled []Category, patterns []patter
 	filtered := make([]match, 0, len(matches))
 	for _, m := range matches {
 		i := jsonTokenContaining(tokens, m.start)
-		if i >= 0 && tokens[i].key && tokens[i].escaped && m.jsonValueStart < m.jsonValueEnd {
+		if i >= 0 && tokens[i].key && tokens[i].escaped && m.jsonField {
 			continue
 		}
 		filtered = append(filtered, m)
@@ -252,7 +262,7 @@ func scanJSONEncodedContent(input string, disabled []Category, patterns []patter
 		quotedKey, _ := json.Marshal(key.decoded)
 		normalized := string(quotedKey) + input[key.end:value.end]
 		for _, m := range collectMatches(normalized, nil, patterns) {
-			if m.start != 0 || m.end != len(normalized) || m.jsonValueStart >= m.jsonValueEnd {
+			if m.start != 0 || m.end != len(normalized) || !m.jsonField {
 				continue
 			}
 			protected[[2]int{value.start + 1, value.end - 1}] = true
@@ -262,7 +272,7 @@ func scanJSONEncodedContent(input string, disabled []Category, patterns []patter
 			m.logicalMatch = m.match
 			m.start, m.end = key.start, value.end
 			m.match = input[m.start:m.end]
-			m.jsonValueStart, m.jsonValueEnd = value.start+1, value.end-1
+			m.valueStart, m.valueEnd = value.start+1, value.end-1
 			matches = append(matches, m)
 		}
 	}
@@ -271,8 +281,8 @@ func scanJSONEncodedContent(input string, disabled []Category, patterns []patter
 	// their provider priority and raw allowlist behavior even when the field's
 	// category is disabled; only unknown string content needs another view.
 	for _, m := range matches {
-		if m.jsonValueStart < m.jsonValueEnd {
-			protected[[2]int{m.jsonValueStart, m.jsonValueEnd}] = true
+		if m.jsonField {
+			protected[[2]int{m.valueStart, m.valueEnd}] = true
 		}
 	}
 	if len(disabled) > 0 {
@@ -287,23 +297,37 @@ func scanJSONEncodedContent(input string, disabled []Category, patterns []patter
 			if i >= 0 && tokens[i].key && tokens[i].escaped {
 				continue
 			}
-			if m.jsonValueStart < m.jsonValueEnd {
-				protected[[2]int{m.jsonValueStart, m.jsonValueEnd}] = true
+			if m.jsonField {
+				protected[[2]int{m.valueStart, m.valueEnd}] = true
 			}
 		}
 	}
 	decodedTokens := make([]bool, len(tokens))
 	var decodedMatches []match
+	var privateKeyPatterns []pattern
+	for _, p := range patterns {
+		if p.category == CategoryPrivateKey {
+			privateKeyPatterns = append(privateKeyPatterns, p)
+		}
+	}
 	for i, token := range tokens {
-		if token.key || !token.escaped || protected[[2]int{token.start + 1, token.end - 1}] {
+		if token.key || !token.escaped {
 			continue
 		}
-		logical := collectMatches(token.decoded, disabled, patterns)
+		isProtected := protected[[2]int{token.start + 1, token.end - 1}]
+		tokenPatterns := patterns
+		if isProtected {
+			// A complete PEM body needs decoded newlines even inside a known
+			// credential field, including one whose category is disabled.
+			// Other providers retain their existing raw matches and allowlists.
+			tokenPatterns = privateKeyPatterns
+		}
+		logical := collectMatches(token.decoded, disabled, tokenPatterns)
 		mapped, ok := mapJSONMatches(input, token, logical)
 		if !ok {
 			continue
 		}
-		decodedTokens[i] = true
+		decodedTokens[i] = !isProtected
 		decodedMatches = append(decodedMatches, mapped...)
 	}
 
@@ -380,16 +404,10 @@ func mapJSONMatches(input string, token jsonStringToken, matches []match) ([]mat
 		return nil, true
 	}
 	offsets := []int{0, len(token.decoded)}
-	for i := range matches {
-		m := &matches[i]
-		if m.jsonValueStart >= m.jsonValueEnd && builtinMatchRejecters[m.category] != nil {
-			if start, end, ok := quotedAssignmentValueBounds(m.match); ok {
-				m.jsonValueStart, m.jsonValueEnd = m.start+start, m.start+end
-			}
-		}
+	for _, m := range matches {
 		offsets = append(offsets, m.start, m.end)
-		if m.jsonValueStart < m.jsonValueEnd {
-			offsets = append(offsets, m.jsonValueStart, m.jsonValueEnd)
+		if m.valueStart < m.valueEnd {
+			offsets = append(offsets, m.valueStart, m.valueEnd)
 		}
 	}
 	sort.Ints(offsets)
@@ -447,25 +465,32 @@ func mapJSONMatches(input string, token jsonStringToken, matches []match) ([]mat
 		m.logicalMatch = m.match
 		m.start, m.end = mapped[m.start], mapped[m.end]
 		m.match = input[m.start:m.end]
-		if m.jsonValueStart < m.jsonValueEnd {
-			m.jsonValueStart, m.jsonValueEnd = mapped[m.jsonValueStart], mapped[m.jsonValueEnd]
+		if m.valueStart < m.valueEnd {
+			m.valueStart, m.valueEnd = mapped[m.valueStart], mapped[m.valueEnd]
 		}
 	}
 	return matches, true
 }
 
-// Decoded log messages can contain quoted assignments around provider tokens.
-// Preserve their uncovered value bytes without changing raw shell scanning.
-func quotedAssignmentValueBounds(m string) (start, end int, ok bool) {
+// assignmentValueBounds excludes the public key, separator, whitespace and
+// optional quote delimiters from a validated built-in assignment match.
+func assignmentValueBounds(m string) (start, end int, ok bool) {
 	sep := strings.IndexAny(m, "=:")
 	if sep < 0 {
 		return 0, 0, false
 	}
 	value := strings.TrimLeft(m[sep+1:], " \t\r\n\f")
-	if len(value) < 2 || (value[0] != '"' && value[0] != '\'') || value[len(value)-1] != value[0] {
+	if len(value) == 0 {
 		return 0, 0, false
 	}
-	return len(m) - len(value) + 1, len(m) - 1, true
+	start, end = len(m)-len(value), len(m)
+	if m[start] == '"' || m[start] == '\'' {
+		start++
+	}
+	if start < end && (m[end-1] == '"' || m[end-1] == '\'') {
+		end--
+	}
+	return start, end, start < end
 }
 
 // deduplicateMatches removes overlapping matches, preferring higher priority.
@@ -475,12 +500,16 @@ func deduplicateMatches(matches []match) []match {
 	}
 
 	// Sort by priority (descending) so higher priority matches get first pick.
-	// For same priority, prefer earlier matches.
+	// For same priority, prefer earlier matches, then complete matches over
+	// shorter fallbacks at the same position (for example a PEM header).
 	sort.Slice(matches, func(i, j int) bool {
 		if matches[i].priority != matches[j].priority {
 			return matches[i].priority > matches[j].priority
 		}
-		return matches[i].start < matches[j].start
+		if matches[i].start != matches[j].start {
+			return matches[i].start < matches[j].start
+		}
+		return matches[i].end > matches[j].end
 	})
 
 	var result []match
@@ -505,12 +534,11 @@ func deduplicateMatches(matches []match) []match {
 
 		if !overlaps {
 			result = append(result, m)
-		} else if m.jsonValueStart < m.jsonValueEnd {
-			// A provider pattern can cover only the prefix of a JSON string,
-			// particularly when an escape interrupts the provider's raw regex.
-			// Preserve its category and exact match, but also redact every
-			// uncovered byte of the validated credential value.
-			result = append(result, uncoveredJSONValueMatches(m, result)...)
+		} else if m.valueStart < m.valueEnd {
+			// A provider pattern can cover only part of another credential.
+			// Keep its category and exact match while protecting every other
+			// byte already recognized as part of the surrounding secret.
+			result = append(result, uncoveredValueMatches(m, result)...)
 		}
 	}
 
@@ -522,11 +550,11 @@ func deduplicateMatches(matches []match) []match {
 	return result
 }
 
-func uncoveredJSONValueMatches(m match, kept []match) []match {
+func uncoveredValueMatches(m match, kept []match) []match {
 	fragments := []match{{
 		category:        m.category,
-		start:           m.jsonValueStart,
-		end:             m.jsonValueEnd,
+		start:           m.valueStart,
+		end:             m.valueEnd,
 		priority:        m.priority,
 		allowlistSource: m.match,
 		logicalMatch:    m.logicalMatch,
@@ -535,7 +563,7 @@ func uncoveredJSONValueMatches(m match, kept []match) []match {
 		if other.start == other.end {
 			continue // Zero-width patterns do not protect any credential bytes.
 		}
-		if other.end <= m.jsonValueStart || other.start >= m.jsonValueEnd {
+		if other.end <= m.valueStart || other.start >= m.valueEnd {
 			continue
 		}
 		var remaining []match

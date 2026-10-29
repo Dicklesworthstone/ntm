@@ -36,6 +36,10 @@ type pattern struct {
 	regex            *regexp.Regexp
 	priority         int // higher priority patterns take precedence
 	requiredLiterals []literalRequirement
+	builtin          bool
+	// Standalone credentials protect their complete match when a more specific
+	// provider overlaps only part of it. User patterns never receive this tag.
+	protectWholeMatch bool
 	// reject, when set, drops a regex match that is known not to be a
 	// credential (for example the shell's PWD= working-directory variable).
 	// Only built-in patterns carry one; user ExtraPatterns never do.
@@ -50,6 +54,23 @@ var builtinMatchRejecters = map[Category]func(input string, start, end int) bool
 	CategoryAWSSecretKey:  rejectJSONCredentialValue(40, 40, "/+="),
 	CategoryGenericAPIKey: rejectJSONCredentialValue(16, 0, "_-"),
 	CategoryGenericSecret: rejectJSONCredentialValue(16, 0, "/+=_-"),
+}
+
+var privateKeyBlockPattern = buildPrivateKeyBlockPattern()
+
+func buildPrivateKeyBlockPattern() string {
+	var alternatives []string
+	for _, kind := range []string{"PRIVATE KEY", "RSA PRIVATE KEY", "DSA PRIVATE KEY", "EC PRIVATE KEY", "OPENSSH PRIVATE KEY", "ENCRYPTED PRIVATE KEY"} {
+		// Repeating each literal label enforces matching BEGIN/END kinds without
+		// backreferences. Restricted body lines cannot cross another PEM header
+		// or neighboring quoted fields while searching for a footer.
+		alternatives = append(alternatives,
+			`-----BEGIN `+kind+`-----[\t ]*\r?\n`+
+				`(?:[\t ]*[A-Za-z0-9_-]+[\t ]*:[^\r\n]*\r?\n)*(?:\r?\n)?`+
+				`(?:[A-Za-z0-9+/=\t ]*\r?\n)+`+
+				`-----END `+kind+`-----`)
+	}
+	return strings.Join(alternatives, "|")
 }
 
 // defaultPatterns contains all built-in detection patterns.
@@ -80,10 +101,11 @@ var defaultPatterns = []patternDef{
 	{CategoryBearerToken, `(?i)bearer\s+[a-zA-Z0-9._-]{20,}`, 80, []literalRequirement{{anyOf: []string{"bearer"}, ignoreCase: true}}},
 
 	// Private keys
-	{CategoryPrivateKey, `-----BEGIN\s+(RSA\s+|DSA\s+|EC\s+|OPENSSH\s+)?PRIVATE KEY-----`, 95, []literalRequirement{{anyOf: []string{"private key"}, ignoreCase: true}}},
+	{CategoryPrivateKey, privateKeyBlockPattern, 95, []literalRequirement{{anyOf: []string{"private key"}, ignoreCase: true}}},
+	{CategoryPrivateKey, `-----BEGIN\s+(RSA\s+|DSA\s+|EC\s+|OPENSSH\s+|ENCRYPTED\s+)?PRIVATE KEY-----`, 95, []literalRequirement{{anyOf: []string{"private key"}, ignoreCase: true}}},
 
 	// Database URLs with credentials
-	{CategoryDatabaseURL, `(?i)(postgres|mysql|mongodb|redis)://[^:]+:[^@]+@[^\s]+`, 85, []literalRequirement{{anyOf: []string{"postgres://", "mysql://", "mongodb://", "redis://"}, ignoreCase: true}}},
+	{CategoryDatabaseURL, `(?i)(postgres|mysql|mongodb|redis)://[^:"]+:[^@"]+@[^\s"]+`, 85, []literalRequirement{{anyOf: []string{"postgres://", "mysql://", "mongodb://", "redis://"}, ignoreCase: true}}},
 
 	// Generic patterns (lower priority)
 	{CategoryPassword, `(?i)(password|passwd|pwd)\s*[=:]\s*["']?[^\s"']{8,}["']?`, 50, []literalRequirement{{anyOf: []string{"password", "passwd", "pwd"}, ignoreCase: true}}},
@@ -153,12 +175,21 @@ func compilePatterns() {
 				// Pattern compilation errors should be caught during development.
 				continue
 			}
+			protectWholeMatch := true
+			switch def.category {
+			case CategoryPassword, CategoryAWSSecretKey, CategoryGenericAPIKey, CategoryGenericSecret, CategoryBearerToken:
+				protectWholeMatch = false
+			case CategoryPrivateKey:
+				protectWholeMatch = def.pattern == privateKeyBlockPattern
+			}
 			compiledPatterns = append(compiledPatterns, pattern{
-				category:         def.category,
-				regex:            re,
-				priority:         def.priority,
-				requiredLiterals: normalizeLiteralRequirements(def.requiredLiterals),
-				reject:           builtinMatchRejecters[def.category],
+				category:          def.category,
+				regex:             re,
+				priority:          def.priority,
+				requiredLiterals:  normalizeLiteralRequirements(def.requiredLiterals),
+				builtin:           true,
+				protectWholeMatch: protectWholeMatch,
+				reject:            builtinMatchRejecters[def.category],
 			})
 		}
 		// Sort by priority (descending) for deterministic matching.

@@ -1672,3 +1672,214 @@ func TestJSONEscapedContentQuotedAssignmentPreservesResiduals(t *testing.T) {
 		t.Error("allowlisting the provider and complete assignment changed the input")
 	}
 }
+
+func TestPrivateKeyCompleteBlocks(t *testing.T) {
+	body := strings.Repeat("c3ludGhldGlj", 8)
+	for _, kind := range []string{"PRIVATE KEY", "RSA PRIVATE KEY", "DSA PRIVATE KEY", "EC PRIVATE KEY", "OPENSSH PRIVATE KEY", "ENCRYPTED PRIVATE KEY"} {
+		t.Run(kind, func(t *testing.T) {
+			block := "-----BEGIN " + kind + "-----\n" + body + "\n-----END " + kind + "-----"
+			assertJSONRawFinding(t, "public-before\n"+block+"\npublic-after", block, CategoryPrivateKey)
+			assertJSONRawFinding(t, "-----BEGIN "+kind+"-----", "-----BEGIN "+kind+"-----", CategoryPrivateKey)
+		})
+	}
+	block := "-----BEGIN RSA PRIVATE KEY-----\r\nProc-Type: 4,ENCRYPTED\r\nDEK-Info: AES-256-CBC,00112233445566778899AABBCCDDEEFF\r\n\r\n" + body + "\r\n-----END RSA PRIVATE KEY-----"
+	assertJSONRawFinding(t, "public-before\r\n"+block+"\r\npublic-after", block, CategoryPrivateKey)
+	spacedMetadata := strings.Replace(block, "Proc-Type:", " \tProc-Type \t:", 1)
+	spacedMetadata = strings.Replace(spacedMetadata, "DEK-Info:", "\tDEK-Info :", 1)
+	assertJSONRawFinding(t, "public-before\r\n"+spacedMetadata+"\r\npublic-after", spacedMetadata, CategoryPrivateKey)
+	block = "-----BEGIN PRIVATE KEY----- \t\n" + body + "\n-----END PRIVATE KEY-----"
+	assertJSONRawFinding(t, "public-before\n"+block+"\npublic-after", block, CategoryPrivateKey)
+}
+
+func TestPrivateKeyJSONAndJSONL(t *testing.T) {
+	block := "-----BEGIN PRIVATE KEY-----\n" + strings.Repeat("c3ludGhldGlj", 8) + "\n-----END PRIVATE KEY-----"
+	encoded, err := json.Marshal(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := string(encoded[1 : len(encoded)-1])
+	tests := []struct {
+		name  string
+		key   string
+		value string
+		cfg   Config
+	}{
+		{name: "private key field", key: "private_key", value: raw},
+		{name: "password field", key: "password", value: raw},
+		{name: "disabled password field", key: "password", value: raw, cfg: Config{DisabledCategories: []Category{CategoryPassword}}},
+		{name: "Unicode escapes in protected field", key: "password", value: strings.Replace(strings.ReplaceAll(raw, `\n`, `\u000a`), "c3ludGhldGlj", `\u00633ludGhldGlj`, 1), cfg: Config{DisabledCategories: []Category{CategoryPassword}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `{"` + tc.key + `":"` + tc.value + `","public":"ready"}`
+			if !json.Valid([]byte(input)) {
+				t.Fatal("invalid JSON test fixture")
+			}
+			output, findings := Redact(input, tc.cfg)
+			start := strings.Index(input, tc.value)
+			if len(findings) != 1 || findings[0].Category != CategoryPrivateKey || findings[0].Match != tc.value || findings[0].Start != start || findings[0].End != start+len(tc.value) {
+				t.Fatalf("complete PEM did not retain its raw source range: %+v", findings)
+			}
+			if strings.Contains(output, "c3ludGhldGlj") || !strings.Contains(output, `"public":"ready"`) {
+				t.Error("PEM body leaked or neighboring public field was consumed")
+			}
+		})
+	}
+	input := `{"private_key":"` + raw + `","public":"first"}` + "\n" + `{"password":"` + raw + `","public":"second"}` + "\n"
+	findings := Scan(input, Config{})
+	if len(findings) != 2 {
+		t.Fatalf("JSONL findings=%d, want two complete private keys", len(findings))
+	}
+	AddLineInfo(input, findings)
+	for i, f := range findings {
+		if f.Category != CategoryPrivateKey || f.Match != raw || f.Line != i+1 || f.Match != input[f.Start:f.End] {
+			t.Errorf("PEM JSONL finding has wrong source range or physical line: %+v", f)
+		}
+	}
+}
+
+func TestPrivateKeyAllowlistsAndProviderOverlap(t *testing.T) {
+	body := strings.Repeat("c3ludGhldGlj", 8)
+	header := "-----BEGIN PRIVATE KEY-----"
+	block := header + "\n" + body + "\n-----END PRIVATE KEY-----"
+	encoded, _ := json.Marshal(block)
+	raw := string(encoded[1 : len(encoded)-1])
+	for _, input := range []string{block, `{"password":"` + raw + `","public":"ready"}`} {
+		for _, allowed := range []string{block, raw} {
+			if input == block && allowed == raw {
+				continue
+			}
+			output, findings := Redact(input, Config{Allowlist: []string{"^" + regexp.QuoteMeta(allowed) + "$"}})
+			if len(findings) != 0 || output != input {
+				t.Error("anchored full raw or logical PEM allowlist did not suppress the complete key")
+			}
+		}
+		output, findings := Redact(input, Config{Allowlist: []string{"^" + regexp.QuoteMeta(header) + "$"}})
+		if len(findings) != 1 || findings[0].Category != CategoryPrivateKey || strings.Contains(output, body) {
+			t.Error("allowlisting only a header exempted the private body")
+		}
+	}
+
+	provider := "AI" + "za" + strings.Repeat("Q", 35)
+	block = header + "\n" + body + "\n" + provider + "A\n" + body + "\n-----END PRIVATE KEY-----"
+	encoded, _ = json.Marshal(block)
+	raw = string(encoded[1 : len(encoded)-1])
+	for _, input := range []string{block, `{"password":"` + raw + `","public":"ready"}`} {
+		output, findings := Redact(input, Config{})
+		if len(findings) != 3 || findings[0].Category != CategoryPrivateKey || findings[1].Category != CategoryGoogleAPIKey || findings[1].Match != provider || findings[2].Category != CategoryPrivateKey {
+			t.Fatalf("provider priority discarded part of a private key: %+v", findings)
+		}
+		for _, f := range findings {
+			if f.Match != input[f.Start:f.End] {
+				t.Error("private key residual lost its raw source range")
+			}
+		}
+		if strings.Contains(output, body) || strings.Contains(output, provider) {
+			t.Error("provider overlap exposed private key material")
+		}
+		output, findings = Redact(input, Config{Allowlist: []string{"^" + regexp.QuoteMeta(provider) + "$"}})
+		if len(findings) != 2 || findings[0].Category != CategoryPrivateKey || findings[1].Category != CategoryPrivateKey || strings.Contains(output, body) {
+			t.Error("provider-only allowlist exempted the rest of the private key")
+		}
+		findings = Scan(input, Config{Allowlist: []string{"^" + regexp.QuoteMeta(block) + "$"}})
+		if len(findings) != 1 || findings[0].Category != CategoryGoogleAPIKey || findings[0].Match != provider {
+			t.Error("whole-block allowlist did not preserve the provider's independent category")
+		}
+	}
+}
+
+func TestPrivateKeyBlockBoundaries(t *testing.T) {
+	body := strings.Repeat("c3ludGhldGlj", 8)
+	rsaHeader := "-----BEGIN RSA PRIVATE KEY-----"
+	ec := "-----BEGIN EC PRIVATE KEY-----\n" + body + "\n-----END EC PRIVATE KEY-----"
+	for _, prefix := range []string{
+		rsaHeader + "\n" + body + "\n-----END EC PRIVATE KEY-----",
+		rsaHeader + "\n" + body,
+	} {
+		input := prefix + "\npublic-neighbor\n" + ec + "\npublic-after"
+		output, findings := Redact(input, Config{})
+		if len(findings) != 2 || findings[0].Match != rsaHeader || findings[1].Match != ec {
+			t.Errorf("mismatched or truncated PEM swallowed neighboring content: %+v", findings)
+		}
+		if !strings.Contains(output, "public-neighbor") || !strings.Contains(output, "public-after") {
+			t.Error("PEM matching consumed a public neighbor")
+		}
+	}
+}
+
+func TestCredentialBodyOverlapCoverage(t *testing.T) {
+	provider := "gh" + "p_" + strings.Repeat("q", 40)
+	tests := []struct {
+		name     string
+		input    string
+		category Category
+	}{
+		{"bare password", "PASSWORD=sensitive-prefix:" + provider + ":sensitive-suffix", CategoryPassword},
+		{"logged bare password", `{"message":"PASSWORD=sensitive-prefix:` + provider + `:sensitive-suffix","public":"ready"}`, CategoryPassword},
+		{"encoded bare password", `{"message":"PASSWORD\u003dsensitive-prefix:` + provider + `:sensitive-suffix","public":"ready"}`, CategoryPassword},
+		{"bare API key", "api_key=sensitive-prefix_" + provider + "_sensitive-suffix", CategoryGenericAPIKey},
+		{"bare generic secret", "token=sensitive-prefix_" + provider + "_sensitive-suffix", CategoryGenericSecret},
+		{"bearer token", `{"authorization":"Bearer sensitive-prefix.` + provider + `.sensitive-suffix","public":"ready"}`, CategoryBearerToken},
+		{"JWT", "eyJhbGciOiJub25lIn0.eyJzdWIiOiJzeW50aGV0aWMifQ.sensitive-prefix_" + provider + "_sensitive-suffix", CategoryJWT},
+		{"database URL", `{"url":"postgres://synthetic-user:sensitive-prefix:` + provider + `:sensitive-suffix@db.invalid/project","public":"ready"}`, CategoryDatabaseURL},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			output, findings := Redact(tc.input, Config{})
+			if len(findings) != 3 || findings[0].Category != tc.category || findings[1].Category != CategoryGitHubToken || findings[1].Match != provider || findings[2].Category != tc.category {
+				t.Fatalf("provider overlap dropped credential bytes: %+v", findings)
+			}
+			for _, f := range findings {
+				if f.Match != tc.input[f.Start:f.End] {
+					t.Error("credential residual lost its raw source range")
+				}
+			}
+			if strings.Contains(output, "sensitive-prefix") || strings.Contains(output, "sensitive-suffix") {
+				t.Error("redaction exposed a credential fragment")
+			}
+			if strings.Contains(tc.input, `"public":"ready"`) && !strings.Contains(output, `"public":"ready"`) {
+				t.Error("credential redaction consumed a neighboring public field")
+			}
+			output, findings = Redact(tc.input, Config{Allowlist: []string{"^" + regexp.QuoteMeta(provider) + "$"}})
+			if len(findings) != 2 || strings.Contains(output, "sensitive-prefix") || strings.Contains(output, "sensitive-suffix") {
+				t.Error("provider-only allowlist exempted uncovered credential bytes")
+			}
+		})
+	}
+	google := "AI" + "za" + strings.Repeat("Q", 35)
+	output, findings := Redact("aws_secret="+google+"Z", Config{})
+	if len(findings) != 2 || findings[0].Category != CategoryGoogleAPIKey || findings[0].Match != google || findings[1].Category != CategoryAWSSecretKey || findings[1].Match != "Z" || strings.Contains(output, "Z") {
+		t.Error("provider overlap exposed the remainder of an AWS secret assignment")
+	}
+}
+
+func TestCredentialBodyExactProviderAllowlistsAndRawExtras(t *testing.T) {
+	provider := "gh" + "p_" + strings.Repeat("q", 40)
+	for _, input := range []string{
+		"PASSWORD=" + provider,
+		"PASSWORD=\"" + provider + "\"",
+		"api_key='" + provider + "'",
+		"token=" + provider,
+		"Bearer " + provider,
+		`{"message":"PASSWORD=` + provider + `","public":"ready"}`,
+	} {
+		findings := Scan(input, Config{})
+		if len(findings) != 1 || findings[0].Category != CategoryGitHubToken || findings[0].Match != provider {
+			t.Error("public assignment or Bearer context produced a spurious residual")
+		}
+		output, findings := Redact(input, Config{Allowlist: []string{"^" + regexp.QuoteMeta(provider) + "$"}})
+		if len(findings) != 0 || output != input {
+			t.Error("anchored exact-provider allowlist no longer suppresses the complete value")
+		}
+	}
+	input := "custom-prefix:" + provider + ":custom-suffix"
+	for _, category := range []Category{CategoryPassword, CategoryPrivateKey, CategoryBearerToken} {
+		cfg := Config{ExtraPatterns: map[Category][]string{category: {regexp.QuoteMeta(input)}}}
+		findings := Scan(input, cfg)
+		if len(findings) != 1 || findings[0].Category != CategoryGitHubToken || findings[0].Match != provider {
+			t.Error("custom pattern incorrectly inherited builtin credential-body protection")
+		}
+	}
+	input = `{"not\"` + provider + `":"public"}`
+	assertJSONRawFinding(t, input, provider, CategoryGitHubToken)
+}

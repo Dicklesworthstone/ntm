@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -218,22 +219,25 @@ func TestScrub_DecodedJSONCredentials(t *testing.T) {
 	}
 }
 
-type jsonCredentialOverlapFixture struct {
-	name       string
-	content    string
-	categories []redaction.Category
-	hidden     []string
-	allowlist  []string
-	visible    string
+type credentialOutputFixture struct {
+	name          string
+	content       string
+	categories    []redaction.Category
+	lines         []int
+	sourceMatches []string
+	hidden        []string
+	allowlist     []string
+	disabled      []redaction.Category
+	visible       string
 }
 
-func jsonCredentialOverlapFixtures() []jsonCredentialOverlapFixture {
+func jsonCredentialOverlapFixtures() []credentialOutputFixture {
 	provider := "gh" + "p_" + strings.Repeat("q", 40)
 	escaped := "gh" + "p_" + strings.Repeat("q", 31) + "\\u0071SECRETL8"
 	composite := "{\"password\":\"left-sensitive " + provider + " right-sensitive\",\"note\":\"public-neighbor\"}"
 	exact := "{\"password\":\"" + provider + "\",\"note\":\"public-neighbor\"}"
 	embedded := "{\"message\":\"PASSWORD=\\\"left-sensitive:" + provider + ":right-sensitive\\\"\",\"note\":\"public-neighbor\"}"
-	return []jsonCredentialOverlapFixture{
+	return []credentialOutputFixture{
 		{
 			name:       "escaped provider suffix",
 			content:    "{\"token\":\"" + escaped + "\",\"note\":\"public-neighbor\"}",
@@ -280,20 +284,157 @@ func jsonCredentialOverlapFixtures() []jsonCredentialOverlapFixture {
 			allowlist:  []string{"^" + regexp.QuoteMeta(provider) + "$"},
 			visible:    provider,
 		},
+		{
+			name:          "unquoted logged password around provider",
+			content:       "{\"message\":\"PASSWORD=left-sensitive:" + provider + ":right-sensitive\",\"note\":\"public-neighbor\"}",
+			categories:    []redaction.Category{redaction.CategoryPassword, redaction.CategoryGitHubToken, redaction.CategoryPassword},
+			lines:         []int{1, 1, 1},
+			sourceMatches: []string{"left-sensitive:", provider, ":right-sensitive"},
+			hidden:        []string{"left-sensitive", "right-sensitive", provider},
+		},
+		{
+			name:          "bearer token around provider",
+			content:       "{\"message\":\"Bearer left-sensitive." + provider + ".right-sensitive\",\"note\":\"public-neighbor\"}",
+			categories:    []redaction.Category{redaction.CategoryBearerToken, redaction.CategoryGitHubToken, redaction.CategoryBearerToken},
+			lines:         []int{1, 1, 1},
+			sourceMatches: []string{"left-sensitive.", provider, ".right-sensitive"},
+			hidden:        []string{"left-sensitive", "right-sensitive", provider},
+		},
+	}
+}
+
+func privateKeyCredentialFixtures() []credentialOutputFixture {
+	head := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("synthetic-pem-head", 3)))
+	tail := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("synthetic-pem-tail", 3)))
+	block := func(kind, body string) string {
+		return "-----BEGIN " + kind + "-----\n" + body + "\n-----END " + kind + "-----"
+	}
+	encode := func(value string) string {
+		data, _ := json.Marshal(value)
+		return string(data[1 : len(data)-1])
+	}
+	record := func(key, value string) string {
+		data, _ := json.Marshal(value)
+		return "{\"" + key + "\":" + string(data) + ",\"note\":\"public-neighbor\"}"
+	}
+	pem := block("PRIVATE KEY", head+"\n"+tail)
+	encrypted := block("ENCRYPTED PRIVATE KEY", head+"\n"+tail)
+	rsa := block("RSA PRIVATE KEY", head+"\n"+tail)
+	encodedPEM := encode(pem)
+	google := "AIza" + strings.Repeat("Q", 35)
+	providerPEM := block("PRIVATE KEY", head+"\n"+google+"A\n"+tail)
+	encodedProviderPEM := encode(providerPEM)
+	providerOffset := strings.Index(encodedProviderPEM, google)
+	providerPrefix := encodedProviderPEM[:providerOffset]
+	providerSuffix := encodedProviderPEM[providerOffset+len(google):]
+	hiddenBody := []string{head, tail, head[:20], tail[len(tail)-20:]}
+	return []credentialOutputFixture{
+		{
+			name:          "raw complete PEM body",
+			content:       "public-neighbor\n" + pem + "\npublic-trailer\n",
+			categories:    []redaction.Category{redaction.CategoryPrivateKey},
+			lines:         []int{2},
+			sourceMatches: []string{pem},
+			hidden:        hiddenBody,
+		},
+		{
+			name:          "JSON complete PEM body",
+			content:       record("private_key", pem),
+			categories:    []redaction.Category{redaction.CategoryPrivateKey},
+			lines:         []int{1},
+			sourceMatches: []string{encodedPEM},
+			hidden:        hiddenBody,
+		},
+		{
+			name:          "JSONL complete PEM bodies",
+			content:       "{\"note\":\"public-neighbor\"}\n\n" + record("private_key", rsa) + "\n" + record("private_key", encrypted) + "\n",
+			categories:    []redaction.Category{redaction.CategoryPrivateKey, redaction.CategoryPrivateKey},
+			lines:         []int{3, 4},
+			sourceMatches: []string{encode(rsa), encode(encrypted)},
+			hidden:        hiddenBody,
+		},
+		{
+			name:          "raw encrypted PEM body",
+			content:       "public-neighbor\n" + encrypted + "\npublic-trailer\n",
+			categories:    []redaction.Category{redaction.CategoryPrivateKey},
+			lines:         []int{2},
+			sourceMatches: []string{encrypted},
+			hidden:        hiddenBody,
+		},
+		{
+			name:          "PEM with password category disabled",
+			content:       record("password", pem),
+			categories:    []redaction.Category{redaction.CategoryPrivateKey},
+			lines:         []int{1},
+			sourceMatches: []string{encodedPEM},
+			hidden:        hiddenBody,
+			disabled:      []redaction.Category{redaction.CategoryPassword},
+		},
+		{
+			name:      "raw full PEM allowlist",
+			content:   record("private_key", pem),
+			allowlist: []string{"^" + regexp.QuoteMeta(encodedPEM) + "$"},
+			visible:   head,
+		},
+		{
+			name:      "logical full PEM allowlist",
+			content:   record("private_key", pem),
+			allowlist: []string{"^" + regexp.QuoteMeta(pem) + "$"},
+			visible:   head,
+		},
+		{
+			name:          "header allowlist does not expose PEM body",
+			content:       record("private_key", pem),
+			categories:    []redaction.Category{redaction.CategoryPrivateKey},
+			lines:         []int{1},
+			sourceMatches: []string{encodedPEM},
+			hidden:        hiddenBody,
+			allowlist:     []string{"^" + regexp.QuoteMeta("-----BEGIN "+"PRIVATE KEY-----") + "$"},
+		},
+		{
+			name:          "PEM body around provider",
+			content:       record("private_key", providerPEM),
+			categories:    []redaction.Category{redaction.CategoryPrivateKey, redaction.CategoryGoogleAPIKey, redaction.CategoryPrivateKey},
+			lines:         []int{1, 1, 1},
+			sourceMatches: []string{providerPrefix, google, providerSuffix},
+			hidden:        append(append([]string{}, hiddenBody...), google),
+		},
+		{
+			name:          "PEM body allowlists only provider",
+			content:       record("private_key", providerPEM),
+			categories:    []redaction.Category{redaction.CategoryPrivateKey, redaction.CategoryPrivateKey},
+			lines:         []int{1, 1},
+			sourceMatches: []string{providerPrefix, providerSuffix},
+			hidden:        hiddenBody,
+			allowlist:     []string{"^" + regexp.QuoteMeta(google) + "$"},
+			visible:       google,
+		},
 	}
 }
 
 func TestScrub_ProviderOverlapPreviews(t *testing.T) {
-	for _, tc := range jsonCredentialOverlapFixtures() {
+	fixtures := jsonCredentialOverlapFixtures()
+	for _, tc := range fixtures {
+		if !json.Valid([]byte(tc.content)) {
+			t.Fatalf("%s fixture must be valid JSON", tc.name)
+		}
+	}
+	testScrubCredentialOutputs(t, fixtures)
+}
+
+func TestScrub_PrivateKeyBodies(t *testing.T) {
+	testScrubCredentialOutputs(t, privateKeyCredentialFixtures())
+}
+
+func testScrubCredentialOutputs(t *testing.T, fixtures []credentialOutputFixture) {
+	t.Helper()
+	for _, tc := range fixtures {
 		t.Run(tc.name, func(t *testing.T) {
-			if !json.Valid([]byte(tc.content)) {
-				t.Fatal("fixture must be valid JSON")
-			}
-			path := filepath.Join(t.TempDir(), "artifact.json")
+			path := filepath.Join(t.TempDir(), "artifact.log")
 			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			res := runScrub([]string{path}, nil, redaction.Config{Allowlist: tc.allowlist})
+			res := runScrub([]string{path}, nil, redaction.Config{Allowlist: tc.allowlist, DisabledCategories: tc.disabled})
 			if res.FilesScanned != 1 || len(res.Warnings) != 0 {
 				t.Fatalf("files=%d warnings=%v, want one file without warnings", res.FilesScanned, res.Warnings)
 			}
@@ -303,6 +444,20 @@ func TestScrub_ProviderOverlapPreviews(t *testing.T) {
 			for i, finding := range res.Findings {
 				if finding.Category != tc.categories[i] {
 					t.Errorf("finding %d category=%s, want %s", i, finding.Category, tc.categories[i])
+				}
+				if len(tc.lines) > 0 && finding.Line != tc.lines[i] {
+					t.Errorf("finding %d line=%d, want physical line %d", i, finding.Line, tc.lines[i])
+				}
+				if len(tc.sourceMatches) > 0 {
+					wantStart := strings.Index(tc.content, tc.sourceMatches[i])
+					wantEnd := wantStart + len(tc.sourceMatches[i])
+					if wantStart < 0 {
+						t.Fatalf("expected source match %d is absent from fixture", i)
+					}
+					wantColumn := wantStart - strings.LastIndex(tc.content[:wantStart], "\n")
+					if finding.Start != wantStart || finding.End != wantEnd || finding.Column != wantColumn {
+						t.Errorf("finding %d source span=%d:%d column=%d, want %d:%d column=%d", i, finding.Start, finding.End, finding.Column, wantStart, wantEnd, wantColumn)
+					}
 				}
 				for _, fragment := range tc.hidden {
 					if strings.Contains(finding.Preview, fragment) {

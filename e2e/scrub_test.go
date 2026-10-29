@@ -6,11 +6,13 @@
 package e2e
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -47,12 +49,37 @@ func TestE2E_ScrubQuotedCredentials(t *testing.T) {
 	compositePassword := "{\"password\":\"left-sensitive " + provider + " right-sensitive\",\"note\":\"public-neighbor\"}\n"
 	embeddedPassword := "{\"message\":\"PASSWORD=\\\"left-sensitive:" + provider + ":right-sensitive\\\"\",\"note\":\"public-neighbor\"}\n"
 	allowlistedAssignments := "{\"message\":\"PASSWORD=\\\"allowlisted-sensitive-control\\\"\",\"note\":\"public-neighbor\"}\n{\"message\":\"PASSWORD=\\\"unlisted-sensitive-secret\\\"\",\"note\":\"public-neighbor\"}\n"
+	pemHead := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("synthetic-pem-head", 3)))
+	pemTail := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("synthetic-pem-tail", 3)))
+	pemBlock := func(kind, body string) string {
+		return "-----BEGIN " + kind + "-----\n" + body + "\n-----END " + kind + "-----"
+	}
+	encodedValue := func(value string) string {
+		data, _ := json.Marshal(value)
+		return string(data[1 : len(data)-1])
+	}
+	pemRecord := func(key, value string) string {
+		data, _ := json.Marshal(value)
+		return "{\"" + key + "\":" + string(data) + ",\"note\":\"public-neighbor\"}"
+	}
+	pem := pemBlock("PRIVATE KEY", pemHead+"\n"+pemTail)
+	encryptedPEM := pemBlock("ENCRYPTED PRIVATE KEY", pemHead+"\n"+pemTail)
+	rsaPEM := pemBlock("RSA PRIVATE KEY", pemHead+"\n"+pemTail)
+	encodedPEM := encodedValue(pem)
+	google := "AIza" + strings.Repeat("Q", 35)
+	providerPEM := pemBlock("PRIVATE KEY", pemHead+"\n"+google+"A\n"+pemTail)
+	encodedProviderPEM := encodedValue(providerPEM)
+	providerOffset := strings.Index(encodedProviderPEM, google)
+	pemPrefix := encodedProviderPEM[:providerOffset]
+	pemSuffix := encodedProviderPEM[providerOffset+len(google):]
+	hiddenPEMBody := []string{pemHead, pemTail, pemHead[:20], pemTail[len(pemTail)-20:]}
 	cases := []struct {
 		name          string
 		content       string
 		categories    []string
 		hidden        []string
 		allowlist     string
+		disabled      string
 		public        string
 		visible       string
 		lines         []int
@@ -130,6 +157,114 @@ func TestE2E_ScrubQuotedCredentials(t *testing.T) {
 			public:     "public-neighbor",
 			visible:    provider,
 			lines:      []int{1, 1},
+		},
+		{
+			name:          "unquoted logged password around provider",
+			content:       "{\"message\":\"PASSWORD=left-sensitive:" + provider + ":right-sensitive\",\"note\":\"public-neighbor\"}\n",
+			categories:    []string{"PASSWORD", "GITHUB_TOKEN", "PASSWORD"},
+			hidden:        []string{"left-sensitive", "right-sensitive", provider},
+			public:        "public-neighbor",
+			lines:         []int{1, 1, 1},
+			sourceMatches: []string{"left-sensitive:", provider, ":right-sensitive"},
+		},
+		{
+			name:          "bearer token around provider",
+			content:       "{\"message\":\"Bearer left-sensitive." + provider + ".right-sensitive\",\"note\":\"public-neighbor\"}\n",
+			categories:    []string{"BEARER_TOKEN", "GITHUB_TOKEN", "BEARER_TOKEN"},
+			hidden:        []string{"left-sensitive", "right-sensitive", provider},
+			public:        "public-neighbor",
+			lines:         []int{1, 1, 1},
+			sourceMatches: []string{"left-sensitive.", provider, ".right-sensitive"},
+		},
+		{
+			name:          "raw complete PEM body",
+			content:       "public-neighbor\n" + pem + "\npublic-trailer\n",
+			categories:    []string{"PRIVATE_KEY"},
+			hidden:        hiddenPEMBody,
+			public:        "public-neighbor",
+			lines:         []int{2},
+			sourceMatches: []string{pem},
+		},
+		{
+			name:          "JSON complete PEM body",
+			content:       pemRecord("private_key", pem),
+			categories:    []string{"PRIVATE_KEY"},
+			hidden:        hiddenPEMBody,
+			public:        "public-neighbor",
+			lines:         []int{1},
+			sourceMatches: []string{encodedPEM},
+		},
+		{
+			name:          "JSONL complete PEM bodies",
+			content:       "{\"note\":\"public-neighbor\"}\n\n" + pemRecord("private_key", rsaPEM) + "\n" + pemRecord("private_key", encryptedPEM) + "\n",
+			categories:    []string{"PRIVATE_KEY", "PRIVATE_KEY"},
+			hidden:        hiddenPEMBody,
+			public:        "public-neighbor",
+			lines:         []int{3, 4},
+			sourceMatches: []string{encodedValue(rsaPEM), encodedValue(encryptedPEM)},
+		},
+		{
+			name:          "raw encrypted PEM body",
+			content:       "public-neighbor\n" + encryptedPEM + "\npublic-trailer\n",
+			categories:    []string{"PRIVATE_KEY"},
+			hidden:        hiddenPEMBody,
+			public:        "public-neighbor",
+			lines:         []int{2},
+			sourceMatches: []string{encryptedPEM},
+		},
+		{
+			name:          "PEM with password category disabled",
+			content:       pemRecord("password", pem),
+			categories:    []string{"PRIVATE_KEY"},
+			hidden:        hiddenPEMBody,
+			disabled:      "'PASSWORD'",
+			public:        "public-neighbor",
+			lines:         []int{1},
+			sourceMatches: []string{encodedPEM},
+		},
+		{
+			name:      "raw full PEM allowlist",
+			content:   pemRecord("private_key", pem),
+			allowlist: strconv.Quote("^" + regexp.QuoteMeta(encodedPEM) + "$"),
+			public:    "public-neighbor",
+			visible:   pemHead,
+		},
+		{
+			name:      "logical full PEM allowlist",
+			content:   pemRecord("private_key", pem),
+			allowlist: strconv.Quote("^" + regexp.QuoteMeta(pem) + "$"),
+			public:    "public-neighbor",
+			visible:   pemHead,
+		},
+		{
+			name:          "header allowlist does not expose PEM body",
+			content:       pemRecord("private_key", pem),
+			categories:    []string{"PRIVATE_KEY"},
+			hidden:        hiddenPEMBody,
+			allowlist:     strconv.Quote("^" + regexp.QuoteMeta("-----BEGIN "+"PRIVATE KEY-----") + "$"),
+			public:        "public-neighbor",
+			lines:         []int{1},
+			sourceMatches: []string{encodedPEM},
+		},
+		{
+			name:          "PEM body around provider",
+			content:       pemRecord("private_key", providerPEM),
+			categories:    []string{"PRIVATE_KEY", "GOOGLE_API_KEY", "PRIVATE_KEY"},
+			hidden:        append(append([]string{}, hiddenPEMBody...), google),
+			public:        "public-neighbor",
+			lines:         []int{1, 1, 1},
+			sourceMatches: []string{pemPrefix, google, pemSuffix},
+		},
+		{
+			name:          "PEM body allowlists only provider",
+			content:       pemRecord("private_key", providerPEM),
+			categories:    []string{"PRIVATE_KEY", "PRIVATE_KEY"},
+			hidden:        hiddenPEMBody,
+			allowlist:     strconv.Quote("^" + regexp.QuoteMeta(google) + "$"),
+			public:        "public-neighbor",
+			visible:       google,
+			lines:         []int{1, 1},
+			sourceMatches: []string{pemPrefix, pemSuffix},
 		},
 		{
 			name:       "embedded quoted assignment",
@@ -262,7 +397,7 @@ func TestE2E_ScrubQuotedCredentials(t *testing.T) {
 			if err := os.WriteFile(artifact, []byte(tc.content), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			settings := "[redaction]\nmode = 'redact'\nallowlist = [" + tc.allowlist + "]\n"
+			settings := "[redaction]\nmode = 'redact'\nallowlist = [" + tc.allowlist + "]\ndisabled_categories = [" + tc.disabled + "]\n"
 			if err := os.WriteFile(configPath, []byte(settings), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -299,7 +434,7 @@ func TestE2E_ScrubQuotedCredentials(t *testing.T) {
 							t.Error("CLI output removed the neighboring public field")
 						}
 						if command == "preview" && tc.visible != "" && !strings.Contains(string(output), tc.visible) {
-							t.Error("CLI output did not preserve the explicitly allowlisted provider")
+							t.Error("CLI output did not preserve the explicitly allowlisted credential")
 						}
 						if format == "json" {
 							var response struct {
