@@ -225,6 +225,9 @@ func runContextInjection(ctx context.Context, opts contextInjectOptions, deps co
 			}
 		}
 	}
+	if deps.remote && !hasPack {
+		return result, ntmctx.ErrRemoteContextPreparation
+	}
 	if deps.resolve == nil || deps.panes == nil {
 		return result, fmt.Errorf("context injection session dependencies are required")
 	}

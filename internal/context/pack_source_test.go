@@ -3,6 +3,7 @@ package context
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,5 +63,32 @@ func TestSourceContextCannotEscapeProjectRoot(t *testing.T) {
 		if comp.Error == "" || strings.Contains(string(comp.Data), "outside-private-content") {
 			t.Fatalf("escaped source root with %q: %+v", file, comp)
 		}
+	}
+}
+
+func TestBuildRefusesRemoteProjectBeforePreparingComponents(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("LOCAL_PROJECT_SOURCE_MUST_NOT_LEAK"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	b := NewContextPackBuilder(nil)
+	b.ClearCache()
+	t.Cleanup(b.ClearCache)
+	for _, files := range [][]string{nil, {"README.md"}, {"*.md"}} {
+		pack, err := b.Build(t.Context(), BuildOptions{
+			AgentType: "cod", ProjectDir: dir, Remote: true, Files: files, Task: "remote task",
+		})
+		if !errors.Is(err, ErrRemoteContextPreparation) || pack != nil {
+			t.Fatalf("remote project produced local context for %v: pack=%+v err=%v", files, pack, err)
+		}
+	}
+	if size, _ := b.CacheStats(); size != 0 {
+		t.Fatal("refused remote preparation published a cached pack")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if pack, err := b.Build(ctx, BuildOptions{Remote: true}); !errors.Is(err, context.Canceled) || pack != nil {
+		t.Fatalf("remote refusal hid cancellation: pack=%+v err=%v", pack, err)
 	}
 }

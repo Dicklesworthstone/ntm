@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,10 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
+
+// ErrRemoteContextPreparation prevents remote project paths from being read
+// through local source, repository, or context-provider adapters.
+var ErrRemoteContextPreparation = errors.New("remote source collection is unsupported; run context preparation on the remote host or use context inject --pack with an explicitly selected stored artifact")
 
 // GetTokenBudget returns the safe working token budget for an agent type.
 // Delegates to the canonical registry in internal/models.
@@ -67,7 +72,7 @@ type BuildOptions struct {
 	CorrelationID   string
 	ProjectDir      string
 	SessionID       string // For CM client connection
-	Remote          bool   // Remote project paths do not identify local CM workspaces
+	Remote          bool   // Remote source preparation requires a host-aware reader
 	IncludeMSSkills bool   // Include Meta Skill suggestions as an optional component
 }
 
@@ -132,6 +137,9 @@ func cacheKey(opts BuildOptions, alloc BudgetAllocation) string {
 func (b *ContextPackBuilder) Build(ctx context.Context, opts BuildOptions) (*ContextPackFull, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if opts.Remote {
+		return nil, ErrRemoteContextPreparation
 	}
 	opts.AgentType = canonicalContextPackAgentType(opts.AgentType)
 	if opts.ProjectDir == "" {

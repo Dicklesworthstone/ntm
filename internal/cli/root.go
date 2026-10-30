@@ -29,6 +29,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/encryption"
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/history"
@@ -682,6 +683,15 @@ Shell Integration:
 		// Configure remote client if requested
 		if sshHost != "" {
 			tmux.DefaultClient = tmux.NewClient(sshHost)
+		}
+
+		if robotContextInject != "" && tmux.DefaultClient.Remote != "" {
+			return robot.EncodeErrorJSON(
+				ntmctx.ErrRemoteContextPreparation,
+				robot.ErrCodeNotImplemented,
+				"Run context preparation on the target host, or use 'ntm context inject SESSION --pack ID' for a stored artifact",
+				"robot-context-inject",
+			)
 		}
 
 		// Agent plugins are recognised agent types everywhere (status, robot

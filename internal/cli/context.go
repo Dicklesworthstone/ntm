@@ -58,6 +58,12 @@ func newContextBuildCmd() *cobra.Command {
 			- Claude (cc), Cursor, Windsurf, Aider: XML format
 			- Codex (cod), Gemini (gmi): Markdown format`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := cmd.Context().Err(); err != nil {
+				return err
+			}
+			if tmux.DefaultClient.Remote != "" {
+				return ntmctx.ErrRemoteContextPreparation
+			}
 			dir, session, err := resolveContextBuildScope(cmd.Context(), tmux.GetCurrentSession())
 			if err != nil {
 				return err
