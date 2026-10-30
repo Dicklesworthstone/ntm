@@ -147,6 +147,127 @@ esac
 	}
 }
 
+// A short pane's historical markers must not override the canonical visible
+// frame, and a final parser or modal blocker must veto SafeToDispatch even
+// when the canonical observation recognizes idle composer chrome.
+func TestPrintIsWorkingUsesVisibleFrameAndFinalDispatchVerdict(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("deterministic tmux transport requires a POSIX shell")
+	}
+	const transport = `#!/bin/sh
+set -eu
+case "$1" in
+  -V) printf 'tmux 3.6a\n' ;;
+  has-session) ;;
+  list-panes) printf '%s\n' "$NTM_WORK_FRAME_PANES" ;;
+  capture-pane) printf '%s\n' "$NTM_WORK_FRAME_CAPTURE" ;;
+  *) printf 'unexpected tmux command: %s\n' "$*" >&2; exit 1 ;;
+esac
+`
+	binary := filepath.Join(t.TempDir(), "tmux")
+	if err := os.WriteFile(binary, []byte(transport), 0o700); err != nil {
+		t.Fatalf("write tmux transport: %v", err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", binary)
+	originalFormat := GetOutputFormat()
+	SetOutputFormat(FormatJSON)
+	t.Cleanup(func() { SetOutputFormat(originalFormat) })
+
+	const codexIdle = "› Ask Codex to do anything\n47% context left\n? for shortcuts"
+	const agyIdle = ">\n──────────────────────────────────────────────────\n? for shortcuts"
+	const codexBusy = "• Working (12s • esc to interrupt)\n" + codexIdle
+	const agyBusy = ">\n──────────────────────────────────────────────────\nesc to cancel"
+	for _, tc := range []struct {
+		name            string
+		agentType       string
+		height          int
+		capture         string
+		wantWorking     bool
+		wantIdle        bool
+		wantLimited     bool
+		wantDispatch    bool
+		wantObservation string
+		wantRecommend   string
+	}{
+		{
+			name: "codex spinner above viewport", agentType: "cod", height: 3, capture: codexBusy,
+			wantIdle: true, wantDispatch: true, wantObservation: "idle", wantRecommend: string(agent.RecommendSafeToRestart),
+		},
+		{
+			name: "codex spinner inside viewport", agentType: "cod", height: 4, capture: codexBusy,
+			wantWorking: true, wantObservation: "working", wantRecommend: string(agent.RecommendDoNotInterrupt),
+		},
+		{
+			name: "unknown height retains busy evidence", agentType: "cod", height: 0, capture: codexBusy,
+			wantWorking: true, wantObservation: "working", wantRecommend: string(agent.RecommendDoNotInterrupt),
+		},
+		{
+			name: "antigravity cancel hint above viewport", agentType: "agy", height: 3, capture: "esc to cancel\n" + agyIdle,
+			wantIdle: true, wantDispatch: true, wantObservation: "idle", wantRecommend: string(agent.RecommendSafeToRestart),
+		},
+		{
+			name: "antigravity cancel hint inside viewport", agentType: "agy", height: 3, capture: agyBusy,
+			wantWorking: true, wantObservation: "working", wantRecommend: string(agent.RecommendDoNotInterrupt),
+		},
+		{
+			name: "rate limit above viewport", agentType: "cod", height: 3, capture: "Rate limit exceeded\n" + codexIdle,
+			wantIdle: true, wantDispatch: true, wantObservation: "idle", wantRecommend: string(agent.RecommendSafeToRestart),
+		},
+		{
+			name: "visible rate limit vetoes idle observation", agentType: "cod", height: 4, capture: "Rate limit exceeded\n" + codexIdle,
+			wantLimited: true, wantObservation: "idle", wantRecommend: string(agent.RecommendRateLimitedWait),
+		},
+		{
+			name: "interactive gate above viewport", agentType: "agy", height: 3, capture: "Do you trust the contents of this project?\n" + agyIdle,
+			wantIdle: true, wantDispatch: true, wantObservation: "idle", wantRecommend: string(agent.RecommendSafeToRestart),
+		},
+		{
+			name: "visible interactive gate vetoes idle observation", agentType: "agy", height: 4, capture: "Do you trust the contents of this project?\n" + agyIdle,
+			wantObservation: "idle", wantRecommend: "MANUAL_INTERVENTION",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("NTM_WORK_FRAME_CAPTURE", tc.capture)
+			t.Setenv("NTM_WORK_FRAME_PANES", strings.Join([]string{
+				"%1", "1", "s__" + tc.agentType + "_1", tc.agentType, "160", strconv.Itoa(tc.height), "0",
+				strconv.FormatInt(time.Now().Unix(), 10), strconv.Itoa(os.Getpid()), "0", tc.agentType, "", "", "0",
+			}, tmux.FieldSeparator))
+			stdout, err := captureStdout(t, func() error {
+				return PrintIsWorking(t.Context(), IsWorkingOptions{Session: "s", LinesCaptured: 100, Verbose: true})
+			})
+			if err != nil {
+				t.Fatalf("PrintIsWorking() error = %v; stdout = %q", err, stdout)
+			}
+			var output IsWorkingOutput
+			if err := json.Unmarshal([]byte(stdout), &output); err != nil {
+				t.Fatalf("PrintIsWorking() did not emit one JSON document: %v; stdout = %q", err, stdout)
+			}
+			if !output.Success || output.Summary.TotalPanes != 1 {
+				t.Fatalf("unexpected work-state response: %+v", output)
+			}
+			pane, ok := output.Panes["1"]
+			if !ok || pane.AgentType != tc.agentType || pane.IsWorking != tc.wantWorking ||
+				pane.IsIdle != tc.wantIdle || pane.IsRateLimited != tc.wantLimited ||
+				pane.SafeToDispatch != tc.wantDispatch || pane.Recommendation != tc.wantRecommend ||
+				pane.ObservationState != tc.wantObservation || pane.ObservationFreshness != "fresh" {
+				t.Fatalf("work-state verdict = %+v; want working=%v idle=%v limited=%v dispatch=%v observation=%s recommendation=%s",
+					pane, tc.wantWorking, tc.wantIdle, tc.wantLimited, tc.wantDispatch, tc.wantObservation, tc.wantRecommend)
+			}
+			if pane.RawSample != tc.capture {
+				t.Fatalf("verbose diagnostic lost full capture: got %q, want %q", pane.RawSample, tc.capture)
+			}
+			if got := output.Summary.ByRecommendation[tc.wantRecommend]; len(got) != 1 || got[0] != "1" {
+				t.Fatalf("summary recommendations = %v, want pane 1 in %s", output.Summary.ByRecommendation, tc.wantRecommend)
+			}
+			if (output.Summary.WorkingCount == 1) != tc.wantWorking ||
+				(output.Summary.IdleCount == 1) != tc.wantIdle ||
+				(output.Summary.RateLimitedCount == 1) != tc.wantLimited {
+				t.Fatalf("summary contradicts final pane verdict: %+v", output.Summary)
+			}
+		})
+	}
+}
+
 func TestParsePanesArg(t *testing.T) {
 	tests := []struct {
 		name      string

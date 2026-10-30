@@ -13,6 +13,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 // =============================================================================
@@ -447,6 +448,13 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 			continue
 		}
 		content := paneObservation.RawOutput
+		// Use the same visible frame as the canonical observer. capture-pane
+		// includes scrollback above short panes; treating that history as live
+		// can restore a stale spinner, limit, or dialog after the observer has
+		// already established that the current composer is idle.
+		if paneObservation.Metadata.Height > 0 {
+			content = util.GetLastNLines(content, paneObservation.Metadata.Height)
+		}
 
 		if paneObservation.Current.Status.State == statuspkg.StateUnknown {
 			// The richer parser below may still recognize provider-specific UI
@@ -466,6 +474,7 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 			workStatus.Confidence = 0
 			workStatus.Indicators = WorkIndicators{Work: []string{}, Limit: []string{}}
 			workStatus.IndicatorBasis = "parse_error"
+			workStatus.SafeToDispatch = false
 			output.Panes[paneKey] = workStatus
 			output.Summary.ErrorCount++
 			continue
@@ -536,6 +545,12 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 		status.IndicatorBasis = workIndicatorBasis(state, liveBusy, parsedStatus, status, paneObservation)
 		applyInteractiveGateOverride(&status, state.Type, content, paneObservation.Metadata.Width)
 		applyProviderErrorOverride(&status, state.Type, content)
+		// The observation is necessary but not sufficient: a parser or modal
+		// override can discover a blocker in an otherwise idle frame. Never
+		// advertise dispatchability alongside a final blocking verdict.
+		status.SafeToDispatch = status.SafeToDispatch && status.IsIdle &&
+			!status.IsWorking && !status.IsRateLimited && !status.AgentCLIDead &&
+			status.Recommendation == string(agent.RecommendSafeToRestart)
 
 		// Ensure indicators are never nil
 		if status.Indicators.Work == nil {
@@ -546,7 +561,15 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 		}
 
 		if opts.Verbose {
+			// Keep the full-capture diagnostic sample even though readiness is
+			// classified from the visible frame only. Let the parser retain its
+			// existing ANSI and carriage-return normalization for that sample.
 			status.RawSample = state.RawSample
+			if content != paneObservation.RawOutput {
+				if diagnostic, err := parser.ParseWithHint(paneObservation.RawOutput, paneHint); err == nil {
+					status.RawSample = diagnostic.RawSample
+				}
+			}
 		}
 
 		// OPTIONAL semantic-progress signal (#199). Computed ONLY under
