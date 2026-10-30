@@ -379,6 +379,7 @@ func GetRoute(opts RouteOptions) (*RouteOutput, int) {
 		// Get activity state
 		classifier := scorer.monitor.GetOrCreate(pane.ID)
 		classifier.SetAgentType(agentType)
+		classifier.setPaneDimensions(pane.Width, pane.Height)
 		activity, err := classifier.Classify()
 		if err != nil {
 			// Add to excluded with error
@@ -640,6 +641,7 @@ func GetRouteRecommendation(opts RouteOptions) (*RouteRecommendation, error) {
 		// Get activity state
 		classifier := scorer.monitor.GetOrCreate(pane.ID)
 		classifier.SetAgentType(agentType)
+		classifier.setPaneDimensions(pane.Width, pane.Height)
 		activity, err := classifier.Classify()
 		if err != nil {
 			continue // Skip agents that can't be classified

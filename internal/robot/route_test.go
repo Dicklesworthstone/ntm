@@ -746,3 +746,175 @@ func TestRouteReservationWarning(t *testing.T) {
 		t.Errorf("no reservation cache: warning %+v, want nil", w)
 	}
 }
+
+func TestRoutingPreservesUnsubmittedAndQueuedInput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("routing fixture requires a POSIX shell")
+	}
+	previousProcess, previousCwd, previousPath := transcriptUsageForProcess, transcriptUsageForCwd, paneCurrentPath
+	t.Cleanup(func() {
+		transcriptUsageForProcess, transcriptUsageForCwd, paneCurrentPath = previousProcess, previousCwd, previousPath
+	})
+	transcriptUsageForProcess = func(string, int) (*ntmctx.TranscriptUsage, bool) { return nil, false }
+	transcriptUsageForCwd = func(string, string) (*ntmctx.TranscriptUsage, bool) { return nil, false }
+	paneCurrentPath = func(string) (string, bool) { return "", false }
+
+	box := func(rows ...string) string {
+		capture := "╭──────────────────────────────────────╮\n"
+		for _, row := range rows {
+			capture += "│ " + row + " │\n"
+		}
+		return capture + "╰──────────────────────────────────────╯\n"
+	}
+	fixture := func(name string) string {
+		data, err := os.ReadFile(filepath.Join("..", "agent", "testdata", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	empty := map[string]string{
+		"claude": "❯ \n",
+		"codex":  "› \n",
+		"grok":   box("❯ "),
+		"omp":    fixture("omp_nerd_idle_done.txt"),
+	}
+	const queued = "❯ \nPress up to edit queued messages\n"
+	cases := []struct {
+		name, agent, capture, other     string
+		firstReason, secondReason, want string
+		height                          int
+	}{
+		{name: "Claude draft", agent: "claude", capture: "❯ Keep this draft\n", firstReason: "unsubmitted input", want: "%42"},
+		{name: "wrapped Claude draft", agent: "claude", capture: box("❯ ", "  the draft continues below the marker"), firstReason: "unsubmitted input", want: "%42"},
+		{name: "Codex draft", agent: "codex", capture: "› Keep this draft\n", firstReason: "unsubmitted input", want: "%42"},
+		{name: "Grok draft", agent: "grok", capture: box("❯ Keep this draft"), firstReason: "unsubmitted input", want: "%42"},
+		{name: "Omp draft", agent: "omp", capture: fixture("omp_nerd_draft.txt"), firstReason: "unsubmitted input", want: "%42"},
+		{name: "queued follow-up", agent: "claude", capture: queued, firstReason: "queued messages", want: "%42"},
+		{name: "all occupied", agent: "claude", capture: "❯ Keep this draft\n", other: queued, firstReason: "unsubmitted input", secondReason: "queued messages"},
+		{name: "history above empty composer", agent: "claude", capture: "❯ Previous submitted prompt\nCompleted response\n❯ \n", want: "%41"},
+		{name: "Claude placeholder", agent: "claude", capture: "❯ Try \"fix the auth bug\"\n", want: "%41"},
+		{name: "Codex placeholder", agent: "codex", capture: "› Ask Codex to do anything\n", want: "%41"},
+		{name: "queued footer outside visible pane", agent: "claude", capture: "Press up to edit queued messages\nold output\ncurrent output\n❯ \n", height: 3, want: "%41"},
+		{name: "queued footer outside live tail", agent: "claude", capture: "Press up to edit queued messages\n" + strings.Repeat("old output\n", 12) + "❯ \n", want: "%41"},
+	}
+	const script = `#!/bin/sh
+set -eu
+case "$1" in
+  has-session) [ "$3" = '=route-composer' ] ;;
+  list-panes)
+    printf '%s\n' "%41_NTM_SEP_1_NTM_SEP_route-composer__${NTM_TEST_ROUTE_AGENT}_1_NTM_SEP_${NTM_TEST_ROUTE_AGENT}_NTM_SEP_240_NTM_SEP_${NTM_TEST_ROUTE_HEIGHT}_NTM_SEP_1_NTM_SEP_1041_NTM_SEP_0_NTM_SEP_${NTM_TEST_ROUTE_AGENT}_NTM_SEP__NTM_SEP__NTM_SEP_0"
+    printf '%s\n' "%42_NTM_SEP_2_NTM_SEP_route-composer__${NTM_TEST_ROUTE_AGENT}_2_NTM_SEP_${NTM_TEST_ROUTE_AGENT}_NTM_SEP_240_NTM_SEP_${NTM_TEST_ROUTE_HEIGHT}_NTM_SEP_0_NTM_SEP_1042_NTM_SEP_0_NTM_SEP_${NTM_TEST_ROUTE_AGENT}_NTM_SEP__NTM_SEP__NTM_SEP_0"
+    ;;
+  capture-pane)
+    case "$3" in
+      %41|%42) cat "$NTM_TEST_ROUTE_COMPOSER_ROOT/$3" ;;
+      *) exit 98 ;;
+    esac
+    ;;
+  *) printf 'unexpected tmux command: %s\n' "$*" >&2; exit 97 ;;
+esac
+`
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hermeticGlobalConfig(t)
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			t.Setenv("XDG_DATA_HOME", t.TempDir())
+			root := t.TempDir()
+			other := tc.other
+			if other == "" {
+				other = empty[tc.agent]
+			}
+			for name, capture := range map[string]string{"%41": tc.capture, "%42": other} {
+				if err := os.WriteFile(filepath.Join(root, name), []byte(capture), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			binary := filepath.Join(root, "tmux")
+			if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			height := tc.height
+			if height == 0 {
+				height = 60
+			}
+			t.Setenv("NTM_TMUX_BINARY", binary)
+			t.Setenv("NTM_TEST_ROUTE_COMPOSER_ROOT", root)
+			t.Setenv("NTM_TEST_ROUTE_AGENT", tc.agent)
+			t.Setenv("NTM_TEST_ROUTE_HEIGHT", fmt.Sprint(height))
+			previousClient := tmux.DefaultClient
+			tmux.DefaultClient = tmux.NewClient("")
+			t.Cleanup(func() { tmux.DefaultClient = previousClient })
+
+			// Composer occupancy is a routing constraint even when the caller
+			// deliberately permits busy, rate-limited, and error-state agents.
+			cfg := config.Default()
+			cfg.Routing.ExcludeIfGenerating = false
+			cfg.Routing.ExcludeIfRateLimited = false
+			cfg.Routing.ExcludeIfErrorState = false
+			cfg.Routing.ExcludeContextAbove = 100
+			scorer := NewAgentScorerFromConfig(cfg)
+			scored, err := scorer.ScoreAgents("route-composer", "")
+			if err != nil || len(scored) != 2 {
+				t.Fatalf("scored agents = %+v, %v; want both physical panes", scored, err)
+			}
+			reasons := map[string]string{"%41": tc.firstReason, "%42": tc.secondReason}
+			wantCandidates := 0
+			for _, agent := range scored {
+				reason := reasons[agent.PaneID]
+				if reason == "" {
+					wantCandidates++
+				}
+				if agent.Excluded != (reason != "") || (reason != "" && !strings.Contains(agent.ExcludeReason, reason)) {
+					t.Fatalf("scorer returned %+v, want exclusion reason %q", agent, reason)
+				}
+			}
+			opts := RouteOptions{
+				Session: "route-composer", Strategy: StrategySticky, LastAgent: "%41",
+				Config: cfg, NoPersist: true,
+			}
+			output, code := GetRoute(opts)
+			if code != 0 || !output.Success || len(output.Candidates) != wantCandidates || len(output.Excluded) != 2-wantCandidates {
+				t.Fatalf("robot route = %+v, code %d; want %d candidates", output, code, wantCandidates)
+			}
+			for _, excluded := range output.Excluded {
+				if reason := reasons[excluded.PaneID]; reason == "" || !strings.Contains(excluded.Reason, reason) {
+					t.Errorf("robot exclusion = %+v, want reason %q", excluded, reason)
+				}
+			}
+			recommendation, err := GetRouteRecommendation(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for surface, rec := range map[string]*RouteRecommendation{"robot": output.Recommendation, "send": recommendation} {
+				if tc.want == "" {
+					if rec != nil {
+						t.Errorf("%s selected an occupied pane: %+v", surface, rec)
+					}
+				} else if rec == nil || rec.PaneID != tc.want {
+					t.Errorf("%s recommendation = %+v, want %s", surface, rec, tc.want)
+				}
+			}
+			if tc.firstReason != "" {
+				if err := os.WriteFile(filepath.Join(root, "%41"), []byte(empty[tc.agent]), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				// Reuse the classifier to prove occupancy is refreshed rather
+				// than remaining latched after the user clears the composer.
+				refreshed, err := scorer.ScoreAgents("route-composer", "")
+				if err != nil || len(refreshed) != 2 {
+					t.Fatalf("refreshed scores = %+v, %v", refreshed, err)
+				}
+				for _, agent := range refreshed {
+					if agent.PaneID == "%41" && (agent.Excluded || agent.UnsubmittedInput || agent.QueuedMessages) {
+						t.Fatalf("cleared composer stayed occupied: %+v", agent)
+					}
+				}
+				recovered, err := GetRouteRecommendation(opts)
+				if err != nil || recovered == nil || recovered.PaneID != "%41" {
+					t.Fatalf("cleared pane was not selectable: %+v, %v", recovered, err)
+				}
+			}
+		})
+	}
+}

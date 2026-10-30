@@ -110,16 +110,18 @@ func contextUsageForPane(usage map[string]float64, paneID string) float64 {
 // classifier's authoritative pane state, including live rate-limit evidence.
 func scoredAgentForRouting(pane tmux.Pane, agentType string, activity *AgentActivity, contextUsage map[string]float64) ScoredAgent {
 	return ScoredAgent{
-		PaneID:       pane.ID,
-		AgentType:    agentType,
-		PaneIndex:    pane.Index,
-		State:        activity.State,
-		Confidence:   activity.Confidence,
-		Velocity:     activity.Velocity,
-		ContextUsage: contextUsageForPane(contextUsage, pane.ID),
-		LastActivity: activity.LastOutput,
-		HealthState:  deriveHealthState(activity.State),
-		RateLimited:  activity.RateLimited,
+		PaneID:           pane.ID,
+		AgentType:        agentType,
+		PaneIndex:        pane.Index,
+		State:            activity.State,
+		Confidence:       activity.Confidence,
+		Velocity:         activity.Velocity,
+		ContextUsage:     contextUsageForPane(contextUsage, pane.ID),
+		LastActivity:     activity.LastOutput,
+		HealthState:      deriveHealthState(activity.State),
+		RateLimited:      activity.RateLimited,
+		UnsubmittedInput: activity.UnsubmittedInput,
+		QueuedMessages:   activity.QueuedMessages,
 	}
 }
 
@@ -144,6 +146,10 @@ type ScoredAgent struct {
 	// Health state
 	HealthState HealthState `json:"health_state"`
 	RateLimited bool        `json:"rate_limited"`
+
+	// Drafts and queued follow-ups make a pane unavailable for new routing.
+	UnsubmittedInput bool `json:"unsubmitted_input,omitempty"`
+	QueuedMessages   bool `json:"queued_messages,omitempty"`
 
 	// Scoring results
 	Score         float64        `json:"score"`    // Final composite score (0-100)
@@ -711,6 +717,7 @@ func (s *AgentScorer) ScoreAgents(session string, prompt string) ([]ScoredAgent,
 		// Get activity state
 		classifier := s.monitor.GetOrCreate(pane.ID)
 		classifier.SetAgentType(agentType)
+		classifier.setPaneDimensions(pane.Width, pane.Height)
 		activity, err := classifier.Classify()
 		if err != nil {
 			// If we can't classify, skip this agent
@@ -868,6 +875,13 @@ func (s *AgentScorer) affinityMatch(agent *ScoredAgent, prompt string) float64 {
 
 // checkExclusion checks if an agent should be excluded from routing.
 func (s *AgentScorer) checkExclusion(agent *ScoredAgent) (bool, string) {
+	if agent.UnsubmittedInput {
+		return true, "agent has unsubmitted input"
+	}
+	if agent.QueuedMessages {
+		return true, "agent has queued messages"
+	}
+
 	if s.config.ExcludeIfErrorState && agent.State == StateError {
 		return true, "agent in ERROR state"
 	}
