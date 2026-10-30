@@ -1,10 +1,18 @@
 package cli
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -140,7 +148,7 @@ func TestFormatContextInjectContent_MaxBytesTruncation(t *testing.T) {
 		t.Error("truncated content should contain truncation marker")
 	}
 
-	if len(content) > 250 { // Some slack for headers
+	if len(content) > 200 {
 		t.Errorf("content too large: %d bytes", len(content))
 	}
 }
@@ -541,5 +549,241 @@ func TestContextInjectResult_Fields(t *testing.T) {
 	}
 	if len(r.PanesInjected) != 2 {
 		t.Error("wrong pane count")
+	}
+}
+
+func TestFormatContextInjectContent_ExactTextBudgets(t *testing.T) {
+	dir := t.TempDir()
+	files := []string{"first.md", "second.md", "last.md"}
+	contents := []string{"first file", strings.Repeat("é🙂界", 12), "last file"}
+	for i, file := range files {
+		if err := os.WriteFile(filepath.Join(dir, file), []byte(contents[i]), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	full, _, truncated, err := formatContextInjectContent(dir, files, 0)
+	if err != nil || truncated {
+		t.Fatalf("unlimited text preparation: truncated=%t err=%v", truncated, err)
+	}
+	for budget := 1; budget <= len(full)+1; budget++ {
+		content, _, truncated, err := formatContextInjectContent(dir, files, budget)
+		if err != nil {
+			t.Fatalf("budget %d: %v", budget, err)
+		}
+		if len(content) > budget || !utf8.ValidString(content) {
+			t.Fatalf("budget %d produced %d bytes or invalid UTF-8: %q", budget, len(content), content)
+		}
+		if truncated != (budget < len(full)) {
+			t.Fatalf("budget %d: truncated=%t, full size=%d", budget, truncated, len(full))
+		}
+		if budget >= len(full) && content != full {
+			t.Fatalf("budget %d changed a fully fitting message", budget)
+		}
+	}
+}
+
+func TestReadContextInjectTextBoundsReads(t *testing.T) {
+	input := strings.Repeat("bounded source", 4096)
+	reader := strings.NewReader(input)
+	content, truncated, err := readContextInjectText(reader, 32)
+	if err != nil || !truncated || content != input[:32] {
+		t.Fatalf("bounded read: content=%q truncated=%t err=%v", content, truncated, err)
+	}
+	if consumed := len(input) - reader.Len(); consumed > 33 {
+		t.Fatalf("32-byte budget read %d bytes from the source", consumed)
+	}
+	// A very large user budget must not overflow the read limit.
+	content, truncated, err = readContextInjectText(strings.NewReader("whole file"), int(^uint(0)>>1))
+	if err != nil || truncated || content != "whole file" {
+		t.Fatalf("maximum integer budget: content=%q truncated=%t err=%v", content, truncated, err)
+	}
+}
+
+func TestReadContextInjectTextValidity(t *testing.T) {
+	for _, tc := range []struct {
+		name, input, want, wantError string
+		limit                       int
+		truncated                   bool
+	}{
+		{name: "unlimited", input: "  café🙂\n", want: "café🙂", limit: -1},
+		{name: "exact", input: "界", want: "界", limit: 3},
+		{name: "split rune", input: "界tail", limit: 2, truncated: true},
+		{name: "zero bytes", input: "text", limit: 0, truncated: true},
+		{name: "invalid interior", input: "a\xffrest", limit: 3, wantError: "invalid UTF-8"},
+		{name: "incomplete at EOF", input: "a\xc2", limit: 2, wantError: "invalid UTF-8"},
+		{name: "binary", input: "text\x00tail", limit: -1, wantError: "NUL"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			content, truncated, err := readContextInjectText(strings.NewReader(tc.input), tc.limit)
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+					t.Fatalf("expected %s, got content=%q err=%v", tc.wantError, content, err)
+				}
+				return
+			}
+			if err != nil || content != tc.want || truncated != tc.truncated || !utf8.ValidString(content) {
+				t.Fatalf("content=%q truncated=%t err=%v; want %q truncated=%t", content, truncated, err, tc.want, tc.truncated)
+			}
+		})
+	}
+}
+
+func TestFormatContextInjectContent_AllowsConfinedSymlink(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("project context"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("README.md", filepath.Join(dir, "alias.md")); err != nil {
+		t.Skipf("symlink fixture unavailable: %v", err)
+	}
+	content, injected, truncated, err := formatContextInjectContent(dir, []string{"alias.md"}, 0)
+	if err != nil || truncated || content != "### alias.md\n\nproject context" || len(injected) != 1 || injected[0] != "alias.md" {
+		t.Fatalf("confined symlink rejected or changed: content=%q files=%v truncated=%t err=%v", content, injected, truncated, err)
+	}
+}
+
+func TestFormatContextInjectContent_RejectsFIFO(t *testing.T) {
+	// Run the read in a child test process so removing the regular-file guard
+	// fails by a bounded deadline instead of hanging the whole test suite.
+	if fifo := os.Getenv("NTM_CONTEXT_INJECT_FIFO_FIXTURE"); fifo != "" {
+		_, _, _, err := formatContextInjectContent(filepath.Dir(fifo), []string{filepath.Base(fifo)}, 64)
+		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("FIFO was not rejected before opening: %v", err)
+		}
+		return
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("FIFO fixture requires a Unix filesystem")
+	}
+	mkfifo, err := exec.LookPath("mkfifo")
+	if err != nil {
+		t.Skip("mkfifo is unavailable")
+	}
+	fifo := filepath.Join(t.TempDir(), "context.pipe")
+	if output, err := exec.Command(mkfifo, fifo).CombinedOutput(); err != nil {
+		t.Fatalf("create FIFO fixture: %v: %s", err, output)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestFormatContextInjectContent_RejectsFIFO$", "-test.timeout=4s")
+	cmd.Env = append(os.Environ(), "NTM_CONTEXT_INJECT_FIFO_FIXTURE="+fifo)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("FIFO rejection must finish without a writer: %v: %s", err, output)
+	}
+}
+
+func TestContextInjectCobraRejectsUnsafeRawFiles(t *testing.T) {
+	oldJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSON })
+	for _, scenario := range []string{"file symlink", "directory symlink", "default symlink", "directory", "invalid UTF-8", "NUL"} {
+		t.Run(scenario, func(t *testing.T) {
+			dir := t.TempDir()
+			outside := t.TempDir()
+			if err := os.WriteFile(filepath.Join(outside, "private.md"), []byte("OUTSIDE_PROJECT_CONTENT"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			selected := "README.md"
+			args := []string{"demo", "--files", selected}
+			switch scenario {
+			case "file symlink", "directory symlink", "default symlink":
+				target, link := filepath.Join(outside, "private.md"), filepath.Join(dir, selected)
+				if scenario == "directory symlink" {
+					target, link = outside, filepath.Join(dir, "linked")
+					args = []string{"demo", "--files", "linked/private.md"}
+				} else if scenario == "default symlink" {
+					if err := os.Mkdir(filepath.Join(dir, ".claude"), 0700); err != nil {
+						t.Fatal(err)
+					}
+					link = filepath.Join(dir, ".claude", "project_context.md")
+					args = []string{"demo"}
+				}
+				if err := os.Symlink(target, link); err != nil {
+					t.Skipf("symlink fixture unavailable: %v", err)
+				}
+			case "directory":
+				if err := os.Mkdir(filepath.Join(dir, selected), 0700); err != nil {
+					t.Fatal(err)
+				}
+			case "invalid UTF-8", "NUL":
+				data := []byte("text\xfftail")
+				if scenario == "NUL" {
+					data = []byte("text\x00tail")
+				}
+				if err := os.WriteFile(filepath.Join(dir, selected), data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			calls := 0
+			deps := contextInjectDeps{
+				resolve: func(context.Context, string) (string, error) { return "demo", nil },
+				project: func(context.Context, string) (string, error) { return dir, nil },
+				panes: func(string) ([]tmux.Pane, error) {
+					return []tmux.Pane{{ID: "%7", Index: 1, Type: tmux.AgentClaude}}, nil
+				},
+				send: func(context.Context, tmux.Pane, string) error {
+					calls++
+					return nil
+				},
+			}
+			cmd := newContextInjectCmdWithDeps(&deps)
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(io.Discard)
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			cmd.SetArgs(args)
+			err := cmd.ExecuteContext(t.Context())
+			var result ContextInjectResult
+			if decodeErr := json.Unmarshal(out.Bytes(), &result); decodeErr != nil {
+				t.Fatalf("invalid command response: %v: %s", decodeErr, out.String())
+			}
+			if err == nil || result.Success || result.Error == "" || calls != 0 || len(result.PanesInjected) != 0 {
+				t.Fatalf("unsafe preparation reached delivery: calls=%d result=%+v err=%v", calls, result, err)
+			}
+			if strings.Contains(out.String(), "OUTSIDE_PROJECT_CONTENT") {
+				t.Fatal("outside-project content leaked into the command response")
+			}
+		})
+	}
+}
+
+func TestContextInjectCobraRawFilesHonorsByteBudget(t *testing.T) {
+	dir := t.TempDir()
+	for name, data := range map[string]string{"a.md": "first", "b.md": strings.Repeat("é🙂", 30)} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSON })
+	var delivered string
+	deps := contextInjectDeps{
+		resolve: func(context.Context, string) (string, error) { return "demo", nil },
+		project: func(context.Context, string) (string, error) { return dir, nil },
+		panes: func(string) ([]tmux.Pane, error) {
+			return []tmux.Pane{{ID: "%7", Index: 1, Type: tmux.AgentClaude}}, nil
+		},
+		send: func(_ context.Context, _ tmux.Pane, content string) error {
+			delivered = content
+			return nil
+		},
+	}
+	cmd := newContextInjectCmdWithDeps(&deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"demo", "--files", "a.md,b.md", "--max-bytes", "64"})
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var result ContextInjectResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("invalid command response: %v: %s", err, out.String())
+	}
+	if delivered == "" || len(delivered) > 64 || !utf8.ValidString(delivered) || !strings.Contains(delivered, "...(truncated)") {
+		t.Fatalf("command delivered an invalid or oversized payload (%d bytes): %q", len(delivered), delivered)
+	}
+	if !result.Success || !result.Truncated || result.TotalBytes != len(delivered) || len(result.InjectedFiles) != 2 || len(result.PanesInjected) != 1 {
+		t.Fatalf("command receipt disagrees with delivery: %+v", result)
 	}
 }

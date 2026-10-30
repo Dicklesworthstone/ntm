@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -378,7 +379,10 @@ func injectContextIntoPanes(session string, panes []tmux.Pane, content string, d
 	return injected, err
 }
 
-// formatContextInjectContent reads files and formats them for injection.
+// formatContextInjectContent reads project-confined regular text files. A positive
+// maxBytes bounds the complete message, including separators and truncation text;
+// zero preserves the unlimited mode. Bounded reads inspect at most one extra
+// byte to distinguish an exact fit from a truncated file.
 func formatContextInjectContent(projectDir string, files []string, maxBytes int) (string, []string, bool, error) {
 	if maxBytes < 0 {
 		return "", nil, false, fmt.Errorf("maxBytes must be >= 0, got %d", maxBytes)
@@ -387,7 +391,14 @@ func formatContextInjectContent(projectDir string, files []string, maxBytes int)
 	if err != nil {
 		return "", nil, false, fmt.Errorf("resolve project directory: %w", err)
 	}
+	root, err := os.OpenRoot(baseDir)
+	if err != nil {
+		return "", nil, false, fmt.Errorf("open project directory: %w", err)
+	}
+	defer root.Close()
 
+	const separator = "\n\n---\n\n"
+	const marker = "\n\n...(truncated)"
 	var parts []string
 	var injected []string
 	totalSize := 0
@@ -397,52 +408,124 @@ func formatContextInjectContent(projectDir string, files []string, maxBytes int)
 		if strings.TrimSpace(f) == "" {
 			continue
 		}
-		path, displayPath, err := resolveContextInjectPath(baseDir, f)
+		_, displayPath, err := resolveContextInjectPath(baseDir, f)
 		if err != nil {
 			return "", nil, false, err
 		}
-		data, err := os.ReadFile(path)
+		if !utf8.ValidString(displayPath) || strings.ContainsAny(displayPath, "\x00\r\n") {
+			return "", nil, false, fmt.Errorf("inject file %q has an invalid text path", f)
+		}
+		header := fmt.Sprintf("### %s\n\n", displayPath)
+		overhead := len(header)
+		if len(parts) > 0 {
+			overhead += len(separator)
+		}
+		remaining := -1 // An unlimited read is distinct from a zero-byte budget.
+		if maxBytes > 0 {
+			remaining = max(0, maxBytes-totalSize-overhead)
+		}
+		content, clipped, err := readContextInjectFile(root, filepath.FromSlash(displayPath), remaining)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue // Skip missing files silently
 			}
 			return "", nil, false, fmt.Errorf("read %s: %w", f, err)
 		}
-
-		content := strings.TrimSpace(string(data))
-		if content == "" {
+		if content == "" && !clipped {
 			continue
 		}
 
-		// Check if adding this file would exceed max bytes
-		header := fmt.Sprintf("### %s\n\n", displayPath)
-		entrySize := len(header) + len(content) + 2 // +2 for trailing newlines
-		if maxBytes > 0 && totalSize+entrySize > maxBytes {
-			// Truncate this file's content to fit
-			remaining := maxBytes - totalSize - len(header) - len("\n\n...(truncated)\n")
-			if remaining <= 0 {
-				truncated = true
+		if clipped {
+			truncated = true
+			if remaining < len(marker) {
 				break
 			}
-			content = content[:remaining] + "\n\n...(truncated)"
-			truncated = true
+			limit := remaining - len(marker)
+			if len(content) > limit {
+				content = content[:limit]
+				for !utf8.ValidString(content) {
+					content = content[:len(content)-1]
+				}
+			}
+			content += marker
 		}
 
 		parts = append(parts, header+content)
 		injected = append(injected, displayPath)
-		totalSize += len(header) + len(content) + 2
+		totalSize += overhead + len(content)
 
-		if maxBytes > 0 && truncated {
+		if clipped {
 			break
 		}
 	}
 
-	if len(parts) == 0 {
-		return "", nil, false, nil
-	}
+	return strings.Join(parts, separator), injected, truncated, nil
+}
 
-	result := strings.Join(parts, "\n\n---\n\n")
-	return result, injected, truncated, nil
+func readContextInjectFile(root *os.Root, name string, limit int) (string, bool, error) {
+	// Stat before opening prevents ordinary FIFO/device selections from blocking.
+	// Root confines both checks and the open, including symlink resolution.
+	info, err := root.Stat(name)
+	if err != nil {
+		return "", false, err
+	}
+	if !info.Mode().IsRegular() {
+		return "", false, fmt.Errorf("not a regular file")
+	}
+	file, err := root.Open(name)
+	if err != nil {
+		return "", false, err
+	}
+	defer file.Close()
+	info, err = file.Stat()
+	if err != nil {
+		return "", false, err
+	}
+	if !info.Mode().IsRegular() {
+		return "", false, fmt.Errorf("not a regular file")
+	}
+	return readContextInjectText(file, limit)
+}
+
+// Reject binary and malformed text instead of sending replacement characters or
+// terminal NULs. A bounded read may end inside a valid rune; only that incomplete
+// suffix is discarded. Unread content is never claimed to have been validated.
+func readContextInjectText(reader io.Reader, limit int) (string, bool, error) {
+	source := reader
+	if limit >= 0 {
+		source = io.LimitReader(reader, int64(limit))
+	}
+	data, err := io.ReadAll(source)
+	if err != nil {
+		return "", false, err
+	}
+	clipped := false
+	if limit >= 0 && len(data) == limit {
+		var extra [1]byte
+		n, err := io.ReadFull(reader, extra[:])
+		if err != nil && err != io.EOF {
+			return "", false, err
+		}
+		clipped = n > 0
+	}
+	if !utf8.Valid(data) {
+		for i := 0; i < len(data); {
+			r, size := utf8.DecodeRune(data[i:])
+			if r == utf8.RuneError && size == 1 {
+				if clipped && !utf8.FullRune(data[i:]) {
+					data = data[:i]
+					break
+				}
+				return "", false, fmt.Errorf("invalid UTF-8 text")
+			}
+			i += size
+		}
+	}
+	text := string(data)
+	if strings.ContainsRune(text, 0) {
+		return "", false, fmt.Errorf("binary content contains NUL bytes")
+	}
+	return strings.TrimSpace(text), clipped, nil
 }
 
 func newContextInjectCmd() *cobra.Command {
