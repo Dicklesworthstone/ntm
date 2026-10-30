@@ -3323,3 +3323,126 @@ func TestComposerClearBlockerVocabularyIsDistinct(t *testing.T) {
 		seen[blocker] = true
 	}
 }
+
+func TestBorderedComposerPayloadSpansRows(t *testing.T) {
+	const message = "Refactor the dispatcher and run the tests."
+	cases := []struct {
+		name    string
+		capture string
+		message string
+		want    bool
+	}{
+		{"hard wrap inside word", claudeComposerBox("❯ Refactor the dispatch", "  er and run the tests."), message, true},
+		{"word boundary wrap", claudeComposerBox("❯ Refactor the dispatcher", "  and run the tests."), message, true},
+		{"numbered prompt", claudeComposerBox("❯ 1. Refactor the dispatch", "  er and run the tests."), "1. Refactor the dispatcher and run the tests.", true},
+		{"unicode prompt", claudeComposerBox("❯ Réparer le réparti", "  teur et exécuter tous les tests."), "Réparer le répartiteur et exécuter tous les tests.", true},
+		{"payload on continuation", claudeComposerBox("❯ ", "  Refactor the dispatch", "  er and run the tests."), message, true},
+		{"wrapped pasted marker", claudeComposerBox("❯ [Pas", "  ted text +12 lines]"), message, true},
+		{"wrong continuation", claudeComposerBox("❯ Refactor the dispatch", "  UNRELATED and run the tests."), message, false},
+		{"missing word boundary", claudeComposerBox("❯ Refactor the dispatch", "  erand run the tests."), message, false},
+		{"invented word boundary", claudeComposerBox("❯ Refactor the dis patcher", "  and run the tests."), message, false},
+		{"blank row interrupts prefix", claudeComposerBox("❯ Refactor the dispatch", "", "  er and run the tests."), message, false},
+		{"footer cannot finish prefix", claudeComposerBox("❯ Refactor the dispatch") + "er and run the tests.\n", message, false},
+		{"empty box cannot borrow footer", claudeComposerBox("❯ ") + message + "\n", message, false},
+		{"history above empty live box", claudeComposerBox("❯ Refactor the dispatch", "  er and run the tests.") + claudeComposerBox("❯ "), message, false},
+		{"invalid bytes are not replacement characters", claudeComposerBox("❯ Refactor � authentication and run the tests."), "Refactor \xff authentication and run the tests.", false},
+		{"unboxed wrapped behavior unchanged", "❯ Refactor the dispatch\ner and run the tests.\n", message, false},
+		{"unboxed single row unchanged", "❯ " + message + "\n", message, true},
+	}
+	providers := []struct {
+		name  string
+		holds func(string, string) bool
+	}{
+		{"claude", claudeComposerHoldsPayload},
+		{"grok", grokComposerHoldsPayload},
+	}
+	for _, provider := range providers {
+		t.Run(provider.name, func(t *testing.T) {
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					if got := provider.holds(tc.capture, tc.message); got != tc.want {
+						t.Fatalf("holds payload = %v, want %v\ncapture:\n%s", got, tc.want, tc.capture)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestVerifyBorderedComposerSubmissionRescuesWrappedPayload(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires a POSIX shell fixture")
+	}
+	const message = "Refactor the dispatcher and run the tests."
+	const script = `#!/bin/sh
+set -eu
+case "$1" in
+  capture-pane)
+    if [ -f "$NTM_TEST_WRAPPED_COMPOSER_ROOT/submitted" ]; then
+      cat "$NTM_TEST_WRAPPED_COMPOSER_ROOT/empty"
+    else
+      cat "$NTM_TEST_WRAPPED_COMPOSER_ROOT/held"
+    fi
+    ;;
+  send-keys)
+    for key in "$@"; do :; done
+    printf '%s\n' "$key" >> "$NTM_TEST_WRAPPED_COMPOSER_ROOT/keys"
+    if [ "$key" = Enter ] && [ "$NTM_TEST_WRAPPED_COMPOSER_RELEASE" = 1 ]; then
+      : > "$NTM_TEST_WRAPPED_COMPOSER_ROOT/submitted"
+    fi
+    ;;
+  *) exit 9 ;;
+esac
+`
+	for _, provider := range []struct {
+		name     string
+		verify   func(*Client, context.Context, string, string, int) (bool, bool, error)
+		wantKeys string
+	}{
+		{"claude", (*Client).VerifyClaudeSubmissionContext, "Escape\nEnter\n"},
+		{"grok", (*Client).VerifyGrokSubmissionContext, "Enter\n"},
+	} {
+		t.Run(provider.name, func(t *testing.T) {
+			for _, outcome := range []struct {
+				name          string
+				release       string
+				wantConfirmed bool
+			}{
+				{"rescued", "1", true},
+				{"still stranded", "0", false},
+			} {
+				t.Run(outcome.name, func(t *testing.T) {
+					root := t.TempDir()
+					binary := filepath.Join(root, "tmux")
+					if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					for name, capture := range map[string]string{
+						"held":  claudeComposerBox("❯ Refactor the dispatch", "  er and run the tests."),
+						"empty": claudeComposerBox("❯ "),
+					} {
+						if err := os.WriteFile(filepath.Join(root, name), []byte(capture), 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+					t.Setenv("NTM_TMUX_BINARY", binary)
+					t.Setenv("NTM_TEST_WRAPPED_COMPOSER_ROOT", root)
+					t.Setenv("NTM_TEST_WRAPPED_COMPOSER_RELEASE", outcome.release)
+					ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+					defer cancel()
+					confirmed, rescued, err := provider.verify(NewClient(""), ctx, "%1", message, 80)
+					if err != nil || confirmed != outcome.wantConfirmed || !rescued {
+						t.Fatalf("verification = (%v, %v, %v), want (%v, true, nil)", confirmed, rescued, err, outcome.wantConfirmed)
+					}
+					keys, err := os.ReadFile(filepath.Join(root, "keys"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if string(keys) != provider.wantKeys {
+						t.Fatalf("rescue keys = %q, want %q", keys, provider.wantKeys)
+					}
+				})
+			}
+		})
+	}
+}

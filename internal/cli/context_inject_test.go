@@ -602,8 +602,8 @@ func TestReadContextInjectTextBoundsReads(t *testing.T) {
 func TestReadContextInjectTextValidity(t *testing.T) {
 	for _, tc := range []struct {
 		name, input, want, wantError string
-		limit                       int
-		truncated                   bool
+		limit                        int
+		truncated                    bool
 	}{
 		{name: "unlimited", input: "  café🙂\n", want: "café🙂", limit: -1},
 		{name: "exact", input: "界", want: "界", limit: 3},

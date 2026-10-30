@@ -2647,6 +2647,38 @@ const composerBlockMaxRows = 24
 // only from these is chrome, not composer text.
 const boxRuleRunes = "─━╌┄┈╰╯└┘╭╮┌┐┏┓┗┛"
 
+// composerBlockRows returns the bottom-most marker row and the bounded
+// continuation rows inside its bordered composer. Keep empty rows so payload
+// matching cannot silently bridge a blank line.
+func composerBlockRows(capture string, markers []string) (rows []string, bordered, found bool) {
+	lines := strings.Split(capture, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		idx, marker := indexAnyMarker(lines[i], markers)
+		if idx < 0 {
+			continue
+		}
+		head := strings.TrimSpace(lines[i][idx+len(marker):])
+		head = strings.TrimSpace(strings.TrimRight(head, "│┃"))
+		rows = []string{head}
+		bordered = strings.ContainsAny(lines[i][:idx], "│┃")
+		if bordered {
+			for j := i + 1; j < len(lines) && j-i <= composerBlockMaxRows; j++ {
+				row := lines[j]
+				if !strings.ContainsAny(row, "│┃") {
+					break
+				}
+				inner := strings.TrimSpace(strings.Trim(row, " \t│┃"))
+				if inner != "" && strings.TrimLeft(inner, boxRuleRunes) == "" {
+					break
+				}
+				rows = append(rows, inner)
+			}
+		}
+		return rows, bordered, true
+	}
+	return nil, false, false
+}
+
 // composerBlockEmpty reports whether the LIVE composer block — the bottom-most
 // marker line together with its wrapped continuation rows — carries any text.
 //
@@ -2661,48 +2693,84 @@ const boxRuleRunes = "─━╌┄┈╰╯└┘╭╮┌┐┏┓┗┛"
 // carry one too. Unboxed TUIs fall back to the single-row check unchanged, so
 // this can never invent composer text where the old check saw none.
 func composerBlockEmpty(capture string, markers []string, placeholderPrefixes []string) (found, empty bool, text string) {
-	lines := strings.Split(capture, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		idx, marker := indexAnyMarker(lines[i], markers)
-		if idx < 0 {
-			continue
-		}
-		head := strings.TrimSpace(lines[i][idx+len(marker):])
-		head = strings.TrimSpace(strings.TrimRight(head, "│┃"))
-
-		parts := []string{}
-		if head != "" {
-			parts = append(parts, head)
-		}
-		if strings.ContainsAny(lines[i][:idx], "│┃") {
-			for j := i + 1; j < len(lines) && j-i <= composerBlockMaxRows; j++ {
-				row := lines[j]
-				if !strings.ContainsAny(row, "│┃") {
-					break
-				}
-				inner := strings.TrimSpace(strings.Trim(row, " \t│┃"))
-				if inner == "" {
-					continue
-				}
-				if strings.TrimLeft(inner, boxRuleRunes) == "" {
-					break
-				}
-				parts = append(parts, inner)
-			}
-		}
-
-		text = strings.Join(parts, " ")
-		if text == "" {
-			return true, true, ""
-		}
-		for _, prefix := range placeholderPrefixes {
-			if strings.HasPrefix(text, prefix) {
-				return true, true, text
-			}
-		}
-		return true, false, text
+	rows, _, found := composerBlockRows(capture, markers)
+	if !found {
+		return false, false, ""
 	}
-	return false, false, ""
+	parts := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if row != "" {
+			parts = append(parts, row)
+		}
+	}
+	text = strings.Join(parts, " ")
+	if text == "" {
+		return true, true, ""
+	}
+	for _, prefix := range placeholderPrefixes {
+		if strings.HasPrefix(text, prefix) {
+			return true, true, text
+		}
+	}
+	return true, false, text
+}
+
+// composerRowsMatchPrefix matches exact message bytes across consecutive
+// physical input rows. A row break may replace whitespace or split a word;
+// a blank row or a different character cannot be skipped.
+func composerRowsMatchPrefix(rows []string, prefix string) bool {
+	if len(rows) == 0 || rows[0] == "" || prefix == "" {
+		return false
+	}
+	for start := range rows[0] {
+		remaining := prefix
+		for i, row := range rows {
+			if i == 0 {
+				row = row[start:]
+			}
+			if row == "" {
+				break
+			}
+			if strings.HasPrefix(row, remaining) {
+				return true
+			}
+			if !strings.HasPrefix(remaining, row) {
+				break
+			}
+			remaining = strings.TrimLeftFunc(remaining[len(row):], unicode.IsSpace)
+			if remaining == "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// borderedComposerHoldsPayload uses the same bounded input block as clearing
+// and inspection. Unboxed captures retain their existing single-row matcher:
+// following screen rows cannot be distinguished safely from footer chrome.
+func borderedComposerHoldsPayload(capture, message string, markers []string) (bordered, holds bool) {
+	rows, bordered, found := composerBlockRows(capture, markers)
+	if !found || !bordered {
+		return false, false
+	}
+	snippet := ""
+	for _, line := range strings.Split(message, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			if len(line) > 32 {
+				line = line[:32]
+			}
+			snippet = line
+			break
+		}
+	}
+	for i := range rows {
+		if composerRowsMatchPrefix(rows[i:], "[Pasted") || composerRowsMatchPrefix(rows[i:], snippet) {
+			return true, true
+		}
+	}
+	return true, false
 }
 
 // ComposerState is the message-independent view of an agent pane's input
@@ -3246,6 +3314,9 @@ func grokLooksWorking(capture string) bool {
 // BOTTOM-MOST marker line is live-composer evidence; the trailing box border
 // is stripped before evaluation.
 func grokComposerHoldsPayload(capture, message string) bool {
+	if bordered, holds := borderedComposerHoldsPayload(capture, message, composerMarkersForAgent(AgentGrok)); bordered {
+		return holds
+	}
 	snippet := ""
 	for _, line := range strings.Split(message, "\n") {
 		line = strings.TrimSpace(line)
@@ -3514,6 +3585,9 @@ func VerifyCodexSubmissionContext(ctx context.Context, target, message string, p
 // line is composer evidence. As with codex, composer text alone is not
 // payload: the line must carry the message snippet or a "[Pasted" stand-in.
 func claudeComposerHoldsPayload(capture, message string) bool {
+	if bordered, holds := borderedComposerHoldsPayload(capture, message, composerMarkersForAgent(AgentClaude)); bordered {
+		return holds
+	}
 	snippet := ""
 	for _, line := range strings.Split(message, "\n") {
 		line = strings.TrimSpace(line)
