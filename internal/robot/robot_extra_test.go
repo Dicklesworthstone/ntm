@@ -339,6 +339,7 @@ func TestAttachSnapshotResourcePressureEmitsRobotPressure(t *testing.T) {
 }
 
 func TestBuildTerseOutputFromSnapshotUsesSharedProjection(t *testing.T) {
+	claudeContext, codexContext, geminiContext, userContext := 60.0, 80.0, 70.0, 100.0
 	snapshot := &SnapshotOutput{
 		RobotResponse: NewRobotResponse(true),
 		Summary: StatusSummary{
@@ -350,10 +351,10 @@ func TestBuildTerseOutputFromSnapshotUsesSharedProjection(t *testing.T) {
 			{
 				Name: "proj",
 				Agents: []SnapshotAgent{
-					{Type: "claude", State: "active", ContextPercent: 60},
-					{Type: "codex", State: "idle", ContextPercent: 80},
-					{Type: "gemini", State: "error", ContextPercent: 70},
-					{Type: "user", State: "active", ContextPercent: 100},
+					{Type: "claude", State: "active", ContextPercent: &claudeContext},
+					{Type: "codex", State: "idle", ContextPercent: &codexContext},
+					{Type: "gemini", State: "error", ContextPercent: &geminiContext},
+					{Type: "user", State: "active", ContextPercent: &userContext},
 				},
 			},
 		},
@@ -409,13 +410,14 @@ func TestBuildTerseOutputFromSnapshotUsesSharedProjection(t *testing.T) {
 }
 
 func TestBuildTerseOutputFromSnapshotLeavesContextAtZeroWithoutAgents(t *testing.T) {
+	userContext := 100.0
 	snapshot := &SnapshotOutput{
 		RobotResponse: NewRobotResponse(true),
 		Sessions: []SnapshotSession{
 			{
 				Name: "operator-only",
 				Agents: []SnapshotAgent{
-					{Type: "user", State: "active", ContextPercent: 100},
+					{Type: "user", State: "active", ContextPercent: &userContext},
 				},
 			},
 		},
@@ -630,5 +632,24 @@ func TestCASSSurfacesWithoutIndex(t *testing.T) {
 			}
 			check("cass-context", ctxOut.RobotResponse)
 		})
+	}
+}
+
+func TestBuildTerseOutputFromSnapshotIncludesMeasuredZeroAndSkipsUnknown(t *testing.T) {
+	zero, measured := 0.0, 80.0
+	snapshot := &SnapshotOutput{
+		RobotResponse: NewRobotResponse(true),
+		Sessions: []SnapshotSession{{
+			Name: "context",
+			Agents: []SnapshotAgent{
+				{Type: "claude", ContextPercent: &zero},
+				{Type: "codex", ContextPercent: &measured},
+				{Type: "gemini"},
+			},
+		}},
+	}
+	output := buildTerseOutputFromSnapshot(snapshot)
+	if len(output.States) != 1 || output.States[0].ContextPct != 40 {
+		t.Fatalf("context average = %+v, want (0+80)/2 = 40", output.States)
 	}
 }

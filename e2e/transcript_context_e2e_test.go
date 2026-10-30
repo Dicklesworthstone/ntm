@@ -591,22 +591,8 @@ func TestTranscriptContextStaleTranscriptMediumConfidence(t *testing.T) {
 	logger.Log("[PASS] stale transcript used with confidence medium")
 }
 
-// Scenario 6 (snapshot parity — KNOWN DELTA vs the bead): the bead expects
-// --robot-snapshot's agent context_percent to match the transcript-derived
-// percent. On the current build --robot-snapshot is served by the
-// projection-backed path (initializeRobotPersistence refreshes the runtime
-// projection, then buildProjectionBackedSnapshot wins), and
-// snapshotAgentFromRuntime (internal/robot/robot.go) does not carry
-// ContextPercent at all — GetSnapshot's live-path transcript override
-// (which DOES apply the transcript percent + >100%% clamp) is bypassed.
-// Two actual modes exist, both without parity:
-//   - refresh persisted rows: the session is listed, context_percent omitted;
-//   - refresh failed/timed out (observed when the 10s projection refresh
-//     budget expires): the projection-backed snapshot lists NO sessions.
-//
-// This test pins the actual behavior so the delta stays visible; if snapshot
-// parity is ever implemented it fails loudly and must be flipped to assert
-// equality with the transcript-derived percent.
+// Scenario 6: the persisted snapshot carries the same attributed transcript
+// reading as --robot-context, including after the live pane is collected.
 func TestTranscriptContextSnapshotParity(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live tmux E2E skipped in -short")
@@ -623,7 +609,6 @@ func TestTranscriptContextSnapshotParity(t *testing.T) {
 	registerTranscriptFailureDump(t, logger, home, panes)
 	logger.Log("[SETUP] session=%s pane=%s projDir=%s", session, panes[0].PaneID, projDir)
 
-	// Ground truth via --robot-context first.
 	parsed := fetchTranscriptContext(t, logger, home, session)
 	agent := requireSingleAgent(t, parsed)
 	assertPercent(t, agent.UsagePercent, 60, "context ground truth")
@@ -654,34 +639,15 @@ func TestTranscriptContextSnapshotParity(t *testing.T) {
 		if snapAgent.Type != "claude" {
 			t.Fatalf("snapshot agent type=%q want claude", snapAgent.Type)
 		}
-		if math.Abs(snapAgent.ContextPercent-agent.UsagePercent) < 0.01 {
-			t.Fatalf("snapshot parity now HOLDS (context_percent=%v matches transcript %v): the projection-backed "+
-				"snapshot gained transcript ground truth — update this test to assert equality and clear the bd-2dqv5 delta note",
+		if math.Abs(snapAgent.ContextPercent-agent.UsagePercent) > 0.01 {
+			t.Fatalf("snapshot context_percent=%v, want transcript parity %v",
 				snapAgent.ContextPercent, agent.UsagePercent)
 		}
-		if snapAgent.ContextPercent != 0 {
-			t.Fatalf("snapshot context_percent=%v: expected 0 (projection-backed snapshot drops ContextPercent entirely) "+
-				"or transcript parity %v; got a third value — investigate", snapAgent.ContextPercent, agent.UsagePercent)
-		}
-		logger.Log("[DELTA] bd-2dqv5 expected snapshot context_percent=%v; actual=0 (omitted): "+
-			"projection-backed --robot-snapshot bypasses GetSnapshot's transcript override and "+
-			"snapshotAgentFromRuntime never populates ContextPercent", agent.UsagePercent)
 	}
 	if !found {
-		// Delta mode B: the projection refresh persisted no fresh runtime
-		// session rows (its 10s budget expires in heavier working
-		// directories), and the projection-backed snapshot then lists no
-		// sessions at all — the live GetSnapshot path with the transcript
-		// override never runs. Still no parity; pin it and log the delta.
-		if len(snap.Sessions) != 0 {
-			t.Fatalf("session %s missing from a snapshot that DOES list %d other session(s): %s",
-				session, len(snap.Sessions), out)
-		}
-		logger.Log("[DELTA] bd-2dqv5 expected snapshot context_percent=%v; actual: projection-backed "+
-			"--robot-snapshot returned zero sessions (projection refresh persisted no fresh rows), so the "+
-			"transcript-derived percent surfaces only via --robot-context", agent.UsagePercent)
+		t.Fatalf("session %s missing from projection-backed snapshot: %s", session, out)
 	}
-	logger.Log("[PASS] snapshot behavior pinned (documented delta: no transcript parity on projection-backed path)")
+	logger.Log("[PASS] projected snapshot matches transcript context")
 }
 
 // Scenario 7 (perf guard): four same-persona panes sharing one cwd form a

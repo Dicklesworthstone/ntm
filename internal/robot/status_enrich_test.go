@@ -1,6 +1,7 @@
 package robot
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/process"
 )
 
@@ -585,4 +587,61 @@ func truncateForLog(s string, maxLen int) string {
 
 func containsIgnoreCase(s, substr string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
+}
+
+func TestEnrichAgentContextPreservesAttributedReadings(t *testing.T) {
+	gauge := "╭── ⬢ Union Alpha > 🗑 omp-probe ▶─────7%─────────────────────────────────────────────────────────┃──────────262K───╮\n" +
+		"╰─                                                                                                                    ─╯\n"
+	cases := []struct {
+		name, agentType, content, captureError string
+		transcript                             *ntmctx.TranscriptUsage
+		wantTokens, wantLimit                  int
+		wantPercent                            float64
+		known                                  bool
+	}{
+		{name: "transcript overrides scrollback", agentType: "claude", content: "small visible tail", transcript: &ntmctx.TranscriptUsage{Tokens: 120000, ContextWindow: 200000}, wantTokens: 120000, wantLimit: 200000, wantPercent: 60, known: true},
+		{name: "measured zero", agentType: "claude", transcript: &ntmctx.TranscriptUsage{Tokens: 0, ContextWindow: 200000}, wantLimit: 200000, known: true},
+		{name: "clamped transcript", agentType: "codex", transcript: &ntmctx.TranscriptUsage{Tokens: 300000, ContextWindow: 200000}, wantTokens: 300000, wantLimit: 200000, wantPercent: 100, known: true},
+		{name: "gauge overrides transcript", agentType: "omp", content: gauge, transcript: &ntmctx.TranscriptUsage{Tokens: 120000, ContextWindow: 200000}, wantTokens: 18340, wantLimit: 262000, wantPercent: 7, known: true},
+		{name: "missing evidence", agentType: "claude"},
+		{name: "failed capture", agentType: "claude", content: "old output", captureError: "pane unavailable", transcript: &ntmctx.TranscriptUsage{Tokens: 120000, ContextWindow: 200000}},
+		{name: "operator pane", agentType: "user", content: "shell history", transcript: &ntmctx.TranscriptUsage{Tokens: 120000, ContextWindow: 200000}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			agent := Agent{Type: tc.agentType, CaptureError: tc.captureError, ContextTokens: 999, ContextLimit: 1000, ContextPercent: 99.9}
+			enrichAgentContext(&agent, "claude-fable-5", tc.content, tc.transcript)
+			percent := contextPercentForAgent(&agent)
+			if (percent != nil) != tc.known {
+				t.Fatalf("known context = %v, want %v: %+v", percent, tc.known, agent)
+			}
+			if agent.ContextTokens != tc.wantTokens || agent.ContextLimit != tc.wantLimit {
+				t.Fatalf("tokens/window = %d/%d, want %d/%d", agent.ContextTokens, agent.ContextLimit, tc.wantTokens, tc.wantLimit)
+			}
+			if percent != nil && math.Abs(*percent-tc.wantPercent) > 0.000001 {
+				t.Fatalf("context = %v, want %v", *percent, tc.wantPercent)
+			}
+		})
+	}
+}
+
+func TestEnrichAgentContextClearsAnEstimateWhenEvidenceDisappears(t *testing.T) {
+	agent := Agent{Type: "claude"}
+	enrichAgentContext(&agent, "claude-fable-5", "visible agent output provides an estimate", nil)
+	if percent := contextPercentForAgent(&agent); percent == nil || *percent <= 0 {
+		t.Fatalf("missing scrollback fallback: %+v", agent)
+	}
+	enrichAgentContext(&agent, "claude-fable-5", "", nil)
+	if percent := contextPercentForAgent(&agent); percent != nil || agent.ContextTokens != 0 || agent.ContextLimit != 0 {
+		t.Fatalf("old reading survived loss of evidence: %+v", agent)
+	}
+}
+
+func TestContextPercentForAgentRejectsInvalidNumbers(t *testing.T) {
+	for _, value := range []float64{-1, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		agent := Agent{Type: "claude", ContextLimit: 200000, ContextPercent: value}
+		if got := contextPercentForAgent(&agent); got != nil {
+			t.Fatalf("invalid reading %v became JSON context %v", value, *got)
+		}
+	}
 }

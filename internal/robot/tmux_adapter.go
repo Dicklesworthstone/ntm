@@ -198,6 +198,7 @@ func (a *TmuxAdapter) NormalizeAgent(sessionName string, agent *Agent, outputTai
 		LastOutputAt:     lastOutputAt,
 		LastOutputAgeSec: lastOutputAgeSec,
 		OutputTailLines:  agent.OutputLinesSinceLast,
+		ContextPercent:   contextPercentForAgent(agent),
 		CurrentBead:      "", // Would need external enrichment
 		PendingMail:      0,  // Would need Agent Mail integration
 		AgentMailName:    agent.Name,

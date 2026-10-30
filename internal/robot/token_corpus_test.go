@@ -84,6 +84,7 @@ func buildCorpusSnapshot(variant int) *SnapshotOutput {
 		agents := make([]SnapshotAgent, 0, agentsPerSession)
 		for a := 0; a < agentsPerSession; a++ {
 			bead := fmt.Sprintf("bd-corpus-%d%d", s, a)
+			contextPercent := float64(20 + 7*((s+a)%10))
 			agent := SnapshotAgent{
 				Pane:             fmt.Sprintf("%d", a+1),
 				Type:             agentTypes[(s+a)%len(agentTypes)],
@@ -93,7 +94,7 @@ func buildCorpusSnapshot(variant int) *SnapshotOutput {
 				State:            states[(s+a)%len(states)],
 				LastOutputAgeSec: 5 + 13*a,
 				OutputTailLines:  50,
-				ContextPercent:   float64(20 + 7*((s+a)%10)),
+				ContextPercent:   &contextPercent,
 				PendingMail:      (s + a) % 3,
 			}
 			if (s+a)%2 == 0 {

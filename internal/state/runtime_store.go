@@ -445,10 +445,10 @@ func (s *Store) UpsertRuntimeAgent(agent *RuntimeAgent) error {
 		INSERT INTO runtime_agents (
 			id, session_name, pane, agent_type, variant, type_confidence, type_method,
 			state, state_reason, previous_state, state_changed_at,
-			last_output_at, last_output_age_sec, output_tail_lines,
+			last_output_at, last_output_age_sec, output_tail_lines, context_percent,
 			current_bead, pending_mail, agent_mail_name,
 			health_status, health_reason, collected_at, stale_after
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			session_name = excluded.session_name,
 			pane = excluded.pane,
@@ -463,6 +463,7 @@ func (s *Store) UpsertRuntimeAgent(agent *RuntimeAgent) error {
 			last_output_at = excluded.last_output_at,
 			last_output_age_sec = excluded.last_output_age_sec,
 			output_tail_lines = excluded.output_tail_lines,
+			context_percent = excluded.context_percent,
 			current_bead = excluded.current_bead,
 			pending_mail = excluded.pending_mail,
 			agent_mail_name = excluded.agent_mail_name,
@@ -473,7 +474,7 @@ func (s *Store) UpsertRuntimeAgent(agent *RuntimeAgent) error {
 		agent.ID, agent.SessionName, agent.Pane, agent.AgentType, agent.Variant,
 		agent.TypeConfidence, agent.TypeMethod, agent.State, agent.StateReason,
 		agent.PreviousState, agent.StateChangedAt, agent.LastOutputAt,
-		agent.LastOutputAgeSec, agent.OutputTailLines, agent.CurrentBead,
+		agent.LastOutputAgeSec, agent.OutputTailLines, agent.ContextPercent, agent.CurrentBead,
 		agent.PendingMail, agent.AgentMailName, agent.HealthStatus, agent.HealthReason,
 		agent.CollectedAt, agent.StaleAfter,
 	)
@@ -492,7 +493,7 @@ func (s *Store) GetRuntimeAgentsBySession(sessionName string) ([]RuntimeAgent, e
 		SELECT id, session_name, pane, agent_type, COALESCE(variant, ''),
 			type_confidence, type_method, state, COALESCE(state_reason, ''),
 			COALESCE(previous_state, ''), state_changed_at, last_output_at,
-			last_output_age_sec, output_tail_lines, COALESCE(current_bead, ''),
+			last_output_age_sec, output_tail_lines, context_percent, COALESCE(current_bead, ''),
 			pending_mail, COALESCE(agent_mail_name, ''), health_status,
 			COALESCE(health_reason, ''), collected_at, stale_after
 		FROM runtime_agents
@@ -510,7 +511,7 @@ func (s *Store) GetRuntimeAgentsBySession(sessionName string) ([]RuntimeAgent, e
 			&agent.ID, &agent.SessionName, &agent.Pane, &agent.AgentType, &agent.Variant,
 			&agent.TypeConfidence, &agent.TypeMethod, &agent.State, &agent.StateReason,
 			&agent.PreviousState, &agent.StateChangedAt, &agent.LastOutputAt,
-			&agent.LastOutputAgeSec, &agent.OutputTailLines, &agent.CurrentBead,
+			&agent.LastOutputAgeSec, &agent.OutputTailLines, &agent.ContextPercent, &agent.CurrentBead,
 			&agent.PendingMail, &agent.AgentMailName, &agent.HealthStatus,
 			&agent.HealthReason, &agent.CollectedAt, &agent.StaleAfter,
 		); err != nil {
@@ -531,7 +532,7 @@ func (s *Store) GetRuntimeAgent(id string) (*RuntimeAgent, error) {
 		SELECT id, session_name, pane, agent_type, COALESCE(variant, ''),
 			type_confidence, type_method, state, COALESCE(state_reason, ''),
 			COALESCE(previous_state, ''), state_changed_at, last_output_at,
-			last_output_age_sec, output_tail_lines, COALESCE(current_bead, ''),
+			last_output_age_sec, output_tail_lines, context_percent, COALESCE(current_bead, ''),
 			pending_mail, COALESCE(agent_mail_name, ''), health_status,
 			COALESCE(health_reason, ''), collected_at, stale_after
 		FROM runtime_agents
@@ -540,7 +541,7 @@ func (s *Store) GetRuntimeAgent(id string) (*RuntimeAgent, error) {
 		&agent.ID, &agent.SessionName, &agent.Pane, &agent.AgentType, &agent.Variant,
 		&agent.TypeConfidence, &agent.TypeMethod, &agent.State, &agent.StateReason,
 		&agent.PreviousState, &agent.StateChangedAt, &agent.LastOutputAt,
-		&agent.LastOutputAgeSec, &agent.OutputTailLines, &agent.CurrentBead,
+		&agent.LastOutputAgeSec, &agent.OutputTailLines, &agent.ContextPercent, &agent.CurrentBead,
 		&agent.PendingMail, &agent.AgentMailName, &agent.HealthStatus,
 		&agent.HealthReason, &agent.CollectedAt, &agent.StaleAfter,
 	)
@@ -626,10 +627,10 @@ func (tx *Tx) UpsertRuntimeAgent(agent *RuntimeAgent) error {
 		INSERT INTO runtime_agents (
 			id, session_name, pane, agent_type, variant, type_confidence, type_method,
 			state, state_reason, previous_state, state_changed_at,
-			last_output_at, last_output_age_sec, output_tail_lines,
+			last_output_at, last_output_age_sec, output_tail_lines, context_percent,
 			current_bead, pending_mail, agent_mail_name,
 			health_status, health_reason, collected_at, stale_after
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			session_name = excluded.session_name,
 			pane = excluded.pane,
@@ -644,6 +645,7 @@ func (tx *Tx) UpsertRuntimeAgent(agent *RuntimeAgent) error {
 			last_output_at = excluded.last_output_at,
 			last_output_age_sec = excluded.last_output_age_sec,
 			output_tail_lines = excluded.output_tail_lines,
+			context_percent = excluded.context_percent,
 			current_bead = excluded.current_bead,
 			pending_mail = excluded.pending_mail,
 			agent_mail_name = excluded.agent_mail_name,
@@ -654,7 +656,7 @@ func (tx *Tx) UpsertRuntimeAgent(agent *RuntimeAgent) error {
 		agent.ID, agent.SessionName, agent.Pane, agent.AgentType, agent.Variant,
 		agent.TypeConfidence, agent.TypeMethod, agent.State, agent.StateReason,
 		agent.PreviousState, agent.StateChangedAt, agent.LastOutputAt,
-		agent.LastOutputAgeSec, agent.OutputTailLines, agent.CurrentBead,
+		agent.LastOutputAgeSec, agent.OutputTailLines, agent.ContextPercent, agent.CurrentBead,
 		agent.PendingMail, agent.AgentMailName, agent.HealthStatus, agent.HealthReason,
 		agent.CollectedAt, agent.StaleAfter,
 	)

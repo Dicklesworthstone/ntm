@@ -6829,3 +6829,223 @@ func TestOmpRobotStateDialogsAndContext(t *testing.T) {
 		t.Error("a selector overlay hides the composer; no gauge reading expected")
 	}
 }
+
+func TestGetSnapshotPreservesCollectedTranscriptContext(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture tmux uses a POSIX shell")
+	}
+	dir := t.TempDir()
+	t.Chdir(dir)
+	configPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(configPath, []byte("[alerts]\nenabled = false\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_CONFIG", configPath)
+	mail := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(mail.Close)
+	t.Setenv("AGENT_MAIL_URL", mail.URL)
+
+	// The collection phase reads three empty panes. Only attributed
+	// transcripts can supply their usage; the snapshot phase forbids capture.
+	tmuxPath := filepath.Join(dir, "tmux")
+	script := `#!/bin/sh
+if [ "$NTM_TEST_PROJECTION_ONLY" = 1 ]; then
+  printf '%s\n' "$1" >> "$NTM_TEST_PROJECTION_CALLS"
+fi
+case "$1" in
+  list-sessions)
+    printf '%s\n' 'projected_NTM_SEP_1_NTM_SEP_1_NTM_SEP_2026-01-01T00:00:00Z'
+    ;;
+  list-panes)
+    if [ "$2" = -a ]; then
+      printf '%s\n' \
+        'projected_NTM_SEP_%1_NTM_SEP_1_NTM_SEP_claude_NTM_SEP_claude_NTM_SEP_100_NTM_SEP_30_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_claude' \
+        'projected_NTM_SEP_%2_NTM_SEP_2_NTM_SEP_claude_NTM_SEP_claude_NTM_SEP_100_NTM_SEP_30_NTM_SEP_0_NTM_SEP_0_NTM_SEP_0_NTM_SEP_claude' \
+        'projected_NTM_SEP_%3_NTM_SEP_3_NTM_SEP_claude_NTM_SEP_claude_NTM_SEP_100_NTM_SEP_30_NTM_SEP_0_NTM_SEP_0_NTM_SEP_0_NTM_SEP_claude'
+    fi
+    ;;
+  display-message)
+    printf '%s\n' "$4"
+    ;;
+  capture-pane)
+    if [ "$NTM_TEST_PROJECTION_ONLY" = 1 ]; then
+      exit 9
+    fi
+    ;;
+esac
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", tmuxPath)
+	t.Setenv("PATH", dir)
+	callsPath := filepath.Join(dir, "snapshot-tmux-calls")
+	t.Setenv("NTM_TEST_PROJECTION_CALLS", callsPath)
+	prevClient := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("")
+	t.Cleanup(func() { tmux.DefaultClient = prevClient })
+
+	prevProcess, prevCwd, prevPath := transcriptUsageForProcess, transcriptUsageForCwd, paneCurrentPath
+	t.Cleanup(func() {
+		transcriptUsageForProcess, transcriptUsageForCwd, paneCurrentPath = prevProcess, prevCwd, prevPath
+	})
+	paneCurrentPath = func(id string) (string, bool) { return id, true }
+	transcriptUsageForProcess = func(string, int) (*ntmctx.TranscriptUsage, bool) {
+		return nil, false
+	}
+	transcriptUsageForCwd = func(_ string, cwd string) (*ntmctx.TranscriptUsage, bool) {
+		switch cwd {
+		case "%1":
+			return &ntmctx.TranscriptUsage{Tokens: 120000, ContextWindow: 200000}, true
+		case "%2":
+			return &ntmctx.TranscriptUsage{Tokens: 0, ContextWindow: 200000}, true
+		default:
+			return nil, false
+		}
+	}
+	collected, err := collectNormalizedTmuxProjectionContext(context.Background(), dir, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(collected.Sessions) != 1 || len(collected.Agents) != 3 {
+		t.Fatalf("collected projection = %+v, want one session and three agents", collected)
+	}
+	store := newProjectionTestStore(t)
+	if err := persistNormalizedProjection(store, &adapters.AggregatedSignals{CollectedAt: collected.CollectedAt}, collected, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	previousStore := currentProjectionStore()
+	SetProjectionStore(store)
+	t.Cleanup(func() { SetProjectionStore(previousStore) })
+
+	// A public snapshot must read the persisted measurements, even when
+	// neither live capture nor transcript attribution is available.
+	t.Setenv("NTM_TEST_PROJECTION_ONLY", "1")
+	transcriptUsageForProcess = func(string, int) (*ntmctx.TranscriptUsage, bool) {
+		t.Error("projection-backed snapshot attempted process transcript lookup")
+		return nil, false
+	}
+	transcriptUsageForCwd = func(string, string) (*ntmctx.TranscriptUsage, bool) {
+		t.Error("projection-backed snapshot attempted cwd transcript lookup")
+		return nil, false
+	}
+	stubRobotWork(t, func(context.Context, *state.Store, adapters.WorkCoordinationAdapterConfig, bool) (*adapters.WorkSection, error) {
+		return nil, errors.New("work unavailable in context fixture")
+	})
+	cfg := config.Default()
+	cfg.Alerts.Enabled = false
+	snapshot, err := GetSnapshot(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.Success || len(snapshot.Sessions) != 1 || len(snapshot.Sessions[0].Agents) != 3 {
+		t.Fatalf("public snapshot did not serve the persisted projection: %+v", snapshot)
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Sessions []struct {
+			Agents []map[string]json.RawMessage `json:"agents"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range wire.Sessions[0].Agents {
+		var pane string
+		if err := json.Unmarshal(row["pane"], &pane); err != nil {
+			t.Fatal(err)
+		}
+		value, present := row["context_percent"]
+		switch pane {
+		case "%1", "%2":
+			want := 60.0
+			if pane == "%2" {
+				want = 0
+			}
+			var got float64
+			if !present || string(value) == "null" {
+				t.Fatalf("pane %s lost known context %v: %s", pane, want, encoded)
+			}
+			if err := json.Unmarshal(value, &got); err != nil || math.Abs(got-want) > 0.000001 {
+				t.Fatalf("pane %s context = %s, want %v (error %v)", pane, value, want, err)
+			}
+		case "%3":
+			if present {
+				t.Fatalf("unknown context became a measured value: %s", encoded)
+			}
+		default:
+			t.Fatalf("unexpected projected pane %q", pane)
+		}
+	}
+	calls, err := os.ReadFile(callsPath)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(calls), "capture-pane") {
+		t.Fatalf("snapshot fell back to live capture: %s", calls)
+	}
+}
+
+func TestResolvePaneTranscriptsDoesNotAttributeRemoteProcesses(t *testing.T) {
+	prevClient := tmux.DefaultClient
+	prevProcess, prevCwd, prevPath := transcriptUsageForProcess, transcriptUsageForCwd, paneCurrentPath
+	t.Cleanup(func() {
+		tmux.DefaultClient = prevClient
+		transcriptUsageForProcess, transcriptUsageForCwd, paneCurrentPath = prevProcess, prevCwd, prevPath
+	})
+	tmux.DefaultClient = tmux.NewClient("remote.example")
+	paneCurrentPath = func(string) (string, bool) {
+		t.Fatal("remote transcript attribution consulted a pane path")
+		return "", false
+	}
+	transcriptUsageForProcess = func(string, int) (*ntmctx.TranscriptUsage, bool) {
+		t.Fatal("remote PID was resolved through local process transcripts")
+		return nil, false
+	}
+	transcriptUsageForCwd = func(string, string) (*ntmctx.TranscriptUsage, bool) {
+		t.Fatal("remote cwd was resolved through local transcripts")
+		return nil, false
+	}
+	got := ResolvePaneTranscripts([]tmux.Pane{{ID: "%1", PID: 123, Type: tmux.AgentClaude}})
+	if len(got) != 0 {
+		t.Fatalf("remote panes received local context: %+v", got)
+	}
+}
+
+func TestResolvePaneTranscriptsStopsAfterCancellation(t *testing.T) {
+	prevClient := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("")
+	t.Cleanup(func() { tmux.DefaultClient = prevClient })
+	panes := []tmux.Pane{
+		{ID: "%1", Type: tmux.AgentClaude},
+		{ID: "%2", Type: tmux.AgentClaude},
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	calls := 0
+	got := resolvePaneTranscripts(ctx, panes,
+		func(string) (string, bool) {
+			calls++
+			cancel()
+			return "/project", true
+		},
+		func(string, int) (*ntmctx.TranscriptUsage, bool) {
+			t.Fatal("process lookup ran after cancellation")
+			return nil, false
+		},
+		func(string, string) (*ntmctx.TranscriptUsage, bool) {
+			t.Fatal("cwd lookup ran after cancellation")
+			return nil, false
+		},
+	)
+	if calls != 1 || len(got) != 0 {
+		t.Fatalf("canceled attribution continued: path calls=%d result=%+v", calls, got)
+	}
+	if got, err := resolvePaneTranscriptsContext(ctx, panes); !errors.Is(err, context.Canceled) || len(got) != 0 {
+		t.Fatalf("context resolver lost cancellation: result=%+v err=%v", got, err)
+	}
+}

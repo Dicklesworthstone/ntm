@@ -97,3 +97,69 @@ func TestClaimWatermarkFirstClaimantWinsEmptySlot(t *testing.T) {
 		t.Error("a second claimant that also saw no row took the slot as well")
 	}
 }
+
+func TestRuntimeAgentContextPercentRoundTripsUnknownAndZero(t *testing.T) {
+	store := testStore(t)
+	now := time.Now().UTC()
+	expires := now.Add(time.Hour)
+	if err := store.UpsertRuntimeSession(&RuntimeSession{Name: "context", CollectedAt: now, StaleAfter: expires}); err != nil {
+		t.Fatal(err)
+	}
+	zero, measured := 0.0, 73.5
+	for _, mode := range []string{"direct", "transaction"} {
+		t.Run(mode, func(t *testing.T) {
+			agent := &RuntimeAgent{
+				ID: "context:" + mode, SessionName: "context", Pane: mode,
+				AgentType: "claude", State: AgentStateIdle, HealthStatus: HealthStatusHealthy,
+				CollectedAt: now, StaleAfter: expires,
+			}
+			for _, want := range []*float64{nil, &zero, &measured, nil} {
+				agent.ContextPercent = want
+				var err error
+				if mode == "transaction" {
+					err = store.Transaction(func(tx *Tx) error { return tx.UpsertRuntimeAgent(agent) })
+				} else {
+					err = store.UpsertRuntimeAgent(agent)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				byID, err := store.GetRuntimeAgent(agent.ID)
+				if err != nil || byID == nil {
+					t.Fatalf("GetRuntimeAgent: %+v, %v", byID, err)
+				}
+				rows, err := store.GetRuntimeAgentsBySession("context")
+				if err != nil {
+					t.Fatal(err)
+				}
+				var listed *RuntimeAgent
+				for i := range rows {
+					if rows[i].ID == agent.ID {
+						listed = &rows[i]
+					}
+				}
+				if listed == nil {
+					t.Fatalf("agent %s missing from fresh session rows", agent.ID)
+				}
+				for _, got := range []*RuntimeAgent{byID, listed} {
+					if (got.ContextPercent == nil) != (want == nil) {
+						t.Fatalf("context presence = %v, want %v", got.ContextPercent, want)
+					}
+					if want != nil && *got.ContextPercent != *want {
+						t.Fatalf("context = %v, want %v", *got.ContextPercent, *want)
+					}
+				}
+			}
+		})
+	}
+	// Rows written by an older binary omit the new column. Missing evidence
+	// must read as unknown rather than as a measured empty context.
+	if _, err := store.db.Exec("INSERT INTO runtime_agents (id, session_name, pane, agent_type, collected_at, stale_after) VALUES (?, ?, ?, ?, ?, ?)",
+		"context:legacy", "context", "legacy", "claude", now, expires); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := store.GetRuntimeAgent("context:legacy")
+	if err != nil || legacy == nil || legacy.ContextPercent != nil {
+		t.Fatalf("legacy context should remain unknown: %+v, %v", legacy, err)
+	}
+}

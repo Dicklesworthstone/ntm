@@ -43,7 +43,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	swarmlib "github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
-	"github.com/Dicklesworthstone/ntm/internal/tokens"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
 	"github.com/Dicklesworthstone/ntm/internal/util"
@@ -3696,10 +3695,14 @@ func ResolveAgentType(t string) string {
 // pane's title matched none of detectModel's patterns, so --robot-context
 // reported model "unknown" for a model the operator had named (GH #333).
 var paneLaunchModel = func(paneID string) string {
+	return paneLaunchModelContext(context.Background(), paneID)
+}
+
+func paneLaunchModelContext(ctx context.Context, paneID string) string {
 	if paneID == "" {
 		return ""
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	spec, err := tmux.ReadPaneLaunchSpecContext(ctx, paneID)
 	if err != nil || spec == nil {
@@ -4621,17 +4624,17 @@ func snapshotServiceFromPane(pane tmux.Pane) SnapshotService {
 
 // SnapshotAgent represents an agent in the snapshot
 type SnapshotAgent struct {
-	Pane             string  `json:"pane"`
-	Type             string  `json:"type"`              // claude, codex, antigravity, grok, gemini, or another supported type
-	Variant          string  `json:"variant,omitempty"` // Model alias or persona name
-	TypeConfidence   float64 `json:"type_confidence"`
-	TypeMethod       string  `json:"type_method"`
-	State            string  `json:"state"`
-	LastOutputAgeSec int     `json:"last_output_age_sec"`
-	OutputTailLines  int     `json:"output_tail_lines"`
-	ContextPercent   float64 `json:"context_percent,omitempty"`
-	CurrentBead      *string `json:"current_bead,omitempty"`
-	PendingMail      int     `json:"pending_mail"`
+	Pane             string   `json:"pane"`
+	Type             string   `json:"type"`              // claude, codex, antigravity, grok, gemini, or another supported type
+	Variant          string   `json:"variant,omitempty"` // Model alias or persona name
+	TypeConfidence   float64  `json:"type_confidence"`
+	TypeMethod       string   `json:"type_method"`
+	State            string   `json:"state"`
+	LastOutputAgeSec int      `json:"last_output_age_sec"`
+	OutputTailLines  int      `json:"output_tail_lines"`
+	ContextPercent   *float64 `json:"context_percent,omitempty"`
+	CurrentBead      *string  `json:"current_bead,omitempty"`
+	PendingMail      int      `json:"pending_mail"`
 }
 
 // SnapshotAgentMail represents Agent Mail availability and inbox state.
@@ -4869,24 +4872,9 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 				lines := splitLines(status.StripANSI(captured))
 				agent.OutputTailLines = len(lines)
 				agent.State = determineState(captured, agent.Type)
-				if !strings.EqualFold(agent.Type, "user") {
-					if usage := tokens.GetUsageInfo(captured, detectModel(agent.Type, pane.Title)); usage != nil {
-						agent.ContextPercent = usage.UsagePercent
-					}
-					// Prefer ground truth: omp's own pane-attributed context
-					// gauge, else the agent CLI's session transcript when one
-					// is unambiguously correlated to this pane (see
-					// resolvePaneTranscripts).
-					tu, ok := ompStatusBarUsage(agent.Type, status.StripANSI(captured), time.Now())
-					if !ok {
-						tu, ok = paneTranscripts[pane.ID]
-					}
-					if ok {
-						if pct, limit, _ := transcriptUsagePercent(tu, detectModel(agent.Type, pane.Title)); limit > 0 {
-							agent.ContextPercent = pct
-						}
-					}
-				}
+				measured := Agent{Type: agent.Type}
+				enrichAgentContext(&measured, contextPaneModel(pane, agent.Type), captured, paneTranscripts[pane.ID])
+				agent.ContextPercent = contextPercentForAgent(&measured)
 			}
 
 			snapSession.Agents = append(snapSession.Agents, agent)
@@ -5604,6 +5592,7 @@ func snapshotAgentFromRuntime(sessionName string, row state.RuntimeAgent, paneLa
 		State:            strings.TrimSpace(string(row.State)),
 		LastOutputAgeSec: row.LastOutputAgeSec,
 		OutputTailLines:  row.OutputTailLines,
+		ContextPercent:   row.ContextPercent,
 		PendingMail:      row.PendingMail,
 	}
 	if bead := strings.TrimSpace(row.CurrentBead); bead != "" {
@@ -8096,6 +8085,13 @@ func collectNormalizedTmuxProjectionContext(ctx context.Context, projectDir stri
 
 	for i := range sessions {
 		panes := allPanes[sessions[i].Name]
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		paneTranscripts, err := resolvePaneTranscriptsContext(ctx, panes)
+		if err != nil {
+			return nil, err
+		}
 		// Ensure panes are associated with the session for the adapter
 		sessions[i].Panes = append([]tmux.Pane(nil), panes...)
 
@@ -8128,7 +8124,17 @@ func collectNormalizedTmuxProjectionContext(ctx context.Context, projectDir stri
 			captured := allCapturedContent[pane.ID]
 			content := captured.content
 			agent.CaptureError = captured.captureErr
-			enrichAgentStatus(&agent, sessions[i].Name, modelNameForPane(pane, cfg), content)
+			modelName := paneLaunchModelContext(ctx, pane.ID)
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if modelName == "" {
+				modelName = detectModel(agent.Type, pane.Title)
+			}
+			// Context is enriched once below with attributed evidence, rather
+			// than estimating it here and discarding it during normalization.
+			enrichAgentStatus(&agent, sessions[i].Name, "", content)
+			enrichAgentContext(&agent, modelName, content, paneTranscripts[pane.ID])
 			if content != "" {
 				outputTails[pane.ID] = content
 			}
@@ -10301,8 +10307,10 @@ func buildTerseOutputFromSnapshot(snapshot *SnapshotOutput) *TerseOutput {
 				continue
 			}
 			state.ActiveAgents++
-			totalContextPercent += agent.ContextPercent
-			contextAgentCount++
+			if agent.ContextPercent != nil {
+				totalContextPercent += *agent.ContextPercent
+				contextAgentCount++
+			}
 			switch strings.ToLower(strings.TrimSpace(agent.State)) {
 			case "idle":
 				state.IdleAgents++
@@ -10608,8 +10616,39 @@ var transcriptUsageForProcess = func(agentType string, panePID int) (*ntmctx.Tra
 // sole-pane rule, so a pane never shows another pane's numbers (scrollback
 // estimation stands instead).
 func ResolvePaneTranscripts(panes []tmux.Pane) map[string]*ntmctx.TranscriptUsage {
+	return resolvePaneTranscripts(context.Background(), panes, paneCurrentPath, transcriptUsageForProcess, transcriptUsageForCwd)
+}
+
+// resolvePaneTranscriptsContext keeps the projection refresh's deadline on
+// tmux and process discovery, instead of starting independent background work.
+func resolvePaneTranscriptsContext(ctx context.Context, panes []tmux.Pane) (map[string]*ntmctx.TranscriptUsage, error) {
+	currentPath := func(paneID string) (string, bool) {
+		cwd, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", tmux.ExactTarget(paneID), "#{pane_current_path}")
+		cwd = strings.TrimSpace(cwd)
+		return cwd, err == nil && cwd != ""
+	}
+	byProcess := func(agentType string, pid int) (*ntmctx.TranscriptUsage, bool) {
+		return ntmctx.ProcessTranscriptUsage(ctx, agentType, pid)
+	}
+	result := resolvePaneTranscripts(ctx, panes, currentPath, byProcess, transcriptUsageForCwd)
+	return result, ctx.Err()
+}
+
+func resolvePaneTranscripts(ctx context.Context, panes []tmux.Pane,
+	currentPath func(string) (string, bool),
+	byProcess func(string, int) (*ntmctx.TranscriptUsage, bool),
+	byCwd func(string, string) (*ntmctx.TranscriptUsage, bool),
+) map[string]*ntmctx.TranscriptUsage {
+	// Remote tmux PIDs and paths belong to another host. They cannot identify
+	// a local process or transcript; pane-rendered gauges remain usable.
+	if ctx.Err() != nil || tmux.DefaultClient.Remote != "" {
+		return map[string]*ntmctx.TranscriptUsage{}
+	}
 	refs := make([]ntmctx.PaneTranscriptRef, 0, len(panes))
 	for _, pane := range panes {
+		if ctx.Err() != nil {
+			return map[string]*ntmctx.TranscriptUsage{}
+		}
 		if pane.IsServicePane() {
 			continue
 		}
@@ -10617,10 +10656,23 @@ func ResolvePaneTranscripts(panes []tmux.Pane) map[string]*ntmctx.TranscriptUsag
 		if agentType == "unknown" || agentType == "user" {
 			continue
 		}
-		cwd, _ := paneCurrentPath(pane.ID)
+		cwd, _ := currentPath(pane.ID)
 		refs = append(refs, ntmctx.PaneTranscriptRef{PaneID: pane.ID, AgentType: agentType, PID: pane.PID, Cwd: cwd})
 	}
-	return ntmctx.AttributePaneTranscripts(refs, nil, transcriptUsageForProcess, transcriptUsageForCwd)
+	return ntmctx.AttributePaneTranscripts(refs, nil,
+		func(agentType string, pid int) (*ntmctx.TranscriptUsage, bool) {
+			if ctx.Err() != nil {
+				return nil, false
+			}
+			return byProcess(agentType, pid)
+		},
+		func(agentType, cwd string) (*ntmctx.TranscriptUsage, bool) {
+			if ctx.Err() != nil {
+				return nil, false
+			}
+			return byCwd(agentType, cwd)
+		},
+	)
 }
 
 // transcriptUsagePercent converts a transcript usage reading into a percent

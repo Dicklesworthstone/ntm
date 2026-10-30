@@ -2,6 +2,7 @@ package robot
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"regexp"
@@ -12,8 +13,10 @@ import (
 
 	gopsprocess "github.com/shirou/gopsutil/v4/process"
 
+	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
+	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tokens"
 	"github.com/Dicklesworthstone/ntm/internal/util"
@@ -132,16 +135,60 @@ func enrichAgentStatus(agent *Agent, sessionName, modelName string, content stri
 		agent.QueuedMessages = composer.QueuedMessages
 
 		if modelName != "" {
-			agent.ContextModel = modelName
-			usage := tokens.GetUsageInfo(content, modelName)
-			if usage != nil {
-				agent.ContextTokens = usage.EstimatedTokens
-				agent.ContextLimit = usage.ContextLimit
-				agent.ContextPercent = usage.UsagePercent
-				agent.ContextModel = usage.Model
-			}
+			enrichAgentContext(agent, modelName, content, nil)
 		}
 	}
+}
+
+// enrichAgentContext shares context attribution between live snapshots and
+// persisted projections. The pane's own gauge wins, followed by its attributed
+// transcript, then a scrollback estimate. Missing evidence clears old readings.
+func enrichAgentContext(agent *Agent, modelName, content string, transcript *ntmctx.TranscriptUsage) {
+	agent.ContextTokens = 0
+	agent.ContextLimit = 0
+	agent.ContextPercent = 0
+	agent.ContextModel = ""
+	if agent.CaptureError != "" || isNonAgentPaneType(agent.Type) {
+		return
+	}
+	if modelName != "" && strings.TrimSpace(content) != "" {
+		if usage := tokens.GetUsageInfo(content, modelName); usage != nil && usage.ContextLimit > 0 {
+			agent.ContextTokens = usage.EstimatedTokens
+			agent.ContextLimit = usage.ContextLimit
+			agent.ContextPercent = usage.UsagePercent
+			agent.ContextModel = usage.Model
+		}
+	}
+	usage, fromGauge := ompStatusBarUsage(agent.Type, status.StripANSI(content), time.Now())
+	if !fromGauge {
+		usage = transcript
+	}
+	if usage == nil || usage.Tokens < 0 {
+		return
+	}
+	model, percent, limit, _ := transcriptContextReading(modelName, usage)
+	if limit <= 0 {
+		return
+	}
+	if fromGauge {
+		// Match --robot-context's exact whole-percent gauge arithmetic.
+		percent = float64(usage.Tokens) * 100 / float64(limit)
+	}
+	agent.ContextTokens = usage.Tokens
+	agent.ContextLimit = limit
+	agent.ContextPercent = percent
+	agent.ContextModel = model
+}
+
+func contextPercentForAgent(agent *Agent) *float64 {
+	if agent == nil || agent.ContextLimit <= 0 || agent.CaptureError != "" || isNonAgentPaneType(agent.Type) {
+		return nil
+	}
+	percent := agent.ContextPercent
+	if percent < 0 || math.IsNaN(percent) || math.IsInf(percent, 0) {
+		return nil
+	}
+	return &percent
 }
 
 func getProcessMemoryMB(pid int) (int, error) {

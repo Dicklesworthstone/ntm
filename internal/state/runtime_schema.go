@@ -157,6 +157,9 @@ type RuntimeAgent struct {
 	LastOutputAgeSec int        `json:"last_output_age_sec"`
 	OutputTailLines  int        `json:"output_tail_lines"`
 
+	// Nil means no usable reading; a measured empty context is a non-nil zero.
+	ContextPercent *float64 `json:"context_percent,omitempty"`
+
 	// Coordination
 	CurrentBead   string `json:"current_bead,omitempty"`
 	PendingMail   int    `json:"pending_mail"`
