@@ -245,6 +245,26 @@ func commandGroupHasLiveMembers(pgid int) (bool, error) {
 	return alive, nil
 }
 
+// procTaskExiting is the kernel's PF_EXITING.
+const procTaskExiting = 0x4
+
+// procStatRowIsReleasedTask reports whether fields, the stat fields after comm,
+// are what the kernel prints for a task whose signal state is gone: parent 0,
+// group -1 and session -1, the defaults it starts from when it cannot take the
+// signal lock. Any process exiting on the host can show this row mid-census.
+// The state letter is read before that lock and can be stale, so it proves
+// nothing. Flags are printed last, and PF_EXITING there means the task is
+// leaving and cannot return to user code. It has left every group, so it is
+// no group's live member.
+func procStatRowIsReleasedTask(fields []string) bool {
+	// Requiring a field after flags refuses a row cut off inside that number.
+	if len(fields) < 8 || fields[1] != "0" || fields[2] != "-1" || fields[3] != "-1" {
+		return false
+	}
+	flags, err := strconv.ParseUint(fields[6], 10, 64)
+	return err == nil && flags&procTaskExiting != 0
+}
+
 // Validate identity and state as well as group membership. Silently skipping a
 // malformed row could hide a live member; accepting a different PID could turn
 // a restricted or inconsistent procfs view into false settlement evidence.
@@ -266,10 +286,7 @@ func parseCommandGroupStat(data []byte, expectedPID int) (int, string, error) {
 	if !ok || group < -1 || len(fields) < 3 || len(fields[0]) != 1 {
 		return invalid()
 	}
-	// A task past signal teardown reports state X with group -1: it has left
-	// every group and cannot execute, so any process exiting on the host can
-	// show this row mid-census. Every other state must name a real group.
-	if group == -1 && fields[0] != "X" {
+	if group == -1 && !procStatRowIsReleasedTask(fields) {
 		return invalid()
 	}
 	parent, err := strconv.Atoi(fields[1])
