@@ -99,6 +99,32 @@ func TestWatcherNeverOwnsUnverifiedConflictGrants(t *testing.T) {
 	}
 }
 
+// A conflict the server reports needs no ownership proof, so an unverified
+// receipt still raises it, and that receipt's grant stays out of the owned set.
+func TestWatcherRaisesConflictsFromAnUnverifiedReceipt(t *testing.T) {
+	var raised []FileConflict
+	w := NewFileReservationWatcher(WithAgentName("BlueLake"), WithProjectDir("/test/project"),
+		WithConflictCallback(func(conflict FileConflict) { raised = append(raised, conflict) }))
+	w.capturePaneOutput = func(context.Context, string, int) (string, error) {
+		return "Edited src/main.go", nil
+	}
+	w.client = &ownershipWatcherClient{
+		reserve: func(o agentmail.FileReservationOptions) (*agentmail.ReservationResult, error) {
+			return &agentmail.ReservationResult{
+				Granted:   []agentmail.FileReservation{{ID: 101, PathPattern: "src/main.go", AgentName: o.AgentName}},
+				Conflicts: []agentmail.ReservationConflict{{Path: "src/main.go", Holders: []string{"GreenCastle"}}},
+			}, errors.Join(agentmail.ErrReservationConflict, agentmail.ErrReservationUnverified)
+		},
+	}
+	w.checkPaneOutputsFromOwnershipTest(t)
+	if len(raised) != 1 || raised[0].Path != "src/main.go" || !reflect.DeepEqual(raised[0].Holders, []string{"GreenCastle"}) {
+		t.Fatalf("raised=%+v", raised)
+	}
+	if owned := w.activeReservations["%7"]; owned != nil && len(owned.ReservationID) != 0 {
+		t.Fatalf("unverified grant entered the owned set: %+v", owned)
+	}
+}
+
 // Exercise topology, capture, edit detection and reservation together, not just
 // a hand-built result passed directly to recordReservationResult.
 func (w *FileReservationWatcher) checkPaneOutputsFromOwnershipTest(t *testing.T) {

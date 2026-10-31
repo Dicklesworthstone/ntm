@@ -589,9 +589,13 @@ func (w *FileReservationWatcher) onFileEdit(
 	if err != nil && (!agentmail.IsReservationConflict(err) || errors.Is(err, agentmail.ErrReservationUnverified)) {
 		// A response can carry BOTH conflicts and failed ownership readback.
 		// Those handles are inspection evidence, never authority to renew or
-		// release. Only a verified partial grant may enter our owned set.
+		// release. Only a verified partial grant may enter our owned set. The
+		// server's conflict report needs no such proof, so it is still raised.
 		if w.debug {
 			log.Printf("[FileReservationWatcher] Reservation error for pane %s: %v", pane.ID, err)
+		}
+		if result != nil {
+			w.emitConflicts(ctx, sessionName, pane.ID, agentName, result.Conflicts)
 		}
 		return false
 	}
@@ -606,19 +610,23 @@ func (w *FileReservationWatcher) onFileEdit(
 			len(result.Granted), pane.ID, newFiles)
 	}
 
-	// Emit conflicts to callback
-	if result != nil && len(result.Conflicts) > 0 {
-		if w.debug {
-			log.Printf("[FileReservationWatcher] Conflicts for pane %s: %v", pane.ID, result.Conflicts)
-		}
+	w.emitConflicts(ctx, sessionName, pane.ID, agentName, result.Conflicts)
+	return true
+}
 
-		if w.conflictCallback != nil {
-			for _, conflict := range w.buildConflictNotifications(ctx, sessionName, pane.ID, agentName, result.Conflicts) {
-				w.conflictCallback(conflict)
-			}
+// emitConflicts passes server-reported conflicts to the callback.
+func (w *FileReservationWatcher) emitConflicts(ctx context.Context, sessionName, paneID, agentName string, conflicts []agentmail.ReservationConflict) {
+	if len(conflicts) == 0 {
+		return
+	}
+	if w.debug {
+		log.Printf("[FileReservationWatcher] Conflicts for pane %s: %v", paneID, conflicts)
+	}
+	if w.conflictCallback != nil {
+		for _, conflict := range w.buildConflictNotifications(ctx, sessionName, paneID, agentName, conflicts) {
+			w.conflictCallback(conflict)
 		}
 	}
-	return true
 }
 
 // renewPaneReservation extends the lease for a pane that produced new output.
