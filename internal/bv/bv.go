@@ -819,6 +819,45 @@ func HasLocalBeadsDB(dir string) bool {
 	return info.IsDir()
 }
 
+// beadsReadOnlyFlags stop br changing the tracker it reads. Without them an
+// ordinary read upgrades an older-schema database in place and can rebuild it
+// from JSONL, leaving events and non-default config only in .br_recovery.
+var beadsReadOnlyFlags = []string{"--no-auto-import", "--no-auto-flush"}
+
+// isBeadsReadCommand reports whether args is a br read that honors
+// beadsReadOnlyFlags. `info` is left out because br rewrites an older-schema
+// tracker under it even with those flags.
+func isBeadsReadCommand(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "list", "ready", "show", "stats", "blocked":
+		return true
+	case "dep":
+		return len(args) > 1 && (args[1] == "list" || args[1] == "tree")
+	}
+	return false
+}
+
+// BeadsReadArgs returns a copy of args for running br from dir. When dir has no
+// .beads of its own, br can still reach a parent's tracker by walking up, and
+// ntm did not choose that tracker, so a read of it gets beadsReadOnlyFlags. The
+// read can then lag a newer issues.jsonl until an ordinary br command imports
+// it. Writes, and reads from a directory with its own .beads, are unchanged.
+func BeadsReadArgs(dir string, args []string) []string {
+	result := append([]string(nil), args...)
+	if !isBeadsReadCommand(result) || HasLocalBeadsDB(dir) {
+		return result
+	}
+	for _, flag := range beadsReadOnlyFlags {
+		if !containsString(result, flag) {
+			result = append(result, flag)
+		}
+	}
+	return result
+}
+
 // RunBd executes br (beads_rust) with given args and returns stdout.
 // If br reports a missing database and suggests `--no-db`, it retries once with `--no-db`
 // and caches that preference for the remainder of the process.
@@ -895,8 +934,14 @@ func runBdCommandContext(parent context.Context, dir string, options beadsComman
 	if err != nil {
 		return "", err
 	}
+	// Decide on the literal dir: normalization has already moved normalizedDir
+	// to the discovered tracker root, which always has a .beads of its own.
+	if options.projectBound {
+		args = append([]string(nil), args...)
+	} else {
+		args = BeadsReadArgs(dir, args)
+	}
 	dir = normalizedDir
-	args = append([]string(nil), args...)
 
 	// br's SQLite-backed workspace can self-contend when a single ntm process
 	// launches multiple br subprocesses against the same directory in parallel.

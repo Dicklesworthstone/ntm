@@ -12,6 +12,8 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/Dicklesworthstone/ntm/internal/bv"
 )
 
 // IterationSourceResolver expands foreach iteration source expressions into
@@ -569,7 +571,7 @@ func (r *IterationSourceResolver) runBr(ctx context.Context, args []string) ([]b
 		out, err := r.RunBr(ctx, args)
 		return checkedIterationSourceOutput(ctx, out, err)
 	}
-	cmd := exec.Command("br", args...)
+	cmd := exec.Command("br", bv.BeadsReadArgs(r.ProjectDir, args)...)
 	if r.ProjectDir != "" {
 		cmd.Dir = r.ProjectDir
 	}

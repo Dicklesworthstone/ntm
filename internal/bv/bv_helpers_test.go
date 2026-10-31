@@ -140,6 +140,7 @@ func setupBeadsRecoveryCommands(t *testing.T, rebuild, doctor beadsRecoveryTestC
 	for key, value := range map[string]string{
 		"NTM_TEST_BR_CALLS":       workspace.calls,
 		"NTM_TEST_BR_INFO":        beadsRecoveryJSON(t, map[string]string{"database_path": databasePath, "jsonl_path": workspace.jsonl}),
+		"NTM_TEST_READ_ARGV":      "--lock-timeout 5000 show task-1 --json",
 		"NTM_TEST_DOCTOR_STARTED": workspace.doctorStarted,
 		"NTM_TEST_REBUILD_STDOUT": rebuild.stdout,
 		"NTM_TEST_REBUILD_STDERR": rebuild.stderr,
@@ -155,7 +156,7 @@ func setupBeadsRecoveryCommands(t *testing.T, rebuild, doctor beadsRecoveryTestC
 	script := `#!/bin/sh
 printf '%s\t%s\n' "$PWD" "$*" >> "$NTM_TEST_BR_CALLS"
 case "$*" in
-  '--lock-timeout 5000 show task-1 --json')
+  "$NTM_TEST_READ_ARGV")
     printf '%s' "$NTM_TEST_READ_STDOUT"
     printf '%s' "$NTM_TEST_READ_STDERR" >&2
     exit "${NTM_TEST_READ_EXIT:-0}"
@@ -344,6 +345,10 @@ func TestReadForMutationContextDoesNotRepairInheritedOrRedirectedDatabase(t *tes
 				if err := os.Mkdir(readDir, 0755); err != nil {
 					t.Fatal(err)
 				}
+				// A read that only reached this tracker by walking up must not
+				// let br change it, and that holds for a mutation's reads too.
+				commands = []string{"show task-1 --json --no-auto-import --no-auto-flush"}
+				t.Setenv("NTM_TEST_READ_ARGV", "--lock-timeout 5000 show task-1 --json --no-auto-import --no-auto-flush")
 			case "symlinked beads directory":
 				readDir = t.TempDir()
 				if err := os.Mkdir(filepath.Join(readDir, ".git"), 0755); err != nil {
