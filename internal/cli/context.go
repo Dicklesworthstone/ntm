@@ -363,19 +363,11 @@ func selectContextInjectionPanes(panes []tmux.Pane, selector string, targetAll b
 	return targets, nil
 }
 
-type contextInjectSender func(target, content string, enter bool) error
-
 // injectContextIntoPanes adapts the uniform-content robot injection path to
 // the same batch dispatcher used by context inject. Its error includes the
 // delivered pane IDs so a partial delivery must not be blindly replayed.
-func injectContextIntoPanes(session string, panes []tmux.Pane, content string, dryRun bool, sender contextInjectSender) ([]int, error) {
-	var send contextPaneSender
-	if sender != nil {
-		send = func(_ context.Context, pane tmux.Pane, text string) error {
-			return sender(pane.ID, text, true)
-		}
-	}
-	receipts, err := dispatchContextRequests(context.Background(), session, uniformContextRequests(panes, content), dryRun, send)
+func injectContextIntoPanes(ctx context.Context, session string, panes []tmux.Pane, content string, dryRun bool, send contextPaneSender) ([]int, error) {
+	receipts, err := dispatchContextRequests(ctx, session, uniformContextRequests(panes, content), dryRun, send)
 	injected := make([]int, 0, len(receipts))
 	for _, receipt := range receipts {
 		if receipt.Status == "delivered" || (dryRun && receipt.Status == "planned") {

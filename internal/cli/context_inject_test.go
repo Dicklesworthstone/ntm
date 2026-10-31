@@ -331,7 +331,7 @@ func TestInjectContextIntoPanesAcceptsMixedGrokBatch(t *testing.T) {
 				{ID: "%3", Index: 3, Type: tmux.AgentCodex},
 			}
 			calls := 0
-			injected, err := injectContextIntoPanes("demo", panes, "context", false, func(string, string, bool) error {
+			injected, err := injectContextIntoPanes(t.Context(), "demo", panes, "context", false, func(context.Context, tmux.Pane, string) error {
 				calls++
 				return nil
 			})

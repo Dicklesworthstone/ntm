@@ -165,11 +165,11 @@ func TestContextUniformRobotInjectionReturnsPartialFailure(t *testing.T) {
 	t.Parallel()
 	failure := errors.New("pane unavailable")
 	panes := []tmux.Pane{{ID: "%1", Index: 1, Type: tmux.AgentClaude}, {ID: "%2", Index: 2, Type: tmux.AgentCodex}}
-	injected, err := injectContextIntoPanes("demo", panes, "context", false, func(target, _ string, enter bool) error {
-		if !enter {
-			t.Fatal("context was not submitted")
+	injected, err := injectContextIntoPanes(t.Context(), "demo", panes, "context", false, func(_ context.Context, pane tmux.Pane, text string) error {
+		if text != "context" {
+			t.Fatalf("context payload changed: %q", text)
 		}
-		if target == "%2" {
+		if pane.ID == "%2" {
 			return failure
 		}
 		return nil

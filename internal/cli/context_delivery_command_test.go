@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -192,6 +193,270 @@ func TestContextInjectCobraUsesCanonicalTargetsAcrossModes(t *testing.T) {
 						if receipt.Target != want[i] || receipt.Status != "delivered" {
 							t.Fatalf("receipt lost selected physical target: %+v", receipt)
 						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func installContextMutationTMUX(t *testing.T, kind tmux.AgentType, afterWrite string) (string, string) {
+	t.Helper()
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("requires /bin/sh")
+	}
+
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"pid":       "321\n",
+		"rotation":  "\n",
+		"command":   "agent\n",
+		"mutations": "",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	script := `#!/bin/sh
+set -eu
+record_input() {
+  printf '%s\n' "$1" >> "$NTM_CONTEXT_GUARD_DIR/mutations"
+  if [ ! -f "$NTM_CONTEXT_GUARD_DIR/first" ]; then
+    : > "$NTM_CONTEXT_GUARD_DIR/first"
+    case "$NTM_CONTEXT_GUARD_AFTER_WRITE" in
+      replace) printf '999\n' > "$NTM_CONTEXT_GUARD_DIR/pid" ;;
+      shell) printf 'bash\n' > "$NTM_CONTEXT_GUARD_DIR/command" ;;
+    esac
+  fi
+}
+case "$1" in
+  load-buffer)
+    cat > /dev/null
+    ;;
+  display-message)
+    printf '[%s]\n' "$NTM_CONTEXT_GUARD_TYPE"
+    ;;
+  if-shell)
+    if [ "$2" != "-F" ] || [ "$3" != "-t" ] || [ "$4" != "%41" ]; then
+      exit 2
+    fi
+    read -r current_pid < "$NTM_CONTEXT_GUARD_DIR/pid"
+    read -r rotation < "$NTM_CONTEXT_GUARD_DIR/rotation"
+    read -r current_command < "$NTM_CONTEXT_GUARD_DIR/command"
+    case "$5" in
+      *"#{==:#{pane_pid},$current_pid}"*) ;;
+      *)
+        printf 'ntm_pane_identity_changed\n'
+        exit 0
+        ;;
+    esac
+    case "$5" in
+      *'#{==:#{@ntm_rotation_token},}'*)
+        if [ -n "$rotation" ]; then
+          printf 'ntm_pane_identity_changed\n'
+          exit 0
+        fi
+        ;;
+      *) exit 2 ;;
+    esac
+    case "$5" in
+      *'#{!=:#{pane_current_command},}'*)
+        case "$current_command" in
+          ""|sh|bash|zsh|fish|dash|ksh)
+            printf 'ntm_pane_identity_changed\n'
+            exit 0
+            ;;
+        esac
+        ;;
+    esac
+    record_input "$6"
+    ;;
+  paste-buffer|send-keys)
+    record_input "unguarded: $*"
+    ;;
+  delete-buffer)
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+`
+	binary := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", binary)
+	t.Setenv("NTM_CONTEXT_GUARD_DIR", dir)
+	t.Setenv("NTM_CONTEXT_GUARD_TYPE", string(kind))
+	t.Setenv("NTM_CONTEXT_GUARD_AFTER_WRITE", afterWrite)
+
+	oldClient := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("")
+	t.Cleanup(func() { tmux.DefaultClient = oldClient })
+	return dir, filepath.Join(dir, "mutations")
+}
+
+func TestContextInjectionRetainsPaneIdentityThroughPreparationAndSubmission(t *testing.T) {
+	oldJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSON })
+
+	protocols := []struct {
+		name    string
+		kind    tmux.AgentType
+		content string
+		writes  int
+	}{
+		{
+			name:    "bracketed_paste",
+			kind:    tmux.AgentClaude,
+			content: "project context\nsecond line",
+			writes:  2,
+		},
+		{
+			name:    "literal_chunks",
+			kind:    tmux.AgentGrok,
+			content: strings.Repeat("x", 8193),
+			writes:  4,
+		},
+	}
+	scenarios := []struct {
+		name       string
+		afterWrite string
+		fail       bool
+		partial    bool
+	}{
+		{name: "live"},
+		{name: "replaced_during_preparation", fail: true},
+		{name: "rotation_during_preparation", fail: true},
+		{name: "replaced_after_first_write", afterWrite: "replace", fail: true, partial: true},
+		{name: "exited_after_first_write", afterWrite: "shell", fail: true, partial: true},
+	}
+
+	for _, surface := range []string{"cobra_build", "robot_adapter"} {
+		t.Run(surface, func(t *testing.T) {
+			for _, protocol := range protocols {
+				t.Run(protocol.name, func(t *testing.T) {
+					for _, scenario := range scenarios {
+						t.Run(scenario.name, func(t *testing.T) {
+							dir, logPath := installContextMutationTMUX(t, protocol.kind, scenario.afterWrite)
+							pane := tmux.Pane{
+								ID: "%41", Index: 1, PID: 321,
+								Type: protocol.kind, Command: "agent",
+							}
+							prepared := false
+							prepare := func() {
+								prepared = true
+								var name, value string
+								switch scenario.name {
+								case "replaced_during_preparation":
+									name, value = "pid", "999\n"
+								case "rotation_during_preparation":
+									name, value = "rotation", "rotation-owner\n"
+								}
+								if name != "" {
+									if err := os.WriteFile(filepath.Join(dir, name), []byte(value), 0600); err != nil {
+										t.Fatal(err)
+									}
+								}
+							}
+
+							var injected []int
+							var deliveryErr error
+							var failureText string
+							if surface == "cobra_build" {
+								deps := packInjectionTestDeps(t)
+								deps.panes = func(string) ([]tmux.Pane, error) {
+									return []tmux.Pane{pane}, nil
+								}
+								baseBuild := deps.build
+								deps.build = func(ctx context.Context, opts ntmctx.BuildOptions) (*ntmctx.ContextPackFull, error) {
+									prepare()
+									pack, err := baseBuild(ctx, opts)
+									if err != nil {
+										return nil, err
+									}
+									pack.RenderedPrompt = protocol.content
+									return pack, nil
+								}
+								deps.send = sendContextToPane
+
+								cmd := newContextInjectCmdWithDeps(&deps)
+								var stdout bytes.Buffer
+								cmd.SetOut(&stdout)
+								cmd.SetErr(io.Discard)
+								cmd.SilenceErrors, cmd.SilenceUsage = true, true
+								cmd.SetArgs([]string{"demo", "--build", "--files", "main.go"})
+								deliveryErr = cmd.ExecuteContext(t.Context())
+
+								var result ContextInjectResult
+								if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+									t.Fatalf("invalid command result: %v; output=%q", err, stdout.String())
+								}
+								if result.Success == scenario.fail || len(result.Deliveries) != 1 {
+									t.Fatalf("wrong command outcome: %+v; error=%v", result, deliveryErr)
+								}
+								wantStatus := "delivered"
+								if scenario.fail {
+									wantStatus = "uncertain"
+								}
+								if result.Deliveries[0].Status != wantStatus {
+									t.Fatalf("wrong delivery receipt: %+v", result.Deliveries[0])
+								}
+								injected = result.PanesInjected
+								failureText = result.Error
+							} else {
+								prepare()
+								injected, deliveryErr = injectContextIntoPanes(
+									t.Context(), "demo", []tmux.Pane{pane},
+									protocol.content, false, sendContextToPane,
+								)
+								if deliveryErr != nil {
+									failureText = deliveryErr.Error()
+								}
+							}
+
+							if !prepared {
+								t.Fatal("test did not reach context preparation")
+							}
+							if (deliveryErr != nil) != scenario.fail {
+								t.Fatalf("wrong delivery error: %v; injected=%v", deliveryErr, injected)
+							}
+							if scenario.fail {
+								if len(injected) != 0 || !strings.Contains(failureText, tmux.ErrPaneIdentityChanged.Error()) {
+									t.Fatalf("changed target was reported delivered: injected=%v error=%q", injected, failureText)
+								}
+							} else if !reflect.DeepEqual(injected, []int{1}) {
+								t.Fatalf("valid target was not delivered: %v", injected)
+							}
+
+							data, err := os.ReadFile(logPath)
+							if err != nil {
+								t.Fatal(err)
+							}
+							log := string(data)
+							if strings.Contains(log, "unguarded:") {
+								t.Fatalf("context delivery bypassed the mutation guard: %s", log)
+							}
+							wantWrites := protocol.writes
+							if scenario.fail {
+								wantWrites = 0
+								if scenario.partial {
+									wantWrites = 1
+								}
+							}
+							if got := strings.Count(log, "\n"); got != wantWrites {
+								t.Fatalf("accepted %d input mutations, want %d: %s", got, wantWrites, log)
+							}
+							wantEnters := 1
+							if scenario.fail {
+								wantEnters = 0
+							}
+							if got := strings.Count(log, "'Enter'"); got != wantEnters {
+								t.Fatalf("submitted %d Enter keys, want %d: %s", got, wantEnters, log)
+							}
+						})
 					}
 				})
 			}

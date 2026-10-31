@@ -2956,7 +2956,7 @@ Shell Integration:
 					failRobotCommand(targetErr, robot.ErrCodePaneNotFound, "Inspect canonical pane addresses with --robot-is-working", "robot-context-inject")
 					return
 				}
-				injectedPanes, err = injectContextIntoPanes(session, targets, content, robotContextInjectDry, tmux.SendKeys)
+				injectedPanes, err = injectContextIntoPanes(cmd.Context(), session, targets, content, robotContextInjectDry, sendContextToPane)
 				if err != nil {
 					code, hint := classifyRobotContextInjectError(err)
 					failRobotCommand(err, code, hint, "robot-context-inject")
