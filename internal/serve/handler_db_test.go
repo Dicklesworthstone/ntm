@@ -148,7 +148,7 @@ func (f *flushRecorder) Flush() {
 	f.flushed = true
 }
 
-func TestRedactingResponseWriter_Flush(t *testing.T) {
+func TestRedactingResponseWriter_FlushSSE(t *testing.T) {
 
 	inner := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
 	rw := &redactingResponseWriter{
@@ -158,6 +158,7 @@ func TestRedactingResponseWriter_Flush(t *testing.T) {
 		categories:     make(map[string]int),
 	}
 
+	rw.Header().Set("Content-Type", "text/event-stream")
 	rw.Flush()
 	if !inner.flushed {
 		t.Error("expected inner Flush to be called")

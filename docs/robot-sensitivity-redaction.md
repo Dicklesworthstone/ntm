@@ -62,8 +62,21 @@ only responses would also permit them into existing handler logs and persistence
 Uniform rejection avoids both problems and applies to future API handlers too.
 A refused request leaves the idempotency key available for a corrected submission.
 
-Response redaction remains separate: JSON output in `redact` mode keeps its
-structure and safe neighboring fields. The existing pipeline recovery response
+Response redaction remains separate: JSON output in both `redact` and `block`
+modes keeps its structure and safe neighboring fields. A response is processed
+after its handler runs, so output filtering preserves the handler's HTTP status.
+If a custom pattern crosses a JSON boundary that cannot be safely rewritten, the
+server withholds the response body and returns a valid JSON object with
+`response_unavailable: true` and `error_code: "RESPONSE_REDACTION_FAILED"`.
+Its hint explains that the handler has already run and may have completed the
+operation; inspect the operation's state before retrying. This is not a request
+rejection and does not imply a rollback. The original body and pattern details
+are never included in that diagnostic. Responses without findings retain their
+exact bytes, including large integers, whitespace, and duplicate object keys.
+Flushing a JSON response does not bypass protection: buffering continues until
+the complete document can be checked, even when a credential spans writes.
+
+The existing pipeline recovery response
 exception preserves the exact 64-character lowercase hexadecimal `receipt_token`
 only on `/api/v1/pipelines/<id>/recover`. Clients submit it under the request's
 `receipt` field; there is no new request-redaction exception. A sensitive recovery

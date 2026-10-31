@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -520,6 +522,248 @@ func TestRedactedJSONFieldKeepsItsKeyAndNeighbours(t *testing.T) {
 	}
 	if parsed["status"] != "sending" || parsed["endpoint"] != "e" || !strings.HasPrefix(parsed["api_token"], "[REDACTED:") {
 		t.Fatalf("fields = %v", parsed)
+	}
+}
+
+func serveJSONResponseWithConfig(t *testing.T, path, body string, status int, cfg redaction.Config) *httptest.ResponseRecorder {
+	t.Helper()
+	srv := &Server{redactionCfg: &RedactionConfig{Enabled: true, Config: cfg}}
+	handlerCalls := 0
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(status)
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write handler response: %v", err)
+		}
+	})
+	rec := httptest.NewRecorder()
+	srv.redactionMiddleware(next).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	if handlerCalls != 1 {
+		t.Fatalf("response test handler called %d times, want 1", handlerCalls)
+	}
+	if got := rec.Header().Get("Content-Length"); got != strconv.Itoa(rec.Body.Len()) {
+		t.Errorf("Content-Length = %q, response length = %d", got, rec.Body.Len())
+	}
+	return rec
+}
+
+func TestJSONResponseRedactionProtectsBlockModeAndDiagnostics(t *testing.T) {
+	const secret = "syntheticNeverValidToken123456789"
+	logs := &lockedBuffer{}
+	previousLogWriter := log.Writer()
+	log.SetOutput(logs)
+	t.Cleanup(func() { log.SetOutput(previousLogWriter) })
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		t.Run(string(mode), func(t *testing.T) {
+			body := `{"success":false,"error_code":"UPSTREAM_AUTH_FAILED","error":"upstream authentication failed","details":{"api_token":"` + secret + `","retryable":false},"retry_after":15}`
+			rec := serveJSONResponseWithConfig(t, "/api/v1/test", body, http.StatusBadGateway, redaction.Config{Mode: mode})
+			if rec.Code != http.StatusBadGateway {
+				t.Errorf("handler status changed: %d, want 502", rec.Code)
+			}
+			var response struct {
+				Success    bool           `json:"success"`
+				ErrorCode  string         `json:"error_code"`
+				Error      string         `json:"error"`
+				Details    map[string]any `json:"details"`
+				RetryAfter int            `json:"retry_after"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatalf("redacted response is not valid JSON: %v", err)
+			}
+			if response.Success || response.ErrorCode != "UPSTREAM_AUTH_FAILED" || response.Error != "upstream authentication failed" || response.RetryAfter != 15 || response.Details["retryable"] != false {
+				t.Errorf("meaningful non-secret diagnostics changed: %+v", response)
+			}
+			if token, ok := response.Details["api_token"].(string); !ok || !strings.HasPrefix(token, "[REDACTED:") {
+				t.Error("credential field was not explicitly redacted")
+			}
+			if strings.Contains(rec.Body.String(), secret) || strings.Contains(logs.String(), secret) {
+				t.Error("response redaction disclosed credential contents")
+			}
+		})
+	}
+}
+
+func TestJSONResponseRedactionPreservesUnchangedBytes(t *testing.T) {
+	const body = " \n{ \"error\":\"service unavailable\", \"count\":9007199254740993, \"label\":\"first\", \"label\":\"last\", \"items\":[true,null] }\t\n"
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock, redaction.ModeWarn, redaction.ModeOff} {
+		t.Run(string(mode), func(t *testing.T) {
+			rec := serveJSONResponseWithConfig(t, "/api/v1/test", body, http.StatusServiceUnavailable, redaction.Config{Mode: mode})
+			if rec.Code != http.StatusServiceUnavailable || rec.Body.String() != body {
+				t.Errorf("response without findings changed: status=%d body=%s", rec.Code, rec.Body)
+			}
+		})
+	}
+}
+
+func TestJSONResponseRedactionHandlesCustomMatchBoundaries(t *testing.T) {
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		for _, tc := range []struct {
+			name, body, match, leak string
+			originalValue           any
+			withheld                bool
+		}{
+			{"number", `{"private":123456789,"error":"service unavailable"}`, "123456789", "123456789", float64(123456789), true},
+			{"boolean", `{"private":true,"error":"service unavailable"}`, "true", "", true, true},
+			{"null", `{"private":null,"error":"service unavailable"}`, "null", "", nil, true},
+			{"quoted scalar", `{"private":"sensitive-data","error":"service unavailable"}`, `"sensitive-data"`, "sensitive-data", "sensitive-data", true},
+			{"whole nested object", `{"private":{"inner":"sensitive-data"},"error":"service unavailable"}`, `{"inner":"sensitive-data"}`, "sensitive-data", map[string]any{"inner": "sensitive-data"}, true},
+			{"whole property", `{"private":{"inner":"sensitive-data"},"error":"service unavailable"}`, `"private":{"inner":"sensitive-data"}`, "sensitive-data", map[string]any{"inner": "sensitive-data"}, true},
+			{"sensitive property name in pair", `{"sensitive-field-name":"ordinary","error":"service unavailable"}`, `"sensitive-field-name":"ordinary"`, "sensitive-field-name", nil, true},
+			{"escaped string boundary", `{"private":"before\"sensitive-data\"after","error":"service unavailable"}`, `\"sensitive-data\"`, "sensitive-data", `before"sensitive-data"after`, false},
+		} {
+			t.Run(string(mode)+"/"+tc.name, func(t *testing.T) {
+				if !json.Valid([]byte(tc.body)) {
+					t.Fatal("fixture must start as valid JSON")
+				}
+				cfg := redaction.Config{Mode: mode, ExtraPatterns: map[redaction.Category][]string{
+					"CUSTOM_SENSITIVE": {regexp.QuoteMeta(tc.match)},
+				}}
+				rec := serveJSONResponseWithConfig(t, "/api/v1/test", tc.body, http.StatusServiceUnavailable, cfg)
+				var parsed map[string]any
+				if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+					t.Fatalf("custom match produced invalid JSON: %v", err)
+				}
+				if rec.Code == http.StatusUnprocessableEntity || parsed["error_code"] == "SECRETS_DETECTED" {
+					t.Error("response filtering incorrectly claimed the already-handled request was rejected")
+				}
+				if tc.leak != "" && strings.Contains(rec.Body.String(), tc.leak) {
+					t.Error("custom response match disclosed sensitive content")
+				}
+				if value, exists := parsed["private"]; exists && reflect.DeepEqual(value, tc.originalValue) {
+					t.Error("custom response match left the sensitive value unchanged")
+				}
+				if rec.Code != http.StatusServiceUnavailable {
+					t.Errorf("response filtering changed handler status: %d", rec.Code)
+				}
+				if tc.withheld {
+					assertJSONResponseWithheld(t, rec.Body.Bytes())
+				} else if parsed["error"] != "service unavailable" {
+					t.Error("safe response diagnostic was lost during string redaction")
+				}
+			})
+		}
+	}
+}
+
+func assertJSONResponseWithheld(t *testing.T, body []byte) {
+	t.Helper()
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("withheld response is not valid JSON: %v", err)
+	}
+	want := map[string]any{
+		"response_unavailable": true,
+		"error_code":           "RESPONSE_REDACTION_FAILED",
+		"error":                "Response content could not be safely redacted",
+		"hint":                 "The handler has already run and may have completed the operation. Check its state before retrying.",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("unexpected withholding envelope: %v", got)
+	}
+}
+
+func TestJSONResponseRedactionFallbackPreservesCompletedHandlerStatus(t *testing.T) {
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		t.Run(string(mode), func(t *testing.T) {
+			cfg := redaction.Config{Mode: mode, ExtraPatterns: map[redaction.Category][]string{
+				"PRIVATE_ID": {"123456789"},
+			}}
+			rec := serveJSONResponseWithConfig(t, "/api/v1/test", `{"success":true,"id":123456789}`, http.StatusCreated, cfg)
+			if rec.Code != http.StatusCreated {
+				t.Errorf("completed operation status changed: %d, want 201", rec.Code)
+			}
+			assertJSONResponseWithheld(t, rec.Body.Bytes())
+		})
+	}
+}
+
+func TestJSONResponseRedactionFlushCannotBypassProtection(t *testing.T) {
+	const secret = "syntheticNeverValidToken123456789"
+	body := `{"error_code":"UPSTREAM_FAILURE","error":"try later","api_token":"` + secret + `"}`
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		for _, flushAt := range []string{"complete body", "before content type", "after headers", "inside credential"} {
+			t.Run(string(mode)+"/"+flushAt, func(t *testing.T) {
+				srv := &Server{redactionCfg: &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: mode}}}
+				rec := httptest.NewRecorder()
+				next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					flusher := w.(http.Flusher)
+					if flushAt == "before content type" {
+						flusher.Flush()
+					}
+					w.Header().Set("Content-Type", "application/json")
+					w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+					w.WriteHeader(http.StatusBadGateway)
+					if flushAt == "after headers" {
+						flusher.Flush()
+					}
+					if flushAt == "inside credential" {
+						split := strings.Index(body, secret) + len(secret)/2
+						if _, err := io.WriteString(w, body[:split]); err != nil {
+							t.Fatal(err)
+						}
+						flusher.Flush()
+						if rec.Body.Len() != 0 {
+							t.Error("partial credential escaped before response redaction could run")
+						}
+						if _, err := io.WriteString(w, body[split:]); err != nil {
+							t.Fatal(err)
+						}
+					} else if _, err := io.WriteString(w, body); err != nil {
+						t.Fatal(err)
+					}
+					flusher.Flush()
+					if strings.Contains(rec.Body.String(), secret) {
+						t.Error("Flush exposed the credential before handler completion")
+					}
+				})
+				srv.redactionMiddleware(next).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/test", nil))
+				if rec.Code != http.StatusBadGateway {
+					t.Errorf("Flush changed handler status: %d, want 502", rec.Code)
+				}
+				var parsed map[string]string
+				if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+					t.Fatalf("flushed response is not valid JSON: %v", err)
+				}
+				if parsed["error_code"] != "UPSTREAM_FAILURE" || parsed["error"] != "try later" || !strings.HasPrefix(parsed["api_token"], "[REDACTED:") || strings.Contains(rec.Body.String(), secret) {
+					t.Error("Flush bypassed redaction or destroyed safe diagnostics")
+				}
+				if rec.Result().Header.Get("Content-Type") != "application/json" || rec.Result().ContentLength != int64(rec.Body.Len()) {
+					t.Errorf("Flush committed stale headers: %v", rec.Result().Header)
+				}
+			})
+		}
+	}
+}
+
+func TestJSONResponseRedactionKeepsOnlyRecoveryReceiptExemption(t *testing.T) {
+	const secret = "syntheticNeverValidToken123456789"
+	token := strings.Repeat("ab", 32)
+	body := `{"delivery":{"receipt_token":"` + token + `","api_token":"` + secret + `"},"status":"pending"}`
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		for _, path := range []string{"/api/v1/pipelines/run-1/recover", "/api/v1/sessions"} {
+			t.Run(string(mode)+path, func(t *testing.T) {
+				rec := serveJSONResponseWithConfig(t, path, body, http.StatusOK, redaction.Config{Mode: mode})
+				var response struct {
+					Delivery map[string]string `json:"delivery"`
+					Status   string            `json:"status"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+					t.Fatalf("response is not valid JSON: %v", err)
+				}
+				if response.Status != "pending" || !strings.HasPrefix(response.Delivery["api_token"], "[REDACTED:") || strings.Contains(rec.Body.String(), secret) {
+					t.Error("unrelated credential or non-secret status escaped response policy")
+				}
+				if path == "/api/v1/pipelines/run-1/recover" {
+					if response.Delivery["receipt_token"] != token {
+						t.Error("recovery lost its exact receipt token")
+					}
+				} else if strings.Contains(rec.Body.String(), token) {
+					t.Error("recovery receipt exemption escaped its route")
+				}
+			})
+		}
 	}
 }
 

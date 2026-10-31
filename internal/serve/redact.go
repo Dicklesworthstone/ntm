@@ -51,6 +51,11 @@ var jsonCredentialPair = regexp.MustCompile(`^("(?:\\.|[^"\\])*"\s*:\s*)"(?:\\.|
 
 const redactionMaxRequestBodyBytes = 10 << 20
 
+// A response is filtered after its handler has run. Keep the handler's status
+// and make an unavailable representation explicit without claiming rollback or
+// encouraging a retry of an operation that may already have committed.
+const redactionUnavailableResponse = `{"response_unavailable":true,"error_code":"RESPONSE_REDACTION_FAILED","error":"Response content could not be safely redacted","hint":"The handler has already run and may have completed the operation. Check its state before retrying."}`
+
 // requestRedactionFinding identifies a location without disclosing the match,
 // its placeholder hash, or a caller-controlled field name (which may itself be
 // a secret). Offsets refer to the original request bytes; End is exclusive.
@@ -224,7 +229,8 @@ func (rw *redactingResponseWriter) Write(b []byte) (int, error) {
 		rw.statusCode = http.StatusOK
 		rw.wroteHeader = true
 	}
-	// After Flush() is called, write directly (streaming passthrough mode)
+	// Only explicitly framed SSE producers may enter streaming passthrough.
+	// They protect each complete event before writing it.
 	if rw.finalized {
 		return rw.ResponseWriter.Write(b)
 	}
@@ -253,13 +259,18 @@ func (rw *redactingResponseWriter) finalize() {
 	// Check if response is JSON
 	contentType := rw.Header().Get("Content-Type")
 	if isJSONContent(contentType) {
-		// Apply redaction to JSON response
-		result := redaction.ScanAndRedact(string(body), rw.cfg)
+		// Protect output in block mode too. Refusing a request belongs before
+		// dispatch; at this point the handler may already have changed state.
+		output, result, err := redactJSONBytes(body, rw.cfg)
 		rw.summary.ResponseFinds = len(result.Findings)
 		for _, f := range result.Findings {
 			rw.categories[string(f.Category)]++
 		}
-		body = []byte(jsonResponseOutput(string(body), result))
+		body = output
+		if err != nil {
+			body = []byte(redactionUnavailableResponse)
+			log.Print("redact: JSON response withheld because it could not be safely redacted")
+		}
 	}
 
 	// Since we buffered the response (and potentially changed its length during redaction),
@@ -273,6 +284,58 @@ func (rw *redactingResponseWriter) finalize() {
 	if _, err := rw.ResponseWriter.Write(body); err != nil {
 		log.Printf("redact: failed to write response body: %v", err)
 	}
+}
+
+// redactJSONBytes protects a complete JSON document for an output surface.
+// Never use this to rewrite input: a syntactically valid placeholder can still
+// corrupt credentials or instructions that a handler stores or executes.
+//
+// Both enforcing modes redact output. Unlike request admission, an output
+// failure cannot undo a handler's work. Callers must use the returned bytes,
+// never Result.Output, and explicitly withhold/reset on error. Errors contain
+// no source content, field names, or custom-pattern details.
+func redactJSONBytes(body []byte, cfg redaction.Config) ([]byte, redaction.Result, error) {
+	if cfg.Mode == redaction.ModeBlock {
+		cfg.Mode = redaction.ModeRedact
+	}
+	result := redaction.ScanAndRedact(string(body), cfg)
+	if cfg.Mode != redaction.ModeRedact {
+		return body, result, nil
+	}
+	if !json.Valid(body) {
+		return nil, result, errors.New("invalid JSON output")
+	}
+	if len(result.Findings) == 0 {
+		return body, result, nil
+	}
+	markers := make([]string, 0, 2*len(result.Findings))
+	for _, f := range result.Findings {
+		if f.Start < 0 || f.End <= f.Start || f.End > len(body) {
+			return nil, result, errors.New("invalid JSON redaction boundary")
+		}
+		// Built-in credential-field findings identify public key context.
+		// A custom pattern may classify the key itself as sensitive; retaining
+		// that key while replacing only its value would disclose the match.
+		if len(cfg.ExtraPatterns[f.Category]) > 0 && jsonCredentialPair.Match(body[f.Start:f.End]) {
+			return nil, result, errors.New("ambiguous JSON redaction boundary")
+		}
+		markers = append(markers, f.Redacted, "")
+	}
+	output := []byte(jsonResponseOutput(string(body), result))
+	if !json.Valid(output) {
+		return nil, result, errors.New("unsafe JSON redaction boundary")
+	}
+	// Repaired JSON must not retain detectable secret content. This also
+	// protects against a structurally valid but incomplete custom rewrite.
+	// Ignore only the markers just inserted: PASSWORD detects arbitrary quoted
+	// values and would otherwise mistake its own marker for a new password.
+	checkCfg := cfg
+	checkCfg.Mode = redaction.ModeBlock
+	remaining := strings.NewReplacer(markers...).Replace(string(output))
+	if redaction.ScanAndRedact(remaining, checkCfg).Blocked {
+		return nil, result, errors.New("JSON redaction left sensitive content")
+	}
+	return output, result, nil
 }
 
 // jsonResponseOutput returns result's output for a JSON body. ScanAndRedact
@@ -308,12 +371,16 @@ func jsonResponseOutput(input string, result redaction.Result) string {
 	return out.String()
 }
 
-// Flush implements http.Flusher for streaming responses (SSE, chunked).
-// Once Flush is called, the writer switches to passthrough mode — subsequent
-// writes go directly to the underlying ResponseWriter without buffering,
-// since streaming responses can't be buffered-then-redacted as a whole.
+// Flush permits streaming only for SSE, whose producers redact complete frames.
+// JSON (including a flush before Content-Type is set) remains buffered until
+// finalize: a secret or JSON token can straddle arbitrary Write/Flush calls.
 func (rw *redactingResponseWriter) Flush() {
 	rw.mu.Lock()
+	contentType := strings.ToLower(strings.TrimSpace(strings.SplitN(rw.Header().Get("Content-Type"), ";", 2)[0]))
+	if !rw.finalized && contentType != "text/event-stream" {
+		rw.mu.Unlock()
+		return
+	}
 	if !rw.finalized {
 		rw.finalized = true // Switch to passthrough mode
 

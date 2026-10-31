@@ -15,6 +15,7 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ### Fixed
 
+- **JSON output confidentiality in `ntm serve`**: `block` mode now protects response credentials as well as refusing sensitive requests. Response filtering preserves meaningful non-secret diagnostics and the handler's HTTP status. Unsafe custom-pattern rewrites produce a valid, explicit `RESPONSE_REDACTION_FAILED` envelope that warns the operation may already have completed, instead of leaking credentials, emitting malformed JSON, or implying the request was rolled back. JSON `Flush` calls can no longer release unredacted fragments.
 - **JSON request integrity in `ntm serve`** (GH #378): enabled `redact` and `block` modes now refuse detected secrets with `422 SECRETS_DETECTED` before handlers or idempotency replay, instead of replacing credentials with malformed JSON or executable/storable placeholders. Accepted requests retain their original bytes. Errors identify categories and byte locations without echoing credential contents or field names. The policy covers `/api/v1` bodies even with a missing or mislabeled `Content-Type`; malformed and oversized bodies are explicitly rejected rather than forwarded or truncated. Response redaction and the pipeline recovery receipt exception are preserved. See [REST request integrity](docs/robot-sensitivity-redaction.md#rest-request-integrity).
 
 ## [v1.38.0] -- 2026-10-31 [GitHub Release]
