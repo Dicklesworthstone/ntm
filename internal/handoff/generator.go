@@ -621,7 +621,7 @@ func (g *Generator) getInProgressBeads(ctx context.Context, agentName string) ([
 		args = append(args, "--assignee", agentName)
 	}
 
-	out, err := g.runCommand(ctx, 10*time.Second, "br", args...)
+	out, err := g.runCommand(ctx, 10*time.Second, "br", bv.BeadsReadArgs(g.projectDir, args)...)
 	if err != nil {
 		if cancelErr := generatorCancellationError(ctx, err, "get in-progress beads"); cancelErr != nil {
 			return nil, cancelErr

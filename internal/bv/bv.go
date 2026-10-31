@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"math/rand/v2"
 	"os"
@@ -27,6 +28,7 @@ import (
 
 	assignmentstore "github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/sqliteutil"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 	"github.com/Dicklesworthstone/ntm/internal/worksource"
 )
 
@@ -840,14 +842,75 @@ func isBeadsReadCommand(args []string) bool {
 	return false
 }
 
-// BeadsReadArgs returns a copy of args for running br from dir. When dir has no
-// .beads of its own, br can still reach a parent's tracker by walking up, and
-// ntm did not choose that tracker, so a read of it gets beadsReadOnlyFlags. The
-// read can then lag a newer issues.jsonl until an ordinary br command imports
-// it. Writes, and reads from a directory with its own .beads, are unchanged.
+// readsWalkedUpTracker reports whether a br read for dir lands on a tracker that
+// was found by walking up and is not this project's own. dir alone cannot always
+// say: a caller that resolved the project first passes the tracker root itself,
+// so the walk from the process's own directory counts too.
+func readsWalkedUpTracker(dir string) bool {
+	if !HasLocalBeadsDB(dir) {
+		root, err := util.FindBeadsRoot(dir)
+		return err != nil || !trackerInSameRepo(dir, root)
+	}
+	cwd, err := os.Getwd()
+	if err != nil || HasLocalBeadsDB(cwd) {
+		return false
+	}
+	root, err := util.FindBeadsRoot(cwd)
+	if err != nil {
+		return false
+	}
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return false
+	}
+	dirInfo, err := os.Stat(dir)
+	if err != nil || !os.SameFile(rootInfo, dirInfo) {
+		return false
+	}
+	return !trackerInSameRepo(cwd, root)
+}
+
+// trackerInSameRepo reports whether start and the tracker at root, an ancestor
+// of start, belong to one git repository: no directory from start up to but not
+// including root has a .git entry, and one exists at or above root. A .git file
+// (worktree or submodule) counts like a directory. Stat calls only, so a tree
+// with no repository, or a .git that cannot be read, stays on the safe side.
+func trackerInSameRepo(start, root string) bool {
+	dir, err := filepath.Abs(start)
+	if err != nil {
+		return false
+	}
+	for dir != root {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); !errors.Is(err, fs.ErrNotExist) {
+			return false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+	for {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+}
+
+// BeadsReadArgs returns a copy of args for running br from dir. When br would
+// reach a tracker by walking up, and that tracker is outside dir's own git
+// repository, ntm did not choose it, so a read of it gets beadsReadOnlyFlags. The
+// read can then lag a newer issues.jsonl until an ordinary br command imports it.
+// Writes, reads from a directory with its own .beads, and reads from anywhere
+// inside the tracker's repository are unchanged.
 func BeadsReadArgs(dir string, args []string) []string {
 	result := append([]string(nil), args...)
-	if !isBeadsReadCommand(result) || HasLocalBeadsDB(dir) {
+	if !isBeadsReadCommand(result) || !readsWalkedUpTracker(dir) {
 		return result
 	}
 	for _, flag := range beadsReadOnlyFlags {

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	processutil "github.com/shirou/gopsutil/v4/process"
 )
@@ -413,7 +414,7 @@ func readyBeadCount(ctx context.Context, dir string) (int, error) {
 	if strings.TrimSpace(dir) == "" {
 		return 0, fmt.Errorf("no pane working directory")
 	}
-	raw, err := semanticCommandOutput(ctx, dir, "br", "ready", "--json")
+	raw, err := semanticCommandOutput(ctx, dir, "br", bv.BeadsReadArgs(dir, []string{"ready", "--json"})...)
 	if err != nil {
 		return 0, err
 	}

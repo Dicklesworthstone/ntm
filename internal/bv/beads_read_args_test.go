@@ -69,6 +69,93 @@ func TestBeadsReadArgsDoesNotRepeatFlagsOrShareTheCallersSlice(t *testing.T) {
 	}
 }
 
+// A caller that resolved the project first passes the tracker root, so only the
+// process's own directory shows that the tracker was found by walking up.
+func TestBeadsReadArgsSeesAWalkUpTheCallerAlreadyResolved(t *testing.T) {
+	root := t.TempDir()
+	mkBeadsDir(t, root)
+	nested := filepath.Join(root, "project", "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	t.Chdir(nested)
+	if got := BeadsReadArgs(root, []string{"stats", "--json"}); strings.Join(got, " ") != "stats --json --no-auto-import --no-auto-flush" {
+		t.Errorf("resolved walk-up read = %v", got)
+	}
+	if got := BeadsReadArgs(root, []string{"close", "bd-1"}); strings.Join(got, " ") != "close bd-1" {
+		t.Errorf("resolved walk-up write changed: %v", got)
+	}
+
+	other := t.TempDir()
+	mkBeadsDir(t, other)
+	if got := BeadsReadArgs(other, []string{"stats", "--json"}); strings.Join(got, " ") != "stats --json" {
+		t.Errorf("another project's local tracker changed: %v", got)
+	}
+
+	t.Chdir(root)
+	if got := BeadsReadArgs(root, []string{"stats", "--json"}); strings.Join(got, " ") != "stats --json" {
+		t.Errorf("read from the tracker's own directory changed: %v", got)
+	}
+}
+
+// A read from inside the tracker's own repository is the project's own read and
+// keeps importing. Anything else stays read-only, including a tree where no
+// repository can be found. Paths are relative to a base holding the tracker at
+// "project".
+func TestBeadsReadArgsGitBoundary(t *testing.T) {
+	const plain, flagged = "stats --json", "stats --json --no-auto-import --no-auto-flush"
+	for _, tc := range []struct {
+		name     string
+		gitDirs  []string
+		gitFiles []string
+		from     string
+		want     string
+	}{
+		{name: "repo subdirectory", gitDirs: []string{"project"}, from: "project/src/deep", want: plain},
+		{name: "worktree checkout holding the tracker", gitFiles: []string{"project"}, from: "project/src", want: plain},
+		{name: "tracker below the repo root", gitDirs: []string{"."}, from: "project/src", want: plain},
+		{name: "clone under a parent tracker", gitDirs: []string{"project/clone"}, from: "project/clone/src", want: flagged},
+		{name: "clone root under a parent tracker", gitDirs: []string{"project/clone"}, from: "project/clone", want: flagged},
+		{name: "clone under a tracker in its own repo", gitDirs: []string{"project", "project/clone"}, from: "project/clone/src", want: flagged},
+		{name: "worktree under a parent tracker", gitFiles: []string{"project/wt"}, from: "project/wt/src", want: flagged},
+		{name: "submodule in the tracker's repo", gitDirs: []string{"project"}, gitFiles: []string{"project/vendor/sub"}, from: "project/vendor/sub/src", want: flagged},
+		{name: "no git at all", from: "project/nested", want: flagged},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			root := filepath.Join(base, "project")
+			from := filepath.Join(base, tc.from)
+			if err := os.MkdirAll(from, 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			mkBeadsDir(t, root)
+			for _, dir := range tc.gitDirs {
+				if err := os.MkdirAll(filepath.Join(base, dir, ".git"), 0o755); err != nil {
+					t.Fatalf("mkdir .git: %v", err)
+				}
+			}
+			for _, dir := range tc.gitFiles {
+				path := filepath.Join(base, dir)
+				if err := os.MkdirAll(path, 0o755); err != nil {
+					t.Fatalf("mkdir: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(path, ".git"), []byte("gitdir: elsewhere\n"), 0o644); err != nil {
+					t.Fatalf("write .git file: %v", err)
+				}
+			}
+
+			if got := strings.Join(BeadsReadArgs(from, []string{"stats", "--json"}), " "); got != tc.want {
+				t.Errorf("read for the literal directory = %q, want %q", got, tc.want)
+			}
+			t.Chdir(from)
+			if got := strings.Join(BeadsReadArgs(root, []string{"stats", "--json"}), " "); got != tc.want {
+				t.Errorf("read for the resolved tracker root = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // A tracker found by walking up must get the read-only flags even though
 // normalization resolves the command's directory to that tracker's root.
 func TestRunBdWalkUpReadReachesBrWithReadOnlyFlags(t *testing.T) {

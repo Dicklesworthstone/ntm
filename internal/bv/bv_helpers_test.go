@@ -334,7 +334,7 @@ func TestReadForMutationContextLeavesUnrelatedErrorsUntouched(t *testing.T) {
 }
 
 func TestReadForMutationContextDoesNotRepairInheritedOrRedirectedDatabase(t *testing.T) {
-	for _, kind := range []string{"parent workspace", "symlinked beads directory", "external database", "external JSONL"} {
+	for _, kind := range []string{"parent workspace", "clone under parent workspace", "symlinked beads directory", "external database", "external JSONL"} {
 		t.Run(kind, func(t *testing.T) {
 			w := setupBeadsReadRecoveryCommands(t, beadsRecoveryTestCommand{})
 			readDir := w.dir
@@ -343,6 +343,11 @@ func TestReadForMutationContextDoesNotRepairInheritedOrRedirectedDatabase(t *tes
 			case "parent workspace":
 				readDir = filepath.Join(w.dir, "child")
 				if err := os.Mkdir(readDir, 0755); err != nil {
+					t.Fatal(err)
+				}
+			case "clone under parent workspace":
+				readDir = filepath.Join(w.dir, "child")
+				if err := os.MkdirAll(filepath.Join(readDir, ".git"), 0755); err != nil {
 					t.Fatal(err)
 				}
 				// A read that only reached this tracker by walking up must not

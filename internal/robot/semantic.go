@@ -34,6 +34,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/bv"
 )
 
 // defaultSemanticWindow is the conservative fallback look-back window used when
@@ -301,7 +303,7 @@ func gatherClaimActivityWithContext(ctx context.Context, dir, label string, wind
 		return claimActivity{}
 	}
 	// br includes closed issues with --all; it rejects --include-closed.
-	raw, err := semanticCommandOutput(ctx, dir, "br", "list", "--label", label, "--all", "--json")
+	raw, err := semanticCommandOutput(ctx, dir, "br", bv.BeadsReadArgs(dir, []string{"list", "--label", label, "--all", "--json"})...)
 	if err != nil {
 		return claimActivity{}
 	}
