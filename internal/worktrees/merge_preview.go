@@ -216,7 +216,9 @@ func mergeCheckoutBlockers(ctx context.Context, dir, expectedBranch, role string
 		blockers = append(blockers, role+"_branch_not_checked_out")
 	}
 	// Read status without opportunistically refreshing/writing the index.
-	out, err := gitOutput(ctx, dir, "--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none")
+	// .ntm/ is ntm's own state, not work a merge could lose, so ntm must not
+	// refuse to merge because of what it wrote there itself.
+	out, err := gitOutput(ctx, dir, "--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none", "--", ":(top)", ":(top,exclude).ntm")
 	if err != nil {
 		return nil, fmt.Errorf("inspect %s checkout changes: %w", role, err)
 	}
