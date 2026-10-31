@@ -442,6 +442,35 @@ func readCommandProcfsVisibility(readFile func(string) ([]byte, error)) (string,
 	if identity == "" {
 		return invalid("/proc mount is missing from mountinfo")
 	}
+	// NSpid lists IDs from this procfs namespace through the task's own
+	// namespace. A single matching ID proves that procfs rows and getpgid
+	// refer to the same processes; equal numbers in nested namespaces do not.
+	// /proc/self resolves the thread-group leader, including on worker threads.
+	data, err = readFile("/proc/self/status")
+	if err != nil {
+		return "", fmt.Errorf("inspect command procfs PID namespace: %w", err)
+	}
+	namespaceSeen := false
+	for _, line := range strings.SplitAfter(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || fields[0] != "NSpid:" {
+			continue
+		}
+		if namespaceSeen || len(fields) != 2 || !strings.HasSuffix(line, "\n") {
+			return invalid("PID namespace evidence must contain one complete NSpid value")
+		}
+		namespaceSeen = true
+		pid, err := strconv.ParseUint(fields[1], 10, 64)
+		if err != nil || pid == 0 {
+			return invalid("malformed PID namespace evidence")
+		}
+		if pid != uint64(os.Getpid()) {
+			return invalid("procfs PID namespace does not match command observer")
+		}
+	}
+	if !namespaceSeen {
+		return invalid("PID namespace evidence missing from /proc/self/status")
+	}
 	return identity, nil
 }
 

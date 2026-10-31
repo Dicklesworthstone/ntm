@@ -824,6 +824,13 @@ proof, while the command's existing deadline and cancellation remain effective.
 The same proof requires a complete, stable `/proc` mount view. Modes that hide
 process directories, such as `hidepid=2` or `hidepid=4`, cannot authorize a settled
 receipt; an apparently empty visible group does not prove hidden work ended.
+The mount must also expose the observer's own PID namespace: a single `NSpid`
+value in `/proc/self/status` must match its process ID before and after the
+census. An ancestor namespace's process numbers can alias unrelated local
+processes, so matching numeric group IDs alone cannot prove settlement. Missing
+namespace evidence (including kernels without `NSpid` support or `CONFIG_PID_NS`)
+also leaves observation uncertain; use a complete procfs mount for the process's
+own namespace on a kernel that supplies this evidence.
 
 If cleanup returns without that proof, the receipt becomes `unresolved`, with the
 failed or cancelled outcome and cleanup details preserved, rather than remaining

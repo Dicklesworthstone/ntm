@@ -458,6 +458,10 @@ func TestCommandGroupFallbackPreservesNormalLifecycle(t *testing.T) {
 
 const commandGroupTestMountInfo = "10 1 0:2 / /proc rw,nosuid,nodev,noexec - proc proc rw\n"
 
+func commandGroupTestSelfStatus() string {
+	return fmt.Sprintf("Name:\tntm\nNSpid:\t%d\n", os.Getpid())
+}
+
 func commandGroupTestStat(pid int, state string, group int, threads string) string {
 	fields := make([]string, 19)
 	for i := range fields {
@@ -753,6 +757,9 @@ func TestCommandGroupCensusNarrowsAndValidatesEvidence(t *testing.T) {
 					if path == "/proc/self/mountinfo" {
 						return []byte(commandGroupTestMountInfo), nil
 					}
+					if path == "/proc/self/status" {
+						return []byte(commandGroupTestSelfStatus()), nil
+					}
 					if path == "/proc/stat" {
 						return []byte("cpu 1 2 3\nprocesses 123\nprocs_running 2\n"), nil
 					}
@@ -847,6 +854,9 @@ func TestCommandGroupCensusRequiresStableBirthEvidence(t *testing.T) {
 					if path == "/proc/self/mountinfo" {
 						return []byte(commandGroupTestMountInfo), nil
 					}
+					if path == "/proc/self/status" {
+						return []byte(commandGroupTestSelfStatus()), nil
+					}
 					if path != "/proc/stat" {
 						return proc.ReadFile(strings.TrimPrefix(path, "/proc/"))
 					}
@@ -933,6 +943,8 @@ func TestCommandGroupCensusRequiresCompleteProcfsVisibility(t *testing.T) {
 				getpgid: func(int) (int, error) { return 42, nil },
 				readFile: func(path string) ([]byte, error) {
 					switch path {
+					case "/proc/self/status":
+						return []byte(commandGroupTestSelfStatus()), nil
 					case "/proc/self/mountinfo":
 						mountReads++
 						if mountReads == tc.readErrAt {
@@ -957,6 +969,93 @@ func TestCommandGroupCensusRequiresCompleteProcfsVisibility(t *testing.T) {
 				t.Fatalf("lost visibility failure cause: %v", err)
 			}
 		})
+	}
+}
+
+func TestCommandGroupCensusRequiresMatchingPIDNamespace(t *testing.T) {
+	valid := commandGroupTestSelfStatus()
+	pid := strconv.Itoa(os.Getpid())
+	otherPID := strconv.Itoa(os.Getpid() + 1)
+	for _, tc := range []struct {
+		name    string
+		status  string
+		readErr error
+		valid   bool
+	}{
+		{name: "matching namespace", status: valid, valid: true},
+		{name: "namespace evidence missing"},
+		{name: "matching numeric Pid alone is insufficient", status: "Pid:\t" + pid + "\n"},
+		{name: "namespace value missing", status: "NSpid:\n"},
+		{name: "zero PID", status: "NSpid:\t0\n"},
+		{name: "negative PID", status: "NSpid:\t-1\n"},
+		{name: "signed PID", status: "NSpid:\t+" + pid + "\n"},
+		{name: "nondecimal PID", status: "NSpid:\t0x2a\n"},
+		{name: "unknown PID", status: "NSpid:\tunknown\n"},
+		{name: "overflowing PID", status: "NSpid:\t18446744073709551616\n"},
+		{name: "mismatched PID", status: "NSpid:\t" + otherPID + "\n"},
+		{name: "nested namespace", status: "NSpid:\t" + otherPID + "\t" + pid + "\n"},
+		{name: "nested namespace with equal numeric IDs", status: "NSpid:\t" + pid + "\t" + pid + "\n"},
+		{name: "extra namespace token", status: "NSpid:\t" + pid + "\tunknown\n"},
+		{name: "duplicate namespace row", status: valid + "NSpid:\t" + pid + "\n"},
+		{name: "truncated namespace row", status: "NSpid:\t" + pid},
+		{name: "status read denied", readErr: syscall.EACCES},
+	} {
+		observations := []int{1, 2}
+		if tc.valid {
+			observations = []int{0}
+		}
+		for _, failAt := range observations {
+			t.Run(fmt.Sprintf("%s/observation_%d", tc.name, failAt), func(t *testing.T) {
+				// An unrelated ancestor-namespace zombie may have the same
+				// numeric PID and group as the locally owned leader. Even this
+				// apparently quiet record cannot prove settlement without a
+				// matching procfs namespace before and after the census.
+				proc := fstest.MapFS{
+					"42/stat": {Data: []byte(commandGroupTestStat(42, "Z", 42, "1"))},
+				}
+				statusReads, dirReads := 0, 0
+				inspector := commandGroupInspector{
+					readDir: func(path string) ([]os.DirEntry, error) {
+						dirReads++
+						if path != "/proc" {
+							t.Fatalf("unexpected directory %q", path)
+						}
+						return proc.ReadDir(".")
+					},
+					getpgid: func(int) (int, error) { return 42, nil },
+					readFile: func(path string) ([]byte, error) {
+						switch path {
+						case "/proc/self/mountinfo":
+							return []byte(commandGroupTestMountInfo), nil
+						case "/proc/self/status":
+							statusReads++
+							if statusReads == failAt {
+								return []byte(tc.status), tc.readErr
+							}
+							return []byte(valid), nil
+						case "/proc/stat":
+							return []byte("processes 123\n"), nil
+						default:
+							return proc.ReadFile(strings.TrimPrefix(path, "/proc/"))
+						}
+					},
+				}
+				alive, err := inspectCommandGroup(42, inspector)
+				wantStatusReads, wantDirReads := failAt, failAt-1
+				if tc.valid {
+					wantStatusReads, wantDirReads = 2, 1
+				}
+				if alive || (err == nil) != tc.valid || statusReads != wantStatusReads || dirReads != wantDirReads {
+					t.Fatalf("alive=%t error=%v status_reads=%d dir_reads=%d; want valid=%t status_reads=%d dir_reads=%d", alive, err, statusReads, dirReads, tc.valid, wantStatusReads, wantDirReads)
+				}
+				if err != nil && !strings.Contains(err.Error(), "namespace") {
+					t.Fatalf("missing namespace diagnostic: %v", err)
+				}
+				if tc.readErr != nil && !errors.Is(err, tc.readErr) {
+					t.Fatalf("lost status read error: %v", err)
+				}
+			})
+		}
 	}
 }
 
