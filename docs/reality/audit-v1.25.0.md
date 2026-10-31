@@ -55,7 +55,7 @@ total-minutes: 4 (budget 90)
 | bd-456fv | NO_PROOF_NAMED |
 | bd-ws5-ship-or-cut-jv0rc.1.1 | NO_PROOF_NAMED |
 
-## Completeness-language check (draft notes: /private/tmp/claude-501/-Users-jemanuel-projects-ntm/bebc8724-6a41-44a4-ad9c-e5f004972cd9/scratchpad/draft-notes-v1.25.0.md)
+## Completeness-language check (draft notes: draft-notes-v1.25.0.md, a local scratch file)
 ```
 3:  convention.** (bd-ws3-contract-breadth-psvyu.2) Every robot envelope —
 8:  every registered schema type and fails on any null-where-array, with an
