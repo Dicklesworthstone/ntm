@@ -117,6 +117,8 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
   - 2 catch small defects in newer code (GH #375): `TestRemoteProcessOperationsCLIRefuseBeforePaneObservation` and `TestWaitCommandJSONPreservesFailureCodes`. A remote `--robot-*` process request is refused correctly, but only after observing panes over SSH, and `ntm wait --type=nonsense` reports `PANE_NOT_FOUND` instead of `INVALID_FLAG`.
   - 2 need `SHELL` set in the environment and pass with `SHELL=/bin/bash`: `TestRealGuardedSendRechecksPIDBeforeEnter` and `TestRealPaneMutationGuardProtectsSharedSendAndRescueKeys`.
   - 5 fail on v1.37.2 as well: `TestRestoreLifecycleReportsOnlyCompletedContextDeliveries` (GH #340), `TestRunGitCommandReportsTimeoutWhileReadingOutput`, `TestRequestMirrorsToInstalledSLB`, `TestRobotSLBReviewsThroughInstalledSLB` and `TestGetEnv_GlobalMode`.
+- **One more test fails intermittently (GH #376).** Run alone, `TestRESTBackgroundPipelineFreshServerCancelsActualWorker` failed 4 of 200 times on this release and 3 of 200 times on v1.37.2. All 7 failures are the same `TempDir` cleanup error, raised when the detached worker is still writing as the test ends, and no assertion failed.
+- **The Go module still carries two tracked executables (GH #346):** the 59.8 MB Linux binary `cmd/ntm/ntm` and the 2.8 MB `fakeshell`. They are the same files as in v1.37.2. They make the module download larger and play no part in the built binary.
 
 ## [v1.37.2] -- 2026-10-14 [GitHub Release]
 
