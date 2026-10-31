@@ -924,18 +924,39 @@ func TestPipelineRecoverHTTPPreservesConfiguredRedaction(t *testing.T) {
 		t.Fatalf("redaction changed the exact receipt token: %q %v", token, err)
 	}
 	const secret = "sk-proj-FAKEtestkey1234567890123456789012345678901234"
+	before := pipelineRecoveryHTTPJournal(t, root, prior.RunID)
 	body := pipelineRecoveryHTTPBody(t, token, "Observed original response using "+secret)
+	req := pipelineRecoveryHTTPRequest(http.MethodPost, path, body)
+	req.Header.Set("Idempotency-Key", "recovery-redaction-integrity")
+	rec, refusal := pipelineRecoveryHTTPServe(t, srv, req)
+	if rec.Code != http.StatusUnprocessableEntity || refusal.Success || refusal.ErrorCode != "SECRETS_DETECTED" || strings.Contains(rec.Body.String(), secret) {
+		t.Fatalf("sensitive recovery reason was not explicitly refused: %d %s", rec.Code, rec.Body)
+	}
+	if !bytes.Equal(before, pipelineRecoveryHTTPJournal(t, root, prior.RunID)) {
+		t.Fatal("refused recovery persisted a credential or replacement reason")
+	}
+
+	// Rejecting the operator's reason must leave the receipt usable, and must
+	// not reserve the HTTP replay key. The exact receipt travels under the
+	// request's `receipt` field; response receipt_token redaction remains scoped
+	// to the recovery route. The second attempt also exercises durable replay.
+	const reason = "Observed original response without including credentials"
+	body = pipelineRecoveryHTTPBody(t, token, reason)
 	for attempt := 0; attempt < 2; attempt++ {
-		rec, out := pipelineRecoveryHTTPServe(t, srv, pipelineRecoveryHTTPRequest(http.MethodPost, path, body))
-		if rec.Code != http.StatusOK || out.Replayed != (attempt == 1) || out.Delivery.ReceiptToken != token || strings.Contains(rec.Body.String(), secret) || !strings.Contains(out.Delivery.ResolutionReason, "[REDACTED:") {
-			t.Fatalf("redacted acceptance/replay failed: %d %s", rec.Code, rec.Body)
+		req := pipelineRecoveryHTTPRequest(http.MethodPost, path, body)
+		if attempt == 0 {
+			req.Header.Set("Idempotency-Key", "recovery-redaction-integrity")
+		}
+		rec, out := pipelineRecoveryHTTPServe(t, srv, req)
+		if rec.Code != http.StatusOK || out.Replayed != (attempt == 1) || out.Delivery.ReceiptToken != token || out.Delivery.ResolutionReason != reason {
+			t.Fatalf("unchanged acceptance/replay failed: %d %s", rec.Code, rec.Body)
 		}
 		persisted, err := pipeline.LoadState(root, prior.RunID)
-		if err != nil || persisted.AgentDeliveries["agent"].ResolutionReason != out.Delivery.ResolutionReason {
+		if err != nil || persisted.AgentDeliveries["agent"].ResolutionReason != reason {
 			t.Fatalf("durable decision and wire reason differ: %+v %v", persisted, err)
 		}
 		if bytes.Contains(pipelineRecoveryHTTPJournal(t, root, prior.RunID), []byte(secret)) {
-			t.Fatal("operator reason bypassed configured request redaction")
+			t.Fatal("refused operator reason reached the recovery journal")
 		}
 	}
 	pipelineRecoveryHTTPAssertNoSend(t, logPath)

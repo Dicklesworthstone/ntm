@@ -11,6 +11,12 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **JSON request integrity in `ntm serve`** (GH #378): enabled `redact` and `block` modes now refuse detected secrets with `422 SECRETS_DETECTED` before handlers or idempotency replay, instead of replacing credentials with malformed JSON or executable/storable placeholders. Accepted requests retain their original bytes. Errors identify categories and byte locations without echoing credential contents or field names. The policy covers `/api/v1` bodies even with a missing or mislabeled `Content-Type`; malformed and oversized bodies are explicitly rejected rather than forwarded or truncated. Response redaction and the pipeline recovery receipt exception are preserved. See [REST request integrity](docs/robot-sensitivity-redaction.md#rest-request-integrity).
+
 ## [v1.38.0] -- 2026-10-31 [GitHub Release]
 
 **This is the first release to carry the work on `main` that v1.37.1 and v1.37.2 held back: pipeline branch checkpoints, webhook outbox persistence, checkpoint binary and untracked capture, the reservation watcher, and Gemini readiness and context metrics. It also adds reviewed `ntm worktrees` merges, operator recovery for uncertain pipeline deliveries, pipeline commands and context rotations, per-request project selection on the REST mail and reservation routes, and pi agent support. Go moves to 1.26.10 for GO-2026-6809.** Many recovery and delivery paths now stop for an operator decision where they used to repeat work or carry on, so commands that used to proceed can now refuse. Read the Upgrade notes first, and finish or inspect in-flight pipeline runs before upgrading.

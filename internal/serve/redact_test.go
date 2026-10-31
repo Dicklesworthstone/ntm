@@ -73,9 +73,7 @@ func TestRedactionMiddleware_ModeOff(t *testing.T) {
 	t.Log("TEST: TestRedactionMiddleware_ModeOff - passed")
 }
 
-func TestRedactionMiddleware_RedactRequest(t *testing.T) {
-	t.Log("TEST: TestRedactionMiddleware_RedactRequest - starting")
-
+func TestRedactionMiddleware_RedactRequestRejectsInsteadOfSubstituting(t *testing.T) {
 	testSecret := "sk-proj-FAKEtestkey1234567890123456789012345678901234"
 	s := &Server{
 		redactionCfg: &RedactionConfig{
@@ -84,13 +82,10 @@ func TestRedactionMiddleware_RedactRequest(t *testing.T) {
 		},
 	}
 
-	var receivedBody string
+	handlerCalled := false
 	handler := s.redactionMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		receivedBody = string(body)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		handlerCalled = true
+		w.WriteHeader(http.StatusNoContent)
 	}))
 
 	reqBody := `{"key":"` + testSecret + `"}`
@@ -100,17 +95,22 @@ func TestRedactionMiddleware_RedactRequest(t *testing.T) {
 
 	handler.ServeHTTP(rr, req)
 
-	t.Logf("TEST: TestRedactionMiddleware_RedactRequest - original body: %s", reqBody)
-	t.Logf("TEST: TestRedactionMiddleware_RedactRequest - received body: %s", receivedBody)
-
-	// Request body should have secret redacted
-	if strings.Contains(receivedBody, testSecret) {
-		t.Errorf("request body still contains secret: %s", receivedBody)
+	if handlerCalled {
+		t.Fatal("handler received a credential-bearing request that could save or execute a placeholder")
 	}
-	if !strings.Contains(receivedBody, "[REDACTED:") {
-		t.Errorf("request body should contain redaction marker: %s", receivedBody)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422: %s", rr.Code, rr.Body)
 	}
-	t.Log("TEST: TestRedactionMiddleware_RedactRequest - passed")
+	var response APIError
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("rejection must be valid JSON: %v", err)
+	}
+	if response.ErrorCode != "SECRETS_DETECTED" || response.Success {
+		t.Errorf("unexpected rejection envelope: %+v", response)
+	}
+	if strings.Contains(rr.Body.String(), testSecret) {
+		t.Error("rejection exposed the submitted credential")
+	}
 }
 
 func TestRedactionMiddleware_RedactResponse(t *testing.T) {
@@ -676,12 +676,17 @@ func TestIntegration_RESTRedaction(t *testing.T) {
 		},
 	}
 
-	// Create a test endpoint that echoes back request body + adds a secret to response
+	// Successful input admission must still reach response redaction. Echo an
+	// ordinary request unchanged and add a server-side secret to the response.
+	var receivedBody string
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read admitted request: %v", err)
+		}
+		receivedBody = string(body)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		// Echo back the body (which should be redacted) plus add response data
 		resp := map[string]interface{}{
 			"received":      string(body),
 			"server_secret": testSecret,
@@ -692,8 +697,8 @@ func TestIntegration_RESTRedaction(t *testing.T) {
 	// Wrap with redaction middleware
 	handler := s.redactionMiddleware(testHandler)
 
-	// Send request with secret
-	reqBody := `{"api_key":"` + testSecret + `","safe":"no secret here"}`
+	// Preserve exact request bytes while redacting the separate response value.
+	reqBody := " \n{ \"safe\" : \"no secret here\" }\t\n"
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/test", strings.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -707,11 +712,17 @@ func TestIntegration_RESTRedaction(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Errorf("expected status 200, got: %d", rr.Code)
 	}
+	if receivedBody != reqBody {
+		t.Error("ordinary request bytes changed before reaching the handler")
+	}
 
 	// Parse response
 	var resp map[string]interface{}
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to parse response: %v", err)
+	}
+	if resp["received"] != reqBody {
+		t.Errorf("response changed ordinary echoed request: %v", resp["received"])
 	}
 
 	// CRITICAL: Verify no raw secret in response

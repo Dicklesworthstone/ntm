@@ -6,6 +6,70 @@ This document defines sensitivity classification, redaction, and disclosure-cont
 
 Robot mode surfaces expose richer operational data than interactive output. This creates risk: pane output, mail content, command arguments, and diagnostic evidence may contain secrets, credentials, PII, or internal addresses. This contract ensures robot payloads remain safe by default while preserving agent ergonomics.
 
+## REST Request Integrity
+
+`ntm serve` treats request admission separately from output redaction. When REST
+redaction is enabled, `redact` and `block` both reject JSON requests with detected
+secrets before handlers or idempotency replay run. Accepted request bytes remain
+unchanged. No route receives a credential or instruction replaced by a redaction
+placeholder, even when such a replacement would preserve JSON syntax.
+
+This policy applies to every `/api/v1` request body, regardless of `Content-Type`,
+because the API handlers decode JSON even when the header is missing or mislabeled.
+Declared `application/json` bodies elsewhere are also checked. Empty bodies remain
+available to routes with optional input. Nonempty malformed JSON without detected
+secrets is rejected with `400 BAD_REQUEST`; an unreadable body is also rejected
+without forwarding its partial contents. Bodies above 10 MiB return `413 REQUEST_TOO_LARGE`, including
+chunked bodies and bodies whose first 10 MiB happen to form valid JSON.
+
+| Configuration | Detected secret in a JSON request |
+|---------------|----------------------------------|
+| Enabled `redact` | Reject with `422 SECRETS_DETECTED` |
+| Enabled `block` | Reject with `422 SECRETS_DETECTED` |
+| `warn`, `off`, or disabled REST redaction | No secret-based rejection or substitution by this middleware |
+| Explicitly allowlisted match or disabled category | Original bytes pass if no other findings require rejection |
+
+The CLI enables REST redaction for `redact` and `block`; its default `warn` mode
+does not enable this middleware. Existing allowlists and category settings still
+govern detection. Allowlisting is an explicit operator policy choice and also
+affects output handling; removing a real credential from a request is preferable
+to broadening the allowlist merely to get a request accepted.
+
+Secret rejections use the normal API error envelope. `details.findings_count`
+reports the total, and `details.findings` contains up to 100 objects with only
+`category`, `start`, and `end`. Locations are zero-based byte offsets in the
+original body, with an exclusive `end`. `findings_truncated: true` indicates that
+more locations were omitted. The error and hint explain the refusal. Diagnostics
+never include raw matches, credential hashes, arbitrary field names, body excerpts,
+or decoder error text. Logs retain the request summary and category counts.
+
+### Why requests are rejected
+
+The handlers require exact input for several different reasons:
+
+| Handler surface | Integrity requirement |
+|-----------------|-----------------------|
+| `PUT /api/v1/policy/` | Saves the submitted policy text to disk |
+| `POST /api/v1/approvals/request` | Persists actions, resources, and reasons; also logs the action |
+| Agent `/send` and pane `/input` | Dispatch the submitted instruction or text |
+| Jobs and pipelines | Execute work and persist inputs or decisions |
+| Pipeline `/recover` | Records an operator's exact acceptance reason |
+| Safety and validation routes | Must evaluate the caller's actual input |
+
+Substituting placeholders on selected routes would change what is stored,
+executed, or validated. Passing original detected secrets through while redacting
+only responses would also permit them into existing handler logs and persistence.
+Uniform rejection avoids both problems and applies to future API handlers too.
+A refused request leaves the idempotency key available for a corrected submission.
+
+Response redaction remains separate: JSON output in `redact` mode keeps its
+structure and safe neighboring fields. The existing pipeline recovery response
+exception preserves the exact 64-character lowercase hexadecimal `receipt_token`
+only on `/api/v1/pipelines/<id>/recover`. Clients submit it under the request's
+`receipt` field; there is no new request-redaction exception. A sensitive recovery
+reason is rejected before the journal changes, and a corrected reason can still
+use the same receipt.
+
 ## Disclosure States
 
 Every disclosable field has a disclosure state:

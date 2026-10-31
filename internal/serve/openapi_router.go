@@ -406,7 +406,7 @@ func buildRouterOperation(rt RouterRoute, components *OpenAPIComponents) *Operat
 				"step_id":         {Type: "string", Description: "Exact step_id returned by inspection."},
 				"receipt":         {Type: "string", Description: "Exact 64-character lowercase hexadecimal receipt_token returned by inspection."},
 				"accept_delivery": {Type: "boolean", Description: "Must be true to record acceptance."},
-				"reason":          {Type: "string", Description: "Operator observation; after trimming whitespace, 1 to 4096 UTF-8 bytes. Configured request redaction applies before persistence."},
+				"reason":          {Type: "string", Description: "Operator observation; after trimming whitespace, 1 to 4096 UTF-8 bytes. Enabled redact/block modes reject detected secrets with 422 SECRETS_DETECTED before persistence; submitted values are never replaced with placeholders."},
 			},
 			Required:             []string{"step_id", "receipt", "accept_delivery", "reason"},
 			AdditionalProperties: false,

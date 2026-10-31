@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -48,6 +49,17 @@ const receiptTokenAllowlist = `^"receipt_token"\s*:\s*"[0-9a-f]{64}"$`
 // the separator.
 var jsonCredentialPair = regexp.MustCompile(`^("(?:\\.|[^"\\])*"\s*:\s*)"(?:\\.|[^"\\])*"$`)
 
+const redactionMaxRequestBodyBytes = 10 << 20
+
+// requestRedactionFinding identifies a location without disclosing the match,
+// its placeholder hash, or a caller-controlled field name (which may itself be
+// a secret). Offsets refer to the original request bytes; End is exclusive.
+type requestRedactionFinding struct {
+	Category redaction.Category `json:"category"`
+	Start    int                `json:"start"`
+	End      int                `json:"end"`
+}
+
 // responseRedactionConfig returns the config for the response to path.
 func responseRedactionConfig(cfg redaction.Config, path string) redaction.Config {
 	if pipelineRecoverPath.MatchString(path) {
@@ -56,8 +68,10 @@ func responseRedactionConfig(cfg redaction.Config, path string) redaction.Config
 	return cfg
 }
 
-// redactionMiddleware creates middleware that redacts sensitive content in requests and responses.
-// It scans JSON request bodies and response bodies for secrets and redacts or blocks as configured.
+// redactionMiddleware scans JSON requests and redacts JSON responses. In redact
+// and block modes, requests with findings are rejected before dispatch. Request
+// values must never be replaced: even a JSON-preserving rewrite could cause a
+// handler to persist a placeholder as a credential or execute altered input.
 func (s *Server) redactionMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Snapshot config under lock to avoid races with SetRedactionConfig
@@ -82,43 +96,79 @@ func (s *Server) redactionMiddleware(next http.Handler) http.Handler {
 		}
 		categories := make(map[string]int)
 
-		// Handle request body redaction for JSON content
-		if r.Body != nil && r.ContentLength != 0 {
+		// Admit JSON input without changing any submitted values. Do not rely
+		// on ContentLength: chunked bodies have no known length.
+		if r.Body != nil && r.Body != http.NoBody {
 			contentType := r.Header.Get("Content-Type")
-			if isJSONContent(contentType) {
-				// Limit request body to 10MB to prevent DoS/OOM
-				limitedBody := io.LimitReader(r.Body, 10<<20)
+			// Every v1 API body consumer decodes JSON, usually without checking
+			// Content-Type. A missing or mislabeled header must not bypass the
+			// policy on routes that can store or act on submitted values.
+			if isJSONContent(contentType) || r.URL.Path == "/api/v1" || strings.HasPrefix(r.URL.Path, "/api/v1/") {
+				// Read one byte past the limit so a prefix can never be accepted
+				// as the entire request. The router may already wrap the body
+				// in MaxBytesReader; recognize its error as the same refusal.
+				limitedBody := io.LimitReader(r.Body, redactionMaxRequestBodyBytes+1)
 				body, err := io.ReadAll(limitedBody)
 				r.Body.Close()
+				var tooLarge *http.MaxBytesError
+				if len(body) > redactionMaxRequestBodyBytes || errors.As(err, &tooLarge) {
+					writeErrorResponse(w, http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE",
+						"request body exceeds the 10 MiB limit", nil, reqID)
+					return
+				}
 				if err != nil {
 					writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "failed to read request body", nil, reqID)
 					return
 				}
 
-				// Scan/redact the request body
-				result := redaction.ScanAndRedact(string(body), cfg)
-				if result.Blocked {
-					summary.Blocked = true
-					summary.RequestFinds = len(result.Findings)
-					for _, f := range result.Findings {
-						categories[string(f.Category)]++
-					}
-					summary.Categories = categories
-					logRedactionSummary(summary)
-					writeErrorResponse(w, http.StatusUnprocessableEntity, "SECRETS_DETECTED",
-						"request contains sensitive content that cannot be processed",
-						map[string]interface{}{"findings_count": len(result.Findings)}, reqID)
-					return
+				// Redact mode applies only to output. Scan input in block mode
+				// instead so we neither construct nor forward substituted data.
+				requestCfg := cfg
+				if requestCfg.Mode == redaction.ModeRedact {
+					requestCfg.Mode = redaction.ModeBlock
 				}
-
+				result := redaction.ScanAndRedact(string(body), requestCfg)
 				summary.RequestFinds = len(result.Findings)
 				for _, f := range result.Findings {
 					categories[string(f.Category)]++
 				}
+				if result.Blocked {
+					summary.Blocked = true
+					summary.Categories = categories
+					logRedactionSummary(summary)
 
-				// Replace body with redacted content
-				r.Body = io.NopCloser(bytes.NewReader([]byte(result.Output)))
-				r.ContentLength = int64(len(result.Output))
+					// Bound diagnostic output, and never serialize Finding itself:
+					// it contains the submitted secret in Match.
+					findings := make([]requestRedactionFinding, min(len(result.Findings), 100))
+					for i, f := range result.Findings[:len(findings)] {
+						findings[i] = requestRedactionFinding{Category: f.Category, Start: f.Start, End: f.End}
+					}
+					details := map[string]interface{}{
+						"findings_count": len(result.Findings),
+						"findings":       findings,
+						"hint":           "Remove sensitive content at the reported byte offsets and retry; request values were not changed.",
+					}
+					if len(findings) < len(result.Findings) {
+						details["findings_truncated"] = true
+					}
+					writeErrorResponse(w, http.StatusUnprocessableEntity, "SECRETS_DETECTED",
+						"request contains sensitive content; refusing to substitute redaction placeholders for submitted values",
+						details, reqID)
+					return
+				}
+
+				// Keep syntax errors out of handlers too. Do not echo decoder
+				// errors, which can include bytes from sensitive input. Empty
+				// bodies remain available to routes with optional JSON input.
+				if len(body) > 0 && !json.Valid(body) {
+					writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid JSON request body", nil, reqID)
+					return
+				}
+
+				// Preserve the original bytes, including whitespace, duplicate
+				// keys, escaped strings and numbers requiring exact precision.
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				r.ContentLength = int64(len(body))
 			}
 		}
 

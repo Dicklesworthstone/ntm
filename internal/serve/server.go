@@ -1356,14 +1356,14 @@ func (s *Server) buildRouter() chi.Router {
 	// Jobs select their effective destination from the eventual JSON body.
 	// Pin configuration and cwd before redaction can wait on that body.
 	r.Use(s.jobProjectSelectionMiddleware)
-	// Redact sensitive content in requests/responses. Inert unless Config.Redaction
-	// was supplied (see that field): the middleware is always mounted, but it
-	// passes through untouched when no redaction config reached New.
+	// Reject sensitive JSON input before any handler or replay can act on it;
+	// redact response content. Inert unless Config.Redaction was supplied (see
+	// that field): no redaction config means untouched request/response bytes.
 	r.Use(s.redactionMiddleware)
 	// Freeze mail and reservation requests' projects before replay lookup.
 	// Validation errors follow each route's permission check.
 	r.Use(s.mailProjectScopeMiddleware)
-	// Classify the canonical post-redaction job request before cache lookup.
+	// Classify the unchanged, admitted job request before cache lookup.
 	// Admission later uses the same captured selection and project resolver.
 	r.Use(s.jobHTTPReplayScopeMiddleware)
 	// Idempotency-Key replay for EVERY mutating route — the single mount point
@@ -4155,9 +4155,9 @@ func (s *Server) handlePaneInputV1(w http.ResponseWriter, r *http.Request) {
 	if !refresh() {
 		return
 	}
-	// The REST redaction middleware already processed this text. Keep its bytes
-	// intact, including whitespace and stage-only input, while sharing the live
-	// quarantine, trust/composer, agent transport, and submission checks.
+	// The REST redaction middleware already admitted this text without rewriting
+	// it. Keep its bytes intact, including whitespace and stage-only input, while
+	// sharing the live quarantine, trust/composer, transport, and submission checks.
 	service, err := dispatch.NewService(dispatch.Ports{
 		Redactor: dispatch.AllowAllRedactor{}, Deliverer: dispatch.TMUXDeliverer{},
 	})
