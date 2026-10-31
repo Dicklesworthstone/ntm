@@ -7845,7 +7845,7 @@ type Change struct {
 }
 
 // GetSnapshotDelta retrieves state changes since the given timestamp.
-// Uses the internal state tracker ring buffer to return delta changes.
+// Replays the durable attention feed, including event-specific payloads.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetSnapshotDelta(since time.Time) (*SnapshotDeltaOutput, error) {
 	output := &SnapshotDeltaOutput{
@@ -7893,6 +7893,16 @@ func GetSnapshotDelta(since time.Time) (*SnapshotDeltaOutput, error) {
 		}
 		if event.ReasonCode != "" {
 			change.Data["reason_code"] = event.ReasonCode
+		}
+		// Preserve the canonical event payload and validated follow-up actions
+		// used by --robot-events. Keep the stored scope above so window.pane
+		// addresses survive even when they are not integer pane indices.
+		replayed := attentionEventFromStored(event)
+		if len(replayed.Details) > 0 {
+			change.Data["details"] = replayed.Details
+		}
+		if len(replayed.NextActions) > 0 {
+			change.Data["next_actions"] = replayed.NextActions
 		}
 		output.Changes = append(output.Changes, change)
 	}

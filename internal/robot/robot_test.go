@@ -7049,3 +7049,199 @@ func TestResolvePaneTranscriptsStopsAfterCancellation(t *testing.T) {
 		t.Fatalf("context resolver lost cancellation: result=%+v err=%v", got, err)
 	}
 }
+
+func TestGetSnapshotDeltaPreservesCanonicalEventPayloads(t *testing.T) {
+	store := newProjectionTestStore(t)
+	previous := currentProjectionStore()
+	SetProjectionStore(store)
+	t.Cleanup(func() { SetProjectionStore(previous) })
+	now := time.Now().UTC()
+	expires := now.Add(time.Hour)
+	stateCursor, err := store.AppendAttentionEvent(&state.StoredAttentionEvent{
+		Ts: now.Add(-30 * time.Second), SessionName: "delta-proj", Pane: "2.0",
+		Category: string(EventCategoryAgent), EventType: string(EventTypeAgentStateChange),
+		Source: "activity_detector", Actionability: state.Actionability("interesting"),
+		Severity: state.Severity("info"), Summary: "agent became idle", ExpiresAt: &expires,
+		Details:     `{"old_state":"working","new_state":"idle","pane_id":"%14","queued_messages":0,"cursor":"payload-local","source_health":{"available":true,"capture_age_ms":0},"title_disclosure":{"disclosure_state":"redacted","preview":"[REDACTED]"}}`,
+		NextActions: `[{"action":"robot-tail","args":"--robot-tail=delta-proj --panes=2.0 --lines=50","reason":"Inspect completed work"},{"action":"robot-retired-command","args":"--robot-retired-command","reason":"Obsolete stored action"}]`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	feed := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize: 16, RetentionPeriod: time.Hour, HeartbeatInterval: 0,
+	}, WithAttentionStore(store))
+	t.Cleanup(feed.Stop)
+	pressure := feed.Append(NewContextPressureAttentionEvent("delta-proj", tmux.Pane{
+		ID: "%14", Index: 0, WindowIndex: 2, Type: tmux.AgentClaude,
+	}, 96.5, 75))
+	rotation := feed.PublishActuation(ActuationRecord{
+		Stage: ActuationStageOutcome, Action: "context_rotation", Session: "delta-proj",
+		Targets: []string{"%14"}, Successful: []string{"%14"}, Result: "completed",
+		RequestID: "rotation-123", ReasonCode: "context_rotation_auto_confirm",
+	})
+
+	output, err := GetSnapshotDelta(now.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !output.Success || len(output.Changes) != 3 {
+		t.Fatalf("delta = %+v, want all three durable changes", output)
+	}
+	detailsAt := func(index int) map[string]any {
+		t.Helper()
+		details, ok := output.Changes[index].Data["details"].(map[string]any)
+		if !ok {
+			t.Fatalf("change %d lost structured details: %+v", index, output.Changes[index])
+		}
+		return details
+	}
+	stateChange := output.Changes[0]
+	if stateChange.Session != "delta-proj" || stateChange.Pane != "2.0" || stateChange.Type != string(EventTypeAgentStateChange) {
+		t.Fatalf("stored scope changed: %+v", stateChange)
+	}
+	if stateChange.Data["cursor"] != stateCursor || stateChange.Data["summary"] != "agent became idle" {
+		t.Fatalf("payload fields replaced event metadata: %+v", stateChange.Data)
+	}
+	stateDetails := detailsAt(0)
+	if stateDetails["old_state"] != "working" || stateDetails["new_state"] != "idle" ||
+		stateDetails["queued_messages"] != float64(0) || stateDetails["cursor"] != "payload-local" {
+		t.Fatalf("state transition evidence lost: %+v", stateDetails)
+	}
+	health, ok := stateDetails["source_health"].(map[string]any)
+	if !ok || health["available"] != true || health["capture_age_ms"] != float64(0) {
+		t.Fatalf("nested provenance lost: %+v", stateDetails)
+	}
+	disclosure, ok := stateDetails["title_disclosure"].(map[string]any)
+	if !ok || disclosure["disclosure_state"] != "redacted" || disclosure["preview"] != "[REDACTED]" {
+		t.Fatalf("upstream disclosure metadata changed: %+v", stateDetails)
+	}
+	actions, ok := stateChange.Data["next_actions"].([]NextAction)
+	if !ok || len(actions) != 1 || actions[0].Action != "robot-tail" || actions[0].Args != "--robot-tail=delta-proj --panes=2.0 --lines=50" {
+		t.Fatalf("replayed actions did not use canonical validation: %+v", stateChange.Data["next_actions"])
+	}
+	contextDetails := detailsAt(1)
+	if contextDetails["usage_percent"] != 96.5 || contextDetails["threshold_percent"] != float64(75) ||
+		contextDetails["pane_id"] != "%14" || contextDetails["signal"] != attentionSignalContextHot {
+		t.Fatalf("context pressure evidence lost: %+v", contextDetails)
+	}
+	contextChange := output.Changes[1]
+	if contextChange.Data["cursor"] != pressure.Cursor || contextChange.Data["actionability"] != string(ActionabilityActionRequired) {
+		t.Fatalf("context pressure metadata changed: %+v", contextChange)
+	}
+	contextActions, ok := contextChange.Data["next_actions"].([]NextAction)
+	if !ok || len(contextActions) != 1 || contextActions[0].Action != "robot-context" {
+		t.Fatalf("context pressure lost its follow-up: %+v", contextChange.Data)
+	}
+	rotationDetails := detailsAt(2)
+	successful, ok := rotationDetails["successful"].([]any)
+	if !ok || len(successful) != 1 || successful[0] != "%14" || rotationDetails["result"] != "completed" || rotationDetails["request_id"] != "rotation-123" {
+		t.Fatalf("rotation outcome evidence lost: %+v", rotationDetails)
+	}
+	if output.Changes[2].Data["cursor"] != rotation.Cursor || output.Changes[2].Data["reason_code"] != "context_rotation_auto_confirm" {
+		t.Fatalf("rotation metadata changed: %+v", output.Changes[2])
+	}
+	encoded, err := json.Marshal(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"usage_percent":96.5`) || !strings.Contains(string(encoded), `"next_actions":[`) {
+		t.Fatalf("public delta JSON omitted the evidence/actions: %s", encoded)
+	}
+}
+
+func TestGetSnapshotDeltaHandlesLegacyPayloadsAndReplayBounds(t *testing.T) {
+	store := newProjectionTestStore(t)
+	previous := currentProjectionStore()
+	SetProjectionStore(store)
+	t.Cleanup(func() { SetProjectionStore(previous) })
+	now := time.Now().UTC()
+	expires := now.Add(time.Hour)
+	expired := now.Add(-10 * time.Second)
+	fixtures := []struct {
+		name, details, actions string
+		at                     time.Time
+		expires                *time.Time
+	}{
+		{
+			name: "malformed-details", details: `{"usage_percent":`,
+			actions: `[{"action":"robot-status","args":"--robot-status","reason":"Inspect current state"}]`,
+			at:      now.Add(-30 * time.Second), expires: &expires,
+		},
+		{
+			name: "malformed-actions", details: `{"usage_percent":0,"compacted":true}`, actions: `[`,
+			at: now.Add(-30 * time.Second), expires: &expires,
+		},
+		{
+			name: "obsolete-actions", details: `{}`,
+			actions: `[{"action":"robot-retired-command","args":"--robot-retired-command"},{"action":"","args":"--robot-status"}]`,
+			at:      now.Add(-30 * time.Second), expires: &expires,
+		},
+		{
+			name: "non-object-details", details: `["legacy text"]`, actions: `[]`,
+			at: now.Add(-30 * time.Second), expires: &expires,
+		},
+		{
+			name: "before-window", details: `{"must_not_replay":true}`,
+			at: now.Add(-2 * time.Hour), expires: &expires,
+		},
+		{
+			name: "expired", details: `{"must_not_replay":true}`,
+			at: now.Add(-30 * time.Second), expires: &expired,
+		},
+		{
+			name: "future", details: `{"must_not_replay":true}`,
+			at: now.Add(2 * time.Hour), expires: &expires,
+		},
+	}
+	for _, fixture := range fixtures {
+		_, err := store.AppendAttentionEvent(&state.StoredAttentionEvent{
+			Ts: fixture.at, SessionName: fixture.name, Pane: "3.0",
+			Category: string(EventCategoryAgent), EventType: string(EventTypeAgentStateChange),
+			Source: "legacy", Actionability: state.Actionability("interesting"), Severity: state.Severity("info"),
+			Summary: fixture.name, Details: fixture.details, NextActions: fixture.actions, ExpiresAt: fixture.expires,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	output, err := GetSnapshotDelta(now.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !output.Success || len(output.Changes) != 4 {
+		t.Fatalf("delta = %+v, want four replayable events", output)
+	}
+	for _, change := range output.Changes {
+		if change.Pane != "3.0" || change.Type != string(EventTypeAgentStateChange) || change.Data["summary"] != change.Session {
+			t.Fatalf("legacy metadata or scope changed: %+v", change)
+		}
+		switch change.Session {
+		case "malformed-details":
+			if _, exists := change.Data["details"]; exists {
+				t.Fatalf("malformed details were exposed: %+v", change)
+			}
+			actions, ok := change.Data["next_actions"].([]NextAction)
+			if !ok || len(actions) != 1 || actions[0].Action != "robot-status" {
+				t.Fatalf("malformed details discarded valid actions: %+v", change)
+			}
+		case "malformed-actions":
+			details, ok := change.Data["details"].(map[string]any)
+			if !ok || details["usage_percent"] != float64(0) || details["compacted"] != true {
+				t.Fatalf("malformed actions discarded measured-zero context: %+v", change)
+			}
+			if _, exists := change.Data["next_actions"]; exists {
+				t.Fatalf("malformed actions were exposed: %+v", change)
+			}
+		case "obsolete-actions", "non-object-details":
+			if _, exists := change.Data["details"]; exists {
+				t.Fatalf("empty or non-object details were exposed: %+v", change)
+			}
+			if _, exists := change.Data["next_actions"]; exists {
+				t.Fatalf("obsolete or empty actions were exposed: %+v", change)
+			}
+		default:
+			t.Fatalf("time or retention filter admitted %q", change.Session)
+		}
+	}
+}
