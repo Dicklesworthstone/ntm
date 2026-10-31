@@ -263,7 +263,13 @@ func parseCommandGroupStat(data []byte, expectedPID int) (int, string, error) {
 	}
 	group, ok := parseProcStatPGID(data)
 	fields := strings.Fields(text[close+1:])
-	if !ok || group < 0 || len(fields) < 3 || len(fields[0]) != 1 {
+	if !ok || group < -1 || len(fields) < 3 || len(fields[0]) != 1 {
+		return invalid()
+	}
+	// A task past signal teardown reports state X with group -1: it has left
+	// every group and cannot execute, so any process exiting on the host can
+	// show this row mid-census. Every other state must name a real group.
+	if group == -1 && fields[0] != "X" {
 		return invalid()
 	}
 	parent, err := strconv.Atoi(fields[1])
