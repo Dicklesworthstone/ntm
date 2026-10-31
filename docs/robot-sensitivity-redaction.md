@@ -82,6 +82,53 @@ successful read restores the exact submitted bytes, and refused reads do not
 reserve the key or replace an existing cached result. These replay-integrity
 checks also apply when redaction is disabled.
 
+A terminal result also remains protected when its response is too large to
+cache. Above the 1 MiB response limit, a successful result or an explicitly
+retained post-publication error keeps a bounded inspection receipt. The original
+request still receives its full response and original status. A same-key retry
+returns `409 IDEMPOTENCY_RESULT_UNAVAILABLE`, with `original_status`,
+`response_unavailable: true`, `inspection_required: true`, and `retry_safe: false`;
+it does not run the handler again. Different request bytes still return
+`422 IDEMPOTENT_REPLAY`. Ordinary validation failures remain retryable. Flight
+acquisition checks for a completed result while holding its lock, so a completion
+between a cache miss and acquisition cannot create a second executor. These
+guarantees use the existing bounded in-memory cache: expiry, eviction, and server
+restart still require inspecting affected state before retrying a mutation.
+
+### Request metadata and diagnostics
+
+Enabled `redact` and `block` also inspect URL paths and query values before
+handlers or idempotency replay. These values can name stored resources, select
+actions, or enter handler logs. Detected secrets return `422 SECRETS_DETECTED`,
+with `details.source` set to `path` or `query`; no submitted value is replaced.
+Inspection includes decoded query keys paired with every repeated value, generic
+credential fields, and JSON embedded in query strings. Invalid query encoding
+returns `400 BAD_REQUEST` without exposing parser text. Accepted paths, query
+ordering, escaping, duplicate values, and request bodies remain unchanged.
+
+The complete supplied `X-Request-Id` is checked before sanitization or truncation.
+If sensitive, it receives a new independent identifier used consistently in
+response headers, errors, logs, and audit records. It is never replaced with a
+credential-derived placeholder. An idempotent replay also checks cached
+correlation and `Location` headers against the current request policy, withholding
+unsafe identities instead of exposing a value cached under an older policy or
+substituting a different identity. A sensitive `Origin` is refused with `403`
+before CORS can reflect it, even if its host would otherwise be allowed.
+Authentication still receives the exact supplied authentication headers.
+
+Request, authentication, permission-denial, panic, and redaction-summary logs
+protect their diagnostic copies. Audit records protect the same observations
+before JSONL or SQLite persistence, including User-Agent, principal, resource
+identifiers, and handler-provided details. Status, action, duration, correlation,
+and non-sensitive context remain useful; ambiguous custom-pattern replacements
+withhold the affected diagnostic field. The operational request and identity
+used for authorization are not rewritten. A request pins one policy for
+correlation, admission, and diagnostics; streaming frames retain their separate
+current-policy checks. Off/warn, disabled REST redaction, explicit allowlists,
+and disabled categories retain their documented behavior.
+
+### Response integrity
+
 Response redaction remains separate: JSON output in both `redact` and `block`
 modes keeps its structure and safe neighboring fields. A response is processed
 after its handler runs, so output filtering preserves the handler's HTTP status.

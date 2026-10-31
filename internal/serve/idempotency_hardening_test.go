@@ -1,7 +1,9 @@
 package serve
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 )
 
@@ -87,6 +90,199 @@ func TestIdempotencyConcurrentDuplicateSingleExecution(t *testing.T) {
 	}
 	if replays != 1 {
 		t.Fatalf("replay responses=%d, want exactly 1 (one execute, one replay)", replays)
+	}
+}
+
+func TestIdempotencyFlightRechecksCompletionAfterCacheMiss(t *testing.T) {
+	store := NewIdempotencyStore(time.Hour)
+	defer store.Stop()
+	const key, fingerprint = "completed-between-lookup-and-flight", "original-body"
+	if _, leader := store.BeginFlight(key); !leader {
+		t.Fatal("first request did not acquire its flight")
+	}
+	// This is the exact interleaving at the old race: a second caller observes
+	// a miss, then the original leader publishes its result and releases the
+	// flight before that caller attempts acquisition. No scheduler timing or
+	// test-only production hook is needed to reproduce the store state.
+	if _, _, _, _, found := store.GetWithFingerprint(key); found {
+		t.Fatal("in-flight request unexpectedly had a completed result")
+	}
+	want := []byte(`{"operation":"completed-once"}`)
+	store.SetWithFingerprint(key, fingerprint, want, http.StatusCreated, http.Header{"Location": {"/operations/original"}})
+	store.EndFlight(key)
+	wait, leader := store.BeginFlight(key)
+	if leader {
+		store.EndFlight(key)
+		t.Fatal("cache-miss follower became a new executor after the original request completed")
+	}
+	select {
+	case <-wait:
+	default:
+		t.Fatal("completed result did not wake the follower to recheck the cache")
+	}
+	body, status, headers, gotFingerprint, found := store.GetWithFingerprint(key)
+	if !found || status != http.StatusCreated || !bytes.Equal(body, want) || gotFingerprint != fingerprint || headers.Get("Location") != "/operations/original" {
+		t.Fatal("completed result or its request identity was lost during acquisition")
+	}
+	// Expiration still permits a new operation under the documented cache
+	// lifetime; an old map entry must not cause a busy retry loop forever.
+	store.mu.Lock()
+	store.entries[key].createdAt = time.Now().Add(-2 * time.Hour)
+	store.mu.Unlock()
+	if _, leader := store.BeginFlight(key); !leader {
+		t.Fatal("expired result prevented a new flight")
+	}
+	store.EndFlight(key)
+}
+
+func TestIdempotencyOverflowRetainsTerminalResult(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		status       int
+		retain       bool
+		wantRetained bool
+	}{
+		{"successful mutation", http.StatusAccepted, false, true},
+		{"explicit terminal failure", http.StatusInternalServerError, true, true},
+		{"ordinary refusal remains retryable", http.StatusBadRequest, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newWiringTestServer(t, nil)
+			executions := 0
+			payload := strings.Repeat("large operation result ", idempotencyMaxBodyBytes/len("large operation result ")+1)
+			handler := s.requestIDMiddlewareFunc(s.idempotencyMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				executions++
+				if tc.retain {
+					markIdempotencyResultRetained(r)
+				}
+				w.Header().Set("Content-Type", "text/plain")
+				w.Header().Set("Location", "/operations/original")
+				w.WriteHeader(tc.status)
+				if _, err := io.WriteString(w, payload); err != nil {
+					t.Fatal(err)
+				}
+			})))
+			do := func(body, requestID string) *httptest.ResponseRecorder {
+				req := httptest.NewRequest(http.MethodPost, "/operations", strings.NewReader(body))
+				req.Header.Set("Idempotency-Key", "large-result")
+				req.Header.Set(requestIDHeader, requestID)
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+				return rec
+			}
+			first := do(`{"action":"once"}`, "original-request")
+			if first.Code != tc.status || first.Body.String() != payload || first.Header().Get("Content-Type") != "text/plain" || first.Header().Get("X-Idempotent-Replay") != "" {
+				t.Fatal("retention altered the original response status, representation, or headers")
+			}
+			if !tc.wantRetained {
+				retry := do(`{"action":"once"}`, "retry-request")
+				if retry.Code != tc.status || retry.Body.String() != payload || retry.Header().Get("X-Idempotent-Replay") != "" || executions != 2 || idempotencyStoreLen(s.idempotencyStore) != 0 {
+					t.Fatal("oversized ordinary refusal was incorrectly retained as a completed operation")
+				}
+				return
+			}
+			var retained []byte
+			for attempt := 0; attempt < 2; attempt++ {
+				retry := do(`{"action":"once"}`, "retry-request")
+				var result APIError
+				if err := json.Unmarshal(retry.Body.Bytes(), &result); err != nil {
+					t.Fatalf("replay returned an invalid or truncated JSON receipt: %v", err)
+				}
+				if retry.Code != http.StatusConflict || retry.Header().Get("X-Idempotent-Replay") != "true" || executions != 1 ||
+					result.Success || result.ErrorCode != "IDEMPOTENCY_RESULT_UNAVAILABLE" || result.Details["original_status"] != float64(tc.status) ||
+					result.Details["response_unavailable"] != true || result.Details["inspection_required"] != true || result.Details["retry_safe"] != false ||
+					!strings.Contains(result.Hint, "handler has already run") || retry.Body.Len() >= idempotencyMaxBodyBytes || strings.Contains(retry.Body.String(), "large operation result") {
+					t.Fatalf("oversized terminal result was not safely retained: executions=%d status=%d body=%s", executions, retry.Code, retry.Body)
+				}
+				if retry.Header().Get("Content-Type") != "application/json" || retry.Header().Get("Location") != "/operations/original" ||
+					retry.Header().Get(requestIDHeader) != "retry-request" || retry.Header().Get(idempotencyOriginalRequestIDHeader) != "original-request" ||
+					result.RequestID != "original-request" {
+					t.Fatal("inspection receipt lost its representation, operation location, or request correlation")
+				}
+				if attempt > 0 && !bytes.Equal(retry.Body.Bytes(), retained) {
+					t.Fatal("same-key inspection receipt changed between retries")
+				}
+				retained = append([]byte(nil), retry.Body.Bytes()...)
+			}
+			changed := do(`{"action":"different"}`, "changed-request")
+			if changed.Code != http.StatusUnprocessableEntity || executions != 1 || !strings.Contains(changed.Body.String(), ErrCodeIdempotentReplay) {
+				t.Fatal("oversized result failed to retain the original request fingerprint")
+			}
+			if got := idempotencyStoreLen(s.idempotencyStore); got != 1 {
+				t.Fatalf("retries created %d retained entries, want 1", got)
+			}
+		})
+	}
+}
+
+func TestIdempotencyOversizedCheckpointImportDoesNotOverwriteOnRetry(t *testing.T) {
+	cp, _ := checkpointDisclosureFixture(t, "clean")
+	cp.Description = strings.Repeat("public recovery notes ", idempotencyMaxBodyBytes/len("public recovery notes ")+1)
+	storage := checkpoint.NewStorage()
+	if err := storage.Save(cp); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(t.TempDir(), "large-description.zip")
+	if _, err := storage.Export(cp.SessionName, cp.ID, archivePath, checkpoint.ExportOptions{Format: checkpoint.FormatZip}); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeBlock}})
+	body := ImportCheckpointRequest{Data: base64.StdEncoding.EncodeToString(archive), AllowOverwrite: true}
+	do := func(body ImportCheckpointRequest) *httptest.ResponseRecorder {
+		req := wiringJSONRequest(t, http.MethodPost, "/api/v1/sessions/large-import/checkpoints/import", body)
+		req.Header.Set("Idempotency-Key", "large-import-result")
+		rec := httptest.NewRecorder()
+		s.Router().ServeHTTP(rec, req)
+		return rec
+	}
+	first := do(body)
+	if first.Code != http.StatusCreated || first.Body.Len() <= idempotencyMaxBodyBytes {
+		t.Fatalf("fixture did not publish a checkpoint with an oversized success: status=%d response_bytes=%d", first.Code, first.Body.Len())
+	}
+	var original struct {
+		Checkpoint CheckpointResponse `json:"checkpoint"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &original); err != nil || original.Checkpoint.Description != cp.Description {
+		t.Fatal("first import response did not preserve its complete description")
+	}
+	stored, err := storage.Load("large-import", cp.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.Name = "intervening legitimate recovery state"
+	if err := storage.Save(stored); err != nil {
+		t.Fatal(err)
+	}
+	metadataPath := filepath.Join(storage.CheckpointDir(stored.SessionName, stored.ID), checkpoint.MetadataFile)
+	beforeRetry, err := os.ReadFile(metadataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry := do(body)
+	afterReplay, err := os.ReadFile(metadataPath)
+	if err != nil || !bytes.Equal(beforeRetry, afterReplay) {
+		t.Fatal("same-key retry overwrote intervening checkpoint state after an oversized success")
+	}
+	var result APIError
+	if err := json.Unmarshal(retry.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if retry.Code != http.StatusConflict || retry.Header().Get("X-Idempotent-Replay") != "true" ||
+		result.ErrorCode != "IDEMPOTENCY_RESULT_UNAVAILABLE" || result.Details["original_status"] != float64(http.StatusCreated) {
+		t.Fatalf("retry did not report the already-published import: status=%d response_bytes=%d", retry.Code, retry.Body.Len())
+	}
+	body.AllowOverwrite = false
+	changed := do(body)
+	if changed.Code != http.StatusUnprocessableEntity || !strings.Contains(changed.Body.String(), ErrCodeIdempotentReplay) {
+		t.Fatal("changed import body reused the original operation's retained identity")
+	}
+	afterRetry, err := os.ReadFile(metadataPath)
+	if err != nil || !bytes.Equal(beforeRetry, afterRetry) {
+		t.Fatal("same-key retry or changed-body reuse overwrote intervening checkpoint state")
 	}
 }
 

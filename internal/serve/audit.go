@@ -693,6 +693,7 @@ func (s *Server) AuditMiddleware(store *AuditStore) func(http.Handler) http.Hand
 			}
 
 			start := time.Now()
+			cfg := s.requestRedactionConfig(r)
 
 			// Initialize audit context
 			ac := &AuditContext{
@@ -731,22 +732,22 @@ func (s *Server) AuditMiddleware(store *AuditStore) func(http.Handler) http.Hand
 			rec := &AuditRecord{
 				Timestamp:  start,
 				RequestID:  reqID,
-				UserID:     userID,
+				UserID:     redactRequestDiagnostic(userID, cfg),
 				Role:       role,
 				Action:     action,
-				Resource:   resource,
-				ResourceID: ac.ResourceID,
-				Method:     r.Method,
-				Path:       r.URL.Path,
+				Resource:   redactRequestDiagnostic(resource, cfg),
+				ResourceID: redactRequestDiagnostic(ac.ResourceID, cfg),
+				Method:     redactRequestDiagnostic(r.Method, cfg),
+				Path:       redactRequestDiagnostic(r.URL.Path, cfg),
 				StatusCode: ww.Status(),
 				Duration:   duration,
-				SessionID:  ac.SessionID,
-				PaneID:     ac.PaneID,
-				AgentID:    ac.AgentID,
-				Details:    ac.Details,
-				RemoteAddr: r.RemoteAddr,
-				UserAgent:  r.UserAgent(),
-				ApprovalID: ac.ApprovalID,
+				SessionID:  redactRequestDiagnostic(ac.SessionID, cfg),
+				PaneID:     redactRequestDiagnostic(ac.PaneID, cfg),
+				AgentID:    redactRequestDiagnostic(ac.AgentID, cfg),
+				Details:    redactRequestDiagnostic(ac.Details, cfg),
+				RemoteAddr: redactRequestDiagnostic(r.RemoteAddr, cfg),
+				UserAgent:  redactRequestDiagnostic(r.UserAgent(), cfg),
+				ApprovalID: redactRequestDiagnostic(ac.ApprovalID, cfg),
 			}
 
 			if err := store.Record(rec); err != nil {

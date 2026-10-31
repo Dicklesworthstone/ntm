@@ -304,9 +304,10 @@ func (s *Server) RequirePermission(perm Permission) func(http.Handler) http.Hand
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			rc := RoleFromContext(r.Context())
+			cfg := s.requestRedactionConfig(r)
 			if rc == nil {
 				reqID := requestIDFromContext(r.Context())
-				log.Printf("RBAC: no role context path=%s request_id=%s", r.URL.Path, reqID)
+				log.Printf("RBAC: no role context path=%s request_id=%s", redactRequestDiagnostic(r.URL.Path, cfg), reqID)
 				writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden, "access denied: no role context", nil, reqID)
 				return
 			}
@@ -314,7 +315,7 @@ func (s *Server) RequirePermission(perm Permission) func(http.Handler) http.Hand
 			if !rc.Role.HasPermission(perm) {
 				reqID := requestIDFromContext(r.Context())
 				log.Printf("RBAC: permission denied role=%s perm=%s path=%s user=%s request_id=%s",
-					rc.Role, perm, r.URL.Path, rc.UserID, reqID)
+					rc.Role, perm, redactRequestDiagnostic(r.URL.Path, cfg), redactRequestDiagnostic(rc.UserID, cfg), reqID)
 				writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden,
 					fmt.Sprintf("access denied: role '%s' lacks permission '%s'", rc.Role, perm), nil, reqID)
 				return

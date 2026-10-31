@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"sort"
@@ -71,6 +72,136 @@ type requestRedactionFinding struct {
 	End      int                `json:"end"`
 }
 
+type requestRedactionConfigKey struct{}
+
+// A request uses one policy for admission, correlation, and diagnostics. Event
+// streams continue to snapshot their policy separately for each emitted frame.
+func (s *Server) redactionConfigSnapshot() redaction.Config {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.redactionCfg == nil || !s.redactionCfg.Enabled {
+		return redaction.Config{Mode: redaction.ModeOff}
+	}
+	return s.redactionCfg.Config
+}
+
+func (s *Server) requestRedactionConfig(r *http.Request) redaction.Config {
+	if cfg, ok := r.Context().Value(requestRedactionConfigKey{}).(redaction.Config); ok {
+		return cfg
+	}
+	return s.redactionConfigSnapshot()
+}
+
+func enforcesRequestRedaction(cfg redaction.Config) bool {
+	return cfg.Mode == redaction.ModeRedact || cfg.Mode == redaction.ModeBlock
+}
+
+// Metadata can contain a JSON document as well as plain text. Wrapping the
+// exact value as a JSON string lets the existing scanner inspect both without
+// changing the route, header, query, or principal used by application code.
+func requestMetadataFindings(value string, cfg redaction.Config) []redaction.Finding {
+	if value == "" || !enforcesRequestRedaction(cfg) {
+		return nil
+	}
+	cfg.Mode = redaction.ModeBlock
+	data, _ := json.Marshal(value) // Strings are always JSON-serializable.
+	return redaction.ScanJSONAndRedact(string(data), cfg).Findings
+}
+
+// redactRequestDiagnostic protects an observational copy only. Ambiguous
+// custom-pattern replacements withhold that field, never its operational value.
+func redactRequestDiagnostic(value string, cfg redaction.Config) string {
+	if value == "" || !enforcesRequestRedaction(cfg) {
+		return value
+	}
+	data, _ := json.Marshal(value)
+	output, result, err := redactJSONBytes(data, cfg)
+	if err != nil {
+		return "[REDACTED]"
+	}
+	if len(result.Findings) == 0 {
+		return value
+	}
+	var protected string
+	if json.Unmarshal(output, &protected) != nil {
+		return "[REDACTED]"
+	}
+	return protected
+}
+
+// Replay can predate the enforcing policy. These headers carry identities, so
+// omit an unsafe cached value rather than substituting a different identifier
+// or URL. The cache's original representation remains intact.
+func protectReplayMetadata(header http.Header, cfg redaction.Config) {
+	if !enforcesRequestRedaction(cfg) {
+		return
+	}
+	for _, key := range []string{requestIDHeader, "Location"} {
+		for _, value := range header.Values(key) {
+			unsafe := len(requestMetadataFindings(value, cfg)) > 0
+			if key == "Location" && !unsafe {
+				decoded, err := url.QueryUnescape(value)
+				unsafe = err != nil || len(requestMetadataFindings(decoded, cfg)) > 0
+			}
+			if unsafe {
+				header.Del(key)
+				break
+			}
+		}
+	}
+}
+
+// Paths and query values reach handler logs and can also select or modify
+// stored resources. Refuse sensitive values before dispatch instead of passing
+// a placeholder that would name a different resource or instruction.
+func admitRequestURL(w http.ResponseWriter, r *http.Request, cfg redaction.Config, summary *RedactionSummary, categories map[string]int) bool {
+	if !enforcesRequestRedaction(cfg) {
+		return true
+	}
+	refuse := func(source, value string) bool {
+		findings := requestMetadataFindings(value, cfg)
+		if len(findings) == 0 {
+			return false
+		}
+		for _, finding := range findings {
+			categories[string(finding.Category)]++
+		}
+		summary.RequestFinds = len(findings)
+		summary.Blocked = true
+		summary.Categories = categories
+		logRedactionSummary(summary)
+		writeErrorResponse(w, http.StatusUnprocessableEntity, "SECRETS_DETECTED",
+			"request URL contains sensitive content; refusing to substitute redaction placeholders for submitted values",
+			map[string]interface{}{
+				"source": source,
+				"hint":   "Remove sensitive content from the reported URL component and retry; request values were not changed.",
+			}, summary.RequestID)
+		return true
+	}
+	if refuse("path", r.URL.Path) {
+		return false
+	}
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request query encoding", nil, summary.RequestID)
+		return false
+	}
+	if refuse("query", r.URL.RawQuery) {
+		return false
+	}
+	for key, values := range query {
+		for _, value := range values {
+			// Keep each repeated value paired with its decoded key. Scanning
+			// values alone (or an array) loses generic credential-field context.
+			entry, _ := json.Marshal(map[string]string{key: value})
+			if refuse("query", string(entry)) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // responseRedactionConfig returns the config for the response to path.
 func responseRedactionConfig(cfg redaction.Config, path string) redaction.Config {
 	if pipelineRecoverPath.MatchString(path) {
@@ -85,27 +216,23 @@ func responseRedactionConfig(cfg redaction.Config, path string) redaction.Config
 // handler to persist a placeholder as a credential or execute altered input.
 func (s *Server) redactionMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Snapshot config under lock to avoid races with SetRedactionConfig
-		s.mu.RLock()
-		rcfg := s.redactionCfg
-		s.mu.RUnlock()
-
-		// Skip if redaction not enabled
-		if rcfg == nil || !rcfg.Enabled || rcfg.Config.Mode == redaction.ModeOff {
+		cfg := s.requestRedactionConfig(r)
+		if cfg.Mode == redaction.ModeOff {
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		reqID := requestIDFromContext(r.Context())
-		cfg := rcfg.Config
-
 		// Track findings for summary
 		summary := &RedactionSummary{
 			RequestID: reqID,
-			Path:      r.URL.Path,
-			Method:    r.Method,
+			Path:      redactRequestDiagnostic(r.URL.Path, cfg),
+			Method:    redactRequestDiagnostic(r.Method, cfg),
 		}
 		categories := make(map[string]int)
+		if !admitRequestURL(w, r, cfg, summary, categories) {
+			return
+		}
 
 		// Admit JSON input without changing any submitted values. Do not rely
 		// on ContentLength: chunked bodies have no known length.

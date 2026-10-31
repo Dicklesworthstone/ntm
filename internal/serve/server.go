@@ -325,7 +325,8 @@ const maxRequestBodyBytes = 10 << 20 // 10 MiB
 // Idempotency cache bounds (bd-vq37v). The 24h TTL alone left the cache
 // unbounded: a remote-auth caller sending unique keys could grow the map (and
 // full buffered response bodies) for a day. Entries are capped with
-// least-recently-used eviction, and oversized responses are never cached.
+// least-recently-used eviction. Oversized terminal responses retain a small
+// inspection receipt instead of permitting the original operation to run again.
 const (
 	// idempotencyMaxEntries caps the number of cached responses.
 	idempotencyMaxEntries = 4096
@@ -461,14 +462,19 @@ func (s *IdempotencyStore) evictLRULocked() {
 	}
 }
 
-// BeginFlight registers the caller as the executor for key if no request with
-// that key is currently in flight. It returns (nil, true) for the leader; a
-// follower receives a channel that closes when the leader finishes, plus
-// false. This closes the Get-miss..Set window in which two concurrent POSTs
-// with the same Idempotency-Key both executed (bd-vq37v).
+// BeginFlight registers the caller as the executor only if key has neither a
+// completed result nor an active request. It returns true for the leader;
+// a follower receives a channel that closes when it must recheck the cache.
+// A completed result gets an already-closed channel: the previous leader may
+// have stored it after this caller's cache miss but before flight acquisition.
 func (s *IdempotencyStore) BeginFlight(key string) (<-chan struct{}, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if entry, ok := s.entries[key]; ok && time.Since(entry.createdAt) <= s.ttl {
+		ready := make(chan struct{})
+		close(ready)
+		return ready, false
+	}
 	if ch, ok := s.flights[key]; ok {
 		return ch, false
 	}
@@ -1792,12 +1798,24 @@ func (s *Server) maxBytesMiddleware(next http.Handler) http.Handler {
 // requestIDMiddlewareFunc is the chi middleware version of requestIDMiddleware.
 func (s *Server) requestIDMiddlewareFunc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reqID := sanitizeRequestID(r.Header.Get(requestIDHeader))
+		cfg := s.redactionConfigSnapshot()
+		originalID := r.Header.Get(requestIDHeader)
+		reqID := ""
+		// Screen the complete supplied value before sanitizing/truncating it:
+		// a truncated token can still disclose credential material in headers,
+		// early refusal bodies, and every downstream log or audit record.
+		if len(requestMetadataFindings(originalID, cfg)) == 0 {
+			reqID = sanitizeRequestID(originalID)
+			if len(requestMetadataFindings(reqID, cfg)) > 0 {
+				reqID = ""
+			}
+		}
 		if reqID == "" {
 			reqID = generateRequestID()
 		}
 		w.Header().Set(requestIDHeader, reqID)
-		ctx := context.WithValue(r.Context(), requestIDKey, reqID)
+		ctx := context.WithValue(r.Context(), requestRedactionConfigKey{}, cfg)
+		ctx = context.WithValue(ctx, requestIDKey, reqID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -1808,8 +1826,10 @@ func (s *Server) recovererMiddleware(next http.Handler) http.Handler {
 		defer func() {
 			if rec := recover(); rec != nil {
 				reqID := requestIDFromContext(r.Context())
+				cfg := s.requestRedactionConfig(r)
 				stack := string(debug.Stack())
-				log.Printf("PANIC recovered: %v request_id=%s\n%s", rec, reqID, stack)
+				log.Printf("PANIC recovered: %s request_id=%s\n%s",
+					redactRequestDiagnostic(fmt.Sprint(rec), cfg), reqID, redactRequestDiagnostic(stack, cfg))
 				writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "internal server error", nil, reqID)
 			}
 		}()
@@ -1821,10 +1841,12 @@ func (s *Server) recovererMiddleware(next http.Handler) http.Handler {
 func (s *Server) loggingMiddlewareFunc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		cfg := s.requestRedactionConfig(r)
 		ww := chimw.NewWrapResponseWriter(w, r.ProtoMajor)
 		next.ServeHTTP(ww, r)
 		reqID := requestIDFromContext(r.Context())
-		log.Printf("%s %s %d %s request_id=%s", r.Method, r.URL.Path, ww.Status(), time.Since(start), reqID)
+		log.Printf("%s %s %d %s request_id=%s", redactRequestDiagnostic(r.Method, cfg),
+			redactRequestDiagnostic(r.URL.Path, cfg), ww.Status(), time.Since(start), reqID)
 	})
 }
 
@@ -1833,6 +1855,11 @@ func (s *Server) corsMiddlewareFunc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		if origin != "" {
+			if len(requestMetadataFindings(origin, s.requestRedactionConfig(r))) > 0 {
+				writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden,
+					"origin contains sensitive content", nil, requestIDFromContext(r.Context()))
+				return
+			}
 			s.mu.RLock()
 			allowed := originAllowed(origin, s.corsAllowedOrigins)
 			s.mu.RUnlock()
@@ -1867,7 +1894,10 @@ func (s *Server) authMiddlewareFunc(next http.Handler) http.Handler {
 		claims, err := s.authenticateRequest(r)
 		if err != nil {
 			reqID := requestIDFromContext(r.Context())
-			log.Printf("auth failed mode=%s path=%s remote=%s request_id=%s err=%v", s.auth.Mode, r.URL.Path, r.RemoteAddr, reqID, err)
+			cfg := s.requestRedactionConfig(r)
+			log.Printf("auth failed mode=%s path=%s remote=%s request_id=%s err=%s", s.auth.Mode,
+				redactRequestDiagnostic(r.URL.Path, cfg), redactRequestDiagnostic(r.RemoteAddr, cfg),
+				reqID, redactRequestDiagnostic(err.Error(), cfg))
 			writeErrorResponse(w, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized", nil, reqID)
 			return
 		}
@@ -1962,6 +1992,7 @@ func (s *Server) idempotencyMiddleware(next http.Handler) http.Handler {
 						"Idempotency-Key reused with a different request body", nil, reqID)
 					return
 				}
+				protectReplayMetadata(replayHeader, s.requestRedactionConfig(r))
 				applyReplayHeaders(w.Header(), replayHeader)
 				w.Header().Set("X-Idempotent-Replay", "true")
 				w.WriteHeader(status)
@@ -1992,10 +2023,38 @@ func (s *Server) idempotencyMiddleware(next http.Handler) http.Handler {
 
 		// A failure after publication is a terminal result too: replay the
 		// receipt instead of repeating work that may already have completed.
-		// Ordinary failures remain retryable. Retained receipts, like success
-		// responses, must be bounded and cannot come from hijacked connections.
-		if (rec.statusCode >= 200 && rec.statusCode < 300 || result.retain.Load()) && !rec.hijacked && !rec.overflow {
-			s.idempotencyStore.SetWithFingerprint(key, fingerprint, rec.body, rec.statusCode, rec.Header())
+		// Ordinary failures remain retryable. When the original representation
+		// exceeds the cache bound, retain a small receipt instead: discarding
+		// the result would let a retry repeat an already completed mutation.
+		if (rec.statusCode >= 200 && rec.statusCode < 300 || result.retain.Load()) && !rec.hijacked {
+			body, status, header := rec.body, rec.statusCode, rec.Header()
+			if rec.overflow {
+				receipt := APIError{
+					APIResponse: APIResponse{
+						Success: false, Timestamp: time.Now().UTC().Format(time.RFC3339),
+						RequestID: requestIDFromContext(r.Context()),
+					},
+					Error:     "The original request was handled, but its response is too large to replay",
+					ErrorCode: "IDEMPOTENCY_RESULT_UNAVAILABLE",
+					Details: map[string]interface{}{
+						"original_status":      rec.statusCode,
+						"response_unavailable": true,
+						"inspection_required":  true,
+						"retry_safe":           false,
+					},
+					Hint: "The handler has already run. Inspect the affected state before sending a new request; this retry did not repeat the operation.",
+				}
+				// Only fixed strings, booleans, and an HTTP status are encoded.
+				body, _ = json.Marshal(receipt)
+				body = append(body, '\n')
+				status = http.StatusConflict
+				header = cloneReplayHeaders(header)
+				if header == nil {
+					header = make(http.Header)
+				}
+				header.Set("Content-Type", "application/json")
+			}
+			s.idempotencyStore.SetWithFingerprint(key, fingerprint, body, status, header)
 		}
 	})
 }
@@ -2037,8 +2096,8 @@ type responseRecorder struct {
 	http.ResponseWriter
 	statusCode int
 	body       []byte
-	// overflow is set when the response exceeds idempotencyMaxBodyBytes; the
-	// buffer stops growing and the response is not cached (bd-vq37v).
+	// overflow is set when the response exceeds idempotencyMaxBodyBytes. The
+	// full body is discarded; terminal results retain a small inspection receipt.
 	overflow bool
 	// hijacked is set when the handler took over the connection; nothing
 	// meaningful can be cached afterwards.
