@@ -45,12 +45,18 @@ func (e *Executor) resolveBranch(ctx context.Context, step *Step) (string, error
 		// A partial key must not select a branch (including its default).
 		// Share command-step ownership and enforce the workflow's byte limits.
 		limits := e.limits.EffectiveLimits()
-		out, err := runCommandOutput(e.commandEvaluationContext(ctx, step), cmd, limits.MaxCommandStdoutBytes, limits.MaxCommandStderrBytes)
+		evaluationCtx, cancel := e.selectorEvaluationContext(ctx, step)
+		defer cancel()
+		out, err := runCommandOutput(evaluationCtx, cmd, limits.MaxCommandStdoutBytes, limits.MaxCommandStderrBytes)
 		if err != nil {
 			return "", fmt.Errorf("branch shell command failed: %w", err)
 		}
 
-		return strings.TrimSpace(string(out)), nil
+		key := strings.TrimSpace(string(out))
+		if err := evaluationCtx.Err(); err != nil {
+			return "", err
+		}
+		return key, nil
 	}
 
 	return expr, nil

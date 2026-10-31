@@ -169,12 +169,12 @@ printf good)`
 			if err != nil || state == nil || state.Status != StatusCompleted || state.Steps[step.ID].Attempts != 2 {
 				t.Fatalf("settled exit failure lost its ordinary retry semantics: %+v %v", state, err)
 			}
-			if len(state.CommandEvaluations) != 0 {
-				t.Fatalf("settled evaluations retained unresolved launch receipts: %+v", state.CommandEvaluations)
+			if record := state.CommandEvaluations[step.ID]; len(state.CommandEvaluations) != 1 || record.Status != commandExecutionSettled || string(record.Output) != "good" {
+				t.Fatalf("successful retry lost its reusable output: %+v", state.CommandEvaluations)
 			}
 			saved, err := LoadState(root, cfg.RunID)
-			if err != nil || len(saved.CommandEvaluations) != 0 {
-				t.Fatalf("settlement proof was not durably cleared: %+v %v", saved, err)
+			if err != nil || saved.CommandEvaluations[step.ID].Status != commandExecutionSettled || string(saved.CommandEvaluations[step.ID].Output) != "good" {
+				t.Fatalf("successful output was not durable: %+v %v", saved, err)
 			}
 			if data, err := os.ReadFile(filepath.Join(root, "selector.launches")); err != nil || string(data) != "launch\nlaunch\n" {
 				t.Fatalf("settled selector did not retry exactly once: %q %v", data, err)
@@ -247,5 +247,146 @@ func TestControlledPipelineRejectsUnsettledBeadQueryOutput(t *testing.T) {
 				t.Fatalf("fixture did not demonstrate work surviving the rejected query: %q %v", data, err)
 			}
 		})
+	}
+}
+
+func TestControlledPipelineReusesForeachSourceBeforeAdmissionCheckpoint(t *testing.T) {
+	e := newCommandTestExecutor(t)
+	step := Step{ID: "items", Foreach: &ForeachConfig{Beads: "$(printf x >> selections; cat source-items)",
+		Steps: []Step{{ID: "body", Command: "printf '%s\\n' '${item}' >> admitted"}}}}
+	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: e.state.WorkflowID, Settings: DefaultWorkflowSettings(), Steps: []Step{step}}
+	if err := os.WriteFile(filepath.Join(e.config.ProjectDir, "source-items"), []byte("alpha\nbeta\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	items, err := e.resolveForeachItems(e.commandEvaluationContext(context.Background(), &step), step.Foreach, "foreach")
+	if err != nil || len(items) != 2 {
+		t.Fatalf("initial source: %+v %v", items, err)
+	}
+	prior, err := LoadState(e.config.ProjectDir, e.state.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prior.ForeachState) != 0 || len(prior.Steps) != 0 || prior.CommandEvaluations[step.ID].Status != commandExecutionSettled {
+		t.Fatal("fixture did not stop after source success and before item admission")
+	}
+	if err := os.WriteFile(filepath.Join(e.config.ProjectDir, "source-items"), []byte("changed\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := AcquireRunControl(context.Background(), e.config.ProjectDir, e.state.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	resumed, err := NewExecutor(e.config).Resume(owner.Context(), workflow, prior, nil)
+	if err != nil || resumed == nil || resumed.Status != StatusCompleted {
+		t.Fatalf("resume lost the completed source: %+v %v", resumed, err)
+	}
+	if resumed.ForeachState[step.ID].ItemsFingerprint != computeForeachItemsFingerprint(items) {
+		t.Fatal("resume did not bind iteration progress to the original source items")
+	}
+	for name, want := range map[string]string{"selections": "x", "admitted": "alpha\nbeta\n"} {
+		if data, err := os.ReadFile(filepath.Join(e.config.ProjectDir, name)); err != nil || string(data) != want {
+			t.Fatalf("%s = %q want %q: %v", name, data, want, err)
+		}
+	}
+}
+
+func TestControlledPipelineRetainsForeachSourceAcrossChildFailure(t *testing.T) {
+	for _, mode := range []ResumeMode{ResumeModeContinue, ResumeModeRestartFailed} {
+		t.Run(string(mode), func(t *testing.T) {
+			root := t.TempDir()
+			step := Step{ID: "items", Foreach: &ForeachConfig{Beads: "$(printf x >> selections; cat source-items)",
+				Steps: []Step{{ID: "body", Command: "if [ '${item}' = beta ] && [ ! -f release ]; then exit 7; fi; printf '%s\\n' '${item}' >> admitted"}}}}
+			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "stable-foreach-source", Settings: DefaultWorkflowSettings(), Steps: []Step{step}}
+			cfg := DefaultExecutorConfig("stable-foreach-source")
+			cfg.ProjectDir, cfg.RunID = root, "run-stable-foreach-source"
+			if err := os.WriteFile(filepath.Join(root, "source-items"), []byte("alpha\nbeta\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			first, err := RunControlledPipeline(context.Background(), workflow, nil, cfg, nil)
+			if err == nil || first == nil || first.Status != StatusFailed {
+				t.Fatalf("fixture did not fail in its second item: %+v %v", first, err)
+			}
+			prior, err := LoadState(root, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record := prior.CommandEvaluations[step.ID]
+			if record.Status != commandExecutionSettled || len(prior.ForeachState[step.ID].CompletedIterationIDs) != 1 {
+				t.Fatalf("fixture lacks successful source and partial iteration progress: %+v %+v", record, prior.ForeachState[step.ID])
+			}
+			for name, content := range map[string]string{"source-items": "changed\n", "release": "go"} {
+				if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			owner, err := AcquireRunControl(context.Background(), root, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer owner.Close()
+			cfg.WorkflowFile = prior.WorkflowFile
+			frozen, valid, err := LoadResumeWorkflow(prior.WorkflowFile)
+			if err != nil || !valid.Valid {
+				t.Fatalf("recovery definition: %v %+v", err, valid)
+			}
+			resumed, err := NewExecutor(cfg).ResumeWithOptions(owner.Context(), frozen, prior, ResumeOptions{Mode: mode}, nil)
+			if err != nil || resumed == nil || resumed.Status != StatusCompleted {
+				t.Fatalf("resume failed to retain the admitted item list: %+v %v", resumed, err)
+			}
+			if kept := resumed.CommandEvaluations[step.ID]; kept.Status != commandExecutionSettled || !kept.StartedAt.Equal(record.StartedAt) {
+				t.Fatalf("child failure refreshed its successful source: %+v", kept)
+			}
+			for name, want := range map[string]string{"selections": "x", "admitted": "alpha\nbeta\n"} {
+				if data, err := os.ReadFile(filepath.Join(root, name)); err != nil || string(data) != want {
+					t.Fatalf("%s = %q want %q: %v", name, data, want, err)
+				}
+			}
+		})
+	}
+}
+
+func TestControlledPipelineReusesBeadQueryBeforeResultCheckpoint(t *testing.T) {
+	e := newCommandTestExecutor(t)
+	root := e.config.ProjectDir
+	bin := filepath.Join(root, "bin")
+	if err := os.Mkdir(bin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	br := filepath.Join(bin, "br")
+	writeBr := func(id string) {
+		t.Helper()
+		script := "#!/bin/sh\nprintf x >> selections\nprintf '%s' '{\"issues\":[{\"id\":\"" + id + "\",\"status\":\"open\"}]}'\n"
+		if err := os.WriteFile(br, []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeBr("bd-original")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	step := Step{ID: "query", BeadQuery: &BeadQueryStep{Status: "open"}}
+	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: e.state.WorkflowID, Settings: DefaultWorkflowSettings(), Steps: []Step{step}}
+	resolver := IterationSourceResolver{ProjectDir: root}
+	if _, err := resolver.runBr(e.commandEvaluationContext(context.Background(), &step), step.BeadQuery.brListArgs()); err != nil {
+		t.Fatal(err)
+	}
+	prior, err := LoadState(root, e.state.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prior.Steps) != 0 || prior.CommandEvaluations[step.ID].Status != commandExecutionSettled {
+		t.Fatal("fixture did not stop before typed result admission")
+	}
+	writeBr("bd-changed")
+	owner, err := AcquireRunControl(context.Background(), root, e.state.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	resumed, err := NewExecutor(e.config).Resume(owner.Context(), workflow, prior, nil)
+	if err != nil || resumed == nil || resumed.Status != StatusCompleted || !strings.Contains(resumed.Steps[step.ID].Output, "bd-original") || strings.Contains(resumed.Steps[step.ID].Output, "bd-changed") {
+		t.Fatalf("resume lost the original typed query result: %+v %v", resumed, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "selections")); err != nil || string(data) != "x" {
+		t.Fatalf("completed query effects were repeated: %q %v", data, err)
 	}
 }

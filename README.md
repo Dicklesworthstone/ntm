@@ -815,6 +815,15 @@ output capture are both required for a `settled` receipt.
 Linux also retries transient leader-observation failures for up to 250 ms before
 giving up ownership. An explicit loss of child ownership ends observation and
 signalling immediately; a saved numeric PID cannot authorize a later signal.
+For normal Linux completion, NTM checks that the kernel's process-creation counter
+did not change during a quiet census and that zombie process leaders have no
+surviving threads. A child that forks and exits during enumeration therefore
+cannot hide a still-running grandchild. A raced census is retried; natural
+completion sends no termination signal. Host-wide process churn can delay this
+proof, while the command's existing deadline and cancellation remain effective.
+The same proof requires a complete, stable `/proc` mount view. Modes that hide
+process directories, such as `hidepid=2` or `hidepid=4`, cannot authorize a settled
+receipt; an apparently empty visible group does not prove hidden work ended.
 
 If cleanup returns without that proof, the receipt becomes `unresolved`, with the
 failed or cancelled outcome and cleanup details preserved, rather than remaining
@@ -831,9 +840,24 @@ failure leaves an `unresolved` entry in `command_evaluations`; automatic retries
 and ordinary resume refuse it even when a failure handler completed the enclosing
 step. Inspect the original work before deliberately authorizing `restart-failed`,
 a containing `force-iter` scope, or a whole-run reset. Unfinished external selectors
-from older checkpoints without this journal require the same explicit decision.
-Proven completion clears the evaluation receipt, so a normal nonzero exit retains
-the workflow's configured retry behavior.
+from older checkpoints without sufficient source or decision evidence require the
+same explicit decision.
+Successful evaluations retain their complete bounded output in the checkpoint
+before it can choose a branch or admit iterations. Ordinary resume reuses that
+output, including after a crash between command completion and decision storage,
+instead of repeating source effects. Reuse requires the same step definition,
+expanded executable and arguments, working directory, effective environment, and
+capture limits. Changed inputs require restoring the original inputs or an
+explicit replay of the affected scope. A failed child does not discard an already
+admitted branch choice or foreach item list. A normal nonzero source exit with
+proven cleanup still clears its receipt and retains configured retry behavior.
+
+External branch, foreach, and bead-query sources use `step.timeout`, or the
+executor's default timeout when no step override is set, and the workflow's
+`max_command_stdout_bytes` and `max_command_stderr_bytes` limits. A source deadline
+applies to source evaluation; branch and foreach bodies keep their own lifetimes.
+Dry runs preview dynamic foreach sources without executing their shell commands
+or `br` queries; static item and model lists can still be expanded for preview.
 
 For a foreground command receipt:
 

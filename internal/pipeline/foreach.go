@@ -71,7 +71,31 @@ func (e *Executor) executeForeach(ctx context.Context, step *Step, workflow *Wor
 		return finishForeachFailure(result, "foreach", err.Error())
 	}
 
-	items, err := e.resolveForeachItems(e.commandEvaluationContext(ctx, step), config, kind)
+	// Dynamic sources can execute arbitrary shell commands. A preview cannot
+	// safely discover their items; leave static item/model previews unchanged.
+	if e.config.DryRun && stepUsesCommandEvaluation(step) {
+		source := config.Beads
+		if source == "" {
+			source = config.Pairs
+		}
+		if source == "" {
+			source = config.Debates
+		}
+		if source == "" {
+			source = strings.Join(config.Models, ", ")
+		}
+		result.Status = StatusCompleted
+		result.Output = dryRunOutput(step, "Would resolve foreach iteration source: "+truncatePrompt(SanitizeDescriptionForTerminal(source), 200))
+		result.FinishedAt = time.Now()
+		return result
+	}
+
+	evaluationCtx, cancel := e.selectorEvaluationContext(ctx, step)
+	items, err := e.resolveForeachItems(evaluationCtx, config, kind)
+	if evaluationCtx.Err() != nil {
+		err = errors.Join(evaluationCtx.Err(), err)
+	}
+	cancel()
 	if err != nil {
 		if errors.Is(err, errCommandOutputUnsettled) {
 			return finishForeachFailure(result, "execution_unknown", err.Error())
@@ -232,6 +256,7 @@ func (e *Executor) resolveForeachItems(ctx context.Context, config *ForeachConfi
 
 	resolver := IterationSourceResolver{
 		ProjectDir: e.config.ProjectDir,
+		Limits:     e.limits,
 		RunBr:      e.config.BeadQueryRunBr,
 	}
 	switch {

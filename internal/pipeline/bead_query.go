@@ -85,9 +85,12 @@ func (e *Executor) executeBeadQuery(ctx context.Context, step *Step, workflow *W
 
 	resolver := IterationSourceResolver{
 		ProjectDir: e.config.ProjectDir,
+		Limits:     e.limits,
 		RunBr:      e.config.BeadQueryRunBr,
 	}
-	out, err := resolver.runBr(e.commandEvaluationContext(ctx, step), args)
+	evaluationCtx, cancel := e.selectorEvaluationContext(ctx, step)
+	defer cancel()
+	out, err := resolver.runBr(evaluationCtx, args)
 	if err != nil {
 		result.Status = StatusFailed
 		errorType := "bead_query"
@@ -131,6 +134,15 @@ func (e *Executor) executeBeadQuery(ctx context.Context, step *Step, workflow *W
 		result.Error = stepRuntimeError(step, "bead_query", "bead_query",
 			fmt.Sprintf("failed to encode bead records: %v", err),
 			"check for unsupported values in br output",
+			err.Error())
+		result.FinishedAt = time.Now()
+		return result
+	}
+	if err := evaluationCtx.Err(); err != nil {
+		result.Status = StatusFailed
+		result.Error = stepRuntimeError(step, "bead_query", "bead_query",
+			fmt.Sprintf("query evaluation cancelled: %v", err),
+			"check the query deadline before retrying",
 			err.Error())
 		result.FinishedAt = time.Now()
 		return result

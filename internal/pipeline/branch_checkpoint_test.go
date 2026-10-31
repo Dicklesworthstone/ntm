@@ -66,6 +66,161 @@ func TestBranchDecisionIsDurableBeforeChildDispatch(t *testing.T) {
 	}
 }
 
+func TestBranchDecisionReusesSourceSuccessBeforeAdmissionCheckpoint(t *testing.T) {
+	step := decisionTestStep()
+	e, workflow, cfg := decisionTestExecutor(t, step)
+	decisionTestWrite(t, cfg.ProjectDir, "choice", "a")
+	key, err := e.resolveBranch(context.Background(), &step)
+	if err != nil || key != "a" {
+		t.Fatalf("source completion: %q %v", key, err)
+	}
+	// Simulate owner loss after the command's success checkpoint but before
+	// prepareBranchDecision has admitted the key or dispatched any child.
+	prior, err := LoadState(cfg.ProjectDir, cfg.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := prior.Steps[branchDecisionID(step.ID)]; exists {
+		t.Fatal("fixture passed the intended pre-admission crash boundary")
+	}
+	if record := prior.CommandEvaluations[step.ID]; record.Status != commandExecutionSettled || string(record.Output) != "a" {
+		t.Fatalf("completed source output was not durable: %+v", record)
+	}
+	decisionTestWrite(t, cfg.ProjectDir, "choice", "b")
+	decisionTestWrite(t, cfg.ProjectDir, "release", "go")
+	owner, err := AcquireRunControl(context.Background(), cfg.ProjectDir, cfg.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	resumed, err := NewExecutor(cfg).Resume(owner.Context(), workflow, prior, nil)
+	if err != nil || resumed == nil || resumed.Status != StatusCompleted {
+		t.Fatalf("resume from saved source output: %+v %v", resumed, err)
+	}
+	for name, want := range map[string]string{"selections": "x", "marker": "original"} {
+		data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, name))
+		if err != nil || string(data) != want {
+			t.Fatalf("%s = %q want %q: %v", name, data, want, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(cfg.ProjectDir, "wrong-branch")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("resume admitted a fresh selector result: %v", err)
+	}
+}
+
+func TestBranchDecisionRestartFailedPreservesAdmittedSource(t *testing.T) {
+	for _, scenario := range []string{"failed body", "unrelated failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			step := decisionTestStep()
+			step.Branches["a"] = []Step{{ID: "work", Command: "printf x >> body-attempts; test -f release && printf original > marker"}}
+			_, workflow, cfg := decisionTestExecutor(t, step)
+			decisionTestWrite(t, cfg.ProjectDir, "choice", "a")
+			wantBodyAttempts := "xx"
+			if scenario == "unrelated failure" {
+				decisionTestWrite(t, cfg.ProjectDir, "release", "go")
+				workflow.Steps = append(workflow.Steps, Step{ID: "unrelated", DependsOn: []string{step.ID},
+					Command: "printf x >> other-attempts; test -f other-release"})
+				wantBodyAttempts = "x"
+			}
+			first, err := RunControlledPipeline(context.Background(), workflow, nil, cfg, nil)
+			if err == nil || first == nil || first.Status != StatusFailed {
+				t.Fatalf("fixture did not stop at its intended failure: %+v %v", first, err)
+			}
+			prior, err := LoadState(cfg.ProjectDir, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record := prior.CommandEvaluations[step.ID]
+			if record.Status != commandExecutionSettled {
+				t.Fatalf("source did not retain successful output: %+v", record)
+			}
+			decisionTestWrite(t, cfg.ProjectDir, "choice", "b")
+			decisionTestWrite(t, cfg.ProjectDir, "release", "go")
+			decisionTestWrite(t, cfg.ProjectDir, "other-release", "go")
+			owner, err := AcquireRunControl(context.Background(), cfg.ProjectDir, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer owner.Close()
+			cfg.WorkflowFile = prior.WorkflowFile
+			frozen, valid, err := LoadResumeWorkflow(prior.WorkflowFile)
+			if err != nil || !valid.Valid {
+				t.Fatalf("recovery definition: %v %+v", err, valid)
+			}
+			resumed, err := NewExecutor(cfg).ResumeWithOptions(owner.Context(), frozen, prior, ResumeOptions{Mode: ResumeModeRestartFailed}, nil)
+			if err != nil || resumed == nil || resumed.Status != StatusCompleted {
+				t.Fatalf("restart-failed could not resume the failed work: %+v %v", resumed, err)
+			}
+			if kept := resumed.CommandEvaluations[step.ID]; kept.Status != commandExecutionSettled || !kept.StartedAt.Equal(record.StartedAt) || kept.OutputHash != record.OutputHash {
+				t.Fatalf("restart-failed discarded unrelated or admitted source evidence: %+v", kept)
+			}
+			for name, want := range map[string]string{"selections": "x", "body-attempts": wantBodyAttempts, "marker": "original"} {
+				data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, name))
+				if err != nil || string(data) != want {
+					t.Fatalf("%s = %q want %q: %v", name, data, want, err)
+				}
+			}
+			if scenario == "unrelated failure" {
+				if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "other-attempts")); err != nil || string(data) != "xx" {
+					t.Fatalf("restart-failed did not retry the selected failed command: %q %v", data, err)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(cfg.ProjectDir, "wrong-branch")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("restart-failed reevaluated the admitted branch: %v", err)
+			}
+		})
+	}
+}
+
+func TestBranchDecisionRestartFailedRefreshesUnadmittedSource(t *testing.T) {
+	step := decisionTestStep()
+	_, workflow, cfg := decisionTestExecutor(t, step)
+	decisionTestWrite(t, cfg.ProjectDir, "choice", "unknown")
+	decisionTestWrite(t, cfg.ProjectDir, "release", "go")
+	first, err := RunControlledPipeline(context.Background(), workflow, nil, cfg, nil)
+	if err == nil || first == nil || first.Status != StatusFailed {
+		t.Fatalf("fixture admitted an unmatched branch: %+v %v", first, err)
+	}
+	decisionTestWrite(t, cfg.ProjectDir, "choice", "a")
+	owner, err := AcquireRunControl(context.Background(), cfg.ProjectDir, cfg.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	prior, err := LoadState(cfg.ProjectDir, cfg.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := prior.Steps[branchDecisionID(step.ID)]; exists {
+		t.Fatal("unmatched source unexpectedly acquired an admission checkpoint")
+	}
+	cfg.WorkflowFile = prior.WorkflowFile
+	frozen, valid, err := LoadResumeWorkflow(prior.WorkflowFile)
+	if err != nil || !valid.Valid {
+		t.Fatalf("recovery definition: %v %+v", err, valid)
+	}
+	ordinary, err := NewExecutor(cfg).Resume(owner.Context(), frozen, prior, nil)
+	if err == nil || ordinary == nil || ordinary.Status != StatusFailed || !strings.Contains(err.Error(), "no matching key: unknown") {
+		t.Fatalf("ordinary resume discarded the original unusable result: %+v %v", ordinary, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "selections")); err != nil || string(data) != "x" {
+		t.Fatalf("ordinary resume repeated successful source effects: %q %v", data, err)
+	}
+	prior, err = LoadState(cfg.ProjectDir, cfg.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewExecutor(cfg).ResumeWithOptions(owner.Context(), frozen, prior, ResumeOptions{Mode: ResumeModeRestartFailed}, nil)
+	if err != nil || restarted == nil || restarted.Status != StatusCompleted {
+		t.Fatalf("explicit replay failed to refresh unadmitted source output: %+v %v", restarted, err)
+	}
+	for name, want := range map[string]string{"selections": "xx", "marker": "original"} {
+		if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, name)); err != nil || string(data) != want {
+			t.Fatalf("%s = %q want %q: %v", name, data, want, err)
+		}
+	}
+}
+
 func TestBranchDecisionResumeDoesNotReevaluateChangedSelector(t *testing.T) {
 	_, workflow, cfg := decisionTestExecutor(t, decisionTestStep())
 	decisionTestWrite(t, cfg.ProjectDir, "choice", "a")

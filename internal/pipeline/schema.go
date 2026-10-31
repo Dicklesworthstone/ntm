@@ -1384,8 +1384,8 @@ type ExecutionState struct {
 	AgentDeliveries    map[string]AgentDeliveryState     `json:"agent_deliveries,omitempty"`
 	CommandExecutions  map[string]CommandExecutionState  `json:"command_executions,omitempty"`
 	CommandEvaluations map[string]CommandEvaluationState `json:"command_evaluations,omitempty"`
-	// Version 1 means every external selector launch has a durable intent.
-	// Without this marker an absent receipt cannot prove legacy work ended.
+	// Version 2 retains successful selector output as well as launch intent.
+	// Earlier journals can lose completion between command exit and admission.
 	CommandEvaluationVersion int                             `json:"command_evaluation_version,omitempty"`
 	MailSends                map[string]MailSendState        `json:"mail_sends,omitempty"`
 	ReservationSteps         map[string]ReservationStepState `json:"reservation_steps,omitempty"`

@@ -138,6 +138,7 @@ type InFlightStepState struct {
 }
 
 const (
+	commandEvaluationVersion   = 2
 	commandExecutionVersion    = 1
 	commandExecutionStarting   = "starting"
 	commandExecutionRunning    = "running"
@@ -188,8 +189,10 @@ type CommandExecutionState struct {
 // resolve iteration sources. These commands can have effects of their own,
 // before any child step or branch decision exists. Scheduler results and
 // failure handlers cannot substitute for proof that those commands ended.
-// A durable intent is written before Start. Verified process and stream
-// settlement removes it; returned uncertainty retains a terminal receipt.
+// A durable intent is written before Start. Verified successful output stays
+// available until an explicit replay resets its scope, so a crash between
+// command completion and branch/item admission cannot repeat source effects.
+// Returned uncertainty retains a terminal receipt without usable output.
 // ProcessID is diagnostic only and must never be signalled on resume.
 type CommandEvaluationState struct {
 	Version    int       `json:"version"`
@@ -200,16 +203,44 @@ type CommandEvaluationState struct {
 	StartedAt  time.Time `json:"started_at"`
 	FinishedAt time.Time `json:"finished_at,omitempty"`
 	Error      string    `json:"error,omitempty"`
+	// InvocationHash binds the expanded executable, arguments, working
+	// directory, effective environment and capture limits without persisting
+	// command text or environment values. Output is base64 in JSON so even
+	// invalid UTF-8 bytes round-trip exactly.
+	InvocationHash string `json:"invocation_hash,omitempty"`
+	StdoutLimit    int64  `json:"stdout_limit,omitempty"`
+	StderrLimit    int64  `json:"stderr_limit,omitempty"`
+	Output         []byte `json:"output,omitempty"`
+	OutputHash     string `json:"output_hash,omitempty"`
+}
+
+func cloneCommandEvaluation(record CommandEvaluationState) CommandEvaluationState {
+	record.Output = append([]byte(nil), record.Output...)
+	return record
+}
+
+func validCommandEvaluationHash(value string) bool {
+	digest, err := hex.DecodeString(value)
+	return err == nil && len(digest) == sha256.Size && value == strings.ToLower(value)
 }
 
 func validateCommandEvaluation(id string, record CommandEvaluationState) error {
 	invalid := func(reason string) error {
 		return fmt.Errorf("invalid command evaluation for step %q: %s", id, reason)
 	}
-	digest, err := hex.DecodeString(record.StepHash)
-	if id == "" || record.StepID != id || record.Version != 1 || record.StartedAt.IsZero() ||
-		err != nil || len(digest) != sha256.Size || record.StepHash != strings.ToLower(record.StepHash) {
+	if id == "" || record.StepID != id || (record.Version != 1 && record.Version != commandEvaluationVersion) || record.StartedAt.IsZero() ||
+		!validCommandEvaluationHash(record.StepHash) {
 		return invalid("missing or inconsistent launch identity")
+	}
+	if record.Version == commandEvaluationVersion {
+		if !validCommandEvaluationHash(record.InvocationHash) || record.StdoutLimit <= 0 || record.StderrLimit <= 0 {
+			return invalid("missing expanded invocation identity or capture limits")
+		}
+	} else if record.InvocationHash != "" || record.StdoutLimit != 0 || record.StderrLimit != 0 || record.OutputHash != "" || len(record.Output) != 0 {
+		return invalid("legacy evaluation contains unsupported output evidence")
+	}
+	if record.Status != commandExecutionSettled && (record.OutputHash != "" || len(record.Output) != 0) {
+		return invalid("unproven evaluation contains usable output")
 	}
 	switch record.Status {
 	case commandExecutionStarting:
@@ -220,10 +251,74 @@ func validateCommandEvaluation(id string, record CommandEvaluationState) error {
 		if record.ProcessID <= 0 || record.FinishedAt.IsZero() || record.FinishedAt.Before(record.StartedAt) || strings.TrimSpace(record.Error) == "" {
 			return invalid("unresolved evaluation lacks returned cleanup evidence")
 		}
+	case commandExecutionSettled:
+		digest := sha256.Sum256(record.Output)
+		if record.Version != commandEvaluationVersion || record.ProcessID <= 0 || record.FinishedAt.IsZero() ||
+			record.FinishedAt.Before(record.StartedAt) || record.Error != "" || int64(len(record.Output)) > record.StdoutLimit ||
+			record.OutputHash != hex.EncodeToString(digest[:]) {
+			return invalid("settled evaluation lacks consistent complete output evidence")
+		}
 	default:
 		return invalid("unknown evaluation status")
 	}
 	return nil
+}
+
+// Freeze the effective launch inputs before checkpointing them. The process
+// must receive exactly the directory and environment described by this hash,
+// even if another goroutine changes the parent's cwd or environment later.
+func commandEvaluationInvocationHash(request commandOutputRequest) (string, error) {
+	cmd := request.Cmd
+	if cmd == nil || cmd.Path == "" || cmd.Stdin != nil || len(cmd.ExtraFiles) != 0 || request.StdoutLimit <= 0 || request.StderrLimit <= 0 {
+		return "", fmt.Errorf("command evaluation requires a bounded invocation without inherited input or extra files")
+	}
+	if cmd.Err != nil {
+		return "", cmd.Err
+	}
+	for _, value := range cmd.Env {
+		if strings.IndexByte(value, 0) >= 0 {
+			return "", fmt.Errorf("command evaluation environment contains NUL")
+		}
+	}
+	dir, err := filepath.Abs(cmd.Dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve command evaluation directory: %w", err)
+	}
+	// Obtain Environ before filling an empty Dir: exec only rewrites an
+	// inherited PWD when the caller explicitly supplied a working directory.
+	// Freezing the implicit cwd must not silently change that environment.
+	environment := cmd.Environ()
+	cmd.Dir = dir
+	if !filepath.IsAbs(cmd.Path) {
+		cmd.Path = filepath.Join(dir, cmd.Path)
+	}
+	cmd.Env = environment
+	// Environ has already retained the last value of duplicate variables.
+	// Canonicalize their order for a stable identity across equivalent runs.
+	env := append([]string(nil), cmd.Env...)
+	sort.Strings(env)
+	bytesList := func(values []string) [][]byte {
+		out := make([][]byte, len(values))
+		for i, value := range values {
+			out[i] = []byte(value)
+		}
+		return out
+	}
+	// Byte slices prevent JSON's invalid-UTF-8 replacement from collapsing
+	// distinct command arguments or environment values into one identity.
+	encoded, err := json.Marshal(struct {
+		Path        []byte   `json:"path"`
+		Args        [][]byte `json:"args"`
+		Dir         []byte   `json:"dir"`
+		Env         [][]byte `json:"env"`
+		StdoutLimit int64    `json:"stdout_limit"`
+		StderrLimit int64    `json:"stderr_limit"`
+	}{[]byte(cmd.Path), bytesList(cmd.Args), []byte(dir), bytesList(env), request.StdoutLimit, request.StderrLimit})
+	if err != nil {
+		return "", fmt.Errorf("hash command evaluation invocation: %w", err)
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 func uncertainCommandEvaluationError(id string) error {
@@ -238,41 +333,75 @@ func (e *Executor) commandEvaluationContext(ctx context.Context, step *Step) con
 	}
 	var record CommandEvaluationState
 	lifecycle := &commandOutputLifecycle{
-		beforeStart: func() error {
+		beforeStart: func(request commandOutputRequest) ([]byte, bool, error) {
 			digest, err := commandDefinitionHash(step)
 			if err != nil {
-				return err
+				return nil, false, err
+			}
+			invocation, err := commandEvaluationInvocationHash(request)
+			if err != nil {
+				return nil, false, err
 			}
 			e.stateMu.Lock()
 			if e.state == nil {
 				e.stateMu.Unlock()
-				return fmt.Errorf("cannot start command evaluation without execution state")
+				return nil, false, fmt.Errorf("cannot start command evaluation without execution state")
+			}
+			if e.state.CommandEvaluationVersion > commandEvaluationVersion || e.state.CommandEvaluationVersion < 0 {
+				version := e.state.CommandEvaluationVersion
+				e.stateMu.Unlock()
+				return nil, false, fmt.Errorf("unsupported command evaluation journal version %d", version)
 			}
 			if prior, ok := e.state.CommandEvaluations[step.ID]; ok {
+				prior = cloneCommandEvaluation(prior)
 				e.stateMu.Unlock()
 				if err := validateCommandEvaluation(step.ID, prior); err != nil {
-					return err
+					return nil, false, err
 				}
-				return uncertainCommandEvaluationError(step.ID)
+				if prior.Status != commandExecutionSettled {
+					return nil, false, uncertainCommandEvaluationError(step.ID)
+				}
+				if prior.StepHash != digest || prior.InvocationHash != invocation {
+					return nil, false, fmt.Errorf("command evaluation %q definition or expanded invocation changed since its output was checkpointed; restore the original inputs or explicitly reset its replay scope", step.ID)
+				}
+				return prior.Output, true, nil
 			}
 			if e.state.CommandEvaluations == nil {
 				e.state.CommandEvaluations = make(map[string]CommandEvaluationState)
 			}
-			record = CommandEvaluationState{Version: 1, StepID: step.ID, StepHash: digest, Status: commandExecutionStarting, StartedAt: time.Now()}
+			record = CommandEvaluationState{Version: commandEvaluationVersion, StepID: step.ID, StepHash: digest,
+				InvocationHash: invocation, StdoutLimit: request.StdoutLimit, StderrLimit: request.StderrLimit,
+				Status: commandExecutionStarting, StartedAt: time.Now()}
 			e.state.CommandEvaluations[step.ID] = record
+			e.state.CommandEvaluationVersion = commandEvaluationVersion
 			e.stateMu.Unlock()
-			return e.persistState()
+			return nil, false, e.persistState()
 		},
-		afterWait: func(cmd *exec.Cmd, settled bool, waitErr error) error {
+		afterWait: func(cmd *exec.Cmd, settled bool, output []byte, waitErr error) error {
 			e.stateMu.Lock()
 			prior, exists := e.state.CommandEvaluations[step.ID]
-			if !exists || prior.StepHash != record.StepHash || !prior.StartedAt.Equal(record.StartedAt) {
+			if !exists || prior.Status != commandExecutionStarting || prior.StepHash != record.StepHash ||
+				prior.InvocationHash != record.InvocationHash || !prior.StartedAt.Equal(record.StartedAt) {
 				e.stateMu.Unlock()
 				return fmt.Errorf("command evaluation identity changed for step %q", step.ID)
 			}
-			if settled {
+			if settled && waitErr == nil {
+				if cmd.Process == nil || int64(len(output)) > record.StdoutLimit {
+					e.stateMu.Unlock()
+					return fmt.Errorf("command evaluation %q returned invalid successful output evidence", step.ID)
+				}
+				record.Status, record.FinishedAt = commandExecutionSettled, time.Now()
+				record.ProcessID, record.Output = cmd.Process.Pid, append([]byte(nil), output...)
+				digest := sha256.Sum256(record.Output)
+				record.OutputHash = hex.EncodeToString(digest[:])
+				e.state.CommandEvaluations[step.ID] = record
+			} else if settled {
 				delete(e.state.CommandEvaluations, step.ID)
 			} else {
+				if cmd.Process == nil {
+					e.stateMu.Unlock()
+					return fmt.Errorf("command evaluation %q lost its process identity before cleanup returned", step.ID)
+				}
 				record.Status, record.FinishedAt = commandExecutionUnresolved, time.Now()
 				record.ProcessID = cmd.Process.Pid
 				record.Error = errors.Join(uncertainCommandEvaluationError(step.ID), waitErr).Error()
@@ -291,7 +420,10 @@ func (e *Executor) hasUnresolvedCommandEvaluation(step *Step) bool {
 	if e.state == nil {
 		return false
 	}
-	for id := range e.state.CommandEvaluations {
+	for id, record := range e.state.CommandEvaluations {
+		if record.Status == commandExecutionSettled && validateCommandEvaluation(id, record) == nil {
+			continue
+		}
 		if id == step.ID {
 			return true
 		}
@@ -302,24 +434,51 @@ func (e *Executor) hasUnresolvedCommandEvaluation(step *Step) bool {
 	return false
 }
 
-func resumeResetsCommandEvaluation(opts ResumeOptions, id string) bool {
-	return !opts.KeepState || opts.Mode == ResumeModeRestartFailed ||
-		(opts.Mode == ResumeModeForceIter && iterationIndexFromID(id, opts.StepID+"_iter") >= opts.Iteration)
+func resumeResetsCommandEvaluation(state *ExecutionState, opts ResumeOptions, id string) bool {
+	if !opts.KeepState || (opts.Mode == ResumeModeForceIter && iterationIndexFromID(id, opts.StepID+"_iter") >= opts.Iteration) {
+		return true
+	}
+	if opts.Mode != ResumeModeRestartFailed {
+		return false
+	}
+	record, exists := state.CommandEvaluations[id]
+	if !exists || record.Status != commandExecutionSettled {
+		// A failure handler may have completed the enclosing step without
+		// settling its original source. Explicit replay must reopen that case.
+		return true
+	}
+	if result, recorded := state.Steps[id]; recorded && !shouldRerunStep(result) {
+		return false
+	}
+	// A failed body does not invalidate an already-admitted source. Keep the
+	// original branch choice and foreach item binding while retrying children.
+	if decision, ok := state.Steps[branchDecisionID(id)]; ok {
+		if admitted, err := decodeBranchDecision(branchDecisionID(id), decision); err == nil && admitted.DefinitionHash == record.StepHash {
+			return false
+		}
+	}
+	if progress, ok := state.ForeachState[id]; ok && validCommandEvaluationHash(progress.ItemsFingerprint) {
+		return false
+	}
+	return true
 }
 
 // Check receipts independently of the scheduler's result, including completed
 // results produced by on_failure recovery. Validate even for an explicit reset
 // so corrupt or future-version evidence cannot silently authorize replay.
 func (e *Executor) validateCommandEvaluationResumeLocked(workflow *Workflow, state *ExecutionState, opts ResumeOptions) error {
-	if state.CommandEvaluationVersion != 0 && state.CommandEvaluationVersion != 1 {
+	if state.CommandEvaluationVersion < 0 || state.CommandEvaluationVersion > commandEvaluationVersion {
 		return fmt.Errorf("unsupported command evaluation journal version %d", state.CommandEvaluationVersion)
 	}
 	for id, record := range state.CommandEvaluations {
 		if err := validateCommandEvaluation(id, record); err != nil {
 			return err
 		}
-		if !resumeResetsCommandEvaluation(opts, id) {
-			return uncertainCommandEvaluationError(id)
+		if !resumeResetsCommandEvaluation(state, opts, id) {
+			if record.Status != commandExecutionSettled {
+				return uncertainCommandEvaluationError(id)
+			}
+			continue
 		}
 		if opts.KeepState && opts.Mode == ResumeModeRestartFailed {
 			graph := e.graph
@@ -339,11 +498,11 @@ func (e *Executor) validateCommandEvaluationResumeLocked(workflow *Workflow, sta
 			}
 		}
 	}
-	if state.CommandEvaluationVersion == 0 && opts.KeepState {
-		// Earlier executors did not journal selectors. Neither a missing
-		// receipt nor iteration progress proves that a later evaluation has
-		// stopped. Fence unfinished external selectors before adopting the
-		// new protocol; literal branch keys and static item lists stay safe.
+	if state.CommandEvaluationVersion < commandEvaluationVersion && opts.KeepState {
+		// Earlier executors either lacked intents or deleted successful source
+		// output before admitting it. An absent receipt cannot justify another
+		// evaluation. Existing branch decisions can finish their original body
+		// without evaluating again; dynamic foreach sources need saved output.
 		graph := e.graph
 		if graph == nil && workflow != nil {
 			graph = NewDependencyGraph(workflow)
@@ -372,7 +531,22 @@ func (e *Executor) validateCommandEvaluationResumeLocked(workflow *Workflow, sta
 			if !ok || !stepUsesCommandEvaluation(step) {
 				continue
 			}
-			if !resumeResetsCommandEvaluation(opts, id) {
+			if step.Branch != "" {
+				if saved, exists := state.Steps[branchDecisionID(id)]; exists {
+					decision, err := decodeBranchDecision(branchDecisionID(id), saved)
+					if err != nil {
+						return err
+					}
+					digest, err := branchDefinitionHash(step)
+					if err != nil {
+						return err
+					}
+					if decision.DefinitionHash == digest {
+						continue
+					}
+				}
+			}
+			if !resumeResetsCommandEvaluation(state, opts, id) {
 				return fmt.Errorf("unfinished selector %q has no durable launch evidence: %w", id, uncertainCommandEvaluationError(id))
 			}
 			if opts.Mode == ResumeModeRestartFailed {
@@ -1617,7 +1791,7 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 	// Admission has accounted for legacy unfinished selectors. From this
 	// point every new evaluation uses the durable launch protocol.
 	e.stateMu.Lock()
-	e.state.CommandEvaluationVersion = 1
+	e.state.CommandEvaluationVersion = commandEvaluationVersion
 	e.stateMu.Unlock()
 	if !opts.KeepState {
 		e.resetResumeState(workflow)
@@ -1629,6 +1803,9 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 	} else if opts.Mode == ResumeModeRestartFailed {
 		e.stateMu.Lock()
 		for stepID := range e.state.CommandEvaluations {
+			if !resumeResetsCommandEvaluation(e.state, opts, stepID) {
+				continue
+			}
 			// A recovery handler may have completed the enclosing selector.
 			// Explicit replay must reopen it as well as remove its receipt.
 			if e.state.Steps == nil {
@@ -1742,6 +1919,9 @@ func (e *Executor) resetSettledOnCancelState(workflow *Workflow) {
 	for id := range e.state.CommandExecutions {
 		collect(id)
 	}
+	for id := range e.state.CommandEvaluations {
+		collect(id)
+	}
 	for id := range e.state.MailSends {
 		collect(id)
 	}
@@ -1757,6 +1937,9 @@ func (e *Executor) resetSettledOnCancelState(workflow *Workflow) {
 	for id, step := range owned {
 		if record, ok := e.state.CommandExecutions[id]; ok && record.Status == commandExecutionSettled {
 			delete(e.state.CommandExecutions, id)
+		}
+		if record, ok := e.state.CommandEvaluations[id]; ok && record.Status == commandExecutionSettled {
+			delete(e.state.CommandEvaluations, id)
 		}
 		if record, ok := e.state.MailSends[id]; ok && record.Status != mailSendSending {
 			delete(e.state.MailSends, id)
@@ -1813,6 +1996,9 @@ func (e *Executor) resetPostPipelineForMainAttempt(workflow *Workflow) {
 	for id := range e.state.CommandExecutions {
 		collect(id)
 	}
+	for id := range e.state.CommandEvaluations {
+		collect(id)
+	}
 	for id := range e.state.AgentDeliveries {
 		collect(id)
 	}
@@ -1834,6 +2020,9 @@ func (e *Executor) resetPostPipelineForMainAttempt(workflow *Workflow) {
 	for id, step := range owned {
 		if record, ok := e.state.CommandExecutions[id]; ok && record.Status == commandExecutionSettled {
 			delete(e.state.CommandExecutions, id)
+		}
+		if record, ok := e.state.CommandEvaluations[id]; ok && record.Status == commandExecutionSettled {
+			delete(e.state.CommandEvaluations, id)
 		}
 		if record, ok := e.state.AgentDeliveries[id]; ok && record.Status == agentDeliveryCompleted {
 			delete(e.state.AgentDeliveries, id)

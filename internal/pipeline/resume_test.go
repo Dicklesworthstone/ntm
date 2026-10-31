@@ -19,7 +19,9 @@ func TestCommandEvaluationDurableIntentAndReturnedUncertainty(t *testing.T) {
 	e := newCommandTestExecutor(t)
 	step := &Step{ID: "choose", Branch: "$(printf selected)", Branches: map[string]interface{}{"selected": Step{ID: "body", Command: "true"}}}
 	lifecycle := e.commandEvaluationContext(context.Background(), step).Value(commandOutputLifecycleKey{}).(*commandOutputLifecycle)
-	if err := lifecycle.beforeStart(); err != nil {
+	cmd := exec.Command("/bin/sh", "-c", "printf selected")
+	request := commandOutputRequest{Cmd: cmd, StdoutLimit: 64, StderrLimit: 64}
+	if _, reused, err := lifecycle.beforeStart(request); err != nil || reused {
 		t.Fatal(err)
 	}
 	// This is the crash boundary: no process has been launched and no result
@@ -38,13 +40,13 @@ func TestCommandEvaluationDurableIntentAndReturnedUncertainty(t *testing.T) {
 	if err := recovered.applyResumeOptions(workflow, ResumeOptions{}); !errors.Is(err, errCommandOutputUnsettled) {
 		t.Fatalf("resume admitted a command interrupted after intent: %v", err)
 	}
-	if err := lifecycle.beforeStart(); !errors.Is(err, errCommandOutputUnsettled) {
+	if _, _, err := lifecycle.beforeStart(request); !errors.Is(err, errCommandOutputUnsettled) {
 		t.Fatalf("duplicate evaluation overwrote an outstanding intent: %v", err)
 	}
 	// A returned cleanup failure is terminal evidence, independently of a
 	// scheduler result that a failure handler may replace with Completed.
-	cmd := &exec.Cmd{Process: &os.Process{Pid: 31415}}
-	if err := lifecycle.afterWait(cmd, false, errors.New("injected output drain failure")); err != nil {
+	cmd.Process = &os.Process{Pid: 31415}
+	if err := lifecycle.afterWait(cmd, false, nil, errors.New("injected output drain failure")); err != nil {
 		t.Fatal(err)
 	}
 	prior, err = LoadState(e.config.ProjectDir, e.state.RunID)
@@ -67,15 +69,16 @@ func TestCommandEvaluationDurableIntentAndReturnedUncertainty(t *testing.T) {
 	}
 }
 
-func TestCommandEvaluationProvenSettlementClearsIntent(t *testing.T) {
-	for _, waitErr := range []error{nil, errors.New("settled command exited unsuccessfully")} {
+func TestCommandEvaluationProvenFailureClearsIntent(t *testing.T) {
+	for _, waitErr := range []error{context.Canceled, errors.New("settled command exited unsuccessfully")} {
 		e := newCommandTestExecutor(t)
 		step := &Step{ID: "source", Foreach: &ForeachConfig{Items: "$(printf item)"}}
 		lifecycle := e.commandEvaluationContext(context.Background(), step).Value(commandOutputLifecycleKey{}).(*commandOutputLifecycle)
-		if err := lifecycle.beforeStart(); err != nil {
+		cmd := exec.Command("/bin/sh", "-c", "printf item")
+		if _, reused, err := lifecycle.beforeStart(commandOutputRequest{Cmd: cmd, StdoutLimit: 64, StderrLimit: 64}); err != nil || reused {
 			t.Fatal(err)
 		}
-		if err := lifecycle.afterWait(&exec.Cmd{}, true, waitErr); err != nil {
+		if err := lifecycle.afterWait(cmd, true, nil, waitErr); err != nil {
 			t.Fatal(err)
 		}
 		prior, err := LoadState(e.config.ProjectDir, e.state.RunID)
@@ -196,6 +199,64 @@ func TestCommandEvaluationMalformedReceiptCannotBeReset(t *testing.T) {
 	}
 }
 
+func TestCommandEvaluationSettledReceiptCorruptionCannotAuthorizeReuseOrReset(t *testing.T) {
+	for _, damage := range []string{"output bytes", "output hash", "invocation hash", "stdout bound", "stderr bound", "pid", "timestamp", "error", "old version", "future version"} {
+		t.Run(damage, func(t *testing.T) {
+			e := newCommandTestExecutor(t)
+			step := Step{ID: "source", Branch: "$(printf selected)"}
+			cmd := exec.Command("/bin/sh", "-c", "printf selected")
+			lifecycle := e.commandEvaluationContext(context.Background(), &step).Value(commandOutputLifecycleKey{}).(*commandOutputLifecycle)
+			if _, _, err := lifecycle.beforeStart(commandOutputRequest{Cmd: cmd, StdoutLimit: 64, StderrLimit: 64}); err != nil {
+				t.Fatal(err)
+			}
+			cmd.Process = &os.Process{Pid: 31415}
+			if err := lifecycle.afterWait(cmd, true, []byte("selected"), nil); err != nil {
+				t.Fatal(err)
+			}
+			record := cloneCommandEvaluation(e.state.CommandEvaluations[step.ID])
+			switch damage {
+			case "output bytes":
+				record.Output[0] = 'X'
+			case "output hash":
+				record.OutputHash = strings.Repeat("0", 64)
+			case "invocation hash":
+				record.InvocationHash = "missing"
+			case "stdout bound":
+				record.StdoutLimit = 1
+			case "stderr bound":
+				record.StderrLimit = 0
+			case "pid":
+				record.ProcessID = 0
+			case "timestamp":
+				record.FinishedAt = record.StartedAt.Add(-time.Second)
+			case "error":
+				record.Error = "incomplete output"
+			case "old version":
+				record.Version = 1
+			case "future version":
+				record.Version = commandEvaluationVersion + 1
+			}
+			e.state.CommandEvaluations[step.ID] = record
+			before, err := json.Marshal(e.state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, opts := range []ResumeOptions{{}, {Reset: true}} {
+				if err := e.applyResumeOptions(&Workflow{Steps: []Step{step}}, opts); err == nil {
+					t.Fatalf("corrupt successful output authorized resume/reset: %+v", opts)
+				}
+				after, err := json.Marshal(e.state)
+				if err != nil || !bytes.Equal(before, after) {
+					t.Fatalf("refusal discarded corrupt output evidence: %v", err)
+				}
+			}
+			if !e.hasUnresolvedCommandEvaluation(&step) {
+				t.Fatal("invalid success bypassed the automatic retry fence")
+			}
+		})
+	}
+}
+
 func TestLegacyCommandEvaluationResumeRequiresLaunchEvidence(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -215,7 +276,7 @@ func TestLegacyCommandEvaluationResumeRequiresLaunchEvidence(t *testing.T) {
 		{"literal shell-shaped item", Step{Foreach: &ForeachConfig{Items: "$(printf literal)"}}, false},
 	}
 	for _, tc := range cases {
-		for _, version := range []int{0, 1} {
+		for _, version := range []int{0, 1, commandEvaluationVersion} {
 			t.Run(tc.name+"/version"+strconv.Itoa(version), func(t *testing.T) {
 				e := newCommandTestExecutor(t)
 				step := tc.step
@@ -231,7 +292,7 @@ func TestLegacyCommandEvaluationResumeRequiresLaunchEvidence(t *testing.T) {
 				}
 				before, _ := json.Marshal(e.state)
 				err := e.applyResumeOptions(workflow, ResumeOptions{})
-				if version == 0 && tc.external {
+				if version < commandEvaluationVersion && tc.external {
 					after, _ := json.Marshal(e.state)
 					if !errors.Is(err, errCommandOutputUnsettled) || !bytes.Equal(before, after) {
 						t.Fatalf("legacy external work was admitted or rewritten: %v", err)
@@ -242,7 +303,7 @@ func TestLegacyCommandEvaluationResumeRequiresLaunchEvidence(t *testing.T) {
 				} else if err != nil {
 					t.Fatalf("safe evaluation was incorrectly fenced: %v", err)
 				}
-				if e.state.CommandEvaluationVersion != 1 {
+				if e.state.CommandEvaluationVersion != commandEvaluationVersion {
 					t.Fatal("accepted resume did not adopt the evaluation journal")
 				}
 			})

@@ -3,10 +3,278 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
+
+var selectorPolicyKinds = []string{"branch", "models", "beads", "pairs", "debates", "br", "bead_query"}
+
+// Use actual shell/br subprocesses through the controlled executor. A data
+// callback would skip the process ownership and stream capture under test.
+func selectorPolicyWorkflow(t *testing.T, kind, script string) (*Workflow, ExecutorConfig, string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("requires POSIX process fixtures")
+	}
+	root := t.TempDir()
+	output := "chosen\n"
+	if kind == "pairs" {
+		output = "DEBATE-1|H-1|H-2|pane-1|pane-2\n"
+	}
+	if kind == "br" || kind == "bead_query" {
+		output = `{"issues":[{"id":"bd-1"}]}`
+	}
+	t.Setenv("NTM_SELECTOR_POLICY_RESULT", output)
+	name := "selector-source"
+	if kind == "br" || kind == "bead_query" {
+		name = "br"
+		t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
+	if err := os.WriteFile(filepath.Join(root, name), []byte("#!/bin/sh\nset -eu\n"+script+"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	body := []Step{{ID: "body", Command: "printf body > child-dispatched"}}
+	step := Step{ID: "select"}
+	switch kind {
+	case "branch":
+		step.Branch = "$(./selector-source)"
+		step.Branches = map[string]interface{}{"chosen": body, "default": body}
+	case "models":
+		step.Foreach = &ForeachConfig{Models: StringOrList{"$(./selector-source)"}, Steps: body}
+	case "beads":
+		step.Foreach = &ForeachConfig{Beads: "$(./selector-source)", Steps: body}
+	case "pairs":
+		step.Foreach = &ForeachConfig{Pairs: "$(./selector-source)", Steps: body}
+	case "debates":
+		step.Foreach = &ForeachConfig{Debates: "$(./selector-source)", Steps: body}
+	case "br":
+		step.Foreach = &ForeachConfig{Beads: "hypothesis", Steps: body}
+	case "bead_query":
+		step.BeadQuery = &BeadQueryStep{Label: StringOrList{"hypothesis"}}
+	default:
+		t.Fatalf("unknown selector fixture %q", kind)
+	}
+	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "selector-policy", Settings: DefaultWorkflowSettings(), Steps: []Step{
+		step,
+		{ID: "consume", DependsOn: []string{"select"}, Command: "printf downstream > dispatched"},
+	}}
+	cfg := DefaultExecutorConfig("selector-policy")
+	cfg.ProjectDir, cfg.RunID = root, "selector-policy-run"
+	return workflow, cfg, output
+}
+
+func assertSelectorPolicyNoDispatch(t *testing.T, cfg ExecutorConfig) {
+	t.Helper()
+	for _, name := range []string{"child-dispatched", "dispatched"} {
+		if _, err := os.Stat(filepath.Join(cfg.ProjectDir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("invalid source admitted %s: %v", name, err)
+		}
+	}
+}
+
+func TestSelectorPolicyNativeOutputLimits(t *testing.T) {
+	for _, kind := range selectorPolicyKinds {
+		for _, stream := range []string{"stdout", "stderr", "exact"} {
+			t.Run(kind+"/"+stream, func(t *testing.T) {
+				script := `printf '%s' "$NTM_SELECTOR_POLICY_RESULT"`
+				if stream == "stderr" {
+					script += "; printf noise >&2"
+				} else if stream == "exact" {
+					script += "; printf note >&2"
+				}
+				workflow, cfg, output := selectorPolicyWorkflow(t, kind, script)
+				workflow.Settings.Limits.MaxCommandStdoutBytes = int64(len(output))
+				workflow.Settings.Limits.MaxCommandStderrBytes = 4
+				if stream == "stdout" {
+					workflow.Settings.Limits.MaxCommandStdoutBytes--
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				state, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+				if stream == "exact" {
+					if err != nil || state == nil || state.Status != StatusCompleted {
+						t.Fatalf("exact-limit source failed: %+v %v", state, err)
+					}
+					if _, err := os.Stat(filepath.Join(cfg.ProjectDir, "dispatched")); err != nil {
+						t.Fatalf("complete source did not admit its consumer: %v", err)
+					}
+					return
+				}
+				if err == nil || state == nil || state.Status != StatusFailed {
+					t.Fatalf("oversized %s was accepted: %+v %v", stream, state, err)
+				}
+				result := state.Steps["select"]
+				if result.Error == nil || !strings.Contains(result.Error.Message, errCommandOutputLimit.Error()) || result.Output != "" {
+					t.Fatalf("source did not reject the complete output: %+v", result)
+				}
+				if _, exists := state.CommandEvaluations["select"]; exists {
+					t.Fatal("settled output-limit failure retained an evaluation receipt")
+				}
+				assertSelectorPolicyNoDispatch(t, cfg)
+			})
+		}
+	}
+}
+
+func TestSelectorPolicyNativeTimeoutsTerminateChildren(t *testing.T) {
+	const script = `trap 'wait; exit 0' TERM
+/bin/sh -c '
+trap "printf terminated > child-terminated; exit 0" TERM
+printf ready > child-ready
+while :; do sleep 30; done
+' &
+printf '%s' "$NTM_SELECTOR_POLICY_RESULT"
+wait`
+	for _, kind := range selectorPolicyKinds {
+		for _, timeoutSource := range []string{"default", "step"} {
+			t.Run(kind+"/"+timeoutSource, func(t *testing.T) {
+				workflow, cfg, _ := selectorPolicyWorkflow(t, kind, script)
+				cfg.DefaultTimeout = 300 * time.Millisecond
+				if timeoutSource == "step" {
+					cfg.DefaultTimeout = 5 * time.Second
+					workflow.Steps[0].Timeout = Duration{Duration: 300 * time.Millisecond}
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+				defer cancel()
+				state, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+				if ctx.Err() != nil {
+					t.Fatalf("selector ignored its own %s timeout: %v", timeoutSource, ctx.Err())
+				}
+				if err == nil || state == nil || state.Status != StatusFailed {
+					t.Fatalf("timed-out source succeeded: %+v %v", state, err)
+				}
+				result := state.Steps["select"]
+				if result.Error == nil || !strings.Contains(result.Error.Message, context.DeadlineExceeded.Error()) || result.Output != "" {
+					t.Fatalf("deadline admitted partial source output: %+v", result)
+				}
+				for _, name := range []string{"child-ready", "child-terminated"} {
+					if _, err := os.Stat(filepath.Join(cfg.ProjectDir, name)); err != nil {
+						t.Fatalf("owned child did not complete cooperative termination (%s): %v", name, err)
+					}
+				}
+				if _, exists := state.CommandEvaluations["select"]; exists {
+					t.Fatal("cooperatively terminated source retained an evaluation receipt")
+				}
+				assertSelectorPolicyNoDispatch(t, cfg)
+			})
+		}
+	}
+}
+
+func TestSelectorPolicyDeadlineDoesNotBoundChildBody(t *testing.T) {
+	for _, kind := range []string{"branch", "beads"} {
+		t.Run(kind, func(t *testing.T) {
+			workflow, cfg, _ := selectorPolicyWorkflow(t, kind, `printf '%s' "$NTM_SELECTOR_POLICY_RESULT"`)
+			cfg.DefaultTimeout = 3 * time.Second
+			workflow.Steps[0].Timeout = Duration{Duration: time.Second}
+			body := []Step{{ID: "body", Command: "sleep 1.2; printf body > child-dispatched"}}
+			if kind == "branch" {
+				workflow.Steps[0].Branches["chosen"] = body
+			} else {
+				workflow.Steps[0].Foreach.Steps = body
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			state, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+			if err != nil || state == nil || state.Status != StatusCompleted {
+				t.Fatalf("source deadline escaped into its body: %+v %v", state, err)
+			}
+			if _, err := os.Stat(filepath.Join(cfg.ProjectDir, "child-dispatched")); err != nil {
+				t.Fatalf("body did not finish independently of source deadline: %v", err)
+			}
+		})
+	}
+}
+
+func TestSelectorPolicyDryRunExecutesNoDynamicSource(t *testing.T) {
+	for _, kind := range selectorPolicyKinds {
+		t.Run(kind, func(t *testing.T) {
+			workflow, cfg, _ := selectorPolicyWorkflow(t, kind, `printf source > source-effect; printf '%s' "$NTM_SELECTOR_POLICY_RESULT"`)
+			cfg.DryRun = true
+			state, err := RunControlledPipeline(context.Background(), workflow, nil, cfg, nil)
+			if err != nil || state == nil || state.Status != StatusCompleted {
+				t.Fatalf("source preview failed: %+v %v", state, err)
+			}
+			if _, err := os.Stat(filepath.Join(cfg.ProjectDir, "source-effect")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("dry run executed its dynamic source: %v", err)
+			}
+			if len(state.CommandEvaluations) != 0 || len(state.ForeachState) != 0 {
+				t.Fatalf("dry run published source execution evidence: %+v %+v", state.CommandEvaluations, state.ForeachState)
+			}
+			assertSelectorPolicyNoDispatch(t, cfg)
+		})
+	}
+}
+
+func TestSelectorPolicyInjectedBrAdmission(t *testing.T) {
+	for _, kind := range []string{"br", "bead_query"} {
+		for _, failure := range []string{"limit", "deadline"} {
+			t.Run(kind+"/"+failure, func(t *testing.T) {
+				workflow, cfg, output := selectorPolicyWorkflow(t, kind, "exit 99")
+				workflow.Steps[0].Timeout = Duration{Duration: 100 * time.Millisecond}
+				if failure == "limit" {
+					workflow.Settings.Limits.MaxCommandStdoutBytes = int64(len(output) - 1)
+				}
+				calls := 0
+				cfg.BeadQueryRunBr = func(ctx context.Context, _ []string) ([]byte, error) {
+					calls++
+					deadline, ok := ctx.Deadline()
+					if !ok || time.Until(deadline) > 200*time.Millisecond {
+						return nil, errors.New("injected runner did not receive the selector deadline")
+					}
+					if failure == "deadline" {
+						<-ctx.Done()
+					}
+					return []byte(output), nil
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				state, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+				if err == nil || state == nil || state.Status != StatusFailed || calls != 1 || ctx.Err() != nil {
+					t.Fatalf("injected runner bypassed source admission: %+v %v calls=%d context=%v", state, err, calls, ctx.Err())
+				}
+				want := errCommandOutputLimit.Error()
+				if failure == "deadline" {
+					want = context.DeadlineExceeded.Error()
+				}
+				if result := state.Steps["select"]; result.Error == nil || !strings.Contains(result.Error.Message, want) || result.Output != "" {
+					t.Fatalf("injected result became authoritative after %s: %+v", failure, result)
+				}
+				assertSelectorPolicyNoDispatch(t, cfg)
+			})
+		}
+	}
+}
+
+func TestSelectorPolicyDryRunPreservesStaticForeach(t *testing.T) {
+	for _, kind := range []string{"items", "models"} {
+		t.Run(kind, func(t *testing.T) {
+			workflow, cfg, _ := selectorPolicyWorkflow(t, "models", "exit 99")
+			cfg.DryRun = true
+			if kind == "items" {
+				workflow.Steps[0].Foreach.Items = `["one","two"]`
+				workflow.Steps[0].Foreach.Models = nil
+			} else {
+				workflow.Steps[0].Foreach.Models = StringOrList{"cc", "cod"}
+			}
+			state, err := RunControlledPipeline(context.Background(), workflow, nil, cfg, nil)
+			if err != nil || state == nil || state.Status != StatusCompleted {
+				t.Fatalf("static foreach preview failed: %+v %v", state, err)
+			}
+			for _, id := range []string{"select_iter0_body", "select_iter1_body"} {
+				if result, exists := state.Steps[id]; !exists || result.Status != StatusCompleted {
+					t.Fatalf("static preview lost materialized body %q: %+v", id, result)
+				}
+			}
+			assertSelectorPolicyNoDispatch(t, cfg)
+		})
+	}
+}
 
 func TestResolveBeads_StructuredFormResolvesIDs(t *testing.T) {
 	const fixture = `{

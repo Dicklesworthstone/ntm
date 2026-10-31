@@ -296,7 +296,7 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 		ForeachState:             make(map[string]ForeachIterationState),
 		ParallelState:            make(map[string]ParallelGroupState),
 		InFlightSteps:            make(map[string]InFlightStepState),
-		CommandEvaluationVersion: 1,
+		CommandEvaluationVersion: commandEvaluationVersion,
 	}
 	e.progress = progress
 	e.stateMu.Unlock()
@@ -3888,7 +3888,10 @@ func (e *Executor) snapshotState() *ExecutionState {
 		}
 	}
 	if e.state.CommandEvaluations != nil {
-		snapshot.CommandEvaluations = maps.Clone(e.state.CommandEvaluations)
+		snapshot.CommandEvaluations = make(map[string]CommandEvaluationState, len(e.state.CommandEvaluations))
+		for key, record := range e.state.CommandEvaluations {
+			snapshot.CommandEvaluations[key] = cloneCommandEvaluation(record)
+		}
 	}
 	if e.state.MailSends != nil {
 		snapshot.MailSends = make(map[string]MailSendState, len(e.state.MailSends))

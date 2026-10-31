@@ -3,6 +3,7 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -194,17 +195,17 @@ func TestCommandOutputLifecycleGatesDispatchAndPublication(t *testing.T) {
 			var observedErr error
 			observedSettled := false
 			ctx = context.WithValue(ctx, commandOutputLifecycleKey{}, &commandOutputLifecycle{
-				beforeStart: func() error {
+				beforeStart: func(commandOutputRequest) ([]byte, bool, error) {
 					beforeCalls++
 					if phase == "before_start" {
-						return injected
+						return nil, false, injected
 					}
 					if phase == "cancel_after_intent" {
 						cancel()
 					}
-					return nil
+					return nil, false, nil
 				},
-				afterWait: func(observed *exec.Cmd, settled bool, err error) error {
+				afterWait: func(observed *exec.Cmd, settled bool, _ []byte, err error) error {
 					afterCalls++
 					observedSettled, observedErr = settled, err
 					if observed != cmd {
@@ -270,7 +271,7 @@ func TestCommandOutputRejectsEscapedInheritedPipes(t *testing.T) {
 				observed, settled := false, true
 				var observedErr error
 				ctx = context.WithValue(ctx, commandOutputLifecycleKey{}, &commandOutputLifecycle{
-					afterWait: func(_ *exec.Cmd, proof bool, err error) error {
+					afterWait: func(_ *exec.Cmd, proof bool, _ []byte, err error) error {
 						observed, settled, observedErr = true, proof, err
 						return nil
 					},
@@ -297,6 +298,175 @@ func TestCommandOutputRejectsEscapedInheritedPipes(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestCommandOutputReusesDurableSuccessBytesAfterReload(t *testing.T) {
+	for _, empty := range []bool{false, true} {
+		t.Run(fmt.Sprintf("empty_%t", empty), func(t *testing.T) {
+			e := newCommandTestExecutor(t)
+			script := `printf x >> selections; printf '\377\000\300tail'`
+			want := []byte{0xff, 0, 0xc0, 't', 'a', 'i', 'l'}
+			if empty {
+				script, want = `printf x >> selections`, nil
+			}
+			step := &Step{ID: "source", Branch: "$(" + script + ")"}
+			command := func() *exec.Cmd {
+				cmd := exec.Command("/bin/sh", "-c", script)
+				cmd.Dir = e.config.ProjectDir
+				cmd.Env = []string{"SOURCE_VALUE=original", "DUP=discarded", "DUP=effective"}
+				return cmd
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			out, err := runCommandOutput(e.commandEvaluationContext(ctx, step), command(), 64, 64)
+			if err != nil || !bytes.Equal(out, want) {
+				t.Fatalf("initial complete output: %x %v", out, err)
+			}
+			prior, err := LoadState(e.config.ProjectDir, e.state.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record := prior.CommandEvaluations[step.ID]
+			if record.Status != commandExecutionSettled || !bytes.Equal(record.Output, want) || validateCommandEvaluation(step.ID, record) != nil {
+				t.Fatalf("saved success lost exact bytes or proof: %+v output=%x", record, record.Output)
+			}
+			if len(want) != 0 {
+				snapshot := e.snapshotState()
+				snapshot.CommandEvaluations[step.ID].Output[0] = 'z'
+				if !bytes.Equal(e.state.CommandEvaluations[step.ID].Output, want) {
+					t.Fatal("snapshot output aliases the live evaluation receipt")
+				}
+			}
+			fresh := NewExecutor(e.config)
+			fresh.state = prior
+			cmd := command()
+			// Equivalent effective environments have the same identity despite
+			// order changes or a duplicate variable that exec would discard.
+			cmd.Env = []string{"DUP=effective", "SOURCE_VALUE=original"}
+			out, err = runCommandOutput(fresh.commandEvaluationContext(ctx, step), cmd, 64, 64)
+			if err != nil || !bytes.Equal(out, want) || cmd.Process != nil {
+				t.Fatalf("reload reran or altered successful output: %x %v process=%v", out, err, cmd.Process)
+			}
+			if len(out) != 0 {
+				out[0] = 'z'
+				if !bytes.Equal(fresh.state.CommandEvaluations[step.ID].Output, want) {
+					t.Fatal("returned output aliases its durable receipt")
+				}
+			}
+			if data, err := os.ReadFile(filepath.Join(e.config.ProjectDir, "selections")); err != nil || string(data) != "x" {
+				t.Fatalf("successful evaluation effects were repeated: %q %v", data, err)
+			}
+		})
+	}
+}
+
+func TestCommandOutputInvocationFreezePreservesEffectiveEnvironment(t *testing.T) {
+	t.Setenv("PWD", "/inherited/logical/directory")
+	cmd := exec.Command("/bin/sh", "-c", "true")
+	before := cmd.Environ()
+	request := commandOutputRequest{Cmd: cmd, StdoutLimit: 64, StderrLimit: 64}
+	digest, err := commandEvaluationInvocationHash(request)
+	if err != nil || !filepath.IsAbs(cmd.Dir) || strings.Join(cmd.Env, "\x00") != strings.Join(before, "\x00") {
+		t.Fatalf("freezing an implicit cwd changed the effective launch environment: dir=%q env=%q err=%v", cmd.Dir, cmd.Env, err)
+	}
+	if again, err := commandEvaluationInvocationHash(request); err != nil || again != digest {
+		t.Fatalf("freezing a command twice changed its identity: %q %q %v", digest, again, err)
+	}
+}
+
+func TestCommandOutputRejectsChangedDurableInvocation(t *testing.T) {
+	for _, change := range []string{"expanded command", "executable", "directory", "environment", "definition", "stdout limit", "stderr limit", "invalid UTF-8 argument"} {
+		t.Run(change, func(t *testing.T) {
+			e := newCommandTestExecutor(t)
+			script := "printf x >> selections; printf original"
+			step := &Step{ID: "source", Branch: "${vars.expanded_selector}"}
+			command := func() *exec.Cmd {
+				cmd := exec.Command("/bin/sh", "-c", script, "source", string([]byte{0xff}))
+				cmd.Dir, cmd.Env = e.config.ProjectDir, []string{"SOURCE_VALUE=original"}
+				return cmd
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := runCommandOutput(e.commandEvaluationContext(ctx, step), command(), 64, 64); err != nil {
+				t.Fatal(err)
+			}
+			prior, err := LoadState(e.config.ProjectDir, e.state.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(pipelineStatePath(e.config.ProjectDir, e.state.RunID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			fresh := NewExecutor(e.config)
+			fresh.state = prior
+			cmd := command()
+			stdoutLimit, stderrLimit := int64(64), int64(64)
+			switch change {
+			case "expanded command":
+				cmd.Args[2] += "; printf changed"
+			case "executable":
+				cmd.Path = "/bin/false"
+			case "directory":
+				cmd.Dir = t.TempDir()
+			case "environment":
+				cmd.Env = []string{"SOURCE_VALUE=changed"}
+			case "definition":
+				step.Branch = "${vars.other_selector}"
+			case "stdout limit":
+				stdoutLimit++
+			case "stderr limit":
+				stderrLimit++
+			case "invalid UTF-8 argument":
+				cmd.Args[len(cmd.Args)-1] = string([]byte{0xfe})
+			}
+			out, err := runCommandOutput(fresh.commandEvaluationContext(ctx, step), cmd, stdoutLimit, stderrLimit)
+			if out != nil || err == nil || !strings.Contains(err.Error(), "expanded invocation changed") || cmd.Process != nil {
+				t.Fatalf("changed invocation reused output or launched work: %q %v process=%v", out, err, cmd.Process)
+			}
+			after, err := os.ReadFile(pipelineStatePath(e.config.ProjectDir, e.state.RunID))
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("rejected invocation changed its saved evidence: %v", err)
+			}
+			if data, err := os.ReadFile(filepath.Join(e.config.ProjectDir, "selections")); err != nil || string(data) != "x" {
+				t.Fatalf("identity rejection repeated source effects: %q %v", data, err)
+			}
+		})
+	}
+}
+
+func TestCommandOutputLostSuccessCheckpointKeepsIntentUnresolved(t *testing.T) {
+	e := newCommandTestExecutor(t)
+	step := &Step{ID: "source", Branch: "$(printf x >> selections; printf complete)"}
+	ctx := e.commandEvaluationContext(context.Background(), step)
+	lifecycle := ctx.Value(commandOutputLifecycleKey{}).(*commandOutputLifecycle)
+	injected := errors.New("owner stopped before success checkpoint")
+	lifecycle.afterWait = func(_ *exec.Cmd, settled bool, output []byte, err error) error {
+		if !settled || err != nil || string(output) != "complete" {
+			t.Fatalf("fixture did not reach the completed-command crash boundary: settled=%t output=%q err=%v", settled, output, err)
+		}
+		return injected
+	}
+	cmd := exec.Command("/bin/sh", "-c", "printf x >> selections; printf complete")
+	cmd.Dir = e.config.ProjectDir
+	if out, err := runCommandOutput(ctx, cmd, 64, 64); out != nil || !errors.Is(err, injected) {
+		t.Fatalf("lost checkpoint published authoritative output: %q %v", out, err)
+	}
+	prior, err := LoadState(e.config.ProjectDir, e.state.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prior.CommandEvaluations[step.ID].Status != commandExecutionStarting {
+		t.Fatalf("lost success checkpoint erased launch intent: %+v", prior.CommandEvaluations)
+	}
+	fresh := NewExecutor(e.config)
+	fresh.state = prior
+	if err := fresh.applyResumeOptions(&Workflow{Steps: []Step{*step}}, ResumeOptions{}); !errors.Is(err, errCommandOutputUnsettled) {
+		t.Fatalf("missing completion proof authorized replay: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(e.config.ProjectDir, "selections")); err != nil || string(data) != "x" {
+		t.Fatalf("refused resume repeated effects: %q %v", data, err)
 	}
 }
 

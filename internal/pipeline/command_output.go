@@ -16,9 +16,15 @@ var errCommandOutputUnsettled = errors.New("pipeline command output lacks verifi
 // to one evaluation and never write state after the capture call returns.
 type commandOutputLifecycleKey struct{}
 
+type commandOutputRequest struct {
+	Cmd         *exec.Cmd
+	StdoutLimit int64
+	StderrLimit int64
+}
+
 type commandOutputLifecycle struct {
-	beforeStart func() error
-	afterWait   func(cmd *exec.Cmd, settled bool, err error) error
+	beforeStart func(commandOutputRequest) (output []byte, reused bool, err error)
+	afterWait   func(cmd *exec.Cmd, settled bool, output []byte, err error) error
 }
 
 // runCommandOutput captures an authoritative branch or iteration-source result.
@@ -50,14 +56,24 @@ func runCommandOutput(ctx context.Context, cmd *exec.Cmd, stdoutLimit, stderrLim
 	configureCommandProcessGroup(cmd)
 	lifecycle, _ := ctx.Value(commandOutputLifecycleKey{}).(*commandOutputLifecycle)
 	if lifecycle != nil && lifecycle.beforeStart != nil {
-		if err := lifecycle.beforeStart(); err != nil {
+		cached, reused, err := lifecycle.beforeStart(commandOutputRequest{Cmd: cmd, StdoutLimit: stdoutLimit, StderrLimit: stderrLimit})
+		if err != nil {
 			return nil, err
+		}
+		if reused {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if int64(len(cached)) > stdoutLimit {
+				return nil, fmt.Errorf("%w: saved command output contains %d bytes (limit %d)", errCommandOutputLimit, len(cached), stdoutLimit)
+			}
+			return cached, nil
 		}
 	}
 	settled := true // Before Start there can be no owned command process.
 	defer func() {
 		if lifecycle != nil && lifecycle.afterWait != nil {
-			if err := lifecycle.afterWait(cmd, settled, retErr); err != nil {
+			if err := lifecycle.afterWait(cmd, settled, output, retErr); err != nil {
 				output = nil
 				retErr = errors.Join(retErr, err)
 			}
