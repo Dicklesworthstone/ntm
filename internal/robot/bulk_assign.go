@@ -2832,6 +2832,12 @@ func (p *robotAtomicPaneDispatchPort) Dispatch(ctx context.Context, req assignme
 		receipt.DeliveryID = assignment.DispatchDeliveryID(delivery.Target.Ref.StableKey(), string(delivery.Protocol), req.IdempotencyKey)
 	}
 	if dispatchErr != nil {
+		// Preserve the transport's proven zero-delivery refusal so the
+		// durable assignment can retry without claiming or reserving again.
+		// Uncertain transport failures must retain the sending barrier.
+		if dispatchsvc.IsGuaranteedNoDeliveryActuation(dispatchErr) {
+			return receipt, assignment.GuaranteeNoActuation(dispatchErr)
+		}
 		return receipt, dispatchErr
 	}
 	if result.Delivered != 1 || len(result.Receipts) != 1 || result.Receipts[0].Status != dispatchsvc.ReceiptDelivered {

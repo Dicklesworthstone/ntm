@@ -1450,6 +1450,133 @@ func TestRobotAtomicPaneDispatchRevalidatesFreshIdleBeforeActuation(t *testing.T
 	}
 }
 
+func TestRobotAtomicPaneDispatchPreservesDurableRetrySafety(t *testing.T) {
+	tests := []struct {
+		name      string
+		failure   error
+		retryable bool
+	}{
+		{
+			name: "proven zero delivery",
+			failure: fmt.Errorf("transport refused: %w",
+				dispatchsvc.GuaranteeNoDeliveryActuation(errors.New("pane is not ready for delivery"))),
+			retryable: true,
+		},
+		{
+			name:    "ambiguous delivery",
+			failure: errors.New("connection lost after write"),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			const session = "robot-dispatch-recovery"
+			pane := tmux.Pane{ID: "%31", WindowIndex: 0, Index: 1, Type: tmux.AgentCodex}
+			claimCalls, reserveCalls, deliverCalls := 0, 0, 0
+
+			claimer := assignment.ClaimFunc(func(_ context.Context, beadID, actor string) (assignment.ClaimReceipt, error) {
+				claimCalls++
+				return assignment.ClaimReceipt{
+					BeadID: beadID, Actor: actor, Status: "in_progress", ClaimedAt: time.Now().UTC(),
+				}, nil
+			})
+			reserver := assignment.ReservationFunc(func(_ context.Context, req assignment.ReservationRequest) (assignment.LeaseReceipt, error) {
+				reserveCalls++
+				expires := time.Now().UTC().Add(time.Hour)
+				return assignment.LeaseReceipt{
+					AgentName: req.AgentName, Target: req.Target,
+					Requested:      append([]string(nil), req.RequestedPaths...),
+					Granted:        append([]string(nil), req.RequestedPaths...),
+					ReservationIDs: []int{41},
+					ExpiresAt:      &expires,
+				}, nil
+			})
+			port := newRobotAtomicPaneDispatchPort(
+				session,
+				func(context.Context, string) ([]tmux.Pane, error) { return []tmux.Pane{pane}, nil },
+				bulkSafeObserver([]tmux.Pane{pane}),
+				redaction.Config{Mode: redaction.ModeOff},
+				dispatchsvc.DelivererFunc(func(_ context.Context, delivery dispatchsvc.Delivery) error {
+					deliverCalls++
+					if delivery.Target.Ref.ID != pane.ID {
+						t.Fatalf("delivery target = %q, want %q", delivery.Target.Ref.ID, pane.ID)
+					}
+					if deliverCalls == 1 {
+						return test.failure
+					}
+					return nil
+				}),
+				nil,
+			)
+			store := assignment.NewStore(session)
+			coordinator := assignment.NewAtomicCoordinator(store, claimer, reserver, port, port)
+			request := assignment.AtomicRequest{
+				BeadID: "bd-dispatch-recovery", BeadTitle: "Recover the assignment",
+				Target: pane.ID, Pane: pane.Index, AgentType: "codex", AgentName: "RetryAgent",
+				Actor: "Coordinator", Prompt: "Implement the assignment recovery fix.",
+				IdempotencyKey:     "dispatch-recovery-key",
+				RequireReservation: true, RequestedPaths: []string{"internal/robot/**"},
+				ReservationTTL: time.Hour,
+			}
+
+			first, err := coordinator.Execute(t.Context(), request)
+			if err == nil || first.Sent {
+				t.Fatalf("first Execute = %+v, error = %v; want an unsent failure", first, err)
+			}
+			if unknown := errors.Is(err, assignment.ErrDispatchOutcomeUnknown); unknown == test.retryable {
+				t.Fatalf("first Execute error = %v, retryable = %v", err, test.retryable)
+			}
+
+			// Reopen the actual ledger so retry safety depends on persisted
+			// state, rather than the original coordinator's memory.
+			reloaded, err := assignment.LoadStoreStrict(session)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pending := reloaded.Get(request.BeadID)
+			wantState := assignment.DispatchSending
+			if test.retryable {
+				wantState = assignment.DispatchPending
+			}
+			if pending == nil || pending.DispatchState != wantState || pending.Status != assignment.StatusClaimed {
+				t.Fatalf("persisted assignment = %+v, want claimed/%s", pending, wantState)
+			}
+			if pending.PendingPrompt != request.Prompt || len(pending.ReservationIDs) != 1 || pending.ReservationIDs[0] != 41 {
+				t.Fatalf("pending prompt or lease was lost: %+v", pending)
+			}
+			if test.retryable && pending.LastDispatchError == "" {
+				t.Fatal("retryable refusal lost its diagnostic")
+			}
+
+			coordinator = assignment.NewAtomicCoordinator(reloaded, claimer, reserver, port, port)
+			retry, retryErr := coordinator.Execute(t.Context(), request)
+			if !test.retryable {
+				if !errors.Is(retryErr, assignment.ErrDispatchOutcomeUnknown) || retry.Sent {
+					t.Fatalf("ambiguous retry = %+v, error = %v", retry, retryErr)
+				}
+				if claimCalls != 1 || reserveCalls != 1 || deliverCalls != 1 {
+					t.Fatalf("ambiguous retry repeated side effects: claim=%d reserve=%d deliver=%d",
+						claimCalls, reserveCalls, deliverCalls)
+				}
+				return
+			}
+
+			if retryErr != nil || !retry.Sent || !retry.Recovered || retry.Replayed || retry.Dispatch.DeliveryID == "" {
+				t.Fatalf("recovered Execute = %+v, error = %v", retry, retryErr)
+			}
+			replay, replayErr := coordinator.Execute(t.Context(), request)
+			if replayErr != nil || !replay.Sent || !replay.Replayed || replay.Dispatch.DeliveryID != retry.Dispatch.DeliveryID {
+				t.Fatalf("durable replay = %+v, error = %v", replay, replayErr)
+			}
+			if claimCalls != 1 || reserveCalls != 1 || deliverCalls != 2 {
+				t.Fatalf("recovery/replay side effects: claim=%d reserve=%d deliver=%d; want 1/1/2",
+					claimCalls, reserveCalls, deliverCalls)
+			}
+		})
+	}
+}
+
 func TestRobotAtomicPreflightBlocksSensitiveReservationPathBeforeTopologyLookup(t *testing.T) {
 	port := newRobotAtomicPaneDispatchPort(
 		"sensitive-path", nil, nil, redaction.DefaultConfig(), nil, nil,
