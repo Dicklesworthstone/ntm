@@ -49,6 +49,12 @@ const receiptTokenAllowlist = `^"receipt_token"\s*:\s*"[0-9a-f]{64}"$`
 // the separator.
 var jsonCredentialPair = regexp.MustCompile(`^("(?:\\.|[^"\\])*"\s*:\s*)"(?:\\.|[^"\\])*"$`)
 
+// Persisted event output can be scanned again during replay. A complete marker
+// is already protected; rehashing it would make live and replayed data disagree.
+// Only built-in password findings use this exemption (never custom patterns or
+// request admission), since their matcher also accepts arbitrary quoted text.
+var jsonRedactionMarker = regexp.MustCompile(`^"\[REDACTED:[A-Z][A-Z0-9_]*:[0-9a-f]{8}\]"$`)
+
 const redactionMaxRequestBodyBytes = 10 << 20
 
 // A response is filtered after its handler has run. Keep the handler's status
@@ -305,10 +311,17 @@ func redactJSONBytes(body []byte, cfg redaction.Config) ([]byte, redaction.Resul
 	if !json.Valid(body) {
 		return nil, result, errors.New("invalid JSON output")
 	}
+	protectedPassword := func(f redaction.Finding) bool {
+		if f.Category != redaction.CategoryPassword || len(cfg.ExtraPatterns[f.Category]) > 0 {
+			return false
+		}
+		pair := jsonCredentialPair.FindStringSubmatch(f.Match)
+		return pair != nil && jsonRedactionMarker.MatchString(f.Match[len(pair[1]):])
+	}
+	result.Findings = slices.DeleteFunc(result.Findings, protectedPassword)
 	if len(result.Findings) == 0 {
 		return body, result, nil
 	}
-	markers := make([]string, 0, 2*len(result.Findings))
 	for _, f := range result.Findings {
 		if f.Start < 0 || f.End <= f.Start || f.End > len(body) {
 			return nil, result, errors.New("invalid JSON redaction boundary")
@@ -319,7 +332,6 @@ func redactJSONBytes(body []byte, cfg redaction.Config) ([]byte, redaction.Resul
 		if len(cfg.ExtraPatterns[f.Category]) > 0 && jsonCredentialPair.Match(body[f.Start:f.End]) {
 			return nil, result, errors.New("ambiguous JSON redaction boundary")
 		}
-		markers = append(markers, f.Redacted, "")
 	}
 	output := []byte(jsonResponseOutput(string(body), result))
 	if !json.Valid(output) {
@@ -327,13 +339,14 @@ func redactJSONBytes(body []byte, cfg redaction.Config) ([]byte, redaction.Resul
 	}
 	// Repaired JSON must not retain detectable secret content. This also
 	// protects against a structurally valid but incomplete custom rewrite.
-	// Ignore only the markers just inserted: PASSWORD detects arbitrary quoted
-	// values and would otherwise mistake its own marker for a new password.
+	// Ignore complete markers: PASSWORD detects arbitrary quoted values and
+	// would otherwise mistake already protected values for new passwords.
 	checkCfg := cfg
 	checkCfg.Mode = redaction.ModeBlock
-	remaining := strings.NewReplacer(markers...).Replace(string(output))
-	if redaction.ScanAndRedact(remaining, checkCfg).Blocked {
-		return nil, result, errors.New("JSON redaction left sensitive content")
+	for _, f := range redaction.ScanAndRedact(string(output), checkCfg).Findings {
+		if !protectedPassword(f) {
+			return nil, result, errors.New("JSON redaction left sensitive content")
+		}
 	}
 	return output, result, nil
 }

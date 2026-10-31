@@ -652,6 +652,15 @@ func (h *WSHub) handleReplay(req *wsReplayRequest) {
 			Data:      json.RawMessage(ev.Data),
 			Replay:    true,
 		}
+		// History may have been recorded while redaction was disabled, or by
+		// an older server. Apply the current disclosure policy without changing
+		// the stored cursor, original record or routing identity.
+		if err := h.redactEvent(frame); err != nil {
+			log.Printf("ws_events: replay withheld by redaction seq=%d", ev.Seq)
+			res.reset = true
+			h.trySendReset(req.client, "", "redaction_failed", res.cursor, 0)
+			return
+		}
 		data, err := json.Marshal(frame)
 		if err != nil {
 			log.Printf("ws_events: replay marshal error seq=%d: %v", ev.Seq, err)

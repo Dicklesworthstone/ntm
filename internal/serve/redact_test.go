@@ -470,7 +470,10 @@ func TestWSHubRedaction_Disabled(t *testing.T) {
 	}
 
 	// redactWSEventData should return unchanged data when disabled
-	result := redactWSEventData(data, redaction.Config{Mode: redaction.ModeOff})
+	result, err := redactWSEventData(data, redaction.Config{Mode: redaction.ModeOff})
+	if err != nil {
+		t.Fatal(err)
+	}
 	resultMap := result.(map[string]interface{})
 
 	t.Logf("TEST: TestWSHubRedaction_Disabled - result: %v", resultMap)
@@ -502,8 +505,20 @@ func TestWSHubRedaction_RedactMode(t *testing.T) {
 		},
 	}
 
-	result := redactWSEventData(data, cfg)
-	resultMap := result.(map[string]interface{})
+	result, err := redactWSEventData(data, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resultMap map[string]interface{}
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	if err := decoder.Decode(&resultMap); err != nil {
+		t.Fatal(err)
+	}
 
 	t.Logf("TEST: TestWSHubRedaction_RedactMode - result: %v", resultMap)
 
@@ -517,7 +532,7 @@ func TestWSHubRedaction_RedactMode(t *testing.T) {
 	}
 
 	// Check count is preserved
-	if resultMap["count"] != 42 {
+	if resultMap["count"] != json.Number("42") {
 		t.Errorf("count should be preserved: %v", resultMap["count"])
 	}
 
@@ -546,8 +561,18 @@ func TestWSHubRedaction_ArrayData(t *testing.T) {
 		map[string]interface{}{"key": testSecret},
 	}
 
-	result := redactWSEventData(data, cfg)
-	resultSlice := result.([]interface{})
+	result, err := redactWSEventData(data, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resultSlice []interface{}
+	if err := json.Unmarshal(encoded, &resultSlice); err != nil {
+		t.Fatal(err)
+	}
 
 	t.Logf("TEST: TestWSHubRedaction_ArrayData - result: %v", resultSlice)
 
@@ -580,7 +605,10 @@ func TestWSHubRedaction_WarnMode(t *testing.T) {
 		"message": "Secret: " + testSecret,
 	}
 
-	result := redactWSEventData(data, cfg)
+	result, err := redactWSEventData(data, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	resultMap := result.(map[string]interface{})
 
 	t.Logf("TEST: TestWSHubRedaction_WarnMode - result: %v", resultMap)
@@ -648,9 +676,20 @@ func TestWSHubRedaction_NonStringTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := redactWSEventData(tt.input, cfg)
-			if result != tt.input {
-				t.Errorf("non-string type should be unchanged: got %v, want %v", result, tt.input)
+			result, err := redactWSEventData(tt.input, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := json.Marshal(tt.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Errorf("non-string JSON type should be unchanged: got %s, want %s", got, want)
 			}
 		})
 	}

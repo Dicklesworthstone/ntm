@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -13,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"net"
 	"net/http"
@@ -32,6 +34,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/pipeline"
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 )
@@ -3214,6 +3217,337 @@ func TestEventStreamSSE(t *testing.T) {
 	body, _ := io.ReadAll(rec.Body)
 	if len(body) == 0 {
 		t.Error("Expected some output from SSE stream")
+	}
+}
+
+type sseTestRecorder struct {
+	*httptest.ResponseRecorder
+	onFlush func()
+}
+
+func (r *sseTestRecorder) Flush() {
+	r.ResponseRecorder.Flush()
+	if r.onFlush != nil {
+		r.onFlush()
+	}
+}
+
+type sseTestFrame struct {
+	event string
+	data  json.RawMessage
+}
+
+func readSSETestFrames(t *testing.T, body string) []sseTestFrame {
+	t.Helper()
+	var frames []sseTestFrame
+	for _, record := range strings.Split(body, "\n\n") {
+		if record == "" {
+			continue
+		}
+		lines := strings.Split(record, "\n")
+		if len(lines) != 2 || !strings.HasPrefix(lines[0], "event: ") || !strings.HasPrefix(lines[1], "data: ") {
+			t.Fatal("invalid SSE frame boundaries")
+		}
+		data := json.RawMessage(strings.TrimPrefix(lines[1], "data: "))
+		if !json.Valid(data) {
+			t.Fatal("SSE frame contains invalid JSON")
+		}
+		frames = append(frames, sseTestFrame{event: strings.TrimPrefix(lines[0], "event: "), data: data})
+	}
+	return frames
+}
+
+func newRedactionTestAttentionFeed(t *testing.T) *robot.AttentionFeed {
+	t.Helper()
+	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{JournalSize: 8, RetentionPeriod: time.Hour})
+	previous := robot.GetAttentionFeed()
+	robot.SetAttentionFeed(feed)
+	t.Cleanup(func() {
+		robot.SetAttentionFeed(previous)
+		feed.Stop()
+	})
+	return feed
+}
+
+func TestSSEFrameRedactionModesPreserveExactJSONAndSource(t *testing.T) {
+	provider := "sk-" + strings.Repeat("x", 48)
+	token := strings.Repeat("q", 32)
+	for _, mode := range []redaction.Mode{redaction.ModeOff, redaction.ModeWarn, redaction.ModeRedact, redaction.ModeBlock} {
+		t.Run(string(mode), func(t *testing.T) {
+			s := &Server{redactionCfg: &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: mode}}}
+			payload := map[string]any{
+				"cursor":  json.Number("9007199254740993"),
+				"items":   []any{},
+				"summary": "ordinary context",
+				"details": map[string]any{
+					"api_token": token,
+					"nested":    []any{map[string]any{"message": provider}},
+				},
+			}
+			original, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := httptest.NewRecorder()
+			if err := s.writeSSEEvent(rec, "attention", payload); err != nil {
+				t.Fatalf("writeSSEEvent: %v", err)
+			}
+			frames := readSSETestFrames(t, rec.Body.String())
+			if len(frames) != 1 || frames[0].event != "attention" {
+				t.Fatal("event routing or frame count changed")
+			}
+			var decoded map[string]json.RawMessage
+			if err := json.Unmarshal(frames[0].data, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if string(decoded["cursor"]) != "9007199254740993" || string(decoded["items"]) != "[]" || string(decoded["summary"]) != `"ordinary context"` {
+				t.Fatal("redaction changed exact cursors, empty arrays, or safe context")
+			}
+			if mode == redaction.ModeRedact || mode == redaction.ModeBlock {
+				if strings.Contains(rec.Body.String(), provider) || strings.Contains(rec.Body.String(), token) || !strings.Contains(rec.Body.String(), "[REDACTED:") {
+					t.Fatal("enforcing mode disclosed sensitive SSE data")
+				}
+			} else if !bytes.Equal(frames[0].data, original) {
+				t.Fatal("off/warn mode changed the serialized payload")
+			}
+			after, err := json.Marshal(payload)
+			if err != nil || !bytes.Equal(after, original) {
+				t.Fatal("output redaction mutated its source object")
+			}
+		})
+	}
+}
+
+type ssePrivateMarshalError string
+
+func (value ssePrivateMarshalError) MarshalJSON() ([]byte, error) {
+	return nil, errors.New(string(value))
+}
+
+func TestSSEFrameRefusesUnsafeOutputWithoutPartialWritesOrSecretDiagnostics(t *testing.T) {
+	secret := "sk-" + strings.Repeat("z", 48)
+	for _, tc := range []struct {
+		name    string
+		event   string
+		payload any
+		cfg     redaction.Config
+	}{
+		{name: "sensitive routing label", event: secret, payload: map[string]string{"message": "safe"}},
+		{name: "injected frame boundary", event: "attention\ndata: " + secret, payload: map[string]string{"message": "safe"}},
+		{name: "private marshaler error", event: "attention", payload: ssePrivateMarshalError(secret)},
+		{name: "unsafe structural rewrite", event: "attention", payload: map[string]int{"count": 1234567890}, cfg: redaction.Config{ExtraPatterns: map[redaction.Category][]string{"TEST_CUSTOM": {`1234567890`}}}},
+		{name: "oversized frame", event: "attention", payload: strings.Repeat("a", sseMaxFrameBytes)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := log.Writer()
+			log.SetOutput(&logs)
+			defer log.SetOutput(previous)
+			tc.cfg.Mode = redaction.ModeRedact
+			s := &Server{redactionCfg: &RedactionConfig{Enabled: true, Config: tc.cfg}}
+			rec := httptest.NewRecorder()
+			err := s.writeSSEEvent(rec, tc.event, tc.payload)
+			if err == nil || rec.Body.Len() != 0 {
+				t.Fatal("unsafe event was not refused before any frame bytes were written")
+			}
+			if strings.Contains(err.Error(), secret) || strings.Contains(logs.String(), secret) {
+				t.Fatal("SSE refusal disclosed private source data in diagnostics")
+			}
+		})
+	}
+}
+
+func TestEventStreamSSERedactsMetadataAndRefusesSensitiveRouting(t *testing.T) {
+	secret := "sk-" + strings.Repeat("y", 48)
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		for _, sensitiveType := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/sensitive_type_%t", mode, sensitiveType), func(t *testing.T) {
+				s := New(Config{Redaction: &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: mode}}})
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				rec := &sseTestRecorder{ResponseRecorder: httptest.NewRecorder()}
+				event := events.BaseEvent{Type: "agent.started", Session: secret, Timestamp: time.Now().UTC()}
+				if sensitiveType {
+					event.Type = secret
+				}
+				published := false
+				rec.onFlush = func() {
+					if !published {
+						published = true
+						s.broadcastEvent(event)
+					} else {
+						cancel()
+					}
+				}
+				s.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/events", nil).WithContext(ctx))
+				if ctx.Err() == context.DeadlineExceeded {
+					t.Fatal("stream did not terminate after its last deliverable frame")
+				}
+				frames := readSSETestFrames(t, rec.Body.String())
+				wantFrames := 2
+				if sensitiveType {
+					wantFrames = 1
+				}
+				if len(frames) != wantFrames || frames[0].event != "connected" || strings.Contains(rec.Body.String(), secret) {
+					t.Fatal("legacy SSE disclosed metadata or changed safe frame boundaries")
+				}
+				if !sensitiveType && (frames[1].event != "agent.started" || !strings.Contains(string(frames[1].data), "[REDACTED:")) {
+					t.Fatal("safe event type or redacted session metadata was lost")
+				}
+				if event.Session != secret {
+					t.Fatal("streaming mutated the source event")
+				}
+			})
+		}
+	}
+}
+
+func TestAttentionStreamSSERedactsReplayLiveAndUpdatedPolicy(t *testing.T) {
+	secret := "sk-" + strings.Repeat("v", 48)
+	token := strings.Repeat("p", 32)
+	for _, initialMode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock, redaction.ModeOff} {
+		t.Run(string(initialMode), func(t *testing.T) {
+			feed := newRedactionTestAttentionFeed(t)
+			replay := feed.PublishMailPending("/project", "sender", "receiver", "replay "+secret, 1, "thread")
+			s := New(Config{Redaction: &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: initialMode}}})
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			rec := &sseTestRecorder{ResponseRecorder: httptest.NewRecorder()}
+			published := false
+			rec.onFlush = func() {
+				if !published {
+					published = true
+					if initialMode == redaction.ModeOff {
+						s.mu.Lock()
+						s.redactionCfg = &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeBlock}}
+						s.mu.Unlock()
+					}
+					feed.Append(robot.AttentionEvent{Category: robot.EventCategoryAlert, Summary: "live " + secret, Details: map[string]any{"api_token": token}})
+				}
+				if strings.Count(rec.Body.String(), "event: attention\n") == 2 {
+					cancel()
+				}
+			}
+			s.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/attention/stream?heartbeat=0", nil).WithContext(ctx))
+			if ctx.Err() == context.DeadlineExceeded {
+				t.Fatal("stream did not deliver replay and queued live events")
+			}
+			frames := readSSETestFrames(t, rec.Body.String())
+			if len(frames) != 3 || frames[0].event != "connected" || frames[1].event != "attention" || frames[2].event != "attention" {
+				t.Fatal("connection/replay/live frame sequence changed")
+			}
+			if strings.Contains(rec.Body.String(), secret) || strings.Contains(rec.Body.String(), token) {
+				t.Fatal("SSE replay or live data escaped the current output policy")
+			}
+			for i, frame := range frames[1:] {
+				var delivered robot.AttentionEvent
+				if err := json.Unmarshal(frame.data, &delivered); err != nil {
+					t.Fatal(err)
+				}
+				if delivered.Cursor != replay.Cursor+int64(i) || !strings.Contains(delivered.Summary, "[REDACTED:") {
+					t.Fatal("stream lost cursor identity or summary protection")
+				}
+			}
+			stored, _, err := feed.Replay(0, 8)
+			if err != nil || len(stored) != 2 || !strings.Contains(stored[0].Summary, secret) || stored[1].Details["api_token"] != token {
+				t.Fatal("per-client redaction changed the shared feed")
+			}
+		})
+	}
+}
+
+func TestAttentionStreamSSEProtectsHeartbeatDiagnostics(t *testing.T) {
+	s, store := setupTestServer(t)
+	newRedactionTestAttentionFeed(t)
+	secret := "sk-" + strings.Repeat("h", 48)
+	now := time.Now().UTC()
+	if err := store.UpsertSourceHealth(&state.SourceHealth{SourceName: "mail", Available: true, Healthy: false, Reason: "service unavailable", LastErrorCode: secret, LastError: secret, LastCheckAt: now, ConsecutiveFailures: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(s.attentionHeartbeatSourceSummary().degradedReasons, " "), secret) {
+		t.Fatal("source-health fixture does not expose the sensitive diagnostic")
+	}
+	s.redactionCfg = &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeBlock}}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	rec := &sseTestRecorder{ResponseRecorder: httptest.NewRecorder()}
+	rec.onFlush = func() {
+		if strings.Contains(rec.Body.String(), "event: heartbeat\n") {
+			cancel()
+		}
+	}
+	s.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/attention/stream?heartbeat=1", nil).WithContext(ctx))
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatal("heartbeat was not delivered")
+	}
+	frames := readSSETestFrames(t, rec.Body.String())
+	if len(frames) != 2 || frames[1].event != "heartbeat" || strings.Contains(rec.Body.String(), secret) {
+		t.Fatal("heartbeat diagnostics disclosed sensitive content")
+	}
+	var heartbeat struct {
+		SourcesDegraded  int      `json:"sources_degraded"`
+		DegradedReasons  []string `json:"degraded_reasons"`
+		SubscriptionLive bool     `json:"subscription_active"`
+	}
+	if err := json.Unmarshal(frames[1].data, &heartbeat); err != nil {
+		t.Fatal(err)
+	}
+	if heartbeat.SourcesDegraded != 1 || !heartbeat.SubscriptionLive || len(heartbeat.DegradedReasons) != 1 || !strings.Contains(heartbeat.DegradedReasons[0], "[REDACTED:") {
+		t.Fatal("heartbeat lost its non-secret health diagnostics")
+	}
+}
+
+func TestAttentionStreamSSETerminatesOnUnsafeLiveFrame(t *testing.T) {
+	feed := newRedactionTestAttentionFeed(t)
+	s := New(Config{Redaction: &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeRedact}}})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	rec := &sseTestRecorder{ResponseRecorder: httptest.NewRecorder()}
+	published := false
+	rec.onFlush = func() {
+		if !published {
+			published = true
+			feed.Append(robot.AttentionEvent{Summary: "undeliverable", Details: map[string]any{"value": ssePrivateMarshalError("private source failure")}})
+			feed.Append(robot.AttentionEvent{Summary: "must not skip ahead"})
+		}
+	}
+	s.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/attention/stream?heartbeat=0", nil).WithContext(ctx))
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatal("unsafe live frame was silently skipped instead of terminating the stream")
+	}
+	frames := readSSETestFrames(t, rec.Body.String())
+	if len(frames) != 1 || frames[0].event != "connected" {
+		t.Fatal("stream advanced past an unsafe event or emitted a partial frame")
+	}
+}
+
+func TestAttentionSSEReplayRefusalPreservesLastDeliveredCursor(t *testing.T) {
+	const exactCursor int64 = 9007199254740993
+	s := &Server{redactionCfg: &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeBlock}}}
+	secret := "sk-" + strings.Repeat("r", 48)
+	events := []robot.AttentionEvent{
+		{Cursor: exactCursor, Summary: "safe context " + secret},
+		{Cursor: exactCursor + 1, Summary: "undeliverable", Details: map[string]any{"value": ssePrivateMarshalError(secret)}},
+		{Cursor: exactCursor + 2, Summary: "must not skip ahead"},
+	}
+	rec := httptest.NewRecorder()
+	cursor, delivered, err := s.writeAttentionReplay(rec, rec, events, nil, "", nil, exactCursor-1)
+	if err == nil || strings.Contains(err.Error(), secret) || cursor != exactCursor || delivered != 1 {
+		t.Fatal("replay refusal lost the last delivered cursor or leaked error contents")
+	}
+	frames := readSSETestFrames(t, rec.Body.String())
+	if len(frames) != 1 || strings.Contains(rec.Body.String(), secret) {
+		t.Fatal("replay emitted an unsafe or subsequent frame")
+	}
+	var event robot.AttentionEvent
+	if err := json.Unmarshal(frames[0].data, &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.Cursor != exactCursor || !strings.Contains(event.Summary, "safe context") || !strings.Contains(event.Summary, "[REDACTED:") {
+		t.Fatal("replay changed the exact cursor or discarded safe context")
+	}
+	if !strings.Contains(events[0].Summary, secret) || events[1].Details["value"] != ssePrivateMarshalError(secret) {
+		t.Fatal("replay protection mutated source events")
 	}
 }
 
@@ -6848,7 +7182,7 @@ func TestWriteAttentionReplay_AdvancesCursorToLastDeliveredEvent(t *testing.T) {
 		{Cursor: 7, Session: "alpha", Summary: "second"},
 	}
 
-	finalCursor, delivered, err := writeAttentionReplay(rec, rec, events, nil, "", nil, 2)
+	finalCursor, delivered, err := (&Server{}).writeAttentionReplay(rec, rec, events, nil, "", nil, 2)
 	if err != nil {
 		t.Fatalf("writeAttentionReplay() error = %v", err)
 	}
@@ -6876,7 +7210,7 @@ func TestWriteAttentionReplay_SuppressesReplayHeartbeatEventsAndPreservesCursor(
 		{Cursor: 7, Session: "alpha", Summary: "real"},
 	}
 
-	finalCursor, delivered, err := writeAttentionReplay(rec, rec, events, nil, "", nil, 10)
+	finalCursor, delivered, err := (&Server{}).writeAttentionReplay(rec, rec, events, nil, "", nil, 10)
 	if err != nil {
 		t.Fatalf("writeAttentionReplay() error = %v", err)
 	}

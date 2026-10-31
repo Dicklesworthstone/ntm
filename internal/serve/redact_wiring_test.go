@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -295,4 +296,138 @@ func TestRedactionRouterRefusesSecretsBeforeAgentDispatch(t *testing.T) {
 	if rec.Code != http.StatusOK || !json.Valid(rec.Body.Bytes()) || len(delivered) != 1 || delivered[0] != message {
 		t.Fatalf("ordinary prompt not dispatched exactly once and unchanged: status=%d, delivered=%q, body=%s", rec.Code, delivered, rec.Body)
 	}
+}
+
+type wiringAttentionMarshalBarrier struct {
+	entered chan struct{}
+	release <-chan struct{}
+}
+
+func (b *wiringAttentionMarshalBarrier) MarshalJSON() ([]byte, error) {
+	close(b.entered)
+	<-b.release
+	return []byte(`"ordinary diagnostic"`), nil
+}
+
+func TestWSRedactionAttentionFailureDuringReplayStopsSubscription(t *testing.T) {
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		t.Run(string(mode), func(t *testing.T) {
+			hub := NewWSHub()
+			defer hub.Stop()
+			hub.setRedactionCfgForTest(&RedactionConfig{Enabled: true, Config: redaction.Config{
+				Mode: mode, ExtraPatterns: map[redaction.Category][]string{"CUSTOM": {`"classified"\s*:\s*"[^"]*"`}},
+			}})
+			release := make(chan struct{})
+			unblock := func() {
+				select {
+				case <-release:
+				default:
+					close(release)
+				}
+			}
+			defer unblock()
+			barrier := &wiringAttentionMarshalBarrier{entered: make(chan struct{}), release: release}
+			feed := &fakeAttentionStreamFeed{
+				stats: robot.JournalStats{Count: 1, OldestCursor: 1, NewestCursor: 1, RetentionPeriod: time.Hour},
+				replayEvents: []robot.AttentionEvent{{
+					Cursor: 1, Type: "mail.pending", Details: map[string]any{"diagnostic": barrier},
+				}},
+				replayNewest: 1,
+			}
+			client := &WSClient{id: "attention-replay-race", hub: hub, send: make(chan []byte, 4), topics: make(map[string]struct{})}
+			completed := make(chan map[string]any, 1)
+			go func() {
+				completed <- client.handleAttentionSubscribeWithFeed(feed, WSMessage{Data: map[string]any{"since_cursor": float64(0)}}, []string{"attention"})
+			}()
+			select {
+			case <-barrier.entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("replay never reached the serialization barrier")
+			}
+
+			// The feed can publish on another goroutine while subscribe is
+			// replaying. A withheld live event must stop that entire subscription,
+			// including the replay already being prepared for the wire.
+			feed.emit(robot.AttentionEvent{Cursor: 2, Type: "mail.pending", Details: map[string]any{"classified": "private material"}})
+			failure := queuedWSReplayFrame(t, client)
+			if failure["type"] != "error" || failure["code"] != "REDACTION_FAILED" {
+				t.Fatalf("live failure did not report resynchronization: %v", failure)
+			}
+			client.attentionSubMu.Lock()
+			sub := client.attentionSub
+			stopped := sub != nil && !sub.Active && sub.Cursor == 0
+			client.attentionSubMu.Unlock()
+			if !stopped {
+				t.Fatal("live failure did not stop the subscription at its admitted cursor")
+			}
+			unblock()
+			var result map[string]any
+			select {
+			case result = <-completed:
+			case <-time.After(5 * time.Second):
+				t.Fatal("subscription did not finish after releasing replay")
+			}
+			if result["error_code"] != "REDACTION_FAILED" || result["subscribed"] != nil {
+				t.Fatalf("stopped subscription acknowledged success: %v", result)
+			}
+			if len(client.send) != 0 || sub.Cursor != 0 || sub.EventCount != 0 {
+				t.Fatal("in-flight replay delivered a frame or advanced the cursor after redaction failure")
+			}
+			if client.attentionSub != nil || feed.subscriber != nil || len(client.Topics()) != 0 {
+				t.Fatal("failed subscription retained its feed callback or topic membership")
+			}
+		})
+	}
+}
+
+func TestWSRedactionAttentionReplacementDiscardsPreparedOldEvent(t *testing.T) {
+	hub := NewWSHub()
+	defer hub.Stop()
+	hub.setRedactionCfgForTest(&RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeRedact}})
+	release := make(chan struct{})
+	unblock := func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}
+	defer unblock()
+	barrier := &wiringAttentionMarshalBarrier{entered: make(chan struct{}), release: release}
+	old := &WSAttentionSub{Active: true, topics: []string{"attention:old"}}
+	client := &WSClient{
+		id: "attention-replacement", hub: hub, send: make(chan []byte, 4),
+		topics: map[string]struct{}{"attention:old": {}}, attentionSub: old,
+	}
+	completed := make(chan struct{})
+	go func() {
+		client.deliverAttentionEvent(robot.AttentionEvent{
+			Cursor: 41, Session: "old", Type: "mail.pending", Details: map[string]any{"diagnostic": barrier},
+		}, old)
+		close(completed)
+	}()
+	select {
+	case <-barrier.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("old delivery never reached the serialization barrier")
+	}
+
+	feed := &fakeAttentionStreamFeed{}
+	result := client.handleAttentionSubscribeWithFeed(feed, WSMessage{Data: map[string]any{"since_cursor": float64(-1)}}, []string{"attention:new"})
+	if result["subscribed"] != true {
+		t.Fatalf("replacement subscription failed: %v", result)
+	}
+	client.attentionSubMu.Lock()
+	replacement := client.attentionSub
+	client.attentionSubMu.Unlock()
+	unblock()
+	select {
+	case <-completed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("old delivery did not finish after releasing serialization")
+	}
+	if len(client.send) != 0 || replacement == old || replacement.Cursor != -1 || replacement.EventCount != 0 || !replacement.Active {
+		t.Fatal("old subscription delivered a stale event or changed the replacement's cursor/state")
+	}
+	client.cancelAttentionSubscription()
 }

@@ -83,6 +83,28 @@ only on `/api/v1/pipelines/<id>/recover`. Clients submit it under the request's
 reason is rejected before the journal changes, and a corrected reason can still
 use the same receipt.
 
+### Streaming output
+
+Enabled `redact` and `block` policies also protect server event payloads in
+WebSocket live delivery, persisted replay, attention subscriptions, and both SSE
+routes (`/events` and `/api/v1/attention/stream`). Each complete JSON payload is
+serialized and checked before disclosure. This retains credential field-name
+context and covers typed maps, structs, arrays, and raw JSON without rounding
+large numeric cursors through floating-point values. The shared source event is
+not rewritten. WebSocket persistence and live delivery use the same serialized
+payload; historical replay is checked against the current policy even if the
+original record was stored while redaction was disabled. Complete existing
+redaction markers remain stable when replayed.
+
+Routing metadata is refused if it contains detected secrets rather than being
+replaced with a different topic or event type. Unsafe WebSocket events trigger
+a reset or a failed attention subscription requiring resynchronization. Delivery
+cannot silently continue past an event withheld by redaction. SSE checks each
+complete frame, including replay and heartbeat diagnostics, using the current
+configuration. It closes the stream on an unsafe frame or a frame above 10 MiB
+without emitting a partial or truncated event. Diagnostic logs contain static
+failure reasons and finding counts, never source payloads or marshaler errors.
+
 ## Disclosure States
 
 Every disclosable field has a disclosure state:

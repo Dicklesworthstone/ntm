@@ -1,12 +1,19 @@
 package serve
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/json"
+	"errors"
+	"log"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
@@ -872,4 +879,342 @@ func droppedStatsForTest(t *testing.T, s *WSEventStore, clientID string, since t
 		t.Fatalf("rows err: %v", err)
 	}
 	return stats
+}
+
+func TestWSRedactionProtectsLivePersistenceAndReplay(t *testing.T) {
+	const credential = "0123456789abcdefghijklmnopqrstuv"
+	const receipt = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	type record struct {
+		Token      string `json:"api_token"`
+		Diagnostic string `json:"diagnostic"`
+		Count      uint64 `json:"count"`
+	}
+	typed := record{Token: credential, Diagnostic: "retain this diagnostic", Count: 9007199254740993}
+	tests := []struct {
+		name string
+		data any
+	}{
+		{"generic map", map[string]any{"api_token": credential, "diagnostic": typed.Diagnostic, "count": typed.Count}},
+		{"password marker stays stable", map[string]any{"password": credential, "diagnostic": typed.Diagnostic}},
+		{"provider password marker stays stable", map[string]any{"password": wiringFakeSecret, "diagnostic": typed.Diagnostic}},
+		{"existing marker and fresh secret", map[string]any{"password": "[REDACTED:OPENAI_KEY:0123abcd]", "api_token": credential, "diagnostic": typed.Diagnostic}},
+		{"typed map", map[string]string{"api_token": credential, "diagnostic": typed.Diagnostic}},
+		{"struct", typed},
+		{"struct pointer", &typed},
+		{"typed slice", []record{typed}},
+		{"nested typed map", map[string]map[string]string{"config": {"api_token": credential, "diagnostic": typed.Diagnostic}}},
+		{"raw JSON", json.RawMessage(`{"api_token":"` + credential + `","diagnostic":"retain this diagnostic","count":9007199254740993}`)},
+		{"provider token", map[string]any{"message": wiringFakeSecret, "diagnostic": typed.Diagnostic}},
+		{"secret key", map[string]any{wiringFakeSecret: "sensitive field name", "diagnostic": typed.Diagnostic}},
+		{"receipt has no WS exception", map[string]any{"receipt_token": receipt, "diagnostic": typed.Diagnostic}},
+	}
+
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		t.Run(string(mode), func(t *testing.T) {
+			db, cleanup := setupTestDB(t)
+			defer cleanup()
+			store := NewWSEventStore(db, DefaultWSEventStoreConfig())
+			defer store.Stop()
+			hub := NewWSHub()
+			defer hub.Stop()
+			hub.SetEventStore(store)
+			hub.setRedactionCfgForTest(&RedactionConfig{Enabled: true, Config: redaction.Config{Mode: mode}})
+			const topic = "sessions:redaction"
+			client := &WSClient{id: "redacted-live", hub: hub, send: make(chan []byte, 2), topics: map[string]struct{}{topic: {}}}
+			hub.clients[client] = struct{}{}
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					before, err := json.Marshal(tt.data)
+					if err != nil {
+						t.Fatal(err)
+					}
+					since := store.CurrentSeq()
+					hub.Publish(topic, "diagnostic", tt.data)
+					hub.broadcastEvent(<-hub.broadcast)
+					var frame struct {
+						Type WSMessageType   `json:"type"`
+						Seq  int64           `json:"seq"`
+						Data json.RawMessage `json:"data"`
+					}
+					select {
+					case raw := <-client.send:
+						if err := json.Unmarshal(raw, &frame); err != nil {
+							t.Fatal(err)
+						}
+					default:
+						t.Fatal("publication did not deliver a frame")
+					}
+					if frame.Type != WSMsgEvent || frame.Seq != since+1 {
+						t.Fatalf("redaction lost event/cursor: %+v", frame)
+					}
+					for _, secret := range []string{credential, wiringFakeSecret, receipt} {
+						if bytes.Contains(frame.Data, []byte(secret)) {
+							t.Fatalf("credential escaped in %s mode via %s", mode, tt.name)
+						}
+					}
+					if !bytes.Contains(frame.Data, []byte(typed.Diagnostic)) || !bytes.Contains(frame.Data, []byte("[REDACTED:")) {
+						t.Fatalf("redaction lost useful diagnostic or marker: %s", frame.Data)
+					}
+					if bytes.Contains(before, []byte("9007199254740993")) && !bytes.Contains(frame.Data, []byte("9007199254740993")) {
+						t.Fatalf("redaction rounded the exact numeric payload: %s", frame.Data)
+					}
+					var persisted string
+					if err := db.QueryRow("SELECT data FROM ws_events WHERE seq = ?", frame.Seq).Scan(&persisted); err != nil {
+						t.Fatal(err)
+					}
+					if persisted != string(frame.Data) {
+						t.Fatalf("persisted and delivered forms differ: stored=%s wire=%s", persisted, frame.Data)
+					}
+					replayed := &WSClient{id: "redacted-replay", hub: hub, send: make(chan []byte, 2), topics: make(map[string]struct{})}
+					req := &wsReplayRequest{client: replayed, topics: []string{topic}, since: since, resp: make(chan wsReplayResult, 1)}
+					hub.handleReplay(req)
+					result := <-req.resp
+					if result.reset || result.replayed != 1 {
+						t.Fatalf("redacted history was not replayable: %+v", result)
+					}
+					var replay WSEvent
+					select {
+					case raw := <-replayed.send:
+						var data struct {
+							Data json.RawMessage `json:"data"`
+						}
+						if err := json.Unmarshal(raw, &replay); err != nil {
+							t.Fatal(err)
+						}
+						if err := json.Unmarshal(raw, &data); err != nil || !bytes.Equal(data.Data, frame.Data) {
+							t.Fatalf("replay changed sanitized data: %s, %v", raw, err)
+						}
+					default:
+						t.Fatal("replay delivered no frame")
+					}
+					if !replay.Replay || replay.Seq != frame.Seq {
+						t.Fatalf("replay lost its cursor/flag: %+v", replay)
+					}
+					after, err := json.Marshal(tt.data)
+					if err != nil || !bytes.Equal(before, after) {
+						t.Fatal("redaction mutated the publisher's payload")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestWSRedactionAppliesCurrentPolicyToHistoricalReplay(t *testing.T) {
+	const credential = "0123456789abcdefghijklmnopqrstuv"
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		t.Run(string(mode), func(t *testing.T) {
+			db, cleanup := setupTestDB(t)
+			defer cleanup()
+			store := NewWSEventStore(db, DefaultWSEventStoreConfig())
+			defer store.Stop()
+			const topic = "sessions:historical"
+			original, err := store.Store(topic, "diagnostic", map[string]any{"api_token": credential, "diagnostic": "old useful detail"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			hub := NewWSHub()
+			defer hub.Stop()
+			hub.SetEventStore(store)
+			hub.setRedactionCfgForTest(&RedactionConfig{Enabled: true, Config: redaction.Config{Mode: mode}})
+			client := &WSClient{id: "current-policy", hub: hub, send: make(chan []byte, 2), topics: make(map[string]struct{})}
+			req := &wsReplayRequest{client: client, topics: []string{topic}, since: 0, resp: make(chan wsReplayResult, 1)}
+			hub.handleReplay(req)
+			result := <-req.resp
+			if result.reset || result.replayed != 1 || result.cursor != original.Seq {
+				t.Fatalf("historical replay failed: %+v", result)
+			}
+			select {
+			case raw := <-client.send:
+				if !json.Valid(raw) || bytes.Contains(raw, []byte(credential)) || !bytes.Contains(raw, []byte("old useful detail")) || !bytes.Contains(raw, []byte("[REDACTED:")) {
+					t.Fatalf("historical replay ignored active policy: %s", raw)
+				}
+			default:
+				t.Fatal("historical replay delivered no frame")
+			}
+		})
+	}
+}
+
+type changingWSPayload struct{ calls int }
+
+func (p *changingWSPayload) MarshalJSON() ([]byte, error) {
+	p.calls++
+	if p.calls == 1 {
+		return []byte(`{"message":"one immutable snapshot"}`), nil
+	}
+	return json.Marshal(map[string]string{"api_token": "0123456789abcdefghijklmnopqrstuv"})
+}
+
+type failingWSPayload struct{}
+
+func (failingWSPayload) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("private diagnostic " + wiringFakeSecret)
+}
+
+func TestWSRedactionFreezesSerializedPayloadAndFailsClosed(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	store := NewWSEventStore(db, DefaultWSEventStoreConfig())
+	defer store.Stop()
+	hub := NewWSHub()
+	defer hub.Stop()
+	hub.SetEventStore(store)
+	hub.setRedactionCfgForTest(&RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeRedact}})
+	const topic = "sessions:serialization"
+	client := &WSClient{id: "serialized-once", hub: hub, send: make(chan []byte, 2), topics: map[string]struct{}{topic: {}}}
+	hub.clients[client] = struct{}{}
+	payload := &changingWSPayload{}
+	hub.broadcastEvent(&WSEvent{Type: WSMsgEvent, Topic: topic, EventType: "diagnostic", Data: payload})
+	frame := queuedWSReplayFrame(t, client)
+	if payload.calls != 1 || frame["data"].(map[string]any)["message"] != "one immutable snapshot" {
+		t.Fatalf("payload was encoded more than once: calls=%d frame=%v", payload.calls, frame)
+	}
+	var persisted string
+	if err := db.QueryRow("SELECT data FROM ws_events WHERE seq = 1").Scan(&persisted); err != nil || persisted != `{"message":"one immutable snapshot"}` {
+		t.Fatalf("frozen snapshot was not persisted: %q %v", persisted, err)
+	}
+
+	var logs lockedBuffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	hub.broadcastEvent(&WSEvent{Type: WSMsgEvent, Topic: topic, EventType: "diagnostic", Data: failingWSPayload{}})
+	reset := queuedWSReplayFrame(t, client)
+	if reset["type"] != "stream.reset" || reset["reason"] != "redaction_failed" || reset["current_seq"] != float64(1) {
+		t.Fatalf("failed serialization was not an explicit stream reset: %v", reset)
+	}
+	if store.CurrentSeq() != 1 || strings.Contains(logs.String(), wiringFakeSecret) {
+		t.Fatal("failed serialization persisted data, moved cursor, or exposed private diagnostics")
+	}
+}
+
+func TestWSRedactionRejectsSensitiveRoutingMetadata(t *testing.T) {
+	for _, field := range []string{"topic", "event_type"} {
+		t.Run(field, func(t *testing.T) {
+			store := NewWSEventStore(nil, DefaultWSEventStoreConfig())
+			defer store.Stop()
+			hub := NewWSHub()
+			defer hub.Stop()
+			hub.SetEventStore(store)
+			hub.setRedactionCfgForTest(&RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeRedact}})
+			event := &WSEvent{Type: WSMsgEvent, Topic: "sessions:metadata", EventType: "diagnostic", Data: "ordinary event data"}
+			if field == "topic" {
+				event.Topic += wiringFakeSecret
+			} else {
+				event.EventType += wiringFakeSecret
+			}
+			client := &WSClient{id: "metadata", hub: hub, send: make(chan []byte, 2), topics: map[string]struct{}{event.Topic: {}}}
+			hub.clients[client] = struct{}{}
+			var logs lockedBuffer
+			previous := log.Writer()
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(previous) })
+			hub.broadcastEvent(event)
+			reset := queuedWSReplayFrame(t, client)
+			encoded, err := json.Marshal(reset)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reset["type"] != "stream.reset" || reset["reason"] != "redaction_failed" || bytes.Contains(encoded, []byte(wiringFakeSecret)) {
+				t.Fatalf("sensitive routing identity was not safely refused: %s", encoded)
+			}
+			if store.CurrentSeq() != 0 || strings.Contains(logs.String(), wiringFakeSecret) {
+				t.Fatal("sensitive routing metadata was persisted or logged")
+			}
+		})
+	}
+}
+
+func TestWSRedactionAttentionLiveAndReplay(t *testing.T) {
+	const credential = "0123456789abcdefghijklmnopqrstuv"
+	event := robot.AttentionEvent{
+		Cursor: 9007199254740993, Ts: time.Now().UTC().Format(time.RFC3339Nano),
+		Session: "redaction", Category: "mail", Type: "mail.pending", Actionability: "action_required", Severity: "warning",
+		Summary: "mail needs review: " + wiringFakeSecret,
+		Details: map[string]any{"api_token": credential, "diagnostic": "keep this useful detail"},
+	}
+	before, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock, redaction.ModeWarn, redaction.ModeOff} {
+		t.Run(string(mode), func(t *testing.T) {
+			hub := NewWSHub()
+			defer hub.Stop()
+			hub.setRedactionCfgForTest(&RedactionConfig{Enabled: true, Config: redaction.Config{Mode: mode}})
+			for _, replay := range []bool{false, true} {
+				sub := &WSAttentionSub{Active: true, Cursor: event.Cursor - 1, SinceCursor: event.Cursor - 1, topics: []string{"attention:redaction"}}
+				client := &WSClient{id: "attention-redaction", hub: hub, send: make(chan []byte, 2), attentionSub: sub}
+				if replay {
+					if got, err := client.deliverAttentionReplay([]robot.AttentionEvent{event}, sub.topics, sub); got != 1 || err != nil {
+						t.Fatalf("attention replay delivered %d events, want 1: %v", got, err)
+					}
+				} else {
+					client.deliverAttentionEvent(event, sub)
+					if sub.EventCount != 1 {
+						t.Fatalf("attention live count = %d, want 1", sub.EventCount)
+					}
+				}
+				if sub.Cursor != event.Cursor {
+					t.Fatalf("attention cursor changed: %d", sub.Cursor)
+				}
+				select {
+				case raw := <-client.send:
+					if !json.Valid(raw) || !bytes.Contains(raw, []byte("9007199254740993")) || !bytes.Contains(raw, []byte("keep this useful detail")) || !bytes.Contains(raw, []byte("mail needs review: ")) {
+						t.Fatalf("attention envelope lost useful data: %s", raw)
+					}
+					protect := mode == redaction.ModeRedact || mode == redaction.ModeBlock
+					for _, secret := range []string{credential, wiringFakeSecret} {
+						if bytes.Contains(raw, []byte(secret)) == protect {
+							t.Fatalf("attention replay=%v did not honor %s mode", replay, mode)
+						}
+					}
+				default:
+					t.Fatal("attention delivered no frame")
+				}
+			}
+		})
+	}
+	after, err := json.Marshal(event)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("attention redaction mutated the shared feed event")
+	}
+}
+
+func TestWSRedactionAttentionFailureCannotAcknowledgeOrSkipHistory(t *testing.T) {
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		t.Run(string(mode), func(t *testing.T) {
+			hub := NewWSHub()
+			defer hub.Stop()
+			hub.setRedactionCfgForTest(&RedactionConfig{Enabled: true, Config: redaction.Config{
+				Mode: mode, ExtraPatterns: map[redaction.Category][]string{"CUSTOM": {`"classified"\s*:\s*"[^"]*"`}},
+			}})
+			event := robot.AttentionEvent{Cursor: 1, Type: "mail.pending", Summary: "useful diagnostic", Details: map[string]any{"classified": "private material"}}
+			sub := &WSAttentionSub{Active: true, topics: []string{"attention"}}
+			client := &WSClient{id: "unsafe-attention", hub: hub, send: make(chan []byte, 2), attentionSub: sub}
+			client.deliverAttentionEvent(event, sub)
+			failure := queuedWSReplayFrame(t, client)
+			if failure["type"] != "error" || failure["code"] != "REDACTION_FAILED" || sub.Active || sub.Cursor != 0 || sub.EventCount != 0 {
+				t.Fatalf("unsafe attention event was not explicitly stopped: frame=%v sub=%+v", failure, sub)
+			}
+			client.deliverAttentionEvent(robot.AttentionEvent{Cursor: 2, Type: "mail.pending", Summary: "later ordinary event"}, sub)
+			if len(client.send) != 0 || sub.Cursor != 0 {
+				t.Fatal("later event silently skipped the unsafe attention cursor")
+			}
+
+			feed := &fakeAttentionStreamFeed{
+				stats:        robot.JournalStats{Count: 1, OldestCursor: 1, NewestCursor: 1, RetentionPeriod: time.Hour},
+				replayEvents: []robot.AttentionEvent{event}, replayNewest: 1,
+			}
+			replayClient := &WSClient{id: "unsafe-attention-replay", hub: hub, send: make(chan []byte, 2), topics: make(map[string]struct{})}
+			result := replayClient.handleAttentionSubscribeWithFeed(feed, WSMessage{Data: map[string]any{"since_cursor": float64(0)}}, []string{"attention"})
+			if result["error_code"] != "REDACTION_FAILED" || result["subscribed"] != nil || len(replayClient.send) != 0 {
+				t.Fatalf("unsafe replay acknowledged success or delivered content: %v", result)
+			}
+			if feed.subscriber != nil || replayClient.attentionSub != nil || len(replayClient.Topics()) != 0 {
+				t.Fatal("unsafe replay retained its live subscription")
+			}
+		})
+	}
 }
