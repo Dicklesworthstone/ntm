@@ -124,6 +124,189 @@ func TestRedactionMiddleware_RejectsCredentialJSON(t *testing.T) {
 	}
 }
 
+func TestRedactionMiddleware_RejectsDecodedJSONCredentials(t *testing.T) {
+	const token = "abcdefghijklmnopqrstuv"
+	escapedProvider := `\u0073` + wiringFakeSecret[1:]
+	inner := `{"api_\u0074oken":"` + token + `"}`
+	encoded, err := json.Marshal(inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct{ name, body string }{
+		{"provider credential in escaped property name", `{"` + escapedProvider + `":"ordinary value"}`},
+		{"provider credential in nested escaped property name", `{"records":[{"nested":{"` + escapedProvider + `":"ordinary value"}}]}`},
+		{"encoded credential object", `{"prompt":` + string(encoded) + `}`},
+		{"encoded credential object in nested array", `{"records":[{"prompt":` + string(encoded) + `}]}`},
+		{"credential before duplicate public value", `{"prompt":` + string(encoded) + `,"prompt":"ordinary"}`},
+		{"credential after duplicate public value", `{"prompt":"ordinary","prompt":` + string(encoded) + `}`},
+	}
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		for _, tt := range tests {
+			t.Run(string(mode)+"/"+tt.name, func(t *testing.T) {
+				s := &Server{redactionCfg: &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: mode}}}
+				called := false
+				handler := s.redactionMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					called = true
+					w.WriteHeader(http.StatusNoContent)
+				}))
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/test", strings.NewReader(tt.body))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+				if called || rec.Code != http.StatusUnprocessableEntity {
+					t.Fatalf("encoded credential reached handler=%t status=%d, want explicit refusal", called, rec.Code)
+				}
+				var response struct {
+					ErrorCode string `json:"error_code"`
+					Details   struct {
+						Findings []requestRedactionFinding `json:"findings"`
+					} `json:"details"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || response.ErrorCode != "SECRETS_DETECTED" || len(response.Details.Findings) == 0 {
+					t.Fatalf("missing structured secret refusal: %s, %v", rec.Body, err)
+				}
+				for _, finding := range response.Details.Findings {
+					if finding.Start < 0 || finding.End <= finding.Start || finding.End > len(tt.body) || finding.Category == "" {
+						t.Fatalf("diagnostic does not refer to original request bytes: %+v", finding)
+					}
+				}
+				if strings.Contains(rec.Body.String(), token) || strings.Contains(rec.Body.String(), wiringFakeSecret) {
+					t.Fatal("encoded credential appeared in refusal diagnostics")
+				}
+			})
+		}
+	}
+}
+
+// Approval actions are decoded, saved in state.db and logged verbatim. A
+// credential hidden by another JSON representation must be refused before
+// those effects, including when duplicate properties would hide it from a
+// lossy map-based inspection of the request.
+func TestRedactionRouterRejectsEncodedApprovalBeforeStorageAndLogs(t *testing.T) {
+	const token = "abcdefghijklmnopqrstuv"
+	const customCredential = "NTM_AUTH_CREDENTIAL_SYNTHETIC12345"
+	action := `{"api_\u0074oken":"` + token + `"}`
+	encodedAction, err := json.Marshal(action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nestedAction, err := json.Marshal(map[string]string{"nested": action})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedNested, err := json.Marshal(string(nestedAction))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name, body string
+		custom     bool
+	}{
+		{"encoded object", `{"action":` + string(encodedAction) + `,"resource":"target"}`, false},
+		{"escaped action field", `{"actio\u006e":` + string(encodedAction) + `,"resource":"target"}`, false},
+		{"nested encoded object", `{"action":` + string(encodedNested) + `,"resource":"target"}`, false},
+		{"duplicate sensitive final action", `{"action":"echo harmless","action":` + string(encodedAction) + `,"resource":"target"}`, false},
+		{"duplicate sensitive earlier action", `{"action":` + string(encodedAction) + `,"action":"echo harmless","resource":"target"}`, false},
+		{"escaped configured credential", `{"action":"echo NTM_AUTH_\u0043REDENTIAL_SYNTHETIC12345","resource":"target"}`, true},
+	}
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		for _, tt := range tests {
+			t.Run(string(mode)+"/"+tt.name, func(t *testing.T) {
+				t.Setenv("HOME", t.TempDir())
+				s, store := setupTestServer(t)
+				s.redactionCfg = &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: mode}}
+				secret := token
+				if tt.custom {
+					s.redactionCfg.Config.ExtraPatterns = map[redaction.Category][]string{"CUSTOM_AUTH": {`NTM_AUTH_CREDENTIAL_[A-Z0-9]+`}}
+					secret = customCredential
+				}
+				var logs lockedBuffer
+				previous := log.Writer()
+				log.SetOutput(&logs)
+				t.Cleanup(func() { log.SetOutput(previous) })
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/approvals/request", strings.NewReader(tt.body))
+				req.RemoteAddr = "127.0.0.1:12345"
+				req.Header.Set("Idempotency-Key", "encoded-approval")
+				rec := httptest.NewRecorder()
+				s.Router().ServeHTTP(rec, req)
+				after, err := store.ListApprovalHistory()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if rec.Code != http.StatusUnprocessableEntity || len(after) != 0 || strings.Contains(logs.String(), secret) {
+					t.Fatalf("encoded approval was acted on: status=%d stored=%d credential_in_logs=%t", rec.Code, len(after), strings.Contains(logs.String(), secret))
+				}
+				assertWiringSecretRefusal(t, rec)
+				if strings.Contains(rec.Body.String(), secret) {
+					t.Fatal("credential reached refusal response")
+				}
+
+				corrected := ApprovalRequestRequest{Action: `echo "ready"`, Resource: "target", Reason: "  preserve café exactly  "}
+				for attempt := 0; attempt < 2; attempt++ {
+					req = wiringJSONRequest(t, http.MethodPost, "/api/v1/approvals/request", corrected)
+					req.Header.Set("Idempotency-Key", "encoded-approval")
+					rec = httptest.NewRecorder()
+					s.Router().ServeHTTP(rec, req)
+					if rec.Code != http.StatusOK || (rec.Header().Get("X-Idempotent-Replay") == "true") != (attempt == 1) {
+						t.Fatalf("corrected approval attempt=%d status=%d replay=%q", attempt, rec.Code, rec.Header().Get("X-Idempotent-Replay"))
+					}
+				}
+				after, err = store.ListApprovalHistory()
+				if err != nil || len(after) != 1 || after[0].Action != corrected.Action || after[0].Resource != corrected.Resource || after[0].Reason != corrected.Reason {
+					t.Fatalf("corrected approval was not stored exactly once: count=%d err=%v", len(after), err)
+				}
+			})
+		}
+	}
+}
+
+func TestRedactionMiddlewarePreservesPermittedEncodedJSON(t *testing.T) {
+	const token = "abcdefghijklmnopqrstuv"
+	inner := `{"api_\u0074oken":"` + token + `"}`
+	encoded, err := json.Marshal(inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential := `{"prompt":` + string(encoded) + `}`
+	providerKey := `{"\u0073` + wiringFakeSecret[1:] + `":"ordinary"}`
+	tests := []struct {
+		name, body string
+		cfg        redaction.Config
+	}{
+		{"harmless escaped and nested JSON", " \n{\"prompt\":\"{\\\"api_\\\\u0074oken\\\":\\\"short\\\"}\",\"nested\":[9007199254740993,true],\"label\":\"first\",\"label\":\"last\"}\t", redaction.Config{}},
+		{"nested field explicitly allowlisted", credential, redaction.Config{Allowlist: []string{`^` + regexp.QuoteMeta(`"api_token":"`+token+`"`) + `$`}}},
+		{"nested category explicitly disabled", credential, redaction.Config{DisabledCategories: []redaction.Category{redaction.CategoryGenericSecret}}},
+		{"escaped provider key explicitly allowlisted", providerKey, redaction.Config{Allowlist: []string{`^` + regexp.QuoteMeta(wiringFakeSecret) + `$`}}},
+		{"escaped provider category explicitly disabled", providerKey, redaction.Config{DisabledCategories: []redaction.Category{redaction.CategoryOpenAIKey}}},
+	}
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		for _, tt := range tests {
+			t.Run(string(mode)+"/"+tt.name, func(t *testing.T) {
+				if !json.Valid([]byte(tt.body)) {
+					t.Fatal("permitted fixture is invalid JSON")
+				}
+				cfg := tt.cfg.DeepCopy()
+				cfg.Mode = mode
+				s := &Server{redactionCfg: &RedactionConfig{Enabled: true, Config: cfg}}
+				called := false
+				handler := s.redactionMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					called = true
+					body, err := io.ReadAll(r.Body)
+					if err != nil || string(body) != tt.body {
+						t.Fatalf("permitted input changed before handler, err=%v", err)
+					}
+					w.WriteHeader(http.StatusNoContent)
+				}))
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/test", strings.NewReader(tt.body))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+				if !called || rec.Code != http.StatusNoContent {
+					t.Fatalf("explicitly permitted JSON refused: called=%t status=%d", called, rec.Code)
+				}
+			})
+		}
+	}
+}
+
 func TestRedactionMiddleware_BoundsRejectionDiagnostics(t *testing.T) {
 	const secret = "syntheticNeverValidToken123456789"
 	body := "[" + strings.TrimSuffix(strings.Repeat(`{"api_token":"`+secret+`"},`, 101), ",") + "]"
@@ -582,6 +765,72 @@ func TestJSONResponseRedactionProtectsBlockModeAndDiagnostics(t *testing.T) {
 				t.Error("response redaction disclosed credential contents")
 			}
 		})
+	}
+}
+
+func TestJSONResponseRedactionProtectsDecodedCredentials(t *testing.T) {
+	const token = "abcdefghijklmnopqrstuv"
+	const customCredential = "NTM_AUTH_CREDENTIAL_SYNTHETIC12345"
+	inner, err := json.Marshal(`{"api_\u0074oken":"` + token + `"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	customPair, err := json.Marshal(`{"private":"` + customCredential + `"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const diagnostic = `,"error_code":"UPSTREAM_AUTH_FAILED","error":"upstream authentication failed","retry_after":15}`
+	tests := []struct {
+		name, body      string
+		patterns        map[redaction.Category][]string
+		fallbackAllowed bool
+	}{
+		{"escaped provider property name", `{"\u0073` + wiringFakeSecret[1:] + `":"ordinary"` + diagnostic, nil, false},
+		{"nested encoded credential field", `{"details":` + string(inner) + diagnostic, nil, false},
+		{"escaped configured credential", `{"details":"NTM_AUTH_\u0043REDENTIAL_SYNTHETIC12345"` + diagnostic,
+			map[redaction.Category][]string{"CUSTOM_AUTH": {`NTM_AUTH_CREDENTIAL_[A-Z0-9]+`}}, false},
+		{"configured pair inside encoded object", `{"details":` + string(customPair) + diagnostic,
+			map[redaction.Category][]string{"CUSTOM_AUTH": {regexp.QuoteMeta(`"private":"` + customCredential + `"`)}}, true},
+	}
+	var logs lockedBuffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		for _, tt := range tests {
+			t.Run(string(mode)+"/"+tt.name, func(t *testing.T) {
+				rec := serveJSONResponseWithConfig(t, "/api/v1/test", tt.body, http.StatusBadGateway,
+					redaction.Config{Mode: mode, ExtraPatterns: tt.patterns})
+				if rec.Code != http.StatusBadGateway {
+					t.Fatalf("response filtering changed completed-handler status: %d", rec.Code)
+				}
+				var decoded map[string]any
+				if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+					t.Fatalf("response lost valid JSON: %v", err)
+				}
+				// Re-encoding exposes JSON escapes as the strings and property
+				// names a client sees, rather than merely checking wire spelling.
+				visible, err := json.Marshal(decoded)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, secret := range []string{token, wiringFakeSecret, customCredential} {
+					if bytes.Contains(visible, []byte(secret)) || strings.Contains(rec.Body.String(), secret) || strings.Contains(logs.String(), secret) {
+						t.Fatal("encoded response disclosed credential contents")
+					}
+				}
+				if decoded["response_unavailable"] == true && tt.fallbackAllowed {
+					assertJSONResponseWithheld(t, rec.Body.Bytes())
+					return
+				}
+				if decoded["error_code"] != "UPSTREAM_AUTH_FAILED" || decoded["error"] != "upstream authentication failed" || decoded["retry_after"] != float64(15) {
+					t.Fatal("safe string redaction lost meaningful neighboring diagnostics")
+				}
+				if !bytes.Contains(visible, []byte("[REDACTED:")) {
+					t.Fatal("protected response has no explicit redaction marker")
+				}
+			})
+		}
 	}
 }
 

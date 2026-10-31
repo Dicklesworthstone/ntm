@@ -21,6 +21,20 @@ import (
 //   - ModeRedact: replaces sensitive content with placeholders
 //   - ModeBlock: scans and sets Blocked=true if findings exist
 func ScanAndRedact(input string, cfg Config) Result {
+	return scanAndRedact(input, cfg, false)
+}
+
+// ScanJSONAndRedact inspects JSON application data, including decoded property
+// names, embedded JSON strings, and configured patterns in decoded strings.
+// Findings retain offsets in the original input; no document is reserialized.
+// Non-JSON input retains ScanAndRedact's text semantics. ModeRedact still uses
+// textual replacements, which need not preserve JSON structure: request callers
+// must use block mode and output callers must validate their JSON replacements.
+func ScanJSONAndRedact(input string, cfg Config) Result {
+	return scanAndRedact(input, cfg, true)
+}
+
+func scanAndRedact(input string, cfg Config, semanticJSON bool) Result {
 	result := Result{
 		Mode:           cfg.Mode,
 		OriginalLength: len(input),
@@ -44,7 +58,7 @@ func ScanAndRedact(input string, cfg Config) Result {
 	extra := compileExtraPatterns(cfg.ExtraPatterns)
 
 	// Scan for all matches.
-	matches := scan(input, allowlist, cfg.DisabledCategories, extra)
+	matches := scan(input, allowlist, cfg.DisabledCategories, extra, semanticJSON && json.Valid([]byte(input)))
 
 	// No findings: return input unchanged.
 	if len(matches) == 0 {
@@ -96,15 +110,22 @@ type match struct {
 	allowlistSource string
 	// JSON-encoded matches can also be allowlisted by their logical content.
 	logicalMatch string
+	// Keep intermediate representations when JSON transports nest strings.
+	// They are allowlist evidence only, never returned as diagnostics.
+	allowlistContexts []string
 }
 
 // scan finds all sensitive content in input.
-func scan(input string, allowlist []*regexp.Regexp, disabled []Category, extra []pattern) []match {
+func scan(input string, allowlist []*regexp.Regexp, disabled []Category, extra []pattern, semanticJSON bool) []match {
 	builtin := getPatterns()
 	allMatches := collectMatches(input, disabled, builtin)
-	allMatches = scanJSONEncodedContent(input, disabled, builtin, allMatches)
-	// Custom patterns keep their raw-input semantics while sharing the same
-	// category priority, deduplication, and allowlist handling as built-ins.
+	var decodedExtra []pattern
+	if semanticJSON {
+		decodedExtra = extra
+	}
+	allMatches = scanJSONEncodedContent(input, disabled, builtin, allMatches, semanticJSON, decodedExtra)
+	// Always retain custom patterns' raw-input matches. JSON application data
+	// additionally checks their decoded string values through the same matcher.
 	allMatches = append(allMatches, collectMatches(input, disabled, extra)...)
 
 	// Remove overlapping matches, keeping higher priority ones.
@@ -121,8 +142,15 @@ func scan(input string, allowlist []*regexp.Regexp, disabled []Category, extra [
 			if m.allowlistSource != "" {
 				allowlistSource = m.allowlistSource
 			}
-			if isAllowlisted(allowlistSource, allowlist) ||
-				(m.logicalMatch != "" && isAllowlisted(m.logicalMatch, allowlist)) {
+			allowed := isAllowlisted(allowlistSource, allowlist) ||
+				(m.logicalMatch != "" && isAllowlisted(m.logicalMatch, allowlist))
+			for _, source := range m.allowlistContexts {
+				if allowed {
+					break
+				}
+				allowed = isAllowlisted(source, allowlist)
+			}
+			if allowed {
 				continue
 			}
 			filtered = append(filtered, m)
@@ -232,13 +260,13 @@ type jsonRecord struct {
 // and Unicode-escaped property names. Complete records and parser-validated
 // container prefixes are independent, including a final unfinished field value.
 // Shell-quoted text and definite syntax errors retain raw matching behavior.
-func scanJSONEncodedContent(input string, disabled []Category, patterns []pattern, matches []match) []match {
+func scanJSONEncodedContent(input string, disabled []Category, patterns []pattern, matches []match, semanticJSON bool, extra []pattern) []match {
 	if !strings.Contains(input, `"`) {
 		return matches
 	}
 
 	var tokens []jsonStringToken
-	needsDecoding := false
+	needsDecoding := len(extra) > 0
 	for _, record := range jsonRecordRanges(input) {
 		for _, loc := range jsonStringPattern.FindAllStringIndex(input[record.start:record.completeEnd], -1) {
 			token := jsonStringToken{start: record.start + loc[0], end: record.start + loc[1]}
@@ -251,6 +279,12 @@ func scanJSONEncodedContent(input string, disabled []Category, patterns []patter
 				}
 				token.escaped = true
 				needsDecoding = true
+			} else if len(extra) > 0 {
+				// Anchored custom patterns apply to a handler-visible string
+				// even when its original JSON spelling needed no escapes.
+				if err := json.Unmarshal([]byte(raw), &token.decoded); err != nil {
+					return matches
+				}
 			}
 			tokens = append(tokens, token)
 		}
@@ -353,7 +387,16 @@ func scanJSONEncodedContent(input string, disabled []Category, patterns []patter
 		}
 	}
 	for i, token := range tokens {
-		if token.key || (!token.escaped && !token.unfinished) {
+		if token.key && !semanticJSON {
+			continue
+		}
+		if !token.escaped && !token.unfinished {
+			if len(extra) > 0 {
+				logical := collectMatches(token.decoded, disabled, extra)
+				if mapped, ok := mapJSONMatches(input, token, logical); ok {
+					decodedMatches = append(decodedMatches, mapped...)
+				}
+			}
 			continue
 		}
 		isProtected := protected[[2]int{token.start + 1, token.contentEnd()}]
@@ -365,6 +408,13 @@ func scanJSONEncodedContent(input string, disabled []Category, patterns []patter
 			tokenPatterns = privateKeyPatterns
 		}
 		logical := collectMatches(token.decoded, disabled, tokenPatterns)
+		if semanticJSON && !isProtected {
+			// Each recursive step consumes a real JSON string encoding and
+			// maps back through that token. Ordinary object/array nesting is
+			// handled by the parser, not recursion over remarshal operations.
+			logical = scanJSONEncodedContent(token.decoded, disabled, tokenPatterns, logical, true, extra)
+		}
+		logical = append(logical, collectMatches(token.decoded, disabled, extra)...)
 		mapped, ok := mapJSONMatches(input, token, logical)
 		if !ok {
 			continue
@@ -623,7 +673,10 @@ func mapJSONMatches(input string, token jsonStringToken, matches []match) ([]mat
 		m := &matches[i]
 		extendTail := token.unfinished && token.decodedEnd < token.end &&
 			m.end == len(token.decoded) && m.valueEnd == m.end && m.valueStart < m.valueEnd
-		m.logicalMatch = m.match
+		m.allowlistContexts = append(m.allowlistContexts, m.match)
+		if m.logicalMatch == "" {
+			m.logicalMatch = m.match
+		}
 		m.start, m.end = mapped[m.start], mapped[m.end]
 		if m.valueStart < m.valueEnd {
 			m.valueStart, m.valueEnd = mapped[m.valueStart], mapped[m.valueEnd]
@@ -633,6 +686,7 @@ func mapJSONMatches(input string, token jsonStringToken, matches []match) ([]mat
 			// An allowlist for the known decoded prefix cannot authorize the
 			// unknown escape suffix. The actual complete raw span still can.
 			m.logicalMatch = ""
+			m.allowlistContexts = nil
 		}
 		m.match = input[m.start:m.end]
 	}
@@ -719,12 +773,13 @@ func deduplicateMatches(matches []match) []match {
 
 func uncoveredValueMatches(m match, kept []match) []match {
 	fragments := []match{{
-		category:        m.category,
-		start:           m.valueStart,
-		end:             m.valueEnd,
-		priority:        m.priority,
-		allowlistSource: m.match,
-		logicalMatch:    m.logicalMatch,
+		category:          m.category,
+		start:             m.valueStart,
+		end:               m.valueEnd,
+		priority:          m.priority,
+		allowlistSource:   m.match,
+		logicalMatch:      m.logicalMatch,
+		allowlistContexts: m.allowlistContexts,
 	}}
 	for _, other := range kept {
 		if other.start == other.end {

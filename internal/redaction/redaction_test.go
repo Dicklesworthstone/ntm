@@ -2,6 +2,7 @@ package redaction
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -2181,5 +2182,269 @@ func TestJSONTruncatedKeepsCrossRecordRawMatches(t *testing.T) {
 				t.Error("decoding an unfinished record discarded a longer raw credential match")
 			}
 		})
+	}
+}
+
+// A JSON transport can add several encoding layers around a handler's string.
+// Keep each representation of the matched span for original-offset and
+// allowlist checks without decoding through a map (which loses duplicate keys).
+func nestedJSONScanFixture(t *testing.T, document, matched string, depth int) (string, string, []string) {
+	t.Helper()
+	contexts := []string{matched}
+	for range depth {
+		encoded, err := json.Marshal(document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		document = `{"message":` + string(encoded) + `,"status":"ready"}`
+		encoded, err = json.Marshal(matched)
+		if err != nil {
+			t.Fatal(err)
+		}
+		matched = string(encoded[1 : len(encoded)-1])
+		contexts = append(contexts, matched)
+	}
+	if !json.Valid([]byte(document)) {
+		t.Fatal("invalid JSON scan fixture")
+	}
+	return document, matched, contexts
+}
+
+func assertJSONScanFinding(t *testing.T, input, rawMatch string, category Category, cfg Config) Finding {
+	t.Helper()
+	cfg.Mode = ModeBlock
+	result := ScanJSONAndRedact(input, cfg)
+	if !result.Blocked || result.Output != input || result.OriginalLength != len(input) || len(result.Findings) != 1 {
+		t.Fatalf("semantic scan must block one finding without changing input: blocked=%v findings=%d unchanged=%v", result.Blocked, len(result.Findings), result.Output == input)
+	}
+	finding := result.Findings[0]
+	start := strings.Index(input, rawMatch)
+	if start < 0 || finding.Category != category || finding.Start != start || finding.End != start+len(rawMatch) || finding.Match != rawMatch {
+		t.Fatalf("finding lost its original byte range or category: got=%+v want category=%s range=[%d,%d)", finding, category, start, start+len(rawMatch))
+	}
+	return finding
+}
+
+func TestScanJSONAndRedactFindsEscapedKeysAndNestedDocuments(t *testing.T) {
+	provider := "gh" + "p_" + strings.Repeat("q", 40)
+	encodedProvider := `\u0067` + provider[1:]
+	field := `"api_\u0074oken":"syntheticCredential123456"`
+	for _, tc := range []struct {
+		name, document, matched string
+		category                Category
+		minimumDepth            int
+	}{
+		{"provider key", `{"` + encodedProvider + `":"public"}`, encodedProvider, CategoryGitHubToken, 0},
+		{"embedded credential field", `{` + field + `}`, field, CategoryGenericSecret, 1},
+	} {
+		for depth := tc.minimumDepth; depth <= 3; depth++ {
+			t.Run(fmt.Sprintf("%s/depth=%d", tc.name, depth), func(t *testing.T) {
+				input, matched, _ := nestedJSONScanFixture(t, tc.document, tc.matched, depth)
+				assertJSONScanFinding(t, input, matched, tc.category, Config{})
+				// Free-text callers retain the documented one-level semantics.
+				generic := ScanAndRedact(input, Config{Mode: ModeBlock})
+				if generic.Blocked || len(generic.Findings) != 0 || generic.Output != input {
+					t.Fatal("JSON-specific scanning changed the generic scanner contract")
+				}
+			})
+		}
+	}
+}
+
+func TestScanJSONAndRedactCustomPatternsKeepRawAndDecodedMatches(t *testing.T) {
+	const logical = "SYNTHETIC-CONFIDENTIAL"
+	const encoded = `\u0053YNTHETIC-CONFIDENTIAL`
+	const rawOnly = `\u0058`
+	input := `{"action":"` + encoded + `","encoding":"` + rawOnly + `","public":"ready"}`
+	cfg := Config{Mode: ModeBlock, ExtraPatterns: map[Category][]string{
+		"CUSTOM_LOGICAL": {regexp.QuoteMeta(logical)},
+		"CUSTOM_RAW":     {regexp.QuoteMeta(rawOnly)},
+	}}
+	result := ScanJSONAndRedact(input, cfg)
+	if !result.Blocked || result.Output != input || len(result.Findings) != 2 {
+		t.Fatalf("raw and decoded custom patterns were not both retained: %+v", result.Findings)
+	}
+	for i, expected := range []struct {
+		category Category
+		matched  string
+	}{{"CUSTOM_LOGICAL", encoded}, {"CUSTOM_RAW", rawOnly}} {
+		finding := result.Findings[i]
+		start := strings.Index(input, expected.matched)
+		if finding.Category != expected.category || finding.Match != expected.matched || finding.Start != start || finding.End != start+len(expected.matched) {
+			t.Errorf("custom finding %d lost source bytes: %+v", i, finding)
+		}
+	}
+	generic := ScanAndRedact(input, cfg)
+	if len(generic.Findings) != 1 || generic.Findings[0].Category != "CUSTOM_RAW" || generic.Findings[0].Match != rawOnly {
+		t.Fatal("generic custom patterns no longer use only their raw input")
+	}
+}
+
+func TestScanJSONAndRedactAppliesAnchoredPatternsToUnescapedStrings(t *testing.T) {
+	const marker = "SYNTHETIC-CONFIDENTIAL"
+	cfg := Config{Mode: ModeBlock, ExtraPatterns: map[Category][]string{"CUSTOM_ANCHORED": {"^" + regexp.QuoteMeta(marker) + "$"}}}
+	for _, tc := range []struct {
+		name, input string
+	}{
+		{"value", `{"action":"` + marker + `","public":"ready"}`},
+		{"key", `{"` + marker + `":"public","status":"ready"}`},
+		{"array value", `{"items":["public","` + marker + `"]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertJSONScanFinding(t, tc.input, marker, "CUSTOM_ANCHORED", cfg)
+			generic := ScanAndRedact(tc.input, cfg)
+			if generic.Blocked || len(generic.Findings) != 0 || generic.Output != tc.input {
+				t.Fatal("generic anchored patterns stopped applying to the complete raw input")
+			}
+			allowedCfg := cfg
+			allowedCfg.Allowlist = []string{"^" + regexp.QuoteMeta(marker) + "$"}
+			permitted := ScanJSONAndRedact(tc.input, allowedCfg)
+			if permitted.Blocked || len(permitted.Findings) != 0 || permitted.Output != tc.input {
+				t.Fatal("explicit logical allowlist did not preserve the unescaped string")
+			}
+		})
+	}
+}
+
+func TestScanJSONAndRedactMapsSurrogatePairsAcrossEncodingLayers(t *testing.T) {
+	const logical = "SYNTHETIC-😀-SECRET"
+	const encoded = `\u0053YNTHETIC-\ud83d\ude00-SECRET`
+	cfg := Config{ExtraPatterns: map[Category][]string{"CUSTOM_UNICODE": {regexp.QuoteMeta(logical)}}}
+	for _, position := range []string{"key", "value"} {
+		for depth := 0; depth <= 2; depth++ {
+			t.Run(fmt.Sprintf("%s/depth=%d", position, depth), func(t *testing.T) {
+				field := `"action":"` + encoded + `"`
+				if position == "key" {
+					field = `"` + encoded + `":"public"`
+				}
+				input := `{"prefix":"雪\u96ea\ud83d\ude00",` + field + `,"after":"ready"}`
+				input, matched, _ := nestedJSONScanFixture(t, input, encoded, depth)
+				assertJSONScanFinding(t, input, matched, "CUSTOM_UNICODE", cfg)
+			})
+		}
+	}
+}
+
+func TestScanJSONAndRedactPreservesNestedAllowlistContexts(t *testing.T) {
+	provider := "gh" + "p_" + strings.Repeat("q", 40)
+	encodedProvider := `\u0067` + provider[1:]
+	encodedField := `"pass\u0077ord":"synthetic-never-valid-password"`
+	logicalField := `"password":"synthetic-never-valid-password"`
+	for _, tc := range []struct {
+		name, document, matched, logical string
+		category                         Category
+	}{
+		{"provider key", `{"` + encodedProvider + `":"public"}`, encodedProvider, provider, CategoryGitHubToken},
+		{"credential field", `{` + encodedField + `}`, encodedField, logicalField, CategoryPassword},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input, matched, contexts := nestedJSONScanFixture(t, tc.document, tc.matched, 3)
+			assertJSONScanFinding(t, input, matched, tc.category, Config{})
+			contexts = append(contexts, tc.logical)
+			for i, allowed := range contexts {
+				t.Run(fmt.Sprintf("context=%d", i), func(t *testing.T) {
+					cfg := Config{Mode: ModeBlock, Allowlist: []string{"^" + regexp.QuoteMeta(allowed) + "$"}}
+					result := ScanJSONAndRedact(input, cfg)
+					if result.Blocked || len(result.Findings) != 0 || result.Output != input {
+						t.Fatalf("raw/intermediate/logical allowlist lost at encoding level %d", i)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestScanJSONAndRedactNestedResidualsRetainWholeFieldAllowlists(t *testing.T) {
+	provider := "gh" + "p_" + strings.Repeat("q", 40)
+	field := `"password":"sensitive-prefix:` + provider + `:sensitive-suffix"`
+	input, _, contexts := nestedJSONScanFixture(t, `{`+field+`}`, field, 3)
+	result := ScanJSONAndRedact(input, Config{Mode: ModeBlock})
+	if !result.Blocked || len(result.Findings) != 3 || result.Output != input {
+		t.Fatalf("nested credential lost provider or residual findings: %+v", result.Findings)
+	}
+	for i, expected := range []string{"sensitive-prefix:", provider, ":sensitive-suffix"} {
+		finding := result.Findings[i]
+		category := CategoryPassword
+		if i == 1 {
+			category = CategoryGitHubToken
+		}
+		if finding.Category != category || finding.Match != expected || finding.Start < 0 || finding.End > len(input) || input[finding.Start:finding.End] != expected {
+			t.Fatalf("nested residual %d changed its original source range: %+v", i, finding)
+		}
+	}
+	for i, allowed := range contexts {
+		t.Run(fmt.Sprintf("whole field context=%d", i), func(t *testing.T) {
+			cfg := Config{Mode: ModeBlock, Allowlist: []string{"^" + regexp.QuoteMeta(allowed) + "$"}}
+			result := ScanJSONAndRedact(input, cfg)
+			if len(result.Findings) != 1 || result.Findings[0].Category != CategoryGitHubToken || result.Findings[0].Match != provider {
+				t.Fatal("whole-field allowlist lost residual context or exempted an independent provider")
+			}
+			cfg.Allowlist = append(cfg.Allowlist, "^"+regexp.QuoteMeta(provider)+"$")
+			result = ScanJSONAndRedact(input, cfg)
+			if result.Blocked || len(result.Findings) != 0 || result.Output != input {
+				t.Fatal("explicit field and provider allowlists failed to preserve original input")
+			}
+		})
+	}
+}
+
+func TestScanJSONAndRedactHonorsDisabledCategories(t *testing.T) {
+	provider := "gh" + "p_" + strings.Repeat("q", 40)
+	encodedProvider := `\u0067` + provider[1:]
+	passwordField := `"pass\u0077ord":"synthetic-never-valid-password"`
+	nestedPassword, _, _ := nestedJSONScanFixture(t, `{`+passwordField+`}`, passwordField, 2)
+	for _, tc := range []struct {
+		name, input string
+		cfg         Config
+	}{
+		{"provider key", `{"` + encodedProvider + `":"public"}`, Config{DisabledCategories: []Category{CategoryGitHubToken}}},
+		{"nested password", nestedPassword, Config{DisabledCategories: []Category{CategoryPassword}}},
+		{"protected field retains category suppression", `{"api_token":"` + encodedProvider + `"}`, Config{DisabledCategories: []Category{CategoryGenericSecret}}},
+		{"custom decoded match", `{"action":"\u0053YNTHETIC-CONFIDENTIAL"}`, Config{
+			ExtraPatterns: map[Category][]string{"CUSTOM_LOGICAL": {`SYNTHETIC-CONFIDENTIAL`}}, DisabledCategories: []Category{"CUSTOM_LOGICAL"},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.cfg.Mode = ModeBlock
+			result := ScanJSONAndRedact(tc.input, tc.cfg)
+			if result.Blocked || len(result.Findings) != 0 || result.Output != tc.input {
+				t.Fatalf("disabled category changed accepted input: %+v", result.Findings)
+			}
+		})
+	}
+}
+
+func TestScanJSONAndRedactPreservesDuplicateKeysNumbersAndModeSemantics(t *testing.T) {
+	first := `\u0067` + "hp_" + strings.Repeat("q", 40)
+	second := `\u0067` + "hp_" + strings.Repeat("r", 40)
+	input := " \n" + `{"item":"` + first + `","item":"` + second + `","number":9007199254740993,"zero":-0.0,"empty":[]}` + "\t\n"
+	for _, mode := range []Mode{ModeOff, ModeWarn, ModeRedact, ModeBlock} {
+		t.Run(string(mode), func(t *testing.T) {
+			result := ScanJSONAndRedact(input, Config{Mode: mode})
+			wantFindings := 2
+			if mode == ModeOff {
+				wantFindings = 0
+			}
+			if result.Mode != mode || result.OriginalLength != len(input) || len(result.Findings) != wantFindings || result.Blocked != (mode == ModeBlock) {
+				t.Fatalf("JSON scanning changed mode semantics: mode=%s findings=%d blocked=%v", result.Mode, len(result.Findings), result.Blocked)
+			}
+			if mode != ModeRedact {
+				if result.Output != input {
+					t.Fatal("non-rewriting mode changed duplicate keys, number spelling or whitespace")
+				}
+				return
+			}
+			if strings.Contains(result.Output, first) || strings.Contains(result.Output, second) || strings.Count(result.Output, `"item":`) != 2 ||
+				!strings.Contains(result.Output, `"number":9007199254740993,"zero":-0.0,"empty":[]`) || !json.Valid([]byte(result.Output)) {
+				t.Fatal("redaction lost a duplicate credential or altered neighboring JSON values")
+			}
+		})
+	}
+	clean := " \n" + `{"item":"ready","item":"still ready","number":9007199254740993,"escaped":"\ud83d\ude00","zero":-0.0}` + "\t\n"
+	for _, mode := range []Mode{ModeOff, ModeWarn, ModeRedact, ModeBlock} {
+		result := ScanJSONAndRedact(clean, Config{Mode: mode})
+		if result.Blocked || len(result.Findings) != 0 || result.Output != clean {
+			t.Fatalf("clean JSON was changed in mode %s", mode)
+		}
 	}
 }

@@ -1001,7 +1001,7 @@ func (h *WSHub) redactEvent(event *WSEvent) error {
 	}
 	metadataCfg := cfg.Config
 	metadataCfg.Mode = redaction.ModeBlock
-	if result := redaction.ScanAndRedact(string(metadata), metadataCfg); result.Blocked {
+	if result := redaction.ScanJSONAndRedact(string(metadata), metadataCfg); result.Blocked {
 		return errors.New("event metadata contains sensitive content")
 	}
 	data, err := redactWSEventData(event.Data, cfg.Config)

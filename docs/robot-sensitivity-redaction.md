@@ -43,6 +43,18 @@ more locations were omitted. The error and hint explain the refusal. Diagnostics
 never include raw matches, credential hashes, arbitrary field names, body excerpts,
 or decoder error text. Logs retain the request summary and category counts.
 
+JSON admission examines the strings that a handler can decode, including
+property names and JSON documents embedded inside strings. Another layer of
+escaping cannot hide a detected credential from this inspection. Configured
+extra patterns are checked against both the raw input and decoded strings on
+JSON API surfaces, including anchored patterns on complete string values.
+Existing raw, intermediate, and logical match allowlists remain effective, and
+disabled categories keep their existing field semantics. This uses the same
+scanner and maps findings back through the original escape sequences; it never
+decodes the whole request into a map or reserializes accepted input. Duplicate
+properties, exact number spellings, and whitespace remain intact. Generic text
+and log callers retain their existing scanning contract.
+
 ### Why requests are rejected
 
 The handlers require exact input for several different reasons:

@@ -151,7 +151,7 @@ func inspectCheckpointArchive(ctx context.Context, data []byte, format checkpoin
 		if ctx.Err() != nil {
 			return errCheckpointDisclosureInvalid
 		}
-		if redaction.ScanAndRedact(string(data), cfg).Blocked {
+		if redaction.ScanJSONAndRedact(string(data), cfg).Blocked {
 			return errCheckpointDisclosureSensitive
 		}
 		return nil
@@ -1045,7 +1045,7 @@ func (s *Server) handleExportCheckpoint(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		encoded = append(encoded, '\n')
-		if redaction.ScanAndRedact(string(encoded), disclosureCfg).Blocked {
+		if redaction.ScanJSONAndRedact(string(encoded), disclosureCfg).Blocked {
 			writeCheckpointDisclosureError(w, errCheckpointDisclosureSensitive, reqID, false)
 			return
 		}
@@ -1232,7 +1232,8 @@ func (s *Server) writeCheckpointImportPublicationError(w http.ResponseWriter, r 
 		s.mu.RUnlock()
 		reference := map[string]string{"id": cp.ID, "session_name": cp.SessionName}
 		encoded, _ := json.Marshal(reference) // A map of strings cannot fail.
-		if len(redaction.Scan(string(encoded), cfg)) == 0 &&
+		cfg.Mode = redaction.ModeBlock
+		if !redaction.ScanJSONAndRedact(string(encoded), cfg).Blocked &&
 			len(redaction.Scan(cp.ID+"\n"+cp.SessionName, cfg)) == 0 {
 			details["checkpoint"] = reference
 		} else {

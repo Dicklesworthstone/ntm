@@ -138,7 +138,7 @@ func (s *Server) redactionMiddleware(next http.Handler) http.Handler {
 				if requestCfg.Mode == redaction.ModeRedact {
 					requestCfg.Mode = redaction.ModeBlock
 				}
-				result := redaction.ScanAndRedact(string(body), requestCfg)
+				result := redaction.ScanJSONAndRedact(string(body), requestCfg)
 				summary.RequestFinds = len(result.Findings)
 				for _, f := range result.Findings {
 					categories[string(f.Category)]++
@@ -304,7 +304,7 @@ func redactJSONBytes(body []byte, cfg redaction.Config) ([]byte, redaction.Resul
 	if cfg.Mode == redaction.ModeBlock {
 		cfg.Mode = redaction.ModeRedact
 	}
-	result := redaction.ScanAndRedact(string(body), cfg)
+	result := redaction.ScanJSONAndRedact(string(body), cfg)
 	if cfg.Mode != redaction.ModeRedact {
 		return body, result, nil
 	}
@@ -343,7 +343,7 @@ func redactJSONBytes(body []byte, cfg redaction.Config) ([]byte, redaction.Resul
 	// would otherwise mistake already protected values for new passwords.
 	checkCfg := cfg
 	checkCfg.Mode = redaction.ModeBlock
-	for _, f := range redaction.ScanAndRedact(string(output), checkCfg).Findings {
+	for _, f := range redaction.ScanJSONAndRedact(string(output), checkCfg).Findings {
 		if !protectedPassword(f) {
 			return nil, result, errors.New("JSON redaction left sensitive content")
 		}
