@@ -1,7 +1,10 @@
 package serve
 
 import (
+	"archive/tar"
+	"archive/zip"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -14369,6 +14372,206 @@ func TestCheckWSOrigin_AllowedOriginEmptyScheme(t *testing.T) {
 	req2.Header.Set("Origin", "https://evil.example.com")
 	if srv.checkWSOrigin(req2) {
 		t.Error("should reject non-matching origin")
+	}
+}
+
+func TestCheckpointArchiveDisclosureInspection(t *testing.T) {
+	encodeGzip := func(header gzip.Header, content []byte) []byte {
+		t.Helper()
+		var out bytes.Buffer
+		writer := gzip.NewWriter(&out)
+		writer.Header = header
+		if _, err := writer.Write(content); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return out.Bytes()
+	}
+	encodeZip := func(header zip.FileHeader, comment string, content []byte) []byte {
+		t.Helper()
+		if header.Name == "" {
+			header.Name = "metadata.json"
+		}
+		var out bytes.Buffer
+		writer := zip.NewWriter(&out)
+		if err := writer.SetComment(comment); err != nil {
+			t.Fatal(err)
+		}
+		entry, err := writer.CreateHeader(&header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write(content); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return out.Bytes()
+	}
+	encodeTar := func(header tar.Header, outer gzip.Header, content []byte) []byte {
+		t.Helper()
+		if header.Name == "" {
+			header.Name = "metadata.json"
+		}
+		header.Mode, header.Size = 0600, int64(len(content))
+		header.Typeflag = tar.TypeReg
+		header.Format = tar.FormatPAX
+		var out bytes.Buffer
+		writer := tar.NewWriter(&out)
+		if err := writer.WriteHeader(&header); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(content); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return encodeGzip(outer, out.Bytes())
+	}
+	clean := []byte(`{"command":"printf ready","count":9007199254740993}`)
+	sensitive := []byte(`{"api_token":"0123456789abcdefghijklmnopqrstuv"}`)
+	secret := []byte(wiringFakeSecret)
+	// An unknown ZIP extra field is still part of the disclosed archive.
+	extra := append([]byte{0xfe, 0xca, byte(len(secret)), 0}, secret...)
+	nestedSecret := encodeGzip(gzip.Header{}, secret)
+	nestedClean := encodeGzip(gzip.Header{}, clean)
+	cleanZip := encodeZip(zip.FileHeader{}, "", clean)
+	cleanTar := encodeTar(tar.Header{}, gzip.Header{}, clean)
+	badOuterTrailer := bytes.Clone(cleanTar)
+	badOuterTrailer[len(badOuterTrailer)-8] ^= 0x80
+	badInnerTrailer := bytes.Clone(nestedClean)
+	badInnerTrailer[len(badInnerTrailer)-8] ^= 0x80
+	laterHeader := append(bytes.Clone(nestedClean), encodeGzip(gzip.Header{Name: wiringFakeSecret}, []byte("second harmless member"))...)
+	splitSecret := append(encodeGzip(gzip.Header{}, secret[:10]), encodeGzip(gzip.Header{}, secret[10:])...)
+	cleanMembers := append(bytes.Clone(nestedClean), encodeGzip(gzip.Header{}, []byte("second harmless member"))...)
+	laterOuterHeader := append(bytes.Clone(cleanTar), encodeGzip(gzip.Header{Comment: wiringFakeSecret}, make([]byte, 512))...)
+	cleanOuterMembers := append(bytes.Clone(cleanTar), encodeGzip(gzip.Header{}, make([]byte, 512))...)
+
+	tests := []struct {
+		name   string
+		format checkpoint.ExportFormat
+		data   []byte
+		want   error
+	}{
+		{"clean zip", checkpoint.FormatZip, cleanZip, nil},
+		{"clean tar gzip", checkpoint.FormatTarGz, cleanTar, nil},
+		{"empty ordinary zip member", checkpoint.FormatZip, encodeZip(zip.FileHeader{Name: "panes/output.txt"}, "", nil), nil},
+		{"zero member outer gzip", checkpoint.FormatTarGz, nil, errCheckpointDisclosureInvalid},
+		{"zero member nested gzip", checkpoint.FormatZip, encodeZip(zip.FileHeader{Name: "panes/output.gz"}, "", nil), errCheckpointDisclosureInvalid},
+		{"zip credential value", checkpoint.FormatZip, encodeZip(zip.FileHeader{}, "", sensitive), errCheckpointDisclosureSensitive},
+		{"tar credential value", checkpoint.FormatTarGz, encodeTar(tar.Header{}, gzip.Header{}, sensitive), errCheckpointDisclosureSensitive},
+		{"zip entry name", checkpoint.FormatZip, encodeZip(zip.FileHeader{Name: wiringFakeSecret}, "", clean), errCheckpointDisclosureSensitive},
+		{"tar entry name", checkpoint.FormatTarGz, encodeTar(tar.Header{Name: wiringFakeSecret}, gzip.Header{}, clean), errCheckpointDisclosureSensitive},
+		{"zip archive comment", checkpoint.FormatZip, encodeZip(zip.FileHeader{}, wiringFakeSecret, clean), errCheckpointDisclosureSensitive},
+		{"zip entry comment", checkpoint.FormatZip, encodeZip(zip.FileHeader{Comment: wiringFakeSecret}, "", clean), errCheckpointDisclosureSensitive},
+		{"zip extra field", checkpoint.FormatZip, encodeZip(zip.FileHeader{Extra: extra}, "", clean), errCheckpointDisclosureSensitive},
+		{"tar owner", checkpoint.FormatTarGz, encodeTar(tar.Header{Uname: wiringFakeSecret}, gzip.Header{}, clean), errCheckpointDisclosureSensitive},
+		{"tar group", checkpoint.FormatTarGz, encodeTar(tar.Header{Gname: wiringFakeSecret}, gzip.Header{}, clean), errCheckpointDisclosureSensitive},
+		{"tar PAX metadata", checkpoint.FormatTarGz, encodeTar(tar.Header{PAXRecords: map[string]string{"NTM.note": wiringFakeSecret}}, gzip.Header{}, clean), errCheckpointDisclosureSensitive},
+		{"outer gzip name", checkpoint.FormatTarGz, encodeTar(tar.Header{}, gzip.Header{Name: wiringFakeSecret}, clean), errCheckpointDisclosureSensitive},
+		{"outer gzip comment", checkpoint.FormatTarGz, encodeTar(tar.Header{}, gzip.Header{Comment: wiringFakeSecret}, clean), errCheckpointDisclosureSensitive},
+		{"outer gzip extra field", checkpoint.FormatTarGz, encodeTar(tar.Header{}, gzip.Header{Extra: secret}, clean), errCheckpointDisclosureSensitive},
+		{"zip nested gzip payload", checkpoint.FormatZip, encodeZip(zip.FileHeader{Name: "panes/output.gz"}, "", nestedSecret), errCheckpointDisclosureSensitive},
+		{"tar nested gzip payload", checkpoint.FormatTarGz, encodeTar(tar.Header{Name: "panes/output.gz"}, gzip.Header{}, nestedSecret), errCheckpointDisclosureSensitive},
+		{"nested gzip magic without extension", checkpoint.FormatZip, encodeZip(zip.FileHeader{Name: "panes/output"}, "", nestedSecret), errCheckpointDisclosureSensitive},
+		{"nested gzip name", checkpoint.FormatZip, encodeZip(zip.FileHeader{Name: "panes/output.gz"}, "", encodeGzip(gzip.Header{Name: wiringFakeSecret}, clean)), errCheckpointDisclosureSensitive},
+		{"nested gzip comment", checkpoint.FormatZip, encodeZip(zip.FileHeader{Name: "panes/output.gz"}, "", encodeGzip(gzip.Header{Comment: wiringFakeSecret}, clean)), errCheckpointDisclosureSensitive},
+		{"nested gzip extra field", checkpoint.FormatZip, encodeZip(zip.FileHeader{Name: "panes/output.gz"}, "", encodeGzip(gzip.Header{Extra: secret}, clean)), errCheckpointDisclosureSensitive},
+		{"later nested gzip header", checkpoint.FormatZip, encodeZip(zip.FileHeader{Name: "panes/output.gz"}, "", laterHeader), errCheckpointDisclosureSensitive},
+		{"credential spans gzip members", checkpoint.FormatZip, encodeZip(zip.FileHeader{Name: "panes/output.gz"}, "", splitSecret), errCheckpointDisclosureSensitive},
+		{"clean nested gzip members", checkpoint.FormatZip, encodeZip(zip.FileHeader{Name: "panes/output.gz"}, "", cleanMembers), nil},
+		{"later outer gzip header", checkpoint.FormatTarGz, laterOuterHeader, errCheckpointDisclosureSensitive},
+		{"clean outer gzip members", checkpoint.FormatTarGz, cleanOuterMembers, nil},
+		{"bad outer gzip checksum", checkpoint.FormatTarGz, badOuterTrailer, errCheckpointDisclosureInvalid},
+		{"truncated outer gzip trailer", checkpoint.FormatTarGz, cleanTar[:len(cleanTar)-4], errCheckpointDisclosureInvalid},
+		{"bad nested gzip checksum", checkpoint.FormatZip, encodeZip(zip.FileHeader{Name: "panes/output.gz"}, "", badInnerTrailer), errCheckpointDisclosureInvalid},
+		{"truncated nested gzip trailer", checkpoint.FormatTarGz, encodeTar(tar.Header{Name: "panes/output.gz"}, gzip.Header{}, nestedClean[:len(nestedClean)-4]), errCheckpointDisclosureInvalid},
+		{"zip mislabeled as tar gzip", checkpoint.FormatTarGz, cleanZip, errCheckpointDisclosureInvalid},
+		{"tar gzip mislabeled as zip", checkpoint.FormatZip, cleanTar, errCheckpointDisclosureInvalid},
+		{"unsupported format", checkpoint.ExportFormat("unsupported"), cleanZip, errCheckpointDisclosureInvalid},
+		{"malformed archive with sensitive error context", checkpoint.FormatZip, secret, errCheckpointDisclosureInvalid},
+	}
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		t.Run(string(mode), func(t *testing.T) {
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					before := bytes.Clone(tt.data)
+					err := inspectCheckpointArchive(context.Background(), tt.data, tt.format, redaction.Config{Mode: mode})
+					if !errors.Is(err, tt.want) {
+						t.Fatalf("inspection error=%v, want %v", err, tt.want)
+					}
+					if err != nil && (err.Error() != tt.want.Error() || strings.Contains(err.Error(), wiringFakeSecret)) {
+						t.Fatalf("inspection returned source-dependent diagnostics: %v", err)
+					}
+					if !bytes.Equal(tt.data, before) {
+						t.Fatal("inspection altered the recoverable archive")
+					}
+				})
+			}
+		})
+	}
+
+	for _, format := range []checkpoint.ExportFormat{checkpoint.FormatZip, checkpoint.FormatTarGz} {
+		t.Run("canceled "+string(format), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			data := cleanZip
+			if format == checkpoint.FormatTarGz {
+				data = cleanTar
+			}
+			before := bytes.Clone(data)
+			if err := inspectCheckpointArchive(ctx, data, format, redaction.Config{Mode: redaction.ModeRedact}); !errors.Is(err, errCheckpointDisclosureInvalid) {
+				t.Fatalf("canceled inspection error=%v, want static refusal", err)
+			}
+			if !bytes.Equal(data, before) {
+				t.Fatal("canceled inspection altered the archive")
+			}
+		})
+	}
+}
+
+func TestCheckpointArchiveDisclosureInspectionLimits(t *testing.T) {
+	makeZip := func(entries int, advertisedSize uint64) []byte {
+		t.Helper()
+		var out bytes.Buffer
+		writer := zip.NewWriter(&out)
+		for i := 0; i < entries; i++ {
+			// Raw headers let an attacker advertise a huge expanded member
+			// without forcing this test to allocate or decompress that member.
+			if _, err := writer.CreateRaw(&zip.FileHeader{
+				Name: fmt.Sprintf("entry-%d", i), Method: zip.Store,
+				UncompressedSize64: advertisedSize,
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return out.Bytes()
+	}
+	for _, tt := range []struct {
+		name string
+		data []byte
+	}{
+		{"advertised expanded entry", makeZip(1, checkpointDisclosureEntryBytes+1)},
+		{"too many entries", makeZip(checkpointDisclosureEntries+1, 0)},
+		{"compressed snapshot limit", make([]byte, checkpointDisclosureArchiveBytes+1)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			before := bytes.Clone(tt.data)
+			err := inspectCheckpointArchive(context.Background(), tt.data, checkpoint.FormatZip, redaction.Config{Mode: redaction.ModeRedact})
+			if !errors.Is(err, errCheckpointDisclosureLimit) || err.Error() != errCheckpointDisclosureLimit.Error() {
+				t.Fatalf("oversized archive error=%v, want static limit refusal", err)
+			}
+			if !bytes.Equal(tt.data, before) {
+				t.Fatal("refused archive was changed")
+			}
+		})
 	}
 }
 

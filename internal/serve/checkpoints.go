@@ -2,6 +2,10 @@
 package serve
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -21,8 +25,286 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+// Match checkpoint import's expanded-entry and aggregate limits. The HTTP
+// disclosure boundary additionally bounds the exact compressed snapshot and
+// entry count before inspection; it never admits a scanned prefix as an archive.
+const (
+	checkpointDisclosureArchiveBytes = 64 << 20
+	checkpointDisclosureEntryBytes   = 100 << 20
+	checkpointDisclosureTotalBytes   = 1 << 30
+	checkpointDisclosureEntries      = 4096
+	checkpointDisclosureTarPadding   = 1 << 20
+)
+
+var (
+	errCheckpointDisclosureSensitive = errors.New("checkpoint archive contains sensitive content")
+	errCheckpointDisclosureLimit     = errors.New("checkpoint archive exceeds inspection limits")
+	errCheckpointDisclosureInvalid   = errors.New("checkpoint archive could not be safely inspected")
+)
+
+func (s *Server) checkpointDisclosureConfig() (redaction.Config, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.redactionCfg == nil || !s.redactionCfg.Enabled ||
+		(s.redactionCfg.Config.Mode != redaction.ModeRedact && s.redactionCfg.Config.Mode != redaction.ModeBlock) {
+		return redaction.Config{}, false
+	}
+	cfg := s.redactionCfg.Config.DeepCopy()
+	cfg.Mode = redaction.ModeBlock
+	return cfg, true
+}
+
+type checkpointDisclosureReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r checkpointDisclosureReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.r.Read(p)
+}
+
+// gzip.Reader's multistream mode exposes only the first member's header.
+// Iterate explicitly so later headers cannot hide secrets, while presenting
+// one decoded stream so credentials split between members remain detectable.
+type checkpointDisclosureGzip struct {
+	compressed *bytes.Reader
+	current    *gzip.Reader
+	scan       func([]byte) error
+	remaining  int64
+	members    int
+}
+
+func (r *checkpointDisclosureGzip) Read(p []byte) (int, error) {
+	for {
+		if r.current == nil {
+			if r.compressed.Len() == 0 {
+				if r.members == 0 {
+					return 0, errCheckpointDisclosureInvalid
+				}
+				return 0, io.EOF
+			}
+			if r.members >= checkpointDisclosureEntries {
+				return 0, errCheckpointDisclosureLimit
+			}
+			gz, err := gzip.NewReader(r.compressed)
+			if err != nil {
+				return 0, errCheckpointDisclosureInvalid
+			}
+			gz.Multistream(false)
+			for _, metadata := range [][]byte{[]byte(gz.Name), []byte(gz.Comment), gz.Extra} {
+				if err := r.scan(metadata); err != nil {
+					gz.Close()
+					return 0, err
+				}
+			}
+			r.current = gz
+			r.members++
+		}
+		n, err := r.current.Read(p)
+		r.remaining -= int64(n)
+		if r.remaining < 0 {
+			return n, errCheckpointDisclosureLimit
+		}
+		if err == io.EOF {
+			closeErr := r.current.Close()
+			r.current = nil
+			if closeErr != nil {
+				return n, errCheckpointDisclosureInvalid
+			}
+			if n != 0 {
+				return n, nil
+			}
+			continue
+		}
+		if err != nil {
+			return n, errCheckpointDisclosureInvalid
+		}
+		return n, nil
+	}
+}
+
+func (r *checkpointDisclosureGzip) Close() error {
+	if r.current != nil {
+		return r.current.Close()
+	}
+	return nil
+}
+
+// inspectCheckpointArchive checks the exact encoded snapshot used for export or
+// import. Recovery metadata and patches are executable state: rewriting them
+// could produce a valid archive that restores a different command or credential.
+// This boundary only refuses; explicit scrollback redaction remains the export
+// caller's separate choice. No source bytes or entry names escape in errors.
+func inspectCheckpointArchive(ctx context.Context, data []byte, format checkpoint.ExportFormat, cfg redaction.Config) error {
+	if len(data) > checkpointDisclosureArchiveBytes {
+		return errCheckpointDisclosureLimit
+	}
+	cfg.Mode = redaction.ModeBlock
+	scan := func(data []byte) error {
+		if ctx.Err() != nil {
+			return errCheckpointDisclosureInvalid
+		}
+		if redaction.ScanAndRedact(string(data), cfg).Blocked {
+			return errCheckpointDisclosureSensitive
+		}
+		return nil
+	}
+	var expanded int64
+	readEntry := func(reader io.Reader) ([]byte, error) {
+		limit := min(int64(checkpointDisclosureEntryBytes), int64(checkpointDisclosureTotalBytes)-expanded)
+		if limit < 0 {
+			return nil, errCheckpointDisclosureLimit
+		}
+		entry, err := io.ReadAll(io.LimitReader(checkpointDisclosureReader{ctx: ctx, r: reader}, limit+1))
+		if int64(len(entry)) > limit {
+			return nil, errCheckpointDisclosureLimit
+		}
+		if err != nil {
+			if errors.Is(err, errCheckpointDisclosureSensitive) || errors.Is(err, errCheckpointDisclosureLimit) {
+				return nil, err
+			}
+			return nil, errCheckpointDisclosureInvalid
+		}
+		expanded += int64(len(entry))
+		return entry, nil
+	}
+	inspectEntry := func(name string, reader io.Reader) error {
+		if err := scan([]byte(name)); err != nil {
+			return err
+		}
+		entry, err := readEntry(reader)
+		if err != nil {
+			return err
+		}
+		// Scrollback is often itself gzip-compressed inside either archive
+		// format. Inspect its decoded bytes, including the gzip checksum/end.
+		if strings.EqualFold(filepath.Ext(name), ".gz") || bytes.HasPrefix(entry, []byte{0x1f, 0x8b}) {
+			gz := &checkpointDisclosureGzip{compressed: bytes.NewReader(entry), scan: scan, remaining: checkpointDisclosureEntryBytes}
+			decoded, readErr := readEntry(gz)
+			closeErr := gz.Close()
+			if readErr != nil {
+				return readErr
+			}
+			if closeErr != nil {
+				return errCheckpointDisclosureInvalid
+			}
+			return scan(decoded)
+		}
+		return scan(entry)
+	}
+
+	switch format {
+	case checkpoint.FormatZip:
+		archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+		if err != nil {
+			return errCheckpointDisclosureInvalid
+		}
+		if len(archive.File) > checkpointDisclosureEntries {
+			return errCheckpointDisclosureLimit
+		}
+		if err := scan([]byte(archive.Comment)); err != nil {
+			return err
+		}
+		for _, file := range archive.File {
+			if file.UncompressedSize64 > checkpointDisclosureEntryBytes ||
+				file.UncompressedSize64 > uint64(int64(checkpointDisclosureTotalBytes)-expanded) {
+				return errCheckpointDisclosureLimit
+			}
+			for _, metadata := range [][]byte{[]byte(file.Comment), file.Extra} {
+				if err := scan(metadata); err != nil {
+					return err
+				}
+			}
+			reader, err := file.Open()
+			if err != nil {
+				return errCheckpointDisclosureInvalid
+			}
+			inspectErr := inspectEntry(file.Name, reader)
+			closeErr := reader.Close()
+			if inspectErr != nil {
+				return inspectErr
+			}
+			if closeErr != nil {
+				return errCheckpointDisclosureInvalid
+			}
+		}
+	case checkpoint.FormatTarGz:
+		// Count the complete expanded tar stream, including PAX/GNU headers
+		// consumed internally by archive/tar rather than returned as entries.
+		gz := &checkpointDisclosureGzip{compressed: bytes.NewReader(data), scan: scan, remaining: checkpointDisclosureTotalBytes}
+		defer gz.Close()
+		archive := tar.NewReader(checkpointDisclosureReader{ctx: ctx, r: gz})
+		for count := 0; ; count++ {
+			header, err := archive.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				if errors.Is(err, errCheckpointDisclosureSensitive) || errors.Is(err, errCheckpointDisclosureLimit) {
+					return err
+				}
+				return errCheckpointDisclosureInvalid
+			}
+			if count >= checkpointDisclosureEntries || header.Size > checkpointDisclosureEntryBytes ||
+				header.Size > int64(checkpointDisclosureTotalBytes)-expanded {
+				return errCheckpointDisclosureLimit
+			}
+			// Only regular files and directory markers are checkpoint data.
+			if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA && header.Typeflag != tar.TypeDir {
+				return errCheckpointDisclosureInvalid
+			}
+			for _, metadata := range []string{header.Uname, header.Gname, header.Linkname} {
+				if err := scan([]byte(metadata)); err != nil {
+					return err
+				}
+			}
+			for key, value := range header.PAXRecords {
+				if err := scan([]byte(key + "=" + value)); err != nil {
+					return err
+				}
+			}
+			if err := inspectEntry(header.Name, archive); err != nil {
+				return err
+			}
+		}
+		// Tar EOF occurs before the gzip trailer. Finish it and refuse trailing
+		// material instead of treating an unchecked suffix as inspected data.
+		padding, err := io.ReadAll(io.LimitReader(checkpointDisclosureReader{ctx: ctx, r: gz}, checkpointDisclosureTarPadding+1))
+		if len(padding) > checkpointDisclosureTarPadding {
+			return errCheckpointDisclosureLimit
+		}
+		if errors.Is(err, errCheckpointDisclosureSensitive) || errors.Is(err, errCheckpointDisclosureLimit) {
+			return err
+		}
+		if err != nil || len(bytes.Trim(padding, "\x00")) != 0 {
+			return errCheckpointDisclosureInvalid
+		}
+	default:
+		return errCheckpointDisclosureInvalid
+	}
+	return nil
+}
+
+func writeCheckpointDisclosureError(w http.ResponseWriter, err error, requestID string, importing bool) {
+	status, code := http.StatusUnprocessableEntity, "CHECKPOINT_SENSITIVE_CONTENT"
+	message := "checkpoint archive contains sensitive content; refused without changing checkpoint values"
+	if errors.Is(err, errCheckpointDisclosureLimit) {
+		code, message = "CHECKPOINT_INSPECTION_LIMIT", "checkpoint archive exceeds safe inspection limits; refused without changing checkpoint values"
+	} else if !errors.Is(err, errCheckpointDisclosureSensitive) {
+		status, code, message = http.StatusInternalServerError, ErrCodeInternalError, "failed to inspect checkpoint export"
+		if importing {
+			status, code, message = http.StatusBadRequest, ErrCodeBadRequest, "checkpoint archive could not be safely inspected"
+		}
+	}
+	writeErrorResponse(w, status, code, message, nil, requestID)
+}
 
 // Checkpoint API request/response types
 
@@ -537,6 +819,7 @@ func (s *Server) handleExportCheckpoint(w http.ResponseWriter, r *http.Request) 
 	sessionName := chi.URLParam(r, "sessionName")
 	checkpointID := chi.URLParam(r, "checkpointId")
 	reqID := requestIDFromContext(r.Context())
+	disclosureCfg, protectArchive := s.checkpointDisclosureConfig()
 
 	// Validate before the name reaches a filesystem path or the
 	// Content-Disposition header. Sibling handlers validate here; export did
@@ -641,15 +924,62 @@ func (s *Server) handleExportCheckpoint(w http.ResponseWriter, r *http.Request) 
 
 	_, err = storage.Export(sessionName, checkpointID, tmpPath, opts)
 	if err != nil {
-		log.Printf("REST: checkpoint export failed session=%s id=%s error=%v request_id=%s",
-			sessionName, checkpointID, err, reqID)
+		if protectArchive {
+			// Export errors can contain sensitive artifact names before a
+			// completed archive is available for disclosure inspection.
+			log.Printf("REST: checkpoint export failed request_id=%s", reqID)
+		} else {
+			log.Printf("REST: checkpoint export failed session=%s id=%s error=%v request_id=%s",
+				sessionName, checkpointID, err, reqID)
+		}
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
 			"failed to export checkpoint", nil, reqID)
 		return
 	}
 
+	// Inspect the completed archive, including metadata and patches that the
+	// explicit scrollback-redaction option intentionally leaves unchanged.
+	// Keep the admitted snapshot for both wire forms: do not reopen mutable
+	// source artifacts after inspection or rewrite recovery values implicitly.
+	var admitted []byte
+	if protectArchive {
+		file, openErr := os.Open(tmpPath)
+		if openErr != nil {
+			writeCheckpointDisclosureError(w, errCheckpointDisclosureInvalid, reqID, false)
+			return
+		}
+		admitted, err = io.ReadAll(io.LimitReader(checkpointDisclosureReader{ctx: r.Context(), r: file}, checkpointDisclosureArchiveBytes+1))
+		closeErr := file.Close()
+		if len(admitted) > checkpointDisclosureArchiveBytes {
+			writeCheckpointDisclosureError(w, errCheckpointDisclosureLimit, reqID, false)
+			return
+		}
+		if err != nil || closeErr != nil {
+			writeCheckpointDisclosureError(w, errCheckpointDisclosureInvalid, reqID, false)
+			return
+		}
+		if err := inspectCheckpointArchive(r.Context(), admitted, exportFormat, disclosureCfg); err != nil {
+			writeCheckpointDisclosureError(w, err, reqID, false)
+			return
+		}
+	}
+
 	// Check if client wants download or inline response
 	if r.URL.Query().Get("download") == "true" || r.Header.Get("Accept") == "application/octet-stream" {
+		if protectArchive {
+			filename := fmt.Sprintf("%s_%s%s", sessionName, checkpointID, ext)
+			if redaction.ScanAndRedact(filename, disclosureCfg).Blocked {
+				writeCheckpointDisclosureError(w, errCheckpointDisclosureSensitive, reqID, false)
+				return
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+			w.Header().Set("Content-Length", strconv.Itoa(len(admitted)))
+			if _, err := w.Write(admitted); err != nil {
+				log.Print("REST: failed to write inspected checkpoint export")
+			}
+			return
+		}
 		f, err := os.Open(tmpPath)
 		if err != nil {
 			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
@@ -676,11 +1006,14 @@ func (s *Server) handleExportCheckpoint(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Return base64-encoded data in JSON response
-	data, err := os.ReadFile(tmpPath)
-	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
-			"failed to read export file", nil, reqID)
-		return
+	data := admitted
+	if !protectArchive {
+		data, err = os.ReadFile(tmpPath)
+		if err != nil {
+			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
+				"failed to read export file", nil, reqID)
+			return
+		}
 	}
 
 	contentType := "application/gzip"
@@ -691,18 +1024,46 @@ func (s *Server) handleExportCheckpoint(w http.ResponseWriter, r *http.Request) 
 	log.Printf("REST: checkpoint exported session=%s id=%s size=%d request_id=%s",
 		sessionName, checkpointID, len(data), reqID)
 
-	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
+	response := map[string]interface{}{
 		"filename":     fmt.Sprintf("%s_%s%s", sessionName, checkpointID, ext),
 		"size":         int64(len(data)),
 		"content_type": contentType,
 		"data":         base64.StdEncoding.EncodeToString(data),
-	}, reqID)
+	}
+	if protectArchive {
+		// Even an accidental/custom match in opaque base64 must not turn a
+		// valid JSON response into a silently corrupted recovery archive.
+		// Construct and inspect the exact final envelope before writing it.
+		response["success"] = true
+		response["timestamp"] = time.Now().UTC().Format(time.RFC3339)
+		if reqID != "" {
+			response["request_id"] = reqID
+		}
+		encoded, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			writeCheckpointDisclosureError(w, errCheckpointDisclosureInvalid, reqID, false)
+			return
+		}
+		encoded = append(encoded, '\n')
+		if redaction.ScanAndRedact(string(encoded), disclosureCfg).Blocked {
+			writeCheckpointDisclosureError(w, errCheckpointDisclosureSensitive, reqID, false)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write(encoded); err != nil {
+			log.Print("REST: failed to write inspected checkpoint export")
+		}
+		return
+	}
+	writeSuccessResponse(w, http.StatusOK, response, reqID)
 }
 
 // handleImportCheckpoint imports a checkpoint from an archive.
 func (s *Server) handleImportCheckpoint(w http.ResponseWriter, r *http.Request) {
 	sessionName := chi.URLParam(r, "sessionName")
 	reqID := requestIDFromContext(r.Context())
+	disclosureCfg, protectArchive := s.checkpointDisclosureConfig()
 
 	var req ImportCheckpointRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -729,6 +1090,20 @@ func (s *Server) handleImportCheckpoint(w http.ResponseWriter, r *http.Request) 
 	ext := ".tar.gz"
 	if len(archiveData) >= 4 && archiveData[0] == 'P' && archiveData[1] == 'K' {
 		ext = ".zip"
+	}
+
+	// JSON request admission cannot see through base64 and compression.
+	// Refuse sensitive recovery state before Import can publish or overwrite
+	// a checkpoint; never replace values that a later restore will execute.
+	if protectArchive {
+		format := checkpoint.FormatTarGz
+		if ext == ".zip" {
+			format = checkpoint.FormatZip
+		}
+		if err := inspectCheckpointArchive(r.Context(), archiveData, format, disclosureCfg); err != nil {
+			writeCheckpointDisclosureError(w, err, reqID, true)
+			return
+		}
 	}
 
 	// Write to temp file
@@ -786,8 +1161,12 @@ func (s *Server) handleImportCheckpoint(w http.ResponseWriter, r *http.Request) 
 
 	cp, err := storage.Import(tmpPath, opts)
 	if err != nil {
-		log.Printf("REST: checkpoint import failed session=%s error=%v request_id=%s",
-			sessionName, err, reqID)
+		if protectArchive {
+			log.Printf("REST: checkpoint import failed request_id=%s", reqID)
+		} else {
+			log.Printf("REST: checkpoint import failed session=%s error=%v request_id=%s",
+				sessionName, err, reqID)
+		}
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
 			"failed to import checkpoint", nil, reqID)
 		return

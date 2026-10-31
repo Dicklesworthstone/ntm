@@ -113,6 +113,38 @@ configuration. It closes the stream on an unsafe frame or a frame above 10 MiB
 without emitting a partial or truncated event. Diagnostic logs contain static
 failure reasons and finding counts, never source payloads or marshaler errors.
 
+### Checkpoint archives
+
+Checkpoint import and export require an additional check because JSON scanning
+cannot see credentials inside base64 or compressed archive entries. With enabled
+`redact` or `block`, imports inspect the decoded archive before checkpoint creation
+or overwrite. Exports inspect the completed archive before either a binary
+download or an inline base64 response. Accepted exports use the exact inspected
+snapshot. An unsafe inline JSON envelope is refused too, so response redaction
+cannot silently replace part of the base64 archive.
+
+Recovery commands and Git patches must retain their intended values. Detected
+secrets therefore cause `422 CHECKPOINT_SENSITIVE_CONTENT`, with a static message
+and no credential contents or artifact names. The server does not rewrite those
+values. Rejected imports leave existing checkpoints untouched, and rejected
+exports leave source recovery data intact. The existing `redact_secrets` export
+option still explicitly sanitizes scrollback; the resulting archive must pass
+inspection of its remaining contents as well.
+
+Inspection covers selected entries, archive names and metadata, and decoded gzip
+scrollback, including headers and payloads across concatenated gzip members.
+Checksums and trailers must complete successfully. Limits are 64 MiB for the
+encoded snapshot, 100 MiB per expanded entry, 1 GiB for aggregate expanded data,
+and 4,096 entries or gzip members. Tar expansion also includes internal extension
+headers, and post-archive zero padding is limited to 1 MiB. Exceeding a limit
+returns `422 CHECKPOINT_INSPECTION_LIMIT`. An unreadable or malformed import
+returns `400 BAD_REQUEST`; an export that cannot be inspected returns
+`500 INTERNAL_ERROR`. The ordinary 10 MiB HTTP request limit still applies to
+the complete import JSON body, including its base64 field.
+
+Allowlists and enabled detection categories continue to govern these checks.
+`warn`, `off`, and disabled REST redaction retain their existing behavior.
+
 ## Disclosure States
 
 Every disclosable field has a disclosure state:
