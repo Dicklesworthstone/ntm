@@ -15,8 +15,23 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	processutil "github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/shellword"
 )
+
+// waitForCmdline waits until pid shows a command line. Start returns when the
+// exec pipe closes, which is before the kernel fills in the new image's argv, and
+// discovery reading that empty argv would find no agent.
+func waitForCmdline(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(processutil.GetCmdlineContext(t.Context(), pid)) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("process %d never showed a command line", pid)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
 
 func nativeDiscoverer(home string) *Discoverer {
 	discoverer := NewDiscoverer()
@@ -1887,6 +1902,7 @@ func TestPiStartupCorrelationDoesNotBecomeExactProcessBinding(t *testing.T) {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
+	waitForCmdline(t, cmd.Process.Pid)
 	now := time.Now()
 	writePiTranscript(t, store, "recent.jsonl", "recent-id", cwd, now, now)
 	got := NewDiscoverer().DiscoverContext(t.Context(), "pi", cwd, cmd.Process.Pid)
