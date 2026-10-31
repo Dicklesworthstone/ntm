@@ -908,6 +908,30 @@ func TestCommandCancellationRacingFailedGroupObservation(t *testing.T) {
 	}
 }
 
+func TestCommandCancellationRacingQuietGroupObservation(t *testing.T) {
+	cmd := startGroupTestCommand(t, t.TempDir(), "exit 0")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	quietObserved := false
+	calls := 0
+	ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(pgid int) (bool, error) {
+		calls++
+		alive, err := commandGroupHasLiveMembers(pgid)
+		if err == nil && !alive && !quietObserved {
+			// Cancellation arrives after a real complete census but before
+			// its successful result reaches the owner's lifecycle decision.
+			quietObserved = true
+			cancel()
+		}
+		return alive, err
+	})
+	result := waitCommandWithProcessGroupCleanup(ctx, cmd)
+	if !quietObserved || !result.Cancelled || !result.Settled || !errors.Is(result.Err, context.Canceled) ||
+		result.SignalSent != "SIGTERM,SIGKILL" || calls < 3 {
+		t.Fatalf("successful census masked concurrent cancellation: %+v calls=%d quiet=%t", result, calls, quietObserved)
+	}
+}
+
 func TestCommandFinalObservationFailureIsBoundedAndUnsettled(t *testing.T) {
 	cmd := startGroupTestCommand(t, t.TempDir(), "exit 0")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
