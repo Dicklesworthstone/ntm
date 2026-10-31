@@ -9,6 +9,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 
@@ -32,6 +35,25 @@ type RedactionSummary struct {
 	ResponseFinds int            `json:"response_findings"`
 	Categories    map[string]int `json:"categories,omitempty"`
 	Blocked       bool           `json:"blocked,omitempty"`
+}
+
+// Callers of pipeline recovery must echo receipt_token exactly, so that one route
+// returns it unredacted. The route and the value's shape both have to match; the
+// same key anywhere else in serve is redacted like any other credential field.
+var pipelineRecoverPath = regexp.MustCompile(`^/api/v1/pipelines/[^/]+/recover$`)
+
+const receiptTokenAllowlist = `^"receipt_token"\s*:\s*"[0-9a-f]{64}"$`
+
+// jsonCredentialPair splits a whole "key":"value" finding, keeping the key and
+// the separator.
+var jsonCredentialPair = regexp.MustCompile(`^("(?:\\.|[^"\\])*"\s*:\s*)"(?:\\.|[^"\\])*"$`)
+
+// responseRedactionConfig returns the config for the response to path.
+func responseRedactionConfig(cfg redaction.Config, path string) redaction.Config {
+	if pipelineRecoverPath.MatchString(path) {
+		cfg.Allowlist = append(slices.Clip(cfg.Allowlist), receiptTokenAllowlist)
+	}
+	return cfg
 }
 
 // redactionMiddleware creates middleware that redacts sensitive content in requests and responses.
@@ -103,7 +125,7 @@ func (s *Server) redactionMiddleware(next http.Handler) http.Handler {
 		// Wrap response writer to capture and redact response
 		rw := &redactingResponseWriter{
 			ResponseWriter: w,
-			cfg:            cfg,
+			cfg:            responseRedactionConfig(cfg, r.URL.Path),
 			summary:        summary,
 			categories:     categories,
 			buffer:         &bytes.Buffer{},
@@ -187,7 +209,7 @@ func (rw *redactingResponseWriter) finalize() {
 		for _, f := range result.Findings {
 			rw.categories[string(f.Category)]++
 		}
-		body = []byte(result.Output)
+		body = []byte(jsonResponseOutput(string(body), result))
 	}
 
 	// Since we buffered the response (and potentially changed its length during redaction),
@@ -201,6 +223,39 @@ func (rw *redactingResponseWriter) finalize() {
 	if _, err := rw.ResponseWriter.Write(body); err != nil {
 		log.Printf("redact: failed to write response body: %v", err)
 	}
+}
+
+// jsonResponseOutput returns result's output for a JSON body. ScanAndRedact
+// replaces a whole "key":"value" credential pair, quotes included, which suits
+// free text but leaves a JSON response unparseable. Here only the value goes, and
+// a closing quote that a finding swallowed stays.
+func jsonResponseOutput(input string, result redaction.Result) string {
+	if result.Mode != redaction.ModeRedact || len(result.Findings) == 0 {
+		return result.Output
+	}
+	findings := slices.Clone(result.Findings)
+	sort.Slice(findings, func(i, j int) bool { return findings[i].Start < findings[j].Start })
+
+	var out strings.Builder
+	out.Grow(len(input))
+	last := 0
+	for _, f := range findings {
+		if f.Start < last || f.Start > f.End || f.End > len(input) {
+			continue
+		}
+		span := input[f.Start:f.End]
+		out.WriteString(input[last:f.Start])
+		if pair := jsonCredentialPair.FindStringSubmatch(span); pair != nil {
+			out.WriteString(pair[1] + `"` + f.Redacted + `"`)
+		} else if strings.HasSuffix(span, `"`) && !strings.HasSuffix(span, `\"`) {
+			out.WriteString(f.Redacted + `"`)
+		} else {
+			out.WriteString(f.Redacted)
+		}
+		last = f.End
+	}
+	out.WriteString(input[last:])
+	return out.String()
 }
 
 // Flush implements http.Flusher for streaming responses (SSE, chunked).
