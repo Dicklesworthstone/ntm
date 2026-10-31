@@ -14,13 +14,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const commandGroupPollInterval = 50 * time.Millisecond
-
 var errCommandLeaderRunning = errors.New("command leader is still running")
-
-// Per-command fault injection keeps concurrent waiters independent. Cleanup
-// contexts retain these values even after the command's context is cancelled.
-type commandGroupObservationTestHookKey struct{}
 
 // waitCommandWithProcessGroupCleanup owns the WHOLE isolated command group.
 // Do not call Cmd.Wait concurrently: it would reap the leader, allowing its
@@ -68,10 +62,14 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	}
 	// Detect unsupported waitid or an externally reaped child before sending
 	// any numeric group signal. A live or exited child remains unreaped.
-	if err := observeCommandExit(cmd.Process.Pid, syscall.WNOHANG); err != nil && !errors.Is(err, errCommandLeaderRunning) {
+	if err := observeCommandExitWithRetry(ctx, cmd.Process.Pid); err != nil && err != errCommandLeaderRunning {
 		var killErr error
 		if ctx.Err() != nil {
-			killErr = cmd.Process.Kill()
+			// Process.Kill can fall back to a numeric PID when pidfds are
+			// unavailable. Definite ownership loss forbids that signal too.
+			if !errors.Is(err, syscall.ECHILD) && !errors.Is(err, syscall.ESRCH) {
+				killErr = cmd.Process.Kill()
+			}
 		} else {
 			// Leave inherited pipes open for healthy descendants, even if
 			// their leader exits after we hand it to the final reaper. The
@@ -84,13 +82,16 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	// or the leader is stuck in uninterruptible I/O. Poll without reaping so
 	// cancellation never has to join an unbounded exit observer.
 	observationErr := waitCommandLeaderExit(ctx, cmd.Process.Pid)
-	if observationErr != nil && !errors.Is(observationErr, context.Canceled) && !errors.Is(observationErr, context.DeadlineExceeded) {
+	if observationErr != nil && observationErr != context.Canceled && observationErr != context.DeadlineExceeded {
 		// Lost waitability is not authority for a numeric group signal, or
-		// a request to kill a healthy leader. Only actual cancellation may
-		// stop it through its identity-stable process handle.
+		// a request to kill a healthy leader. Even actual cancellation must
+		// not use Process.Kill after definite ownership loss: without pidfd
+		// support that method signals the potentially recycled numeric PID.
 		var killErr error
 		if ctx.Err() != nil {
-			killErr = cmd.Process.Kill()
+			if !errors.Is(observationErr, syscall.ECHILD) && !errors.Is(observationErr, syscall.ESRCH) {
+				killErr = cmd.Process.Kill()
+			}
 		} else {
 			cmd.WaitDelay = 0
 		}
@@ -172,6 +173,48 @@ func observeCommandExit(pid int, extraFlags int) error {
 	}
 }
 
+const commandLeaderObservationRetryTimeout = 250 * time.Millisecond
+
+type commandLeaderObservationTestHookKey struct{}
+
+// Retain the leader while retrying a failed non-reaping probe. Even when the
+// caller cancels during these bounded retries, recovering waitability permits
+// ordinary owned-group cleanup. Reaping on the first fault would permanently
+// surrender that authority and leave subsequent cancellation unable to stop
+// descendants. ECHILD/ESRCH are different: ownership was lost, and probing the
+// same numeric PID again could observe a different process after reuse.
+func observeCommandExitWithRetry(ctx context.Context, pid int) error {
+	observe := func(pid int) error { return observeCommandExit(pid, syscall.WNOHANG) }
+	if hook, ok := ctx.Value(commandLeaderObservationTestHookKey{}).(func(int) error); ok && hook != nil {
+		observe = hook
+	}
+	observationErr := observe(pid)
+	if observationErr == nil || observationErr == errCommandLeaderRunning {
+		return observationErr
+	}
+	ticker := time.NewTicker(commandGroupPollInterval)
+	defer ticker.Stop()
+	deadline := time.NewTimer(commandLeaderObservationRetryTimeout)
+	defer deadline.Stop()
+	for {
+		if errors.Is(observationErr, syscall.ECHILD) || errors.Is(observationErr, syscall.ESRCH) {
+			return fmt.Errorf("command leader %d is no longer waitable: %w", pid, observationErr)
+		}
+		select {
+		case <-deadline.C:
+			// Always wrap observation failures. Only waitCommandLeaderExit's
+			// direct context error may enter group cancellation without a new
+			// successful probe; an error wrapping cancellation is no proof.
+			return fmt.Errorf("observe command leader %d after bounded retries: %w", pid, observationErr)
+		case <-ticker.C:
+			observationErr = observe(pid)
+			if observationErr == nil || observationErr == errCommandLeaderRunning {
+				return observationErr
+			}
+		}
+	}
+}
+
 func waitCommandLeaderExit(ctx context.Context, pid int) error {
 	ticker := time.NewTicker(commandGroupPollInterval)
 	defer ticker.Stop()
@@ -179,7 +222,7 @@ func waitCommandLeaderExit(ctx context.Context, pid int) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := observeCommandExit(pid, syscall.WNOHANG); !errors.Is(err, errCommandLeaderRunning) {
+		if err := observeCommandExitWithRetry(ctx, pid); err != errCommandLeaderRunning {
 			return err
 		}
 		select {
@@ -191,39 +234,9 @@ func waitCommandLeaderExit(ctx context.Context, pid int) error {
 }
 
 func waitCommandGroupQuiescent(ctx context.Context, pgid int) error {
-	observe := commandGroupHasLiveMembers
-	if hook, ok := ctx.Value(commandGroupObservationTestHookKey{}).(func(int) (bool, error)); ok && hook != nil {
-		observe = hook
-	}
-	ticker := time.NewTicker(commandGroupPollInterval)
-	defer ticker.Stop()
-	var observationErr error
-	interrupted := func() error {
-		if observationErr != nil {
-			return errors.Join(ctx.Err(), fmt.Errorf("command group observation failed: %w", observationErr))
-		}
-		return ctx.Err()
-	}
-	for {
-		if err := ctx.Err(); err != nil {
-			return interrupted()
-		}
-		alive, err := observe(pgid)
-		observationErr = err
-		if err == nil && !alive {
-			return nil
-		}
-		// Unknown is neither quiet nor a request to stop healthy work. Retry
-		// within the caller's lifecycle deadline; cancellation gets its own
-		// full grace and bounded post-kill observation budgets. In particular,
-		// do not reap here: WaitDelay could close a healthy child's output
-		// pipe, and reaping would release the identity needed for cleanup.
-		select {
-		case <-ctx.Done():
-			return interrupted()
-		case <-ticker.C:
-		}
-	}
+	return waitCommandGroupObservation(ctx, pgid, func() (bool, error) {
+		return commandGroupHasLiveMembers(pgid)
+	})
 }
 
 // groupSignalFoundOnlyZombies is always false on Linux: kill(-pgid) signals

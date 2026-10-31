@@ -3,6 +3,7 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -279,26 +280,35 @@ func TestCommandGroupInspectionFailurePreservesUnresolvedLaunch(t *testing.T) {
 					RetryDelay: Duration{Duration: time.Millisecond},
 				}},
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			const timeout = 250 * time.Millisecond
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
+			started := time.Now()
 			initial, err := NewExecutor(e.config).Run(ctx, workflow, nil, nil)
-			if err == nil || initial == nil || initial.Status != StatusFailed || initial.Steps["uncertain"].Attempts != 1 {
-				t.Fatalf("inspection failure retried an unresolved command: %+v %v", initial, err)
+			if err == nil || ctx.Err() != context.DeadlineExceeded || initial == nil || initial.Status != StatusCancelled || initial.Steps["uncertain"].Attempts != 1 {
+				t.Fatalf("inspection failure ended work before its genuine timeout or retried it: %+v %v", initial, err)
+			}
+			if elapsed := time.Since(started); elapsed < timeout+commandCancelGracePeriod {
+				t.Fatalf("failed inspection shortened the command deadline or SIGTERM grace: %v", elapsed)
 			}
 			prior, err := LoadState(e.config.ProjectDir, initial.RunID)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if receipt, ok := prior.CommandExecutions["uncertain"]; !ok || receipt.Status != commandExecutionUnresolved ||
-				!receipt.SettledAt.IsZero() || receipt.Result.Error == nil || receipt.Result.FinishedAt.IsZero() {
+				!receipt.SettledAt.IsZero() || receipt.Result.Error == nil || receipt.Result.FinishedAt.IsZero() ||
+				!strings.Contains(receipt.Result.Error.Details, "SIGTERM grace period") {
 				t.Fatalf("failed inspection lost its unresolved cleanup evidence: %+v", receipt)
+			}
+			if data, err := os.ReadFile(filepath.Join(e.config.ProjectDir, "effects")); err != nil || string(data) != "once" {
+				t.Fatalf("uncertain command effects were lost or repeated: %q %v", data, err)
 			}
 			statePath := pipelineStatePath(e.config.ProjectDir, initial.RunID)
 			before, err := os.ReadFile(statePath)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := NewExecutor(e.config).Resume(ctx, workflow, prior, nil); err == nil || !strings.Contains(err.Error(), "unresolved launch") {
+			if _, err := NewExecutor(e.config).Resume(context.Background(), workflow, prior, nil); err == nil || !strings.Contains(err.Error(), "unresolved launch") {
 				t.Fatalf("ordinary resume accepted an unresolved command: %v", err)
 			}
 			after, err := os.ReadFile(statePath)
@@ -497,4 +507,244 @@ func TestKillProcessGroupDescendantsBestEffort(t *testing.T) {
 	killProcessGroupDescendants(-5)
 	// Use a pgid that very likely matches no live process group.
 	killProcessGroupDescendants(2147483646)
+}
+
+func TestCommandGroupObservationPolicy(t *testing.T) {
+	fault := errors.New("injected process-group observation failure")
+	t.Run("unknown then live then quiet", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		calls := 0
+		err := waitCommandGroupObservation(ctx, 42, func() (bool, error) {
+			calls++
+			switch calls {
+			case 1, 2:
+				return false, fault
+			case 3:
+				return true, nil
+			default:
+				return false, nil
+			}
+		})
+		if err != nil || calls != 4 {
+			t.Fatalf("observation did not recover: calls=%d err=%v", calls, err)
+		}
+	})
+	for _, tc := range []struct {
+		name          string
+		secondAlive   bool
+		secondFailure error
+		wantFailure   bool
+	}{
+		{"cancel during unknown observation", false, fault, true},
+		{"cancel after recovered live observation", true, nil, false},
+		{"cancel during quiet observation", false, nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls := 0
+			err := waitCommandGroupObservation(ctx, 42, func() (bool, error) {
+				calls++
+				if calls == 1 {
+					return false, fault
+				}
+				cancel()
+				return tc.secondAlive, tc.secondFailure
+			})
+			if calls != 2 || !errors.Is(err, context.Canceled) || errors.Is(err, fault) != tc.wantFailure {
+				t.Fatalf("cancellation lost or retained obsolete evidence: calls=%d err=%v", calls, err)
+			}
+		})
+	}
+	t.Run("independent cleanup preserves observer", func(t *testing.T) {
+		calls := 0
+		ctx := context.WithValue(context.Background(), commandGroupObservationTestHookKey{}, func(pgid int) (bool, error) {
+			if pgid != 42 {
+				t.Fatalf("observer received group %d", pgid)
+			}
+			calls++
+			if calls == 1 {
+				return false, fault
+			}
+			return false, nil
+		})
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+		cleanup, stop := context.WithTimeout(context.WithoutCancel(cancelled), time.Second)
+		defer stop()
+		if err := waitCommandGroupObservation(cleanup, 42, func() (bool, error) {
+			t.Fatal("cleanup lost its per-command observer")
+			return false, nil
+		}); err != nil || calls != 2 {
+			t.Fatalf("cleanup inherited cancellation or lost observer: calls=%d err=%v", calls, err)
+		}
+	})
+	t.Run("persistent unknown uses full deadline", func(t *testing.T) {
+		const budget = 150 * time.Millisecond
+		ctx, cancel := context.WithTimeout(context.Background(), budget)
+		defer cancel()
+		started := time.Now()
+		err := waitCommandGroupObservation(ctx, 42, func() (bool, error) { return false, fault })
+		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, fault) || time.Since(started) < budget {
+			t.Fatalf("unknown observation shortened its budget or lost the failure: %v", err)
+		}
+	})
+}
+
+func TestParseCommandGroupPSOutputRequiresCompleteEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		output string
+		alive  bool
+		err    string
+	}{
+		{"live leader", "42 42 S\n", true, ""},
+		{"live descendant", "42 42 Z\n43 42 R\n", true, ""},
+		{"zombie group", "42 42 Z\n43 42 Z+\n", false, ""},
+		{"unrelated live work", "41 41 S\n42 42 Z\n", false, ""},
+		{"whitespace", "\n\t42\t42\tZ\n\n", false, ""},
+		{"unknown state remains live", "42 42 ?\n", true, ""},
+		{"missing leader", "43 42 Z\n", false, "leader missing"},
+		{"moved leader", "42 41 Z\n", false, "leader changed process group"},
+		{"empty census", "", false, "leader missing"},
+		{"truncated row", "42 42\n", false, "malformed ps row"},
+		{"unrelated malformed row", "42 42 Z\nunknown row\n", false, "malformed ps row"},
+		{"extra column", "42 42 Z extra\n", false, "malformed ps row"},
+		{"invalid pid", "bad 42 Z\n", false, "invalid ps process identity"},
+		{"invalid group", "42 bad Z\n", false, "invalid ps process identity"},
+		{"negative pid", "-1 42 Z\n", false, "invalid ps process identity"},
+		{"negative group", "42 -1 Z\n", false, "invalid ps process identity"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			alive, err := parseCommandGroupPSOutput([]byte(tc.output), 42)
+			if tc.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.err) || alive {
+					t.Fatalf("incomplete census was accepted: alive=%t err=%v", alive, err)
+				}
+			} else if err != nil || alive != tc.alive {
+				t.Fatalf("census alive=%t err=%v, want alive=%t", alive, err, tc.alive)
+			}
+		})
+	}
+	for _, pgid := range []int{-1, 0, 1} {
+		if _, err := parseCommandGroupPSOutput([]byte("1 1 Z\n"), pgid); err == nil {
+			t.Fatalf("accepted unsafe group %d", pgid)
+		}
+	}
+}
+
+func TestCommandGroupPSObservationRecoversFailures(t *testing.T) {
+	realPS, err := exec.LookPath("ps")
+	if err != nil {
+		t.Skipf("system ps unavailable: %v", err)
+	}
+	for _, fault := range []string{"exit_failure", "missing_leader", "malformed_row"} {
+		t.Run(fault, func(t *testing.T) {
+			dir := t.TempDir()
+			probes, recovered := filepath.Join(dir, "probes"), filepath.Join(dir, "recovered")
+			t.Setenv("NTM_TEST_COMMAND_PS_PROBES", probes)
+			t.Setenv("NTM_TEST_COMMAND_PS_RECOVERED", recovered)
+			t.Setenv("NTM_TEST_COMMAND_PS_FAULT", fault)
+			t.Setenv("NTM_TEST_COMMAND_PS_REAL", realPS)
+			const script = `#!/bin/sh
+printf x >> "$NTM_TEST_COMMAND_PS_PROBES"
+if [ ! -f "$NTM_TEST_COMMAND_PS_RECOVERED" ]; then
+  case "$NTM_TEST_COMMAND_PS_FAULT" in
+    exit_failure) exit 42 ;;
+    missing_leader) printf '1 1 S\n' ;;
+    malformed_row) printf 'uninterpretable row\n' ;;
+  esac
+  exit 0
+fi
+exec "$NTM_TEST_COMMAND_PS_REAL" "$@"
+`
+			if err := os.WriteFile(filepath.Join(dir, "ps"), []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			cmd := exec.Command("/bin/sh", "-c", "while [ ! -f release ]; do sleep 0.01; done; printf complete")
+			cmd.Dir = dir
+			var output bytes.Buffer
+			cmd.Stdout = &output
+			configureCommandProcessGroup(cmd)
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			done, live := make(chan error, 1), make(chan struct{})
+			go func() {
+				liveReported := false
+				done <- waitCommandGroupObservation(ctx, cmd.Process.Pid, func() (bool, error) {
+					alive, err := observeCommandGroupWithPS(ctx, cmd.Process.Pid)
+					if err == nil && alive && !liveReported {
+						liveReported = true
+						close(live)
+					}
+					return alive, err
+				})
+				close(done)
+			}()
+			t.Cleanup(func() {
+				cancel()
+				_ = os.WriteFile(filepath.Join(dir, "release"), []byte("finish"), 0600)
+				select {
+				case <-done:
+				case <-time.After(3 * commandPipeDrainTimeout):
+					t.Error("ps observer did not stop after cancellation")
+				}
+				if cmd.ProcessState == nil {
+					_ = cancelCommandProcessGroup(cmd)
+					_ = cmd.Wait()
+				}
+			})
+			waitUntil(t, 4*time.Second, func() bool {
+				data, _ := os.ReadFile(probes)
+				return len(data) >= 2
+			}, "portable observer did not retry the real ps failures")
+			select {
+			case err := <-done:
+				t.Fatalf("failed ps census abandoned healthy work: %v", err)
+			default:
+			}
+			if !processExists(cmd.Process.Pid) {
+				t.Fatal("observation failure killed the healthy leader")
+			}
+			if err := os.WriteFile(recovered, []byte("observe"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-live:
+			case err := <-done:
+				t.Fatalf("recovered ps did not observe the live leader: %v", err)
+			case <-ctx.Done():
+				t.Fatal("real ps observation did not recover")
+			}
+			if err := os.WriteFile(filepath.Join(dir, "release"), []byte("finish"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; err != nil {
+				t.Fatalf("real ps could not settle the unreaped group: %v", err)
+			}
+			if err := cmd.Wait(); err != nil || output.String() != "complete" {
+				t.Fatalf("healthy work lost its output: %q %v", output.String(), err)
+			}
+		})
+	}
+}
+
+func TestCommandGroupPSProbeHonorsDeadline(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte("#!/bin/sh\nexec sleep 30\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	started := time.Now()
+	alive, err := observeCommandGroupWithPS(context.Background(), 42)
+	if alive || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("blocked ps was accepted or lost its deadline: alive=%t err=%v", alive, err)
+	}
+	if elapsed := time.Since(started); elapsed < commandPipeDrainTimeout || elapsed > 3*commandPipeDrainTimeout {
+		t.Fatalf("blocked ps escaped its observation budget: %v", elapsed)
+	}
 }

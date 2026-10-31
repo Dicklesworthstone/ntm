@@ -8,14 +8,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"runtime"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 )
-
-const commandGroupPollInterval = 50 * time.Millisecond
 
 // Keep the leader unreaped until its entire isolated group stops executing.
 // A leader-first Cmd.Wait allows PID/PGID reuse and can abandon background
@@ -47,6 +42,9 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 		select {
 		case err := <-done:
 			result.Err = errors.Join(result.Err, err)
+			if cmd.ProcessState == nil {
+				result.Settled = false
+			}
 		case <-timer.C:
 			result.Err = errors.Join(result.Err, errors.New("command leader did not finish waiting after cleanup"))
 			result.Settled = false
@@ -59,33 +57,29 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	}
 
 	quietErr := waitCommandGroupQuiescent(ctx, cmd.Process.Pid)
-	if quietErr == nil {
+	if quietErr == nil && ctx.Err() == nil {
 		// Close the snapshot/fork race while the group ID remains pinned,
 		// then verify the group again before publishing settlement.
 		killErr := cancelCommandProcessGroup(cmd)
 		if errors.Is(killErr, os.ErrProcessDone) {
 			killErr = nil
 		}
-		settle, stop := context.WithTimeout(context.Background(), commandPipeDrainTimeout)
+		settle, stop := context.WithTimeout(context.WithoutCancel(ctx), commandPipeDrainTimeout)
 		quietErr = waitCommandGroupQuiescent(settle, cmd.Process.Pid)
 		stop()
 		return reap(commandCleanupResult{Err: errors.Join(killErr, quietErr), Settled: killErr == nil && quietErr == nil})
 	}
-	if ctx.Err() == nil {
-		// Failed process inspection is not evidence of settlement. Kill the
-		// still-owned group, but retain the unresolved launch for inspection.
-		killErr := cancelCommandProcessGroup(cmd)
-		if errors.Is(killErr, os.ErrProcessDone) {
-			killErr = nil
-		}
-		return reap(commandCleanupResult{Err: errors.Join(quietErr, killErr)})
-	}
-
 	result = commandCleanupResult{Cancelled: true, SignalSent: "SIGTERM"}
 	termErr := signalCommandProcessGroup(cmd, syscall.SIGTERM)
-	grace, cancel := context.WithTimeout(context.Background(), commandCancelGracePeriod)
-	_ = waitCommandGroupQuiescent(grace, cmd.Process.Pid)
+	grace, cancel := context.WithTimeout(context.WithoutCancel(ctx), commandCancelGracePeriod)
+	graceErr := waitCommandGroupQuiescent(grace, cmd.Process.Pid)
 	cancel()
+	// A failed census must neither shorten the grace allowance nor disappear
+	// from the final receipt. A plain deadline means live work used its grace;
+	// a wrapped observation error also retains why quiescence was uncertain.
+	if graceErr != nil && graceErr != context.DeadlineExceeded {
+		result.Err = fmt.Errorf("observe command group during SIGTERM grace period: %w", graceErr)
+	}
 	// A child can fork after the snapshot starts and exit before its row is
 	// read. Keep the leader pinned through a final kill and a fresh quiet
 	// observation even when the graceful shutdown appeared complete.
@@ -94,7 +88,7 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	if errors.Is(killErr, os.ErrProcessDone) {
 		killErr = nil
 	}
-	settle, stop := context.WithTimeout(context.Background(), commandPipeDrainTimeout)
+	settle, stop := context.WithTimeout(context.WithoutCancel(ctx), commandPipeDrainTimeout)
 	quietErr = waitCommandGroupQuiescent(settle, cmd.Process.Pid)
 	stop()
 	if killErr != nil {
@@ -112,22 +106,9 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 }
 
 func waitCommandGroupQuiescent(ctx context.Context, pgid int) error {
-	ticker := time.NewTicker(commandGroupPollInterval)
-	defer ticker.Stop()
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		alive, err := commandGroupHasLiveMembers(ctx, pgid)
-		if err != nil || !alive {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
-	}
+	return waitCommandGroupObservation(ctx, pgid, func() (bool, error) {
+		return commandGroupHasLiveMembers(ctx, pgid)
+	})
 }
 
 // groupSignalFoundOnlyZombies reports whether an EPERM from kill(-pgid) only
@@ -144,49 +125,6 @@ func groupSignalFoundOnlyZombies(pgid int) bool {
 	return err == nil && !alive
 }
 
-// The leader must appear in every complete snapshot until we call Cmd.Wait.
-// Missing or malformed output fails closed, including restricted ps output;
-// a permission error from kill(0) is never accepted as proof of settlement.
 func commandGroupHasLiveMembers(ctx context.Context, pgid int) (bool, error) {
-	probe, cancel := context.WithTimeout(ctx, commandPipeDrainTimeout)
-	defer cancel()
-	// BSD and AIX ps name this column "state"; Solaris and illumos use "s".
-	stateColumn := "state="
-	if runtime.GOOS == "solaris" || runtime.GOOS == "illumos" {
-		stateColumn = "s="
-	}
-	cmd := exec.CommandContext(probe, "ps", "-A", "-o", "pid=", "-o", "pgid=", "-o", stateColumn)
-	cmd.WaitDelay = commandPipeDrainTimeout
-	output, err := cmd.Output()
-	if err != nil {
-		return false, fmt.Errorf("inspect command process group: %w", err)
-	}
-	leaderSeen, alive := false, false
-	for _, line := range strings.Split(string(output), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		if len(fields) != 3 {
-			return false, fmt.Errorf("inspect command process group: malformed ps row %q", line)
-		}
-		pid, pidErr := strconv.Atoi(fields[0])
-		group, groupErr := strconv.Atoi(fields[1])
-		if pidErr != nil || groupErr != nil || pid < 0 || group < 0 {
-			return false, fmt.Errorf("inspect command process group: invalid ps process identity %q", line)
-		}
-		if pid == pgid {
-			if group != pgid {
-				return false, errors.New("inspect command process group: leader changed process group")
-			}
-			leaderSeen = true
-		}
-		if group == pgid && fields[2][0] != 'Z' {
-			alive = true
-		}
-	}
-	if !leaderSeen {
-		return false, errors.New("inspect command process group: unreaped leader missing from ps output")
-	}
-	return alive, nil
+	return observeCommandGroupWithPS(ctx, pgid)
 }

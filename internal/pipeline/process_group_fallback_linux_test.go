@@ -726,3 +726,194 @@ func TestCommandGroupCensusNarrowsAndValidatesEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestCommandLeaderObservationRetriesPreserveHealthyWork(t *testing.T) {
+	for _, failAt := range []int{1, 2} {
+		t.Run(fmt.Sprintf("probe_%d", failAt), func(t *testing.T) {
+			dir := t.TempDir()
+			cmd := startGroupTestCommand(t, dir, "sleep 0.15; printf complete > effect")
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			calls, failures := 0, 0
+			ctx = context.WithValue(ctx, commandLeaderObservationTestHookKey{}, func(pid int) error {
+				calls++
+				if calls >= failAt && failures < 2 {
+					failures++
+					return syscall.EIO
+				}
+				return observeCommandExit(pid, syscall.WNOHANG)
+			})
+			result := waitCommandWithProcessGroupCleanup(ctx, cmd)
+			if result.Err != nil || result.Cancelled || !result.Settled || failures != 2 {
+				t.Fatalf("transient leader observation abandoned healthy work: %+v failures=%d", result, failures)
+			}
+			if data, err := os.ReadFile(filepath.Join(dir, "effect")); err != nil || string(data) != "complete" {
+				t.Fatalf("healthy command did not complete its effect: %q %v", data, err)
+			}
+		})
+	}
+}
+
+func TestCommandLeaderObservationRetriesRetainGroupCancellation(t *testing.T) {
+	for _, failAt := range []int{1, 2} {
+		t.Run(fmt.Sprintf("probe_%d", failAt), func(t *testing.T) {
+			dir := t.TempDir()
+			groupTestFile(t, dir, "child.sh", `trap 'printf handled > handled; exit 0' TERM
+printf '%s' "$$" > child.pid
+i=0
+while [ "$i" -lt 12 ]; do i=$((i+1)); sleep 1; done
+`)
+			cmd := startGroupTestCommand(t, dir, `trap 'exit 0' TERM; /bin/sh child.sh >/dev/null 2>&1 & wait`)
+			child, err := os.FindProcess(waitForPIDFile(t, filepath.Join(dir, "child.pid")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = child.Kill(); _ = child.Release() })
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			calls, failures := 0, 0
+			ctx = context.WithValue(ctx, commandLeaderObservationTestHookKey{}, func(pid int) error {
+				calls++
+				if calls >= failAt && failures < 2 {
+					failures++
+					// Cancellation arrives while waitability is unknown. A
+					// recovering probe must retain the whole group's lifecycle.
+					cancel()
+					return syscall.EIO
+				}
+				return observeCommandExit(pid, syscall.WNOHANG)
+			})
+			result := waitCommandWithProcessGroupCleanup(ctx, cmd)
+			if !result.Cancelled || !result.Settled || !errors.Is(result.Err, context.Canceled) ||
+				result.SignalSent != "SIGTERM,SIGKILL" || failures != 2 {
+				t.Fatalf("leader observation retry surrendered group cancellation: %+v failures=%d", result, failures)
+			}
+			if data, err := os.ReadFile(filepath.Join(dir, "handled")); err != nil || string(data) != "handled" {
+				t.Fatalf("redirected descendant did not receive graceful cancellation: %q %v", data, err)
+			}
+		})
+	}
+}
+
+func TestCommandLeaderObservationFailureCannotAuthorizeGroupCancellation(t *testing.T) {
+	dir := t.TempDir()
+	groupTestFile(t, dir, "child.sh", `printf '%s' "$$" > child.pid
+exec sleep 12
+`)
+	cmd := startGroupTestCommand(t, dir, `/bin/sh child.sh >/dev/null 2>&1 & wait`)
+	childPID := waitForPIDFile(t, filepath.Join(dir, "child.pid"))
+	child, err := os.FindProcess(childPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Kill(); _ = child.Release() })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	calls := 0
+	ctx = context.WithValue(ctx, commandLeaderObservationTestHookKey{}, func(pid int) error {
+		calls++
+		if calls == 1 {
+			return observeCommandExit(pid, syscall.WNOHANG)
+		}
+		cancel()
+		return errors.Join(context.Canceled, syscall.EIO)
+	})
+	started := time.Now()
+	result := waitCommandWithProcessGroupCleanup(ctx, cmd)
+	if !result.Cancelled || result.Settled || result.SignalSent != "" ||
+		!errors.Is(result.Err, context.Canceled) || !errors.Is(result.Err, syscall.EIO) {
+		t.Fatalf("failed ownership proof entered numeric group cancellation: %+v", result)
+	}
+	if elapsed := time.Since(started); elapsed > commandLeaderObservationRetryTimeout+2*commandPipeDrainTimeout {
+		t.Fatalf("failed ownership observation exceeded its bound: %v", elapsed)
+	}
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", childPID))
+	if err != nil {
+		t.Fatalf("uncertain cleanup signaled a descendant: %v", err)
+	}
+	group, state, err := parseCommandGroupStat(data, childPID)
+	if err != nil || group != cmd.Process.Pid || state == "Z" || state == "X" {
+		t.Fatalf("unproven group identity was used to stop a child: group=%d state=%q err=%v", group, state, err)
+	}
+}
+
+func TestCommandLeaderLostOwnershipCannotSignalOnCancellation(t *testing.T) {
+	for _, cause := range []error{syscall.ECHILD, syscall.ESRCH} {
+		for _, failAt := range []int{1, 2} {
+			t.Run(fmt.Sprintf("%v/probe_%d", cause, failAt), func(t *testing.T) {
+				dir := t.TempDir()
+				input, release, err := os.Pipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = input.Close(); _ = release.Close() })
+				cmd := exec.Command("/bin/sh", "-c", `trap 'printf signalled > signalled; exit 17' TERM
+printf ready > ready
+read release
+printf natural > complete
+`)
+				cmd.Dir, cmd.Stdin = dir, input
+				configureCommandProcessGroup(cmd)
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				handedToWait := false
+				t.Cleanup(func() {
+					_ = release.Close()
+					_ = cmd.Process.Kill()
+					if !handedToWait {
+						_ = cmd.Wait()
+					}
+				})
+				awaitGroupTestFile(t, filepath.Join(dir, "ready"))
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				calls := 0
+				ctx = context.WithValue(ctx, commandLeaderObservationTestHookKey{}, func(pid int) error {
+					calls++
+					if calls != failAt {
+						// A later successful probe must never recover authority
+						// after definite loss: the PID could have been reused.
+						return observeCommandExit(pid, syscall.WNOHANG)
+					}
+					cancel()
+					return errors.Join(context.Canceled, cause)
+				})
+				handedToWait = true
+				started := time.Now()
+				result := waitCommandWithProcessGroupCleanup(ctx, cmd)
+				if !result.Cancelled || result.Settled || result.SignalSent != "" ||
+					!errors.Is(result.Err, context.Canceled) || !errors.Is(result.Err, cause) {
+					t.Fatalf("lost identity authorized cancellation or settlement: %+v", result)
+				}
+				if calls != failAt {
+					t.Fatalf("retried a definitively lost leader identity: calls=%d want=%d", calls, failAt)
+				}
+				if elapsed := time.Since(started); elapsed > 2*commandPipeDrainTimeout+time.Second {
+					t.Fatalf("lost ownership exceeded its final reaper bound: %v", elapsed)
+				}
+				// Keep the command blocked until cleanup has returned. This
+				// deterministically exposes even a direct Process.Kill fallback,
+				// without needing to recycle a real system PID in the test.
+				fallbackTestAssertAlive(t, cmd)
+				if _, err := os.Stat(filepath.Join(dir, "signalled")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("lost ownership sent SIGTERM to the live command: %v", err)
+				}
+				if _, err := release.WriteString("finish\n"); err != nil {
+					t.Fatal(err)
+				}
+				if data := awaitGroupTestFile(t, filepath.Join(dir, "complete")); string(data) != "natural" {
+					t.Fatalf("unresolved command did not finish naturally: %q", data)
+				}
+				deadline := time.Now().Add(2 * time.Second)
+				for time.Now().Before(deadline) {
+					if errors.Is(cmd.Process.Signal(syscall.Signal(0)), os.ErrProcessDone) {
+						return
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				t.Fatal("final reaper did not collect the naturally completed command")
+			})
+		}
+	}
+}
