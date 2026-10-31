@@ -2,10 +2,10 @@ package cli
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
