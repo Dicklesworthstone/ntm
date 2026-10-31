@@ -66,6 +66,13 @@ func (w *cappedWriter) Write(p []byte) (int, error) {
 // Hide both optional copy interfaces to avoid recursion and a source WriterTo
 // returning without the copy loop having observed the end of the stream.
 func (w *cappedWriter) ReadFrom(r io.Reader) (n int64, err error) {
+	return w.readFrom(r, w)
+}
+
+// readFrom keeps EOF accounting attached to the capture while routing every
+// chunk through its owner's writer. Wrappers such as cancelOnTruncationWriter
+// must retain both this completion evidence and their per-write behavior.
+func (w *cappedWriter) readFrom(r io.Reader, dst io.Writer) (n int64, err error) {
 	w.mu.Lock()
 	w.readStarted = true
 	w.activeReads++
@@ -77,7 +84,7 @@ func (w *cappedWriter) ReadFrom(r io.Reader) (n int64, err error) {
 		w.readFailed = w.readFailed || !complete
 		w.mu.Unlock()
 	}()
-	n, err = io.Copy(struct{ io.Writer }{w}, struct{ io.Reader }{r})
+	n, err = io.Copy(struct{ io.Writer }{dst}, struct{ io.Reader }{r})
 	complete = err == nil
 	return n, err
 }

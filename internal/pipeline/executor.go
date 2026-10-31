@@ -283,19 +283,20 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 	e.reservationStopOnce = sync.Once{}
 	e.reservationFinalCheck = false
 	e.state = &ExecutionState{
-		RunID:         runID,
-		WorkflowID:    workflow.Name,
-		WorkflowFile:  e.config.WorkflowFile,
-		Session:       e.config.Session,
-		Status:        StatusRunning,
-		StartedAt:     time.Now(),
-		UpdatedAt:     time.Now(),
-		Steps:         make(map[string]StepResult),
-		Variables:     make(map[string]interface{}),
-		Errors:        []ExecutionError{},
-		ForeachState:  make(map[string]ForeachIterationState),
-		ParallelState: make(map[string]ParallelGroupState),
-		InFlightSteps: make(map[string]InFlightStepState),
+		RunID:                    runID,
+		WorkflowID:               workflow.Name,
+		WorkflowFile:             e.config.WorkflowFile,
+		Session:                  e.config.Session,
+		Status:                   StatusRunning,
+		StartedAt:                time.Now(),
+		UpdatedAt:                time.Now(),
+		Steps:                    make(map[string]StepResult),
+		Variables:                make(map[string]interface{}),
+		Errors:                   []ExecutionError{},
+		ForeachState:             make(map[string]ForeachIterationState),
+		ParallelState:            make(map[string]ParallelGroupState),
+		InFlightSteps:            make(map[string]InFlightStepState),
+		CommandEvaluationVersion: 1,
 	}
 	e.progress = progress
 	e.stateMu.Unlock()
@@ -1042,6 +1043,11 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 		// metadata survive retry exhaustion and on_failure recovery.
 		result = stepResult
 		result.Attempts = attempt
+		if e.hasUnresolvedCommandEvaluation(step) {
+			// A selector can start external work before any child receipt or
+			// branch decision exists. Its uncertainty also fences containers.
+			break
+		}
 		if delivery, ok := e.loadAgentDelivery(step.ID); ok && delivery.Status == agentDeliverySending {
 			// A transport error is not proof of non-delivery. Automatic retry
 			// cannot resolve this uncertainty by submitting the request again.
@@ -3880,6 +3886,9 @@ func (e *Executor) snapshotState() *ExecutionState {
 		for key, record := range e.state.CommandExecutions {
 			snapshot.CommandExecutions[key] = cloneCommandExecution(record)
 		}
+	}
+	if e.state.CommandEvaluations != nil {
+		snapshot.CommandEvaluations = maps.Clone(e.state.CommandEvaluations)
 	}
 	if e.state.MailSends != nil {
 		snapshot.MailSends = make(map[string]MailSendState, len(e.state.MailSends))

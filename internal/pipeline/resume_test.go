@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -12,6 +14,276 @@ import (
 	"testing"
 	"time"
 )
+
+func TestCommandEvaluationDurableIntentAndReturnedUncertainty(t *testing.T) {
+	e := newCommandTestExecutor(t)
+	step := &Step{ID: "choose", Branch: "$(printf selected)", Branches: map[string]interface{}{"selected": Step{ID: "body", Command: "true"}}}
+	lifecycle := e.commandEvaluationContext(context.Background(), step).Value(commandOutputLifecycleKey{}).(*commandOutputLifecycle)
+	if err := lifecycle.beforeStart(); err != nil {
+		t.Fatal(err)
+	}
+	// This is the crash boundary: no process has been launched and no result
+	// or decision exists, but ordinary resume must not infer non-execution.
+	prior, err := LoadState(e.config.ProjectDir, e.state.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, ok := prior.CommandEvaluations[step.ID]
+	if !ok || record.Status != commandExecutionStarting || validateCommandEvaluation(step.ID, record) != nil {
+		t.Fatalf("prelaunch intent was not durable: %+v", prior.CommandEvaluations)
+	}
+	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "evaluation", Steps: []Step{*step}}
+	recovered := NewExecutor(e.config)
+	recovered.state = prior
+	if err := recovered.applyResumeOptions(workflow, ResumeOptions{}); !errors.Is(err, errCommandOutputUnsettled) {
+		t.Fatalf("resume admitted a command interrupted after intent: %v", err)
+	}
+	if err := lifecycle.beforeStart(); !errors.Is(err, errCommandOutputUnsettled) {
+		t.Fatalf("duplicate evaluation overwrote an outstanding intent: %v", err)
+	}
+	// A returned cleanup failure is terminal evidence, independently of a
+	// scheduler result that a failure handler may replace with Completed.
+	cmd := &exec.Cmd{Process: &os.Process{Pid: 31415}}
+	if err := lifecycle.afterWait(cmd, false, errors.New("injected output drain failure")); err != nil {
+		t.Fatal(err)
+	}
+	prior, err = LoadState(e.config.ProjectDir, e.state.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record = prior.CommandEvaluations[step.ID]
+	if record.Status != commandExecutionUnresolved || record.ProcessID != 31415 || record.FinishedAt.IsZero() || !strings.Contains(record.Error, "injected output drain failure") || validateCommandEvaluation(step.ID, record) != nil {
+		t.Fatalf("returned uncertainty was stranded as a running evaluation: %+v", record)
+	}
+	prior.Steps[step.ID] = StepResult{StepID: step.ID, Status: StatusCompleted}
+	recovered.state = prior
+	if err := recovered.applyResumeOptions(workflow, ResumeOptions{}); !errors.Is(err, errCommandOutputUnsettled) {
+		t.Fatalf("completed recovery handler erased evaluation uncertainty: %v", err)
+	}
+	snapshot := e.snapshotState()
+	delete(snapshot.CommandEvaluations, step.ID)
+	if !e.hasUnresolvedCommandEvaluation(step) {
+		t.Fatal("snapshot mutation erased live launch evidence")
+	}
+}
+
+func TestCommandEvaluationProvenSettlementClearsIntent(t *testing.T) {
+	for _, waitErr := range []error{nil, errors.New("settled command exited unsuccessfully")} {
+		e := newCommandTestExecutor(t)
+		step := &Step{ID: "source", Foreach: &ForeachConfig{Items: "$(printf item)"}}
+		lifecycle := e.commandEvaluationContext(context.Background(), step).Value(commandOutputLifecycleKey{}).(*commandOutputLifecycle)
+		if err := lifecycle.beforeStart(); err != nil {
+			t.Fatal(err)
+		}
+		if err := lifecycle.afterWait(&exec.Cmd{}, true, waitErr); err != nil {
+			t.Fatal(err)
+		}
+		prior, err := LoadState(e.config.ProjectDir, e.state.RunID)
+		if err != nil || len(prior.CommandEvaluations) != 0 {
+			t.Fatalf("verified settlement retained a replay fence: %+v %v", prior, err)
+		}
+	}
+}
+
+func TestCommandEvaluationResumeScopePreservesUnprovenWork(t *testing.T) {
+	for _, scenario := range []string{"continue", "completed recovery", "restart top-level", "completed container", "completed iteration", "force wrong suffix", "force selected suffix", "reset"} {
+		t.Run(scenario, func(t *testing.T) {
+			e := newCommandTestExecutor(t)
+			selector := Step{ID: "choose", Branch: "$(printf yes)", Branches: map[string]interface{}{"yes": Step{ID: "body", Command: "true"}}}
+			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "evaluation-scope", Steps: []Step{selector}}
+			id := selector.ID
+			opts := ResumeOptions{}
+			allowed := false
+			switch scenario {
+			case "completed recovery", "restart top-level":
+				e.state.Steps[id] = StepResult{StepID: id, Status: StatusCompleted}
+				if scenario == "restart top-level" {
+					opts.Mode, allowed = ResumeModeRestartFailed, true
+				}
+			case "completed container", "completed iteration", "force wrong suffix", "force selected suffix":
+				workflow.Steps = []Step{{ID: "outer", Foreach: &ForeachConfig{Items: `["one","two"]`, Steps: []Step{selector}}}}
+				id = "outer_iter1_choose"
+				e.state.ForeachState = map[string]ForeachIterationState{"outer": {StepID: "outer", Total: 2}}
+				opts.Mode = ResumeModeRestartFailed
+				if scenario == "completed container" {
+					e.state.Steps["outer"] = StepResult{StepID: "outer", Status: StatusCompleted}
+				}
+				if scenario == "completed iteration" {
+					progress := e.state.ForeachState["outer"]
+					progress.CompletedIterationIDs = []string{"outer_iter1"}
+					e.state.ForeachState["outer"] = progress
+				}
+				if strings.HasPrefix(scenario, "force ") {
+					opts.Mode, opts.StepID, opts.Iteration = ResumeModeForceIter, "outer", 1
+					if scenario == "force wrong suffix" {
+						id = "outer_iter0_choose"
+					} else {
+						allowed = true
+					}
+				}
+			case "reset":
+				opts.Reset, allowed = true, true
+			}
+			selector.ID = id
+			digest, err := commandDefinitionHash(&selector)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.state.CommandEvaluations = map[string]CommandEvaluationState{id: {Version: 1, StepID: id, StepHash: digest, Status: commandExecutionStarting, StartedAt: time.Now()}}
+			before, err := json.Marshal(e.state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = e.applyResumeOptions(workflow, opts)
+			if allowed {
+				if err != nil || len(e.state.CommandEvaluations) != 0 {
+					t.Fatalf("explicit replay scope did not reopen evaluation: %+v %v", e.state.CommandEvaluations, err)
+				}
+				if scenario == "restart top-level" && e.state.Steps[id].Status != StatusPending {
+					t.Fatal("explicit restart retained a completed selector")
+				}
+				return
+			}
+			after, marshalErr := json.Marshal(e.state)
+			if err == nil || marshalErr != nil || !bytes.Equal(before, after) {
+				t.Fatalf("unsafe replay was admitted or changed its evidence: err=%v marshal=%v", err, marshalErr)
+			}
+		})
+	}
+}
+
+func TestCommandEvaluationMalformedReceiptCannotBeReset(t *testing.T) {
+	for _, damage := range []string{"version", "journal version", "identity", "hash", "status", "started", "pid", "finished", "error"} {
+		t.Run(damage, func(t *testing.T) {
+			e := newCommandTestExecutor(t)
+			step := Step{ID: "choose", Branch: "$(printf yes)"}
+			digest, err := commandDefinitionHash(&step)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			record := CommandEvaluationState{Version: 1, StepID: step.ID, StepHash: digest, Status: commandExecutionUnresolved, ProcessID: 2718, StartedAt: now, FinishedAt: now, Error: "unproven cleanup"}
+			switch damage {
+			case "version":
+				record.Version++
+			case "journal version":
+				e.state.CommandEvaluationVersion = 999
+			case "identity":
+				record.StepID = "unrelated"
+			case "hash":
+				record.StepHash = "invalid"
+			case "status":
+				record.Status = "settled"
+			case "started":
+				record.StartedAt = time.Time{}
+			case "pid":
+				record.ProcessID = -1
+			case "finished":
+				record.FinishedAt = now.Add(-time.Second)
+			case "error":
+				record.Error = ""
+			}
+			e.state.CommandEvaluations = map[string]CommandEvaluationState{step.ID: record}
+			before, _ := json.Marshal(e.state)
+			if err := e.applyResumeOptions(&Workflow{Steps: []Step{step}}, ResumeOptions{Reset: true}); err == nil {
+				t.Fatal("reset discarded malformed launch evidence")
+			}
+			after, _ := json.Marshal(e.state)
+			if !bytes.Equal(before, after) {
+				t.Fatal("refused reset changed launch evidence")
+			}
+		})
+	}
+}
+
+func TestLegacyCommandEvaluationResumeRequiresLaunchEvidence(t *testing.T) {
+	cases := []struct {
+		name     string
+		step     Step
+		external bool
+	}{
+		{"shell branch", Step{Branch: "$(printf selected)"}, true},
+		{"expanded branch", Step{Branch: "${vars.selector}"}, true},
+		{"literal branch", Step{Branch: "selected"}, false},
+		{"bead query", Step{BeadQuery: &BeadQueryStep{}}, true},
+		{"bead source", Step{Foreach: &ForeachConfig{Beads: "status:open"}}, true},
+		{"pairs source", Step{Foreach: &ForeachConfig{Pairs: "$(printf pairs)"}}, true},
+		{"debates source", Step{Foreach: &ForeachConfig{Debates: "$(printf debates)"}}, true},
+		{"model source", Step{Foreach: &ForeachConfig{Models: StringOrList{"$(printf cc)"}}}, true},
+		{"static models", Step{Foreach: &ForeachConfig{Models: StringOrList{"cc", "cod"}}}, false},
+		{"static items", Step{Foreach: &ForeachConfig{Items: `["item"]`}}, false},
+		{"literal shell-shaped item", Step{Foreach: &ForeachConfig{Items: "$(printf literal)"}}, false},
+	}
+	for _, tc := range cases {
+		for _, version := range []int{0, 1} {
+			t.Run(tc.name+"/version"+strconv.Itoa(version), func(t *testing.T) {
+				e := newCommandTestExecutor(t)
+				step := tc.step
+				step.ID = "evaluate"
+				workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "legacy-source", Steps: []Step{step}}
+				e.state.CommandEvaluationVersion = version
+				e.state.InFlightSteps = map[string]InFlightStepState{step.ID: {StepID: step.ID, Kind: stepKind(&step)}}
+				e.state.Steps[step.ID] = StepResult{StepID: step.ID, Status: StatusRunning}
+				// Existing iteration progress describes earlier source evaluations;
+				// it does not prove that a later legacy evaluation has stopped.
+				if step.Foreach != nil {
+					e.state.ForeachState = map[string]ForeachIterationState{step.ID: {StepID: step.ID, Total: 2, CompletedIterationIDs: []string{step.ID + "_iter0"}}}
+				}
+				before, _ := json.Marshal(e.state)
+				err := e.applyResumeOptions(workflow, ResumeOptions{})
+				if version == 0 && tc.external {
+					after, _ := json.Marshal(e.state)
+					if !errors.Is(err, errCommandOutputUnsettled) || !bytes.Equal(before, after) {
+						t.Fatalf("legacy external work was admitted or rewritten: %v", err)
+					}
+					if err := e.applyResumeOptions(workflow, ResumeOptions{Mode: ResumeModeRestartFailed}); err != nil {
+						t.Fatalf("explicit top-level replay was refused: %v", err)
+					}
+				} else if err != nil {
+					t.Fatalf("safe evaluation was incorrectly fenced: %v", err)
+				}
+				if e.state.CommandEvaluationVersion != 1 {
+					t.Fatal("accepted resume did not adopt the evaluation journal")
+				}
+			})
+		}
+	}
+}
+
+func TestCommandEvaluationCheckpointFailurePreventsLaunch(t *testing.T) {
+	e := newCommandTestExecutor(t)
+	// Block checkpoint-directory creation while leaving the working directory
+	// usable by the shell. A failed intent must never dispatch its command.
+	if err := os.WriteFile(filepath.Join(e.config.ProjectDir, ".ntm"), []byte("blocked"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	step := &Step{ID: "choose", Branch: "$(printf dispatched > marker; printf selected)"}
+	key, err := e.resolveBranch(context.Background(), step)
+	if key != "" || !errors.Is(err, ErrCheckpointFailed) {
+		t.Fatalf("failed durable intent returned a selector: %q %v", key, err)
+	}
+	if _, err := os.Stat(filepath.Join(e.config.ProjectDir, "marker")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("selector launched without a durable intent: %v", err)
+	}
+}
+
+func TestLegacyFailedCommandEvaluationCannotAuthorizeReplay(t *testing.T) {
+	for _, status := range []ExecutionStatus{StatusFailed, StatusCancelled} {
+		for _, step := range []Step{{ID: "choose", Branch: "$(printf selected)"}, {ID: "source", Foreach: &ForeachConfig{Beads: "$(printf item)"}}} {
+			t.Run(string(status)+"/"+step.ID, func(t *testing.T) {
+				e := newCommandTestExecutor(t)
+				e.state.Steps[step.ID] = StepResult{StepID: step.ID, Status: status, FinishedAt: time.Now(), Error: &StepError{Type: "branch", Message: "output observation failed"}}
+				workflow := &Workflow{Steps: []Step{step}}
+				if err := e.applyResumeOptions(workflow, ResumeOptions{}); !errors.Is(err, errCommandOutputUnsettled) {
+					t.Fatalf("legacy terminal failure authorized selector replay: %v", err)
+				}
+				if err := e.applyResumeOptions(workflow, ResumeOptions{Mode: ResumeModeRestartFailed}); err != nil {
+					t.Fatalf("explicit restart did not authorize replay: %v", err)
+				}
+			})
+		}
+	}
+}
 
 func TestResumeContinueRestartsFirstIncompleteLoopIteration(t *testing.T) {
 	tmpDir := t.TempDir()

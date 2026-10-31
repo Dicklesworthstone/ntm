@@ -157,10 +157,16 @@ func TestBranchDecisionRejectsDefinitionChangesWithoutRewritingEvidence(t *testi
 }
 
 func TestBranchDecisionStorageFailurePreventsChildEffects(t *testing.T) {
-	step := Step{ID: "route", Branch: "$(mkdir -p .ntm/pipelines/run-branch-checkpoint.json; printf a)", Branches: map[string]interface{}{
+	step := Step{ID: "route", Branch: "a", Branches: map[string]interface{}{
 		"a": []Step{{ID: "work", Command: "printf unsafe > marker"}},
 	}}
 	e, workflow, cfg := decisionTestExecutor(t, step)
+	// Isolate the decision save itself. Shell selectors now checkpoint their
+	// launch intent first, so a shell-created obstruction would test a
+	// different persistence boundary (or fail to obstruct an existing file).
+	if err := os.MkdirAll(pipelineStatePath(cfg.ProjectDir, cfg.RunID), 0700); err != nil {
+		t.Fatal(err)
+	}
 	result := e.executeBranch(context.Background(), &step, workflow)
 	if result.Status != StatusFailed || !errors.Is(e.checkpointFailure(), ErrCheckpointFailed) {
 		t.Fatalf("decision save failure was ignored: %+v %v", result, e.checkpointFailure())

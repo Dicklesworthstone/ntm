@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -44,7 +45,7 @@ func (e *Executor) resolveBranch(ctx context.Context, step *Step) (string, error
 		// A partial key must not select a branch (including its default).
 		// Share command-step ownership and enforce the workflow's byte limits.
 		limits := e.limits.EffectiveLimits()
-		out, err := runCommandOutput(ctx, cmd, limits.MaxCommandStdoutBytes, limits.MaxCommandStderrBytes)
+		out, err := runCommandOutput(e.commandEvaluationContext(ctx, step), cmd, limits.MaxCommandStdoutBytes, limits.MaxCommandStderrBytes)
 		if err != nil {
 			return "", fmt.Errorf("branch shell command failed: %w", err)
 		}
@@ -150,6 +151,9 @@ func (e *Executor) executeBranch(ctx context.Context, step *Step, workflow *Work
 			Type:      "branch",
 			Message:   err.Error(),
 			Timestamp: time.Now(),
+		}
+		if errors.Is(err, errCommandOutputUnsettled) {
+			result.Error.Type = "execution_unknown"
 		}
 		result.FinishedAt = time.Now()
 		slog.Error("branch decision failed",

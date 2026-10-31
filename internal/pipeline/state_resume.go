@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -180,6 +182,224 @@ type CommandExecutionState struct {
 	ResolutionExitCode   int       `json:"resolution_exit_code,omitempty"`
 	ResolutionOutputHash string    `json:"resolution_output_hash,omitempty"`
 	ResolvedAt           time.Time `json:"resolved_at,omitempty"`
+}
+
+// CommandEvaluationState fences shell commands used to choose branches or
+// resolve iteration sources. These commands can have effects of their own,
+// before any child step or branch decision exists. Scheduler results and
+// failure handlers cannot substitute for proof that those commands ended.
+// A durable intent is written before Start. Verified process and stream
+// settlement removes it; returned uncertainty retains a terminal receipt.
+// ProcessID is diagnostic only and must never be signalled on resume.
+type CommandEvaluationState struct {
+	Version    int       `json:"version"`
+	StepID     string    `json:"step_id"`
+	StepHash   string    `json:"step_hash"`
+	Status     string    `json:"status"`
+	ProcessID  int       `json:"process_id,omitempty"`
+	StartedAt  time.Time `json:"started_at"`
+	FinishedAt time.Time `json:"finished_at,omitempty"`
+	Error      string    `json:"error,omitempty"`
+}
+
+func validateCommandEvaluation(id string, record CommandEvaluationState) error {
+	invalid := func(reason string) error {
+		return fmt.Errorf("invalid command evaluation for step %q: %s", id, reason)
+	}
+	digest, err := hex.DecodeString(record.StepHash)
+	if id == "" || record.StepID != id || record.Version != 1 || record.StartedAt.IsZero() ||
+		err != nil || len(digest) != sha256.Size || record.StepHash != strings.ToLower(record.StepHash) {
+		return invalid("missing or inconsistent launch identity")
+	}
+	switch record.Status {
+	case commandExecutionStarting:
+		if record.ProcessID != 0 || !record.FinishedAt.IsZero() || record.Error != "" {
+			return invalid("starting evaluation contains completion evidence")
+		}
+	case commandExecutionUnresolved:
+		if record.ProcessID <= 0 || record.FinishedAt.IsZero() || record.FinishedAt.Before(record.StartedAt) || strings.TrimSpace(record.Error) == "" {
+			return invalid("unresolved evaluation lacks returned cleanup evidence")
+		}
+	default:
+		return invalid("unknown evaluation status")
+	}
+	return nil
+}
+
+func uncertainCommandEvaluationError(id string) error {
+	return fmt.Errorf("%w for selector step %q; inspect the original command and its effects before explicitly using restart-failed, a containing force-iter scope, or --keep-state=false to authorize replay", errCommandOutputUnsettled, id)
+}
+
+// Only the source evaluation receives this context. A branch/foreach body
+// installs its own launch identity rather than inheriting its parent's receipt.
+func (e *Executor) commandEvaluationContext(ctx context.Context, step *Step) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var record CommandEvaluationState
+	lifecycle := &commandOutputLifecycle{
+		beforeStart: func() error {
+			digest, err := commandDefinitionHash(step)
+			if err != nil {
+				return err
+			}
+			e.stateMu.Lock()
+			if e.state == nil {
+				e.stateMu.Unlock()
+				return fmt.Errorf("cannot start command evaluation without execution state")
+			}
+			if prior, ok := e.state.CommandEvaluations[step.ID]; ok {
+				e.stateMu.Unlock()
+				if err := validateCommandEvaluation(step.ID, prior); err != nil {
+					return err
+				}
+				return uncertainCommandEvaluationError(step.ID)
+			}
+			if e.state.CommandEvaluations == nil {
+				e.state.CommandEvaluations = make(map[string]CommandEvaluationState)
+			}
+			record = CommandEvaluationState{Version: 1, StepID: step.ID, StepHash: digest, Status: commandExecutionStarting, StartedAt: time.Now()}
+			e.state.CommandEvaluations[step.ID] = record
+			e.stateMu.Unlock()
+			return e.persistState()
+		},
+		afterWait: func(cmd *exec.Cmd, settled bool, waitErr error) error {
+			e.stateMu.Lock()
+			prior, exists := e.state.CommandEvaluations[step.ID]
+			if !exists || prior.StepHash != record.StepHash || !prior.StartedAt.Equal(record.StartedAt) {
+				e.stateMu.Unlock()
+				return fmt.Errorf("command evaluation identity changed for step %q", step.ID)
+			}
+			if settled {
+				delete(e.state.CommandEvaluations, step.ID)
+			} else {
+				record.Status, record.FinishedAt = commandExecutionUnresolved, time.Now()
+				record.ProcessID = cmd.Process.Pid
+				record.Error = errors.Join(uncertainCommandEvaluationError(step.ID), waitErr).Error()
+				e.state.CommandEvaluations[step.ID] = record
+			}
+			e.stateMu.Unlock()
+			return e.persistState()
+		},
+	}
+	return context.WithValue(ctx, commandOutputLifecycleKey{}, lifecycle)
+}
+
+func (e *Executor) hasUnresolvedCommandEvaluation(step *Step) bool {
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
+	if e.state == nil {
+		return false
+	}
+	for id := range e.state.CommandEvaluations {
+		if id == step.ID {
+			return true
+		}
+		if _, _, owns := resolveScopedRuntimeChildren(step.ID, id, step); owns {
+			return true
+		}
+	}
+	return false
+}
+
+func resumeResetsCommandEvaluation(opts ResumeOptions, id string) bool {
+	return !opts.KeepState || opts.Mode == ResumeModeRestartFailed ||
+		(opts.Mode == ResumeModeForceIter && iterationIndexFromID(id, opts.StepID+"_iter") >= opts.Iteration)
+}
+
+// Check receipts independently of the scheduler's result, including completed
+// results produced by on_failure recovery. Validate even for an explicit reset
+// so corrupt or future-version evidence cannot silently authorize replay.
+func (e *Executor) validateCommandEvaluationResumeLocked(workflow *Workflow, state *ExecutionState, opts ResumeOptions) error {
+	if state.CommandEvaluationVersion != 0 && state.CommandEvaluationVersion != 1 {
+		return fmt.Errorf("unsupported command evaluation journal version %d", state.CommandEvaluationVersion)
+	}
+	for id, record := range state.CommandEvaluations {
+		if err := validateCommandEvaluation(id, record); err != nil {
+			return err
+		}
+		if !resumeResetsCommandEvaluation(opts, id) {
+			return uncertainCommandEvaluationError(id)
+		}
+		if opts.KeepState && opts.Mode == ResumeModeRestartFailed {
+			graph := e.graph
+			if graph == nil && workflow != nil {
+				graph = NewDependencyGraph(workflow)
+			}
+			resolve, err := resumeRuntimeStepResolver(graph, state)
+			if err != nil {
+				return err
+			}
+			step, ok := resolve(id)
+			if !ok || (step.Branch == "" && step.Foreach == nil && step.ForeachPane == nil && step.BeadQuery == nil) {
+				return fmt.Errorf("command evaluation %q has no matching selector; inspect its effects before a whole-run reset", id)
+			}
+			if err := e.validateLeafReplayScopeLocked(workflow, state, id, stepKind(step)); err != nil {
+				return err
+			}
+		}
+	}
+	if state.CommandEvaluationVersion == 0 && opts.KeepState {
+		// Earlier executors did not journal selectors. Neither a missing
+		// receipt nor iteration progress proves that a later evaluation has
+		// stopped. Fence unfinished external selectors before adopting the
+		// new protocol; literal branch keys and static item lists stay safe.
+		graph := e.graph
+		if graph == nil && workflow != nil {
+			graph = NewDependencyGraph(workflow)
+		}
+		resolve, err := resumeRuntimeStepResolver(graph, state)
+		if err != nil {
+			return err
+		}
+		unfinished := make(map[string]bool)
+		for id := range state.InFlightSteps {
+			unfinished[id] = true
+		}
+		for id, result := range state.Steps {
+			// Old output waiters could return a terminal failure while a
+			// descendant still ran. A failed/cancelled result is no stronger
+			// termination proof than an interrupted running evaluation.
+			if result.Status == StatusRunning || result.Status == StatusPending || result.Status == StatusFailed || result.Status == StatusCancelled {
+				unfinished[id] = true
+			}
+		}
+		for id := range unfinished {
+			if _, recorded := state.CommandEvaluations[id]; recorded {
+				continue
+			}
+			step, ok := resolve(id)
+			if !ok || !stepUsesCommandEvaluation(step) {
+				continue
+			}
+			if !resumeResetsCommandEvaluation(opts, id) {
+				return fmt.Errorf("unfinished selector %q has no durable launch evidence: %w", id, uncertainCommandEvaluationError(id))
+			}
+			if opts.Mode == ResumeModeRestartFailed {
+				if err := e.validateLeafReplayScopeLocked(workflow, state, id, stepKind(step)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func stepUsesCommandEvaluation(step *Step) bool {
+	if step.ForeachPane != nil {
+		return false
+	}
+	if source := step.Foreach; source != nil {
+		// Match source precedence in resolveForeachItems. Items expands data
+		// expressions only; the other source forms can invoke shell or br.
+		return source.Items == "" && (source.Beads != "" || source.Pairs != "" || source.Debates != "" ||
+			(len(source.Models) == 1 && looksLikeShellModelSource(strings.TrimSpace(source.Models[0]))))
+	}
+	if step.Branch != "" {
+		_, shell := stripShellInvocation(step.Branch)
+		return shell || strings.Contains(step.Branch, "${")
+	}
+	return step.BeadQuery != nil
 }
 
 // CommandExecutionRecoveryEntry exposes identity and decision metadata without
@@ -1300,6 +1520,10 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 	checkpoint := resumeCheckpointTime(state)
 	priorSession := state.Session
 	targetSession := e.config.Session
+	if err := e.validateCommandEvaluationResumeLocked(workflow, state, opts); err != nil {
+		e.stateMu.RUnlock()
+		return err
+	}
 	// Check every record before interpreting an explicit restart. In particular,
 	// a future or corrupt status must not be erased and mistaken for permission
 	// to send the same prompt again.
@@ -1390,6 +1614,11 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 		e.stateMu.Unlock()
 	}
 
+	// Admission has accounted for legacy unfinished selectors. From this
+	// point every new evaluation uses the durable launch protocol.
+	e.stateMu.Lock()
+	e.state.CommandEvaluationVersion = 1
+	e.stateMu.Unlock()
 	if !opts.KeepState {
 		e.resetResumeState(workflow)
 		return nil
@@ -1399,6 +1628,15 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 		e.forceResumeIteration(opts.StepID, opts.Iteration)
 	} else if opts.Mode == ResumeModeRestartFailed {
 		e.stateMu.Lock()
+		for stepID := range e.state.CommandEvaluations {
+			// A recovery handler may have completed the enclosing selector.
+			// Explicit replay must reopen it as well as remove its receipt.
+			if e.state.Steps == nil {
+				e.state.Steps = make(map[string]StepResult)
+			}
+			e.state.Steps[stepID] = StepResult{StepID: stepID, Status: StatusPending}
+			delete(e.state.CommandEvaluations, stepID)
+		}
 		for stepID := range e.state.AgentDeliveries {
 			if resumeResetsAgentDelivery(e.state, opts, stepID) {
 				delete(e.state.AgentDeliveries, stepID)
@@ -1716,6 +1954,7 @@ func validateForceResumeIteration(workflow *Workflow, state *ExecutionState, opt
 		if hasRuntimeCheckpoint(state.Steps, consumer) ||
 			hasRuntimeCheckpoint(state.AgentDeliveries, consumer) ||
 			hasRuntimeCheckpoint(state.CommandExecutions, consumer) ||
+			hasRuntimeCheckpoint(state.CommandEvaluations, consumer) ||
 			hasRuntimeCheckpoint(state.MailSends, consumer) ||
 			hasRuntimeCheckpoint(state.ReservationSteps, consumer) ||
 			hasRuntimeCheckpoint(state.InFlightSteps, consumer) ||
@@ -2039,6 +2278,7 @@ func (e *Executor) resetResumeState(workflow *Workflow) {
 	e.state.InFlightSteps = nil
 	e.state.AgentDeliveries = nil
 	e.state.CommandExecutions = nil
+	e.state.CommandEvaluations = nil
 	e.state.MailSends = nil
 	e.state.ReservationSteps = nil
 	e.state.CurrentStep = ""
@@ -2131,6 +2371,7 @@ func (e *Executor) forceResumeIteration(stepID string, iteration int) {
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.Steps, prefix, iteration)...)
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.AgentDeliveries, prefix, iteration)...)
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.CommandExecutions, prefix, iteration)...)
+	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.CommandEvaluations, prefix, iteration)...)
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.MailSends, prefix, iteration)...)
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.ReservationSteps, prefix, iteration)...)
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.InFlightSteps, prefix, iteration)...)
@@ -2356,6 +2597,7 @@ func (e *Executor) verifyForeachItemsFingerprint(stepID, fingerprint string) err
 		hasIterationEntries(e.state.Steps, prefix) ||
 		hasIterationEntries(e.state.AgentDeliveries, prefix) ||
 		hasIterationEntries(e.state.CommandExecutions, prefix) ||
+		hasIterationEntries(e.state.CommandEvaluations, prefix) ||
 		hasIterationEntries(e.state.MailSends, prefix) ||
 		hasIterationEntries(e.state.ReservationSteps, prefix) ||
 		hasIterationEntries(e.state.InFlightSteps, prefix) ||

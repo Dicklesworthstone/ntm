@@ -460,6 +460,11 @@ func (e *Executor) branchHasChildEvidence(parent *Step) bool {
 			return true
 		}
 	}
+	for id := range e.state.CommandEvaluations {
+		if belongs(id) {
+			return true
+		}
+	}
 	for id := range e.state.AgentDeliveries {
 		if belongs(id) {
 			return true

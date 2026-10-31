@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -86,12 +87,18 @@ func (e *Executor) executeBeadQuery(ctx context.Context, step *Step, workflow *W
 		ProjectDir: e.config.ProjectDir,
 		RunBr:      e.config.BeadQueryRunBr,
 	}
-	out, err := resolver.runBr(ctx, args)
+	out, err := resolver.runBr(e.commandEvaluationContext(ctx, step), args)
 	if err != nil {
 		result.Status = StatusFailed
-		result.Error = stepRuntimeError(step, "bead_query", "bead_query",
+		errorType := "bead_query"
+		hint := "verify br is installed and project_dir points at a Beads repo"
+		if errors.Is(err, errCommandOutputUnsettled) {
+			errorType = "execution_unknown"
+			hint = "inspect the original query process and its effects before explicitly authorizing replay"
+		}
+		result.Error = stepRuntimeError(step, "bead_query", errorType,
 			fmt.Sprintf("br list failed: %v", err),
-			"verify br is installed and project_dir points at a Beads repo",
+			hint,
 			err.Error())
 		result.FinishedAt = time.Now()
 		return result

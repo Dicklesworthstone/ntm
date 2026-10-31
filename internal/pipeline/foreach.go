@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -70,8 +71,11 @@ func (e *Executor) executeForeach(ctx context.Context, step *Step, workflow *Wor
 		return finishForeachFailure(result, "foreach", err.Error())
 	}
 
-	items, err := e.resolveForeachItems(ctx, config, kind)
+	items, err := e.resolveForeachItems(e.commandEvaluationContext(ctx, step), config, kind)
 	if err != nil {
+		if errors.Is(err, errCommandOutputUnsettled) {
+			return finishForeachFailure(result, "execution_unknown", err.Error())
+		}
 		return finishForeachFailure(result, "foreach_source", err.Error())
 	}
 	if len(items) > e.limits.MaxForeachIterations {
