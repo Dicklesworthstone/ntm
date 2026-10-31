@@ -62,6 +62,14 @@ only responses would also permit them into existing handler logs and persistence
 Uniform rejection avoids both problems and applies to future API handlers too.
 A refused request leaves the idempotency key available for a corrected submission.
 
+Idempotency replay also verifies the entire request body within the same 10 MiB
+limit. Reusing a key with different bytes anywhere in the accepted body returns
+`422 IDEMPOTENT_REPLAY`; an equal prefix is insufficient. Unreadable, oversized,
+or canceled bodies cannot dispatch a handler or retrieve a cached success. A
+successful read restores the exact submitted bytes, and refused reads do not
+reserve the key or replace an existing cached result. These replay-integrity
+checks also apply when redaction is disabled.
+
 Response redaction remains separate: JSON output in both `redact` and `block`
 modes keeps its structure and safe neighboring fields. A response is processed
 after its handler runs, so output filtering preserves the handler's HTTP status.

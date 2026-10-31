@@ -1,14 +1,22 @@
 package serve
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 )
 
 // bd-vq37v (D4): single-flight per scoped key, bounded cache, body
@@ -160,6 +168,272 @@ func TestIdempotencyBodyMismatchRejected(t *testing.T) {
 	same := do(`{"agents":1}`)
 	if same.Code != http.StatusOK || same.Header().Get("X-Idempotent-Replay") != "true" {
 		t.Fatalf("same-body replay status=%d replay=%q, want 200 replay", same.Code, same.Header().Get("X-Idempotent-Replay"))
+	}
+}
+
+// A policy update is a real persistent mutation. Two accepted JSON documents
+// with the same long prefix must not share a successful replay when their
+// policy content differs after the former 8 MiB fingerprint boundary.
+func TestIdempotencyPolicyUpdateComparesCompleteAcceptedBody(t *testing.T) {
+	padding := strings.Repeat(" ", 8<<20)
+	firstPolicy := "version: 1\nblocked:\n  - pattern: original-danger\n    reason: original reason\n"
+	secondPolicy := "version: 1\nblocked:\n  - pattern: revised-danger\n    reason: revised reason\n"
+	encode := func(content string) string {
+		body, err := json.Marshal(PolicyUpdateRequest{Content: content})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return padding + string(body)
+	}
+	firstBody, secondBody := encode(firstPolicy), encode(secondPolicy)
+
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		t.Run(string(mode), func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Chdir(home)
+			policyPath := filepath.Join(home, ".ntm", "policy.yaml")
+			s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: mode}})
+			writes := 0
+			s.policyWriteFile = func(path string, content []byte, permissions os.FileMode) error {
+				writes++
+				return os.WriteFile(path, content, permissions)
+			}
+			router := s.Router()
+			do := func(body, key string) *httptest.ResponseRecorder {
+				req := httptest.NewRequest(http.MethodPut, "/api/v1/policy/", strings.NewReader(body))
+				req.RemoteAddr = "127.0.0.1:12345"
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Idempotency-Key", key)
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				return rec
+			}
+			assertPolicy := func(want string, wantWrites int) {
+				t.Helper()
+				got, err := os.ReadFile(policyPath)
+				if err != nil || string(got) != want || writes != wantWrites {
+					t.Fatalf("policy=%q writes=%d, want policy=%q writes=%d, err=%v", got, writes, want, wantWrites, err)
+				}
+			}
+
+			first := do(firstBody, "complete-policy-body")
+			if first.Code != http.StatusOK || first.Header().Get("X-Idempotent-Replay") != "" {
+				t.Fatalf("initial update status=%d replay=%q: %s", first.Code, first.Header().Get("X-Idempotent-Replay"), first.Body)
+			}
+			assertPolicy(firstPolicy, 1)
+
+			changed := do(secondBody, "complete-policy-body")
+			var refusal APIError
+			if err := json.Unmarshal(changed.Body.Bytes(), &refusal); err != nil || changed.Code != http.StatusUnprocessableEntity || refusal.ErrorCode != ErrCodeIdempotentReplay {
+				t.Fatalf("changed policy beyond common prefix status=%d replay=%q, want 422 conflict: %s (decode=%v)", changed.Code, changed.Header().Get("X-Idempotent-Replay"), changed.Body, err)
+			}
+			assertPolicy(firstPolicy, 1)
+
+			retry := do(firstBody, "complete-policy-body")
+			if retry.Code != http.StatusOK || retry.Header().Get("X-Idempotent-Replay") != "true" || retry.Body.String() != first.Body.String() {
+				t.Fatalf("exact retry status=%d replay=%q: %s", retry.Code, retry.Header().Get("X-Idempotent-Replay"), retry.Body)
+			}
+			assertPolicy(firstPolicy, 1)
+
+			fresh := do(secondBody, "revised-policy-body")
+			if fresh.Code != http.StatusOK || fresh.Header().Get("X-Idempotent-Replay") != "" {
+				t.Fatalf("fresh-key update status=%d replay=%q: %s", fresh.Code, fresh.Header().Get("X-Idempotent-Replay"), fresh.Body)
+			}
+			assertPolicy(secondPolicy, 2)
+		})
+	}
+}
+
+// A transport may return complete-looking JSON together with a read error.
+// Decoding that prefix, or treating its missing fingerprint as a cache hit,
+// would acknowledge an incomplete request as a successful mutation.
+type idempotencyErrorBody struct {
+	data []byte
+	err  error
+}
+
+func (b *idempotencyErrorBody) Read(p []byte) (int, error) {
+	n := copy(p, b.data)
+	b.data = b.data[n:]
+	if len(b.data) == 0 {
+		return n, b.err
+	}
+	return n, nil
+}
+
+func (b *idempotencyErrorBody) Close() error { return nil }
+
+func TestIdempotencyRejectsIncompleteOrOversizedRequests(t *testing.T) {
+	const acceptedBody = `{"operation":"accepted"}`
+	const partialBody = `{"operation":"unreadable"}`
+	const limit = 10 << 20
+	oversizedBody := partialBody + strings.Repeat(" ", limit+1-len(partialBody))
+	tests := []struct {
+		name          string
+		body          func(http.ResponseWriter) io.ReadCloser
+		requestCtx    func() (context.Context, context.CancelFunc)
+		contentLength int64
+		wantStatus    int
+		wantCode      string
+	}{
+		{
+			name: "read error with complete JSON prefix",
+			body: func(http.ResponseWriter) io.ReadCloser {
+				return &idempotencyErrorBody{data: []byte(partialBody), err: errors.New("transport failed: " + wiringFakeSecret)}
+			},
+			contentLength: -1,
+			wantStatus:    http.StatusBadRequest,
+			wantCode:      ErrCodeBadRequest,
+		},
+		{
+			name: "canceled before fingerprinting",
+			body: func(http.ResponseWriter) io.ReadCloser {
+				return io.NopCloser(strings.NewReader(partialBody))
+			},
+			requestCtx: func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx, cancel
+			},
+			contentLength: -1,
+			wantStatus:    http.StatusRequestTimeout,
+			wantCode:      ErrCodeTimeout,
+		},
+		{
+			name: "deadline exceeded before fingerprinting",
+			body: func(http.ResponseWriter) io.ReadCloser {
+				return io.NopCloser(strings.NewReader(partialBody))
+			},
+			requestCtx: func() (context.Context, context.CancelFunc) {
+				return context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+			},
+			contentLength: -1,
+			wantStatus:    http.StatusRequestTimeout,
+			wantCode:      ErrCodeTimeout,
+		},
+		{
+			name: "oversized chunked body",
+			body: func(http.ResponseWriter) io.ReadCloser {
+				return io.NopCloser(strings.NewReader(oversizedBody))
+			},
+			contentLength: -1,
+			wantStatus:    http.StatusRequestEntityTooLarge,
+			wantCode:      "REQUEST_TOO_LARGE",
+		},
+		{
+			name: "oversized body with misleading length",
+			body: func(http.ResponseWriter) io.ReadCloser {
+				return io.NopCloser(strings.NewReader(oversizedBody))
+			},
+			contentLength: 1,
+			wantStatus:    http.StatusRequestEntityTooLarge,
+			wantCode:      "REQUEST_TOO_LARGE",
+		},
+		{
+			name: "MaxBytesReader reports overflow at the limit",
+			body: func(w http.ResponseWriter) io.ReadCloser {
+				return http.MaxBytesReader(w, io.NopCloser(strings.NewReader(oversizedBody)), limit)
+			},
+			contentLength: -1,
+			wantStatus:    http.StatusRequestEntityTooLarge,
+			wantCode:      "REQUEST_TOO_LARGE",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, cached := range []bool{false, true} {
+				t.Run(fmt.Sprintf("cached=%t", cached), func(t *testing.T) {
+					store := NewIdempotencyStore(time.Hour)
+					t.Cleanup(store.Stop)
+					s := &Server{idempotencyStore: store}
+					executions := 0
+					persisted := ""
+					handler := s.idempotencyMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						var input struct {
+							Operation string `json:"operation"`
+						}
+						if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+							t.Errorf("failed request reached handler: %v", err)
+							w.WriteHeader(http.StatusBadRequest)
+							return
+						}
+						executions++
+						persisted = input.Operation
+						w.Header().Set("Content-Type", "application/json")
+						_, _ = w.Write([]byte(`{"success":true}`))
+					}))
+					doAccepted := func() *httptest.ResponseRecorder {
+						req := httptest.NewRequest(http.MethodPost, "/mutation", strings.NewReader(acceptedBody))
+						req.Header.Set("Idempotency-Key", "read-integrity")
+						rec := httptest.NewRecorder()
+						handler.ServeHTTP(rec, req)
+						return rec
+					}
+					if cached {
+						if first := doAccepted(); first.Code != http.StatusOK {
+							t.Fatalf("seed success status=%d: %s", first.Code, first.Body)
+						}
+					}
+					beforeExecutions, beforeValue := executions, persisted
+					req := httptest.NewRequest(http.MethodPost, "/mutation", nil)
+					rec := httptest.NewRecorder()
+					req.Body = tt.body(rec)
+					req.ContentLength = tt.contentLength
+					req.Header.Set("Idempotency-Key", "read-integrity")
+					if tt.requestCtx != nil {
+						ctx, cancel := tt.requestCtx()
+						t.Cleanup(cancel)
+						req = req.WithContext(ctx)
+					}
+					handler.ServeHTTP(rec, req)
+					var refusal APIError
+					if err := json.Unmarshal(rec.Body.Bytes(), &refusal); err != nil || rec.Code != tt.wantStatus || refusal.ErrorCode != tt.wantCode {
+						t.Fatalf("failed input status=%d code=%q, want %d %s: %s (decode=%v)", rec.Code, refusal.ErrorCode, tt.wantStatus, tt.wantCode, rec.Body, err)
+					}
+					if rec.Header().Get("X-Idempotent-Replay") != "" || executions != beforeExecutions || persisted != beforeValue {
+						t.Fatalf("failed input replayed or mutated state: replay=%q executions=%d value=%q", rec.Header().Get("X-Idempotent-Replay"), executions, persisted)
+					}
+					if strings.Contains(rec.Body.String(), wiringFakeSecret) {
+						t.Fatal("transport error disclosed credential contents")
+					}
+					// Failed admission neither consumes a new key nor overwrites
+					// the successful response already associated with one.
+					retry := doAccepted()
+					if retry.Code != http.StatusOK || (retry.Header().Get("X-Idempotent-Replay") == "true") != cached || executions != 1 || persisted != "accepted" {
+						t.Fatalf("intact retry status=%d replay=%q executions=%d value=%q", retry.Code, retry.Header().Get("X-Idempotent-Replay"), executions, persisted)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestIdempotencyAcceptsAndPreservesMaximumRequestBody(t *testing.T) {
+	const input = `{"payload":"intact"}`
+	body := input + strings.Repeat(" ", (10<<20)-len(input))
+	store := NewIdempotencyStore(time.Hour)
+	t.Cleanup(store.Stop)
+	s := &Server{idempotencyStore: store}
+	executions := 0
+	handler := s.idempotencyMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, err := io.ReadAll(r.Body)
+		if err != nil || string(data) != body {
+			t.Errorf("maximum body changed before handler: length=%d err=%v", len(data), err)
+		}
+		executions++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	for attempt := 0; attempt < 2; attempt++ {
+		req := httptest.NewRequest(http.MethodPost, "/mutation", strings.NewReader(body))
+		req.ContentLength = -1
+		req.Header.Set("Idempotency-Key", "maximum-request")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent || executions != 1 || (rec.Header().Get("X-Idempotent-Replay") == "true") != (attempt == 1) {
+			t.Fatalf("maximum request attempt=%d status=%d executions=%d replay=%q", attempt, rec.Code, executions, rec.Header().Get("X-Idempotent-Replay"))
+		}
 	}
 }
 

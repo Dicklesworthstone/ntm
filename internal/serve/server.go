@@ -317,6 +317,11 @@ const (
 	ErrCodeJobPending       = "JOB_PENDING"
 )
 
+// Every body admission and replay check must use the same limit. Hashing only
+// a prefix of an accepted request can acknowledge a different mutation with a
+// cached success, without ever executing the submitted operation.
+const maxRequestBodyBytes = 10 << 20 // 10 MiB
+
 // Idempotency cache bounds (bd-vq37v). The 24h TTL alone left the cache
 // unbounded: a remote-auth caller sending unique keys could grow the map (and
 // full buffered response bodies) for a day. Entries are capped with
@@ -326,10 +331,6 @@ const (
 	idempotencyMaxEntries = 4096
 	// idempotencyMaxBodyBytes caps a single cached (and buffered) response body.
 	idempotencyMaxBodyBytes = 1 << 20 // 1 MiB
-	// idempotencyFingerprintLimit bounds how much of a request body is hashed
-	// for replay fingerprinting. Bodies larger than this are fingerprinted by
-	// prefix, which is still deterministic for mismatch detection.
-	idempotencyFingerprintLimit = 8 << 20 // 8 MiB
 )
 
 // IdempotencyStore caches responses by idempotency key.
@@ -1783,7 +1784,7 @@ func (s *Server) buildMTLSConfig() (*tls.Config, error) {
 func (s *Server) maxBytesMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Limit to 10MB default
-		r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 		next.ServeHTTP(w, r)
 	})
 }
@@ -1913,7 +1914,25 @@ func (s *Server) idempotencyMiddleware(next http.Handler) http.Handler {
 		// Fingerprint the request body so a replay with the same key but a
 		// DIFFERENT payload is rejected instead of silently echoing the first
 		// response (bd-vq37v).
-		fingerprint := idempotencyRequestFingerprint(r)
+		fingerprint, err := idempotencyRequestFingerprint(r)
+		if err != nil {
+			reqID := requestIDFromContext(r.Context())
+			var tooLarge *http.MaxBytesError
+			switch {
+			case errors.As(err, &tooLarge):
+				writeErrorResponse(w, http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE",
+					"request body exceeds the 10 MiB limit", nil, reqID)
+			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+				writeErrorResponse(w, http.StatusRequestTimeout, ErrCodeTimeout,
+					"request canceled before its body could be verified", nil, reqID)
+			default:
+				// Reader errors can contain source credentials. Neither a cached
+				// response nor a handler may hide an incomplete read.
+				writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+					"failed to read complete request body", nil, reqID)
+			}
+			return
+		}
 
 		// Single-flight per scoped key: concurrent duplicates wait for the
 		// first request instead of double-executing (bd-vq37v). The loop
@@ -1921,7 +1940,7 @@ func (s *Server) idempotencyMiddleware(next http.Handler) http.Handler {
 		// (nothing cached), the woken follower becomes the new leader.
 		for {
 			if cached, status, replayHeader, storedFP, ok := s.idempotencyStore.GetWithFingerprint(key); ok {
-				if storedFP != "" && fingerprint != "" && storedFP != fingerprint {
+				if storedFP != "" && storedFP != fingerprint {
 					reqID := requestIDFromContext(r.Context())
 					writeErrorResponse(w, http.StatusUnprocessableEntity, ErrCodeIdempotentReplay,
 						"Idempotency-Key reused with a different request body", nil, reqID)
@@ -1960,29 +1979,36 @@ func (s *Server) idempotencyMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// idempotencyRequestFingerprint hashes the request body (bounded by
-// idempotencyFingerprintLimit) and restores r.Body for downstream handlers.
-// Returns a non-empty hash even for empty bodies so mismatch detection always
-// has something to compare.
-func idempotencyRequestFingerprint(r *http.Request) string {
+// idempotencyRequestFingerprint verifies and hashes the complete admitted body,
+// then restores its exact bytes for the handler. A read failure must never turn
+// into an empty fingerprint that authorizes an unrelated cached success.
+func idempotencyRequestFingerprint(r *http.Request) (string, error) {
+	if err := r.Context().Err(); err != nil {
+		return "", err
+	}
 	if scope, ok := r.Context().Value(jobHTTPReplayScopeKey{}).(jobHTTPReplayScope); ok {
-		// Job bodies were read completely within the HTTP limit. A changed
-		// command after the generic 8 MiB prefix must still conflict.
-		return scope.fingerprint
+		// Jobs already verified the full body before binding its project. Keep
+		// that captured identity and canonical decoder's error semantics.
+		return scope.fingerprint, scope.requestErr
 	}
-	h := sha256.New()
+	var data []byte
 	if r.Body != nil && r.Body != http.NoBody {
-		data, err := io.ReadAll(io.LimitReader(r.Body, idempotencyFingerprintLimit))
-		if err != nil {
-			// Body unreadable; hand the bytes read so far plus the original
-			// reader back to the handler, which will surface the read error.
-			r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(data), r.Body))
-			return ""
+		var err error
+		data, err = io.ReadAll(io.LimitReader(r.Body, maxRequestBodyBytes+1))
+		_ = r.Body.Close()
+		if len(data) > maxRequestBodyBytes {
+			return "", &http.MaxBytesError{Limit: maxRequestBodyBytes}
 		}
-		h.Write(data)
-		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(data), r.Body))
+		if err != nil {
+			return "", err
+		}
+		r.Body = io.NopCloser(bytes.NewReader(data))
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	if err := r.Context().Err(); err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 // responseRecorder captures the response for idempotency caching.

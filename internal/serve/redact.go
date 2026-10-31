@@ -55,7 +55,7 @@ var jsonCredentialPair = regexp.MustCompile(`^("(?:\\.|[^"\\])*"\s*:\s*)"(?:\\.|
 // request admission), since their matcher also accepts arbitrary quoted text.
 var jsonRedactionMarker = regexp.MustCompile(`^"\[REDACTED:[A-Z][A-Z0-9_]*:[0-9a-f]{8}\]"$`)
 
-const redactionMaxRequestBodyBytes = 10 << 20
+const redactionMaxRequestBodyBytes = maxRequestBodyBytes
 
 // A response is filtered after its handler has run. Keep the handler's status
 // and make an unavailable representation explicit without claiming rollback or

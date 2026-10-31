@@ -25,7 +25,7 @@ var (
 	errJobNotCancellable = errors.New("job cannot be cancelled")
 )
 
-const jobHTTPMaxBodyBytes = 10 << 20
+const jobHTTPMaxBodyBytes = maxRequestBodyBytes
 
 type jobProjectSelectionKey struct{}
 
