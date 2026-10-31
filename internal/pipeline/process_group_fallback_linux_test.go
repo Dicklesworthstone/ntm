@@ -22,7 +22,7 @@ import (
 // Use real children and kernel failure injection. The seccomp filters apply
 // only inside a subprocess, never to the test runner or a developer's shell.
 func TestCommandGroupFallbackKernelFailures(t *testing.T) {
-	for _, mode := range []string{"group-denied", "settlement-denied", "open-denied", "send-denied", "unowned", "reaped", "wait-cancel", "wait-deadline", "wait-observe", "wait-observe-only", "wait-observe-pipes", "wait-ownership"} {
+	for _, mode := range []string{"group-denied", "normal-signals-denied", "open-denied", "send-denied", "unowned", "reaped", "wait-cancel", "wait-deadline", "wait-observe", "wait-observe-only", "wait-observe-pipes", "wait-ownership"} {
 		t.Run(mode, func(t *testing.T) {
 			exe, err := os.Executable()
 			if err != nil {
@@ -72,10 +72,11 @@ func TestCommandGroupFallbackHelper(t *testing.T) {
 		}
 		return
 	}
-	if mode == "settlement-denied" {
+	if mode == "normal-signals-denied" {
 		cmd := exec.Command("sh", "-c", "printf done")
 		configureCommandProcessGroup(cmd)
-		cmd.Stdout = newCappedWriter(64)
+		capture := newCappedWriter(64)
+		cmd.Stdout = capture
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -87,8 +88,8 @@ func TestCommandGroupFallbackHelper(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		result := waitCommandWithProcessGroupCleanup(ctx, cmd)
-		if result.Settled || result.Cancelled || !errors.Is(result.Err, syscall.EPERM) {
-			t.Fatalf("failed group cleanup authorized a settled launch receipt: %+v", result)
+		if !result.Settled || result.Cancelled || result.Err != nil || capture.String() != "done" || !capture.outputCaptureComplete() {
+			t.Fatalf("normal completion depended on an unsolicited group signal: %+v output=%q", result, capture.String())
 		}
 		return
 	}
@@ -455,6 +456,17 @@ func TestCommandGroupFallbackPreservesNormalLifecycle(t *testing.T) {
 	}
 }
 
+const commandGroupTestMountInfo = "10 1 0:2 / /proc rw,nosuid,nodev,noexec - proc proc rw\n"
+
+func commandGroupTestStat(pid int, state string, group int, threads string) string {
+	fields := make([]string, 19)
+	for i := range fields {
+		fields[i] = "0"
+	}
+	fields[0], fields[1], fields[2], fields[17] = state, "1", strconv.Itoa(group), threads
+	return fmt.Sprintf("%d (worker) %s", pid, strings.Join(fields, " "))
+}
+
 func TestCommandGroupCensusNarrowsAndValidatesEvidence(t *testing.T) {
 	type process struct {
 		group    int
@@ -463,7 +475,7 @@ func TestCommandGroupCensusNarrowsAndValidatesEvidence(t *testing.T) {
 		statErr  error
 		read     bool
 	}
-	leader := process{group: 42, stat: "42 (leader) Z 1 42", read: true}
+	leader := process{group: 42, stat: commandGroupTestStat(42, "Z", 42, "1"), read: true}
 	for _, tc := range []struct {
 		name      string
 		processes map[int]process
@@ -501,14 +513,70 @@ func TestCommandGroupCensusNarrowsAndValidatesEvidence(t *testing.T) {
 			name: "zombie and dead members cannot execute",
 			processes: map[int]process{
 				42: leader,
-				43: {group: 42, stat: "43 (worker) Z 1 42", read: true},
-				44: {group: 42, stat: "44 (worker) X 1 42", read: true},
+				43: {group: 42, stat: commandGroupTestStat(43, "Z", 42, "1"), read: true},
+				44: {group: 42, stat: commandGroupTestStat(44, "X", 42, "1"), read: true},
 			},
+		},
+		{
+			name: "zombie thread leader can have executing threads",
+			processes: map[int]process{
+				42: leader,
+				43: {group: 42, stat: commandGroupTestStat(43, "Z", 42, "2"), read: true},
+			},
+			alive: true,
+		},
+		{
+			name: "dead thread leader does not prove other threads stopped",
+			processes: map[int]process{
+				42: leader,
+				43: {group: 42, stat: commandGroupTestStat(43, "X", 42, "2"), read: true},
+			},
+			alive: true,
+		},
+		{
+			name: "zombie without thread count cannot settle",
+			processes: map[int]process{
+				42: leader,
+				43: {group: 42, stat: "43 (worker) Z 1 42", read: true},
+			},
+			message: "missing thread-count evidence",
+		},
+		{
+			name: "thread count cut off within its number cannot settle",
+			processes: map[int]process{
+				42: leader,
+				43: {group: 42, stat: strings.TrimSuffix(commandGroupTestStat(43, "Z", 42, "1"), " 0"), read: true},
+			},
+			message: "missing thread-count evidence",
+		},
+		{
+			name: "zero thread count cannot settle",
+			processes: map[int]process{
+				42: leader,
+				43: {group: 42, stat: commandGroupTestStat(43, "Z", 42, "0"), read: true},
+			},
+			message: "malformed thread-count evidence",
+		},
+		{
+			name: "negative thread count cannot settle",
+			processes: map[int]process{
+				42: leader,
+				43: {group: 42, stat: commandGroupTestStat(43, "Z", 42, "-1"), read: true},
+			},
+			message: "malformed thread-count evidence",
+		},
+		{
+			name: "malformed thread count cannot settle",
+			processes: map[int]process{
+				42: leader,
+				43: {group: 42, stat: commandGroupTestStat(43, "Z", 42, "unknown"), read: true},
+			},
+			message: "malformed thread-count evidence",
 		},
 		{
 			name: "denied kernel lookup falls back to strict leader and unrelated rows",
 			processes: map[int]process{
-				42: {groupErr: syscall.EPERM, stat: "42 (leader) Z 1 42", read: true},
+				42: {groupErr: syscall.EPERM, stat: commandGroupTestStat(42, "Z", 42, "1"), read: true},
 				43: {groupErr: syscall.EPERM, stat: "43 (other) S 1 99", read: true},
 			},
 		},
@@ -624,14 +692,14 @@ func TestCommandGroupCensusNarrowsAndValidatesEvidence(t *testing.T) {
 		{
 			name: "leader stat group mismatch",
 			processes: map[int]process{
-				42: {group: 42, stat: "42 (leader) Z 1 99", read: true},
+				42: {group: 42, stat: commandGroupTestStat(42, "Z", 99, "1"), read: true},
 			},
 			message: "leader changed process group",
 		},
 		{
 			name: "leader absent from directory",
 			processes: map[int]process{
-				43: {group: 42, stat: "43 (worker) Z 1 42", read: true},
+				43: {group: 42, stat: commandGroupTestStat(43, "Z", 42, "1"), read: true},
 			},
 			message: "unreaped leader missing",
 		},
@@ -682,6 +750,12 @@ func TestCommandGroupCensusNarrowsAndValidatesEvidence(t *testing.T) {
 					return process.group, process.groupErr
 				},
 				readFile: func(path string) ([]byte, error) {
+					if path == "/proc/self/mountinfo" {
+						return []byte(commandGroupTestMountInfo), nil
+					}
+					if path == "/proc/stat" {
+						return []byte("cpu 1 2 3\nprocesses 123\nprocs_running 2\n"), nil
+					}
 					path = strings.TrimPrefix(path, "/proc/")
 					name, _, _ := strings.Cut(path, "/")
 					pid, err := strconv.Atoi(name)
@@ -722,6 +796,165 @@ func TestCommandGroupCensusNarrowsAndValidatesEvidence(t *testing.T) {
 				if reads[pid] != want {
 					t.Errorf("read stat for PID %d %d times, want %d", pid, reads[pid], want)
 				}
+			}
+		})
+	}
+}
+
+func TestCommandGroupCensusRequiresStableBirthEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		before    string
+		after     string
+		readErrAt int
+		live      bool
+		wantReads int
+		wantCause error
+		wantError bool
+	}{
+		{name: "unchanged", before: "processes 123\n", after: "processes 123\n", wantReads: 2},
+		{name: "fork during census", before: "processes 123\n", after: "processes 124\n", wantReads: 2, wantCause: errCommandGroupBirthRace, wantError: true},
+		{name: "counter decreased", before: "processes 123\n", after: "processes 122\n", wantReads: 2, wantCause: errCommandGroupBirthRace, wantError: true},
+		{name: "initial read denied", readErrAt: 1, wantReads: 1, wantCause: syscall.EACCES, wantError: true},
+		{name: "final read denied", before: "processes 123\n", readErrAt: 2, wantReads: 2, wantCause: syscall.EACCES, wantError: true},
+		{name: "initial row missing", before: "procs_running 1\n", wantReads: 1, wantError: true},
+		{name: "final row missing", before: "processes 123\n", after: "procs_running 1\n", wantReads: 2, wantError: true},
+		{name: "malformed count", before: "processes unknown\n", wantReads: 1, wantError: true},
+		{name: "count cut off before record terminator", before: "processes 12", wantReads: 1, wantError: true},
+		{name: "negative count", before: "processes -1\n", wantReads: 1, wantError: true},
+		{name: "overflowing count", before: "processes 18446744073709551616\n", wantReads: 1, wantError: true},
+		{name: "duplicate count", before: "processes 123\nprocesses 123\n", wantReads: 1, wantError: true},
+		{name: "extra count field", before: "processes 123 124\n", wantReads: 1, wantError: true},
+		{name: "positive liveness needs no ending counter", before: "processes 123\n", after: "malformed", live: true, wantReads: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			proc := fstest.MapFS{
+				"42/stat": {Data: []byte(commandGroupTestStat(42, "Z", 42, "1"))},
+			}
+			if tc.live {
+				proc["43/stat"] = &fstest.MapFile{Data: []byte(commandGroupTestStat(43, "S", 42, "1"))}
+			}
+			reads := 0
+			inspector := commandGroupInspector{
+				readDir: func(path string) ([]os.DirEntry, error) {
+					if path != "/proc" {
+						t.Fatalf("unexpected directory %q", path)
+					}
+					return proc.ReadDir(".")
+				},
+				getpgid: func(int) (int, error) { return 42, nil },
+				readFile: func(path string) ([]byte, error) {
+					if path == "/proc/self/mountinfo" {
+						return []byte(commandGroupTestMountInfo), nil
+					}
+					if path != "/proc/stat" {
+						return proc.ReadFile(strings.TrimPrefix(path, "/proc/"))
+					}
+					reads++
+					if reads == tc.readErrAt {
+						return nil, syscall.EACCES
+					}
+					if reads == 1 {
+						return []byte(tc.before), nil
+					}
+					return []byte(tc.after), nil
+				},
+			}
+			alive, err := inspectCommandGroup(42, inspector)
+			if alive != tc.live || (err != nil) != tc.wantError || reads != tc.wantReads {
+				t.Fatalf("alive=%t error=%v reads=%d; want alive=%t error=%t reads=%d", alive, err, reads, tc.live, tc.wantError, tc.wantReads)
+			}
+			if tc.wantCause != nil && !errors.Is(err, tc.wantCause) {
+				t.Fatalf("lost counter failure cause: %v", err)
+			}
+		})
+	}
+}
+
+func TestCommandGroupCensusRequiresCompleteProcfsVisibility(t *testing.T) {
+	withOption := func(option string) string {
+		return strings.TrimSuffix(commandGroupTestMountInfo, "\n") + "," + option + "\n"
+	}
+	for _, tc := range []struct {
+		name           string
+		before         string
+		after          string
+		readErrAt      int
+		wantMountReads int
+		wantDirReads   int
+		wantError      bool
+		wantCause      error
+	}{
+		{name: "ordinary procfs", before: commandGroupTestMountInfo, wantMountReads: 2, wantDirReads: 1},
+		{name: "hidepid zero", before: withOption("hidepid=0"), wantMountReads: 2, wantDirReads: 1},
+		{name: "hidepid off", before: withOption("hidepid=off"), wantMountReads: 2, wantDirReads: 1},
+		{name: "hidepid one retains directory enumeration", before: withOption("hidepid=1"), wantMountReads: 2, wantDirReads: 1},
+		{name: "hidepid noaccess retains directory enumeration", before: withOption("hidepid=noaccess"), wantMountReads: 2, wantDirReads: 1},
+		{name: "unrelated hidden mount does not change proc visibility", before: "20 1 0:3 / /other rw - proc proc rw,hidepid=2\n" + commandGroupTestMountInfo, wantMountReads: 2, wantDirReads: 1},
+		{name: "invisible numeric", before: withOption("hidepid=2"), wantMountReads: 1, wantError: true},
+		{name: "invisible named", before: withOption("hidepid=invisible"), wantMountReads: 1, wantError: true},
+		{name: "ptraceable numeric", before: withOption("hidepid=4"), wantMountReads: 1, wantError: true},
+		{name: "ptraceable named", before: withOption("hidepid=ptraceable"), wantMountReads: 1, wantError: true},
+		{name: "hidden mount-level option", before: strings.Replace(commandGroupTestMountInfo, "rw,nosuid", "rw,hidepid=2,nosuid", 1), wantMountReads: 1, wantError: true},
+		{name: "unknown visibility value", before: withOption("hidepid=3"), wantMountReads: 1, wantError: true},
+		{name: "unknown visibility option", before: withOption("hidepid-future=0"), wantMountReads: 1, wantError: true},
+		{name: "visibility value missing", before: withOption("hidepid"), wantMountReads: 1, wantError: true},
+		{name: "duplicate visibility values", before: withOption("hidepid=0,hidepid=1"), wantMountReads: 1, wantError: true},
+		{name: "missing proc mount", before: "1 1 0:1 / / rw - ext4 root rw\n", wantMountReads: 1, wantError: true},
+		{name: "non-proc filesystem", before: strings.Replace(commandGroupTestMountInfo, "- proc ", "- tmpfs ", 1), wantMountReads: 1, wantError: true},
+		{name: "partial proc subtree", before: strings.Replace(commandGroupTestMountInfo, " / /proc ", " /123 /proc ", 1), wantMountReads: 1, wantError: true},
+		{name: "overlapping proc mounts", before: commandGroupTestMountInfo + withOption("hidepid=2"), wantMountReads: 1, wantError: true},
+		{name: "invalid mount identity", before: strings.Replace(commandGroupTestMountInfo, "10 1", "none 1", 1), wantMountReads: 1, wantError: true},
+		{name: "invalid mount device", before: strings.Replace(commandGroupTestMountInfo, "0:2", "invalid", 1), wantMountReads: 1, wantError: true},
+		{name: "missing mount separator", before: strings.Replace(commandGroupTestMountInfo, " - ", " ", 1), wantMountReads: 1, wantError: true},
+		{name: "truncated selected record", before: strings.TrimSuffix(commandGroupTestMountInfo, "\n"), wantMountReads: 1, wantError: true},
+		{name: "truncated mountinfo fields", before: "10 1 0:2\n", wantMountReads: 1, wantError: true},
+		{name: "initial mountinfo denied", before: commandGroupTestMountInfo, readErrAt: 1, wantMountReads: 1, wantError: true, wantCause: syscall.EACCES},
+		{name: "final mountinfo denied", before: commandGroupTestMountInfo, readErrAt: 2, wantMountReads: 2, wantDirReads: 1, wantError: true, wantCause: syscall.EACCES},
+		{name: "restricted then unrestricted refuses initial enumeration", before: withOption("hidepid=2"), after: commandGroupTestMountInfo, wantMountReads: 1, wantError: true},
+		{name: "unrestricted then restricted refuses quiet", before: commandGroupTestMountInfo, after: withOption("hidepid=2"), wantMountReads: 2, wantDirReads: 1, wantError: true},
+		{name: "complete-visible remount remains safe", before: withOption("hidepid=1"), after: withOption("hidepid=0"), wantMountReads: 2, wantDirReads: 1},
+		{name: "mount identity replaced during census", before: commandGroupTestMountInfo, after: strings.Replace(commandGroupTestMountInfo, "10 1", "11 1", 1), wantMountReads: 2, wantDirReads: 1, wantError: true, wantCause: errCommandGroupMountRace},
+		{name: "mount device changed during census", before: commandGroupTestMountInfo, after: strings.Replace(commandGroupTestMountInfo, "0:2", "0:3", 1), wantMountReads: 2, wantDirReads: 1, wantError: true, wantCause: errCommandGroupMountRace},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			proc := fstest.MapFS{
+				"42/stat": {Data: []byte(commandGroupTestStat(42, "Z", 42, "1"))},
+			}
+			mountReads, dirReads := 0, 0
+			inspector := commandGroupInspector{
+				readDir: func(path string) ([]os.DirEntry, error) {
+					dirReads++
+					if path != "/proc" {
+						t.Fatalf("unexpected directory %q", path)
+					}
+					return proc.ReadDir(".")
+				},
+				getpgid: func(int) (int, error) { return 42, nil },
+				readFile: func(path string) ([]byte, error) {
+					switch path {
+					case "/proc/self/mountinfo":
+						mountReads++
+						if mountReads == tc.readErrAt {
+							return nil, syscall.EACCES
+						}
+						if mountReads > 1 && tc.after != "" {
+							return []byte(tc.after), nil
+						}
+						return []byte(tc.before), nil
+					case "/proc/stat":
+						return []byte("processes 123\n"), nil
+					default:
+						return proc.ReadFile(strings.TrimPrefix(path, "/proc/"))
+					}
+				},
+			}
+			alive, err := inspectCommandGroup(42, inspector)
+			if alive || (err != nil) != tc.wantError || mountReads != tc.wantMountReads || dirReads != tc.wantDirReads {
+				t.Fatalf("alive=%t error=%v mount_reads=%d dir_reads=%d; want error=%t mount_reads=%d dir_reads=%d", alive, err, mountReads, dirReads, tc.wantError, tc.wantMountReads, tc.wantDirReads)
+			}
+			if tc.wantCause != nil && !errors.Is(err, tc.wantCause) {
+				t.Fatalf("lost visibility failure cause: %v", err)
 			}
 		})
 	}

@@ -73,7 +73,7 @@ printf orphan > late-effect
 }
 
 func TestControlledPipelineObservationRetriesReconcileReceipts(t *testing.T) {
-	for _, phase := range []string{"live_child", "final_census"} {
+	for _, phase := range []string{"live_child", "quiet_group"} {
 		t.Run(phase, func(t *testing.T) {
 			root := t.TempDir()
 			groupTestFile(t, root, "child.sh", `printf '%s' "$$" > child.pid
@@ -98,17 +98,23 @@ printf child
 				if int64(pgid) != target.Load() {
 					return commandGroupHasLiveMembers(pgid)
 				}
-				if (phase == "live_child" || quietSeen) && failures.Load() < 3 {
+				if phase == "quiet_group" && !quietSeen {
+					alive, err := commandGroupHasLiveMembers(pgid)
+					if err != nil || alive {
+						return alive, err
+					}
+					// Withhold the first otherwise-quiet certificate. Once a
+					// complete certificate is accepted, no second census is
+					// needed to settle naturally completed work.
+					quietSeen = true
+				}
+				if failures.Load() < 3 {
 					if failures.Add(1) == 3 {
 						close(injectedAll)
 					}
 					return false, injected
 				}
-				alive, err := commandGroupHasLiveMembers(pgid)
-				if err == nil && !alive {
-					quietSeen = true
-				}
-				return alive, err
+				return commandGroupHasLiveMembers(pgid)
 			})
 			type outcome struct {
 				state *ExecutionState
@@ -130,7 +136,7 @@ printf child
 				}
 			})
 			awaitGroupTestFile(t, filepath.Join(root, "child.pid"))
-			if phase == "final_census" {
+			if phase == "quiet_group" {
 				groupTestFile(t, root, "release", "finish")
 			}
 			select {
@@ -182,7 +188,7 @@ printf child
 	}
 }
 
-func TestControlledPipelinePersistentFinalObservationPreservesUncertainty(t *testing.T) {
+func TestControlledPipelinePersistentObservationCancellationPreservesUncertainty(t *testing.T) {
 	for _, background := range []bool{false, true} {
 		t.Run(fmt.Sprintf("background_%t", background), func(t *testing.T) {
 			root := t.TempDir()
@@ -193,7 +199,7 @@ func TestControlledPipelinePersistentFinalObservationPreservesUncertainty(t *tes
 			}
 			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "unknown-observation", Settings: DefaultWorkflowSettings(), Steps: []Step{
 				work,
-				{ID: "gate", DependsOn: []string{work.ID}, Command: "while [ ! -f final.observation ]; do sleep 0.01; done; printf ready"},
+				{ID: "gate", DependsOn: []string{work.ID}, Command: "exec sleep 30"},
 			}}
 			cfg := DefaultExecutorConfig("unknown-observation")
 			cfg.ProjectDir, cfg.RunID = root, "run-unknown-observation"
@@ -201,36 +207,35 @@ func TestControlledPipelinePersistentFinalObservationPreservesUncertainty(t *tes
 			defer cancel()
 			var target atomic.Int64
 			ctx = context.WithValue(ctx, commandStartedTestHookKey{}, func(pid int) { target.CompareAndSwap(0, int64(pid)) })
-			injected := errors.New("injected persistent final census failure")
+			injected := errors.New("injected persistent census failure through cancellation")
 			var failures atomic.Int32
 			quietSeen := false
 			ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(pgid int) (bool, error) {
 				if int64(pgid) != target.Load() {
 					return commandGroupHasLiveMembers(pgid)
 				}
-				if quietSeen {
-					if failures.Add(1) == 1 {
-						// WaitNone must reach its final census before the gate
-						// completes and finalization cancels background lifetimes.
-						if err := os.WriteFile(filepath.Join(root, "final.observation"), []byte("observed"), 0600); err != nil {
-							return false, errors.Join(injected, err)
-						}
+				if !quietSeen {
+					alive, err := commandGroupHasLiveMembers(pgid)
+					if err != nil || alive {
+						return alive, err
 					}
-					return false, injected
-				}
-				alive, err := commandGroupHasLiveMembers(pgid)
-				if err == nil && !alive {
 					quietSeen = true
 				}
-				return alive, err
+				if failures.Add(1) == 1 {
+					// The observation is unknown before any quiet certificate
+					// is admitted. Only genuine cancellation ends supervision;
+					// the same fault must survive grace and post-kill retries.
+					cancel()
+				}
+				return false, injected
 			})
 			events := make(chan ProgressEvent, 100)
 			started := time.Now()
 			state, err := RunControlledPipeline(ctx, workflow, nil, cfg, events)
-			if elapsed := time.Since(started); elapsed > 6*time.Second {
-				t.Fatalf("persistent final observation exceeded its cleanup bound: %v", elapsed)
+			if elapsed := time.Since(started); elapsed < commandCancelGracePeriod || elapsed > 9*time.Second {
+				t.Fatalf("persistent observation shortened grace or exceeded its cleanup bound: %v", elapsed)
 			}
-			if err == nil || state == nil || state.Status != StatusFailed || failures.Load() < 2 {
+			if err == nil || state == nil || state.Status != StatusCancelled || failures.Load() < 2 {
 				t.Fatalf("persistent uncertainty became success or skipped retries: %+v %v failures=%d", state, err, failures.Load())
 			}
 			assertNoCompletionEvent(t, events)
@@ -240,11 +245,11 @@ func TestControlledPipelinePersistentFinalObservationPreservesUncertainty(t *tes
 			}
 			receipt := prior.CommandExecutions[work.ID]
 			if receipt.Status != commandExecutionUnresolved || !receipt.SettledAt.IsZero() || receipt.Background != background ||
-				receipt.Result.Status != StatusFailed || receipt.Result.Output != "captured" || receipt.Result.Error == nil ||
+				receipt.Result.Status != StatusCancelled || receipt.Result.Output != "captured" || receipt.Result.Error == nil ||
 				!strings.Contains(receipt.Result.Error.Details, injected.Error()) || receipt.Result.FinishedAt.IsZero() || receipt.Result.RerunOnResume {
 				t.Fatalf("ended supervision lost uncertainty or granted replay: %+v", receipt)
 			}
-			if !background && (prior.Steps[work.ID].Attempts != 1 || prior.Steps[work.ID].Error.Type != "execution_unknown") {
+			if !background && (prior.Steps[work.ID].Attempts != 1 || prior.Steps[work.ID].Error.Type != "cancelled") {
 				t.Fatalf("uncertain foreground execution was retried or disguised as an exit error: %+v", prior.Steps[work.ID])
 			}
 			entry := commandOperatorRecoveryEntry(t, cfg)

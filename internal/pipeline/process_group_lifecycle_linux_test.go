@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -660,8 +661,10 @@ func TestCommandGroupInspectionRetainsZombieLeaderEvidence(t *testing.T) {
 	if err := observeCommandExit(cmd.Process.Pid, 0); err != nil {
 		t.Fatal(err)
 	}
-	if alive, err := commandGroupHasLiveMembers(cmd.Process.Pid); err != nil || alive {
-		t.Fatalf("unreaped zombie leader should establish a quiet owned group: alive=%t err=%v", alive, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := waitCommandGroupQuiescent(ctx, cmd.Process.Pid); err != nil {
+		t.Fatalf("unreaped zombie leader should establish a guarded quiet owned group: %v", err)
 	}
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)
@@ -932,25 +935,186 @@ func TestCommandCancellationRacingQuietGroupObservation(t *testing.T) {
 	}
 }
 
-func TestCommandFinalObservationFailureIsBoundedAndUnsettled(t *testing.T) {
+func TestCommandNaturalSettlementDoesNotReobserveProvenQuietGroup(t *testing.T) {
 	cmd := startGroupTestCommand(t, t.TempDir(), "exit 0")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	fault := errors.New("final census remains unavailable")
-	calls := 0
+	quietSeen := false
+	lateCalls := 0
 	ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(pgid int) (bool, error) {
-		calls++
-		if calls > 1 {
-			return false, fault
+		if quietSeen {
+			lateCalls++
+			return false, errors.New("later unrelated churn invalidated a redundant census")
 		}
-		return commandGroupHasLiveMembers(pgid)
+		alive, err := commandGroupHasLiveMembers(pgid)
+		quietSeen = err == nil && !alive
+		return alive, err
 	})
-	started := time.Now()
 	result := waitCommandWithProcessGroupCleanup(ctx, cmd)
-	if result.Settled || result.Cancelled || !errors.Is(result.Err, fault) || !errors.Is(result.Err, context.DeadlineExceeded) || cmd.ProcessState == nil {
-		t.Fatalf("unproven final census allowed settlement or lost error: %+v", result)
+	if !quietSeen || lateCalls != 0 || !result.Settled || result.Cancelled || result.Err != nil || cmd.ProcessState == nil {
+		t.Fatalf("certified quiet command was stranded by a redundant census: %+v quiet=%t late_calls=%d", result, quietSeen, lateCalls)
 	}
-	if elapsed := time.Since(started); elapsed < commandPipeDrainTimeout || elapsed > 3*commandPipeDrainTimeout {
-		t.Fatalf("final observation did not respect bounded retries: %v", elapsed)
+}
+
+func TestCommandGroupForkHandoffCannotKillHealthyGrandchild(t *testing.T) {
+	dir := t.TempDir()
+	groupTestFile(t, dir, "forker.sh", `printf '%s' "$$" > forker.pid
+read proceed <&3
+/bin/sh worker.sh &
+`)
+	groupTestFile(t, dir, "worker.sh", `printf '%s' "$$" > worker.pid
+read proceed <&4
+printf healthy > effect
+printf child
+`)
+	forkInput, forkRelease, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = forkInput.Close(); _ = forkRelease.Close() })
+	workInput, workRelease, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = workInput.Close(); _ = workRelease.Close() })
+	cmd := exec.Command("/bin/sh", "-c", "printf leader-; /bin/sh forker.sh &")
+	cmd.Dir, cmd.ExtraFiles = dir, []*os.File{forkInput, workInput}
+	capture := newCappedWriter(64)
+	cmd.Stdout, cmd.Stderr = capture, capture
+	configureCommandProcessGroup(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// The waiter becomes the sole reaper. Cleanup can release or stop the
+	// test-owned handles, but must not start a second Wait after that handoff.
+	waiterStarted := false
+	var forker, worker *os.Process
+	t.Cleanup(func() {
+		_ = forkRelease.Close()
+		_ = workRelease.Close()
+		for _, process := range []*os.Process{forker, worker, cmd.Process} {
+			if process != nil {
+				_ = process.Kill()
+				if process != cmd.Process {
+					_ = process.Release()
+				}
+			}
+		}
+		if !waiterStarted {
+			_ = cmd.Wait()
+		}
+	})
+	forkerPID := waitForPIDFile(t, filepath.Join(dir, "forker.pid"))
+	forker, err = os.FindProcess(forkerPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	first := true
+	var handoffErr error
+	workerObservedLive := false
+	var churn atomic.Int32
+	// Start fallible test helpers before transferring exclusive reaping to
+	// the waiter. Once inside its observer, return errors instead of FailNow.
+	startPipelineReceiptChurn(t, &churn)
+	ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(pgid int) (bool, error) {
+		if !first {
+			alive, err := commandGroupHasLiveMembers(pgid)
+			if err == nil && alive && !workerObservedLive && churn.Load() > 1 {
+				workerObservedLive = true
+				if _, err := workRelease.WriteString("finish\n"); err != nil {
+					return false, err
+				}
+			}
+			return alive, err
+		}
+		first = false
+		alive, err := inspectCommandGroup(pgid, commandGroupInspector{
+			getpgid:  syscall.Getpgid,
+			readFile: os.ReadFile,
+			readDir: func(path string) ([]os.DirEntry, error) {
+				entries, err := os.ReadDir(path)
+				if err != nil {
+					return nil, err
+				}
+				listed := false
+				for _, entry := range entries {
+					listed = listed || entry.Name() == strconv.Itoa(forkerPID)
+				}
+				if !listed {
+					return nil, errors.New("gated forker was missing from the real directory snapshot")
+				}
+				// Every PID and stat record is real. Only scheduling is
+				// controlled: fork AFTER enumeration, then retire the forker
+				// BEFORE the observer can read its old directory entry.
+				if _, err := forkRelease.WriteString("fork\n"); err != nil {
+					return nil, err
+				}
+				workerPID := 0
+				deadline := time.Now().Add(3 * time.Second)
+				for time.Now().Before(deadline) {
+					data, readErr := os.ReadFile(filepath.Join(dir, "worker.pid"))
+					if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+						return nil, readErr
+					}
+					if pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data))); parseErr == nil && pid > 1 {
+						workerPID = pid
+						break
+					}
+					if err := ctx.Err(); err != nil {
+						return nil, err
+					}
+					time.Sleep(time.Millisecond)
+				}
+				if workerPID == 0 {
+					return nil, errors.New("new worker did not publish its PID before observation deadline")
+				}
+				worker, err = os.FindProcess(workerPID)
+				if err != nil {
+					return nil, err
+				}
+				for _, entry := range entries {
+					if entry.Name() == strconv.Itoa(workerPID) {
+						return nil, errors.New("new worker unexpectedly appeared in the earlier snapshot")
+					}
+				}
+				deadline = time.Now().Add(3 * time.Second)
+				for time.Now().Before(deadline) {
+					data, readErr := os.ReadFile(fmt.Sprintf("/proc/%d/stat", forkerPID))
+					if errors.Is(readErr, os.ErrNotExist) {
+						return entries, nil
+					}
+					if readErr != nil {
+						return nil, readErr
+					}
+					_, state, parseErr := parseCommandGroupStat(data, forkerPID)
+					if parseErr != nil {
+						return nil, parseErr
+					}
+					if state == "Z" || state == "X" {
+						return entries, nil
+					}
+					time.Sleep(time.Millisecond)
+				}
+				return nil, errors.New("forker did not exit before its census row was inspected")
+			},
+		})
+		handoffErr = err
+		return alive, err
+	})
+	waiterStarted = true
+	result := waitCommandWithProcessGroupCleanup(ctx, cmd)
+	if !errors.Is(handoffErr, errCommandGroupBirthRace) {
+		t.Fatalf("real fork/exit handoff was accepted as quiet evidence: %v", handoffErr)
+	}
+	if !workerObservedLive || churn.Load() < 2 || result.Err != nil || result.Cancelled || result.SignalSent != "" || !result.Settled {
+		t.Fatalf("normal completion killed or abandoned the hidden grandchild: %+v observed_live=%t churn=%d", result, workerObservedLive, churn.Load())
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "effect")); err != nil || string(data) != "healthy" {
+		t.Fatalf("healthy grandchild did not finish its side effect: %q %v", data, err)
+	}
+	if capture.String() != "leader-child" || !capture.outputCaptureComplete() {
+		t.Fatalf("natural descendant completion lost captured-stream EOF: output=%q complete=%t", capture.String(), capture.outputCaptureComplete())
 	}
 }

@@ -14,7 +14,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-var errCommandLeaderRunning = errors.New("command leader is still running")
+var (
+	errCommandLeaderRunning  = errors.New("command leader is still running")
+	errCommandGroupBirthRace = errors.New("process creation raced command group observation")
+	errCommandGroupMountRace = errors.New("procfs mount changed during command group observation")
+)
 
 // waitCommandWithProcessGroupCleanup owns the WHOLE isolated command group.
 // Do not call Cmd.Wait concurrently: it would reap the leader, allowing its
@@ -103,18 +107,12 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 		// until all ordinary group members stop executing.
 		observationErr = waitCommandGroupQuiescent(ctx, cmd.Process.Pid)
 		if observationErr == nil && ctx.Err() == nil {
-			// Close the enumeration/fork race while the group ID is still
-			// pinned. Normal background writers have already finished.
-			err := cancelCommandProcessGroup(cmd)
-			if errors.Is(err, os.ErrProcessDone) {
-				err = nil
-			}
-			// Signal delivery is not proof that every child stopped. Take
-			// a fresh census while the leader still pins the group ID.
-			settle, stop := context.WithTimeout(context.WithoutCancel(ctx), commandPipeDrainTimeout)
-			quietErr := waitCommandGroupQuiescent(settle, cmd.Process.Pid)
-			stop()
-			return reap(commandCleanupResult{Err: errors.Join(err, quietErr), Settled: err == nil && quietErr == nil})
+			// Quiet evidence includes an unchanged kernel birth counter and
+			// accounts for surviving threads. Never use an unsolicited kill
+			// to repair a snapshot that might have missed a new descendant.
+			// No executing member remains to fork after this certificate.
+			// Hand off the pinned leader and verify captured-stream EOF.
+			return reap(commandCleanupResult{Settled: true})
 		}
 	}
 	result = commandCleanupResult{Cancelled: true, SignalSent: "SIGTERM"}
@@ -273,6 +271,14 @@ func inspectCommandGroup(pgid int, inspector commandGroupInspector) (bool, error
 	if pgid <= 1 {
 		return false, fmt.Errorf("inspect command process group: invalid group ID %d", pgid)
 	}
+	mountBefore, err := readCommandProcfsVisibility(inspector.readFile)
+	if err != nil {
+		return false, err
+	}
+	birthsBefore, err := readCommandProcessBirths(inspector.readFile)
+	if err != nil {
+		return false, err
+	}
 	entries, err := inspector.readDir("/proc")
 	if err != nil {
 		return false, fmt.Errorf("inspect command process group: %w", err)
@@ -286,8 +292,9 @@ func inspectCommandGroup(pgid int, inspector commandGroupInspector) (bool, error
 		// Kernel membership narrows the census BEFORE procfs interpretation.
 		// A malformed or unreadable row from another group cannot affect this
 		// command. Still enumerate every PID: orphaned grandchildren no longer
-		// appear in the leader's children list. Fork and group changes can race
-		// any snapshot, so callers retain the final signal and fresh census.
+		// appear in the leader's children list. A later birth-counter check
+		// rejects quiet snapshots in which a descendant could have forked
+		// after enumeration and exited before its own row was inspected.
 		group, groupErr := inspector.getpgid(pid)
 		if errors.Is(groupErr, syscall.ESRCH) {
 			continue
@@ -325,14 +332,165 @@ func inspectCommandGroup(pgid int, inspector commandGroupInspector) (bool, error
 			}
 			leaderSeen = true
 		}
-		if group == pgid && processState != "Z" && processState != "X" {
-			alive = true
+		if group == pgid {
+			if processState != "Z" && processState != "X" {
+				alive = true
+			} else {
+				// A zombie thread-group leader can still have executing
+				// threads. /proc enumerates the leader, not each of its TIDs.
+				threads, err := commandGroupStatThreads(data, pid)
+				if err != nil {
+					return false, errors.Join(groupErr, err)
+				}
+				alive = alive || threads > 1
+			}
 		}
 	}
 	if !leaderSeen {
 		return false, errors.New("inspect command process group: unreaped leader missing from procfs")
 	}
-	return alive, nil
+	if alive {
+		return true, nil
+	}
+	mountAfter, err := readCommandProcfsVisibility(inspector.readFile)
+	if err != nil {
+		return false, err
+	}
+	if mountBefore != mountAfter {
+		return false, errCommandGroupMountRace
+	}
+	birthsAfter, err := readCommandProcessBirths(inspector.readFile)
+	if err != nil {
+		return false, err
+	}
+	if birthsBefore != birthsAfter {
+		return false, errCommandGroupBirthRace
+	}
+	return false, nil
+}
+
+// A stable birth counter cannot repair hidden process directories. A setuid
+// or non-dumpable descendant can remain in the owned group while hidepid=2/4
+// omits it from readdir. hidepid=1 only restricts access to rows: enumeration
+// remains complete, and an unreadable owned row already fails closed below.
+func readCommandProcfsVisibility(readFile func(string) ([]byte, error)) (string, error) {
+	data, err := readFile("/proc/self/mountinfo")
+	if err != nil {
+		return "", fmt.Errorf("inspect command procfs visibility: %w", err)
+	}
+	invalid := func(reason string) (string, error) {
+		return "", fmt.Errorf("inspect command procfs visibility: %s", reason)
+	}
+	identity := ""
+	for _, line := range strings.SplitAfter(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) < 5 {
+			return invalid("malformed mountinfo record")
+		}
+		if fields[4] != "/proc" {
+			continue
+		}
+		if !strings.HasSuffix(line, "\n") {
+			return invalid("truncated /proc mountinfo record")
+		}
+		if identity != "" {
+			return invalid("ambiguous overlapping /proc mounts")
+		}
+		separator := -1
+		for i := 6; i < len(fields); i++ {
+			if fields[i] == "-" {
+				separator = i
+				break
+			}
+		}
+		if separator < 0 || len(fields) != separator+4 || fields[3] != "/" || fields[separator+1] != "proc" {
+			return invalid("/proc is not a complete procfs mount")
+		}
+		mountID, idErr := strconv.ParseUint(fields[0], 10, 64)
+		parentID, parentErr := strconv.ParseUint(fields[1], 10, 64)
+		major, minor, deviceOK := strings.Cut(fields[2], ":")
+		_, majorErr := strconv.ParseUint(major, 10, 64)
+		_, minorErr := strconv.ParseUint(minor, 10, 64)
+		if idErr != nil || mountID == 0 || parentErr != nil || parentID == 0 || !deviceOK || majorErr != nil || minorErr != nil {
+			return invalid("invalid /proc mount identity")
+		}
+		hidepidSeen := false
+		for _, options := range []string{fields[5], fields[separator+3]} {
+			for _, option := range strings.Split(options, ",") {
+				name, value, assigned := strings.Cut(option, "=")
+				if !strings.HasPrefix(name, "hidepid") {
+					continue
+				}
+				if hidepidSeen || !assigned || name != "hidepid" {
+					return invalid("ambiguous hidepid mount option")
+				}
+				hidepidSeen = true
+				switch value {
+				case "0", "off", "1", "noaccess":
+				default:
+					return invalid("hidepid mount option does not guarantee visible process directories")
+				}
+			}
+		}
+		// Preserve mount identity separately from complete-visible options:
+		// remounting off/noaccess does not change directory completeness.
+		identity = strings.Join(fields[:5], "\x00") + "\x00" + strings.Join(fields[separator+1:separator+3], "\x00")
+	}
+	if identity == "" {
+		return invalid("/proc mount is missing from mountinfo")
+	}
+	return identity, nil
+}
+
+// Linux increments total_forks under tasklist_lock before waking a new task,
+// including CLONE_THREAD tasks, and exposes it as /proc/stat's processes row.
+// An unchanged counter across enumeration and inspection rules out a live
+// descendant hidden by a fork/exit handoff. Global churn can invalidate this
+// certificate; the caller retries unknown evidence without signalling work.
+func readCommandProcessBirths(readFile func(string) ([]byte, error)) (uint64, error) {
+	data, err := readFile("/proc/stat")
+	if err != nil {
+		return 0, fmt.Errorf("inspect command process birth counter: %w", err)
+	}
+	var births uint64
+	found := false
+	for _, line := range strings.SplitAfter(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || fields[0] != "processes" {
+			continue
+		}
+		if found || len(fields) != 2 || !strings.HasSuffix(line, "\n") {
+			return 0, errors.New("inspect command process birth counter: malformed processes row")
+		}
+		births, err = strconv.ParseUint(fields[1], 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("inspect command process birth counter: %w", err)
+		}
+		found = true
+	}
+	if !found {
+		return 0, errors.New("inspect command process birth counter: processes row missing")
+	}
+	return births, nil
+}
+
+func commandGroupStatThreads(data []byte, pid int) (uint64, error) {
+	// parseCommandGroupStat has already validated comm and process identity.
+	text := string(data)
+	fields := strings.Fields(text[strings.LastIndexByte(text, ')')+1:])
+	// num_threads is field 20, or index 17 after comm. Require the following
+	// field too so a record truncated within the thread count cannot say 1.
+	if len(fields) < 19 {
+		return 0, fmt.Errorf("inspect process %d: missing thread-count evidence", pid)
+	}
+	threads, err := strconv.ParseUint(fields[17], 10, 64)
+	if err != nil || threads == 0 {
+		return 0, fmt.Errorf("inspect process %d: malformed thread-count evidence", pid)
+	}
+	return threads, nil
 }
 
 // procTaskExiting is the kernel's PF_EXITING.
