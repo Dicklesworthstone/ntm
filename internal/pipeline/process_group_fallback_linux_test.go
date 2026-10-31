@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
+	"testing/fstest"
 	"time"
 	"unsafe"
 
@@ -19,7 +22,7 @@ import (
 // Use real children and kernel failure injection. The seccomp filters apply
 // only inside a subprocess, never to the test runner or a developer's shell.
 func TestCommandGroupFallbackKernelFailures(t *testing.T) {
-	for _, mode := range []string{"group-denied", "settlement-denied", "open-denied", "send-denied", "unowned", "reaped", "wait-cancel", "wait-deadline", "wait-observe", "wait-ownership"} {
+	for _, mode := range []string{"group-denied", "settlement-denied", "open-denied", "send-denied", "unowned", "reaped", "wait-cancel", "wait-deadline", "wait-observe", "wait-observe-only", "wait-observe-pipes", "wait-ownership"} {
 		t.Run(mode, func(t *testing.T) {
 			exe, err := os.Executable()
 			if err != nil {
@@ -217,10 +220,14 @@ func fallbackTestInstallFilter(mode string) error {
 		// The command remains alive even after every shutdown signal fails.
 		// Deny both os.Process's pidfd route and the numeric group route on
 		// the cleanup owner's locked thread. The final reaper runs elsewhere
-		// and never sends a signal. wait-observe also denies the initial probe.
+		// and never sends a signal. wait-observe also denies the initial probe;
+		// wait-observe-only and wait-observe-pipes permit all signals so an
+		// erroneous kill is real.
 		numbers := []uint32{unix.SYS_KILL, unix.SYS_PIDFD_SEND_SIGNAL}
 		if mode == "wait-observe" {
 			numbers = append(numbers, unix.SYS_WAITID)
+		} else if mode == "wait-observe-only" || mode == "wait-observe-pipes" {
+			numbers = []uint32{unix.SYS_WAITID}
 		}
 		filter = []unix.SockFilter{{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0}}
 		for _, nr := range numbers {
@@ -246,6 +253,23 @@ func fallbackTestInstallFilter(mode string) error {
 func fallbackTestBoundedWait(t *testing.T, mode string) {
 	t.Helper()
 	cmd := exec.Command("/bin/sh", "-c", "printf ready; exec sleep 12")
+	var releasePath string
+	if mode == "wait-observe-pipes" {
+		// The leader exits naturally; its child writes only after the waiter
+		// has returned. Closing its output on failed observation would lose
+		// the late bytes or deliver SIGPIPE to otherwise healthy work.
+		cmd = exec.Command("/bin/sh", "-c", `(
+i=0
+while [ ! -f release ] && [ "$i" -lt 1200 ]; do
+  i=$((i+1)); sleep 0.01
+done
+printf after
+) &
+printf ready
+`)
+		cmd.Dir = t.TempDir()
+		releasePath = filepath.Join(cmd.Dir, "release")
+	}
 	configureCommandProcessGroup(cmd)
 	cmd.WaitDelay = 0 // The waiter must also bound callers without pipe setup.
 	capture := newCappedWriter(64)
@@ -256,6 +280,9 @@ func fallbackTestBoundedWait(t *testing.T, mode string) {
 	process := cmd.Process
 	waitStarted := false
 	defer func() {
+		if releasePath != "" {
+			_ = os.WriteFile(releasePath, []byte("finish"), 0600)
+		}
 		// Leave the seccomp-restricted thread to clean up this exact process
 		// handle. Never call Wait twice or read cmd.ProcessState concurrently
 		// with a late reaper. Observe reaping and capture completion instead.
@@ -293,6 +320,16 @@ func fallbackTestBoundedWait(t *testing.T, mode string) {
 		fmt.Printf("SECCOMP_UNAVAILABLE: %v\n", err)
 		return
 	}
+	if mode == "wait-observe-only" || mode == "wait-observe-pipes" {
+		// Prove that only observation is restricted. Either of the old
+		// cleanup paths could kill this healthy process on the same thread.
+		if err := process.Signal(syscall.Signal(0)); err != nil {
+			t.Fatalf("identity-stable signals unexpectedly denied: %v", err)
+		}
+		if err := syscall.Kill(-process.Pid, 0); err != nil {
+			t.Fatalf("owned group signals unexpectedly denied: %v", err)
+		}
+	}
 	ctx := context.Background()
 	if mode == "wait-cancel" {
 		var cancel context.CancelFunc
@@ -319,13 +356,30 @@ func fallbackTestBoundedWait(t *testing.T, mode string) {
 	if result.Cancelled != (ctx.Err() != nil) || (ctx.Err() != nil && !errors.Is(result.Err, ctx.Err())) {
 		t.Fatalf("lost cancellation or deadline cause: %+v context=%v", result, ctx.Err())
 	}
+	if mode == "wait-observe-pipes" {
+		if capture.String() != "ready" || capture.outputCaptureComplete() {
+			t.Fatal("failed observation closed the healthy descendant's inherited output")
+		}
+		if err := os.WriteFile(releasePath, []byte("finish"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for capture.String() != "readyafter" || !capture.outputCaptureComplete() {
+			if time.Now().After(deadline) {
+				t.Fatalf("healthy descendant lost late output: %q; EOF=%t", capture.String(), capture.outputCaptureComplete())
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Logf("%s returned unresolved in %v and retained the descendant's late output", mode, elapsed)
+		return
+	}
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", process.Pid))
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, state, err := parseCommandGroupStat(data, process.Pid)
 	if err != nil || state == "Z" || state == "X" {
-		t.Fatalf("fixture did not keep the denied-signal child alive: state=%q err=%v", state, err)
+		t.Fatalf("%s did not keep the unresolved child alive: state=%q err=%v", mode, state, err)
 	}
 	if capture.String() != "ready" || capture.outputCaptureComplete() {
 		t.Fatal("unresolved return lost partial output or claimed its still-open pipe had reached EOF")
@@ -396,6 +450,278 @@ func TestCommandGroupFallbackPreservesNormalLifecycle(t *testing.T) {
 				}
 			} else if result.Err != nil || capture.String() != "beginend" {
 				t.Fatalf("background completion lost output: result=%+v output=%q", result, capture.String())
+			}
+		})
+	}
+}
+
+func TestCommandGroupCensusNarrowsAndValidatesEvidence(t *testing.T) {
+	type process struct {
+		group    int
+		groupErr error
+		stat     string
+		statErr  error
+		read     bool
+	}
+	leader := process{group: 42, stat: "42 (leader) Z 1 42", read: true}
+	for _, tc := range []struct {
+		name      string
+		processes map[int]process
+		dirErr    error
+		alive     bool
+		causes    []error
+		message   string
+	}{
+		{
+			name: "unrelated malformed and unreadable rows are never read",
+			processes: map[int]process{
+				42: leader,
+				43: {group: 99, stat: "not a process record"},
+				44: {group: 99, statErr: syscall.EACCES},
+			},
+		},
+		{
+			name: "live member survives unrelated malformed row",
+			processes: map[int]process{
+				42: leader,
+				43: {group: 42, stat: "43 (worker) S 1 42", read: true},
+				44: {group: 99, stat: "bad"},
+			},
+			alive: true,
+		},
+		{
+			name: "unknown member state stays live",
+			processes: map[int]process{
+				42: leader,
+				43: {group: 42, stat: "43 (worker) ? 1 42", read: true},
+			},
+			alive: true,
+		},
+		{
+			name: "zombie and dead members cannot execute",
+			processes: map[int]process{
+				42: leader,
+				43: {group: 42, stat: "43 (worker) Z 1 42", read: true},
+				44: {group: 42, stat: "44 (worker) X 1 42", read: true},
+			},
+		},
+		{
+			name: "denied kernel lookup falls back to strict leader and unrelated rows",
+			processes: map[int]process{
+				42: {groupErr: syscall.EPERM, stat: "42 (leader) Z 1 42", read: true},
+				43: {groupErr: syscall.EPERM, stat: "43 (other) S 1 99", read: true},
+			},
+		},
+		{
+			name: "denied kernel lookup falls back to live member evidence",
+			processes: map[int]process{
+				42: leader,
+				43: {groupErr: syscall.EPERM, stat: "43 (worker) S 1 42", read: true},
+			},
+			alive: true,
+		},
+		{
+			name: "unknown membership without valid stat refuses quiet census",
+			processes: map[int]process{
+				42: leader,
+				43: {groupErr: syscall.EPERM, read: true},
+			},
+			causes:  []error{syscall.EPERM},
+			message: "malformed process-group evidence",
+		},
+		{
+			name: "unknown membership is not masked by a live member",
+			processes: map[int]process{
+				42: leader,
+				43: {group: 42, stat: "43 (worker) S 1 42", read: true},
+				44: {groupErr: syscall.EPERM, read: true},
+			},
+			causes: []error{syscall.EPERM},
+		},
+		{
+			name: "unknown membership and unreadable stat retain both failures",
+			processes: map[int]process{
+				42: leader,
+				43: {groupErr: syscall.EPERM, statErr: syscall.EIO, read: true},
+			},
+			causes:  []error{syscall.EPERM, syscall.EIO},
+			message: "inspect process 43",
+		},
+		{
+			name: "unknown membership and missing stat remain uncertain",
+			processes: map[int]process{
+				42: leader,
+				43: {groupErr: syscall.EPERM, statErr: os.ErrNotExist, read: true},
+			},
+			causes: []error{syscall.EPERM, os.ErrNotExist},
+		},
+		{
+			name: "target stat permission failure remains uncertain",
+			processes: map[int]process{
+				42: leader,
+				43: {group: 42, statErr: syscall.EACCES, read: true},
+			},
+			causes: []error{syscall.EACCES},
+		},
+		{
+			name: "target malformed stat remains uncertain",
+			processes: map[int]process{
+				42: leader,
+				43: {group: 42, stat: "bad", read: true},
+			},
+			message: "malformed process-group evidence",
+		},
+		{
+			name: "target mismatched identity remains uncertain",
+			processes: map[int]process{
+				42: leader,
+				43: {group: 42, stat: "99 (worker) Z 1 42", read: true},
+			},
+			message: "malformed process-group evidence",
+		},
+		{
+			name: "member vanishes before kernel lookup",
+			processes: map[int]process{
+				42: leader,
+				43: {groupErr: syscall.ESRCH},
+			},
+		},
+		{
+			name: "member vanishes before stat open",
+			processes: map[int]process{
+				42: leader,
+				43: {group: 42, statErr: os.ErrNotExist, read: true},
+			},
+		},
+		{
+			name: "member vanishes during stat read",
+			processes: map[int]process{
+				42: leader,
+				43: {group: 42, statErr: syscall.ESRCH, read: true},
+			},
+		},
+		{
+			name: "member moves after kernel lookup",
+			processes: map[int]process{
+				42: leader,
+				43: {group: 42, stat: "43 (worker) S 1 99", read: true},
+			},
+		},
+		{
+			name: "member released after kernel lookup",
+			processes: map[int]process{
+				42: leader,
+				43: {group: 42, stat: "43 (worker) R 0 -1 -1 0 -1 4 0", read: true},
+			},
+		},
+		{
+			name: "leader kernel group mismatch",
+			processes: map[int]process{
+				42: {group: 99, stat: "42 (leader) Z 1 42"},
+			},
+			message: "leader changed process group",
+		},
+		{
+			name: "leader stat group mismatch",
+			processes: map[int]process{
+				42: {group: 42, stat: "42 (leader) Z 1 99", read: true},
+			},
+			message: "leader changed process group",
+		},
+		{
+			name: "leader absent from directory",
+			processes: map[int]process{
+				43: {group: 42, stat: "43 (worker) Z 1 42", read: true},
+			},
+			message: "unreaped leader missing",
+		},
+		{
+			name: "leader vanishes before kernel lookup",
+			processes: map[int]process{
+				42: {groupErr: syscall.ESRCH},
+			},
+			message: "unreaped leader missing",
+		},
+		{
+			name: "leader vanishes before stat read",
+			processes: map[int]process{
+				42: {group: 42, statErr: os.ErrNotExist, read: true},
+			},
+			message: "unreaped leader missing",
+		},
+		{
+			name:   "directory enumeration failure",
+			dirErr: syscall.EIO,
+			causes: []error{syscall.EIO},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			proc := fstest.MapFS{
+				"self/stat": {Data: []byte("not a numbered process directory")},
+				"uptime":    {Data: []byte("not a process directory")},
+			}
+			for pid, process := range tc.processes {
+				proc[strconv.Itoa(pid)+"/stat"] = &fstest.MapFile{Data: []byte(process.stat)}
+			}
+			reads := make(map[int]int)
+			inspector := commandGroupInspector{
+				readDir: func(path string) ([]os.DirEntry, error) {
+					if path != "/proc" {
+						t.Fatalf("unexpected directory %q", path)
+					}
+					if tc.dirErr != nil {
+						return nil, tc.dirErr
+					}
+					return proc.ReadDir(".")
+				},
+				getpgid: func(pid int) (int, error) {
+					process, ok := tc.processes[pid]
+					if !ok {
+						t.Fatalf("looked up a non-process entry %d", pid)
+					}
+					return process.group, process.groupErr
+				},
+				readFile: func(path string) ([]byte, error) {
+					path = strings.TrimPrefix(path, "/proc/")
+					name, _, _ := strings.Cut(path, "/")
+					pid, err := strconv.Atoi(name)
+					if err != nil {
+						t.Fatalf("unexpected stat path %q", path)
+					}
+					reads[pid]++
+					if err := tc.processes[pid].statErr; err != nil {
+						return nil, err
+					}
+					return proc.ReadFile(path)
+				},
+			}
+			alive, err := inspectCommandGroup(42, inspector)
+			if alive != tc.alive {
+				t.Errorf("alive=%t, want %t; error=%v", alive, tc.alive, err)
+			}
+			if len(tc.causes) == 0 && tc.message == "" {
+				if err != nil {
+					t.Errorf("valid group evidence was rejected: %v", err)
+				}
+			} else if err == nil {
+				t.Fatal("incomplete group evidence authorized quiescence")
+			}
+			for _, cause := range tc.causes {
+				if !errors.Is(err, cause) {
+					t.Errorf("lost observation cause: got %v, want %v", err, cause)
+				}
+			}
+			if tc.message != "" && !strings.Contains(err.Error(), tc.message) {
+				t.Errorf("got %v, want diagnostic %q", err, tc.message)
+			}
+			for pid, process := range tc.processes {
+				want := 0
+				if process.read {
+					want = 1
+				}
+				if reads[pid] != want {
+					t.Errorf("read stat for PID %d %d times, want %d", pid, reads[pid], want)
+				}
 			}
 		})
 	}

@@ -136,10 +136,11 @@ type InFlightStepState struct {
 }
 
 const (
-	commandExecutionVersion  = 1
-	commandExecutionStarting = "starting"
-	commandExecutionRunning  = "running"
-	commandExecutionSettled  = "settled"
+	commandExecutionVersion    = 1
+	commandExecutionStarting   = "starting"
+	commandExecutionRunning    = "running"
+	commandExecutionUnresolved = "unresolved"
+	commandExecutionSettled    = "settled"
 )
 
 // CommandRecoveryMaxOutputBytes bounds the explicitly supplied final output of
@@ -157,6 +158,9 @@ const CommandExecutionResolutionAccept = "accept"
 // is published. It cannot prove that replaying an external command is safe.
 // ProcessID is diagnostic evidence only; a resumed process must never signal a
 // numeric PID from an earlier lifetime. A crash can leave that group running.
+// An unresolved receipt records that supervision returned without proof of
+// settlement. Its terminal Result preserves output and cleanup diagnostics,
+// but only settled receipts authorize automatic retry or ordinary resume.
 type CommandExecutionState struct {
 	Version    int        `json:"version"`
 	StepID     string     `json:"step_id"`
@@ -275,6 +279,16 @@ func validateCommandExecution(key string, record CommandExecutionState) error {
 		}
 		if record.Status == commandExecutionRunning && record.ProcessID == 0 {
 			return invalid("running command is missing its process ID")
+		}
+	case commandExecutionUnresolved:
+		if record.ProcessID == 0 || !record.SettledAt.IsZero() || record.Result.StepID != key ||
+			record.Result.AgentType != "command" || !record.Result.StartedAt.Equal(record.StartedAt) ||
+			record.Result.FinishedAt.IsZero() || record.Result.FinishedAt.Before(record.StartedAt) ||
+			record.Result.Error == nil || record.Result.Error.Message == "" || record.Result.RerunOnResume {
+			return invalid("missing or inconsistent unresolved cleanup evidence")
+		}
+		if record.Result.Status != StatusFailed && record.Result.Status != StatusCancelled {
+			return invalid("unresolved cleanup cannot publish a successful outcome")
 		}
 	case commandExecutionSettled:
 		if record.SettledAt.IsZero() || record.SettledAt.Before(record.StartedAt) || record.Result.StepID != key || record.Result.FinishedAt.IsZero() {

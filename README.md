@@ -804,7 +804,24 @@ for the case where the command finished but its final checkpoint was lost. `pipe
 includes these command receipts in its `commands` JSON array, with eligibility
 and refusal information. Before accepting one, independently verify that the
 original command **and all its descendants have finished**, then supply its
-observed exit code and complete captured output:
+observed exit code and complete captured output.
+
+On Linux, a failed process-group observation keeps the command under supervision
+and is retried within its existing execution deadline. It does not request
+cancellation or shorten the five-second SIGTERM grace period. After the final
+group signal, NTM retries observation for up to one second while retaining the
+original group leader's identity. A complete quiet-group observation and complete
+output capture are both required for a `settled` receipt.
+
+If cleanup returns without that proof, the receipt becomes `unresolved`, with the
+failed or cancelled outcome and cleanup details preserved, rather than remaining
+`running` after supervision ended. Ordinary resume and automatic retry refuse
+these receipts. A saved PID disappearing later is not sufficient evidence for
+automatic reconciliation: its original group identity is no longer pinned.
+Use the explicit recovery procedure below only after independently verifying the
+original command and its effects.
+
+For example:
 
 ```bash
 ntm pipeline recover run-20241230-123456-abcd --json

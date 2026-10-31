@@ -1499,11 +1499,20 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 	// owned process-group waiter can prove settlement. Persist that proof
 	// before executeStep clears scheduler bookkeeping or another worker saves.
 	commandSettled := true
+	commandCleanupReturned := false
 	defer func() {
-		if !commandSettled || !journalCommand {
+		if !journalCommand || (!commandSettled && !commandCleanupReturned) {
 			return
 		}
-		record.Status, record.SettledAt, record.Result = commandExecutionSettled, time.Now(), result
+		record.Result = result
+		if commandSettled {
+			record.Status, record.SettledAt = commandExecutionSettled, time.Now()
+		} else {
+			// Supervision ended, but termination was not proved. Persist the
+			// actual failure without leaving a misleading running receipt or
+			// granting the replay permission carried only by settled receipts.
+			record.Status, record.SettledAt = commandExecutionUnresolved, time.Time{}
+		}
 		// A failed save stops the workflow through its sticky checkpoint error,
 		// while retaining the actual command outcome in the returned state.
 		_ = e.saveCommandExecution(record)
@@ -1540,9 +1549,18 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 			cmdCancel()
 			cleanup := waitCommandWithProcessGroupCleanup(cmdCtx, cmd)
 			commandSettled = cleanup.Settled
+			commandCleanupReturned = true
 			result.Output = e.capturedCommandOutput(step, stdoutBuf, stderrBuf)
 			result.Status, result.FinishedAt = StatusFailed, time.Now()
-			result.Error = stepRuntimeError(step, StepKindCommand, "checkpoint", err.Error(), "inspect the command group and restore durable storage before retrying", "")
+			cleanupErr := cleanup.Err
+			if !cleanup.Settled {
+				cleanupErr = errors.Join(cleanupErr, uncertainCommandExecutionError(step.ID, record.ProcessID))
+			}
+			var details string
+			if cleanupErr != nil {
+				details = cleanupErr.Error()
+			}
+			result.Error = stepRuntimeError(step, StepKindCommand, "checkpoint", err.Error(), "inspect the command group and restore durable storage before retrying", details)
 			return result
 		}
 	}
@@ -1556,27 +1574,44 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		go func() {
 			defer e.backgroundCommandWG.Done()
 			cleanup := waitCommandWithProcessGroupCleanup(ctx, cmd)
+			cleanupErr := cleanup.Err
 			if !cleanup.Settled {
-				// Keep the launch receipt unresolved, but also carry the
+				// Keep the launch receipt unresolved and also carry the
 				// cleanup failure into the workflow's terminal outcome. A
 				// detached child can still act after this worker returns.
+				cleanupErr = errors.Join(cleanupErr, uncertainCommandExecutionError(stepID, backgroundRecord.ProcessID))
 				e.stateMu.Lock()
 				if e.backgroundCommandErrors == nil {
 					e.backgroundCommandErrors = make(map[string]error)
 				}
-				e.backgroundCommandErrors[stepID] = errors.Join(cleanup.Err, uncertainCommandExecutionError(stepID, backgroundRecord.ProcessID))
+				e.backgroundCommandErrors[stepID] = cleanupErr
 				e.stateMu.Unlock()
 			}
-			if cleanup.Settled && journalCommand {
+			if journalCommand {
 				finished := time.Now()
 				backgroundRecord.Status, backgroundRecord.SettledAt = commandExecutionSettled, finished
 				backgroundRecord.Result = StepResult{StepID: stepID, AgentType: "command", Status: StatusCompleted, StartedAt: startedAt, FinishedAt: finished}
-				if cleanup.Cancelled || cleanup.Err != nil {
+				if !cleanup.Settled {
+					backgroundRecord.Status, backgroundRecord.SettledAt = commandExecutionUnresolved, time.Time{}
+				}
+				if cleanup.Cancelled || cleanupErr != nil {
 					backgroundRecord.Result.Status = StatusFailed
+					errorType := "command"
+					if !cleanup.Settled {
+						errorType = "execution_unknown"
+					}
 					if cleanup.Cancelled {
 						backgroundRecord.Result.Status = StatusCancelled
+						errorType = "cancelled"
+						if cleanupErr == nil {
+							cleanupErr = context.Canceled
+						}
 					}
-					backgroundRecord.Result.RerunOnResume = true
+					backgroundStep := &Step{ID: stepID}
+					backgroundRecord.Result.Output = e.capturedCommandOutput(backgroundStep, stdoutBuf, stderrBuf)
+					backgroundRecord.Result.Error = stepRuntimeError(backgroundStep, StepKindCommand, errorType,
+						"background command cleanup failed", "inspect the command execution before resuming", cleanupErr.Error())
+					backgroundRecord.Result.RerunOnResume = cleanup.Settled
 				}
 				_ = e.saveCommandExecution(backgroundRecord) // Sticky checkpoint failure cancels the run.
 			}
@@ -1642,6 +1677,7 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 
 	cleanup := waitCommandWithProcessGroupCleanup(cmdCtx, cmd)
 	commandSettled = cleanup.Settled
+	commandCleanupReturned = true
 	close(heartbeatDone)
 	// bd-48ckr: wait for the heartbeat goroutine to fully exit before
 	// returning so test-injected mutations (commandHeartbeatInterval,
@@ -1678,7 +1714,7 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 			result.Error = stepRuntimeError(step, "command", errorType,
 				reason,
 				"retry the run if cancellation was not intentional",
-				"")
+				waitErr.Error())
 			result.FinishedAt = time.Now()
 			return result
 		}
@@ -1687,7 +1723,7 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 			result.Error = stepRuntimeError(step, "command", "timeout",
 				fmt.Sprintf("timed out after %s", timeout),
 				"increase step.timeout or reduce command runtime",
-				"")
+				waitErr.Error())
 			slog.Warn("command step timed out",
 				"run_id", e.state.RunID,
 				"step_id", step.ID,
@@ -1697,7 +1733,12 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 			return result
 		}
 		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) {
+		if !cleanup.Settled {
+			result.Status = StatusFailed
+			result.Error = stepRuntimeError(step, StepKindCommand, "execution_unknown",
+				"command cleanup could not verify settlement",
+				"inspect the command group and its effects before deliberately replaying it", waitErr.Error())
+		} else if errors.As(waitErr, &exitErr) {
 			result.Status = StatusFailed
 			result.Error = commandExitStepError(step, exitErr.ExitCode())
 			slog.Warn("command step exited non-zero",

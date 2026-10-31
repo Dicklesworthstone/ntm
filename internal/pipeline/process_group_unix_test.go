@@ -289,8 +289,9 @@ func TestCommandGroupInspectionFailurePreservesUnresolvedLaunch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if receipt, ok := prior.CommandExecutions["uncertain"]; !ok || receipt.Status == commandExecutionSettled {
-				t.Fatalf("failed inspection manufactured settlement: %+v", receipt)
+			if receipt, ok := prior.CommandExecutions["uncertain"]; !ok || receipt.Status != commandExecutionUnresolved ||
+				!receipt.SettledAt.IsZero() || receipt.Result.Error == nil || receipt.Result.FinishedAt.IsZero() {
+				t.Fatalf("failed inspection lost its unresolved cleanup evidence: %+v", receipt)
 			}
 			statePath := pipelineStatePath(e.config.ProjectDir, initial.RunID)
 			before, err := os.ReadFile(statePath)

@@ -499,7 +499,7 @@ printf ready > pipeline.ready
 			}
 			for _, id := range []string{"alpha", "zeta"} {
 				receipt, ok := saved.CommandExecutions[id]
-				if !ok || receipt.Status != commandExecutionRunning || !receipt.Background || !receipt.SettledAt.IsZero() {
+				if !ok || receipt.Status != commandExecutionUnresolved || !receipt.Background || !receipt.SettledAt.IsZero() || receipt.Result.Error == nil {
 					t.Fatalf("unsettled %s receipt was replaced with replay permission: %+v", id, receipt)
 				}
 			}
@@ -740,5 +740,193 @@ func TestCommandCleanupSettlesEmptyCapturedStreams(t *testing.T) {
 				t.Fatalf("empty captures did not settle: %+v", result)
 			}
 		})
+	}
+}
+
+func TestCommandGroupObservationRetriesAndPreservesFailure(t *testing.T) {
+	fault := errors.New("injected process census failure")
+	for _, tc := range []struct {
+		name      string
+		recover   bool
+		live      bool
+		wantError bool
+	}{
+		{name: "transient then quiet", recover: true},
+		{name: "transient then live until deadline", recover: true, live: true},
+		{name: "unresolved at deadline", wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			ctx, cancel := context.WithTimeout(context.Background(), 4*commandGroupPollInterval)
+			defer cancel()
+			ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(int) (bool, error) {
+				calls++
+				if calls <= 2 || !tc.recover {
+					return false, fault
+				}
+				return tc.live, nil
+			})
+			err := waitCommandGroupQuiescent(ctx, 42)
+			if calls < 3 || errors.Is(err, fault) != tc.wantError {
+				t.Fatalf("calls=%d err=%v, want retained observation failure=%t", calls, err, tc.wantError)
+			}
+			if tc.live || !tc.recover {
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("lost observation deadline: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("recovered observation poisoned a complete census: %v", err)
+			}
+		})
+	}
+}
+
+func TestCommandObservationFailureKeepsHealthyChildAndOutput(t *testing.T) {
+	dir := t.TempDir()
+	groupTestFile(t, dir, "child.sh", `printf ready > child.ready
+while [ ! -f release ]; do sleep 0.01; done
+printf child-finished
+`)
+	cmd := exec.Command("/bin/sh", "-c", `/bin/sh child.sh &`)
+	cmd.Dir = dir
+	capture := newCappedWriter(128)
+	cmd.Stdout, cmd.Stderr = capture, capture
+	configureCommandProcessGroup(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	observed := make(chan struct{}, 1)
+	calls := 0
+	ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(pgid int) (bool, error) {
+		calls++
+		if calls <= 4 {
+			select {
+			case observed <- struct{}{}:
+			default:
+			}
+			return false, errors.New("injected unrelated process read failure")
+		}
+		return commandGroupHasLiveMembers(pgid)
+	})
+	done := make(chan commandCleanupResult, 1)
+	go func() { done <- waitCommandWithProcessGroupCleanup(ctx, cmd) }()
+	t.Cleanup(func() {
+		_ = os.WriteFile(filepath.Join(dir, "release"), []byte("finish"), 0600)
+		cancel()
+	})
+	awaitGroupTestFile(t, filepath.Join(dir, "child.ready"))
+	select {
+	case <-observed:
+	case <-ctx.Done():
+		t.Fatal("waiter never observed its exited leader's group")
+	}
+	if err := observeCommandExit(cmd.Process.Pid, syscall.WNOHANG); err != nil {
+		t.Errorf("observation failure released the leader identity: %v", err)
+	}
+	groupTestFile(t, dir, "release", "finish")
+	select {
+	case result := <-done:
+		if result.Err != nil || result.Cancelled || !result.Settled || capture.String() != "child-finished" || !capture.outputCaptureComplete() || calls < 5 {
+			t.Fatalf("healthy work harmed by census failure: %+v output=%q calls=%d", result, capture.String(), calls)
+		}
+	case <-ctx.Done():
+		t.Fatal("healthy child did not finish after observation recovered")
+	}
+}
+
+func TestCommandObservationFailureDoesNotShortenGraceOrStrandSettlement(t *testing.T) {
+	dir := t.TempDir()
+	groupTestFile(t, dir, "child.sh", `trap '' TERM
+printf '%s' "$$" > child.pid
+while [ ! -f release ]; do sleep 0.01; done
+printf orphan > late-effect
+`)
+	cmd := startGroupTestCommand(t, dir, `trap 'exit 0' TERM; /bin/sh child.sh >/dev/null 2>&1 & wait`)
+	childPID, err := strconv.Atoi(string(awaitGroupTestFile(t, filepath.Join(dir, "child.pid"))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := os.FindProcess(childPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer child.Kill()
+	fault := errors.New("injected grace observation failure")
+	quietCalls := 0
+	ctx, cancel := context.WithCancel(context.Background())
+	ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(pgid int) (bool, error) {
+		alive, err := commandGroupHasLiveMembers(pgid)
+		if err != nil {
+			return false, err
+		}
+		if alive {
+			return false, fault
+		}
+		quietCalls++
+		if quietCalls <= 2 {
+			return false, errors.New("injected post-kill observation failure")
+		}
+		return false, nil
+	})
+	cancel()
+	started := time.Now()
+	result := waitCommandWithProcessGroupCleanup(ctx, cmd)
+	elapsed := time.Since(started)
+	if elapsed < commandCancelGracePeriod || elapsed > commandCancelGracePeriod+3*commandPipeDrainTimeout {
+		t.Errorf("observation failure changed cleanup budget: elapsed=%v result=%+v", elapsed, result)
+	}
+	if !result.Cancelled || !result.Settled || !errors.Is(result.Err, context.Canceled) || !errors.Is(result.Err, fault) ||
+		!strings.Contains(result.Err.Error(), "SIGTERM grace period") || result.SignalSent != "SIGTERM,SIGKILL" || quietCalls < 3 {
+		t.Fatalf("cancellation lost grace failure or final settlement: %+v quiet_calls=%d", result, quietCalls)
+	}
+	groupTestFile(t, dir, "release", "finish")
+	time.Sleep(50 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(dir, "late-effect")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cancelled child survived cleanup: %v", err)
+	}
+}
+
+func TestCommandCancellationRacingFailedGroupObservation(t *testing.T) {
+	dir := t.TempDir()
+	cmd := startGroupTestCommand(t, dir, `sleep 30 >/dev/null 2>&1 &`)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	calls := 0
+	ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(pgid int) (bool, error) {
+		calls++
+		if calls == 1 {
+			cancel()
+			return false, errors.New("census failed while cancellation arrived")
+		}
+		return commandGroupHasLiveMembers(pgid)
+	})
+	result := waitCommandWithProcessGroupCleanup(ctx, cmd)
+	if !result.Cancelled || !result.Settled || !errors.Is(result.Err, context.Canceled) || calls < 2 {
+		t.Fatalf("cancellation during census lost group ownership: %+v calls=%d", result, calls)
+	}
+}
+
+func TestCommandFinalObservationFailureIsBoundedAndUnsettled(t *testing.T) {
+	cmd := startGroupTestCommand(t, t.TempDir(), "exit 0")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	fault := errors.New("final census remains unavailable")
+	calls := 0
+	ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(pgid int) (bool, error) {
+		calls++
+		if calls > 1 {
+			return false, fault
+		}
+		return commandGroupHasLiveMembers(pgid)
+	})
+	started := time.Now()
+	result := waitCommandWithProcessGroupCleanup(ctx, cmd)
+	if result.Settled || result.Cancelled || !errors.Is(result.Err, fault) || !errors.Is(result.Err, context.DeadlineExceeded) || cmd.ProcessState == nil {
+		t.Fatalf("unproven final census allowed settlement or lost error: %+v", result)
+	}
+	if elapsed := time.Since(started); elapsed < commandPipeDrainTimeout || elapsed > 3*commandPipeDrainTimeout {
+		t.Fatalf("final observation did not respect bounded retries: %v", elapsed)
 	}
 }

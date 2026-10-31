@@ -18,6 +18,10 @@ const commandGroupPollInterval = 50 * time.Millisecond
 
 var errCommandLeaderRunning = errors.New("command leader is still running")
 
+// Per-command fault injection keeps concurrent waiters independent. Cleanup
+// contexts retain these values even after the command's context is cancelled.
+type commandGroupObservationTestHookKey struct{}
+
 // waitCommandWithProcessGroupCleanup owns the WHOLE isolated command group.
 // Do not call Cmd.Wait concurrently: it would reap the leader, allowing its
 // numeric PID/PGID to be reused before a delayed group signal. WNOWAIT observes
@@ -65,16 +69,31 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	// Detect unsupported waitid or an externally reaped child before sending
 	// any numeric group signal. A live or exited child remains unreaped.
 	if err := observeCommandExit(cmd.Process.Pid, syscall.WNOHANG); err != nil && !errors.Is(err, errCommandLeaderRunning) {
-		killErr := cmd.Process.Kill()
-		return reap(commandCleanupResult{Err: errors.Join(err, killErr)})
+		var killErr error
+		if ctx.Err() != nil {
+			killErr = cmd.Process.Kill()
+		} else {
+			// Leave inherited pipes open for healthy descendants, even if
+			// their leader exits after we hand it to the final reaper. The
+			// outer reap timer still bounds this unresolved return.
+			cmd.WaitDelay = 0
+		}
+		return reap(commandCleanupResult{Err: errors.Join(err, ctx.Err(), killErr), Cancelled: ctx.Err() != nil})
 	}
 	// A blocking waitid goroutine cannot be canceled if SIGKILL is denied
 	// or the leader is stuck in uninterruptible I/O. Poll without reaping so
 	// cancellation never has to join an unbounded exit observer.
 	observationErr := waitCommandLeaderExit(ctx, cmd.Process.Pid)
 	if observationErr != nil && !errors.Is(observationErr, context.Canceled) && !errors.Is(observationErr, context.DeadlineExceeded) {
-		// Lost waitability is not authority for a numeric group signal.
-		killErr := cmd.Process.Kill()
+		// Lost waitability is not authority for a numeric group signal, or
+		// a request to kill a healthy leader. Only actual cancellation may
+		// stop it through its identity-stable process handle.
+		var killErr error
+		if ctx.Err() != nil {
+			killErr = cmd.Process.Kill()
+		} else {
+			cmd.WaitDelay = 0
+		}
 		return reap(commandCleanupResult{Err: errors.Join(observationErr, ctx.Err(), killErr), Cancelled: ctx.Err() != nil})
 	}
 	if ctx.Err() == nil {
@@ -82,7 +101,7 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 		// finishes. Preserve its output and keep cancellation effective
 		// until all ordinary group members stop executing.
 		observationErr = waitCommandGroupQuiescent(ctx, cmd.Process.Pid)
-		if observationErr == nil {
+		if observationErr == nil && ctx.Err() == nil {
 			// Close the enumeration/fork race while the group ID is still
 			// pinned. Normal background writers have already finished.
 			err := cancelCommandProcessGroup(cmd)
@@ -91,24 +110,23 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 			}
 			// Signal delivery is not proof that every child stopped. Take
 			// a fresh census while the leader still pins the group ID.
-			settle, stop := context.WithTimeout(context.Background(), commandPipeDrainTimeout)
+			settle, stop := context.WithTimeout(context.WithoutCancel(ctx), commandPipeDrainTimeout)
 			quietErr := waitCommandGroupQuiescent(settle, cmd.Process.Pid)
 			stop()
 			return reap(commandCleanupResult{Err: errors.Join(err, quietErr), Settled: err == nil && quietErr == nil})
 		}
 	}
-	if observationErr != nil && ctx.Err() == nil {
-		// The leader is pinned, but failed procfs inspection cannot prove
-		// quiescence. Terminate the owned group and surface that failure.
-		killErr := cancelCommandProcessGroup(cmd)
-		return reap(commandCleanupResult{Err: errors.Join(observationErr, killErr)})
-	}
-
 	result = commandCleanupResult{Cancelled: true, SignalSent: "SIGTERM"}
 	termErr := signalCommandProcessGroup(cmd, syscall.SIGTERM)
-	grace, cancel := context.WithTimeout(context.Background(), commandCancelGracePeriod)
-	_ = waitCommandGroupQuiescent(grace, cmd.Process.Pid)
+	grace, cancel := context.WithTimeout(context.WithoutCancel(ctx), commandCancelGracePeriod)
+	graceErr := waitCommandGroupQuiescent(grace, cmd.Process.Pid)
 	cancel()
+	// The deadline alone means live work used its normal grace allowance.
+	// Failed observation is different: retain its cause, but never shorten
+	// the grace period or mistake it for evidence that the children exited.
+	if graceErr != nil && graceErr != context.DeadlineExceeded {
+		result.Err = fmt.Errorf("observe command group during SIGTERM grace period: %w", graceErr)
+	}
 	// Even a successful graceful census is not atomic with fork/exit. Match
 	// the Unix waiter: close that race with a final signal to the still-pinned
 	// group, then observe quiescence again before granting replay permission.
@@ -117,7 +135,7 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	if errors.Is(killErr, os.ErrProcessDone) {
 		killErr = nil
 	}
-	settle, stop := context.WithTimeout(context.Background(), commandPipeDrainTimeout)
+	settle, stop := context.WithTimeout(context.WithoutCancel(ctx), commandPipeDrainTimeout)
 	quietErr := waitCommandGroupQuiescent(settle, cmd.Process.Pid)
 	stop()
 	if killErr != nil {
@@ -173,19 +191,36 @@ func waitCommandLeaderExit(ctx context.Context, pid int) error {
 }
 
 func waitCommandGroupQuiescent(ctx context.Context, pgid int) error {
+	observe := commandGroupHasLiveMembers
+	if hook, ok := ctx.Value(commandGroupObservationTestHookKey{}).(func(int) (bool, error)); ok && hook != nil {
+		observe = hook
+	}
 	ticker := time.NewTicker(commandGroupPollInterval)
 	defer ticker.Stop()
+	var observationErr error
+	interrupted := func() error {
+		if observationErr != nil {
+			return errors.Join(ctx.Err(), fmt.Errorf("command group observation failed: %w", observationErr))
+		}
+		return ctx.Err()
+	}
 	for {
 		if err := ctx.Err(); err != nil {
-			return err
+			return interrupted()
 		}
-		alive, err := commandGroupHasLiveMembers(pgid)
-		if err != nil || !alive {
-			return err
+		alive, err := observe(pgid)
+		observationErr = err
+		if err == nil && !alive {
+			return nil
 		}
+		// Unknown is neither quiet nor a request to stop healthy work. Retry
+		// within the caller's lifecycle deadline; cancellation gets its own
+		// full grace and bounded post-kill observation budgets. In particular,
+		// do not reap here: WaitDelay could close a healthy child's output
+		// pipe, and reaping would release the identity needed for cleanup.
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return interrupted()
 		case <-ticker.C:
 		}
 	}
@@ -205,29 +240,71 @@ func groupSignalFoundOnlyZombies(int) bool {
 // A quiet result requires a complete, valid census containing the unreaped
 // leader in its expected group. Missing evidence must not authorize replay.
 func commandGroupHasLiveMembers(pgid int) (bool, error) {
+	return inspectCommandGroup(pgid, commandGroupInspector{
+		readDir:  os.ReadDir,
+		readFile: os.ReadFile,
+		getpgid:  syscall.Getpgid,
+	})
+}
+
+// Keep the observation operations local to each census. Besides making the
+// failure paths testable without changing process-wide state, this prevents a
+// test or a concurrent cleanup from replacing another command's observer.
+type commandGroupInspector struct {
+	readDir  func(string) ([]os.DirEntry, error)
+	readFile func(string) ([]byte, error)
+	getpgid  func(int) (int, error)
+}
+
+func inspectCommandGroup(pgid int, inspector commandGroupInspector) (bool, error) {
 	if pgid <= 1 {
 		return false, fmt.Errorf("inspect command process group: invalid group ID %d", pgid)
 	}
-	entries, err := os.ReadDir("/proc")
+	entries, err := inspector.readDir("/proc")
 	if err != nil {
 		return false, fmt.Errorf("inspect command process group: %w", err)
 	}
 	leaderSeen, alive := false, false
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || !entry.IsDir() {
+		if err != nil || pid <= 0 || !entry.IsDir() {
 			continue
 		}
-		data, err := os.ReadFile("/proc/" + entry.Name() + "/stat")
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+		// Kernel membership narrows the census BEFORE procfs interpretation.
+		// A malformed or unreadable row from another group cannot affect this
+		// command. Still enumerate every PID: orphaned grandchildren no longer
+		// appear in the leader's children list. Fork and group changes can race
+		// any snapshot, so callers retain the final signal and fresh census.
+		group, groupErr := inspector.getpgid(pid)
+		if errors.Is(groupErr, syscall.ESRCH) {
+			continue
+		}
+		if groupErr == nil {
+			if group < 0 {
+				return false, fmt.Errorf("inspect process %d: invalid kernel process group %d", pid, group)
+			}
+			if pid == pgid && group != pgid {
+				return false, errors.New("inspect command process group: leader changed process group")
+			}
+			if group != pgid {
 				continue
 			}
-			return false, fmt.Errorf("inspect process %s: %w", entry.Name(), err)
+		} else {
+			// An LSM or syscall filter may deny getpgid while allowing procfs.
+			// A fully validated stat row still supplies the original census
+			// proof. Without that independent evidence, retain both failures.
+			groupErr = fmt.Errorf("inspect process %d group: %w", pid, groupErr)
+		}
+		data, err := inspector.readFile("/proc/" + entry.Name() + "/stat")
+		if err != nil {
+			if groupErr == nil && (errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH)) {
+				continue
+			}
+			return false, errors.Join(groupErr, fmt.Errorf("inspect process %s: %w", entry.Name(), err))
 		}
 		group, processState, err := parseCommandGroupStat(data, pid)
 		if err != nil {
-			return false, err
+			return false, errors.Join(groupErr, err)
 		}
 		if pid == pgid {
 			if group != pgid {

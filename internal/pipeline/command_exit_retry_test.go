@@ -177,6 +177,126 @@ func TestCommandResumeRejectsUnknownEvidenceBeforeExplicitReset(t *testing.T) {
 	}
 }
 
+func TestCommandUnresolvedReceiptRequiresFailureEvidence(t *testing.T) {
+	started := time.Now().Add(-time.Second)
+	record := CommandExecutionState{
+		Version: commandExecutionVersion, StepID: "work", StepHash: strings.Repeat("a", 64),
+		Status: commandExecutionUnresolved, ProcessID: 123, StartedAt: started,
+		Result: StepResult{
+			StepID: "work", AgentType: "command", Status: StatusFailed,
+			StartedAt: started, FinishedAt: time.Now(), Output: "partial output",
+			Error: &StepError{Type: "execution_unknown", Message: "group observation failed", Details: "injected census failure"},
+		},
+	}
+	for _, status := range []ExecutionStatus{StatusFailed, StatusCancelled} {
+		candidate := cloneCommandExecution(record)
+		candidate.Result.Status = status
+		if err := validateCommandExecution(candidate.StepID, candidate); err != nil {
+			t.Fatalf("valid %s cleanup evidence rejected: %v", status, err)
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*CommandExecutionState)
+	}{
+		{"success", func(r *CommandExecutionState) { r.Result.Status = StatusCompleted }},
+		{"still running", func(r *CommandExecutionState) { r.Result.Status = StatusRunning }},
+		{"settlement claim", func(r *CommandExecutionState) { r.SettledAt = time.Now() }},
+		{"missing process", func(r *CommandExecutionState) { r.ProcessID = 0 }},
+		{"missing failure", func(r *CommandExecutionState) { r.Result.Error = nil }},
+		{"empty failure", func(r *CommandExecutionState) { r.Result.Error.Message = "" }},
+		{"missing finish", func(r *CommandExecutionState) { r.Result.FinishedAt = time.Time{} }},
+		{"reversed lifetime", func(r *CommandExecutionState) { r.Result.FinishedAt = started.Add(-time.Second) }},
+		{"different launch", func(r *CommandExecutionState) { r.Result.StartedAt = started.Add(time.Millisecond) }},
+		{"different step", func(r *CommandExecutionState) { r.Result.StepID = "other" }},
+		{"different executor", func(r *CommandExecutionState) { r.Result.AgentType = "agent" }},
+		{"replay permission", func(r *CommandExecutionState) { r.Result.RerunOnResume = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := cloneCommandExecution(record)
+			tc.mutate(&candidate)
+			if err := validateCommandExecution(candidate.StepID, candidate); err == nil {
+				t.Fatalf("accepted inconsistent unresolved cleanup evidence: %+v", candidate)
+			}
+		})
+	}
+}
+
+func TestCommandUnresolvedReceiptBlocksReplayAndSupportsOperatorRecovery(t *testing.T) {
+	for _, status := range []ExecutionStatus{StatusFailed, StatusCancelled} {
+		t.Run(string(status), func(t *testing.T) {
+			cfg, workflow, prior, output := commandOperatorRecoveryFixture(t, 0, "direct")
+			running := commandOperatorRecoveryEntry(t, cfg)
+			record := prior.CommandExecutions[running.StepID]
+			// The fixture really ran the original command once and joined it.
+			// Model an ended supervisor that could not prove its cleanup; its
+			// partial result must never become a substitute for that proof.
+			record.Status = commandExecutionUnresolved
+			record.Result = StepResult{
+				StepID: record.StepID, AgentType: "command", Status: status,
+				StartedAt: record.StartedAt, FinishedAt: time.Now(), Output: output[:5],
+				Error: &StepError{Type: "execution_unknown", Message: "command group could not be observed", Details: "injected final census failure"},
+			}
+			prior.Status = status
+			prior.CommandExecutions[record.StepID] = record
+			prior.Steps[record.StepID] = record.Result
+			delete(prior.InFlightSteps, record.StepID)
+			if err := SaveState(cfg.ProjectDir, prior); err != nil {
+				t.Fatal(err)
+			}
+			saved, err := LoadState(cfg.ProjectDir, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			durable := saved.CommandExecutions[record.StepID]
+			if durable.Status != commandExecutionUnresolved || !durable.SettledAt.IsZero() ||
+				durable.Result.Status != status || durable.Result.Output != output[:5] ||
+				durable.Result.Error == nil || durable.Result.Error.Details != "injected final census failure" {
+				t.Fatalf("lost unresolved command evidence across checkpoint round trip: %+v", durable)
+			}
+			before := commandOperatorRecoveryBytes(t, cfg)
+			if _, err := NewExecutor(cfg).Resume(context.Background(), workflow, saved, nil); err == nil || !strings.Contains(err.Error(), "unresolved launch") {
+				t.Fatalf("ordinary resume accepted an unresolved terminal receipt: %v", err)
+			}
+			if !bytes.Equal(before, commandOperatorRecoveryBytes(t, cfg)) {
+				t.Fatal("rejected resume rewrote unresolved cleanup evidence")
+			}
+			retry := NewExecutor(cfg)
+			retry.state, retry.graph = saved, NewDependencyGraph(workflow)
+			result := retry.executeStep(context.Background(), &workflow.Steps[0], workflow)
+			if result.Attempts != 1 || result.Status != StatusFailed || result.Error == nil || result.Error.Type != "execution_unknown" {
+				t.Fatalf("automatic retry accepted an unresolved terminal receipt: %+v", result)
+			}
+			entry := commandOperatorRecoveryEntry(t, cfg)
+			if entry.Status != commandExecutionUnresolved || !entry.CanAccept || entry.ReceiptToken != running.ReceiptToken {
+				t.Fatalf("ended supervision changed the command identity or hid recovery: %+v", entry)
+			}
+			accepted, err := AcceptCommandExecutionContext(context.Background(), cfg.ProjectDir, cfg.RunID,
+				entry.StepID, entry.ReceiptToken, "Verified the original group ended and recovered its complete output", 0, output)
+			if err != nil || accepted.Replayed || accepted.Command.Status != commandExecutionSettled {
+				t.Fatalf("explicit recovery of unresolved supervision failed: %+v %v", accepted, err)
+			}
+			resolved, err := LoadState(cfg.ProjectDir, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(cfg.ProjectDir, "resume-allowed"), []byte("allow"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			final, err := NewExecutor(cfg).Resume(context.Background(), workflow, resolved, nil)
+			if err != nil || final.Status != StatusCompleted || final.Steps[entry.StepID].Output != strings.TrimSpace(output) {
+				t.Fatalf("resume did not use the explicitly accepted complete outcome: %+v %v", final, err)
+			}
+			if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "effects")); err != nil || string(data) != "once\n" {
+				t.Fatalf("receipt reconciliation replayed original work: %q %v", data, err)
+			}
+			if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "dependent")); err != nil || string(data) != "42" {
+				t.Fatalf("dependent consumed partial unresolved output: %q %v", data, err)
+			}
+		})
+	}
+}
+
 func TestCommandResumeProtectsLiveWaitNoneAfterSchedulerCompletion(t *testing.T) {
 	e := newCommandTestExecutor(t)
 	step := Step{ID: "sidecar", Command: "sleep 60", Wait: WaitNone}
