@@ -1,6 +1,6 @@
 module github.com/Dicklesworthstone/ntm
 
-go 1.26.9
+go 1.26.10
 
 replace github.com/charmbracelet/bubbletea => ./third_party/bubbletea
 
