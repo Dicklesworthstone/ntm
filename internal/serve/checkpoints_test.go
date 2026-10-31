@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -302,6 +303,221 @@ func TestCheckpointArchiveDisclosureCleanRoundTripPreservesRecoveryCommand(t *te
 				}
 			})
 		}
+	}
+}
+
+func TestCheckpointImportPublicationOutcomeIsRetained(t *testing.T) {
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock, redaction.ModeOff} {
+		for _, published := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/published=%t", mode, published), func(t *testing.T) {
+				cp, _ := checkpointDisclosureFixture(t, "clean")
+				storage := checkpoint.NewStorage()
+				archivePath := filepath.Join(t.TempDir(), "source.zip")
+				if _, err := storage.Export(cp.SessionName, cp.ID, archivePath, checkpoint.ExportOptions{Format: checkpoint.FormatZip}); err != nil {
+					t.Fatal(err)
+				}
+				archive, err := os.ReadFile(archivePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				old := *cp
+				old.SessionName, old.Name = "publication-target", "original recovery state"
+				if err := storage.Save(&old); err != nil {
+					t.Fatal(err)
+				}
+				metadataPath := filepath.Join(storage.CheckpointDir(old.SessionName, old.ID), checkpoint.MetadataFile)
+				before, err := os.ReadFile(metadataPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: mode}})
+				var logs lockedBuffer
+				originalLogOutput := log.Writer()
+				log.SetOutput(&logs)
+				t.Cleanup(func() { log.SetOutput(originalLogOutput) })
+				calls := 0
+				importer := func(path string, opts checkpoint.ImportOptions) (*checkpoint.Checkpoint, error) {
+					calls++
+					var imported *checkpoint.Checkpoint
+					if published {
+						// Exercise real atomic replacement, then inject only the
+						// finalization error that cannot be induced portably over HTTP.
+						var err error
+						imported, err = storage.Import(path, opts)
+						if err != nil {
+							t.Fatalf("real import failed: %v", err)
+						}
+					}
+					return imported, fmt.Errorf("wrapped publication failure: %w", &checkpoint.ImportPublicationError{
+						Published: published, CheckpointDir: "/private/destination/" + wiringFakeSecret,
+						RetainedDir: "/private/retained/" + wiringFakeSecret,
+						Cause:       errors.New("private filesystem failure " + wiringFakeSecret),
+					})
+				}
+				router := chi.NewRouter()
+				router.Use(s.requestIDMiddlewareFunc, s.redactionMiddleware, s.idempotencyMiddleware)
+				router.Post("/api/v1/sessions/{sessionName}/checkpoints/import", func(w http.ResponseWriter, r *http.Request) {
+					s.handleImportCheckpointWithImporter(w, r, importer)
+				})
+				body := ImportCheckpointRequest{Data: base64.StdEncoding.EncodeToString(archive), AllowOverwrite: true}
+				do := func(body ImportCheckpointRequest) *httptest.ResponseRecorder {
+					req := wiringJSONRequest(t, http.MethodPost, "/api/v1/sessions/"+old.SessionName+"/checkpoints/import", body)
+					req.Header.Set("Idempotency-Key", "publication-result")
+					rec := httptest.NewRecorder()
+					router.ServeHTTP(rec, req)
+					return rec
+				}
+				first := do(body)
+				if first.Code != http.StatusInternalServerError {
+					t.Fatalf("publication result status=%d body=%s", first.Code, first.Body)
+				}
+				var result APIError
+				if err := json.Unmarshal(first.Body.Bytes(), &result); err != nil {
+					t.Fatal(err)
+				}
+				wantState, wantCode := "unknown", "CHECKPOINT_IMPORT_PUBLICATION_UNCERTAIN"
+				if published {
+					wantState, wantCode = "published", "CHECKPOINT_IMPORT_FINALIZATION_FAILED"
+				}
+				if result.Success || result.ErrorCode != wantCode || result.Details["publication_state"] != wantState ||
+					result.Details["published"] != published || result.Details["finalization_complete"] != false ||
+					result.Details["inspection_required"] != true || result.Details["retry_safe"] != false ||
+					!strings.Contains(result.Hint, "before importing again") {
+					t.Fatalf("publication evidence was lost: %+v", result)
+				}
+				if published {
+					reference, ok := result.Details["checkpoint"].(map[string]interface{})
+					if !ok || len(reference) != 2 || reference["id"] != cp.ID || reference["session_name"] != old.SessionName {
+						t.Fatalf("missing exact published checkpoint reference: %#v", reference)
+					}
+				} else if _, ok := result.Details["checkpoint"]; ok {
+					t.Fatal("uncertain publication invented a confirmed checkpoint reference")
+				}
+				stored, err := storage.Load(old.SessionName, cp.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantName := old.Name
+				if published {
+					wantName = cp.Name
+				}
+				if stored.Name != wantName {
+					t.Fatalf("wrong recovery state after reported outcome: got %q, want %q", stored.Name, wantName)
+				}
+				afterFirst, err := os.ReadFile(metadataPath)
+				if err != nil || (bytes.Equal(before, afterFirst) == published) {
+					t.Fatal("fixture did not exercise the reported publication state")
+				}
+				second := do(body)
+				if second.Code != first.Code || second.Header().Get("X-Idempotent-Replay") != "true" ||
+					!bytes.Equal(second.Body.Bytes(), first.Body.Bytes()) || calls != 1 {
+					t.Fatalf("same-key retry re-executed an unsafe import: calls=%d status=%d replay=%q body=%s",
+						calls, second.Code, second.Header().Get("X-Idempotent-Replay"), second.Body)
+				}
+				verify := false
+				body.VerifyChecksums = &verify
+				mismatch := do(body)
+				if mismatch.Code != http.StatusUnprocessableEntity || calls != 1 ||
+					!strings.Contains(mismatch.Body.String(), ErrCodeIdempotentReplay) {
+					t.Fatalf("retained outcome lost body identity: calls=%d status=%d body=%s", calls, mismatch.Code, mismatch.Body)
+				}
+				afterReplay, err := os.ReadFile(metadataPath)
+				if err != nil || !bytes.Equal(afterFirst, afterReplay) {
+					t.Fatal("replay or mismatched request changed published recovery state")
+				}
+				for _, private := range []string{wiringFakeSecret, "/private/destination/", "/private/retained/", "private filesystem failure"} {
+					if strings.Contains(first.Body.String()+second.Body.String()+logs.String(), private) {
+						t.Fatal("publication diagnostics disclosed a private path or error cause")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestCheckpointImportOrdinaryRefusalCanRetry(t *testing.T) {
+	cp, _ := checkpointDisclosureFixture(t, "clean")
+	storage := checkpoint.NewStorage()
+	archivePath := filepath.Join(t.TempDir(), "source.zip")
+	if _, err := storage.Export(cp.SessionName, cp.ID, archivePath, checkpoint.ExportOptions{Format: checkpoint.FormatZip}); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeBlock}})
+	calls := 0
+	router := chi.NewRouter()
+	router.Use(s.redactionMiddleware, s.idempotencyMiddleware)
+	router.Post("/api/v1/sessions/{sessionName}/checkpoints/import", func(w http.ResponseWriter, r *http.Request) {
+		s.handleImportCheckpointWithImporter(w, r, func(path string, opts checkpoint.ImportOptions) (*checkpoint.Checkpoint, error) {
+			calls++
+			if calls == 1 {
+				return nil, errors.New("ordinary validation failure")
+			}
+			return storage.Import(path, opts)
+		})
+	})
+	body := ImportCheckpointRequest{Data: base64.StdEncoding.EncodeToString(archive)}
+	for i, want := range []int{http.StatusBadRequest, http.StatusCreated, http.StatusCreated} {
+		req := wiringJSONRequest(t, http.MethodPost, "/api/v1/sessions/refusal-retry/checkpoints/import", body)
+		req.Header.Set("Idempotency-Key", "ordinary-refusal")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != want || (rec.Header().Get("X-Idempotent-Replay") == "true") != (i == 2) {
+			t.Fatalf("request %d status=%d replay=%q body=%s", i, rec.Code, rec.Header().Get("X-Idempotent-Replay"), rec.Body)
+		}
+		if i == 0 {
+			if _, err := storage.Load("refusal-retry", cp.ID); err == nil {
+				t.Fatal("ordinary refusal unexpectedly published a checkpoint")
+			}
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("ordinary refusal was cached or successful import was replayed by execution: calls=%d", calls)
+	}
+}
+
+func TestCheckpointImportPublicationWithholdsSensitiveReference(t *testing.T) {
+	cp, _ := checkpointDisclosureFixture(t, "clean")
+	storage := checkpoint.NewStorage()
+	archivePath := filepath.Join(t.TempDir(), "source.zip")
+	if _, err := storage.Export(cp.SessionName, cp.ID, archivePath, checkpoint.ExportOptions{Format: checkpoint.FormatZip}); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Even in permissive mode, error diagnostics must not expose a secret or
+	// replace a recovery identifier with a plausible but incorrect placeholder.
+	s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeOff}})
+	router := chi.NewRouter()
+	router.Post("/api/v1/sessions/{sessionName}/checkpoints/import", func(w http.ResponseWriter, r *http.Request) {
+		s.handleImportCheckpointWithImporter(w, r, func(path string, opts checkpoint.ImportOptions) (*checkpoint.Checkpoint, error) {
+			imported, err := storage.Import(path, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return imported, &checkpoint.ImportPublicationError{Published: true, Cause: errors.New("sync failure")}
+		})
+	})
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, wiringJSONRequest(t, http.MethodPost, "/api/v1/sessions/"+wiringFakeSecret+"/checkpoints/import",
+		ImportCheckpointRequest{Data: base64.StdEncoding.EncodeToString(archive)}))
+	var result APIError
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusInternalServerError || result.Details["checkpoint_reference_withheld"] != true ||
+		result.Details["published"] != true || result.Details["checkpoint"] != nil || strings.Contains(rec.Body.String(), wiringFakeSecret) ||
+		strings.Contains(rec.Body.String(), "[REDACTED") {
+		t.Fatalf("unsafe recovery reference was not explicitly withheld: %s", rec.Body)
+	}
+	stored, err := storage.Load(wiringFakeSecret, cp.ID)
+	if err != nil || stored.SessionName != wiringFakeSecret {
+		t.Fatal("safe diagnostic handling changed the published checkpoint identifier")
 	}
 }
 

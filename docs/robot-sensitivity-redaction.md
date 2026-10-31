@@ -145,6 +145,24 @@ the complete import JSON body, including its base64 field.
 Allowlists and enabled detection categories continue to govern these checks.
 `warn`, `off`, and disabled REST redaction retain their existing behavior.
 
+An import error after publication is different from an admission refusal. If the
+complete checkpoint was observed at its destination but finalization failed, the
+API returns `500 CHECKPOINT_IMPORT_FINALIZATION_FAILED` with
+`publication_state: "published"`. A publication attempt whose outcome cannot be
+confirmed returns `500 CHECKPOINT_IMPORT_PUBLICATION_UNCERTAIN` with
+`publication_state: "unknown"`. Both report `inspection_required: true`,
+`finalization_complete: false`, and `retry_safe: false`. Neither establishes that
+the previous checkpoint is unchanged. A published checkpoint reference is exact
+or explicitly withheld if it contains sensitive content; paths, commands, and
+underlying error text are never included in these diagnostics.
+
+These terminal error receipts are retained for same-key idempotency replay, so a
+retry does not repeat an import while its receipt remains cached. A different
+body with that key still conflicts. Ordinary pre-publication validation errors
+remain retryable. Retention uses the existing bounded in-memory cache, so expiry,
+eviction, and server restart do not provide a durable retry guarantee. Inspect
+the destination checkpoint and retained recovery evidence before importing again.
+
 ## Disclosure States
 
 Every disclosable field has a disclosure state:

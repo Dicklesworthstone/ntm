@@ -1889,6 +1889,22 @@ type idempotencyHandledKeyType struct{}
 
 var idempotencyHandledKey idempotencyHandledKeyType
 
+type idempotencyResultKey struct{}
+
+type idempotencyResultState struct {
+	retain atomic.Bool
+}
+
+// markIdempotencyResultRetained keeps a terminal outcome even when it is not a
+// successful HTTP response. A handler that has published work, or cannot prove
+// publication did not occur, must not let a same-key retry execute it again.
+// Only server code can mark this request; no client header selects this policy.
+func markIdempotencyResultRetained(r *http.Request) {
+	if result, ok := r.Context().Value(idempotencyResultKey{}).(*idempotencyResultState); ok {
+		result.retain.Store(true)
+	}
+}
+
 // idempotencyMiddleware handles Idempotency-Key header for mutating requests.
 func (s *Server) idempotencyMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1969,11 +1985,16 @@ func (s *Server) idempotencyMiddleware(next http.Handler) http.Handler {
 		defer s.idempotencyStore.EndFlight(key)
 
 		// Capture response
+		result := &idempotencyResultState{}
+		r = r.WithContext(context.WithValue(r.Context(), idempotencyResultKey{}, result))
 		rec := &responseRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(rec, r)
 
-		// Cache successful, non-hijacked, bounded responses
-		if rec.statusCode >= 200 && rec.statusCode < 300 && !rec.hijacked && !rec.overflow {
+		// A failure after publication is a terminal result too: replay the
+		// receipt instead of repeating work that may already have completed.
+		// Ordinary failures remain retryable. Retained receipts, like success
+		// responses, must be bounded and cannot come from hijacked connections.
+		if (rec.statusCode >= 200 && rec.statusCode < 300 || result.retain.Load()) && !rec.hijacked && !rec.overflow {
 			s.idempotencyStore.SetWithFingerprint(key, fingerprint, rec.body, rec.statusCode, rec.Header())
 		}
 	})

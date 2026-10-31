@@ -1061,6 +1061,14 @@ func (s *Server) handleExportCheckpoint(w http.ResponseWriter, r *http.Request) 
 
 // handleImportCheckpoint imports a checkpoint from an archive.
 func (s *Server) handleImportCheckpoint(w http.ResponseWriter, r *http.Request) {
+	s.handleImportCheckpointWithImporter(w, r, checkpoint.NewStorage().Import)
+}
+
+// Keep the import dependency local to the request so publication failure tests
+// can exercise the HTTP contract without replacing process-wide filesystem ops.
+func (s *Server) handleImportCheckpointWithImporter(w http.ResponseWriter, r *http.Request,
+	importCheckpoint func(string, checkpoint.ImportOptions) (*checkpoint.Checkpoint, error),
+) {
 	sessionName := chi.URLParam(r, "sessionName")
 	reqID := requestIDFromContext(r.Context())
 	disclosureCfg, protectArchive := s.checkpointDisclosureConfig()
@@ -1145,7 +1153,6 @@ func (s *Server) handleImportCheckpoint(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	storage := checkpoint.NewStorage()
 	opts := checkpoint.ImportOptions{
 		TargetSession:   sessionName,
 		TargetDir:       req.TargetDir,
@@ -1159,8 +1166,17 @@ func (s *Server) handleImportCheckpoint(w http.ResponseWriter, r *http.Request) 
 		opts.TargetSession = req.TargetSession
 	}
 
-	cp, err := storage.Import(tmpPath, opts)
+	cp, err := importCheckpoint(tmpPath, opts)
 	if err != nil {
+		var publicationErr *checkpoint.ImportPublicationError
+		if errors.As(err, &publicationErr) {
+			// Import may already have replaced the public recovery state. This
+			// terminal result must survive a same-key retry, even though HTTP
+			// correctly reports that publication/finalization did not complete.
+			markIdempotencyResultRetained(r)
+			s.writeCheckpointImportPublicationError(w, r, cp, publicationErr)
+			return
+		}
 		if protectArchive {
 			log.Printf("REST: checkpoint import failed request_id=%s", reqID)
 		} else {
@@ -1179,6 +1195,54 @@ func (s *Server) handleImportCheckpoint(w http.ResponseWriter, r *http.Request) 
 		"imported":   true,
 		"checkpoint": checkpointToResponse(cp, true),
 	}, reqID)
+}
+
+func (s *Server) writeCheckpointImportPublicationError(w http.ResponseWriter, r *http.Request,
+	cp *checkpoint.Checkpoint, publicationErr *checkpoint.ImportPublicationError,
+) {
+	reqID := requestIDFromContext(r.Context())
+	state := "unknown"
+	code := "CHECKPOINT_IMPORT_PUBLICATION_UNCERTAIN"
+	message := "checkpoint publication could not be confirmed; recovery state may have changed"
+	hint := "Inspect the destination checkpoint and retained recovery evidence before importing again. Publication failure does not establish that the previous checkpoint is unchanged."
+	if publicationErr.Published {
+		state = "published"
+		code = "CHECKPOINT_IMPORT_FINALIZATION_FAILED"
+		message = "checkpoint was published but finalization failed"
+		hint = "Inspect the published checkpoint and retained recovery evidence before importing again. Failed finalization does not undo publication."
+	}
+	details := map[string]interface{}{
+		"publication_state":     state,
+		"published":             publicationErr.Published,
+		"finalization_complete": false,
+		"inspection_required":   true,
+		"retry_safe":            false,
+		"hint":                  hint,
+	}
+	if cp != nil {
+		// A recovery reference must be exact or explicitly withheld. A
+		// placeholder ID could send a caller to the wrong checkpoint. Keep
+		// diagnostics safe even when ordinary body redaction is disabled,
+		// without exposing working directories, commands, or retained paths.
+		cfg := redaction.DefaultConfig()
+		s.mu.RLock()
+		if s.redactionCfg != nil {
+			cfg = s.redactionCfg.Config.DeepCopy()
+		}
+		s.mu.RUnlock()
+		reference := map[string]string{"id": cp.ID, "session_name": cp.SessionName}
+		encoded, _ := json.Marshal(reference) // A map of strings cannot fail.
+		if len(redaction.Scan(string(encoded), cfg)) == 0 &&
+			len(redaction.Scan(cp.ID+"\n"+cp.SessionName, cfg)) == 0 {
+			details["checkpoint"] = reference
+		} else {
+			details["checkpoint_reference_withheld"] = true
+		}
+	}
+	// ImportPublicationError.Error includes filesystem paths and the original
+	// cause, which can contain credentials. Log only the classified outcome.
+	log.Printf("REST: checkpoint import publication incomplete state=%s request_id=%s", state, reqID)
+	writeErrorResponse(w, http.StatusInternalServerError, code, message, details, reqID)
 }
 
 // handleRollback performs a rollback to a checkpoint's git state.
