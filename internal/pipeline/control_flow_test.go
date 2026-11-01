@@ -1975,6 +1975,9 @@ func TestResumeFinalizationClearsReopenedNamedOutputs(t *testing.T) {
 			cfg := resumeFinalizationConfig(t.TempDir())
 			cfg.ResumeOptions.Reset = reset
 			producer := Step{ID: "producer", Command: "printf '%s' '${vars.previous | empty}' > observed; printf new", OutputVar: "previous"}
+			if !reset {
+				producer.Command = "if [ ! -f allow-producer ]; then printf old; exit 7; fi; " + producer.Command
+			}
 			post, priorID := producer, producer.ID
 			if reset {
 				post = Step{ID: "tail", Command: "printf parent", OnSuccess: []Step{producer}}
@@ -1984,14 +1987,35 @@ func TestResumeFinalizationClearsReopenedNamedOutputs(t *testing.T) {
 				SchemaVersion: SchemaVersion, Name: "reopened-post-output", Settings: DefaultWorkflowSettings(),
 				Steps: []Step{{ID: "main", Command: "printf main"}}, PostPipelineSteps: []Step{post},
 			}
-			previous := resumeFinalizationCompletedStep(priorID, "old")
-			if !reset {
-				previous.Status = StatusFailed
+			completed := map[string]StepResult{"main": resumeFinalizationCompletedStep("main", "done")}
+			if reset {
+				completed[priorID] = resumeFinalizationCompletedStep(priorID, "old")
 			}
-			prior := resumeFinalizationSavedState(t, cfg.ProjectDir, workflow, map[string]StepResult{
-				"main": resumeFinalizationCompletedStep("main", "done"), priorID: previous,
-			})
+			prior := resumeFinalizationSavedState(t, cfg.ProjectDir, workflow, completed)
+			if !reset {
+				// Ordinary resume may reopen a proven-settled failure. Generate
+				// that evidence through the command waiter; a bare failed legacy
+				// result cannot establish that its process group stopped.
+				executor := NewExecutor(cfg)
+				executor.state, executor.graph = prior, NewDependencyGraph(workflow)
+				previous := executor.executeStep(context.Background(), &workflow.PostPipelineSteps[0], workflow)
+				receipt := prior.CommandExecutions[priorID]
+				if previous.Status != StatusFailed || previous.Output != "old" || receipt.Status != commandExecutionSettled || receipt.SettledAt.IsZero() {
+					t.Fatalf("post fixture did not produce a settled failure: result=%+v receipt=%+v", previous, receipt)
+				}
+				prior.Steps[priorID] = previous
+				if err := os.WriteFile(filepath.Join(cfg.ProjectDir, "allow-producer"), nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			prior.Variables["previous"] = "stale"
+			if err := SaveState(cfg.ProjectDir, prior); err != nil {
+				t.Fatal(err)
+			}
+			prior, err := LoadState(cfg.ProjectDir, prior.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
 			state, err := NewExecutor(cfg).Resume(context.Background(), workflow, prior, nil)
 			if err != nil || state.Status != StatusCompleted {
 				t.Fatalf("Resume() = %v, %v; want completed", state, err)

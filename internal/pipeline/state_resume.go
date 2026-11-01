@@ -680,6 +680,9 @@ func (e *Executor) validateCommandEvaluationResumeLocked(workflow *Workflow, sta
 			if _, recorded := state.CommandEvaluations[id]; recorded {
 				continue
 			}
+			if resumeCancelledBeforeDispatch(state, id) {
+				continue
+			}
 			step, ok := resolve(id)
 			if !ok || !stepUsesCommandEvaluation(step) {
 				continue
@@ -2876,10 +2879,27 @@ func (e *Executor) validateLeafReplayScopeLocked(workflow *Workflow, state *Exec
 	return nil
 }
 
-// Existing terminal failures retain ordinary retry semantics. A legacy running
-// command, however, has no proof its old process stopped or even that its side
-// effects were captured. It needs the same explicit replay decision as a new
-// unresolved launch receipt. The caller holds stateMu.
+// resumeCancelledBeforeDispatch recognizes affirmative scheduler evidence that
+// a child never entered its executor. Generic cancellation, zero attempts, and
+// human-readable reasons cannot establish this on their own. Callers validate
+// existing execution receipts independently before considering missing journals.
+// The caller holds stateMu.
+func resumeCancelledBeforeDispatch(state *ExecutionState, stepID string) bool {
+	result, exists := state.Steps[stepID]
+	if !exists || result.StepID != stepID || result.Status != StatusCancelled ||
+		result.SkipKind != SkipKindCancelledBeforeDispatch || result.Attempts != 0 || result.RerunOnResume {
+		return false
+	}
+	_, inFlight := state.InFlightSteps[stepID]
+	return !inFlight
+}
+
+// A legacy scheduler outcome does not prove the command group stopped. Older
+// waiters could return failed/cancelled while descendants were still executing,
+// and a background rerun marker carries no stronger settlement evidence. Without
+// a journal, these launches need the same explicit replay decision as unresolved
+// receipts. Proven-settled failures retain ordinary retry semantics above.
+// The caller holds stateMu.
 func (e *Executor) validateLegacyCommandResumeLocked(state *ExecutionState, opts ResumeOptions, workflow *Workflow) error {
 	if !opts.KeepState {
 		return nil
@@ -2897,12 +2917,19 @@ func (e *Executor) validateLegacyCommandResumeLocked(state *ExecutionState, opts
 		unfinished[stepID] = true
 	}
 	for stepID, result := range state.Steps {
-		if result.Status == StatusRunning || result.Status == StatusPending {
+		switch result.Status {
+		case StatusFailed, StatusCancelled, StatusRunning, StatusPending:
+			unfinished[stepID] = true
+		}
+		if result.RerunOnResume {
 			unfinished[stepID] = true
 		}
 	}
 	for stepID := range unfinished {
 		if _, recorded := state.CommandExecutions[stepID]; recorded || resumeResetsCommandExecution(state, opts, stepID) {
+			continue
+		}
+		if resumeCancelledBeforeDispatch(state, stepID) {
 			continue
 		}
 		command := state.InFlightSteps[stepID].Kind == StepKindCommand || state.Steps[stepID].AgentType == "command"
@@ -2949,6 +2976,9 @@ func (e *Executor) validateLegacyAgentResumeLocked(state *ExecutionState, opts R
 	}
 	for stepID := range unfinished {
 		if _, recorded := state.AgentDeliveries[stepID]; recorded || resumeResetsAgentDelivery(state, opts, stepID) {
+			continue
+		}
+		if resumeCancelledBeforeDispatch(state, stepID) {
 			continue
 		}
 		step, ok := resolve(stepID)

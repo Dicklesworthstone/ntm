@@ -606,20 +606,56 @@ func TestCommandGroupFallbackMembershipRacesAndFailures(t *testing.T) {
 func TestCommandGroupFallbackRechecksMembershipAndClosesHandles(t *testing.T) {
 	leader := fallbackTestStartProcess(t, 0)
 	other := fallbackTestStartProcess(t, 0)
-	before, err := os.ReadDir("/proc/self/fd")
-	if err != nil {
-		t.Fatal(err)
+	ops := systemCommandGroupFallbackOps()
+	openPidfd, closePidfd := ops.openPidfd, ops.closePidfd
+	owned := make(map[int]bool)
+	opened, closed := 0, 0
+	// Track this operation's real handles. Process-wide descriptor counts can
+	// change when unrelated goroutines or finalizers finish cleanup.
+	ops.openPidfd = func(pid, flags int) (int, error) {
+		fd, err := openPidfd(pid, flags)
+		if err == nil {
+			if owned[fd] {
+				t.Fatalf("opened process handle %d is already owned", fd)
+			}
+			owned[fd] = true
+			opened++
+		}
+		return fd, err
 	}
+	ops.closePidfd = func(fd int) error {
+		if !owned[fd] {
+			t.Errorf("process handle %d was closed twice or without acquisition", fd)
+			return syscall.EBADF
+		}
+		// Retire ownership before the syscall: a failed close must fail this
+		// test, but its descriptor must not be closed again after possible reuse.
+		delete(owned, fd)
+		if err := closePidfd(fd); err != nil {
+			t.Errorf("close process handle %d: %v", fd, err)
+			return err
+		}
+		closed++
+		return nil
+	}
+	t.Cleanup(func() {
+		// Clean up only handles the tested helper never attempted to release.
+		// The assertions below still fail before this cleanup can mask a leak.
+		for fd := range owned {
+			if err := closePidfd(fd); err != nil {
+				t.Errorf("cleanup leaked process handle %d: %v", fd, err)
+			}
+		}
+	})
 	for i := 0; i < 64; i++ {
 		// Model a stale census entry whose current process is in a different
 		// group: obtaining its handle does not authorize the signal.
-		if err := killCommandGroupMember(other.Process.Pid, leader.Process.Pid, systemCommandGroupFallbackOps()); err != nil {
+		if err := killCommandGroupMember(other.Process.Pid, leader.Process.Pid, ops); err != nil {
 			t.Fatal(err)
 		}
-	}
-	after, err := os.ReadDir("/proc/self/fd")
-	if err != nil || len(after) != len(before) {
-		t.Fatalf("membership refusal leaked process handles: before=%d after=%d err=%v", len(before), len(after), err)
+		if opened != i+1 || closed != opened || len(owned) != 0 {
+			t.Fatalf("membership refusal %d retained or mishandled process handles: opened=%d closed=%d retained=%v", i+1, opened, closed, owned)
+		}
 	}
 	fallbackTestAssertAlive(t, other)
 }

@@ -611,28 +611,35 @@ func TestResumeLegacyExternalLeafRequiresExplicitRestart(t *testing.T) {
 		{ID: "prompt", Prompt: "review"},
 		{ID: "template", Template: "review"},
 		{ID: "command", Command: "echo allowed"},
-		{ID: "group", Parallel: ParallelSpec{Steps: []Step{{ID: "nested", Prompt: "review nested"}}}},
+		{ID: "group", Parallel: ParallelSpec{Steps: []Step{
+			{ID: "nested", Prompt: "review nested"},
+			{ID: "shell", Command: "echo allowed nested"},
+		}}},
 	}}
-	for _, stepID := range []string{"prompt", "template", "group_nested", "command"} {
+	for _, stepID := range []string{"prompt", "template", "group_nested", "command", "group_shell"} {
 		t.Run(stepID, func(t *testing.T) {
-			for _, mode := range []ResumeMode{ResumeModeContinue, ResumeModeRestartFailed} {
-				executor := NewExecutor(DefaultExecutorConfig("resume-session"))
-				executor.graph = NewDependencyGraph(workflow)
-				executor.state = &ExecutionState{
-					Session: "resume-session", Steps: map[string]StepResult{stepID: {StepID: stepID, Status: StatusRunning}},
-				}
-				err := executor.applyResumeOptions(workflow, ResumeOptions{Mode: mode})
-				wantErr := mode == ResumeModeContinue
-				if (err != nil) != wantErr {
-					t.Fatalf("mode %s error = %v, want error %t", mode, err, wantErr)
-				}
-				diagnosis := "no durable delivery evidence"
-				if stepID == "command" {
-					diagnosis = "unresolved launch"
-				}
-				if wantErr && !strings.Contains(err.Error(), diagnosis) {
-					t.Fatalf("missing recovery diagnosis: %v", err)
-				}
+			for _, status := range []ExecutionStatus{StatusRunning, StatusPending, StatusFailed, StatusCancelled} {
+				t.Run(string(status), func(t *testing.T) {
+					for _, mode := range []ResumeMode{ResumeModeContinue, ResumeModeRestartFailed} {
+						executor := NewExecutor(DefaultExecutorConfig("resume-session"))
+						executor.graph = NewDependencyGraph(workflow)
+						executor.state = &ExecutionState{
+							Session: "resume-session", Steps: map[string]StepResult{stepID: {StepID: stepID, Status: status}},
+						}
+						err := executor.applyResumeOptions(workflow, ResumeOptions{Mode: mode})
+						wantErr := mode == ResumeModeContinue
+						if (err != nil) != wantErr {
+							t.Fatalf("mode %s error = %v, want error %t", mode, err, wantErr)
+						}
+						diagnosis := "no durable delivery evidence"
+						if stepID == "command" || stepID == "group_shell" {
+							diagnosis = "unresolved launch"
+						}
+						if wantErr && !strings.Contains(err.Error(), diagnosis) {
+							t.Fatalf("missing recovery diagnosis: %v", err)
+						}
+					}
+				})
 			}
 		})
 	}
@@ -644,6 +651,101 @@ func TestResumeLegacyExternalLeafRequiresExplicitRestart(t *testing.T) {
 	}
 	if err := executor.applyResumeOptions(workflow, ResumeOptions{}); err == nil || !strings.Contains(err.Error(), "no durable delivery evidence") {
 		t.Fatalf("legacy in-flight leaf without a StepResult was replayable: %v", err)
+	}
+}
+
+func TestResumeCancelledBeforeDispatchRequiresConsistentEvidence(t *testing.T) {
+	workflow := &Workflow{Name: "undispatched", Steps: []Step{{ID: "group", Parallel: ParallelSpec{Steps: []Step{
+		{ID: "command", Command: "printf work"},
+		{ID: "prompt", Prompt: "review"},
+		{ID: "template", Template: "review"},
+		{ID: "selector", Branch: "$(printf route)", Branches: map[string]interface{}{"route": []Step{{ID: "body", Command: "printf selected"}}}},
+	}}}}}
+	for _, stepID := range []string{"group_command", "group_prompt", "group_template", "group_selector"} {
+		t.Run(stepID, func(t *testing.T) {
+			for _, tc := range []struct {
+				name     string
+				mutate   func(*StepResult)
+				inFlight bool
+				wantErr  bool
+			}{
+				{name: "scheduler evidence"},
+				{name: "legacy cancellation reason", mutate: func(result *StepResult) {
+					result.SkipKind, result.SkipReason = SkipKindCancelled, "cancelled before parallel child dispatch"
+				}, wantErr: true},
+				{name: "attempted", mutate: func(result *StepResult) { result.Attempts = 1 }, wantErr: true},
+				{name: "in flight", inFlight: true, wantErr: true},
+				{name: "background replay marker", mutate: func(result *StepResult) { result.RerunOnResume = true }, wantErr: true},
+				{name: "failed", mutate: func(result *StepResult) { result.Status = StatusFailed }, wantErr: true},
+				{name: "running", mutate: func(result *StepResult) { result.Status = StatusRunning }, wantErr: true},
+				{name: "different step", mutate: func(result *StepResult) { result.StepID = "other" }, wantErr: true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					result := StepResult{StepID: stepID, Status: StatusCancelled, SkipKind: SkipKindCancelledBeforeDispatch}
+					if tc.mutate != nil {
+						tc.mutate(&result)
+					}
+					executor := NewExecutor(DefaultExecutorConfig("resume-session"))
+					executor.state = &ExecutionState{Session: "resume-session", Steps: map[string]StepResult{stepID: result}}
+					if tc.inFlight {
+						executor.state.InFlightSteps = map[string]InFlightStepState{stepID: {StepID: stepID}}
+					}
+					err := executor.applyResumeOptions(workflow, ResumeOptions{})
+					if (err != nil) != tc.wantErr {
+						t.Fatalf("ordinary resume error = %v, want refusal %t", err, tc.wantErr)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestResumeCancelledBeforeDispatchDoesNotBypassLaunchReceipts(t *testing.T) {
+	for _, kind := range []string{"command", "selector", "agent"} {
+		t.Run(kind, func(t *testing.T) {
+			step := Step{ID: "work", Command: "printf work"}
+			state := &ExecutionState{Session: "resume-session", Steps: map[string]StepResult{
+				"work": {StepID: "work", Status: StatusCancelled, SkipKind: SkipKindCancelledBeforeDispatch},
+			}}
+			wantError := "unresolved launch"
+			switch kind {
+			case "command":
+				state.CommandExecutions = map[string]CommandExecutionState{"work": {
+					Version: commandExecutionVersion, StepID: "work", StepHash: strings.Repeat("a", 64),
+					Status: commandExecutionStarting, StartedAt: time.Now(),
+				}}
+			case "selector":
+				step.Command, step.Branch = "", "$(printf route)"
+				step.Branches = map[string]interface{}{"route": []Step{{ID: "body", Command: "printf selected"}}}
+				state.CommandEvaluationVersion = commandEvaluationVersion
+				state.CommandEvaluations = map[string]CommandEvaluationState{"work": {
+					Version: commandEvaluationVersion, StepID: "work", StepHash: strings.Repeat("a", 64),
+					Status: commandExecutionStarting, StartedAt: time.Now(), InvocationHash: strings.Repeat("b", 64),
+					StdoutLimit: 1024, StderrLimit: 1024,
+				}}
+				wantError = errCommandOutputUnsettled.Error()
+			case "agent":
+				step.Command, step.Prompt = "", "review"
+				record := testAgentDelivery("work", agentDeliverySending)
+				record.Version++
+				state.AgentDeliveries = map[string]AgentDeliveryState{"work": record}
+				wantError = "invalid agent delivery"
+			}
+			before, err := json.Marshal(state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			executor := NewExecutor(DefaultExecutorConfig("resume-session"))
+			executor.state = state
+			workflow := &Workflow{Name: "conflicting-dispatch", Steps: []Step{step}}
+			if err := executor.applyResumeOptions(workflow, ResumeOptions{}); err == nil || !strings.Contains(err.Error(), wantError) {
+				t.Fatalf("scheduler marker bypassed receipt validation: %v", err)
+			}
+			after, err := json.Marshal(state)
+			if err != nil || string(after) != string(before) {
+				t.Fatalf("refusal changed the saved evidence: %v", err)
+			}
+		})
 	}
 }
 

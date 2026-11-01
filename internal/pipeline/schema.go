@@ -1317,6 +1317,10 @@ const (
 	SkipKindForeachBreak     SkipKind = "foreach_loop_control_break_after"
 	SkipKindCancelled        SkipKind = "cancelled"
 	SkipKindLimit            SkipKind = "resource_limit_exceeded"
+	// SkipKindCancelledBeforeDispatch is positive scheduler evidence that a
+	// cancelled child never entered its executor. Unlike generic cancellation,
+	// this permits ordinary resume when no attempts or launch evidence conflict.
+	SkipKindCancelledBeforeDispatch SkipKind = "cancelled_before_dispatch"
 	// SkipKindResumeAlreadyCompleted marks a foreach iteration that was
 	// fully completed in a prior run and is being skipped on resume to
 	// avoid duplicating side effects (bd-qeatk).

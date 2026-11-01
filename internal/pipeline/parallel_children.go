@@ -193,7 +193,7 @@ func (e *Executor) runParallelChildren(ctx context.Context, step *Step, workflow
 					results[i].SkipReason = fmt.Sprintf("dependency failed: %v", blocked)
 				case parallelTaskCancelled:
 					results[i].Status = StatusCancelled
-					results[i].SkipKind = SkipKindCancelled
+					results[i].SkipKind = SkipKindCancelledBeforeDispatch
 					results[i].SkipReason = "cancelled before parallel child dispatch"
 				default:
 					return fmt.Errorf("parallel child %q produced no result", children[i].ID)

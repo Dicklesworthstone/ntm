@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -294,6 +295,175 @@ func TestCommandUnresolvedReceiptBlocksReplayAndSupportsOperatorRecovery(t *test
 				t.Fatalf("dependent consumed partial unresolved output: %q %v", data, err)
 			}
 		})
+	}
+}
+
+func TestLegacyFailedCommandResumeCannotReplayLiveEffects(t *testing.T) {
+	for _, status := range []ExecutionStatus{StatusFailed, StatusCancelled} {
+		t.Run(string(status), func(t *testing.T) {
+			cfg := DefaultExecutorConfig("legacy-command")
+			cfg.ProjectDir, cfg.RunID = t.TempDir(), "run-legacy-command"
+			step := Step{ID: "work", Command: `printf 'once\n' >> effects
+if [ -f replay-allowed ]; then printf replayed > replayed; exit 0; fi
+printf ready > ready
+read proceed
+printf finished > original-finished
+`}
+			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "legacy-command", Settings: DefaultWorkflowSettings(), Steps: []Step{step}}
+			frozen, path, err := SnapshotWorkflow(context.Background(), cfg.ProjectDir, workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.WorkflowFile = path
+			input, release, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = input.Close(); _ = release.Close() })
+			original := exec.Command("/bin/sh", "-c", step.Command)
+			original.Dir, original.Stdin = cfg.ProjectDir, input
+			configureCommandProcessGroup(original)
+			started := time.Now()
+			if err := original.Start(); err != nil {
+				t.Fatal(err)
+			}
+			waited := false
+			t.Cleanup(func() {
+				_ = release.Close()
+				_ = original.Process.Kill()
+				if !waited {
+					_ = original.Wait()
+				}
+			})
+			awaitCommandCancellationFile(t, filepath.Join(cfg.ProjectDir, "ready"), "ready")
+			// Older waiters could return a failed/cancelled scheduler result
+			// without stopping their command group. Keep the original work
+			// alive after its real side effect while saving that legacy shape.
+			finished := time.Now()
+			prior := &ExecutionState{
+				RunID: cfg.RunID, WorkflowID: workflow.Name, WorkflowFile: path, Session: cfg.Session,
+				Status: status, StartedAt: started, FinishedAt: finished, LastCheckpointAt: finished,
+				Steps: map[string]StepResult{step.ID: {
+					StepID: step.ID, AgentType: "command", Status: status, StartedAt: started, FinishedAt: finished,
+					Error: &StepError{Type: "command", Message: "legacy process observation failed"},
+				}},
+				Variables: map[string]interface{}{},
+			}
+			if err := SaveState(cfg.ProjectDir, prior); err != nil {
+				t.Fatal(err)
+			}
+			before := commandOperatorRecoveryBytes(t, cfg)
+			prior, err = LoadState(cfg.ProjectDir, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// If preflight admits a replay, it finishes immediately instead
+			// of blocking on the fixture's independently owned input pipe.
+			if err := os.WriteFile(filepath.Join(cfg.ProjectDir, "replay-allowed"), []byte("allow"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := NewExecutor(cfg).Resume(context.Background(), frozen, prior, nil); err == nil || !strings.Contains(err.Error(), "unresolved launch") {
+				t.Fatalf("legacy terminal failure authorized replay of live work: %v", err)
+			}
+			if !bytes.Equal(before, commandOperatorRecoveryBytes(t, cfg)) {
+				t.Fatal("refused legacy resume rewrote the original checkpoint")
+			}
+			if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "effects")); err != nil || string(data) != "once\n" {
+				t.Fatalf("ordinary resume duplicated the original side effect: %q %v", data, err)
+			}
+			if _, err := os.Stat(filepath.Join(cfg.ProjectDir, "replayed")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("ordinary resume dispatched another command: %v", err)
+			}
+			if _, err := release.WriteString("finish\n"); err != nil {
+				t.Fatal(err)
+			}
+			waited = true
+			if err := original.Wait(); err != nil {
+				t.Fatalf("refused recovery damaged the original healthy process: %v", err)
+			}
+			awaitCommandCancellationFile(t, filepath.Join(cfg.ProjectDir, "original-finished"), "finished")
+			// The old group has now actually ended. An operator's explicit
+			// restart remains the authorization to repeat its prior effect.
+			prior, err = LoadState(cfg.ProjectDir, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			final, err := NewExecutor(cfg).ResumeWithOptions(context.Background(), frozen, prior, ResumeOptions{Mode: ResumeModeRestartFailed}, nil)
+			if err != nil || final == nil || final.Status != StatusCompleted {
+				t.Fatalf("explicit legacy restart failed after stopping the original work: %+v %v", final, err)
+			}
+			if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "effects")); err != nil || string(data) != "once\nonce\n" {
+				t.Fatalf("explicit restart did not repeat work exactly once: %q %v", data, err)
+			}
+		})
+	}
+}
+
+func TestCommandSettledTerminalFailureStillAllowsOrdinaryResume(t *testing.T) {
+	for _, status := range []ExecutionStatus{StatusFailed, StatusCancelled} {
+		t.Run(string(status), func(t *testing.T) {
+			e := newCommandTestExecutor(t)
+			e.config.RunID = e.state.RunID
+			e.state.Session = e.config.Session
+			command := "printf 'once\\n' >> effects; if [ -f allow ]; then printf complete; exit 0; fi; exit 7"
+			if status == StatusCancelled {
+				command = "printf 'once\\n' >> effects; if [ -f allow ]; then printf complete; exit 0; fi; printf ready > ready; exec sleep 30"
+			}
+			step := Step{ID: "work", Command: command}
+			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: e.state.WorkflowID, Settings: DefaultWorkflowSettings(), Steps: []Step{step}}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			done := make(chan StepResult, 1)
+			go func() { done <- e.executeCommand(ctx, &step, workflow) }()
+			if status == StatusCancelled {
+				awaitCommandCancellationFile(t, filepath.Join(e.config.ProjectDir, "ready"), "ready")
+				cancel()
+			}
+			var first StepResult
+			select {
+			case first = <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("original command did not finish its owned cleanup")
+			}
+			if first.Status != status {
+				t.Fatalf("fixture did not reach its terminal outcome: %+v", first)
+			}
+			e.state.Status, e.state.Steps[step.ID] = status, first
+			if err := e.persistState(); err != nil {
+				t.Fatal(err)
+			}
+			prior, err := LoadState(e.config.ProjectDir, e.config.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt := prior.CommandExecutions[step.ID]
+			if receipt.Status != commandExecutionSettled || receipt.Result.Status != status || receipt.SettledAt.IsZero() {
+				t.Fatalf("fixture lacks real settlement evidence: %+v", receipt)
+			}
+			if err := os.WriteFile(filepath.Join(e.config.ProjectDir, "allow"), []byte("allow"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			final, err := NewExecutor(e.config).Resume(context.Background(), workflow, prior, nil)
+			if err != nil || final == nil || final.Status != StatusCompleted || final.Steps[step.ID].Output != "complete" {
+				t.Fatalf("proven-settled failure lost ordinary retry behavior: %+v %v", final, err)
+			}
+			if data, err := os.ReadFile(filepath.Join(e.config.ProjectDir, "effects")); err != nil || string(data) != "once\nonce\n" {
+				t.Fatalf("settled failure was not retried exactly once: %q %v", data, err)
+			}
+		})
+	}
+}
+
+func TestLegacyBackgroundRerunMarkerRequiresSettlementEvidence(t *testing.T) {
+	e := newCommandTestExecutor(t)
+	step := Step{ID: "sidecar", Command: "sleep 30", Wait: WaitNone}
+	workflow := &Workflow{Name: e.state.WorkflowID, Steps: []Step{step}}
+	e.state.Steps[step.ID] = StepResult{StepID: step.ID, AgentType: "command", Status: StatusCompleted, RerunOnResume: true}
+	if err := e.applyResumeOptions(workflow, ResumeOptions{}); err == nil || !strings.Contains(err.Error(), "unresolved launch") {
+		t.Fatalf("legacy background rerun marker substituted for settlement: %v", err)
+	}
+	if err := e.applyResumeOptions(workflow, ResumeOptions{Mode: ResumeModeRestartFailed}); err != nil {
+		t.Fatalf("explicit legacy sidecar replay was refused: %v", err)
 	}
 }
 
