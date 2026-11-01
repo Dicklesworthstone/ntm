@@ -15,10 +15,35 @@ import (
 // group leader throughout. Never fall back to kill(pid): between a procfs
 // read and that signal, the PID could have been recycled for unrelated work.
 func killProcessGroupDescendants(leaderPID int) error {
+	return killProcessGroupDescendantsWithOps(leaderPID, systemCommandGroupFallbackOps())
+}
+
+// Keep failure injection local to one fallback. Membership and identity
+// handles must use the same PID namespace: procfs numbers are only candidates,
+// since an inherited /proc mount can describe a different namespace.
+type commandGroupFallbackOps struct {
+	readDir     func(string) ([]os.DirEntry, error)
+	getpgid     func(int) (int, error)
+	openPidfd   func(int, int) (int, error)
+	signalPidfd func(int, unix.Signal, *unix.Siginfo, int) error
+	closePidfd  func(int) error
+}
+
+func systemCommandGroupFallbackOps() commandGroupFallbackOps {
+	return commandGroupFallbackOps{
+		readDir:     os.ReadDir,
+		getpgid:     syscall.Getpgid,
+		openPidfd:   unix.PidfdOpen,
+		signalPidfd: unix.PidfdSendSignal,
+		closePidfd:  unix.Close,
+	}
+}
+
+func killProcessGroupDescendantsWithOps(leaderPID int, ops commandGroupFallbackOps) error {
 	if leaderPID <= 1 {
 		return fmt.Errorf("inspect command descendants: invalid leader %d", leaderPID)
 	}
-	entries, err := os.ReadDir("/proc")
+	entries, err := ops.readDir("/proc")
 	if err != nil {
 		return fmt.Errorf("inspect command descendants: %w", err)
 	}
@@ -28,24 +53,20 @@ func killProcessGroupDescendants(leaderPID int) error {
 		if err != nil || !entry.IsDir() || pid <= 1 || pid == leaderPID {
 			continue
 		}
-		// This first read only narrows the census. It is never authority to
-		// signal: membership is read again after obtaining the pidfd below.
-		data, err := os.ReadFile("/proc/" + entry.Name() + "/stat")
+		// This first query only narrows the candidates. A procfs row may
+		// describe an unrelated ancestor-namespace process with the same
+		// number, so only kernel membership can authorize a local pidfd.
+		group, err := ops.getpgid(pid)
 		if err != nil {
-			if !commandProcessDisappeared(err) {
-				failures = errors.Join(failures, fmt.Errorf("inspect process %d: %w", pid, err))
+			if !errors.Is(err, syscall.ESRCH) {
+				failures = errors.Join(failures, fmt.Errorf("inspect process %d group: %w", pid, err))
 			}
-			continue
-		}
-		group, ok := parseProcStatPGID(data)
-		if !ok {
-			failures = errors.Join(failures, fmt.Errorf("inspect process %d: malformed group evidence", pid))
 			continue
 		}
 		if group != leaderPID {
 			continue
 		}
-		if err := killCommandGroupMember(pid, leaderPID); err != nil {
+		if err := killCommandGroupMember(pid, leaderPID, ops); err != nil {
 			failures = errors.Join(failures, err)
 		}
 	}
@@ -57,38 +78,30 @@ func killProcessGroupDescendants(leaderPID int) error {
 // addresses the original process (or returns ESRCH), never the replacement.
 // An unsupported or restricted pidfd syscall is an explicit cleanup failure;
 // it must not opt back into the unsafe numeric signaling path.
-func killCommandGroupMember(pid, leaderPID int) error {
+func killCommandGroupMember(pid, leaderPID int, ops commandGroupFallbackOps) error {
 	if pid <= 1 || leaderPID <= 1 || pid == leaderPID {
 		return fmt.Errorf("kill command descendant: invalid member %d of group %d", pid, leaderPID)
 	}
-	fd, err := unix.PidfdOpen(pid, 0)
+	fd, err := ops.openPidfd(pid, 0)
 	if err != nil {
 		if errors.Is(err, syscall.ESRCH) {
 			return nil
 		}
 		return fmt.Errorf("open process handle %d: %w", pid, err)
 	}
-	defer unix.Close(fd)
-	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	defer ops.closePidfd(fd)
+	group, err := ops.getpgid(pid)
 	if err != nil {
-		if commandProcessDisappeared(err) {
+		if errors.Is(err, syscall.ESRCH) {
 			return nil
 		}
-		return fmt.Errorf("recheck process %d: %w", pid, err)
-	}
-	group, ok := parseProcStatPGID(data)
-	if !ok {
-		return fmt.Errorf("recheck process %d: malformed group evidence", pid)
+		return fmt.Errorf("recheck process %d group: %w", pid, err)
 	}
 	if group != leaderPID {
 		return nil
 	}
-	if err := unix.PidfdSendSignal(fd, unix.SIGKILL, nil, 0); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := ops.signalPidfd(fd, unix.SIGKILL, nil, 0); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("kill process handle %d: %w", pid, err)
 	}
 	return nil
-}
-
-func commandProcessDisappeared(err error) bool {
-	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH)
 }

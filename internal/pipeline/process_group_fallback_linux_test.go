@@ -22,7 +22,7 @@ import (
 // Use real children and kernel failure injection. The seccomp filters apply
 // only inside a subprocess, never to the test runner or a developer's shell.
 func TestCommandGroupFallbackKernelFailures(t *testing.T) {
-	for _, mode := range []string{"group-denied", "normal-signals-denied", "open-denied", "send-denied", "unowned", "reaped", "wait-cancel", "wait-deadline", "wait-observe", "wait-observe-only", "wait-observe-pipes", "wait-ownership"} {
+	for _, mode := range []string{"group-denied", "normal-signals-denied", "open-denied", "send-denied", "membership-denied", "unowned", "reaped", "wait-cancel", "wait-deadline", "wait-observe", "wait-observe-only", "wait-observe-pipes", "wait-ownership"} {
 		t.Run(mode, func(t *testing.T) {
 			exe, err := os.Executable()
 			if err != nil {
@@ -120,7 +120,7 @@ func TestCommandGroupFallbackHelper(t *testing.T) {
 		fallbackTestAwaitKilled(t, leader)
 		fallbackTestAwaitKilled(t, member)
 	} else {
-		err := killCommandGroupMember(member.Process.Pid, leader.Process.Pid)
+		err := killCommandGroupMember(member.Process.Pid, leader.Process.Pid, systemCommandGroupFallbackOps())
 		if !errors.Is(err, syscall.EPERM) {
 			t.Fatalf("restricted pidfd operation did not report its failure: %v", err)
 		}
@@ -193,6 +193,8 @@ func fallbackTestInstallFilter(mode string) error {
 		number = unix.SYS_PIDFD_OPEN
 	} else if mode == "send-denied" {
 		number = unix.SYS_PIDFD_SEND_SIGNAL
+	} else if mode == "membership-denied" {
+		number = unix.SYS_GETPGID
 	}
 	filter := []unix.SockFilter{
 		{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0}, // seccomp_data.nr
@@ -401,6 +403,154 @@ func TestCommandGroupFallbackSweepsOnlyItsGroup(t *testing.T) {
 	}
 }
 
+func TestCommandGroupFallbackUsesCallerNamespaceMembership(t *testing.T) {
+	leader := fallbackTestStartProcess(t, 0)
+	member := fallbackTestStartProcess(t, leader.Process.Pid)
+	other := fallbackTestStartProcess(t, 0)
+	// Model an ancestor-namespace /proc view: its row for the unrelated
+	// local PID claims the owned PGID, while the owned local PID's stat
+	// cannot be interpreted. Neither row may authorize or prevent a signal.
+	proc := fstest.MapFS{
+		strconv.Itoa(other.Process.Pid) + "/stat":  {Data: []byte(commandGroupTestStat(other.Process.Pid, "S", leader.Process.Pid, "1"))},
+		strconv.Itoa(member.Process.Pid) + "/stat": {Data: []byte("unreadable unrelated namespace record")},
+	}
+	ops := systemCommandGroupFallbackOps()
+	ops.readDir = func(path string) ([]os.DirEntry, error) {
+		if path != "/proc" {
+			t.Fatalf("unexpected candidate directory %q", path)
+		}
+		return proc.ReadDir(".")
+	}
+	opened := make(map[int]int)
+	ops.openPidfd = func(pid, flags int) (int, error) {
+		opened[pid]++
+		return unix.PidfdOpen(pid, flags)
+	}
+	if err := killProcessGroupDescendantsWithOps(leader.Process.Pid, ops); err != nil {
+		t.Fatal(err)
+	}
+	fallbackTestAwaitKilled(t, member)
+	fallbackTestAssertAlive(t, leader)
+	fallbackTestAssertAlive(t, other)
+	if opened[member.Process.Pid] != 1 || opened[other.Process.Pid] != 0 {
+		t.Fatalf("procfs aliases affected kernel membership admission: opened=%v", opened)
+	}
+}
+
+func TestCommandGroupFallbackMembershipRacesAndFailures(t *testing.T) {
+	type groupProbe struct {
+		group int
+		err   error
+	}
+	owned := groupProbe{group: 42}
+	for _, tc := range []struct {
+		name          string
+		probes        []groupProbe
+		openErr       error
+		signalErr     error
+		otherGroupErr error
+		wantOpen      bool
+		wantSignal    bool
+		wantCauses    []error
+	}{
+		{name: "stable owned member", probes: []groupProbe{owned, owned}, wantOpen: true, wantSignal: true},
+		{name: "unrelated numeric alias", probes: []groupProbe{{group: 77}}},
+		{name: "candidate disappeared", probes: []groupProbe{{err: syscall.ESRCH}}},
+		{name: "candidate membership denied", probes: []groupProbe{{err: syscall.EPERM}}, wantCauses: []error{syscall.EPERM}},
+		{name: "candidate exited before handle open", probes: []groupProbe{owned}, openErr: syscall.ESRCH, wantOpen: true},
+		{name: "pidfd unsupported", probes: []groupProbe{owned}, openErr: syscall.ENOSYS, wantOpen: true, wantCauses: []error{syscall.ENOSYS}},
+		{name: "pidfd denied", probes: []groupProbe{owned}, openErr: syscall.EPERM, wantOpen: true, wantCauses: []error{syscall.EPERM}},
+		{name: "PID recycled into another group before open", probes: []groupProbe{owned, {group: 77}}, wantOpen: true},
+		{name: "process left group after open", probes: []groupProbe{owned, {group: 0}}, wantOpen: true},
+		{name: "process disappeared after open", probes: []groupProbe{owned, {err: syscall.ESRCH}}, wantOpen: true},
+		{name: "membership recheck denied", probes: []groupProbe{owned, {err: syscall.EACCES}}, wantOpen: true, wantCauses: []error{syscall.EACCES}},
+		{name: "membership recheck failed", probes: []groupProbe{owned, {err: syscall.EIO}}, wantOpen: true, wantCauses: []error{syscall.EIO}},
+		{name: "PID recycled after open leaves only exited handle", probes: []groupProbe{owned, owned}, signalErr: syscall.ESRCH, wantOpen: true, wantSignal: true},
+		{name: "handle signal denied", probes: []groupProbe{owned, owned}, signalErr: syscall.EPERM, wantOpen: true, wantSignal: true, wantCauses: []error{syscall.EPERM}},
+		{name: "independent membership failures retain both causes", probes: []groupProbe{{err: syscall.EACCES}}, otherGroupErr: syscall.EIO, wantCauses: []error{syscall.EACCES, syscall.EIO}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			proc := fstest.MapFS{
+				"1/stat":  {},
+				"42/stat": {},
+				"43/stat": {},
+				"44/stat": {},
+				"45/stat": {},
+			}
+			probes := 0
+			opened, signalled, closed := make(map[int]int), make(map[int]int), make(map[int]int)
+			ops := commandGroupFallbackOps{
+				readDir: func(string) ([]os.DirEntry, error) { return proc.ReadDir(".") },
+				getpgid: func(pid int) (int, error) {
+					if pid == 43 {
+						if probes >= len(tc.probes) {
+							t.Fatal("unexpected extra membership probe")
+						}
+						probe := tc.probes[probes]
+						probes++
+						return probe.group, probe.err
+					}
+					if pid == 44 {
+						return 77, tc.otherGroupErr
+					}
+					if pid != 45 {
+						t.Fatalf("inspected protected PID %d", pid)
+					}
+					return 42, nil
+				},
+				openPidfd: func(pid, flags int) (int, error) {
+					if flags != 0 {
+						t.Fatalf("unexpected pidfd flags %d", flags)
+					}
+					opened[pid]++
+					if pid == 43 && tc.openErr != nil {
+						return -1, tc.openErr
+					}
+					return pid + 1000, nil
+				},
+				// Distinct descriptor values ensure signalling uses the pinned
+				// handle even when the PID now names a replacement process.
+				signalPidfd: func(fd int, signal unix.Signal, info *unix.Siginfo, flags int) error {
+					if (fd != 1043 && fd != 1045) || signal != unix.SIGKILL || info != nil || flags != 0 {
+						t.Fatalf("unsafe handle signal: fd=%d signal=%v info=%v flags=%d", fd, signal, info, flags)
+					}
+					signalled[fd]++
+					if fd == 1043 {
+						return tc.signalErr
+					}
+					return nil
+				},
+				closePidfd: func(fd int) error { closed[fd]++; return nil },
+			}
+			err := killProcessGroupDescendantsWithOps(42, ops)
+			if (err != nil) != (len(tc.wantCauses) > 0) {
+				t.Fatalf("unexpected fallback error: %v", err)
+			}
+			for _, cause := range tc.wantCauses {
+				if !errors.Is(err, cause) {
+					t.Errorf("lost member failure %v: %v", cause, err)
+				}
+			}
+			wantOpen, wantSignal, wantClose := 0, 0, 0
+			if tc.wantOpen {
+				wantOpen = 1
+				if tc.openErr == nil {
+					wantClose = 1
+				}
+			}
+			if tc.wantSignal {
+				wantSignal = 1
+			}
+			if probes != len(tc.probes) || opened[43] != wantOpen || signalled[1043] != wantSignal || closed[1043] != wantClose {
+				t.Fatalf("unsafe member lifecycle: probes=%d open=%v signal=%v close=%v", probes, opened, signalled, closed)
+			}
+			if opened[45] != 1 || signalled[1045] != 1 || closed[1045] != 1 || opened[44] != 0 {
+				t.Fatalf("one uncertain member prevented safe partial cleanup: open=%v signal=%v close=%v", opened, signalled, closed)
+			}
+		})
+	}
+}
+
 func TestCommandGroupFallbackRechecksMembershipAndClosesHandles(t *testing.T) {
 	leader := fallbackTestStartProcess(t, 0)
 	other := fallbackTestStartProcess(t, 0)
@@ -411,7 +561,7 @@ func TestCommandGroupFallbackRechecksMembershipAndClosesHandles(t *testing.T) {
 	for i := 0; i < 64; i++ {
 		// Model a stale census entry whose current process is in a different
 		// group: obtaining its handle does not authorize the signal.
-		if err := killCommandGroupMember(other.Process.Pid, leader.Process.Pid); err != nil {
+		if err := killCommandGroupMember(other.Process.Pid, leader.Process.Pid, systemCommandGroupFallbackOps()); err != nil {
 			t.Fatal(err)
 		}
 	}
