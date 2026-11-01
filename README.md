@@ -845,8 +845,11 @@ launch intent before starting their command. Their output is usable only after
 the owned group settles and both captured streams reach EOF. A returned cleanup
 failure leaves an `unresolved` entry in `command_evaluations`; automatic retries
 and ordinary resume refuse it even when a failure handler completed the enclosing
-step. Inspect the original work before deliberately authorizing `restart-failed`,
-a containing `force-iter` scope, or a whole-run reset. Unfinished external selectors
+step. If the original source and its descendants finished and its final outcome
+can be independently verified, `pipeline recover --accept-selector` can record
+that outcome without repeating its effects. Inspect the original work before
+deliberately authorizing `restart-failed`, a containing `force-iter` scope, or a
+whole-run reset. Unfinished external selectors
 from older checkpoints without sufficient source or decision evidence require the
 same explicit decision.
 Successful evaluations retain their complete bounded output in the checkpoint
@@ -896,6 +899,44 @@ after completion; a conflicting observation is refused. A live run owner,
 background command, cleanup or post-pipeline command, or command whose enclosing
 work already completed prevents acceptance. Recorded PIDs are diagnostic only: recovery neither infers completion
 from PID disappearance nor signals a saved process ID.
+
+For an interrupted selector receipt, inspection includes a `selectors` array
+with its exact receipt token, acceptance eligibility, and refusal reason:
+
+```bash
+ntm pipeline recover run-20241230-123456-abcd --json
+
+ntm pipeline recover run-20241230-123456-abcd --step-id choose \
+  --receipt <selector-receipt-from-inspection> --accept-selector \
+  --exit-code 0 --output-file selector-stdout.bin \
+  --reason "Verified the original selector and all descendants finished"
+
+ntm pipeline resume run-20241230-123456-abcd --mode=continue
+```
+
+First independently verify that the original selector **and all its descendants
+have finished**. Supply its observed exit code and complete stdout, including an
+empty regular file when it emitted no stdout. Selector output is retained as
+exact bytes, including non-UTF-8 data, and is bounded by the original capture
+limit, the frozen workflow's limit, and the 16 MiB recovery limit. Recovery
+responses expose only identity, decision metadata, byte counts, and hashes.
+
+Acceptance writes a distinct `accepted` receipt with an immutable decision hash.
+It preserves the original intent or cleanup status, timestamps, diagnostic error,
+and recorded PID. An intent whose PID was never checkpointed stays without a PID;
+the operator's observation does not invent native process-settlement evidence.
+No command, signal, branch selection, or item admission occurs during acceptance.
+Ordinary resume checks the exact selector definition and expanded invocation
+before consuming successful output. A nonzero accepted exit follows normal
+failure handling without relaunching the source, even when retry is configured.
+
+The exact receipt, reason, exit code, and stdout replay the same saved decision;
+changing any part is refused. Recovery also refuses a live run owner, a stale or
+corrupt receipt, legacy evidence without an invocation identity, changed frozen
+definitions, already-admitted output, completed enclosing work, and selectors in
+cleanup or post-pipeline phases. An intentional reevaluation requires the normal
+explicit replay scope. Older executors that do not understand `accepted` refuse
+that receipt rather than interpreting it as native settlement.
 
 Pipeline `mail_send` steps also checkpoint their send intent and delivery receipt.
 If a response is lost or the run stops while a send is unresolved, automatic

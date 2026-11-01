@@ -291,6 +291,114 @@ func TestControlledPipelineReusesForeachSourceBeforeAdmissionCheckpoint(t *testi
 	}
 }
 
+func TestSelectorOperatorRecoveryPublishesOnlyOnOrdinaryResume(t *testing.T) {
+	for _, kind := range []string{"branch", "foreach"} {
+		t.Run(kind, func(t *testing.T) {
+			output, admitted := []byte("good"), "good\n"
+			if kind == "foreach" {
+				output, admitted = []byte("alpha\nbeta\n"), "alpha\nbeta\n"
+			}
+			cfg, workflow, _, _ := selectorOperatorRecoveryFixture(t, kind, output, 0, false)
+			entry := selectorRecoveryEntry(t, cfg)
+			reason := "Verified source and descendants finished; complete original stdout captured"
+			accepted, err := AcceptCommandEvaluationContext(context.Background(), cfg.ProjectDir, cfg.RunID, entry.StepID, entry.ReceiptToken, reason, 0, output)
+			if err != nil || accepted.Replayed {
+				t.Fatalf("accept source: %+v %v", accepted, err)
+			}
+			if _, err := os.Stat(filepath.Join(cfg.ProjectDir, "admitted")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("acceptance itself dispatched a consumer: %v", err)
+			}
+			// Re-execution would observe different items/choice and add another
+			// source effect; only accepted bytes may reach normal admission.
+			if err := os.WriteFile(filepath.Join(cfg.ProjectDir, "source-output"), []byte("changed\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			prior, err := LoadState(cfg.ProjectDir, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			owner, err := AcquireRunControl(context.Background(), cfg.ProjectDir, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(owner.Context(), 5*time.Second)
+			resumed, resumeErr := NewExecutor(cfg).Resume(ctx, workflow, prior, nil)
+			cancel()
+			owner.Close()
+			if resumeErr != nil || resumed == nil || resumed.Status != StatusCompleted {
+				t.Fatalf("ordinary resume did not consume accepted %s: %+v %v", kind, resumed, resumeErr)
+			}
+			for name, want := range map[string]string{"source-effects": "once\n", "admitted": admitted} {
+				if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, name)); err != nil || string(data) != want {
+					t.Fatalf("%s=%q want %q: %v", name, data, want, err)
+				}
+			}
+			if kind == "foreach" && resumed.ForeachState[entry.StepID].ItemsFingerprint != computeForeachItemsFingerprint([]interface{}{"alpha", "beta"}) {
+				t.Fatal("accepted source did not bind progress to the original iteration list")
+			}
+			before := selectorRecoveryCheckpoint(t, cfg)
+			again, err := AcceptCommandEvaluationContext(context.Background(), cfg.ProjectDir, cfg.RunID, entry.StepID, entry.ReceiptToken, reason, 0, append([]byte(nil), output...))
+			if err != nil || !again.Replayed {
+				t.Fatalf("immutable decision was not idempotent after parent completion: %+v %v", again, err)
+			}
+			for _, different := range []struct {
+				reason string
+				exit   int
+				output []byte
+			}{{reason + " changed", 0, output}, {reason, 7, output}, {reason, 0, []byte("different")}} {
+				if _, err := AcceptCommandEvaluationContext(context.Background(), cfg.ProjectDir, cfg.RunID, entry.StepID, entry.ReceiptToken, different.reason, different.exit, different.output); err == nil {
+					t.Fatal("a completed operator decision was replaced")
+				}
+			}
+			if !bytes.Equal(before, selectorRecoveryCheckpoint(t, cfg)) {
+				t.Fatal("idempotence or changed-decision refusal rewrote the checkpoint")
+			}
+		})
+	}
+}
+
+func TestSelectorOperatorRecoveryRetainsNonzeroOutcomeAcrossResume(t *testing.T) {
+	for _, kind := range []string{"branch", "foreach"} {
+		t.Run(kind, func(t *testing.T) {
+			cfg, workflow, _, _ := selectorOperatorRecoveryFixture(t, kind, []byte("good"), 7, false)
+			entry := selectorRecoveryEntry(t, cfg)
+			if _, err := AcceptCommandEvaluationContext(context.Background(), cfg.ProjectDir, cfg.RunID, entry.StepID, entry.ReceiptToken, "Verified final exit status and complete original stdout", 7, []byte("good")); err != nil {
+				t.Fatal(err)
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				prior, err := LoadState(cfg.ProjectDir, cfg.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				owner, err := AcquireRunControl(context.Background(), cfg.ProjectDir, cfg.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithTimeout(owner.Context(), 5*time.Second)
+				resumed, resumeErr := NewExecutor(cfg).Resume(ctx, workflow, prior, nil)
+				cancel()
+				owner.Close()
+				if resumeErr == nil || resumed == nil || resumed.Status != StatusFailed {
+					t.Fatalf("accepted failure became usable selector output: %+v %v", resumed, resumeErr)
+				}
+				result := resumed.Steps[entry.StepID]
+				if result.Error == nil || !strings.Contains(result.Error.Message, "status 7") || result.Error.Type == "execution_unknown" || result.Attempts != 1 {
+					t.Fatalf("normal source failure policy lost its accepted exit outcome: %+v", result)
+				}
+				if record := resumed.CommandEvaluations[entry.StepID]; record.Status != commandEvaluationAccepted || record.ResolutionExitCode != 7 {
+					t.Fatalf("failure handling discarded immutable acceptance: %+v", record)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(cfg.ProjectDir, "admitted")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("nonzero accepted output dispatched body work: %v", err)
+			}
+			if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "source-effects")); err != nil || string(data) != "once\n" {
+				t.Fatalf("retry or resume reran the accepted failed selector: %q %v", data, err)
+			}
+		})
+	}
+}
+
 func TestControlledPipelineRetainsForeachSourceAcrossChildFailure(t *testing.T) {
 	for _, mode := range []ResumeMode{ResumeModeContinue, ResumeModeRestartFailed} {
 		t.Run(string(mode), func(t *testing.T) {

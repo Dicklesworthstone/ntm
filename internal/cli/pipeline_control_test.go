@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -898,6 +899,514 @@ func TestPipelineRecoverCommandOwnershipAndCancellation(t *testing.T) {
 	owner, err = pipeline.AcquireRunControl(context.Background(), root, prior.RunID)
 	if err != nil {
 		t.Fatalf("canceled recovery retained run ownership: %v", err)
+	}
+	owner.Close()
+}
+
+// Hold a real selector after it has emitted its output, then obstruct the
+// checkpoint replacement before releasing it. Restoring the exact saved launch
+// intent models a lost completion publication without inventing invocation
+// hashes, process identities, or evidence that the source ever ran.
+func interruptedPipelineSelectorOutcome(t *testing.T, root, kind string, output []byte, exitCode int) *pipeline.ExecutionState {
+	t.Helper()
+	pipelineRecoveryTmux(t, root, "2718", "")
+	if err := os.WriteFile(filepath.Join(root, "fixture-selector-output"), output, 0600); err != nil {
+		t.Fatal(err)
+	}
+	script := "printf 'once\\n' >> selector-effects\n" +
+		"cat fixture-selector-output > observed-selector-output\n" +
+		"cat observed-selector-output\n" +
+		"printf ready > selector-ready\n" +
+		"while [ ! -f selector-release ]; do sleep 0.01; done\n" + fmt.Sprintf("exit %d", exitCode)
+	step := pipeline.Step{
+		ID: "select", OnError: pipeline.ErrorActionRetry, RetryCount: 3,
+		RetryDelay: pipeline.Duration{Duration: time.Hour},
+		Timeout:    pipeline.Duration{Duration: 10 * time.Second},
+	}
+	if kind == "foreach" {
+		step.Foreach = &pipeline.ForeachConfig{
+			Models: pipeline.StringOrList{"$(" + script + ")"},
+			Steps: []pipeline.Step{{
+				ID: "child", Command: "printf '%s\\n' '${item}' >> selector-children",
+			}},
+		}
+	} else {
+		step.Branch = "$(" + script + ")"
+		step.Branches = map[string]interface{}{
+			"PRIVATE-SELECTOR-KEY": map[string]interface{}{"id": "child", "command": "printf 'chosen\\n' >> selector-children"},
+			"default":              map[string]interface{}{"id": "fallback", "command": "printf 'fallback\\n' >> selector-children"},
+			"x\x00\uFFFD":          map[string]interface{}{"id": "normalized", "command": "printf 'wrong\\n' >> selector-children"},
+			"x\x00\uFFFD\uFFFD":    map[string]interface{}{"id": "replaced", "command": "printf 'wrong\\n' >> selector-children"},
+		}
+	}
+	if kind == "failure action" {
+		step.OnFailure = pipeline.OnFailureSpec{Action: "fallback_to_ntm_inbox"}
+	}
+	workflow := &pipeline.Workflow{
+		SchemaVersion: pipeline.SchemaVersion, Name: "selector-recovery-cli",
+		Settings: pipeline.WorkflowSettings{OnError: pipeline.ErrorActionFail},
+		Steps: []pipeline.Step{step, {
+			ID: "consume", DependsOn: []string{"select"}, Command: "printf once > selector-dependent",
+		}},
+	}
+	workflow.Settings.Limits.MaxCommandStdoutBytes = 64
+	workflow.Settings.Limits.MaxCommandStderrBytes = 64
+	cfg := pipeline.DefaultExecutorConfig("delivery-session")
+	cfg.ProjectDir, cfg.RunID = root, pipeline.GenerateRunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	var final *pipeline.ExecutionState
+	var runErr error
+	go func() {
+		defer close(done)
+		final, runErr = pipeline.RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+	}()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("original selector owner did not finish cleanup")
+		}
+	}()
+	statePath := filepath.Join(root, ".ntm", "pipelines", cfg.RunID+".json")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		prior, err := pipeline.LoadState(root, cfg.RunID)
+		_, readyErr := os.Stat(filepath.Join(root, "selector-ready"))
+		if err == nil && readyErr == nil && prior.CommandEvaluations["select"].Status == "starting" {
+			break
+		}
+		select {
+		case <-done:
+			t.Fatalf("selector finished before its durable intent: %+v %v", final, runErr)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("selector did not reach its durable intent and output gate")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedPath := statePath + ".before-selector-settlement"
+	if err := os.Rename(statePath, savedPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(statePath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "selector-release"), []byte("finish"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("original selector did not finish after its output gate opened")
+	}
+	if !errors.Is(runErr, pipeline.ErrCheckpointFailed) || final == nil || final.Status != pipeline.StatusFailed {
+		t.Fatalf("fixture did not lose publication at the real checkpoint boundary: %+v %v", final, runErr)
+	}
+	for _, name := range []string{"selector-children", "selector-dependent"} {
+		if _, err := os.Stat(filepath.Join(root, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("work %q ran after selector publication failed: %v", name, err)
+		}
+	}
+	if err := os.Rename(statePath, statePath+".blocked-selector-directory"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(savedPath, statePath); err != nil {
+		t.Fatal(err)
+	}
+	if after, err := os.ReadFile(statePath); err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("fixture changed the saved selector intent: %v", err)
+	}
+	if actual, err := os.ReadFile(filepath.Join(root, "selector-effects")); err != nil || string(actual) != "once\n" {
+		t.Fatalf("initial selector did not execute exactly once: %q %v", actual, err)
+	}
+	if actual, err := os.ReadFile(filepath.Join(root, "observed-selector-output")); err != nil || !bytes.Equal(actual, output) {
+		t.Fatalf("selector output artifact differs from its actual captured bytes: %q %v", actual, err)
+	}
+	prior, err := pipeline.LoadState(root, cfg.RunID)
+	if err != nil || prior.CommandEvaluations["select"].Status != "starting" || prior.CommandEvaluations["select"].ProcessID != 0 {
+		t.Fatalf("lost publication lacks the original selector intent: %+v %v", prior, err)
+	}
+	return prior
+}
+
+// Decode the public wire contract independently of the internal receipt type.
+// Inspection and acceptance expose decision metadata, never selector stdout.
+type pipelineSelectorRecoveryEntry struct {
+	StepID           string    `json:"step_id"`
+	Status           string    `json:"status"`
+	ReceiptToken     string    `json:"receipt_token"`
+	ProcessID        int       `json:"process_id"`
+	CanAccept        bool      `json:"can_accept"`
+	RefusalReason    string    `json:"refusal_reason"`
+	ResolutionAction string    `json:"resolution_action"`
+	ResolutionReason string    `json:"resolution_reason"`
+	ResolvedAt       time.Time `json:"resolved_at"`
+	ExitCode         *int      `json:"exit_code"`
+	OutputBytes      int       `json:"output_bytes"`
+	OutputHash       string    `json:"output_hash"`
+}
+
+type pipelineSelectorRecoveryResponse struct {
+	Success   bool                            `json:"success"`
+	ErrorCode string                          `json:"error_code"`
+	Selectors []pipelineSelectorRecoveryEntry `json:"selectors"`
+	Selector  pipelineSelectorRecoveryEntry   `json:"selector"`
+	Replayed  bool                            `json:"replayed"`
+}
+
+func inspectPipelineSelectorRecovery(t *testing.T, runID string, output []byte) pipelineSelectorRecoveryEntry {
+	t.Helper()
+	raw, err := executePipelineRecoveryCommand(t, runID)
+	var out pipelineSelectorRecoveryResponse
+	if err != nil || json.Unmarshal([]byte(raw), &out) != nil || !out.Success || len(out.Selectors) != 1 {
+		t.Fatalf("selector inspection failed: %s %v", raw, err)
+	}
+	entry := out.Selectors[0]
+	if entry.StepID != "select" || len(entry.ReceiptToken) != 64 {
+		t.Fatalf("inspection lost selector launch identity: %+v", entry)
+	}
+	for _, private := range []string{"fixture-selector-output", "selector-effects", string(output), base64.StdEncoding.EncodeToString(output)} {
+		if private != "" && strings.Contains(raw, private) {
+			t.Fatalf("selector inspection exposed execution contents %q: %s", private, raw)
+		}
+	}
+	return entry
+}
+
+func TestPipelineRecoverSelectorThenResumeWithoutRerun(t *testing.T) {
+	for _, tc := range []struct {
+		name, kind, children string
+		output               []byte
+		code                 int
+	}{
+		{"branch selection", "branch", "chosen\n", []byte("PRIVATE-SELECTOR-KEY\n"), 0},
+		{"raw binary output", "branch", "fallback\n", []byte{'x', 0, 0xff, 0xfe, '\n'}, 0},
+		{"original foreach items", "foreach", "cc\ncod\n", []byte("cc\ncod\n"), 0},
+		{"accepted nonzero", "branch", "", []byte("PRIVATE-SELECTOR-KEY\n"), 7},
+		{"normal failure action", "failure action", "", []byte("PRIVATE-SELECTOR-KEY\n"), 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := inPipelineControlProject(t)
+			prior := interruptedPipelineSelectorOutcome(t, root, tc.kind, tc.output, tc.code)
+			oldJSON := jsonOutput
+			jsonOutput = true
+			t.Cleanup(func() { jsonOutput = oldJSON })
+			statePath := filepath.Join(root, ".ntm", "pipelines", prior.RunID+".json")
+			before, err := os.ReadFile(statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry := inspectPipelineSelectorRecovery(t, prior.RunID, tc.output)
+			if entry.Status != "starting" || entry.ProcessID != 0 || !entry.CanAccept {
+				t.Fatalf("starting intent cannot be reconciled explicitly: %+v", entry)
+			}
+			if after, err := os.ReadFile(statePath); err != nil || !bytes.Equal(after, before) {
+				t.Fatal("inspection changed selector execution evidence")
+			}
+			const reason = "Verified the original selector and every descendant finished; retained complete stdout and final exit status"
+			args := []string{prior.RunID, "--accept-selector", "--step-id", "select", "--receipt", entry.ReceiptToken,
+				"--reason", reason, "--exit-code", fmt.Sprint(tc.code), "--output-file", filepath.Join(root, "observed-selector-output")}
+			raw, err := executePipelineRecoveryCommand(t, args...)
+			var accepted pipelineSelectorRecoveryResponse
+			if err != nil || json.Unmarshal([]byte(raw), &accepted) != nil || !accepted.Success || accepted.Replayed ||
+				accepted.Selector.Status != "accepted" || accepted.Selector.ResolutionAction != "accept" ||
+				accepted.Selector.ResolutionReason != reason || accepted.Selector.ResolvedAt.IsZero() ||
+				accepted.Selector.ExitCode == nil || *accepted.Selector.ExitCode != tc.code || accepted.Selector.OutputBytes != len(tc.output) {
+				t.Fatalf("selector acceptance lost the exact operator decision: %s %v", raw, err)
+			}
+			saved, err := pipeline.LoadState(root, prior.RunID)
+			if err != nil || saved.Status != prior.Status || saved.Steps["select"].Status == pipeline.StatusCompleted || len(saved.ForeachState) != 0 {
+				t.Fatalf("acceptance dispatched or completed selector work: %+v %v", saved, err)
+			}
+			original, record := prior.CommandEvaluations["select"], saved.CommandEvaluations["select"]
+			if record.Status != "accepted" || record.ProcessID != original.ProcessID || record.StartedAt != original.StartedAt ||
+				record.FinishedAt != original.FinishedAt || record.InvocationHash != original.InvocationHash || !bytes.Equal(record.Output, tc.output) {
+				t.Fatalf("operator acceptance fabricated native execution evidence or changed raw output: %+v", record)
+			}
+			for _, name := range []string{"selector-children", "selector-dependent"} {
+				if _, err := os.Stat(filepath.Join(root, name)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("acceptance executed %q: %v", name, err)
+				}
+			}
+			inspection := inspectPipelineSelectorRecovery(t, prior.RunID, tc.output)
+			if inspection.Status != "accepted" || inspection.OutputBytes != len(tc.output) || len(inspection.OutputHash) != 64 {
+				t.Fatalf("accepted selector inspection lost bounded output metadata: %+v", inspection)
+			}
+			acceptedBytes, err := os.ReadFile(statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err = executePipelineRecoveryCommand(t, args...)
+			var replay pipelineSelectorRecoveryResponse
+			if err != nil || json.Unmarshal([]byte(raw), &replay) != nil || !replay.Replayed || replay.Selector.ResolvedAt != accepted.Selector.ResolvedAt {
+				t.Fatalf("identical selector decision did not replay: %s %v", raw, err)
+			}
+			if after, err := os.ReadFile(statePath); err != nil || !bytes.Equal(after, acceptedBytes) {
+				t.Fatal("selector decision replay rewrote the checkpoint")
+			}
+			changedOutput := filepath.Join(root, "different-selector-output")
+			if err := os.WriteFile(changedOutput, append(append([]byte(nil), tc.output...), 'x'), 0600); err != nil {
+				t.Fatal(err)
+			}
+			for _, change := range []struct{ flag, value string }{
+				{"--receipt", strings.Repeat("0", 64)}, {"--reason", "A different observation"},
+				{"--exit-code", fmt.Sprint((tc.code + 1) % 256)}, {"--output-file", changedOutput},
+			} {
+				conflict := append([]string(nil), args...)
+				for i := range conflict {
+					if conflict[i] == change.flag {
+						conflict[i+1] = change.value
+						break
+					}
+				}
+				raw, err := executePipelineRecoveryCommand(t, conflict...)
+				var refused pipelineSelectorRecoveryResponse
+				if !errors.Is(err, errJSONFailure) || json.Unmarshal([]byte(raw), &refused) != nil || refused.Success || refused.ErrorCode != "RECOVERY_REFUSED" {
+					t.Fatalf("conflicting selector decision %s was accepted: %s %v", change.flag, raw, err)
+				}
+				if after, err := os.ReadFile(statePath); err != nil || !bytes.Equal(after, acceptedBytes) {
+					t.Fatalf("conflicting %s changed the accepted selector decision", change.flag)
+				}
+			}
+			// The source would now select different work if resume executed it.
+			// Only the explicitly accepted original bytes may drive its body.
+			if err := os.WriteFile(filepath.Join(root, "fixture-selector-output"), []byte("gmi\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := newPipelineResumeCmd()
+			cmd.SetArgs([]string{prior.RunID})
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			raw, resumeErr := captureStdout(t, func() error { return cmd.ExecuteContext(ctx) })
+			final, err := pipeline.LoadState(root, prior.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.code == 0 {
+				if resumeErr != nil || final.Status != pipeline.StatusCompleted || final.Steps["consume"].Status != pipeline.StatusCompleted {
+					t.Fatalf("accepted selector did not continue normally: %+v %s %v", final, raw, resumeErr)
+				}
+				if actual, err := os.ReadFile(filepath.Join(root, "selector-children")); err != nil || string(actual) != tc.children {
+					t.Fatalf("resume selected changed work or repeated a child: %q want %q: %v", actual, tc.children, err)
+				}
+			} else if tc.kind == "failure action" {
+				if resumeErr != nil || final.Status != pipeline.StatusCompleted || final.Steps["select"].Status != pipeline.StatusSkipped ||
+					final.Steps["select"].SkipKind != pipeline.SkipKindOnFailureAction || final.Variables["runtime.select_failure_action"] != "fallback_to_ntm_inbox" ||
+					final.Steps["consume"].Status != pipeline.StatusCompleted {
+					t.Fatalf("accepted selector exit bypassed normal failure handling: %+v %s %v", final, raw, resumeErr)
+				}
+			} else {
+				result := final.Steps["select"]
+				if resumeErr == nil || final.Status != pipeline.StatusFailed || result.Status != pipeline.StatusFailed || result.Attempts != 1 || result.Error == nil {
+					t.Fatalf("accepted selector failure was retried or treated as success: %+v %s %v", final, raw, resumeErr)
+				}
+				if _, err := os.Stat(filepath.Join(root, "selector-dependent")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("dependent ran after accepted selector failure: %v", err)
+				}
+			}
+			if tc.code != 0 {
+				if _, err := os.Stat(filepath.Join(root, "selector-children")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("failed selector dispatched its body: %v", err)
+				}
+			}
+			if actual, err := os.ReadFile(filepath.Join(root, "selector-effects")); err != nil || string(actual) != "once\n" {
+				t.Fatalf("recovery repeated selector source effects: %q %v", actual, err)
+			}
+			settledBytes, err := os.ReadFile(statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err = executePipelineRecoveryCommand(t, args...)
+			if err != nil || json.Unmarshal([]byte(raw), &replay) != nil || !replay.Replayed || replay.Selector.ResolvedAt != accepted.Selector.ResolvedAt {
+				t.Fatalf("consumed selector decision did not replay: %s %v", raw, err)
+			}
+			if after, err := os.ReadFile(statePath); err != nil || !bytes.Equal(after, settledBytes) {
+				t.Fatal("replaying a consumed selector decision changed the journal")
+			}
+		})
+	}
+}
+
+func TestPipelineRecoverSelectorRejectsInvalidInputs(t *testing.T) {
+	root := inPipelineControlProject(t)
+	output := []byte("PRIVATE-SELECTOR-KEY\n")
+	prior := interruptedPipelineSelectorOutcome(t, root, "branch", output, 0)
+	oldJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSON })
+	entry := inspectPipelineSelectorRecovery(t, prior.RunID, output)
+	base := []string{prior.RunID, "--accept-selector", "--step-id", "select", "--receipt", entry.ReceiptToken, "--reason", "Verified original selector completion"}
+	withOutput := func(file string) []string {
+		return append(append([]string(nil), base...), "--exit-code", "0", "--output-file", file)
+	}
+	outputFile := filepath.Join(root, "observed-selector-output")
+	overWorkflowLimit := filepath.Join(root, "over-selector-workflow-limit")
+	if err := os.WriteFile(overWorkflowLimit, bytes.Repeat([]byte{'x'}, 65), 0600); err != nil {
+		t.Fatal(err)
+	}
+	oversized := filepath.Join(root, "oversized-selector-output")
+	file, err := os.Create(oversized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(pipeline.CommandRecoveryMaxOutputBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string][]string{
+		"missing explicit exit":           append(append([]string(nil), base...), "--output-file", outputFile),
+		"missing output file":             append(append([]string(nil), base...), "--exit-code", "0"),
+		"delivery and selector":           append(withOutput(outputFile), "--accept-delivery"),
+		"command and selector":            append(withOutput(outputFile), "--accept-command"),
+		"flags without acceptance":        {prior.RunID, "--exit-code", "0", "--output-file", outputFile},
+		"disabled acceptance":             append(withOutput(outputFile), "--accept-selector=false"),
+		"negative exit":                   append(withOutput(outputFile), "--exit-code", "-1"),
+		"invalid exit":                    append(withOutput(outputFile), "--exit-code", "256"),
+		"blank reason":                    append(withOutput(outputFile), "--reason", "  "),
+		"missing step":                    append(withOutput(outputFile), "--step-id", ""),
+		"missing receipt":                 append(withOutput(outputFile), "--receipt", ""),
+		"stale receipt":                   append(withOutput(outputFile), "--receipt", strings.Repeat("0", 64)),
+		"missing file":                    withOutput(filepath.Join(root, "missing-selector-output")),
+		"directory":                       withOutput(root),
+		"oversized global limit":          withOutput(oversized),
+		"oversized frozen workflow limit": withOutput(overWorkflowLimit),
+	}
+	statePath := filepath.Join(root, ".ntm", "pipelines", prior.RunID+".json")
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			raw, err := executePipelineRecoveryCommand(t, args...)
+			var refused pipelineSelectorRecoveryResponse
+			if !errors.Is(err, errJSONFailure) || json.Unmarshal([]byte(raw), &refused) != nil || refused.Success || refused.ErrorCode != "RECOVERY_REFUSED" {
+				t.Fatalf("invalid selector decision was accepted: %s %v", raw, err)
+			}
+			if after, err := os.ReadFile(statePath); err != nil || !bytes.Equal(after, before) {
+				t.Fatal("invalid selector input changed the original launch evidence")
+			}
+		})
+	}
+}
+
+func TestPipelineRecoverSelectorRejectsLegacyAndChangedWorkflow(t *testing.T) {
+	for _, kind := range []string{"legacy intent", "changed frozen workflow"} {
+		t.Run(kind, func(t *testing.T) {
+			root := inPipelineControlProject(t)
+			output := []byte("PRIVATE-SELECTOR-KEY\n")
+			prior := interruptedPipelineSelectorOutcome(t, root, "branch", output, 0)
+			oldJSON := jsonOutput
+			jsonOutput = true
+			t.Cleanup(func() { jsonOutput = oldJSON })
+			entry := inspectPipelineSelectorRecovery(t, prior.RunID, output)
+			if kind == "legacy intent" {
+				record := prior.CommandEvaluations["select"]
+				record.Version, record.InvocationHash, record.StdoutLimit, record.StderrLimit = 1, "", 0, 0
+				prior.CommandEvaluations["select"] = record
+				prior.CommandEvaluationVersion = 1
+				if err := pipeline.SaveState(root, prior); err != nil {
+					t.Fatal(err)
+				}
+				entry = inspectPipelineSelectorRecovery(t, prior.RunID, output)
+				if entry.CanAccept || entry.RefusalReason == "" {
+					t.Fatalf("legacy selector lacks an explicit recovery refusal: %+v", entry)
+				}
+			} else {
+				original, err := os.ReadFile(prior.WorkflowFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(prior.WorkflowFile, append(original, []byte("\n# changed after launch\n")...), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			statePath := filepath.Join(root, ".ntm", "pipelines", prior.RunID+".json")
+			before, err := os.ReadFile(statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			args := []string{prior.RunID, "--accept-selector", "--step-id", "select", "--receipt", entry.ReceiptToken,
+				"--reason", "Verified original selector completion", "--exit-code", "0", "--output-file", filepath.Join(root, "observed-selector-output")}
+			raw, err := executePipelineRecoveryCommand(t, args...)
+			var refused pipelineSelectorRecoveryResponse
+			if !errors.Is(err, errJSONFailure) || json.Unmarshal([]byte(raw), &refused) != nil || refused.Success || refused.ErrorCode != "RECOVERY_REFUSED" {
+				t.Fatalf("ineligible selector recovery was accepted: %s %v", raw, err)
+			}
+			if after, err := os.ReadFile(statePath); err != nil || !bytes.Equal(after, before) {
+				t.Fatal("ineligible selector recovery changed the checkpoint")
+			}
+		})
+	}
+}
+
+func TestPipelineRecoverSelectorOwnershipAndCancellation(t *testing.T) {
+	root := inPipelineControlProject(t)
+	output := []byte("PRIVATE-SELECTOR-KEY\n")
+	prior := interruptedPipelineSelectorOutcome(t, root, "branch", output, 0)
+	oldJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSON })
+	entry := inspectPipelineSelectorRecovery(t, prior.RunID, output)
+	args := []string{prior.RunID, "--accept-selector", "--step-id", "select", "--receipt", entry.ReceiptToken,
+		"--reason", "Verified original selector completion", "--exit-code", "0", "--output-file", filepath.Join(root, "observed-selector-output")}
+	statePath := filepath.Join(root, ".ntm", "pipelines", prior.RunID+".json")
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := pipeline.AcquireRunControl(context.Background(), root, prior.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(owner.Close)
+	const invalidState = "selector owner must be checked before reading the checkpoint"
+	if err := os.WriteFile(statePath, []byte(invalidState), 0600); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := executePipelineRecoveryCommand(t, args...)
+	var refused pipelineSelectorRecoveryResponse
+	if !errors.Is(err, pipeline.ErrRunAlreadyOwned) || json.Unmarshal([]byte(raw), &refused) != nil || refused.Success || refused.ErrorCode != "PIPELINE_RUNNING" {
+		t.Fatalf("selector acceptance read state before checking live ownership: %s %v", raw, err)
+	}
+	if after, err := os.ReadFile(statePath); err != nil || string(after) != invalidState {
+		t.Fatal("live-owner refusal changed selector state")
+	}
+	owner.Close()
+	if err := os.WriteFile(statePath, before, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := newPipelineCmd()
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs(append([]string{"recover"}, args...))
+	var response bytes.Buffer
+	cmd.SetOut(&response)
+	cmd.SetErr(io.Discard)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = cmd.ExecuteContext(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled selector acceptance lost its cancellation cause: %s %v", response.String(), err)
+	}
+	if after, err := os.ReadFile(statePath); err != nil || !bytes.Equal(after, before) {
+		t.Fatal("cancelled selector acceptance persisted a decision")
+	}
+	owner, err = pipeline.AcquireRunControl(context.Background(), root, prior.RunID)
+	if err != nil {
+		t.Fatalf("cancelled selector acceptance retained ownership: %v", err)
 	}
 	owner.Close()
 }

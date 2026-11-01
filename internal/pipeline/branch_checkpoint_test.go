@@ -3,7 +3,9 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func decisionTestExecutor(t *testing.T, step Step) (*Executor, *Workflow, ExecutorConfig) {
@@ -63,6 +66,84 @@ func TestBranchDecisionIsDurableBeforeChildDispatch(t *testing.T) {
 	decision, err := decodeBranchDecision(branchDecisionID("route"), checkpoint.Steps[branchDecisionID("route")])
 	if err != nil || decision.BranchKey != "a" {
 		t.Fatalf("missing decision: %+v %v", decision, err)
+	}
+}
+
+func TestBranchDecisionBinarySelectorKeepsRawDefaultAcrossResume(t *testing.T) {
+	raw := []byte{'x', 0, 0xff, 0xfe, '\n'}
+	step := Step{ID: "route", Branch: "$(printf x >> selections; cat choice)", Branches: map[string]interface{}{
+		"default": []Step{{ID: "work", Command: "printf x >> body-attempts; test -f release && printf original > marker"}},
+		// Neither per-byte JSON replacement nor grouped UTF-8 replacement
+		// may turn an unmatched raw selector into an authored alias branch.
+		"x\x00\ufffd\ufffd": []Step{{ID: "work", Command: "printf wrong > wrong-branch"}},
+		"x\x00\ufffd":       []Step{{ID: "work", Command: "printf wrong > wrong-branch"}},
+	}}
+	_, workflow, cfg := decisionTestExecutor(t, step)
+	decisionTestWrite(t, cfg.ProjectDir, "choice", string(raw))
+	first, err := RunControlledPipeline(context.Background(), workflow, nil, cfg, nil)
+	if err == nil || first == nil || first.Status != StatusFailed || first.Steps["route_work"].Error == nil {
+		t.Fatalf("fixture did not fail inside the selected default body: %+v %v", first, err)
+	}
+	prior, err := LoadState(cfg.ProjectDir, cfg.RunID)
+	if err != nil {
+		t.Fatalf("binary selector could not checkpoint a decision: %v", err)
+	}
+	decisionID := branchDecisionID(step.ID)
+	decision, err := decodeBranchDecision(decisionID, prior.Steps[decisionID])
+	if err != nil || decision.BranchKey != "default" || !utf8.ValidString(decision.SelectorKey) ||
+		prior.Steps[decisionID].Output != decision.SelectorKey {
+		t.Fatalf("binary selector lost its raw-match decision or stable display: %+v %v", decision, err)
+	}
+	record := prior.CommandEvaluations[step.ID]
+	wantHash := fmt.Sprintf("%x", sha256.Sum256(raw))
+	if record.Status != commandExecutionSettled || !bytes.Equal(record.Output, raw) || record.OutputHash != wantHash {
+		t.Fatalf("textual decision normalization changed raw source evidence: %+v", record)
+	}
+	for name, want := range map[string]string{"selections": "x", "body-attempts": "x"} {
+		if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, name)); err != nil || string(data) != want {
+			t.Fatalf("first %s=%q want %q: %v", name, data, want, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(cfg.ProjectDir, "wrong-branch")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("display normalization changed original branch matching: %v", err)
+	}
+
+	// A fresh source would now select the replacement-character alias. Resume
+	// must retain the original default and retry only its settled failed body.
+	decisionTestWrite(t, cfg.ProjectDir, "choice", "x\x00\ufffd\ufffd")
+	decisionTestWrite(t, cfg.ProjectDir, "release", "go")
+	frozen, validation, err := LoadResumeWorkflow(prior.WorkflowFile)
+	if err != nil || !validation.Valid {
+		t.Fatalf("load original frozen branch: %+v %v", validation, err)
+	}
+	owner, err := AcquireRunControl(context.Background(), cfg.ProjectDir, cfg.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	resumed, err := NewExecutor(cfg).Resume(owner.Context(), frozen, prior, nil)
+	if err != nil || resumed == nil || resumed.Status != StatusCompleted {
+		t.Fatalf("resume failed to retain the binary selector's default: %+v %v", resumed, err)
+	}
+	if kept := resumed.CommandEvaluations[step.ID]; !kept.StartedAt.Equal(record.StartedAt) || !bytes.Equal(kept.Output, raw) || kept.OutputHash != wantHash {
+		t.Fatalf("body retry changed or repeated its completed source: %+v", kept)
+	}
+	for name, want := range map[string]string{"selections": "x", "body-attempts": "xx", "marker": "original"} {
+		if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, name)); err != nil || string(data) != want {
+			t.Fatalf("resumed %s=%q want %q: %v", name, data, want, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(cfg.ProjectDir, "wrong-branch")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("resume selected a normalized alias instead of saved default: %v", err)
+	}
+	final, err := LoadState(cfg.ProjectDir, cfg.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := decodeBranchDecision(decisionID, final.Steps[decisionID])
+	if err != nil || reloaded.BranchKey != "default" || reloaded.SelectorKey != decision.SelectorKey ||
+		!bytes.Equal(final.CommandEvaluations[step.ID].Output, raw) || final.CommandEvaluations[step.ID].OutputHash != wantHash {
+		t.Fatalf("final JSON reload changed the selected branch or raw evidence: %+v %v", reloaded, err)
 	}
 }
 

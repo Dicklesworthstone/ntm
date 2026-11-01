@@ -120,7 +120,7 @@ func validateBranchDecisions(state *ExecutionState) error {
 	return nil
 }
 
-// prepareBranchDecision returns the original selector result and selected body.
+// prepareBranchDecision returns the saved selector text and selected body.
 // Even default fallback records BOTH keys. Anonymous child IDs use the matched
 // map key, so the dispatcher and recovery namespace resolver agree even when
 // the selector returns an arbitrary string that falls back to "default".
@@ -170,7 +170,13 @@ func (e *Executor) prepareBranchDecision(ctx context.Context, step *Step) (branc
 		if _, err := lookupBranch(step.Branches, key); err != nil {
 			return fail(err)
 		}
-		decision = branchDecision{Version: branchDecisionVersion, ParentID: step.ID, DefinitionHash: digest, SelectorKey: key, BranchKey: matched}
+		// JSON cannot preserve invalid UTF-8 in a string. Canonicalize only
+		// this diagnostic text, after matching the original byte-exact key,
+		// so both copies of the checkpoint identity survive serialization.
+		// The source journal retains the exact stdout bytes and their hash;
+		// dispatch and recovery continue to use the original matched key.
+		decision = branchDecision{Version: branchDecisionVersion, ParentID: step.ID, DefinitionHash: digest,
+			SelectorKey: strings.ToValidUTF8(key, "\uFFFD"), BranchKey: matched}
 	}
 	body, found := step.Branches[decision.BranchKey]
 	if !found {

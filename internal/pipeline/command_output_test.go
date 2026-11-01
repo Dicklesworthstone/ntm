@@ -5,6 +5,7 @@ package pipeline
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -467,6 +468,198 @@ func TestCommandOutputLostSuccessCheckpointKeepsIntentUnresolved(t *testing.T) {
 	}
 	if data, err := os.ReadFile(filepath.Join(e.config.ProjectDir, "selections")); err != nil || string(data) != "x" {
 		t.Fatalf("refused resume repeated effects: %q %v", data, err)
+	}
+}
+
+// A real command completes its effect and drains both output pipes, then the
+// lifecycle hook loses the final publication. This leaves the actual durable
+// starting receipt (PID zero), without inventing hashes or leaving live work.
+// The alternate case preserves a deterministic returned observation failure.
+func selectorOperatorRecoveryFixture(t *testing.T, kind string, output []byte, exitCode int, unresolved bool) (ExecutorConfig, *Workflow, *ExecutionState, string) {
+	t.Helper()
+	e := newCommandTestExecutor(t)
+	e.config.RunID = e.state.RunID
+	script := fmt.Sprintf("printf 'once\\n' >> source-effects; cat source-output; exit %d", exitCode)
+	step := Step{ID: "select", OnError: ErrorActionRetry, RetryCount: 2, RetryDelay: Duration{Duration: time.Millisecond}}
+	if kind == "foreach" {
+		step.Foreach = &ForeachConfig{Beads: "$(" + script + ")", Steps: []Step{{ID: "body", Command: "printf '%s\\n' '${item}' >> admitted"}}}
+	} else {
+		step.Branch = "$(" + script + ")"
+		step.Branches = map[string]interface{}{"good": Step{ID: "body", Command: "printf 'good\\n' >> admitted"}}
+	}
+	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: e.state.WorkflowID, Settings: DefaultWorkflowSettings(), Steps: []Step{step}}
+	workflow.Settings.Limits.MaxCommandStdoutBytes, workflow.Settings.Limits.MaxCommandStderrBytes = 64, 64
+	frozen, path, err := SnapshotWorkflow(context.Background(), e.config.ProjectDir, workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.config.WorkflowFile = path
+	e.state.WorkflowFile, e.state.Session, e.state.Status, e.state.StartedAt = path, e.config.Session, StatusRunning, time.Now()
+	e.graph, e.limits = NewDependencyGraph(frozen), frozen.Settings.Limits.EffectiveLimits()
+	if err := os.WriteFile(filepath.Join(e.config.ProjectDir, "source-output"), output, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx = e.commandEvaluationContext(ctx, &frozen.Steps[0])
+	lifecycle := ctx.Value(commandOutputLifecycleKey{}).(*commandOutputLifecycle)
+	nativeAfterWait := lifecycle.afterWait
+	lost := errors.New("injected completion checkpoint loss")
+	lifecycle.afterWait = func(cmd *exec.Cmd, settled bool, captured []byte, waitErr error) error {
+		if !settled || (exitCode == 0 && (waitErr != nil || !bytes.Equal(captured, output))) {
+			t.Fatalf("fixture failed before the final outcome boundary: settled=%t output=%x err=%v", settled, captured, waitErr)
+		}
+		if exitCode != 0 {
+			var exit *exec.ExitError
+			if !errors.As(waitErr, &exit) || exit.ExitCode() != exitCode {
+				t.Fatalf("fixture lost the real nonzero outcome: %v", waitErr)
+			}
+		}
+		if unresolved {
+			return errors.Join(lost, nativeAfterWait(cmd, false, nil, errors.New("injected final-census uncertainty")))
+		}
+		return lost
+	}
+	cmd := exec.Command("/bin/sh", "-c", script)
+	cmd.Dir = e.config.ProjectDir
+	if got, err := runCommandOutput(ctx, cmd, 64, 64); got != nil || !errors.Is(err, lost) {
+		t.Fatalf("lost outcome published source bytes: %x %v", got, err)
+	}
+	if cmd.ProcessState == nil {
+		t.Fatal("fixture left the original command unjoined")
+	}
+	prior, err := LoadState(e.config.ProjectDir, e.config.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := prior.CommandEvaluations[step.ID]
+	wantStatus := commandExecutionStarting
+	if unresolved {
+		wantStatus = commandExecutionUnresolved
+	}
+	if record.Status != wantStatus || (!unresolved && record.ProcessID != 0) || len(prior.Steps) != 0 || len(prior.ForeachState) != 0 {
+		t.Fatalf("fixture did not preserve the original pre-admission receipt: %+v", record)
+	}
+	return e.config, frozen, prior, script
+}
+
+func selectorRecoveryEntry(t *testing.T, cfg ExecutorConfig) CommandEvaluationRecoveryEntry {
+	t.Helper()
+	inspection, err := InspectCommandEvaluationRecovery(context.Background(), cfg.ProjectDir, cfg.RunID)
+	if err != nil || len(inspection.Selectors) != 1 {
+		t.Fatalf("inspect selector recovery: %+v %v", inspection, err)
+	}
+	return inspection.Selectors[0]
+}
+
+func selectorRecoveryCheckpoint(t *testing.T, cfg ExecutorConfig) []byte {
+	t.Helper()
+	data, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestSelectorOperatorRecoveryPreservesOriginalEvidenceAndBytes(t *testing.T) {
+	for _, unresolved := range []bool{false, true} {
+		for _, exitCode := range []int{0, 7, 255} {
+			t.Run(fmt.Sprintf("unresolved_%t/exit_%d", unresolved, exitCode), func(t *testing.T) {
+				output := []byte{0xff, 0, 0xc0, 'r', 'a', 'w'}
+				cfg, workflow, prior, script := selectorOperatorRecoveryFixture(t, "branch", output, exitCode, unresolved)
+				original := prior.CommandEvaluations["select"]
+				entry := selectorRecoveryEntry(t, cfg)
+				if !entry.CanAccept || entry.ReceiptToken == "" {
+					t.Fatalf("recoverable selector was not offered: %+v", entry)
+				}
+				reason := "Independently verified the original process tree ended and captured complete stdout"
+				accepted, err := AcceptCommandEvaluationContext(context.Background(), cfg.ProjectDir, cfg.RunID, entry.StepID, entry.ReceiptToken, reason, exitCode, output)
+				if err != nil || accepted.Replayed || accepted.Selector.Status != commandEvaluationAccepted || accepted.Selector.ExitCode == nil || *accepted.Selector.ExitCode != exitCode {
+					t.Fatalf("accept selector outcome: %+v %v", accepted, err)
+				}
+				prior, err = LoadState(cfg.ProjectDir, cfg.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				record := prior.CommandEvaluations[entry.StepID]
+				if record.OriginalStatus != original.Status || record.ProcessID != original.ProcessID ||
+					!record.StartedAt.Equal(original.StartedAt) || !record.FinishedAt.Equal(original.FinishedAt) || record.Error != original.Error ||
+					!bytes.Equal(record.Output, output) || record.ResolutionToken != entry.ReceiptToken || len(prior.Steps) != 0 {
+					t.Fatalf("acceptance replaced original evidence or published source output: %+v", record)
+				}
+				if unresolved && !strings.Contains(record.Error, "injected final-census uncertainty") {
+					t.Fatal("acceptance erased the original cleanup cause")
+				}
+				inspection := selectorRecoveryEntry(t, cfg)
+				public, err := json.Marshal(inspection)
+				if err != nil || bytes.Contains(public, []byte(`"output":`)) || inspection.OutputBytes != len(output) || inspection.OutputHash == "" {
+					t.Fatalf("inspection exposed source bytes or lost metadata: %s %v", public, err)
+				}
+				before := selectorRecoveryCheckpoint(t, cfg)
+				fresh := NewExecutor(cfg)
+				fresh.state = prior
+				if err := fresh.applyResumeOptions(workflow, ResumeOptions{}); err != nil {
+					t.Fatalf("accepted selector did not pass resume admission: %v", err)
+				}
+				cmd := exec.Command("/bin/sh", "-c", script)
+				cmd.Dir = cfg.ProjectDir
+				got, err := runCommandOutput(fresh.commandEvaluationContext(context.Background(), &workflow.Steps[0]), cmd, 64, 64)
+				if cmd.Process != nil || (exitCode == 0 && (err != nil || !bytes.Equal(got, output))) ||
+					(exitCode != 0 && (got != nil || err == nil || !strings.Contains(err.Error(), fmt.Sprintf("status %d", exitCode)))) {
+					t.Fatalf("accepted outcome was reexecuted or misinterpreted: %x %v process=%v", got, err, cmd.Process)
+				}
+				if !bytes.Equal(before, selectorRecoveryCheckpoint(t, cfg)) {
+					t.Fatal("consuming accepted output rewrote its immutable evidence")
+				}
+				if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "source-effects")); err != nil || string(data) != "once\n" {
+					t.Fatalf("acceptance repeated source effects: %q %v", data, err)
+				}
+			})
+		}
+	}
+}
+
+func TestSelectorOperatorRecoveryChangedInvocationCannotConsumeOrLaunch(t *testing.T) {
+	for _, change := range []string{"command", "directory", "environment", "definition", "stdout cap", "stderr cap"} {
+		t.Run(change, func(t *testing.T) {
+			cfg, workflow, _, script := selectorOperatorRecoveryFixture(t, "branch", []byte("good"), 0, false)
+			entry := selectorRecoveryEntry(t, cfg)
+			if _, err := AcceptCommandEvaluationContext(context.Background(), cfg.ProjectDir, cfg.RunID, entry.StepID, entry.ReceiptToken, "Verified complete original outcome", 0, []byte("good")); err != nil {
+				t.Fatal(err)
+			}
+			prior, err := LoadState(cfg.ProjectDir, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := selectorRecoveryCheckpoint(t, cfg)
+			fresh := NewExecutor(cfg)
+			fresh.state = prior
+			step := cloneStep(workflow.Steps[0])
+			cmd := exec.Command("/bin/sh", "-c", script)
+			cmd.Dir = cfg.ProjectDir
+			stdoutLimit, stderrLimit := int64(64), int64(64)
+			switch change {
+			case "command":
+				cmd.Args[2] += "; printf changed"
+			case "directory":
+				cmd.Dir = t.TempDir()
+			case "environment":
+				cmd.Env = append(cmd.Environ(), "NTM_CHANGED_ACCEPTED_SOURCE=1")
+			case "definition":
+				step.Name = "changed"
+			case "stdout cap":
+				stdoutLimit++
+			case "stderr cap":
+				stderrLimit++
+			}
+			out, err := runCommandOutput(fresh.commandEvaluationContext(context.Background(), &step), cmd, stdoutLimit, stderrLimit)
+			if out != nil || err == nil || !strings.Contains(err.Error(), "expanded invocation changed") || cmd.Process != nil {
+				t.Fatalf("changed %s consumed accepted bytes or launched: %x %v", change, out, err)
+			}
+			if !bytes.Equal(before, selectorRecoveryCheckpoint(t, cfg)) {
+				t.Fatal("identity refusal rewrote the accepted checkpoint")
+			}
+		})
 	}
 }
 

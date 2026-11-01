@@ -1043,9 +1043,10 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 		// metadata survive retry exhaustion and on_failure recovery.
 		result = stepResult
 		result.Attempts = attempt
-		if e.hasUnresolvedCommandEvaluation(step) {
-			// A selector can start external work before any child receipt or
-			// branch decision exists. Its uncertainty also fences containers.
+		if e.hasUnresolvedCommandEvaluation(step) || e.hasAcceptedCommandEvaluationFailure(step) {
+			// Selector uncertainty also fences its containers. An operator's
+			// accepted final failure cannot change through another automatic
+			// attempt; proceed directly to the normal failure policy.
 			break
 		}
 		if delivery, ok := e.loadAgentDelivery(step.ID); ok && delivery.Status == agentDeliverySending {
