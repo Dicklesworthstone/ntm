@@ -345,7 +345,7 @@ func TestPipelineJobCheckpointStopsBeforeExecution(t *testing.T) {
 				}))
 				var out pipeline.PipelineRunOutput
 				if resume {
-					out = srv.resumePipelineWithResult(ctx, config.RunID, config.Session, nil, nil)
+					out = srv.resumePipelineWithResult(ctx, config.RunID, config.Session, nil, nil, pipeline.ResumeOptions{})
 				} else {
 					out = srv.executeOwnedPipeline(ctx, workflow, nil, config)
 				}

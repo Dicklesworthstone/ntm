@@ -18,7 +18,7 @@ func TestWorkflowSnapshotPreservesStructuredSchema(t *testing.T) {
 		"name":"structured-snapshot",
 		"notes":["saved definition", "resumable"],
 		"vars":{"env":{"type":"string","default":"test"}},
-		"settings":{"timeout":"30s"},
+		"settings":{"timeout":"30s","limits":{"max_selector_output_bytes_total":128}},
 		"steps":[
 			{"id":"first","command":"echo ${vars.env}","timeout":"2s"},
 			{"id":"fanout","depends_on":["first"],"parallel":{"steps":[
@@ -43,6 +43,9 @@ func TestWorkflowSnapshotPreservesStructuredSchema(t *testing.T) {
 	}
 	if len(reloaded.Steps) != 2 || len(reloaded.Steps[1].Parallel.Steps) != 2 || reloaded.Vars["env"].Default != "test" {
 		t.Fatalf("snapshot dropped structured workflow fields: %+v", reloaded)
+	}
+	if reloaded.Settings.Limits.MaxSelectorOutputBytesTotal != 128 {
+		t.Fatalf("snapshot lost selector output budget: %+v", reloaded.Settings.Limits)
 	}
 }
 

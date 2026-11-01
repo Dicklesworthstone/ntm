@@ -203,8 +203,9 @@ type PipelineCleanupRequest struct {
 
 // PipelineResumeRequest is the request body for POST /api/v1/pipelines/{id}/resume
 type PipelineResumeRequest struct {
-	Session   string                 `json:"session,omitempty"`
-	Variables map[string]interface{} `json:"variables,omitempty"`
+	Session                     string                 `json:"session,omitempty"`
+	Variables                   map[string]interface{} `json:"variables,omitempty"`
+	MaxSelectorOutputBytesTotal int64                  `json:"max_selector_output_bytes_total,omitempty"`
 }
 
 // PipelineRecoverRequest records one explicit acceptance of an uncertain
@@ -556,6 +557,10 @@ func (s *Server) handleResumePipeline(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil, reqID)
 		return
 	}
+	if req.MaxSelectorOutputBytesTotal < 0 {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "max_selector_output_bytes_total must be zero or positive", nil, reqID)
+		return
+	}
 
 	slog.Info("pipeline resume", "request_id", reqID, "run_id", runID)
 
@@ -584,7 +589,9 @@ func (s *Server) handleResumePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := s.resumePipelineWithResult(r.Context(), runID, session, req.Variables, state)
+	result := s.resumePipelineWithResult(r.Context(), runID, session, req.Variables, state, pipeline.ResumeOptions{
+		MaxSelectorOutputBytesTotal: req.MaxSelectorOutputBytesTotal,
+	})
 
 	if !result.Success {
 		statusCode := http.StatusBadRequest
@@ -1007,7 +1014,7 @@ func (s *Server) executeOwnedPipeline(ctx context.Context, workflow *pipeline.Wo
 }
 
 // resumePipelineWithResult resumes a pipeline from saved state
-func (s *Server) resumePipelineWithResult(ctx context.Context, runID, session string, variables map[string]interface{}, state *pipeline.ExecutionState) pipeline.PipelineRunOutput {
+func (s *Server) resumePipelineWithResult(ctx context.Context, runID, session string, variables map[string]interface{}, state *pipeline.ExecutionState, resumeOptions pipeline.ResumeOptions) pipeline.PipelineRunOutput {
 	output := pipeline.PipelineRunOutput{RunID: runID, Session: session}
 	view, err := s.pipelineExecutionServer(ctx)
 	if err != nil {
@@ -1069,6 +1076,7 @@ func (s *Server) resumePipelineWithResult(ctx context.Context, runID, session st
 	config.ProjectDir = s.pipelineProjectDir()
 	config.WorkflowFile = state.WorkflowFile
 	config.RunID = runID
+	config.ResumeOptions = resumeOptions
 	if err := checkpointPipelineJob(ctx, workflow.Name, config, "before_resume"); err != nil {
 		output.RobotResponse = pipeline.NewErrorResponse(err, ErrCodeInternalError, "workflow was not resumed; repair job recovery storage before retrying")
 		return output

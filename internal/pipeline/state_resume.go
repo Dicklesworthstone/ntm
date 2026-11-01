@@ -60,6 +60,10 @@ type ResumeOptions struct {
 	OnRosterChange ResumeRosterChangePolicy `json:"on_roster_change,omitempty"`
 	StepID         string                   `json:"step_id,omitempty"`
 	Iteration      int                      `json:"iteration,omitempty"`
+	// MaxSelectorOutputBytesTotal overrides admission capacity for this
+	// attempt without changing the frozen workflow or replaying its sources.
+	// Zero uses the workflow limit; negative values are rejected.
+	MaxSelectorOutputBytesTotal int64 `json:"max_selector_output_bytes_total,omitempty"`
 }
 
 // ForeachIterationState records durable progress for loop/foreach-style
@@ -413,63 +417,99 @@ func (e *Executor) commandEvaluationContext(ctx context.Context, step *Step) con
 			if err != nil {
 				return nil, false, err
 			}
+			for {
+				if err := ctx.Err(); err != nil {
+					return nil, false, err
+				}
+				e.stateMu.Lock()
+				if e.state == nil {
+					e.stateMu.Unlock()
+					return nil, false, fmt.Errorf("cannot start command evaluation without execution state")
+				}
+				if e.state.CommandEvaluationVersion > commandEvaluationVersion || e.state.CommandEvaluationVersion < 0 {
+					version := e.state.CommandEvaluationVersion
+					e.stateMu.Unlock()
+					return nil, false, fmt.Errorf("unsupported command evaluation journal version %d", version)
+				}
+				if prior, ok := e.state.CommandEvaluations[step.ID]; ok {
+					prior = cloneCommandEvaluation(prior)
+					// Only scalar run identity is read from this snapshot below.
+					// Hashing retained output must not hold the execution-state lock
+					// or make ordinary cached successes pay for operator provenance.
+					identityState := *e.state
+					e.stateMu.Unlock()
+					if err := validateCommandEvaluation(step.ID, prior); err != nil {
+						return nil, false, err
+					}
+					if prior.Status == commandEvaluationAccepted {
+						if _, err := commandEvaluationRecoveryEntry(&identityState, prior); err != nil {
+							return nil, false, err
+						}
+					}
+					if !commandEvaluationHasOutcome(prior) {
+						return nil, false, uncertainCommandEvaluationError(step.ID)
+					}
+					if prior.StepHash != digest || prior.InvocationHash != invocation {
+						return nil, false, fmt.Errorf("command evaluation %q definition or expanded invocation changed since its output was checkpointed; restore the original inputs or explicitly reset its replay scope", step.ID)
+					}
+					if prior.Status == commandEvaluationAccepted && prior.ResolutionExitCode != 0 {
+						return nil, false, fmt.Errorf("accepted selector %q exited with status %d; its recorded outcome will not launch the command again", step.ID, prior.ResolutionExitCode)
+					}
+					return prior.Output, true, nil
+				}
+				wake, err := e.selectorOutputAdmissionLocked(step.ID, request.StdoutLimit)
+				if err != nil {
+					e.stateMu.Unlock()
+					return nil, false, err
+				}
+				if wake != nil {
+					e.stateMu.Unlock()
+					select {
+					case <-ctx.Done():
+						return nil, false, ctx.Err()
+					case <-wake:
+						continue
+					}
+				}
+				if err := ctx.Err(); err != nil {
+					e.stateMu.Unlock()
+					return nil, false, err
+				}
+				if e.state.CommandEvaluations == nil {
+					e.state.CommandEvaluations = make(map[string]CommandEvaluationState)
+				}
+				record = CommandEvaluationState{Version: commandEvaluationVersion, StepID: step.ID, StepHash: digest,
+					InvocationHash: invocation, StdoutLimit: request.StdoutLimit, StderrLimit: request.StderrLimit,
+					Status: commandExecutionStarting, StartedAt: time.Now()}
+				e.state.CommandEvaluations[step.ID] = record
+				e.state.CommandEvaluationVersion = commandEvaluationVersion
+				e.startSelectorOutputReservationLocked(record)
+				e.stateMu.Unlock()
+				if err := e.persistState(); err != nil {
+					// runCommandOutput installs afterWait only after this hook
+					// succeeds. End runtime ownership here but retain the fence
+					// whose removal cannot be proved durable after a save failure.
+					e.finishSelectorOutputReservation(record)
+					return nil, false, err
+				}
+				return nil, false, nil
+			}
+		},
+		afterWait: func(cmd *exec.Cmd, settled bool, output []byte, waitErr error) error {
+			defer e.finishSelectorOutputReservation(record)
 			e.stateMu.Lock()
 			if e.state == nil {
 				e.stateMu.Unlock()
-				return nil, false, fmt.Errorf("cannot start command evaluation without execution state")
+				return fmt.Errorf("command evaluation lost execution state for step %q", step.ID)
 			}
-			if e.state.CommandEvaluationVersion > commandEvaluationVersion || e.state.CommandEvaluationVersion < 0 {
-				version := e.state.CommandEvaluationVersion
-				e.stateMu.Unlock()
-				return nil, false, fmt.Errorf("unsupported command evaluation journal version %d", version)
-			}
-			if prior, ok := e.state.CommandEvaluations[step.ID]; ok {
-				prior = cloneCommandEvaluation(prior)
-				// Only scalar run identity is read from this snapshot below.
-				// Hashing retained output must not hold the execution-state lock
-				// or make ordinary cached successes pay for operator provenance.
-				identityState := *e.state
-				e.stateMu.Unlock()
-				if err := validateCommandEvaluation(step.ID, prior); err != nil {
-					return nil, false, err
-				}
-				if prior.Status == commandEvaluationAccepted {
-					if _, err := commandEvaluationRecoveryEntry(&identityState, prior); err != nil {
-						return nil, false, err
-					}
-				}
-				if !commandEvaluationHasOutcome(prior) {
-					return nil, false, uncertainCommandEvaluationError(step.ID)
-				}
-				if prior.StepHash != digest || prior.InvocationHash != invocation {
-					return nil, false, fmt.Errorf("command evaluation %q definition or expanded invocation changed since its output was checkpointed; restore the original inputs or explicitly reset its replay scope", step.ID)
-				}
-				if prior.Status == commandEvaluationAccepted && prior.ResolutionExitCode != 0 {
-					return nil, false, fmt.Errorf("accepted selector %q exited with status %d; its recorded outcome will not launch the command again", step.ID, prior.ResolutionExitCode)
-				}
-				return prior.Output, true, nil
-			}
-			if e.state.CommandEvaluations == nil {
-				e.state.CommandEvaluations = make(map[string]CommandEvaluationState)
-			}
-			record = CommandEvaluationState{Version: commandEvaluationVersion, StepID: step.ID, StepHash: digest,
-				InvocationHash: invocation, StdoutLimit: request.StdoutLimit, StderrLimit: request.StderrLimit,
-				Status: commandExecutionStarting, StartedAt: time.Now()}
-			e.state.CommandEvaluations[step.ID] = record
-			e.state.CommandEvaluationVersion = commandEvaluationVersion
-			e.stateMu.Unlock()
-			return nil, false, e.persistState()
-		},
-		afterWait: func(cmd *exec.Cmd, settled bool, output []byte, waitErr error) error {
-			e.stateMu.Lock()
 			prior, exists := e.state.CommandEvaluations[step.ID]
-			if !exists || prior.Status != commandExecutionStarting || prior.StepHash != record.StepHash ||
-				prior.InvocationHash != record.InvocationHash || !prior.StartedAt.Equal(record.StartedAt) {
+			if !exists || prior.Status != commandExecutionStarting || prior.StepID != record.StepID ||
+				!selectorOutputReservationFor(record).matches(prior) {
 				e.stateMu.Unlock()
 				return fmt.Errorf("command evaluation identity changed for step %q", step.ID)
 			}
 			if settled && waitErr == nil {
-				if cmd.Process == nil || int64(len(output)) > record.StdoutLimit {
+				if cmd == nil || cmd.Process == nil || int64(len(output)) > record.StdoutLimit {
 					e.stateMu.Unlock()
 					return fmt.Errorf("command evaluation %q returned invalid successful output evidence", step.ID)
 				}
@@ -481,7 +521,7 @@ func (e *Executor) commandEvaluationContext(ctx context.Context, step *Step) con
 			} else if settled {
 				delete(e.state.CommandEvaluations, step.ID)
 			} else {
-				if cmd.Process == nil {
+				if cmd == nil || cmd.Process == nil {
 					e.stateMu.Unlock()
 					return fmt.Errorf("command evaluation %q lost its process identity before cleanup returned", step.ID)
 				}
@@ -2093,6 +2133,9 @@ func defaultResumeOptions() ResumeOptions {
 }
 
 func normalizeResumeOptions(opts ResumeOptions) (ResumeOptions, error) {
+	if opts.MaxSelectorOutputBytesTotal < 0 {
+		return opts, fmt.Errorf("max_selector_output_bytes_total must not be negative")
+	}
 	if opts == (ResumeOptions{}) {
 		return defaultResumeOptions(), nil
 	}

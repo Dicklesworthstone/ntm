@@ -183,7 +183,7 @@ func TestPipelineResumeSnapshotSymlinkCannotBypassHashCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := &Server{projectDir: dir}
-	out := srv.resumePipelineWithResult(context.Background(), runID, prior.Session, nil, prior)
+	out := srv.resumePipelineWithResult(context.Background(), runID, prior.Session, nil, prior, pipeline.ResumeOptions{})
 	if out.Success || out.ErrorCode != ErrCodeInvalidWorkflow {
 		t.Fatalf("resolving snapshot symlink bypassed integrity validation: %+v", out)
 	}

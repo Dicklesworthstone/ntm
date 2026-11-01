@@ -235,7 +235,7 @@ func TestPipelineResumeReloadsCheckpointInsideOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := &Server{projectDir: dir}
-	out := srv.resumePipelineWithResult(context.Background(), runID, stale.Session, nil, stale)
+	out := srv.resumePipelineWithResult(context.Background(), runID, stale.Session, nil, stale, pipeline.ResumeOptions{})
 	if !out.Success || out.Status != "completed" || out.RunID != runID {
 		t.Fatalf("resume from fresh checkpoint failed: %+v", out)
 	}

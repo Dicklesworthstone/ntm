@@ -922,6 +922,28 @@ External branch, foreach, and bead-query sources use `step.timeout`, or the
 executor's default timeout when no step override is set, and the workflow's
 `max_command_stdout_bytes` and `max_command_stderr_bytes` limits. A source deadline
 applies to source evaluation; branch and foreach bodies keep their own lifetimes.
+The run also limits retained selector stdout and outstanding stdout reservations
+with `settings.limits.max_selector_output_bytes_total` (default **32 MiB**).
+Before a new source starts, it reserves its entire `max_command_stdout_bytes`
+allowance. Successful completion replaces that reservation with the exact saved
+bytes; uncertain completion keeps the full reservation and its replay barrier.
+Parallel sources wait within their existing deadlines when active captures can
+free enough capacity. If saved output or unresolved receipts leave insufficient
+capacity, the next source fails before launch, without creating a receipt or
+performing its command's effects. Already saved outcomes remain reusable even
+when an older checkpoint exceeds the current budget.
+
+For sources that return small records, a smaller `max_command_stdout_bytes`
+allows more concurrent reservations. To raise capacity for an existing frozen
+run without resetting its evidence, use
+`ntm pipeline resume <run-id> --max-selector-output-bytes-total 67108864`.
+This positive byte override applies only to that resume attempt; it preserves
+the frozen workflow, original capture limits, and cached output identities.
+The REST resume endpoint and `pipeline_resume` jobs accept the corresponding
+`max_selector_output_bytes_total` field. This budget covers selector stdout and
+reservations; other checkpoint fields, parsed items, and temporary serialization
+buffers have separate memory and storage costs.
+
 Dry runs preview dynamic foreach sources without executing their shell commands
 or `br` queries; static item and model lists can still be expanded for preview.
 

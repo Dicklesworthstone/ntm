@@ -103,7 +103,12 @@ func (s *Server) jobPipelineResume(ctx context.Context, params map[string]interf
 	if err := decodeJobParams(params, &req); err != nil {
 		return nil, err
 	}
-	return executeResumePipelineJob(ctx, s.pipelineProjectDir(), req, pipeline.LoadState, s.resumePipelineWithResult)
+	return executeResumePipelineJob(ctx, s.pipelineProjectDir(), req, pipeline.LoadState,
+		func(runCtx context.Context, runID, session string, variables map[string]interface{}, state *pipeline.ExecutionState) pipeline.PipelineRunOutput {
+			return s.resumePipelineWithResult(runCtx, runID, session, variables, state, pipeline.ResumeOptions{
+				MaxSelectorOutputBytesTotal: req.MaxSelectorOutputBytesTotal,
+			})
+		})
 }
 
 func executeResumePipelineJob(ctx context.Context, projectDir string, req jobPipelineResumeParams,
@@ -115,6 +120,9 @@ func executeResumePipelineJob(ctx context.Context, projectDir string, req jobPip
 	}
 	if strings.TrimSpace(req.RunID) == "" {
 		return nil, fmt.Errorf("run_id is required")
+	}
+	if req.MaxSelectorOutputBytesTotal < 0 {
+		return nil, fmt.Errorf("max_selector_output_bytes_total must be zero or positive")
 	}
 	session, err := applyJobResumeTarget(ctx, projectDir, req.RunID, req.Session)
 	if err != nil {

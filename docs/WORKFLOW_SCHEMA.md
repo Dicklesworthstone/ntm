@@ -399,6 +399,43 @@ The `mail` channel sends as `ntm-pipeline`, using the workflow's working
 directory as the Agent Mail project key (the same key `mail_send` steps take
 explicitly as `project_key`).
 
+### Selector Output Limits
+
+Shell branch predicates, external foreach sources, and bead queries retain their
+successful stdout in the run checkpoint so ordinary resume can reuse the result
+without repeating source effects. Configure their capture limits and aggregate
+journal budget under `settings.limits`:
+
+```yaml
+settings:
+  limits:
+    max_command_stdout_bytes: 16777216       # Per source: 16 MiB
+    max_command_stderr_bytes: 4194304        # Per source: 4 MiB
+    max_selector_output_bytes_total: 33554432 # Retained stdout + reservations: 32 MiB
+```
+
+All values are bytes; omitted or nonpositive workflow limits use their defaults.
+Each new selector reserves its full stdout allowance before launch. On proven
+success the charge becomes its actual retained bytes. Unresolved selectors keep
+the original full reservation until their outcome is explicitly recovered or
+their scope is deliberately reset. Existing cached outcomes remain available
+even when a saved journal exceeds the aggregate budget.
+
+Parallel sources wait within their source deadlines while active reservations
+can shrink. If the retained evidence makes admission impossible, a new source is
+refused before launch. Lower the per-source stdout cap for small outputs, or
+increase the aggregate budget when more retained output is expected. The
+aggregate limit does not cap other checkpoint fields, parsed item lists, or
+temporary capture and serialization copies.
+
+For an existing frozen run, a positive
+`ntm pipeline resume <run-id> --max-selector-output-bytes-total <bytes>` override
+changes admission policy for that attempt without changing captured output,
+receipt identity, or the frozen workflow. REST resume requests and
+`pipeline_resume` jobs accept `max_selector_output_bytes_total` with the same
+meaning. Zero uses the frozen workflow's configured limit or its default;
+negative resume overrides are rejected.
+
 ### Error Actions
 
 | Action | Behavior |

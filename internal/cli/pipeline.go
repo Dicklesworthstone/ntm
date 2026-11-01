@@ -617,14 +617,15 @@ func newPipelineCancelCmd() *cobra.Command {
 // newPipelineResumeCmd creates the "pipeline resume" subcommand
 func newPipelineResumeCmd() *cobra.Command {
 	var (
-		session        string
-		background     bool
-		mode           string
-		keepState      bool
-		maxResumeAge   string
-		onRosterChange string
-		stepID         string
-		iteration      int
+		session                     string
+		background                  bool
+		mode                        string
+		keepState                   bool
+		maxResumeAge                string
+		onRosterChange              string
+		stepID                      string
+		iteration                   int
+		maxSelectorOutputBytesTotal int64
 	)
 
 	cmd := &cobra.Command{
@@ -648,6 +649,10 @@ After inspection and stopping any surviving command processes,
 --mode=force-iter deliberately repeats the selected iteration and later ones.
 These explicit restart choices may repeat side effects.
 
+If retained selector output exhausts its aggregate budget, raise
+--max-selector-output-bytes-total for this resume attempt. Existing selector
+outcomes stay intact; the saved workflow's limits remain unchanged.
+
 Examples:
   # Resume a specific pipeline
   ntm pipeline resume run-20241230-123456-abcd --session myproject
@@ -658,13 +663,17 @@ Examples:
   # Resume will pick up from the last incomplete step`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if maxSelectorOutputBytesTotal < 0 {
+				return fmt.Errorf("--max-selector-output-bytes-total must be zero or positive")
+			}
 			runID := args[0]
 			resumeOpts := pipeline.ResumeOptions{
-				Mode:           pipeline.ResumeMode(mode),
-				KeepState:      keepState,
-				OnRosterChange: pipeline.ResumeRosterChangePolicy(onRosterChange),
-				StepID:         stepID,
-				Iteration:      iteration,
+				Mode:                        pipeline.ResumeMode(mode),
+				KeepState:                   keepState,
+				OnRosterChange:              pipeline.ResumeRosterChangePolicy(onRosterChange),
+				StepID:                      stepID,
+				Iteration:                   iteration,
+				MaxSelectorOutputBytesTotal: maxSelectorOutputBytesTotal,
 			}
 			// normalizeResumeOptions derives KeepState from Reset (bd-uyjdn), so a
 			// KeepState:false set here alone was silently flipped back to true and
@@ -932,6 +941,7 @@ Examples:
 	cmd.Flags().StringVar(&mode, "mode", string(pipeline.ResumeModeContinue), "Resume mode: continue, restart-failed, force-iter")
 	cmd.Flags().BoolVar(&keepState, "keep-state", true, "Preserve completed step outputs while resuming")
 	cmd.Flags().StringVar(&maxResumeAge, "max-resume-age", "", "Refuse to resume state older than this duration (for example 7d, 24h)")
+	cmd.Flags().Int64Var(&maxSelectorOutputBytesTotal, "max-selector-output-bytes-total", 0, "Override the selector output budget in bytes for this resume attempt (0 uses the saved workflow)")
 	cmd.Flags().StringVar(&onRosterChange, "on-roster-change", string(pipeline.ResumeRosterAbort), "Roster-change policy: abort or proceed")
 	cmd.Flags().StringVar(&stepID, "step-id", "", "Step ID used with --mode=force-iter")
 	cmd.Flags().IntVar(&iteration, "iteration", 0, "Iteration index used with --mode=force-iter")

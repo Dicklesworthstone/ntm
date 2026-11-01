@@ -127,6 +127,13 @@ type Executor struct {
 	// Protected by stateMu and reset per attempt.
 	backgroundCommandErrors map[string]error
 
+	// Selector capture reservations are derived from durable receipts. Only
+	// these attempt-local owners may release capacity while another selector
+	// waits; interrupted starting receipts are never treated as live workers.
+	// Both fields are protected by stateMu.
+	selectorOutputActive map[string]selectorOutputReservation
+	selectorOutputWake   chan struct{}
+
 	// persistMu serializes snapshot-and-save transactions. Multiple workers may
 	// checkpoint concurrently; without this lock an older snapshot whose fsync
 	// finishes last can overwrite a newer state revision on disk.
@@ -278,6 +285,7 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 
 	e.stateMu.Lock()
 	e.backgroundCommandErrors = nil
+	e.resetSelectorOutputBudgetLocked()
 	e.reservationFailure = nil
 	e.reservationWake = make(chan struct{}, 1)
 	e.reservationStop = make(chan struct{})
@@ -379,6 +387,9 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 	if prior == nil {
 		return nil, fmt.Errorf("resume state is nil")
 	}
+	if e.config.ResumeOptions.MaxSelectorOutputBytesTotal < 0 {
+		return prior, fmt.Errorf("max_selector_output_bytes_total must not be negative")
+	}
 
 	// bd-0wzkc: reject resume of state captured for a different workflow.
 	// applyResumeState marks any completed StepResult IDs as executed in the
@@ -410,6 +421,7 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 
 	e.stateMu.Lock()
 	e.backgroundCommandErrors = nil
+	e.resetSelectorOutputBudgetLocked()
 	e.reservationFailure = nil
 	e.reservationWake = make(chan struct{}, 1)
 	e.reservationStop = make(chan struct{})
@@ -460,6 +472,11 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 	e.progress = progress
 	e.defaults = workflow.Defaults
 	e.limits = workflow.Settings.Limits.EffectiveLimits()
+	if limit := e.config.ResumeOptions.MaxSelectorOutputBytesTotal; limit > 0 {
+		// Admission capacity is attempt-local. Do not change the frozen
+		// workflow or the invocation identity of retained selector output.
+		e.limits.MaxSelectorOutputBytesTotal = limit
+	}
 
 	// Build dependency graph
 	e.graph = NewDependencyGraph(workflow)

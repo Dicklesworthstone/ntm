@@ -236,8 +236,12 @@ type LimitsConfig struct {
 	MaxCommandStdoutBytes int64 `yaml:"max_command_stdout_bytes,omitempty" toml:"max_command_stdout_bytes,omitempty" json:"max_command_stdout_bytes,omitempty"`
 	MaxCommandStderrBytes int64 `yaml:"max_command_stderr_bytes,omitempty" toml:"max_command_stderr_bytes,omitempty" json:"max_command_stderr_bytes,omitempty"`
 	MaxCommandStdinBytes  int64 `yaml:"max_command_stdin_bytes,omitempty" toml:"max_command_stdin_bytes,omitempty" json:"max_command_stdin_bytes,omitempty"`
-	MaxForeachRounds      int   `yaml:"max_foreach_rounds,omitempty" toml:"max_foreach_rounds,omitempty" json:"max_foreach_rounds,omitempty"`
-	SubstepParallelMax    int   `yaml:"substep_parallel_max,omitempty" toml:"substep_parallel_max,omitempty" json:"substep_parallel_max,omitempty"`
+	// MaxSelectorOutputBytesTotal bounds retained selector output plus full
+	// stdout reservations for active or unresolved selector commands. This
+	// limits the command-evaluation journal, not the entire checkpoint.
+	MaxSelectorOutputBytesTotal int64 `yaml:"max_selector_output_bytes_total,omitempty" toml:"max_selector_output_bytes_total,omitempty" json:"max_selector_output_bytes_total,omitempty"`
+	MaxForeachRounds            int   `yaml:"max_foreach_rounds,omitempty" toml:"max_foreach_rounds,omitempty" json:"max_foreach_rounds,omitempty"`
+	SubstepParallelMax          int   `yaml:"substep_parallel_max,omitempty" toml:"substep_parallel_max,omitempty" json:"substep_parallel_max,omitempty"`
 	// MaxParallelSteps bounds how many simultaneously-ready independent
 	// top-level steps the executor dispatches concurrently (bd-jio7h).
 	// Zero/unset means DefaultMaxParallelSteps; 1 forces the legacy serial
@@ -249,16 +253,17 @@ type LimitsConfig struct {
 }
 
 const (
-	DefaultMaxForeachIterations  = 10000
-	DefaultMaxConcurrentForeach  = 16
-	DefaultMaxCommandStdoutBytes = 16 * 1024 * 1024 // 16 MB
-	DefaultMaxCommandStderrBytes = 4 * 1024 * 1024  // 4 MB
-	DefaultMaxCommandStdinBytes  = 1 * 1024 * 1024  // 1 MB (bd-1ka2t)
-	DefaultSubstepParallelMax    = 8                // bd-dmjn3
-	DefaultMaxParallelSteps      = 4                // bd-jio7h
-	DefaultMaxTemplateBytes      = 256 * 1024       // 256 KB
-	DefaultMaxStepCountTotal     = 100000
-	DefaultMaxSubstitutionDepth  = 8
+	DefaultMaxForeachIterations        = 10000
+	DefaultMaxConcurrentForeach        = 16
+	DefaultMaxCommandStdoutBytes       = 16 * 1024 * 1024 // 16 MB
+	DefaultMaxCommandStderrBytes       = 4 * 1024 * 1024  // 4 MB
+	DefaultMaxCommandStdinBytes        = 1 * 1024 * 1024  // 1 MB (bd-1ka2t)
+	DefaultMaxSelectorOutputBytesTotal = 32 * 1024 * 1024 // 32 MiB of retained output and reservations
+	DefaultSubstepParallelMax          = 8                // bd-dmjn3
+	DefaultMaxParallelSteps            = 4                // bd-jio7h
+	DefaultMaxTemplateBytes            = 256 * 1024       // 256 KB
+	DefaultMaxStepCountTotal           = 100000
+	DefaultMaxSubstitutionDepth        = 8
 )
 
 // EffectiveLimits returns the limits config with defaults applied for zero values.
@@ -277,6 +282,9 @@ func (lc LimitsConfig) EffectiveLimits() LimitsConfig {
 	}
 	if lc.MaxCommandStdinBytes <= 0 {
 		lc.MaxCommandStdinBytes = DefaultMaxCommandStdinBytes
+	}
+	if lc.MaxSelectorOutputBytesTotal <= 0 {
+		lc.MaxSelectorOutputBytesTotal = DefaultMaxSelectorOutputBytesTotal
 	}
 	if lc.MaxForeachRounds <= 0 {
 		lc.MaxForeachRounds = DefaultMaxRounds
