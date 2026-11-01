@@ -147,6 +147,49 @@ func TestBranchDecisionBinarySelectorKeepsRawDefaultAcrossResume(t *testing.T) {
 	}
 }
 
+func TestBranchChildHashMatchesDurableJSONRepresentation(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	result := StepResult{
+		StepID: "route_fanout", Status: StatusCompleted, Output: "done",
+		StartedAt: now, FinishedAt: now,
+		ParsedData: map[string]interface{}{
+			"ratio": json.Number("1.0"),
+			"nested": []interface{}{map[string]interface{}{"score": json.Number("2.50")}},
+		},
+	}
+	outputs := map[string]interface{}{
+		"collected_parsed": map[string]interface{}{"ratio": json.Number("1.0")},
+	}
+	liveHash, err := branchChildHash(result, outputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Model the exact representation change made by ExecutionState JSON
+	// persistence: interface-backed numbers become ordinary float64 values.
+	encoded, err := json.Marshal(struct {
+		Result  StepResult             `json:"result"`
+		Outputs map[string]interface{} `json:"outputs,omitempty"`
+	}{result, outputs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var durable struct {
+		Result  StepResult             `json:"result"`
+		Outputs map[string]interface{} `json:"outputs,omitempty"`
+	}
+	if err := json.Unmarshal(encoded, &durable); err != nil {
+		t.Fatal(err)
+	}
+	durableHash, err := branchChildHash(durable.Result, durable.Outputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if liveHash != durableHash {
+		t.Fatalf("branch child hash changed across durable JSON representation: live=%s durable=%s", liveHash, durableHash)
+	}
+}
+
 func TestBranchDecisionReusesSourceSuccessBeforeAdmissionCheckpoint(t *testing.T) {
 	step := decisionTestStep()
 	e, workflow, cfg := decisionTestExecutor(t, step)
