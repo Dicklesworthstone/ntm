@@ -1662,6 +1662,90 @@ printf natural > complete
 	}
 }
 
+func TestCommandOwnershipLossAfterGroupObservationRefusesSignalsAndSettlement(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		cancel          bool
+		quietBeforeLoss int
+		cause           error
+		wantSignals     string
+		wantOutput      string
+	}{
+		{name: "natural quiet group", quietBeforeLoss: 1, cause: syscall.ECHILD, wantOutput: "natural"},
+		{name: "after TERM grace", cancel: true, quietBeforeLoss: 1, cause: syscall.ESRCH, wantSignals: "SIGTERM", wantOutput: "graceful"},
+		{name: "after final cancellation census", cancel: true, quietBeforeLoss: 2, cause: syscall.ECHILD, wantSignals: "SIGTERM,SIGKILL", wantOutput: "graceful"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			input, release, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = input.Close(); _ = release.Close() })
+			cmd := exec.Command("/bin/sh", "-c", `trap 'printf graceful; exit 0' TERM
+printf ready > ready
+read release <&3
+printf natural
+`)
+			cmd.Dir, cmd.ExtraFiles = dir, []*os.File{input}
+			capture := newCappedWriter(64)
+			cmd.Stdout, cmd.Stderr = capture, capture
+			configureCommandProcessGroup(cmd)
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			handedToWait := false
+			t.Cleanup(func() {
+				_ = release.Close()
+				_ = cmd.Process.Kill()
+				if !handedToWait {
+					_ = cmd.Wait()
+				}
+			})
+			awaitGroupTestFile(t, filepath.Join(dir, "ready"))
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			quietCensuses, ownershipFailures := 0, 0
+			ownershipLost := false
+			ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(pgid int) (bool, error) {
+				alive, err := commandGroupHasLiveMembers(pgid)
+				if err == nil && !alive {
+					quietCensuses++
+					// Arm the fault only after a real quiet snapshot. Earlier
+					// leader probes were successful, and TERM received its
+					// cooperative shutdown opportunity before grace ended.
+					ownershipLost = quietCensuses >= tc.quietBeforeLoss
+				}
+				return alive, err
+			})
+			ctx = context.WithValue(ctx, commandLeaderObservationTestHookKey{}, func(pid int) error {
+				if ownershipLost {
+					ownershipFailures++
+					return tc.cause
+				}
+				return observeCommandExit(pid, syscall.WNOHANG)
+			})
+			if tc.cancel {
+				cancel()
+			} else if _, err := release.WriteString("finish\n"); err != nil {
+				t.Fatal(err)
+			}
+			handedToWait = true
+			result := waitCommandWithProcessGroupCleanup(ctx, cmd)
+			if result.Cancelled != tc.cancel || result.Settled || result.SignalSent != tc.wantSignals ||
+				!errors.Is(result.Err, tc.cause) || errors.Is(result.Err, context.Canceled) != tc.cancel {
+				t.Fatalf("late ownership loss authorized a signal or settlement: %+v", result)
+			}
+			if quietCensuses != tc.quietBeforeLoss || ownershipFailures != 1 {
+				t.Fatalf("lost ownership was ignored or probed again: quiet_censuses=%d ownership_failures=%d", quietCensuses, ownershipFailures)
+			}
+			if capture.String() != tc.wantOutput || !capture.outputCaptureComplete() {
+				t.Fatalf("late ownership failure damaged completed output: %q complete=%t", capture.String(), capture.outputCaptureComplete())
+			}
+		})
+	}
+}
+
 func TestCommandLeaderHandleCancellationPreservesGrace(t *testing.T) {
 	fault := errors.New("injected pidfd poll failure")
 	for _, tc := range []struct {

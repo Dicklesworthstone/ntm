@@ -82,16 +82,44 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 		// until all ordinary group members stop executing.
 		observationErr = waitCommandGroupQuiescent(ctx, cmd.Process.Pid)
 		if observationErr == nil && ctx.Err() == nil {
+			// A census describes numeric IDs, not our right to use them.
+			// Retain the sole-reaper contract and verify that the original
+			// exited child is still waitable before publishing settlement.
+			if err := observeCommandExitWithRetry(ctx, cmd.Process); err != nil {
+				return reap(cleanupCommandAfterObservationFailure(ctx, cmd,
+					fmt.Errorf("verify command leader before settlement: %w", err)))
+			}
 			// Quiet evidence includes an unchanged kernel birth counter and
 			// accounts for surviving threads. Never use an unsolicited kill
 			// to repair a snapshot that might have missed a new descendant.
 			// No executing member remains to fork after this certificate.
 			// Hand off the pinned leader and verify captured-stream EOF.
-			return reap(commandCleanupResult{Settled: true})
+			if ctx.Err() == nil {
+				return reap(commandCleanupResult{Settled: true})
+			}
 		}
 	}
-	result = commandCleanupResult{Cancelled: true, SignalSent: "SIGTERM"}
+	return reap(cleanupCancelledCommandGroup(ctx, cmd, observationErr))
+}
+
+// Cancellation authority comes only from the caller's context. A failed census
+// cannot grant it, even if that failure wraps context.Canceled or a deadline.
+// Recheck child ownership at each signal boundary: an earlier waitid or a later
+// procfs snapshot cannot authorize signalling a saved, possibly reused PGID.
+func cleanupCancelledCommandGroup(ctx context.Context, cmd *exec.Cmd, observationErr error) commandCleanupResult {
+	if ctx.Err() == nil {
+		return cleanupCommandAfterObservationFailure(ctx, cmd, errors.Join(
+			errors.New("command group cleanup requires cancellation"), observationErr))
+	}
+	if err := observeCommandExitWithRetry(ctx, cmd.Process); err != nil && err != errCommandLeaderRunning {
+		return cleanupCommandAfterObservationFailure(ctx, cmd, errors.Join(observationErr,
+			fmt.Errorf("verify command leader before SIGTERM: %w", err)))
+	}
+	result := commandCleanupResult{Err: observationErr, Cancelled: true, SignalSent: "SIGTERM"}
 	termErr := signalCommandProcessGroup(cmd, syscall.SIGTERM)
+	if termErr != nil && !errors.Is(termErr, os.ErrProcessDone) {
+		result.Err = errors.Join(result.Err, fmt.Errorf("terminate command group: %w", termErr))
+	}
 	grace, cancel := context.WithTimeout(context.WithoutCancel(ctx), commandCancelGracePeriod)
 	graceErr := waitCommandGroupQuiescent(grace, cmd.Process.Pid)
 	cancel()
@@ -99,7 +127,13 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	// Failed observation is different: retain its cause, but never shorten
 	// the grace period or mistake it for evidence that the children exited.
 	if graceErr != nil && graceErr != context.DeadlineExceeded {
-		result.Err = fmt.Errorf("observe command group during SIGTERM grace period: %w", graceErr)
+		result.Err = errors.Join(result.Err, fmt.Errorf("observe command group during SIGTERM grace period: %w", graceErr))
+	}
+	if err := observeCommandExitWithRetry(ctx, cmd.Process); err != nil && err != errCommandLeaderRunning {
+		// The TERM grace has already run. Do not restart it, signal a stale
+		// numeric group, or claim that leader-only cleanup settled children.
+		result.Err = errors.Join(result.Err, ctx.Err(), fmt.Errorf("verify command leader before SIGKILL: %w", err))
+		return result
 	}
 	// Even a successful graceful census is not atomic with fork/exit. Match
 	// the Unix waiter: close that race with a final signal to the still-pinned
@@ -118,15 +152,18 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	if killErr != nil {
 		result.Err = errors.Join(result.Err, fmt.Errorf("kill command group: %w", killErr))
 	}
-	if termErr != nil && !errors.Is(termErr, os.ErrProcessDone) {
-		result.Err = errors.Join(result.Err, fmt.Errorf("terminate command group: %w", termErr))
-	}
 	if quietErr != nil {
 		result.Err = errors.Join(result.Err, fmt.Errorf("command group did not settle: %w", quietErr))
 	}
 	result.Err = errors.Join(result.Err, ctx.Err())
 	result.Settled = killErr == nil && quietErr == nil
-	return reap(result)
+	if result.Settled {
+		if err := observeCommandExitWithRetry(ctx, cmd.Process); err != nil {
+			result.Settled = false
+			result.Err = errors.Join(result.Err, fmt.Errorf("verify command leader after group cleanup: %w", err))
+		}
+	}
+	return result
 }
 
 // Failed waitid observation does not establish authority over a numeric process

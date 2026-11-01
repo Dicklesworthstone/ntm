@@ -839,6 +839,66 @@ printf child-finished
 	}
 }
 
+func TestCommandGroupCleanupRequiresActualCancellation(t *testing.T) {
+	for _, cause := range []error{syscall.EACCES, context.Canceled, context.DeadlineExceeded} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			dir := t.TempDir()
+			input, release, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = input.Close(); _ = release.Close() })
+			cmd := exec.Command("/bin/sh", "-c", `trap 'printf terminated; exit 1' TERM
+printf ready > ready
+read finish
+printf completed
+printf effect > effect
+`)
+			capture := newCappedWriter(128)
+			cmd.Dir, cmd.Stdin, cmd.Stdout, cmd.Stderr = dir, input, capture, capture
+			configureCommandProcessGroup(cmd)
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if cmd.ProcessState == nil {
+					_ = cmd.Process.Kill()
+					_ = cmd.Wait()
+				}
+			})
+			awaitGroupTestFile(t, filepath.Join(dir, "ready"))
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			fault := fmt.Errorf("unrelated process observation failed: %w", cause)
+			// Exercise the cancellation boundary itself. A future observer
+			// that returns an error before the caller cancels must be unable
+			// to turn that error (even context.Canceled) into a group signal.
+			result := cleanupCancelledCommandGroup(ctx, cmd, fault)
+			if result.Cancelled || result.Settled || result.SignalSent != "" || !errors.Is(result.Err, cause) {
+				t.Fatalf("observation error authorized cancellation: %+v", result)
+			}
+			if ctx.Err() != nil || cmd.WaitDelay != 0 || capture.outputCaptureComplete() {
+				t.Fatalf("healthy command lost its execution window or output pipe: ctx=%v wait_delay=%v complete=%t",
+					ctx.Err(), cmd.WaitDelay, capture.outputCaptureComplete())
+			}
+			if err := observeCommandExit(cmd.Process.Pid, syscall.WNOHANG); err != errCommandLeaderRunning {
+				t.Fatalf("observation error stopped healthy leader: %v", err)
+			}
+			if _, err := release.WriteString("finish\n"); err != nil {
+				t.Fatal(err)
+			}
+			result = waitCommandWithProcessGroupCleanup(ctx, cmd)
+			if result.Err != nil || result.Cancelled || !result.Settled || result.SignalSent != "" ||
+				capture.String() != "completed" || !capture.outputCaptureComplete() {
+				t.Fatalf("refused cleanup disrupted natural completion: %+v output=%q", result, capture.String())
+			}
+			if data, err := os.ReadFile(filepath.Join(dir, "effect")); err != nil || string(data) != "effect" {
+				t.Fatalf("healthy command could not finish its work: %q %v", data, err)
+			}
+		})
+	}
+}
+
 func TestCommandObservationFailureDoesNotShortenGraceOrStrandSettlement(t *testing.T) {
 	dir := t.TempDir()
 	groupTestFile(t, dir, "child.sh", `trap '' TERM
