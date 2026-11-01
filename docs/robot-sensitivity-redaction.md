@@ -112,6 +112,20 @@ request IDs receive independent generated IDs; unsafe or unverified cached
 identity headers and checkpoint references are withheld. Logs use safe fallback
 fields and may report `inspection_limited: true` without source contents.
 
+Enforcing policies also bound non-streaming response capture to the scanner's
+100 MiB input ceiling, before appending each write. Missing or late content-type
+headers cannot bypass this bound. Overflow releases the captured buffer and
+withholds the entire representation, including its prefix, through the same
+`RESPONSE_REDACTION_FAILED` envelope. Later writes and flushes cannot restore
+forwarding. The handler still finishes with its original status, allowing
+idempotency bookkeeping to retain the completed result or its existing bounded
+inspection receipt. The replacement has JSON headers rather than the original
+archive encoding, disposition, range, or content validators. Accepted checkpoint
+archives remain within the capture budget, and independently protected SSE
+frames can continue streaming after their initial buffer is released. This
+bounds middleware-owned capture, not allocations made inside a handler or its
+JSON encoder before writing. Off/warn behavior remains unchanged.
+
 The bounded APIs and reusable `redaction.Scanner` share the same detection engine
 as the existing text/JSON APIs. Their explicit `LimitExceeded` result also sets
 `Blocked`, with empty `Findings` and `Output`; an empty finding slice alone never

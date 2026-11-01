@@ -435,15 +435,22 @@ func (s *Server) redactionMiddleware(next http.Handler) http.Handler {
 // redactingResponseWriter wraps http.ResponseWriter to intercept and redact response bodies.
 type redactingResponseWriter struct {
 	http.ResponseWriter
-	cfg         redaction.Config
-	summary     *RedactionSummary
-	categories  map[string]int
-	buffer      *bytes.Buffer
-	statusCode  int
-	wroteHeader bool
-	finalized   bool
-	hijacked    bool
-	mu          sync.Mutex
+	cfg        redaction.Config
+	summary    *RedactionSummary
+	categories map[string]int
+	buffer     *bytes.Buffer
+	// A nonpositive captureLimit uses the scanner's input budget. This is an
+	// internal writer bound, not a separate server configuration.
+	captureLimit      int
+	captureOverflow   bool
+	streamingRejected bool
+	wroteBody         bool
+	sseBeforeBody     bool
+	statusCode        int
+	wroteHeader       bool
+	finalized         bool
+	hijacked          bool
+	mu                sync.Mutex
 }
 
 func (rw *redactingResponseWriter) WriteHeader(code int) {
@@ -462,13 +469,67 @@ func (rw *redactingResponseWriter) Write(b []byte) (int, error) {
 		rw.statusCode = http.StatusOK
 		rw.wroteHeader = true
 	}
+	rw.rejectLateSSELocked()
+	if rw.captureOverflow || rw.streamingRejected {
+		// The handler may already have changed state. Let it finish its
+		// bookkeeping, including retaining an idempotency result, without
+		// exposing a prefix or keeping more of the unavailable response.
+		return len(b), nil
+	}
 	// Only explicitly framed SSE producers may enter streaming passthrough.
 	// They protect each complete event before writing it.
 	if rw.finalized {
 		return rw.ResponseWriter.Write(b)
 	}
+	if len(b) > 0 && !rw.wroteBody {
+		rw.wroteBody = true
+		rw.sseBeforeBody = isSSEContent(rw.Header().Get("Content-Type"))
+	}
+	if rw.buffer == nil {
+		rw.buffer = &bytes.Buffer{}
+	}
+	if enforcesRequestRedaction(rw.cfg) {
+		limit := rw.captureLimit
+		if limit <= 0 {
+			limit = redaction.DefaultScanLimits().MaxInputBytes
+		}
+		current := rw.buffer.Len()
+		if current > limit || len(b) > limit-current {
+			rw.captureOverflow = true
+			rw.buffer = nil
+			if rw.summary != nil {
+				rw.summary.InspectionLimited = true
+			}
+			return len(b), nil
+		}
+		needed := current + len(b)
+		if needed > rw.buffer.Cap() || rw.buffer.Cap() > limit {
+			// bytes.Buffer's ordinary geometric growth can retain capacity
+			// beyond the input limit even when its length remains below it.
+			capacity := rw.buffer.Cap()
+			if capacity > limit/2 {
+				capacity = limit
+			} else {
+				capacity *= 2
+			}
+			capacity = max(capacity, needed)
+			data := make([]byte, current, capacity)
+			copy(data, rw.buffer.Bytes())
+			rw.buffer = bytes.NewBuffer(data)
+		}
+	}
 	// Buffer the response for redaction
 	return rw.buffer.Write(b)
+}
+
+// rejectLateSSELocked prevents a mutable header from releasing an earlier
+// buffered JSON or unknown body. Callers must hold rw.mu.
+func (rw *redactingResponseWriter) rejectLateSSELocked() {
+	if !rw.finalized && enforcesRequestRedaction(rw.cfg) && rw.wroteBody &&
+		!rw.sseBeforeBody && isSSEContent(rw.Header().Get("Content-Type")) {
+		rw.streamingRejected = true
+		rw.buffer = nil
+	}
 }
 
 // finalize processes the buffered response, applies redaction, and writes to the underlying writer.
@@ -479,9 +540,22 @@ func (rw *redactingResponseWriter) finalize() {
 	if rw.finalized || rw.hijacked {
 		return
 	}
+	rw.rejectLateSSELocked()
 	rw.finalized = true
 
-	body := rw.buffer.Bytes()
+	var body []byte
+	if rw.buffer != nil {
+		body = rw.buffer.Bytes()
+		rw.buffer = nil
+	}
+	if rw.captureOverflow || rw.streamingRejected {
+		body = rw.unavailableResponseBody()
+		if rw.captureOverflow {
+			log.Print("redact: response withheld because capture exceeded the inspection limit")
+		} else {
+			log.Print("redact: response withheld because streaming was enabled after body output started")
+		}
+	}
 	if len(body) == 0 {
 		if rw.wroteHeader {
 			rw.ResponseWriter.WriteHeader(rw.statusCode)
@@ -491,7 +565,7 @@ func (rw *redactingResponseWriter) finalize() {
 
 	// Check if response is JSON
 	contentType := rw.Header().Get("Content-Type")
-	if isJSONContent(contentType) {
+	if !rw.captureOverflow && !rw.streamingRejected && isJSONContent(contentType) {
 		// Protect output in block mode too. Refusing a request belongs before
 		// dispatch; at this point the handler may already have changed state.
 		output, result, err := redactJSONBytes(body, rw.cfg)
@@ -502,7 +576,7 @@ func (rw *redactingResponseWriter) finalize() {
 		body = output
 		if err != nil {
 			rw.summary.InspectionLimited = errors.Is(err, errRedactionInspectionLimit)
-			body = []byte(redactionUnavailableResponse)
+			body = rw.unavailableResponseBody()
 			log.Print("redact: JSON response withheld because it could not be safely redacted")
 		}
 	}
@@ -518,6 +592,37 @@ func (rw *redactingResponseWriter) finalize() {
 	if _, err := rw.ResponseWriter.Write(body); err != nil {
 		log.Printf("redact: failed to write response body: %v", err)
 	}
+}
+
+// unavailableResponseBody describes only the replacement representation. Keep
+// the operation's status and correlation headers: withholding cannot undo work
+// that the handler completed or make an unsafe retry safe.
+func (rw *redactingResponseWriter) unavailableResponseBody() []byte {
+	body := []byte(redactionUnavailableResponse)
+	header := rw.Header()
+	// Removing only the declaration could turn a former trailer into an
+	// ordinary header on the replacement response.
+	for _, declaration := range header.Values("Trailer") {
+		for _, name := range strings.Split(declaration, ",") {
+			header.Del(strings.TrimSpace(name))
+		}
+	}
+	for name := range header {
+		if strings.HasPrefix(name, http.TrailerPrefix) {
+			delete(header, name)
+		}
+	}
+	for _, name := range []string{
+		"Content-Disposition", "Content-Encoding", "Content-Range",
+		"ETag", "Last-Modified", "Content-MD5", "Digest", "Content-Digest", "Repr-Digest",
+		"Transfer-Encoding", "Trailer",
+	} {
+		header.Del(name)
+	}
+	header.Set("Content-Type", "application/json")
+	header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
+	header.Set("Cache-Control", "no-store")
+	return body
 }
 
 // redactJSONBytes protects a complete JSON document for an output surface.
@@ -623,8 +728,12 @@ func jsonResponseOutput(input string, result redaction.Result) string {
 // finalize: a secret or JSON token can straddle arbitrary Write/Flush calls.
 func (rw *redactingResponseWriter) Flush() {
 	rw.mu.Lock()
-	contentType := strings.ToLower(strings.TrimSpace(strings.SplitN(rw.Header().Get("Content-Type"), ";", 2)[0]))
-	if !rw.finalized && contentType != "text/event-stream" {
+	rw.rejectLateSSELocked()
+	if rw.captureOverflow || rw.streamingRejected {
+		rw.mu.Unlock()
+		return
+	}
+	if !rw.finalized && !isSSEContent(rw.Header().Get("Content-Type")) {
 		rw.mu.Unlock()
 		return
 	}
@@ -633,16 +742,18 @@ func (rw *redactingResponseWriter) Flush() {
 
 		if rw.wroteHeader {
 			rw.ResponseWriter.WriteHeader(rw.statusCode)
-			rw.wroteHeader = false
 		}
 
 		// Flush any already-buffered content first
-		body := rw.buffer.Bytes()
+		var body []byte
+		if rw.buffer != nil {
+			body = rw.buffer.Bytes()
+			rw.buffer = nil
+		}
 		if len(body) > 0 {
 			if _, err := rw.ResponseWriter.Write(body); err != nil {
 				log.Printf("redact: failed to flush buffered streaming body: %v", err)
 			}
-			rw.buffer.Reset()
 		}
 	}
 	rw.mu.Unlock()
@@ -655,15 +766,21 @@ func (rw *redactingResponseWriter) Flush() {
 // Hijack preserves websocket and other upgraded connection flows when redaction
 // middleware wraps the response writer.
 func (rw *redactingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	rw.mu.Lock()
+	rw.rejectLateSSELocked()
+	if rw.captureOverflow || rw.streamingRejected {
+		rw.mu.Unlock()
+		return nil, nil, errors.New("response could not be safely disclosed before connection upgrade")
+	}
 	hijacker, ok := rw.ResponseWriter.(http.Hijacker)
 	if !ok {
+		rw.mu.Unlock()
 		return nil, nil, http.ErrNotSupported
 	}
 
-	rw.mu.Lock()
 	rw.hijacked = true
 	rw.finalized = true
-	rw.buffer.Reset()
+	rw.buffer = nil
 	rw.mu.Unlock()
 
 	return hijacker.Hijack()
@@ -681,6 +798,10 @@ func (rw *redactingResponseWriter) Push(target string, opts *http.PushOptions) e
 // Unwrap exposes the underlying response writer for ResponseController callers.
 func (rw *redactingResponseWriter) Unwrap() http.ResponseWriter {
 	return rw.ResponseWriter
+}
+
+func isSSEContent(contentType string) bool {
+	return strings.EqualFold(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]), "text/event-stream")
 }
 
 // isJSONContent checks if the content type is JSON.

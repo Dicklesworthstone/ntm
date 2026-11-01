@@ -903,6 +903,273 @@ func TestJSONResponseRedactionScanLimitsPreserveCompletedStatus(t *testing.T) {
 	}
 }
 
+func responseCaptureTestWriter(w http.ResponseWriter, mode redaction.Mode, limit int) *redactingResponseWriter {
+	return &redactingResponseWriter{
+		ResponseWriter: w,
+		cfg:            redaction.Config{Mode: mode},
+		summary:        &RedactionSummary{},
+		categories:     make(map[string]int),
+		buffer:         &bytes.Buffer{},
+		captureLimit:   limit,
+	}
+}
+
+func assertResponseCaptureReleased(t *testing.T, rw *redactingResponseWriter) {
+	t.Helper()
+	if rw.buffer != nil && (rw.buffer.Len() != 0 || rw.buffer.Cap() != 0) {
+		t.Fatalf("response capture retained source storage: length=%d capacity=%d", rw.buffer.Len(), rw.buffer.Cap())
+	}
+}
+
+func TestJSONResponseCapturePreservesExactBound(t *testing.T) {
+	// An odd limit also exercises a final buffer growth that cannot round up
+	// beyond the configured bound. Whitespace, duplicate keys and large
+	// integers must remain byte-exact when inspection can complete.
+	const limit = 257
+	const document = " \n{\"diagnostic\":\"keep exactly\",\"count\":9007199254740993,\"label\":\"first\",\"label\":\"last\"}\t\n"
+	body := strings.Repeat(" ", limit-len(document)) + document
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		t.Run(string(mode), func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			rw := responseCaptureTestWriter(rec, mode, limit)
+			rw.Header().Set("Content-Type", "application/json")
+			rw.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			rw.WriteHeader(http.StatusAccepted)
+			for offset := 0; offset < len(body); {
+				end := min(offset+37, len(body))
+				if n, err := io.WriteString(rw, body[offset:end]); err != nil || n != end-offset {
+					t.Fatalf("bounded write returned bytes=%d err=%v", n, err)
+				}
+				if rw.buffer == nil || rw.buffer.Len() != end || rw.buffer.Cap() > limit {
+					t.Fatal("pending response storage exceeded its byte budget or lost admitted bytes")
+				}
+				if rec.Body.Len() != 0 {
+					t.Fatal("a response prefix escaped before complete inspection")
+				}
+				offset = end
+			}
+			rw.Flush()
+			if rec.Body.Len() != 0 {
+				t.Fatal("Flush exposed an uninspected JSON response")
+			}
+			rw.finalize()
+			if rec.Code != http.StatusAccepted || rec.Body.String() != body || rw.summary.InspectionLimited {
+				t.Fatal("an exact-bound response lost its original status or bytes")
+			}
+			if rec.Result().ContentLength != int64(len(body)) {
+				t.Fatal("exact-bound response framing changed")
+			}
+			assertResponseCaptureReleased(t, rw)
+		})
+	}
+}
+
+func TestJSONResponseCaptureOverflowIsSticky(t *testing.T) {
+	const limit = 256
+	body := []byte(`{"api_token":"` + wiringFakeSecret + `","diagnostic":"` + strings.Repeat("x", limit) + `"}`)
+	var logs lockedBuffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		for _, tc := range []struct {
+			name, contentType string
+			accumulated       bool
+		}{
+			{"single JSON write", "application/json", false},
+			{"accumulated JSON writes", "application/json", true},
+			{"unknown representation", "", true},
+			{"binary representation", "application/octet-stream", true},
+		} {
+			t.Run(string(mode)+"/"+tc.name, func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				rw := responseCaptureTestWriter(rec, mode, limit)
+				rw.Header().Set("Content-Type", tc.contentType)
+				rw.Header().Set("Content-Length", strconv.Itoa(len(body)))
+				for header, value := range map[string]string{
+					"Content-Encoding":    "gzip",
+					"Content-Disposition": `attachment; filename="old-response.json"`,
+					"Content-Range":       "bytes 0-99/100",
+					"ETag":                `"old-representation"`,
+					"Content-MD5":         "old-checksum",
+					"Digest":              "sha-256=old-checksum",
+					"Trailer":             "X-Private-First, x-private-second",
+					"X-Private-First":     wiringFakeSecret,
+					"X-Private-Second":    wiringFakeSecret,
+				} {
+					rw.Header().Set(header, value)
+				}
+				rw.Header().Set(http.TrailerPrefix+"X-Private-Late", wiringFakeSecret)
+				rw.Header().Set(requestIDHeader, "completed-request")
+				rw.Header().Set("Location", "/operations/completed")
+				rw.WriteHeader(http.StatusCreated)
+				chunks := [][]byte{body}
+				if tc.accumulated {
+					chunks = [][]byte{body[:limit-1], body[limit-1:]}
+				}
+				for _, chunk := range chunks {
+					if n, err := rw.Write(chunk); err != nil || n != len(chunk) {
+						t.Fatalf("capture refusal interrupted completed handler output: bytes=%d err=%v", n, err)
+					}
+					if rw.buffer != nil && (rw.buffer.Len() > limit || rw.buffer.Cap() > limit) {
+						t.Fatal("response source storage exceeded the capture budget")
+					}
+					if rec.Body.Len() != 0 {
+						t.Fatal("overflow exposed a response prefix")
+					}
+				}
+				assertResponseCaptureReleased(t, rw)
+				if !rw.summary.InspectionLimited {
+					t.Fatal("capture exhaustion was not reported as incomplete inspection")
+				}
+				// A later media-type change, Flush, or additional chunk must not
+				// convert an already-refused representation into a raw stream.
+				rw.Header().Set("Content-Type", "text/event-stream")
+				rw.Flush()
+				late := []byte("data: " + wiringFakeSecret + "\n\n")
+				if n, err := rw.Write(late); err != nil || n != len(late) {
+					t.Fatalf("late discarded write returned bytes=%d err=%v", n, err)
+				}
+				rw.WriteHeader(http.StatusBadRequest)
+				rw.Flush()
+				if rec.Body.Len() != 0 {
+					t.Fatal("late writes or streaming promotion bypassed capture refusal")
+				}
+				rw.finalize()
+				if rec.Code != http.StatusCreated || rec.Body.String() != redactionUnavailableResponse {
+					t.Fatal("capture refusal changed the completed status or emitted source bytes")
+				}
+				assertJSONResponseWithheld(t, rec.Body.Bytes())
+				result := rec.Result()
+				if result.Header.Get("Content-Type") != "application/json" || result.ContentLength != int64(rec.Body.Len()) {
+					t.Fatal("unavailable representation retained stale framing")
+				}
+				for _, header := range []string{"Content-Encoding", "Content-Disposition", "Content-Range", "ETag", "Content-MD5", "Digest", "Trailer", "X-Private-First", "X-Private-Second", http.TrailerPrefix + "X-Private-Late"} {
+					if result.Header.Get(header) != "" {
+						t.Errorf("unavailable representation retained %s", header)
+					}
+				}
+				if len(result.Trailer) != 0 || result.Header.Get("Cache-Control") != "no-store" ||
+					result.Header.Get(requestIDHeader) != "completed-request" || result.Header.Get("Location") != "/operations/completed" {
+					t.Fatal("safe fallback retained source trailers or lost operation correlation")
+				}
+				// finalize normally ends handler output, but refusal must remain
+				// sticky even if a late producer subsequently attempts another write.
+				if n, err := rw.Write(late); err != nil || n != len(late) {
+					t.Fatalf("post-finalization discarded write returned bytes=%d err=%v", n, err)
+				}
+				rw.Flush()
+				rw.finalize()
+				if rec.Body.String() != redactionUnavailableResponse || strings.Contains(logs.String(), wiringFakeSecret) {
+					t.Fatal("a late producer disclosed source content after refusal")
+				}
+				assertResponseCaptureReleased(t, rw)
+			})
+		}
+	}
+}
+
+func TestJSONResponseCaptureProductionLimit(t *testing.T) {
+	// Exercise the real default once. The source allocation belongs to the
+	// handler; a single oversized Write must not retain a second large copy.
+	limit := redaction.DefaultScanLimits().MaxInputBytes
+	body := bytes.Repeat([]byte{' '}, limit+1)
+	const document = `{"api_token":"` + wiringFakeSecret + `"}`
+	copy(body[len(body)-len(document):], document)
+	rec := httptest.NewRecorder()
+	rw := responseCaptureTestWriter(rec, redaction.ModeBlock, 0)
+	rw.Header().Set("Content-Type", "application/json")
+	rw.WriteHeader(http.StatusCreated)
+	if n, err := rw.Write(body); err != nil || n != len(body) {
+		t.Fatalf("default-limit write returned bytes=%d err=%v", n, err)
+	}
+	if rec.Body.Len() != 0 || !rw.summary.InspectionLimited {
+		t.Fatal("production capture limit did not refuse the complete oversized response")
+	}
+	assertResponseCaptureReleased(t, rw)
+	rw.finalize()
+	if rec.Code != http.StatusCreated || rec.Body.String() != redactionUnavailableResponse {
+		t.Fatal("production capture refusal lost its completed status or safe receipt")
+	}
+}
+
+func TestJSONResponseCapturePreventsLateStreamingPromotion(t *testing.T) {
+	const limit = 256
+	body := []byte(`{"api_token":"` + wiringFakeSecret + `","diagnostic":"ordinary"}`)
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		for _, initialType := range []string{"", "application/json"} {
+			for _, flush := range []bool{false, true} {
+				t.Run(string(mode)+"/"+initialType+"/flush="+strconv.FormatBool(flush), func(t *testing.T) {
+					rec := httptest.NewRecorder()
+					rw := responseCaptureTestWriter(rec, mode, limit)
+					rw.Header().Set("Content-Type", initialType)
+					rw.WriteHeader(http.StatusAccepted)
+					if _, err := rw.Write(body); err != nil {
+						t.Fatal(err)
+					}
+					rw.Header().Set("Content-Type", "text/event-stream")
+					if flush {
+						rw.Flush()
+						// Relabeling again must not erase the earlier refusal.
+						rw.Header().Set("Content-Type", "application/json")
+						if _, err := rw.Write(body); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if rec.Body.Len() != 0 {
+						t.Fatal("late SSE promotion exposed a credential-bearing response prefix")
+					}
+					rw.finalize()
+					if rec.Code != http.StatusAccepted || rec.Body.String() != redactionUnavailableResponse || rw.summary.InspectionLimited {
+						t.Fatal("late streaming promotion was not safely refused independently of byte exhaustion")
+					}
+					assertResponseCaptureReleased(t, rw)
+				})
+			}
+		}
+		t.Run(string(mode)+"/declared stream", func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			rw := responseCaptureTestWriter(rec, mode, limit)
+			rw.Header().Set("Content-Type", "text/event-stream")
+			rw.WriteHeader(http.StatusOK)
+			const first = "data: {\"diagnostic\":\"first protected frame\"}\n\n"
+			if _, err := io.WriteString(rw, first); err != nil {
+				t.Fatal(err)
+			}
+			rw.Flush()
+			assertResponseCaptureReleased(t, rw)
+			second := "data: {\"diagnostic\":\"" + strings.Repeat("safe ", limit) + "\"}\n\n"
+			if _, err := io.WriteString(rw, second); err != nil {
+				t.Fatal(err)
+			}
+			rw.Flush()
+			rw.finalize()
+			if rec.Code != http.StatusOK || rec.Body.String() != first+second || rw.summary.InspectionLimited {
+				t.Fatal("declared SSE lost its existing per-frame streaming behavior")
+			}
+		})
+	}
+}
+
+func TestJSONResponseCapturePermissiveModesPreserveBytes(t *testing.T) {
+	body := `{"diagnostic":"` + strings.Repeat("safe ", 64) + `","api_token":"` + wiringFakeSecret + `"}`
+	for _, mode := range []redaction.Mode{redaction.ModeOff, redaction.ModeWarn} {
+		t.Run(string(mode), func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			rw := responseCaptureTestWriter(rec, mode, 64)
+			rw.Header().Set("Content-Type", "application/json")
+			rw.WriteHeader(http.StatusAccepted)
+			if _, err := io.WriteString(rw, body); err != nil {
+				t.Fatal(err)
+			}
+			rw.finalize()
+			if rec.Code != http.StatusAccepted || rec.Body.String() != body || rw.summary.InspectionLimited {
+				t.Fatal("enforcing-mode capture policy changed explicit off/warn output")
+			}
+		})
+	}
+}
+
 func TestJSONResponseRedactionHandlesCustomMatchBoundaries(t *testing.T) {
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		for _, tc := range []struct {

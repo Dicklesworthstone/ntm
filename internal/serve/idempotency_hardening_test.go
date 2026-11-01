@@ -286,6 +286,97 @@ func TestIdempotencyOversizedCheckpointImportDoesNotOverwriteOnRetry(t *testing.
 	}
 }
 
+func TestIdempotencyResponseCapturePreservesPolicyMutation(t *testing.T) {
+	const original = "# Original client spelling must survive.\nversion: 1\nblocked:\n  - pattern: 'original-danger'\n    reason: \"  keep café exactly  \"\n"
+	const intervening = "version: 1\nblocked:\n  - pattern: revised-danger\n    reason: legitimate subsequent change\n"
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		t.Run(string(mode), func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Chdir(home)
+			policyPath := filepath.Join(home, ".ntm", "policy.yaml")
+			s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: mode}})
+			writes, executions := 0, 0
+			s.policyWriteFile = func(path string, content []byte, permissions os.FileMode) error {
+				writes++
+				return os.WriteFile(path, content, permissions)
+			}
+			// Exercise the actual persistent policy handler and idempotency
+			// middleware. Trailing JSON whitespace enlarges only its response,
+			// without inventing a storage route or allocating a large fixture.
+			padding := bytes.Repeat([]byte{' '}, 16<<10)
+			handler := s.requestIDMiddlewareFunc(s.idempotencyMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				executions++
+				s.handlePolicyUpdateV1(w, r)
+				for remaining := idempotencyMaxBodyBytes + 1; remaining > 0; {
+					chunk := padding[:min(remaining, len(padding))]
+					if n, err := w.Write(chunk); err != nil || n != len(chunk) {
+						t.Fatalf("completed handler could not finish its representation: bytes=%d err=%v", n, err)
+					}
+					remaining -= len(chunk)
+				}
+			})))
+			do := func(content string) *httptest.ResponseRecorder {
+				req := wiringJSONRequest(t, http.MethodPut, "/api/v1/policy/", PolicyUpdateRequest{Content: content})
+				req.Header.Set("Idempotency-Key", "captured-policy-result")
+				rec := httptest.NewRecorder()
+				// This is the production ordering: response capture wraps the
+				// idempotency recorder. Lower only this writer's private budget;
+				// its replay receipt still fits, unlike the original response.
+				rw := responseCaptureTestWriter(rec, mode, 4<<10)
+				handler.ServeHTTP(rw, req)
+				rw.finalize()
+				return rec
+			}
+			assertPolicy := func(want string) {
+				t.Helper()
+				got, err := os.ReadFile(policyPath)
+				if err != nil || string(got) != want || writes != 1 || executions != 1 {
+					t.Fatalf("stored policy or execution count changed: writes=%d executions=%d read_error=%v", writes, executions, err)
+				}
+			}
+			first := do(original)
+			if first.Code != http.StatusOK || first.Header().Get("X-Idempotent-Replay") != "" || first.Body.String() != redactionUnavailableResponse {
+				t.Fatal("capture refusal misrepresented the completed policy update")
+			}
+			assertJSONResponseWithheld(t, first.Body.Bytes())
+			assertPolicy(original)
+			if err := os.WriteFile(policyPath, []byte(intervening), 0644); err != nil {
+				t.Fatal(err)
+			}
+			var retained []byte
+			for attempt := 0; attempt < 2; attempt++ {
+				retry := do(original)
+				var result APIError
+				if err := json.Unmarshal(retry.Body.Bytes(), &result); err != nil {
+					t.Fatalf("retry did not return a complete JSON receipt: %v", err)
+				}
+				if retry.Code != http.StatusConflict || retry.Header().Get("X-Idempotent-Replay") != "true" ||
+					result.ErrorCode != "IDEMPOTENCY_RESULT_UNAVAILABLE" || result.Details["original_status"] != float64(http.StatusOK) ||
+					result.Details["inspection_required"] != true || result.Details["retry_safe"] != false ||
+					!strings.Contains(result.Hint, "handler has already run") {
+					t.Fatal("retry did not preserve the already-completed operation barrier")
+				}
+				if attempt > 0 && !bytes.Equal(retry.Body.Bytes(), retained) {
+					t.Fatal("retained inspection receipt changed between identical retries")
+				}
+				retained = bytes.Clone(retry.Body.Bytes())
+				assertPolicy(intervening)
+			}
+			changed := do(intervening)
+			var refusal APIError
+			if err := json.Unmarshal(changed.Body.Bytes(), &refusal); err != nil || changed.Code != http.StatusUnprocessableEntity || refusal.ErrorCode != ErrCodeIdempotentReplay {
+				t.Fatal("capture refusal lost the original request fingerprint")
+			}
+			assertPolicy(intervening)
+			if idempotencyStoreLen(s.idempotencyStore) != 1 {
+				t.Fatal("retries replaced the single retained result")
+			}
+		})
+	}
+}
+
 // TestIdempotencyStoreEviction: the cache must stay bounded, evicting the
 // least-recently-used entry once idempotencyMaxEntries is reached.
 func TestIdempotencyStoreEviction(t *testing.T) {
