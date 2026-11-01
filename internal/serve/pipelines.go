@@ -804,12 +804,24 @@ func (s *Server) handleValidatePipeline(w http.ResponseWriter, r *http.Request) 
 	var validation pipeline.ValidationResult
 
 	if req.WorkflowContent != "" {
-		// Parse inline content (assume YAML format for inline content)
+		// Parse inline content (assume YAML format for inline content).
+		// The outer request scanner sees the JSON string representation, but
+		// YAML escapes can reveal a credential only after this decode. Refuse
+		// that typed value before validation diagnostics can quote it.
 		wf, err := pipeline.ParseString(req.WorkflowContent, "yaml")
 		if err != nil {
+			parseError := err.Error()
+			if enforcesRequestRedaction(s.requestRedactionConfig(r)) {
+				// Parser errors can include decoded field names or scalar
+				// fragments. Keep the diagnostic useful without echoing them.
+				parseError = "workflow YAML could not be parsed; check syntax and supported fields"
+			}
 			writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidWorkflow, "failed to parse workflow", map[string]interface{}{
-				"parse_error": err.Error(),
+				"parse_error": parseError,
 			}, reqID)
+			return
+		}
+		if !s.admitDecodedRequest(w, r, wf, "workflow") {
 			return
 		}
 		workflow = wf
