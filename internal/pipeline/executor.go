@@ -585,6 +585,13 @@ func (e *Executor) finalizeCancelledWorkflow(ctx context.Context, workflow *Work
 	e.stateMu.Unlock()
 	e.persistState()
 
+	// Main sidecars retain their resources through graceful shutdown and
+	// receipt persistence. Join their supervision before authored cleanup can
+	// release those resources. An unresolved receipt still remains unresolved;
+	// it does not suppress the independently bounded best-effort cleanup.
+	e.Cancel()
+	e.backgroundCommandWG.Wait()
+
 	e.runOnCancelSteps(workflow)
 
 	finishedAt := time.Now()

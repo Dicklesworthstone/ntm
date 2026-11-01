@@ -931,6 +931,14 @@ retry behavior. Newly cancelled parallel children that never entered their execu
 carry separate scheduler evidence, so they can resume without being mistaken for
 previously launched work.
 
+During cancellation, NTM saves the cancelled state before waiting for background
+command supervision to return and persist its receipts. Only then does it start
+authored `on_cancel` cleanup, so graceful sidecar shutdown can finish before
+cleanup releases its resources. Each cleanup step receives its full configured
+timeout after this wait. Returned uncertainty still leaves an unresolved receipt;
+it does not suppress authored cleanup or prove that every process has exited.
+Background commands started by cleanup are also joined before the run returns.
+
 Shell branch predicates, external foreach sources, and bead queries also persist
 launch intent before starting their command. Their output is usable only after
 the owned group settles and both captured streams reach EOF. A returned cleanup

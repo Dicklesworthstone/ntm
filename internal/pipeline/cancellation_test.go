@@ -810,3 +810,147 @@ func TestExecutor_RunOnCancelSteps_HungCleanupRespectsTimeout(t *testing.T) {
 		t.Fatalf("hung cleanup completed despite 30s sleep vs 500ms cap; status=%q error=%+v", hung.Status, hung.Error)
 	}
 }
+
+func TestExecutorCancellationHooksFollowMainBackgroundSupervision(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX command and SIGTERM fixtures")
+	}
+	for _, unresolved := range []bool{false, true} {
+		name := "settled_sidecar"
+		if unresolved {
+			name = "unresolved_supervision"
+		}
+		t.Run(name, func(t *testing.T) {
+			e := newCommandTestExecutor(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			e.cancelFn = cancel
+			t.Cleanup(func() {
+				cancel()
+				e.backgroundCommandWG.Wait()
+			})
+			main := Step{
+				ID: "sidecar", Wait: WaitNone, Stdin: "fixture\n",
+				Command: "trap 'printf stopped > main-stopped; exit 0' TERM; printf ready > main-ready; while :; do sleep 0.02; done",
+			}
+			receiptStatus := "settled"
+			if unresolved {
+				receiptStatus = "unresolved"
+			}
+			workflow := &Workflow{
+				SchemaVersion: SchemaVersion, Name: "test-workflow", Settings: DefaultWorkflowSettings(),
+				Steps: []Step{main},
+			}
+			workflow.Settings.OnCancelTimeout = Duration{Duration: 2 * time.Second}
+			workflow.Settings.OnCancel = []Step{
+				{
+					ID: "release_resources", Stdin: "fixture\n",
+					Command: "test -f main-stopped && grep -q '\"status\": \"" + receiptStatus +
+						"\"' .ntm/pipelines/run-cmd-test.json && printf released > resources-released",
+				},
+				// Cancellation cleanup may itself acknowledge background work.
+				// The final join must still settle workers created after the
+				// main-sidecar barrier, before finishExecution returns.
+				{ID: "cleanup_sidecar", Wait: WaitNone, Stdin: "fixture\n", Command: "sleep 30"},
+			}
+			e.graph = NewDependencyGraph(workflow)
+			unknown := errors.New("injected command settlement remains unknown")
+			workerResult := make(chan error, 1)
+			if unresolved {
+				// Model a waiter that completed supervision without acquiring
+				// settlement proof. No PID is observed or signalled by this
+				// fixture, and joining it must not authorize command replay.
+				hash, err := commandDefinitionHash(&main)
+				if err != nil {
+					t.Fatal(err)
+				}
+				record := CommandExecutionState{
+					Version: commandExecutionVersion, StepID: main.ID, StepHash: hash,
+					Status: commandExecutionRunning, Background: true,
+					ProcessID: os.Getpid(), StartedAt: time.Now(),
+				}
+				if err := e.saveCommandExecution(record); err != nil {
+					t.Fatal(err)
+				}
+				e.stateMu.Lock()
+				e.state.Steps[main.ID] = StepResult{StepID: main.ID, AgentType: "command", Status: StatusCompleted}
+				e.stateMu.Unlock()
+				e.backgroundCommandWG.Add(1)
+				go func() {
+					defer e.backgroundCommandWG.Done()
+					<-ctx.Done()
+					saved, err := LoadState(e.config.ProjectDir, e.state.RunID)
+					if err == nil && (saved.Status != StatusCancelled || saved.CancelledAt == nil || saved.CancelledAt.IsZero()) {
+						err = errors.New("cancellation was not checkpointed before joining sidecars")
+					}
+					record.Status = commandExecutionUnresolved
+					record.Result = StepResult{
+						StepID: main.ID, AgentType: "command", Status: StatusCancelled,
+						StartedAt: record.StartedAt, FinishedAt: time.Now(),
+						Error: &StepError{Type: "execution_unknown", Message: unknown.Error()},
+					}
+					e.stateMu.Lock()
+					e.backgroundCommandErrors = map[string]error{main.ID: unknown}
+					e.stateMu.Unlock()
+					err = errors.Join(err, e.saveCommandExecution(record))
+					err = errors.Join(err, os.WriteFile(filepath.Join(e.config.ProjectDir, "main-stopped"), []byte("supervision-ended"), 0600))
+					workerResult <- err
+				}()
+			} else {
+				result := e.executeCommand(ctx, &main, workflow)
+				if result.Status != StatusCompleted {
+					t.Fatalf("sidecar launch failed: %+v", result)
+				}
+				e.stateMu.Lock()
+				e.state.Steps[main.ID] = result
+				e.stateMu.Unlock()
+				awaitCommandCancellationFile(t, filepath.Join(e.config.ProjectDir, "main-ready"), "ready")
+			}
+			// A recorded protection failure can reach finalization before
+			// cancellation becomes visible through its supplied context. The
+			// finalizer must request cancellation before waiting. In the old
+			// order, OnCancel necessarily ran before this sidecar could stop.
+			protection := errors.New("injected reservation protection failure")
+			e.stateMu.Lock()
+			e.reservationFailure = protection
+			e.stateMu.Unlock()
+			if ctx.Err() != nil {
+				t.Fatalf("fixture must enter finalization with a live context: %v", ctx.Err())
+			}
+			state, err := e.finishExecution(ctx, workflow, nil)
+			if ctx.Err() != context.Canceled {
+				t.Fatalf("finalizer waited for the caller deadline instead of requesting cancellation: %v", ctx.Err())
+			}
+			if !errors.Is(err, protection) || state.Status != StatusFailed || state.CancelledAt == nil {
+				t.Fatalf("lost cancellation/protection outcome: state=%+v err=%v", state, err)
+			}
+			if cleanup := state.Steps["release_resources"]; cleanup.Status != StatusCompleted {
+				t.Fatalf("authored cleanup preceded sidecar shutdown or its receipt: %+v", cleanup)
+			}
+			awaitCommandCancellationFile(t, filepath.Join(e.config.ProjectDir, "resources-released"), "released")
+			saved, loadErr := LoadState(e.config.ProjectDir, state.RunID)
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			cleanup := saved.CommandExecutions["cleanup_sidecar"]
+			if cleanup.Status != commandExecutionSettled || cleanup.SettledAt.IsZero() {
+				t.Fatalf("cleanup-launched sidecar escaped the final join: %+v", cleanup)
+			}
+			mainReceipt := saved.CommandExecutions[main.ID]
+			if unresolved {
+				if workerErr := <-workerResult; workerErr != nil {
+					t.Fatal(workerErr)
+				}
+				if !errors.Is(err, unknown) || mainReceipt.Status != commandExecutionUnresolved ||
+					!mainReceipt.SettledAt.IsZero() || mainReceipt.Result.RerunOnResume {
+					t.Fatalf("joining supervision fabricated settlement: receipt=%+v err=%v", mainReceipt, err)
+				}
+				retry := e.executeCommand(context.Background(), &main, workflow)
+				if retry.Status != StatusFailed || retry.Error == nil || retry.Error.Type != "execution_unknown" {
+					t.Fatalf("authored cleanup bypassed the unresolved replay fence: %+v", retry)
+				}
+			} else if mainReceipt.Status != commandExecutionSettled || mainReceipt.Result.Status != StatusCancelled {
+				t.Fatalf("main sidecar cancellation lost its settled receipt: %+v", mainReceipt)
+			}
+		})
+	}
+}
