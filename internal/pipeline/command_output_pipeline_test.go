@@ -399,6 +399,128 @@ func TestSelectorOperatorRecoveryRetainsNonzeroOutcomeAcrossResume(t *testing.T)
 	}
 }
 
+func TestSelectorOperatorRecoveryReopensPrematureCompletion(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		kind       string
+		unresolved bool
+		status     ExecutionStatus
+		exitCode   int
+	}{
+		{"starting_branch_success", "branch", false, StatusFailed, 0},
+		{"starting_foreach_failure", "foreach", false, StatusCancelled, 7},
+		{"unresolved_branch_failure", "branch", true, StatusFailed, 7},
+		{"unresolved_foreach_success", "foreach", true, StatusCancelled, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := []byte("good")
+			if tc.kind == "foreach" {
+				output = []byte("alpha\nbeta\n")
+			}
+			cfg, workflow, prior, _ := selectorOperatorRecoveryFixture(t, tc.kind, output, tc.exitCode, tc.unresolved)
+			original := selectorRecoveryEntry(t, cfg)
+			finished := time.Now().UTC()
+			prior.Status, prior.FinishedAt, prior.UpdatedAt = StatusCompleted, finished, finished
+			prior.Steps[original.StepID] = StepResult{StepID: original.StepID, Status: tc.status,
+				Error: &StepError{Type: "execution_unknown", Message: "original source settlement was not observed"}}
+			prior.Variables["retained"] = "unrelated value"
+			if err := SaveState(cfg.ProjectDir, prior); err != nil {
+				t.Fatal(err)
+			}
+			before := selectorRecoveryCheckpoint(t, cfg)
+			entry := selectorRecoveryEntry(t, cfg)
+			if !entry.CanAccept || entry.ReceiptToken != original.ReceiptToken || !bytes.Equal(before, selectorRecoveryCheckpoint(t, cfg)) {
+				t.Fatalf("false workflow completion hid or changed its unfinished selector: %+v", entry)
+			}
+			const reason = "Verified the original source and descendants ended and recovered complete stdout"
+			accepted, err := AcceptCommandEvaluationContext(context.Background(), cfg.ProjectDir, cfg.RunID,
+				entry.StepID, entry.ReceiptToken, reason, tc.exitCode, output)
+			if err != nil || accepted.Replayed || accepted.Selector.ReceiptToken != entry.ReceiptToken {
+				t.Fatalf("recover falsely completed selector: %+v %v", accepted, err)
+			}
+			saved, err := LoadState(cfg.ProjectDir, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if saved.Status != StatusFailed || !saved.FinishedAt.Equal(finished) ||
+				!saved.UpdatedAt.Equal(accepted.Selector.ResolvedAt) || !saved.LastCheckpointAt.Equal(prior.LastCheckpointAt) ||
+				saved.Steps[entry.StepID].Status != tc.status || saved.Variables["retained"] != "unrelated value" ||
+				len(saved.ForeachState) != 0 || len(saved.Steps) != len(prior.Steps) {
+				t.Fatalf("acceptance published selector work or did not repair terminal status: %+v", saved)
+			}
+			if len(saved.Errors) != len(prior.Errors)+1 {
+				t.Fatalf("status repair did not add one audit diagnostic: %+v", saved.Errors)
+			}
+			diagnostic := saved.Errors[len(saved.Errors)-1]
+			if diagnostic.Type != "recovery" || diagnostic.StepID != entry.StepID || !diagnostic.Fatal ||
+				!diagnostic.Timestamp.Equal(accepted.Selector.ResolvedAt) || !strings.Contains(diagnostic.Message, "unsettled") || !strings.Contains(diagnostic.Message, "resume") {
+				t.Fatalf("status repair lost its reason: %+v", diagnostic)
+			}
+			if _, err := os.Stat(filepath.Join(cfg.ProjectDir, "admitted")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("acceptance admitted selector work: %v", err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			final, err := NewExecutor(cfg).Resume(ctx, workflow, saved, nil)
+			if tc.exitCode == 0 {
+				if err != nil || final.Status != StatusCompleted {
+					t.Fatalf("verified selector could not resume after status repair: %+v %v", final, err)
+				}
+				want := "good\n"
+				if tc.kind == "foreach" {
+					want = string(output)
+				}
+				if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "admitted")); err != nil || string(data) != want {
+					t.Fatalf("accepted source did not use normal admission: %q %v", data, err)
+				}
+			} else {
+				if err == nil || final.Status != StatusFailed {
+					t.Fatalf("accepted unsuccessful selector lost its failure: %+v %v", final, err)
+				}
+				if _, err := os.Stat(filepath.Join(cfg.ProjectDir, "admitted")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("accepted failed source admitted work: %v", err)
+				}
+			}
+			if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "source-effects")); err != nil || string(data) != "once\n" {
+				t.Fatalf("recovery repeated the original source: %q %v", data, err)
+			}
+			before = selectorRecoveryCheckpoint(t, cfg)
+			again, err := AcceptCommandEvaluationContext(context.Background(), cfg.ProjectDir, cfg.RunID,
+				entry.StepID, entry.ReceiptToken, reason, tc.exitCode, output)
+			if err != nil || !again.Replayed || !bytes.Equal(before, selectorRecoveryCheckpoint(t, cfg)) {
+				t.Fatalf("repeating acceptance reopened a finished selector outcome: %+v %v", again, err)
+			}
+		})
+	}
+}
+
+func TestSelectorOperatorRecoveryPrematureCompletionRefusalsPreserveState(t *testing.T) {
+	for _, status := range []ExecutionStatus{StatusCompleted, StatusSkipped, StatusPending, StatusRunning, ""} {
+		t.Run(string(status), func(t *testing.T) {
+			output := []byte("good")
+			cfg, _, prior, _ := selectorOperatorRecoveryFixture(t, "branch", output, 0, false)
+			entry := selectorRecoveryEntry(t, cfg)
+			prior.Status = StatusCompleted
+			prior.Steps[entry.StepID] = StepResult{StepID: entry.StepID, Status: status}
+			if err := SaveState(cfg.ProjectDir, prior); err != nil {
+				t.Fatal(err)
+			}
+			before := selectorRecoveryCheckpoint(t, cfg)
+			entry = selectorRecoveryEntry(t, cfg)
+			if entry.CanAccept {
+				t.Fatalf("completed workflow without an unsuccessful source advertised recovery: %+v", entry)
+			}
+			if _, err := AcceptCommandEvaluationContext(context.Background(), cfg.ProjectDir, cfg.RunID,
+				entry.StepID, entry.ReceiptToken, "Verified the original selector ended", 0, output); err == nil {
+				t.Fatal("acceptance replaced potentially consumed selector output")
+			}
+			if !bytes.Equal(before, selectorRecoveryCheckpoint(t, cfg)) {
+				t.Fatal("refused selector recovery changed workflow status or evidence")
+			}
+		})
+	}
+}
+
 func TestControlledPipelineRetainsForeachSourceAcrossChildFailure(t *testing.T) {
 	for _, mode := range []ResumeMode{ResumeModeContinue, ResumeModeRestartFailed} {
 		t.Run(string(mode), func(t *testing.T) {

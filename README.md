@@ -953,6 +953,16 @@ remaining unsettled process receipt prevents a successful workflow outcome.
 The original receipts remain unchanged for inspection and supported recovery;
 confirmed settled failures keep their existing error-policy behavior.
 
+An older checkpoint may already report `completed` while retaining an unfinished
+foreground command or selector receipt. If that step's scheduler result is
+failed or cancelled, recovery inspection can offer the same explicit acceptance
+procedure. Acceptance retains all existing identity, ownership, and
+enclosing-work checks, then saves the observed outcome and changes the
+contradictory workflow status to `failed` in one checkpoint, with a recovery
+diagnostic. Ordinary resume then applies the accepted outcome. Completed work
+and any other unresolved receipts retain their evidence; repeating an accepted
+decision after successful resume does not reopen the run.
+
 A failed or cancelled scheduler result from an older checkpoint is not evidence
 that a command group stopped. Without an execution receipt, ordinary resume also
 refuses these steps and background rerun markers; an intentional replay requires

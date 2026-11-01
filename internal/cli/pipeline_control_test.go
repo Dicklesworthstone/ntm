@@ -802,18 +802,24 @@ func inspectPipelineCommandRecovery(t *testing.T, runID string) pipeline.Command
 
 func TestPipelineRecoverCommandThenResumeWithoutRerun(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		output string
-		code   int
-		parse  bool
+		name      string
+		output    string
+		code      int
+		parse     bool
+		completed bool
 	}{
-		{"parsed output", "{\"answer\":42}\n", 0, true},
-		{"explicit empty output", "", 0, false},
-		{"accepted exit failure", "PRIVATE-COMMAND-OUTPUT\n", 7, false},
+		{"parsed output", "{\"answer\":42}\n", 0, true, false},
+		{"explicit empty output", "", 0, false, false},
+		{"accepted exit failure", "PRIVATE-COMMAND-OUTPUT\n", 7, false, false},
+		{"legacy completed with parsed output", "{\"answer\":42}\n", 0, true, true},
+		{"legacy completed with exit failure", "PRIVATE-COMMAND-OUTPUT\n", 7, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := inPipelineControlProject(t)
 			prior := interruptedPipelineCommandOutcome(t, root, tc.output, tc.code, tc.parse)
+			if tc.completed {
+				markPipelineRecoveryFalseCompletion(t, root, prior, "command")
+			}
 			oldJSON := jsonOutput
 			jsonOutput = true
 			t.Cleanup(func() { jsonOutput = oldJSON })
@@ -836,7 +842,11 @@ func TestPipelineRecoverCommandThenResumeWithoutRerun(t *testing.T) {
 				t.Fatalf("command acceptance failed: %s %v", raw, err)
 			}
 			saved, err := pipeline.LoadState(root, prior.RunID)
-			if err != nil || saved.Status != prior.Status || saved.Steps["command"].Status == pipeline.StatusCompleted || saved.Steps["consume"].Status == pipeline.StatusCompleted {
+			wantStatus := prior.Status
+			if tc.completed {
+				wantStatus = pipeline.StatusFailed
+			}
+			if err != nil || saved.Status != wantStatus || saved.Steps["command"].Status == pipeline.StatusCompleted || saved.Steps["consume"].Status == pipeline.StatusCompleted {
 				t.Fatalf("acceptance executed or completed pipeline work: %+v %v", saved, err)
 			}
 			for _, name := range []string{"steps.command.output", "steps.command.data", "recovered", "recovered_parsed"} {
@@ -929,6 +939,25 @@ func TestPipelineRecoverCommandThenResumeWithoutRerun(t *testing.T) {
 				t.Fatal("settled command replay rewrote execution state")
 			}
 		})
+	}
+}
+
+// Older executors could handle an observation failure and then report the run
+// completed without settling its launch receipt. Retain the real fixture's
+// receipt and source effects while modelling only that scheduler metadata.
+func markPipelineRecoveryFalseCompletion(t *testing.T, root string, state *pipeline.ExecutionState, stepID string) {
+	t.Helper()
+	finished := time.Now().UTC()
+	state.Status, state.FinishedAt, state.UpdatedAt = pipeline.StatusCompleted, finished, finished
+	result := state.Steps[stepID]
+	result.StepID, result.Status, result.FinishedAt = stepID, pipeline.StatusFailed, finished
+	result.Error = &pipeline.StepError{Type: "command", Message: "process observation ended without settlement"}
+	if state.Steps == nil {
+		state.Steps = make(map[string]pipeline.StepResult)
+	}
+	state.Steps[stepID] = result
+	if err := pipeline.SaveState(root, state); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1232,16 +1261,22 @@ func TestPipelineRecoverSelectorThenResumeWithoutRerun(t *testing.T) {
 		name, kind, children string
 		output               []byte
 		code                 int
+		completed            bool
 	}{
-		{"branch selection", "branch", "chosen\n", []byte("PRIVATE-SELECTOR-KEY\n"), 0},
-		{"raw binary output", "branch", "fallback\n", []byte{'x', 0, 0xff, 0xfe, '\n'}, 0},
-		{"original foreach items", "foreach", "cc\ncod\n", []byte("cc\ncod\n"), 0},
-		{"accepted nonzero", "branch", "", []byte("PRIVATE-SELECTOR-KEY\n"), 7},
-		{"normal failure action", "failure action", "", []byte("PRIVATE-SELECTOR-KEY\n"), 7},
+		{"branch selection", "branch", "chosen\n", []byte("PRIVATE-SELECTOR-KEY\n"), 0, false},
+		{"raw binary output", "branch", "fallback\n", []byte{'x', 0, 0xff, 0xfe, '\n'}, 0, false},
+		{"original foreach items", "foreach", "cc\ncod\n", []byte("cc\ncod\n"), 0, false},
+		{"accepted nonzero", "branch", "", []byte("PRIVATE-SELECTOR-KEY\n"), 7, false},
+		{"normal failure action", "failure action", "", []byte("PRIVATE-SELECTOR-KEY\n"), 7, false},
+		{"legacy completed branch", "branch", "chosen\n", []byte("PRIVATE-SELECTOR-KEY\n"), 0, true},
+		{"legacy completed nonzero", "branch", "", []byte("PRIVATE-SELECTOR-KEY\n"), 7, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := inPipelineControlProject(t)
 			prior := interruptedPipelineSelectorOutcome(t, root, tc.kind, tc.output, tc.code)
+			if tc.completed {
+				markPipelineRecoveryFalseCompletion(t, root, prior, "select")
+			}
 			oldJSON := jsonOutput
 			jsonOutput = true
 			t.Cleanup(func() { jsonOutput = oldJSON })
@@ -1269,7 +1304,11 @@ func TestPipelineRecoverSelectorThenResumeWithoutRerun(t *testing.T) {
 				t.Fatalf("selector acceptance lost the exact operator decision: %s %v", raw, err)
 			}
 			saved, err := pipeline.LoadState(root, prior.RunID)
-			if err != nil || saved.Status != prior.Status || saved.Steps["select"].Status == pipeline.StatusCompleted || len(saved.ForeachState) != 0 {
+			wantStatus := prior.Status
+			if tc.completed {
+				wantStatus = pipeline.StatusFailed
+			}
+			if err != nil || saved.Status != wantStatus || saved.Steps["select"].Status == pipeline.StatusCompleted || len(saved.ForeachState) != 0 {
 				t.Fatalf("acceptance dispatched or completed selector work: %+v %v", saved, err)
 			}
 			original, record := prior.CommandEvaluations["select"], saved.CommandEvaluations["select"]

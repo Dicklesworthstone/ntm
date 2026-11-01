@@ -903,6 +903,13 @@ func (e *Executor) validateCommandEvaluationRecovery(workflow *Workflow, state *
 	}
 	switch state.Status {
 	case StatusPending, StatusRunning, StatusFailed, StatusCancelled:
+	case StatusCompleted:
+		// Older finalizers could report completion after a handled source
+		// failure without settling its receipt. Only an unsuccessful source
+		// result can establish this contradiction; consumed output stays final.
+		if status := state.Steps[record.StepID].Status; status != StatusFailed && status != StatusCancelled {
+			return fmt.Errorf("completed pipeline %q has no failed or cancelled result for selector %q", state.RunID, record.StepID)
+		}
 	default:
 		return fmt.Errorf("pipeline %q has status %q and cannot accept an unfinished selector", state.RunID, state.Status)
 	}
@@ -1083,6 +1090,7 @@ func AcceptCommandEvaluationContext(ctx context.Context, projectDir, runID, step
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	repairCompletedWorkflowForProcessRecovery(state, stepID, now)
 	if err := SaveState(projectDir, state); err != nil {
 		return nil, fmt.Errorf("persist operator selector acceptance: %w", err)
 	}
@@ -1371,6 +1379,12 @@ func (e *Executor) validateCommandRecovery(workflow *Workflow, state *ExecutionS
 	}
 	switch state.Status {
 	case StatusPending, StatusRunning, StatusFailed, StatusCancelled:
+	case StatusCompleted:
+		// Accept only the historical false-completion case. The remaining
+		// definition and replay-scope checks still protect consumed outcomes.
+		if status := state.Steps[record.StepID].Status; status != StatusFailed && status != StatusCancelled {
+			return fmt.Errorf("completed pipeline %q has no failed or cancelled result for command %q", state.RunID, record.StepID)
+		}
 	default:
 		return fmt.Errorf("pipeline %q has status %q and cannot accept an unfinished command", state.RunID, state.Status)
 	}
@@ -1389,8 +1403,9 @@ func (e *Executor) validateCommandRecovery(workflow *Workflow, state *ExecutionS
 // AcceptCommandExecutionContext records an operator-observed final outcome for
 // an unresolved foreground command. The caller must have verified that the
 // entire original process group ended; a PID lookup cannot establish that.
-// It changes only the command journal. Resume validates the materialized step,
-// applies its normal output parser/error policy, and publishes dependent data.
+// It changes the command journal and repairs a contradictory completed workflow
+// status when needed. Resume validates the materialized step, applies its normal
+// output parser/error policy, and publishes dependent data.
 func AcceptCommandExecutionContext(ctx context.Context, projectDir, runID, stepID, receiptToken, reason string, exitCode int, output string) (*CommandExecutionRecoveryResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -1489,12 +1504,28 @@ func AcceptCommandExecutionContext(ctx context.Context, projectDir, runID, stepI
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	repairCompletedWorkflowForProcessRecovery(state, stepID, now)
 	if err := SaveState(projectDir, state); err != nil {
 		return nil, fmt.Errorf("persist operator command acceptance: %w", err)
 	}
 	result.Command = entry
 	slog.Info("pipeline command outcome accepted by operator", "run_id", state.RunID, "step_id", stepID, "exit_code", exitCode, "output_bytes", len(output))
 	return result, nil
+}
+
+// Completed-run admission requires an unfinished receipt and an unsuccessful
+// scheduler result for its source. Persist the repaired workflow outcome in the
+// same transaction as the accepted decision, without publishing source output or
+// discarding other uncertainty. Immutable acceptance replays return before here.
+func repairCompletedWorkflowForProcessRecovery(state *ExecutionState, stepID string, now time.Time) {
+	if state.Status != StatusCompleted {
+		return
+	}
+	state.Status, state.UpdatedAt = StatusFailed, now
+	state.Errors = append(state.Errors, ExecutionError{
+		StepID: stepID, Type: "recovery", Timestamp: now, Fatal: true,
+		Message: fmt.Sprintf("workflow reported completion while step %q remained unsettled; an operator accepted its outcome, and ordinary resume is required", stepID),
+	})
 }
 
 const (
