@@ -1416,11 +1416,6 @@ func (e *Executor) validateCommandRecovery(workflow *Workflow, state *ExecutionS
 	if _, cleanup := resolveOnCancelRuntimeStep(workflow, record.StepID); cleanup {
 		return fmt.Errorf("command %q belongs to cancellation cleanup; ordinary resume may run that phase again", record.StepID)
 	}
-	for i := range workflow.PostPipelineSteps {
-		if _, tail := resolveHookRuntimeStep(&workflow.PostPipelineSteps[i], "post_pipeline", i+1, record.StepID); tail {
-			return fmt.Errorf("command %q belongs to post-pipeline finalization; ordinary resume may reopen that phase", record.StepID)
-		}
-	}
 	switch state.Status {
 	case StatusPending, StatusRunning, StatusFailed, StatusCancelled:
 	case StatusCompleted:
@@ -1437,6 +1432,12 @@ func (e *Executor) validateCommandRecovery(workflow *Workflow, state *ExecutionS
 	}
 	if err := validateRecoveryWorkflowStep(workflow, state, record.StepID, StepKindCommand, record.StepHash, commandDefinitionHash); err != nil {
 		return err
+	}
+	if step, post := topLevelPostPipelineRecoveryStep(workflow, record.StepID); post {
+		if stepKind(step) != StepKindCommand {
+			return fmt.Errorf("post-pipeline step %q is no longer a command", record.StepID)
+		}
+		return nil
 	}
 	if err := e.validateLeafReplayScopeLocked(workflow, state, record.StepID, StepKindCommand); err != nil {
 		return fmt.Errorf("cannot accept output for a command that ordinary resume will not revisit: %w", err)
@@ -2078,6 +2079,27 @@ func (e *Executor) acceptAgentDeliveryContext(ctx context.Context, stepID, recei
 
 // recoveryWorkflowStep uses the scheduler's runtime namespace resolver, counting
 // root owners so a literal authored ID cannot silently steal a scoped receipt.
+// topLevelPostPipelineRecoveryStep returns an independently scheduled post-pipeline
+// root. Ordinary resume always revisits this phase, so an accepted foreground
+// outcome can be consumed without replaying the original command. Nested hooks
+// and cancellation cleanup remain subject to their existing replay-scope fences.
+func topLevelPostPipelineRecoveryStep(workflow *Workflow, stepID string) (*Step, bool) {
+	if workflow == nil {
+		return nil, false
+	}
+	for i := range workflow.PostPipelineSteps {
+		step := &workflow.PostPipelineSteps[i]
+		id := step.ID
+		if id == "" {
+			id = fmt.Sprintf("post_pipeline_%d", i+1)
+		}
+		if id == stepID {
+			return step, true
+		}
+	}
+	return nil, false
+}
+
 func recoveryWorkflowStep(workflow *Workflow, stepID string) (*Step, error) {
 	var found *Step
 	for _, phase := range []struct {

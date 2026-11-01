@@ -813,7 +813,7 @@ func commandOperatorRecoveryBytes(t *testing.T, cfg ExecutorConfig) []byte {
 }
 
 func TestCommandOperatorRecoveryPublishesOnlyOnResume(t *testing.T) {
-	for _, layout := range []string{"direct", "foreach", "parallel", "branch"} {
+	for _, layout := range []string{"direct", "foreach", "parallel", "branch", "post"} {
 		t.Run(layout, func(t *testing.T) {
 			cfg, workflow, prior, output := commandOperatorRecoveryFixture(t, 0, layout)
 			before := commandOperatorRecoveryBytes(t, cfg)
@@ -866,8 +866,10 @@ func TestCommandOperatorRecoveryPublishesOnlyOnResume(t *testing.T) {
 					t.Fatalf("named output missing: %#v", final.Variables)
 				}
 			}
-			if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "dependent")); err != nil || string(data) != want {
-				t.Fatalf("dependent did not receive recovered output: %q %v", data, err)
+			if layout != "post" {
+				if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "dependent")); err != nil || string(data) != want {
+					t.Fatalf("dependent did not receive recovered output: %q %v", data, err)
+				}
 			}
 			if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "effects")); err != nil || string(data) != "once\n" {
 				t.Fatalf("resume repeated original command side effects: %q %v", data, err)
@@ -911,14 +913,11 @@ func TestCommandOperatorRecoveryAcceptedFailureDoesNotRetry(t *testing.T) {
 }
 
 func TestCommandOperatorRecoveryRefusalsPreserveCheckpoint(t *testing.T) {
-	for _, scenario := range []string{"stale receipt", "live owner", "background", "terminal step", "completed container", "completed iteration", "post-pipeline", "missing workflow", "output limit", "changed reason", "changed output", "changed exit", "canceled context"} {
+	for _, scenario := range []string{"stale receipt", "live owner", "background", "terminal step", "completed container", "completed iteration", "missing workflow", "output limit", "changed reason", "changed output", "changed exit", "canceled context"} {
 		t.Run(scenario, func(t *testing.T) {
 			layout := "direct"
 			if scenario == "completed container" || scenario == "completed iteration" {
 				layout = "foreach"
-			}
-			if scenario == "post-pipeline" {
-				layout = "post"
 			}
 			cfg, _, prior, output := commandOperatorRecoveryFixture(t, 0, layout)
 			entry := commandOperatorRecoveryEntry(t, cfg)
@@ -993,7 +992,7 @@ func TestCommandOperatorRecoveryRefusalsPreserveCheckpoint(t *testing.T) {
 				ctx = canceled
 			}
 			switch scenario {
-			case "background", "terminal step", "completed container", "completed iteration", "post-pipeline", "missing workflow":
+			case "background", "terminal step", "completed container", "completed iteration", "missing workflow":
 				if entry.CanAccept || entry.RefusalReason == "" {
 					t.Fatalf("unsupported receipt advertised acceptance: %+v", entry)
 				}
