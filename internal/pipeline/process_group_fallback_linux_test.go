@@ -1300,9 +1300,15 @@ exec sleep 12
 		cancel()
 		return errors.Join(context.Canceled, syscall.EIO)
 	})
+	wantSignals := "SIGTERM"
+	if err := cmd.Process.WithHandle(func(uintptr) {}); errors.Is(err, os.ErrNoHandle) {
+		wantSignals = ""
+	} else if err != nil {
+		t.Fatal(err)
+	}
 	started := time.Now()
 	result := waitCommandWithProcessGroupCleanup(ctx, cmd)
-	if !result.Cancelled || result.Settled || result.SignalSent != "" ||
+	if !result.Cancelled || result.Settled || result.SignalSent != wantSignals ||
 		!errors.Is(result.Err, context.Canceled) || !errors.Is(result.Err, syscall.EIO) {
 		t.Fatalf("failed ownership proof entered numeric group cancellation: %+v", result)
 	}
@@ -1397,5 +1403,143 @@ printf natural > complete
 				t.Fatal("final reaper did not collect the naturally completed command")
 			})
 		}
+	}
+}
+
+func TestCommandLeaderHandleCancellationPreservesGrace(t *testing.T) {
+	fault := errors.New("injected pidfd poll failure")
+	for _, tc := range []struct {
+		name       string
+		pollErr    error
+		revents    int16
+		termErr    error
+		killErr    error
+		wantKill   bool
+		wantCause  error
+		wantEvents bool
+	}{
+		{name: "cooperative exit", revents: unix.POLLIN},
+		{name: "live until grace expires", wantKill: true},
+		{name: "poll failure", pollErr: fault, wantKill: true, wantCause: fault},
+		{name: "interrupted poll", pollErr: syscall.EINTR, wantKill: true},
+		{name: "invalid poll descriptor", revents: unix.POLLNVAL, wantKill: true, wantEvents: true},
+		{name: "inconsistent poll events", revents: unix.POLLIN | unix.POLLERR, wantKill: true, wantEvents: true},
+		{name: "term denied", termErr: syscall.EPERM, wantKill: true, wantCause: syscall.EPERM},
+		{name: "kill denied", killErr: syscall.EPERM, wantKill: true, wantCause: syscall.EPERM},
+		{name: "already exited", termErr: syscall.ESRCH},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			grace := 2 * commandGroupPollInterval
+			started := time.Now()
+			var sent []unix.Signal
+			ops := commandLeaderHandleOps{
+				signal: func(fd int, sig unix.Signal, info *unix.Siginfo, flags int) error {
+					if fd != 42 || info != nil || flags != 0 {
+						t.Fatalf("signal left the held pidfd: fd=%d info=%v flags=%d", fd, info, flags)
+					}
+					sent = append(sent, sig)
+					if sig == unix.SIGTERM {
+						return tc.termErr
+					}
+					if sig != unix.SIGKILL || time.Since(started) < grace {
+						t.Fatalf("observation failure shortened TERM grace: signal=%v elapsed=%v", sig, time.Since(started))
+					}
+					return tc.killErr
+				},
+				poll: func(fds []unix.PollFd, timeout int) (int, error) {
+					if len(fds) != 1 || fds[0].Fd != 42 || fds[0].Events != unix.POLLIN || timeout <= 0 || timeout > int(commandGroupPollInterval/time.Millisecond) {
+						t.Fatalf("invalid pidfd poll: fds=%+v timeout=%d", fds, timeout)
+					}
+					fds[0].Revents = tc.revents
+					return 0, tc.pollErr
+				},
+			}
+			signals, err := cancelCommandLeaderWithHandle(42, grace, ops)
+			wantSignals, wantCount := "SIGTERM", 1
+			if tc.wantKill {
+				wantSignals, wantCount = "SIGTERM,SIGKILL", 2
+			}
+			if signals != wantSignals || len(sent) != wantCount || sent[0] != unix.SIGTERM {
+				t.Fatalf("unexpected escalation: signals=%q sent=%v", signals, sent)
+			}
+			if tc.wantCause != nil && !errors.Is(err, tc.wantCause) {
+				t.Fatalf("lost failed cleanup evidence: %v", err)
+			}
+			if tc.wantEvents && (err == nil || !strings.Contains(err.Error(), "unexpected poll events")) {
+				t.Fatalf("invalid pidfd events were accepted as exit: %v", err)
+			}
+			if tc.wantCause == nil && !tc.wantEvents && err != nil {
+				t.Fatalf("unexpected leader cleanup error: %v", err)
+			}
+		})
+	}
+}
+
+func TestCommandLeaderObservationFailureRequiresStableCancellationHandle(t *testing.T) {
+	leader := fallbackTestStartProcess(t, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// A bare Process containing a real, live PID has no identity-stable
+	// handle. Its number must never become a fallback cancellation target.
+	unpinned := &exec.Cmd{Process: &os.Process{Pid: leader.Process.Pid}}
+	result := cleanupCommandAfterObservationFailure(ctx, unpinned, syscall.EIO)
+	if !result.Cancelled || result.Settled || result.SignalSent != "" ||
+		!errors.Is(result.Err, os.ErrNoHandle) || !errors.Is(result.Err, syscall.EIO) || !errors.Is(result.Err, context.Canceled) {
+		t.Fatalf("missing handle granted numeric cancellation or lost evidence: %+v", result)
+	}
+	fallbackTestAssertAlive(t, leader)
+}
+
+func TestCommandLeaderPersistentObservationFailurePreservesTermHandler(t *testing.T) {
+	for _, failAt := range []int{1, 2} {
+		t.Run(fmt.Sprintf("probe_%d", failAt), func(t *testing.T) {
+			dir := t.TempDir()
+			cmd := exec.Command("/bin/sh", "-c", `trap 'sleep 0.15; printf handled > handled; printf finished; exit 0' TERM
+printf ready > ready
+while :; do sleep 0.01; done
+`)
+			cmd.Dir = dir
+			capture := newCappedWriter(64)
+			cmd.Stdout, cmd.Stderr = capture, capture
+			configureCommandProcessGroup(cmd)
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			handedToWait := false
+			t.Cleanup(func() {
+				_ = cmd.Process.Kill()
+				if !handedToWait {
+					_ = cmd.Wait()
+				}
+			})
+			if err := cmd.Process.WithHandle(func(uintptr) {}); errors.Is(err, os.ErrNoHandle) {
+				t.Skip("kernel does not provide a stable process handle")
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			awaitGroupTestFile(t, filepath.Join(dir, "ready"))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls := 0
+			ctx = context.WithValue(ctx, commandLeaderObservationTestHookKey{}, func(pid int) error {
+				calls++
+				if calls < failAt {
+					return observeCommandExit(pid, syscall.WNOHANG)
+				}
+				cancel()
+				return syscall.EIO
+			})
+			handedToWait = true
+			result := waitCommandWithProcessGroupCleanup(ctx, cmd)
+			var exitErr *exec.ExitError
+			if !result.Cancelled || result.Settled || result.SignalSent != "SIGTERM" ||
+				!errors.Is(result.Err, syscall.EIO) || !errors.Is(result.Err, context.Canceled) ||
+				errors.As(result.Err, &exitErr) || capture.String() != "finished" || !capture.outputCaptureComplete() {
+				t.Fatalf("failed waitid skipped graceful leader cleanup or fabricated group settlement: %+v output=%q", result, capture.String())
+			}
+			if data, err := os.ReadFile(filepath.Join(dir, "handled")); err != nil || string(data) != "handled" {
+				t.Fatalf("cancellation destroyed the leader's TERM handler: %q %v", data, err)
+			}
+		})
 	}
 }

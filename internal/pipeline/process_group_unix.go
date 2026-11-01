@@ -19,6 +19,10 @@ const (
 	commandCancelGracePeriod = 5 * time.Second
 	commandPipeDrainTimeout  = time.Second
 	commandGroupPollInterval = 50 * time.Millisecond
+	// Keep the original, unreaped leader through a bounded read-only recovery
+	// when the post-kill census failed. Reaping after the first short outage
+	// would permanently discard the identity needed to certify settlement.
+	commandSettlementRecoveryTimeout = 5 * time.Second
 )
 
 // Per-command fault injection keeps concurrent waiters independent. Cleanup
@@ -114,6 +118,27 @@ func waitCommandGroupObservation(ctx context.Context, pgid int, observe func() (
 		case <-ticker.C:
 		}
 	}
+}
+
+// reconcileCommandGroupSettlement gives a failed final census an independent
+// recovery budget while the caller still pins the original group leader and
+// owns its execution journal. Call only after a successful final group signal.
+// A plain deadline carries no failed inspection to reconcile and keeps the
+// ordinary bounded cleanup contract. Unknown evidence receives read-only
+// retries, never another signal or permission to replay.
+func reconcileCommandGroupSettlement(ctx context.Context, pgid int, observationErr error) error {
+	if observationErr == nil || observationErr == context.DeadlineExceeded {
+		return observationErr
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	recovery, cancel := context.WithTimeout(context.WithoutCancel(ctx), commandSettlementRecoveryTimeout)
+	defer cancel()
+	if err := waitCommandGroupQuiescent(recovery, pgid); err != nil {
+		return errors.Join(observationErr, fmt.Errorf("command group settlement recovery exhausted: %w", err))
+	}
+	return nil
 }
 
 // observeCommandGroupWithPS is the portable Unix census. Keep its real process

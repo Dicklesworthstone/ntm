@@ -203,7 +203,7 @@ func TestControlledPipelinePersistentObservationCancellationPreservesUncertainty
 			}}
 			cfg := DefaultExecutorConfig("unknown-observation")
 			cfg.ProjectDir, cfg.RunID = root, "run-unknown-observation"
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			var target atomic.Int64
 			ctx = context.WithValue(ctx, commandStartedTestHookKey{}, func(pid int) { target.CompareAndSwap(0, int64(pid)) })
@@ -232,8 +232,9 @@ func TestControlledPipelinePersistentObservationCancellationPreservesUncertainty
 			events := make(chan ProgressEvent, 100)
 			started := time.Now()
 			state, err := RunControlledPipeline(ctx, workflow, nil, cfg, events)
-			if elapsed := time.Since(started); elapsed < commandCancelGracePeriod || elapsed > 9*time.Second {
-				t.Fatalf("persistent observation shortened grace or exceeded its cleanup bound: %v", elapsed)
+			minimum := commandCancelGracePeriod + commandPipeDrainTimeout + commandSettlementRecoveryTimeout
+			if elapsed := time.Since(started); elapsed < minimum || elapsed > minimum+3*time.Second {
+				t.Fatalf("persistent observation shortened its grace/recovery budgets or exceeded its cleanup bound: %v (minimum %v)", elapsed, minimum)
 			}
 			if err == nil || state == nil || state.Status != StatusCancelled || failures.Load() < 2 {
 				t.Fatalf("persistent uncertainty became success or skipped retries: %+v %v failures=%d", state, err, failures.Load())
@@ -265,6 +266,137 @@ func TestControlledPipelinePersistentObservationCancellationPreservesUncertainty
 			}
 			if data, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(data) != "once\n" {
 				t.Fatalf("uncertain command was launched more than once: %q %v", data, err)
+			}
+		})
+	}
+}
+
+func TestControlledPipelineLateSettlementRecoveryKeepsOwnershipAndReceipts(t *testing.T) {
+	for _, background := range []bool{false, true} {
+		t.Run(fmt.Sprintf("background_%t", background), func(t *testing.T) {
+			root := t.TempDir()
+			work := Step{ID: "work", Command: "printf 'once\\n' >> launches; printf captured"}
+			if background {
+				work.Wait = WaitNone
+			}
+			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "late-settlement", Settings: DefaultWorkflowSettings(), Steps: []Step{
+				work,
+				{ID: "gate", DependsOn: []string{work.ID}, Command: "test -f resume-allowed || exec sleep 30; printf consumed"},
+			}}
+			cfg := DefaultExecutorConfig("late-settlement")
+			cfg.ProjectDir, cfg.RunID = root, "run-late-settlement"
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			var target atomic.Int64
+			ctx = context.WithValue(ctx, commandStartedTestHookKey{}, func(pid int) { target.CompareAndSwap(0, int64(pid)) })
+			fault := errors.New("injected census outage outlasting the first settlement budget")
+			recovering := make(chan struct{})
+			var release atomic.Bool
+			phase := 0 // Only the target command's waiter accesses these fields.
+			var firstSettlementCheck time.Time
+			announcedRecovery := false
+			ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(pgid int) (bool, error) {
+				if int64(pgid) != target.Load() {
+					return commandGroupHasLiveMembers(pgid)
+				}
+				if phase < 2 {
+					alive, err := commandGroupHasLiveMembers(pgid)
+					if err != nil || alive {
+						return alive, err
+					}
+					phase++
+					if phase == 1 {
+						// Cancel during the first real quiet observation so the
+						// waiter enters cancellation instead of natural completion.
+						// The next real quiet proof finishes the SIGTERM grace.
+						cancel()
+					}
+					return false, nil
+				}
+				if release.Load() {
+					return commandGroupHasLiveMembers(pgid)
+				}
+				if firstSettlementCheck.IsZero() {
+					firstSettlementCheck = time.Now()
+				}
+				if !announcedRecovery && time.Since(firstSettlementCheck) > commandPipeDrainTimeout+2*commandGroupPollInterval {
+					announcedRecovery = true
+					close(recovering)
+				}
+				return false, fault
+			})
+			type outcome struct {
+				state *ExecutionState
+				err   error
+			}
+			done := make(chan outcome, 1)
+			go func() {
+				state, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+				done <- outcome{state, err}
+				close(done)
+			}()
+			t.Cleanup(func() {
+				release.Store(true)
+				cancel()
+				select {
+				case <-done:
+				case <-time.After(commandCancelGracePeriod + commandSettlementRecoveryTimeout + 4*commandPipeDrainTimeout):
+					t.Error("pipeline did not join its late settlement recovery")
+				}
+			})
+			select {
+			case <-recovering:
+			case early := <-done:
+				t.Fatalf("first failed settlement check permanently ended supervision: %+v %v", early.state, early.err)
+			case <-time.After(8 * time.Second):
+				t.Fatal("command did not enter late settlement recovery")
+			}
+			prior, err := LoadState(root, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pending := prior.CommandExecutions[work.ID]
+			if pending.Status != commandExecutionRunning || !pending.SettledAt.IsZero() || pending.ProcessID != int(target.Load()) {
+				t.Fatalf("receipt claimed settlement or lost its identity while recovery remained uncertain: %+v", pending)
+			}
+			owner, err := AcquireRunControl(context.Background(), root, cfg.RunID)
+			if owner != nil {
+				owner.Close()
+				t.Fatal("run released exclusive ownership before late settlement recovery finished")
+			}
+			if !errors.Is(err, ErrRunAlreadyOwned) {
+				t.Fatalf("unexpected ownership failure during late settlement recovery: %v", err)
+			}
+			release.Store(true)
+			var initial outcome
+			select {
+			case initial = <-done:
+			case <-time.After(commandSettlementRecoveryTimeout + 3*commandPipeDrainTimeout):
+				t.Fatal("recovered observation did not settle the receipt before releasing ownership")
+			}
+			if !errors.Is(initial.err, context.Canceled) || initial.state == nil || initial.state.Status != StatusCancelled {
+				t.Fatalf("late settlement lost the original cancellation: %+v %v", initial.state, initial.err)
+			}
+			prior, err = LoadState(root, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt := prior.CommandExecutions[work.ID]
+			if receipt.Status != commandExecutionSettled || receipt.SettledAt.IsZero() || receipt.Result.Status != StatusCancelled ||
+				receipt.Result.Output != "captured" || receipt.ProcessID != pending.ProcessID || receipt.Background != background {
+				t.Fatalf("late proof failed to reconcile the exact cancelled receipt and captured output: %+v", receipt)
+			}
+			owner, err = AcquireRunControl(context.Background(), root, cfg.RunID)
+			if err != nil {
+				t.Fatalf("settled recovery did not release run ownership: %v", err)
+			}
+			owner.Close()
+			groupTestFile(t, root, "resume-allowed", "continue")
+			final, err := NewExecutor(cfg).Resume(context.Background(), workflow, prior, nil)
+			if err != nil || final.Status != StatusCompleted || final.Steps["gate"].Output != "consumed" {
+				t.Fatalf("ordinary resume did not use the reconciled settlement: %+v %v", final, err)
+			}
+			if data, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(data) != "once\nonce\n" {
+				t.Fatalf("resuming proved cancellation did not launch exactly one replacement attempt: %q %v", data, err)
 			}
 		})
 	}
@@ -486,6 +618,184 @@ printf complete > child.effect
 				t.Fatalf("process churn repeated command effects: %q %v", data, err)
 			}
 			t.Logf("settled after %d real live-group censuses and %d unrelated process launches", liveCensuses.Load(), churn.Load())
+		})
+	}
+}
+
+func TestControlledPipelineConcurrentChildrenUnderProcessChurn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real concurrent descendants with staggered completion under bounded process churn")
+	}
+	for _, cancelWork := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cancel_%t", cancelWork), func(t *testing.T) {
+			root := t.TempDir()
+			groupTestFile(t, root, "child.sh", `id="$1"
+trap 'printf handled > "child.$id.handled"; exit 0' TERM
+printf '%s' "$$" > "child.$id.pid"
+while [ ! -f "child.$id.release" ]; do sleep 0.01; done
+printf complete > "child.$id.effect"
+`)
+			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "concurrent-churn", Settings: DefaultWorkflowSettings(), Steps: []Step{
+				{ID: "work", Command: "printf 'once\\n' >> launches; /bin/sh child.sh 1 >/dev/null 2>&1 & /bin/sh child.sh 2 >/dev/null 2>&1 & /bin/sh child.sh 3 >/dev/null 2>&1 & printf leader"},
+				{ID: "downstream", DependsOn: []string{"work"}, Command: "printf consumed > downstream; printf consumed"},
+			}}
+			cfg := DefaultExecutorConfig("concurrent-churn")
+			cfg.ProjectDir, cfg.RunID = root, "run-concurrent-churn"
+			cleanupBudget := commandCancelGracePeriod + commandSettlementRecoveryTimeout + 4*commandPipeDrainTimeout
+			ctx, cancel := context.WithTimeout(context.Background(), 2*cleanupBudget)
+			var target atomic.Int64
+			ctx = context.WithValue(ctx, commandStartedTestHookKey{}, func(pid int) { target.CompareAndSwap(0, int64(pid)) })
+			observedChurn, afterFirst, afterSecond := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var churn, completedChildren, liveCensuses atomic.Int32
+			var firstChurnCount int32
+			churnSeen, firstSeen, secondSeen := false, false, false // Target waiter only.
+			ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(pgid int) (bool, error) {
+				alive, err := commandGroupHasLiveMembers(pgid)
+				if int64(pgid) != target.Load() || err != nil || !alive {
+					return alive, err
+				}
+				liveCensuses.Add(1)
+				if launches := churn.Load(); launches > 0 {
+					if firstChurnCount == 0 {
+						firstChurnCount = launches
+					} else if launches > firstChurnCount && !churnSeen {
+						churnSeen = true
+						close(observedChurn)
+					}
+				}
+				if completedChildren.Load() >= 1 && !firstSeen {
+					firstSeen = true
+					close(afterFirst)
+				}
+				if completedChildren.Load() >= 2 && !secondSeen {
+					secondSeen = true
+					close(afterSecond)
+				}
+				return alive, nil
+			})
+			type outcome struct {
+				state *ExecutionState
+				err   error
+			}
+			done := make(chan outcome, 1)
+			go func() {
+				state, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+				done <- outcome{state, err}
+				close(done)
+			}()
+			t.Cleanup(func() {
+				for id := 1; id <= 3; id++ {
+					_ = os.WriteFile(filepath.Join(root, fmt.Sprintf("child.%d.release", id)), []byte("finish"), 0600)
+				}
+				cancel()
+				select {
+				case <-done:
+				case <-time.After(cleanupBudget):
+					t.Error("concurrent descendants did not finish bounded cleanup")
+				}
+			})
+			pids := make([]int, 3)
+			for id := 1; id <= 3; id++ {
+				pids[id-1] = waitForPIDFile(t, filepath.Join(root, fmt.Sprintf("child.%d.pid", id)))
+			}
+			startPipelineReceiptChurn(t, &churn)
+			awaitLive := func(observed <-chan struct{}, phase string) {
+				t.Helper()
+				select {
+				case <-observed:
+				case early := <-done:
+					t.Fatalf("pipeline ended while %s still had gated children: %+v %v", phase, early.state, early.err)
+				case <-time.After(5 * commandPipeDrainTimeout):
+					t.Fatalf("pipeline did not observe live children during %s", phase)
+				}
+				state, err := LoadState(root, cfg.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				receipt := state.CommandExecutions["work"]
+				if receipt.Status != commandExecutionRunning || !receipt.SettledAt.IsZero() {
+					t.Fatalf("pipeline settled with gated siblings during %s: %+v", phase, receipt)
+				}
+				if _, err := os.Stat(filepath.Join(root, "downstream")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("downstream ran before all siblings finished during %s: %v", phase, err)
+				}
+			}
+			awaitLive(observedChurn, "unrelated process churn")
+			groupTestFile(t, root, "child.1.release", "finish first")
+			awaitGroupTestFile(t, filepath.Join(root, "child.1.effect"))
+			completedChildren.Store(1)
+			awaitLive(afterFirst, "first child completion")
+			if cancelWork {
+				cancel()
+			} else {
+				groupTestFile(t, root, "child.2.release", "finish second")
+				awaitGroupTestFile(t, filepath.Join(root, "child.2.effect"))
+				completedChildren.Store(2)
+				awaitLive(afterSecond, "second child completion")
+				groupTestFile(t, root, "child.3.release", "finish last")
+			}
+			var final outcome
+			select {
+			case final = <-done:
+			case <-time.After(cleanupBudget):
+				t.Fatal("concurrent command group did not reach bounded settlement")
+			}
+			wantStatus := StatusCompleted
+			if cancelWork {
+				wantStatus = StatusCancelled
+				if !errors.Is(final.err, context.Canceled) {
+					t.Fatalf("concurrent cancellation lost its original cause: %v", final.err)
+				}
+				for id := 2; id <= 3; id++ {
+					if got := string(awaitGroupTestFile(t, filepath.Join(root, fmt.Sprintf("child.%d.handled", id)))); got != "handled" {
+						t.Fatalf("child %d lost its SIGTERM grace: %q", id, got)
+					}
+					groupTestFile(t, root, fmt.Sprintf("child.%d.release", id), "cancelled child must be gone")
+					if _, err := os.Stat(filepath.Join(root, fmt.Sprintf("child.%d.effect", id))); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("cancelled child %d performed its gated effect: %v", id, err)
+					}
+				}
+				if _, err := os.Stat(filepath.Join(root, "downstream")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("cancelled group dispatched downstream work: %v", err)
+				}
+			} else {
+				if final.err != nil {
+					t.Fatalf("concurrent normal completion failed: %v", final.err)
+				}
+				for id := 1; id <= 3; id++ {
+					if got := string(awaitGroupTestFile(t, filepath.Join(root, fmt.Sprintf("child.%d.effect", id)))); got != "complete" {
+						t.Fatalf("healthy child %d did not finish its work: %q", id, got)
+					}
+				}
+				if got := string(awaitGroupTestFile(t, filepath.Join(root, "downstream"))); got != "consumed" {
+					t.Fatalf("downstream lost settled command output: %q", got)
+				}
+			}
+			if final.state == nil || final.state.Status != wantStatus {
+				t.Fatalf("unexpected concurrent lifecycle result: %+v %v", final.state, final.err)
+			}
+			prior, err := LoadState(root, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt := prior.CommandExecutions["work"]
+			if receipt.Status != commandExecutionSettled || receipt.SettledAt.IsZero() || receipt.Result.Status != wantStatus || receipt.Result.Output != "leader" {
+				t.Fatalf("concurrent lifecycle stranded or corrupted its receipt: %+v", receipt)
+			}
+			for _, pid := range pids {
+				if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+					group, state, parseErr := parseCommandGroupStat(data, pid)
+					if parseErr != nil || (group == receipt.ProcessID && state != "Z" && state != "X") {
+						t.Fatalf("child %d remained live after group settlement: group=%d state=%q err=%v", pid, group, state, parseErr)
+					}
+				} else if !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("inspect settled child %d: %v", pid, err)
+				}
+			}
+			if data, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(data) != "once\n" {
+				t.Fatalf("concurrent process churn duplicated command execution: %q %v", data, err)
+			}
+			t.Logf("settled three independent children after %d live censuses and %d unrelated launches", liveCensuses.Load(), churn.Load())
 		})
 	}
 }

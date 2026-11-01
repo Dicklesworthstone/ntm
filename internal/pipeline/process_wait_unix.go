@@ -67,6 +67,9 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 		settle, stop := context.WithTimeout(context.WithoutCancel(ctx), commandPipeDrainTimeout)
 		quietErr = waitCommandGroupQuiescent(settle, cmd.Process.Pid)
 		stop()
+		if killErr == nil {
+			quietErr = reconcileCommandGroupSettlement(ctx, cmd.Process.Pid, quietErr)
+		}
 		return reap(commandCleanupResult{Err: errors.Join(killErr, quietErr), Settled: killErr == nil && quietErr == nil})
 	}
 	result = commandCleanupResult{Cancelled: true, SignalSent: "SIGTERM"}
@@ -91,6 +94,9 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	settle, stop := context.WithTimeout(context.WithoutCancel(ctx), commandPipeDrainTimeout)
 	quietErr = waitCommandGroupQuiescent(settle, cmd.Process.Pid)
 	stop()
+	if killErr == nil {
+		quietErr = reconcileCommandGroupSettlement(ctx, cmd.Process.Pid, quietErr)
+	}
 	if killErr != nil {
 		result.Err = errors.Join(result.Err, fmt.Errorf("kill command group: %w", killErr))
 	}

@@ -810,11 +810,24 @@ On Unix, a failed process-group observation keeps the command under supervision
 and is retried within its existing execution deadline. It does not request
 cancellation or shorten the five-second SIGTERM grace period. After the final
 group signal, NTM retries observation for up to one second while retaining the
-original group leader's identity. A complete quiet-group observation and complete
-output capture are both required for a `settled` receipt.
+original group leader's identity. If that final census remains unknown after a
+successful signal, a separate five-second recovery window retries observation
+without sending another signal. The original leader and exclusive run ownership
+remain held until recovery finishes, so later quiet evidence can settle the exact
+foreground, background, or selector receipt before the run returns. A confirmed
+live group or failed final signal keeps the original cleanup budget. A complete
+quiet-group observation and complete output capture are both required for a
+`settled` receipt.
 Linux also retries transient leader-observation failures for up to 250 ms before
 giving up ownership. An explicit loss of child ownership ends observation and
 signalling immediately; a saved numeric PID cannot authorize a later signal.
+If leader observation remains unavailable during explicit cancellation, NTM can
+still send SIGTERM through the original leader's pidfd and wait up to five seconds
+for graceful exit. Failed pidfd observations preserve that grace period before
+SIGKILL. This fallback never signals a numeric PID or process group. Stopping
+only the leader cannot settle the command's receipt because descendants may
+remain alive. If no stable handle is available, the command remains unresolved
+without a fallback numeric signal.
 For normal Linux completion, NTM checks that the kernel's process-creation counter
 did not change during a quiet census and that zombie process leaders have no
 surviving threads. A child that forks and exits during enumeration therefore

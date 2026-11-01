@@ -67,39 +67,14 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	// Detect unsupported waitid or an externally reaped child before sending
 	// any numeric group signal. A live or exited child remains unreaped.
 	if err := observeCommandExitWithRetry(ctx, cmd.Process.Pid); err != nil && err != errCommandLeaderRunning {
-		var killErr error
-		if ctx.Err() != nil {
-			// Process.Kill can fall back to a numeric PID when pidfds are
-			// unavailable. Definite ownership loss forbids that signal too.
-			if !errors.Is(err, syscall.ECHILD) && !errors.Is(err, syscall.ESRCH) {
-				killErr = cmd.Process.Kill()
-			}
-		} else {
-			// Leave inherited pipes open for healthy descendants, even if
-			// their leader exits after we hand it to the final reaper. The
-			// outer reap timer still bounds this unresolved return.
-			cmd.WaitDelay = 0
-		}
-		return reap(commandCleanupResult{Err: errors.Join(err, ctx.Err(), killErr), Cancelled: ctx.Err() != nil})
+		return reap(cleanupCommandAfterObservationFailure(ctx, cmd, err))
 	}
 	// A blocking waitid goroutine cannot be canceled if SIGKILL is denied
 	// or the leader is stuck in uninterruptible I/O. Poll without reaping so
 	// cancellation never has to join an unbounded exit observer.
 	observationErr := waitCommandLeaderExit(ctx, cmd.Process.Pid)
 	if observationErr != nil && observationErr != context.Canceled && observationErr != context.DeadlineExceeded {
-		// Lost waitability is not authority for a numeric group signal, or
-		// a request to kill a healthy leader. Even actual cancellation must
-		// not use Process.Kill after definite ownership loss: without pidfd
-		// support that method signals the potentially recycled numeric PID.
-		var killErr error
-		if ctx.Err() != nil {
-			if !errors.Is(observationErr, syscall.ECHILD) && !errors.Is(observationErr, syscall.ESRCH) {
-				killErr = cmd.Process.Kill()
-			}
-		} else {
-			cmd.WaitDelay = 0
-		}
-		return reap(commandCleanupResult{Err: errors.Join(observationErr, ctx.Err(), killErr), Cancelled: ctx.Err() != nil})
+		return reap(cleanupCommandAfterObservationFailure(ctx, cmd, observationErr))
 	}
 	if ctx.Err() == nil {
 		// The shell may have forked work and exited before that work
@@ -137,6 +112,9 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	settle, stop := context.WithTimeout(context.WithoutCancel(ctx), commandPipeDrainTimeout)
 	quietErr := waitCommandGroupQuiescent(settle, cmd.Process.Pid)
 	stop()
+	if killErr == nil {
+		quietErr = reconcileCommandGroupSettlement(ctx, cmd.Process.Pid, quietErr)
+	}
 	if killErr != nil {
 		result.Err = errors.Join(result.Err, fmt.Errorf("kill command group: %w", killErr))
 	}
@@ -149,6 +127,91 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	result.Err = errors.Join(result.Err, ctx.Err())
 	result.Settled = killErr == nil && quietErr == nil
 	return reap(result)
+}
+
+// Failed waitid observation does not establish authority over a numeric process
+// group. Healthy work keeps its output pipes, and definite ownership loss never
+// authorizes a signal. Explicit cancellation may still stop the original leader
+// through its identity-stable handle, with the same TERM grace as normal cleanup.
+// Leader-only cleanup cannot establish settlement of the whole command group.
+func cleanupCommandAfterObservationFailure(ctx context.Context, cmd *exec.Cmd, observationErr error) commandCleanupResult {
+	result := commandCleanupResult{Err: errors.Join(observationErr, ctx.Err()), Cancelled: ctx.Err() != nil}
+	if !result.Cancelled {
+		// The final reaper can outlive its caller. Do not let WaitDelay close
+		// the inherited pipes of healthy descendants after the leader exits.
+		cmd.WaitDelay = 0
+		return result
+	}
+	if errors.Is(observationErr, syscall.ECHILD) || errors.Is(observationErr, syscall.ESRCH) {
+		return result
+	}
+	var cleanupErr error
+	handleErr := cmd.Process.WithHandle(func(handle uintptr) {
+		result.SignalSent, cleanupErr = cancelCommandLeaderWithHandle(int(handle), commandCancelGracePeriod, commandLeaderHandleOps{
+			signal: unix.PidfdSendSignal,
+			poll:   unix.Poll,
+		})
+	})
+	if handleErr != nil {
+		// Process.Signal/Kill may fall back to a recycled numeric PID when
+		// pidfds are unavailable. An unknown waitability state forbids that.
+		handleErr = fmt.Errorf("cancel command leader after failed observation: %w", handleErr)
+	}
+	result.Err = errors.Join(result.Err, handleErr, cleanupErr)
+	return result
+}
+
+type commandLeaderHandleOps struct {
+	signal func(int, unix.Signal, *unix.Siginfo, int) error
+	poll   func([]unix.PollFd, int) (int, error)
+}
+
+// The caller holds Process.WithHandle throughout this operation. Polling the
+// pidfd observes leader exit without waitid, procfs, reaping, or numeric signals.
+// Even a failed poll preserves the full grace period before escalation.
+func cancelCommandLeaderWithHandle(fd int, grace time.Duration, ops commandLeaderHandleOps) (string, error) {
+	signals := "SIGTERM"
+	termErr := ops.signal(fd, unix.SIGTERM, nil, 0)
+	if errors.Is(termErr, syscall.ESRCH) {
+		return signals, nil
+	}
+	if termErr != nil {
+		termErr = fmt.Errorf("terminate command leader handle: %w", termErr)
+	}
+	deadline := time.Now().Add(grace)
+	var observationErr error
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		interval := min(remaining, commandGroupPollInterval)
+		started := time.Now()
+		fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+		_, err := ops.poll(fds, int((interval+time.Millisecond-1)/time.Millisecond))
+		if err == nil && fds[0].Revents&unix.POLLIN != 0 && fds[0].Revents&(unix.POLLERR|unix.POLLNVAL) == 0 {
+			return signals, errors.Join(termErr, observationErr)
+		}
+		if err != nil && !errors.Is(err, syscall.EINTR) {
+			observationErr = fmt.Errorf("observe command leader handle during SIGTERM grace period: %w", err)
+		} else if err == nil && fds[0].Revents != 0 {
+			observationErr = fmt.Errorf("observe command leader handle during SIGTERM grace period: unexpected poll events %#x", fds[0].Revents)
+		}
+		// A rejected poll (including EINTR) can return immediately. Retain
+		// bounded polling instead of busy-spinning or shortening the grace.
+		if delay := min(time.Until(deadline), interval-time.Since(started)); delay > 0 {
+			time.Sleep(delay)
+		}
+	}
+	signals += ",SIGKILL"
+	killErr := ops.signal(fd, unix.SIGKILL, nil, 0)
+	if errors.Is(killErr, syscall.ESRCH) {
+		killErr = nil
+	}
+	if killErr != nil {
+		killErr = fmt.Errorf("kill command leader handle: %w", killErr)
+	}
+	return signals, errors.Join(termErr, observationErr, killErr)
 }
 
 // observeCommandExit distinguishes a live child from an observed exit while
