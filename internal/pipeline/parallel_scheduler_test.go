@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -109,6 +110,69 @@ func TestParallelSchedulerFailureCancelsRetainedBackgroundContexts(t *testing.T)
 			}
 		})
 	}
+}
+
+func TestCommandCancellationScopeJoinCanBeInterruptedWithoutReleasingWorkers(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ctx, finish := withCommandCancellationScope(ctx, cancel)
+		first := retainCommandCancellationScopes(ctx)
+		last := retainCommandCancellationScopes(ctx)
+		defer first()
+		defer last()
+		finish()
+		scope := ctx.Value(commandCancellationScopeKey{}).(*commandCancellationScope)
+
+		interrupt, stop := context.WithCancel(context.Background())
+		defer stop()
+		interrupted, joined := make(chan struct{}), make(chan struct{})
+		go func() {
+			scope.wait(interrupt)
+			close(interrupted)
+		}()
+		go func() {
+			scope.wait(context.Background())
+			close(joined)
+		}()
+		synctest.Wait()
+		select {
+		case <-interrupted:
+			t.Fatal("cleanup join returned before supervision or caller cancellation")
+		case <-joined:
+			t.Fatal("cleanup join returned with both workers outstanding")
+		default:
+		}
+
+		first()
+		stop()
+		synctest.Wait()
+		select {
+		case <-interrupted:
+		default:
+			t.Fatal("caller cancellation did not interrupt the cleanup join")
+		}
+		select {
+		case <-joined:
+			t.Fatal("an interrupted join released another waiter's cleanup worker")
+		default:
+		}
+		if ctx.Err() != nil {
+			t.Fatal("an interrupted join released the still-retained command scope")
+		}
+
+		last()
+		synctest.Wait()
+		select {
+		case <-joined:
+		default:
+			t.Fatal("last supervisor did not release the cleanup join")
+		}
+		if ctx.Err() != context.Canceled {
+			t.Fatal("completed scope retained cancellation after its workers returned")
+		}
+		scope.wait(context.Background()) // Already-drained scopes never block.
+	})
 }
 
 func TestParallelSchedulerReverseChainAndSettledOutputs(t *testing.T) {

@@ -9,9 +9,229 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// These entry guards call Err outside stateMu. Cancel only after the chosen
+// admission boundary is visible, so the regression cannot accidentally stop
+// in the already-safe admission check or rely on goroutine scheduling.
+type stepEntryCancellationContext struct {
+	context.Context
+	cancel          context.CancelFunc
+	executor        *Executor
+	stepID          string
+	afterInFlight   bool
+	afterSettlement bool
+	stepStarts      <-chan ProgressEvent
+	startAfter      int
+	seenStarts      atomic.Int32
+	triggered       atomic.Bool
+	wasInFlight     atomic.Bool
+}
+
+func (c *stepEntryCancellationContext) Err() error {
+	if err := c.Context.Err(); err != nil {
+		return err
+	}
+	c.executor.stateMu.RLock()
+	state := c.executor.state
+	admitted, inFlight, settled := false, false, false
+	if state != nil {
+		if state.StepAdmissions != nil {
+			admitted = state.StepAdmissions.Work[c.stepID]
+		}
+		_, inFlight = state.InFlightSteps[c.stepID]
+		settled = state.CommandExecutions[c.stepID].Status == commandExecutionSettled
+	}
+	c.executor.stateMu.RUnlock()
+	ready := admitted && (!c.afterInFlight || inFlight) && (!c.afterSettlement || settled)
+	if c.startAfter > 0 {
+		for {
+			select {
+			case event := <-c.stepStarts:
+				if event.Type == "step_start" && event.StepID == c.stepID {
+					c.seenStarts.Add(1)
+				}
+			default:
+				ready = ready && int(c.seenStarts.Load()) >= c.startAfter
+				goto observed
+			}
+		}
+	}
+observed:
+	if ready && c.triggered.CompareAndSwap(false, true) {
+		c.wasInFlight.Store(inFlight)
+		c.cancel()
+	}
+	return c.Context.Err()
+}
+
+func TestStepEntryCancellationPersistsNoDispatchProofAndResumes(t *testing.T) {
+	for _, boundary := range []struct {
+		name                   string
+		afterInFlight, foreach bool
+		startAfter             int
+	}{
+		{name: "after admission"},
+		{name: "after in-flight checkpoint", afterInFlight: true},
+		{name: "before kind dispatch", afterInFlight: true, startAfter: 1},
+		{name: "foreach before kind dispatch", afterInFlight: true, foreach: true},
+	} {
+		t.Run(boundary.name, func(t *testing.T) {
+			cfg := DefaultExecutorConfig("step-entry-cancel")
+			cfg.ProjectDir, cfg.RunID = t.TempDir(), GenerateRunID()
+			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "step-entry-cancel", Settings: DefaultWorkflowSettings(), Steps: []Step{
+				{ID: "work", Command: "printf 'once\\n' >> effects; printf resumed"},
+			}}
+			if boundary.foreach {
+				workflow.Steps = []Step{{ID: "batch", Foreach: &ForeachConfig{Items: `["item"]`, Steps: workflow.Steps}}}
+			}
+			frozen, path, err := SnapshotWorkflow(context.Background(), cfg.ProjectDir, workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.WorkflowFile = path
+			step := frozen.Steps[0]
+			if boundary.foreach {
+				step = cloneStep(frozen.Steps[0].Foreach.Steps[0])
+				step.ID = "batch_iter0_work"
+			}
+			executor := NewExecutor(cfg)
+			executor.graph = NewDependencyGraph(frozen)
+			progress := make(chan ProgressEvent, 8)
+			executor.progress = progress
+			now := time.Now()
+			executor.state = &ExecutionState{
+				RunID: cfg.RunID, WorkflowID: frozen.Name, WorkflowFile: path, Session: cfg.Session,
+				Status: StatusRunning, StartedAt: now, UpdatedAt: now,
+				Steps: map[string]StepResult{}, Variables: map[string]interface{}{}, CommandEvaluationVersion: commandEvaluationVersion,
+			}
+			base, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ctx := &stepEntryCancellationContext{Context: base, cancel: cancel, executor: executor, stepID: step.ID,
+				afterInFlight: boundary.afterInFlight, stepStarts: progress, startAfter: boundary.startAfter}
+			var result StepResult
+			if boundary.foreach {
+				result = executor.executeForeachNestedStep(ctx, &step, frozen)
+			} else {
+				result = executor.executeStep(ctx, &step, frozen)
+			}
+			if !ctx.triggered.Load() || ctx.wasInFlight.Load() != ctx.afterInFlight || int(ctx.seenStarts.Load()) != boundary.startAfter {
+				t.Fatalf("cancellation missed the selected entry guard: triggered=%t in-flight=%t", ctx.triggered.Load(), ctx.wasInFlight.Load())
+			}
+			if result.Status != StatusCancelled || result.SkipKind != SkipKindCancelledBeforeDispatch || result.Attempts != 0 || result.AgentType != "" {
+				t.Fatalf("pre-dispatch cancellation lost its affirmative proof: %+v", result)
+			}
+			executor.stateMu.Lock()
+			executor.state.Status = StatusCancelled
+			executor.state.Steps[step.ID] = result
+			executor.stateMu.Unlock()
+			if err := executor.persistState(); err != nil {
+				t.Fatal(err)
+			}
+			prior, err := LoadState(cfg.ProjectDir, cfg.RunID)
+			if err != nil || len(prior.CommandExecutions) != 0 || len(prior.InFlightSteps) != 0 || !resumeCancelledBeforeDispatch(prior, step.ID) {
+				t.Fatalf("saved cancellation cannot safely resume: %+v %v", prior, err)
+			}
+			if effects, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "effects")); !os.IsNotExist(err) {
+				t.Fatalf("cancelled entry dispatched a command: %q %v", effects, err)
+			}
+			final, err := NewExecutor(cfg).Resume(context.Background(), frozen, prior, nil)
+			if err != nil || final.Status != StatusCompleted || final.Steps[step.ID].Output != "resumed" || final.CommandExecutions[step.ID].Status != commandExecutionSettled {
+				t.Fatalf("ordinary resume stranded a proven-undispatched command: %+v %v", final, err)
+			}
+			if effects, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "effects")); err != nil || string(effects) != "once\n" {
+				t.Fatalf("resume did not execute exactly one original command: %q %v", effects, err)
+			}
+		})
+	}
+}
+
+func TestStepEntryCancellationPreservesEarlierAttemptEvidence(t *testing.T) {
+	for _, adapter := range []string{"top-level", "foreach"} {
+		t.Run(adapter, func(t *testing.T) {
+			executor := newCommandTestExecutor(t)
+			executor.state.Session = executor.config.Session
+			step := Step{ID: "work", Command: "printf 'once\\n' >> effects; exit 7", OnError: ErrorActionRetry, RetryCount: 1, RetryDelay: Duration{Duration: time.Millisecond}}
+			workflow := &Workflow{Name: executor.state.WorkflowID, Settings: DefaultWorkflowSettings(), Steps: []Step{step}}
+			executor.graph = NewDependencyGraph(workflow)
+			progress := make(chan ProgressEvent, 8)
+			executor.progress = progress
+			base, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ctx := &stepEntryCancellationContext{Context: base, cancel: cancel, executor: executor, stepID: step.ID, afterInFlight: true}
+			var result StepResult
+			if adapter == "foreach" {
+				ctx.afterSettlement = true
+				result = executor.executeForeachNestedStep(ctx, &step, workflow)
+			} else {
+				ctx.stepStarts, ctx.startAfter = progress, 2
+				result = executor.executeStep(ctx, &step, workflow)
+			}
+			if !ctx.triggered.Load() || result.Status != StatusCancelled || result.SkipKind != SkipKindCancelledBeforeDispatch || result.Attempts != 1 {
+				t.Fatalf("cancelled retry erased its earlier actual attempt: %+v", result)
+			}
+			original, exists := executor.loadCommandExecution(step.ID)
+			if !exists || original.Status != commandExecutionSettled || original.ProcessID <= 0 || original.Result.Status != StatusFailed {
+				t.Fatalf("cancelled retry lost its original native failure: %+v", original)
+			}
+			if effects, err := os.ReadFile(filepath.Join(executor.config.ProjectDir, "effects")); err != nil || string(effects) != "once\n" {
+				t.Fatalf("cancelled retry executed another command: %q %v", effects, err)
+			}
+			executor.state.Steps[step.ID] = result
+			// A later loss of native evidence cannot make the new cancellation
+			// marker authorize replay of the first attempt's real effect.
+			delete(executor.state.CommandExecutions, step.ID)
+			if err := executor.applyResumeOptions(workflow, ResumeOptions{}); err == nil || !strings.Contains(err.Error(), "unresolved launch") {
+				t.Fatalf("earlier attempt became replayable without its receipt: %v", err)
+			}
+		})
+	}
+}
+
+func TestNativeCancellationBeforeStartPersistsSettlementAndResumes(t *testing.T) {
+	executor := newCommandTestExecutor(t)
+	executor.state.Session = executor.config.Session
+	executor.state.CommandEvaluationVersion = commandEvaluationVersion
+	executor.config.DefaultTimeout = -time.Nanosecond
+	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: executor.state.WorkflowID, Settings: DefaultWorkflowSettings(), Steps: []Step{
+		{ID: "work", Command: "printf 'once\\n' >> effects; printf resumed"},
+	}}
+	executor.graph = NewDependencyGraph(workflow)
+	// The parent stays live: only executeCommand's own timeout expires, after
+	// scheduler admission and its kind-dispatch guard have already passed.
+	result := executor.executeStep(context.Background(), &workflow.Steps[0], workflow)
+	original, exists := executor.loadCommandExecution("work")
+	if result.Status != StatusCancelled || !exists || original.Status != commandExecutionSettled || original.ProcessID != 0 || original.Result.Status != StatusCancelled {
+		t.Fatalf("native pre-start cancellation lost its exact no-process receipt: %+v %+v", result, original)
+	}
+	if err := validateCommandExecution("work", original); err != nil {
+		t.Fatalf("native no-process evidence is invalid: %v", err)
+	}
+	if effects, err := os.ReadFile(filepath.Join(executor.config.ProjectDir, "effects")); !os.IsNotExist(err) {
+		t.Fatalf("expired native context started its command: %q %v", effects, err)
+	}
+	executor.state.Status = StatusCancelled
+	executor.state.Steps["work"] = result
+	if err := executor.persistState(); err != nil {
+		t.Fatal(err)
+	}
+	prior, err := LoadState(executor.config.ProjectDir, executor.state.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := executor.config
+	cfg.DefaultTimeout = time.Second
+	final, err := NewExecutor(cfg).Resume(context.Background(), workflow, prior, nil)
+	if err != nil || final.Status != StatusCompleted || final.Steps["work"].Output != "resumed" {
+		t.Fatalf("ordinary resume stranded a proven-unstarted command: %+v %v", final, err)
+	}
+	if effects, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "effects")); err != nil || string(effects) != "once\n" {
+		t.Fatalf("resume did not launch exactly one command: %q %v", effects, err)
+	}
+}
 
 func TestExecuteCommand_GlobalTimeoutCancelsWithPartialOutput(t *testing.T) {
 	e := newCommandTestExecutor(t)

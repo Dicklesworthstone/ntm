@@ -1095,18 +1095,19 @@ func (e *Executor) executeForeachNestedStep(ctx context.Context, step *Step, wor
 	var result StepResult
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		result = e.executeForeachNestedStepOnce(ctx, step, workflow)
+		result.Attempts = attempt
+		if result.Status == StatusCancelled && result.SkipKind == SkipKindCancelledBeforeDispatch {
+			result.Attempts = attempt - 1
+		}
 		if findStepAdmissionError(result.Error) != nil {
-			result.Attempts = attempt
 			return result
 		}
 		if err := e.stepAdmissionFailure(ctx); err != nil {
-			result.Attempts = attempt
 			if result.Status == StatusCompleted && len(step.OnSuccess) > 0 {
 				return stepAdmissionExecutionFailure(result, err)
 			}
 			return result
 		}
-		result.Attempts = attempt
 		if result.Status == StatusCompleted {
 			if err := e.runOnSuccessSteps(ctx, step, workflow); err != nil {
 				return stepAdmissionExecutionFailure(result, err)

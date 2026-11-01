@@ -1440,6 +1440,163 @@ func TestControlledPipelineObservedBackgroundFailureSurvivesNormalShutdown(t *te
 	}
 }
 
+func TestControlledPipelineFatalFailureJoinsSidecarsBeforePostHooks(t *testing.T) {
+	for _, cancelDuringJoin := range []bool{false, true} {
+		name := "post_hooks"
+		if cancelDuringJoin {
+			name = "cancellation_during_join"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			groupTestFile(t, root, "sidecar.sh", `trap 'printf entered > term-entered
+while [ ! -f child-release ]; do sleep 0.01; done
+if [ -f resources-released ]; then printf raced > resource-race; fi
+printf stopped > sidecar-stopped
+exit 0' TERM
+printf '%s' "$$" > sidecar-pid
+printf ready > sidecar-ready
+while :; do sleep 0.01; done
+`)
+			cfg := DefaultExecutorConfig("fatal-post-hooks")
+			cfg.ProjectDir, cfg.RunID = root, "run-fatal-post-hooks"
+			release := "printf released > resources-released; test -f sidecar-stopped && " +
+				"grep -A 2 '\"step_id\": \"sidecar\"' .ntm/pipelines/" + cfg.RunID +
+				".json | grep -q '\"status\": \"settled\"'"
+			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "fatal-post-hooks", Settings: DefaultWorkflowSettings(), Steps: []Step{
+				{ID: "sidecar", Wait: WaitNone, Command: "/bin/sh sidecar.sh </dev/null >/dev/null 2>&1 &"},
+				{ID: "fail", DependsOn: []string{"sidecar"}, OnError: ErrorActionFail,
+					Command: "while [ ! -f fail-release ]; do sleep 0.01; done; exit 17"},
+			}, PostPipelineSteps: []Step{
+				{ID: "post_release", Command: "printf started > post-started; " + release},
+				{ID: "post_sidecar", Wait: WaitNone, Command: "trap 'printf stopped > post-stopped; exit 0' TERM; " +
+					"printf ready > post-ready; while :; do sleep 0.01; done"},
+				{ID: "post_ready", Command: "while [ ! -f post-ready ]; do sleep 0.01; done"},
+			}}
+			workflow.Settings.OnCancel = []Step{
+				{ID: "cancel_release", Command: "printf started > cancel-started; " + release},
+				{ID: "cancel_sidecar", Wait: WaitNone, Command: "sleep 30"},
+			}
+			guard, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			// Two main launches precede every authored cleanup command. Keep
+			// the real child inside its TERM handler while watching this
+			// dispatch boundary, rather than racing a short-lived child.
+			var launches atomic.Int32
+			cleanupStarted := make(chan struct{})
+			ctx := context.WithValue(guard, commandStartedTestHookKey{}, func(int) {
+				if launches.Add(1) == 3 {
+					close(cleanupStarted)
+				}
+			})
+			done := make(chan nestedWaitNoneOutcome, 1)
+			go func() {
+				state, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+				done <- nestedWaitNoneOutcome{state, err}
+				close(done)
+			}()
+			t.Cleanup(func() {
+				_ = os.WriteFile(filepath.Join(root, "child-release"), []byte("finish"), 0600)
+				cancel()
+				select {
+				case <-done:
+				case <-time.After(15 * time.Second):
+					t.Error("fatal-error fixture did not join its command groups")
+				}
+			})
+			awaitCommandCancellationFile(t, filepath.Join(root, "sidecar-ready"), "ready")
+			groupTestFile(t, root, "fail-release", "finish")
+			awaitCommandCancellationFile(t, filepath.Join(root, "term-entered"), "entered")
+			select {
+			case <-cleanupStarted:
+				t.Fatal("authored cleanup started while the cancelled main child still owned its resources")
+			case early := <-done:
+				t.Fatalf("fatal main error returned with its child in the TERM handler: %+v %v", early.state, early.err)
+			case <-time.After(200 * time.Millisecond):
+			}
+
+			if cancelDuringJoin {
+				if err := RequestRunCancellation(guard, root, cfg.RunID); err != nil {
+					t.Fatal(err)
+				}
+				// Cancellation must be checkpointed while the child is still
+				// held, before on_cancel performs its own uninterruptible join.
+				deadline := time.Now().Add(2 * time.Second)
+				for {
+					pending, err := LoadState(root, cfg.RunID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if pending.Status == StatusCancelled && pending.CancelledAt != nil {
+						if pending.CommandExecutions["sidecar"].Status != commandExecutionRunning {
+							t.Fatalf("held child lost its running receipt before cancellation was published: %+v", pending.CommandExecutions["sidecar"])
+						}
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatal("fatal-error join withheld the caller's cancellation checkpoint until child shutdown")
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				select {
+				case <-cleanupStarted:
+					t.Fatal("cancellation cleanup bypassed the still-running TERM handler")
+				default:
+				}
+				if _, err := os.Stat(filepath.Join(root, "cancel-started")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("on_cancel started before the held child stopped: %v", err)
+				}
+			}
+
+			groupTestFile(t, root, "child-release", "finish")
+			var final nestedWaitNoneOutcome
+			select {
+			case final = <-done:
+			case <-guard.Done():
+				t.Fatal("fatal workflow did not finish after child shutdown was released")
+			}
+			wantStatus, phase := StatusFailed, "post"
+			if cancelDuringJoin {
+				wantStatus, phase = StatusCancelled, "cancel"
+			}
+			if final.state == nil || final.state.Status != wantStatus || final.err == nil || !strings.Contains(final.err.Error(), "exit_code=17") {
+				t.Fatalf("main failure lost its original outcome: %+v %v", final.state, final.err)
+			}
+			if got := final.state.Steps[phase+"_release"]; got.Status != StatusCompleted {
+				t.Fatalf("resource release preceded child shutdown or durable receipt reconciliation: %+v", got)
+			}
+			if got := final.state.Steps["fail"]; got.Status != StatusFailed || got.Error == nil || got.Error.Type != "exit" {
+				t.Fatalf("ordinary main exit became a cancellation or cleanup failure: %+v", got)
+			}
+			saved, err := LoadState(root, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range []string{"sidecar", phase + "_sidecar"} {
+				receipt := saved.CommandExecutions[id]
+				if receipt.Status != commandExecutionSettled || receipt.SettledAt.IsZero() || !receipt.Result.RerunOnResume {
+					t.Fatalf("%s escaped main or final supervision: %+v", id, receipt)
+				}
+			}
+			if cancelDuringJoin {
+				if _, err := os.Stat(filepath.Join(root, "post-started")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("interrupted fatal-error join still dispatched post hooks: %v", err)
+				}
+			} else {
+				if saved.CancelledAt != nil {
+					t.Fatal("stopping the failed main scope cancelled the workflow context used by post hooks")
+				}
+				if _, err := os.Stat(filepath.Join(root, "cancel-started")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("ordinary main failure dispatched on_cancel: %v", err)
+				}
+				awaitCommandCancellationFile(t, filepath.Join(root, "post-stopped"), "stopped")
+			}
+			assertNestedWaitNoneDescendantStopped(t, root)
+			if _, err := os.Stat(filepath.Join(root, "resource-race")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("resource release raced the child's graceful shutdown: %v", err)
+			}
+		})
+	}
+}
+
 func TestControlledPipelineNestedWaitNoneSurvivesContainerCompletion(t *testing.T) {
 	for _, shape := range []string{"parallel", "foreach", "foreach_in_parallel", "parallel_in_foreach", "post_pipeline"} {
 		for _, resume := range []bool{false, true} {

@@ -874,6 +874,18 @@ after the container returns; expiry is recorded as a background failure. Moving 
 sidecar into a nested container therefore does not shorten its healthy lifetime
 or remove its cancellation and timeout boundaries.
 
+A fatal main step failure requests cancellation of its main sidecars and joins
+their supervision before running post-pipeline hooks. This lets SIGTERM handlers
+and receipt persistence finish before hooks release resources. The workflow context stays
+live for those hooks; caller cancellation during the wait switches to `on_cancel`
+cleanup. Returned uncertainty still leaves an unresolved receipt and refuses
+replay.
+
+Cancellation before the first execution attempt retains explicit no-dispatch
+evidence. Native commands cancelled before launch retain a settled receipt with
+process ID zero. Ordinary resume can continue this proven-unstarted work; prior
+attempts and unresolved receipts keep their existing replay restrictions.
+
 For a command with `wait: none`, an explicit step `timeout` applies to the
 background process's whole lifetime. Expiry requests normal command cleanup,
 records a timeout outcome, and prevents the final workflow from reporting success.

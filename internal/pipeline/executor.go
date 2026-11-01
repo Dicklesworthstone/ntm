@@ -58,6 +58,7 @@ type commandCancellationScope struct {
 	mu       sync.Mutex
 	retained int
 	finished bool
+	drained  chan struct{}
 }
 
 func withCommandCancellationScope(ctx context.Context, cancel context.CancelFunc) (context.Context, context.CancelFunc) {
@@ -73,6 +74,27 @@ func (scope *commandCancellationScope) finish() {
 	scope.mu.Unlock()
 	if cancel {
 		scope.cancel()
+	}
+}
+
+// wait joins this scope's cleanup workers after its foreground scheduler has
+// stopped admitting commands. Caller cancellation hands control back to normal
+// finalization so it can checkpoint cancellation before its final cleanup join.
+// Returning from supervision does not imply that every receipt is settled.
+func (scope *commandCancellationScope) wait(ctx context.Context) {
+	scope.mu.Lock()
+	if scope.retained == 0 {
+		scope.mu.Unlock()
+		return
+	}
+	if scope.drained == nil {
+		scope.drained = make(chan struct{})
+	}
+	drained := scope.drained
+	scope.mu.Unlock()
+	select {
+	case <-drained:
+	case <-ctx.Done():
 	}
 }
 
@@ -93,6 +115,10 @@ func retainCommandCancellationScopes(ctx context.Context) context.CancelFunc {
 			for _, scope := range scopes {
 				scope.mu.Lock()
 				scope.retained--
+				if scope.retained == 0 && scope.drained != nil {
+					close(scope.drained)
+					scope.drained = nil
+				}
 				cancel := scope.finished && scope.retained == 0
 				scope.mu.Unlock()
 				if cancel {
@@ -1040,6 +1066,13 @@ scheduler:
 
 	if fatalErr != nil {
 		cancelSteps()
+		// Fatal main failures have requested sidecar cancellation. Finish
+		// supervision before post hooks release resources still used
+		// by TERM handlers. Healthy runs retain sidecars through post hooks.
+		// Use the live workflow context so actual cancellation can proceed
+		// to its existing checkpoint-before-join path without another
+		// WaitGroup waiter racing commands started by authored cleanup.
+		stepCtx.Value(commandCancellationScopeKey{}).(*commandCancellationScope).wait(ctx)
 	}
 	return fatalErr
 }
@@ -1060,12 +1093,20 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 		Attempts:  0,
 	}
 	if e.stopBeforeDispatch(ctx, &result) {
+		if result.Status == StatusCancelled {
+			// No kind executor has run. Preserve that affirmative evidence
+			// without weakening resume's independent launch-receipt checks.
+			result.SkipKind = SkipKindCancelledBeforeDispatch
+		}
 		return result
 	}
 	e.markStepInFlight(step.ID, stepKind(step), -1)
 	e.persistState()
 	defer e.clearStepInFlight(step.ID)
 	if e.stopBeforeDispatch(ctx, &result) {
+		if result.Status == StatusCancelled {
+			result.SkipKind = SkipKindCancelledBeforeDispatch
+		}
 		return result
 	}
 
@@ -1132,15 +1173,21 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 
 		// Execute the step
 		stepResult := e.executeStepOnce(ctx, step, workflow)
+		startedAttempts := attempt
+		if stepResult.Status == StatusCancelled && stepResult.SkipKind == SkipKindCancelledBeforeDispatch {
+			// This attempt never entered its kind executor. Keep any
+			// earlier attempts visible to the missing-receipt fence.
+			startedAttempts--
+		}
 		if findStepAdmissionError(stepResult.Error) != nil {
-			stepResult.Attempts = attempt
+			stepResult.Attempts = startedAttempts
 			return stepResult
 		}
 		if err := e.stepAdmissionFailure(ctx); err != nil {
 			// A sibling or descendant can exhaust capacity after this body
 			// finishes. Preserve its original completion/uncertainty evidence;
 			// the sticky attempt error stops scheduling and fails the run.
-			stepResult.Attempts = attempt
+			stepResult.Attempts = startedAttempts
 			if stepResult.Status == StatusCompleted && len(step.OnSuccess) > 0 {
 				return stepAdmissionExecutionFailure(stepResult, err)
 			}
@@ -1171,7 +1218,7 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 
 		if stepResult.Status == StatusCancelled {
 			result = stepResult
-			result.Attempts = attempt
+			result.Attempts = startedAttempts
 			if result.FinishedAt.IsZero() {
 				result.FinishedAt = time.Now()
 			}
@@ -1297,6 +1344,9 @@ func (e *Executor) executeStepOnce(ctx context.Context, step *Step, workflow *Wo
 		StartedAt: time.Now(),
 	}
 	if e.stopBeforeDispatch(ctx, &result) {
+		if result.Status == StatusCancelled {
+			result.SkipKind = SkipKindCancelledBeforeDispatch
+		}
 		return result
 	}
 
@@ -1683,9 +1733,6 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		waitCondition = WaitCompletion
 	}
 
-	if e.stopBeforeDispatch(cmdCtx, &result) {
-		return result
-	}
 	record := CommandExecutionState{
 		Version: commandExecutionVersion, StepID: step.ID, StepHash: stepHash,
 		Status: commandExecutionStarting, Background: waitCondition == WaitNone,
