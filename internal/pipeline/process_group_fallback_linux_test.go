@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +32,7 @@ func TestCommandGroupFallbackKernelFailures(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, exe, "-test.run=^TestCommandGroupFallbackHelper$", "-test.v")
+			cmd.Stdin = strings.NewReader("")
 			cmd.Env = append(os.Environ(), "NTM_GROUP_FALLBACK_HELPER="+mode)
 			configureCommandProcessGroup(cmd)
 			output, err := cmd.CombinedOutput()
@@ -74,9 +76,10 @@ func TestCommandGroupFallbackHelper(t *testing.T) {
 	}
 	if mode == "normal-signals-denied" {
 		cmd := exec.Command("sh", "-c", "printf done")
+		cmd.Stdin = strings.NewReader("")
 		configureCommandProcessGroup(cmd)
 		capture := newCappedWriter(64)
-		cmd.Stdout = capture
+		cmd.Stdout, cmd.Stderr = capture, capture
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -143,6 +146,7 @@ func fallbackTestAssertAlive(t *testing.T, cmd *exec.Cmd) {
 func fallbackTestStartProcess(t *testing.T, group int) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command("sleep", "60")
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = strings.NewReader(""), io.Discard, io.Discard
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: group}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -258,9 +262,9 @@ func fallbackTestBoundedWait(t *testing.T, mode string) {
 	cmd := exec.Command("/bin/sh", "-c", "printf ready; exec sleep 12")
 	var releasePath string
 	if mode == "wait-observe-pipes" {
-		// The leader exits naturally; its child writes only after the waiter
-		// has returned. Closing its output on failed observation would lose
-		// the late bytes or deliver SIGPIPE to otherwise healthy work.
+		// The leader exits naturally; its child writes after observation has
+		// failed beyond the original retry window. Closing its output on
+		// failed observation would lose bytes or deliver SIGPIPE to healthy work.
 		cmd = exec.Command("/bin/sh", "-c", `(
 i=0
 while [ ! -f release ] && [ "$i" -lt 1200 ]; do
@@ -273,6 +277,7 @@ printf ready
 		cmd.Dir = t.TempDir()
 		releasePath = filepath.Join(cmd.Dir, "release")
 	}
+	cmd.Stdin = strings.NewReader("")
 	configureCommandProcessGroup(cmd)
 	cmd.WaitDelay = 0 // The waiter must also bound callers without pipe setup.
 	capture := newCappedWriter(64)
@@ -281,6 +286,10 @@ printf ready
 		t.Fatal(err)
 	}
 	process := cmd.Process
+	hasHandle := false
+	if err := process.WithHandle(func(uintptr) { hasHandle = true }); err != nil && !errors.Is(err, os.ErrNoHandle) {
+		t.Fatal(err)
+	}
 	waitStarted := false
 	defer func() {
 		if releasePath != "" {
@@ -343,6 +352,30 @@ printf ready
 		ctx, cancel = context.WithTimeout(ctx, 20*time.Millisecond)
 		defer cancel()
 	}
+	healthyObservation := hasHandle && (mode == "wait-observe" || mode == "wait-observe-only" || mode == "wait-observe-pipes")
+	var releaseErr <-chan error
+	if healthyObservation {
+		// A permanent syscall fault must keep healthy work supervised beyond
+		// the old retry + final-reaper timeout. Only this independent execution
+		// deadline may request cancellation, which must still finish promptly.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 2*commandPipeDrainTimeout)
+		defer cancel()
+		if mode == "wait-observe-pipes" {
+			released := make(chan error, 1)
+			releaseErr = released
+			go func() {
+				timer := time.NewTimer(commandPipeDrainTimeout)
+				defer timer.Stop()
+				select {
+				case <-timer.C:
+					released <- os.WriteFile(releasePath, []byte("finish"), 0600)
+				case <-ctx.Done():
+					released <- ctx.Err()
+				}
+			}()
+		}
+	}
 	start := time.Now()
 	waitStarted = true
 	result := waitCommandWithProcessGroupCleanup(ctx, cmd)
@@ -352,12 +385,31 @@ printf ready
 	if elapsed > commandCancelGracePeriod+5*commandPipeDrainTimeout {
 		t.Fatalf("cleanup exceeded its budget: elapsed=%v result=%+v", elapsed, result)
 	}
-	if result.Settled || !errors.Is(result.Err, syscall.EPERM) ||
-		!strings.Contains(result.Err.Error(), "did not finish waiting after cleanup") {
+	if result.Settled || !errors.Is(result.Err, syscall.EPERM) {
 		t.Fatalf("failed shutdown did not retain an unresolved outcome: %+v", result)
+	}
+	if healthyObservation && !result.Cancelled {
+		t.Fatalf("inspection failure ended healthy supervision before its deadline: elapsed=%v result=%+v", elapsed, result)
 	}
 	if result.Cancelled != (ctx.Err() != nil) || (ctx.Err() != nil && !errors.Is(result.Err, ctx.Err())) {
 		t.Fatalf("lost cancellation or deadline cause: %+v context=%v", result, ctx.Err())
+	}
+	if healthyObservation && mode != "wait-observe" {
+		wantOutput := "ready"
+		if mode == "wait-observe-pipes" {
+			if err := <-releaseErr; err != nil {
+				t.Fatalf("release healthy descendant: %v", err)
+			}
+			wantOutput += "after"
+		}
+		if result.SignalSent != "SIGTERM" || capture.String() != wantOutput || !capture.outputCaptureComplete() {
+			t.Fatalf("cancellation lost preserved output or exceeded leader-only cleanup: result=%+v output=%q EOF=%t", result, capture.String(), capture.outputCaptureComplete())
+		}
+		t.Logf("%s retained healthy supervision until its deadline, then returned unresolved in %v", mode, elapsed)
+		return
+	}
+	if !strings.Contains(result.Err.Error(), "did not finish waiting after cleanup") {
+		t.Fatalf("failed final wait did not retain its cause: %+v", result)
 	}
 	if mode == "wait-observe-pipes" {
 		if capture.String() != "ready" || capture.outputCaptureComplete() {
@@ -579,9 +631,10 @@ func TestCommandGroupFallbackPreservesNormalLifecycle(t *testing.T) {
 			if cancelled {
 				cmd = exec.Command("sleep", "60")
 			}
+			cmd.Stdin = strings.NewReader("")
 			configureCommandProcessGroup(cmd)
 			capture := newCappedWriter(64)
-			cmd.Stdout = capture
+			cmd.Stdout, cmd.Stderr = capture, capture
 			if err := cmd.Start(); err != nil {
 				t.Fatal(err)
 			}
@@ -1209,6 +1262,136 @@ func TestCommandGroupCensusRequiresMatchingPIDNamespace(t *testing.T) {
 	}
 }
 
+func requireCommandPIDFDObservation(t *testing.T) {
+	t.Helper()
+	cmd := fallbackTestStartProcess(t, 0)
+	var observationErr error
+	handleErr := cmd.Process.WithHandle(func(handle uintptr) {
+		observationErr = observeCommandExitID(unix.P_PIDFD, int(handle), syscall.WNOHANG)
+	})
+	if errors.Is(handleErr, os.ErrNoHandle) || errors.Is(observationErr, syscall.ENOSYS) || errors.Is(observationErr, syscall.EINVAL) {
+		t.Skip("kernel does not provide identity-stable non-reaping process observation")
+	}
+	if handleErr != nil || observationErr != errCommandLeaderRunning {
+		t.Fatalf("observe running child through original pidfd: handle=%v observation=%v", handleErr, observationErr)
+	}
+	fallbackTestStopProcess(cmd)
+}
+
+func TestCommandLeaderObservationUsesOriginalHandle(t *testing.T) {
+	requireCommandPIDFDObservation(t)
+	leader := fallbackTestStartProcess(t, 0)
+	other := fallbackTestStartProcess(t, 0)
+	originalPID := leader.Process.Pid
+	defer func() { leader.Process.Pid = originalPID }()
+	if err := leader.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	// Substitute a live child's PID while retaining the original handle.
+	if err := observeCommandExit(originalPID, 0); err != nil {
+		t.Fatal(err)
+	}
+	leader.Process.Pid = other.Process.Pid
+	if err := observeCommandExitWithRetry(context.Background(), leader.Process); err != nil {
+		t.Fatalf("numeric identity replaced the original exited leader: %v", err)
+	}
+	fallbackTestAssertAlive(t, other)
+	// Reaping must not permit fallback to the unrelated child.
+	if err := leader.Wait(); err == nil {
+		t.Fatal("killed leader unexpectedly exited successfully")
+	}
+	probes := 0
+	ctx := context.WithValue(context.Background(), commandLeaderObservationTestHookKey{}, func(int) error {
+		probes++
+		return errCommandLeaderRunning
+	})
+	if err := observeCommandExitWithRetry(ctx, leader.Process); err == nil || err == errCommandLeaderRunning || probes != 0 {
+		t.Fatalf("lost original handle resumed numeric probing: error=%v probes=%d", err, probes)
+	}
+	fallbackTestAssertAlive(t, other)
+}
+
+func TestCommandLeaderObservationRecoveryBudgetStartsOnCancellation(t *testing.T) {
+	for _, deadline := range []bool{false, true} {
+		t.Run(fmt.Sprintf("deadline_%t", deadline), func(t *testing.T) {
+			const healthyWindow = 2 * commandLeaderObservationRetryTimeout
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			started := time.Now()
+			if deadline {
+				var stop context.CancelFunc
+				ctx, stop = context.WithDeadline(ctx, started.Add(healthyWindow))
+				defer stop()
+			}
+			var cancelledAt time.Time
+			err := retryCommandLeaderObservation(ctx, 42, true, func() error {
+				if !deadline && time.Since(started) >= healthyWindow && ctx.Err() == nil {
+					cancelledAt = time.Now()
+					cancel()
+				}
+				if ctx.Err() != nil {
+					// Preserve the original failure and unknown ownership.
+					return ctx.Err()
+				}
+				return syscall.EIO
+			})
+			if deadline {
+				cancelledAt = started.Add(healthyWindow)
+			}
+			if ctx.Err() == nil || err == ctx.Err() || !errors.Is(err, ctx.Err()) || !errors.Is(err, syscall.EIO) {
+				t.Fatalf("unknown observation bypassed cancellation recovery or lost its cause: %v context=%v", err, ctx.Err())
+			}
+			if elapsed := time.Since(cancelledAt); cancelledAt.IsZero() || elapsed < commandLeaderObservationRetryTimeout || elapsed > commandLeaderObservationRetryTimeout+time.Second {
+				t.Fatalf("observation recovery did not retain its independent cancellation budget: %v", elapsed)
+			}
+		})
+	}
+}
+
+func TestCommandLeaderObservationUnsupportedIdentityRemainsBounded(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stable bool
+		cause  error
+	}{
+		{name: "numeric process only", cause: syscall.EIO},
+		{name: "pidfd wait unsupported", stable: true, cause: syscall.EINVAL},
+		{name: "waitid unsupported", stable: true, cause: syscall.ENOSYS},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			started := time.Now()
+			err := retryCommandLeaderObservation(context.Background(), 42, tc.stable, func() error { return tc.cause })
+			if !errors.Is(err, tc.cause) {
+				t.Fatalf("unsupported identity observation lost its cause: %v", err)
+			}
+			if elapsed := time.Since(started); elapsed < commandLeaderObservationRetryTimeout || elapsed > commandLeaderObservationRetryTimeout+time.Second {
+				t.Fatalf("unsupported identity escaped conservative retry bound: %v", elapsed)
+			}
+		})
+	}
+}
+
+func TestCommandLeaderObservationLostIdentityEndsRetries(t *testing.T) {
+	for _, cause := range []error{syscall.ECHILD, syscall.ESRCH} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			probes := 0
+			err := retryCommandLeaderObservation(context.Background(), 42, true, func() error {
+				probes++
+				if probes == 1 {
+					return syscall.EIO
+				}
+				if probes == 2 {
+					return cause
+				}
+				return errCommandLeaderRunning
+			})
+			if probes != 2 || !errors.Is(err, cause) || !errors.Is(err, syscall.EIO) {
+				t.Fatalf("definite ownership loss retried a reusable PID or erased the earlier failure: error=%v probes=%d", err, probes)
+			}
+		})
+	}
+}
+
 func TestCommandLeaderObservationRetriesPreserveHealthyWork(t *testing.T) {
 	for _, failAt := range []int{1, 2} {
 		t.Run(fmt.Sprintf("probe_%d", failAt), func(t *testing.T) {
@@ -1236,6 +1419,78 @@ func TestCommandLeaderObservationRetriesPreserveHealthyWork(t *testing.T) {
 	}
 }
 
+func TestCommandLeaderProlongedObservationRecoveryPreservesHealthyWork(t *testing.T) {
+	requireCommandPIDFDObservation(t)
+	for _, failAt := range []int{1, 2} {
+		t.Run(fmt.Sprintf("probe_%d", failAt), func(t *testing.T) {
+			dir := t.TempDir()
+			input, release, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = input.Close(); _ = release.Close() })
+			cmd := exec.Command("/bin/sh", "-c", `trap 'printf signalled > signalled; exit 17' TERM
+printf ready-
+printf ready > ready
+read release
+printf complete > effect
+printf complete
+`)
+			cmd.Dir, cmd.Stdin = dir, input
+			capture := newCappedWriter(64)
+			cmd.Stdout, cmd.Stderr = capture, capture
+			configureCommandProcessGroup(cmd)
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			handedToWait := false
+			t.Cleanup(func() {
+				_ = release.Close()
+				_ = cmd.Process.Kill()
+				if !handedToWait {
+					_ = cmd.Wait()
+				}
+			})
+			awaitGroupTestFile(t, filepath.Join(dir, "ready"))
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			calls, recovered := 0, false
+			var failedAt time.Time
+			const outage = commandLeaderObservationRetryTimeout + commandPipeDrainTimeout + 2*commandGroupPollInterval
+			ctx = context.WithValue(ctx, commandLeaderObservationTestHookKey{}, func(pid int) error {
+				calls++
+				if calls >= failAt && !recovered {
+					if failedAt.IsZero() {
+						failedAt = time.Now()
+					}
+					if time.Since(failedAt) < outage {
+						return syscall.EIO
+					}
+					recovered = true
+					if _, err := release.WriteString("finish\n"); err != nil {
+						return fmt.Errorf("release healthy command after observation recovery: %w", err)
+					}
+				}
+				return observeCommandExit(pid, syscall.WNOHANG)
+			})
+			handedToWait = true
+			result := waitCommandWithProcessGroupCleanup(ctx, cmd)
+			if result.Err != nil || result.Cancelled || !result.Settled || result.SignalSent != "" || !recovered {
+				t.Fatalf("prolonged observation failure abandoned healthy command supervision: %+v recovered=%t", result, recovered)
+			}
+			if capture.String() != "ready-complete" || !capture.outputCaptureComplete() {
+				t.Fatalf("late observation recovery lost output: %q EOF=%t", capture.String(), capture.outputCaptureComplete())
+			}
+			if data, err := os.ReadFile(filepath.Join(dir, "effect")); err != nil || string(data) != "complete" {
+				t.Fatalf("healthy command did not complete its effect: %q %v", data, err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "signalled")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("observation uncertainty signalled healthy work: %v", err)
+			}
+		})
+	}
+}
+
 func TestCommandLeaderObservationRetriesRetainGroupCancellation(t *testing.T) {
 	for _, failAt := range []int{1, 2} {
 		t.Run(fmt.Sprintf("probe_%d", failAt), func(t *testing.T) {
@@ -1245,7 +1500,7 @@ printf '%s' "$$" > child.pid
 i=0
 while [ "$i" -lt 12 ]; do i=$((i+1)); sleep 1; done
 `)
-			cmd := startGroupTestCommand(t, dir, `trap 'exit 0' TERM; /bin/sh child.sh >/dev/null 2>&1 & wait`)
+			cmd := startGroupTestCommand(t, dir, `trap 'exit 0' TERM; /bin/sh child.sh >child.output 2>&1 & wait`)
 			child, err := os.FindProcess(waitForPIDFile(t, filepath.Join(dir, "child.pid")))
 			if err != nil {
 				t.Fatal(err)
@@ -1282,7 +1537,7 @@ func TestCommandLeaderObservationFailureCannotAuthorizeGroupCancellation(t *test
 	groupTestFile(t, dir, "child.sh", `printf '%s' "$$" > child.pid
 exec sleep 12
 `)
-	cmd := startGroupTestCommand(t, dir, `/bin/sh child.sh >/dev/null 2>&1 & wait`)
+	cmd := startGroupTestCommand(t, dir, `/bin/sh child.sh >child.output 2>&1 & wait`)
 	childPID := waitForPIDFile(t, filepath.Join(dir, "child.pid"))
 	child, err := os.FindProcess(childPID)
 	if err != nil {
@@ -1341,6 +1596,7 @@ read release
 printf natural > complete
 `)
 				cmd.Dir, cmd.Stdin = dir, input
+				cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
 				configureCommandProcessGroup(cmd)
 				if err := cmd.Start(); err != nil {
 					t.Fatal(err)
@@ -1499,6 +1755,7 @@ printf ready > ready
 while :; do sleep 0.01; done
 `)
 			cmd.Dir = dir
+			cmd.Stdin = strings.NewReader("")
 			capture := newCappedWriter(64)
 			cmd.Stdout, cmd.Stderr = capture, capture
 			configureCommandProcessGroup(cmd)

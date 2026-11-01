@@ -66,13 +66,13 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	}
 	// Detect unsupported waitid or an externally reaped child before sending
 	// any numeric group signal. A live or exited child remains unreaped.
-	if err := observeCommandExitWithRetry(ctx, cmd.Process.Pid); err != nil && err != errCommandLeaderRunning {
+	if err := observeCommandExitWithRetry(ctx, cmd.Process); err != nil && err != errCommandLeaderRunning {
 		return reap(cleanupCommandAfterObservationFailure(ctx, cmd, err))
 	}
 	// A blocking waitid goroutine cannot be canceled if SIGKILL is denied
 	// or the leader is stuck in uninterruptible I/O. Poll without reaping so
 	// cancellation never has to join an unbounded exit observer.
-	observationErr := waitCommandLeaderExit(ctx, cmd.Process.Pid)
+	observationErr := waitCommandLeaderExit(ctx, cmd.Process)
 	if observationErr != nil && observationErr != context.Canceled && observationErr != context.DeadlineExceeded {
 		return reap(cleanupCommandAfterObservationFailure(ctx, cmd, observationErr))
 	}
@@ -218,9 +218,13 @@ func cancelCommandLeaderWithHandle(fd int, grace time.Duration, ops commandLeade
 // preserving waitability. Use x/sys's architecture-specific siginfo layout;
 // a successful WNOHANG syscall alone does not prove that the child exited.
 func observeCommandExit(pid int, extraFlags int) error {
+	return observeCommandExitID(unix.P_PID, pid, extraFlags)
+}
+
+func observeCommandExitID(idType, id, extraFlags int) error {
 	var info unix.Siginfo
 	for {
-		err := unix.Waitid(unix.P_PID, pid, &info, unix.WEXITED|unix.WNOWAIT|extraFlags, nil)
+		err := unix.Waitid(idType, id, &info, unix.WEXITED|unix.WNOWAIT|extraFlags, nil)
 		if errors.Is(err, syscall.EINTR) {
 			continue
 		}
@@ -238,37 +242,80 @@ const commandLeaderObservationRetryTimeout = 250 * time.Millisecond
 
 type commandLeaderObservationTestHookKey struct{}
 
-// Retain the leader while retrying a failed non-reaping probe. Even when the
-// caller cancels during these bounded retries, recovering waitability permits
-// ordinary owned-group cleanup. Reaping on the first fault would permanently
-// surrender that authority and leave subsequent cancellation unable to stop
-// descendants. ECHILD/ESRCH are different: ownership was lost, and probing the
-// same numeric PID again could observe a different process after reuse.
-func observeCommandExitWithRetry(ctx context.Context, pid int) error {
-	observe := func(pid int) error { return observeCommandExit(pid, syscall.WNOHANG) }
-	if hook, ok := ctx.Value(commandLeaderObservationTestHookKey{}).(func(int) error); ok && hook != nil {
-		observe = hook
+// Retain the original leader through a failed non-reaping probe. A pidfd keeps
+// retries bound to that process even if an external reaper masks ownership loss
+// during the outage. A healthy command retains supervision until observation
+// recovers or its execution context ends. Cancellation then grants one bounded
+// recovery interval before falling back to leader-only handle cleanup.
+// Without a stable handle, retain the short conservative numeric retry budget.
+func observeCommandExitWithRetry(ctx context.Context, process *os.Process) error {
+	var observationErr error
+	handleErr := process.WithHandle(func(handle uintptr) {
+		observationErr = retryCommandLeaderObservation(ctx, process.Pid, true, func() error {
+			return observeCommandExitID(unix.P_PIDFD, int(handle), syscall.WNOHANG)
+		})
+	})
+	if handleErr == nil {
+		return observationErr
 	}
-	observationErr := observe(pid)
+	if !errors.Is(handleErr, os.ErrNoHandle) {
+		return fmt.Errorf("observe command leader %d handle: %w", process.Pid, handleErr)
+	}
+	return retryCommandLeaderObservation(ctx, process.Pid, false, func() error {
+		return observeCommandExit(process.Pid, syscall.WNOHANG)
+	})
+}
+
+func retryCommandLeaderObservation(ctx context.Context, pid int, stableHandle bool, observe func() error) error {
+	if hook, ok := ctx.Value(commandLeaderObservationTestHookKey{}).(func(int) error); ok && hook != nil {
+		observe = func() error { return hook(pid) }
+	}
+	observationErr := observe()
 	if observationErr == nil || observationErr == errCommandLeaderRunning {
 		return observationErr
 	}
+	firstObservationErr := observationErr
+	failure := func() error {
+		if errors.Is(observationErr, firstObservationErr) {
+			return observationErr
+		}
+		return errors.Join(firstObservationErr, observationErr)
+	}
 	ticker := time.NewTicker(commandGroupPollInterval)
 	defer ticker.Stop()
-	deadline := time.NewTimer(commandLeaderObservationRetryTimeout)
-	defer deadline.Stop()
+	var deadline *time.Timer
+	var deadlineC <-chan time.Time
+	cancelled := ctx.Done()
+	defer func() {
+		if deadline != nil {
+			deadline.Stop()
+		}
+	}()
 	for {
 		if errors.Is(observationErr, syscall.ECHILD) || errors.Is(observationErr, syscall.ESRCH) {
-			return fmt.Errorf("command leader %d is no longer waitable: %w", pid, observationErr)
+			return fmt.Errorf("command leader %d is no longer waitable: %w", pid, failure())
+		}
+		if deadline == nil && (!stableHandle || ctx.Err() != nil ||
+			errors.Is(observationErr, syscall.EINVAL) || errors.Is(observationErr, syscall.ENOSYS)) {
+			// Unsupported pidfd observation cannot silently switch to an
+			// unbounded numeric probe. The same bound keeps explicit
+			// cancellation effective when observation never recovers.
+			deadline = time.NewTimer(commandLeaderObservationRetryTimeout)
+			deadlineC = deadline.C
+			cancelled = nil
 		}
 		select {
-		case <-deadline.C:
+		case <-deadlineC:
 			// Always wrap observation failures. Only waitCommandLeaderExit's
 			// direct context error may enter group cancellation without a new
 			// successful probe; an error wrapping cancellation is no proof.
-			return fmt.Errorf("observe command leader %d after bounded retries: %w", pid, observationErr)
+			return fmt.Errorf("observe command leader %d after bounded retries: %w", pid, failure())
+		case <-cancelled:
+			// Arm the independent recovery budget on the next iteration.
+			// Returning ctx.Err here would discard unknown ownership and
+			// incorrectly authorize numeric process-group cancellation.
 		case <-ticker.C:
-			observationErr = observe(pid)
+			observationErr = observe()
 			if observationErr == nil || observationErr == errCommandLeaderRunning {
 				return observationErr
 			}
@@ -276,14 +323,14 @@ func observeCommandExitWithRetry(ctx context.Context, pid int) error {
 	}
 }
 
-func waitCommandLeaderExit(ctx context.Context, pid int) error {
+func waitCommandLeaderExit(ctx context.Context, process *os.Process) error {
 	ticker := time.NewTicker(commandGroupPollInterval)
 	defer ticker.Stop()
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := observeCommandExitWithRetry(ctx, pid); err != errCommandLeaderRunning {
+		if err := observeCommandExitWithRetry(ctx, process); err != errCommandLeaderRunning {
 			return err
 		}
 		select {

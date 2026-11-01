@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -183,6 +184,156 @@ printf child
 			}
 			if data, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(data) != "once\n" {
 				t.Fatalf("receipt reconciliation repeated producer effects: %q %v", data, err)
+			}
+		})
+	}
+}
+
+func TestControlledPipelineLeaderObservationRecoveryKeepsOwnershipAndReceipts(t *testing.T) {
+	requireCommandPIDFDObservation(t)
+	for _, background := range []bool{false, true} {
+		t.Run(fmt.Sprintf("background_%t", background), func(t *testing.T) {
+			root := t.TempDir()
+			groupTestFile(t, root, "child.sh", `trap 'printf signalled > child.signalled; exit 19' TERM
+printf ready > child.ready
+while [ ! -f child.release ]; do sleep 0.01; done
+printf complete > child.effect
+printf child-
+`)
+			work := Step{ID: "work", Command: "printf 'once\\n' >> launches; /bin/sh child.sh & wait; printf leader"}
+			if background {
+				work.Wait = WaitNone
+			}
+			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "leader-recovery", Settings: DefaultWorkflowSettings(), Steps: []Step{
+				work,
+				{ID: "consume", DependsOn: []string{work.ID}, Command: "printf started > consume.started; while [ ! -f consume.release ]; do sleep 0.01; done; test -f resume-allowed || exit 7; printf consumed"},
+			}}
+			cfg := DefaultExecutorConfig("leader-recovery")
+			cfg.ProjectDir, cfg.RunID = root, "run-leader-recovery"
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			var target atomic.Int64
+			ctx = context.WithValue(ctx, commandStartedTestHookKey{}, func(pid int) { target.CompareAndSwap(0, int64(pid)) })
+			var recovered atomic.Bool
+			outageHeld := make(chan struct{})
+			var outageStarted time.Time
+			announced := false // Accessed only by the target command's waiter.
+			fault := errors.New("injected leader observation outage beyond the old retry and reaper budgets")
+			ctx = context.WithValue(ctx, commandLeaderObservationTestHookKey{}, func(pid int) error {
+				if int64(pid) != target.Load() || recovered.Load() {
+					return observeCommandExit(pid, syscall.WNOHANG)
+				}
+				if outageStarted.IsZero() {
+					outageStarted = time.Now()
+				}
+				if !announced && time.Since(outageStarted) > commandLeaderObservationRetryTimeout+commandPipeDrainTimeout+2*commandGroupPollInterval {
+					announced = true
+					close(outageHeld)
+				}
+				return fault
+			})
+			type outcome struct {
+				state *ExecutionState
+				err   error
+			}
+			done := make(chan outcome, 1)
+			go func() {
+				state, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+				done <- outcome{state, err}
+				close(done)
+			}()
+			t.Cleanup(func() {
+				recovered.Store(true)
+				_ = os.WriteFile(filepath.Join(root, "child.release"), []byte("finish"), 0600)
+				_ = os.WriteFile(filepath.Join(root, "consume.release"), []byte("finish"), 0600)
+				cancel()
+				select {
+				case <-done:
+				case <-time.After(commandCancelGracePeriod + commandSettlementRecoveryTimeout + 4*commandPipeDrainTimeout):
+					t.Error("leader-observation recovery did not join its command cleanup")
+				}
+			})
+			awaitGroupTestFile(t, filepath.Join(root, "child.ready"))
+			select {
+			case <-outageHeld:
+			case early := <-done:
+				t.Fatalf("leader inspection failure abandoned healthy work: %+v %v", early.state, early.err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("leader inspection stopped retrying while healthy work remained owned")
+			}
+			prior, err := LoadState(root, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pending := prior.CommandExecutions[work.ID]
+			if pending.Status != commandExecutionRunning || !pending.SettledAt.IsZero() || pending.ProcessID != int(target.Load()) {
+				t.Fatalf("healthy leader outage prematurely ended its receipt: %+v", pending)
+			}
+			for _, name := range []string{"child.signalled", "child.effect"} {
+				if _, err := os.Stat(filepath.Join(root, name)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("inspection failure advanced or terminated gated work (%s): %v", name, err)
+				}
+			}
+			if !background {
+				if _, err := os.Stat(filepath.Join(root, "consume.started")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("leader uncertainty dispatched foreground dependents: %v", err)
+				}
+			}
+			owner, err := AcquireRunControl(context.Background(), root, cfg.RunID)
+			if owner != nil {
+				owner.Close()
+				t.Fatal("healthy leader outage released exclusive run ownership")
+			}
+			if !errors.Is(err, ErrRunAlreadyOwned) {
+				t.Fatalf("unexpected ownership error during leader recovery: %v", err)
+			}
+			recovered.Store(true)
+			groupTestFile(t, root, "child.release", "finish")
+			settled := false
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				prior, err = LoadState(root, cfg.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if prior.CommandExecutions[work.ID].Status == commandExecutionSettled {
+					settled = true
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			receipt := prior.CommandExecutions[work.ID]
+			if !settled || receipt.SettledAt.IsZero() || receipt.ProcessID != pending.ProcessID ||
+				receipt.Result.Status != StatusCompleted || receipt.Result.Error != nil || receipt.Background != background {
+				t.Fatalf("recovered leader observation stranded or corrupted its receipt: %+v", receipt)
+			}
+			if !background && receipt.Result.Output != "child-leader" {
+				t.Fatalf("leader recovery lost captured descendant output: %q", receipt.Result.Output)
+			}
+			if string(awaitGroupTestFile(t, filepath.Join(root, "child.effect"))) != "complete" {
+				t.Fatal("healthy child did not finish its work after observation recovered")
+			}
+			groupTestFile(t, root, "consume.release", "finish")
+			var initial outcome
+			select {
+			case initial = <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("settled leader recovery did not release the run")
+			}
+			if initial.err == nil || initial.state == nil || initial.state.Status != StatusFailed ||
+				initial.state.Steps["consume"].Error == nil || initial.state.Steps["consume"].Error.Type != "exit" {
+				t.Fatalf("run did not reach the intentional downstream failure: %+v %v", initial.state, initial.err)
+			}
+			prior, err = LoadState(root, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			groupTestFile(t, root, "resume-allowed", "continue")
+			final, err := NewExecutor(cfg).Resume(context.Background(), workflow, prior, nil)
+			if err != nil || final.Status != StatusCompleted || final.Steps["consume"].Output != "consumed" {
+				t.Fatalf("ordinary resume could not use the recovered receipt: %+v %v", final, err)
+			}
+			if data, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(data) != "once\n" {
+				t.Fatalf("leader recovery replayed healthy command effects: %q %v", data, err)
 			}
 		})
 	}

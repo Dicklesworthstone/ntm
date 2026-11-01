@@ -818,9 +818,14 @@ foreground, background, or selector receipt before the run returns. A confirmed
 live group or failed final signal keeps the original cleanup budget. A complete
 quiet-group observation and complete output capture are both required for a
 `settled` receipt.
-Linux also retries transient leader-observation failures for up to 250 ms before
-giving up ownership. An explicit loss of child ownership ends observation and
-signalling immediately; a saved numeric PID cannot authorize a later signal.
+Linux observes the original leader through its stable pidfd when supported.
+Transient leader-observation failures then retain supervision within the existing
+execution deadline, so later recovery can still settle the receipt. Cancellation
+allows a separate 250 ms of observation recovery before falling back to leader
+cleanup. A system without a stable handle or pidfd-based wait support retains the
+bounded 250 ms observation fallback. An explicit loss of child ownership ends
+observation and signalling immediately; a saved numeric PID cannot authorize a
+later signal.
 If leader observation remains unavailable during explicit cancellation, NTM can
 still send SIGTERM through the original leader's pidfd and wait up to five seconds
 for graceful exit. Failed pidfd observations preserve that grace period before
