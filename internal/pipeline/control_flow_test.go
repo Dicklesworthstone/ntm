@@ -2511,3 +2511,95 @@ func TestOnFailureActionScopesCommandSettlement(t *testing.T) {
 		})
 	}
 }
+
+func TestCommandSettlementUsesCurrentBackgroundAcknowledgement(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*CommandExecutionState, *StepResult)
+		want   bool
+	}{
+		{name: "current acknowledgement replaces stale failure", want: false},
+		{name: "current failure", mutate: func(_ *CommandExecutionState, result *StepResult) { result.Status = StatusFailed }, want: true},
+		{name: "current diagnostic", mutate: func(_ *CommandExecutionState, result *StepResult) { result.Error = &StepError{Type: "execution_unknown", Message: "returned uncertainty"} }, want: true},
+		{name: "rerunnable acknowledgement", mutate: func(_ *CommandExecutionState, result *StepResult) { result.RerunOnResume = true }, want: true},
+		{name: "different result identity", mutate: func(_ *CommandExecutionState, result *StepResult) { result.StepID = "other" }, want: true},
+		{name: "launch intent", mutate: func(record *CommandExecutionState, _ *StepResult) { record.Status = commandExecutionStarting }, want: true},
+		{name: "foreground launch", mutate: func(record *CommandExecutionState, _ *StepResult) { record.Background = false }, want: true},
+		{name: "invalid receipt", mutate: func(record *CommandExecutionState, _ *StepResult) { record.Version++ }, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			step := Step{ID: "sidecar", Command: "serve", Wait: WaitNone}
+			record := CommandExecutionState{Version: commandExecutionVersion, StepID: step.ID, StepHash: strings.Repeat("a", 64),
+				Status: commandExecutionRunning, ProcessID: 321, Background: true, StartedAt: time.Now()}
+			if err := validateCommandExecution(step.ID, record); err != nil {
+				t.Fatal(err)
+			}
+			current := StepResult{StepID: step.ID, Status: StatusCompleted}
+			if tc.mutate != nil {
+				tc.mutate(&record, &current)
+			}
+			saved := StepResult{StepID: step.ID, Status: StatusFailed, Error: &StepError{Type: "old_attempt", Message: "prior failure"}}
+			e := NewExecutor(DefaultExecutorConfig("background-acknowledgement"))
+			e.state = &ExecutionState{CommandExecutions: map[string]CommandExecutionState{step.ID: record}, Steps: map[string]StepResult{step.ID: saved}}
+			original := current
+			if got := e.hasUnresolvedCommandExecutionForOutcome(&step, &current); got != tc.want {
+				t.Fatalf("current outcome has unsettled process = %t, want %t", got, tc.want)
+			}
+			if !e.hasUnresolvedCommandExecution(&step) {
+				t.Fatal("failure-policy inspection accepted an unfinished direct command")
+			}
+			if !reflect.DeepEqual(current, original) || !reflect.DeepEqual(e.state.Steps[step.ID], saved) ||
+				!reflect.DeepEqual(e.state.CommandExecutions[step.ID], record) {
+				t.Fatal("settlement inspection changed receipt or scheduler evidence")
+			}
+		})
+	}
+
+	t.Run("acknowledgement does not hide owned uncertainty", func(t *testing.T) {
+		step := Step{ID: "sidecar", Command: "serve", Wait: WaitNone, OnSuccess: []Step{{ID: "child", Command: "work"}}}
+		record := CommandExecutionState{Version: commandExecutionVersion, StepID: step.ID, StepHash: strings.Repeat("a", 64),
+			Status: commandExecutionRunning, ProcessID: 321, Background: true, StartedAt: time.Now()}
+		childID := onSuccessChildStepID(step.ID, "child", 1)
+		child := record
+		child.StepID, child.Background = childID, false
+		e := NewExecutor(DefaultExecutorConfig("owned-uncertainty"))
+		e.state = &ExecutionState{CommandExecutions: map[string]CommandExecutionState{step.ID: record, childID: child}}
+		current := StepResult{StepID: step.ID, Status: StatusCompleted}
+		if !e.hasUnresolvedCommandExecutionForOutcome(&step, &current) {
+			t.Fatal("healthy launch acknowledgement hid an unresolved owned child")
+		}
+	})
+}
+
+func TestSuccessHookFailurePreservesSettlementAndCapacityClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"uncertain process", errStepProcessUnsettled, "execution_unknown"},
+		{"wrapped uncertainty", errors.Join(errors.New("hook stopped"), errStepProcessUnsettled), "execution_unknown"},
+		{"runtime capacity", ErrStepCountLimit, "step_limit"},
+		{"materialized capacity", ErrMaterializedStepLimit, "step_limit"},
+		{"propagated capacity", &stepAdmissionPropagationError{message: "child capacity"}, "step_limit"},
+		{"capacity precedence", errors.Join(errStepProcessUnsettled, ErrStepCountLimit), "step_limit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prior := StepResult{StepID: "parent", Status: StatusCompleted, StartedAt: time.Now(), Attempts: 2, Output: "native output",
+				Error: &StepError{Type: "child", Message: "prior diagnostic"}}
+			result := successHookExecutionFailure(prior, tc.err)
+			if result.Status != StatusFailed || result.Error == nil || result.Error.Type != tc.want ||
+				result.Error.Message != tc.err.Error() || result.FinishedAt.IsZero() || result.Attempts != prior.Attempts ||
+				result.Output != prior.Output || !result.StartedAt.Equal(prior.StartedAt) {
+				t.Fatalf("hook failure lost classification or native result: %+v", result)
+			}
+			if len(result.Error.Aggregated) != 1 || !reflect.DeepEqual(result.Error.Aggregated[0], *prior.Error) {
+				t.Fatalf("hook failure lost the earlier diagnostic: %+v", result.Error)
+			}
+			result.Error.Aggregated[0].Message = "changed copy"
+			if prior.Status != StatusCompleted || prior.Error.Message != "prior diagnostic" {
+				t.Fatal("failure mapper changed its successful input result")
+			}
+		})
+	}
+}

@@ -903,9 +903,18 @@ func (e *Executor) runForeachIterationRound(ctx context.Context, parent *Step, w
 
 		step := stepsForRound[i]
 		result := e.executeForeachNestedStep(ctx, &step, workflow)
+		unsettled := findStepAdmissionError(result.Error) == nil &&
+			(e.hasUnresolvedCommandExecutionForOutcome(&step, &result) || e.hasUnresolvedCommandEvaluation(&step))
+		if unsettled {
+			result = unsettledProcessStepFailure(result, fmt.Errorf("%w for %q", errStepProcessUnsettled, step.ID))
+		}
 		iterResult.Results = append(iterResult.Results, result)
 		e.storeForeachNestedResult(&step, result)
 		if findStepAdmissionError(result.Error) != nil {
+			iterResult.Error = resultErrorMessage(result)
+			return true
+		}
+		if unsettled {
 			iterResult.Error = resultErrorMessage(result)
 			return true
 		}
@@ -1109,8 +1118,11 @@ func (e *Executor) executeForeachNestedStep(ctx context.Context, step *Step, wor
 			return result
 		}
 		if result.Status == StatusCompleted {
+			if e.hasUnresolvedCommandExecutionForOutcome(step, &result) || e.hasUnresolvedCommandEvaluation(step) {
+				return unsettledProcessStepFailure(result, fmt.Errorf("%w for %q", errStepProcessUnsettled, step.ID))
+			}
 			if err := e.runOnSuccessSteps(ctx, step, workflow); err != nil {
-				return stepAdmissionExecutionFailure(result, err)
+				return successHookExecutionFailure(result, err)
 			}
 			return result
 		}

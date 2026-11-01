@@ -973,6 +973,15 @@ outcome is explicitly accepted, ordinary resume applies the authored failure
 policy. Unrelated scopes and healthy supervised background children keep their
 normal failure handling.
 
+Ordinary execution checks owned command and selector receipts before publishing
+successful scheduler results. An uncertain success hook leaves its parent failed
+and stops later hooks. An uncertain foreach body also stops its iteration before
+a completed-round checkpoint is written. Explicit acceptance and resume can then revisit the
+unfinished work while retaining the successful parent's native receipt, earlier
+completed hooks, and immutable accepted outcomes. Ordinary settled hook failures
+keep their existing logging behavior; healthy background acknowledgements remain
+valid while their command supervision is active.
+
 An older checkpoint may already report `completed` while retaining an unfinished
 foreground command or selector receipt. If that step's scheduler result is
 failed or cancelled, recovery inspection can offer the same explicit acceptance

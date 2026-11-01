@@ -1198,6 +1198,9 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 			result = stepResult
 			result.Attempts = attempt
 			result.FinishedAt = time.Now()
+			if e.hasUnresolvedCommandExecutionForOutcome(step, &result) || e.hasUnresolvedCommandEvaluation(step) {
+				return unsettledProcessStepFailure(result, fmt.Errorf("%w for %q", errStepProcessUnsettled, step.ID))
+			}
 			// Publish canonical outputs before success hooks for every kind.
 			// Named output_var merging remains the containing scheduler's job.
 			e.varMu.Lock()
@@ -1211,7 +1214,7 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 			// the parent resumable so its pending hooks can finish later.
 			// Context depth bounds recursive OnSuccess chains.
 			if err := e.runOnSuccessSteps(ctx, step, workflow); err != nil {
-				return stepAdmissionExecutionFailure(result, err)
+				return successHookExecutionFailure(result, err)
 			}
 			return result
 		}

@@ -397,14 +397,34 @@ func onSuccessChildStepID(parentID, childID string, ordinal int) string {
 	return fmt.Sprintf("%s_on_success_%s", parentID, childID)
 }
 
+var errStepProcessUnsettled = errors.New("step process settlement is uncertain")
+
+func unsettledProcessStepFailure(result StepResult, err error) StepResult {
+	result.Status, result.FinishedAt = StatusFailed, time.Now()
+	diagnostic := &StepError{Type: "execution_unknown", Message: err.Error(), Timestamp: result.FinishedAt}
+	if result.Error != nil {
+		diagnostic.Aggregated = []StepError{cloneStepErrorValue(*result.Error)}
+	}
+	result.Error = diagnostic
+	return result
+}
+
+func successHookExecutionFailure(result StepResult, err error) StepResult {
+	if !isStepAdmissionError(err) && errors.Is(err, errStepProcessUnsettled) {
+		return unsettledProcessStepFailure(result, err)
+	}
+	return stepAdmissionExecutionFailure(result, err)
+}
+
 // runOnSuccessSteps walks Step.OnSuccess sequentially after a parent
 // step has reached StatusCompleted. Each child runs through executeStep
 // (so its own OnSuccess chain fires recursively) up to maxOnSuccessDepth
 // total. Depth is tracked in the context so recursion through executeStep
 // is bounded even though the call site stays simple. Ordinary child failures
 // are logged without changing the parent's status (bd-w6nth.7). Capacity
-// refusal leaves the parent failed with its native receipt intact so a later
-// attempt can finish the pending hooks without repeating the parent effect.
+// refusal or uncertain process settlement leaves the parent failed with its
+// native receipt intact so a later attempt can finish pending hooks without
+// repeating the parent effect.
 func (e *Executor) runOnSuccessSteps(ctx context.Context, parent *Step, workflow *Workflow) error {
 	if parent == nil || len(parent.OnSuccess) == 0 {
 		return nil
@@ -448,6 +468,12 @@ func (e *Executor) runOnSuccessSteps(ctx context.Context, parent *Step, workflow
 		if result.FinishedAt.IsZero() {
 			result.FinishedAt = time.Now()
 		}
+		var settlementErr error
+		if findStepAdmissionError(result.Error) == nil &&
+			(e.hasUnresolvedCommandExecutionForOutcome(&child, &result) || e.hasUnresolvedCommandEvaluation(&child)) {
+			settlementErr = fmt.Errorf("%w for success hook %q", errStepProcessUnsettled, child.ID)
+			result = unsettledProcessStepFailure(result, settlementErr)
+		}
 
 		e.stateMu.Lock()
 		e.state.Steps[child.ID] = result
@@ -464,6 +490,9 @@ func (e *Executor) runOnSuccessSteps(ctx context.Context, parent *Step, workflow
 		e.stateMu.Unlock()
 		if cause := findStepAdmissionError(result.Error); cause != nil {
 			return &stepAdmissionPropagationError{message: fmt.Sprintf("success hook %q exceeded capacity: %s", child.ID, cause.Message)}
+		}
+		if settlementErr != nil {
+			return settlementErr
 		}
 
 		if child.OutputVar != "" && result.Status == StatusCompleted {

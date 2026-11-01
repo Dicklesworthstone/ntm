@@ -2210,3 +2210,228 @@ func awaitNestedWaitNoneReceipt(t *testing.T, root, runID, status string) Comman
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestControlledPipelineSuccessHooksPreserveUncertainRecovery(t *testing.T) {
+	requireCommandPIDFDObservation(t)
+	for _, selector := range []bool{false, true} {
+		for _, shape := range []string{"direct", "foreach_parent", "parallel_hook", "round_hook"} {
+			t.Run(fmt.Sprintf("%s/selector_%t", shape, selector), func(t *testing.T) {
+				root := t.TempDir()
+				source := "printf '%s' \"$$\" > uncertain.pid; " +
+					"while [ ! -f source.release ]; do sleep 0.01; done; " +
+					"printf 'once\\n' >> source-effects; printf 'chosen\\n' > observed-output; cat observed-output"
+				work := Step{ID: "uncertain", Command: source, OnError: ErrorActionContinue}
+				if selector {
+					work.Command, work.Branch = "", "$("+source+")"
+					work.Branches = map[string]interface{}{"chosen": []Step{{
+						ID: "body", Command: "printf 'once\\n' >> selected-effects; printf selected",
+					}}}
+				}
+				hook := work
+				switch shape {
+				case "parallel_hook":
+					hook = Step{ID: "group", OnError: ErrorActionContinue, Parallel: ParallelSpec{Steps: []Step{work}}}
+				case "round_hook":
+					work.LoopControl = LoopControlBreak
+					hook = Step{ID: "group", OnError: ErrorActionContinue, Foreach: &ForeachConfig{
+						Items: "[\"only\"]", MaxRounds: IntOrExpr{Value: 2}, Steps: []Step{work},
+					}}
+				}
+				parent := Step{ID: "parent", Command: "printf 'once\\n' >> parent-effects; printf parent", OnSuccess: []Step{
+					{ID: "before", Command: "printf 'once\\n' >> before-effects"},
+					hook,
+					{ID: "after", Command: "printf 'once\\n' >> after-effects"},
+				}}
+				rootStep, parentID := parent, parent.ID
+				if shape == "foreach_parent" {
+					rootStep = Step{ID: "outer", OnError: ErrorActionContinue, Foreach: &ForeachConfig{
+						Items: "[\"only\"]", Steps: []Step{parent},
+					}}
+					parentID = "outer_iter0_parent"
+				}
+				workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "success-hook-uncertainty", Settings: DefaultWorkflowSettings(), Steps: []Step{
+					rootStep,
+					{ID: "consume", DependsOn: []string{rootStep.ID}, Command: "printf 'once\\n' >> dependent-effects; printf consumed"},
+				}}
+				cfg := DefaultExecutorConfig(workflow.Name)
+				cfg.ProjectDir, cfg.RunID = root, "run-success-hook-uncertainty"
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				fault := errors.New("injected loss of success-hook observation after its actual exit")
+				var injected, observedExited atomic.Bool
+				observing := make(chan struct{})
+				ctx = context.WithValue(ctx, commandLeaderObservationTestHookKey{}, func(pid int) error {
+					data, err := os.ReadFile(filepath.Join(root, "uncertain.pid"))
+					if err == nil && strings.TrimSpace(string(data)) == fmt.Sprint(pid) && injected.CompareAndSwap(false, true) {
+						close(observing)
+						if err := observeCommandExit(pid, 0); err != nil {
+							return err
+						}
+						observedExited.Store(true)
+						return errors.Join(syscall.ECHILD, fault)
+					}
+					return observeCommandExit(pid, syscall.WNOHANG)
+				})
+				type outcome struct {
+					state *ExecutionState
+					err   error
+				}
+				events := make(chan ProgressEvent, 100)
+				done := make(chan outcome, 1)
+				go func() {
+					state, err := RunControlledPipeline(ctx, workflow, nil, cfg, events)
+					done <- outcome{state, err}
+					close(done)
+				}()
+				t.Cleanup(func() {
+					_ = os.WriteFile(filepath.Join(root, "source.release"), []byte("finish"), 0600)
+					cancel()
+					select {
+					case <-done:
+					case <-time.After(commandCancelGracePeriod + commandSettlementRecoveryTimeout + 4*commandPipeDrainTimeout):
+						t.Error("uncertain success hook did not join command supervision")
+					}
+				})
+				select {
+				case <-observing:
+				case early := <-done:
+					t.Fatalf("pipeline ended before the injected observation: %+v %v", early.state, early.err)
+				case <-time.After(5 * time.Second):
+					t.Fatal("success hook never reached its observation boundary")
+				}
+				groupTestFile(t, root, "source.release", "finish")
+				var initial outcome
+				select {
+				case initial = <-done:
+				case <-ctx.Done():
+					t.Fatal("uncertain success hook did not return")
+				}
+				if initial.err == nil || initial.state == nil || initial.state.Status != StatusFailed || !observedExited.Load() {
+					t.Fatalf("uncertain hook published success or missed the fault: %+v %v", initial.state, initial.err)
+				}
+				assertNoCompletionEvent(t, events)
+				prior, err := LoadState(root, cfg.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, id := range []string{parentID, rootStep.ID} {
+					result := prior.Steps[id]
+					if result.Status != StatusFailed || result.Error == nil || result.Error.Type != "execution_unknown" {
+						t.Fatalf("enclosing step %q cannot revisit uncertain hook: %+v", id, result)
+					}
+				}
+				if shape == "parallel_hook" || shape == "round_hook" {
+					id := onSuccessChildStepID(parentID, hook.ID, 2)
+					if result := prior.Steps[id]; result.Status != StatusFailed || result.Error == nil || result.Error.Type != "execution_unknown" {
+						t.Fatalf("handled composite hook published completion: %+v", result)
+					}
+				}
+				for id, progress := range prior.ForeachState {
+					if len(progress.CompletedIterationIDs) != 0 {
+						t.Fatalf("uncertain iteration %q became complete: %+v", id, progress)
+					}
+					for iteration, round := range progress.CompletedRounds {
+						if round > 0 {
+							t.Fatalf("uncertain iteration %q advanced through round %d", iteration, round)
+						}
+					}
+				}
+				afterID := onSuccessChildStepID(parentID, "after", 3)
+				if _, exists := prior.Steps[afterID]; exists {
+					t.Fatalf("later success hook %q was dispatched", afterID)
+				}
+				for _, name := range []string{"after-effects", "dependent-effects", "selected-effects"} {
+					if _, err := os.Stat(filepath.Join(root, name)); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("uncertain hook allowed %s: %v", name, err)
+					}
+				}
+				marshal := func(value interface{}) []byte {
+					t.Helper()
+					data, err := json.Marshal(value)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return data
+				}
+				parentReceipt := prior.CommandExecutions[parentID]
+				if parentReceipt.Status != commandExecutionSettled || parentReceipt.Result.Status != StatusCompleted || parentReceipt.Result.Output != "parent" {
+					t.Fatalf("successful parent lost its native receipt: %+v", parentReceipt)
+				}
+				parentBytes := marshal(parentReceipt)
+				resumeWorkflow, validation, err := LoadResumeWorkflow(prior.WorkflowFile)
+				if err != nil || !validation.Valid {
+					t.Fatalf("load frozen workflow: %v %+v", err, validation)
+				}
+				before := commandOperatorRecoveryBytes(t, cfg)
+				if _, err := NewExecutor(cfg).Resume(context.Background(), resumeWorkflow, prior, nil); err == nil {
+					t.Fatal("ordinary resume replayed an uncertain success hook")
+				}
+				if !bytes.Equal(before, commandOperatorRecoveryBytes(t, cfg)) {
+					t.Fatal("refused resume changed the uncertain checkpoint")
+				}
+				output, err := os.ReadFile(filepath.Join(root, "observed-output"))
+				if err != nil || string(output) != "chosen\n" {
+					t.Fatalf("complete independently observed output: %q %v", output, err)
+				}
+				const reason = "Independently observed the original hook shell and its foreground children finish and verified complete output"
+				var sourceID string
+				if selector {
+					inspection, err := InspectCommandEvaluationRecovery(context.Background(), root, cfg.RunID)
+					if err != nil || len(inspection.Selectors) != 1 || !inspection.Selectors[0].CanAccept {
+						t.Fatalf("uncertain hook stranded selector acceptance: %+v %v", inspection, err)
+					}
+					entry := inspection.Selectors[0]
+					sourceID = entry.StepID
+					if _, err := AcceptCommandEvaluationContext(context.Background(), root, cfg.RunID, sourceID, entry.ReceiptToken, reason, 0, output); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					entry := commandOperatorRecoveryEntry(t, cfg)
+					sourceID = entry.StepID
+					if !entry.CanAccept {
+						t.Fatalf("uncertain hook stranded command acceptance: %+v", entry)
+					}
+					if _, err := AcceptCommandExecutionContext(context.Background(), root, cfg.RunID, sourceID, entry.ReceiptToken, reason, 0, string(output)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				resolved, err := LoadState(root, cfg.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(parentBytes, marshal(resolved.CommandExecutions[parentID])) {
+					t.Fatal("accepting the hook rewrote its successful parent's native receipt")
+				}
+				var accepted interface{} = resolved.CommandExecutions[sourceID]
+				if selector {
+					accepted = resolved.CommandEvaluations[sourceID]
+				}
+				acceptedBytes := marshal(accepted)
+				resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer resumeCancel()
+				final, err := NewExecutor(cfg).Resume(resumeCtx, resumeWorkflow, resolved, nil)
+				if err != nil || final == nil || final.Status != StatusCompleted || final.Steps["consume"].Output != "consumed" {
+					t.Fatalf("accepted success hook did not finish its parent: %+v %v", final, err)
+				}
+				if !bytes.Equal(parentBytes, marshal(final.CommandExecutions[parentID])) {
+					t.Fatal("resume rewrote its successful parent's native receipt")
+				}
+				accepted = final.CommandExecutions[sourceID]
+				if selector {
+					accepted = final.CommandEvaluations[sourceID]
+				}
+				if !bytes.Equal(acceptedBytes, marshal(accepted)) {
+					t.Fatal("resume changed the immutable accepted hook outcome")
+				}
+				names := []string{"parent-effects", "before-effects", "source-effects", "after-effects", "dependent-effects"}
+				if selector {
+					names = append(names, "selected-effects")
+				}
+				for _, name := range names {
+					if data, err := os.ReadFile(filepath.Join(root, name)); err != nil || string(data) != "once\n" {
+						t.Fatalf("recovery repeated or lost %s: %q %v", name, data, err)
+					}
+				}
+			})
+		}
+	}
+}

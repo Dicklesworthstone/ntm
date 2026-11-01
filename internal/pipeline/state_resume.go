@@ -544,6 +544,12 @@ func (e *Executor) commandEvaluationContext(ctx context.Context, step *Step) con
 // authored recovery. A running background descendant may still have an owner,
 // but a returned failure or unresolved receipt must not become a handled result.
 func (e *Executor) hasUnresolvedCommandExecution(step *Step) bool {
+	return e.hasUnresolvedCommandExecutionForOutcome(step, nil)
+}
+
+// A current wait:none acknowledgement can coexist with an owned live command.
+// A saved scheduler result cannot establish that acknowledgement for this visit.
+func (e *Executor) hasUnresolvedCommandExecutionForOutcome(step *Step, current *StepResult) bool {
 	if step == nil {
 		return false
 	}
@@ -569,8 +575,14 @@ func (e *Executor) hasUnresolvedCommandExecution(step *Step) bool {
 			}
 			continue
 		}
-		if id != step.ID && record.Background && record.Status == commandExecutionRunning {
+		if record.Background && record.Status == commandExecutionRunning {
 			result := e.state.Steps[id]
+			if id == step.ID {
+				if current == nil || current.StepID != id || current.Status != StatusCompleted {
+					return true
+				}
+				result = *current
+			}
 			switch result.Status {
 			case "", StatusPending, StatusRunning, StatusCompleted:
 				if result.Error == nil && !result.RerunOnResume {
