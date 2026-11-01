@@ -75,6 +75,124 @@ printf orphan > late-effect
 	}
 }
 
+func TestControlledPipelineEscapedStdinPreservesUnresolvedReceipt(t *testing.T) {
+	setsid, err := exec.LookPath("setsid")
+	if err != nil {
+		t.Skip("setsid is required for the escaped-input fixture")
+	}
+	quotedSetsid := "'" + strings.ReplaceAll(setsid, "'", "'\\''") + "'"
+	for _, background := range []bool{false, true} {
+		t.Run(fmt.Sprintf("background_%t", background), func(t *testing.T) {
+			root := t.TempDir()
+			groupTestFile(t, root, "escaped.sh", `exec 3<&-
+printf '%s' "$$" > escaped.pid
+while [ ! -f release ]; do sleep 0.01; done
+printf late-effect > effect
+`)
+			work := Step{
+				ID: "work", Stdin: strings.Repeat("x", 4<<20),
+				OnError: ErrorActionRetry, RetryCount: 2, RetryDelay: Duration{Duration: time.Millisecond},
+				Command: "printf 'once\\n' >> launches\nexec 3<&0\n" + quotedSetsid + ` /bin/sh escaped.sh <&3 >/dev/null 2>&1 &
+while [ ! -s escaped.pid ]; do sleep 0.01; done
+printf original
+exit 7
+`,
+			}
+			if background {
+				work.Wait = WaitNone
+			}
+			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "escaped-input", Settings: DefaultWorkflowSettings(), Steps: []Step{work}}
+			workflow.Settings.Limits.MaxCommandStdinBytes = 4 << 20
+			if background {
+				// Keep the run alive until the asynchronous receipt is written;
+				// normal workflow shutdown must not create the input failure.
+				workflow.Steps = append(workflow.Steps, Step{ID: "gate", DependsOn: []string{work.ID},
+					Command: "printf ready > pipeline.ready; while [ ! -f pipeline-release ]; do sleep 0.01; done"})
+			}
+			cfg := DefaultExecutorConfig(workflow.Name)
+			cfg.ProjectDir, cfg.RunID = root, "run-escaped-input"
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			type outcome struct {
+				state *ExecutionState
+				err   error
+			}
+			done := make(chan outcome, 1)
+			go func() {
+				state, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+				done <- outcome{state, err}
+				close(done)
+			}()
+			t.Cleanup(func() {
+				_ = os.WriteFile(filepath.Join(root, "release"), []byte("finish"), 0600)
+				_ = os.WriteFile(filepath.Join(root, "pipeline-release"), []byte("finish"), 0600)
+				cancel()
+				select {
+				case <-done:
+				case <-time.After(commandCancelGracePeriod + commandSettlementRecoveryTimeout + 4*commandPipeDrainTimeout):
+					t.Error("pipeline did not join its input-copy cleanup")
+				}
+			})
+			pidText := strings.TrimSpace(string(awaitGroupTestFile(t, filepath.Join(root, "escaped.pid"))))
+			var pid int
+			if _, err := fmt.Sscan(pidText, &pid); err != nil {
+				t.Fatal(err)
+			}
+			escaped, err := os.FindProcess(pid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = escaped.Kill() })
+			if background {
+				awaitGroupTestFile(t, filepath.Join(root, "pipeline.ready"))
+				deadline := time.Now().Add(5 * time.Second)
+				for {
+					saved, err := LoadState(root, cfg.RunID)
+					if err == nil && saved.CommandExecutions[work.ID].Status == commandExecutionUnresolved {
+						if saved.Status != StatusRunning || ctx.Err() != nil {
+							t.Fatalf("input uncertainty stopped already-admitted work: %+v ctx=%v", saved, ctx.Err())
+						}
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatalf("background input failure did not preserve its unresolved receipt: %+v %v", saved, err)
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				groupTestFile(t, root, "pipeline-release", "finish")
+			}
+			var initial outcome
+			select {
+			case initial = <-done:
+			case <-ctx.Done():
+				t.Fatal("input-copy uncertainty did not return within the command budget")
+			}
+			if initial.err == nil || initial.state == nil || initial.state.Status != StatusFailed {
+				t.Fatalf("input-copy uncertainty published workflow success: %+v %v", initial.state, initial.err)
+			}
+			saved, err := LoadState(root, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record := saved.CommandExecutions[work.ID]
+			if record.Status != commandExecutionUnresolved || !record.SettledAt.IsZero() || record.Result.RerunOnResume ||
+				record.Background != background || record.Result.Output != "original" || record.Result.Error == nil ||
+				!strings.Contains(record.Result.Error.Details, "stdin copy did not settle") || !strings.Contains(record.Result.Error.Details, "exit status 7") {
+				t.Fatalf("receipt lost independent input-copy or exit evidence: %+v", record)
+			}
+			if _, err := NewExecutor(cfg).Resume(context.Background(), workflow, saved, nil); err == nil {
+				t.Fatal("ordinary resume replayed a command with an escaped input reader")
+			}
+			if data, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(data) != "once\n" {
+				t.Fatalf("automatic retry or resume duplicated unresolved effects: %q %v", data, err)
+			}
+			groupTestFile(t, root, "release", "finish")
+			if got := string(awaitGroupTestFile(t, filepath.Join(root, "effect"))); got != "late-effect" {
+				t.Fatalf("escaped input reader did not perform its post-return effect: %q", got)
+			}
+		})
+	}
+}
+
 func TestControlledPipelineObservationRetriesReconcileReceipts(t *testing.T) {
 	for _, phase := range []string{"live_child", "quiet_group"} {
 		t.Run(phase, func(t *testing.T) {

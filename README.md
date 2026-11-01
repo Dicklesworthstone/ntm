@@ -895,6 +895,12 @@ foreground, background, or selector receipt before the run returns. A confirmed
 live group or failed final signal keeps the original cleanup budget. A complete
 quiet-group observation and complete output capture are both required for a
 `settled` receipt.
+The stdin feeder must also finish copying or receive a kernel broken-pipe
+response confirming that its readers closed. A forced stdin-pipe closure during
+the wait timeout leaves the receipt unresolved, including when a nonzero command
+exit would otherwise hide that pipe error. Completing the feed does not establish
+containment of descendants that deliberately leave the group and no longer keep
+NTM's I/O open.
 Linux observes the original leader through its stable pidfd when supported.
 Transient leader-observation failures then retain supervision within the existing
 execution deadline, so later recovery can still settle the receipt. Cancellation

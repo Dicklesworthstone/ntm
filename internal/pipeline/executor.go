@@ -1644,7 +1644,6 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 	}()
 
 	cmd := exec.Command("/bin/sh", "-c", expandedCmd)
-	configureCommandProcessGroup(cmd)
 
 	if e.config.ProjectDir != "" {
 		cmd.Dir = e.config.ProjectDir
@@ -1677,6 +1676,7 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 	if expandedStdin != "" {
 		cmd.Stdin = strings.NewReader(expandedStdin)
 	}
+	configureCommandProcessGroup(cmd)
 
 	waitCondition := step.Wait
 	if waitCondition == "" {

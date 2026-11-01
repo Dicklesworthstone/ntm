@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -368,6 +369,188 @@ exit "$2"
 				}
 			})
 		}
+	}
+}
+
+// A detached child can retain only stdin, with both output captures already at
+// EOF. WaitDelay then interrupts the blocked input copy, but a nonzero leader
+// exit masks that error. A normal command closing its unused stdin is different:
+// the kernel's EPIPE proves there are no remaining readers of that pipe.
+func TestCommandCleanupTracksStdinSettlement(t *testing.T) {
+	setsid, err := exec.LookPath("setsid")
+	if err != nil {
+		t.Skip("setsid is required for the escaped-input fixture")
+	}
+	for _, escapedInput := range []bool{false, true} {
+		for _, code := range []int{0, 7} {
+			t.Run(fmt.Sprintf("escaped_%t/exit_%d", escapedInput, code), func(t *testing.T) {
+				dir := t.TempDir()
+				script := `printf done; exit "$2"`
+				if escapedInput {
+					groupTestFile(t, dir, "escaped.sh", `exec 3<&-
+printf '%s' "$$" > escaped.pid
+while [ ! -f release ]; do sleep 0.01; done
+printf late-effect > effect
+`)
+					script = `exec 3<&0
+"$1" /bin/sh escaped.sh <&3 >/dev/null 2>&1 &
+while [ ! -s escaped.pid ]; do sleep 0.01; done
+printf done
+exit "$2"
+`
+				}
+				cmd := exec.Command("/bin/sh", "-c", script, "fixture", setsid, strconv.Itoa(code))
+				cmd.Dir = dir
+				// Exceed the pipe capacity so the detached reader cannot be
+				// hidden by a fully delivered, buffered input payload.
+				cmd.Stdin = strings.NewReader(strings.Repeat("x", 4<<20))
+				capture := newCappedWriter(128)
+				cmd.Stdout, cmd.Stderr = capture, capture
+				configureCommandProcessGroup(cmd)
+				cmd.WaitDelay = 80 * time.Millisecond
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					if escapedInput {
+						groupTestFile(t, dir, "release", "finish")
+					}
+					if cmd.ProcessState == nil {
+						_ = cancelCommandProcessGroup(cmd)
+						_ = cmd.Wait()
+					}
+				}()
+				if escapedInput {
+					pid, err := strconv.Atoi(string(awaitGroupTestFile(t, filepath.Join(dir, "escaped.pid"))))
+					if err != nil {
+						t.Fatal(err)
+					}
+					escaped, err := os.FindProcess(pid)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer escaped.Kill()
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				outcome := waitCommandWithProcessGroupCleanup(ctx, cmd)
+				if outcome.Settled == escapedInput {
+					t.Errorf("stdin settlement did not distinguish a live escaped reader from closed readers: %+v", outcome)
+				}
+				if outcome.Cancelled || capture.String() != "done" || !capture.outputCaptureComplete() {
+					t.Errorf("changed output or cancellation contract: %+v output=%q EOF=%t", outcome, capture.String(), capture.outputCaptureComplete())
+				}
+				var exit *exec.ExitError
+				if code != 0 && (!errors.As(outcome.Err, &exit) || exit.ExitCode() != code) {
+					t.Errorf("lost exit code %d: %v", code, outcome.Err)
+				}
+				if !escapedInput && code == 0 && outcome.Err != nil {
+					t.Errorf("unused input made a successful owned command fail: %v", outcome.Err)
+				}
+				if escapedInput {
+					groupTestFile(t, dir, "release", "finish")
+					if got := string(awaitGroupTestFile(t, filepath.Join(dir, "effect"))); got != "late-effect" {
+						t.Fatalf("escaped reader did not perform its post-cleanup effect: %q", got)
+					}
+				}
+			})
+		}
+	}
+}
+
+type commandInputFailureWriter struct{ err error }
+
+func (writer commandInputFailureWriter) Write([]byte) (int, error) { return 0, writer.err }
+
+func TestCommandInputSettlementRequiresCopyOrClosedReaders(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		source  io.Reader
+		dst     io.Writer
+		cause   error
+		settled bool
+	}{
+		{name: "delivered", source: strings.NewReader("payload"), dst: io.Discard, settled: true},
+		{name: "closed_readers", source: strings.NewReader("payload"), dst: commandInputFailureWriter{syscall.EPIPE}, cause: syscall.EPIPE, settled: true},
+		{name: "forced_close", source: strings.NewReader("payload"), dst: commandInputFailureWriter{os.ErrClosed}, cause: os.ErrClosed},
+		{name: "source_epipe_is_not_reader_closure", source: iotest.ErrReader(syscall.EPIPE), dst: io.Discard, cause: syscall.EPIPE},
+		{name: "short_write", source: strings.NewReader("payload"), dst: commandInputFailureWriter{}, cause: io.ErrShortWrite},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &exec.Cmd{Stdin: tc.source}
+			configureCommandProcessGroup(cmd)
+			input, ok := cmd.Stdin.(*commandInput)
+			if !ok {
+				t.Fatal("non-file stdin was not tracked before Start")
+			}
+			if input.settlementError() == nil {
+				t.Fatal("unstarted input copy was treated as settled")
+			}
+			_, err := io.Copy(tc.dst, cmd.Stdin)
+			if !errors.Is(err, tc.cause) {
+				t.Fatalf("copy changed its original cause: %v, want %v", err, tc.cause)
+			}
+			result := commandCleanupResult{Settled: true}
+			verifyCommandOutputSettlement(cmd, &result)
+			if result.Settled != tc.settled || (result.Err == nil) != tc.settled {
+				t.Fatalf("incorrect input settlement: %+v", result)
+			}
+			if !tc.settled && !errors.Is(result.Err, tc.cause) {
+				t.Fatalf("receipt lost its input-copy cause: %v", result.Err)
+			}
+			configureCommandProcessGroup(cmd)
+			if cmd.Stdin != input {
+				t.Fatal("reconfiguration replaced input-copy evidence")
+			}
+		})
+	}
+	file, err := os.CreateTemp(t.TempDir(), "direct-input")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	for _, source := range []io.Reader{nil, file} {
+		cmd := &exec.Cmd{Stdin: source}
+		configureCommandProcessGroup(cmd)
+		if cmd.Stdin != source {
+			t.Fatal("direct stdin acquired an unnecessary copy goroutine")
+		}
+	}
+}
+
+func TestCommandOutputRefusesEscapedStdin(t *testing.T) {
+	setsid, err := exec.LookPath("setsid")
+	if err != nil {
+		t.Skip("setsid is required for the escaped-input fixture")
+	}
+	dir := t.TempDir()
+	groupTestFile(t, dir, "escaped.sh", `exec 3<&-
+printf '%s' "$$" > escaped.pid
+while [ ! -f release ]; do sleep 0.01; done
+printf late-effect > effect
+`)
+	cmd := exec.Command("/bin/sh", "-c", `exec 3<&0
+"$1" /bin/sh escaped.sh <&3 >/dev/null 2>&1 &
+while [ ! -s escaped.pid ]; do sleep 0.01; done
+printf chosen
+exit 7
+`, "fixture", setsid)
+	cmd.Dir, cmd.Stdin = dir, strings.NewReader(strings.Repeat("x", 4<<20))
+	cmd.WaitDelay = 80 * time.Millisecond
+	defer groupTestFile(t, dir, "release", "finish")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	output, err := runCommandOutput(ctx, cmd, 128, 128)
+	if output != nil || !errors.Is(err, errCommandOutputUnsettled) || !strings.Contains(err.Error(), "stdin copy did not settle") {
+		t.Fatalf("selector accepted incomplete stdin as settlement: output=%q err=%v", output, err)
+	}
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 7 || ctx.Err() != nil {
+		t.Fatalf("selector lost exit/cancellation provenance: %v ctx=%v", err, ctx.Err())
+	}
+	groupTestFile(t, dir, "release", "finish")
+	if got := string(awaitGroupTestFile(t, filepath.Join(dir, "effect"))); got != "late-effect" {
+		t.Fatalf("escaped selector reader did not survive cleanup: %q", got)
 	}
 }
 

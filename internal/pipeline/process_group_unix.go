@@ -6,11 +6,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -33,7 +35,7 @@ type commandCleanupResult struct {
 	Err        error
 	Cancelled  bool
 	SignalSent string
-	Settled    bool // The owned group is quiet and its captured output reached EOF.
+	Settled    bool // The owned group is quiet and its input/output copies settled.
 	// Linux can prove the leader exited before cleanup signalled the group.
 	// Preserve only that leader's actual Wait failure, independently of later
 	// cancellation or inspection errors. This is not settlement evidence.
@@ -44,16 +46,22 @@ type commandCleanupResult struct {
 }
 
 // verifyCommandOutputSettlement runs after the process-group proof and the
-// Cmd.Wait join. An inherited output pipe can outlive the group (setsid), and
+// Cmd.Wait join. An inherited I/O pipe can outlive the group (setsid), and
 // Wait's ExitError takes precedence over a concurrent ErrWaitDelay. Such a run
 // must keep its launch journal unresolved, not authorize an automatic retry.
-// This does not claim to contain descendants that detach AND close all pipes.
+// This does not contain arbitrary detached work after the owned I/O completes.
 func verifyCommandOutputSettlement(cmd *exec.Cmd, result *commandCleanupResult) {
 	if !result.Settled {
 		return
 	}
 	if errors.Is(result.Err, exec.ErrWaitDelay) {
 		result.Settled = false
+	}
+	if input, ok := cmd.Stdin.(*commandInput); ok {
+		if err := input.settlementError(); err != nil {
+			result.Settled = false
+			result.Err = errors.Join(result.Err, err)
+		}
 	}
 	for _, stream := range []struct {
 		name   string
@@ -69,11 +77,76 @@ func verifyCommandOutputSettlement(cmd *exec.Cmd, result *commandCleanupResult) 
 
 func configureCommandProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Install this after Stdin is assigned and before Start creates its copy
+	// goroutine. Direct files have no os/exec copier or hidden WaitDelay error.
+	switch cmd.Stdin.(type) {
+	case nil, *os.File, *commandInput:
+	default:
+		cmd.Stdin = &commandInput{source: cmd.Stdin}
+	}
 	// A descendant that deliberately leaves the group can still inherit
-	// stdout/stderr. It must not hold cmd.Wait (and run ownership) forever.
+	// its I/O. It must not hold cmd.Wait (and run ownership) forever.
 	if cmd.WaitDelay == 0 {
 		cmd.WaitDelay = commandPipeDrainTimeout
 	}
+}
+
+// commandInput preserves stdin-copy evidence independently of Cmd.Wait, whose
+// ExitError masks a concurrent WaitDelay failure. EOF means the payload was
+// delivered; EPIPE from the destination means all pipe readers closed. A forced
+// close or source-reader failure proves neither, and must not authorize replay.
+type commandInput struct {
+	source  io.Reader
+	mu      sync.Mutex
+	started bool
+	active  int
+	failure error
+}
+
+func (input *commandInput) Read(data []byte) (int, error) {
+	return input.source.Read(data)
+}
+
+func (input *commandInput) WriteTo(dst io.Writer) (int64, error) {
+	input.mu.Lock()
+	input.started = true
+	input.active++
+	input.mu.Unlock()
+	// Hide optional copy interfaces so a source WriterTo cannot bypass EOF
+	// accounting and destination writes retain their own failure provenance.
+	pipe := &commandInputPipeWriter{writer: dst}
+	n, err := io.Copy(pipe, struct{ io.Reader }{input.source})
+	input.mu.Lock()
+	input.active--
+	if err != nil && !pipe.readersClosed {
+		input.failure = errors.Join(input.failure, err)
+	}
+	input.mu.Unlock()
+	// Keep the original write error: os/exec recognizes and ignores the
+	// kernel's EPIPE when a normal command simply declines unused input.
+	return n, err
+}
+
+func (input *commandInput) settlementError() error {
+	input.mu.Lock()
+	defer input.mu.Unlock()
+	if input.started && input.active == 0 && input.failure == nil {
+		return nil
+	}
+	return errors.Join(errors.New("stdin copy did not settle; inspect detached command work before replay"), input.failure)
+}
+
+type commandInputPipeWriter struct {
+	writer        io.Writer
+	readersClosed bool
+}
+
+func (pipe *commandInputPipeWriter) Write(data []byte) (int, error) {
+	n, err := pipe.writer.Write(data)
+	if errors.Is(err, syscall.EPIPE) {
+		pipe.readersClosed = true
+	}
+	return n, err
 }
 
 // cancelCommandProcessGroup force-stops an owned group. The caller must still
