@@ -820,6 +820,15 @@ and refusal information. Before accepting one, independently verify that the
 original command **and all its descendants have finished**, then supply its
 observed exit code and complete captured output.
 
+A `wait: none` launch acknowledgement does not establish successful execution.
+A later unsuccessful exit makes the final workflow fail, while healthy sidecars
+stopped at normal workflow completion remain expected shutdowns. On Linux, a
+leader failure observed before cleanup signals retains its original exit error
+even if workflow shutdown begins before its receipt is saved. Failed, settled
+background receipts follow the existing resume reconciliation: the failed command
+runs again while completed dependent steps retain their results. Uncertain
+settlement still refuses replay.
+
 For a command with `wait: none`, an explicit step `timeout` applies to the
 background process's whole lifetime. Expiry requests normal command cleanup,
 records a timeout outcome, and prevents the final workflow from reporting success.

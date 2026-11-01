@@ -11,10 +11,11 @@ import (
 const commandCancelGracePeriod = 5 * time.Second
 
 type commandCleanupResult struct {
-	Err        error
-	Cancelled  bool
-	SignalSent string
-	Settled    bool
+	Err                 error
+	Cancelled           bool
+	SignalSent          string
+	Settled             bool
+	ExitBeforeSignalErr error
 }
 
 // configureCommandProcessGroup is a no-op on Windows. Unix's Setpgid +

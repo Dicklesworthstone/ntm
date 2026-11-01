@@ -122,8 +122,8 @@ type Executor struct {
 	// return cancels those commands and joins their workers so callers never
 	// observe state while cancellation persistence is still writing to disk.
 	backgroundCommandWG sync.WaitGroup
-	// Unsettled cleanup or an explicit background timeout cannot authorize
-	// success merely because a WaitNone launch returned synchronously.
+	// Unsettled cleanup, an explicit timeout, or a background execution failure
+	// cannot authorize success merely because a WaitNone launch returned.
 	// Protected by stateMu and reset per attempt.
 	backgroundCommandErrors map[string]error
 
@@ -1613,12 +1613,23 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 			if timedOut {
 				cleanupErr = errors.Join(timeoutCause, cleanupErr)
 			}
-			if !cleanup.Settled || timedOut {
+			// Expected workflow shutdown can stop a healthy sidecar. A natural
+			// failure, including one observed before shutdown began signalling,
+			// must still reach the terminal outcome without retrying background
+			// work or changing the already-published launch acknowledgement.
+			if !cleanup.Settled || timedOut || (!cleanup.Cancelled && cleanup.Err != nil) || cleanup.ExitBeforeSignalErr != nil {
+				backgroundErr := cleanupErr
+				if cleanup.Settled && !timedOut && cleanup.ExitBeforeSignalErr != nil {
+					// Routine workflow shutdown must not attach its cancellation
+					// sentinel to a proven earlier execution failure. The receipt
+					// below still preserves every cleanup diagnostic.
+					backgroundErr = cleanup.ExitBeforeSignalErr
+				}
 				e.stateMu.Lock()
 				if e.backgroundCommandErrors == nil {
 					e.backgroundCommandErrors = make(map[string]error)
 				}
-				e.backgroundCommandErrors[stepID] = cleanupErr
+				e.backgroundCommandErrors[stepID] = backgroundErr
 				e.stateMu.Unlock()
 			}
 			if journalCommand {
@@ -1636,7 +1647,7 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 					if !cleanup.Settled {
 						errorType = "execution_unknown"
 					}
-					if cleanup.Cancelled {
+					if cleanup.Cancelled && cleanup.ExitBeforeSignalErr == nil {
 						backgroundRecord.Result.Status = StatusCancelled
 						errorType = "cancelled"
 						if cleanupErr == nil {

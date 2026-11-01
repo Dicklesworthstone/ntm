@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -244,6 +245,207 @@ func TestExecuteCommand_WaitNoneCancellation_MarksRerunOnResume(t *testing.T) {
 	}
 	if persistedStep := persisted.Steps[step.ID]; !persistedStep.RerunOnResume {
 		t.Fatalf("persisted RerunOnResume = false; want true after cleanup worker exits")
+	}
+}
+
+func TestControlledPipelineWaitNoneNaturalFailurePersistsAndResumes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX command and signal fixtures")
+	}
+	for _, tc := range []struct {
+		name, terminate string
+		exitCode        int
+		failed          bool
+		resume          bool
+		shutdown        bool
+	}{
+		{name: "exit", terminate: "exit 7", exitCode: 7, failed: true},
+		{name: "signal", terminate: "kill -TERM $$", exitCode: -1, failed: true},
+		{name: "resume", terminate: "exit 7", exitCode: 7, failed: true, resume: true},
+		{name: "success", terminate: "exit 0"},
+		{name: "workflow_shutdown", shutdown: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			cfg := DefaultExecutorConfig("wait-none-outcome")
+			cfg.ProjectDir, cfg.RunID = root, "run-wait-none-outcome"
+			command := "printf 'once\\n' >> launches; " +
+				"if [ -f repair ]; then printf repaired > repaired; printf recovered; exit 0; fi; " +
+				"printf ready > sidecar-ready; while [ ! -f sidecar-release ]; do sleep 0.01; done; printf original; " + tc.terminate
+			if tc.shutdown {
+				command = "printf 'once\\n' >> launches; trap 'printf handled > handled; printf shutdown; exit 0' TERM; " +
+					"printf ready > sidecar-ready; while :; do sleep 0.01; done"
+			}
+			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "wait-none-outcome", Settings: DefaultWorkflowSettings(), Steps: []Step{
+				{ID: "sidecar", Wait: WaitNone, Command: command, OnError: ErrorActionRetry, RetryCount: 3, RetryDelay: Duration{Duration: time.Millisecond}},
+				{ID: "gate", DependsOn: []string{"sidecar"}, Command: "printf 'once\\n' >> consumers; printf ready > gate-ready; while [ ! -f gate-release ]; do sleep 0.01; done; printf consumed"},
+			}}
+			if tc.resume {
+				// A separately failed final step keeps the resumed attempt open
+				// until the test observes the repaired sidecar's own settlement.
+				// The successful gate remains consumed across both attempts.
+				workflow.Steps = append(workflow.Steps, Step{ID: "finish", DependsOn: []string{"gate"},
+					Command: "if [ ! -f repair ]; then exit 19; fi; printf ready > resume-ready; while [ ! -f finish-release ]; do sleep 0.01; done; printf finished"})
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			type outcome struct {
+				state *ExecutionState
+				err   error
+			}
+			events := make(chan ProgressEvent, 100)
+			done := make(chan outcome, 1)
+			attempts := []chan outcome{done}
+			cancels := []context.CancelFunc{cancel}
+			go func() {
+				state, err := RunControlledPipeline(ctx, workflow, nil, cfg, events)
+				done <- outcome{state, err}
+				close(done)
+			}()
+			t.Cleanup(func() {
+				for _, stop := range cancels {
+					stop()
+				}
+				for _, name := range []string{"sidecar-release", "gate-release", "finish-release"} {
+					_ = os.WriteFile(filepath.Join(root, name), []byte("finish"), 0600)
+				}
+				for _, attempt := range attempts {
+					select {
+					case <-attempt:
+					case <-time.After(15 * time.Second):
+						t.Error("background outcome fixture did not join command cleanup")
+					}
+				}
+			})
+			write := func(name string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(root, name), []byte("finish"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			awaitCommandCancellationFile(t, filepath.Join(root, "sidecar-ready"), "ready")
+			awaitCommandCancellationFile(t, filepath.Join(root, "gate-ready"), "ready")
+			if !tc.shutdown {
+				write("sidecar-release")
+				deadline := time.Now().Add(5 * time.Second)
+				for {
+					prior, err := LoadState(root, cfg.RunID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if prior.CommandExecutions["sidecar"].Status == commandExecutionSettled {
+						if prior.Status != StatusRunning || ctx.Err() != nil {
+							t.Fatalf("background outcome cancelled independently admitted work: state=%s context=%v", prior.Status, ctx.Err())
+						}
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatalf("background process did not settle before workflow shutdown: %+v", prior.CommandExecutions["sidecar"])
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+			}
+			select {
+			case early := <-done:
+				t.Fatalf("background outcome abandoned the foreground gate: %+v %v", early.state, early.err)
+			default:
+			}
+			write("gate-release")
+			var initial outcome
+			select {
+			case initial = <-done:
+			case <-ctx.Done():
+				t.Fatal("workflow did not finish after its gate was released")
+			}
+			if initial.state == nil || initial.state.Steps["gate"].Status != StatusCompleted || initial.state.Steps["gate"].Output != "consumed" {
+				t.Fatalf("background outcome replaced its consumed launch acknowledgement: %+v %v", initial.state, initial.err)
+			}
+			var exitMessage string
+			if tc.failed {
+				var exitErr *exec.ExitError
+				if initial.state.Status != StatusFailed || !errors.As(initial.err, &exitErr) || exitErr.ExitCode() != tc.exitCode ||
+					errors.Is(initial.err, context.Canceled) || errors.Is(initial.err, context.DeadlineExceeded) ||
+					!strings.Contains(initial.err.Error(), "background command \"sidecar\" failed") {
+					t.Fatalf("background failure was hidden or lost its original process error: %+v %v", initial.state, initial.err)
+				}
+				exitMessage = exitErr.Error()
+				assertNoCompletionEvent(t, events)
+			} else if initial.err != nil || initial.state.Status != StatusCompleted {
+				t.Fatalf("ordinary background %s became a terminal failure: %+v %v", tc.name, initial.state, initial.err)
+			}
+			saved, err := LoadState(root, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt := saved.CommandExecutions["sidecar"]
+			if receipt.Status != commandExecutionSettled || receipt.SettledAt.IsZero() {
+				t.Fatalf("background result lacks durable settlement evidence: %+v", receipt)
+			}
+			if tc.failed {
+				if saved.Status != StatusFailed || receipt.Result.Status != StatusFailed || !receipt.Result.RerunOnResume ||
+					receipt.Result.Error == nil || !strings.Contains(receipt.Result.Error.Details, exitMessage) ||
+					!strings.Contains(receipt.Result.Output, "original") || len(saved.Errors) == 0 ||
+					!strings.Contains(saved.Errors[len(saved.Errors)-1].Message, "background command \"sidecar\" failed") {
+					t.Fatalf("background failure was not durable or rerunnable after settlement: %+v %+v", receipt, saved.Errors)
+				}
+			} else if tc.shutdown {
+				if receipt.Result.Status != StatusCancelled || !receipt.Result.RerunOnResume || !strings.Contains(receipt.Result.Output, "shutdown") {
+					t.Fatalf("expected workflow shutdown lost its graceful cancellation outcome: %+v", receipt)
+				}
+				awaitCommandCancellationFile(t, filepath.Join(root, "handled"), "handled")
+			} else if receipt.Result.Status != StatusCompleted || receipt.Result.Error != nil || receipt.Result.RerunOnResume {
+				t.Fatalf("natural successful completion was changed: %+v", receipt)
+			}
+			if data, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(data) != "once\n" {
+				t.Fatalf("background outcome invoked an asynchronous retry: %q %v", data, err)
+			}
+			if !tc.resume {
+				return
+			}
+			originalGate := saved.Steps["gate"]
+			write("repair")
+			resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 20*time.Second)
+			cancels = append(cancels, resumeCancel)
+			resumed := make(chan outcome, 1)
+			attempts = append(attempts, resumed)
+			go func() {
+				state, err := NewExecutor(cfg).Resume(resumeCtx, workflow, saved, nil)
+				resumed <- outcome{state, err}
+				close(resumed)
+			}()
+			awaitCommandCancellationFile(t, filepath.Join(root, "repaired"), "repaired")
+			awaitCommandCancellationFile(t, filepath.Join(root, "resume-ready"), "ready")
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				current, err := LoadState(root, cfg.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				repaired := current.CommandExecutions["sidecar"]
+				if repaired.Status == commandExecutionSettled && repaired.StartedAt.After(receipt.StartedAt) && repaired.Result.Status == StatusCompleted {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("ordinary resume did not settle the repaired background execution: %+v", repaired)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			write("finish-release")
+			select {
+			case final := <-resumed:
+				if final.err != nil || final.state == nil || final.state.Status != StatusCompleted ||
+					!final.state.Steps["gate"].FinishedAt.Equal(originalGate.FinishedAt) || final.state.Steps["finish"].Output != "finished" {
+					t.Fatalf("ordinary resume lost repaired sidecar or retained dependent state: %+v %v", final.state, final.err)
+				}
+			case <-resumeCtx.Done():
+				t.Fatal("resumed workflow did not finish after repairing its sidecar")
+			}
+			if data, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(data) != "once\nonce\n" {
+				t.Fatalf("ordinary resume did not relaunch the failed sidecar exactly once: %q %v", data, err)
+			}
+			if data, err := os.ReadFile(filepath.Join(root, "consumers")); err != nil || string(data) != "once\n" {
+				t.Fatalf("ordinary resume replayed the completed dependent: %q %v", data, err)
+			}
+		})
 	}
 }
 

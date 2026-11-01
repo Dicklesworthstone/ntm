@@ -1220,3 +1220,102 @@ func startPipelineReceiptChurn(t *testing.T, launches *atomic.Int32) {
 		t.Fatal("bounded process churn did not start")
 	}
 }
+
+func TestControlledPipelineObservedBackgroundFailureSurvivesNormalShutdown(t *testing.T) {
+	for _, exitCode := range []int{0, 7} {
+		t.Run(fmt.Sprintf("exit_%d", exitCode), func(t *testing.T) {
+			root := t.TempDir()
+			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "observed-background-exit", Settings: DefaultWorkflowSettings(), Steps: []Step{
+				{ID: "sidecar", Wait: WaitNone, Command: fmt.Sprintf("printf 'once\\n' >> launches; printf diagnostic; exit %d", exitCode)},
+				{ID: "gate", DependsOn: []string{"sidecar"}, Command: "while [ ! -f gate.release ]; do sleep 0.01; done; printf consumed > gate.effect"},
+			}}
+			cfg := DefaultExecutorConfig("observed-background-exit")
+			cfg.ProjectDir, cfg.RunID = root, "run-observed-background-exit"
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			var target atomic.Int64
+			ctx = context.WithValue(ctx, commandStartedTestHookKey{}, func(pid int) { target.CompareAndSwap(0, int64(pid)) })
+			observedExit := make(chan struct{})
+			held := false // Accessed only by the target command's waiter.
+			ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(probeCtx context.Context, pgid int) (bool, error) {
+				alive, err := commandGroupHasLiveMembers(pgid)
+				if int64(pgid) != target.Load() || held || err != nil || alive {
+					return alive, err
+				}
+				// The leader has already exited and its group is quiet. Hold
+				// publication until finishExecution performs its routine
+				// cancellation, making the outcome race deterministic.
+				held = true
+				close(observedExit)
+				<-probeCtx.Done()
+				return false, nil
+			})
+			type outcome struct {
+				state *ExecutionState
+				err   error
+			}
+			events := make(chan ProgressEvent, 100)
+			done := make(chan outcome, 1)
+			go func() {
+				state, err := RunControlledPipeline(ctx, workflow, nil, cfg, events)
+				done <- outcome{state, err}
+				close(done)
+			}()
+			t.Cleanup(func() {
+				cancel()
+				_ = os.WriteFile(filepath.Join(root, "gate.release"), []byte("finish"), 0600)
+				select {
+				case <-done:
+				case <-time.After(15 * time.Second):
+					t.Error("observed background exit did not finish cleanup")
+				}
+			})
+			select {
+			case <-observedExit:
+			case early := <-done:
+				t.Fatalf("workflow ended before its observed sidecar exit was held: %+v %v", early.state, early.err)
+			case <-ctx.Done():
+				t.Fatal("sidecar never reached the held settlement observation")
+			}
+			pending, err := LoadState(root, cfg.RunID)
+			if err != nil || pending.CommandExecutions["sidecar"].Status != commandExecutionRunning {
+				t.Fatalf("sidecar published before the cancellation race: %+v %v", pending, err)
+			}
+			groupTestFile(t, root, "gate.release", "finish")
+			var final outcome
+			select {
+			case final = <-done:
+			case <-ctx.Done():
+				t.Fatal("ordinary workflow shutdown failed to join its observed sidecar")
+			}
+			if ctx.Err() != nil || final.state == nil || final.state.Steps["gate"].Status != StatusCompleted {
+				t.Fatalf("fixture did not finish by ordinary workflow shutdown: %+v %v", final.state, final.err)
+			}
+			if exitCode == 0 {
+				if final.err != nil || final.state.Status != StatusCompleted {
+					t.Fatalf("successful observed exit became a shutdown failure: %+v %v", final.state, final.err)
+				}
+			} else {
+				var exitErr *exec.ExitError
+				if final.state.Status != StatusFailed || !errors.As(final.err, &exitErr) || exitErr.ExitCode() != exitCode ||
+					errors.Is(final.err, context.Canceled) || errors.Is(final.err, context.DeadlineExceeded) {
+					t.Fatalf("normal shutdown erased or misclassified the prior failed exit: %+v %v", final.state, final.err)
+				}
+				assertNoCompletionEvent(t, events)
+			}
+			prior, err := LoadState(root, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt := prior.CommandExecutions["sidecar"]
+			if receipt.Status != commandExecutionSettled || receipt.SettledAt.IsZero() || receipt.Result.Output != "diagnostic" {
+				t.Fatalf("observed sidecar exit lost its settled receipt or output: %+v", receipt)
+			}
+			if exitCode != 0 && (prior.Status != StatusFailed || receipt.Result.Status != StatusFailed || receipt.Result.Error == nil || !receipt.Result.RerunOnResume) {
+				t.Fatalf("ordinary cleanup replaced the prior failure in durable state: %+v", receipt)
+			}
+			if data, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(data) != "once\n" {
+				t.Fatalf("shutdown race repeated background effects: %q %v", data, err)
+			}
+		})
+	}
+}

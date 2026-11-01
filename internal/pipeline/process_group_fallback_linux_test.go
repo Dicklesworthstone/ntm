@@ -1884,3 +1884,136 @@ while :; do sleep 0.01; done
 		})
 	}
 }
+
+func TestCommandLeaderExitBeforeSignalProvenance(t *testing.T) {
+	for _, phase := range []string{"initial", "later", "term_probe", "census", "term"} {
+		for _, outcome := range []struct {
+			name string
+			body string
+			code int
+		}{
+			{name: "success", body: "exit 0"},
+			{name: "nonzero", body: "exit 7", code: 7},
+			{name: "signal", body: "kill -KILL $$", code: -1},
+		} {
+			t.Run(phase+"/"+outcome.name, func(t *testing.T) {
+				dir := t.TempDir()
+				input, release, err := os.Pipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = input.Close(); _ = release.Close() })
+				script := "printf before; printf ready > ready; read release; " + outcome.body
+				if phase == "term" {
+					// A TERM handler can also exit nonzero or by signal. Those
+					// outcomes must not acquire evidence of an earlier exit.
+					script = "trap 'printf handled; " + outcome.body + "' TERM; " + script
+				}
+				cmd := exec.Command("/bin/sh", "-c", script)
+				cmd.Dir, cmd.Stdin = dir, input
+				capture := newCappedWriter(128)
+				cmd.Stdout, cmd.Stderr = capture, capture
+				configureCommandProcessGroup(cmd)
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				handedToWait := false
+				t.Cleanup(func() {
+					_ = release.Close()
+					_ = cmd.Process.Kill()
+					if !handedToWait {
+						_ = cmd.Wait()
+					}
+				})
+				awaitGroupTestFile(t, filepath.Join(dir, "ready"))
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				probes, firstExitProbe := 0, 0
+				ctx = context.WithValue(ctx, commandLeaderObservationTestHookKey{}, func(pid int) error {
+					probes++
+					if phase == "term" {
+						return observeCommandExit(pid, syscall.WNOHANG)
+					}
+					if probes == 1 {
+						running := observeCommandExit(pid, syscall.WNOHANG)
+						if _, err := release.WriteString("finish\n"); err != nil {
+							return err
+						}
+						if running != errCommandLeaderRunning {
+							return fmt.Errorf("leader exited before its input gate opened: %v", running)
+						}
+						if phase == "term_probe" {
+							// The second wait exits on cancellation. Only the
+							// renewed pre-TERM probe can first prove exit.
+							cancel()
+							return running
+						}
+						if phase == "later" {
+							return running
+						}
+					}
+					// The input gate is open; this real WNOWAIT observation
+					// proves exit before any cleanup signal can be sent.
+					exited := observeCommandExit(pid, 0)
+					if exited == nil {
+						if firstExitProbe == 0 {
+							firstExitProbe = probes
+						}
+						if phase != "census" {
+							cancel()
+						}
+					}
+					return exited
+				})
+				censusCancelled := false
+				if phase == "census" {
+					ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(observationCtx context.Context, pgid int) (bool, error) {
+						alive, err := commandGroupHasLiveMembers(pgid)
+						if !censusCancelled && observationCtx.Err() == nil && err == nil && !alive {
+							censusCancelled = true
+							cancel()
+						}
+						return alive, err
+					})
+				} else if phase == "term" {
+					cancel()
+				}
+				handedToWait = true
+				result := waitCommandWithProcessGroupCleanup(ctx, cmd)
+				if !result.Cancelled || !result.Settled || result.SignalSent != "SIGTERM,SIGKILL" || !errors.Is(result.Err, context.Canceled) {
+					t.Fatalf("exit provenance changed lifecycle cleanup: %+v", result)
+				}
+				wantExitProbe := 1
+				switch phase {
+				case "later", "term_probe":
+					wantExitProbe = 2
+				case "term":
+					wantExitProbe = 0
+				}
+				// Later ownership renewals remain mandatory; identify the
+				// first exit proof without restricting their probe count.
+				if firstExitProbe != wantExitProbe || (phase == "census" && !censusCancelled) {
+					t.Fatalf("fixture missed its observation boundary: first_exit_probe=%d census_cancelled=%t", firstExitProbe, censusCancelled)
+				}
+				var exitErr *exec.ExitError
+				if errors.As(result.Err, &exitErr) != (outcome.code != 0) || (exitErr != nil && exitErr.ExitCode() != outcome.code) {
+					t.Fatalf("lost original process exit outcome %d: %+v", outcome.code, result)
+				}
+				if phase != "term" && outcome.code != 0 {
+					if result.ExitBeforeSignalErr != exitErr {
+						t.Fatalf("earlier exit was erased or replaced with cleanup diagnostics: %+v", result)
+					}
+				} else if result.ExitBeforeSignalErr != nil {
+					t.Fatalf("cleanup manufactured evidence of an earlier failure: %+v", result)
+				}
+				wantOutput := "before"
+				if phase == "term" {
+					wantOutput += "handled"
+				}
+				if capture.String() != wantOutput || !capture.outputCaptureComplete() {
+					t.Fatalf("lost settled command output: %q EOF=%t", capture.String(), capture.outputCaptureComplete())
+				}
+			})
+		}
+	}
+}

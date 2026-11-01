@@ -37,6 +37,7 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	if cmd.WaitDelay == 0 {
 		cmd.WaitDelay = commandPipeDrainTimeout
 	}
+	leaderExitedBeforeSignal := false
 	// All group signals must finish before this handoff. Wait owns cmd from
 	// here on, even if it cannot finish within the cleanup budget. In that
 	// case retain one final reaper (with no delayed group signals), rather
@@ -50,6 +51,9 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 		select {
 		case err := <-done:
 			result.Err = errors.Join(result.Err, err)
+			if exitErr, ok := err.(*exec.ExitError); ok && (leaderExitedBeforeSignal || result.leaderExitedBeforeSignal) {
+				result.ExitBeforeSignalErr = exitErr
+			}
 			if cmd.ProcessState == nil {
 				result.Settled = false
 			}
@@ -66,13 +70,18 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	}
 	// Detect unsupported waitid or an externally reaped child before sending
 	// any numeric group signal. A live or exited child remains unreaped.
-	if err := observeCommandExitWithRetry(ctx, cmd.Process); err != nil && err != errCommandLeaderRunning {
-		return reap(cleanupCommandAfterObservationFailure(ctx, cmd, err))
+	initialObservationErr := observeCommandExitWithRetry(ctx, cmd.Process)
+	leaderExitedBeforeSignal = initialObservationErr == nil
+	if initialObservationErr != nil && initialObservationErr != errCommandLeaderRunning {
+		return reap(cleanupCommandAfterObservationFailure(ctx, cmd, initialObservationErr))
 	}
 	// A blocking waitid goroutine cannot be canceled if SIGKILL is denied
 	// or the leader is stuck in uninterruptible I/O. Poll without reaping so
 	// cancellation never has to join an unbounded exit observer.
 	observationErr := waitCommandLeaderExit(ctx, cmd.Process)
+	// A context check can stop this second wait after the initial probe has
+	// already observed exit. Keep that earlier fact through group cleanup.
+	leaderExitedBeforeSignal = leaderExitedBeforeSignal || observationErr == nil
 	if observationErr != nil && observationErr != context.Canceled && observationErr != context.DeadlineExceeded {
 		return reap(cleanupCommandAfterObservationFailure(ctx, cmd, observationErr))
 	}
@@ -111,11 +120,15 @@ func cleanupCancelledCommandGroup(ctx context.Context, cmd *exec.Cmd, observatio
 		return cleanupCommandAfterObservationFailure(ctx, cmd, errors.Join(
 			errors.New("command group cleanup requires cancellation"), observationErr))
 	}
-	if err := observeCommandExitWithRetry(ctx, cmd.Process); err != nil && err != errCommandLeaderRunning {
+	leaderErr := observeCommandExitWithRetry(ctx, cmd.Process)
+	if leaderErr != nil && leaderErr != errCommandLeaderRunning {
 		return cleanupCommandAfterObservationFailure(ctx, cmd, errors.Join(observationErr,
-			fmt.Errorf("verify command leader before SIGTERM: %w", err)))
+			fmt.Errorf("verify command leader before SIGTERM: %w", leaderErr)))
 	}
 	result := commandCleanupResult{Err: observationErr, Cancelled: true, SignalSent: "SIGTERM"}
+	// This renewed proof can first observe exit after the caller cancelled
+	// but before any cleanup signal. Later probes cannot establish that fact.
+	result.leaderExitedBeforeSignal = leaderErr == nil
 	termErr := signalCommandProcessGroup(cmd, syscall.SIGTERM)
 	if termErr != nil && !errors.Is(termErr, os.ErrProcessDone) {
 		result.Err = errors.Join(result.Err, fmt.Errorf("terminate command group: %w", termErr))

@@ -34,6 +34,13 @@ type commandCleanupResult struct {
 	Cancelled  bool
 	SignalSent string
 	Settled    bool // The owned group is quiet and its captured output reached EOF.
+	// Linux can prove the leader exited before cleanup signalled the group.
+	// Preserve only that leader's actual Wait failure, independently of later
+	// cancellation or inspection errors. This is not settlement evidence.
+	ExitBeforeSignalErr error
+
+	// Internal proof acquired by Linux's final ownership check before TERM.
+	leaderExitedBeforeSignal bool
 }
 
 // verifyCommandOutputSettlement runs after the process-group proof and the
@@ -83,8 +90,15 @@ func waitCommandGroupObservation(ctx context.Context, pgid int, observe func() (
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if hook, ok := ctx.Value(commandGroupObservationTestHookKey{}).(func(int) (bool, error)); ok && hook != nil {
-		observe = func() (bool, error) { return hook(pgid) }
+	switch hook := ctx.Value(commandGroupObservationTestHookKey{}).(type) {
+	case func(int) (bool, error):
+		if hook != nil {
+			observe = func() (bool, error) { return hook(pgid) }
+		}
+	case func(context.Context, int) (bool, error):
+		if hook != nil {
+			observe = func() (bool, error) { return hook(ctx, pgid) }
+		}
 	}
 	ticker := time.NewTicker(commandGroupPollInterval)
 	defer ticker.Stop()
