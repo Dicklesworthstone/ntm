@@ -3,10 +3,15 @@ package pipeline
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -114,6 +119,351 @@ func TestExecuteForeachParallelMaxConcurrentCompletesAllIterations(t *testing.T)
 	for _, want := range []string{"a", "b", "c"} {
 		if !seen[want] {
 			t.Fatalf("parallel foreach missing output %q in %#v", want, seen)
+		}
+	}
+}
+
+func foreachSchedulerFixture(t *testing.T, count int) (*Executor, *Workflow, *Step, []foreachIterationPlan) {
+	t.Helper()
+	parent := &Step{ID: "scheduled_fanout", Foreach: &ForeachConfig{Parallel: true}}
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "foreach-scheduler",
+		Settings:      DefaultWorkflowSettings(),
+		Steps:         []Step{*parent},
+	}
+	e := createForeachTestExecutor(t, workflow)
+	e.config.DefaultTimeout = 30 * time.Second
+	plans := make([]foreachIterationPlan, count)
+	for i := range plans {
+		plans[i] = foreachIterationPlan{
+			Index: i,
+			Item:  i,
+			Steps: []Step{{
+				ID:        fmt.Sprintf("%s_iter%d_query", parent.ID, i),
+				BeadQuery: &BeadQueryStep{Label: StringOrList{strconv.Itoa(i)}},
+			}},
+		}
+	}
+	return e, workflow, parent, plans
+}
+
+func awaitForeachSchedulerResults(t *testing.T, done <-chan []foreachIterationResult) []foreachIterationResult {
+	t.Helper()
+	select {
+	case results := <-done:
+		return results
+	case <-time.After(10 * time.Second):
+		t.Fatal("foreach scheduler did not join its workers")
+		return nil
+	}
+}
+
+func awaitForeachSchedulerStarted(t *testing.T, started <-chan int) int {
+	t.Helper()
+	select {
+	case index := <-started:
+		return index
+	case <-time.After(10 * time.Second):
+		t.Fatal("foreach worker did not reach its query barrier")
+		return -1
+	}
+}
+
+// Wait until the producer is parked before counting its workers. Otherwise a
+// goroutine-per-item implementation can appear bounded while it is still
+// creating the rest of its goroutines. Count only this scheduler's stacks,
+// rather than relying on unrelated runtime goroutine totals or a sleep.
+func awaitForeachSchedulerParked(t *testing.T, done <-chan []foreachIterationResult, joining bool) int {
+	t.Helper()
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	stacks := make([]byte, 2<<20)
+	for {
+		n := runtime.Stack(stacks, true)
+		if n == len(stacks) {
+			t.Fatal("goroutine census truncated before the scheduler could be checked")
+		}
+		workers, parked := 0, false
+		for _, stack := range strings.Split(string(stacks[:n]), "\n\n") {
+			if strings.Contains(stack, "(*Executor).executeForeachIterationsParallel.func") {
+				workers++
+			}
+			if !strings.Contains(stack, "(*Executor).executeForeachIterationsParallel(") {
+				continue
+			}
+			waiting := strings.Contains(stack, "sync.(*WaitGroup).Wait(")
+			if !joining {
+				waiting = waiting || strings.Contains(strings.SplitN(stack, "\n", 2)[0], "[select]")
+			}
+			parked = parked || waiting
+		}
+		if parked {
+			return workers
+		}
+		select {
+		case <-done:
+			t.Fatal("scheduler returned while admitted workers were still held at their barriers")
+		case <-deadline.C:
+			t.Fatal("foreach producer never reached its capacity wait or worker join")
+		case <-tick.C:
+		}
+	}
+}
+
+func TestForeachParallelBoundsWaitingGoroutinesAndJoinsOnCancellation(t *testing.T) {
+	const count, concurrency = 512, 3
+	e, workflow, parent, plans := foreachSchedulerFixture(t, count)
+	completed := make(map[string]struct{})
+	for _, index := range []int{1, count - 1} {
+		completed[loopIterationID(parent.ID, index)] = struct{}{}
+		e.state.Steps[plans[index].Steps[0].ID] = StepResult{
+			StepID: plans[index].Steps[0].ID, Status: StatusCompleted, Output: "retained",
+		}
+	}
+	for _, index := range []int{0, count - 2} {
+		plans[index].Skipped, plans[index].SkipKind = true, SkipKindForeachFilter
+		plans[index].SkipReason = "filtered before scheduling"
+	}
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	defer slog.SetDefault(previousLogger)
+	started := make(chan int, count)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	var calls atomic.Int64
+	e.config.BeadQueryRunBr = func(ctx context.Context, args []string) ([]byte, error) {
+		calls.Add(1)
+		index, err := strconv.Atoi(args[len(args)-1])
+		if err != nil {
+			return nil, err
+		}
+		started <- index
+		// Deliberately hold admitted work through cancellation. The scheduler
+		// must join these workers rather than just abandoning its producer.
+		<-release
+		return []byte(`{"issues":[]}`), ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan []foreachIterationResult, 1)
+	go func() {
+		defer close(done)
+		done <- e.executeForeachIterationsParallel(ctx, parent, workflow, plans, ErrorActionContinue, concurrency, completed)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		releaseOnce.Do(func() { close(release) })
+		awaitForeachSchedulerResults(t, done)
+	})
+	seen := make(map[int]bool)
+	for range concurrency {
+		seen[awaitForeachSchedulerStarted(t, started)] = true
+	}
+	if len(seen) != concurrency {
+		t.Fatalf("initial admitted iterations repeated work: %v", seen)
+	}
+	if workers := awaitForeachSchedulerParked(t, done, false); workers != concurrency {
+		t.Fatalf("foreach created %d worker goroutines for %d admitted iterations and %d plans", workers, concurrency, count)
+	}
+	cancel()
+	if workers := awaitForeachSchedulerParked(t, done, true); workers != concurrency {
+		t.Fatalf("cancellation left %d worker goroutines; want only the %d admitted workers being joined", workers, concurrency)
+	}
+	releaseOnce.Do(func() { close(release) })
+	results := awaitForeachSchedulerResults(t, done)
+	if len(results) != count || calls.Load() != concurrency {
+		t.Fatalf("cancellation lost results or dispatched queued work: results=%d query calls=%d", len(results), calls.Load())
+	}
+	for i, result := range results {
+		if result.Index != i || result.Item != i {
+			t.Fatalf("result order changed at %d: %+v", i, result)
+		}
+		switch i {
+		case 0, count - 2:
+			if result.SkipKind != SkipKindForeachFilter {
+				t.Fatalf("filtered iteration %d lost its classification: %+v", i, result)
+			}
+		case 1, count - 1:
+			if result.SkipKind != SkipKindResumeAlreadyCompleted || len(result.Results) != 1 || result.Results[0].Output != "retained" {
+				t.Fatalf("completed iteration %d was replayed or lost its retained output: %+v", i, result)
+			}
+		default:
+			if !seen[i] {
+				if !foreachIterationCancelled(result) {
+					t.Fatalf("queued iteration %d lost its cancellation result: %+v", i, result)
+				}
+				if _, recorded := e.state.Steps[plans[i].Steps[0].ID]; recorded {
+					t.Fatalf("queued iteration %d entered its body after cancellation", i)
+				}
+			}
+		}
+	}
+	starts, finishes, _, progress, _ := countForeachIterationEvents(t, &logs, parent.ID)
+	if starts != concurrency || finishes != concurrency || len(progress) == 0 || progress[len(progress)-1] != count {
+		t.Fatalf("progress omitted or double-counted iterations: starts=%d finishes=%d progress=%v", starts, finishes, progress)
+	}
+}
+
+func TestForeachParallelCapacityReleasePreservesResultOrder(t *testing.T) {
+	const count = 7
+	e, workflow, parent, plans := foreachSchedulerFixture(t, count)
+	started := make(chan int, count)
+	releases := make([]chan struct{}, count)
+	for i := range releases {
+		releases[i] = make(chan struct{}, 1)
+	}
+	var active, maximum atomic.Int64
+	e.config.BeadQueryRunBr = func(ctx context.Context, args []string) ([]byte, error) {
+		index, err := strconv.Atoi(args[len(args)-1])
+		if err != nil {
+			return nil, err
+		}
+		current := active.Add(1)
+		defer active.Add(-1)
+		for prior := maximum.Load(); current > prior && !maximum.CompareAndSwap(prior, current); prior = maximum.Load() {
+		}
+		started <- index
+		select {
+		case <-releases[index]:
+			return []byte(fmt.Sprintf(`{"issues":[{"id":"bead-%d"}]}`, index)), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan []foreachIterationResult, 1)
+	go func() {
+		defer close(done)
+		done <- e.executeForeachIterationsParallel(ctx, parent, workflow, plans, ErrorActionFail, 2, nil)
+	}()
+	t.Cleanup(func() { cancel(); awaitForeachSchedulerResults(t, done) })
+	first, second := awaitForeachSchedulerStarted(t, started), awaitForeachSchedulerStarted(t, started)
+	if first+second != 1 || first == second {
+		t.Fatalf("initial iteration admissions = %d, %d; want 0 and 1", first, second)
+	}
+	// Keep iteration zero blocked while every later iteration finishes. A
+	// freed permit must admit the next plan without waiting for result order.
+	for i := 1; i < count; i++ {
+		releases[i] <- struct{}{}
+		if i+1 < count {
+			if next := awaitForeachSchedulerStarted(t, started); next != i+1 {
+				t.Fatalf("released capacity admitted iteration %d, want %d", next, i+1)
+			}
+		}
+	}
+	awaitForeachSchedulerParked(t, done, true)
+	releases[0] <- struct{}{}
+	results := awaitForeachSchedulerResults(t, done)
+	if len(results) != count || maximum.Load() != 2 || active.Load() != 0 {
+		t.Fatalf("capacity was leaked or exceeded: results=%d max active=%d active=%d", len(results), maximum.Load(), active.Load())
+	}
+	for i, result := range results {
+		if result.Index != i || len(result.Results) != 1 || result.Results[0].StepID != plans[i].Steps[0].ID || !strings.Contains(result.Results[0].Output, fmt.Sprintf(`"id":"bead-%d"`, i)) {
+			t.Fatalf("out-of-order completion corrupted result %d: %+v", i, result)
+		}
+	}
+	if got := len(e.state.ForeachState[parent.ID].CompletedIterationIDs); got != count {
+		t.Fatalf("completed iteration checkpoint contains %d IDs, want %d", got, count)
+	}
+}
+
+func TestForeachParallelBreakAndFailFastStopQueuedDispatch(t *testing.T) {
+	for _, mode := range []string{"break", "fail_fast"} {
+		t.Run(mode, func(t *testing.T) {
+			const count = 64
+			e, workflow, parent, plans := foreachSchedulerFixture(t, count)
+			if mode == "break" {
+				plans[0].Steps = append(plans[0].Steps, Step{ID: parent.ID + "_iter0_break", LoopControl: LoopControlBreak})
+			}
+			started := make(chan int, count)
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			var calls atomic.Int64
+			e.config.BeadQueryRunBr = func(ctx context.Context, args []string) ([]byte, error) {
+				calls.Add(1)
+				index, err := strconv.Atoi(args[len(args)-1])
+				if err != nil {
+					return nil, err
+				}
+				started <- index
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				if mode == "fail_fast" {
+					return nil, errors.New("injected query failure")
+				}
+				return []byte(`{"issues":[]}`), nil
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan []foreachIterationResult, 1)
+			go func() {
+				defer close(done)
+				done <- e.executeForeachIterationsParallel(ctx, parent, workflow, plans, ErrorActionFailFast, 1, nil)
+			}()
+			t.Cleanup(func() {
+				cancel()
+				releaseOnce.Do(func() { close(release) })
+				awaitForeachSchedulerResults(t, done)
+			})
+			if first := awaitForeachSchedulerStarted(t, started); first != 0 {
+				t.Fatalf("first admitted iteration = %d, want 0", first)
+			}
+			awaitForeachSchedulerParked(t, done, false)
+			releaseOnce.Do(func() { close(release) })
+			results := awaitForeachSchedulerResults(t, done)
+			if len(results) != count || calls.Load() != 1 {
+				t.Fatalf("%s admitted queued work or lost results: results=%d query calls=%d", mode, len(results), calls.Load())
+			}
+			if mode == "break" {
+				if results[0].Control != LoopControlBreak {
+					t.Fatalf("first iteration lost break control: %+v", results[0])
+				}
+			} else if !results[0].failed() {
+				t.Fatalf("injected failure was swallowed: %+v", results[0])
+			}
+			for i, result := range results[1:] {
+				cancelled := foreachIterationCancelled(result)
+				if mode == "break" {
+					cancelled = result.SkipKind == SkipKindForeachBreak && result.Skipped && len(result.Results) == 0
+				}
+				if result.Index != i+1 || !cancelled {
+					t.Fatalf("queued iteration %d was dispatched or misclassified after %s: %+v", i+1, mode, result)
+				}
+				if _, recorded := e.state.Steps[plans[i+1].Steps[0].ID]; recorded {
+					t.Fatalf("queued iteration %d entered its body after %s", i+1, mode)
+				}
+			}
+		})
+	}
+}
+
+func TestForeachParallelCancelledAndEmptyInputsDoNotDispatch(t *testing.T) {
+	for _, count := range []int{0, 4} {
+		for _, concurrency := range []int{0, int(^uint(0) >> 1)} {
+			t.Run(fmt.Sprintf("plans=%d/concurrency=%d", count, concurrency), func(t *testing.T) {
+				e, workflow, parent, plans := foreachSchedulerFixture(t, count)
+				var calls atomic.Int64
+				e.config.BeadQueryRunBr = func(context.Context, []string) ([]byte, error) {
+					calls.Add(1)
+					return []byte(`{"issues":[]}`), nil
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				results := e.executeForeachIterationsParallel(ctx, parent, workflow, plans, ErrorActionFail, concurrency, nil)
+				if len(results) != count || calls.Load() != 0 || len(e.state.Steps) != 0 {
+					t.Fatalf("cancelled or empty input dispatched work: results=%d calls=%d", len(results), calls.Load())
+				}
+				for _, result := range results {
+					if !foreachIterationCancelled(result) {
+						t.Fatalf("cancelled plan returned a non-cancellation result: %+v", result)
+					}
+				}
+			})
 		}
 	}
 }

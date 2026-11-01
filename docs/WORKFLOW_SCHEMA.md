@@ -633,6 +633,20 @@ are rejected so unknown-field validation can stay strict.
 3. If any sub-step fails, the group fails (unless `on_error: continue`)
 4. Outputs are accessible via `${steps.<sub_id>.output}`
 
+### Parallel Foreach Scheduling
+
+For `foreach` or `foreach_pane` with `parallel: true`, `max_concurrent` bounds
+worker creation as well as active iteration bodies. The effective width is
+capped by `settings.limits.max_concurrent_foreach` and the number of items in
+that fan-out. Queued items remain in the plan list until a worker slot opens.
+
+Cancellation, `break`, and `on_error: fail_fast` stop further iteration launches.
+The executor joins active workers and their owned command cleanup before
+returning. Results retain item order even when workers finish out of order;
+filtered items and completed iterations reused on resume retain their own skip
+classifications. Pane assignment, filters, and iteration substitutions are
+resolved before any iteration body starts.
+
 ## Conditional Steps
 
 Skip steps based on runtime conditions:

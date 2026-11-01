@@ -551,6 +551,9 @@ func (e *Executor) executeForeachIterationsParallel(ctx context.Context, parent 
 	if maxConcurrent <= 0 {
 		maxConcurrent = 1
 	}
+	if maxConcurrent > len(plans) {
+		maxConcurrent = len(plans)
+	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -572,6 +575,12 @@ func (e *Executor) executeForeachIterationsParallel(ctx context.Context, parent 
 		defer controlMu.Unlock()
 		return breakSeen
 	}
+	cancelledResult := func(plan foreachIterationPlan) foreachIterationResult {
+		if isBreak() {
+			return foreachBreakSkippedIteration(plan)
+		}
+		return cancelledForeachIteration(plan)
+	}
 
 	for i, plan := range plans {
 		if plan.Skipped {
@@ -585,19 +594,37 @@ func (e *Executor) executeForeachIterationsParallel(ctx context.Context, parent 
 			progress.iterationFinished()
 			continue
 		}
+		// Bound goroutine creation as well as active iteration bodies. Taking
+		// the permit inside a worker leaves one blocked goroutine per item.
+		if runCtx.Err() != nil {
+			results[i] = cancelledResult(plan)
+			progress.iterationFinished()
+			continue
+		}
+		select {
+		case sem <- struct{}{}:
+		case <-runCtx.Done():
+			results[i] = cancelledResult(plan)
+			progress.iterationFinished()
+			continue
+		}
+		// Cancellation and a released permit may become ready together.
+		// A successful select must not authorize another dispatch afterward.
+		if runCtx.Err() != nil {
+			<-sem
+			results[i] = cancelledResult(plan)
+			progress.iterationFinished()
+			continue
+		}
 		wg.Add(1)
 		go func(i int, plan foreachIterationPlan) {
-			defer wg.Done()
-			defer progress.iterationFinished()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-runCtx.Done():
-				if isBreak() {
-					results[i] = foreachBreakSkippedIteration(plan)
-				} else {
-					results[i] = cancelledForeachIteration(plan)
-				}
+			defer func() {
+				progress.iterationFinished()
+				<-sem
+				wg.Done()
+			}()
+			if runCtx.Err() != nil {
+				results[i] = cancelledResult(plan)
 				return
 			}
 			iterResult := e.executeForeachIteration(runCtx, parent, workflow, plan, onError)

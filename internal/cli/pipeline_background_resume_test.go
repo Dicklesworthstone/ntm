@@ -8,8 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -166,5 +170,215 @@ func TestPipelineResumeBackgroundRejectsLiveOwner(t *testing.T) {
 	data, err := os.ReadFile(path)
 	if err != nil || string(data) != "checkpoint must not be parsed" {
 		t.Fatal("rejected background resume changed the checkpoint")
+	}
+}
+
+func TestPipelineBackgroundForeachCancelSettlesOwnedGroupsBeforeResume(t *testing.T) {
+	root := inPipelineControlProject(t)
+	pipelineRecoveryTmux(t, root, "2718", "")
+	usePipelineResumeTestWorker(t)
+	previousJSON := jsonOutput
+	jsonOutput = false
+	t.Cleanup(func() { jsonOutput = previousJSON })
+	const workflow = `schema_version: "2.0"
+name: bounded-foreach-cli
+settings:
+  limits:
+    max_concurrent_foreach: 2
+  on_cancel:
+    - id: cleanup
+      command: printf cleaned >> cleanup-effects
+steps:
+  - id: once
+    command: printf once >> prefix-effects
+  - id: fanout
+    depends_on: [once]
+    foreach:
+      items: '[0,1,2,3,4,5,6,7]'
+      parallel: true
+      max_concurrent: 8
+      steps:
+        - id: work
+          command: |
+            printf 'start\n' >> item-${item}.effects
+            if [ ! -f release ]; then
+              sleep 60 &
+              child=$!
+              trap 'wait "$child"; exit 0' TERM
+              printf '%s\n' "$child" > child-${item}.pid
+              printf '%s\n' "$$" > leader-${item}.pid
+              wait "$child"
+            fi
+            printf 'done\n' >> item-${item}.effects
+  - id: finish
+    depends_on: [fanout]
+    command: printf done > completed-marker
+`
+	path := filepath.Join(root, "bounded-foreach.yaml")
+	if err := os.WriteFile(path, []byte(workflow), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run := newPipelineRunCmd()
+	run.SilenceUsage, run.SilenceErrors = true, true
+	run.SetOut(io.Discard)
+	run.SetErr(io.Discard)
+	run.SetArgs([]string{path, "--session=delivery-session", "--background"})
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	output, err := captureStdout(t, func() error { return run.ExecuteContext(ctx) })
+	cancel()
+	if err != nil {
+		t.Fatalf("CLI did not launch the bounded foreach workflow: %s %v", output, err)
+	}
+	var runID string
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "Run ID:") {
+			runID = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "Run ID:"))
+		}
+	}
+	if runID == "" {
+		t.Fatalf("CLI did not report the background run ID: %s", output)
+	}
+	t.Cleanup(func() {
+		_ = os.WriteFile(filepath.Join(root, "release"), []byte("finish"), 0600)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = pipeline.RequestRunCancellation(ctx, root, runID)
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			owner, err := pipeline.AcquireRunControl(context.Background(), root, runID)
+			if err == nil {
+				owner.Close()
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Error("background foreach worker retained ownership after test cleanup")
+	})
+	awaitState := func(want pipeline.ExecutionStatus) *pipeline.ExecutionState {
+		t.Helper()
+		deadline := time.Now().Add(15 * time.Second)
+		var last *pipeline.ExecutionState
+		for time.Now().Before(deadline) {
+			state, err := pipeline.LoadState(root, runID)
+			if err == nil {
+				last = state
+				if state.Status == want {
+					owner, err := pipeline.AcquireRunControl(context.Background(), root, runID)
+					if err == nil {
+						owner.Close()
+						return state
+					}
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("background foreach did not settle as %s: %+v", want, last)
+		return nil
+	}
+	var running *pipeline.ExecutionState
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		state, err := pipeline.LoadState(root, runID)
+		ready := err == nil && state.Steps["once"].Status == pipeline.StatusCompleted
+		for i := 0; ready && i < 2; i++ {
+			_, childErr := os.Stat(filepath.Join(root, fmt.Sprintf("child-%d.pid", i)))
+			_, leaderErr := os.Stat(filepath.Join(root, fmt.Sprintf("leader-%d.pid", i)))
+			ready = childErr == nil && leaderErr == nil && state.CommandExecutions[fmt.Sprintf("fanout_iter%d_work", i)].Status == "running"
+		}
+		if ready {
+			running = state
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if running == nil {
+		t.Fatal("the first two foreach command groups did not reach their barriers")
+	}
+	for i := 2; i < 8; i++ {
+		if _, err := os.Stat(filepath.Join(root, fmt.Sprintf("item-%d.effects", i))); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("iteration %d exceeded the configured concurrency before cancellation: %v", i, err)
+		}
+	}
+	prefix := running.CommandExecutions["once"]
+	stop := newPipelineCancelCmd()
+	stop.SilenceUsage, stop.SilenceErrors = true, true
+	stop.SetOut(io.Discard)
+	stop.SetErr(io.Discard)
+	stop.SetArgs([]string{runID})
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	output, err = captureStdout(t, func() error { return stop.ExecuteContext(ctx) })
+	cancel()
+	if err != nil || !strings.Contains(output, "Cancellation acknowledged") {
+		t.Fatalf("CLI cancellation was not acknowledged: %s %v", output, err)
+	}
+	stopped := awaitState(pipeline.StatusCancelled)
+	if data, err := os.ReadFile(filepath.Join(root, "cleanup-effects")); err != nil || string(data) != "cleaned" {
+		t.Fatalf("cancellation failed to run its cleanup hook: %q %v", data, err)
+	}
+	for i := 0; i < 8; i++ {
+		id := fmt.Sprintf("fanout_iter%d_work", i)
+		if i >= 2 {
+			if _, exists := stopped.CommandExecutions[id]; exists {
+				t.Fatalf("queued iteration %d created a command receipt after cancellation", i)
+			}
+			if _, exists := stopped.Steps[id]; exists {
+				t.Fatalf("queued iteration %d entered its body after cancellation", i)
+			}
+			if _, err := os.Stat(filepath.Join(root, fmt.Sprintf("item-%d.effects", i))); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("queued iteration %d produced effects after cancellation: %v", i, err)
+			}
+			continue
+		}
+		receipt := stopped.CommandExecutions[id]
+		if receipt.Status != "settled" || receipt.SettledAt.IsZero() || receipt.Result.Status != pipeline.StatusCancelled {
+			t.Fatalf("cancelled owned group retained an unresolved receipt: %+v", receipt)
+		}
+		for _, kind := range []string{"leader", "child"} {
+			data, err := os.ReadFile(filepath.Join(root, fmt.Sprintf("%s-%d.pid", kind, i)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+			if err != nil || pid <= 1 {
+				t.Fatalf("invalid %s PID for iteration %d: %q %v", kind, i, data, err)
+			}
+			if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+				t.Fatalf("owned %s %d survived acknowledged cancellation and worker settlement: %v", kind, pid, err)
+			}
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "release"), []byte("finish"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	resume := newPipelineResumeCmd()
+	resume.SilenceUsage, resume.SilenceErrors = true, true
+	resume.SetOut(io.Discard)
+	resume.SetErr(io.Discard)
+	resume.SetArgs([]string{runID, "--background", "--mode=restart-failed"})
+	ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+	output, err = captureStdout(t, func() error { return resume.ExecuteContext(ctx) })
+	cancel()
+	if err != nil {
+		t.Fatalf("CLI could not explicitly resume the settled cancellation: %s %v", output, err)
+	}
+	final := awaitState(pipeline.StatusCompleted)
+	if data, err := os.ReadFile(filepath.Join(root, "prefix-effects")); err != nil || string(data) != "once" || !final.CommandExecutions["once"].StartedAt.Equal(prefix.StartedAt) {
+		t.Fatalf("resume replayed the completed prefix: %q %v", data, err)
+	}
+	for i := 0; i < 8; i++ {
+		want := "start\ndone\n"
+		if i < 2 {
+			want = "start\n" + want
+		}
+		data, err := os.ReadFile(filepath.Join(root, fmt.Sprintf("item-%d.effects", i)))
+		if err != nil || string(data) != want {
+			t.Fatalf("resumed iteration %d repeated queued work or lost its explicit retry: %q, want %q: %v", i, data, want, err)
+		}
+		if receipt := final.CommandExecutions[fmt.Sprintf("fanout_iter%d_work", i)]; receipt.Status != "settled" || receipt.Result.Status != pipeline.StatusCompleted {
+			t.Fatalf("resumed iteration %d left a stranded command receipt: %+v", i, receipt)
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "completed-marker")); err != nil || string(data) != "done" {
+		t.Fatalf("resumed foreach did not release its dependent step: %q %v", data, err)
 	}
 }
