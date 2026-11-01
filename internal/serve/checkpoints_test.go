@@ -306,6 +306,214 @@ func TestCheckpointArchiveDisclosureCleanRoundTripPreservesRecoveryCommand(t *te
 	}
 }
 
+func checkpointScanLimitFixture(t *testing.T, cfg redaction.Config, aggregate bool) (*checkpoint.Checkpoint, map[string][]byte) {
+	t.Helper()
+	cp, _ := checkpointDisclosureFixture(t, "clean")
+	limits := redaction.DefaultScanLimits()
+	count := limits.MaxCandidates + 1
+	if aggregate {
+		// Description candidates occur in raw and decoded JSON; scrollback
+		// contributes another count. Each entry fits, but their sum does not.
+		count = limits.MaxCandidates/3 + 1
+	}
+	cp.Description = strings.Repeat("~", count)
+	if !aggregate {
+		cp.Description += " " + wiringFakeSecret
+	}
+	storage := checkpoint.NewStorage()
+	snapshots := make(map[string][]byte)
+	if aggregate {
+		cp.Session.Panes[0].ScrollbackFile = "panes/pane-0.txt"
+		path := filepath.Join(storage.CheckpointDir(cp.SessionName, cp.ID), cp.Session.Panes[0].ScrollbackFile)
+		data := []byte(strings.Repeat("~", count))
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		snapshots[path] = data
+	}
+	if err := storage.Save(cp); err != nil {
+		t.Fatal(err)
+	}
+	metadataPath := filepath.Join(storage.CheckpointDir(cp.SessionName, cp.ID), checkpoint.MetadataFile)
+	metadata, err := os.ReadFile(metadataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshots[metadataPath] = metadata
+	cfg.Mode = redaction.ModeBlock
+	if aggregate {
+		for _, data := range snapshots {
+			result := redaction.ScanJSONAndRedactWithLimits(string(data), cfg, limits)
+			if result.LimitExceeded || result.Blocked || len(result.Findings) != 0 || result.Output != string(data) {
+				t.Fatalf("aggregate fixture entry must individually complete and be allowed: limit=%t blocked=%t findings=%d",
+					result.LimitExceeded, result.Blocked, len(result.Findings))
+			}
+		}
+	} else {
+		requireServeScanLimit(t, string(metadata), cfg)
+	}
+	return cp, snapshots
+}
+
+func assertCheckpointScanLimit(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	var result APIError
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil || rec.Code != http.StatusUnprocessableEntity || result.ErrorCode != "CHECKPOINT_INSPECTION_LIMIT" || result.Success {
+		t.Fatalf("incomplete archive inspection was not refused: status=%d error_code=%q parse_error=%v", rec.Code, result.ErrorCode, err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, disclosed := fields["data"]; disclosed || rec.Header().Get("Content-Disposition") != "" || strings.Contains(rec.Body.String(), wiringFakeSecret) {
+		t.Fatal("incomplete archive inspection disclosed recovery data or download metadata")
+	}
+}
+
+func assertCheckpointScanLimitSourcesUnchanged(t *testing.T, snapshots map[string][]byte) {
+	t.Helper()
+	for path, before := range snapshots {
+		after, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(before, after) {
+			t.Fatal("incomplete archive inspection changed source recovery bytes")
+		}
+	}
+}
+
+func TestCheckpointScanLimitRefusesExportAcrossWireForms(t *testing.T) {
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		for _, aggregate := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/aggregate=%t", mode, aggregate), func(t *testing.T) {
+				cfg := serveScanLimitConfig(mode)
+				cp, snapshots := checkpointScanLimitFixture(t, cfg, aggregate)
+				s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: cfg})
+				var logs lockedBuffer
+				previous := log.Writer()
+				log.SetOutput(&logs)
+				t.Cleanup(func() { log.SetOutput(previous) })
+				for _, format := range []string{"tar.gz", "zip"} {
+					for _, download := range []bool{false, true} {
+						assertCheckpointScanLimit(t, checkpointDisclosureExport(t, s, cp, format, download, false))
+					}
+				}
+				assertCheckpointScanLimitSourcesUnchanged(t, snapshots)
+				if strings.Contains(logs.String(), wiringFakeSecret) {
+					t.Fatal("archive inspection limit disclosed source credentials in logs")
+				}
+			})
+		}
+	}
+}
+
+func TestCheckpointScanLimitRefusesImportBeforeOverwriteAndCanRetry(t *testing.T) {
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		for _, aggregate := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/aggregate=%t", mode, aggregate), func(t *testing.T) {
+				cfg := serveScanLimitConfig(mode)
+				cp, snapshots := checkpointScanLimitFixture(t, cfg, aggregate)
+				storage := checkpoint.NewStorage()
+				old := *cp
+				old.SessionName, old.Description = "existing-budget-target", "preserve original recovery state"
+				old.Session = checkpoint.SessionState{}
+				if err := storage.Save(&old); err != nil {
+					t.Fatal(err)
+				}
+				oldPath := filepath.Join(storage.CheckpointDir(old.SessionName, old.ID), checkpoint.MetadataFile)
+				oldBytes, err := os.ReadFile(oldPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				snapshots[oldPath] = oldBytes
+				s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: cfg})
+				var logs lockedBuffer
+				previous := log.Writer()
+				log.SetOutput(&logs)
+				t.Cleanup(func() { log.SetOutput(previous) })
+				for _, format := range []string{"tar.gz", "zip"} {
+					path := filepath.Join(t.TempDir(), "source."+format)
+					if _, err := storage.Export(cp.SessionName, cp.ID, path, checkpoint.ExportOptions{Format: checkpoint.ExportFormat(format), IncludeScrollback: true}); err != nil {
+						t.Fatal(err)
+					}
+					archive, err := os.ReadFile(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if aggregate {
+						scrollback := cp.Session.Panes[0].ScrollbackFile
+						original := snapshots[filepath.Join(storage.CheckpointDir(cp.SessionName, cp.ID), scrollback)]
+						if !bytes.Equal(checkpointDisclosureArchiveEntry(t, archive, format, scrollback), original) {
+							t.Fatal("aggregate import fixture omitted or changed its scrollback entry")
+						}
+					}
+					for _, target := range []string{"new-budget-target", old.SessionName} {
+						req := wiringJSONRequest(t, http.MethodPost, "/api/v1/sessions/"+target+"/checkpoints/import",
+							ImportCheckpointRequest{Data: base64.StdEncoding.EncodeToString(archive), AllowOverwrite: true})
+						req.Header.Set("Idempotency-Key", "checkpoint-budget-"+target)
+						rec := httptest.NewRecorder()
+						s.Router().ServeHTTP(rec, req)
+						assertCheckpointScanLimit(t, rec)
+					}
+				}
+				if _, err := os.Stat(storage.CheckpointDir("new-budget-target", cp.ID)); !os.IsNotExist(err) {
+					t.Fatal("incomplete archive inspection created a checkpoint")
+				}
+				assertCheckpointScanLimitSourcesUnchanged(t, snapshots)
+				if strings.Contains(logs.String(), wiringFakeSecret) {
+					t.Fatal("archive import limit disclosed source credentials in logs")
+				}
+
+				// A smaller corrected archive can reuse the refused request's key.
+				cp.Description = "ordinary corrected recovery state"
+				if aggregate {
+					path := filepath.Join(storage.CheckpointDir(cp.SessionName, cp.ID), cp.Session.Panes[0].ScrollbackFile)
+					if err := os.WriteFile(path, []byte("ordinary corrected scrollback"), 0600); err != nil {
+						t.Fatal(err)
+					}
+					// This is a new fixture snapshot with an intentional payload
+					// change. Save must seal it with fresh artifact checksums.
+					cp.ArtifactIntegrity = nil
+				}
+				if err := storage.Save(cp); err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(t.TempDir(), "corrected.zip")
+				if _, err := storage.Export(cp.SessionName, cp.ID, path, checkpoint.ExportOptions{Format: checkpoint.FormatZip, IncludeScrollback: true}); err != nil {
+					t.Fatal(err)
+				}
+				archive, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for attempt := 0; attempt < 2; attempt++ {
+					req := wiringJSONRequest(t, http.MethodPost, "/api/v1/sessions/new-budget-target/checkpoints/import",
+						ImportCheckpointRequest{Data: base64.StdEncoding.EncodeToString(archive), AllowOverwrite: true})
+					req.Header.Set("Idempotency-Key", "checkpoint-budget-new-budget-target")
+					rec := httptest.NewRecorder()
+					s.Router().ServeHTTP(rec, req)
+					if rec.Code != http.StatusCreated || (rec.Header().Get("X-Idempotent-Replay") == "true") != (attempt == 1) {
+						t.Fatalf("corrected archive attempt=%d status=%d replay=%q", attempt, rec.Code, rec.Header().Get("X-Idempotent-Replay"))
+					}
+				}
+				imported, err := storage.Load("new-budget-target", cp.ID)
+				if err != nil || imported == nil || imported.Description != cp.Description || len(imported.Session.Panes) != 1 || imported.Session.Panes[0].LaunchSpec == nil || imported.Session.Panes[0].LaunchSpec.Command != cp.Session.Panes[0].LaunchSpec.Command {
+					t.Fatal("corrected archive did not preserve exact recovery values")
+				}
+				if aggregate {
+					path := filepath.Join(storage.CheckpointDir(imported.SessionName, imported.ID), imported.Session.Panes[0].ScrollbackFile)
+					data, err := os.ReadFile(path)
+					if err != nil || string(data) != "ordinary corrected scrollback" {
+						t.Fatal("corrected archive did not preserve exact scrollback bytes")
+					}
+					integrity := checkpoint.VerifyStoredCheckpoint(storage, imported.SessionName, imported.ID)
+					if !integrity.Valid || integrity.Details["checksum_status"] != "verified" {
+						t.Fatal("corrected archive did not retain valid artifact checksums")
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestCheckpointImportPublicationOutcomeIsRetained(t *testing.T) {
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock, redaction.ModeOff} {
 		for _, published := range []bool{true, false} {

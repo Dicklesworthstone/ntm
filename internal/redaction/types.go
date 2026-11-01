@@ -61,10 +61,45 @@ type Result struct {
 	Findings []Finding `json:"findings"`
 	// Output is the (potentially redacted) content.
 	Output string `json:"output"`
-	// Blocked indicates if the operation should be blocked (ModeBlock + findings).
+	// Blocked indicates findings in ModeBlock or an incomplete bounded scan.
 	Blocked bool `json:"blocked"`
+	// LimitExceeded means the entire input could not be inspected within the
+	// supplied budget. Findings and Output are empty: neither a partial scan nor
+	// an empty findings slice establishes that the input is safe.
+	LimitExceeded bool `json:"limit_exceeded,omitempty"`
 	// OriginalLength is the length of the input before redaction.
 	OriginalLength int `json:"original_length"`
+}
+
+// ScanLimits bounds one inspection operation, including all decoded views and
+// repeated calls on a Scanner. Input/result sizes apply to each call; candidate,
+// token and work consumption accumulate across the operation. All fields must
+// be positive. The unbounded APIs retain their existing semantics.
+type ScanLimits struct {
+	MaxInputBytes    int
+	MaxResultBytes   int
+	MaxCandidates    int
+	MaxJSONTokens    int
+	MaxWorkBytes     int64
+	MaxDepth         int
+	MaxConfigEntries int
+	MaxConfigBytes   int
+}
+
+// DefaultScanLimits provides the service inspection budget. Work includes
+// repeated pattern, parser, decoding, mapping, and allowlist reads. Candidate
+// and token limits apply before filtering and before allocating unbounded lists.
+func DefaultScanLimits() ScanLimits {
+	return ScanLimits{
+		MaxInputBytes:    100 << 20,
+		MaxResultBytes:   100 << 20,
+		MaxCandidates:    16384,
+		MaxJSONTokens:    65536,
+		MaxWorkBytes:     1 << 30,
+		MaxDepth:         32,
+		MaxConfigEntries: 256,
+		MaxConfigBytes:   64 << 10,
+	}
 }
 
 // Config configures the redaction behavior.

@@ -1007,7 +1007,11 @@ func (h *WSHub) redactEvent(event *WSEvent) error {
 	}
 	metadataCfg := cfg.Config
 	metadataCfg.Mode = redaction.ModeBlock
-	if result := redaction.ScanJSONAndRedact(string(metadata), metadataCfg); result.Blocked {
+	result := scanServerJSON(string(metadata), metadataCfg)
+	if result.LimitExceeded {
+		return errRedactionInspectionLimit
+	}
+	if result.Blocked {
 		return errors.New("event metadata contains sensitive content")
 	}
 	data, err := redactWSEventData(event.Data, cfg.Config)
@@ -1804,9 +1808,9 @@ func (s *Server) requestIDMiddlewareFunc(next http.Handler) http.Handler {
 		// Screen the complete supplied value before sanitizing/truncating it:
 		// a truncated token can still disclose credential material in headers,
 		// early refusal bodies, and every downstream log or audit record.
-		if len(requestMetadataFindings(originalID, cfg)) == 0 {
+		if !scanRequestMetadata(originalID, cfg).Blocked {
 			reqID = sanitizeRequestID(originalID)
-			if len(requestMetadataFindings(reqID, cfg)) > 0 {
+			if scanRequestMetadata(reqID, cfg).Blocked {
 				reqID = ""
 			}
 		}
@@ -1855,9 +1859,14 @@ func (s *Server) corsMiddlewareFunc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		if origin != "" {
-			if len(requestMetadataFindings(origin, s.requestRedactionConfig(r))) > 0 {
+			inspection := scanRequestMetadata(origin, s.requestRedactionConfig(r))
+			if inspection.Blocked {
+				message := "origin contains sensitive content"
+				if inspection.LimitExceeded {
+					message = "origin could not be completely inspected within redaction limits"
+				}
 				writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden,
-					"origin contains sensitive content", nil, requestIDFromContext(r.Context()))
+					message, nil, requestIDFromContext(r.Context()))
 				return
 			}
 			s.mu.RLock()
@@ -2696,7 +2705,10 @@ func (s *Server) writeSSEEvent(w io.Writer, eventType string, payload any) (err 
 	if metadataCfg.Mode == redaction.ModeRedact {
 		metadataCfg.Mode = redaction.ModeBlock
 	}
-	metadata := redaction.ScanAndRedact(eventType, metadataCfg)
+	metadata := scanServerText(eventType, metadataCfg)
+	if metadata.LimitExceeded {
+		return errRedactionInspectionLimit
+	}
 	if metadata.Blocked {
 		return errors.New("sensitive SSE routing metadata")
 	}

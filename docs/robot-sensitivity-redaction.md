@@ -55,6 +55,58 @@ decodes the whole request into a map or reserializes accepted input. Duplicate
 properties, exact number spellings, and whitespace remain intact. Generic text
 and log callers retain their existing scanning contract.
 
+### Inspection limits
+
+Enforcing REST policies use a bounded scanner. If it cannot finish inspecting
+the complete input, request admission returns `422 REDACTION_INSPECTION_LIMIT`
+with a static `source` of `body`, `path`, or `query`. No handler or idempotency
+replay runs, and the request values remain unchanged. The diagnostic does not
+claim that a secret was found and does not include partial findings or excerpts.
+A corrected request can use the same idempotency key.
+
+| Resource | Default inspection limit |
+|----------|--------------------------|
+| Each input | 100 MiB; the HTTP request-body limit remains 10 MiB |
+| Each result and generated finding data | 100 MiB of size accounting |
+| Raw match candidates | 16,384 per scanner operation |
+| JSON structural tokens and records | 65,536 per scanner operation |
+| Cumulative inspection work | 1 GiB of charged subject bytes, including fixed per-read accounting |
+| Decoded JSON-string nesting | 32 layers |
+| Configured patterns, category names, and disabled-category entries | 256 entries and 64 KiB of text |
+
+Candidates are charged before rejection filters or allowlists run. Decoded
+representations, normalization, mapping, and repeated allowlist subjects consume
+the same work budget. Token and candidate limits are enforced before allocating
+unbounded regex result lists or JSON record/key collections. Generated findings
+and replacement expansion are checked before materializing the result. These
+are deterministic resource bounds, not a wall-clock deadline or a limit on all
+memory used by the HTTP handler.
+
+URL path/query inspection shares one scanner across repeated values, and archive
+inspection shares one scanner across names, headers, entries, and decoded gzip
+members. Configured regexes are prepared once for the operation. Exhaustion
+remains sticky; later small pieces cannot turn it into a completed clean scan.
+Archive exhaustion returns the existing `422 CHECKPOINT_INSPECTION_LIMIT` before
+import publication/overwrite or export delivery. Explicit allowlists do not
+authorize content that was never completely inspected.
+
+Output inspection preserves the distinction between admission and a completed
+operation. An incomplete initial or residual response scan uses the existing
+`RESPONSE_REDACTION_FAILED` envelope and keeps the handler's status. Event streams
+withhold the affected frame through their existing stop/reset paths. Unverified
+request IDs receive independent generated IDs; unsafe or unverified cached
+identity headers and checkpoint references are withheld. Logs use safe fallback
+fields and may report `inspection_limited: true` without source contents.
+
+The bounded APIs and reusable `redaction.Scanner` share the same detection engine
+as the existing text/JSON APIs. Their explicit `LimitExceeded` result also sets
+`Blocked`, with empty `Findings` and `Output`; an empty finding slice alone never
+establishes successful inspection. Existing unbounded callers and REST off/warn
+behavior retain their semantics. Within the budget, priority, allowlisting,
+disabled categories, decoded JSON handling, and original byte offsets remain
+unchanged. Overlap detection uses indexed interval coverage; differential tests
+compare its complete results with the former implementation.
+
 ### Why requests are rejected
 
 The handlers require exact input for several different reasons:

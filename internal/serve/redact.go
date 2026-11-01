@@ -30,13 +30,14 @@ type RedactionConfig struct {
 
 // RedactionSummary is logged after request/response redaction.
 type RedactionSummary struct {
-	RequestID     string         `json:"request_id"`
-	Path          string         `json:"path"`
-	Method        string         `json:"method"`
-	RequestFinds  int            `json:"request_findings"`
-	ResponseFinds int            `json:"response_findings"`
-	Categories    map[string]int `json:"categories,omitempty"`
-	Blocked       bool           `json:"blocked,omitempty"`
+	RequestID         string         `json:"request_id"`
+	Path              string         `json:"path"`
+	Method            string         `json:"method"`
+	RequestFinds      int            `json:"request_findings"`
+	ResponseFinds     int            `json:"response_findings"`
+	Categories        map[string]int `json:"categories,omitempty"`
+	Blocked           bool           `json:"blocked,omitempty"`
+	InspectionLimited bool           `json:"inspection_limited,omitempty"`
 }
 
 // Callers of pipeline recovery must echo receipt_token exactly, so that one route
@@ -99,13 +100,38 @@ func enforcesRequestRedaction(cfg redaction.Config) bool {
 // Metadata can contain a JSON document as well as plain text. Wrapping the
 // exact value as a JSON string lets the existing scanner inspect both without
 // changing the route, header, query, or principal used by application code.
-func requestMetadataFindings(value string, cfg redaction.Config) []redaction.Finding {
+func scanRequestMetadata(value string, cfg redaction.Config) redaction.Result {
 	if value == "" || !enforcesRequestRedaction(cfg) {
-		return nil
+		return redaction.Result{Mode: cfg.Mode, Output: value}
 	}
 	cfg.Mode = redaction.ModeBlock
 	data, _ := json.Marshal(value) // Strings are always JSON-serializable.
-	return redaction.ScanJSONAndRedact(string(data), cfg).Findings
+	return scanServerJSON(string(data), cfg)
+}
+
+func scanServerJSON(value string, cfg redaction.Config) redaction.Result {
+	if !enforcesRequestRedaction(cfg) {
+		return redaction.ScanJSONAndRedact(value, cfg)
+	}
+	return redaction.ScanJSONAndRedactWithLimits(value, cfg, redaction.DefaultScanLimits())
+}
+
+func scanServerText(value string, cfg redaction.Config) redaction.Result {
+	if !enforcesRequestRedaction(cfg) {
+		return redaction.ScanAndRedact(value, cfg)
+	}
+	return redaction.ScanAndRedactWithLimits(value, cfg, redaction.DefaultScanLimits())
+}
+
+var errRedactionInspectionLimit = errors.New("redaction inspection exceeded its work limit")
+
+func writeRequestInspectionLimit(w http.ResponseWriter, source, requestID string) {
+	writeErrorResponse(w, http.StatusUnprocessableEntity, "REDACTION_INSPECTION_LIMIT",
+		"request could not be completely inspected within redaction limits; request values were not changed",
+		map[string]interface{}{
+			"source": source,
+			"hint":   "Reduce the submitted input or simplify the configured redaction patterns before retrying.",
+		}, requestID)
 }
 
 // redactRequestDiagnostic protects an observational copy only. Ambiguous
@@ -138,10 +164,10 @@ func protectReplayMetadata(header http.Header, cfg redaction.Config) {
 	}
 	for _, key := range []string{requestIDHeader, "Location"} {
 		for _, value := range header.Values(key) {
-			unsafe := len(requestMetadataFindings(value, cfg)) > 0
+			unsafe := scanRequestMetadata(value, cfg).Blocked
 			if key == "Location" && !unsafe {
 				decoded, err := url.QueryUnescape(value)
-				unsafe = err != nil || len(requestMetadataFindings(decoded, cfg)) > 0
+				unsafe = err != nil || scanRequestMetadata(decoded, cfg).Blocked
 			}
 			if unsafe {
 				header.Del(key)
@@ -158,8 +184,22 @@ func admitRequestURL(w http.ResponseWriter, r *http.Request, cfg redaction.Confi
 	if !enforcesRequestRedaction(cfg) {
 		return true
 	}
+	metadataCfg := cfg
+	metadataCfg.Mode = redaction.ModeBlock
+	// A query with many individually cheap values must not reset the work
+	// budget or recompile patterns for every entry.
+	scanner := redaction.NewScanner(metadataCfg, redaction.DefaultScanLimits())
 	refuse := func(source, value string) bool {
-		findings := requestMetadataFindings(value, cfg)
+		data, _ := json.Marshal(value)
+		result := scanner.ScanJSONAndRedact(string(data))
+		if result.LimitExceeded {
+			summary.Blocked = true
+			summary.InspectionLimited = true
+			logRedactionSummary(summary)
+			writeRequestInspectionLimit(w, source, summary.RequestID)
+			return true
+		}
+		findings := result.Findings
 		if len(findings) == 0 {
 			return false
 		}
@@ -265,7 +305,14 @@ func (s *Server) redactionMiddleware(next http.Handler) http.Handler {
 				if requestCfg.Mode == redaction.ModeRedact {
 					requestCfg.Mode = redaction.ModeBlock
 				}
-				result := redaction.ScanJSONAndRedact(string(body), requestCfg)
+				result := scanServerJSON(string(body), requestCfg)
+				if result.LimitExceeded {
+					summary.Blocked = true
+					summary.InspectionLimited = true
+					logRedactionSummary(summary)
+					writeRequestInspectionLimit(w, "body", reqID)
+					return
+				}
 				summary.RequestFinds = len(result.Findings)
 				for _, f := range result.Findings {
 					categories[string(f.Category)]++
@@ -325,7 +372,7 @@ func (s *Server) redactionMiddleware(next http.Handler) http.Handler {
 		rw.finalize()
 
 		// Log summary if there were any findings
-		if summary.RequestFinds > 0 || summary.ResponseFinds > 0 {
+		if summary.RequestFinds > 0 || summary.ResponseFinds > 0 || summary.InspectionLimited {
 			summary.Categories = categories
 			logRedactionSummary(summary)
 		}
@@ -401,6 +448,7 @@ func (rw *redactingResponseWriter) finalize() {
 		}
 		body = output
 		if err != nil {
+			rw.summary.InspectionLimited = errors.Is(err, errRedactionInspectionLimit)
 			body = []byte(redactionUnavailableResponse)
 			log.Print("redact: JSON response withheld because it could not be safely redacted")
 		}
@@ -431,9 +479,13 @@ func redactJSONBytes(body []byte, cfg redaction.Config) ([]byte, redaction.Resul
 	if cfg.Mode == redaction.ModeBlock {
 		cfg.Mode = redaction.ModeRedact
 	}
-	result := redaction.ScanJSONAndRedact(string(body), cfg)
 	if cfg.Mode != redaction.ModeRedact {
-		return body, result, nil
+		return body, redaction.ScanJSONAndRedact(string(body), cfg), nil
+	}
+	scanner := redaction.NewScanner(cfg, redaction.DefaultScanLimits())
+	result := scanner.ScanJSONAndRedact(string(body))
+	if result.LimitExceeded {
+		return nil, result, errRedactionInspectionLimit
 	}
 	if !json.Valid(body) {
 		return nil, result, errors.New("invalid JSON output")
@@ -468,9 +520,11 @@ func redactJSONBytes(body []byte, cfg redaction.Config) ([]byte, redaction.Resul
 	// protects against a structurally valid but incomplete custom rewrite.
 	// Ignore complete markers: PASSWORD detects arbitrary quoted values and
 	// would otherwise mistake already protected values for new passwords.
-	checkCfg := cfg
-	checkCfg.Mode = redaction.ModeBlock
-	for _, f := range redaction.ScanJSONAndRedact(string(output), checkCfg).Findings {
+	check := scanner.ScanJSONAndRedact(string(output))
+	if check.LimitExceeded {
+		return nil, result, errRedactionInspectionLimit
+	}
+	for _, f := range check.Findings {
 		if !protectedPassword(f) {
 			return nil, result, errors.New("JSON redaction left sensitive content")
 		}

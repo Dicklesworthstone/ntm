@@ -1,6 +1,7 @@
 package redaction
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -310,4 +311,103 @@ func BenchmarkPatternCount(b *testing.B) {
 			_ = ScanAndRedact(input, cfg)
 		}
 	})
+}
+
+var dedupBenchmarkResult []match
+
+// BenchmarkDeduplicateMatchesPaired runs the incumbent and coverage index in the
+// same invocation. The sparse case exposes fixed overhead; dense and surrounding
+// credentials exercise the formerly quadratic work. Both include the same input
+// copy because each implementation sorts its candidates in place.
+func BenchmarkDeduplicateMatchesPaired(b *testing.B) {
+	fixtures := []struct {
+		name    string
+		matches []match
+	}{
+		{"Sparse8", dedupBenchmarkDisjoint(8, 128, false)},
+		{"Dense1024", dedupBenchmarkDisjoint(1024, 1, false)},
+		{"Dense8192", dedupBenchmarkDisjoint(8192, 1, false)},
+		{"Interleaved8192", dedupBenchmarkDisjoint(8192, 1, true)},
+		{"Residual512", dedupBenchmarkSurrounding(512, 1)},
+		{"RepeatedSurrounding128x16", dedupBenchmarkSurrounding(128, 16)},
+	}
+	implementations := []struct {
+		name string
+		run  func([]match) []match
+	}{
+		{"Incumbent", deduplicateMatchesIncumbent},
+		{"Coverage", deduplicateMatches},
+	}
+	for _, fixture := range fixtures {
+		b.Run(fixture.name, func(b *testing.B) {
+			want := deduplicateMatchesIncumbent(cloneDedupMatches(fixture.matches))
+			got := deduplicateMatches(cloneDedupMatches(fixture.matches))
+			if !reflect.DeepEqual(got, want) {
+				b.Fatal("candidate changed the incumbent's findings or metadata")
+			}
+			for _, implementation := range implementations {
+				b.Run(implementation.name, func(b *testing.B) {
+					b.ReportAllocs()
+					for i := 0; i < b.N; i++ {
+						dedupBenchmarkResult = implementation.run(cloneDedupMatches(fixture.matches))
+					}
+				})
+			}
+		})
+	}
+}
+
+func dedupBenchmarkDisjoint(count, gap int, interleaved bool) []match {
+	token := "ghp_" + strings.Repeat("a", 40)
+	unit := token + strings.Repeat(" ", gap)
+	source := strings.Repeat(unit, count)
+	matches := make([]match, count)
+	for i := range matches {
+		position := i
+		priority := 100
+		if interleaved {
+			position = count - 1 - i
+			priority -= (i % 4) * 10
+		}
+		start := position * len(unit)
+		matches[i] = match{
+			category: CategoryGitHubToken,
+			match:    source[start : start+len(token)],
+			start:    start,
+			end:      start + len(token),
+			priority: priority,
+		}
+	}
+	return matches
+}
+
+func dedupBenchmarkSurrounding(providers, wrappers int) []match {
+	token := "ghp_" + strings.Repeat("b", 40)
+	prefix := "api_token=\""
+	unit := "left" + token + "right"
+	source := prefix + strings.Repeat(unit, providers) + "\""
+	matches := make([]match, 0, providers+wrappers)
+	for i := 0; i < providers; i++ {
+		start := len(prefix) + i*len(unit) + len("left")
+		matches = append(matches, match{
+			category: CategoryGitHubToken,
+			match:    source[start : start+len(token)],
+			start:    start,
+			end:      start + len(token),
+			priority: 100,
+		})
+	}
+	for i := 0; i < wrappers; i++ {
+		matches = append(matches, match{
+			category:          CategoryGenericAPIKey,
+			match:             source,
+			start:             0,
+			end:               len(source),
+			priority:          50 - i,
+			valueStart:        len(prefix),
+			valueEnd:          len(source) - 1,
+			allowlistContexts: []string{"surrounding assignment"},
+		})
+	}
+	return matches
 }

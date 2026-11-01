@@ -29,6 +29,255 @@ import (
 
 const wiringFakeSecret = "sk-proj-FAKEtestkey1234567890123456789012345678901234"
 
+func serveScanLimitConfig(mode redaction.Mode) redaction.Config {
+	return redaction.Config{
+		Mode: mode, ExtraPatterns: map[redaction.Category][]string{"BUDGET": {`~`}},
+		Allowlist: []string{`^~$`},
+	}
+}
+
+func requireServeScanLimit(t *testing.T, input string, cfg redaction.Config) {
+	t.Helper()
+	cfg.Mode = redaction.ModeBlock
+	result := redaction.ScanJSONAndRedactWithLimits(input, cfg, redaction.DefaultScanLimits())
+	if !result.LimitExceeded || !result.Blocked || len(result.Findings) != 0 || result.Output != "" {
+		t.Fatalf("fixture must exhaust inspection without a usable partial result: limit=%t blocked=%t findings=%d output_bytes=%d",
+			result.LimitExceeded, result.Blocked, len(result.Findings), len(result.Output))
+	}
+}
+
+func assertRequestScanLimit(t *testing.T, rec *httptest.ResponseRecorder, source string) {
+	t.Helper()
+	var response APIError
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || rec.Code != http.StatusUnprocessableEntity || response.ErrorCode != "REDACTION_INSPECTION_LIMIT" {
+		t.Fatalf("incomplete inspection was not explicitly refused: status=%d error_code=%q parse_error=%v", rec.Code, response.ErrorCode, err)
+	}
+	if response.Details["source"] != source {
+		t.Fatalf("inspection refusal source=%v, want %q", response.Details["source"], source)
+	}
+	if _, exists := response.Details["findings"]; exists {
+		t.Error("incomplete inspection exposed partial findings")
+	}
+}
+
+func TestRedactionScanLimitRefusesApprovalBeforeStorage(t *testing.T) {
+	padding := strings.Repeat("~", redaction.DefaultScanLimits().MaxCandidates+1)
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		for _, suffix := range []string{"", " " + wiringFakeSecret} {
+			name := "allowed candidates only"
+			if suffix != "" {
+				name = "late credential"
+			}
+			t.Run(string(mode)+"/"+name, func(t *testing.T) {
+				t.Setenv("HOME", t.TempDir())
+				cfg := serveScanLimitConfig(mode)
+				body := ApprovalRequestRequest{Action: "echo ordinary", Resource: "target", Reason: padding + suffix}
+				encoded, err := json.Marshal(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				requireServeScanLimit(t, string(encoded), cfg)
+				s, store := setupTestServer(t)
+				s.redactionCfg = &RedactionConfig{Enabled: true, Config: cfg}
+				var logs lockedBuffer
+				previous := log.Writer()
+				log.SetOutput(&logs)
+				t.Cleanup(func() { log.SetOutput(previous) })
+				req := wiringJSONRequest(t, http.MethodPost, "/api/v1/approvals/request", body)
+				req.Header.Set("Idempotency-Key", "bounded-approval")
+				rec := httptest.NewRecorder()
+				s.Router().ServeHTTP(rec, req)
+				assertRequestScanLimit(t, rec, "body")
+				approvals, err := store.ListApprovalHistory()
+				if err != nil || len(approvals) != 0 {
+					t.Fatalf("incomplete scan reached approval storage: count=%d err=%v", len(approvals), err)
+				}
+				if strings.Contains(rec.Body.String(), wiringFakeSecret) || strings.Contains(logs.String(), wiringFakeSecret) || strings.Contains(rec.Body.String(), padding[:64]) {
+					t.Fatal("inspection refusal exposed source content")
+				}
+				corrected := ApprovalRequestRequest{Action: `echo "ready"`, Resource: "target", Reason: "  exact café reason\n"}
+				for attempt := 0; attempt < 2; attempt++ {
+					req = wiringJSONRequest(t, http.MethodPost, "/api/v1/approvals/request", corrected)
+					req.Header.Set("Idempotency-Key", "bounded-approval")
+					rec = httptest.NewRecorder()
+					s.Router().ServeHTTP(rec, req)
+					if rec.Code != http.StatusOK || (rec.Header().Get("X-Idempotent-Replay") == "true") != (attempt == 1) {
+						t.Fatalf("corrected request attempt=%d status=%d replay=%q", attempt, rec.Code, rec.Header().Get("X-Idempotent-Replay"))
+					}
+				}
+				approvals, err = store.ListApprovalHistory()
+				if err != nil || len(approvals) != 1 || approvals[0].Action != corrected.Action || approvals[0].Resource != corrected.Resource || approvals[0].Reason != corrected.Reason {
+					t.Fatalf("corrected approval was not stored exactly once: count=%d err=%v", len(approvals), err)
+				}
+			})
+		}
+	}
+}
+
+func TestRedactionScanLimitMetadataNeverUsesIncompleteResults(t *testing.T) {
+	padding := strings.Repeat("~", redaction.DefaultScanLimits().MaxCandidates+1)
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		t.Run(string(mode), func(t *testing.T) {
+			cfg := serveScanLimitConfig(mode)
+			requireServeScanLimit(t, padding, cfg)
+			s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: cfg})
+			calls := 0
+			s.router.Post("/api/v1/scan-probe", func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.WriteHeader(http.StatusNoContent)
+			})
+			for _, source := range []string{"path", "query"} {
+				path := "/api/v1/accounts/" + padding
+				if source == "query" {
+					path = "/api/v1/scan-probe?label=" + url.QueryEscape(padding)
+				}
+				rec := httptest.NewRecorder()
+				s.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
+				assertRequestScanLimit(t, rec, source)
+			}
+			if calls != 0 {
+				t.Fatal("incomplete URL inspection reached the handler")
+			}
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/scan-probe", nil)
+			originalID := "ordinary-id" + padding
+			req.Header.Set(requestIDHeader, originalID)
+			rec := httptest.NewRecorder()
+			s.Router().ServeHTTP(rec, req)
+			if rec.Code != http.StatusNoContent || calls != 1 || rec.Header().Get(requestIDHeader) == "" || rec.Header().Get(requestIDHeader) == sanitizeRequestID(originalID) {
+				t.Fatal("incomplete correlation-ID inspection did not generate a safe independent ID")
+			}
+			if req.Header.Get(requestIDHeader) != originalID || redactRequestDiagnostic(padding, cfg) != "[REDACTED]" {
+				t.Fatal("diagnostic limit handling changed operational metadata or disclosed its original value")
+			}
+			origin := "https://" + padding + ".example"
+			s.corsAllowedOrigins = []string{origin}
+			req = httptest.NewRequest(http.MethodPost, "/api/v1/scan-probe", nil)
+			req.Header.Set("Origin", origin)
+			rec = httptest.NewRecorder()
+			s.Router().ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden || rec.Header().Get("Access-Control-Allow-Origin") != "" || calls != 1 {
+				t.Fatal("an incompletely inspected Origin was reflected or dispatched")
+			}
+		})
+	}
+}
+
+func TestRedactionScanLimitOmitsCachedLocationWithoutRepeatingOperation(t *testing.T) {
+	location := "/api/v1/jobs/created?label=" + strings.Repeat("~", redaction.DefaultScanLimits().MaxCandidates+1)
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		t.Run(string(mode), func(t *testing.T) {
+			cfg := serveScanLimitConfig(mode)
+			requireServeScanLimit(t, location, cfg)
+			s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeOff}})
+			calls := 0
+			s.router.Post("/api/v1/cached-location", func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.Header().Set("Location", location)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"created":true}`))
+			})
+			request := func(id string) *httptest.ResponseRecorder {
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/cached-location", nil)
+				req.Header.Set("Idempotency-Key", "location-inspection")
+				req.Header.Set(requestIDHeader, id)
+				rec := httptest.NewRecorder()
+				s.Router().ServeHTTP(rec, req)
+				return rec
+			}
+			first := request("original-safe-id")
+			if first.Code != http.StatusCreated || first.Header().Get("Location") != location || calls != 1 {
+				t.Fatal("failed to seed original cached response")
+			}
+			s.mu.Lock()
+			s.redactionCfg = &RedactionConfig{Enabled: true, Config: cfg}
+			s.mu.Unlock()
+			replay := request("current-safe-id")
+			if replay.Code != http.StatusCreated || replay.Header().Get("X-Idempotent-Replay") != "true" || replay.Header().Get("Location") != "" || calls != 1 {
+				t.Fatal("incomplete cached identity was disclosed or caused the operation to repeat")
+			}
+			if replay.Header().Get(requestIDHeader) != "current-safe-id" || replay.Header().Get(idempotencyOriginalRequestIDHeader) != "original-safe-id" {
+				t.Fatal("protecting the cached URL changed safe correlation metadata")
+			}
+			s.mu.Lock()
+			s.redactionCfg = &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeOff}}
+			s.mu.Unlock()
+			permitted := request("permissive-retry")
+			if permitted.Header().Get("Location") != location || calls != 1 {
+				t.Fatal("current-policy filtering mutated the cached original")
+			}
+		})
+	}
+}
+
+func TestRedactionScanLimitWithholdsStreamingFrames(t *testing.T) {
+	padding := strings.Repeat("~", redaction.DefaultScanLimits().MaxCandidates+1)
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		t.Run(string(mode), func(t *testing.T) {
+			cfg := serveScanLimitConfig(mode)
+			payload := map[string]string{"description": padding, "api_token": wiringFakeSecret}
+			encoded, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireServeScanLimit(t, string(encoded), cfg)
+			requireServeScanLimit(t, padding, cfg)
+			var logs lockedBuffer
+			previous := log.Writer()
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(previous) })
+			s := &Server{redactionCfg: &RedactionConfig{Enabled: true, Config: cfg}}
+			for _, label := range []string{"attention", padding} {
+				framePayload := payload
+				if label == padding {
+					framePayload = map[string]string{"message": "ordinary"}
+				}
+				rec := httptest.NewRecorder()
+				if err := s.writeSSEEvent(rec, label, framePayload); err == nil || rec.Body.Len() != 0 {
+					t.Fatal("incomplete SSE inspection released frame bytes")
+				}
+			}
+			db, cleanup := setupTestDB(t)
+			defer cleanup()
+			store := NewWSEventStore(db, DefaultWSEventStoreConfig())
+			defer store.Stop()
+			hub := NewWSHub()
+			defer hub.Stop()
+			hub.SetEventStore(store)
+			hub.setRedactionCfgForTest(&RedactionConfig{Enabled: true, Config: cfg})
+			for _, topic := range []string{"sessions:inspection", "sessions:" + padding} {
+				framePayload := payload
+				if topic != "sessions:inspection" {
+					framePayload = map[string]string{"message": "ordinary"}
+				}
+				client := &WSClient{id: "bounded-stream", hub: hub, send: make(chan []byte, 2), topics: map[string]struct{}{topic: {}}}
+				hub.clients[client] = struct{}{}
+				before := store.CurrentSeq()
+				hub.broadcastEvent(&WSEvent{Topic: topic, EventType: "diagnostic", Data: framePayload})
+				select {
+				case raw := <-client.send:
+					var frame struct {
+						Type WSMessageType `json:"type"`
+					}
+					if err := json.Unmarshal(raw, &frame); err != nil || frame.Type != "stream.reset" || bytes.Contains(raw, []byte(wiringFakeSecret)) || bytes.Contains(raw, []byte(padding[:64])) {
+						t.Fatal("incomplete WS inspection did not produce a safe reset")
+					}
+				default:
+					t.Fatal("withheld event did not signal resynchronization")
+				}
+				var count int
+				if err := db.QueryRow("SELECT COUNT(*) FROM ws_events").Scan(&count); err != nil || count != 0 || store.CurrentSeq() != before {
+					t.Fatalf("incomplete WS inspection persisted data or advanced its cursor: rows=%d err=%v", count, err)
+				}
+			}
+			after, err := json.Marshal(payload)
+			if err != nil || !bytes.Equal(encoded, after) || strings.Contains(logs.String(), wiringFakeSecret) {
+				t.Fatal("stream refusal changed the source event or leaked its credential in logs")
+			}
+		})
+	}
+}
+
 func newWiringTestServer(t *testing.T, rcfg *RedactionConfig) *Server {
 	t.Helper()
 	s := New(Config{Host: "127.0.0.1", Port: 0, Redaction: rcfg})

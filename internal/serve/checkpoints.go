@@ -147,11 +147,18 @@ func inspectCheckpointArchive(ctx context.Context, data []byte, format checkpoin
 		return errCheckpointDisclosureLimit
 	}
 	cfg.Mode = redaction.ModeBlock
+	// Share the budget across names, headers, entries and decoded gzip
+	// members: splitting content into many small entries cannot reset it.
+	scanner := redaction.NewScanner(cfg, redaction.DefaultScanLimits())
 	scan := func(data []byte) error {
 		if ctx.Err() != nil {
 			return errCheckpointDisclosureInvalid
 		}
-		if redaction.ScanJSONAndRedact(string(data), cfg).Blocked {
+		result := scanner.ScanJSONAndRedact(string(data))
+		if result.LimitExceeded {
+			return errCheckpointDisclosureLimit
+		}
+		if result.Blocked {
 			return errCheckpointDisclosureSensitive
 		}
 		return nil
@@ -968,7 +975,12 @@ func (s *Server) handleExportCheckpoint(w http.ResponseWriter, r *http.Request) 
 	if r.URL.Query().Get("download") == "true" || r.Header.Get("Accept") == "application/octet-stream" {
 		if protectArchive {
 			filename := fmt.Sprintf("%s_%s%s", sessionName, checkpointID, ext)
-			if redaction.ScanAndRedact(filename, disclosureCfg).Blocked {
+			result := scanServerText(filename, disclosureCfg)
+			if result.LimitExceeded {
+				writeCheckpointDisclosureError(w, errCheckpointDisclosureLimit, reqID, false)
+				return
+			}
+			if result.Blocked {
 				writeCheckpointDisclosureError(w, errCheckpointDisclosureSensitive, reqID, false)
 				return
 			}
@@ -1045,7 +1057,12 @@ func (s *Server) handleExportCheckpoint(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		encoded = append(encoded, '\n')
-		if redaction.ScanJSONAndRedact(string(encoded), disclosureCfg).Blocked {
+		result := scanServerJSON(string(encoded), disclosureCfg)
+		if result.LimitExceeded {
+			writeCheckpointDisclosureError(w, errCheckpointDisclosureLimit, reqID, false)
+			return
+		}
+		if result.Blocked {
 			writeCheckpointDisclosureError(w, errCheckpointDisclosureSensitive, reqID, false)
 			return
 		}
@@ -1233,8 +1250,10 @@ func (s *Server) writeCheckpointImportPublicationError(w http.ResponseWriter, r 
 		reference := map[string]string{"id": cp.ID, "session_name": cp.SessionName}
 		encoded, _ := json.Marshal(reference) // A map of strings cannot fail.
 		cfg.Mode = redaction.ModeBlock
-		if !redaction.ScanJSONAndRedact(string(encoded), cfg).Blocked &&
-			len(redaction.Scan(cp.ID+"\n"+cp.SessionName, cfg)) == 0 {
+		scanner := redaction.NewScanner(cfg, redaction.DefaultScanLimits())
+		structured := scanner.ScanJSONAndRedact(string(encoded))
+		plain := scanner.ScanAndRedact(cp.ID + "\n" + cp.SessionName)
+		if !structured.LimitExceeded && !structured.Blocked && !plain.LimitExceeded && !plain.Blocked {
 			details["checkpoint"] = reference
 		} else {
 			details["checkpoint_reference_withheld"] = true

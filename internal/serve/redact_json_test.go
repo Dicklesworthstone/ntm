@@ -846,6 +846,63 @@ func TestJSONResponseRedactionPreservesUnchangedBytes(t *testing.T) {
 	}
 }
 
+func TestJSONResponseRedactionScanLimitsPreserveCompletedStatus(t *testing.T) {
+	limits := redaction.DefaultScanLimits()
+	initialCfg := serveScanLimitConfig(redaction.ModeRedact)
+	initialBody := `{"success":true,"padding":"` + strings.Repeat("~", limits.MaxCandidates+1) + `","api_token":"` + wiringFakeSecret + `"}`
+	requireServeScanLimit(t, initialBody, initialCfg)
+
+	// The first scan is complete. Its replacements expand each candidate into
+	// two new custom matches, in both the raw and decoded JSON representation.
+	// The residual check must not mistake its empty incomplete result for clean.
+	residualCfg := redaction.Config{Mode: redaction.ModeRedact, ExtraPatterns: map[redaction.Category][]string{
+		"MATCH": {`~|REDACTED|MATCH`},
+	}}
+	residualBody := `{"success":true,"padding":"` + strings.Repeat("~", limits.MaxCandidates/4+1) + `","api_token":"` + wiringFakeSecret + `"}`
+	first := redaction.ScanJSONAndRedactWithLimits(residualBody, residualCfg, limits)
+	if first.LimitExceeded || len(first.Findings) == 0 {
+		t.Fatalf("residual fixture must complete its first scan: limit=%t findings=%d", first.LimitExceeded, len(first.Findings))
+	}
+	candidate := jsonResponseOutput(residualBody, first)
+	if !json.Valid([]byte(candidate)) {
+		t.Fatal("residual fixture must produce a valid candidate response")
+	}
+	requireServeScanLimit(t, candidate, residualCfg)
+
+	var logs lockedBuffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		for _, tt := range []struct {
+			name, body string
+			cfg        redaction.Config
+		}{
+			{"initial scan", initialBody, initialCfg},
+			{"residual scan", residualBody, residualCfg},
+		} {
+			t.Run(string(mode)+"/"+tt.name, func(t *testing.T) {
+				cfg := tt.cfg.DeepCopy()
+				cfg.Mode = mode
+				rec := serveJSONResponseWithConfig(t, "/api/v1/test", tt.body, http.StatusCreated, cfg)
+				if rec.Code != http.StatusCreated {
+					t.Fatalf("output inspection changed the already-completed operation's status: %d", rec.Code)
+				}
+				assertJSONResponseWithheld(t, rec.Body.Bytes())
+				if strings.Contains(rec.Body.String(), wiringFakeSecret) || strings.Contains(logs.String(), wiringFakeSecret) {
+					t.Fatal("incomplete output inspection disclosed source credentials")
+				}
+			})
+		}
+		cfg := serveScanLimitConfig(mode)
+		const ordinary = ` {"diagnostic":"keep exactly","padding":"~~~~","count":9007199254740993} `
+		rec := serveJSONResponseWithConfig(t, "/api/v1/test", ordinary, http.StatusAccepted, cfg)
+		if rec.Code != http.StatusAccepted || rec.Body.String() != ordinary {
+			t.Fatal("a complete bounded scan changed explicitly permitted response bytes")
+		}
+	}
+}
+
 func TestJSONResponseRedactionHandlesCustomMatchBoundaries(t *testing.T) {
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		for _, tc := range []struct {

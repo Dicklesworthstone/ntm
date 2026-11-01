@@ -3,7 +3,10 @@ package redaction
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand"
+	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -2445,6 +2448,619 @@ func TestScanJSONAndRedactPreservesDuplicateKeysNumbersAndModeSemantics(t *testi
 		result := ScanJSONAndRedact(clean, Config{Mode: mode})
 		if result.Blocked || len(result.Findings) != 0 || result.Output != clean {
 			t.Fatalf("clean JSON was changed in mode %s", mode)
+		}
+	}
+}
+
+// This is the incumbent overlap algorithm, kept unchanged apart from function
+// names so equivalence tests and paired benchmarks run both implementations.
+func deduplicateMatchesIncumbent(matches []match) []match {
+	if len(matches) == 0 {
+		return matches
+	}
+
+	// Sort by priority (descending) so higher priority matches get first pick.
+	// For same priority, prefer earlier matches, then complete matches over
+	// shorter fallbacks at the same position (for example a PEM header).
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].priority != matches[j].priority {
+			return matches[i].priority > matches[j].priority
+		}
+		if matches[i].start != matches[j].start {
+			return matches[i].start < matches[j].start
+		}
+		return matches[i].end > matches[j].end
+	})
+
+	var result []match
+	for _, m := range matches {
+		overlaps := false
+		for _, kept := range result {
+			// Check for overlap with already kept higher-priority matches.
+			// Overlap exists if max(m.start, kept.start) < min(m.end, kept.end)
+			start := m.start
+			if kept.start > start {
+				start = kept.start
+			}
+			end := m.end
+			if kept.end < end {
+				end = kept.end
+			}
+			if start < end {
+				overlaps = true
+				break
+			}
+		}
+
+		if !overlaps {
+			result = append(result, m)
+		} else if m.valueStart < m.valueEnd {
+			// A provider pattern can cover only part of another credential.
+			// Keep its category and exact match while protecting every other
+			// byte already recognized as part of the surrounding secret.
+			result = append(result, uncoveredValueMatchesIncumbent(m, result)...)
+		}
+	}
+
+	// Sort result by start position for consistent output order.
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].start < result[j].start
+	})
+
+	return result
+}
+
+func uncoveredValueMatchesIncumbent(m match, kept []match) []match {
+	fragments := []match{{
+		category:          m.category,
+		start:             m.valueStart,
+		end:               m.valueEnd,
+		priority:          m.priority,
+		allowlistSource:   m.match,
+		logicalMatch:      m.logicalMatch,
+		allowlistContexts: m.allowlistContexts,
+	}}
+	for _, other := range kept {
+		if other.start == other.end {
+			continue // Zero-width patterns do not protect any credential bytes.
+		}
+		if other.end <= m.valueStart || other.start >= m.valueEnd {
+			continue
+		}
+		var remaining []match
+		for _, fragment := range fragments {
+			if fragment.end <= other.start || fragment.start >= other.end {
+				remaining = append(remaining, fragment)
+				continue
+			}
+			if fragment.start < other.start {
+				left := fragment
+				left.end = other.start
+				remaining = append(remaining, left)
+			}
+			if other.end < fragment.end {
+				right := fragment
+				right.start = other.end
+				remaining = append(remaining, right)
+			}
+		}
+		fragments = remaining
+		if len(fragments) == 0 {
+			break
+		}
+	}
+	for i := range fragments {
+		fragments[i].match = m.match[fragments[i].start-m.start : fragments[i].end-m.start]
+	}
+	return fragments
+}
+
+func cloneDedupMatches(matches []match) []match {
+	if matches == nil {
+		return nil
+	}
+	cloned := make([]match, len(matches))
+	copy(cloned, matches)
+	return cloned
+}
+
+func TestDeduplicateMatchesMatchesIncumbent(t *testing.T) {
+	source := strings.Repeat("0123456789abcdefghijklmnopqrstuvwxyz", 2)
+	span := func(name string, start, end, priority, valueStart, valueEnd int) match {
+		return match{
+			category:          Category(name),
+			match:             source[start:end],
+			start:             start,
+			end:               end,
+			priority:          priority,
+			valueStart:        valueStart,
+			valueEnd:          valueEnd,
+			jsonField:         true,
+			allowlistSource:   "original-" + name,
+			logicalMatch:      "logical-" + name,
+			allowlistContexts: []string{"encoded-" + name, "nested-" + name},
+		}
+	}
+	cases := []struct {
+		name    string
+		matches []match
+	}{
+		{name: "nil"},
+		{name: "empty", matches: []match{}},
+		{name: "zero widths only", matches: []match{
+			span("zero-lower", 8, 8, 25, 0, 0),
+			span("zero-first", 8, 8, 100, 0, 0),
+			span("zero-second", 8, 8, 100, 0, 0),
+			span("zero-earlier", 3, 3, 100, 0, 0),
+		}},
+		{name: "adjacent spans and zero width boundaries", matches: []match{
+			span("right", 5, 10, 100, 0, 0),
+			span("left", 0, 5, 100, 0, 0),
+			span("zero-between", 5, 5, 200, 0, 0),
+			span("zero-end", 10, 10, 1, 0, 0),
+			span("surrounding", 0, 15, 25, 2, 14),
+		}},
+		{name: "identical ties and longer same start", matches: []match{
+			span("short", 4, 8, 50, 0, 0),
+			span("long-first", 4, 12, 50, 0, 0),
+			span("long-second", 4, 12, 50, 0, 0),
+			span("earlier", 1, 5, 50, 0, 0),
+			span("higher", 18, 23, 100, 0, 0),
+		}},
+		{name: "surrounding credential residuals and metadata", matches: []match{
+			span("provider-first", 10, 15, 100, 0, 0),
+			span("provider-second", 22, 25, 90, 0, 0),
+			span("field", 0, 32, 50, 8, 30),
+			span("outer-field", 0, 40, 25, 4, 38),
+			span("zero-in-gap", 18, 18, 120, 0, 0),
+			span("already-covered", 0, 40, 1, 8, 30),
+		}},
+		{name: "overlap only in public field prefix", matches: []match{
+			span("prefix", 0, 4, 100, 0, 0),
+			span("field", 0, 20, 50, 8, 18),
+			span("outer-field", 0, 22, 25, 6, 20),
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			want := deduplicateMatchesIncumbent(cloneDedupMatches(tc.matches))
+			got := deduplicateMatches(cloneDedupMatches(tc.matches))
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("overlap semantics changed:\n got: %#v\nwant: %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestDeduplicateMatchesGeneratedEquivalence(t *testing.T) {
+	const seed int64 = 20261101
+	rng := rand.New(rand.NewSource(seed))
+	source := strings.Repeat("0123456789abcdef", 16)
+	priorities := []int{100, 90, 50, 25}
+	for trial := 0; trial < 1200; trial++ {
+		input := make([]match, rng.Intn(129))
+		for i := range input {
+			start := rng.Intn(len(source) + 1)
+			end := start + rng.Intn(len(source)-start+1)
+			if rng.Intn(8) == 0 {
+				end = start
+			}
+			if i > 0 && rng.Intn(5) == 0 {
+				// Exercise exact ties without making the metadata interchangeable.
+				previous := input[rng.Intn(i)]
+				start, end = previous.start, previous.end
+			}
+			m := match{
+				category:        Category(fmt.Sprintf("category-%d", i)),
+				match:           source[start:end],
+				start:           start,
+				end:             end,
+				priority:        priorities[rng.Intn(len(priorities))],
+				jsonField:       rng.Intn(2) == 0,
+				allowlistSource: fmt.Sprintf("source-%d", i),
+				logicalMatch:    fmt.Sprintf("logical-%d", i),
+			}
+			if start < end && rng.Intn(2) == 0 {
+				m.valueStart = start + rng.Intn(end-start)
+				m.valueEnd = m.valueStart + 1 + rng.Intn(end-m.valueStart)
+			}
+			switch rng.Intn(3) {
+			case 1:
+				m.allowlistContexts = []string{}
+			case 2:
+				m.allowlistContexts = []string{fmt.Sprintf("encoded-%d", i), fmt.Sprintf("nested-%d", i)}
+			}
+			input[i] = m
+		}
+		want := deduplicateMatchesIncumbent(cloneDedupMatches(input))
+		got := deduplicateMatches(cloneDedupMatches(input))
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("seed=%d trial=%d changed overlap output:\ninput: %#v\n got: %#v\nwant: %#v", seed, trial, input, got, want)
+		}
+	}
+}
+
+const boundedScannerTestCategory Category = "BOUNDED_TEST"
+
+// Isolate work and candidate boundaries from the number of builtin patterns.
+func boundedScannerTestConfig(patterns ...string) Config {
+	cfg := Config{Mode: ModeRedact}
+	seen := make(map[Category]bool)
+	for _, p := range getPatterns() {
+		if !seen[p.category] {
+			cfg.DisabledCategories = append(cfg.DisabledCategories, p.category)
+			seen[p.category] = true
+		}
+	}
+	if len(patterns) > 0 {
+		cfg.ExtraPatterns = map[Category][]string{boundedScannerTestCategory: patterns}
+	}
+	return cfg
+}
+
+func assertScanLimitExceeded(t *testing.T, got Result, input string, mode Mode) {
+	t.Helper()
+	if !got.LimitExceeded || !got.Blocked || got.Output != "" || got.Findings != nil ||
+		got.Mode != mode || got.OriginalLength != len(input) {
+		t.Fatalf("incomplete scan did not withhold its entire result: %#v", got)
+	}
+}
+
+func TestBoundedScannerInputAndResultLimits(t *testing.T) {
+	for _, field := range []string{"input", "result"} {
+		t.Run(field, func(t *testing.T) {
+			limits := DefaultScanLimits()
+			if field == "input" {
+				limits.MaxInputBytes = len("clear")
+			} else {
+				limits.MaxResultBytes = len("clear")
+			}
+			cfg := boundedScannerTestConfig()
+			exact := ScanAndRedactWithLimits("clear", cfg, limits)
+			if want := ScanAndRedact("clear", cfg); !reflect.DeepEqual(exact, want) {
+				t.Fatalf("exact byte limit changed the result: got %#v want %#v", exact, want)
+			}
+			assertScanLimitExceeded(t, ScanAndRedactWithLimits("clear!", cfg, limits), "clear!", cfg.Mode)
+		})
+	}
+}
+
+func TestBoundedScannerInvalidLimitsAndOffMode(t *testing.T) {
+	fields := []struct {
+		name string
+		zero func(*ScanLimits)
+	}{
+		{"input", func(l *ScanLimits) { l.MaxInputBytes = 0 }},
+		{"result", func(l *ScanLimits) { l.MaxResultBytes = 0 }},
+		{"candidates", func(l *ScanLimits) { l.MaxCandidates = 0 }},
+		{"tokens", func(l *ScanLimits) { l.MaxJSONTokens = 0 }},
+		{"work", func(l *ScanLimits) { l.MaxWorkBytes = 0 }},
+		{"depth", func(l *ScanLimits) { l.MaxDepth = 0 }},
+		{"config entries", func(l *ScanLimits) { l.MaxConfigEntries = 0 }},
+		{"config bytes", func(l *ScanLimits) { l.MaxConfigBytes = 0 }},
+	}
+	for _, field := range fields {
+		t.Run(field.name, func(t *testing.T) {
+			limits := DefaultScanLimits()
+			field.zero(&limits)
+			for _, mode := range []Mode{ModeWarn, ModeRedact, ModeBlock} {
+				cfg := boundedScannerTestConfig("x")
+				cfg.Mode = mode
+				assertScanLimitExceeded(t, ScanAndRedactWithLimits("x", cfg, limits), "x", mode)
+			}
+		})
+	}
+	cfg := Config{Mode: ModeOff, ExtraPatterns: map[Category][]string{"IGNORED": {"("}}}
+	input := "ghp_" + strings.Repeat("z", 40)
+	if got, want := ScanJSONAndRedactWithLimits(input, cfg, ScanLimits{}), ScanJSONAndRedact(input, cfg); !reflect.DeepEqual(got, want) {
+		t.Fatalf("off mode no longer intentionally bypasses inspection: got %#v want %#v", got, want)
+	}
+}
+
+func TestBoundedScannerCandidatesBeforeFiltering(t *testing.T) {
+	for _, allowed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("allowlisted=%v", allowed), func(t *testing.T) {
+			cfg := boundedScannerTestConfig("x")
+			if allowed {
+				cfg.Allowlist = []string{"^x$"}
+			}
+			limits := DefaultScanLimits()
+			limits.MaxCandidates = 2
+			input := "x x"
+			if got, want := ScanAndRedactWithLimits(input, cfg, limits), ScanAndRedact(input, cfg); !reflect.DeepEqual(got, want) {
+				t.Fatalf("exact candidate limit changed output: got %#v want %#v", got, want)
+			}
+			assertScanLimitExceeded(t, ScanAndRedactWithLimits("x x x", cfg, limits), "x x x", cfg.Mode)
+		})
+	}
+	t.Run("rejected builtin candidates still count", func(t *testing.T) {
+		cfg := boundedScannerTestConfig()
+		var disabled []Category
+		for _, category := range cfg.DisabledCategories {
+			if category != CategoryPassword {
+				disabled = append(disabled, category)
+			}
+		}
+		cfg.DisabledCategories = disabled
+		limits := DefaultScanLimits()
+		limits.MaxCandidates = 2
+		input := strings.Repeat("password=<redacted> ", 2)
+		got := ScanAndRedactWithLimits(input, cfg, limits)
+		if got.LimitExceeded || len(got.Findings) != 0 || got.Output != input {
+			t.Fatalf("rejected builtin control changed: %#v", got)
+		}
+		input += "password=<redacted>"
+		assertScanLimitExceeded(t, ScanAndRedactWithLimits(input, cfg, limits), input, cfg.Mode)
+	})
+	t.Run("zero width candidates still count", func(t *testing.T) {
+		cfg := boundedScannerTestConfig("(?:)")
+		limits := DefaultScanLimits()
+		limits.MaxCandidates = 3
+		input := "xy"
+		got, want := ScanAndRedactWithLimits(input, cfg, limits), ScanAndRedact(input, cfg)
+		if len(want.Findings) != 3 || !reflect.DeepEqual(got, want) {
+			t.Fatalf("zero-width exact boundary changed: got %#v want %#v", got, want)
+		}
+		limits.MaxCandidates--
+		assertScanLimitExceeded(t, ScanAndRedactWithLimits(input, cfg, limits), input, cfg.Mode)
+	})
+	t.Run("disabled category skips raw candidates", func(t *testing.T) {
+		cfg := boundedScannerTestConfig("x")
+		cfg.DisabledCategories = append(cfg.DisabledCategories, boundedScannerTestCategory)
+		limits := DefaultScanLimits()
+		limits.MaxCandidates = 1
+		input := "x x x x " + strings.Repeat("ghp_"+strings.Repeat("d", 40)+" ", 4)
+		got := ScanAndRedactWithLimits(input, cfg, limits)
+		if got.LimitExceeded || len(got.Findings) != 0 || got.Output != input {
+			t.Fatalf("disabled categories consumed candidate budget: %#v", got)
+		}
+	})
+}
+
+func TestBoundedScannerJSONTokenLimits(t *testing.T) {
+	embedded, err := json.Marshal(map[string]string{"payload": "{\"label\":\"clear"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name  string
+		input string
+		exact int
+	}{
+		{"clean document", "[\"a\",\"b\"]", 3}, // One record and two string tokens.
+		{"JSONL", "\"a\"\n\"b\"", 4},           // Two records and two string tokens.
+		{"unfinished field", "{\"label\":\"clear", 5},
+		{"embedded unfinished field", string(embedded), 8},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := boundedScannerTestConfig()
+			limits := DefaultScanLimits()
+			limits.MaxJSONTokens = tc.exact
+			got, want := ScanJSONAndRedactWithLimits(tc.input, cfg, limits), ScanJSONAndRedact(tc.input, cfg)
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("exact token boundary changed the result: got %#v want %#v", got, want)
+			}
+			limits.MaxJSONTokens--
+			assertScanLimitExceeded(t, ScanJSONAndRedactWithLimits(tc.input, cfg, limits), tc.input, cfg.Mode)
+		})
+	}
+}
+
+func TestBoundedScannerDecodedDepth(t *testing.T) {
+	input := "clear"
+	for i := 0; i < 3; i++ {
+		encoded, err := json.Marshal(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		input = string(encoded)
+	}
+	cfg := boundedScannerTestConfig()
+	limits := DefaultScanLimits()
+	limits.MaxDepth = 3
+	if got, want := ScanJSONAndRedactWithLimits(input, cfg, limits), ScanJSONAndRedact(input, cfg); !reflect.DeepEqual(got, want) {
+		t.Fatalf("exact decoded depth changed the result: got %#v want %#v", got, want)
+	}
+	limits.MaxDepth--
+	assertScanLimitExceeded(t, ScanJSONAndRedactWithLimits(input, cfg, limits), input, cfg.Mode)
+
+	// Plain object/array nesting is not another decoded string representation.
+	input = strings.Repeat("[", 96) + "\"clear\"" + strings.Repeat("]", 96)
+	limits.MaxDepth = 1
+	if got := ScanJSONAndRedactWithLimits(input, cfg, limits); got.LimitExceeded || got.Output != input {
+		t.Fatalf("ordinary container nesting consumed decoded-view depth: %#v", got)
+	}
+}
+
+func TestBoundedScannerSharedBudgetAndConfiguration(t *testing.T) {
+	t.Run("candidates and sticky refusal", func(t *testing.T) {
+		cfg := boundedScannerTestConfig("x")
+		limits := DefaultScanLimits()
+		limits.MaxCandidates = 2
+		scanner := NewScanner(cfg, limits)
+		for i := 0; i < 2; i++ {
+			if got, want := scanner.ScanAndRedact("x"), ScanAndRedact("x", cfg); !reflect.DeepEqual(got, want) {
+				t.Fatalf("call %d changed before exhausting shared candidates: %#v", i+1, got)
+			}
+		}
+		if got := scanner.ScanAndRedact("clear"); got.LimitExceeded || got.Output != "clear" {
+			t.Fatalf("exact candidate budget rejected a candidate-free call: %#v", got)
+		}
+		assertScanLimitExceeded(t, scanner.ScanAndRedact("x"), "x", cfg.Mode)
+		assertScanLimitExceeded(t, scanner.ScanJSONAndRedact("\"clear\""), "\"clear\"", cfg.Mode)
+	})
+	t.Run("JSON tokens span calls", func(t *testing.T) {
+		cfg := boundedScannerTestConfig()
+		limits := DefaultScanLimits()
+		limits.MaxJSONTokens = 4
+		scanner := NewScanner(cfg, limits)
+		for i := 0; i < 2; i++ {
+			if got := scanner.ScanJSONAndRedact("[\"clear\"]"); got.LimitExceeded || got.Output != "[\"clear\"]" {
+				t.Fatalf("call %d changed before exhausting shared tokens: %#v", i+1, got)
+			}
+		}
+		assertScanLimitExceeded(t, scanner.ScanJSONAndRedact("[\"clear\"]"), "[\"clear\"]", cfg.Mode)
+	})
+	t.Run("work spans calls including empty subjects", func(t *testing.T) {
+		cfg := boundedScannerTestConfig()
+		limits := DefaultScanLimits()
+		limits.MaxWorkBytes = 2
+		scanner := NewScanner(cfg, limits)
+		for i := 0; i < 2; i++ {
+			if got := scanner.ScanAndRedact(""); got.LimitExceeded || got.Output != "" || got.Blocked {
+				t.Fatalf("empty call %d changed before exhausting shared work: %#v", i+1, got)
+			}
+		}
+		assertScanLimitExceeded(t, scanner.ScanAndRedact(""), "", cfg.Mode)
+	})
+	t.Run("configuration is frozen before first scan", func(t *testing.T) {
+		cfg := boundedScannerTestConfig("x")
+		cfg.Allowlist = []string{"^safe$"}
+		want := ScanAndRedact("x", cfg)
+		scanner := NewScanner(cfg, DefaultScanLimits())
+		cfg.Allowlist[0] = ".*"
+		cfg.ExtraPatterns[boundedScannerTestCategory][0] = "y"
+		cfg.DisabledCategories[0] = boundedScannerTestCategory
+		if got := scanner.ScanAndRedact("x"); !reflect.DeepEqual(got, want) {
+			t.Fatalf("caller mutation changed the prepared scanner configuration: got %#v want %#v", got, want)
+		}
+	})
+}
+
+func TestBoundedScannerConfigurationLimits(t *testing.T) {
+	cases := []struct {
+		name     string
+		cfg      Config
+		exact    int
+		bytes    bool
+		overflow func(*Config)
+	}{
+		{"blank allowlist entries", Config{Mode: ModeRedact, Allowlist: []string{"", ""}}, 2, false,
+			func(c *Config) { c.Allowlist = append(c.Allowlist, "") }},
+		{"empty pattern category keys", Config{Mode: ModeRedact, ExtraPatterns: map[Category][]string{"A": nil}}, 1, false,
+			func(c *Config) { c.ExtraPatterns["B"] = nil }},
+		{"blank patterns", Config{Mode: ModeRedact, ExtraPatterns: map[Category][]string{"A": {""}}}, 2, false,
+			func(c *Config) { c.ExtraPatterns["A"] = append(c.ExtraPatterns["A"], "") }},
+		{"blank disabled categories", Config{Mode: ModeRedact, DisabledCategories: []Category{"", ""}}, 2, false,
+			func(c *Config) { c.DisabledCategories = append(c.DisabledCategories, "") }},
+		{"disabled pattern entries", Config{Mode: ModeRedact, ExtraPatterns: map[Category][]string{"A": {"x", "y"}}, DisabledCategories: []Category{"A"}}, 4, false,
+			func(c *Config) { c.ExtraPatterns["A"] = append(c.ExtraPatterns["A"], "z") }},
+		{"allowlist bytes", Config{Mode: ModeRedact, Allowlist: []string{"x"}}, 1, true,
+			func(c *Config) { c.Allowlist[0] += "y" }},
+		{"category key bytes", Config{Mode: ModeRedact, ExtraPatterns: map[Category][]string{"AB": nil}}, 2, true,
+			func(c *Config) { c.ExtraPatterns["C"] = nil }},
+		{"disabled pattern bytes", Config{Mode: ModeRedact, ExtraPatterns: map[Category][]string{"A": {"x", "y"}}, DisabledCategories: []Category{"A"}}, 4, true,
+			func(c *Config) { c.ExtraPatterns["A"] = append(c.ExtraPatterns["A"], "z") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			limits := DefaultScanLimits()
+			if tc.bytes {
+				limits.MaxConfigBytes = tc.exact
+			} else {
+				limits.MaxConfigEntries = tc.exact
+			}
+			if got, want := ScanAndRedactWithLimits("clear", tc.cfg, limits), ScanAndRedact("clear", tc.cfg); !reflect.DeepEqual(got, want) {
+				t.Fatalf("exact configuration limit changed the result: got %#v want %#v", got, want)
+			}
+			cfg := tc.cfg.DeepCopy()
+			tc.overflow(&cfg)
+			assertScanLimitExceeded(t, ScanAndRedactWithLimits("clear", cfg, limits), "clear", cfg.Mode)
+		})
+	}
+}
+
+func TestBoundedScannerResultExpansion(t *testing.T) {
+	cfg := boundedScannerTestConfig("x")
+	input := strings.Repeat("q", 256) + "x"
+	want := ScanAndRedact(input, cfg)
+	if len(want.Findings) != 1 || len(want.Output) <= len(input) {
+		t.Fatal("fixture must grow when replacing the short custom match")
+	}
+	limits := DefaultScanLimits()
+	limits.MaxResultBytes = len(want.Output)
+	if got := ScanAndRedactWithLimits(input, cfg, limits); !reflect.DeepEqual(got, want) {
+		t.Fatalf("exact expanded-output boundary changed the result: got %#v want %#v", got, want)
+	}
+	limits.MaxResultBytes--
+	assertScanLimitExceeded(t, ScanAndRedactWithLimits(input, cfg, limits), input, cfg.Mode)
+
+	// Even non-rewriting modes must bound their diagnostic allocation.
+	cfg.Mode = ModeWarn
+	limits = DefaultScanLimits()
+	limits.MaxResultBytes = 64
+	assertScanLimitExceeded(t, ScanAndRedactWithLimits("x", cfg, limits), "x", cfg.Mode)
+}
+
+func TestBoundedScannerWorkAccounting(t *testing.T) {
+	cfg := boundedScannerTestConfig()
+	input := "clear"
+	limits := DefaultScanLimits()
+	// With every pattern disabled and no quote, the encoded-content check is
+	// the only subject read. It costs the input bytes plus one fixed unit.
+	limits.MaxWorkBytes = int64(len(input) + 1)
+	if got, want := ScanAndRedactWithLimits(input, cfg, limits), ScanAndRedact(input, cfg); !reflect.DeepEqual(got, want) {
+		t.Fatalf("exact work boundary changed the result: got %#v want %#v", got, want)
+	}
+	limits.MaxWorkBytes--
+	assertScanLimitExceeded(t, ScanAndRedactWithLimits(input, cfg, limits), input, cfg.Mode)
+
+	cfg = boundedScannerTestConfig("x")
+	input = "x"
+	limits = DefaultScanLimits()
+	// Encoded-content check, custom regexp subject, finding hash subject, and
+	// finding category are the reads for this isolated successful scan.
+	limits.MaxWorkBytes = int64(3*(len(input)+1) + len(boundedScannerTestCategory) + 1)
+	if got, want := ScanAndRedactWithLimits(input, cfg, limits), ScanAndRedact(input, cfg); !reflect.DeepEqual(got, want) {
+		t.Fatalf("isolated custom match exceeded its exact read budget: got %#v want %#v", got, want)
+	}
+	cfg.Allowlist = []string{"^safe$"}
+	assertScanLimitExceeded(t, ScanAndRedactWithLimits(input, cfg, limits), input, cfg.Mode)
+}
+
+func TestBoundedScannerPreservesLegacyResults(t *testing.T) {
+	token := "ghp_" + strings.Repeat("p", 40)
+	inner := "{\"message\":\"\\u0067" + token[1:] + "\",\"custom\":\"marker-123\"}"
+	nested, err := json.Marshal(inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := []string{
+		"ordinary text",
+		"provider=" + token,
+		"{\"\\u0061pi_token\":\"synthetic-never-valid-value\",\"n\":9007199254740993,\"n\":-0.0}",
+		"{\"payload\":" + string(nested) + "}",
+	}
+	configs := []Config{
+		{},
+		{Allowlist: []string{"^" + regexp.QuoteMeta(token) + "$", "synthetic-never-valid-value"}},
+		{ExtraPatterns: map[Category][]string{"CUSTOM": {"^marker-[0-9]+$", "marker-[0-9]+"}}},
+		{DisabledCategories: []Category{CategoryGitHubToken}},
+	}
+	apis := []struct {
+		name      string
+		unbounded func(string, Config) Result
+		bounded   func(string, Config, ScanLimits) Result
+	}{
+		{"raw", ScanAndRedact, ScanAndRedactWithLimits},
+		{"JSON", ScanJSONAndRedact, ScanJSONAndRedactWithLimits},
+	}
+	for _, api := range apis {
+		for configIndex, base := range configs {
+			for _, mode := range []Mode{ModeOff, ModeWarn, ModeRedact, ModeBlock} {
+				for inputIndex, input := range inputs {
+					t.Run(fmt.Sprintf("%s/config%d/%s/input%d", api.name, configIndex, mode, inputIndex), func(t *testing.T) {
+						cfg := base.DeepCopy()
+						cfg.Mode = mode
+						want := api.unbounded(input, cfg)
+						got := api.bounded(input, cfg, DefaultScanLimits())
+						if !reflect.DeepEqual(got, want) {
+							t.Fatalf("bounded scan changed complete legacy result: got %#v want %#v", got, want)
+						}
+					})
+				}
+			}
 		}
 	}
 }
