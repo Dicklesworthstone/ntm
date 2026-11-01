@@ -2,6 +2,7 @@ package serve
 
 import (
 	"bytes"
+	"container/heap"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 
 const jobJournalVersion = 1
 const jobJournalMaxRecordBytes = 8 << 20
+const jobJournalReadBatchSize = 64
 
 // jobJournal records execution evidence, not executable requests. In particular,
 // recovery must never replay a spawn/restore just because its owner disappeared.
@@ -123,59 +125,134 @@ func syncJobJournalDirectory(directory string) error {
 	return errors.Join(dir.Sync(), dir.Close())
 }
 
-func (j *jobJournal) load() ([]*Job, error) {
-	entries, err := os.ReadDir(j.dir)
+// walkEntries bounds directory metadata as well as decoded receipt payloads.
+// Journal history is retained on disk, so even entry names can outgrow memory.
+func (j *jobJournal) walkEntries(visit func(os.DirEntry) error) (err error) {
+	directory, err := os.Open(j.dir)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, directory.Close()) }()
+	for {
+		entries, readErr := directory.ReadDir(jobJournalReadBatchSize)
+		for _, entry := range entries {
+			if err := visit(entry); err != nil {
+				return err
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+}
+
+func (j *jobJournal) readJob(entry os.DirEntry) (*Job, error) {
+	id := strings.TrimSuffix(entry.Name(), ".json")
+	path, err := j.path(id)
+	if err != nil || !entry.Type().IsRegular() {
+		return nil, fmt.Errorf("invalid job journal entry %q", entry.Name())
+	}
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	jobs := make([]*Job, 0)
-	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".json") {
-			continue // An uncommitted temporary file is not an execution record.
-		}
-		id := strings.TrimSuffix(entry.Name(), ".json")
-		path, err := j.path(id)
-		if err != nil || !entry.Type().IsRegular() {
-			return nil, fmt.Errorf("invalid job journal entry %q", entry.Name())
-		}
-		file, err := os.Open(path)
-		if err != nil {
-			return nil, err
-		}
-		data, readErr := io.ReadAll(io.LimitReader(file, jobJournalMaxRecordBytes+1))
-		readErr = errors.Join(readErr, file.Close())
-		if readErr != nil {
-			return nil, readErr
-		}
-		if len(data) > jobJournalMaxRecordBytes {
-			return nil, fmt.Errorf("job journal entry %q exceeds record limit", entry.Name())
-		}
-		var record jobJournalRecord
-		decoder := json.NewDecoder(bytes.NewReader(data))
-		if err := decoder.Decode(&record); err != nil {
-			return nil, fmt.Errorf("decode job journal entry %q: %w", entry.Name(), err)
-		}
-		var trailing interface{}
-		if err := decoder.Decode(&trailing); err != io.EOF {
-			return nil, fmt.Errorf("job journal entry %q has trailing data", entry.Name())
-		}
-		if record.Version != jobJournalVersion || record.Job == nil || record.Job.ID != id {
-			return nil, fmt.Errorf("job journal entry %q has an unsupported version or mismatched identity", entry.Name())
-		}
-		switch record.Job.Status {
-		case JobStatusPending, JobStatusRunning, JobStatusCompleted, JobStatusFailed, JobStatusCancelled:
-		default:
-			return nil, fmt.Errorf("job journal entry %q has unknown status %q", entry.Name(), record.Job.Status)
-		}
-		jobs = append(jobs, record.Job)
+	data, readErr := io.ReadAll(io.LimitReader(file, jobJournalMaxRecordBytes+1))
+	readErr = errors.Join(readErr, file.Close())
+	if readErr != nil {
+		return nil, readErr
 	}
-	sort.Slice(jobs, func(a, b int) bool {
-		if jobs[a].CreatedAt != jobs[b].CreatedAt {
-			return jobs[a].CreatedAt > jobs[b].CreatedAt
+	if len(data) > jobJournalMaxRecordBytes {
+		return nil, fmt.Errorf("job journal entry %q exceeds record limit", entry.Name())
+	}
+	var record jobJournalRecord
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(&record); err != nil {
+		return nil, fmt.Errorf("decode job journal entry %q: %w", entry.Name(), err)
+	}
+	var trailing interface{}
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, fmt.Errorf("job journal entry %q has trailing data", entry.Name())
+	}
+	if record.Version != jobJournalVersion || record.Job == nil || record.Job.ID != id {
+		return nil, fmt.Errorf("job journal entry %q has an unsupported version or mismatched identity", entry.Name())
+	}
+	switch record.Job.Status {
+	case JobStatusPending, JobStatusRunning, JobStatusCompleted, JobStatusFailed, JobStatusCancelled:
+	default:
+		return nil, fmt.Errorf("job journal entry %q has unknown status %q", entry.Name(), record.Job.Status)
+	}
+	return record.Job, nil
+}
+
+func (j *jobJournal) walkJobs(visit func(*Job) error) error {
+	return j.walkEntries(func(entry os.DirEntry) error {
+		if !strings.HasSuffix(entry.Name(), ".json") {
+			return nil // Temporary files and operation receipts are separate namespaces.
 		}
-		return jobs[a].ID < jobs[b].ID
+		job, err := j.readJob(entry)
+		if err != nil {
+			return err
+		}
+		return visit(job)
 	})
-	return jobs, nil
+}
+
+// The oldest retained receipt is the heap root. Match evictTerminalLocked:
+// at a shared timestamp, the smaller IDs are evicted first. Presentation order
+// is separate and sorts the surviving IDs ascending.
+type jobJournalHistory []*Job
+
+func olderJournalJob(a, b *Job) bool {
+	if a.CreatedAt != b.CreatedAt {
+		return a.CreatedAt < b.CreatedAt
+	}
+	return a.ID < b.ID
+}
+
+func (h jobJournalHistory) Len() int           { return len(h) }
+func (h jobJournalHistory) Less(i, k int) bool { return olderJournalJob(h[i], h[k]) }
+func (h jobJournalHistory) Swap(i, k int)      { h[i], h[k] = h[k], h[i] }
+func (h *jobJournalHistory) Push(value any)    { *h = append(*h, value.(*Job)) }
+func (h *jobJournalHistory) Pop() any {
+	last := len(*h) - 1
+	job := (*h)[last]
+	(*h)[last] = nil
+	*h = (*h)[:last]
+	return job
+}
+
+func jobNeedsRecovery(job *Job) bool {
+	return job.Status == JobStatusPending || job.Status == JobStatusRunning || job.Result["_execution_in_progress"] == true
+}
+
+func (j *jobJournal) load(validate ...func(*Job) error) ([]*Job, error) {
+	history := make(jobJournalHistory, 0)
+	if err := j.walkJobs(func(job *Job) error {
+		for _, check := range validate {
+			if err := check(job); err != nil {
+				return err
+			}
+		}
+		if len(history) < maxRetainedJobs {
+			heap.Push(&history, job)
+		} else if olderJournalJob(history[0], job) {
+			history[0] = job
+			heap.Fix(&history, 0)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	sort.Slice(history, func(a, b int) bool {
+		if history[a].CreatedAt != history[b].CreatedAt {
+			return history[a].CreatedAt > history[b].CreatedAt
+		}
+		return history[a].ID < history[b].ID
+	})
+	return history, nil
 }
 
 // recover records an explicit uncertain outcome for interrupted executions.
@@ -184,61 +261,82 @@ func (j *jobJournal) load() ([]*Job, error) {
 func (j *jobJournal) recover(now time.Time) ([]*Job, error) {
 	// A bounded shutdown may have returned while an old worker is still
 	// unwinding. Its individual fence survives even if its in-memory row was
-	// evicted. Never relabel a live execution as interrupted.
-	entries, err := os.ReadDir(j.dir)
-	if err != nil {
-		return nil, err
-	}
-	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".worker.lock") {
-			continue
+	// evicted. Preflight EVERY worker fence and decode EVERY receipt before
+	// rewriting anything, including evidence outside the retained window.
+	unfinished := 0
+	if err := j.walkEntries(func(entry os.DirEntry) error {
+		if strings.HasSuffix(entry.Name(), ".worker.lock") {
+			if !entry.Type().IsRegular() {
+				return fmt.Errorf("invalid job worker fence %q", entry.Name())
+			}
+			release, err := lockJobJournal(filepath.Join(j.dir, entry.Name()))
+			if err != nil {
+				return fmt.Errorf("previous job worker is still active: %w", err)
+			}
+			return release()
 		}
-		if !entry.Type().IsRegular() {
-			return nil, fmt.Errorf("invalid job worker fence %q", entry.Name())
+		if strings.HasSuffix(entry.Name(), ".json") {
+			job, err := j.readJob(entry)
+			if err != nil {
+				return err
+			}
+			if jobNeedsRecovery(job) {
+				unfinished++
+			}
 		}
-		release, err := lockJobJournal(filepath.Join(j.dir, entry.Name()))
-		if err != nil {
-			return nil, fmt.Errorf("previous job worker is still active: %w", err)
-		}
-		if err := release(); err != nil {
-			return nil, err
-		}
-	}
-	jobs, err := j.load()
-	if err != nil {
+		return nil
+	}); err != nil {
 		return nil, err // Never turn unreadable history into an empty, healthy view.
 	}
-	for _, job := range jobs {
-		// A cancelled row can still belong to a worker that was unwinding
-		// when the process died. Its progress is evidence, not a final result.
-		unfinished := job.Result["_execution_in_progress"] == true
-		if unfinished {
-			delete(job.Result, "_execution_in_progress")
-			job.Result["interrupted"] = true
-			job.Result["outcome_unknown"] = true
-			job.UpdatedAt = now.UTC().Format(time.RFC3339)
-		}
-		if job.Status != JobStatusPending && job.Status != JobStatusRunning {
-			if unfinished {
-				if err := j.save(job); err != nil {
-					return nil, fmt.Errorf("record interrupted job %s: %w", job.ID, err)
+	for {
+		if unfinished > 0 {
+			if err := j.walkJobs(func(job *Job) error {
+				if !jobNeedsRecovery(job) {
+					return nil
 				}
+				// A cancelled row can still belong to a worker that was unwinding
+				// when the process died. Its progress is evidence, not a final result.
+				if job.Status == JobStatusPending || job.Status == JobStatusRunning {
+					job.Status = JobStatusFailed
+					job.Error = "server stopped before recording the execution outcome; inspect existing sessions, panes, and pipeline state before retrying; work was not automatically replayed"
+				}
+				job.UpdatedAt = now.UTC().Format(time.RFC3339)
+				if job.Result == nil {
+					job.Result = make(map[string]interface{})
+				}
+				delete(job.Result, "_execution_in_progress")
+				job.Result["interrupted"] = true
+				job.Result["outcome_unknown"] = true
+				if err := j.save(job); err != nil {
+					return fmt.Errorf("record interrupted job %s: %w", job.ID, err)
+				}
+				return nil
+			}); err != nil {
+				return nil, err
 			}
-			continue
 		}
-		job.Status = JobStatusFailed
-		job.UpdatedAt = now.UTC().Format(time.RFC3339)
-		job.Error = "server stopped before recording the execution outcome; inspect existing sessions, panes, and pipeline state before retrying; work was not automatically replayed"
-		if job.Result == nil {
-			job.Result = make(map[string]interface{})
+		// Atomic rewrites may make a directory iterator omit or repeat entries.
+		// Inspect every receipt again without mutation before publishing the
+		// bounded view. Retry omissions only while the unfinished count falls,
+		// so recovery cannot spin or discard unresolved execution evidence.
+		remaining := 0
+		jobs, err := j.load(func(job *Job) error {
+			if jobNeedsRecovery(job) {
+				remaining++
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
 		}
-		job.Result["interrupted"] = true
-		job.Result["outcome_unknown"] = true
-		if err := j.save(job); err != nil {
-			return nil, fmt.Errorf("record interrupted job %s: %w", job.ID, err)
+		if remaining == 0 {
+			return jobs, nil
 		}
+		if remaining >= unfinished {
+			return nil, fmt.Errorf("job journal recovery made no progress: %d unfinished receipts remain", remaining)
+		}
+		unfinished = remaining
 	}
-	return jobs, nil
 }
 
 type jobProgressContextKey struct{}
