@@ -1885,7 +1885,7 @@ func TestResumeFinalizationAdoptsCompletedSuccessChildBeforeRootCheckpoint(t *te
 		t.Fatalf("main fixture failed: %+v", mainResult)
 	}
 	executor.state.Steps[mainResult.StepID] = mainResult
-	tailResult := executor.executeStep(context.Background(), &workflow.PostPipelineSteps[0], workflow)
+	tailResult := executor.executeStep(finalizationContext(context.Background()), &workflow.PostPipelineSteps[0], workflow)
 	if tailResult.Status != StatusCompleted || calls != 1 {
 		t.Fatalf("tail fixture did not complete once: %+v calls=%d", tailResult, calls)
 	}
@@ -1998,7 +1998,7 @@ func TestResumeFinalizationClearsReopenedNamedOutputs(t *testing.T) {
 				// result cannot establish that its process group stopped.
 				executor := NewExecutor(cfg)
 				executor.state, executor.graph = prior, NewDependencyGraph(workflow)
-				previous := executor.executeStep(context.Background(), &workflow.PostPipelineSteps[0], workflow)
+				previous := executor.executeStep(finalizationContext(context.Background()), &workflow.PostPipelineSteps[0], workflow)
 				receipt := prior.CommandExecutions[priorID]
 				if previous.Status != StatusFailed || previous.Output != "old" || receipt.Status != commandExecutionSettled || receipt.SettledAt.IsZero() {
 					t.Fatalf("post fixture did not produce a settled failure: result=%+v receipt=%+v", previous, receipt)

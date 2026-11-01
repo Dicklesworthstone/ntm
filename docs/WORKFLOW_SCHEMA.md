@@ -436,6 +436,66 @@ receipt identity, or the frozen workflow. REST resume requests and
 meaning. Zero uses the frozen workflow's configured limit or its default;
 negative resume overrides are rejected.
 
+### Step Admission and Materialization Limits
+
+Dynamic workflows have two independent node limits, both defaulting to 100,000:
+
+```yaml
+settings:
+  limits:
+    max_step_count_total: 100000
+    max_materialized_step_nodes: 100000
+```
+
+`max_step_count_total` bounds the distinct concrete runtime step IDs admitted
+over the life of a run. Workflow roots reserve IDs before execution; containers
+admit child batches before dispatch. Foreach with a literal round count admits
+the complete eligible expansion together. Expression-driven rounds and legacy
+loops admit each round or iteration before its body starts. A refused batch adds
+no child IDs, results, in-flight entries, or command launch receipts.
+
+Retries and resumed work reuse their existing IDs. Explicit scope resets also
+retain admissions; a fresh run starts a new ledger. Older checkpoints seed the
+ledger from their retained runtime evidence. A journal already above the current
+limit may reuse admitted IDs, but cannot add new ones. Admission records capacity
+only: it never establishes that an effect occurred, that a process terminated,
+or that replay is safe. Unresolved execution receipts retain their normal
+recovery requirements regardless of capacity overrides.
+
+Authored `on_cancel` and `post_pipeline_steps` roots reserve capacity before main
+work starts in a separate finalization allowance of the same size. Their nested
+work shares that allowance. Exhaustion in an earlier cleanup body does not
+consume a later root's reserved slot. Owned process-group termination remains
+part of the executor's cleanup regardless of these authored-step limits.
+
+`max_materialized_step_nodes` bounds the literal workflow definition and active
+copies retained by planners. The executor checks it before constructing its
+dependency graph, cloning eager foreach plans, decoding selected branches, or
+copying parallel bodies. Temporary leases are released when consumers finish.
+Nested planners fail promptly when the remaining capacity is insufficient;
+they do not wait for capacity held by an ancestor. This is a node limit, not a
+byte limit for command output, parsed item values, or the entire checkpoint.
+
+Main-work admission failure stops the attempt even with `on_error: continue`
+or retry policies. A completed native command whose success hook exceeds a
+limit retains its original receipt and output, allowing recovery to finish the
+hook without repeating that command. Ordinary post-pipeline failure policy is
+unchanged; later reserved finalization roots can still run.
+
+To increase capacity for one attempt of a frozen run, use:
+
+```bash
+ntm pipeline resume <run-id> --max-step-count-total 200000 \
+  --max-materialized-step-nodes 200000
+```
+
+REST resume requests and `pipeline_resume` jobs accept `max_step_count_total`
+and `max_materialized_step_nodes` with the same meaning. Positive values change
+only the current attempt, preserving the frozen workflow and receipt identities.
+Zero uses the frozen configuration or default. Negative resume values are
+rejected before checkpoint mutation. Omitted or nonpositive workflow settings
+use the defaults.
+
 ### Error Actions
 
 | Action | Behavior |

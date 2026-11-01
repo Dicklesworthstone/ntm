@@ -1476,8 +1476,15 @@ func TestControlledPipelineHandledObservationFailurePreservesRecovery(t *testing
 				}
 			}
 			completedIndependent := prior.Steps["independent"].FinishedAt
+			// Controlled execution uses the normalized snapshot. Public resume
+			// reloads that same definition, including raw branch child maps,
+			// rather than the caller's original typed authoring structure.
+			resumeWorkflow, validation, err := LoadResumeWorkflow(prior.WorkflowFile)
+			if err != nil || !validation.Valid {
+				t.Fatalf("load frozen workflow for recovery: %v %+v", err, validation)
+			}
 			before := commandOperatorRecoveryBytes(t, cfg)
-			if _, err := NewExecutor(cfg).Resume(context.Background(), workflow, prior, nil); err == nil {
+			if _, err := NewExecutor(cfg).Resume(context.Background(), resumeWorkflow, prior, nil); err == nil {
 				t.Fatal("ordinary resume replayed the unknown source")
 			}
 			if !bytes.Equal(before, commandOperatorRecoveryBytes(t, cfg)) {
@@ -1513,10 +1520,14 @@ func TestControlledPipelineHandledObservationFailurePreservesRecovery(t *testing
 			}
 			resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer resumeCancel()
-			final, err := NewExecutor(cfg).Resume(resumeCtx, workflow, resolved, nil)
+			final, err := NewExecutor(cfg).Resume(resumeCtx, resumeWorkflow, resolved, nil)
 			if err != nil || final == nil || final.Status != StatusCompleted || final.Steps["consume"].Output != "consumed" ||
 				!final.Steps["independent"].FinishedAt.Equal(completedIndependent) {
-				t.Fatalf("verified recovery did not preserve completed independent work: %+v %v", final, err)
+				var sourceError *StepError
+				if final != nil {
+					sourceError = final.Steps[work.ID].Error
+				}
+				t.Fatalf("verified recovery did not preserve completed independent work: source_error=%+v state=%+v error=%v", sourceError, final, err)
 			}
 			names := []string{"source-effects", "independent-effects", "dependent-effects"}
 			if selector {

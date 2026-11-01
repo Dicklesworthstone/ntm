@@ -246,10 +246,11 @@ type LimitsConfig struct {
 	// top-level steps the executor dispatches concurrently (bd-jio7h).
 	// Zero/unset means DefaultMaxParallelSteps; 1 forces the legacy serial
 	// scheduling.
-	MaxParallelSteps     int   `yaml:"max_parallel_steps,omitempty" toml:"max_parallel_steps,omitempty" json:"max_parallel_steps,omitempty"`
-	MaxTemplateBytes     int64 `yaml:"max_template_bytes,omitempty" toml:"max_template_bytes,omitempty" json:"max_template_bytes,omitempty"`
-	MaxStepCountTotal    int   `yaml:"max_step_count_total,omitempty" toml:"max_step_count_total,omitempty" json:"max_step_count_total,omitempty"`
-	MaxSubstitutionDepth int   `yaml:"max_substitution_recursion,omitempty" toml:"max_substitution_recursion,omitempty" json:"max_substitution_recursion,omitempty"`
+	MaxParallelSteps         int   `yaml:"max_parallel_steps,omitempty" toml:"max_parallel_steps,omitempty" json:"max_parallel_steps,omitempty"`
+	MaxTemplateBytes         int64 `yaml:"max_template_bytes,omitempty" toml:"max_template_bytes,omitempty" json:"max_template_bytes,omitempty"`
+	MaxStepCountTotal        int   `yaml:"max_step_count_total,omitempty" toml:"max_step_count_total,omitempty" json:"max_step_count_total,omitempty"`
+	MaxMaterializedStepNodes int   `yaml:"max_materialized_step_nodes,omitempty" toml:"max_materialized_step_nodes,omitempty" json:"max_materialized_step_nodes,omitempty"`
+	MaxSubstitutionDepth     int   `yaml:"max_substitution_recursion,omitempty" toml:"max_substitution_recursion,omitempty" json:"max_substitution_recursion,omitempty"`
 }
 
 const (
@@ -263,6 +264,7 @@ const (
 	DefaultMaxParallelSteps            = 4                // bd-jio7h
 	DefaultMaxTemplateBytes            = 256 * 1024       // 256 KB
 	DefaultMaxStepCountTotal           = 100000
+	DefaultMaxMaterializedStepNodes    = 100000
 	DefaultMaxSubstitutionDepth        = 8
 )
 
@@ -300,6 +302,9 @@ func (lc LimitsConfig) EffectiveLimits() LimitsConfig {
 	}
 	if lc.MaxStepCountTotal <= 0 {
 		lc.MaxStepCountTotal = DefaultMaxStepCountTotal
+	}
+	if lc.MaxMaterializedStepNodes <= 0 {
+		lc.MaxMaterializedStepNodes = DefaultMaxMaterializedStepNodes
 	}
 	if lc.MaxSubstitutionDepth <= 0 {
 		lc.MaxSubstitutionDepth = DefaultMaxSubstitutionDepth
@@ -1321,6 +1326,9 @@ const (
 	// cancelled child never entered its executor. Unlike generic cancellation,
 	// this permits ordinary resume when no attempts or launch evidence conflict.
 	SkipKindCancelledBeforeDispatch SkipKind = "cancelled_before_dispatch"
+	// Admission denied before entering execution is affirmative no-launch
+	// evidence, distinct from historic generic resource-limit failures.
+	SkipKindAdmissionDenied SkipKind = "admission_denied"
 	// SkipKindResumeAlreadyCompleted marks a foreach iteration that was
 	// fully completed in a prior run and is being skipped on resume to
 	// avoid duplicating side effects (bd-qeatk).
@@ -1372,19 +1380,20 @@ type StepError struct {
 
 // ExecutionState contains the complete state of a workflow execution
 type ExecutionState struct {
-	RunID        string                 `json:"run_id"`
-	WorkflowID   string                 `json:"workflow_id"`
-	WorkflowFile string                 `json:"workflow_file,omitempty"`
-	Session      string                 `json:"session,omitempty"`
-	Status       ExecutionStatus        `json:"status"`
-	StartedAt    time.Time              `json:"started_at"`
-	UpdatedAt    time.Time              `json:"updated_at"`
-	FinishedAt   time.Time              `json:"finished_at,omitempty"`
-	CancelledAt  *time.Time             `json:"cancelled_at,omitempty"`
-	CurrentStep  string                 `json:"current_step,omitempty"`
-	Steps        map[string]StepResult  `json:"steps"`
-	Variables    map[string]interface{} `json:"variables"` // Runtime variables including step outputs
-	Errors       []ExecutionError       `json:"errors,omitempty"`
+	RunID          string                 `json:"run_id"`
+	WorkflowID     string                 `json:"workflow_id"`
+	WorkflowFile   string                 `json:"workflow_file,omitempty"`
+	Session        string                 `json:"session,omitempty"`
+	Status         ExecutionStatus        `json:"status"`
+	StartedAt      time.Time              `json:"started_at"`
+	UpdatedAt      time.Time              `json:"updated_at"`
+	FinishedAt     time.Time              `json:"finished_at,omitempty"`
+	CancelledAt    *time.Time             `json:"cancelled_at,omitempty"`
+	CurrentStep    string                 `json:"current_step,omitempty"`
+	Steps          map[string]StepResult  `json:"steps"`
+	StepAdmissions *StepAdmissionState    `json:"step_admissions,omitempty"`
+	Variables      map[string]interface{} `json:"variables"` // Runtime variables including step outputs
+	Errors         []ExecutionError       `json:"errors,omitempty"`
 
 	// Phase-B resume metadata. This is ntm's internal persisted execution
 	// format and may change between pipeline schema revisions.

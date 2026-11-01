@@ -17,8 +17,16 @@ import (
 // runParallelChildren supplies the canonical step lifecycle and persistence
 // boundaries to the body scheduler. It does not implement another executor.
 func (e *Executor) runParallelChildren(ctx context.Context, step *Step, workflow *Workflow, onError ErrorAction) ([]StepResult, error) {
+	release, err := e.acquireStepMaterialization(ctx, len(step.Parallel.Steps))
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	children, tasks, err := parallelChildDefinitions(step)
 	if err != nil {
+		return nil, err
+	}
+	if err := e.admitRuntimeIDs(ctx, runtimeStepIDs(children)); err != nil {
 		return nil, err
 	}
 	results := make([]StepResult, len(children))
@@ -313,7 +321,9 @@ func (e *Executor) resumeParallelSuccessHooks(ctx context.Context, parent *Step,
 			}
 		}
 	}
-	e.runOnSuccessSteps(ctx, parent, workflow)
+	if err := e.runOnSuccessSteps(ctx, parent, workflow); err != nil {
+		return err
+	}
 	if err := e.checkpointFailure(); err != nil {
 		return err
 	}

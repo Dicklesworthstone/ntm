@@ -133,6 +133,7 @@ type Executor struct {
 	// Both fields are protected by stateMu.
 	selectorOutputActive map[string]selectorOutputReservation
 	selectorOutputWake   chan struct{}
+	stepAdmissionAttempt *stepAdmissionAttempt // Protected by stateMu; reset per attempt.
 
 	// persistMu serializes snapshot-and-save transactions. Multiple workers may
 	// checkpoint concurrently; without this lock an older snapshot whose fsync
@@ -286,6 +287,7 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 	e.stateMu.Lock()
 	e.backgroundCommandErrors = nil
 	e.resetSelectorOutputBudgetLocked()
+	e.stepAdmissionAttempt = &stepAdmissionAttempt{}
 	e.reservationFailure = nil
 	e.reservationWake = make(chan struct{}, 1)
 	e.reservationStop = make(chan struct{})
@@ -336,6 +338,11 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 	e.defaults = workflow.Defaults
 	e.limits = workflow.Settings.Limits.EffectiveLimits()
 	e.resetPaneMetadataLoader()
+	if err := e.validateStepDefinitionCapacity(workflow); err != nil {
+		e.state.Status = StatusFailed
+		e.state.FinishedAt = time.Now()
+		return e.state, errors.Join(err, e.persistState())
+	}
 
 	if err := e.persistState(); err != nil {
 		return e.state, err
@@ -358,6 +365,14 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 		return e.state, joinCheckpointError(fmt.Errorf("workflow has dependency errors: %v", errors[0]), e.persistState())
 	}
 
+	if err := e.admitWorkflowRoots(ctx, workflow); err != nil {
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) && e.checkpointFailure() == nil {
+			return e.finishExecution(ctx, workflow, err)
+		}
+		e.state.Status = StatusFailed
+		e.state.FinishedAt = time.Now()
+		return e.state, errors.Join(err, e.persistState())
+	}
 	if err := e.applyStartFrom(workflow); err != nil {
 		e.stateMu.Lock()
 		e.state.Status = StatusFailed
@@ -389,6 +404,9 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 	}
 	if e.config.ResumeOptions.MaxSelectorOutputBytesTotal < 0 {
 		return prior, fmt.Errorf("max_selector_output_bytes_total must not be negative")
+	}
+	if e.config.ResumeOptions.MaxStepCountTotal < 0 || e.config.ResumeOptions.MaxMaterializedStepNodes < 0 {
+		return prior, fmt.Errorf("max_step_count_total and max_materialized_step_nodes must not be negative")
 	}
 
 	// bd-0wzkc: reject resume of state captured for a different workflow.
@@ -422,6 +440,7 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 	e.stateMu.Lock()
 	e.backgroundCommandErrors = nil
 	e.resetSelectorOutputBudgetLocked()
+	e.stepAdmissionAttempt = &stepAdmissionAttempt{}
 	e.reservationFailure = nil
 	e.reservationWake = make(chan struct{}, 1)
 	e.reservationStop = make(chan struct{})
@@ -471,11 +490,9 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 
 	e.progress = progress
 	e.defaults = workflow.Defaults
-	e.limits = workflow.Settings.Limits.EffectiveLimits()
-	if limit := e.config.ResumeOptions.MaxSelectorOutputBytesTotal; limit > 0 {
-		// Admission capacity is attempt-local. Do not change the frozen
-		// workflow or the invocation identity of retained selector output.
-		e.limits.MaxSelectorOutputBytesTotal = limit
+	e.limits = resumeAttemptLimits(workflow.Settings.Limits, e.config.ResumeOptions)
+	if err := e.validateStepDefinitionCapacity(workflow); err != nil {
+		return prior, err
 	}
 
 	// Build dependency graph
@@ -501,6 +518,15 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 		// attempt, not failed protection. Run authored cleanup with the
 		// original receipts intact; do not reset or prune their identities.
 		// Concrete ownership and unknown-outcome errors do not match ctx.Err.
+		e.stateMu.Lock()
+		admissionErr := e.seedStepAdmissionsLocked(workflow, e.graph)
+		e.stateMu.Unlock()
+		if admissionErr != nil {
+			return e.state, errors.Join(resumeErr, admissionErr)
+		}
+		if err := e.admitFinalizationRoots(context.WithoutCancel(ctx), workflow); err != nil {
+			return e.state, errors.Join(resumeErr, err)
+		}
 		return e.finishExecution(ctx, workflow, resumeErr)
 	}
 	if resumeErr == nil {
@@ -532,6 +558,14 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 	// checkpoint age, advance the graph, or authorize downstream effects.
 	if err := e.applyResumeState(); err != nil {
 		return e.state, fmt.Errorf("restore resume outputs: %w", err)
+	}
+	if err := e.admitWorkflowRoots(ctx, workflow); err != nil {
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) && e.checkpointFailure() == nil {
+			return e.finishExecution(ctx, workflow, err)
+		}
+		// This attempt has not dispatched work. An admission checkpoint
+		// failure must not start authored cleanup as a side effect.
+		return e.state, err
 	}
 
 	// bd-05l02: now that resume validation has accepted the prior state,
@@ -633,10 +667,13 @@ func (e *Executor) runOnCancelSteps(workflow *Workflow) {
 		e.state.UpdatedAt = time.Now()
 		e.stateMu.Unlock()
 
-		cleanupCtx := context.WithValue(context.Background(), checkpointCleanupKey{}, true)
+		cleanupCtx := context.WithValue(finalizationContext(context.Background()), checkpointCleanupKey{}, true)
 		stepCtx, stepCancel := context.WithTimeout(cleanupCtx, cleanupTimeout)
 		result := e.executeStep(stepCtx, &step, &cleanupWorkflow)
 		stepCancel()
+		if !e.runtimeIDAdmitted(step.ID) {
+			continue
+		}
 		if result.FinishedAt.IsZero() {
 			result.FinishedAt = time.Now()
 		}
@@ -763,6 +800,9 @@ func (e *Executor) executeWorkflow(ctx context.Context, workflow *Workflow) erro
 	// state, and applies on_error semantics. A non-nil return is fatal.
 	finishStep := func(d stepDone) error {
 		stepID, step, result := d.stepID, d.step, d.result
+		if !e.runtimeIDAdmitted(stepID) {
+			return fmt.Errorf("runtime step %q was refused before admission", stepID)
+		}
 
 		e.stateMu.Lock()
 		e.state.Steps[stepID] = result
@@ -810,6 +850,9 @@ func (e *Executor) executeWorkflow(ctx context.Context, workflow *Workflow) erro
 			_ = e.graph.MarkFailed(stepID)
 		}
 
+		if err := e.stepAdmissionFailure(ctx); err != nil {
+			return err
+		}
 		// Handle failure based on error action
 		if result.Status == StatusFailed {
 			// Mark step as failed in dependency graph
@@ -941,6 +984,9 @@ scheduler:
 
 // executeStep runs a single step with retry logic
 func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workflow) StepResult {
+	if err := e.admitRuntimeIDs(ctx, []string{step.ID}); err != nil {
+		return stepAdmissionResult(step, err)
+	}
 	// Releasing an already-expired lease is valid cleanup. Its own identity
 	// check owns admission. Reset this marker for every child so success or
 	// recovery hooks cannot inherit a release parent's exemption.
@@ -1024,6 +1070,20 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 
 		// Execute the step
 		stepResult := e.executeStepOnce(ctx, step, workflow)
+		if findStepAdmissionError(stepResult.Error) != nil {
+			stepResult.Attempts = attempt
+			return stepResult
+		}
+		if err := e.stepAdmissionFailure(ctx); err != nil {
+			// A sibling or descendant can exhaust capacity after this body
+			// finishes. Preserve its original completion/uncertainty evidence;
+			// the sticky attempt error stops scheduling and fails the run.
+			stepResult.Attempts = attempt
+			if stepResult.Status == StatusCompleted && len(step.OnSuccess) > 0 {
+				return stepAdmissionExecutionFailure(stepResult, err)
+			}
+			return stepResult
+		}
 
 		if stepResult.Status == StatusCompleted {
 			result = stepResult
@@ -1037,10 +1097,13 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 			e.emitProgress("step_complete", step.ID,
 				stepProgressMessage("Step completed", step, ""), e.calculateProgress())
 			// bd-w6nth.7: run OnSuccess steps after a successful parent.
-			// Failures here are logged but do NOT flip the parent's
-			// Status (matching post_pipeline_steps semantics). Depth is
-			// tracked in ctx so recursive OnSuccess chains can be capped.
-			e.runOnSuccessSteps(ctx, step, workflow)
+			// Ordinary hook failures are logged without changing its status.
+			// Capacity refusal keeps the original effect receipt and leaves
+			// the parent resumable so its pending hooks can finish later.
+			// Context depth bounds recursive OnSuccess chains.
+			if err := e.runOnSuccessSteps(ctx, step, workflow); err != nil {
+				return stepAdmissionExecutionFailure(result, err)
+			}
 			return result
 		}
 
@@ -1132,7 +1195,7 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 }
 
 func (e *Executor) finalizeFailedStep(ctx context.Context, step *Step, workflow *Workflow, result StepResult) StepResult {
-	if result.Status != StatusFailed {
+	if result.Status != StatusFailed || findStepAdmissionError(result.Error) != nil {
 		return result
 	}
 	if e.stopBeforeDispatch(ctx, &result) {
@@ -2678,7 +2741,9 @@ func (e *Executor) executeParallel(ctx context.Context, step *Step, workflow *Wo
 		result.Status = StatusFailed
 		result.FinishedAt = time.Now()
 		errorType := "parallel_dependency"
-		if errors.Is(scheduleErr, ErrCheckpointFailed) {
+		if isStepAdmissionError(scheduleErr) {
+			errorType = "step_limit"
+		} else if errors.Is(scheduleErr, ErrCheckpointFailed) {
 			errorType = "checkpoint"
 		} else if errors.Is(scheduleErr, context.DeadlineExceeded) {
 			errorType = "parallel_timeout"
@@ -2736,6 +2801,19 @@ func (e *Executor) executeParallel(ctx context.Context, step *Step, workflow *Wo
 	}
 	result.ParsedData = groupOutputs
 	e.storeParallelOutputVars(step, results, completionOrder)
+	for _, child := range results {
+		if cause := findStepAdmissionError(child.Error); cause != nil {
+			// A refused descendant is unfinished work. Continue may handle
+			// ordinary failures, but cannot checkpoint this container complete.
+			result.Status = StatusFailed
+			result.Error = aggregateParallelErrors(results, len(results))
+			if result.Error == nil {
+				return stepAdmissionExecutionFailure(result, &stepAdmissionPropagationError{message: cause.Message})
+			}
+			result.Error.Type = "step_limit"
+			return result
+		}
+	}
 
 	// Determine final status based on error mode and results.
 	//
@@ -2828,6 +2906,9 @@ func (e *Executor) executeLoop(ctx context.Context, step *Step, workflow *Workfl
 	// Store collected data as parsed data
 	if len(loopResult.Collected) > 0 {
 		result.ParsedData = loopResult.Collected
+	}
+	if cause := findStepAdmissionError(result.Error); cause != nil {
+		return stepAdmissionExecutionFailure(result, &stepAdmissionPropagationError{message: cause.Message})
 	}
 
 	return result
@@ -3914,6 +3995,7 @@ func (e *Executor) snapshotState() *ExecutionState {
 	}
 
 	snapshot := *e.state
+	snapshot.StepAdmissions = cloneStepAdmissions(e.state.StepAdmissions)
 	snapshot.Errors = append([]ExecutionError(nil), e.state.Errors...)
 
 	if e.state.Steps != nil {

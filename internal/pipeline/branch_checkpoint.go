@@ -182,6 +182,11 @@ func (e *Executor) prepareBranchDecision(ctx context.Context, step *Step) (branc
 	if !found {
 		return fail(fmt.Errorf("saved branch %q is missing from step %q; refusing fallback during recovery", decision.BranchKey, step.ID))
 	}
+	release, err := e.retainDefinitionMaterialization(ctx, body)
+	if err != nil {
+		return fail(err)
+	}
+	defer release()
 	steps, err := parseBranchSteps(body, step.ID, decision.BranchKey)
 	if err != nil {
 		return fail(fmt.Errorf("failed to parse branch body: %w", err))
@@ -231,6 +236,16 @@ func (e *Executor) prepareBranchDecision(ctx context.Context, step *Step) (branc
 				return fail(fmt.Errorf("branch child %q result differs from its completion checkpoint; refusing stale recovery", childID))
 			}
 		}
+	}
+	if err := e.admitRuntimeBatch(ctx, func(yield func(string) error) error {
+		for i := range steps {
+			if err := yield(scopedChildStepID(step.ID, steps[i].ID, i+1)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return fail(err)
 	}
 	owned := branchBodyOutputVars(steps)
 	for name := range decision.Scope {
@@ -344,7 +359,9 @@ func (e *Executor) adoptBranchChild(ctx context.Context, decision branchDecision
 			// A native command journal can reconstruct the result of a child
 			// interrupted during hooks. The existing hook runner adopts its
 			// own completed children; do not run the original command again.
-			e.runOnSuccessSteps(ctx, child, workflow)
+			if err := e.runOnSuccessSteps(ctx, child, workflow); err != nil {
+				return StepResult{}, false, err
+			}
 		}
 	}
 	return prior, true, nil

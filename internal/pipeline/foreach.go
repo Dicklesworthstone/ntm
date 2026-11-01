@@ -36,6 +36,21 @@ type foreachIterationResult struct {
 	SkipReason string                 `json:"skip_reason,omitempty"`
 	SkipKind   SkipKind               `json:"skip_kind,omitempty"`
 	Error      string                 `json:"error,omitempty"`
+	// Admission can fail between rounds without creating a child result.
+	// Keep its local classification until the container aggregates outcomes.
+	admissionError *StepError
+}
+
+func (r foreachIterationResult) admissionFailure() *StepError {
+	if r.admissionError != nil {
+		return r.admissionError
+	}
+	for _, result := range r.Results {
+		if cause := findStepAdmissionError(result.Error); cause != nil {
+			return cause
+		}
+	}
+	return nil
 }
 
 func (r foreachIterationResult) failed() bool {
@@ -65,6 +80,18 @@ func (e *Executor) executeForeach(ctx context.Context, step *Step, workflow *Wor
 	if config == nil {
 		return finishForeachFailure(result, "foreach", "step has no foreach configuration")
 	}
+	bodyCount := len(config.Steps)
+	if bodyCount == 0 {
+		bodyCount = len(config.Body)
+	}
+	if bodyCount == 0 && config.Template != "" {
+		bodyCount = 1
+	}
+	releaseBody, err := e.acquireStepMaterialization(ctx, bodyCount)
+	if err != nil {
+		return finishForeachFailure(result, "step_limit", err.Error())
+	}
+	defer releaseBody()
 
 	body, err := foreachBodySteps(step, config)
 	if err != nil {
@@ -124,9 +151,47 @@ func (e *Executor) executeForeach(ctx context.Context, step *Step, workflow *Wor
 		fmt.Sprintf("Starting %s with %d iterations", kind, len(items)),
 		e.calculateProgress())
 
+	releasePlans, err := e.acquireDefinitionCopies(ctx, body, len(items))
+	if err != nil {
+		return finishForeachFailure(result, "step_limit", err.Error())
+	}
+	defer releasePlans()
 	plans, err := e.prepareForeachIterations(ctx, step, config, kind, body, items)
 	if err != nil {
 		return finishForeachFailure(result, "foreach", err.Error())
+	}
+	// Literal round counts are known without changing the existing timing of
+	// expression evaluation. Admit their complete expansion before any body.
+	if config.MaxRounds.Expr == "" {
+		rounds := config.MaxRounds.Value
+		if rounds <= 0 {
+			rounds = 1
+		}
+		err := e.admitRuntimeBatch(ctx, func(yield func(string) error) error {
+			for _, plan := range plans {
+				if plan.Skipped {
+					continue
+				}
+				for round := 1; ; round++ {
+					for _, child := range plan.Steps {
+						id := child.ID
+						if rounds > 1 {
+							id = fmt.Sprintf("%s_round%d", id, round)
+						}
+						if err := yield(id); err != nil {
+							return err
+						}
+					}
+					if round == rounds {
+						break
+					}
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return finishForeachFailure(result, "step_limit", err.Error())
+		}
 	}
 
 	// bd-gstw3: items-fingerprint drift detection (parity with bd-3awat for
@@ -177,6 +242,11 @@ func (e *Executor) executeForeach(ctx context.Context, step *Step, workflow *Wor
 	outputBindings := e.storeForeachOutputVars(step, config, plans, iterations)
 	if failed > 0 {
 		result.Error = aggregateForeachErrors(iterations, step.ID, total)
+		if findStepAdmissionError(result.Error) != nil {
+			result.Status = StatusFailed
+			result.Error.Type = "step_limit"
+			return result
+		}
 		if onError != ErrorActionContinue {
 			result.Status = StatusFailed
 			e.emitProgress("step_error", step.ID, result.Error.Message, e.calculateProgress())
@@ -534,6 +604,9 @@ func (e *Executor) executeForeachIterationsSequential(ctx context.Context, paren
 			}
 			break
 		}
+		if iterResult.admissionFailure() != nil {
+			break
+		}
 		if iterResult.failed() && onError == ErrorActionFailFast {
 			for _, remaining := range plans[i+1:] {
 				results = append(results, cancelledForeachIteration(remaining))
@@ -715,6 +788,29 @@ func (e *Executor) executeForeachIteration(ctx context.Context, parent *Step, wo
 	}
 
 	for round := startRound; round <= maxRounds; round++ {
+		if err := e.admitRuntimeBatch(ctx, func(yield func(string) error) error {
+			for _, child := range plan.Steps {
+				id := child.ID
+				if maxRounds > 1 {
+					id = fmt.Sprintf("%s_round%d", id, round)
+				}
+				if err := yield(id); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			iterResult.Error = err.Error()
+			if isStepAdmissionError(err) {
+				iterResult.admissionError = &StepError{Type: "step_limit", Message: err.Error(), Timestamp: time.Now()}
+			} else if err == ctx.Err() {
+				// Cancellation can arrive before any child exists. Preserve
+				// its provenance so a sibling's loop break can normalize it.
+				iterResult.SkipKind = SkipKindCancelled
+				iterResult.SkipReason = err.Error()
+			}
+			return iterResult
+		}
 		// bd-2ubxp.20: bind round/rounds_remaining/loop.round on a derived
 		// context instead of writing to shared state.Variables, so parallel
 		// iterations don't race on each other's round values.
@@ -724,11 +820,25 @@ func (e *Executor) executeForeachIteration(ctx context.Context, parent *Step, wo
 		}
 
 		stepsForRound := plan.Steps
+		releaseRound := func() {}
 		if maxRounds > 1 {
+			var err error
+			releaseRound, err = e.acquireStepMaterialization(ctx, len(plan.Steps))
+			if err != nil {
+				iterResult.Error = err.Error()
+				if isStepAdmissionError(err) {
+					iterResult.admissionError = &StepError{Type: "step_limit", Message: err.Error(), Timestamp: time.Now()}
+				} else if err == ctx.Err() {
+					iterResult.SkipKind = SkipKindCancelled
+					iterResult.SkipReason = err.Error()
+				}
+				return iterResult
+			}
 			stepsForRound = rewriteRoundStepIDs(plan.Steps, round)
 		}
 
 		exit := e.runForeachIterationRound(roundCtx, parent, workflow, plan, parentOnError, stepsForRound, &iterResult)
+		releaseRound()
 		if exit {
 			return iterResult
 		}
@@ -794,6 +904,10 @@ func (e *Executor) runForeachIterationRound(ctx context.Context, parent *Step, w
 		result := e.executeForeachNestedStep(ctx, &step, workflow)
 		iterResult.Results = append(iterResult.Results, result)
 		e.storeForeachNestedResult(&step, result)
+		if findStepAdmissionError(result.Error) != nil {
+			iterResult.Error = resultErrorMessage(result)
+			return true
+		}
 
 		if result.Status == StatusSkipped {
 			if step.LoopControl == LoopControlBreak || step.LoopControl == LoopControlContinue {
@@ -931,6 +1045,12 @@ func (e *Executor) logForeachLoopControl(control LoopControl, workflow *Workflow
 }
 
 func (e *Executor) executeForeachNestedStep(ctx context.Context, step *Step, workflow *Workflow) StepResult {
+	if err := e.admitRuntimeIDs(ctx, []string{step.ID}); err != nil {
+		return stepAdmissionResult(step, err)
+	}
+	e.markStepInFlight(step.ID, stepKind(step), -1)
+	e.persistState()
+	defer e.clearStepInFlight(step.ID)
 	if step.When != "" {
 		skip, err := e.evaluateConditionCtx(ctx, step.When)
 		if err != nil {
@@ -974,9 +1094,22 @@ func (e *Executor) executeForeachNestedStep(ctx context.Context, step *Step, wor
 	var result StepResult
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		result = e.executeForeachNestedStepOnce(ctx, step, workflow)
+		if findStepAdmissionError(result.Error) != nil {
+			result.Attempts = attempt
+			return result
+		}
+		if err := e.stepAdmissionFailure(ctx); err != nil {
+			result.Attempts = attempt
+			if result.Status == StatusCompleted && len(step.OnSuccess) > 0 {
+				return stepAdmissionExecutionFailure(result, err)
+			}
+			return result
+		}
 		result.Attempts = attempt
 		if result.Status == StatusCompleted {
-			e.runOnSuccessSteps(ctx, step, workflow)
+			if err := e.runOnSuccessSteps(ctx, step, workflow); err != nil {
+				return stepAdmissionExecutionFailure(result, err)
+			}
 			return result
 		}
 		if result.Status == StatusSkipped || result.Status == StatusCancelled {
@@ -1201,6 +1334,9 @@ func foreachIterationKey(iter foreachIterationResult) string {
 }
 
 func (e *Executor) storeForeachNestedResult(step *Step, result StepResult) {
+	if !e.runtimeIDAdmitted(result.StepID) {
+		return
+	}
 	e.stateMu.Lock()
 	if e.state.Steps == nil {
 		e.state.Steps = make(map[string]StepResult)
@@ -1603,6 +1739,11 @@ func (e *Executor) foreachCompletedIterationIDs(stepID string) map[string]struct
 }
 
 func foreachIterationCancelled(result foreachIterationResult) bool {
+	// A prior cancelled child may have been handled with on_error: continue.
+	// A later admission refusal must remain visible even if a sibling breaks.
+	if result.admissionFailure() != nil {
+		return false
+	}
 	if result.SkipKind == SkipKindCancelled {
 		return true
 	}

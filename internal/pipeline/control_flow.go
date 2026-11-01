@@ -123,6 +123,8 @@ func scopedChildStepID(parentID, childID string, ordinal int) string {
 // executeBranch resolves the branch predicate, looks up the matching branch,
 // parses the branch body into steps, and executes them sequentially.
 func (e *Executor) executeBranch(ctx context.Context, step *Step, workflow *Workflow) StepResult {
+	ctx, releaseMaterializations := withMaterializationOwner(ctx)
+	defer releaseMaterializations()
 	result := StepResult{
 		StepID:    step.ID,
 		Status:    StatusRunning,
@@ -160,6 +162,8 @@ func (e *Executor) executeBranch(ctx context.Context, step *Step, workflow *Work
 		}
 		if errors.Is(err, errCommandOutputUnsettled) {
 			result.Error.Type = "execution_unknown"
+		} else if isStepAdmissionError(err) {
+			result.Error.Type = "step_limit"
 		}
 		result.FinishedAt = time.Now()
 		slog.Error("branch decision failed",
@@ -257,6 +261,9 @@ func (e *Executor) executeBranch(ctx context.Context, step *Step, workflow *Work
 			result.Output = strings.Join(outputs, "\n")
 			result.FinishedAt = time.Now()
 			result.Error = &StepError{Type: "branch_recovery", Message: err.Error(), Timestamp: result.FinishedAt}
+			if isStepAdmissionError(err) {
+				result.Error.Type = "step_limit"
+			}
 			return result
 		}
 		if !adopted {
@@ -308,6 +315,14 @@ func (e *Executor) executeOnFailureRecovery(ctx context.Context, step *Step, wor
 	if step == nil || len(step.OnFailure.Fallback) == 0 {
 		return failed
 	}
+	if err := e.admitRuntimeIDs(ctx, []string{step.ID + ".on_failure"}); err != nil {
+		return e.recordRecoveryFailure(failed, step.ID, err)
+	}
+	release, err := e.acquireStepMaterialization(ctx, 1)
+	if err != nil {
+		return e.recordRecoveryFailure(failed, step.ID, err)
+	}
+	defer release()
 
 	recoveryStep, suppressFailure, err := e.recoveryStepFromFallback(ctx, step)
 	if err != nil {
@@ -374,13 +389,13 @@ func onSuccessChildStepID(parentID, childID string, ordinal int) string {
 // step has reached StatusCompleted. Each child runs through executeStep
 // (so its own OnSuccess chain fires recursively) up to maxOnSuccessDepth
 // total. Depth is tracked in the context so recursion through executeStep
-// is bounded even though the call site stays simple. Failures inside an
-// OnSuccess child are logged but NEVER change the parent's Status —
-// they're side-effect dispatches (notifications, hand-offs) rather
-// than gating steps (bd-w6nth.7).
-func (e *Executor) runOnSuccessSteps(ctx context.Context, parent *Step, workflow *Workflow) {
+// is bounded even though the call site stays simple. Ordinary child failures
+// are logged without changing the parent's status (bd-w6nth.7). Capacity
+// refusal leaves the parent failed with its native receipt intact so a later
+// attempt can finish the pending hooks without repeating the parent effect.
+func (e *Executor) runOnSuccessSteps(ctx context.Context, parent *Step, workflow *Workflow) error {
 	if parent == nil || len(parent.OnSuccess) == 0 {
-		return
+		return nil
 	}
 	depth := onSuccessDepth(ctx)
 	if depth >= maxOnSuccessDepth {
@@ -391,7 +406,7 @@ func (e *Executor) runOnSuccessSteps(ctx context.Context, parent *Step, workflow
 			"depth", depth,
 			"max_depth", maxOnSuccessDepth,
 		)
-		return
+		return nil
 	}
 
 	childCtx := withOnSuccessDepth(ctx, depth+1)
@@ -409,6 +424,15 @@ func (e *Executor) runOnSuccessSteps(ctx context.Context, parent *Step, workflow
 		}
 
 		result := e.executeStep(childCtx, &child, workflow)
+		if !e.runtimeIDAdmitted(child.ID) {
+			if cause := findStepAdmissionError(result.Error); cause != nil {
+				return &stepAdmissionPropagationError{message: fmt.Sprintf("success hook %q was not admitted: %s", child.ID, cause.Message)}
+			}
+			if result.Error != nil {
+				return fmt.Errorf("success hook %q was not admitted: %s", child.ID, result.Error.Message)
+			}
+			return fmt.Errorf("success hook %q was not admitted", child.ID)
+		}
 		if result.FinishedAt.IsZero() {
 			result.FinishedAt = time.Now()
 		}
@@ -426,6 +450,9 @@ func (e *Executor) runOnSuccessSteps(ctx context.Context, parent *Step, workflow
 			)
 		}
 		e.stateMu.Unlock()
+		if cause := findStepAdmissionError(result.Error); cause != nil {
+			return &stepAdmissionPropagationError{message: fmt.Sprintf("success hook %q exceeded capacity: %s", child.ID, cause.Message)}
+		}
 
 		if child.OutputVar != "" && result.Status == StatusCompleted {
 			e.varMu.Lock()
@@ -437,6 +464,7 @@ func (e *Executor) runOnSuccessSteps(ctx context.Context, parent *Step, workflow
 			e.varMu.Unlock()
 		}
 	}
+	return e.stepAdmissionFailure(ctx)
 }
 
 // runPostPipelineSteps iterates Workflow.PostPipelineSteps in order after
@@ -447,6 +475,7 @@ func (e *Executor) runOnSuccessSteps(ctx context.Context, parent *Step, workflow
 // notification, not gating (bd-w6nth.5). Only ambiguous ownership of persisted
 // step/dispatch identities is returned as a fatal workflow error.
 func (e *Executor) runPostPipelineSteps(ctx context.Context, workflow *Workflow) error {
+	ctx = finalizationContext(ctx)
 	if workflow == nil || len(workflow.PostPipelineSteps) == 0 {
 		return nil
 	}
@@ -488,6 +517,9 @@ func (e *Executor) runPostPipelineSteps(ctx context.Context, workflow *Workflow)
 		e.stateMu.Unlock()
 
 		result := e.executeStep(ctx, &step, workflow)
+		if !e.runtimeIDAdmitted(step.ID) {
+			continue
+		}
 		if result.FinishedAt.IsZero() {
 			result.FinishedAt = time.Now()
 		}
@@ -738,18 +770,25 @@ func (e *Executor) recordRecoveryFailure(failed StepResult, stepID string, err e
 	})
 	e.stateMu.Unlock()
 
-	if failed.Error == nil {
+	if failed.Error != nil {
+		// The original native receipt can share this pointer. Recovery
+		// diagnostics belong to the scheduler result, not its launch evidence.
+		original := cloneStepErrorValue(*failed.Error)
+		failed.Error = &original
+		if failed.Error.Details != "" {
+			failed.Error.Details += "\n"
+		}
+		failed.Error.Details += msg
+	} else {
 		failed.Error = &StepError{
 			Type:      "on_failure",
 			Message:   msg,
 			Timestamp: time.Now(),
 		}
-		return failed
 	}
-	if failed.Error.Details != "" {
-		failed.Error.Details += "\n"
+	if isStepAdmissionError(err) {
+		failed.Error.Aggregated = append(failed.Error.Aggregated, StepError{Type: "step_limit", Message: err.Error(), Timestamp: time.Now()})
 	}
-	failed.Error.Details += msg
 	return failed
 }
 

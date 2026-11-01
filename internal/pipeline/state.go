@@ -228,6 +228,7 @@ func (e *Executor) stopBeforeDispatch(ctx context.Context, result *StepResult) b
 // notification. Otherwise a WaitNone cleanup save (or the final save itself)
 // can fail after consumers have already been told the workflow succeeded.
 func (e *Executor) finishExecution(ctx context.Context, workflow *Workflow, err error) (*ExecutionState, error) {
+	err = errors.Join(err, e.stepAdmissionFailure(ctx))
 	// Both new and resumed attempts must finish their authored handoff and
 	// output checks before publishing the terminal state. Ordinary main-step
 	// failures still run post hooks; cancellation uses on_cancel instead.
@@ -451,11 +452,17 @@ func decodeState(data []byte, runID string) (*ExecutionState, error) {
 	if err := validateBranchDecisions(&state); err != nil {
 		return nil, err
 	}
+	if err := validateStepAdmissions(state.StepAdmissions); err != nil {
+		return nil, err
+	}
 
 	return &state, nil
 }
 
 func marshalStateForDisk(state *ExecutionState) ([]byte, error) {
+	if err := validateStepAdmissions(state.StepAdmissions); err != nil {
+		return nil, err
+	}
 	if err := validateBranchDecisions(state); err != nil {
 		return nil, err
 	}

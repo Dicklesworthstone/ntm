@@ -64,6 +64,8 @@ type ResumeOptions struct {
 	// attempt without changing the frozen workflow or replaying its sources.
 	// Zero uses the workflow limit; negative values are rejected.
 	MaxSelectorOutputBytesTotal int64 `json:"max_selector_output_bytes_total,omitempty"`
+	MaxStepCountTotal           int   `json:"max_step_count_total,omitempty"`
+	MaxMaterializedStepNodes    int   `json:"max_materialized_step_nodes,omitempty"`
 }
 
 // ForeachIterationState records durable progress for loop/foreach-style
@@ -2135,7 +2137,26 @@ func defaultResumeOptions() ResumeOptions {
 	}
 }
 
+// Resume capacities belong to this attempt. Both detached preflight and the
+// executor use them without changing the frozen workflow or receipt identity.
+func resumeAttemptLimits(limits LimitsConfig, opts ResumeOptions) LimitsConfig {
+	limits = limits.EffectiveLimits()
+	if opts.MaxSelectorOutputBytesTotal > 0 {
+		limits.MaxSelectorOutputBytesTotal = opts.MaxSelectorOutputBytesTotal
+	}
+	if opts.MaxStepCountTotal > 0 {
+		limits.MaxStepCountTotal = opts.MaxStepCountTotal
+	}
+	if opts.MaxMaterializedStepNodes > 0 {
+		limits.MaxMaterializedStepNodes = opts.MaxMaterializedStepNodes
+	}
+	return limits
+}
+
 func normalizeResumeOptions(opts ResumeOptions) (ResumeOptions, error) {
+	if opts.MaxStepCountTotal < 0 || opts.MaxMaterializedStepNodes < 0 {
+		return opts, fmt.Errorf("max_step_count_total and max_materialized_step_nodes must not be negative")
+	}
 	if opts.MaxSelectorOutputBytesTotal < 0 {
 		return opts, fmt.Errorf("max_selector_output_bytes_total must not be negative")
 	}
@@ -2208,6 +2229,10 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 		}
 	}
 	checkpoint := resumeCheckpointTime(state)
+	if err := validateStepAdmissions(state.StepAdmissions); err != nil {
+		e.stateMu.RUnlock()
+		return err
+	}
 	priorSession := state.Session
 	targetSession := e.config.Session
 	if err := e.validateCommandEvaluationResumeLocked(workflow, state, opts); err != nil {
@@ -2295,6 +2320,12 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 
 	if priorSession != "" && targetSession != "" && priorSession != targetSession && opts.OnRosterChange != ResumeRosterProceed {
 		return fmt.Errorf("resume state was captured for session %q but target session is %q; set OnRosterChange=proceed to override", priorSession, targetSession)
+	}
+	e.stateMu.Lock()
+	admissionErr := e.seedStepAdmissionsLocked(workflow, graph)
+	e.stateMu.Unlock()
+	if admissionErr != nil {
+		return admissionErr
 	}
 	if targetSession != "" && priorSession != targetSession && opts.OnRosterChange == ResumeRosterProceed {
 		e.stateMu.Lock()
@@ -2879,15 +2910,18 @@ func (e *Executor) validateLeafReplayScopeLocked(workflow *Workflow, state *Exec
 	return nil
 }
 
-// resumeCancelledBeforeDispatch recognizes affirmative scheduler evidence that
-// a child never entered its executor. Generic cancellation, zero attempts, and
+// resumeCancelledBeforeDispatch recognizes affirmative scheduler or admission
+// evidence that a child never entered its executor. Generic cancellation, zero attempts, and
 // human-readable reasons cannot establish this on their own. Callers validate
 // existing execution receipts independently before considering missing journals.
 // The caller holds stateMu.
 func resumeCancelledBeforeDispatch(state *ExecutionState, stepID string) bool {
 	result, exists := state.Steps[stepID]
-	if !exists || result.StepID != stepID || result.Status != StatusCancelled ||
-		result.SkipKind != SkipKindCancelledBeforeDispatch || result.Attempts != 0 || result.RerunOnResume {
+	if !exists || result.StepID != stepID || result.Attempts != 0 || result.RerunOnResume {
+		return false
+	}
+	if !(result.Status == StatusCancelled && result.SkipKind == SkipKindCancelledBeforeDispatch) &&
+		!(result.Status == StatusFailed && result.SkipKind == SkipKindAdmissionDenied) {
 		return false
 	}
 	_, inFlight := state.InFlightSteps[stepID]

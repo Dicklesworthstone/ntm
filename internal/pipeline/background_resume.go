@@ -112,6 +112,10 @@ func prepareBackgroundResume(ctx context.Context, root string, req backgroundReq
 	}
 	cfg.WorkflowFile = path
 	checker := NewExecutor(cfg)
+	checker.limits = resumeAttemptLimits(workflow.Settings.Limits, opts)
+	if err := checker.validateStepDefinitionCapacity(workflow); err != nil {
+		return fail(err)
+	}
 	checker.state = prior
 	checker.state = checker.snapshotState()
 	if err := checker.verifyReservationResume(ctx, workflow, opts); err != nil {

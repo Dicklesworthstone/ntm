@@ -1587,9 +1587,12 @@ func TestStepOwnsForeachOutputVar(t *testing.T) {
 // survive as that shape rather than being replaced by a summary string.
 func TestForeachAggregateOutputVarKeepsDeclaredShape(t *testing.T) {
 	state := &ExecutionState{Variables: map[string]interface{}{}}
-	e := &Executor{state: state}
+	e := &Executor{state: state, config: ExecutorConfig{DryRun: true}}
 
 	parent := &Step{ID: "each", OutputVar: "collected", Foreach: &ForeachConfig{}}
+	if err := e.admitRuntimeIDs(context.Background(), []string{parent.ID}); err != nil {
+		t.Fatalf("admit in-memory result fixture: %v", err)
+	}
 	state.Variables[parent.OutputVar] = []string{"a", "b"}
 
 	// Simulate the generic step-result path running afterwards.

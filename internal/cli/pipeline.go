@@ -626,6 +626,8 @@ func newPipelineResumeCmd() *cobra.Command {
 		stepID                      string
 		iteration                   int
 		maxSelectorOutputBytesTotal int64
+		maxStepCountTotal           int
+		maxMaterializedStepNodes    int
 	)
 
 	cmd := &cobra.Command{
@@ -652,6 +654,9 @@ These explicit restart choices may repeat side effects.
 If retained selector output exhausts its aggregate budget, raise
 --max-selector-output-bytes-total for this resume attempt. Existing selector
 outcomes stay intact; the saved workflow's limits remain unchanged.
+Use --max-step-count-total to raise distinct runtime-step admission capacity,
+or --max-materialized-step-nodes to raise transient planning capacity. These
+overrides also apply only to this attempt and do not authorize replay.
 
 Examples:
   # Resume a specific pipeline
@@ -666,6 +671,12 @@ Examples:
 			if maxSelectorOutputBytesTotal < 0 {
 				return fmt.Errorf("--max-selector-output-bytes-total must be zero or positive")
 			}
+			if maxStepCountTotal < 0 {
+				return fmt.Errorf("--max-step-count-total must be zero or positive")
+			}
+			if maxMaterializedStepNodes < 0 {
+				return fmt.Errorf("--max-materialized-step-nodes must be zero or positive")
+			}
 			runID := args[0]
 			resumeOpts := pipeline.ResumeOptions{
 				Mode:                        pipeline.ResumeMode(mode),
@@ -674,6 +685,8 @@ Examples:
 				StepID:                      stepID,
 				Iteration:                   iteration,
 				MaxSelectorOutputBytesTotal: maxSelectorOutputBytesTotal,
+				MaxStepCountTotal:           maxStepCountTotal,
+				MaxMaterializedStepNodes:    maxMaterializedStepNodes,
 			}
 			// normalizeResumeOptions derives KeepState from Reset (bd-uyjdn), so a
 			// KeepState:false set here alone was silently flipped back to true and
@@ -942,6 +955,8 @@ Examples:
 	cmd.Flags().BoolVar(&keepState, "keep-state", true, "Preserve completed step outputs while resuming")
 	cmd.Flags().StringVar(&maxResumeAge, "max-resume-age", "", "Refuse to resume state older than this duration (for example 7d, 24h)")
 	cmd.Flags().Int64Var(&maxSelectorOutputBytesTotal, "max-selector-output-bytes-total", 0, "Override the selector output budget in bytes for this resume attempt (0 uses the saved workflow)")
+	cmd.Flags().IntVar(&maxStepCountTotal, "max-step-count-total", 0, "Override distinct runtime-step admission capacity for this resume attempt (0 uses the saved workflow)")
+	cmd.Flags().IntVar(&maxMaterializedStepNodes, "max-materialized-step-nodes", 0, "Override transient step-planning capacity for this resume attempt (0 uses the saved workflow)")
 	cmd.Flags().StringVar(&onRosterChange, "on-roster-change", string(pipeline.ResumeRosterAbort), "Roster-change policy: abort or proceed")
 	cmd.Flags().StringVar(&stepID, "step-id", "", "Step ID used with --mode=force-iter")
 	cmd.Flags().IntVar(&iteration, "iteration", 0, "Iteration index used with --mode=force-iter")

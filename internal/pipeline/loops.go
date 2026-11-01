@@ -608,6 +608,22 @@ func (le *LoopExecutor) substituteIntExpr(expr string) (string, error) {
 // whose first body step succeeded before ctx.Done() fires would be marked
 // complete and resume would silently skip the remaining body steps.
 func (le *LoopExecutor) executeIteration(ctx context.Context, step *Step, loop *LoopConfig, workflow *Workflow, iterIndex int) ([]StepResult, bool, bool, bool) {
+	if err := le.executor.admitRuntimeBatch(ctx, func(yield func(string) error) error {
+		for _, child := range loop.Steps {
+			if err := yield(fmt.Sprintf("%s_iter%d_%s", step.ID, iterIndex, child.ID)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		if ctx.Err() != nil && err == ctx.Err() {
+			return nil, false, false, false
+		}
+		// One container failure propagates through the existing loop result
+		// contract. No refused child gets a result or an in-flight marker.
+		failed := stepAdmissionExecutionFailure(StepResult{StepID: step.ID, StartedAt: time.Now()}, err)
+		return []StepResult{failed}, true, false, false
+	}
 	results := make([]StepResult, 0, len(loop.Steps))
 
 	for _, nestedStep := range loop.Steps {
@@ -652,9 +668,14 @@ func (le *LoopExecutor) executeIteration(ctx context.Context, step *Step, loop *
 		results = append(results, result)
 
 		// Store result in state
-		le.executor.stateMu.Lock()
-		le.executor.state.Steps[iteratedStep.ID] = result
-		le.executor.stateMu.Unlock()
+		if le.executor.runtimeIDAdmitted(iteratedStep.ID) {
+			le.executor.stateMu.Lock()
+			le.executor.state.Steps[iteratedStep.ID] = result
+			le.executor.stateMu.Unlock()
+		}
+		if findStepAdmissionError(result.Error) != nil {
+			return results, true, false, false
+		}
 
 		// Handle step failure based on error action
 		if result.Status == StatusFailed {

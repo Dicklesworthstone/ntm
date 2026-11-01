@@ -82,6 +82,11 @@ func foreachIterationFailureError(iteration foreachIterationResult) (StepError, 
 		entry.Message = fmt.Sprintf("iter-%d: %s", iteration.Index, entry.Message)
 		failures = append(failures, entry)
 	}
+	if iteration.admissionError != nil {
+		entry := cloneStepErrorValue(*iteration.admissionError)
+		entry.Message = fmt.Sprintf("iter-%d: %s", iteration.Index, entry.Message)
+		failures = append(failures, entry)
+	}
 	if len(failures) > 0 {
 		first := failures[0]
 		if len(failures) == 1 {

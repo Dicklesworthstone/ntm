@@ -18,7 +18,7 @@ func TestWorkflowSnapshotPreservesStructuredSchema(t *testing.T) {
 		"name":"structured-snapshot",
 		"notes":["saved definition", "resumable"],
 		"vars":{"env":{"type":"string","default":"test"}},
-		"settings":{"timeout":"30s","limits":{"max_selector_output_bytes_total":128}},
+		"settings":{"timeout":"30s","limits":{"max_selector_output_bytes_total":128,"max_step_count_total":1,"max_materialized_step_nodes":1}},
 		"steps":[
 			{"id":"first","command":"echo ${vars.env}","timeout":"2s"},
 			{"id":"fanout","depends_on":["first"],"parallel":{"steps":[
@@ -46,6 +46,9 @@ func TestWorkflowSnapshotPreservesStructuredSchema(t *testing.T) {
 	}
 	if reloaded.Settings.Limits.MaxSelectorOutputBytesTotal != 128 {
 		t.Fatalf("snapshot lost selector output budget: %+v", reloaded.Settings.Limits)
+	}
+	if reloaded.Settings.Limits.MaxStepCountTotal != 1 || reloaded.Settings.Limits.MaxMaterializedStepNodes != 1 {
+		t.Fatalf("snapshot lost admission policy needed for attempt-local recovery: %+v", reloaded.Settings.Limits)
 	}
 }
 

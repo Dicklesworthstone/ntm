@@ -212,6 +212,8 @@ type PipelineResumeRequest struct {
 	Session                     string                 `json:"session,omitempty"`
 	Variables                   map[string]interface{} `json:"variables,omitempty"`
 	MaxSelectorOutputBytesTotal int64                  `json:"max_selector_output_bytes_total,omitempty"`
+	MaxStepCountTotal           int                    `json:"max_step_count_total,omitempty"`
+	MaxMaterializedStepNodes    int                    `json:"max_materialized_step_nodes,omitempty"`
 }
 
 // PipelineRecoverRequest records one explicit acceptance of an uncertain
@@ -573,6 +575,14 @@ func (s *Server) handleResumePipeline(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "max_selector_output_bytes_total must be zero or positive", nil, reqID)
 		return
 	}
+	if req.MaxStepCountTotal < 0 {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "max_step_count_total must be zero or positive", nil, reqID)
+		return
+	}
+	if req.MaxMaterializedStepNodes < 0 {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "max_materialized_step_nodes must be zero or positive", nil, reqID)
+		return
+	}
 
 	slog.Info("pipeline resume", "request_id", reqID, "run_id", runID)
 
@@ -603,6 +613,8 @@ func (s *Server) handleResumePipeline(w http.ResponseWriter, r *http.Request) {
 
 	result := s.resumePipelineWithResult(r.Context(), runID, session, req.Variables, state, pipeline.ResumeOptions{
 		MaxSelectorOutputBytesTotal: req.MaxSelectorOutputBytesTotal,
+		MaxStepCountTotal:           req.MaxStepCountTotal,
+		MaxMaterializedStepNodes:    req.MaxMaterializedStepNodes,
 	})
 
 	if !result.Success {

@@ -993,6 +993,32 @@ The REST resume endpoint and `pipeline_resume` jobs accept the corresponding
 reservations; other checkpoint fields, parsed items, and temporary serialization
 buffers have separate memory and storage costs.
 
+Dynamic step expansion is bounded separately by
+`settings.limits.max_step_count_total` and `max_materialized_step_nodes`, both
+defaulting to **100,000**. The first limits distinct concrete runtime IDs across
+the run; retries, ordinary resume, and explicit scope resets reuse the existing
+admission ledger. The second limits literal definitions and active planner
+copies, checked before eager foreach expansion, branch decoding, and parallel
+body allocation. Nested planners refuse insufficient capacity promptly.
+Neither limit is a byte cap for all pipeline memory or checkpoint data.
+
+Main work stops on admission exhaustion even under continue or retry policies.
+Authored cancellation and post-pipeline roots reserve a separate bounded ID
+allowance before main execution, so an earlier dynamic cleanup cannot consume
+a later release root's slot. Existing process cleanup and uncertain-execution
+replay barriers remain authoritative; an admission is never proof of execution
+or termination. A successful command whose success hook exceeds capacity keeps
+its receipt, allowing the hook to finish on resume without repeating the command.
+
+For a frozen run, raise either limit for the current attempt with
+`ntm pipeline resume <run-id> --max-step-count-total 200000
+--max-materialized-step-nodes 200000`. The REST resume endpoint and
+`pipeline_resume` jobs accept the corresponding snake_case fields. Positive
+overrides preserve the frozen workflow and native receipts; zero uses the
+frozen policy, and negative values are rejected before checkpoint mutation.
+See [step admission limits](docs/WORKFLOW_SCHEMA.md#step-admission-and-materialization-limits)
+for accounting and cleanup details.
+
 Dry runs preview dynamic foreach sources without executing their shell commands
 or `br` queries; static item and model lists can still be expanded for preview.
 
