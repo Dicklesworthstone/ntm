@@ -732,6 +732,20 @@ ntm pipeline resume run-20241230-123456-abcd --mode=continue
 ntm pipeline cleanup --older=7d
 ```
 
+Pipeline cleanup removes old checkpoints only after acquiring the run's ownership
+lock and verifying that execution and every saved command, selector, delivery,
+mail, and reservation receipt have settled. Active runs and unresolved receipts
+remain available for recovery, even when their checkpoint is old. Legacy,
+malformed, oversized, or otherwise uninspectable states are also retained;
+cleanup never treats missing evidence as permission to replay work.
+
+Use `ntm pipeline cleanup --older=7d --dry-run` to inspect the same eligibility
+checks without removing files. Human and JSON output include retained run IDs
+and reason codes, without command output or message contents. Shared workflow
+snapshots and stable ownership lock files are preserved. The REST cleanup
+endpoint applies the same checks and returns deleted, eligible, and retained
+counts with per-run results.
+
 Pipeline resume preserves completed step outputs. Prompt and template steps also
 save their delivery and response evidence: `--mode=continue` resumes observing a
 confirmed request on its original tmux host and physical pane without submitting

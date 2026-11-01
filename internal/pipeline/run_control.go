@@ -55,6 +55,42 @@ type runControlSignal struct {
 	Token string `json:"token"`
 }
 
+// acquireRunLock fences execution and checkpoint removal without advertising
+// an executor. Only AcquireRunControl publishes an owner and watches requests.
+// The lock file remains a stable rendezvous point even after state is removed.
+func acquireRunLock(ctx context.Context, projectDir, runID string) (*lockedFile, string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+	prefix, err := runControlPrefix(projectDir, runID)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(prefix), 0700); err != nil {
+		return nil, "", fmt.Errorf("prepare run control: %w", err)
+	}
+	lockCtx, cancelLock := context.WithTimeout(ctx, 100*time.Millisecond)
+	lock, err := openLockedFile(lockCtx, prefix+".lock")
+	cancelLock()
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, "", ctx.Err()
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, "", fmt.Errorf("%w: %s", ErrRunAlreadyOwned, runID)
+		}
+		return nil, "", fmt.Errorf("acquire run control: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		lock.unlockAndClose()
+		return nil, "", err
+	}
+	return lock, prefix, nil
+}
+
 // AcquireRunControl must precede loading resume state and any execution-side
 // writes. Contention fails rather than queuing a stale resume behind a live
 // executor. The kernel releases the lock after a crash without a stale-PID
@@ -63,30 +99,8 @@ func AcquireRunControl(ctx context.Context, projectDir, runID string) (*RunContr
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	prefix, err := runControlPrefix(projectDir, runID)
+	lock, prefix, err := acquireRunLock(ctx, projectDir, runID)
 	if err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(filepath.Dir(prefix), 0700); err != nil {
-		return nil, fmt.Errorf("prepare run control: %w", err)
-	}
-	lockCtx, cancelLock := context.WithTimeout(ctx, 100*time.Millisecond)
-	lock, err := openLockedFile(lockCtx, prefix+".lock")
-	cancelLock()
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, fmt.Errorf("%w: %s", ErrRunAlreadyOwned, runID)
-		}
-		return nil, fmt.Errorf("acquire run control: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
-		lock.unlockAndClose()
 		return nil, err
 	}
 	var token [32]byte

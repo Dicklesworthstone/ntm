@@ -5438,13 +5438,16 @@ func TestHandleCleanupPipelines_UsesServerProjectDir(t *testing.T) {
 	projectDir := t.TempDir()
 	srv.projectDir = projectDir
 
+	finishedAt := time.Now().Add(-4 * time.Hour)
 	state := &pipeline.ExecutionState{
-		RunID:      "cleanup-project-dir",
-		WorkflowID: "cleanup-workflow",
-		Session:    "cleanup-session",
-		Status:     pipeline.StatusCompleted,
-		StartedAt:  time.Now().Add(-4 * time.Hour),
-		UpdatedAt:  time.Now().Add(-4 * time.Hour),
+		RunID:                    "cleanup-project-dir",
+		WorkflowID:               "cleanup-workflow",
+		Session:                  "cleanup-session",
+		Status:                   pipeline.StatusCompleted,
+		StartedAt:                finishedAt.Add(-time.Minute),
+		FinishedAt:               finishedAt,
+		UpdatedAt:                finishedAt,
+		CommandEvaluationVersion: 2,
 	}
 	if err := pipeline.SaveState(projectDir, state); err != nil {
 		t.Fatalf("save state: %v", err)

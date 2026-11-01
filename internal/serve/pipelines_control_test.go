@@ -34,6 +34,133 @@ func pipelineControlRequest(method, runID string) *http.Request {
 	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, route))
 }
 
+func TestPipelineCleanupHTTPRetainsRecoveryEvidenceAndLiveOwners(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	srv.auth = AuthConfig{Mode: AuthModeAPIKey, APIKey: "pipeline-recovery-test-key", Role: RoleOperator}
+	root := srv.projectDir
+	old := time.Now().Add(-48 * time.Hour).UTC()
+	writeCheckpoint := func(project, runID string, unresolved, recent bool) []byte {
+		t.Helper()
+		started, finished := old.Add(-time.Minute), old
+		result := pipeline.StepResult{
+			StepID: "work", Status: pipeline.StatusCompleted, AgentType: "command",
+			StartedAt: started, FinishedAt: finished, Output: "PRIVATE-CLEANUP-OUTPUT",
+		}
+		record := pipeline.CommandExecutionState{
+			Version: 1, StepID: result.StepID, StepHash: strings.Repeat("a", 64),
+			ProcessID: 2147483000, Status: "settled", StartedAt: started,
+			SettledAt: finished, Result: result,
+		}
+		status := pipeline.StatusCompleted
+		if unresolved {
+			// A failed scheduler result can coexist with a process group whose
+			// termination was never proved. Age must not erase that fence.
+			status, result.Status = pipeline.StatusFailed, pipeline.StatusFailed
+			result.Error = &pipeline.StepError{Type: "process_cleanup", Message: "process group observation failed"}
+			record.Status, record.SettledAt, record.Result = "unresolved", time.Time{}, result
+		}
+		state := &pipeline.ExecutionState{
+			RunID: runID, WorkflowID: "cleanup-http", Session: "cleanup-http",
+			Status: status, StartedAt: started, FinishedAt: finished, UpdatedAt: finished,
+			CommandEvaluationVersion: 2,
+			Steps:                    map[string]pipeline.StepResult{"work": result},
+			CommandExecutions:        map[string]pipeline.CommandExecutionState{"work": record},
+		}
+		if err := pipeline.SaveState(project, state); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(project, ".ntm", "pipelines", runID+".json")
+		if !recent {
+			if err := os.Chtimes(path, old, old); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return pipelineRecoveryHTTPJournal(t, project, runID)
+	}
+	before := map[string][]byte{
+		"cleanup-settled":    writeCheckpoint(root, "cleanup-settled", false, false),
+		"cleanup-unresolved": writeCheckpoint(root, "cleanup-unresolved", true, false),
+		"cleanup-owned":      writeCheckpoint(root, "cleanup-owned", false, false),
+		"cleanup-recent":     writeCheckpoint(root, "cleanup-recent", false, true),
+	}
+	otherProject := t.TempDir()
+	otherBefore := writeCheckpoint(otherProject, "cleanup-settled", false, false)
+	owner, err := pipeline.AcquireRunControl(context.Background(), root, "cleanup-owned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	const path = "/api/v1/pipelines/cleanup"
+	const body = `{"older_than_hours":24}`
+	request := func() *httptest.ResponseRecorder {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		srv.router.ServeHTTP(rec, pipelineRecoveryHTTPRequest(http.MethodPost, path, body))
+		return rec
+	}
+
+	// Exercise the registered route and its permissions, not just the handler.
+	if rec := request(); rec.Code != http.StatusForbidden {
+		t.Fatalf("operator cleanup = %d %s, want forbidden", rec.Code, rec.Body)
+	}
+	for runID, original := range before {
+		if !bytes.Equal(original, pipelineRecoveryHTTPJournal(t, root, runID)) {
+			t.Fatalf("denied cleanup changed %s", runID)
+		}
+	}
+	srv.auth.Role = RoleAdmin
+	rec := request()
+	var response struct {
+		Success bool `json:"success"`
+		pipeline.StateCleanupResult
+		OlderThanHours int `json:"older_than_hours"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || rec.Code != http.StatusOK || !response.Success {
+		t.Fatalf("cleanup failed: %d %s: %v", rec.Code, rec.Body, err)
+	}
+	if response.Deleted != 1 || response.Eligible != 1 || response.Retained != 3 || response.OlderThanHours != 24 || len(response.Entries) != 4 {
+		t.Fatalf("cleanup did not distinguish settled, uncertain, owned and recent state: %s", rec.Body)
+	}
+	want := map[string]pipeline.StateCleanupEntry{
+		"cleanup-settled":    {RunID: "cleanup-settled", Action: "deleted", Reason: "settled"},
+		"cleanup-unresolved": {RunID: "cleanup-unresolved", Action: "retained", Reason: "unsettled_command"},
+		"cleanup-owned":      {RunID: "cleanup-owned", Action: "retained", Reason: "owned"},
+		"cleanup-recent":     {RunID: "cleanup-recent", Action: "retained", Reason: "recent"},
+	}
+	for _, entry := range response.Entries {
+		if expected, ok := want[entry.RunID]; !ok || entry != expected {
+			t.Fatalf("unexpected cleanup decision: %+v", entry)
+		}
+		delete(want, entry.RunID)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing cleanup decisions: %+v", want)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".ntm", "pipelines", "cleanup-settled.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("settled checkpoint was not deleted: %v", err)
+	}
+	for _, runID := range []string{"cleanup-unresolved", "cleanup-owned", "cleanup-recent"} {
+		if !bytes.Equal(before[runID], pipelineRecoveryHTTPJournal(t, root, runID)) {
+			t.Fatalf("cleanup rewrote retained checkpoint %s", runID)
+		}
+	}
+	if !bytes.Equal(otherBefore, pipelineRecoveryHTTPJournal(t, otherProject, "cleanup-settled")) {
+		t.Fatal("cleanup escaped the configured project")
+	}
+	if owner.Context().Err() != nil {
+		t.Fatal("cleanup cancelled the live owner")
+	}
+	if second, err := pipeline.AcquireRunControl(context.Background(), root, "cleanup-owned"); !errors.Is(err, pipeline.ErrRunAlreadyOwned) {
+		if second != nil {
+			second.Close()
+		}
+		t.Fatalf("cleanup broke the owner's lock rendezvous: %v", err)
+	}
+	if strings.Contains(rec.Body.String(), "PRIVATE-CLEANUP-OUTPUT") || strings.Contains(rec.Body.String(), "process group observation failed") {
+		t.Fatal("cleanup report exposed receipt output or diagnostics")
+	}
+}
+
 func TestPipelineResumeRejectsLiveOwnerBeforeCheckpointMutation(t *testing.T) {
 	dir := t.TempDir()
 	runID := pipeline.GenerateRunID()

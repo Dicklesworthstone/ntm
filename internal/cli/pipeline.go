@@ -1250,17 +1250,20 @@ func newPipelineCleanupCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "cleanup",
-		Short: "Clean up old pipeline state files",
-		Long: `Remove pipeline state files older than the specified duration.
+		Short: "Clean up old, settled pipeline state files",
+		Long: `Remove old pipeline state files only when execution has safely settled.
 
 State files are stored in .ntm/pipelines/ and can accumulate over time.
-Use this command to clean up old files and free disk space.
+Cleanup checks ownership and saved execution receipts before removing a file.
+Live runs, unresolved receipts, and states that cannot be safely inspected are
+retained for recovery. The dry run performs the same checks and lists the result
+for each saved run without removing files.
 
 Examples:
-  # Remove state files older than 7 days
+  # Remove eligible state files older than 7 days
   ntm pipeline cleanup --older 7d
 
-  # Remove state files older than 30 days
+  # Remove eligible state files older than 30 days
   ntm pipeline cleanup --older 30d
 
   # Dry run - show what would be deleted
@@ -1282,28 +1285,19 @@ Examples:
 				return err
 			}
 
-			if dryRun {
-				if jsonOutput {
-					result := map[string]interface{}{
-						"success":    true,
-						"dry_run":    true,
-						"older_than": olderThan,
-						"duration":   duration.String(),
-					}
-					return json.NewEncoder(os.Stdout).Encode(result)
-				}
-				fmt.Printf("Dry run: would clean up state files older than %s\n", duration)
-				return nil
-			}
-
-			// Perform cleanup
-			deleted, err := pipeline.CleanupStates(projectDir, duration)
+			report, err := pipeline.CleanupStates(cmd.Context(), projectDir, duration, dryRun)
 			if err != nil {
 				if jsonOutput {
 					result := map[string]interface{}{
 						"success":    false,
 						"error":      err.Error(),
 						"error_code": "CLEANUP_FAILED",
+					}
+					if report != nil {
+						result["deleted"] = report.Deleted
+						result["eligible"] = report.Eligible
+						result["retained"] = report.Retained
+						result["entries"] = report.Entries
 					}
 					return emitJSONFailureEnvelopeWithCause(result, err)
 				}
@@ -1313,7 +1307,11 @@ Examples:
 			if jsonOutput {
 				result := map[string]interface{}{
 					"success":     true,
-					"deleted":     deleted,
+					"dry_run":     dryRun,
+					"deleted":     report.Deleted,
+					"eligible":    report.Eligible,
+					"retained":    report.Retained,
+					"entries":     report.Entries,
 					"older_than":  olderThan,
 					"duration":    duration.String(),
 					"project_dir": projectDir,
@@ -1321,17 +1319,24 @@ Examples:
 				return json.NewEncoder(os.Stdout).Encode(result)
 			}
 
-			if deleted == 0 {
-				fmt.Println("No state files to clean up.")
+			if dryRun {
+				fmt.Printf("Dry run: %d state file(s) eligible for cleanup; %d retained.\n", report.Eligible, report.Retained)
+			} else if report.Deleted == 0 {
+				fmt.Printf("No eligible state files to clean up; %d retained.\n", report.Retained)
 			} else {
-				output.SuccessCheck(fmt.Sprintf("Cleaned up %d state file(s) older than %s", deleted, duration))
+				output.SuccessCheck(fmt.Sprintf("Cleaned up %d state file(s) older than %s; %d retained", report.Deleted, duration, report.Retained))
+			}
+			for _, entry := range report.Entries {
+				if dryRun || entry.Action == "retained" {
+					fmt.Printf("  %s: %s (%s)\n", entry.RunID, entry.Action, entry.Reason)
+				}
 			}
 
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&olderThan, "older", "", "Remove files older than duration (e.g., 7d, 30d)")
+	cmd.Flags().StringVar(&olderThan, "older", "", "Remove eligible files older than duration (e.g., 7d, 30d)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be deleted without deleting")
 
 	return cmd

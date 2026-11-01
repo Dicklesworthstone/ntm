@@ -1410,3 +1410,244 @@ func TestPipelineRecoverSelectorOwnershipAndCancellation(t *testing.T) {
 	}
 	owner.Close()
 }
+
+func pipelineCleanupCheckpoint(t *testing.T, root, runID, kind string) (string, []byte) {
+	t.Helper()
+	finished := time.Now().UTC().Add(-30 * 24 * time.Hour)
+	started := finished.Add(-time.Hour)
+	record := pipeline.CommandEvaluationState{
+		Version: 2, StepID: "source", Status: "settled", ProcessID: 1,
+		StepHash: strings.Repeat("a", 64), InvocationHash: strings.Repeat("b", 64),
+		StdoutLimit: 64, StderrLimit: 64, StartedAt: started, FinishedAt: finished,
+		// A complete empty stdout still has a positive byte-capture limit and
+		// the real SHA-256 digest; cleanup must inspect valid settled evidence.
+		OutputHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	}
+	step := pipeline.StepResult{
+		StepID: "source", Status: pipeline.StatusCompleted, AgentType: "branch",
+		StartedAt: started, FinishedAt: finished,
+	}
+	state := &pipeline.ExecutionState{
+		RunID: runID, WorkflowID: "cleanup-fixture", Session: "cleanup-session",
+		Status: pipeline.StatusCompleted, StartedAt: started, FinishedAt: finished,
+		UpdatedAt: finished, LastCheckpointAt: finished, CommandEvaluationVersion: 2,
+		Steps: make(map[string]pipeline.StepResult), Variables: make(map[string]interface{}),
+	}
+	switch kind {
+	case "settled":
+	case "running":
+		state.Status, state.FinishedAt = pipeline.StatusRunning, time.Time{}
+		step.Status, step.FinishedAt = pipeline.StatusRunning, time.Time{}
+		record.Status, record.ProcessID, record.FinishedAt, record.OutputHash = "starting", 0, time.Time{}, ""
+	case "unresolved":
+		state.Status, step.Status = pipeline.StatusFailed, pipeline.StatusFailed
+		record.Status, record.OutputHash = "unresolved", ""
+		record.Error = "process-group observation remained uncertain after cleanup"
+		step.Error = &pipeline.StepError{Type: "command", Message: record.Error, Timestamp: finished}
+	default:
+		t.Fatalf("unknown cleanup fixture kind %q", kind)
+	}
+	state.Steps[step.StepID] = step
+	state.CommandEvaluations = map[string]pipeline.CommandEvaluationState{record.StepID: record}
+	if err := pipeline.SaveState(root, state); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, ".ntm", "pipelines", runID+".json")
+	if err := os.Chtimes(path, finished, finished); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path, before
+}
+
+func executePipelineCleanupCommand(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	cmd := newPipelineCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	var commandOutput bytes.Buffer
+	cmd.SetOut(&commandOutput)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs(append([]string{"cleanup"}, args...))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stdout, err := captureStdout(t, func() error { return cmd.ExecuteContext(ctx) })
+	return stdout + commandOutput.String(), err
+}
+
+// Decode the CLI wire contract independently of the cleanup implementation.
+type pipelineCleanupResponse struct {
+	Success    bool   `json:"success"`
+	DryRun     bool   `json:"dry_run"`
+	Deleted    int    `json:"deleted"`
+	Eligible   int    `json:"eligible"`
+	Retained   int    `json:"retained"`
+	OlderThan  string `json:"older_than"`
+	Duration   string `json:"duration"`
+	ProjectDir string `json:"project_dir"`
+	Entries    []struct {
+		RunID  string `json:"run_id"`
+		Action string `json:"action"`
+		Reason string `json:"reason"`
+	} `json:"entries"`
+}
+
+func TestPipelineCleanupPreviewAndDeletionPreserveRecoveryFences(t *testing.T) {
+	root := inPipelineControlProject(t)
+	oldJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSON })
+	paths, original := make(map[string]string), make(map[string][]byte)
+	for kind, runID := range map[string]string{
+		"settled": "run-cleanup-settled", "running": "run-cleanup-running", "unresolved": "run-cleanup-unresolved",
+	} {
+		paths[runID], original[runID] = pipelineCleanupCheckpoint(t, root, runID, kind)
+	}
+	const corruptID = "run-cleanup-corrupt"
+	paths[corruptID] = filepath.Join(root, ".ntm", "pipelines", corruptID+".json")
+	original[corruptID] = []byte("{a damaged checkpoint must remain available for recovery")
+	if err := os.WriteFile(paths[corruptID], original[corruptID], 0600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(paths[corruptID], old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, dryRun := range []bool{true, false} {
+		args := []string{"--older", "7d"}
+		if dryRun {
+			args = append(args, "--dry-run")
+		}
+		raw, err := executePipelineCleanupCommand(t, args...)
+		var response pipelineCleanupResponse
+		if err != nil || json.Unmarshal([]byte(raw), &response) != nil || !response.Success {
+			t.Fatalf("cleanup dry_run=%t failed: %s %v", dryRun, raw, err)
+		}
+		wantDeleted, eligibleAction := 1, "deleted"
+		if dryRun {
+			wantDeleted, eligibleAction = 0, "would_delete"
+		}
+		if response.DryRun != dryRun || response.Deleted != wantDeleted || response.Eligible != 1 || response.Retained != 3 ||
+			response.OlderThan != "7d" || response.Duration != (7*24*time.Hour).String() || len(response.Entries) != 4 {
+			t.Fatalf("cleanup report did not expose actual eligibility: %s", raw)
+		}
+		gotRoot, rootErr := filepath.EvalSymlinks(response.ProjectDir)
+		wantRoot, err := filepath.EvalSymlinks(root)
+		if rootErr != nil || err != nil || gotRoot != wantRoot {
+			t.Fatalf("cleanup resolved a different project: %s %v %v", raw, rootErr, err)
+		}
+		seen := make(map[string]bool)
+		for _, entry := range response.Entries {
+			if _, exists := paths[entry.RunID]; !exists || seen[entry.RunID] || strings.TrimSpace(entry.Reason) == "" {
+				t.Fatalf("cleanup returned an unknown, duplicate, or unexplained entry: %+v", entry)
+			}
+			seen[entry.RunID] = true
+			wantAction := "retained"
+			if entry.RunID == "run-cleanup-settled" {
+				wantAction = eligibleAction
+			}
+			if entry.Action != wantAction {
+				t.Fatalf("cleanup action for %s=%q, want %q: %s", entry.RunID, entry.Action, wantAction, raw)
+			}
+		}
+		for runID, path := range paths {
+			after, err := os.ReadFile(path)
+			if !dryRun && runID == "run-cleanup-settled" {
+				if !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("eligible checkpoint was not removed: %v", err)
+				}
+			} else if err != nil || !bytes.Equal(after, original[runID]) {
+				t.Fatalf("cleanup changed protected checkpoint %s (dry_run=%t): %v", runID, dryRun, err)
+			}
+		}
+	}
+	// Retrying cleanup cannot erase the recovery fences left by the first run.
+	raw, err := executePipelineCleanupCommand(t, "--older", "7d")
+	var repeated pipelineCleanupResponse
+	if err != nil || json.Unmarshal([]byte(raw), &repeated) != nil || !repeated.Success ||
+		repeated.Deleted != 0 || repeated.Eligible != 0 || repeated.Retained != 3 || len(repeated.Entries) != 3 {
+		t.Fatalf("repeated cleanup lost retained evidence: %s %v", raw, err)
+	}
+}
+
+func TestPipelineCleanupRetainsLiveOwnerUntilReleased(t *testing.T) {
+	root := inPipelineControlProject(t)
+	oldJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSON })
+	const runID = "run-cleanup-owner"
+	path, before := pipelineCleanupCheckpoint(t, root, runID, "settled")
+	owner, err := pipeline.AcquireRunControl(context.Background(), root, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	for _, dryRun := range []bool{true, false} {
+		args := []string{"--older", "7d"}
+		if dryRun {
+			args = append(args, "--dry-run")
+		}
+		raw, err := executePipelineCleanupCommand(t, args...)
+		var response pipelineCleanupResponse
+		if err != nil || json.Unmarshal([]byte(raw), &response) != nil || !response.Success ||
+			response.DryRun != dryRun || response.Deleted != 0 || response.Eligible != 0 || response.Retained != 1 || len(response.Entries) != 1 {
+			t.Fatalf("cleanup did not retain the live owner's checkpoint: %s %v", raw, err)
+		}
+		entry := response.Entries[0]
+		if entry.RunID != runID || entry.Action != "retained" || entry.Reason != "owned" {
+			t.Fatalf("ownership refusal lost its identity or reason: %+v", entry)
+		}
+		if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, before) {
+			t.Fatalf("cleanup changed a live owner's state: %v", err)
+		}
+	}
+	if other, err := pipeline.AcquireRunControl(context.Background(), root, runID); !errors.Is(err, pipeline.ErrRunAlreadyOwned) {
+		if other != nil {
+			other.Close()
+		}
+		t.Fatalf("cleanup displaced the live ownership lock: %v", err)
+	}
+	owner.Close()
+	raw, err := executePipelineCleanupCommand(t, "--older", "7d")
+	var response pipelineCleanupResponse
+	if err != nil || json.Unmarshal([]byte(raw), &response) != nil || !response.Success || response.Deleted != 1 || response.Eligible != 1 || response.Retained != 0 {
+		t.Fatalf("settled checkpoint was not eligible after ownership ended: %s %v", raw, err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("released settled checkpoint remains after cleanup: %v", err)
+	}
+}
+
+func TestPipelineCleanupHumanPreviewShowsEligibilityAndReasons(t *testing.T) {
+	root := inPipelineControlProject(t)
+	oldJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSON })
+	paths, original := make(map[string]string), make(map[string][]byte)
+	for kind, runID := range map[string]string{"settled": "run-cleanup-preview-done", "unresolved": "run-cleanup-preview-uncertain"} {
+		paths[runID], original[runID] = pipelineCleanupCheckpoint(t, root, runID, kind)
+	}
+	raw, err := executePipelineCleanupCommand(t, "--older", "7d", "--dry-run")
+	var response pipelineCleanupResponse
+	if err != nil || json.Unmarshal([]byte(raw), &response) != nil || !response.Success || response.Eligible != 1 || response.Retained != 1 || len(response.Entries) != 2 {
+		t.Fatalf("preview did not inspect both checkpoint identities: %s %v", raw, err)
+	}
+	jsonOutput = false
+	human, err := executePipelineCleanupCommand(t, "--older", "7d", "--dry-run")
+	if err != nil || !strings.Contains(human, "1 state file(s) eligible") || !strings.Contains(human, "1 retained") {
+		t.Fatalf("human preview omitted real cleanup counts: %s %v", human, err)
+	}
+	for _, entry := range response.Entries {
+		if entry.Reason == "" || !strings.Contains(human, entry.RunID+": "+entry.Action+" ("+entry.Reason+")") {
+			t.Fatalf("human preview omitted a run's eligibility reason: %+v\n%s", entry, human)
+		}
+	}
+	for runID, path := range paths {
+		if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, original[runID]) {
+			t.Fatalf("human preview changed checkpoint %s: %v", runID, err)
+		}
+	}
+}

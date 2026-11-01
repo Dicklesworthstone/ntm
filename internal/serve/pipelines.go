@@ -821,7 +821,7 @@ func (s *Server) handleCleanupPipelines(w http.ResponseWriter, r *http.Request) 
 
 	slog.Info("pipeline cleanup", "request_id", reqID, "older_than_hours", hours)
 
-	deleted, err := pipeline.CleanupStates(s.pipelineProjectDir(), time.Duration(hours)*time.Hour)
+	report, err := pipeline.CleanupStates(r.Context(), s.pipelineProjectDir(), time.Duration(hours)*time.Hour, false)
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "cleanup failed", map[string]interface{}{
 			"error": err.Error(),
@@ -830,7 +830,10 @@ func (s *Server) handleCleanupPipelines(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"deleted":          deleted,
+		"deleted":          report.Deleted,
+		"eligible":         report.Eligible,
+		"retained":         report.Retained,
+		"entries":          report.Entries,
 		"older_than_hours": hours,
 	}, reqID)
 }

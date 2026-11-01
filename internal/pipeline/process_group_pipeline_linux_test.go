@@ -185,6 +185,21 @@ printf child
 			if data, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(data) != "once\n" {
 				t.Fatalf("receipt reconciliation repeated producer effects: %q %v", data, err)
 			}
+			checkpointPath := pipelineStatePath(root, cfg.RunID)
+			old := time.Now().Add(-48 * time.Hour)
+			if err := os.Chtimes(checkpointPath, old, old); err != nil {
+				t.Fatal(err)
+			}
+			report, err := CleanupStates(context.Background(), root, 24*time.Hour, false)
+			if err != nil || report.Deleted != 1 || report.Retained != 0 {
+				t.Fatalf("reconciled receipt permanently blocked safe cleanup: %+v %v", report, err)
+			}
+			if _, err := os.Stat(checkpointPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("settled checkpoint was not removed: %v", err)
+			}
+			if _, err := os.Stat(prior.WorkflowFile); err != nil {
+				t.Fatalf("cleanup removed the shared workflow snapshot: %v", err)
+			}
 		})
 	}
 }
@@ -457,6 +472,20 @@ func TestControlledPipelinePersistentObservationCancellationPreservesUncertainty
 				t.Fatalf("recovery inspection misclassified unresolved command: %+v", entry)
 			}
 			before := commandOperatorRecoveryBytes(t, cfg)
+			old := time.Now().Add(-48 * time.Hour)
+			if err := os.Chtimes(pipelineStatePath(root, cfg.RunID), old, old); err != nil {
+				t.Fatal(err)
+			}
+			report, err := CleanupStates(context.Background(), root, 24*time.Hour, false)
+			if err != nil || report.Deleted != 0 || report.Retained != 1 || len(report.Entries) != 1 || report.Entries[0].Reason != "unsettled_command" {
+				t.Fatalf("old uncertain termination lost its replay fence during cleanup: %+v %v", report, err)
+			}
+			if !bytes.Equal(before, commandOperatorRecoveryBytes(t, cfg)) {
+				t.Fatal("cleanup altered unresolved command evidence")
+			}
+			if _, err := RunControlledPipeline(context.Background(), workflow, nil, cfg, nil); err == nil || !strings.Contains(err.Error(), "already has state") {
+				t.Fatalf("cleanup authorized a new launch with an unresolved run ID: %v", err)
+			}
 			if _, err := NewExecutor(cfg).Resume(context.Background(), workflow, prior, nil); err == nil || !strings.Contains(err.Error(), "unresolved launch") {
 				t.Fatalf("ordinary resume replayed uncertain work: %v", err)
 			}
@@ -688,6 +717,14 @@ func TestControlledPipelineLateSettlementRecoveryKeepsOwnershipAndReceipts(t *te
 			}
 			if !errors.Is(err, ErrRunAlreadyOwned) {
 				t.Fatalf("unexpected ownership failure during late settlement recovery: %v", err)
+			}
+			old := time.Now().Add(-48 * time.Hour)
+			if err := os.Chtimes(pipelineStatePath(root, cfg.RunID), old, old); err != nil {
+				t.Fatal(err)
+			}
+			report, err := CleanupStates(context.Background(), root, 24*time.Hour, false)
+			if err != nil || report.Deleted != 0 || report.Retained != 1 || len(report.Entries) != 1 || report.Entries[0].Reason != "owned" {
+				t.Fatalf("cleanup discarded the checkpoint during late settlement recovery: %+v %v", report, err)
 			}
 			release.Store(true)
 			var initial outcome

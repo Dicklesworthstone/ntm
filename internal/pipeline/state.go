@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
@@ -378,11 +380,23 @@ func LoadState(projectDir, runID string) (*ExecutionState, error) {
 		return nil, fmt.Errorf("read pipeline state: %w", err)
 	}
 
+	return decodeState(data, runID)
+}
+
+// decodeState is shared by ordinary loading and bounded cleanup inspection.
+// Neither decoding path may reinterpret a different run's recovery evidence.
+func decodeState(data []byte, runID string) (*ExecutionState, error) {
+	if err := validateRunID(runID); err != nil {
+		return nil, err
+	}
 	var header struct {
 		StateSchemaVersion int `json:"state_schema_version,omitempty"`
 	}
 	if err := json.Unmarshal(data, &header); err != nil {
 		return nil, fmt.Errorf("parse pipeline state header: %w", err)
+	}
+	if header.StateSchemaVersion < 0 {
+		return nil, fmt.Errorf("invalid negative pipeline state schema version %d", header.StateSchemaVersion)
 	}
 	if header.StateSchemaVersion > PipelineStateSchemaVersion {
 		return nil, fmt.Errorf("pipeline state schema version %d is newer than supported version %d", header.StateSchemaVersion, PipelineStateSchemaVersion)
@@ -430,46 +444,304 @@ func marshalStateForDisk(state *ExecutionState) ([]byte, error) {
 	return json.MarshalIndent(doc, "", "  ")
 }
 
-// CleanupStates removes pipeline state files older than the provided duration.
-// Returns the number of deleted state files.
-func CleanupStates(projectDir string, olderThan time.Duration) (int, error) {
-	if olderThan <= 0 {
-		return 0, fmt.Errorf("olderThan must be greater than zero")
-	}
+// StateCleanupEntry reports a decision without exposing commands or captured
+// output. Reason is a stable code; retained files remain available for recovery.
+type StateCleanupEntry struct {
+	RunID  string `json:"run_id"`
+	Action string `json:"action"`
+	Reason string `json:"reason"`
+}
 
-	dir := pipelineStateDir(projectDir)
-	entries, err := os.ReadDir(dir)
+// StateCleanupResult describes the same eligibility checks in preview and
+// deletion mode. Eligible includes deleted files and files that would be deleted.
+type StateCleanupResult struct {
+	Deleted  int                 `json:"deleted"`
+	Eligible int                 `json:"eligible"`
+	Retained int                 `json:"retained"`
+	Entries  []StateCleanupEntry `json:"entries"`
+}
+
+const stateCleanupMaxBytes int64 = 64 << 20
+
+// CleanupStates removes only old, terminal checkpoints whose owned effects are
+// settled. Age alone cannot discard the receipts that prevent unsafe replay.
+// Preview uses the same ownership, decoding, and settlement checks as deletion.
+func CleanupStates(ctx context.Context, projectDir string, olderThan time.Duration, dryRun bool) (*StateCleanupResult, error) {
+	result := &StateCleanupResult{Entries: make([]StateCleanupEntry, 0)}
+	if olderThan <= 0 {
+		return result, fmt.Errorf("olderThan must be greater than zero")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	if strings.TrimSpace(projectDir) == "" {
+		return result, fmt.Errorf("project directory is required for pipeline cleanup")
+	}
+	projectDir = normalizeLockRoot(projectDir)
+	entries, err := os.ReadDir(pipelineStateDir(projectDir))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return 0, nil
+			return result, nil
 		}
-		return 0, fmt.Errorf("read pipeline state dir: %w", err)
+		return result, fmt.Errorf("read pipeline state dir: %w", err)
 	}
 
 	cutoff := time.Now().Add(-olderThan)
-	deleted := 0
-
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		if filepath.Ext(entry.Name()) != ".json" {
-			continue
+		if err := ctx.Err(); err != nil {
+			return result, err
 		}
-
-		info, err := entry.Info()
-		if err != nil {
-			continue
+		runID := strings.TrimSuffix(entry.Name(), ".json")
+		decision := StateCleanupEntry{RunID: runID, Action: "retained", Reason: "unreadable"}
+		info, infoErr := entry.Info()
+		var cleanupErr error
+		if infoErr == nil {
+			decision, cleanupErr = cleanupStateCandidate(ctx, projectDir, runID, info, cutoff, dryRun)
 		}
-
-		if info.ModTime().Before(cutoff) {
-			path := filepath.Join(dir, entry.Name())
-			if err := os.Remove(path); err != nil {
-				return deleted, fmt.Errorf("remove pipeline state: %w", err)
-			}
-			deleted++
+		result.Entries = append(result.Entries, decision)
+		switch decision.Action {
+		case "deleted":
+			result.Deleted++
+			result.Eligible++
+		case "would_delete":
+			result.Eligible++
+		default:
+			result.Retained++
+		}
+		if cleanupErr != nil {
+			return result, cleanupErr
 		}
 	}
+	return result, nil
+}
 
-	return deleted, nil
+// The directory snapshot is only a prefilter. Ownership is held while reading
+// and through the final identity check and unlink. Cleanup never publishes an
+// executor owner token, acknowledges cancellation, or unlinks rendezvous locks.
+func cleanupStateCandidate(ctx context.Context, projectDir, runID string, observed os.FileInfo, cutoff time.Time, dryRun bool) (StateCleanupEntry, error) {
+	entry := StateCleanupEntry{RunID: runID, Action: "retained"}
+	retain := func(reason string) (StateCleanupEntry, error) {
+		entry.Reason = reason
+		return entry, nil
+	}
+	if err := ctx.Err(); err != nil {
+		entry.Reason = "cancelled"
+		return entry, err
+	}
+	if err := validateRunID(runID); err != nil {
+		return retain("invalid_run_id")
+	}
+	if observed == nil || !observed.Mode().IsRegular() {
+		return retain("not_regular")
+	}
+	if !observed.ModTime().Before(cutoff) {
+		return retain("recent")
+	}
+	if observed.Size() > stateCleanupMaxBytes {
+		return retain("too_large")
+	}
+
+	lock, _, err := acquireRunLock(ctx, projectDir, runID)
+	if err != nil {
+		if ctx.Err() != nil {
+			entry.Reason = "cancelled"
+			return entry, ctx.Err()
+		}
+		if errors.Is(err, ErrRunAlreadyOwned) {
+			return retain("owned")
+		}
+		return retain("lock_unavailable")
+	}
+	defer lock.unlockAndClose()
+
+	path := pipelineStatePath(projectDir, runID)
+	current, err := os.Lstat(path)
+	if err != nil || !sameCleanupStateFile(observed, current) {
+		return retain("changed")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return retain("unreadable")
+	}
+	opened, statErr := file.Stat()
+	if statErr != nil || !sameCleanupStateFile(current, opened) {
+		_ = file.Close()
+		return retain("changed")
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, stateCleanupMaxBytes+1))
+	afterRead, statErr := file.Stat()
+	closeErr := file.Close()
+	if readErr != nil || statErr != nil || closeErr != nil {
+		return retain("unreadable")
+	}
+	if int64(len(data)) > stateCleanupMaxBytes {
+		return retain("too_large")
+	}
+	if !sameCleanupStateFile(opened, afterRead) {
+		return retain("changed")
+	}
+	state, err := decodeState(data, runID)
+	if err != nil {
+		return retain("invalid_state")
+	}
+	if reason := stateCleanupRetentionReason(state); reason != "" {
+		return retain(reason)
+	}
+
+	// SaveState replaces the inode atomically. A refreshed checkpoint from
+	// an older caller that did not use run control must also be preserved.
+	current, err = os.Lstat(path)
+	if err != nil || !sameCleanupStateFile(observed, current) || !current.ModTime().Before(cutoff) {
+		return retain("changed")
+	}
+	if err := ctx.Err(); err != nil {
+		entry.Reason = "cancelled"
+		return entry, err
+	}
+	entry.Reason = "settled"
+	if dryRun {
+		entry.Action = "would_delete"
+		return entry, nil
+	}
+	if err := os.Remove(path); err != nil {
+		entry.Reason = "remove_failed"
+		return entry, fmt.Errorf("remove pipeline state %q: %w", runID, err)
+	}
+	entry.Action = "deleted"
+	return entry, nil
+}
+
+func sameCleanupStateFile(before, after os.FileInfo) bool {
+	return before != nil && after != nil && before.Mode().IsRegular() && after.Mode().IsRegular() &&
+		os.SameFile(before, after) && before.Size() == after.Size() && before.ModTime().Equal(after.ModTime())
+}
+
+func cleanupReceiptIDs[T any](records map[string]T) []string {
+	ids := make([]string, 0, len(records))
+	for id := range records {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// Positive receipt evidence outranks a failed/cancelled scheduler result.
+// Conversely, a terminal scheduler result never proves that an owned process,
+// prompt, message, or reservation has settled.
+func stateCleanupRetentionReason(state *ExecutionState) string {
+	if state == nil {
+		return "invalid_state"
+	}
+	switch state.Status {
+	case StatusCompleted, StatusFailed, StatusCancelled:
+	default:
+		return "nonterminal"
+	}
+	if state.StartedAt.IsZero() || state.FinishedAt.IsZero() || state.FinishedAt.Before(state.StartedAt) {
+		return "unfinished"
+	}
+	if state.Status == StatusCancelled && state.CancelledAt == nil {
+		return "unfinished"
+	}
+	if state.CancelledAt != nil && (state.CancelledAt.IsZero() || state.CancelledAt.Before(state.StartedAt) || state.CancelledAt.After(state.FinishedAt)) {
+		return "unfinished"
+	}
+	if state.CurrentStep != "" || len(state.InFlightSteps) != 0 {
+		return "in_flight"
+	}
+	for _, step := range state.Steps {
+		switch step.Status {
+		case StatusCompleted, StatusFailed, StatusCancelled, StatusSkipped:
+		default:
+			return "unfinished_step"
+		}
+		if step.FinishedAt.IsZero() {
+			return "unfinished_step"
+		}
+	}
+	for id, group := range state.ParallelState {
+		if group.StepID != id || !group.AllSubstepsSettled || group.CompletedAt.IsZero() ||
+			group.CompletedAt.Before(group.StartedAt) || len(group.InFlightStepIDs) != 0 {
+			return "in_flight"
+		}
+	}
+	for _, executionErr := range state.Errors {
+		if executionErr.Type == "checkpoint" {
+			// Bounded on_cancel commands may run without receipts after a
+			// persistence failure, so absent receipts cannot prove cleanup.
+			return "checkpoint_failure"
+		}
+	}
+	if state.CommandEvaluationVersion != commandEvaluationVersion {
+		return "unsupported_journal"
+	}
+	for _, id := range cleanupReceiptIDs(state.CommandExecutions) {
+		record := state.CommandExecutions[id]
+		if err := validateCommandExecution(id, record); err != nil {
+			return "invalid_command_receipt"
+		}
+		if _, err := commandExecutionRecoveryEntry(state, record); err != nil {
+			return "invalid_command_receipt"
+		}
+		if record.Status != commandExecutionSettled {
+			return "unsettled_command"
+		}
+	}
+	for _, id := range cleanupReceiptIDs(state.CommandEvaluations) {
+		record := state.CommandEvaluations[id]
+		if err := validateCommandEvaluation(id, record); err != nil {
+			return "invalid_selector_receipt"
+		}
+		if _, err := commandEvaluationRecoveryEntry(state, record); err != nil {
+			return "invalid_selector_receipt"
+		}
+		if !commandEvaluationHasOutcome(record) {
+			return "unsettled_selector"
+		}
+	}
+	for _, id := range cleanupReceiptIDs(state.AgentDeliveries) {
+		record := state.AgentDeliveries[id]
+		if err := validateAgentDelivery(id, record, state.Session); err != nil {
+			return "invalid_agent_receipt"
+		}
+		if _, err := agentDeliveryRecoveryEntry(state, record); err != nil {
+			return "invalid_agent_receipt"
+		}
+		if record.Status != agentDeliveryNotSent && record.Status != agentDeliveryCompleted {
+			return "unfinished_agent_delivery"
+		}
+	}
+	for _, id := range cleanupReceiptIDs(state.MailSends) {
+		record := state.MailSends[id]
+		if err := validateMailSend(id, record); err != nil {
+			return "invalid_mail_receipt"
+		}
+		if record.Status != mailSendSent && record.Status != mailSendRejected {
+			return "unfinished_mail_send"
+		}
+	}
+	identities := make(map[[2]int]agentmail.FileReservation)
+	for _, id := range cleanupReceiptIDs(state.ReservationSteps) {
+		record := state.ReservationSteps[id]
+		if err := validateReservationStep(id, record); err != nil {
+			return "invalid_reservation_receipt"
+		}
+		if record.Status != reservationReleased && record.Status != reservationRejected {
+			return "unfinished_reservation"
+		}
+		for _, grant := range record.Granted {
+			key := [2]int{grant.ProjectID, grant.ID}
+			if prior, exists := identities[key]; exists && !sameReservationLease(prior, grant) {
+				return "invalid_reservation_receipt"
+			}
+			identities[key] = grant
+		}
+	}
+	return ""
 }
