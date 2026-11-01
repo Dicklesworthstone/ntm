@@ -53,7 +53,7 @@ func joinCheckpointError(err, checkpointErr error) error {
 
 // backgroundCommandFailure is read after all cleanup workers have joined.
 // Stable ordering keeps concurrent sidecar failures useful in saved outcomes;
-// wrapping preserves cancellation and pipe-drain errors for callers.
+// Wrapping preserves timeout, cancellation, and pipe-drain errors for callers.
 func (e *Executor) backgroundCommandFailure() error {
 	e.stateMu.RLock()
 	defer e.stateMu.RUnlock()
@@ -64,7 +64,7 @@ func (e *Executor) backgroundCommandFailure() error {
 	sort.Strings(ids)
 	var failures []error
 	for _, id := range ids {
-		failures = append(failures, fmt.Errorf("background command %q did not settle: %w", id, e.backgroundCommandErrors[id]))
+		failures = append(failures, fmt.Errorf("background command %q failed: %w", id, e.backgroundCommandErrors[id]))
 	}
 	return errors.Join(failures...)
 }
@@ -254,7 +254,7 @@ func (e *Executor) finishExecution(ctx context.Context, workflow *Workflow, err 
 	e.state.UpdatedAt = e.state.FinishedAt
 	e.state.CurrentStep = ""
 	// Cancellation and checkpoint failures already have their own terminal
-	// classification, but must not hide a sidecar whose cleanup is uncertain.
+	// classification, but must not hide a sidecar's timeout or uncertain cleanup.
 	// Otherwise the combined execution error below persists this diagnostic.
 	if backgroundErr != nil && (cancelled || checkpointErr != nil) {
 		e.state.Errors = append(e.state.Errors, ExecutionError{

@@ -339,6 +339,54 @@ printf child-
 	}
 }
 
+func TestWaitNoneExplicitTimeoutWithUnknownSettlementRefusesReplay(t *testing.T) {
+	e := newCommandTestExecutor(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	fault := errors.New("injected unknown background timeout settlement")
+	ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(int) (bool, error) { return false, fault })
+	step := Step{ID: "sidecar", Wait: WaitNone, Timeout: Duration{Duration: time.Second},
+		Command: "printf 'once\\n' >> launches; trap 'printf shutdown; exit 0' TERM; while :; do sleep 0.01; done"}
+	workflow := Workflow{Name: "uncertain-timeout"}
+	result := e.executeCommand(ctx, &step, &workflow)
+	e.stateMu.Lock()
+	e.state.Steps[step.ID] = result
+	e.stateMu.Unlock()
+	done := make(chan struct{})
+	go func() { e.backgroundCommandWG.Wait(); close(done) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(15 * time.Second):
+			t.Error("unknown background timeout did not finish bounded cleanup")
+		}
+	})
+	if result.Status != StatusCompleted {
+		t.Fatalf("sidecar did not acknowledge launch: %+v", result)
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("explicit timeout failed to finish its observation budgets")
+	}
+	record, ok := e.loadCommandExecution(step.ID)
+	if !ok || record.Status != commandExecutionUnresolved || !record.SettledAt.IsZero() || record.Result.RerunOnResume ||
+		record.Result.Status != StatusFailed || record.Result.Error == nil || record.Result.Error.Type != "timeout" ||
+		!strings.Contains(record.Result.Output, "shutdown") || !strings.Contains(record.Result.Error.Details, fault.Error()) {
+		t.Fatalf("timeout fabricated settlement or lost its output and uncertainty: %+v", record)
+	}
+	if err := e.backgroundCommandFailure(); !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, fault) {
+		t.Fatalf("background outcome lost its deadline or failed inspection: %v", err)
+	}
+	replayed := e.executeCommand(context.Background(), &step, &workflow)
+	if replayed.Status != StatusFailed || replayed.Error == nil || replayed.Error.Type != "execution_unknown" {
+		t.Fatalf("uncertain background timeout authorized replay: %+v", replayed)
+	}
+	if data, err := os.ReadFile(filepath.Join(e.config.ProjectDir, "launches")); err != nil || string(data) != "once\n" {
+		t.Fatalf("uncertain timeout duplicated command effects: %q %v", data, err)
+	}
+}
+
 func TestControlledPipelinePersistentObservationCancellationPreservesUncertainty(t *testing.T) {
 	for _, background := range []bool{false, true} {
 		t.Run(fmt.Sprintf("background_%t", background), func(t *testing.T) {

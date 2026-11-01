@@ -2,8 +2,10 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -243,6 +245,225 @@ func TestExecuteCommand_WaitNoneCancellation_MarksRerunOnResume(t *testing.T) {
 	if persistedStep := persisted.Steps[step.ID]; !persistedStep.RerunOnResume {
 		t.Fatalf("persisted RerunOnResume = false; want true after cleanup worker exits")
 	}
+}
+
+func TestControlledPipelineWaitNoneExplicitTimeoutPersistsFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX command and SIGTERM fixture")
+	}
+	root := t.TempDir()
+	cfg := DefaultExecutorConfig("wait-none-timeout")
+	cfg.ProjectDir, cfg.RunID = root, "run-wait-none-timeout"
+	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "wait-none-timeout", Settings: DefaultWorkflowSettings(), Steps: []Step{
+		{ID: "sidecar", Wait: WaitNone, Timeout: Duration{Duration: time.Second},
+			Command: "printf 'once\\n' >> launches; trap 'printf handled > handled; printf shutdown; exit 0' TERM; printf ready > ready; while [ ! -f sidecar-release ]; do sleep 0.01; done; printf late > late-effect"},
+		{ID: "gate", DependsOn: []string{"sidecar"}, Command: "while [ ! -f gate-release ]; do sleep 0.01; done; printf consumed"},
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	type outcome struct {
+		state *ExecutionState
+		err   error
+	}
+	events := make(chan ProgressEvent, 100)
+	done := make(chan outcome, 1)
+	go func() {
+		state, err := RunControlledPipeline(ctx, workflow, nil, cfg, events)
+		done <- outcome{state, err}
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		_ = os.WriteFile(filepath.Join(root, "sidecar-release"), []byte("finish"), 0600)
+		_ = os.WriteFile(filepath.Join(root, "gate-release"), []byte("finish"), 0600)
+		select {
+		case <-done:
+		case <-time.After(15 * time.Second):
+			t.Error("background timeout fixture did not finish cleanup")
+		}
+	})
+	awaitCommandCancellationFile(t, filepath.Join(root, "ready"), "ready")
+	awaitCommandCancellationFile(t, filepath.Join(root, "handled"), "handled")
+	deadline := time.Now().Add(10 * time.Second)
+	var prior *ExecutionState
+	for {
+		var err error
+		prior, err = LoadState(root, cfg.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if prior.CommandExecutions["sidecar"].Status == commandExecutionSettled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("explicit background timeout never settled its receipt: %+v", prior.CommandExecutions["sidecar"])
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	receipt := prior.CommandExecutions["sidecar"]
+	if receipt.Result.Status != StatusFailed || receipt.Result.Error == nil || receipt.Result.Error.Type != "timeout" ||
+		!receipt.Result.RerunOnResume || !strings.Contains(receipt.Result.Output, "shutdown") ||
+		!strings.Contains(receipt.Result.Error.Details, context.DeadlineExceeded.Error()) {
+		t.Fatalf("background deadline lost its durable failure, graceful output, or settled retry permission: %+v", receipt)
+	}
+	if prior.Status != StatusRunning || ctx.Err() != nil {
+		t.Fatalf("background deadline replaced the workflow's independent lifetime: state=%s context=%v", prior.Status, ctx.Err())
+	}
+	select {
+	case early := <-done:
+		t.Fatalf("fire-and-forget timeout abandoned already-admitted gate work: %+v %v", early.state, early.err)
+	default:
+	}
+	if err := os.WriteFile(filepath.Join(root, "sidecar-release"), []byte("old work must be gone"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "gate-release"), []byte("finish"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var final outcome
+	select {
+	case final = <-done:
+	case <-ctx.Done():
+		t.Fatal("background timeout fixture did not finish after the foreground gate")
+	}
+	if !errors.Is(final.err, context.DeadlineExceeded) || final.state == nil || final.state.Status != StatusFailed ||
+		final.state.Steps["gate"].Status != StatusCompleted || final.state.Steps["gate"].Output != "consumed" {
+		t.Fatalf("settled background deadline was silently published as success: %+v %v", final.state, final.err)
+	}
+	assertNoCompletionEvent(t, events)
+	saved, err := LoadState(root, cfg.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Status != StatusFailed || !saved.Steps["sidecar"].RerunOnResume || len(saved.Errors) == 0 ||
+		!strings.Contains(saved.Errors[len(saved.Errors)-1].Message, "timed out") {
+		t.Fatalf("final background timeout was not durable: %+v", saved)
+	}
+	if _, err := os.Stat(filepath.Join(root, "late-effect")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expired sidecar performed work after its settled timeout: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(data) != "once\n" {
+		t.Fatalf("background timeout retried a fire-and-forget command: %q %v", data, err)
+	}
+}
+
+func TestExecuteCommandWaitNoneWithoutExplicitTimeoutKeepsRunLifetime(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX command fixture")
+	}
+	e := newCommandTestExecutor(t)
+	e.config.DefaultTimeout = 250 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		e.backgroundCommandWG.Wait()
+	})
+	step := Step{ID: "sidecar", Wait: WaitNone,
+		Command: "printf ready > ready; while [ ! -f release ]; do sleep 0.01; done; printf survived > effect"}
+	result := e.executeCommand(ctx, &step, &Workflow{Name: "sidecar-run-lifetime"})
+	if result.Status != StatusCompleted {
+		t.Fatalf("sidecar did not acknowledge its launch: %+v", result)
+	}
+	e.stateMu.Lock()
+	e.state.Steps[step.ID] = result
+	e.stateMu.Unlock()
+	awaitCommandCancellationFile(t, filepath.Join(e.config.ProjectDir, "ready"), "ready")
+	time.Sleep(2 * e.config.DefaultTimeout)
+	if record, ok := e.loadCommandExecution(step.ID); !ok || record.Status != commandExecutionRunning {
+		t.Fatalf("foreground default timeout shortened an unbounded sidecar's lifetime: %+v", record)
+	}
+	if err := os.WriteFile(filepath.Join(e.config.ProjectDir, "release"), []byte("continue"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	awaitCommandCancellationFile(t, filepath.Join(e.config.ProjectDir, "effect"), "survived")
+	e.backgroundCommandWG.Wait()
+	record, ok := e.loadCommandExecution(step.ID)
+	if !ok || record.Status != commandExecutionSettled || record.Result.Status != StatusCompleted || record.Result.RerunOnResume || e.backgroundCommandFailure() != nil {
+		t.Fatalf("unbounded sidecar lost its natural successful completion: %+v", record)
+	}
+}
+
+func TestExecuteCommandWaitNoneExplicitTimeoutPreservesCancellationCause(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX command and SIGTERM fixture")
+	}
+	for _, scenario := range []string{"natural", "parent_cancel", "deadline_then_parent_cancel"} {
+		t.Run(scenario, func(t *testing.T) {
+			e := newCommandTestExecutor(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(func() {
+				cancel()
+				_ = os.WriteFile(filepath.Join(e.config.ProjectDir, "release"), []byte("finish"), 0600)
+				_ = os.WriteFile(filepath.Join(e.config.ProjectDir, "grace-release"), []byte("finish"), 0600)
+				e.backgroundCommandWG.Wait()
+			})
+			timeout := 30 * time.Second
+			if scenario == "deadline_then_parent_cancel" {
+				timeout = time.Second
+			}
+			step := Step{ID: "sidecar", Wait: WaitNone, Timeout: Duration{Duration: timeout},
+				Command: "trap 'printf handled > handled; while [ ! -f grace-release ]; do sleep 0.01; done; printf stopped; exit 0' TERM; printf ready > ready; while [ ! -f release ]; do sleep 0.01; done; printf completed"}
+			result := e.executeCommand(ctx, &step, &Workflow{Name: "sidecar-cause"})
+			if result.Status != StatusCompleted {
+				t.Fatalf("explicit-timeout sidecar did not acknowledge launch: %+v", result)
+			}
+			e.stateMu.Lock()
+			e.state.Steps[step.ID] = result
+			e.stateMu.Unlock()
+			awaitCommandCancellationFile(t, filepath.Join(e.config.ProjectDir, "ready"), "ready")
+			if scenario == "natural" {
+				if err := os.WriteFile(filepath.Join(e.config.ProjectDir, "release"), []byte("finish"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if scenario == "parent_cancel" {
+					cancel()
+				}
+				awaitCommandCancellationFile(t, filepath.Join(e.config.ProjectDir, "handled"), "handled")
+				// In the deadline scenario, cancel the parent only after TERM
+				// proves that the step's own deadline already fired. This must
+				// not rewrite its final classification to workflow cancellation.
+				cancel()
+				if err := os.WriteFile(filepath.Join(e.config.ProjectDir, "grace-release"), []byte("finish"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.backgroundCommandWG.Wait()
+			record, ok := e.loadCommandExecution(step.ID)
+			if !ok || record.Status != commandExecutionSettled {
+				t.Fatalf("sidecar did not settle after %s: %+v", scenario, record)
+			}
+			wantStatus, wantError := StatusCompleted, ""
+			if scenario == "parent_cancel" {
+				wantStatus, wantError = StatusCancelled, "cancelled"
+			} else if scenario == "deadline_then_parent_cancel" {
+				wantStatus, wantError = StatusFailed, "timeout"
+			}
+			if record.Result.Status != wantStatus || record.Result.RerunOnResume != (scenario != "natural") ||
+				(wantError == "" && record.Result.Error != nil) || (wantError != "" && (record.Result.Error == nil || record.Result.Error.Type != wantError)) {
+				t.Fatalf("sidecar lost its original %s outcome: %+v", scenario, record)
+			}
+			backgroundErr := e.backgroundCommandFailure()
+			if scenario == "deadline_then_parent_cancel" {
+				if !errors.Is(backgroundErr, context.DeadlineExceeded) || !strings.Contains(record.Result.Output, "stopped") {
+					t.Fatalf("step deadline lost its terminal cause or graceful output: receipt=%+v error=%v", record, backgroundErr)
+				}
+			} else if backgroundErr != nil {
+				t.Fatalf("ordinary %s became a background timeout failure: %v", scenario, backgroundErr)
+			}
+		})
+	}
+}
+
+func awaitCommandCancellationFile(t *testing.T, path, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(path); err == nil && string(data) == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("command did not publish %q in %s", want, path)
 }
 
 func TestExecutor_Run_WaitNoneCleanupSettlesBeforeReturn(t *testing.T) {

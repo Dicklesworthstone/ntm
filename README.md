@@ -806,6 +806,15 @@ and refusal information. Before accepting one, independently verify that the
 original command **and all its descendants have finished**, then supply its
 observed exit code and complete captured output.
 
+For a command with `wait: none`, an explicit step `timeout` applies to the
+background process's whole lifetime. Expiry requests normal command cleanup,
+records a timeout outcome, and prevents the final workflow from reporting success.
+Already-admitted dependent work keeps its existing scheduling. A later workflow
+cancellation does not erase the original timeout cause. Without an explicit
+timeout, a sidecar retains the workflow's lifetime instead of inheriting the
+foreground command default. Uncertain cleanup still leaves an unresolved receipt
+and refuses replay, even when the deadline has expired.
+
 On Unix, a failed process-group observation keeps the command under supervision
 and is retried within its existing execution deadline. It does not request
 cancellation or shorten the five-second SIGTERM grace period. After the final

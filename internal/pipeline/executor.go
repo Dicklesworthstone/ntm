@@ -122,8 +122,9 @@ type Executor struct {
 	// return cancels those commands and joins their workers so callers never
 	// observe state while cancellation persistence is still writing to disk.
 	backgroundCommandWG sync.WaitGroup
-	// Unsettled cleanup cannot authorize success merely because a WaitNone
-	// launch returned synchronously. Protected by stateMu and reset per attempt.
+	// Unsettled cleanup or an explicit background timeout cannot authorize
+	// success merely because a WaitNone launch returned synchronously.
+	// Protected by stateMu and reset per attempt.
 	backgroundCommandErrors map[string]error
 
 	// persistMu serializes snapshot-and-save transactions. Multiple workers may
@@ -1439,8 +1440,14 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 	if step.Timeout.Duration > 0 {
 		timeout = step.Timeout.Duration
 	}
-	cmdCtx, cmdCancel := context.WithTimeout(ctx, timeout)
-	defer cmdCancel()
+	timeoutCause := fmt.Errorf("command step %q timed out after %s: %w", step.ID, timeout, context.DeadlineExceeded)
+	cmdCtx, cmdCancel := context.WithTimeoutCause(ctx, timeout, timeoutCause)
+	cancelCommandContext := true
+	defer func() {
+		if cancelCommandContext {
+			cmdCancel()
+		}
+	}()
 
 	cmd := exec.Command("/bin/sh", "-c", expandedCmd)
 	configureCommandProcessGroup(cmd)
@@ -1577,16 +1584,36 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		stepID := step.ID
 		workflowName := workflow.Name
 		backgroundRecord := record
+		backgroundCtx, backgroundCancel := ctx, context.CancelFunc(func() {})
+		if step.Timeout.Duration > 0 {
+			// An explicit limit belongs to the command's whole lifetime,
+			// including its asynchronous group cleanup. Transfer the cancel
+			// function so the synchronous launch acknowledgement cannot stop
+			// the process. Unbounded sidecars retain the run lifetime instead
+			// of inheriting the configured foreground default.
+			backgroundCtx, backgroundCancel = cmdCtx, cmdCancel
+			cancelCommandContext = false
+		}
 		e.backgroundCommandWG.Add(1)
 		go func() {
 			defer e.backgroundCommandWG.Done()
-			cleanup := waitCommandWithProcessGroupCleanup(ctx, cmd)
+			defer backgroundCancel()
+			cleanup := waitCommandWithProcessGroupCleanup(backgroundCtx, cmd)
+			// A later workflow cancellation must not erase the deadline that
+			// actually stopped this command. Natural completion is still a
+			// success if its deadline fires only after the waiter returned.
+			timedOut := cleanup.Cancelled && context.Cause(backgroundCtx) == timeoutCause
 			cleanupErr := cleanup.Err
 			if !cleanup.Settled {
 				// Keep the launch receipt unresolved and also carry the
 				// cleanup failure into the workflow's terminal outcome. A
 				// detached child can still act after this worker returns.
 				cleanupErr = errors.Join(cleanupErr, uncertainCommandExecutionError(stepID, backgroundRecord.ProcessID))
+			}
+			if timedOut {
+				cleanupErr = errors.Join(timeoutCause, cleanupErr)
+			}
+			if !cleanup.Settled || timedOut {
 				e.stateMu.Lock()
 				if e.backgroundCommandErrors == nil {
 					e.backgroundCommandErrors = make(map[string]error)
@@ -1604,6 +1631,8 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 				if cleanup.Cancelled || cleanupErr != nil {
 					backgroundRecord.Result.Status = StatusFailed
 					errorType := "command"
+					reason := "background command cleanup failed"
+					hint := "inspect the command execution before resuming"
 					if !cleanup.Settled {
 						errorType = "execution_unknown"
 					}
@@ -1614,10 +1643,19 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 							cleanupErr = context.Canceled
 						}
 					}
+					if timedOut {
+						backgroundRecord.Result.Status = StatusFailed
+						errorType = "timeout"
+						reason = fmt.Sprintf("background command timed out after %s", timeout)
+						hint = "increase step.timeout or reduce command runtime"
+						if !cleanup.Settled {
+							hint = "inspect the command group before resuming; settlement is uncertain even though its timeout elapsed"
+						}
+					}
 					backgroundStep := &Step{ID: stepID}
 					backgroundRecord.Result.Output = e.capturedCommandOutput(backgroundStep, stdoutBuf, stderrBuf)
 					backgroundRecord.Result.Error = stepRuntimeError(backgroundStep, StepKindCommand, errorType,
-						"background command cleanup failed", "inspect the command execution before resuming", cleanupErr.Error())
+						reason, hint, cleanupErr.Error())
 					backgroundRecord.Result.RerunOnResume = cleanup.Settled
 				}
 				_ = e.saveCommandExecution(backgroundRecord) // Sticky checkpoint failure cancels the run.
@@ -1633,6 +1671,7 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 				FieldDurationMS, time.Since(startedAt).Milliseconds(),
 				"bytes_captured", stdoutBuf.Len(),
 				FieldSignalSent, cleanup.SignalSent,
+				"timed_out", timedOut,
 			)
 			// bd-yrnue: the synchronous return below recorded StatusCompleted,
 			// but the background process has now been killed by cancellation
