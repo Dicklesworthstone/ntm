@@ -5,6 +5,7 @@ package pipeline
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestBranchPredicateCaptureRejectsOverflowBeforeDispatch(t *testing.T) {
@@ -618,5 +621,193 @@ func TestControlledPipelineReusesBeadQueryBeforeResultCheckpoint(t *testing.T) {
 	}
 	if data, err := os.ReadFile(filepath.Join(root, "selections")); err != nil || string(data) != "x" {
 		t.Fatalf("completed query effects were repeated: %q %v", data, err)
+	}
+}
+
+func TestUnresolvedProcessFailureDefersAuthoredRecovery(t *testing.T) {
+	for _, selector := range []bool{false, true} {
+		for _, nested := range []bool{false, true} {
+			for _, policy := range []string{"action", "fallback", "suppress"} {
+				t.Run(fmt.Sprintf("selector_%t/foreach_dispatch_%t/%s", selector, nested, policy), func(t *testing.T) {
+					templatePath := filepath.Join(t.TempDir(), "recover.md")
+					if err := os.WriteFile(templatePath, []byte("Recover the confirmed original failure"), 0600); err != nil {
+						t.Fatal(err)
+					}
+					configure := func(workflow *Workflow) {
+						source := &workflow.Steps[0]
+						if policy == "action" {
+							source.OnFailure = OnFailureSpec{Action: "use_verified_fallback"}
+						} else {
+							source.OnFailure = OnFailureSpec{Fallback: map[string]interface{}{
+								"pane": 1, "template": templatePath, "wait": string(WaitNone),
+								"suppress_failure": policy == "suppress",
+							}}
+						}
+						consumer := Step{ID: "consume", DependsOn: []string{source.ID}, Command: "printf 'once\\n' >> dependent"}
+						if len(workflow.Steps) == 1 {
+							workflow.Steps = append(workflow.Steps, consumer)
+						} else {
+							workflow.Steps[1] = consumer
+						}
+					}
+					var cfg ExecutorConfig
+					var workflow *Workflow
+					var prior *ExecutionState
+					var output []byte
+					effects := "effects"
+					if selector {
+						output = []byte("good")
+						cfg, workflow, prior, _ = selectorOperatorRecoveryFixture(t, "branch", output, 7, true, configure)
+						effects = "source-effects"
+					} else {
+						var raw string
+						cfg, workflow, prior, raw = commandOperatorRecoveryFixture(t, 7, "direct", configure)
+						output = []byte(raw)
+					}
+					// Both fixtures executed the source once, observed its real
+					// exit 7, and joined it before restoring an unfinished receipt.
+					// The scheduler must not infer that independently held proof.
+					mock := NewMockTmuxClient(tmux.Pane{ID: "%1", Index: 1, Type: tmux.AgentCodex})
+					t.Cleanup(mock.Reset)
+					step := &workflow.Steps[0]
+					receiptBytes := func(state *ExecutionState) []byte {
+						t.Helper()
+						var record interface{} = state.CommandExecutions[step.ID]
+						if selector {
+							record = state.CommandEvaluations[step.ID]
+						}
+						data, err := json.Marshal(record)
+						if err != nil {
+							t.Fatal(err)
+						}
+						return data
+					}
+					unfinished := receiptBytes(prior)
+					executor := NewExecutor(cfg)
+					executor.state, executor.graph = prior, NewDependencyGraph(workflow)
+					executor.limits = workflow.Settings.Limits.EffectiveLimits()
+					executor.SetTmuxClient(mock)
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					var failed StepResult
+					if nested {
+						failed = executor.executeForeachNestedStep(ctx, step, workflow)
+					} else {
+						failed = executor.executeStep(ctx, step, workflow)
+					}
+					if failed.Status != StatusFailed || failed.Error == nil {
+						t.Fatalf("unfinished source was converted into a terminal handled outcome: %+v", failed)
+					}
+					if !bytes.Equal(unfinished, receiptBytes(prior)) {
+						t.Fatal("failure handling changed the original process receipt")
+					}
+					if _, exists := prior.Variables["runtime."+runtimeFailureActionKey(step.ID)]; exists {
+						t.Fatal("unknown settlement published a failure action")
+					}
+					if _, exists := prior.Steps[onFailureStepID(step.ID)]; exists || len(prior.AgentDeliveries) != 0 {
+						t.Fatalf("unknown settlement admitted fallback evidence: steps=%+v deliveries=%+v", prior.Steps, prior.AgentDeliveries)
+					}
+					pastes, err := mock.PasteHistory("%1")
+					if err != nil || len(pastes) != 0 {
+						t.Fatalf("unknown settlement dispatched fallback work: %+v %v", pastes, err)
+					}
+					for _, name := range []string{"dependent", "admitted"} {
+						if _, err := os.Stat(filepath.Join(cfg.ProjectDir, name)); !errors.Is(err, os.ErrNotExist) {
+							t.Fatalf("unknown source admitted downstream work %q: %v", name, err)
+						}
+					}
+
+					// Persist the scheduler's actual failed result. Acceptance
+					// must remain possible without replacing any consumed result.
+					prior.Steps[step.ID], prior.Status = failed, StatusFailed
+					if err := SaveState(cfg.ProjectDir, prior); err != nil {
+						t.Fatal(err)
+					}
+					beforeResume := commandOperatorRecoveryBytes(t, cfg)
+					if _, err := NewExecutor(cfg).Resume(ctx, workflow, prior, nil); err == nil {
+						t.Fatal("ordinary resume replayed the unfinished source")
+					}
+					if !bytes.Equal(beforeResume, commandOperatorRecoveryBytes(t, cfg)) {
+						t.Fatal("refused ordinary resume rewrote unfinished evidence")
+					}
+					const reason = "Verified the original process tree ended with exit status 7"
+					if selector {
+						entry := selectorRecoveryEntry(t, cfg)
+						if !entry.CanAccept {
+							t.Fatalf("failure policy stranded selector acceptance: %+v", entry)
+						}
+						if _, err := AcceptCommandEvaluationContext(ctx, cfg.ProjectDir, cfg.RunID, step.ID, entry.ReceiptToken, reason, 7, output); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						entry := commandOperatorRecoveryEntry(t, cfg)
+						if !entry.CanAccept {
+							t.Fatalf("failure policy stranded command acceptance: %+v", entry)
+						}
+						if _, err := AcceptCommandExecutionContext(ctx, cfg.ProjectDir, cfg.RunID, step.ID, entry.ReceiptToken, reason, 7, string(output)); err != nil {
+							t.Fatal(err)
+						}
+					}
+					accepted, err := LoadState(cfg.ProjectDir, cfg.RunID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					acceptedReceipt := receiptBytes(accepted)
+					resumed := NewExecutor(cfg)
+					resumed.SetTmuxClient(mock)
+					final, resumeErr := resumed.Resume(ctx, workflow, accepted, nil)
+					if final == nil {
+						t.Fatalf("accepted source did not resume: %v", resumeErr)
+					}
+					wantStatus := StatusCompleted
+					if policy == "fallback" {
+						wantStatus = StatusFailed
+					}
+					if final.Status != wantStatus || (policy == "fallback") != (resumeErr != nil) {
+						t.Fatalf("confirmed failure did not apply its authored policy: status=%s err=%v", final.Status, resumeErr)
+					}
+					wantSource := StatusCompleted
+					if policy == "action" {
+						wantSource = StatusSkipped
+					} else if policy == "fallback" {
+						wantSource = StatusFailed
+					}
+					if final.Steps[step.ID].Status != wantSource {
+						t.Fatalf("confirmed failure source status=%s, want %s", final.Steps[step.ID].Status, wantSource)
+					}
+					if !bytes.Equal(acceptedReceipt, receiptBytes(final)) {
+						t.Fatal("failure policy rewrote the immutable accepted outcome")
+					}
+					if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, effects)); err != nil || string(data) != "once\n" {
+						t.Fatalf("recovery repeated the original process: %q %v", data, err)
+					}
+					pastes, err = mock.PasteHistory("%1")
+					wantPastes := 1
+					if policy == "action" {
+						wantPastes = 0
+						if got := final.Variables["runtime."+runtimeFailureActionKey(step.ID)]; got != "use_verified_fallback" {
+							t.Fatalf("confirmed failure did not publish its action: %v", got)
+						}
+					}
+					if err != nil || len(pastes) != wantPastes {
+						t.Fatalf("confirmed failure dispatched %d fallbacks, want %d: %v", len(pastes), wantPastes, err)
+					}
+					if policy != "action" && final.AgentDeliveries[onFailureStepID(step.ID)].Status != agentDeliveryCompleted {
+						t.Fatalf("fallback did not retain its completed delivery receipt: %+v", final.AgentDeliveries)
+					}
+					if _, err := os.Stat(filepath.Join(cfg.ProjectDir, "admitted")); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("nonzero selector outcome admitted its source body: %v", err)
+					}
+					dependent, dependentErr := os.ReadFile(filepath.Join(cfg.ProjectDir, "dependent"))
+					if policy == "fallback" {
+						if !errors.Is(dependentErr, os.ErrNotExist) {
+							t.Fatalf("unsuppressed failure dispatched a dependent: %q %v", dependent, dependentErr)
+						}
+					} else if dependentErr != nil || string(dependent) != "once\n" {
+						t.Fatalf("confirmed handled failure did not continue once: %q %v", dependent, dependentErr)
+					}
+				})
+			}
+		}
 	}
 }

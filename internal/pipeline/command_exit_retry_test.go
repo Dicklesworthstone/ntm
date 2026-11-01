@@ -690,7 +690,7 @@ func TestCommandCleanupResetPreservesMainNamespaceCollision(t *testing.T) {
 // to model losing the final settlement write, without fabricating launch data or
 // leaving an orphan process. Direct execution also permits testing an actual
 // nonzero result without the original scheduler consuming its retry budget.
-func commandOperatorRecoveryFixture(t *testing.T, exitCode int, layout string) (ExecutorConfig, *Workflow, *ExecutionState, string) {
+func commandOperatorRecoveryFixture(t *testing.T, exitCode int, layout string, configure ...func(*Workflow)) (ExecutorConfig, *Workflow, *ExecutionState, string) {
 	t.Helper()
 	e := newCommandTestExecutor(t)
 	e.config.RunID = e.state.RunID
@@ -725,6 +725,9 @@ func commandOperatorRecoveryFixture(t *testing.T, exitCode int, layout string) (
 	}
 	if layout != "post" {
 		workflow.Steps = append(workflow.Steps, consumer)
+	}
+	for _, update := range configure {
+		update(workflow)
 	}
 	frozen, path, err := SnapshotWorkflow(context.Background(), e.config.ProjectDir, workflow)
 	if err != nil {

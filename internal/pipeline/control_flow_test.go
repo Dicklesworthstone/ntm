@@ -2400,3 +2400,114 @@ func TestPostPipelineStepsDispatchesMO09HandbackTemplate(t *testing.T) {
 		t.Fatalf("handback paste = %q, want substring %q", history[0].Content, wantContent)
 	}
 }
+
+func TestOnFailureActionScopesCommandSettlement(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		scope      string
+		status     string
+		background bool
+		scheduler  ExecutionStatus
+		rerun      bool
+		malformed  bool
+		handled    bool
+	}{
+		{name: "direct_running", scope: "direct", status: commandExecutionRunning},
+		{name: "direct_background_ack", scope: "direct", status: commandExecutionRunning, background: true, scheduler: StatusCompleted},
+		{name: "owned_foreground_running", scope: "parallel", status: commandExecutionRunning},
+		{name: "owned_foreground_unresolved", scope: "parallel", status: commandExecutionUnresolved, scheduler: StatusFailed},
+		{name: "owned_foreach_unresolved", scope: "foreach", status: commandExecutionUnresolved, scheduler: StatusFailed},
+		{name: "background_started_without_ack", scope: "parallel", status: commandExecutionRunning, background: true, handled: true},
+		{name: "background_launch_ack", scope: "parallel", status: commandExecutionRunning, background: true, scheduler: StatusCompleted, handled: true},
+		{name: "background_starting_is_not_live_proof", scope: "parallel", status: commandExecutionStarting, background: true},
+		{name: "background_returned_failed", scope: "parallel", status: commandExecutionRunning, background: true, scheduler: StatusFailed},
+		{name: "background_returned_cancelled", scope: "parallel", status: commandExecutionRunning, background: true, scheduler: StatusCancelled},
+		{name: "background_returned_skipped", scope: "parallel", status: commandExecutionRunning, background: true, scheduler: StatusSkipped},
+		{name: "background_ack_requires_rerun", scope: "parallel", status: commandExecutionRunning, background: true, scheduler: StatusCompleted, rerun: true},
+		{name: "background_returned_unresolved", scope: "parallel", status: commandExecutionUnresolved, background: true, scheduler: StatusCompleted},
+		{name: "settled_native_failure", scope: "parallel", status: commandExecutionSettled, scheduler: StatusFailed, handled: true},
+		{name: "invalid_settlement", scope: "parallel", status: commandExecutionSettled, malformed: true},
+		{name: "invalid_background_running", scope: "parallel", status: commandExecutionRunning, background: true, scheduler: StatusCompleted, malformed: true},
+		{name: "unrelated_similar_prefix", scope: "unrelated", status: commandExecutionUnresolved, scheduler: StatusFailed, handled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			executor := newBranchTestExecutor()
+			child := Step{ID: "child", Command: "exit 7"}
+			if tc.background {
+				child.Wait = WaitNone
+			}
+			parent := Step{ID: "group", Parallel: ParallelSpec{Steps: []Step{child}},
+				OnFailure: OnFailureSpec{Action: "use_verified_fallback"}}
+			id := "group_child"
+			switch tc.scope {
+			case "direct":
+				parent.Command, parent.Wait, parent.Parallel = child.Command, child.Wait, ParallelSpec{}
+				id = parent.ID
+			case "foreach":
+				parent.Parallel = ParallelSpec{}
+				parent.Foreach = &ForeachConfig{Items: "[\"one\"]", Steps: []Step{child}}
+				id = "group_iter0_child"
+			case "unrelated":
+				id = "group_child_shadow"
+			}
+			definition := child
+			if tc.scope == "direct" {
+				definition = parent
+			}
+			definition.ID = id
+			digest, err := commandDefinitionHash(&definition)
+			if err != nil {
+				t.Fatal(err)
+			}
+			started, finished := time.Now().Add(-time.Second), time.Now()
+			record := CommandExecutionState{
+				Version: commandExecutionVersion, StepID: id, StepHash: digest, StartedAt: started,
+				Status: tc.status, Background: tc.background, ProcessID: 123,
+			}
+			if tc.status == commandExecutionStarting {
+				record.ProcessID = 0
+			}
+			if tc.status == commandExecutionUnresolved || tc.status == commandExecutionSettled {
+				record.Result = StepResult{
+					StepID: id, AgentType: "command", Status: StatusFailed,
+					StartedAt: started, FinishedAt: finished,
+					Error: &StepError{Type: "command", Message: "recorded source failure"},
+				}
+				if tc.status == commandExecutionSettled {
+					record.SettledAt = finished
+				}
+			}
+			if tc.malformed {
+				if tc.status == commandExecutionSettled {
+					record.SettledAt = time.Time{}
+				} else {
+					record.ProcessID = 0
+				}
+			} else if err := validateCommandExecution(id, record); err != nil {
+				t.Fatalf("invalid fixture receipt: %v", err)
+			}
+			executor.state.CommandExecutions = map[string]CommandExecutionState{id: record}
+			if tc.scheduler != "" {
+				executor.state.Steps[id] = StepResult{StepID: id, Status: tc.scheduler, RerunOnResume: tc.rerun}
+			}
+			failed := StepResult{StepID: parent.ID, Status: StatusFailed,
+				Error: &StepError{Type: "command", Message: "original failure", Details: "retain the original cause"}}
+			got := executor.executeOnFailureAction(&parent, failed)
+			if tc.handled {
+				if got.Status != StatusSkipped || executor.state.Variables["runtime.group_failure_action"] != "use_verified_fallback" {
+					t.Fatalf("known failure policy was disabled by another outcome: %+v", got)
+				}
+			} else {
+				if !reflect.DeepEqual(got, failed) {
+					t.Fatalf("unknown source was handled or lost its cause: %+v", got)
+				}
+				if _, exists := executor.state.Variables["runtime.group_failure_action"]; exists {
+					t.Fatal("unknown source published a failure action")
+				}
+			}
+			if !reflect.DeepEqual(record, executor.state.CommandExecutions[id]) {
+				t.Fatal("failure policy rewrote the receipt it inspected")
+			}
+		})
+	}
+}

@@ -315,6 +315,11 @@ func (e *Executor) executeOnFailureRecovery(ctx context.Context, step *Step, wor
 	if step == nil || len(step.OnFailure.Fallback) == 0 {
 		return failed
 	}
+	// Even a nonsuppressing fallback creates owned child evidence that can
+	// make an unresolved selector ineligible for explicit acceptance.
+	if e.hasUnresolvedCommandExecution(step) || e.hasUnresolvedCommandEvaluation(step) {
+		return failed
+	}
 	if delivery, exists := e.loadAgentDelivery(onFailureStepID(step.ID)); exists && delivery.Status != agentDeliveryNotSent {
 		// An accepted child cannot suppress a failure caused by changing its
 		// parent or its own materialized definition during recovery.
@@ -572,6 +577,11 @@ func (e *Executor) executeOnFailureAction(step *Step, failed StepResult) StepRes
 	}
 	action := strings.TrimSpace(step.OnFailure.Action)
 	if action == "" || knownFailureAction(action) {
+		return failed
+	}
+	// A skipped source is treated as consumed output during recovery. Keep
+	// the original failed result and variables until settlement is known.
+	if e.hasUnresolvedCommandExecution(step) || e.hasUnresolvedCommandEvaluation(step) {
 		return failed
 	}
 

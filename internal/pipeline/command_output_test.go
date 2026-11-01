@@ -475,7 +475,7 @@ func TestCommandOutputLostSuccessCheckpointKeepsIntentUnresolved(t *testing.T) {
 // lifecycle hook loses the final publication. This leaves the actual durable
 // starting receipt (PID zero), without inventing hashes or leaving live work.
 // The alternate case preserves a deterministic returned observation failure.
-func selectorOperatorRecoveryFixture(t *testing.T, kind string, output []byte, exitCode int, unresolved bool) (ExecutorConfig, *Workflow, *ExecutionState, string) {
+func selectorOperatorRecoveryFixture(t *testing.T, kind string, output []byte, exitCode int, unresolved bool, configure ...func(*Workflow)) (ExecutorConfig, *Workflow, *ExecutionState, string) {
 	t.Helper()
 	e := newCommandTestExecutor(t)
 	e.config.RunID = e.state.RunID
@@ -489,6 +489,9 @@ func selectorOperatorRecoveryFixture(t *testing.T, kind string, output []byte, e
 	}
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: e.state.WorkflowID, Settings: DefaultWorkflowSettings(), Steps: []Step{step}}
 	workflow.Settings.Limits.MaxCommandStdoutBytes, workflow.Settings.Limits.MaxCommandStderrBytes = 64, 64
+	for _, update := range configure {
+		update(workflow)
+	}
 	frozen, path, err := SnapshotWorkflow(context.Background(), e.config.ProjectDir, workflow)
 	if err != nil {
 		t.Fatal(err)

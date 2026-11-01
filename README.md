@@ -965,6 +965,14 @@ remaining unsettled process receipt prevents a successful workflow outcome.
 The original receipts remain unchanged for inspection and supported recovery;
 confirmed settled failures keep their existing error-policy behavior.
 
+An `on_failure` action or fallback waits until its failed source and owned
+process work have a known outcome. Unresolved command and selector receipts keep
+their failed scheduler results, without publishing failure-action variables or
+dispatching fallback work that would prevent later acceptance. Once the original
+outcome is explicitly accepted, ordinary resume applies the authored failure
+policy. Unrelated scopes and healthy supervised background children keep their
+normal failure handling.
+
 An older checkpoint may already report `completed` while retaining an unfinished
 foreground command or selector receipt. If that step's scheduler result is
 failed or cancelled, recovery inspection can offer the same explicit acceptance

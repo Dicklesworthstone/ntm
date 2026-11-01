@@ -539,6 +539,50 @@ func (e *Executor) commandEvaluationContext(ctx context.Context, step *Step) con
 	return context.WithValue(ctx, commandOutputLifecycleKey{}, lifecycle)
 }
 
+// A failed source must retain its unfinished process evidence until settlement
+// is known. Follow runtime ownership so one scope cannot disable another's
+// authored recovery. A running background descendant may still have an owner,
+// but a returned failure or unresolved receipt must not become a handled result.
+func (e *Executor) hasUnresolvedCommandExecution(step *Step) bool {
+	if step == nil {
+		return false
+	}
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
+	if e.state == nil {
+		return false
+	}
+	for id, record := range e.state.CommandExecutions {
+		if id != step.ID {
+			if _, _, owns := resolveScopedRuntimeChildren(step.ID, id, step); !owns {
+				continue
+			}
+		}
+		if err := validateCommandExecution(id, record); err != nil {
+			return true
+		}
+		if record.Status == commandExecutionSettled {
+			if record.ResolutionAction != "" {
+				if _, err := commandExecutionRecoveryEntry(e.state, record); err != nil {
+					return true
+				}
+			}
+			continue
+		}
+		if id != step.ID && record.Background && record.Status == commandExecutionRunning {
+			result := e.state.Steps[id]
+			switch result.Status {
+			case "", StatusPending, StatusRunning, StatusCompleted:
+				if result.Error == nil && !result.RerunOnResume {
+					continue
+				}
+			}
+		}
+		return true
+	}
+	return false
+}
+
 func (e *Executor) hasUnresolvedCommandEvaluation(step *Step) bool {
 	e.stateMu.RLock()
 	defer e.stateMu.RUnlock()
