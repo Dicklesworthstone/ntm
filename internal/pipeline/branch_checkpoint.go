@@ -294,6 +294,24 @@ func branchChildHash(result StepResult, outputs map[string]interface{}) (string,
 	if err != nil {
 		return "", fmt.Errorf("hash branch child result: %w", err)
 	}
+
+	// Hash the representation that can actually survive the ExecutionState
+	// JSON checkpoint. Interface-backed parsed/output values may carry richer
+	// Go types before persistence (for example json.Number("1.0")); LoadState
+	// decodes them into ordinary JSON values, and re-marshalling those values
+	// can otherwise produce different bytes ("1.0" -> "1"). A receipt created
+	// from the live representation would then reject its own durable result.
+	//
+	// Round-tripping here intentionally uses the same encoding/json semantics as
+	// state persistence, so the receipt binds to exactly what resume can recover.
+	var durable interface{}
+	if err := json.Unmarshal(data, &durable); err != nil {
+		return "", fmt.Errorf("canonicalize branch child result: %w", err)
+	}
+	data, err = json.Marshal(durable)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize branch child result: %w", err)
+	}
 	digest := sha256.Sum256(data)
 	return hex.EncodeToString(digest[:]), nil
 }
