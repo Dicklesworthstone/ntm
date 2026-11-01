@@ -1076,3 +1076,44 @@ func TestCommandOperatorRecoveryRejectsCorruptResolutionBeforeReset(t *testing.T
 		})
 	}
 }
+
+func TestControlledPipelineHandledProcessFailuresRemainCompleted(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("requires /bin/sh")
+	}
+	root := t.TempDir()
+	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "handled-process-failures", Settings: DefaultWorkflowSettings(), Steps: []Step{
+		{ID: "command", Command: "printf 'once\\n' >> command-effects; exit 7", OnError: ErrorActionContinue},
+		{ID: "selector", Branch: "$(printf 'once\\n' >> selector-effects; exit 7)", OnError: ErrorActionContinue,
+			Branches: map[string]interface{}{"unused": []Step{{ID: "body", Command: "printf unexpected > body-effects"}}}},
+		{ID: "independent", Command: "printf 'once\\n' >> independent-effects; printf continued"},
+	}}
+	cfg := DefaultExecutorConfig(workflow.Name)
+	cfg.ProjectDir, cfg.RunID = root, "run-handled-process-failures"
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	final, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+	if err != nil || final == nil || final.Status != StatusCompleted || final.Steps["independent"].Output != "continued" {
+		t.Fatalf("handled settled process failures prevented completion: %+v %v", final, err)
+	}
+	prior, err := LoadState(root, cfg.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := prior.CommandExecutions["command"]
+	if record.Status != commandExecutionSettled || record.Result.Status != StatusFailed ||
+		record.Result.Error == nil || record.Result.Error.Type != "exit" || !strings.Contains(record.Result.Error.Details, "exit_code=7") {
+		t.Fatalf("handled command failure lost its settled exit outcome: %+v", record)
+	}
+	if prior.Steps["selector"].Status != StatusFailed || len(prior.CommandEvaluations) != 0 {
+		t.Fatalf("known failed selector retained uncertain launch evidence: %+v", prior)
+	}
+	for _, name := range []string{"command-effects", "selector-effects", "independent-effects"} {
+		if data, err := os.ReadFile(filepath.Join(root, name)); err != nil || string(data) != "once\n" {
+			t.Fatalf("handled process failure interrupted or repeated %s: %q %v", name, data, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "body-effects")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed selector dispatched a branch body: %v", err)
+	}
+}

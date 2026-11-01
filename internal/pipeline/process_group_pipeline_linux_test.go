@@ -3,6 +3,7 @@ package pipeline
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -1315,6 +1316,216 @@ func TestControlledPipelineObservedBackgroundFailureSurvivesNormalShutdown(t *te
 			}
 			if data, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(data) != "once\n" {
 				t.Fatalf("shutdown race repeated background effects: %q %v", data, err)
+			}
+		})
+	}
+}
+
+func TestControlledPipelineHandledObservationFailurePreservesRecovery(t *testing.T) {
+	requireCommandPIDFDObservation(t)
+	for _, selector := range []bool{false, true} {
+		t.Run(fmt.Sprintf("selector_%t", selector), func(t *testing.T) {
+			root := t.TempDir()
+			source := "printf '%s' \"$$\" > uncertain.pid; " +
+				"while [ ! -f source.release ]; do sleep 0.01; done; " +
+				"printf 'once\\n' >> source-effects; printf 'chosen\\n' > observed-output; cat observed-output"
+			work := Step{ID: "uncertain", Command: source, OnError: ErrorActionContinue}
+			if selector {
+				work.Command, work.Branch = "", "$("+source+")"
+				work.Branches = map[string]interface{}{"chosen": []Step{{
+					ID: "body", Command: "printf 'once\\n' >> selected-effects; printf selected",
+				}}}
+			}
+			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "handled-uncertainty", Settings: DefaultWorkflowSettings(), Steps: []Step{
+				work,
+				{ID: "independent", Command: "printf ready > independent.ready; while [ ! -f independent.release ]; do sleep 0.01; done; printf 'once\\n' >> independent-effects; printf continued"},
+				{ID: "consume", DependsOn: []string{work.ID}, Command: "printf 'once\\n' >> dependent-effects; printf consumed"},
+			}}
+			workflow.Settings.Limits.MaxParallelSteps = 2
+			cfg := DefaultExecutorConfig(workflow.Name)
+			cfg.ProjectDir, cfg.RunID = root, "run-handled-uncertainty"
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			fault := errors.New("injected loss of leader observation after its actual exit")
+			var injected, observedExited atomic.Bool
+			observing := make(chan struct{})
+			ctx = context.WithValue(ctx, commandLeaderObservationTestHookKey{}, func(pid int) error {
+				data, err := os.ReadFile(filepath.Join(root, "uncertain.pid"))
+				if err == nil && strings.TrimSpace(string(data)) == fmt.Sprint(pid) && injected.CompareAndSwap(false, true) {
+					close(observing)
+					// Hold the original child unreaped until it really exits.
+					// The fixture's foreground children finish before its shell;
+					// this independent observation later supports acceptance.
+					if err := observeCommandExit(pid, 0); err != nil {
+						return err
+					}
+					observedExited.Store(true)
+					return errors.Join(syscall.ECHILD, fault)
+				}
+				return observeCommandExit(pid, syscall.WNOHANG)
+			})
+			type outcome struct {
+				state *ExecutionState
+				err   error
+			}
+			events := make(chan ProgressEvent, 100)
+			done := make(chan outcome, 1)
+			go func() {
+				state, err := RunControlledPipeline(ctx, workflow, nil, cfg, events)
+				done <- outcome{state, err}
+				close(done)
+			}()
+			t.Cleanup(func() {
+				_ = os.WriteFile(filepath.Join(root, "source.release"), []byte("finish"), 0600)
+				_ = os.WriteFile(filepath.Join(root, "independent.release"), []byte("finish"), 0600)
+				cancel()
+				select {
+				case <-done:
+				case <-time.After(commandCancelGracePeriod + commandSettlementRecoveryTimeout + 4*commandPipeDrainTimeout):
+					t.Error("handled observation failure did not join its command cleanup")
+				}
+			})
+			awaitGroupTestFile(t, filepath.Join(root, "uncertain.pid"))
+			awaitGroupTestFile(t, filepath.Join(root, "independent.ready"))
+			select {
+			case <-observing:
+			case early := <-done:
+				t.Fatalf("pipeline ended before the injected observation: %+v %v", early.state, early.err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("source never reached its deterministic observation boundary")
+			}
+			groupTestFile(t, root, "source.release", "finish")
+
+			// on_error: continue must let independently running work finish.
+			// The terminal settlement gate runs only after that work joins.
+			var pending *ExecutionState
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				saved, err := LoadState(root, cfg.RunID)
+				if err == nil && saved.Steps[work.ID].Status == StatusFailed {
+					pending = saved
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			if pending == nil || pending.Status != StatusRunning || ctx.Err() != nil || !observedExited.Load() {
+				t.Fatalf("handled observation failure stopped independent work or missed the fault: %+v %v", pending, ctx.Err())
+			}
+			if _, err := os.Stat(filepath.Join(root, "independent-effects")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("gated independent command already ended: %v", err)
+			}
+			receiptBytes := func(state *ExecutionState) []byte {
+				t.Helper()
+				var receipt interface{} = state.CommandExecutions[work.ID]
+				if selector {
+					record := state.CommandEvaluations[work.ID]
+					if record.Status != commandExecutionUnresolved || !strings.Contains(record.Error, fault.Error()) {
+						t.Fatalf("selector lost unknown settlement evidence: %+v", record)
+					}
+					receipt = record
+				} else {
+					record := state.CommandExecutions[work.ID]
+					if record.Status != commandExecutionUnresolved || !record.SettledAt.IsZero() ||
+						record.Result.RerunOnResume || record.Result.Error == nil || !strings.Contains(record.Result.Error.Details, fault.Error()) {
+						t.Fatalf("command lost unknown settlement evidence: %+v", record)
+					}
+				}
+				data, err := json.Marshal(receipt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return data
+			}
+			unresolved := receiptBytes(pending)
+			groupTestFile(t, root, "independent.release", "finish")
+			var initial outcome
+			select {
+			case initial = <-done:
+			case <-ctx.Done():
+				t.Fatal("handled observation failure did not finish after independent work")
+			}
+			if initial.err == nil || initial.state == nil || initial.state.Status != StatusFailed ||
+				initial.state.Steps["independent"].Status != StatusCompleted || initial.state.Steps["independent"].Output != "continued" {
+				t.Fatalf("unknown settlement published success or interrupted independent work: %+v %v", initial.state, initial.err)
+			}
+			if selector && !errors.Is(initial.err, errCommandOutputUnsettled) {
+				t.Fatalf("terminal outcome lost selector uncertainty: %v", initial.err)
+			}
+			if !selector && !strings.Contains(initial.err.Error(), "unresolved launch") {
+				t.Fatalf("terminal outcome lost command uncertainty: %v", initial.err)
+			}
+			assertNoCompletionEvent(t, events)
+			prior, err := LoadState(root, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prior.Status != StatusFailed || !bytes.Equal(unresolved, receiptBytes(prior)) {
+				t.Fatal("terminal settlement gate changed the unresolved receipt or failed to persist failure")
+			}
+			diagnosticSaved := false
+			for _, failure := range prior.Errors {
+				if failure.Fatal && failure.Type == "execution" && failure.Message == initial.err.Error() {
+					diagnosticSaved = true
+				}
+			}
+			if !diagnosticSaved {
+				t.Fatalf("terminal uncertainty was not available to later status inspection: %+v", prior.Errors)
+			}
+			for _, name := range []string{"dependent-effects", "selected-effects"} {
+				if _, err := os.Stat(filepath.Join(root, name)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("uncertain source dispatched dependent work (%s): %v", name, err)
+				}
+			}
+			completedIndependent := prior.Steps["independent"].FinishedAt
+			before := commandOperatorRecoveryBytes(t, cfg)
+			if _, err := NewExecutor(cfg).Resume(context.Background(), workflow, prior, nil); err == nil {
+				t.Fatal("ordinary resume replayed the unknown source")
+			}
+			if !bytes.Equal(before, commandOperatorRecoveryBytes(t, cfg)) {
+				t.Fatal("refused ordinary resume changed the unresolved checkpoint")
+			}
+
+			output, err := os.ReadFile(filepath.Join(root, "observed-output"))
+			if err != nil || string(output) != "chosen\n" {
+				t.Fatalf("independently recorded complete source output: %q %v", output, err)
+			}
+			const reason = "Independently observed the original shell and its foreground children finish and verified complete output"
+			if selector {
+				inspection, err := InspectCommandEvaluationRecovery(context.Background(), root, cfg.RunID)
+				if err != nil || len(inspection.Selectors) != 1 || !inspection.Selectors[0].CanAccept {
+					t.Fatalf("handled uncertainty stranded selector recovery: %+v %v", inspection, err)
+				}
+				entry := inspection.Selectors[0]
+				if _, err := AcceptCommandEvaluationContext(context.Background(), root, cfg.RunID, entry.StepID, entry.ReceiptToken, reason, 0, output); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				entry := commandOperatorRecoveryEntry(t, cfg)
+				if !entry.CanAccept {
+					t.Fatalf("handled uncertainty stranded command recovery: %+v", entry)
+				}
+				if _, err := AcceptCommandExecutionContext(context.Background(), root, cfg.RunID, entry.StepID, entry.ReceiptToken, reason, 0, string(output)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			resolved, err := LoadState(root, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer resumeCancel()
+			final, err := NewExecutor(cfg).Resume(resumeCtx, workflow, resolved, nil)
+			if err != nil || final == nil || final.Status != StatusCompleted || final.Steps["consume"].Output != "consumed" ||
+				!final.Steps["independent"].FinishedAt.Equal(completedIndependent) {
+				t.Fatalf("verified recovery did not preserve completed independent work: %+v %v", final, err)
+			}
+			names := []string{"source-effects", "independent-effects", "dependent-effects"}
+			if selector {
+				names = append(names, "selected-effects")
+			}
+			for _, name := range names {
+				if data, err := os.ReadFile(filepath.Join(root, name)); err != nil || string(data) != "once\n" {
+					t.Fatalf("recovery repeated or lost %s: %q %v", name, data, err)
+				}
 			}
 		})
 	}

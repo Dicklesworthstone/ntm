@@ -923,6 +923,12 @@ automatic reconciliation: its original group identity is no longer pinned.
 Use the explicit recovery procedure below only after independently verifying the
 original command and its effects.
 
+Handling a command or selector error with `on_error: continue` can let other
+steps finish, but it cannot establish process settlement. At finalization, any
+remaining unsettled process receipt prevents a successful workflow outcome.
+The original receipts remain unchanged for inspection and supported recovery;
+confirmed settled failures keep their existing error-policy behavior.
+
 A failed or cancelled scheduler result from an older checkpoint is not evidence
 that a command group stopped. Without an execution receipt, ordinary resume also
 refuses these steps and background rerun markers; an intentional replay requires

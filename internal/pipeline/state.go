@@ -71,6 +71,38 @@ func (e *Executor) backgroundCommandFailure() error {
 	return errors.Join(failures...)
 }
 
+// After all execution and cleanup workers have joined, a handled step failure
+// still cannot turn uncertain process settlement into a successful workflow.
+// Inspect the durable receipts without changing their evidence or replay rules.
+func (e *Executor) unsettledProcessExecutionFailure() error {
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
+	if e.state == nil {
+		return nil
+	}
+	var commandIDs, selectorIDs []string
+	for id, record := range e.state.CommandExecutions {
+		if record.Status != commandExecutionSettled {
+			commandIDs = append(commandIDs, id)
+		}
+	}
+	for id, record := range e.state.CommandEvaluations {
+		if !commandEvaluationHasOutcome(record) {
+			selectorIDs = append(selectorIDs, id)
+		}
+	}
+	sort.Strings(commandIDs)
+	sort.Strings(selectorIDs)
+	var failures []error
+	for _, id := range commandIDs {
+		failures = append(failures, uncertainCommandExecutionError(id, e.state.CommandExecutions[id].ProcessID))
+	}
+	for _, id := range selectorIDs {
+		failures = append(failures, uncertainCommandEvaluationError(id))
+	}
+	return errors.Join(failures...)
+}
+
 // persistState serializes snapshot/save/publication as one transaction. The
 // timestamp in memory advances only after SaveState has synced the checkpoint.
 // Once a save fails, its error is sticky for this attempt, even if cleanup can
@@ -242,6 +274,9 @@ func (e *Executor) finishExecution(ctx context.Context, workflow *Workflow, err 
 	checkpointErr := e.checkpointFailure()
 	err = joinCheckpointError(err, checkpointErr)
 	err = errors.Join(err, protectionErr)
+	if err == nil {
+		err = e.unsettledProcessExecutionFailure()
+	}
 
 	status, notification := StatusCompleted, NotifyCompleted
 	switch {
