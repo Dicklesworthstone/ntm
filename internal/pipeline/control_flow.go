@@ -315,7 +315,14 @@ func (e *Executor) executeOnFailureRecovery(ctx context.Context, step *Step, wor
 	if step == nil || len(step.OnFailure.Fallback) == 0 {
 		return failed
 	}
-	if err := e.admitRuntimeIDs(ctx, []string{step.ID + ".on_failure"}); err != nil {
+	if delivery, exists := e.loadAgentDelivery(onFailureStepID(step.ID)); exists && delivery.Status != agentDeliveryNotSent {
+		// An accepted child cannot suppress a failure caused by changing its
+		// parent or its own materialized definition during recovery.
+		if err := e.validateOnFailureDelivery(ctx, step, delivery); err != nil {
+			return e.recordRecoveryFailure(failed, step.ID, err)
+		}
+	}
+	if err := e.admitRuntimeIDs(ctx, []string{onFailureStepID(step.ID)}); err != nil {
 		return e.recordRecoveryFailure(failed, step.ID, err)
 	}
 	release, err := e.acquireStepMaterialization(ctx, 1)
@@ -653,31 +660,47 @@ func knownFailureAction(action string) bool {
 // per-iteration overlay instead of falling back to the unpopulated
 // state.Variables["round"].
 func (e *Executor) recoveryStepFromFallback(ctx context.Context, step *Step) (*Step, bool, error) {
-	fallback := step.OnFailure.Fallback
+	return recoveryStepDefinition(step.ID, step.OnFailure.Fallback, func(value string) string {
+		return e.substituteVariablesCtx(ctx, value)
+	})
+}
+
+const onFailureStepSuffix = ".on_failure"
+
+func onFailureStepID(parentID string) string { return parentID + onFailureStepSuffix }
+
+// The namespace resolver and dispatcher share one definition constructor.
+// A nil substitution function describes the frozen authoring structure only;
+// unresolved pane expressions cannot be used to dispatch until materialized.
+func recoveryStepDefinition(parentID string, fallback map[string]interface{}, substitute func(string) string) (*Step, bool, error) {
+	static := substitute == nil
+	if static {
+		substitute = func(value string) string { return value }
+	}
 	template, ok := recoveryStringValue(fallback["template"])
 	if !ok || strings.TrimSpace(template) == "" {
 		return nil, false, fmt.Errorf("on_failure recovery requires non-empty template")
 	}
-	template = e.substituteVariablesCtx(ctx, template)
+	template = substitute(template)
 
-	pane, err := e.recoveryPaneSpec(ctx, fallback["pane"])
+	pane, err := recoveryPaneSpec(fallback["pane"], substitute, static)
 	if err != nil {
 		return nil, false, err
 	}
 
-	params, err := e.recoveryParams(ctx, fallback["params"])
+	params, err := recoveryParams(fallback["params"], substitute)
 	if err != nil {
 		return nil, false, err
 	}
 
 	wait := WaitNone
 	if rawWait, ok := recoveryStringValue(fallback["wait"]); ok && strings.TrimSpace(rawWait) != "" {
-		wait = WaitCondition(e.substituteVariablesCtx(ctx, rawWait))
+		wait = WaitCondition(substitute(rawWait))
 	}
 
 	return &Step{
-		ID:       step.ID + ".on_failure",
-		Name:     "on_failure recovery for " + step.ID,
+		ID:       onFailureStepID(parentID),
+		Name:     "on_failure recovery for " + parentID,
 		Template: template,
 		Pane:     pane,
 		Params:   params,
@@ -685,7 +708,7 @@ func (e *Executor) recoveryStepFromFallback(ctx context.Context, step *Step) (*S
 	}, recoveryBoolValue(fallback["suppress_failure"]), nil
 }
 
-func (e *Executor) recoveryPaneSpec(ctx context.Context, raw interface{}) (PaneSpec, error) {
+func recoveryPaneSpec(raw interface{}, substitute func(string) string, static bool) (PaneSpec, error) {
 	switch v := raw.(type) {
 	case int:
 		if v > 0 {
@@ -705,17 +728,20 @@ func (e *Executor) recoveryPaneSpec(ctx context.Context, raw interface{}) (PaneS
 			return PaneSpec{Index: int(n)}, nil
 		}
 	case string:
-		resolved := strings.TrimSpace(e.substituteVariablesCtx(ctx, v))
+		resolved := strings.TrimSpace(substitute(v))
 		n, err := strconv.Atoi(resolved)
 		if err == nil && n > 0 {
 			return PaneSpec{Index: n}, nil
+		}
+		if static && strings.Contains(resolved, "${") {
+			return PaneSpec{Expr: resolved}, nil
 		}
 		return PaneSpec{}, fmt.Errorf("on_failure pane %q must resolve to a positive pane index", v)
 	}
 	return PaneSpec{}, fmt.Errorf("on_failure recovery requires positive pane index")
 }
 
-func (e *Executor) recoveryParams(ctx context.Context, raw interface{}) (map[string]interface{}, error) {
+func recoveryParams(raw interface{}, substitute func(string) string) (map[string]interface{}, error) {
 	if raw == nil {
 		return nil, nil
 	}
@@ -732,30 +758,102 @@ func (e *Executor) recoveryParams(ctx context.Context, raw interface{}) (map[str
 
 	resolved := make(map[string]interface{}, len(params))
 	for key, val := range params {
-		resolved[key] = e.recoveryParamValue(ctx, val)
+		resolved[key] = recoveryParamValue(val, substitute)
 	}
 	return resolved, nil
 }
 
-func (e *Executor) recoveryParamValue(ctx context.Context, val interface{}) interface{} {
+func recoveryParamValue(val interface{}, substitute func(string) string) interface{} {
 	switch v := val.(type) {
 	case string:
-		return e.substituteVariablesCtx(ctx, v)
+		return substitute(v)
 	case []interface{}:
 		out := make([]interface{}, len(v))
 		for i, item := range v {
-			out[i] = e.recoveryParamValue(ctx, item)
+			out[i] = recoveryParamValue(item, substitute)
 		}
 		return out
 	case map[string]interface{}:
 		out := make(map[string]interface{}, len(v))
 		for key, item := range v {
-			out[key] = e.recoveryParamValue(ctx, item)
+			out[key] = recoveryParamValue(item, substitute)
 		}
 		return out
 	default:
 		return val
 	}
+}
+
+func onFailureRuntimeStep(parentID, runtimeID string, parent *Step) (*Step, bool) {
+	if runtimeID != onFailureStepID(parentID) || len(parent.OnFailure.Fallback) == 0 {
+		return nil, false
+	}
+	child, _, err := recoveryStepDefinition(parentID, parent.OnFailure.Fallback, nil)
+	return child, err == nil
+}
+
+// A fallback delivery proves the parent already reached failure recovery. Do
+// not repeat its settled command merely to revisit an uncertain delivery or
+// publish an already-completed suppressing fallback. Non-suppressing completed
+// recovery retains the ordinary policy for retrying a failed command.
+func (e *Executor) pendingOnFailureDelivery(step *Step) (AgentDeliveryState, bool) {
+	if len(step.OnFailure.Fallback) == 0 {
+		return AgentDeliveryState{}, false
+	}
+	record, exists := e.loadAgentDelivery(onFailureStepID(step.ID))
+	return record, exists && record.Status != agentDeliveryNotSent &&
+		(record.Status != agentDeliveryCompleted || recoveryBoolValue(step.OnFailure.Fallback["suppress_failure"]))
+}
+
+func (e *Executor) validateOnFailureDelivery(ctx context.Context, parent *Step, record AgentDeliveryState) error {
+	if err := validateAgentDelivery(onFailureStepID(parent.ID), record, e.config.Session); err != nil {
+		return err
+	}
+	if record.ResolutionAction != "" {
+		e.stateMu.RLock()
+		_, err := agentDeliveryRecoveryEntry(e.state, record)
+		e.stateMu.RUnlock()
+		if err != nil {
+			return err
+		}
+	}
+	child, _, err := e.recoveryStepFromFallback(ctx, parent)
+	if err != nil {
+		return err
+	}
+	digest, err := agentStepHash(child)
+	if err != nil {
+		return err
+	}
+	if record.Kind != StepKindTemplate || record.StepHash != digest {
+		return fmt.Errorf("saved failure recovery for %q belongs to a different materialized definition; refusing to repeat its parent or delivery", parent.ID)
+	}
+	if parent.Command != "" {
+		original, exists := e.loadCommandExecution(parent.ID)
+		if !exists {
+			return fmt.Errorf("failure recovery for %q has lost its original command receipt", parent.ID)
+		}
+		if err := validateCommandExecution(parent.ID, original); err != nil {
+			return err
+		}
+		if original.ResolutionAction != "" {
+			e.stateMu.RLock()
+			_, err := commandExecutionRecoveryEntry(e.state, original)
+			e.stateMu.RUnlock()
+			if err != nil {
+				return err
+			}
+		}
+		digest, err := commandDefinitionHash(parent)
+		if err != nil {
+			return err
+		}
+		if original.Status != commandExecutionSettled || original.Result.Status != StatusFailed ||
+			original.StepHash != digest || original.StartedAt.After(record.StartedAt) {
+			return fmt.Errorf("failure recovery for %q no longer belongs to the original settled failed command; refusing to suppress or repeat it", parent.ID)
+		}
+	}
+	return nil
 }
 
 func (e *Executor) recordRecoveryFailure(failed StepResult, stepID string, err error) StepResult {

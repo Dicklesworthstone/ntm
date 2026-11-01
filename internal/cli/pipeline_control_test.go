@@ -371,6 +371,152 @@ func TestPipelineRecoverRefusesIncompleteDecisionFlags(t *testing.T) {
 	}
 }
 
+func TestPipelineRecoverFailureFallbackResumesWithoutRepeatingEffects(t *testing.T) {
+	for _, nested := range []bool{false, true} {
+		t.Run(fmt.Sprintf("nested_branch=%t", nested), func(t *testing.T) {
+			root := inPipelineControlProject(t)
+			template := filepath.Join(root, "fallback.md")
+			if err := os.WriteFile(template, []byte("Recover the original failed request"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			work := pipeline.Step{ID: "work", Command: "printf 'once\\n' >> work-effects; exit 7",
+				OnFailure: pipeline.OnFailureSpec{Fallback: map[string]interface{}{
+					"pane": 1, "template": template, "wait": "none", "suppress_failure": true,
+				}},
+			}
+			body, commandID := work, "work"
+			if nested {
+				body = pipeline.Step{ID: "choose", Branch: "selected", Branches: map[string]interface{}{"selected": []pipeline.Step{work}}}
+				commandID = "choose_work"
+			}
+			body.DependsOn = []string{"prefix"}
+			workflow := &pipeline.Workflow{SchemaVersion: pipeline.SchemaVersion, Name: "fallback-recovery", Steps: []pipeline.Step{
+				{ID: "prefix", Command: "printf 'once\\n' >> prefix-effects"}, body,
+				{ID: "consume", Command: "printf 'once\\n' >> dependent-effects", DependsOn: []string{body.ID}},
+			}}
+			frozen, snapshot, err := pipeline.SnapshotWorkflow(context.Background(), root, workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mock := pipeline.NewMockTmuxClient(tmux.Pane{ID: "%17", Index: 1, NTMIndex: 1, PID: 2718, Type: tmux.AgentClaude, Width: 120, Height: 40})
+			t.Cleanup(mock.Reset)
+			if err := mock.SetPaneOutput("%17", "ORIGINAL-BOUNDARY\n"); err != nil {
+				t.Fatal(err)
+			}
+			mock.SetSubmissionVerifier(func(_, _, _ string) error { return errors.New("fallback acknowledgment was lost") })
+			cfg := pipeline.DefaultExecutorConfig("delivery-session")
+			cfg.ProjectDir, cfg.WorkflowFile, cfg.RunID = root, snapshot, pipeline.GenerateRunID()
+			executor := pipeline.NewExecutor(cfg)
+			executor.SetTmuxClient(mock)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			initial, runErr := executor.Run(ctx, frozen, nil, nil)
+			if runErr == nil || initial == nil || initial.Status != pipeline.StatusFailed {
+				t.Fatalf("ambiguous fallback did not fail the original attempt: %+v %v", initial, runErr)
+			}
+			fallbackID := commandID + ".on_failure"
+			prior, err := pipeline.LoadState(root, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			delivery := prior.AgentDeliveries[fallbackID]
+			if delivery.Status != "sending" || prior.CommandExecutions[commandID].Status != "settled" || prior.CommandExecutions[commandID].Result.Status != pipeline.StatusFailed {
+				t.Fatalf("fixture lacks native failure and ambiguous fallback evidence: command=%+v delivery=%+v", prior.CommandExecutions[commandID], delivery)
+			}
+			history, err := mock.PasteHistory("%17")
+			if err != nil || len(history) != 1 || len(mock.VerificationHistory()) != 1 {
+				t.Fatalf("fallback was not submitted once: pastes=%+v verifications=%+v error=%v", history, mock.VerificationHistory(), err)
+			}
+			commandBefore, err := json.Marshal(prior.CommandExecutions[commandID])
+			if err != nil {
+				t.Fatal(err)
+			}
+			prefixBefore, err := json.Marshal(prior.CommandExecutions["prefix"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			logPath := pipelineRecoveryTmux(t, root, "2718", delivery.BeforeOutput+"\nRECOVERY-ANSWER\n")
+			oldJSON := jsonOutput
+			jsonOutput = true
+			t.Cleanup(func() { jsonOutput = oldJSON })
+			statePath := filepath.Join(root, ".ntm", "pipelines", cfg.RunID+".json")
+			before, err := os.ReadFile(statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resume := func() (string, error) {
+				cmd := newPipelineResumeCmd()
+				cmd.SetArgs([]string{cfg.RunID})
+				cmd.SetOut(io.Discard)
+				cmd.SetErr(io.Discard)
+				return captureStdout(t, func() error { return cmd.ExecuteContext(ctx) })
+			}
+			if raw, err := resume(); err == nil {
+				t.Fatalf("ordinary resume accepted an ambiguous fallback: %s", raw)
+			}
+			if after, err := os.ReadFile(statePath); err != nil || !bytes.Equal(before, after) {
+				effects, _ := os.ReadFile(filepath.Join(root, "work-effects"))
+				t.Fatalf("refused resume changed the original recovery evidence; native effects=%q", effects)
+			}
+			raw, err := executePipelineRecoveryCommand(t, cfg.RunID)
+			var inspection struct {
+				Success    bool                                  `json:"success"`
+				Deliveries []pipeline.AgentDeliveryRecoveryEntry `json:"deliveries"`
+			}
+			if err != nil || json.Unmarshal([]byte(raw), &inspection) != nil || !inspection.Success || len(inspection.Deliveries) != 1 || inspection.Deliveries[0].StepID != fallbackID {
+				t.Fatalf("fallback inspection lost its runtime owner: %s %v", raw, err)
+			}
+			entry := inspection.Deliveries[0]
+			args := []string{cfg.RunID, "--accept-delivery", "--step-id", fallbackID, "--receipt", entry.ReceiptToken, "--reason", "Observed the original fallback request reach its recorded agent"}
+			raw, err = executePipelineRecoveryCommand(t, args...)
+			var accepted struct {
+				Success  bool                                `json:"success"`
+				Replayed bool                                `json:"replayed"`
+				Delivery pipeline.AgentDeliveryRecoveryEntry `json:"delivery"`
+			}
+			if err != nil || json.Unmarshal([]byte(raw), &accepted) != nil || !accepted.Success || accepted.Replayed || accepted.Delivery.Status != "delivered" {
+				t.Fatalf("public recovery refused the owned fallback: %s %v", raw, err)
+			}
+			if _, err := os.Stat(filepath.Join(root, "dependent-effects")); !os.IsNotExist(err) {
+				t.Fatalf("acceptance dispatched dependent work: %v", err)
+			}
+			if raw, err := resume(); err != nil {
+				t.Fatalf("accepted fallback did not resume: %s %v", raw, err)
+			}
+			final, err := pipeline.LoadState(root, cfg.RunID)
+			if err != nil || final.Status != pipeline.StatusCompleted || final.Steps["consume"].Status != pipeline.StatusCompleted || final.AgentDeliveries[fallbackID].Status != "completed" {
+				t.Fatalf("accepted fallback did not complete original work: %+v %v", final, err)
+			}
+			commandAfter, err := json.Marshal(final.CommandExecutions[commandID])
+			if err != nil || !bytes.Equal(commandBefore, commandAfter) {
+				t.Fatal("resuming the fallback replaced its original native command receipt")
+			}
+			prefixAfter, err := json.Marshal(final.CommandExecutions["prefix"])
+			if err != nil || !bytes.Equal(prefixBefore, prefixAfter) {
+				t.Fatal("resuming the fallback replaced its completed predecessor receipt")
+			}
+			for _, name := range []string{"work-effects", "prefix-effects", "dependent-effects"} {
+				if data, err := os.ReadFile(filepath.Join(root, name)); err != nil || string(data) != "once\n" {
+					t.Fatalf("%s was lost or repeated: %q %v", name, data, err)
+				}
+			}
+			raw, err = executePipelineRecoveryCommand(t, args...)
+			if err != nil || json.Unmarshal([]byte(raw), &accepted) != nil || !accepted.Replayed || accepted.Delivery.Status != "completed" {
+				t.Fatalf("completed fallback decision did not replay: %s %v", raw, err)
+			}
+			calls, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, transport := range []string{"load-buffer", "paste-buffer", "send-keys"} {
+				if strings.Contains(string(calls), transport) {
+					t.Fatalf("fallback recovery repeated %s: %s", transport, calls)
+				}
+			}
+		})
+	}
+}
+
 func TestPipelineRecoverRejectsLiveOwnerBeforeReadingState(t *testing.T) {
 	root := inPipelineControlProject(t)
 	oldJSON := jsonOutput

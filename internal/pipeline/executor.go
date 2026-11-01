@@ -1204,6 +1204,11 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 			// cannot resolve this uncertainty by submitting the request again.
 			break
 		}
+		if _, pending := e.pendingOnFailureDelivery(step); pending {
+			// Recovery already crossed the delivery boundary for this failure.
+			// Re-enter it without spending retries on the original command.
+			break
+		}
 		if command, ok := e.loadCommandExecution(step.ID); ok && (command.Status != commandExecutionSettled || command.ResolutionAction != "") {
 			// No retry may start another process while the original command
 			// group has an unresolved outcome, or replace an operator's explicit
@@ -1484,7 +1489,46 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		if prior.Result.Status == StatusCompleted && !prior.Result.RerunOnResume {
 			return prior.Result
 		}
+		if (!prior.Background || prior.ProcessID == 0) && prior.Result.Status == StatusFailed {
+			if delivery, pending := e.pendingOnFailureDelivery(step); pending {
+				if err := e.validateOnFailureDelivery(ctx, step, delivery); err != nil {
+					result.Status, result.FinishedAt = StatusFailed, time.Now()
+					result.Error = stepRuntimeError(step, StepKindCommand, "recovery", err.Error(), "restore the original failure recovery inputs or explicitly reset its replay scope", "")
+					return result
+				}
+				return prior.Result
+			}
+		}
+	} else if !e.config.DryRun {
+		if delivery, exists := e.loadAgentDelivery(onFailureStepID(step.ID)); exists && delivery.Status != agentDeliveryNotSent {
+			result.Status, result.FinishedAt = StatusFailed, time.Now()
+			result.Error = stepRuntimeError(step, StepKindCommand, "recovery", "failure recovery has lost its original command receipt", "restore the original command receipt or explicitly reset its replay scope", "")
+			return result
+		}
 	}
+
+	// Substitution and validation can fail before a launch intent exists. If
+	// this live failure can dispatch a fallback, retain exact proof that this
+	// attempt started no process before recovery crosses its delivery boundary.
+	// Never infer that proof later from an unbound scheduler result.
+	prelaunch := true
+	defer func() {
+		if !prelaunch || e.config.DryRun || len(step.OnFailure.Fallback) == 0 || result.Status != StatusFailed || result.Error == nil {
+			return
+		}
+		switch result.Error.Type {
+		case "substitution", "validation", "limit":
+		default:
+			return
+		}
+		record := CommandExecutionState{
+			Version: commandExecutionVersion, StepID: step.ID, StepHash: stepHash,
+			Status: commandExecutionSettled, StartedAt: result.StartedAt, SettledAt: time.Now(), Result: result,
+		}
+		if err := e.saveCommandExecution(record); err != nil {
+			result.Error = stepRuntimeError(step, StepKindCommand, "checkpoint", err.Error(), "restore durable storage before recovering the failed command", "")
+		}
+	}()
 
 	// bd-2xka8: bind pane metadata before substitution so ${pane.X} in the
 	// command body or args resolves against the step's configured pane.
@@ -1556,6 +1600,7 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		result.FinishedAt = time.Now()
 		return result
 	}
+	prelaunch = false
 
 	if e.config.DryRun {
 		// bd-ziavr: surface the substituted Stdin payload alongside the

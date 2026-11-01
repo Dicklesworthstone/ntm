@@ -2024,6 +2024,28 @@ func recoveryWorkflowStep(workflow *Workflow, stepID string) (*Step, error) {
 	return found, nil
 }
 
+// A fallback is owned by its actual parent, including the selected branch and
+// concrete iteration namespace. A suffix alone is not evidence of ownership.
+func recoveryFallbackParent(workflow *Workflow, state *ExecutionState, stepID string) (*Step, string, bool, error) {
+	if !strings.HasSuffix(stepID, onFailureStepSuffix) {
+		return nil, "", false, nil
+	}
+	parentID := strings.TrimSuffix(stepID, onFailureStepSuffix)
+	resolve, err := resumeRuntimeStepResolver(NewDependencyGraph(workflow), state)
+	if err != nil {
+		return nil, "", false, err
+	}
+	parent, found := resolve(parentID)
+	if !found {
+		parent, err = recoveryWorkflowStep(workflow, parentID)
+		if err != nil {
+			return nil, "", false, nil
+		}
+	}
+	_, owns := onFailureRuntimeStep(parentID, stepID, parent)
+	return parent, parentID, owns, nil
+}
+
 func validateAgentRecoveryWorkflow(projectDir string, state *ExecutionState, record AgentDeliveryState) (bool, error) {
 	workflow, err := loadRecoveryWorkflow(projectDir, state)
 	if err != nil {
@@ -2035,6 +2057,36 @@ func validateAgentRecoveryWorkflow(projectDir string, state *ExecutionState, rec
 	step, err := recoveryWorkflowStep(workflow, record.StepID)
 	if err != nil {
 		return false, err
+	}
+	parent, parentID, fallback, err := recoveryFallbackParent(workflow, state, record.StepID)
+	if err != nil {
+		return false, err
+	}
+	if fallback {
+		step, _, err = recoveryStepDefinition(parentID, parent.OnFailure.Fallback, nil)
+		if err != nil {
+			return false, err
+		}
+		if parent.Command != "" {
+			original, exists := state.CommandExecutions[parentID]
+			if !exists {
+				return false, fmt.Errorf("failure recovery for %q has lost its original command receipt", parentID)
+			}
+			if err := validateCommandExecution(parentID, original); err != nil {
+				return false, err
+			}
+			if original.ResolutionAction != "" {
+				if _, err := commandExecutionRecoveryEntry(state, original); err != nil {
+					return false, err
+				}
+			}
+			if original.Status != commandExecutionSettled || original.Result.Status != StatusFailed || original.StartedAt.After(record.StartedAt) {
+				return false, fmt.Errorf("failure recovery for %q no longer belongs to its original settled failed command", parentID)
+			}
+			if err := validateRecoveryWorkflowStep(workflow, state, parentID, StepKindCommand, original.StepHash, commandDefinitionHash); err != nil {
+				return false, err
+			}
+		}
 	}
 	definition := cloneStep(*step)
 	definition.ID = record.StepID
@@ -2078,6 +2130,24 @@ func validateRecoveryWorkflowStep(workflow *Workflow, state *ExecutionState, ste
 		return err
 	}
 	deferred := false
+	parent, parentID, fallback, err := recoveryFallbackParent(workflow, state, stepID)
+	if err != nil {
+		return err
+	}
+	if fallback {
+		step, _, err = recoveryStepDefinition(parentID, parent.OnFailure.Fallback, nil)
+		if err != nil {
+			return err
+		}
+		// Static fallback definitions must match immediately. Dynamic fields
+		// are reconstructed in their original runtime scope on resume, where
+		// executeAgentDelivery still requires the exact materialized hash.
+		definition, err := json.Marshal(step)
+		if err != nil {
+			return err
+		}
+		deferred = strings.Contains(string(definition), "${")
+	}
 	// Branch alternatives can share an authored child ID. The generic namespace
 	// resolver can then return a different alternative; only normal resume uses
 	// the durable selected branch and original variable scope to materialize it.
@@ -2101,7 +2171,7 @@ func validateRecoveryWorkflowStep(workflow *Workflow, state *ExecutionState, ste
 		if err != nil {
 			return err
 		}
-		if _, _, owns := resolveScopedRuntimeStepFromSteps(decision.ParentID, stepID, children); owns {
+		if _, _, owns := resolveScopedRuntimeStepFromSteps(decision.ParentID, stepID, children); owns && !fallback {
 			deferred = true
 		}
 	}
@@ -2110,7 +2180,7 @@ func validateRecoveryWorkflowStep(workflow *Workflow, state *ExecutionState, ste
 		if err != nil || (parent.Foreach == nil && parent.ForeachPane == nil) {
 			continue
 		}
-		if _, _, owns := resolveScopedRuntimeChildren(parentID, stepID, parent); owns && iterationIndexFromID(stepID, parentID+"_iter") >= 0 {
+		if _, _, owns := resolveScopedRuntimeChildren(parentID, stepID, parent); owns && !fallback && iterationIndexFromID(stepID, parentID+"_iter") >= 0 {
 			deferred = true
 		}
 	}
@@ -2251,6 +2321,20 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 			if _, err := agentDeliveryRecoveryEntry(state, record); err != nil {
 				e.stateMu.RUnlock()
 				return err
+			}
+		}
+		if record.Status == agentDeliverySending && !resumeResetsAgentDelivery(state, opts, stepID) && workflow != nil {
+			_, _, fallback, err := recoveryFallbackParent(workflow, state, stepID)
+			if err != nil {
+				e.stateMu.RUnlock()
+				return err
+			}
+			if fallback {
+				// A fallback is dispatched after its parent has already failed.
+				// Stop before reopening that parent or rewriting its checkpoint;
+				// only an explicit receipt decision can resolve the delivery.
+				e.stateMu.RUnlock()
+				return fmt.Errorf("agent prompt delivery outcome is unknown for failure recovery %q; inspect the original pane and use pipeline recover %s to accept its exact receipt before continuing, or explicitly restart-failed or reset to authorize resending", stepID, state.RunID)
 			}
 		}
 		if targetSession != "" && priorSession != targetSession && !resumeResetsAgentDelivery(state, opts, stepID) {
@@ -2469,6 +2553,9 @@ func (e *Executor) resetSettledOnCancelState(workflow *Workflow) {
 	for id := range e.state.CommandEvaluations {
 		collect(id)
 	}
+	for id := range e.state.AgentDeliveries {
+		collect(id)
+	}
 	for id := range e.state.MailSends {
 		collect(id)
 	}
@@ -2482,11 +2569,16 @@ func (e *Executor) resetSettledOnCancelState(workflow *Workflow) {
 		collect(id)
 	}
 	for id, step := range owned {
-		if record, ok := e.state.CommandExecutions[id]; ok && record.Status == commandExecutionSettled {
+		recovery, hasRecovery := e.state.AgentDeliveries[onFailureStepID(id)]
+		pendingRecovery := hasRecovery && recovery.Status != agentDeliveryCompleted && recovery.Status != agentDeliveryNotSent
+		if record, ok := e.state.CommandExecutions[id]; ok && record.Status == commandExecutionSettled && !pendingRecovery {
 			delete(e.state.CommandExecutions, id)
 		}
 		if record, ok := e.state.CommandEvaluations[id]; ok && commandEvaluationHasOutcome(record) {
 			delete(e.state.CommandEvaluations, id)
+		}
+		if record, ok := e.state.AgentDeliveries[id]; ok && record.Status == agentDeliveryCompleted {
+			delete(e.state.AgentDeliveries, id)
 		}
 		if record, ok := e.state.MailSends[id]; ok && record.Status != mailSendSending {
 			delete(e.state.MailSends, id)
@@ -2565,7 +2657,9 @@ func (e *Executor) resetPostPipelineForMainAttempt(workflow *Workflow) {
 		collect(id)
 	}
 	for id, step := range owned {
-		if record, ok := e.state.CommandExecutions[id]; ok && record.Status == commandExecutionSettled {
+		recovery, hasRecovery := e.state.AgentDeliveries[onFailureStepID(id)]
+		pendingRecovery := hasRecovery && recovery.Status != agentDeliveryCompleted && recovery.Status != agentDeliveryNotSent
+		if record, ok := e.state.CommandExecutions[id]; ok && record.Status == commandExecutionSettled && !pendingRecovery {
 			delete(e.state.CommandExecutions, id)
 		}
 		if record, ok := e.state.CommandEvaluations[id]; ok && commandEvaluationHasOutcome(record) {

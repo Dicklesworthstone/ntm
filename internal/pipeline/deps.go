@@ -635,6 +635,9 @@ func resolveScopedRuntimeChildren(parentID, runtimeID string, parent *Step) (*St
 	if decision, canonicalID, ok := branchDecisionRuntimeStep(parentID, runtimeID, parent); ok {
 		return decision, canonicalID, true
 	}
+	if recovery, ok := onFailureRuntimeStep(parentID, runtimeID, parent); ok {
+		return recovery, runtimeID, true
+	}
 	for i := range parent.OnSuccess {
 		child := &parent.OnSuccess[i]
 		childID := onSuccessChildStepID(parentID, child.ID, i+1)

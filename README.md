@@ -781,6 +781,15 @@ step-definition checks. A live run owner, stale receipt, or conflicting decision
 is refused; repeating the same receipt and reason returns the saved decision,
 including after the run completes.
 
+Structured `on_failure` recovery has its own delivery receipt, identified by
+the failed step's runtime ID followed by `.on_failure`. Use the exact ID and
+receipt token from inspection, including any enclosing branch or iteration
+namespace. After an uncertain fallback is accepted, resume finishes that
+original fallback without repeating the native command that triggered it.
+The original command receipt remains intact. Parent and fallback definition
+checks still apply, and the parent failure is suppressed only when the saved
+workflow explicitly configures `suppress_failure: true`.
+
 REST clients can perform the same recovery through the server's configured
 project. `GET /api/v1/pipelines/{id}/recover` requires `pipelines:read` and returns
 the `deliveries`, `commands`, and `selectors` arrays, including receipt identities,

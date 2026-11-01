@@ -1116,6 +1116,11 @@ func (e *Executor) executeForeachNestedStep(ctx context.Context, step *Step, wor
 		if result.Status == StatusSkipped || result.Status == StatusCancelled {
 			return result
 		}
+		if _, pending := e.pendingOnFailureDelivery(step); pending {
+			// Revisit the existing recovery delivery without spending retries
+			// on the settled failure that originally dispatched it.
+			break
+		}
 		if attempt < maxAttempts {
 			select {
 			case <-ctx.Done():

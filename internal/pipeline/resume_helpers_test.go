@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -23,6 +25,25 @@ func uncertainRecoveryFixture(t *testing.T, shape string, agentTypes ...tmux.Age
 	cfg.ProjectDir, cfg.RunID = t.TempDir(), GenerateRunID()
 	cfg.DefaultTimeout, cfg.GlobalTimeout = time.Second, 5*time.Second
 	leaf := Step{ID: "agent", Pane: PaneSpec{Index: 1}, Prompt: "SECRET-TASK ${vars.subject}", Wait: WaitTime, Timeout: Duration{Duration: time.Millisecond}}
+	if strings.HasPrefix(shape, "fallback") {
+		if err := os.WriteFile(filepath.Join(cfg.ProjectDir, "recover.md"), []byte("SECRET-TASK <SUBJECT> <ROUND>"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		leaf = Step{ID: "work", Command: "printf 'once\\n' >> parent-effects; exit 7", OnFailure: OnFailureSpec{Fallback: map[string]interface{}{
+			"pane": 1, "template": "recover.md", "wait": string(WaitNone), "suppress_failure": true,
+			"params": map[string]interface{}{"SUBJECT": "${vars.subject}", "ROUND": "single"},
+		}}}
+		if strings.Contains(shape, "static") {
+			leaf.OnFailure.Fallback["params"].(map[string]interface{})["SUBJECT"] = "original"
+		}
+		if shape == "fallback-prelaunch" {
+			leaf.Command = "printf 'once\\n' >> parent-effects; ${vars.undefined}"
+		}
+		if shape == "fallback-rounds" {
+			leaf.Command = "printf '%s\\n' '${round}' >> parent-effects; exit 7"
+			leaf.OnFailure.Fallback["params"].(map[string]interface{})["ROUND"] = "${round}"
+		}
+	}
 	root := leaf
 	switch shape {
 	case "fire-and-forget":
@@ -31,14 +52,27 @@ func uncertainRecoveryFixture(t *testing.T, shape string, agentTypes ...tmux.Age
 		root = Step{ID: "outer", Foreach: &ForeachConfig{Items: `["outer"]`, Steps: []Step{
 			{ID: "inner", Foreach: &ForeachConfig{Items: `["inner"]`, Steps: []Step{leaf}}},
 		}}}
-	case "branch":
-		other := leaf
-		other.Prompt = "UNSELECTED-TASK"
+	case "branch", "fallback-branch", "fallback-branch-static":
+		other := cloneStep(leaf)
+		if shape == "branch" {
+			other.Prompt = "UNSELECTED-TASK"
+		} else {
+			other.Command = "printf wrong >> parent-effects; exit 9"
+			other.OnFailure.Fallback["params"].(map[string]interface{})["SUBJECT"] = "UNSELECTED-TASK"
+		}
 		root = Step{ID: "route", Branch: "z", Branches: map[string]interface{}{"a": []Step{other}, "z": []Step{leaf}}}
+	case "fallback-rounds":
+		root = Step{ID: "outer", Foreach: &ForeachConfig{Items: `["outer"]`, Steps: []Step{
+			{ID: "inner", Foreach: &ForeachConfig{Items: `["inner"]`, MaxRounds: IntOrExpr{Value: 2}, Steps: []Step{leaf}}},
+		}}}
 	}
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "operator-recovery", Settings: DefaultWorkflowSettings(), Steps: []Step{
 		root, {ID: "after", Command: "printf resumed", DependsOn: []string{root.ID}},
 	}}
+	if shape == "fallback-post" {
+		workflow.PostPipelineSteps = workflow.Steps
+		workflow.Steps = []Step{{ID: "prefix", Command: "printf prefix"}}
+	}
 	frozen, path, err := SnapshotWorkflow(context.Background(), cfg.ProjectDir, workflow)
 	if err != nil {
 		t.Fatal(err)
@@ -57,11 +91,24 @@ func uncertainRecoveryFixture(t *testing.T, shape string, agentTypes ...tmux.Age
 	if err := client.SetPaneOutput("%17", initial); err != nil {
 		t.Fatal(err)
 	}
-	client.SetSubmissionVerifier(func(string, string, string) error { return errors.New("submission observation was interrupted") })
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	client.SetSubmissionVerifier(func(string, string, string) error {
+		if shape == "fallback-post" {
+			// Ordinary post-hook failures are warnings. Interrupt the actual
+			// finalization after delivery so its unfinished tail is resumable.
+			cancelRun()
+		}
+		return errors.New("submission observation was interrupted")
+	})
 	executor := NewExecutor(cfg)
 	executor.SetTmuxClient(client)
-	state, runErr := executor.Run(context.Background(), frozen, map[string]interface{}{"subject": "original"}, nil)
-	if runErr == nil || state == nil || state.Status != StatusFailed {
+	state, runErr := executor.Run(runCtx, frozen, map[string]interface{}{"subject": "original"}, nil)
+	wantStatus := StatusFailed
+	if shape == "fallback-post" {
+		wantStatus = StatusCancelled
+	}
+	if runErr == nil || state == nil || state.Status != wantStatus {
 		t.Fatalf("fixture did not stop at an uncertain delivery: %+v %v", state, runErr)
 	}
 	state, err = LoadState(cfg.ProjectDir, cfg.RunID)
@@ -299,6 +346,244 @@ func TestAgentDeliveryRecoveryScopedContinuation(t *testing.T) {
 				t.Fatalf("recovery repeated submission: %+v", client.VerificationHistory())
 			}
 		})
+	}
+}
+
+func TestFailureFallbackRecoveryContinuesOriginalAttempt(t *testing.T) {
+	for _, shape := range []string{"fallback-branch", "fallback-rounds", "fallback-post", "fallback-prelaunch"} {
+		t.Run(shape, func(t *testing.T) {
+			cfg, workflow, prior, client, stepID, token := uncertainRecoveryFixture(t, shape)
+			parentID := strings.TrimSuffix(stepID, onFailureStepSuffix)
+			originalCommand, exists := prior.CommandExecutions[parentID]
+			if !exists || originalCommand.Status != commandExecutionSettled || originalCommand.Result.Status != StatusFailed {
+				t.Fatalf("fallback has no settled original failure: %+v", prior.CommandExecutions)
+			}
+			if shape == "fallback-prelaunch" && (originalCommand.ProcessID != 0 || originalCommand.Result.Error.Type != "substitution") {
+				t.Fatalf("prelaunch failure lost its no-process proof: %+v", originalCommand)
+			}
+			originalDelivery := prior.AgentDeliveries[stepID]
+			before, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			unresolved := NewExecutor(cfg)
+			unresolved.SetTmuxClient(client)
+			if _, err := unresolved.Resume(context.Background(), workflow, prior, nil); err == nil || !strings.Contains(err.Error(), "delivery outcome is unknown") {
+				t.Fatalf("ordinary resume admitted an uncertain fallback: %v", err)
+			}
+			after, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
+			if err != nil || string(after) != string(before) || len(client.VerificationHistory()) != 1 {
+				t.Fatalf("refused fallback resume rewrote the checkpoint or repeated transport: %v", err)
+			}
+			resolver := NewExecutor(cfg)
+			resolver.SetTmuxClient(client)
+			if accepted, err := resolver.acceptAgentDeliveryContext(context.Background(), stepID, token, "Confirmed the original fallback submission"); err != nil || accepted.Replayed {
+				t.Fatalf("accept fallback delivery: %+v %v", accepted, err)
+			}
+			acceptedState, err := LoadState(cfg.ProjectDir, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if shape == "fallback-prelaunch" {
+				// Repairing the input cannot turn recovery of the old failure
+				// into permission to launch the original command for the first time.
+				acceptedState.Variables["undefined"] = "printf replayed"
+			}
+			client.SetSubmissionVerifier(nil)
+			resumed := NewExecutor(cfg)
+			resumed.SetTmuxClient(client)
+			final, err := resumed.Resume(context.Background(), workflow, acceptedState, nil)
+			if err != nil || final.Status != StatusCompleted || final.Steps["after"].Output != "resumed" {
+				t.Fatalf("fallback did not continue the original attempt: %+v %v", final, err)
+			}
+			if got := final.CommandExecutions[parentID]; !reflect.DeepEqual(got, originalCommand) {
+				t.Fatalf("recovery replaced the original command receipt: %+v; want %+v", got, originalCommand)
+			}
+			completed := final.AgentDeliveries[stepID]
+			if completed.Status != agentDeliveryCompleted || completed.StepHash != originalDelivery.StepHash || !completed.StartedAt.Equal(originalDelivery.StartedAt) || completed.ResolutionToken != token {
+				t.Fatalf("fallback completion lost the original receipt: %+v", completed)
+			}
+			wantPastes, wantEffects := 1, "once\n"
+			if shape == "fallback-rounds" {
+				wantPastes, wantEffects = 2, "1\n2\n"
+			}
+			pastes, err := client.PasteHistory("%17")
+			if err != nil || len(pastes) != wantPastes || len(client.VerificationHistory()) != wantPastes {
+				t.Fatalf("recovery repeated a delivery: %+v %v; verifications=%+v", pastes, err, client.VerificationHistory())
+			}
+			if shape == "fallback-rounds" && (pastes[0].Content != "SECRET-TASK original 1" || pastes[1].Content != "SECRET-TASK original 2") {
+				t.Fatalf("fallback was reconstructed in the wrong round scope: %+v", pastes)
+			}
+			effects, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "parent-effects"))
+			if shape == "fallback-prelaunch" {
+				if !os.IsNotExist(err) {
+					t.Fatalf("recovery launched a command that originally failed preflight: %q %v", effects, err)
+				}
+			} else if err != nil || string(effects) != wantEffects {
+				t.Fatalf("recovery repeated a failed command effect: %q %v; want %q", effects, err, wantEffects)
+			}
+		})
+	}
+}
+
+func TestFailureFallbackRecoveryRefusesChangedEvidence(t *testing.T) {
+	for _, change := range []string{"parent definition", "fallback definition", "materialized fallback inputs", "missing parent receipt"} {
+		t.Run(change, func(t *testing.T) {
+			cfg, workflow, _, client, stepID, token := uncertainRecoveryFixture(t, "fallback")
+			resolver := NewExecutor(cfg)
+			resolver.SetTmuxClient(client)
+			if _, err := resolver.acceptAgentDeliveryContext(context.Background(), stepID, token, "Confirmed the original fallback submission"); err != nil {
+				t.Fatal(err)
+			}
+			prior, err := LoadState(cfg.ProjectDir, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt := prior.AgentDeliveries[stepID]
+			switch change {
+			case "parent definition":
+				workflow.Steps[0].Command = "printf repeated >> parent-effects; exit 9"
+			case "fallback definition":
+				workflow.Steps[0].OnFailure.Fallback["params"].(map[string]interface{})["SUBJECT"] = "different-request"
+			case "materialized fallback inputs":
+				prior.Variables["subject"] = "different-request"
+			case "missing parent receipt":
+				delete(prior.CommandExecutions, "work")
+			}
+			resumed := NewExecutor(cfg)
+			resumed.SetTmuxClient(client)
+			final, resumeErr := resumed.Resume(context.Background(), workflow, prior, nil)
+			if resumeErr == nil || (final != nil && (final.Status == StatusCompleted || final.Steps["after"].Status == StatusCompleted)) {
+				t.Fatalf("accepted fallback suppressed an identity failure: %+v %v", final, resumeErr)
+			}
+			if final != nil && final.AgentDeliveries[stepID] != receipt {
+				t.Fatalf("refused recovery rewrote accepted evidence: %+v; want %+v", final.AgentDeliveries[stepID], receipt)
+			}
+			effects, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "parent-effects"))
+			if err != nil || string(effects) != "once\n" {
+				t.Fatalf("changed recovery evidence replayed its parent: %q %v", effects, err)
+			}
+			pastes, err := client.PasteHistory("%17")
+			if err != nil || len(pastes) != 1 || len(client.VerificationHistory()) != 1 {
+				t.Fatalf("changed recovery evidence repeated delivery: %+v %v", pastes, err)
+			}
+		})
+	}
+}
+
+func TestFailureFallbackAcceptanceChecksSelectedStaticDefinition(t *testing.T) {
+	for _, shape := range []string{"fallback-static", "fallback-branch-static"} {
+		t.Run(shape, func(t *testing.T) {
+			cfg, _, prior, client, stepID, _ := uncertainRecoveryFixture(t, shape)
+			record := prior.AgentDeliveries[stepID]
+			record.StepHash = strings.Repeat("f", 64)
+			prior.AgentDeliveries[stepID] = record
+			if err := SaveState(cfg.ProjectDir, prior); err != nil {
+				t.Fatal(err)
+			}
+			inspection, err := InspectAgentDeliveryRecovery(context.Background(), cfg.ProjectDir, cfg.RunID)
+			if err != nil || len(inspection.Deliveries) != 1 {
+				t.Fatalf("inspect changed fixture: %+v %v", inspection, err)
+			}
+			before, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolver := NewExecutor(cfg)
+			resolver.SetTmuxClient(client)
+			accepted, err := resolver.acceptAgentDeliveryContext(context.Background(), stepID, inspection.Deliveries[0].ReceiptToken, "Confirmed the original fallback submission")
+			if err == nil || accepted != nil || !strings.Contains(err.Error(), "definition differs") {
+				t.Fatalf("static fallback mismatch was accepted: %+v %v", accepted, err)
+			}
+			after, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
+			if err != nil || string(after) != string(before) || len(client.VerificationHistory()) != 1 {
+				t.Fatalf("rejected acceptance mutated evidence or repeated transport: %v", err)
+			}
+		})
+	}
+}
+
+func TestFailureFallbackCannotSuppressInvalidParentAcceptance(t *testing.T) {
+	cfg, workflow, _, client, stepID, token := uncertainRecoveryFixture(t, "fallback")
+	resolver := NewExecutor(cfg)
+	resolver.SetTmuxClient(client)
+	if _, err := resolver.acceptAgentDeliveryContext(context.Background(), stepID, token, "Confirmed the original fallback submission"); err != nil {
+		t.Fatal(err)
+	}
+	prior, err := LoadState(cfg.ProjectDir, cfg.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed := NewExecutor(cfg)
+	resumed.SetTmuxClient(client)
+	final, err := resumed.Resume(context.Background(), workflow, prior, nil)
+	if err != nil || final.Status != StatusCompleted {
+		t.Fatalf("complete original fallback: %+v %v", final, err)
+	}
+	original := final.CommandExecutions["work"]
+	outputHash := sha256.Sum256(nil)
+	original.ResolutionAction, original.ResolutionToken = CommandExecutionResolutionAccept, strings.Repeat("0", 64)
+	original.ResolutionReason, original.ResolutionExitCode = "Confirmed original failed command", 7
+	original.ResolutionOutputHash, original.ResolvedAt = hex.EncodeToString(outputHash[:]), original.SettledAt
+	original.Result = StepResult{StepID: "work", AgentType: "command", Status: StatusFailed, StartedAt: original.StartedAt, FinishedAt: original.SettledAt}
+	if err := validateCommandExecution("work", original); err != nil {
+		t.Fatalf("fixture does not isolate immutable receipt identity: %v", err)
+	}
+	final.CommandExecutions["work"] = original
+	guard := NewExecutor(cfg)
+	guard.SetTmuxClient(client)
+	guard.state = final
+	failed := StepResult{StepID: "work", Status: StatusFailed, Error: &StepError{Type: "recovery", Message: "original parent acceptance was rejected"}}
+	result := guard.executeOnFailureRecovery(context.Background(), &workflow.Steps[0], workflow, failed)
+	if result.Status != StatusFailed || result.Error == nil || !strings.Contains(result.Error.Details, "original receipt identity") {
+		t.Fatalf("completed fallback suppressed its parent's identity error: %+v", result)
+	}
+	if _, err := validateAgentRecoveryWorkflow(cfg.ProjectDir, final, final.AgentDeliveries[stepID]); err == nil || !strings.Contains(err.Error(), "original receipt identity") {
+		t.Fatalf("fallback acceptance ignored invalid parent acceptance: %v", err)
+	}
+}
+
+func TestFailureFallbackFinalizationResetPreservesPendingParent(t *testing.T) {
+	for _, phase := range []string{"on_cancel", "post_pipeline"} {
+		for _, status := range []string{agentDeliverySending, agentDeliveryDelivered, agentDeliveryCompleted} {
+			t.Run(phase+"/"+status, func(t *testing.T) {
+				cleanup := Step{ID: "cleanup", Command: "exit 7", OnFailure: OnFailureSpec{Fallback: map[string]interface{}{
+					"pane": 1, "template": "recover.md", "suppress_failure": true,
+				}}}
+				workflow := &Workflow{Steps: []Step{{ID: "main", Command: "true"}}}
+				if phase == "on_cancel" {
+					workflow.Settings.OnCancel = []Step{cleanup}
+				} else {
+					workflow.PostPipelineSteps = []Step{cleanup}
+				}
+				delivery := testAgentDelivery("cleanup.on_failure", status)
+				original := CommandExecutionState{StepID: "cleanup", Status: commandExecutionSettled}
+				executor := NewExecutor(DefaultExecutorConfig("resume-session"))
+				executor.graph = NewDependencyGraph(workflow)
+				executor.state = &ExecutionState{
+					Steps:             map[string]StepResult{"cleanup": {StepID: "cleanup", Status: StatusFailed}, "cleanup.on_failure": {StepID: "cleanup.on_failure", Status: StatusFailed}},
+					CommandExecutions: map[string]CommandExecutionState{"cleanup": original},
+					AgentDeliveries:   map[string]AgentDeliveryState{"cleanup.on_failure": delivery}, Variables: map[string]interface{}{},
+				}
+				if phase == "on_cancel" {
+					executor.resetSettledOnCancelState(workflow)
+				} else {
+					executor.resetPostPipelineForMainAttempt(workflow)
+				}
+				_, hasParent := executor.state.CommandExecutions["cleanup"]
+				retained, hasDelivery := executor.state.AgentDeliveries["cleanup.on_failure"]
+				if status == agentDeliveryCompleted {
+					if hasParent || hasDelivery {
+						t.Fatalf("new finalization attempt retained completed recovery: %+v", executor.state)
+					}
+				} else if !hasParent || !hasDelivery || retained != delivery {
+					t.Fatalf("finalization reset lost the parent of an unfinished fallback: %+v", executor.state)
+				}
+				if _, exists := executor.state.Steps["cleanup.on_failure"]; exists {
+					t.Fatal("finalization reset retained stale fallback scheduler bookkeeping")
+				}
+			})
+		}
 	}
 }
 
