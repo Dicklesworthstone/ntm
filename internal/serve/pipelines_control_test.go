@@ -472,14 +472,18 @@ esac
 }
 
 type pipelineRecoveryHTTPResponse struct {
-	Success    bool                                  `json:"success"`
-	ErrorCode  string                                `json:"error_code"`
-	RunID      string                                `json:"run_id"`
-	WorkflowID string                                `json:"workflow_id"`
-	Session    string                                `json:"session"`
-	Deliveries []pipeline.AgentDeliveryRecoveryEntry `json:"deliveries"`
-	Delivery   pipeline.AgentDeliveryRecoveryEntry   `json:"delivery"`
-	Replayed   bool                                  `json:"replayed"`
+	Success    bool                                      `json:"success"`
+	ErrorCode  string                                    `json:"error_code"`
+	RunID      string                                    `json:"run_id"`
+	WorkflowID string                                    `json:"workflow_id"`
+	Session    string                                    `json:"session"`
+	Deliveries []pipeline.AgentDeliveryRecoveryEntry     `json:"deliveries"`
+	Delivery   pipeline.AgentDeliveryRecoveryEntry       `json:"delivery"`
+	Commands   []pipeline.CommandExecutionRecoveryEntry  `json:"commands"`
+	Command    pipeline.CommandExecutionRecoveryEntry    `json:"command"`
+	Selectors  []pipeline.CommandEvaluationRecoveryEntry `json:"selectors"`
+	Selector   pipeline.CommandEvaluationRecoveryEntry   `json:"selector"`
+	Replayed   bool                                      `json:"replayed"`
 }
 
 type pipelineRecoveryHTTPBodyBarrier struct {
@@ -1089,6 +1093,289 @@ func TestPipelineRecoverHTTPPreservesConfiguredRedaction(t *testing.T) {
 	pipelineRecoveryHTTPAssertNoSend(t, logPath)
 }
 
+// Obstruct the real settlement checkpoint after the command/selector has
+// emitted its output. Restore its exact earlier launch journal after the owner
+// finishes, modelling an interrupted publication without inventing receipts.
+func pipelineRecoveryHTTPOutcomeCheckpoint(t *testing.T, root string, selector bool) (*pipeline.ExecutionState, string) {
+	t.Helper()
+	pipelineRecoveryHTTPTmux(t, root, "")
+	output := `{"answer":42}`
+	if selector {
+		output = "PRIVATE-SELECTOR-KEY"
+	}
+	if err := os.WriteFile(filepath.Join(root, "fixture-outcome"), []byte(output), 0600); err != nil {
+		t.Fatal(err)
+	}
+	script := "printf 'once\\n' >> outcome-effects; cat fixture-outcome; printf ready > outcome-ready; while [ ! -f outcome-release ]; do sleep 0.01; done"
+	work := pipeline.Step{ID: "work", Command: script, OutputVar: "recovered", OutputParse: pipeline.OutputParse{Type: "json"},
+		Timeout: pipeline.Duration{Duration: 10 * time.Second}}
+	consumer := pipeline.Step{ID: "consume", DependsOn: []string{"work"}, Command: "cat > outcome-dependent", Stdin: "${steps.work.data.answer}|${vars.recovered_parsed.answer}"}
+	if selector {
+		work.Command, work.OutputVar, work.OutputParse = "", "", pipeline.OutputParse{}
+		work.Branch = "$(" + script + ")"
+		work.Branches = map[string]interface{}{
+			output:    map[string]interface{}{"id": "chosen", "command": "printf chosen > outcome-children"},
+			"default": map[string]interface{}{"id": "fallback", "command": "printf wrong > outcome-children"},
+		}
+		consumer.Command, consumer.Stdin = "cat outcome-children > outcome-dependent", ""
+	}
+	workflow := &pipeline.Workflow{SchemaVersion: pipeline.SchemaVersion, Name: "http-outcome-recovery",
+		Settings: pipeline.WorkflowSettings{OnError: pipeline.ErrorActionFail}, Steps: []pipeline.Step{work, consumer}}
+	cfg := pipeline.DefaultExecutorConfig("delivery-session")
+	cfg.ProjectDir, cfg.RunID = root, pipeline.GenerateRunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	var final *pipeline.ExecutionState
+	var runErr error
+	go func() {
+		defer close(done)
+		final, runErr = pipeline.RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(8 * time.Second):
+			t.Error("original outcome owner did not finish cleanup")
+		}
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		prior, err := pipeline.LoadState(root, cfg.RunID)
+		_, readyErr := os.Stat(filepath.Join(root, "outcome-ready"))
+		if err == nil && readyErr == nil && ((!selector && prior.CommandExecutions["work"].Status == "running") ||
+			(selector && prior.CommandEvaluations["work"].Status == "starting")) {
+			break
+		}
+		select {
+		case <-done:
+			t.Fatalf("outcome completed before its launch checkpoint: %+v %v", final, runErr)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("outcome did not reach its output gate and durable launch intent")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	statePath := filepath.Join(root, ".ntm", "pipelines", cfg.RunID+".json")
+	before := pipelineRecoveryHTTPJournal(t, root, cfg.RunID)
+	savedPath := statePath + ".before-outcome-settlement"
+	if err := os.Rename(statePath, savedPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(statePath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "outcome-release"), []byte("finish"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("outcome did not finish after its gate opened")
+	}
+	if !errors.Is(runErr, pipeline.ErrCheckpointFailed) || final == nil || final.Status != pipeline.StatusFailed {
+		t.Fatalf("fixture did not lose outcome publication at the storage boundary: %+v %v", final, runErr)
+	}
+	if _, err := os.Stat(filepath.Join(root, "outcome-dependent")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dependent consumed uncheckpointed output: %v", err)
+	}
+	if err := os.Rename(statePath, statePath+".blocked-outcome-directory"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(savedPath, statePath); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, pipelineRecoveryHTTPJournal(t, root, cfg.RunID)) {
+		t.Fatal("fixture changed its original launch evidence")
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "outcome-effects")); err != nil || string(data) != "once\n" {
+		t.Fatalf("original outcome did not execute exactly once: %q %v", data, err)
+	}
+	prior, err := pipeline.LoadState(root, cfg.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return prior, output
+}
+
+func pipelineRecoveryHTTPOutcomeBody(t *testing.T, token string, selector bool, output string) string {
+	t.Helper()
+	exitCode, captured := 0, pipelineRecoveryOutput(output)
+	req := PipelineRecoverRequest{StepID: "work", Receipt: token, Reason: "Verified the original process and descendants finished with this complete output",
+		AcceptCommand: !selector, AcceptSelector: selector, ExitCode: &exitCode, Output: &captured}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
+}
+
+func TestPipelineRecoverHTTPCommandAndSelectorOutcomesResumeWithoutReplay(t *testing.T) {
+	for _, selector := range []bool{false, true} {
+		t.Run(fmt.Sprintf("selector_%t", selector), func(t *testing.T) {
+			srv, _ := setupTestServer(t)
+			srv.auth = AuthConfig{Mode: AuthModeAPIKey, APIKey: "pipeline-recovery-test-key", Role: RoleOperator}
+			srv.redactionCfg = &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeRedact}}
+			root := srv.projectDir
+			prior, output := pipelineRecoveryHTTPOutcomeCheckpoint(t, root, selector)
+			path := "/api/v1/pipelines/" + prior.RunID + "/recover"
+			before := pipelineRecoveryHTTPJournal(t, root, prior.RunID)
+			rec, inspection := pipelineRecoveryHTTPServe(t, srv, pipelineRecoveryHTTPRequest(http.MethodGet, path, ""))
+			if rec.Code != http.StatusOK || inspection.Deliveries == nil || inspection.Commands == nil || inspection.Selectors == nil ||
+				len(inspection.Deliveries) != 0 || len(inspection.Commands)+len(inspection.Selectors) != 1 {
+				t.Fatalf("recovery omitted command/selector receipts or empty collections: %d %s", rec.Code, rec.Body)
+			}
+			var token string
+			if selector {
+				if len(inspection.Selectors) != 1 || !inspection.Selectors[0].CanAccept {
+					t.Fatalf("selector outcome is not recoverable: %+v", inspection)
+				}
+				token = inspection.Selectors[0].ReceiptToken
+			} else {
+				if len(inspection.Commands) != 1 || !inspection.Commands[0].CanAccept {
+					t.Fatalf("command outcome is not recoverable: %+v", inspection)
+				}
+				token = inspection.Commands[0].ReceiptToken
+			}
+			if !bytes.Equal(before, pipelineRecoveryHTTPJournal(t, root, prior.RunID)) {
+				t.Fatal("inspection changed the launch journal")
+			}
+			body := pipelineRecoveryHTTPOutcomeBody(t, token, selector, output)
+			request := pipelineRecoveryHTTPRequest(http.MethodPost, path, body)
+			request.Header.Set("Idempotency-Key", "accept-original-outcome")
+			rec, accepted := pipelineRecoveryHTTPServe(t, srv, request)
+			if rec.Code != http.StatusOK || !accepted.Success || accepted.Replayed {
+				t.Fatalf("outcome acceptance failed: %d %s", rec.Code, rec.Body)
+			}
+			if selector {
+				if accepted.Selector.ReceiptToken != token || accepted.Selector.OutputBytes != len(output) || accepted.Selector.ExitCode == nil || *accepted.Selector.ExitCode != 0 {
+					t.Fatalf("selector response lost immutable outcome metadata: %+v", accepted.Selector)
+				}
+			} else if accepted.Command.ReceiptToken != token || accepted.Command.OutputBytes != len(output) || accepted.Command.ExitCode == nil || *accepted.Command.ExitCode != 0 {
+				t.Fatalf("command response lost immutable outcome metadata: %+v", accepted.Command)
+			}
+			if strings.Contains(rec.Body.String(), output) || strings.Contains(rec.Body.String(), "fixture-outcome") {
+				t.Fatalf("identity-only recovery exposed execution content: %s", rec.Body)
+			}
+			acceptedBytes := pipelineRecoveryHTTPJournal(t, root, prior.RunID)
+			request = pipelineRecoveryHTTPRequest(http.MethodPost, path, body)
+			request.Header.Set("Idempotency-Key", "accept-original-outcome")
+			rec, _ = pipelineRecoveryHTTPServe(t, srv, request)
+			if rec.Code != http.StatusOK || rec.Header().Get("X-Idempotent-Replay") != "true" || !bytes.Equal(acceptedBytes, pipelineRecoveryHTTPJournal(t, root, prior.RunID)) {
+				t.Fatalf("HTTP replay changed the accepted decision: %d %s", rec.Code, rec.Body)
+			}
+			rec, replay := pipelineRecoveryHTTPServe(t, srv, pipelineRecoveryHTTPRequest(http.MethodPost, path, body))
+			if rec.Code != http.StatusOK || !replay.Replayed || !bytes.Equal(acceptedBytes, pipelineRecoveryHTTPJournal(t, root, prior.RunID)) {
+				t.Fatalf("durable acceptance replay changed the decision: %d %s", rec.Code, rec.Body)
+			}
+			conflict := pipelineRecoveryHTTPOutcomeBody(t, token, selector, output+"different")
+			rec, refused := pipelineRecoveryHTTPServe(t, srv, pipelineRecoveryHTTPRequest(http.MethodPost, path, conflict))
+			if rec.Code != http.StatusConflict || refused.ErrorCode != ErrCodeRecoveryRefused || !bytes.Equal(acceptedBytes, pipelineRecoveryHTTPJournal(t, root, prior.RunID)) {
+				t.Fatalf("conflicting outcome replaced the accepted decision: %d %s", rec.Code, rec.Body)
+			}
+			if _, err := os.Stat(filepath.Join(root, "outcome-dependent")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("acceptance dispatched downstream work before resume: %v", err)
+			}
+			rec, resumed := pipelineRecoveryHTTPServe(t, srv, pipelineRecoveryHTTPRequest(http.MethodPost, "/api/v1/pipelines/"+prior.RunID+"/resume", "{}"))
+			if rec.Code != http.StatusOK || !resumed.Success {
+				t.Fatalf("ordinary HTTP resume did not use the accepted outcome: %d %s", rec.Code, rec.Body)
+			}
+			final, err := pipeline.LoadState(root, prior.RunID)
+			if err != nil || final.Status != pipeline.StatusCompleted {
+				t.Fatalf("resumed outcome did not complete: %+v %v", final, err)
+			}
+			want := "42|42"
+			if selector {
+				want = "chosen"
+			}
+			if data, err := os.ReadFile(filepath.Join(root, "outcome-dependent")); err != nil || string(data) != want {
+				t.Fatalf("resume did not interpret the original outcome: %q %v", data, err)
+			}
+			if data, err := os.ReadFile(filepath.Join(root, "outcome-effects")); err != nil || string(data) != "once\n" {
+				t.Fatalf("HTTP recovery repeated command/selector effects: %q %v", data, err)
+			}
+		})
+	}
+}
+
+func TestPipelineRecoverHTTPOutcomeRefusalsPreserveJournal(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	srv.auth = AuthConfig{Mode: AuthModeAPIKey, APIKey: "pipeline-recovery-test-key", Role: RoleOperator}
+	srv.redactionCfg = &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeRedact}}
+	root := srv.projectDir
+	prior, output := pipelineRecoveryHTTPOutcomeCheckpoint(t, root, false)
+	path := "/api/v1/pipelines/" + prior.RunID + "/recover"
+	_, inspection := pipelineRecoveryHTTPServe(t, srv, pipelineRecoveryHTTPRequest(http.MethodGet, path, ""))
+	if len(inspection.Commands) != 1 {
+		t.Fatalf("missing command receipt: %+v", inspection)
+	}
+	token := inspection.Commands[0].ReceiptToken
+	valid := pipelineRecoveryHTTPOutcomeBody(t, token, false, output)
+	before := pipelineRecoveryHTTPJournal(t, root, prior.RunID)
+	for name, mutate := range map[string]func(map[string]interface{}){
+		"missing exit":               func(body map[string]interface{}) { delete(body, "exit_code") },
+		"null exit":                  func(body map[string]interface{}) { body["exit_code"] = nil },
+		"invalid exit":               func(body map[string]interface{}) { body["exit_code"] = 256 },
+		"missing output":             func(body map[string]interface{}) { delete(body, "output") },
+		"null output":                func(body map[string]interface{}) { body["output"] = nil },
+		"ambiguous command selector": func(body map[string]interface{}) { body["accept_selector"] = true },
+		"ambiguous command delivery": func(body map[string]interface{}) { body["accept_delivery"] = true },
+		"delivery with output":       func(body map[string]interface{}) { body["accept_command"], body["accept_delivery"] = false, true },
+		"server path input":          func(body map[string]interface{}) { body["output_file"] = "/tmp/private-output" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			var body map[string]interface{}
+			if err := json.Unmarshal([]byte(valid), &body); err != nil {
+				t.Fatal(err)
+			}
+			mutate(body)
+			encoded, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec, refused := pipelineRecoveryHTTPServe(t, srv, pipelineRecoveryHTTPRequest(http.MethodPost, path, string(encoded)))
+			if rec.Code != http.StatusBadRequest || refused.ErrorCode != ErrCodeBadRequest || !bytes.Equal(before, pipelineRecoveryHTTPJournal(t, root, prior.RunID)) {
+				t.Fatalf("invalid outcome request changed the journal: %d %s", rec.Code, rec.Body)
+			}
+		})
+	}
+	stale := strings.Repeat("a", 64)
+	if stale == token {
+		stale = strings.Repeat("b", 64)
+	}
+	rec, refused := pipelineRecoveryHTTPServe(t, srv, pipelineRecoveryHTTPRequest(http.MethodPost, path, pipelineRecoveryHTTPOutcomeBody(t, stale, false, output)))
+	if rec.Code != http.StatusConflict || refused.ErrorCode != ErrCodeRecoveryRefused || !bytes.Equal(before, pipelineRecoveryHTTPJournal(t, root, prior.RunID)) {
+		t.Fatalf("stale receipt accepted an outcome: %d %s", rec.Code, rec.Body)
+	}
+	owner, err := pipeline.AcquireRunControl(context.Background(), root, prior.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, refused = pipelineRecoveryHTTPServe(t, srv, pipelineRecoveryHTTPRequest(http.MethodPost, path, valid))
+	owner.Close()
+	if rec.Code != http.StatusConflict || refused.ErrorCode != ErrCodePipelineRunning || !bytes.Equal(before, pipelineRecoveryHTTPJournal(t, root, prior.RunID)) {
+		t.Fatalf("acceptance bypassed live execution ownership: %d %s", rec.Code, rec.Body)
+	}
+	const secret = "sk-proj-FAKEtestkey1234567890123456789012345678901234"
+	req := pipelineRecoveryHTTPRequest(http.MethodPost, path, pipelineRecoveryHTTPOutcomeBody(t, token, false, secret))
+	req.Header.Set("Idempotency-Key", "refused-output")
+	rec, refused = pipelineRecoveryHTTPServe(t, srv, req)
+	if rec.Code != http.StatusUnprocessableEntity || refused.ErrorCode != "SECRETS_DETECTED" || strings.Contains(rec.Body.String(), secret) ||
+		!bytes.Equal(before, pipelineRecoveryHTTPJournal(t, root, prior.RunID)) {
+		t.Fatalf("sensitive output was persisted or silently rewritten: %d %s", rec.Code, rec.Body)
+	}
+	// A refused sensitive payload must not consume its HTTP replay key.
+	// Explicit empty output is valid, unlike either omission or JSON null.
+	req = pipelineRecoveryHTTPRequest(http.MethodPost, path, pipelineRecoveryHTTPOutcomeBody(t, token, false, ""))
+	req.Header.Set("Idempotency-Key", "refused-output")
+	rec, accepted := pipelineRecoveryHTTPServe(t, srv, req)
+	if rec.Code != http.StatusOK || !accepted.Success || accepted.Command.OutputBytes != 0 || accepted.Command.ExitCode == nil || *accepted.Command.ExitCode != 0 {
+		t.Fatalf("explicit empty output was not accepted after refusal: %d %s", rec.Code, rec.Body)
+	}
+}
+
 func pipelineScopeHTTPPatchProject(t *testing.T, srv *Server, project string) {
 	t.Helper()
 	body, err := json.Marshal(map[string]string{"project_dir": project})
@@ -1442,5 +1729,144 @@ func TestPipelineHTTPProjectScopeCancellationKeepsOriginalOwner(t *testing.T) {
 	}
 	if !bytes.Equal(afterA, pipelineRecoveryHTTPJournal(t, projectA, runID)) || !bytes.Equal(afterB, pipelineRecoveryHTTPJournal(t, projectB, runID)) {
 		t.Fatal("cancellation replay rewrote a terminal checkpoint")
+	}
+}
+
+func TestPipelineRecoveryOutputPreservesUnicode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "empty", raw: `""`, want: ""},
+		{name: "ordinary escapes", raw: `"quote\" slash\/ backslash\\ newline\n tab\t"`, want: "quote\" slash/ backslash\\ newline\n tab\t"},
+		{name: "literal Unicode", raw: `"snowman ☃ and emoji 😀"`, want: "snowman ☃ and emoji 😀"},
+		{name: "surrogate pair", raw: `"before \ud83d\ude00 after"`, want: "before 😀 after"},
+		{name: "lowest pair", raw: `"\uD800\uDC00"`, want: "\U00010000"},
+		{name: "highest pair", raw: `"\uDBFF\uDFFF"`, want: "\U0010ffff"},
+		{name: "literal replacement", raw: `"�"`, want: "�"},
+		{name: "escaped replacement", raw: `"\ufffd"`, want: "�"},
+		{name: "literal escape spelling", raw: `"\\ud800"`, want: `\ud800`},
+		{name: "literal slash before pair", raw: `"\\\ud83d\ude00"`, want: "\\😀"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			value := pipelineRecoveryOutput("unchanged")
+			if err := json.Unmarshal([]byte(tc.raw), &value); err != nil {
+				t.Fatalf("valid output rejected: %v", err)
+			}
+			if string(value) != tc.want {
+				t.Fatalf("output changed: %q, want %q", value, tc.want)
+			}
+		})
+	}
+	for name, raw := range map[string]string{
+		"invalid UTF-8":          string([]byte{'"', 0xff, '"'}),
+		"UTF-8 surrogate":        string([]byte{'"', 0xed, 0xa0, 0x80, '"'}),
+		"orphaned high":          `"\ud800"`,
+		"orphaned low":           `"\udc00"`,
+		"reversed pair":          `"\udc00\ud800"`,
+		"separated pair":         `"\ud800x\udc00"`,
+		"paired with scalar":     `"\ud800\u0041"`,
+		"literal second escape":  `"\ud800\\udc00"`,
+		"unmatched after valid":  `"\ud83d\ude00\ud800"`,
+		"truncated escape":       `"\ud80"`,
+		"not a string":           `123`,
+		"null is not an outcome": `null`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			value := pipelineRecoveryOutput("unchanged")
+			if err := json.Unmarshal([]byte(raw), &value); err == nil {
+				t.Fatalf("malformed output accepted: %q", raw)
+			}
+			if value != "unchanged" {
+				t.Fatalf("failed decoding changed output: %q", value)
+			}
+		})
+	}
+}
+
+func TestPipelineRecoverHTTPRejectsUnicodeRepairBeforeDecision(t *testing.T) {
+	for _, selector := range []bool{false, true} {
+		for _, mode := range []redaction.Mode{redaction.ModeOff, redaction.ModeRedact} {
+			t.Run(fmt.Sprintf("selector=%v/redaction=%s", selector, mode), func(t *testing.T) {
+				srv, _ := setupTestServer(t)
+				srv.auth = AuthConfig{Mode: AuthModeAPIKey, APIKey: "pipeline-recovery-test-key", Role: RoleOperator}
+				srv.redactionCfg = &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: mode}}
+				root := srv.projectDir
+				prior, _ := pipelineRecoveryHTTPOutcomeCheckpoint(t, root, selector)
+				path := "/api/v1/pipelines/" + prior.RunID + "/recover"
+				rec, inspection := pipelineRecoveryHTTPServe(t, srv, pipelineRecoveryHTTPRequest(http.MethodGet, path, ""))
+				if rec.Code != http.StatusOK {
+					t.Fatalf("recovery inspection: %d %s", rec.Code, rec.Body)
+				}
+				var token string
+				if selector {
+					if len(inspection.Selectors) != 1 {
+						t.Fatalf("missing selector receipt: %+v", inspection)
+					}
+					token = inspection.Selectors[0].ReceiptToken
+				} else {
+					if len(inspection.Commands) != 1 {
+						t.Fatalf("missing command receipt: %+v", inspection)
+					}
+					token = inspection.Commands[0].ReceiptToken
+				}
+				emptyBody := pipelineRecoveryHTTPOutcomeBody(t, token, selector, "")
+				if !strings.Contains(emptyBody, `"output":""`) {
+					t.Fatalf("fixture lacks explicit empty output: %s", emptyBody)
+				}
+				post := func(raw string) (*httptest.ResponseRecorder, pipelineRecoveryHTTPResponse) {
+					body := strings.Replace(emptyBody, `"output":""`, `"output":`+raw, 1)
+					req := pipelineRecoveryHTTPRequest(http.MethodPost, path, body)
+					req.Header.Set("Idempotency-Key", "exact-unicode-outcome")
+					return pipelineRecoveryHTTPServe(t, srv, req)
+				}
+				before := pipelineRecoveryHTTPJournal(t, root, prior.RunID)
+				for _, raw := range []string{
+					string([]byte{'"', 0xff, '"'}),
+					string([]byte{'"', 0xed, 0xa0, 0x80, '"'}),
+					`"\ud800"`, `"\udc00"`, `"\udc00\ud800"`,
+					`"\ud800x\udc00"`, `"\ud800\u0041"`, `"\ud800\\udc00"`,
+					`"\ud83d\ude00\ud800"`,
+				} {
+					rec, out := post(raw)
+					if rec.Code != http.StatusBadRequest || out.Success || out.ErrorCode != ErrCodeBadRequest {
+						t.Fatalf("malformed Unicode persisted a decision: %d %s", rec.Code, rec.Body)
+					}
+					if !bytes.Equal(before, pipelineRecoveryHTTPJournal(t, root, prior.RunID)) {
+						t.Fatal("rejected Unicode rewrote the execution checkpoint")
+					}
+				}
+
+				// Neither malformed input nor redaction may reserve the replay key
+				// or turn genuine replacement characters into a refusal. Persist
+				// one valid, exact outcome through the same HTTP admission path.
+				const raw = `"stable \u2713 \ud83d\ude00 � \\ud800\n"`
+				const want = "stable ✓ 😀 � \\ud800\n"
+				rec, accepted := post(raw)
+				if rec.Code != http.StatusOK || !accepted.Success || rec.Header().Get("X-Idempotent-Replay") != "" {
+					t.Fatalf("valid Unicode outcome rejected: %d %s", rec.Code, rec.Body)
+				}
+				if bytes.Contains(rec.Body.Bytes(), []byte(`"output":`)) {
+					t.Fatal("identity-only recovery response disclosed command output")
+				}
+				state, err := pipeline.LoadState(root, prior.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := state.CommandExecutions["work"].Result.Output
+				if selector {
+					got = string(state.CommandEvaluations["work"].Output)
+				}
+				if got != want {
+					t.Fatalf("accepted output was repaired or normalized: %q, want %q", got, want)
+				}
+				acceptedBytes := pipelineRecoveryHTTPJournal(t, root, prior.RunID)
+				rec, replay := post(raw)
+				if rec.Code != http.StatusOK || !replay.Success || rec.Header().Get("X-Idempotent-Replay") != "true" || !bytes.Equal(acceptedBytes, pipelineRecoveryHTTPJournal(t, root, prior.RunID)) {
+					t.Fatalf("exact outcome replay was not immutable: %d %s", rec.Code, rec.Body)
+				}
+			})
+		}
 	}
 }

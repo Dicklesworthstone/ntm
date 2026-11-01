@@ -3,6 +3,7 @@
 package serve
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -15,8 +16,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 
@@ -37,7 +40,10 @@ const (
 	ErrCodeRecoveryRefused  = "RECOVERY_REFUSED"
 )
 
-const pipelineRecoveryMaxBodyBytes = 32 << 10
+// Outcomes travel inline, never as paths on the server. Keep their encoded JSON
+// inside the same body limit used by redaction and HTTP replay admission. The
+// engine's separate output limit still applies; neither boundary truncates data.
+const pipelineRecoveryMaxBodyBytes = maxRequestBodyBytes
 
 type pipelineProjectScopeKey struct{}
 
@@ -209,12 +215,18 @@ type PipelineResumeRequest struct {
 }
 
 // PipelineRecoverRequest records one explicit acceptance of an uncertain
-// delivery. It cannot change the run's project, session, or workflow.
+// delivery or command outcome. It cannot change the run's project, session, or
+// workflow. Pointers distinguish an explicit zero exit/empty output from a
+// missing outcome; delivery acceptance must not supply either outcome field.
 type PipelineRecoverRequest struct {
-	StepID         string `json:"step_id"`
-	Receipt        string `json:"receipt"`
-	AcceptDelivery bool   `json:"accept_delivery"`
-	Reason         string `json:"reason"`
+	StepID         string                  `json:"step_id"`
+	Receipt        string                  `json:"receipt"`
+	AcceptDelivery bool                    `json:"accept_delivery"`
+	AcceptCommand  bool                    `json:"accept_command,omitempty"`
+	AcceptSelector bool                    `json:"accept_selector,omitempty"`
+	Reason         string                  `json:"reason"`
+	ExitCode       *int                    `json:"exit_code,omitempty"`
+	Output         *pipelineRecoveryOutput `json:"output,omitempty"`
 }
 
 // PipelineExecRequest is the request body for POST /api/v1/pipelines/exec (inline workflow)
@@ -614,7 +626,9 @@ func (s *Server) handleResumePipeline(w http.ResponseWriter, r *http.Request) {
 
 // handleRecoverPipeline exposes the same durable receipt inspection and
 // acceptance as the CLI. Acceptance only records an operator decision; the
-// ordinary resume endpoint separately observes the original agent and continues.
+// ordinary resume endpoint separately interprets the accepted outcome or
+// observes the original agent and continues. Responses expose identity and
+// outcome metadata, never command text or the supplied output itself.
 func (s *Server) handleRecoverPipeline(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	runID, err := url.PathUnescape(chi.URLParam(r, "id"))
@@ -636,7 +650,7 @@ func (s *Server) handleRecoverPipeline(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	fail := func(err error) {
-		status, code, message := http.StatusConflict, ErrCodeRecoveryRefused, "pipeline delivery recovery refused; inspect the receipt and original agent before retrying"
+		status, code, message := http.StatusConflict, ErrCodeRecoveryRefused, "pipeline recovery refused; inspect the receipt and original execution before retrying"
 		var pathErr *os.PathError
 		var linkErr *os.LinkError
 		switch {
@@ -661,9 +675,20 @@ func (s *Server) handleRecoverPipeline(w http.ResponseWriter, r *http.Request) {
 			fail(err)
 			return
 		}
+		commands, err := pipeline.InspectCommandExecutionRecovery(ctx, scope.projectDir, runID)
+		if err != nil {
+			fail(err)
+			return
+		}
+		selectors, err := pipeline.InspectCommandEvaluationRecovery(ctx, scope.projectDir, runID)
+		if err != nil {
+			fail(err)
+			return
+		}
 		writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 			"run_id": inspection.RunID, "workflow_id": inspection.WorkflowID,
 			"session": inspection.Session, "deliveries": inspection.Deliveries,
+			"commands": commands.Commands, "selectors": selectors.Selectors,
 		}, reqID)
 		return
 	}
@@ -685,13 +710,56 @@ func (s *Server) handleRecoverPipeline(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Reason = strings.TrimSpace(req.Reason)
 	digest, receiptErr := hex.DecodeString(req.Receipt)
-	if !req.AcceptDelivery || req.StepID == "" || req.StepID != strings.TrimSpace(req.StepID) ||
+	decisions := 0
+	for _, accept := range []bool{req.AcceptDelivery, req.AcceptCommand, req.AcceptSelector} {
+		if accept {
+			decisions++
+		}
+	}
+	if decisions != 1 || req.StepID == "" || req.StepID != strings.TrimSpace(req.StepID) ||
 		req.Reason == "" || len(req.Reason) > 4096 || receiptErr != nil || len(digest) != sha256.Size || req.Receipt != strings.ToLower(req.Receipt) {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
-			"step_id, exact lowercase receipt, accept_delivery:true, and a reason of 1 to 4096 bytes are required", nil, reqID)
+			"step_id, exact lowercase receipt, exactly one of accept_delivery/accept_command/accept_selector, and a reason of 1 to 4096 bytes are required", nil, reqID)
+		return
+	}
+	if req.AcceptDelivery {
+		if req.ExitCode != nil || req.Output != nil {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+				"delivery acceptance does not accept exit_code or output", nil, reqID)
+			return
+		}
+	} else if req.ExitCode == nil || req.Output == nil || *req.ExitCode < 0 || *req.ExitCode > 255 || len(*req.Output) > pipeline.CommandRecoveryMaxOutputBytes {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			"command and selector acceptance require an explicit exit_code from 0 to 255 and complete output within the request size limit", nil, reqID)
 		return
 	}
 	SetAuditAction(r, AuditActionApprove)
+	if req.AcceptCommand {
+		result, err := pipeline.AcceptCommandExecutionContext(ctx, scope.projectDir, runID, req.StepID, req.Receipt, req.Reason, *req.ExitCode, string(*req.Output))
+		if err != nil {
+			fail(err)
+			return
+		}
+		SetAuditSession(r, result.Session, "", "")
+		writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
+			"run_id": result.RunID, "workflow_id": result.WorkflowID, "session": result.Session,
+			"command": result.Command, "replayed": result.Replayed,
+		}, reqID)
+		return
+	}
+	if req.AcceptSelector {
+		result, err := pipeline.AcceptCommandEvaluationContext(ctx, scope.projectDir, runID, req.StepID, req.Receipt, req.Reason, *req.ExitCode, []byte(*req.Output))
+		if err != nil {
+			fail(err)
+			return
+		}
+		SetAuditSession(r, result.Session, "", "")
+		writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
+			"run_id": result.RunID, "workflow_id": result.WorkflowID, "session": result.Session,
+			"selector": result.Selector, "replayed": result.Replayed,
+		}, reqID)
+		return
+	}
 	result, err := pipeline.AcceptAgentDeliveryContext(ctx, scope.projectDir, runID, req.StepID, req.Receipt, req.Reason)
 	if err != nil {
 		fail(err)
@@ -1207,4 +1275,48 @@ func discoverPipelineTemplates(projectDir string) []PipelineTemplate {
 	}
 
 	return templates
+}
+
+// pipelineRecoveryOutput preserves the operator's complete output. Unlike an
+// ordinary JSON string, it rejects malformed Unicode instead of allowing
+// encoding/json to replace invalid UTF-8 or unmatched UTF-16 surrogates with
+// U+FFFD. A replacement would create a different durable recovery decision.
+type pipelineRecoveryOutput string
+
+func (output *pipelineRecoveryOutput) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || data[0] != '"' || !utf8.Valid(data) {
+		return errors.New("pipeline recovery output must be a valid UTF-8 JSON string")
+	}
+	var decoded string
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	// Syntax validation above guarantees complete escape sequences. Inspect
+	// only actual Unicode escapes: a doubled backslash is literal output,
+	// and a valid surrogate pair represents one unchanged Unicode character.
+	for i := 1; i < len(data)-1; i++ {
+		if data[i] != '\\' {
+			continue
+		}
+		i++
+		if data[i] != 'u' {
+			continue
+		}
+		value, _ := strconv.ParseUint(string(data[i+1:i+5]), 16, 16)
+		i += 4
+		if value < 0xd800 || value > 0xdfff {
+			continue
+		}
+		if value >= 0xdc00 || i+6 >= len(data)-1 || data[i+1] != '\\' || data[i+2] != 'u' {
+			return errors.New("pipeline recovery output contains an unmatched Unicode surrogate")
+		}
+		low, _ := strconv.ParseUint(string(data[i+3:i+7]), 16, 16)
+		if low < 0xdc00 || low > 0xdfff {
+			return errors.New("pipeline recovery output contains an unmatched Unicode surrogate")
+		}
+		i += 6
+	}
+	*output = pipelineRecoveryOutput(decoded)
+	return nil
 }

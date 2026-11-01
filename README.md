@@ -783,8 +783,9 @@ including after the run completes.
 
 REST clients can perform the same recovery through the server's configured
 project. `GET /api/v1/pipelines/{id}/recover` requires `pipelines:read` and returns
-the inspectable delivery identities and their `receipt_token` values. To record
-an observation, send `POST /api/v1/pipelines/{id}/recover` with
+the `deliveries`, `commands`, and `selectors` arrays, including receipt identities,
+acceptance eligibility, refusal reasons, and exact `receipt_token` values. To record
+an agent-delivery observation, send `POST /api/v1/pipelines/{id}/recover` with
 `pipelines:write` permission, `Content-Type: application/json`, and this JSON body:
 
 ```json
@@ -796,10 +797,36 @@ an observation, send `POST /api/v1/pipelines/{id}/recover` with
 }
 ```
 
-Acceptance records the same durable decision as the CLI. Continue with
+To accept a command outcome after independently verifying that the original
+command **and all descendants have finished**, use the command receipt from GET:
+
+```json
+{
+  "step_id": "migrate",
+  "receipt": "<command receipt_token from GET>",
+  "accept_command": true,
+  "exit_code": 0,
+  "output": "Migration completed\n",
+  "reason": "Verified the migration and all child processes finished successfully"
+}
+```
+
+Use `accept_selector: true` and a selector receipt for an interrupted branch,
+foreach, or bead-query source. Exactly one acceptance flag must be true. Command
+and selector decisions require an explicit `exit_code` from 0 to 255 and `output`;
+an empty string records observed empty output, while omission or `null` is refused.
+Delivery decisions cannot include outcome values. Requests use UTF-8 JSON and must
+fit the server's 10 MiB encoded-body limit, including metadata and escaping, as
+well as the frozen workflow's capture limits. Output is never truncated or
+silently repaired. Use the CLI for binary selector output or larger captures
+within its 16 MiB limit. Enabled request redaction rejects detected secrets in
+output or reasons before persistence.
+
+Acceptance records the same durable decision as the CLI without launching work,
+signalling processes, or inferring settlement from a saved PID. Continue with
 `POST /api/v1/pipelines/{id}/resume`, or submit a `pipeline_resume` job for
 pollable execution. Inspection and acceptance expose receipt metadata without
-prompt or transcript contents. Recovery requests cannot select another project
+prompt, transcript, or captured output contents. Recovery requests cannot select another project
 or replace the saved session. Stale receipts, conflicting observations, and a live
 run owner produce a conflict response without changing the checkpoint.
 
@@ -813,7 +840,7 @@ operation that required it. File-based run, validation, and resume still require
 a configured project; recovery additionally requires an accessible absolute
 project directory.
 
-Foreground command steps in the main workflow have a separate CLI recovery path
+Foreground command steps in the main workflow have an explicit recovery path
 for the case where the command finished but its final checkpoint was lost. `pipeline recover`
 includes these command receipts in its `commands` JSON array, with eligibility
 and refusal information. Before accepting one, independently verify that the
@@ -895,6 +922,14 @@ these receipts. A saved PID disappearing later is not sufficient evidence for
 automatic reconciliation: its original group identity is no longer pinned.
 Use the explicit recovery procedure below only after independently verifying the
 original command and its effects.
+
+A failed or cancelled scheduler result from an older checkpoint is not evidence
+that a command group stopped. Without an execution receipt, ordinary resume also
+refuses these steps and background rerun markers; an intentional replay requires
+`--mode=restart-failed` or an explicit reset. Proven-settled failures retain normal
+retry behavior. Newly cancelled parallel children that never entered their executor
+carry separate scheduler evidence, so they can resume without being mistaken for
+previously launched work.
 
 Shell branch predicates, external foreach sources, and bead queries also persist
 launch intent before starting their command. Their output is usable only after
