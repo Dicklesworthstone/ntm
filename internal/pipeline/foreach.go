@@ -628,7 +628,8 @@ func (e *Executor) executeForeachIterationsParallel(ctx context.Context, parent 
 		maxConcurrent = len(plans)
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	runCtx, finish := withCommandCancellationScope(runCtx, cancel)
+	defer finish()
 
 	results := make([]foreachIterationResult, len(plans))
 	sem := make(chan struct{}, maxConcurrent)

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -1321,6 +1322,256 @@ func TestControlledPipelineObservedBackgroundFailureSurvivesNormalShutdown(t *te
 	}
 }
 
+func TestControlledPipelineNestedWaitNoneSurvivesContainerCompletion(t *testing.T) {
+	for _, shape := range []string{"parallel", "foreach", "foreach_in_parallel", "parallel_in_foreach", "post_pipeline"} {
+		for _, resume := range []bool{false, true} {
+			if shape == "post_pipeline" && resume {
+				continue // The failed prelude intentionally runs post hooks too.
+			}
+			t.Run(fmt.Sprintf("%s/resume_%t", shape, resume), func(t *testing.T) {
+				root := t.TempDir()
+				workflow := nestedWaitNoneWorkflow(t, root, shape)
+				cfg := DefaultExecutorConfig("nested-sidecar")
+				cfg.ProjectDir, cfg.RunID = root, "run-nested-sidecar"
+				var prior *ExecutionState
+				if resume {
+					initial, err := RunControlledPipeline(context.Background(), workflow, nil, cfg, nil)
+					if err == nil || initial == nil || initial.Status != StatusFailed || len(initial.CommandExecutions) != 1 {
+						t.Fatalf("resume fixture did not stop before admitting the container: %+v %v", initial, err)
+					}
+					prior, err = LoadState(root, cfg.RunID)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				groupTestFile(t, root, "attempt-ready", "ready")
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				observed := make(chan context.Context, 1)
+				var captured atomic.Bool
+				ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(probeCtx context.Context, pgid int) (bool, error) {
+					alive, err := commandGroupHasLiveMembers(pgid)
+					data, readErr := os.ReadFile(filepath.Join(root, "sidecar-leader"))
+					pid, parseErr := strconv.Atoi(string(data))
+					if err == nil && alive && readErr == nil && parseErr == nil && pid == pgid && captured.CompareAndSwap(false, true) {
+						// The foreground sibling holds the container open until
+						// this natural census captures the real sidecar lifetime.
+						observed <- probeCtx
+					}
+					return alive, err
+				})
+				done := startNestedWaitNoneExecution(t, ctx, cancel, root, cfg, workflow, prior, false)
+				awaitCommandCancellationFile(t, filepath.Join(root, "sidecar-ready"), "ready")
+				var sidecarCtx context.Context
+				select {
+				case sidecarCtx = <-observed:
+				case early := <-done:
+					t.Fatalf("nested sidecar ended before supervision began: %+v %v", early.state, early.err)
+				case <-ctx.Done():
+					t.Fatal("nested sidecar never reached its natural process-group census")
+				}
+				groupTestFile(t, root, "container-release", "finish")
+				awaitCommandCancellationFile(t, filepath.Join(root, "consumer-ready"), "ready")
+				if err := sidecarCtx.Err(); err != nil {
+					t.Fatalf("successful container return cancelled healthy background work: %v", err)
+				}
+				pending, err := LoadState(root, cfg.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, receipt := nestedWaitNoneReceipt(t, pending)
+				if pending.Steps["container"].Status != StatusCompleted || receipt.Status != commandExecutionRunning || receipt.Result.RerunOnResume {
+					t.Fatalf("container completion lost its running sidecar receipt: %+v %+v", pending.Steps["container"], receipt)
+				}
+				// A downstream command now asks the real descendant for work.
+				// The census-context assertion above makes the old cancellation
+				// regression deterministic even if its signal delivery is delayed.
+				groupTestFile(t, root, "consumer-release", "finish")
+				awaitCommandCancellationFile(t, filepath.Join(root, "sidecar-served"), "served")
+				settled := awaitNestedWaitNoneReceipt(t, root, cfg.RunID, commandExecutionSettled)
+				if settled.Result.Status != StatusCompleted || settled.Result.Error != nil || settled.Result.RerunOnResume {
+					t.Fatalf("healthy nested sidecar lost natural settlement: %+v", settled)
+				}
+				groupTestFile(t, root, "finish-release", "finish")
+				select {
+				case final := <-done:
+					if final.err != nil || final.state == nil || final.state.Status != StatusCompleted || final.state.Steps["consumer"].Output != "served" {
+						t.Fatalf("downstream command could not consume its nested sidecar: %+v %v", final.state, final.err)
+					}
+				case <-ctx.Done():
+					t.Fatal("nested sidecar workflow did not finish after the downstream handshake")
+				}
+				if data, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(data) != "once\n" {
+					t.Fatalf("nested sidecar was replayed: %q %v", data, err)
+				}
+				if _, err := os.Stat(filepath.Join(root, "sidecar-stopped")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("healthy nested sidecar received an unsolicited signal: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestControlledPipelineNestedWaitNoneHonorsCancellationAndDeadlines(t *testing.T) {
+	for _, tc := range []struct {
+		name, shape, stop string
+		wantStatus        ExecutionStatus
+	}{
+		{"parallel_cancel", "parallel", "cancel", StatusCancelled},
+		{"foreach_cancel", "foreach", "cancel", StatusCancelled},
+		{"parallel_fail_fast", "parallel", "fail_fast", StatusFailed},
+		{"foreach_fail_fast", "foreach", "fail_fast", StatusFailed},
+		{"foreach_break", "foreach", "break", StatusCompleted},
+		{"command_timeout_after_container", "parallel", "command_timeout", StatusFailed},
+		{"parallel_timeout_during_container", "parallel", "group_timeout_pending", StatusFailed},
+		{"parallel_timeout_after_container", "parallel", "group_timeout_completed", StatusFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			workflow := nestedWaitNoneWorkflow(t, root, tc.shape)
+			container := &workflow.Steps[1]
+			var body *[]Step
+			if tc.shape == "parallel" {
+				body = &container.Parallel.Steps
+			} else {
+				body = &container.Foreach.Steps
+			}
+			switch tc.stop {
+			case "fail_fast":
+				container.OnError = ErrorActionFailFast
+				(*body)[1].Command += "; exit 19"
+			case "break":
+				// Authored parallel-foreach break is rejected by the parser.
+				// Exercise the existing runtime defense through Executor.Run
+				// so it still cancels commands retained by that runtime scope.
+				*body = append(*body, Step{ID: "stop", LoopControl: LoopControlBreak})
+			case "command_timeout":
+				(*body)[0].Timeout = Duration{Duration: 2 * time.Second}
+			case "group_timeout_pending", "group_timeout_completed":
+				container.Timeout = Duration{Duration: 2 * time.Second}
+			}
+			// Keep the workflow open after a successful container return so
+			// break/deadline cleanup cannot be mistaken for final run cleanup.
+			workflow.Steps[2].Command = "printf ready > consumer-ready; while [ ! -f finish-release ]; do sleep 0.01; done; printf consumed"
+			groupTestFile(t, root, "attempt-ready", "ready")
+			cfg := DefaultExecutorConfig("nested-sidecar-stop")
+			cfg.ProjectDir, cfg.RunID = root, "run-nested-sidecar-stop"
+			guard, stopGuard := context.WithTimeout(context.Background(), 20*time.Second)
+			ctx, cancel := context.WithCancel(guard)
+			done := startNestedWaitNoneExecution(t, ctx, func() { cancel(); stopGuard() }, root, cfg, workflow, nil, tc.stop == "break")
+			awaitCommandCancellationFile(t, filepath.Join(root, "sidecar-ready"), "ready")
+			if tc.stop != "group_timeout_pending" {
+				groupTestFile(t, root, "container-release", "finish")
+			}
+			if tc.stop != "fail_fast" && tc.stop != "group_timeout_pending" {
+				awaitCommandCancellationFile(t, filepath.Join(root, "consumer-ready"), "ready")
+			}
+			if tc.stop == "cancel" {
+				cancel()
+			}
+			awaitCommandCancellationFile(t, filepath.Join(root, "sidecar-stopped"), "stopped")
+			receipt := awaitNestedWaitNoneReceipt(t, root, cfg.RunID, commandExecutionSettled)
+			if receipt.SettledAt.IsZero() || !receipt.Result.RerunOnResume || receipt.Result.Error == nil {
+				t.Fatalf("requested %s lost settlement or its retry evidence: %+v", tc.stop, receipt)
+			}
+			deadline := strings.Contains(tc.stop, "timeout")
+			if deadline {
+				if receipt.Result.Status != StatusFailed || receipt.Result.Error.Type != "timeout" || !strings.Contains(receipt.Result.Error.Details, context.DeadlineExceeded.Error()) {
+					t.Fatalf("nested deadline was replaced by ordinary cancellation: %+v", receipt)
+				}
+			} else if receipt.Result.Status != StatusCancelled || receipt.Result.Error.Type != "cancelled" {
+				t.Fatalf("actual %s did not cancel its nested sidecar: %+v", tc.stop, receipt)
+			}
+			assertNestedWaitNoneDescendantStopped(t, root)
+			groupTestFile(t, root, "sidecar-request", "old work must be gone")
+			groupTestFile(t, root, "finish-release", "finish")
+			select {
+			case final := <-done:
+				if final.state == nil || final.state.Status != tc.wantStatus || (final.err == nil) != (tc.wantStatus == StatusCompleted) {
+					t.Fatalf("nested %s terminal outcome: %+v %v, want %s", tc.stop, final.state, final.err, tc.wantStatus)
+				}
+				if deadline && !errors.Is(final.err, context.DeadlineExceeded) {
+					t.Fatalf("nested deadline lost its terminal cause: %v", final.err)
+				}
+			case <-guard.Done():
+				t.Fatal("nested cancellation did not join before its caller returned")
+			}
+			if data, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(data) != "once\n" {
+				t.Fatalf("nested cancellation retried background effects: %q %v", data, err)
+			}
+			if _, err := os.Stat(filepath.Join(root, "sidecar-served")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("settled nested cancellation allowed a late side effect: %v", err)
+			}
+		})
+	}
+}
+
+func TestControlledPipelineNestedWaitNoneUncertaintyRefusesReplay(t *testing.T) {
+	for _, shape := range []string{"parallel", "foreach"} {
+		t.Run(shape, func(t *testing.T) {
+			root := t.TempDir()
+			workflow := nestedWaitNoneWorkflow(t, root, shape)
+			workflow.Steps[2].Command = "printf ready > consumer-ready; while [ ! -f finish-release ]; do sleep 0.01; done"
+			groupTestFile(t, root, "attempt-ready", "ready")
+			cfg := DefaultExecutorConfig("nested-sidecar-uncertain")
+			cfg.ProjectDir, cfg.RunID = root, "run-nested-sidecar-uncertain"
+			guard, stopGuard := context.WithTimeout(context.Background(), 20*time.Second)
+			ctx, cancel := context.WithCancel(guard)
+			injected := errors.New("injected unrelated procfs failure during nested sidecar cleanup")
+			var failCensus atomic.Bool
+			var failures atomic.Int32
+			ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(pgid int) (bool, error) {
+				if failCensus.Load() {
+					data, readErr := os.ReadFile(filepath.Join(root, "sidecar-leader"))
+					pid, parseErr := strconv.Atoi(string(data))
+					if readErr == nil && parseErr == nil && pgid == pid {
+						failures.Add(1)
+						return false, injected
+					}
+				}
+				return commandGroupHasLiveMembers(pgid)
+			})
+			done := startNestedWaitNoneExecution(t, ctx, func() { cancel(); stopGuard() }, root, cfg, workflow, nil, false)
+			awaitCommandCancellationFile(t, filepath.Join(root, "sidecar-ready"), "ready")
+			groupTestFile(t, root, "container-release", "finish")
+			awaitCommandCancellationFile(t, filepath.Join(root, "consumer-ready"), "ready")
+			failCensus.Store(true)
+			cancel()
+			select {
+			case final := <-done:
+				if final.err == nil || final.state == nil || final.state.Status != StatusCancelled || !errors.Is(final.err, injected) {
+					t.Fatalf("nested observation failure became success or lost its cause: %+v %v", final.state, final.err)
+				}
+			case <-guard.Done():
+				t.Fatal("uncertain nested cancellation did not finish its bounded cleanup")
+			}
+			prior, err := LoadState(root, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id, receipt := nestedWaitNoneReceipt(t, prior)
+			if failures.Load() < 2 || receipt.Status != commandExecutionUnresolved || !receipt.SettledAt.IsZero() || receipt.Result.RerunOnResume ||
+				receipt.Result.Error == nil || !strings.Contains(receipt.Result.Error.Details, injected.Error()) {
+				t.Fatalf("nested cancellation fabricated settlement or replay permission: %+v failures=%d", receipt, failures.Load())
+			}
+			if !prior.Steps[id].RerunOnResume {
+				t.Fatal("fixture lost the scheduler's cancellation retry intent")
+			}
+			// The scheduler wants the sidecar back, but only its launch
+			// journal can authorize replay. An unresolved receipt must win.
+			before := commandOperatorRecoveryBytes(t, cfg)
+			if _, err := NewExecutor(cfg).Resume(context.Background(), workflow, prior, nil); err == nil || !strings.Contains(err.Error(), "unresolved launch") {
+				t.Fatalf("ordinary resume replayed the uncertain nested sidecar: %v", err)
+			}
+			if !bytes.Equal(before, commandOperatorRecoveryBytes(t, cfg)) {
+				t.Fatal("rejected resume rewrote the nested uncertainty fence")
+			}
+			if data, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(data) != "once\n" {
+				t.Fatalf("uncertain nested sidecar repeated external effects: %q %v", data, err)
+			}
+		})
+	}
+}
+
 func TestControlledPipelineHandledObservationFailurePreservesRecovery(t *testing.T) {
 	requireCommandPIDFDObservation(t)
 	for _, selector := range []bool{false, true} {
@@ -1539,5 +1790,148 @@ func TestControlledPipelineHandledObservationFailurePreservesRecovery(t *testing
 				}
 			}
 		})
+	}
+}
+
+func nestedWaitNoneWorkflow(t *testing.T, root, shape string) *Workflow {
+	t.Helper()
+	groupTestFile(t, root, "nested-sidecar.sh", `trap 'printf stopped > sidecar-stopped; exit 0' TERM
+printf '%s' "$$" > sidecar-pid
+printf ready > sidecar-ready
+while [ ! -f sidecar-request ]; do sleep 0.01; done
+printf served > sidecar-served
+`)
+	body := []Step{
+		{ID: "sidecar", Wait: WaitNone, Command: "printf 'once\\n' >> launches; printf '%s' \"$$\" > sidecar-leader; /bin/sh nested-sidecar.sh &"},
+		{ID: "hold", DependsOn: []string{"sidecar"}, Command: "while [ ! -f container-release ]; do sleep 0.01; done"},
+	}
+	foreach := func(id string, children []Step) Step {
+		return Step{ID: id, Foreach: &ForeachConfig{Items: `["only"]`, Parallel: true, MaxConcurrent: 1, Steps: children}}
+	}
+	parallel := func(id string, children []Step) Step {
+		return Step{ID: id, Parallel: ParallelSpec{Steps: children}}
+	}
+	var container Step
+	switch shape {
+	case "parallel", "post_pipeline":
+		container = parallel("container", body)
+	case "foreach":
+		container = foreach("container", body)
+	case "foreach_in_parallel":
+		container = parallel("container", []Step{foreach("fanout", body)})
+	case "parallel_in_foreach":
+		container = foreach("container", []Step{parallel("fanout", body)})
+	default:
+		t.Fatalf("unknown nested sidecar fixture shape %q", shape)
+	}
+	container.DependsOn = []string{"prepare"}
+	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "nested-sidecar", Settings: DefaultWorkflowSettings(), Steps: []Step{
+		{ID: "prepare", Command: "test -f attempt-ready"},
+		container,
+		{ID: "consumer", DependsOn: []string{"container"}, Command: "printf ready > consumer-ready; while [ ! -f consumer-release ]; do sleep 0.01; done; " +
+			"printf request > sidecar-request; while [ ! -f sidecar-served ] && [ ! -f sidecar-stopped ]; do sleep 0.01; done; " +
+			"test -f sidecar-served || exit 27; while [ ! -f finish-release ]; do sleep 0.01; done; cat sidecar-served"},
+	}}
+	if shape == "post_pipeline" {
+		workflow.PostPipelineSteps = workflow.Steps[2:]
+		workflow.Steps = workflow.Steps[:2]
+	}
+	return workflow
+}
+
+type nestedWaitNoneOutcome struct {
+	state *ExecutionState
+	err   error
+}
+
+func startNestedWaitNoneExecution(t *testing.T, ctx context.Context, cancel context.CancelFunc, root string, cfg ExecutorConfig, workflow *Workflow, prior *ExecutionState, runtimeDefense bool) <-chan nestedWaitNoneOutcome {
+	t.Helper()
+	done := make(chan nestedWaitNoneOutcome, 1)
+	go func() {
+		var state *ExecutionState
+		var err error
+		if runtimeDefense {
+			state, err = NewExecutor(cfg).Run(ctx, workflow, nil, nil)
+		} else if prior == nil {
+			state, err = RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+		} else {
+			state, err = NewExecutor(cfg).Resume(ctx, workflow, prior, nil)
+		}
+		done <- nestedWaitNoneOutcome{state, err}
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		for _, name := range []string{"container-release", "consumer-release", "sidecar-request", "finish-release"} {
+			_ = os.WriteFile(filepath.Join(root, name), []byte("finish"), 0600)
+		}
+		select {
+		case <-done:
+		case <-time.After(15 * time.Second):
+			t.Error("nested sidecar fixture did not join its process group")
+		}
+	})
+	return done
+}
+
+func assertNestedWaitNoneDescendantStopped(t *testing.T, root string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, "sidecar-pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(string(data))
+	if err != nil || pid <= 0 {
+		t.Fatalf("invalid descendant identity %q: %v", data, err)
+	}
+	// The group census requires an unreaped owned leader. After settlement
+	// inspect the actual descendant instead; zombies cannot execute work.
+	data, err = os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, state, err := parseCommandGroupStat(data, pid)
+	if err != nil || (state != "Z" && state != "X") {
+		t.Fatalf("settled nested command left descendant %d executing: state=%q error=%v", pid, state, err)
+	}
+}
+
+func nestedWaitNoneReceipt(t *testing.T, state *ExecutionState) (string, CommandExecutionState) {
+	t.Helper()
+	var id string
+	var receipt CommandExecutionState
+	for key, record := range state.CommandExecutions {
+		if record.Background {
+			if id != "" {
+				t.Fatalf("nested sidecar fixture has multiple background receipts: %+v", state.CommandExecutions)
+			}
+			id, receipt = key, record
+		}
+	}
+	if id == "" {
+		t.Fatal("nested sidecar fixture lost its background receipt")
+	}
+	return id, receipt
+}
+
+func awaitNestedWaitNoneReceipt(t *testing.T, root, runID, status string) CommandExecutionState {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		state, err := LoadState(root, runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, receipt := nestedWaitNoneReceipt(t, state)
+		if receipt.Status == status {
+			return receipt
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("nested sidecar receipt did not reach %q: %+v", status, receipt)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

@@ -186,7 +186,8 @@ func (g *parallelTaskGraph) run(
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	ctx, finish := withCommandCancellationScope(ctx, cancel)
+	defer finish()
 	outcomes := make([]parallelTaskOutcome, len(g.tasks))
 	started := make([]bool, len(g.tasks))
 	type completion struct {

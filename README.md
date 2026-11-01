@@ -856,6 +856,15 @@ background receipts follow the existing resume reconciliation: the failed comman
 runs again while completed dependent steps retain their results. Uncertain
 settlement still refuses replay.
 
+A background command inside a parallel group or parallel foreach keeps running
+after its container finishes normally. It remains available to downstream steps
+and post-pipeline hooks until workflow finalization stops and joins it. Explicit
+cancellation and fail-fast still stop affected commands.
+An explicit command or enclosing parallel-group deadline remains in force even
+after the container returns; expiry is recorded as a background failure. Moving a
+sidecar into a nested container therefore does not shorten its healthy lifetime
+or remove its cancellation and timeout boundaries.
+
 For a command with `wait: none`, an explicit step `timeout` applies to the
 background process's whole lifetime. Expiry requests normal command cleanup,
 records a timeout outcome, and prevents the final workflow from reporting success.

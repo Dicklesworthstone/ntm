@@ -46,6 +46,63 @@ var commandHeartbeatInterval = 30 * time.Second
 // that post-start save. Production contexts never carry it.
 type commandStartedTestHookKey struct{}
 
+// A scheduler joins its foreground workers before finishing, but wait:none
+// commands can still own processes after their launch acknowledgements return.
+// Retain the native cancellation contexts until those cleanup workers finish.
+// Explicit cancellation remains immediate; only normal scope exit is deferred.
+type commandCancellationScopeKey struct{}
+
+type commandCancellationScope struct {
+	parent   *commandCancellationScope
+	cancel   context.CancelFunc
+	mu       sync.Mutex
+	retained int
+	finished bool
+}
+
+func withCommandCancellationScope(ctx context.Context, cancel context.CancelFunc) (context.Context, context.CancelFunc) {
+	parent, _ := ctx.Value(commandCancellationScopeKey{}).(*commandCancellationScope)
+	scope := &commandCancellationScope{parent: parent, cancel: cancel}
+	return context.WithValue(ctx, commandCancellationScopeKey{}, scope), scope.finish
+}
+
+func (scope *commandCancellationScope) finish() {
+	scope.mu.Lock()
+	scope.finished = true
+	cancel := scope.retained == 0
+	scope.mu.Unlock()
+	if cancel {
+		scope.cancel()
+	}
+}
+
+// Retain every enclosing scheduler and timeout scope before returning a
+// background launch. Keeping the original context chain preserves values,
+// cancellation causes, and container deadlines without reparenting processes.
+func retainCommandCancellationScopes(ctx context.Context) context.CancelFunc {
+	var scopes []*commandCancellationScope
+	for scope, _ := ctx.Value(commandCancellationScopeKey{}).(*commandCancellationScope); scope != nil; scope = scope.parent {
+		scope.mu.Lock()
+		scope.retained++
+		scope.mu.Unlock()
+		scopes = append(scopes, scope)
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			for _, scope := range scopes {
+				scope.mu.Lock()
+				scope.retained--
+				cancel := scope.finished && scope.retained == 0
+				scope.mu.Unlock()
+				if cancel {
+					scope.cancel()
+				}
+			}
+		})
+	}
+}
+
 // ExecutorConfig configures the executor behavior
 type ExecutorConfig struct {
 	Session          string        // Required: tmux session name
@@ -782,9 +839,11 @@ func (e *Executor) executeWorkflow(ctx context.Context, workflow *Workflow) erro
 
 	// stepCtx cancels in-flight siblings on fatal errors (fail / fail_fast /
 	// retry-exhausted) without tearing down the workflow ctx used by
-	// post-pipeline steps and finalization.
+	// post-pipeline steps and finalization. Normal main-phase completion
+	// retains sidecars until finalization cancels and joins their workers.
 	stepCtx, cancelSteps := context.WithCancel(ctx)
-	defer cancelSteps()
+	stepCtx, finishSteps := withCommandCancellationScope(stepCtx, cancelSteps)
+	defer finishSteps()
 
 	type stepDone struct {
 		stepID string
@@ -979,6 +1038,9 @@ scheduler:
 		waitOne()
 	}
 
+	if fatalErr != nil {
+		cancelSteps()
+	}
 	return fatalErr
 }
 
@@ -1681,15 +1743,20 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 			backgroundCtx, backgroundCancel = cmdCtx, cmdCancel
 			cancelCommandContext = false
 		}
+		releaseScopes := retainCommandCancellationScopes(backgroundCtx)
 		e.backgroundCommandWG.Add(1)
 		go func() {
 			defer e.backgroundCommandWG.Done()
+			defer releaseScopes()
 			defer backgroundCancel()
 			cleanup := waitCommandWithProcessGroupCleanup(backgroundCtx, cmd)
 			// A later workflow cancellation must not erase the deadline that
 			// actually stopped this command. Natural completion is still a
 			// success if its deadline fires only after the waiter returned.
-			timedOut := cleanup.Cancelled && context.Cause(backgroundCtx) == timeoutCause
+			// An enclosing container deadline also owns the retained sidecar
+			// lifetime after that container's foreground work has completed.
+			deadlineCause := context.Cause(backgroundCtx)
+			timedOut := cleanup.Cancelled && errors.Is(deadlineCause, context.DeadlineExceeded)
 			cleanupErr := cleanup.Err
 			if !cleanup.Settled {
 				// Keep the launch receipt unresolved and also carry the
@@ -1698,7 +1765,7 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 				cleanupErr = errors.Join(cleanupErr, uncertainCommandExecutionError(stepID, backgroundRecord.ProcessID))
 			}
 			if timedOut {
-				cleanupErr = errors.Join(timeoutCause, cleanupErr)
+				cleanupErr = errors.Join(deadlineCause, cleanupErr)
 			}
 			// Expected workflow shutdown can stop a healthy sidecar. A natural
 			// failure, including one observed before shutdown began signalling,
@@ -1744,8 +1811,12 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 					if timedOut {
 						backgroundRecord.Result.Status = StatusFailed
 						errorType = "timeout"
-						reason = fmt.Sprintf("background command timed out after %s", timeout)
-						hint = "increase step.timeout or reduce command runtime"
+						reason = "background command exceeded an enclosing execution deadline"
+						hint = "inspect the enclosing workflow or container timeout"
+						if deadlineCause == timeoutCause {
+							reason = fmt.Sprintf("background command timed out after %s", timeout)
+							hint = "increase step.timeout or reduce command runtime"
+						}
 						if !cleanup.Settled {
 							hint = "inspect the command group before resuming; settlement is uncertain even though its timeout elapsed"
 						}
@@ -2728,7 +2799,9 @@ func (e *Executor) executeParallel(ctx context.Context, step *Step, workflow *Wo
 	if step.Timeout.Duration > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, step.Timeout.Duration)
-		defer cancel()
+		var finish context.CancelFunc
+		ctx, finish = withCommandCancellationScope(ctx, cancel)
+		defer finish()
 	}
 
 	e.emitProgress("parallel_start", step.ID,

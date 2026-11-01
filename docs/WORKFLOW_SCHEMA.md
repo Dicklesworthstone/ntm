@@ -609,6 +609,15 @@ Define when a step is considered complete:
 | `time` | Wait for timeout duration only |
 | `none` | Fire and forget (don't wait) |
 
+For shell commands, `wait: none` completes the step after launching its owned
+process group. Normal completion of an enclosing parallel group or parallel
+foreach does not stop that command. It can serve downstream steps and
+`post_pipeline` hooks until workflow finalization cancels and joins it.
+Explicit cancellation and fail-fast still cancel the affected process groups.
+Explicit command and enclosing parallel-group deadlines
+remain active after a container returns; deadline expiry is a background failure,
+and unresolved cleanup continues to prevent automatic replay.
+
 ## Error Handling
 
 ### Step-Level Error Handling
@@ -700,12 +709,16 @@ worker creation as well as active iteration bodies. The effective width is
 capped by `settings.limits.max_concurrent_foreach` and the number of items in
 that fan-out. Queued items remain in the plan list until a worker slot opens.
 
-Cancellation, `break`, and `on_error: fail_fast` stop further iteration launches.
-The executor joins active workers and their owned command cleanup before
-returning. Results retain item order even when workers finish out of order;
+Cancellation and `on_error: fail_fast` stop further iteration launches.
+The executor joins active iteration workers before returning from the loop.
+Background command cleanup finishes before the workflow publishes its final
+outcome. Results retain item order even when workers finish out of order;
 filtered items and completed iterations reused on resume retain their own skip
 classifications. Pane assignment, filters, and iteration substitutions are
 resolved before any iteration body starts.
+
+Authored `loop_control: break` remains limited to sequential foreach; parallel
+foreach rejects it because other admitted iterations may already have effects.
 
 ## Conditional Steps
 
