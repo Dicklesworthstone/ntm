@@ -134,6 +134,59 @@ func writeRequestInspectionLimit(w http.ResponseWriter, source, requestID string
 		}, requestID)
 }
 
+// admitDecodedRequest checks values revealed by a handler's secondary parser,
+// such as YAML inside a JSON string. Call it before validation diagnostics or
+// side effects can consume those values. The JSON copy is only for inspection;
+// neither it nor scanner output replaces the submitted content.
+func (s *Server) admitDecodedRequest(w http.ResponseWriter, r *http.Request, value any, source string) bool {
+	cfg := s.requestRedactionConfig(r)
+	if !enforcesRequestRedaction(cfg) {
+		return true
+	}
+	reqID := requestIDFromContext(r.Context())
+	data, err := json.Marshal(value)
+	if err != nil {
+		writeErrorResponse(w, http.StatusUnprocessableEntity, "REDACTION_INSPECTION_FAILED",
+			"decoded request content could not be inspected; request values were not changed",
+			map[string]interface{}{"source": source}, reqID)
+		return false
+	}
+	cfg.Mode = redaction.ModeBlock
+	result := scanServerJSON(string(data), cfg)
+	if !result.Blocked && len(result.Findings) == 0 {
+		return true
+	}
+	summary := &RedactionSummary{
+		RequestID:         reqID,
+		Path:              redactRequestDiagnostic(r.URL.Path, cfg),
+		Method:            redactRequestDiagnostic(r.Method, cfg),
+		Blocked:           true,
+		InspectionLimited: result.LimitExceeded,
+	}
+	if result.LimitExceeded {
+		logRedactionSummary(summary)
+		writeRequestInspectionLimit(w, source, reqID)
+		return false
+	}
+	summary.RequestFinds = len(result.Findings)
+	summary.Categories = make(map[string]int)
+	for _, finding := range result.Findings {
+		summary.Categories[string(finding.Category)]++
+	}
+	logRedactionSummary(summary)
+	// Decoded offsets do not identify locations in the original request. Keep
+	// only category counts and a static source label, never values or field names.
+	writeErrorResponse(w, http.StatusUnprocessableEntity, "SECRETS_DETECTED",
+		"decoded request content contains sensitive values; refusing to substitute redaction placeholders",
+		map[string]interface{}{
+			"source":         source,
+			"findings_count": summary.RequestFinds,
+			"categories":     summary.Categories,
+			"hint":           "Remove sensitive content from the submitted document and retry; request values were not changed.",
+		}, reqID)
+	return false
+}
+
 // redactRequestDiagnostic protects an observational copy only. Ambiguous
 // custom-pattern replacements withhold that field, never its operational value.
 func redactRequestDiagnostic(value string, cfg redaction.Config) string {

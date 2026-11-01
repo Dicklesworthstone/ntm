@@ -2,6 +2,7 @@ package serve
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"log"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
@@ -409,6 +411,77 @@ func assertWiringSecretRefusal(t *testing.T, rec *httptest.ResponseRecorder) {
 	}
 }
 
+type policyYAMLSecretFixture struct {
+	name           string
+	content        string
+	invalidPattern bool
+}
+
+func policyYAMLSecretFixtures() []policyYAMLSecretFixture {
+	prefix := "version: 1\nblocked:\n  - pattern: danger\n    reason: "
+	suffix := wiringFakeSecret[1:]
+	return []policyYAMLSecretFixture{
+		{name: "hex escape", content: prefix + "\"\\x73" + suffix + "\"\n"},
+		{name: "Unicode escape", content: prefix + "\"\\u0073" + suffix + "\"\n"},
+		{name: "long Unicode escape", content: prefix + "\"\\U00000073" + suffix + "\"\n"},
+		{name: "binary scalar", content: prefix + "!!binary " + base64.StdEncoding.EncodeToString([]byte(wiringFakeSecret)) + "\n"},
+		{
+			name: "invalid regex with decoded credential",
+			content: "version: 1\nblocked:\n  - pattern: \"[\\x73" + suffix +
+				"\"\n    reason: ordinary reason\n",
+			invalidPattern: true,
+		},
+	}
+}
+
+// These fixtures must cross the actual YAML decoder boundary. If outer JSON
+// admission already detects one, it cannot prove the typed-policy guard works.
+func requirePolicyOuterJSONClean(t *testing.T, content string, cfg redaction.Config) {
+	t.Helper()
+	encoded, err := json.Marshal(PolicyUpdateRequest{Content: content})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Mode = redaction.ModeBlock
+	result := redaction.ScanJSONAndRedactWithLimits(string(encoded), cfg, redaction.DefaultScanLimits())
+	if result.Blocked || result.LimitExceeded || len(result.Findings) != 0 {
+		t.Fatalf("fixture did not reach the YAML decoding boundary: blocked=%t limited=%t findings=%d",
+			result.Blocked, result.LimitExceeded, len(result.Findings))
+	}
+}
+
+func assertDecodedPolicyRefusal(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	assertWiringSecretRefusal(t, rec)
+	var response APIError
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	count, _ := response.Details["findings_count"].(float64)
+	categories, _ := response.Details["categories"].(map[string]interface{})
+	if response.Details["source"] != "policy" || count < 1 || len(categories) == 0 {
+		t.Fatal("decoded policy refusal lost its safe source, count, or category diagnostics")
+	}
+	if _, exists := response.Details["findings"]; exists {
+		t.Fatal("decoded policy findings claimed offsets into the original request")
+	}
+}
+
+func assertPolicyDiagnosticsSafe(t *testing.T, rec *httptest.ResponseRecorder, logs *lockedBuffer) {
+	t.Helper()
+	diagnostics := rec.Body.String() + logs.String()
+	for _, sensitive := range []string{
+		wiringFakeSecret,
+		wiringFakeSecret[:7], // YAML type errors can expose only a truncated prefix.
+		wiringFakeSecret[1:],
+		base64.StdEncoding.EncodeToString([]byte(wiringFakeSecret)),
+	} {
+		if strings.Contains(diagnostics, sensitive) {
+			t.Fatal("policy diagnostics exposed a submitted credential or encoded representation")
+		}
+	}
+}
+
 // Policy text is written verbatim to the effective policy file. A placeholder
 // inside the YAML remains syntactically valid and would silently change the
 // policy, so merely preserving the surrounding JSON is insufficient.
@@ -426,7 +499,17 @@ func TestRedactionRouterPreservesPolicyOnRejectedRequest(t *testing.T) {
 			if err := os.WriteFile(policyPath, []byte(original), 0600); err != nil {
 				t.Fatal(err)
 			}
-			s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: mode}})
+			cfg := redaction.Config{Mode: mode}
+			s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: cfg})
+			writes := 0
+			s.policyWriteFile = func(path string, content []byte, mode os.FileMode) error {
+				writes++
+				return os.WriteFile(path, content, mode)
+			}
+			var logs lockedBuffer
+			previous := log.Writer()
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(previous) })
 			content := "version: 1\nblocked:\n  - pattern: danger\n    reason: " + wiringFakeSecret + "\n"
 			for _, contentType := range []string{"application/json", "", "text/plain", "application/vnd.ntm+json"} {
 				req := wiringJSONRequest(t, http.MethodPut, "/api/v1/policy/", PolicyUpdateRequest{Content: content})
@@ -441,19 +524,211 @@ func TestRedactionRouterPreservesPolicyOnRejectedRequest(t *testing.T) {
 				}
 			}
 
+			for _, fixture := range policyYAMLSecretFixtures() {
+				t.Run(fixture.name, func(t *testing.T) {
+					requirePolicyOuterJSONClean(t, fixture.content, cfg)
+					decoded, err := policy.DecodeYAML([]byte(fixture.content))
+					if err != nil || len(decoded.Blocked) != 1 {
+						t.Fatal("encoded fixture did not decode to one policy rule")
+					}
+					if fixture.invalidPattern {
+						if decoded.Blocked[0].Pattern != "["+wiringFakeSecret || decoded.Validate() == nil {
+							t.Fatal("fixture must decode a credential-bearing invalid regex")
+						}
+					} else if decoded.Blocked[0].Reason != wiringFakeSecret || decoded.Validate() != nil {
+						t.Fatal("fixture must decode a valid policy containing the complete credential")
+					}
+					for _, route := range []struct{ method, path string }{
+						{http.MethodPut, "/api/v1/policy/"},
+						{http.MethodPost, "/api/v1/policy/validate"},
+					} {
+						req := wiringJSONRequest(t, route.method, route.path, PolicyUpdateRequest{Content: fixture.content})
+						req.Header.Set("Idempotency-Key", "policy-redaction-integrity")
+						rec := httptest.NewRecorder()
+						s.Router().ServeHTTP(rec, req)
+						assertDecodedPolicyRefusal(t, rec)
+						assertPolicyDiagnosticsSafe(t, rec, &logs)
+						got, err := os.ReadFile(policyPath)
+						if err != nil || string(got) != original || writes != 0 {
+							t.Fatalf("decoded policy refusal reached storage: writes=%d read_error=%v", writes, err)
+						}
+					}
+				})
+			}
+
 			// A corrected request can reuse the key: refusal must not reserve a
 			// successful replay entry or write a replacement credential.
-			content = "version: 1\nblocked:\n  - pattern: danger\n    reason: keep this exact reason\n"
-			req := wiringJSONRequest(t, http.MethodPut, "/api/v1/policy/", PolicyUpdateRequest{Content: content})
-			req.Header.Set("Idempotency-Key", "policy-redaction-integrity")
-			rec := httptest.NewRecorder()
-			s.Router().ServeHTTP(rec, req)
-			if rec.Code != http.StatusOK || !json.Valid(rec.Body.Bytes()) {
-				t.Fatalf("ordinary policy update failed: %d %s", rec.Code, rec.Body)
+			content = "# Preserve this comment and spelling.\nversion: 1\nblocked:\n  - pattern: 'danger'\n    reason: \"  keep café exactly  \"\n"
+			for attempt := 0; attempt < 2; attempt++ {
+				req := wiringJSONRequest(t, http.MethodPut, "/api/v1/policy/", PolicyUpdateRequest{Content: content})
+				req.Header.Set("Idempotency-Key", "policy-redaction-integrity")
+				rec := httptest.NewRecorder()
+				s.Router().ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK || !json.Valid(rec.Body.Bytes()) ||
+					(rec.Header().Get("X-Idempotent-Replay") == "true") != (attempt == 1) {
+					t.Fatalf("corrected policy attempt=%d status=%d replay=%q", attempt, rec.Code, rec.Header().Get("X-Idempotent-Replay"))
+				}
 			}
 			got, err := os.ReadFile(policyPath)
+			if err != nil || string(got) != content || writes != 1 {
+				t.Fatalf("ordinary policy was not saved exactly once: writes=%d read_error=%v", writes, err)
+			}
+		})
+	}
+}
+
+func TestRedactionRouterRefusesDecodedPolicyBeforeCreatingDestination(t *testing.T) {
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		t.Run(string(mode), func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Chdir(home) // Prevent an unrelated project policy from becoming the destination.
+			cfg := redaction.Config{Mode: mode}
+			s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: cfg})
+			writes := 0
+			s.policyWriteFile = func(path string, content []byte, mode os.FileMode) error {
+				writes++
+				return os.WriteFile(path, content, mode)
+			}
+			fixture := policyYAMLSecretFixtures()[3] // The binary scalar needs actual YAML decoding.
+			requirePolicyOuterJSONClean(t, fixture.content, cfg)
+			rec := httptest.NewRecorder()
+			s.Router().ServeHTTP(rec, wiringJSONRequest(t, http.MethodPut, "/api/v1/policy/", PolicyUpdateRequest{Content: fixture.content}))
+			assertDecodedPolicyRefusal(t, rec)
+			if _, err := os.Stat(filepath.Join(home, ".ntm")); !os.IsNotExist(err) || writes != 0 {
+				t.Fatalf("refused policy created its destination or reached a write: writes=%d stat_error=%v", writes, err)
+			}
+		})
+	}
+}
+
+func TestRedactionRouterDecodedPolicyPermittedModes(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  redaction.Config
+	}{
+		{"off", redaction.Config{Mode: redaction.ModeOff}},
+		{"warn", redaction.Config{Mode: redaction.ModeWarn}},
+		{"redact with decoded allowlist", redaction.Config{Mode: redaction.ModeRedact, Allowlist: []string{"^" + regexp.QuoteMeta(wiringFakeSecret) + "$"}}},
+		{"block with decoded allowlist", redaction.Config{Mode: redaction.ModeBlock, Allowlist: []string{"^" + regexp.QuoteMeta(wiringFakeSecret) + "$"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Chdir(home)
+			s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: tc.cfg})
+			content := policyYAMLSecretFixtures()[0].content
+			rec := httptest.NewRecorder()
+			s.Router().ServeHTTP(rec, wiringJSONRequest(t, http.MethodPut, "/api/v1/policy/", PolicyUpdateRequest{Content: content}))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("permitted policy was refused: status=%d", rec.Code)
+			}
+			got, err := os.ReadFile(filepath.Join(home, ".ntm", "policy.yaml"))
 			if err != nil || string(got) != content {
-				t.Fatalf("ordinary policy was not saved exactly: %q, %v", got, err)
+				t.Fatalf("permitted YAML was rewritten instead of saved exactly: read_error=%v", err)
+			}
+			decoded, err := policy.DecodeYAML(got)
+			if err != nil || len(decoded.Blocked) != 1 || decoded.Blocked[0].Reason != wiringFakeSecret {
+				t.Fatal("permitted decoded policy value was silently changed")
+			}
+			rec = httptest.NewRecorder()
+			s.Router().ServeHTTP(rec, wiringJSONRequest(t, http.MethodPost, "/api/v1/policy/validate", PolicyValidateRequest{Content: content}))
+			var response struct {
+				Success bool
+				Valid   bool
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || rec.Code != http.StatusOK || !response.Success || !response.Valid {
+				t.Fatalf("permitted supplied policy validation failed: status=%d parse_error=%v", rec.Code, err)
+			}
+		})
+	}
+}
+
+func TestRedactionRouterDecodedPolicyParseFailure(t *testing.T) {
+	content := "version: \"\\x73" + wiringFakeSecret[1:] + "\"\n"
+	if _, err := policy.DecodeYAML([]byte(content)); err == nil || !strings.Contains(err.Error(), wiringFakeSecret[:7]) {
+		t.Fatal("fixture must produce a YAML type error containing decoded credential material")
+	}
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		t.Run(string(mode), func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Chdir(home)
+			cfg := redaction.Config{Mode: mode}
+			requirePolicyOuterJSONClean(t, content, cfg)
+			s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: cfg})
+			var logs lockedBuffer
+			previous := log.Writer()
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(previous) })
+			for _, route := range []struct {
+				method, path string
+				status       int
+			}{
+				{http.MethodPut, "/api/v1/policy/", http.StatusBadRequest},
+				{http.MethodPost, "/api/v1/policy/validate", http.StatusOK},
+			} {
+				rec := httptest.NewRecorder()
+				s.Router().ServeHTTP(rec, wiringJSONRequest(t, route.method, route.path, PolicyUpdateRequest{Content: content}))
+				if rec.Code != route.status || !json.Valid(rec.Body.Bytes()) ||
+					!strings.Contains(rec.Body.String(), "invalid YAML: check policy syntax, field names, and value types") {
+					t.Fatalf("YAML parse error lost its safe actionable diagnostic: status=%d", rec.Code)
+				}
+				assertPolicyDiagnosticsSafe(t, rec, &logs)
+			}
+			if _, err := os.Stat(filepath.Join(home, ".ntm")); !os.IsNotExist(err) {
+				t.Fatalf("invalid policy created a destination: %v", err)
+			}
+		})
+	}
+}
+
+func TestRedactionRouterDecodedPolicyInspectionLimit(t *testing.T) {
+	const sentinel = "SYNTHETIC-PRIVATE!"
+	decodedValue := strings.Repeat(sentinel, redaction.DefaultScanLimits().MaxCandidates+1)
+	content := "version: 1\nblocked:\n  - pattern: danger\n    reason: !!binary " +
+		base64.StdEncoding.EncodeToString([]byte(decodedValue)) + "\n"
+	decoded, err := policy.DecodeYAML([]byte(content))
+	if err != nil || len(decoded.Blocked) != 1 || decoded.Blocked[0].Reason != decodedValue {
+		t.Fatal("binary fixture did not decode to the full dense custom-pattern subject")
+	}
+	decodedJSON, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
+		t.Run(string(mode), func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Chdir(home)
+			cfg := redaction.Config{Mode: mode, ExtraPatterns: map[redaction.Category][]string{"DECODED_YAML": {regexp.QuoteMeta(sentinel)}}}
+			requirePolicyOuterJSONClean(t, content, cfg)
+			requireServeScanLimit(t, string(decodedJSON), cfg)
+			s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: cfg})
+			var logs lockedBuffer
+			previous := log.Writer()
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(previous) })
+			for _, route := range []struct{ method, path string }{
+				{http.MethodPut, "/api/v1/policy/"},
+				{http.MethodPost, "/api/v1/policy/validate"},
+			} {
+				rec := httptest.NewRecorder()
+				req := wiringJSONRequest(t, route.method, route.path, PolicyUpdateRequest{Content: content})
+				req.Header.Set("Idempotency-Key", "decoded-policy-budget")
+				s.Router().ServeHTTP(rec, req)
+				assertRequestScanLimit(t, rec, "policy")
+				if strings.Contains(rec.Body.String()+logs.String(), strings.Repeat(sentinel, 4)) {
+					t.Fatal("incomplete policy inspection exposed decoded source content")
+				}
+			}
+			if _, err := os.Stat(filepath.Join(home, ".ntm")); !os.IsNotExist(err) {
+				t.Fatalf("incomplete policy inspection created a destination: %v", err)
 			}
 		})
 	}

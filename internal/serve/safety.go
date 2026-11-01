@@ -569,6 +569,15 @@ type PolicyUpdateRequest struct {
 	Content string `json:"content"` // YAML content
 }
 
+func (s *Server) policyYAMLDiagnostic(r *http.Request, err error) string {
+	if enforcesRequestRedaction(s.requestRedactionConfig(r)) {
+		// Decoder errors can quote a decoded scalar or a truncated secret that
+		// output detection cannot recognize. No typed value exists to inspect.
+		return "invalid YAML: check policy syntax, field names, and value types"
+	}
+	return fmt.Sprintf("invalid YAML: %v", err)
+}
+
 // PolicyUpdateResponse is the REST response for policy update.
 type PolicyUpdateResponse struct {
 	PolicyPath string              `json:"policy_path"`
@@ -595,7 +604,14 @@ func (s *Server) handlePolicyUpdateV1(w http.ResponseWriter, r *http.Request) {
 	p, err := policy.DecodeYAML([]byte(req.Content))
 	if err != nil {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
-			fmt.Sprintf("invalid YAML: %v", err), nil, reqID)
+			s.policyYAMLDiagnostic(r, err), nil, reqID)
+		return
+	}
+
+	// YAML escapes and binary scalars can reveal credentials that were not
+	// present in the outer JSON. Inspect before validation can quote a value,
+	// and before resolving paths, creating directories, or saving the YAML.
+	if !s.admitDecodedRequest(w, r, p, "policy") {
 		return
 	}
 
@@ -680,13 +696,17 @@ func (s *Server) handlePolicyValidateV1(w http.ResponseWriter, r *http.Request) 
 		// Validate provided content
 		p, err := policy.DecodeYAML([]byte(req.Content))
 		if err != nil {
-			errors = append(errors, fmt.Sprintf("invalid YAML: %v", err))
+			errors = append(errors, s.policyYAMLDiagnostic(r, err))
 			data, _ := toJSONMap(PolicyValidateResponse{
 				Valid:    false,
 				Errors:   errors,
 				Warnings: warnings,
 			})
 			writeSuccessResponse(w, http.StatusOK, data, reqID)
+			return
+		}
+
+		if !s.admitDecodedRequest(w, r, p, "policy") {
 			return
 		}
 
@@ -741,7 +761,7 @@ func (s *Server) handlePolicyValidateV1(w http.ResponseWriter, r *http.Request) 
 
 	p, err := policy.DecodeYAML(fileData)
 	if err != nil {
-		errors = append(errors, fmt.Sprintf("invalid YAML: %v", err))
+		errors = append(errors, s.policyYAMLDiagnostic(r, err))
 		data, _ := toJSONMap(PolicyValidateResponse{
 			Valid:      false,
 			PolicyPath: policyPath,

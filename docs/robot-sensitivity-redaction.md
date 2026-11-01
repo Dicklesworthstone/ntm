@@ -55,12 +55,26 @@ decodes the whole request into a map or reserializes accepted input. Duplicate
 properties, exact number spellings, and whitespace remain intact. Generic text
 and log callers retain their existing scanning contract.
 
+Policy update and supplied-content validation also inspect the typed policy
+after YAML decoding. YAML escapes and `!!binary` scalars can reveal credentials
+that are absent from the outer JSON strings. This check runs before policy
+validation can quote a decoded value and before path resolution, directory
+creation, or storage. A refusal reports `source: "policy"`, `findings_count`, and
+category counts, with no offsets that could be mistaken for original request
+locations. Accepted YAML is saved exactly as submitted, including comments,
+quoting, and formatting; the inspection copy is never written to disk. Enforcing
+modes use a static syntax/schema diagnostic if YAML decoding fails, because
+decoder errors can contain sensitive scalar or field-name fragments. Existing
+off/warn and explicit allowlist behavior still applies.
+
 ### Inspection limits
 
 Enforcing REST policies use a bounded scanner. If it cannot finish inspecting
 the complete input, request admission returns `422 REDACTION_INSPECTION_LIMIT`
-with a static `source` of `body`, `path`, or `query`. No handler or idempotency
-replay runs, and the request values remain unchanged. The diagnostic does not
+with a static `source` of `body`, `path`, `query`, or `policy`. The outer JSON and
+URL checks run before handlers and idempotency replay; decoded-policy checks run
+before validation diagnostics or side effects. Request values remain unchanged.
+The diagnostic does not
 claim that a secret was found and does not include partial findings or excerpts.
 A corrected request can use the same idempotency key.
 
