@@ -470,6 +470,130 @@ func TestControlledPipelinePersistentObservationCancellationPreservesUncertainty
 	}
 }
 
+func TestControlledPipelineCensusOwnershipLossPreservesRecoveryEvidence(t *testing.T) {
+	for _, background := range []bool{false, true} {
+		for _, ownershipErr := range []error{syscall.ECHILD, syscall.ESRCH} {
+			t.Run(fmt.Sprintf("background_%t/%v", background, ownershipErr), func(t *testing.T) {
+				root := t.TempDir()
+				groupTestFile(t, root, "child.sh", `printf '%s' "$$" > child.pid
+while [ ! -f release ]; do sleep 0.01; done
+printf complete > child.effect
+`)
+				work := Step{ID: "work", Command: "printf 'once\\n' >> launches; /bin/sh child.sh </dev/null >/dev/null 2>&1 & printf captured",
+					OnError: ErrorActionRetry, RetryCount: 2, RetryDelay: Duration{Duration: time.Millisecond}}
+				if background {
+					work.Wait = WaitNone
+				}
+				workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "lost-census-ownership", Settings: DefaultWorkflowSettings(), Steps: []Step{
+					work,
+					{ID: "gate", DependsOn: []string{work.ID}, Command: "exec sleep 30"},
+				}}
+				cfg := DefaultExecutorConfig("lost-census-ownership")
+				cfg.ProjectDir, cfg.RunID = root, "run-lost-census-ownership"
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				var target atomic.Int64
+				var armed, ownershipLost atomic.Bool
+				var lostProbes atomic.Int32
+				censusErr := errors.New("injected unrelated procfs read failure before ownership loss")
+				ctx = context.WithValue(ctx, commandStartedTestHookKey{}, func(pid int) { target.CompareAndSwap(0, int64(pid)) })
+				ctx = context.WithValue(ctx, commandLeaderObservationTestHookKey{}, func(pid int) error {
+					if int64(pid) == target.Load() && ownershipLost.Load() {
+						lostProbes.Add(1)
+						return ownershipErr
+					}
+					return observeCommandExit(pid, syscall.WNOHANG)
+				})
+				ctx = context.WithValue(ctx, commandGroupObservationTestHookKey{}, func(pgid int) (bool, error) {
+					if int64(pgid) == target.Load() && armed.Load() && ownershipLost.CompareAndSwap(false, true) {
+						// The leader has exited and the waiter has begun its group
+						// census. Faults before this boundary would exercise only
+						// the initial ownership probe, not cancellation admission.
+						cancel()
+						return false, censusErr
+					}
+					return commandGroupHasLiveMembers(pgid)
+				})
+				type outcome struct {
+					state *ExecutionState
+					err   error
+				}
+				done := make(chan outcome, 1)
+				go func() {
+					state, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+					done <- outcome{state, err}
+					close(done)
+				}()
+				t.Cleanup(func() {
+					_ = os.WriteFile(filepath.Join(root, "release"), []byte("finish"), 0600)
+					cancel()
+					select {
+					case <-done:
+					case <-time.After(commandCancelGracePeriod + 4*commandPipeDrainTimeout):
+						t.Error("pipeline did not finish after injected ownership loss")
+					}
+				})
+				childPID := waitForPIDFile(t, filepath.Join(root, "child.pid"))
+				child, err := os.FindProcess(childPID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = child.Kill(); _ = child.Release() })
+				// Pin the fixture's own child handle before allowing cancellation;
+				// never use the waiter's saved group number for fixture cleanup.
+				armed.Store(true)
+				var initial outcome
+				select {
+				case initial = <-done:
+				case <-time.After(commandCancelGracePeriod + 4*commandPipeDrainTimeout):
+					t.Fatal("lost ownership did not return an unresolved outcome")
+				}
+				if !errors.Is(initial.err, context.Canceled) || initial.state == nil || initial.state.Status != StatusCancelled || lostProbes.Load() != 1 {
+					t.Fatalf("cancellation failed to recheck or retain lost ownership: %+v %v probes=%d", initial.state, initial.err, lostProbes.Load())
+				}
+				prior, err := LoadState(root, cfg.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				receipt := prior.CommandExecutions[work.ID]
+				if receipt.Status != commandExecutionUnresolved || !receipt.SettledAt.IsZero() || receipt.Background != background ||
+					receipt.ProcessID != int(target.Load()) || receipt.Result.Status != StatusCancelled || receipt.Result.Output != "captured" ||
+					receipt.Result.Error == nil || !strings.Contains(receipt.Result.Error.Details, ownershipErr.Error()) ||
+					!strings.Contains(receipt.Result.Error.Details, censusErr.Error()) ||
+					receipt.Result.FinishedAt.IsZero() || receipt.Result.RerunOnResume {
+					t.Fatalf("ownership loss published settlement or lost cancellation evidence: %+v", receipt)
+				}
+				if !background && (prior.Steps[work.ID].Attempts != 1 || prior.Steps[work.ID].Error == nil || prior.Steps[work.ID].Error.Type != "cancelled") {
+					t.Fatalf("unresolved foreground command was retried or misclassified: %+v", prior.Steps[work.ID])
+				}
+				entry := commandOperatorRecoveryEntry(t, cfg)
+				if entry.Status != commandExecutionUnresolved || entry.CanAccept == background {
+					t.Fatalf("operator recovery misclassified ownership uncertainty: %+v", entry)
+				}
+				before := commandOperatorRecoveryBytes(t, cfg)
+				if _, err := NewExecutor(cfg).Resume(context.Background(), workflow, prior, nil); err == nil || !strings.Contains(err.Error(), "unresolved launch") {
+					t.Fatalf("ordinary resume replayed work after losing its group identity: %v", err)
+				}
+				if !bytes.Equal(before, commandOperatorRecoveryBytes(t, cfg)) {
+					t.Fatal("rejected resume rewrote the original unresolved evidence")
+				}
+				if data, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(data) != "once\n" {
+					t.Fatalf("uncertain command was dispatched again: %q %v", data, err)
+				}
+				// An ownership fault must not grant permission to signal a numeric
+				// group. The independently held child still completes on release,
+				// even after the pipeline and its refused recovery have returned.
+				groupTestFile(t, root, "release", "finish")
+				if got := string(awaitGroupTestFile(t, filepath.Join(root, "child.effect"))); got != "complete" {
+					t.Fatalf("ownership failure terminated healthy descendant work: %q", got)
+				}
+				if !bytes.Equal(before, commandOperatorRecoveryBytes(t, cfg)) {
+					t.Fatal("late descendant completion rewrote unresolved recovery evidence")
+				}
+			})
+		}
+	}
+}
+
 func TestControlledPipelineLateSettlementRecoveryKeepsOwnershipAndReceipts(t *testing.T) {
 	for _, background := range []bool{false, true} {
 		t.Run(fmt.Sprintf("background_%t", background), func(t *testing.T) {

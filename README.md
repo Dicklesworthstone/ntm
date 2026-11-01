@@ -835,6 +835,12 @@ cleanup. A system without a stable handle or pidfd-based wait support retains th
 bounded 250 ms observation fallback. An explicit loss of child ownership ends
 observation and signalling immediately; a saved numeric PID cannot authorize a
 later signal.
+Linux requires cancellation of the command's own context before group cleanup,
+even when an observation error contains a cancellation or deadline error. It rechecks the
+original leader's waitability before SIGTERM, before SIGKILL, and before accepting
+settlement. Lost ownership during observation or grace leaves the receipt
+unresolved and prevents further group signals, preserving the ordinary-resume
+replay barrier.
 If leader observation remains unavailable during explicit cancellation, NTM can
 still send SIGTERM through the original leader's pidfd and wait up to five seconds
 for graceful exit. Failed pidfd observations preserve that grace period before
