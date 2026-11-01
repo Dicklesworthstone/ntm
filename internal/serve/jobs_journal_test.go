@@ -94,6 +94,45 @@ func TestJobJournalFailedSaveKeepsLastCheckpoint(t *testing.T) {
 	}
 }
 
+func TestJobOutcomePublicationFollowsDurableCheckpoint(t *testing.T) {
+	srv, journal := progressJournalServer(t)
+	job := srv.jobStore.Create(JobTypeSwarmSpawn)
+	srv.jobStore.Update(job.ID, JobStatusRunning, 0, nil, "")
+	if _, err := srv.checkpointJobProgress(job.ID, map[string]interface{}{"pane_id": "%17"}); err != nil {
+		t.Fatal(err)
+	}
+	result := map[string]interface{}{"pane_id": "%17", "finished": true}
+	writes := 0
+	err := srv.jobStore.checkpointOutcome(job.ID, JobStatusCompleted, 100, result, "", func(candidate *Job) error {
+		writes++
+		// The publication helper holds the store lock, so this inspection
+		// observes the exact row that concurrent GET/list requests will read.
+		visible := srv.jobStore.jobs[job.ID]
+		if visible.Status != JobStatusRunning || visible.Result["finished"] != nil || candidate == visible {
+			t.Fatalf("terminal outcome was published before persistence: %+v", visible)
+		}
+		prior, err := journal.load()
+		if err != nil || len(prior) != 1 || prior[0].Status != JobStatusRunning {
+			t.Fatalf("expected the actual preceding checkpoint: %+v %v", prior, err)
+		}
+		if candidate.Status != JobStatusCompleted || candidate.Result["finished"] != true {
+			t.Fatalf("writer did not receive the complete terminal candidate: %+v", candidate)
+		}
+		return journal.save(candidate)
+	})
+	if err != nil || writes != 1 {
+		t.Fatalf("terminal checkpoint: writes=%d error=%v", writes, err)
+	}
+	visible := srv.jobStore.Get(job.ID)
+	persisted, err := journal.load()
+	if err != nil || len(persisted) != 1 || !reflect.DeepEqual(visible, persisted[0]) || visible.Status != JobStatusCompleted {
+		t.Fatalf("published terminal outcome differs from its durable receipt: %+v %+v %v", visible, persisted, err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("publication modified the engine's result: %+v", result)
+	}
+}
+
 func TestJobJournalRejectsInvalidHistory(t *testing.T) {
 	cases := []struct{ name, data string }{
 		{"truncated", `{"version":1,"job":`},
@@ -303,12 +342,16 @@ func TestJobProgressCheckpointIsImmutableAndDurable(t *testing.T) {
 		t.Fatal(err)
 	}
 	final := finishJobProgress(snapshot, map[string]interface{}{"session": "partial", "monitor_pid": 42})
-	srv.jobStore.retainCancelledResult(job.ID, final)
+	if err := srv.checkpointJobOutcome(job.ID, JobStatusCompleted, 100, final, ""); err != nil {
+		t.Fatal(err)
+	}
 	got := srv.jobStore.Get(job.ID)
 	if got.Status != JobStatusCancelled || got.Error != "cancelled by user" || got.Result["monitor_pid"] != 42 || got.Result["_execution_in_progress"] != nil {
 		t.Fatalf("late final result did not replace progress safely: %+v", got)
 	}
-	srv.jobStore.retainCancelledResult(job.ID, map[string]interface{}{"monitor_pid": 99})
+	if err := srv.checkpointJobOutcome(job.ID, JobStatusCompleted, 100, map[string]interface{}{"monitor_pid": 99}, ""); err != nil {
+		t.Fatal(err)
+	}
 	if srv.jobStore.Get(job.ID).Result["monitor_pid"] != 42 {
 		t.Fatal("a final cancellation receipt was replaced")
 	}

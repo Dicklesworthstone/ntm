@@ -1,11 +1,14 @@
 package serve
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -13,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/pipeline"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 )
@@ -270,5 +274,182 @@ func TestJobOperationHTTPProgressSurvivesOriginalJobEviction(t *testing.T) {
 				t.Fatalf("retry did not preserve operation semantics: %+v", meta)
 			}
 		})
+	}
+}
+
+// Block the actual atomic-rename destination after the preceding receipt is
+// durable. Preserve that original file byte-for-byte for restart recovery.
+func blockJobOutcomePublication(t *testing.T, srv *Server, id string) (string, []byte, func()) {
+	t.Helper()
+	dir, err := srv.jobJournalDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, id+".json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained := path + ".before-terminal"
+	if err := os.Rename(path, retained); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	restore := func() {
+		once.Do(func() {
+			if err := os.Rename(path, path+".blocked-terminal"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(retained, path); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	t.Cleanup(restore)
+	return retained, before, restore
+}
+
+func awaitJobOutcomePublication(t *testing.T, srv *Server) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !srv.jobExecutor.idle() {
+		if time.Now().After(deadline) {
+			t.Fatal("worker did not finish its final checkpoint")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestJobJournalHTTPFinalPublicationFailureRetainsExecutionEvidence(t *testing.T) {
+	for _, operationID := range []string{"", "terminal-once"} {
+		t.Run("operation="+operationID, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "state.db")
+			srv, closeServer := newJournalHTTPServer(t, path)
+			srv.mu.Lock()
+			srv.projectDir = root
+			srv.mu.Unlock()
+			effects, ready, release := filepath.Join(root, "effects"), filepath.Join(root, "ready"), filepath.Join(root, "release")
+			t.Cleanup(func() { _ = os.WriteFile(release, []byte("release"), 0o600) })
+			params := map[string]interface{}{
+				"session": "terminal-journal",
+				"workflow": pipeline.Workflow{SchemaVersion: pipeline.SchemaVersion, Name: "terminal-journal", Steps: []pipeline.Step{{
+					ID: "effect", Command: fmt.Sprintf("printf 'once\\n' >> %q; touch %q; while [ ! -f %q ]; do sleep 0.01; done", effects, ready, release),
+				}}},
+			}
+			if operationID != "" {
+				params["operation_id"] = operationID
+			}
+			initial := postPipelineVariantJob(t, srv, JobTypePipelineExec, params)
+			awaitPipelineJobFile(t, ready)
+			retained, before, restore := blockJobOutcomePublication(t, srv, initial.Job.ID)
+			if err := os.WriteFile(release, []byte("release"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			awaitJobOutcomePublication(t, srv)
+			// Inspect through HTTP before shutdown: shutdown must not be what
+			// makes a misleading completed row eventually truthful.
+			final := pollJobTerminal(t, srv, initial.Job.ID)
+			runID, _ := final.Job.Result["run_id"].(string)
+			if final.Job.Status != string(JobStatusFailed) || final.Job.Result["observed_status"] != string(JobStatusCompleted) ||
+				final.Job.Result["outcome_unknown"] != true || final.Job.Result["_journal_error"] == nil || runID == "" ||
+				final.Job.Result["status"] != "completed" || !strings.Contains(final.Job.Error, "final job receipt") {
+				t.Fatalf("failed final publication advertised completion or lost evidence: %+v", final.Job)
+			}
+			state, err := pipeline.LoadState(root, runID)
+			if err != nil || state.Status != pipeline.StatusCompleted {
+				t.Fatalf("storage failure downgraded the completed pipeline: %+v %v", state, err)
+			}
+			if data, err := os.ReadFile(retained); err != nil || !bytes.Equal(data, before) {
+				t.Fatalf("failed publication replaced the preceding receipt: %v", err)
+			}
+			if operationID != "" {
+				dir, _ := srv.jobJournalDir()
+				receipt, err := readJobOperation(jobOperationPath(dir, operationID))
+				if err != nil || receipt == nil || receipt.Status != JobStatusCompleted || receipt.Result["run_id"] != runID {
+					t.Fatalf("job publication damaged authoritative operation outcome: %+v %v", receipt, err)
+				}
+			}
+			restore()
+			closeServer()
+			restarted, _ := newJournalHTTPServer(t, path)
+			restarted.mu.Lock()
+			restarted.projectDir = root
+			restarted.mu.Unlock()
+			recovered := pollJobTerminal(t, restarted, initial.Job.ID)
+			if recovered.Job.Status != string(JobStatusFailed) || recovered.Job.Result["outcome_unknown"] != true || recovered.Job.Result["run_id"] != runID {
+				t.Fatalf("restart guessed completion or lost the original run: %+v", recovered.Job)
+			}
+			if operationID != "" {
+				retry := postPipelineVariantJob(t, restarted, JobTypePipelineExec, params)
+				replayed := pollJobTerminal(t, restarted, retry.Job.ID)
+				meta := operationMetadata(t, replayed.Job.Result)
+				if replayed.Job.Status != string(JobStatusCompleted) || replayed.Job.Result["run_id"] != runID || meta["replayed"] != true || meta["original_job_id"] != initial.Job.ID {
+					t.Fatalf("retry ignored the durable operation outcome: %+v", replayed.Job)
+				}
+				// A completed polling response now implies the final receipt
+				// already exists, without first joining shutdown.
+				dir, _ := restarted.jobJournalDir()
+				data, err := os.ReadFile(filepath.Join(dir, retry.Job.ID+".json"))
+				var record jobJournalRecord
+				if err != nil || json.Unmarshal(data, &record) != nil || record.Job == nil || record.Job.Status != JobStatusCompleted {
+					t.Fatalf("HTTP completed response preceded its receipt: %s %v", data, err)
+				}
+			}
+			if data, err := os.ReadFile(effects); err != nil || string(data) != "once\n" {
+				t.Fatalf("publication failure or recovery repeated pipeline effects: %q %v", data, err)
+			}
+		})
+	}
+}
+
+func TestJobJournalHTTPFinalPublicationFailurePreservesCancellation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	srv, closeServer := newJournalHTTPServer(t, path)
+	started, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	finish := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(finish)
+	var workerCtx context.Context
+	srv.spawnAgents = func(ctx context.Context, opts robot.SpawnOptions) (*robot.SpawnOutput, error) {
+		workerCtx = ctx
+		if err := reportJobProgress(ctx, map[string]interface{}{"session": opts.Session, "pane_id": "%17"}); err != nil {
+			return nil, err
+		}
+		close(started)
+		<-ctx.Done()
+		<-release // Keep the worker alive until DELETE's receipt is durable.
+		return &robot.SpawnOutput{Session: opts.Session, Agents: []robot.SpawnedAgent{{Pane: "%17"}}}, ctx.Err()
+	}
+	initial := postJob(t, srv, `{"type":"swarm_spawn","params":{"session":"terminalcancel","cc_count":1}}`)
+	awaitExecutorSignal(t, started)
+	rec := admissionRequest(srv, http.MethodDelete, "/api/v1/jobs/"+initial.Job.ID, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cancel: %d %s", rec.Code, rec.Body)
+	}
+	retained, before, restore := blockJobOutcomePublication(t, srv, initial.Job.ID)
+	finish()
+	awaitJobOutcomePublication(t, srv)
+	final := pollJobTerminal(t, srv, initial.Job.ID)
+	if final.Job.Status != string(JobStatusCancelled) || final.Job.Error != "cancelled by user" || final.Job.Result["observed_status"] != string(JobStatusCancelled) ||
+		final.Job.Result["agents"] == nil || final.Job.Result["pane_id"] != "%17" || final.Job.Result["_journal_error"] == nil || final.Job.Result["_execution_in_progress"] != nil {
+		t.Fatalf("failed final write changed cancellation or discarded effects: %+v", final.Job)
+	}
+	if err := reportJobProgress(workerCtx, map[string]interface{}{"late": true}); !errors.Is(err, errJobProgressCheckpoint) || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("finished worker retained permission to write progress: %v", err)
+	}
+	if data, err := os.ReadFile(retained); err != nil || !bytes.Equal(data, before) {
+		t.Fatalf("failed final write replaced durable cancellation: %v", err)
+	}
+	restore()
+	closeServer()
+	restarted, _ := newJournalHTTPServer(t, path)
+	recovered := pollJobTerminal(t, restarted, initial.Job.ID)
+	if recovered.Job.Status != string(JobStatusCancelled) || recovered.Job.Error != "cancelled by user" || recovered.Job.Result["pane_id"] != "%17" ||
+		recovered.Job.Result["outcome_unknown"] != true || recovered.Job.Result["_execution_in_progress"] != nil {
+		t.Fatalf("restart lost cancellation or invented a settled outcome: %+v", recovered.Job)
 	}
 }

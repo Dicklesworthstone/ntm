@@ -46,6 +46,20 @@ A failed cancellation write still signals the worker, but returns HTTP 503 with
 `cancellation_requested: true` in the error details instead of claiming durable
 success. A completed/failed/cancelled row cannot be cancelled again (HTTP 409).
 
+On persistent servers, the worker saves its final receipt before GET/list can
+report completion. If that save fails after the engine returns, the job reports
+`failed` and retains the complete observed result, with `result.observed_status`,
+`result.outcome_unknown: true`, and `result._journal_error`. The engine may already
+have completed its work: inspect the retained run, session, or pane identities
+before deciding whether to retry. An existing cancellation keeps `cancelled` and
+its original reason while retaining the worker's final evidence.
+
+The last durable job checkpoint remains available for restart recovery. An
+independent durable `operation_id` receipt remains authoritative, so repeating
+that operation ID returns its recorded outcome without running the engine again.
+Late progress callbacks cannot replace a terminal receipt after worker ownership
+is released.
+
 Shutdown closes admission permanently, cancels the service-owned contexts, and
 waits for receipt preparation and finalization as well as active execution. A
 shutdown deadline is respected even when a checkpoint holds the store mutex.

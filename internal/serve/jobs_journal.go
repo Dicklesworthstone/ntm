@@ -312,6 +312,70 @@ func finishJobProgress(progress, result map[string]interface{}) map[string]inter
 	return out
 }
 
+// checkpointJobOutcome retains the worker fence while storing and publishing
+// its terminal result. An engine's success is not a durable job completion
+// until this write succeeds. Operation-ID receipts have their own publication
+// boundary and remain authoritative even if this transport row cannot be saved.
+func (s *Server) checkpointJobOutcome(id string, status JobStatus, progress float64, result map[string]interface{}, message string) error {
+	dir, namespaceErr := s.jobJournalDir()
+	return s.jobStore.checkpointOutcome(id, status, progress, result, message, func(job *Job) error {
+		if namespaceErr != nil || dir == "" {
+			return namespaceErr
+		}
+		return (&jobJournal{dir: dir}).save(job)
+	})
+}
+
+// checkpointOutcome serializes cancellation against the complete terminal
+// publication, just as progress checkpointing does. The writer sees a detached
+// candidate; readers cannot see it until persistence has finished. Results are
+// immutable once supplied, including nested progress and operation evidence.
+func (s *JobStore) checkpointOutcome(id string, status JobStatus, progress float64, result map[string]interface{}, message string, persist func(*Job) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job := s.jobs[id]
+	if job == nil {
+		return fmt.Errorf("job %s disappeared before its outcome was checkpointed", id)
+	}
+	if job.Status == JobStatusCompleted || job.Status == JobStatusFailed {
+		return nil // Never replace an already published terminal outcome.
+	}
+	candidate := *job
+	if job.Status == JobStatusCancelled {
+		// Cancellation owns its original status and reason. A worker may
+		// still supply the final effects without clearing an existing result.
+		retainCancelledResult(&candidate, result)
+	} else {
+		candidate.Status, candidate.Progress = status, progress
+		candidate.Result, candidate.Error = result, message
+	}
+	candidate.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := persist(&candidate); err != nil {
+		// Keep the observed outcome separate from the failed durable job.
+		// Neither this status nor a storage error authorizes another engine
+		// invocation. The last durable receipt and operation fence stay intact.
+		candidate.Result = s.cloneJob(&candidate).Result
+		if candidate.Result == nil {
+			candidate.Result = make(map[string]interface{})
+		}
+		candidate.Result["observed_status"] = string(status)
+		candidate.Result["outcome_unknown"] = true
+		candidate.Result["_journal_error"] = err.Error()
+		if candidate.Status != JobStatusCancelled {
+			candidate.Status, candidate.Progress = JobStatusFailed, 0
+			checkpointError := "final job receipt could not be persisted; inspect existing work before retrying: " + err.Error()
+			if candidate.Error != "" {
+				checkpointError = candidate.Error + "; " + checkpointError
+			}
+			candidate.Error = checkpointError
+		}
+		*job = candidate
+		return err
+	}
+	*job = candidate
+	return nil
+}
+
 // RestoreJobHistory is called before serving requests. The returned shutdown
 // function must be called AFTER stopping HTTP admission and BEFORE releasing
 // the state store. It keeps ownership until the dispatchers have checkpointed

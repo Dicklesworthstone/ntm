@@ -254,17 +254,15 @@ func TestSwarmJobCancellationRecoveryHTTP(t *testing.T) {
 func TestCancelledJobRecoveryGuards(t *testing.T) {
 	for _, status := range []JobStatus{JobStatusPending, JobStatusRunning, JobStatusCompleted, JobStatusFailed, JobStatusCancelled} {
 		t.Run(string(status), func(t *testing.T) {
-			store := NewJobStore()
-			job := store.Create(JobTypeSwarmSpawn)
-			store.Update(job.ID, status, 25, nil, "original reason")
-			store.retainCancelledResult(job.ID, nil)
-			store.retainCancelledResult(job.ID, map[string]interface{}{})
-			if got := store.Get(job.ID); got.Result != nil {
-				t.Fatalf("empty evidence changed result: %+v", got)
+			job := &Job{Status: status, Progress: 25, Error: "original reason"}
+			retainCancelledResult(job, nil)
+			retainCancelledResult(job, map[string]interface{}{})
+			if job.Result != nil {
+				t.Fatalf("empty evidence changed result: %+v", job)
 			}
-			store.retainCancelledResult(job.ID, map[string]interface{}{"session": "first"})
-			store.retainCancelledResult(job.ID, map[string]interface{}{"session": "replacement"})
-			got := store.Get(job.ID)
+			retainCancelledResult(job, map[string]interface{}{"session": "first"})
+			retainCancelledResult(job, map[string]interface{}{"session": "replacement"})
+			got := job
 			if got.Status != status || got.Error != "original reason" || got.Progress != 25 {
 				t.Fatalf("recovery changed terminal metadata: %+v", got)
 			}
@@ -275,10 +273,7 @@ func TestCancelledJobRecoveryGuards(t *testing.T) {
 			} else if got.Result != nil {
 				t.Fatalf("recovery changed a non-cancelled job: %+v", got)
 			}
-			store.retainCancelledResult("missing", map[string]interface{}{"session": "ghost"})
-			if store.Get("missing") != nil {
-				t.Fatal("recovery resurrected an absent job")
-			}
+			retainCancelledResult(nil, map[string]interface{}{"session": "ghost"})
 		})
 	}
 }
@@ -299,8 +294,7 @@ func TestCancelledJobRecoveryRace(t *testing.T) {
 				go func() {
 					<-start
 					result := map[string]interface{}{"session": "recoverable"}
-					store.Update(job.ID, workerStatus, 100, result, "worker result")
-					store.retainCancelledResult(job.ID, result)
+					_ = store.checkpointOutcome(job.ID, workerStatus, 100, result, "worker result", func(*Job) error { return nil })
 					done <- struct{}{}
 				}()
 				close(start)

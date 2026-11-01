@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -87,31 +88,36 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 	}
 	var progressMu sync.Mutex
 	lastProgress := job.Result
+	acceptingProgress := true
 	finishProgress := func(result map[string]interface{}) map[string]interface{} {
 		progressMu.Lock()
 		defer progressMu.Unlock()
+		acceptingProgress = false
 		return finishJobProgress(lastProgress, result)
 	}
+	status, progress := JobStatusFailed, float64(0)
+	message := "job stopped before returning its outcome"
+	var result map[string]interface{}
 	// This defer runs before ClearCancel and before releasing the worker
-	// fence, so shutdown/recovery cannot race the final checkpoint.
+	// fence. Publish the terminal row only after its receipt is durable;
+	// neither polling nor shutdown may acknowledge an uncheckpointed success.
 	defer func() {
 		if r := recover(); r != nil {
-			result := finishProgress(nil)
-			s.jobStore.Update(jobID, JobStatusFailed, 0, result, fmt.Sprintf("panic: %v", r))
-			s.jobStore.retainCancelledResult(jobID, result)
+			status, progress, message = JobStatusFailed, 0, fmt.Sprintf("panic: %v", r)
 		}
-		if err := s.persistJobHistory(jobID); err != nil {
-			s.recordJobJournalError(jobID, err)
+		result = finishProgress(result)
+		if err := s.checkpointJobOutcome(jobID, status, progress, result, message); err != nil {
+			slog.Error("job outcome not persisted", "job_id", jobID, "error", err)
 		}
 	}()
 	// No pipeline, agent spawn, or checkpoint restore may act without a
 	// recoverable pre-dispatch record when a durable state store is supplied.
 	if err := s.persistJobHistory(jobID); err != nil {
-		s.jobStore.Update(jobID, JobStatusFailed, 0, nil, fmt.Sprintf("checkpoint job before execution: %v", err))
+		message = fmt.Sprintf("checkpoint job before execution: %v", err)
 		return
 	}
 	if err := ctx.Err(); err != nil {
-		s.jobStore.Update(jobID, JobStatusCancelled, 0, nil, err.Error())
+		status, message = JobStatusCancelled, err.Error()
 		return
 	}
 	s.jobStore.Update(jobID, JobStatusRunning, 0, nil, "")
@@ -119,13 +125,16 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 	// job GET/list surfaces. In-memory callers retain their original ports.
 	dir, err := s.jobJournalDir()
 	if err != nil {
-		s.jobStore.Update(jobID, JobStatusFailed, 0, nil, err.Error())
+		message = err.Error()
 		return
 	}
 	if dir != "" {
 		ctx = context.WithValue(ctx, jobProgressContextKey{}, jobProgressReporter(func(result map[string]interface{}) error {
 			progressMu.Lock()
 			defer progressMu.Unlock()
+			if !acceptingProgress {
+				return fmt.Errorf("%w: job reporter is closed", errJobProgressCheckpoint)
+			}
 			snapshot, err := s.checkpointJobProgress(jobID, result)
 			if snapshot != nil {
 				lastProgress = snapshot
@@ -134,17 +143,14 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 		}))
 	}
 
-	result, err := s.executeJobOperation(ctx, jobID, req)
-	result = finishProgress(result)
+	result, err = s.executeJobOperation(ctx, jobID, req)
 
 	// Some operations can return a useful partial result on failure. Retain
 	// its run/session identity so the caller can inspect effects before retrying.
 	if ctx.Err() != nil {
 		err = errors.Join(err, ctx.Err())
 	}
-	status := JobStatusCompleted
-	progress := float64(100)
-	message := ""
+	status, progress, message = JobStatusCompleted, 100, ""
 	if err != nil {
 		status = JobStatusFailed
 		progress = 0
@@ -153,12 +159,6 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 			status = JobStatusCancelled
 		}
 	}
-	s.jobStore.Update(jobID, status, progress, result, message)
-	// Cancellation may have won the terminal-state race, making Update a
-	// no-op. The worker's recovery evidence is still valuable: cancelling a
-	// request does not undo sessions, panes, or pipeline runs already created.
-	// Run this AFTER Update so cancellation between the two cannot lose it.
-	s.jobStore.retainCancelledResult(jobID, result)
 }
 
 // executeJobRequest is the one execution switch, shared by ordinary dispatch
@@ -187,19 +187,12 @@ func (s *Server) executeJobRequest(ctx context.Context, req CreateJobRequest) (m
 	}
 }
 
-// retainCancelledResult fills in recovery evidence when a worker finishes
+// retainCancelledResult fills in recovery evidence on a detached candidate
 // after DELETE has already made its job terminal. It never changes the
-// cancellation status/reason, replaces a final result, or revives an
-// evicted job. Callers can keep polling GET /jobs/{id} for these late results;
-// a cancelled status by itself does not mean the operation rolled back.
-func (s *JobStore) retainCancelledResult(id string, result map[string]interface{}) {
-	if len(result) == 0 {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	job := s.jobs[id]
-	if job == nil || job.Status != JobStatusCancelled {
+// cancellation status/reason or replaces a final result. The caller must
+// persist the candidate before publishing it to readers.
+func retainCancelledResult(job *Job, result map[string]interface{}) {
+	if len(result) == 0 || job == nil || job.Status != JobStatusCancelled {
 		return
 	}
 	if job.Result != nil && job.Result["_execution_in_progress"] != true {
