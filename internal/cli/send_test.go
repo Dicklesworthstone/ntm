@@ -641,7 +641,7 @@ func TestSendRealSession(t *testing.T) {
 
 	// Use /bin/cat explicitly to avoid shell aliases (e.g., cat -> bat) which
 	// have different input/output behavior and can cause test flakiness.
-	cfg.Agents.Claude = testAgentBinCatCommandTemplate
+	cfg.Agents.Claude = testAgentClaudeCommandTemplate
 
 	sessionName := fmt.Sprintf("ntm-test-send-%d", time.Now().UnixNano())
 	defer func() {
@@ -1440,7 +1440,7 @@ func TestSendDryRunDoesNotSendToPane(t *testing.T) {
 	jsonOutput = true // avoid polluting test logs
 
 	// Use a simple echoing agent so we can detect sends
-	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Claude = testAgentClaudeCommandTemplate
 
 	sessionName := fmt.Sprintf("ntm-test-send-dry-run-%d", time.Now().UnixNano())
 	defer func() {
@@ -1526,7 +1526,7 @@ func TestSendDefaultTargetsAllAgentsWithoutUserPane(t *testing.T) {
 
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
 	cfg.Checkpoints.Enabled = false
-	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Claude = testAgentClaudeCommandTemplate
 	jsonOutput = true
 
 	sessionName := fmt.Sprintf("ntm-test-send-no-user-%d", time.Now().UnixNano())
@@ -2092,8 +2092,13 @@ case "$1" in
     printf '%s\n' '%51_NTM_SEP_1_NTM_SEP_smart-identity__cc_3_sonnet[backend]_NTM_SEP_claude_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_1051_NTM_SEP_1_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0'
     printf '%s\n' '%52_NTM_SEP_2_NTM_SEP_smart-identity__grok_1_NTM_SEP_grok_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_1052_NTM_SEP_1_NTM_SEP_grok_NTM_SEP__NTM_SEP__NTM_SEP_0'
     ;;
-  capture-pane) printf 'claude >\n' ;;
-  display-message) printf '%s\n' "$NTM_SMART_ROUTE_TEST_ROOT" ;;
+  capture-pane) printf '❯ \n' ;;
+  display-message)
+    case "$*" in
+      *"@ntm_rotation_token"*) printf '[]\n' ;;
+      *) printf '%s\n' "$NTM_SMART_ROUTE_TEST_ROOT" ;;
+    esac
+    ;;
   load-buffer) cat > "$NTM_SMART_ROUTE_TEST_ROOT/delivered-prompt" ;;
   paste-buffer|send-keys|delete-buffer|show-options|show-environment) ;;
   *) printf 'unexpected tmux command: %s\n' "$*" >&2; exit 97 ;;
@@ -2242,7 +2247,7 @@ func TestSendSmartRouteIsDisabledWhenPanesSpecified(t *testing.T) {
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
 	cfg.Checkpoints.Enabled = false
 	jsonOutput = true // avoid polluting test logs
-	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Claude = testAgentClaudeCommandTemplate
 
 	sessionName := fmt.Sprintf("ntm-test-send-smart-route-panes-%d", time.Now().UnixNano())
 	defer func() {
@@ -3623,7 +3628,7 @@ func TestSendTemplateRendersPerPaneAgentAndBeadContext(t *testing.T) {
 	t.Cleanup(func() { cfg, jsonOutput = oldCfg, oldJSONOutput })
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
 	cfg.Checkpoints.Enabled = false
-	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Claude = testAgentClaudeCommandTemplate
 	cfg.Agents.Codex = testAgentCodexCommandTemplate
 	jsonOutput = true
 
@@ -4080,5 +4085,147 @@ func TestShellDispatchRefusesCodexTranscriptBeforePrompt(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSendCommandUsesSharedDeliveryPreflight(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("tmux fixture requires /bin/sh")
+	}
+	const claudeTrust = "Quick safety check: Is this a project you created or one you trust?\n❯ No, exit\n  Yes, I trust this folder\nEnter to confirm · Esc to cancel\n"
+	const codexTrust = "Do you trust the contents of this directory?\n› 1. Yes, continue\n  2. No, quit\n"
+	const antigravityTrust = "Do you trust the contents of this project?\n> Yes, I trust this folder\n  No, exit\n↑/↓ Navigate · enter Confirm\n"
+	const grokTrust = "Grok Build may run or modify contents in this directory,\nposing security risks.\nYes, proceed  y\nNo, quit  n\n"
+
+	for _, tc := range []struct {
+		name       string
+		kind       tmux.AgentType
+		command    string
+		capture    string
+		clearInput bool
+		wantError  string
+		wantEnters int
+		wantClears int
+	}{
+		{name: "claude trust", kind: tmux.AgentClaude, command: "claude", capture: claudeTrust, wantError: "PANE_INTERACTIVE_GATE"},
+		{name: "claude trust before clear", kind: tmux.AgentClaude, command: "claude", capture: claudeTrust, clearInput: true, wantError: "PANE_INTERACTIVE_GATE"},
+		{name: "codex trust before clear", kind: tmux.AgentCodex, command: "codex", capture: codexTrust, clearInput: true, wantError: "COMPOSER_NOT_CLEARED"},
+		{name: "antigravity trust before clear", kind: tmux.AgentAntigravity, command: "agy", capture: antigravityTrust, clearInput: true, wantError: "PANE_INTERACTIVE_GATE"},
+		{name: "grok trust", kind: tmux.AgentGrok, command: "grok", capture: grokTrust, wantError: "PANE_INTERACTIVE_GATE"},
+		{name: "grok trust before clear", kind: tmux.AgentGrok, command: "grok", capture: grokTrust, clearInput: true, wantError: "PANE_INTERACTIVE_GATE"},
+		{name: "claude initializing", kind: tmux.AgentClaude, command: "claude", capture: "Loading agent configuration...\n", wantError: "composer not visible"},
+		{name: "omp initializing", kind: tmux.AgentOmp, command: "omp", wantError: "composer not drawn yet"},
+		{name: "ready claude clears once", kind: tmux.AgentClaude, command: "claude", capture: "❯ \n", clearInput: true, wantEnters: 2, wantClears: 1},
+		{name: "working codex accepts steering", kind: tmux.AgentCodex, command: "codex", capture: "• Working (2s • esc to interrupt)\n", wantEnters: 2},
+		{name: "explicit shell is exempt", kind: tmux.AgentUser, command: "bash", capture: grokTrust, clearInput: true, wantEnters: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			projectRoot, logPath := workflowCommandTmuxFixture(t, "stable")
+			cfg.Robot.Semantic.Stamp = false
+			for name, content := range map[string]string{
+				"pane-kind":    string(tc.kind),
+				"pane-command": tc.command,
+				"pane-output":  tc.capture,
+			} {
+				if err := os.WriteFile(filepath.Join(projectRoot, name), []byte(content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			cmd := newSendCmd()
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			args := []string{
+				"evidence-run", "continue the review", "--pane=%91",
+				"--no-hooks", "--no-cass", "--no-cass-check", "--force-non-interactive",
+			}
+			if tc.clearInput {
+				args = append(args, "--clear-input")
+			}
+			cmd.SetArgs(args)
+			stdout, runErr := captureStdout(t, func() error {
+				return cmd.ExecuteContext(t.Context())
+			})
+			var result SendResult
+			if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+				t.Fatalf("decode send result: %v; stdout=%q; command error=%v", err, stdout, runErr)
+			}
+			if !result.NonInteractiveForced {
+				t.Fatalf("fixture did not exercise forced noninteractive send: %+v", result)
+			}
+			if tc.wantError != "" {
+				if !errors.Is(runErr, errJSONFailure) || result.Success || result.Delivered != 0 || result.Failed != 1 ||
+					result.ErrorCode != sendErrorCodeFailed || !strings.Contains(result.Error, tc.wantError) {
+					t.Fatalf("unsafe delivery was not refused: result=%+v error=%v", result, runErr)
+				}
+			} else if runErr != nil || !result.Success || result.Delivered != 1 || result.Failed != 0 {
+				t.Fatalf("valid delivery was refused: result=%+v error=%v", result, runErr)
+			}
+
+			commands, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := string(commands)
+			if tc.wantError != "" {
+				for _, forbidden := range []string{"load-buffer", "paste-buffer", "send-keys"} {
+					if strings.Contains(calls, forbidden) {
+						t.Fatalf("refused send actuated %q:\n%s", forbidden, calls)
+					}
+				}
+				return
+			}
+			if strings.Count(calls, "send-keys -t %91 Enter\n") != tc.wantEnters {
+				t.Fatalf("delivery changed the Enter protocol:\n%s", calls)
+			}
+			if strings.Count(calls, "send-keys -t %91 Escape\n") != tc.wantClears ||
+				strings.Count(calls, "send-keys -t %91 C-u\n") != tc.wantClears {
+				t.Fatalf("composer clearing was duplicated or changed:\n%s", calls)
+			}
+			if strings.Count(calls, "send-keys -t %91 -l -- continue the review\n") != 1 {
+				t.Fatalf("prompt was not delivered exactly once through the existing transport:\n%s", calls)
+			}
+		})
+	}
+}
+
+func TestRunSendRejectsRotationStartedAfterPlanning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("tmux fixture requires /bin/sh")
+	}
+	projectRoot, logPath := workflowCommandTmuxFixture(t, "stable")
+	collected := &sendExecutionResult{}
+	gateCalls := 0
+	err := runSendWithTargets(SendOptions{
+		Context: t.Context(), Session: "evidence-run", PaneSelector: "%91",
+		Prompt: "continue the review", PromptSource: "args",
+		ForceNonInteractive: true, NoHooks: true, NoCASS: true, ClearInput: true,
+		executionPolicy: sendExecutionCollect, executionResult: collected,
+		beforeDispatch: func(_ context.Context, _ dispatchsvc.Request, deliveries []dispatchsvc.Delivery) error {
+			gateCalls++
+			if len(deliveries) != 1 || deliveries[0].Target.Pane.ID != "%91" ||
+				deliveries[0].Target.Pane.RotationToken != "" {
+				t.Fatalf("fixture did not prepare an unquarantined physical pane: %+v", deliveries)
+			}
+			return os.WriteFile(filepath.Join(projectRoot, "rotation-token"), []byte("rotation-after-plan"), 0600)
+		},
+	})
+	if gateCalls != 1 || err == nil || !strings.Contains(err.Error(), string(dispatchsvc.ErrRotationPending)) ||
+		!collected.recorded || collected.result.Success || collected.result.Delivered != 0 || collected.result.Failed != 1 {
+		t.Fatalf("send missed the new rotation quarantine: gates=%d result=%+v error=%v", gateCalls, collected, err)
+	}
+	commands, readErr := os.ReadFile(logPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	calls := string(commands)
+	if !strings.Contains(calls, "display-message -p -t %91 [#{@ntm_rotation_token}]") {
+		t.Fatalf("send never refreshed the physical pane quarantine:\n%s", calls)
+	}
+	for _, forbidden := range []string{"load-buffer", "paste-buffer", "send-keys"} {
+		if strings.Contains(calls, forbidden) {
+			t.Fatalf("quarantined pane received %q:\n%s", forbidden, calls)
+		}
 	}
 }

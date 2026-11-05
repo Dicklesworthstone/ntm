@@ -12,6 +12,8 @@ import (
 
 const (
 	testAgentCatCommandTemplate = `{{if .Model}}: {{shellQuote .Model}} >/dev/null && {{end}}/bin/cat`
+	// Claude sends also require a visible composer before delivery.
+	testAgentClaudeCommandTemplate = `{{if .Model}}: {{shellQuote .Model}} >/dev/null && {{end}}printf '\342\235\257 \n' && /bin/cat`
 	// Codex panes must show the composer marker ("›") before the delivery
 	// readiness probe lets a prompt through, so the codex fake prints it first.
 	testAgentCodexCommandTemplate  = `{{if .Model}}: {{shellQuote .Model}} >/dev/null && {{end}}printf '\342\200\272 \n' && /bin/cat`

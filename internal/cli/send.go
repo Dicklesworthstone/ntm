@@ -4119,29 +4119,20 @@ func newShellDispatchServiceWithGate(
 		Orderer:   shellDispatchOrderer(selected),
 		Protocols: shellDispatchProtocolPlanner{},
 		Deliverer: dispatchsvc.DelivererFunc(func(ctx context.Context, delivery dispatchsvc.Delivery) error {
-			target := delivery.Target.Pane
-			if err := dispatchsvc.RefuseDeadAgentPane(target); err != nil {
+			// Shell sends and workflow stages must pass the same live gates as
+			// robot delivery before clearing input or typing a prompt.
+			target, err := dispatchsvc.PrepareTMUXDelivery(ctx, delivery)
+			if err != nil {
 				return err
-			}
-			if target.ID == "" {
-				target.ID = fmt.Sprintf("%s:%s", session, target.Ref().Physical())
-			}
-			if err := dispatchsvc.ClearComposerForDelivery(ctx, target.ID, delivery); err != nil {
-				return err
-			}
-			if delivery.Target.AgentType.Canonical() == tmux.AgentCodex {
-				if ready, reason := tmux.ComposerReadyForDelivery(ctx, target.ID, delivery.Target.AgentType, target.Width); !ready {
-					return dispatchsvc.GuaranteeNoDeliveryActuation(fmt.Errorf("pane %s not ready for delivery: %s", target.ID, reason))
-				}
 			}
 			switch delivery.Protocol {
 			case dispatchsvc.ProtocolSingleEnter:
-				return tmux.PasteKeysWithDelayContext(ctx, target.ID, delivery.Message, true, delivery.EnterDelay)
+				return tmux.PasteKeysWithDelayContext(ctx, target, delivery.Message, true, delivery.EnterDelay)
 			case dispatchsvc.ProtocolDoubleEnter:
-				if err := tmux.SendKeysForAgentDoubleEnterContext(ctx, target.ID, delivery.Message, target.Type); err != nil {
+				if err := tmux.SendKeysForAgentDoubleEnterContext(ctx, target, delivery.Message, delivery.Target.Pane.Type); err != nil {
 					return err
 				}
-				return dispatchsvc.VerifyAgentSubmission(ctx, target.ID, delivery.Message, target.Type, target.Width)
+				return dispatchsvc.VerifyAgentSubmission(ctx, target, delivery.Message, delivery.Target.Pane.Type, delivery.Target.Pane.Width)
 			default:
 				return fmt.Errorf("unsupported shell send protocol %q", delivery.Protocol)
 			}

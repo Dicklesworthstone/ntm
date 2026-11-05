@@ -166,7 +166,7 @@ func TestAgentLifecycleSpawnWorkKill(t *testing.T) {
 	jsonOutput = true
 
 	// Use 'cat' as agent command - it echoes input back to stdout
-	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Claude = testAgentClaudeCommandTemplate
 	cfg.Agents.Codex = testAgentCodexCommandTemplate
 	cfg.Agents.Gemini = testAgentCatCommandTemplate
 
@@ -328,7 +328,7 @@ func TestAgentLifecycleMultipleAgents(t *testing.T) {
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
 	jsonOutput = true
 
-	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Claude = testAgentClaudeCommandTemplate
 	cfg.Agents.Codex = testAgentCodexCommandTemplate
 	cfg.Agents.Gemini = testAgentCatCommandTemplate
 
@@ -455,7 +455,7 @@ func TestAgentLifecycleRapidSpawnKill(t *testing.T) {
 
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
 	jsonOutput = true
-	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Claude = testAgentClaudeCommandTemplate
 
 	const iterations = 3
 	for i := 0; i < iterations; i++ {
@@ -534,7 +534,7 @@ func TestAgentLifecycleKillIdempotent(t *testing.T) {
 
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
 	jsonOutput = true
-	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Claude = testAgentClaudeCommandTemplate
 
 	sessionName := fmt.Sprintf("ntm-idempotent-%d", time.Now().UnixNano())
 	projectDir := filepath.Join(tmpDir, sessionName)

@@ -31,12 +31,19 @@ func workflowCommandTmuxFixture(t *testing.T, scenario string) (projectRoot, log
 	projectRoot = t.TempDir()
 	chdirForTerminalJSONTest(t, projectRoot)
 	logPath = filepath.Join(projectRoot, "tmux-calls")
-	initialOutput := "SHIP-VERDICT\nready\n"
+	initialOutput := "SHIP-VERDICT\nready\n❯\n"
 	if scenario == "preparation-verdict" {
-		initialOutput = "ready\n"
+		initialOutput = "ready\n❯\n"
 	}
-	if err := os.WriteFile(filepath.Join(projectRoot, "pane-output"), []byte(initialOutput), 0600); err != nil {
-		t.Fatal(err)
+	for name, content := range map[string]string{
+		"pane-output":    initialOutput,
+		"pane-kind":      "cc",
+		"pane-command":   "claude",
+		"rotation-token": "",
+	} {
+		if err := os.WriteFile(filepath.Join(projectRoot, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Setenv("NTM_WORKFLOW_TEST_ROOT", projectRoot)
 	t.Setenv("NTM_WORKFLOW_TEST_SCENARIO", scenario)
@@ -47,6 +54,9 @@ case "$1" in
   list-sessions) echo 'evidence-run_NTM_SEP_1_NTM_SEP_0_NTM_SEP_1700000000' ;;
   list-panes)
     pane='%91'; pid=4242; dead=0
+    agent_kind=$(cat "$NTM_WORKFLOW_TEST_ROOT/pane-kind")
+    agent_command=$(cat "$NTM_WORKFLOW_TEST_ROOT/pane-command")
+    rotation_token=$(cat "$NTM_WORKFLOW_TEST_ROOT/rotation-token")
     if [ "$NTM_WORKFLOW_TEST_SCENARIO" = zero-pid ]; then pid=0; fi
     if [ -f "$NTM_WORKFLOW_TEST_ROOT/captured" ]; then
       case "$NTM_WORKFLOW_TEST_SCENARIO" in
@@ -55,15 +65,21 @@ case "$1" in
         dead-pane) dead=1 ;;
       esac
     fi
-    printf '%s_NTM_SEP_1_NTM_SEP_evidence-run__cc_1_NTM_SEP_claude_NTM_SEP_120_NTM_SEP_40_NTM_SEP_1_NTM_SEP_%s_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_%s\n' "$pane" "$pid" "$dead"
+    printf '%s_NTM_SEP_1_NTM_SEP_evidence-run__%s_1_NTM_SEP_%s_NTM_SEP_120_NTM_SEP_40_NTM_SEP_1_NTM_SEP_%s_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_%s_NTM_SEP_[%s]\n' "$pane" "$agent_kind" "$agent_command" "$pid" "$agent_kind" "$dead" "$rotation_token"
     ;;
   capture-pane)
     : > "$NTM_WORKFLOW_TEST_ROOT/captured"
     cat "$NTM_WORKFLOW_TEST_ROOT/pane-output"
     ;;
   display-message)
+    case "$*" in
+      *"@ntm_rotation_token"*)
+        printf '[%s]\n' "$(cat "$NTM_WORKFLOW_TEST_ROOT/rotation-token")"
+        exit 0
+        ;;
+    esac
     if [ "$NTM_WORKFLOW_TEST_SCENARIO" = preparation-verdict ] && [ -f "$NTM_WORKFLOW_TEST_ROOT/captured" ] && [ ! -f "$NTM_WORKFLOW_TEST_ROOT/preparation-verdict" ]; then
-      printf 'SHIP-VERDICT\n' >> "$NTM_WORKFLOW_TEST_ROOT/pane-output"
+      printf 'ready\nSHIP-VERDICT\n❯\n' > "$NTM_WORKFLOW_TEST_ROOT/pane-output"
       printf 'old-verdict-before-delivery\n' >> "$NTM_WORKFLOW_TEST_ROOT/tmux-calls"
       : > "$NTM_WORKFLOW_TEST_ROOT/preparation-verdict"
     fi
@@ -214,9 +230,9 @@ func assertWorkflowCommandDoesNotTrustOldVerdict(t *testing.T, scenario string) 
 	if state.Completed || state.CurrentStage != "review" || len(state.Dispatches) != 1 || state.Dispatches[0].Status != "delivered" || state.Evidence == nil || len(state.Evidence.Matches) != 0 {
 		t.Fatalf("checkpoint confused old output with new approval: %+v", state)
 	}
-	wantCapture := "SHIP-VERDICT\nready"
+	wantCapture := "SHIP-VERDICT\nready\n❯"
 	if scenario == "preparation-verdict" {
-		wantCapture = "ready\nSHIP-VERDICT"
+		wantCapture = "ready\nSHIP-VERDICT\n❯"
 	}
 	if pane := state.Evidence.Panes["%91"]; pane.PID != 4242 || pane.Capture != wantCapture || pane.Fresh != "" {
 		t.Fatalf("preexisting output escaped its saved baseline: %+v", pane)
