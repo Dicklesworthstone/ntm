@@ -18,12 +18,13 @@ import (
 // Deliberately does not repair sparse or malformed responses. These tests drive
 // the public transfer entry point with the exact replies under examination.
 type receiptTransferClient struct {
-	sourceBShared bool
-	calls         []string
-	grants        map[int]string
-	reserve       func(context.Context, agentmail.FileReservationOptions) (*agentmail.ReservationResult, error)
-	release       func(context.Context, string, []string) (*agentmail.ReleaseReservationsResult, error)
-	renew         func(context.Context, agentmail.RenewReservationsOptions) (*agentmail.RenewReservationsResult, error)
+	sourceBShared  bool
+	sourceReleased map[int]bool
+	calls          []string
+	grants         map[int]string
+	reserve        func(context.Context, agentmail.FileReservationOptions) (*agentmail.ReservationResult, error)
+	release        func(context.Context, string, []string) (*agentmail.ReleaseReservationsResult, error)
+	renew          func(context.Context, agentmail.RenewReservationsOptions) (*agentmail.RenewReservationsResult, error)
 }
 
 func (c *receiptTransferClient) ListReservations(ctx context.Context, _, _ string, _ bool) ([]agentmail.FileReservation, error) {
@@ -34,14 +35,19 @@ func (c *receiptTransferClient) ListReservations(ctx context.Context, _, _ strin
 	// they are independent of the malformed mutation replies under test.
 	created := agentmail.FlexTime{Time: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	expires := agentmail.FlexTime{Time: time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)}
-	rows := []agentmail.FileReservation{
+	sources := []agentmail.FileReservation{
 		{ID: 1001, ProjectID: 73, AgentName: "old", PathPattern: "a.go", Exclusive: true, CreatedTS: created, ExpiresTS: expires},
 		{ID: 1002, ProjectID: 73, AgentName: "old", PathPattern: "b.go", Exclusive: !c.sourceBShared, CreatedTS: created, ExpiresTS: expires},
 	}
 	if c.grants == nil {
 		c.grants = make(map[int]string)
 	}
-	for _, row := range rows {
+	rows := make([]agentmail.FileReservation, 0, len(sources))
+	for _, row := range sources {
+		if c.sourceReleased[row.ID] {
+			continue
+		}
+		rows = append(rows, row)
 		c.grants[row.ID] = row.PathPattern
 	}
 	return rows, nil
@@ -84,6 +90,16 @@ func (c *receiptTransferClient) ReleaseReservations(ctx context.Context, _, owne
 		}
 	}
 	c.calls = append(c.calls, "release:"+owner+":"+strings.Join(paths, ","))
+	// The fixture source effect is independent of the returned count and
+	// of the malformed destination receipts under examination.
+	if owner == "old" {
+		if c.sourceReleased == nil {
+			c.sourceReleased = make(map[int]bool)
+		}
+		for _, id := range ids {
+			c.sourceReleased[id] = true
+		}
+	}
 	if c.release != nil {
 		return c.release(ctx, owner, paths)
 	}

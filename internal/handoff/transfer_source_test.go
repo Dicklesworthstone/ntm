@@ -65,7 +65,7 @@ func (c *sourceLeaseRegistry) ListReservations(ctx context.Context, project, own
 	if project != "project" || owner != "" || !all {
 		return nil, errors.New("source verification did not request the full project listing")
 	}
-	rows := append([]agentmail.FileReservation(nil), c.listing...)
+	rows := append([]agentmail.FileReservation{}, c.listing...)
 	if c.listing == nil {
 		for _, row := range c.live {
 			rows = append(rows, row)
@@ -143,11 +143,8 @@ func TestTransferSourceLeaseSelectorsAndEvidence(t *testing.T) {
 			if err != nil || !result.Success || result.OutcomeUnknown || result.RolledBack {
 				t.Fatalf("valid source leases rejected: %+v %v", result, err)
 			}
-			wantReads := 1
-			if sameAgent {
-				wantReads = 2 // Preflight and independent post-renewal evidence.
-			}
-			if client.reads != wantReads || len(client.mutations) != 1 || len(client.mutations[0].paths) != 0 ||
+			// Both release and renewal require independent post-mutation evidence.
+			if client.reads != 2 || len(client.mutations) != 1 || len(client.mutations[0].paths) != 0 ||
 				!reflect.DeepEqual(client.mutations[0].ids, []int{11, 22}) || client.mutations[0].owner != "old" {
 				t.Fatalf("source selection is not exact-ID scoped: %+v reads=%d", client.mutations, client.reads)
 			}
@@ -369,7 +366,7 @@ func TestTransferSourceUncertainMutationCannotAuthorizeAcquisition(t *testing.T)
 			}
 			client.ackCount = &count
 			result, err := TransferReservations(context.Background(), client, opts)
-			if err == nil || result.Success || !result.OutcomeUnknown || result.RolledBack || result.Stage != kind || client.acquisitions != 0 || result.Attempts != 0 {
+			if err == nil || result.Success || !result.OutcomeUnknown || result.RolledBack || result.Stage != kind || client.acquisitions != 0 || result.Attempts != 0 || client.reads != 1 {
 				t.Fatalf("%s acknowledged %d, allowed further work: %+v %v", kind, count, result, err)
 			}
 			wire, _ := json.Marshal(result)
@@ -380,5 +377,201 @@ func TestTransferSourceUncertainMutationCannotAuthorizeAcquisition(t *testing.T)
 				t.Fatalf("uncertain release fabricated confirmed IDs: %s %v", wire, err)
 			}
 		}
+	}
+}
+
+func TestTransferSourceReleaseReadbackRejectsAcknowledgedSurvivor(t *testing.T) {
+	for _, mode := range []string{"exclusive survives", "shared survives", "owner changes", "expired row", "released row"} {
+		t.Run(mode, func(t *testing.T) {
+			c, opts := transferEvidenceFixture()
+			c.release = func(_ context.Context, owner string, ids []int) (*agentmail.ReleaseReservationsResult, error) {
+				if owner != "old" {
+					t.Fatal("unverified source release authorized destination cleanup")
+				}
+				survivor := 1001
+				if mode == "shared survives" {
+					survivor = 1002
+				}
+				for _, id := range ids {
+					if id != survivor {
+						delete(c.live, id)
+					}
+				}
+				row := c.live[survivor]
+				switch mode {
+				case "owner changes":
+					row.AgentName = "peer"
+				case "expired row":
+					row.ExpiresTS.Time = time.Now().Add(-time.Hour)
+				case "released row":
+					row.ReleasedTS = &agentmail.FlexTime{Time: time.Now()}
+				}
+				c.live[survivor] = row
+				return &agentmail.ReleaseReservationsResult{Released: len(ids)}, nil
+			}
+			result, err := TransferReservations(context.Background(), c, opts)
+			if !errors.Is(err, ErrTransferPostcondition) || result.Success || result.RolledBack || !result.OutcomeUnknown || result.Stage != "verify_release" || result.Attempts != 0 {
+				t.Fatalf("release count authorized work despite a surviving captured ID: %+v %v", result, err)
+			}
+			if len(result.ReleasedIDs) != 0 || len(result.ReleasedPaths) != 0 || len(result.GrantedIDs) != 0 || len(result.RollbackGrants) != 0 ||
+				!reflect.DeepEqual(result.RequestedIDs, []int{1001, 1002}) || !reflect.DeepEqual(c.calls, []string{"release:old"}) || c.reads != 2 {
+				t.Fatalf("unverified release published confirmation or made further mutations: %+v calls=%v reads=%d", result, c.calls, c.reads)
+			}
+		})
+	}
+}
+
+func TestTransferSourceReleaseReadbackFailureStopsAcquisitionAndCompensation(t *testing.T) {
+	readFailure := errors.New("source release listing unavailable")
+	for _, mode := range []string{"read failure", "nil listing", "duplicate ID", "missing ID", "foreign project", "cancelled read", "deadline"} {
+		t.Run(mode, func(t *testing.T) {
+			c, opts := transferEvidenceFixture()
+			original := []agentmail.FileReservation{c.live[1001], c.live[1002]}
+			c.list = func(ctx context.Context) ([]agentmail.FileReservation, error) {
+				if c.reads == 1 {
+					return original, nil
+				}
+				if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > defaultTransferCleanupTime {
+					t.Error("source release readback has no bounded deadline")
+				}
+				row := transferEvidenceLease(888, "independent.go", "peer", true)
+				switch mode {
+				case "read failure":
+					return nil, readFailure
+				case "nil listing":
+					return nil, nil
+				case "duplicate ID":
+					return []agentmail.FileReservation{row, row}, nil
+				case "missing ID":
+					row.ID = 0
+				case "foreign project":
+					row.ProjectID = 74
+				case "cancelled read":
+					return nil, context.Canceled
+				case "deadline":
+					return nil, context.DeadlineExceeded
+				}
+				return []agentmail.FileReservation{row}, nil
+			}
+			result, err := TransferReservations(context.Background(), c, opts)
+			if !errors.Is(err, ErrTransferPostcondition) || result.Success || result.RolledBack || !result.OutcomeUnknown || result.Stage != "verify_release" || result.Attempts != 0 ||
+				len(result.ReleasedIDs) != 0 || len(result.ReleasedPaths) != 0 || !reflect.DeepEqual(c.calls, []string{"release:old"}) || c.reads != 2 {
+				t.Fatalf("missing source-release evidence authorized more work: %+v %v calls=%v reads=%d", result, err, c.calls, c.reads)
+			}
+			if mode == "read failure" && !errors.Is(err, readFailure) || mode == "cancelled read" && !errors.Is(err, context.Canceled) || mode == "deadline" && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("source release readback discarded its cause: %v", err)
+			}
+		})
+	}
+}
+
+func TestTransferSourceReleaseReadbackAllowsNewIDsOnSamePath(t *testing.T) {
+	for _, replacement := range []bool{false, true} {
+		t.Run(map[bool]string{false: "explicit empty listing", true: "replacement lease"}[replacement], func(t *testing.T) {
+			c, opts := transferEvidenceFixture()
+			peer := transferEvidenceLease(1003, "b.go", "peer", false)
+			c.afterRelease = func() {
+				if replacement {
+					c.live[peer.ID] = peer
+				}
+			}
+			c.reserve = func(_ context.Context, o agentmail.FileReservationOptions) (*agentmail.ReservationResult, error) {
+				if c.reads != 2 || o.AgentName != "new" || len(o.Paths) != 1 {
+					t.Fatalf("destination dispatched before complete source verification: reads=%d opts=%+v", c.reads, o)
+				}
+				for _, id := range []int{1001, 1002} {
+					if _, present := c.live[id]; present {
+						t.Fatalf("destination dispatched while captured lease %d remains", id)
+					}
+				}
+				id := 201
+				if !o.Exclusive {
+					id = 202
+				}
+				row := transferEvidenceLease(id, o.Paths[0], o.AgentName, o.Exclusive)
+				c.live[id] = row
+				return &agentmail.ReservationResult{Granted: []agentmail.FileReservation{row}}, nil
+			}
+			result, err := TransferReservations(context.Background(), c, opts)
+			if err != nil || !result.Success || result.OutcomeUnknown || result.RolledBack || result.Attempts != 1 ||
+				!reflect.DeepEqual(result.ReleasedIDs, []int{1001, 1002}) || !reflect.DeepEqual(result.GrantedIDs, []int{201, 202}) ||
+				!reflect.DeepEqual(c.calls, []string{"release:old", "reserve:new", "reserve:new"}) || c.reads != 2 {
+				t.Fatalf("verified source disappearance did not permit both mode groups: %+v %v calls=%v", result, err, c.calls)
+			}
+			if replacement && !reflect.DeepEqual(c.live[peer.ID], peer) {
+				t.Fatal("source verification touched or adopted a replacement same-path lease")
+			}
+		})
+	}
+}
+
+func TestTransferSourceReleaseReadbackAfterCancellationRequiresProofForRollback(t *testing.T) {
+	readFailure := errors.New("cancelled transfer readback unavailable")
+	for _, mode := range []string{"verified", "surviving", "unavailable"} {
+		t.Run(mode, func(t *testing.T) {
+			c, opts := transferEvidenceFixture()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			original := []agentmail.FileReservation{c.live[1001], c.live[1002]}
+			c.release = func(_ context.Context, owner string, ids []int) (*agentmail.ReleaseReservationsResult, error) {
+				if owner != "old" {
+					t.Fatal("cancellation reached destination cleanup")
+				}
+				for _, id := range ids {
+					if mode != "surviving" || id != 1002 {
+						delete(c.live, id)
+					}
+				}
+				cancel()
+				return &agentmail.ReleaseReservationsResult{Released: len(ids)}, nil
+			}
+			c.list = func(ctx context.Context) ([]agentmail.FileReservation, error) {
+				if c.reads == 1 {
+					return original, nil
+				}
+				if deadline, ok := ctx.Deadline(); ctx.Err() != nil || !ok || time.Until(deadline) > defaultTransferCleanupTime {
+					t.Fatalf("post-release observation lost its bounded detached context: %v", ctx.Err())
+				}
+				if mode == "unavailable" {
+					return nil, readFailure
+				}
+				rows := make([]agentmail.FileReservation, 0, len(c.live))
+				for _, row := range c.live {
+					rows = append(rows, row)
+				}
+				return rows, nil
+			}
+			c.reserve = func(ctx context.Context, o agentmail.FileReservationOptions) (*agentmail.ReservationResult, error) {
+				if mode != "verified" || o.AgentName != "old" || ctx.Err() != nil || c.reads != 2 {
+					t.Fatalf("cancelled or unverified release authorized wrong acquisition: mode=%s opts=%+v err=%v", mode, o, ctx.Err())
+				}
+				if _, ok := ctx.Deadline(); !ok {
+					t.Fatal("source recovery has no bounded deadline")
+				}
+				id := 301
+				if !o.Exclusive {
+					id = 302
+				}
+				row := transferEvidenceLease(id, o.Paths[0], o.AgentName, o.Exclusive)
+				c.live[id] = row
+				return &agentmail.ReservationResult{Granted: []agentmail.FileReservation{row}}, nil
+			}
+			result, err := TransferReservations(ctx, c, opts)
+			if !errors.Is(err, context.Canceled) || result.Success || result.Attempts != 0 || c.reads != 2 {
+				t.Fatalf("cancelled transfer lost its cause or dispatched destination work: %+v %v reads=%d", result, err, c.reads)
+			}
+			if mode == "verified" {
+				if !result.RolledBack || result.OutcomeUnknown || !reflect.DeepEqual(result.ReleasedIDs, []int{1001, 1002}) ||
+					!reflect.DeepEqual(c.calls, []string{"release:old", "reserve:old", "reserve:old"}) {
+					t.Fatalf("confirmed source release lost bounded compensation: %+v %v calls=%v", result, err, c.calls)
+				}
+			} else if !errors.Is(err, ErrTransferPostcondition) || result.RolledBack || !result.OutcomeUnknown || result.Stage != "verify_release" || len(result.ReleasedIDs) != 0 ||
+				!reflect.DeepEqual(c.calls, []string{"release:old"}) {
+				t.Fatalf("uncertain source release authorized compensation: %+v %v calls=%v", result, err, c.calls)
+			}
+			if mode == "unavailable" && !errors.Is(err, readFailure) {
+				t.Fatalf("cancellation obscured the verification error: %v", err)
+			}
+		})
 	}
 }

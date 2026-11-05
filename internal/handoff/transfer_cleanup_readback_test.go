@@ -82,7 +82,7 @@ func TestTransferCleanupReadbackRejectsSurvivingAcknowledgedLease(t *testing.T) 
 				t.Fatalf("cleanup count authorized further work despite a surviving ID: %+v %v", result, err)
 			}
 			if result.Attempts != 1 || !reflect.DeepEqual(result.GrantedIDs, []int{201}) || len(cleanedTransferIDs(t, result)) != 0 ||
-				!reflect.DeepEqual(c.calls, []string{"release:old", "reserve:new", "release:new"}) || c.reads != 2 {
+				!reflect.DeepEqual(c.calls, []string{"release:old", "reserve:new", "release:new"}) || c.reads != 3 {
 				t.Fatalf("failed cleanup lost evidence or retried: %+v calls=%v reads=%d", result, c.calls, c.reads)
 			}
 		})
@@ -109,7 +109,7 @@ func TestTransferCleanupReadbackAllowsVerifiedRetryAndPreservesReplacement(t *te
 				return &agentmail.ReleaseReservationsResult{Released: len(ids)}, nil
 			}
 			result, err := TransferReservations(context.Background(), c, opts)
-			if err != nil || !result.Success || result.Attempts != 2 || result.OutcomeUnknown || result.RolledBack || c.reads != 2 ||
+			if err != nil || !result.Success || result.Attempts != 2 || result.OutcomeUnknown || result.RolledBack || c.reads != 3 ||
 				!reflect.DeepEqual(result.GrantedIDs, []int{301, 302}) || !reflect.DeepEqual(cleanedTransferIDs(t, result), []int{201}) {
 				t.Fatalf("verified cleanup did not permit exactly one retry: %+v %v reads=%d", result, err, c.reads)
 			}
@@ -132,6 +132,9 @@ func TestTransferCleanupReadbackFailureStopsRetryAndRollback(t *testing.T) {
 			c.list = func(ctx context.Context) ([]agentmail.FileReservation, error) {
 				if c.reads == 1 {
 					return original, nil
+				}
+				if c.reads == 2 {
+					return []agentmail.FileReservation{}, nil
 				}
 				if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > defaultTransferCleanupTime {
 					t.Error("cleanup readback has no bounded deadline")
@@ -186,7 +189,7 @@ func TestTransferCleanupReadbackKeepsEarlierVerifiedIDsOnLaterFailure(t *testing
 	}
 	result, err := TransferReservations(context.Background(), c, opts)
 	if !errors.Is(err, ErrTransferPostcondition) || !errors.Is(err, agentmail.ErrReservationConflict) || result.Success || result.RolledBack || result.Attempts != 2 ||
-		!reflect.DeepEqual(cleanedTransferIDs(t, result), []int{201}) || !reflect.DeepEqual(result.GrantedIDs, []int{301, 302}) || c.reads != 3 || len(c.calls) != 5 {
+		!reflect.DeepEqual(cleanedTransferIDs(t, result), []int{201}) || !reflect.DeepEqual(result.GrantedIDs, []int{301, 302}) || c.reads != 4 || len(c.calls) != 5 {
 		t.Fatalf("later cleanup failure lost earlier confirmation or pending IDs: %+v %v calls=%v", result, err, c.calls)
 	}
 }
@@ -212,7 +215,7 @@ func TestTransferCleanupUncertainAcknowledgementDoesNotReadBack(t *testing.T) {
 				}
 			}
 			result, err := TransferReservations(context.Background(), c, opts)
-			if err == nil || result.Success || result.RolledBack || !result.OutcomeUnknown || result.CleanupError == "" || c.reads != 1 || len(c.calls) != 3 {
+			if err == nil || result.Success || result.RolledBack || !result.OutcomeUnknown || result.CleanupError == "" || c.reads != 2 || len(c.calls) != 3 {
 				t.Fatalf("uncertain cleanup changed old stopping contract: %+v %v reads=%d", result, err, c.reads)
 			}
 		})
@@ -243,7 +246,7 @@ func TestTransferCleanupReadbackRetainsBoundedCompensationAfterCancellation(t *t
 	}
 	result, err := TransferReservations(ctx, c, opts)
 	if !errors.Is(err, context.Canceled) || !errors.Is(err, agentmail.ErrReservationConflict) || result.Success || !result.RolledBack ||
-		!reflect.DeepEqual(cleanedTransferIDs(t, result), []int{201}) || c.reads != 2 || len(c.calls) != 4 {
+		!reflect.DeepEqual(cleanedTransferIDs(t, result), []int{201}) || c.reads != 3 || len(c.calls) != 4 {
 		t.Fatalf("caller cancellation lost verified cleanup or restoration: %+v %v reads=%d calls=%v", result, err, c.reads, c.calls)
 	}
 }

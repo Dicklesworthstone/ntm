@@ -4595,6 +4595,11 @@ func buildRecoveryContext(ctx context.Context, sessionName, workingDir string, r
 		go func() {
 			defer wg.Done()
 			msgs, reservations, transfer, err := loadRecoveryMessages(ctx, sessionName, workingDir)
+			// A timed-out optional source can still have changed reservation
+			// ownership. Keep its receipt even when messages are unavailable.
+			mu.Lock()
+			rc.ReservationTransfer = transfer
+			mu.Unlock()
 			if recordSourceError("agent mail", err) {
 				return
 			}
@@ -4602,7 +4607,6 @@ func buildRecoveryContext(ctx context.Context, sessionName, workingDir string, r
 			defer mu.Unlock()
 			rc.Messages = msgs
 			rc.FileReservations = reservations
-			rc.ReservationTransfer = transfer
 		}()
 	}
 
@@ -5413,10 +5417,14 @@ func generateRecoverySummary(rc *RecoveryContext) string {
 			rc.Checkpoint.BVSummary.ActionableCount, rc.Checkpoint.BVSummary.BlockedCount))
 	}
 	if rc.ReservationTransfer != nil {
-		if rc.ReservationTransfer.Success {
+		if rc.ReservationTransfer.OutcomeUnknown {
+			parts = append(parts, "reservation transfer outcome unknown (inspect live reservations before retrying)")
+		} else if rc.ReservationTransfer.Success {
 			parts = append(parts, fmt.Sprintf("reservations transferred (%d paths)", len(rc.ReservationTransfer.GrantedPaths)))
 		} else if len(rc.ReservationTransfer.Conflicts) > 0 {
 			parts = append(parts, fmt.Sprintf("reservation conflicts (%d)", len(rc.ReservationTransfer.Conflicts)))
+		} else if rc.ReservationTransfer.Error != "" {
+			parts = append(parts, "reservation transfer failed")
 		}
 	}
 	if rc.CMMemories != nil && (len(rc.CMMemories.Rules) > 0 || len(rc.CMMemories.AntiPatterns) > 0) {
@@ -5456,6 +5464,7 @@ func FormatRecoveryPrompt(rc *RecoveryContext, agentType AgentType) string {
 		len(rc.BlockedBeads) > 0 ||
 		len(rc.Messages) > 0 ||
 		len(rc.FileReservations) > 0 ||
+		rc.ReservationTransfer != nil ||
 		(rc.CMMemories != nil && (len(rc.CMMemories.Rules) > 0 || len(rc.CMMemories.AntiPatterns) > 0)) ||
 		rc.Checkpoint != nil
 
@@ -5472,7 +5481,7 @@ func FormatRecoveryPrompt(rc *RecoveryContext, agentType AgentType) string {
 	}
 
 	// Your Previous Work section
-	if rc.Checkpoint != nil || len(rc.Beads) > 0 || len(rc.FileReservations) > 0 {
+	if rc.Checkpoint != nil || len(rc.Beads) > 0 || len(rc.FileReservations) > 0 || rc.ReservationTransfer != nil {
 		sb.WriteString("## Your Previous Work\n")
 
 		if len(rc.Beads) > 0 {
@@ -5507,7 +5516,9 @@ func FormatRecoveryPrompt(rc *RecoveryContext, agentType AgentType) string {
 			sb.WriteString("\n")
 		}
 		if rc.ReservationTransfer != nil {
-			if rc.ReservationTransfer.Success {
+			if rc.ReservationTransfer.OutcomeUnknown {
+				sb.WriteString("- Reservation transfer: outcome unknown; inspect live reservations before retrying or assuming file ownership.\n")
+			} else if rc.ReservationTransfer.Success {
 				sb.WriteString(fmt.Sprintf("- Reservation transfer: succeeded (%d paths)\n", len(rc.ReservationTransfer.GrantedPaths)))
 			} else if len(rc.ReservationTransfer.Conflicts) > 0 {
 				sb.WriteString(fmt.Sprintf("- Reservation transfer: conflicts (%d)\n", len(rc.ReservationTransfer.Conflicts)))

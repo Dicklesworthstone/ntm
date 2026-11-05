@@ -78,6 +78,21 @@ func (f *fakeTransferClient) ReleaseReservations(ctx context.Context, projectKey
 		paths:      paths,
 		ids:        append([]int(nil), ids...),
 	})
+	// Apply fixture source effects independently of the acknowledgement.
+	// Destination-receipt tests continue to control their own replies.
+	remaining := make([]agentmail.FileReservation, 0, len(f.sources))
+	for _, source := range f.sources {
+		selected := false
+		if source.AgentName == agentName {
+			for _, id := range ids {
+				selected = selected || source.ID == id
+			}
+		}
+		if !selected {
+			remaining = append(remaining, source)
+		}
+	}
+	f.sources = remaining
 	if f.releaseFn != nil {
 		return f.releaseFn(projectKey, agentName, paths, ids)
 	}
@@ -102,7 +117,7 @@ func (f *fakeTransferClient) ListReservations(ctx context.Context, projectKey, a
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return append([]agentmail.FileReservation(nil), f.sources...), nil
+	return append([]agentmail.FileReservation{}, f.sources...), nil
 }
 
 // Existing compensation tests describe paths/modes rather than a registry.

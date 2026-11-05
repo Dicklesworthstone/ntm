@@ -35,9 +35,35 @@ is omitted entirely. If another process replaces a lease after verification,
 the operation still selects only the captured IDs, not the replacement path.
 An incomplete acknowledgement or operation error stops further acquisition or
 compensation and records uncertainty. `requested_ids` parallels
-`requested_paths`; `released_ids` parallels `released_paths` after a complete
-release acknowledgement. A successful same-agent renewal reports the captured
-IDs in `granted_ids`, not newly acquired leases.
+`requested_paths`; `released_ids` parallels `released_paths` only after a complete
+release acknowledgement and independent confirmation that the captured IDs are
+absent. A successful same-agent renewal reports the captured IDs in
+`granted_ids`, not newly acquired leases.
+
+## Source release readback
+
+A complete source release count is followed by one bounded, independent
+project-wide active listing before destination acquisition or source rollback.
+Every captured ID must be absent, even if a surviving row has changed owner,
+expired, or carries a release marker. Missing, malformed, duplicate, or
+foreign-project identity and unavailable readback stop the transfer at
+`stage: verify_release`, with `ErrTransferPostcondition` and
+`outcome_unknown: true`. The result keeps `requested_ids` and
+`requested_paths` as the attempted scope, but publishes no `released_ids` or
+`released_paths` without confirmed absence. No destination attempt or
+compensation is authorized by a failed check.
+
+The observation uses a separate bounded context after the release was
+acknowledged, so caller cancellation does not prevent checking its effects.
+If absence is verified after cancellation, source recovery can use the existing
+bounded compensation path without dispatching to the destination. If verification
+fails, the cancellation and readback causes remain available and no additional
+mutation occurs. Replacement IDs on the same paths are neither adopted nor
+released.
+
+Spawn recovery preserves this receipt and explicitly reports an unknown outcome
+in its summary and injected recovery context, including when there are no other
+recovery items. Inspect live reservations before retrying or assuming ownership.
 
 ## Renewal readback
 
@@ -133,9 +159,10 @@ These checks bind source mutations to captured lease identity and destination
 cleanup to verified receipt IDs. They rely on the server honoring ID selectors
 and retaining unique lease identities. They do not authenticate a replacement
 server, protect against out-of-band database ID reuse, persist a crash-replay
-journal, or make the remote release/acquire sequence atomic. Source release
-still relies on a count acknowledgement without post-release verification;
-renewal and destination cleanup now require independent post-mutation readback.
+journal, or make the remote release/acquire sequence atomic. Source release,
+renewal, and destination cleanup require independent post-mutation readback.
+A later recovery invocation revalidates the original captured IDs; these checks
+do not provide a durable at-most-once release journal across separate attempts.
 Readback is an observation, not a transaction or proof that no subsequent remote
 change can occur. TTL checks also depend on meaningful server/client clock
 alignment; clock skew can cause a safe refusal. Exact-ID selection prevents a

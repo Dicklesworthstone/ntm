@@ -213,6 +213,17 @@ func TransferReservations(ctx context.Context, client ReservationTransferClient,
 		result.OutcomeUnknown = true
 		return fail(fmt.Errorf("released %d of %d requested reservations", count, len(requested)))
 	}
+	// A count does not prove that the captured leases disappeared. Once the
+	// release was acknowledged, finish this bounded observation even if the
+	// caller cancelled; only verified absence can authorize compensation.
+	result.Stage = "verify_release"
+	releaseCtx, releaseCancel := newCleanupContext()
+	releaseErr := verifyTransferRelease(releaseCtx, client, opts.ProjectKey, sources[0].ProjectID, result.RequestedIDs)
+	releaseCancel()
+	if releaseErr != nil {
+		result.OutcomeUnknown = true
+		return fail(errors.Join(releaseErr, ctx.Err()))
+	}
 	result.ReleasedPaths = append([]string(nil), requested...)
 	result.ReleasedIDs = append([]int(nil), result.RequestedIDs...)
 

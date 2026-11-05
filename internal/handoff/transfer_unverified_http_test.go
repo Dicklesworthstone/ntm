@@ -101,11 +101,11 @@ func TestTransferUnverifiedAgentMailReceiptStopsRemoteMutations(t *testing.T) {
 			if !reflect.DeepEqual(mutations, []string{"release_file_reservations", "file_reservation_paths"}) {
 				t.Fatalf("unverified receipt triggered further mutations: %v", mutations)
 			}
-			if mode == "foreign owner" && len(resources) != 3 {
-				t.Fatalf("expected source preflight plus independent grant project and reservation reads, got %v", resources)
+			if mode == "foreign owner" && len(resources) != 4 {
+				t.Fatalf("expected source preflight and release readback plus independent grant project and reservation reads, got %v", resources)
 			}
-			if mode == "malformed timestamp" && len(resources) != 1 {
-				t.Fatalf("bad receipt initiated reads beyond source preflight: %v", resources)
+			if mode == "malformed timestamp" && len(resources) != 2 {
+				t.Fatalf("bad receipt initiated reads beyond source preflight and release readback: %v", resources)
 			}
 		})
 	}
