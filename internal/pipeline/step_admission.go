@@ -547,6 +547,9 @@ func (e *Executor) seedStepAdmissionsLocked(workflow *Workflow, graph *Dependenc
 	for id := range e.state.ParallelState {
 		add(id)
 	}
+	for id := range e.state.SuccessHooks {
+		add(id)
+	}
 	for id, frame := range e.state.InFlightSteps {
 		if frame.Kind == StepKindLoop && frame.Iteration >= 0 && strings.HasSuffix(id, fmt.Sprintf("_iter%d", frame.Iteration)) {
 			continue

@@ -2520,7 +2520,9 @@ func TestCommandSettlementUsesCurrentBackgroundAcknowledgement(t *testing.T) {
 	}{
 		{name: "current acknowledgement replaces stale failure", want: false},
 		{name: "current failure", mutate: func(_ *CommandExecutionState, result *StepResult) { result.Status = StatusFailed }, want: true},
-		{name: "current diagnostic", mutate: func(_ *CommandExecutionState, result *StepResult) { result.Error = &StepError{Type: "execution_unknown", Message: "returned uncertainty"} }, want: true},
+		{name: "current diagnostic", mutate: func(_ *CommandExecutionState, result *StepResult) {
+			result.Error = &StepError{Type: "execution_unknown", Message: "returned uncertainty"}
+		}, want: true},
 		{name: "rerunnable acknowledgement", mutate: func(_ *CommandExecutionState, result *StepResult) { result.RerunOnResume = true }, want: true},
 		{name: "different result identity", mutate: func(_ *CommandExecutionState, result *StepResult) { result.StepID = "other" }, want: true},
 		{name: "launch intent", mutate: func(record *CommandExecutionState, _ *StepResult) { record.Status = commandExecutionStarting }, want: true},
@@ -2573,22 +2575,27 @@ func TestCommandSettlementUsesCurrentBackgroundAcknowledgement(t *testing.T) {
 
 func TestSuccessHookFailurePreservesSettlementAndCapacityClassification(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		err  error
-		want string
+		name       string
+		err        error
+		want       string
+		wantStatus ExecutionStatus
 	}{
-		{"uncertain process", errStepProcessUnsettled, "execution_unknown"},
-		{"wrapped uncertainty", errors.Join(errors.New("hook stopped"), errStepProcessUnsettled), "execution_unknown"},
-		{"runtime capacity", ErrStepCountLimit, "step_limit"},
-		{"materialized capacity", ErrMaterializedStepLimit, "step_limit"},
-		{"propagated capacity", &stepAdmissionPropagationError{message: "child capacity"}, "step_limit"},
-		{"capacity precedence", errors.Join(errStepProcessUnsettled, ErrStepCountLimit), "step_limit"},
+		{"uncertain process", errStepProcessUnsettled, "execution_unknown", StatusFailed},
+		{"wrapped uncertainty", errors.Join(errors.New("hook stopped"), errStepProcessUnsettled), "execution_unknown", StatusFailed},
+		{"runtime capacity", ErrStepCountLimit, "step_limit", StatusFailed},
+		{"materialized capacity", ErrMaterializedStepLimit, "step_limit", StatusFailed},
+		{"propagated capacity", &stepAdmissionPropagationError{message: "child capacity"}, "step_limit", StatusFailed},
+		{"capacity precedence", errors.Join(errStepProcessUnsettled, ErrStepCountLimit), "step_limit", StatusFailed},
+		{"cancellation", context.Canceled, "cancelled", StatusCancelled},
+		{"deadline", context.DeadlineExceeded, "timeout", StatusCancelled},
+		{"cancelled uncertain process", errors.Join(context.Canceled, errStepProcessUnsettled), "execution_unknown", StatusFailed},
+		{"cancelled capacity", errors.Join(context.Canceled, ErrStepCountLimit), "step_limit", StatusFailed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			prior := StepResult{StepID: "parent", Status: StatusCompleted, StartedAt: time.Now(), Attempts: 2, Output: "native output",
 				Error: &StepError{Type: "child", Message: "prior diagnostic"}}
 			result := successHookExecutionFailure(prior, tc.err)
-			if result.Status != StatusFailed || result.Error == nil || result.Error.Type != tc.want ||
+			if result.Status != tc.wantStatus || result.Error == nil || result.Error.Type != tc.want ||
 				result.Error.Message != tc.err.Error() || result.FinishedAt.IsZero() || result.Attempts != prior.Attempts ||
 				result.Output != prior.Output || !result.StartedAt.Equal(prior.StartedAt) {
 				t.Fatalf("hook failure lost classification or native result: %+v", result)

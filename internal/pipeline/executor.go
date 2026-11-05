@@ -1077,6 +1077,32 @@ scheduler:
 	return fatalErr
 }
 
+// resumeSuccessHookStep resumes a durable success tail before any condition,
+// retry, or kind executor can repeat the body's completed effects.
+func (e *Executor) resumeSuccessHookStep(ctx context.Context, step *Step, workflow *Workflow) (StepResult, bool) {
+	result, found, err := e.loadSuccessHookBody(step)
+	if err != nil {
+		now := time.Now()
+		return StepResult{
+			StepID: step.ID, Status: StatusFailed, StartedAt: now, FinishedAt: now,
+			Error: &StepError{Type: "recovery", Message: err.Error(), Timestamp: now},
+		}, true
+	}
+	if !found {
+		return StepResult{}, false
+	}
+	if e.hasUnresolvedCommandExecutionForOutcome(step, &result) || e.hasUnresolvedCommandEvaluation(step) {
+		return unsettledProcessStepFailure(result, fmt.Errorf("%w for %q", errStepProcessUnsettled, step.ID)), true
+	}
+	if err := e.runOnSuccessSteps(ctx, step, workflow); err != nil {
+		return successHookExecutionFailure(result, err), true
+	}
+	result.FinishedAt = time.Now()
+	e.emitProgress("step_complete", step.ID,
+		stepProgressMessage("Step completed", step, "success hooks resumed"), e.calculateProgress())
+	return result, true
+}
+
 // executeStep runs a single step with retry logic
 func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workflow) StepResult {
 	if err := e.admitRuntimeIDs(ctx, []string{step.ID}); err != nil {
@@ -1108,6 +1134,12 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 			result.SkipKind = SkipKindCancelledBeforeDispatch
 		}
 		return result
+	}
+
+	// A completed body owns its remaining success hooks even if a later
+	// attempt would evaluate different conditions or retry the original work.
+	if recovered, ok := e.resumeSuccessHookStep(ctx, step, workflow); ok {
+		return recovered
 	}
 
 	// Check for failed dependencies (in CONTINUE mode, skip steps with failed deps)
@@ -1171,7 +1203,8 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 			stepProgressMessage("Executing step", step, fmt.Sprintf("attempt %d/%d", attempt, maxAttempts)),
 			e.calculateProgress())
 
-		// Execute the step
+		// Execute the step. The kind adapter preserves its input definition
+		// while resolving pane expressions for the current attempt.
 		stepResult := e.executeStepOnce(ctx, step, workflow)
 		startedAttempts := attempt
 		if stepResult.Status == StatusCancelled && stepResult.SkipKind == SkipKindCancelledBeforeDispatch {
@@ -1182,6 +1215,17 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 		if findStepAdmissionError(stepResult.Error) != nil {
 			stepResult.Attempts = startedAttempts
 			return stepResult
+		}
+		if stepResult.Status == StatusCompleted && len(step.OnSuccess) > 0 {
+			stepResult.Attempts = startedAttempts
+			if e.hasUnresolvedCommandExecutionForOutcome(step, &stepResult) || e.hasUnresolvedCommandEvaluation(step) {
+				return unsettledProcessStepFailure(stepResult, fmt.Errorf("%w for %q", errStepProcessUnsettled, step.ID))
+			}
+			// Save the observed body before cancellation, another worker's
+			// admission failure, or a success-hook effect can interrupt its tail.
+			if err := e.prepareSuccessHooks(ctx, step, stepResult); err != nil {
+				return successHookExecutionFailure(stepResult, err)
+			}
 		}
 		if err := e.stepAdmissionFailure(ctx); err != nil {
 			// A sibling or descendant can exhaust capacity after this body
@@ -1210,12 +1254,13 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 				stepProgressMessage("Step completed", step, ""), e.calculateProgress())
 			// bd-w6nth.7: run OnSuccess steps after a successful parent.
 			// Ordinary hook failures are logged without changing its status.
-			// Capacity refusal keeps the original effect receipt and leaves
-			// the parent resumable so its pending hooks can finish later.
+			// Interruption keeps the completed body and consumed hooks durable
+			// so a later attempt finishes the tail without repeating effects.
 			// Context depth bounds recursive OnSuccess chains.
 			if err := e.runOnSuccessSteps(ctx, step, workflow); err != nil {
 				return successHookExecutionFailure(result, err)
 			}
+			result.FinishedAt = time.Now()
 			return result
 		}
 
@@ -4008,6 +4053,11 @@ func (e *Executor) applyResumeState() error {
 		e.stateMu.Unlock()
 		return nil
 	}
+	pendingHooks, consumedHooks, hookOutputs, err := prepareSuccessHookResume(e.graph, e.state)
+	if err != nil {
+		e.stateMu.Unlock()
+		return err
+	}
 	merges, settledChildren, err := prepareCompletedParallelOutputs(e.graph, e.state)
 	if err != nil {
 		e.stateMu.Unlock()
@@ -4023,10 +4073,16 @@ func (e *Executor) applyResumeState() error {
 		}
 	}
 	for stepID, result := range e.state.Steps {
+		// Advisory failures already consumed by a success tail remain part
+		// of its evidence. They are not independent retry work or successful
+		// graph nodes; the hook journal restores any completed output bindings.
+		if consumedHooks[stepID] {
+			continue
+		}
 		// In-flight evidence must win before graph completion and output
 		// retention. Clearing the marker afterward is too late: it leaves
 		// a completed graph node and resurrects an untrusted output alias.
-		if resumeResultInFlight(e.state, stepID, result) || (shouldRerunStep(result) && !settledChildren[stepID]) {
+		if pendingHooks[stepID] || resumeResultInFlight(e.state, stepID, result) || (shouldRerunStep(result) && !settledChildren[stepID]) {
 			rerunStepIDs = append(rerunStepIDs, stepID)
 			continue
 		}
@@ -4063,7 +4119,12 @@ func (e *Executor) applyResumeState() error {
 			finishedAt: result.FinishedAt,
 		}
 		if stepForOutput != nil && !settledChildren[stepID] {
-			entry.outputVar = stepForOutput.OutputVar
+			// The hook body checkpoint owns a foreach collection's shape.
+			// Its summary string cannot replace that captured aggregate.
+			_, hookBody := e.state.SuccessHooks[stepID]
+			if !hookBody || !stepOwnsForeachOutputVar(stepForOutput) {
+				entry.outputVar = stepForOutput.OutputVar
+			}
 		}
 		retained = append(retained, entry)
 	}
@@ -4085,6 +4146,7 @@ func (e *Executor) applyResumeState() error {
 		e.clearStepVariables(stepID)
 	}
 	retained = append(retained, merges...)
+	retained = append(retained, hookOutputs...)
 	if len(retained) > 0 {
 		e.varMu.Lock()
 		restoreResumeOutputEvents(e.state, retained)
@@ -4195,6 +4257,12 @@ func (e *Executor) snapshotState() *ExecutionState {
 			value.InFlightStepIDs = append([]string(nil), value.InFlightStepIDs...)
 			value.ChildCheckpoints = maps.Clone(value.ChildCheckpoints)
 			snapshot.ParallelState[key] = value
+		}
+	}
+	if e.state.SuccessHooks != nil {
+		snapshot.SuccessHooks = make(map[string]SuccessHookState, len(e.state.SuccessHooks))
+		for key, value := range e.state.SuccessHooks {
+			snapshot.SuccessHooks[key] = cloneSuccessHookState(value)
 		}
 	}
 	if e.state.InFlightSteps != nil {

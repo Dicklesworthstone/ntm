@@ -1364,6 +1364,9 @@ type StepResult struct {
 	// synchronous Completed return set this so resume relaunches the sidecar
 	// instead of skipping it (bd-yrnue).
 	RerunOnResume bool `json:"rerun_on_resume,omitempty"`
+	// SuccessHookParent binds a consumed advisory outcome to the journal that
+	// owns it. Losing that journal cannot turn a failed hook into fresh work.
+	SuccessHookParent string `json:"success_hook_parent,omitempty"`
 }
 
 // StepError contains detailed error information for a failed step
@@ -1410,6 +1413,10 @@ type ExecutionState struct {
 	CommandEvaluationVersion int                             `json:"command_evaluation_version,omitempty"`
 	MailSends                map[string]MailSendState        `json:"mail_sends,omitempty"`
 	ReservationSteps         map[string]ReservationStepState `json:"reservation_steps,omitempty"`
+	// SuccessHooks preserves a completed body and the advisory hook outcomes
+	// already consumed by its sequential tail. A failed advisory hook remains
+	// failed for inspection without becoming permission to repeat its effects.
+	SuccessHooks map[string]SuccessHookState `json:"success_hooks,omitempty"`
 
 	// OutputValidation records the post-run check of Workflow.Outputs (bd-3uqce).
 	// nil when the workflow declared no outputs or validation was skipped (e.g.

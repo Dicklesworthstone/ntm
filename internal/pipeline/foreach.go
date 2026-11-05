@@ -1061,6 +1061,9 @@ func (e *Executor) executeForeachNestedStep(ctx context.Context, step *Step, wor
 	e.markStepInFlight(step.ID, stepKind(step), -1)
 	e.persistState()
 	defer e.clearStepInFlight(step.ID)
+	if recovered, ok := e.resumeSuccessHookStep(ctx, step, workflow); ok {
+		return recovered
+	}
 	if step.When != "" {
 		skip, err := e.evaluateConditionCtx(ctx, step.When)
 		if err != nil {
@@ -1111,6 +1114,14 @@ func (e *Executor) executeForeachNestedStep(ctx context.Context, step *Step, wor
 		if findStepAdmissionError(result.Error) != nil {
 			return result
 		}
+		if result.Status == StatusCompleted && len(step.OnSuccess) > 0 {
+			if e.hasUnresolvedCommandExecutionForOutcome(step, &result) || e.hasUnresolvedCommandEvaluation(step) {
+				return unsettledProcessStepFailure(result, fmt.Errorf("%w for %q", errStepProcessUnsettled, step.ID))
+			}
+			if err := e.prepareSuccessHooks(ctx, step, result); err != nil {
+				return successHookExecutionFailure(result, err)
+			}
+		}
 		if err := e.stepAdmissionFailure(ctx); err != nil {
 			if result.Status == StatusCompleted && len(step.OnSuccess) > 0 {
 				return stepAdmissionExecutionFailure(result, err)
@@ -1124,6 +1135,7 @@ func (e *Executor) executeForeachNestedStep(ctx context.Context, step *Step, wor
 			if err := e.runOnSuccessSteps(ctx, step, workflow); err != nil {
 				return successHookExecutionFailure(result, err)
 			}
+			result.FinishedAt = time.Now()
 			return result
 		}
 		if result.Status == StatusSkipped || result.Status == StatusCancelled {

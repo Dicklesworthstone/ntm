@@ -982,6 +982,25 @@ completed hooks, and immutable accepted outcomes. Ordinary settled hook failures
 keep their existing logging behavior; healthy background acknowledgements remain
 valid while their command supervision is active.
 
+Success-hook sequences now checkpoint the completed parent body before the first
+hook, then checkpoint each consumed hook outcome before starting the next one.
+Cancellation leaves the parent unfinished until its remaining hooks settle.
+Ordinary resume reuses the successful body and earlier consumed outcomes,
+including advisory hooks that returned a known failure after producing effects.
+The same continuation applies inside branches, parallel groups, foreach
+iterations, and nested success hooks. A delivered agent prompt resumes observation;
+an unconfirmed delivery still requires its existing explicit recovery decision.
+
+These checkpoints bind both the authored and materialized step definitions,
+ordered hook identities, results, and output bindings. Missing or altered
+consumption evidence stops resume before downstream work. Completed hook outputs
+can be rebuilt from the saved evidence even when the variable cache is missing.
+Explicit whole-run reset and valid forced-iteration scopes clear the matching
+hook progress; restarting a consumed failed hook alone refuses a replay that
+would leave its containing work inconsistent. Background commands retain their
+existing supervised relaunch behavior. This records orchestration progress; it
+does not make a remote side effect and its local checkpoint one atomic operation.
+
 An older checkpoint may already report `completed` while retaining an unfinished
 foreground command or selector receipt. If that step's scheduler result is
 failed or cancelled, recovery inspection can offer the same explicit acceptance

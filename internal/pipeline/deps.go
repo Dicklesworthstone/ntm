@@ -592,6 +592,9 @@ func (g *DependencyGraph) validatePhaseOwnership(state *ExecutionState) []Depend
 		for id := range state.ParallelState {
 			ids[id] = true
 		}
+		for id := range state.SuccessHooks {
+			ids[id] = true
+		}
 	}
 	ordered := make([]string, 0, len(ids))
 	for id := range ids {

@@ -577,11 +577,16 @@ type cancelAgentObservation struct {
 	*MockTmuxClient
 	executor *Executor
 	cancel   context.CancelFunc
+	stepID   string
 }
 
 func (c *cancelAgentObservation) CapturePaneOutput(target string, lines int) (string, error) {
 	output, err := c.MockTmuxClient.CapturePaneOutput(target, lines)
-	if delivery, ok := c.executor.loadAgentDelivery("work"); ok && delivery.Status == agentDeliveryDelivered && c.cancel != nil {
+	stepID := c.stepID
+	if stepID == "" {
+		stepID = "work"
+	}
+	if delivery, ok := c.executor.loadAgentDelivery(stepID); ok && delivery.Status == agentDeliveryDelivered && c.cancel != nil {
 		c.cancel()
 		c.cancel = nil
 	}
@@ -1200,5 +1205,353 @@ func TestAgentDeliveryResumeRejectsDifferentTmuxEndpoint(t *testing.T) {
 	history, err := mock.PasteHistory("%17")
 	if err != nil || len(history) != 1 || len(mock.VerificationHistory()) != 1 {
 		t.Fatalf("endpoint change repeated the original delivery: pastes=%+v verifications=%+v err=%v", history, mock.VerificationHistory(), err)
+	}
+}
+
+func TestSuccessHookAgentRecoveryKeepsOriginalPromptDeliveries(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("native command tail fixture requires a POSIX shell")
+	}
+	for _, uncertain := range []bool{false, true} {
+		t.Run(map[bool]string{false: "delivered observation cancelled", true: "unconfirmed submission"}[uncertain], func(t *testing.T) {
+			cfg := DefaultExecutorConfig("agent-hook-recovery")
+			cfg.ProjectDir, cfg.RunID = t.TempDir(), GenerateRunID()
+			cfg.DefaultTimeout, cfg.GlobalTimeout = 5*time.Second, 20*time.Second
+			workflow := singleStepWorkflow("agent-hook-recovery", Step{
+				ID: "work", Pane: PaneSpec{Index: 1}, Prompt: "parent request", Wait: WaitTime,
+				Timeout: Duration{Duration: 15 * time.Millisecond}, OutputVar: "parent_output",
+				OnSuccess: []Step{
+					{ID: "complete", Pane: PaneSpec{Index: 2}, Prompt: "completed hook request", Wait: WaitTime, Timeout: Duration{Duration: 15 * time.Millisecond}},
+					{ID: "pending", Pane: PaneSpec{Index: 3}, Prompt: "pending hook request", Wait: WaitTime, Timeout: Duration{Duration: 15 * time.Millisecond}},
+					{ID: "tail", Command: "printf 'tail\\n' >> tail-effects"},
+				},
+			})
+			workflow.Steps = append(workflow.Steps, Step{ID: "dependent", DependsOn: []string{"work"}, Command: "printf 'dependent\\n' >> dependent-effects"})
+			workflow, path, err := SnapshotWorkflow(context.Background(), cfg.ProjectDir, workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.WorkflowFile = path
+			mock := NewMockTmuxClient(
+				tmux.Pane{ID: "%1", Index: 1, PID: 3101, Type: tmux.AgentCodex, Width: 100, Command: "codex"},
+				tmux.Pane{ID: "%2", Index: 2, PID: 3102, Type: tmux.AgentCodex, Width: 100, Command: "codex"},
+				tmux.Pane{ID: "%3", Index: 3, PID: 3103, Type: tmux.AgentCodex, Width: 100, Command: "codex"},
+			)
+			t.Cleanup(mock.Reset)
+			for _, paneID := range []string{"%1", "%2", "%3"} {
+				if err := mock.SetPaneOutput(paneID, "OLD-ANSWER\n"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			mock.SetSubmissionVerifier(func(target, message, _ string) error {
+				if target == "%3" {
+					if uncertain {
+						return errComposerStranded
+					}
+					return nil
+				}
+				return mock.AppendPaneOutput(target, "ANSWER: "+message+"\n")
+			})
+			assertOriginalDeliveries := func() {
+				t.Helper()
+				for paneID, prompt := range map[string]string{"%1": "parent request", "%2": "completed hook request", "%3": "pending hook request"} {
+					history, err := mock.PasteHistory(paneID)
+					if err != nil || len(history) != 1 || history[0].Content != prompt || !history[0].Enter {
+						t.Fatalf("pane %s did not retain one original delivery: pastes=%+v error=%v", paneID, history, err)
+					}
+				}
+				if got := len(mock.VerificationHistory()); got != 3 {
+					t.Fatalf("submission verification repeated or skipped: %d, want 3", got)
+				}
+			}
+			assertNoTail := func() {
+				t.Helper()
+				for _, name := range []string{"tail-effects", "dependent-effects"} {
+					if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, name)); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("unfinished hook allowed %s: data=%q error=%v", name, data, err)
+					}
+				}
+			}
+			executor := NewExecutor(cfg)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			executor.SetTmuxClient(&cancelAgentObservation{MockTmuxClient: mock, executor: executor, cancel: cancel, stepID: "work_on_success_pending"})
+			state, runErr := executor.Run(ctx, workflow, nil, nil)
+			wantStatus := StatusCancelled
+			if uncertain {
+				wantStatus = StatusFailed
+			}
+			if runErr == nil || state == nil || state.Status != wantStatus || state.Steps["work"].Status != wantStatus {
+				t.Fatalf("unfinished hook did not stop its parent: state=%+v error=%v", state, runErr)
+			}
+			if !uncertain && !errors.Is(runErr, context.Canceled) {
+				t.Fatalf("observation cancellation lost its original cause: %v", runErr)
+			}
+			assertOriginalDeliveries()
+			assertNoTail()
+			prior, err := LoadState(cfg.ProjectDir, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parentReceipt, completedReceipt := prior.AgentDeliveries["work"], prior.AgentDeliveries["work_on_success_complete"]
+			if parentReceipt.Status != agentDeliveryCompleted || completedReceipt.Status != agentDeliveryCompleted {
+				t.Fatalf("completed prompt receipts were not persisted: %+v", prior.AgentDeliveries)
+			}
+			if uncertain {
+				resumed := NewExecutor(cfg)
+				resumed.SetTmuxClient(mock)
+				state, err = resumed.Resume(context.Background(), workflow, prior, nil)
+				if err == nil || state == nil || state.Status != StatusFailed || state.AgentDeliveries["work_on_success_pending"].Status != agentDeliverySending {
+					t.Fatalf("ordinary resume accepted an unconfirmed send: state=%+v error=%v", state, err)
+				}
+				assertOriginalDeliveries()
+				assertNoTail()
+			}
+			if err := mock.AppendPaneOutput("%3", "RESUMED-ANSWER\n"); err != nil {
+				t.Fatal(err)
+			}
+			if uncertain {
+				inspection, err := InspectAgentDeliveryRecovery(context.Background(), cfg.ProjectDir, cfg.RunID)
+				if err != nil || len(inspection.Deliveries) != 1 || inspection.Deliveries[0].StepID != "work_on_success_pending" || !inspection.Deliveries[0].CanAccept {
+					t.Fatalf("unconfirmed hook cannot be inspected for operator recovery: inspection=%+v error=%v", inspection, err)
+				}
+				resolver := NewExecutor(cfg)
+				resolver.SetTmuxClient(mock)
+				accepted, err := resolver.acceptAgentDeliveryContext(context.Background(), "work_on_success_pending", inspection.Deliveries[0].ReceiptToken, "Observed the original hook task and its fresh answer in the original pane")
+				if err != nil || accepted == nil || accepted.Replayed || accepted.Delivery.Status != agentDeliveryDelivered {
+					t.Fatalf("explicit acceptance did not retain the original delivery: result=%+v error=%v", accepted, err)
+				}
+				assertOriginalDeliveries()
+				assertNoTail()
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				prior, err = LoadState(cfg.ProjectDir, cfg.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				owner, err := AcquireRunControl(context.Background(), cfg.ProjectDir, cfg.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resumed := NewExecutor(cfg)
+				resumed.SetTmuxClient(mock)
+				state, err = resumed.Resume(owner.Context(), workflow, prior, nil)
+				owner.Close()
+				if err != nil || state == nil || state.Status != StatusCompleted {
+					t.Fatalf("resume %d failed after observing the original delivery: state=%+v error=%v", attempt+1, state, err)
+				}
+				assertOriginalDeliveries()
+				if state.AgentDeliveries["work"] != parentReceipt || state.AgentDeliveries["work_on_success_complete"] != completedReceipt {
+					t.Fatalf("resume %d replaced a completed prompt receipt", attempt+1)
+				}
+				if output := state.Steps["work_on_success_pending"].Output; !strings.Contains(output, "RESUMED-ANSWER") || strings.Contains(output, "OLD-ANSWER") {
+					t.Fatalf("resume %d lost the pending response boundary: %q", attempt+1, output)
+				}
+				for name, want := range map[string]string{"tail-effects": "tail\n", "dependent-effects": "dependent\n"} {
+					if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, name)); err != nil || string(data) != want {
+						t.Fatalf("resume %d changed %s more than once: data=%q error=%v", attempt+1, name, data, err)
+					}
+				}
+			}
+		})
+	}
+}
+
+// This lifecycle uses actual persisted execution state and the real agent
+// delivery executor. Its external effects are five distinct pane submissions,
+// so it also runs where native process-group supervision is unavailable.
+func TestSuccessHookPromptOnlyRecovery(t *testing.T) {
+	for _, shape := range []string{"command equivalent", "branch", "parallel", "foreach", "nested hook"} {
+		t.Run(shape, func(t *testing.T) {
+			cfg := DefaultExecutorConfig("prompt-hook-recovery")
+			cfg.ProjectDir, cfg.RunID = t.TempDir(), GenerateRunID()
+			cfg.DefaultTimeout, cfg.GlobalTimeout = time.Second, 10*time.Second
+			promptStep := func(id string, pane int, prompt string) Step {
+				return Step{ID: id, Pane: PaneSpec{Index: pane}, Prompt: prompt, Wait: WaitTime,
+					Timeout: Duration{Duration: time.Millisecond}}
+			}
+			work := promptStep("work", 1, "parent request")
+			work.OutputVar = "body_output"
+			complete := promptStep("complete", 2, "completed hook request")
+			complete.OutputVar = "hook_output"
+			pending := promptStep("pending", 3, "pending hook request")
+			tail := promptStep("tail", 4, "tail request")
+			work.OnSuccess = []Step{complete, pending, tail}
+			root, parentID := work, "work"
+			switch shape {
+			case "branch":
+				root = Step{ID: "route", Branch: "chosen", Branches: map[string]interface{}{"chosen": []Step{work}}}
+				parentID = "route_work"
+			case "parallel":
+				root = Step{ID: "fan", Parallel: ParallelSpec{Steps: []Step{work}}}
+				parentID = "fan_work"
+			case "foreach":
+				root = Step{ID: "each", Foreach: &ForeachConfig{Items: `["item"]`, Steps: []Step{work}}}
+				parentID = "each_iter0_work"
+			case "nested hook":
+				complete.OnSuccess = []Step{pending, tail}
+				root.OnSuccess = []Step{complete}
+			}
+			completeID := parentID + "_on_success_complete"
+			pendingID := parentID + "_on_success_pending"
+			if shape == "nested hook" {
+				pendingID = completeID + "_on_success_pending"
+			}
+			dependent := promptStep("dependent", 5, "dependent request")
+			dependent.DependsOn = []string{root.ID}
+			workflow := singleStepWorkflow("prompt-hook-recovery", root)
+			workflow.Steps = append(workflow.Steps, dependent)
+			workflow, path, err := SnapshotWorkflow(context.Background(), cfg.ProjectDir, workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.WorkflowFile = path
+			panes := []tmux.Pane{
+				{ID: "%1", Index: 1, PID: 4101, Type: tmux.AgentCodex, Width: 100, Command: "codex"},
+				{ID: "%2", Index: 2, PID: 4102, Type: tmux.AgentCodex, Width: 100, Command: "codex"},
+				{ID: "%3", Index: 3, PID: 4103, Type: tmux.AgentCodex, Width: 100, Command: "codex"},
+				{ID: "%4", Index: 4, PID: 4104, Type: tmux.AgentCodex, Width: 100, Command: "codex"},
+				{ID: "%5", Index: 5, PID: 4105, Type: tmux.AgentCodex, Width: 100, Command: "codex"},
+			}
+			mock := NewMockTmuxClient(panes...)
+			t.Cleanup(mock.Reset)
+			for _, pane := range panes {
+				if err := mock.SetPaneOutput(pane.ID, "OLD-ANSWER\n"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			mock.SetSubmissionVerifier(func(target, message, _ string) error {
+				if target == "%3" {
+					return nil
+				}
+				return mock.AppendPaneOutput(target, "ANSWER: "+message+"\n")
+			})
+			assertDeliveries := func(t *testing.T, completed bool) {
+				t.Helper()
+				messages := []string{"parent request", "completed hook request", "pending hook request", "tail request", "dependent request"}
+				for i, pane := range panes {
+					want := 1
+					if !completed && i >= 3 {
+						want = 0
+					}
+					history, err := mock.PasteHistory(pane.ID)
+					if err != nil || len(history) != want || (want == 1 && (history[0].Content != messages[i] || !history[0].Enter)) {
+						t.Fatalf("pane %s submission history=%+v error=%v, want %d copies of %q", pane.ID, history, err, want, messages[i])
+					}
+				}
+				want := 3
+				if completed {
+					want = 5
+				}
+				if got := len(mock.VerificationHistory()); got != want {
+					t.Fatalf("submission verifications=%d, want %d", got, want)
+				}
+			}
+			executor := NewExecutor(cfg)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			executor.SetTmuxClient(&cancelAgentObservation{
+				MockTmuxClient: mock, executor: executor, cancel: cancel, stepID: pendingID,
+			})
+			state, err := executor.Run(ctx, workflow, nil, nil)
+			if !errors.Is(err, context.Canceled) || state == nil || state.Status != StatusCancelled {
+				t.Fatalf("delivered hook cancellation lost its outcome: state=%+v error=%v", state, err)
+			}
+			if result := state.Steps[parentID]; result.Status != StatusCancelled || result.Error == nil || result.Error.Type != "cancelled" {
+				t.Fatalf("interrupted parent was published as complete or misclassified: %+v", result)
+			}
+			assertDeliveries(t, false)
+			prior, err := LoadState(cfg.ProjectDir, state.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parentReceipt, completeReceipt := prior.AgentDeliveries[parentID], prior.AgentDeliveries[completeID]
+			if parentReceipt.Status != agentDeliveryCompleted || completeReceipt.Status != agentDeliveryCompleted || prior.AgentDeliveries[pendingID].Status != agentDeliveryDelivered {
+				t.Fatalf("body/completed/pending delivery evidence was not persisted: %+v", prior.AgentDeliveries)
+			}
+			if err := mock.AppendPaneOutput("%3", "RESUMED-ANSWER\n"); err != nil {
+				t.Fatal(err)
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				prior, err = LoadState(cfg.ProjectDir, state.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if attempt == 1 {
+					// Rebuild the cache from receipts, discarding a parsed alias
+					// that does not belong to this string-only completed hook.
+					prior.Variables = map[string]interface{}{"hook_output_parsed": "stale"}
+				}
+				resumed := NewExecutor(cfg)
+				resumed.SetTmuxClient(mock)
+				state, err = resumed.Resume(context.Background(), workflow, prior, nil)
+				if err != nil || state == nil || state.Status != StatusCompleted {
+					t.Fatalf("resume %d failed to finish the remaining hook tail: state=%+v error=%v", attempt+1, state, err)
+				}
+				assertDeliveries(t, true)
+				if state.AgentDeliveries[parentID] != parentReceipt || state.AgentDeliveries[completeID] != completeReceipt {
+					t.Fatalf("resume %d replaced a completed native delivery receipt", attempt+1)
+				}
+				if output := state.Steps[pendingID].Output; !strings.Contains(output, "RESUMED-ANSWER") || strings.Contains(output, "OLD-ANSWER") {
+					t.Fatalf("resume %d lost the pending prompt's original response boundary: %q", attempt+1, output)
+				}
+				if shape == "command equivalent" || shape == "nested hook" {
+					for key, want := range map[string]string{
+						"body_output": parentReceipt.Output, "hook_output": completeReceipt.Output,
+						"steps." + parentID + ".output":   parentReceipt.Output,
+						"steps." + completeID + ".output": completeReceipt.Output,
+					} {
+						if state.Variables[key] != want {
+							t.Fatalf("resume %d did not rebuild %s: got=%v want=%q", attempt+1, key, state.Variables[key], want)
+						}
+					}
+					if stale, ok := state.Variables["hook_output_parsed"]; ok {
+						t.Fatalf("resume %d retained stale parsed output: %v", attempt+1, stale)
+					}
+				}
+			}
+			if shape != "command equivalent" {
+				return
+			}
+			before, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, state.RunID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, fault := range []string{"missing parent journal", "altered consumed result", "consumed prompt still pending", "changed hook definition"} {
+				t.Run(fault, func(t *testing.T) {
+					var damaged ExecutionState
+					if err := json.Unmarshal(before, &damaged); err != nil {
+						t.Fatal(err)
+					}
+					changed := *workflow
+					changed.Steps = append([]Step(nil), workflow.Steps...)
+					changed.Steps[0] = cloneStep(workflow.Steps[0])
+					switch fault {
+					case "missing parent journal":
+						delete(damaged.SuccessHooks, parentID)
+					case "altered consumed result":
+						result := damaged.Steps[completeID]
+						result.Output = "forged completion"
+						damaged.Steps[completeID] = result
+					case "consumed prompt still pending":
+						receipt := damaged.AgentDeliveries[completeID]
+						receipt.Status, receipt.CompletedAt = agentDeliveryDelivered, time.Time{}
+						damaged.AgentDeliveries[completeID] = receipt
+					case "changed hook definition":
+						changed.Steps[0].OnSuccess[0].Prompt = "different instruction"
+					}
+					resumed := NewExecutor(cfg)
+					resumed.SetTmuxClient(mock)
+					if _, err := resumed.Resume(context.Background(), &changed, &damaged, nil); !errors.Is(err, errSuccessHookRecovery) {
+						t.Fatalf("inconsistent recovery evidence was accepted: %v", err)
+					}
+					after, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, state.RunID))
+					if err != nil || string(before) != string(after) {
+						t.Fatalf("rejected recovery changed durable evidence: error=%v", err)
+					}
+					assertDeliveries(t, true)
+				})
+			}
+		})
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -399,6 +400,635 @@ func onSuccessChildStepID(parentID, childID string, ordinal int) string {
 
 var errStepProcessUnsettled = errors.New("step process settlement is uncertain")
 
+var errSuccessHookRecovery = errors.New("success hook recovery evidence is incomplete")
+
+const successHookStateVersion = 1
+
+// The body and each consumed child are checkpointed before the next hook can
+// run. The full parent definition binds the ordered hook identities; result
+// hashes bind output aliases to the outcomes that actually produced them.
+type SuccessHookState struct {
+	Version        int                                   `json:"version"`
+	StepID         string                                `json:"step_id"`
+	StepHash       string                                `json:"step_hash"`
+	DefinitionHash string                                `json:"definition_hash"`
+	Kind           string                                `json:"kind"`
+	Body           StepResult                            `json:"body"`
+	BodyHash       string                                `json:"body_hash"`
+	Outputs        map[string]interface{}                `json:"outputs,omitempty"`
+	HookIDs        []string                              `json:"hook_ids"`
+	Children       map[string]SuccessHookChildCheckpoint `json:"children,omitempty"`
+}
+
+type SuccessHookChildCheckpoint struct {
+	ResultHash string                 `json:"result_hash"`
+	Outputs    map[string]interface{} `json:"outputs,omitempty"`
+	Background bool                   `json:"background,omitempty"`
+	// A consumed WaitNone launch can deliberately restart on resume. An
+	// interrupted restart must keep later consumed siblings without pretending
+	// that the sidecar's replacement attempt has reached a settled outcome.
+	Restarting bool `json:"restarting,omitempty"`
+}
+
+func successHooksSettled(record SuccessHookState) bool {
+	if len(record.Children) != len(record.HookIDs) {
+		return false
+	}
+	for _, receipt := range record.Children {
+		if receipt.Restarting {
+			return false
+		}
+	}
+	return true
+}
+
+func successHookSidecarRerun(state *ExecutionState, id string, receipt SuccessHookChildCheckpoint) bool {
+	if !receipt.Background {
+		return false
+	}
+	command := state.CommandExecutions[id]
+	return receipt.Restarting || state.Steps[id].RerunOnResume ||
+		(command.Background && command.Status == commandExecutionSettled && command.Result.RerunOnResume)
+}
+
+func cloneSuccessHookResult(result StepResult) StepResult {
+	result.ParsedData = cloneInterfaceValue(result.ParsedData)
+	if result.Error != nil {
+		copy := cloneStepErrorValue(*result.Error)
+		result.Error = &copy
+	}
+	return result
+}
+
+func cloneSuccessHookOutputs(outputs map[string]interface{}) map[string]interface{} {
+	if outputs == nil {
+		return nil
+	}
+	copy := make(map[string]interface{}, len(outputs))
+	for name, value := range outputs {
+		copy[name] = cloneInterfaceValue(value)
+	}
+	return copy
+}
+
+func cloneSuccessHookState(record SuccessHookState) SuccessHookState {
+	record.Body = cloneSuccessHookResult(record.Body)
+	record.Outputs = cloneSuccessHookOutputs(record.Outputs)
+	record.HookIDs = append([]string(nil), record.HookIDs...)
+	if record.Children != nil {
+		children := make(map[string]SuccessHookChildCheckpoint, len(record.Children))
+		for id, receipt := range record.Children {
+			receipt.Outputs = cloneSuccessHookOutputs(receipt.Outputs)
+			children[id] = receipt
+		}
+		record.Children = children
+	}
+	return record
+}
+
+func successHookResultHash(result StepResult, outputs map[string]interface{}, background bool) (string, error) {
+	if background {
+		// Cancellation cleanup alone may set this bit after a WaitNone
+		// command returned. Its launch receipt still owns process settlement
+		// and authorizes the deliberate sidecar relaunch on resume.
+		result.RerunOnResume = false
+	}
+	return parallelCheckpointHash(struct {
+		Result     StepResult             `json:"result"`
+		Outputs    map[string]interface{} `json:"outputs,omitempty"`
+		Background bool                   `json:"background,omitempty"`
+	}{result, outputs, background})
+}
+
+func successHookRecoveryError(format string, args ...interface{}) error {
+	return fmt.Errorf("%w: %s", errSuccessHookRecovery, fmt.Sprintf(format, args...))
+}
+
+// Structural checks also run at SaveState/LoadState, before the runtime
+// definition is available. In-flight markers are checked at recovery, not
+// while a sibling is taking a legitimate live execution snapshot.
+func validateSuccessHookState(id string, record SuccessHookState, state *ExecutionState) error {
+	if record.Version != successHookStateVersion || record.StepID != id || id == "" ||
+		!validCommandEvaluationHash(record.StepHash) || !validCommandEvaluationHash(record.DefinitionHash) || record.Kind == "" || len(record.HookIDs) == 0 ||
+		record.Body.StepID != id || record.Body.Status != StatusCompleted || unsettledSuccessHookError(record.Body.Error) != nil ||
+		record.Body.StartedAt.IsZero() || record.Body.FinishedAt.IsZero() || record.Body.FinishedAt.Before(record.Body.StartedAt) {
+		return successHookRecoveryError("invalid completed body checkpoint for %q", id)
+	}
+	digest, err := successHookResultHash(record.Body, record.Outputs, false)
+	if err != nil || digest != record.BodyHash {
+		return successHookRecoveryError("completed body %q differs from its checkpoint", id)
+	}
+	seen := make(map[string]bool, len(record.HookIDs))
+	for i, childID := range record.HookIDs {
+		if childID == "" || seen[childID] || !strings.HasPrefix(childID, id+"_on_success_") {
+			return successHookRecoveryError("invalid hook identity %q for %q", childID, id)
+		}
+		seen[childID] = true
+		receipt, consumed := record.Children[childID]
+		if consumed != (i < len(record.Children)) {
+			return successHookRecoveryError("hook consumption for %q is not an ordered prefix", id)
+		}
+		if !consumed {
+			continue
+		}
+		result, exists := state.Steps[childID]
+		if !exists || result.StepID != childID || result.SuccessHookParent != id || result.FinishedAt.IsZero() ||
+			(result.Status != StatusCompleted && result.Status != StatusFailed && result.Status != StatusSkipped && !(receipt.Restarting && result.Status == StatusCancelled)) ||
+			(receipt.Restarting && !receipt.Background) ||
+			(!receipt.Background && result.RerunOnResume) ||
+			(result.Status == StatusSkipped && shouldRerunStep(result)) {
+			return successHookRecoveryError("consumed hook %q has lost its settled result", childID)
+		}
+		digest, err := successHookResultHash(result, receipt.Outputs, receipt.Background)
+		if err != nil || digest != receipt.ResultHash {
+			return successHookRecoveryError("consumed hook %q differs from its checkpoint", childID)
+		}
+	}
+	if len(record.Children) > len(record.HookIDs) {
+		return successHookRecoveryError("%q has consumption evidence for an unknown hook", id)
+	}
+	return nil
+}
+
+func validateSuccessHooks(state *ExecutionState) error {
+	if state == nil {
+		return nil
+	}
+	for id, result := range state.Steps {
+		if result.SuccessHookParent == "" {
+			continue
+		}
+		parent, exists := state.SuccessHooks[result.SuccessHookParent]
+		if _, consumed := parent.Children[id]; !exists || !consumed {
+			return successHookRecoveryError("consumed hook %q has lost its parent journal %q", id, result.SuccessHookParent)
+		}
+	}
+	ids := make([]string, 0, len(state.SuccessHooks))
+	for id := range state.SuccessHooks {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if err := validateSuccessHookState(id, state.SuccessHooks[id], state); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSuccessHookDefinition(step *Step, record SuccessHookState) error {
+	digest, err := commandDefinitionHash(step)
+	if err != nil {
+		return err
+	}
+	if record.StepID != step.ID || record.Kind != stepKind(step) || record.StepHash != digest || len(record.HookIDs) != len(step.OnSuccess) {
+		return successHookRecoveryError("step %q definition changed after its body completed; restore the original workflow or explicitly reset the run", step.ID)
+	}
+	for i, child := range step.OnSuccess {
+		id := onSuccessChildStepID(step.ID, child.ID, i+1)
+		if record.HookIDs[i] != id {
+			return successHookRecoveryError("step %q hook identities changed after completion", step.ID)
+		}
+		if receipt, exists := record.Children[id]; exists {
+			if receipt.Background != (child.Command != "" && child.Wait == WaitNone) {
+				return successHookRecoveryError("hook %q changed its background execution kind", id)
+			}
+			if err := validateSuccessHookOutputs(&child, receipt.Outputs); err != nil {
+				return err
+			}
+		}
+	}
+	return validateSuccessHookOutputs(step, record.Outputs)
+}
+
+// The hook journal is affirmative completion evidence, including for an
+// adopted legacy body. Any native receipt that remains must agree with it;
+// adopting the body must not hide an unresolved or contradictory source.
+// Caller holds stateMu.
+func validateSuccessHookNativeBody(state *ExecutionState, step *Step, record SuccessHookState) error {
+	invalid := func() error {
+		return successHookRecoveryError("completed body %q contradicts its native execution receipt", record.StepID)
+	}
+	switch record.Kind {
+	case StepKindCommand:
+		if source, exists := state.CommandExecutions[record.StepID]; exists {
+			if err := validateCommandExecution(record.StepID, source); err != nil {
+				return err
+			}
+			recovered := false
+			if source.Result.Status == StatusFailed && recoveryBoolValue(step.OnFailure.Fallback["suppress_failure"]) {
+				if fallback, found := state.AgentDeliveries[onFailureStepID(record.StepID)]; found {
+					if err := validateAgentDelivery(fallback.StepID, fallback, state.Session); err != nil {
+						return err
+					}
+					if fallback.ResolutionAction != "" {
+						if _, err := agentDeliveryRecoveryEntry(state, fallback); err != nil {
+							return err
+						}
+					}
+					recovered = fallback.StepID == onFailureStepID(record.StepID) && fallback.Kind == StepKindTemplate &&
+						fallback.Status == agentDeliveryCompleted && !source.StartedAt.After(fallback.StartedAt) &&
+						fallback.Output == record.Body.Output
+				}
+			}
+			if source.StepHash != record.StepHash || source.Background != (step.Wait == WaitNone) ||
+				(!source.Background && (source.Status != commandExecutionSettled || (source.Result.Status != StatusCompleted && !recovered))) {
+				return invalid()
+			}
+			if source.ResolutionAction != "" {
+				if _, err := commandExecutionRecoveryEntry(state, source); err != nil {
+					return err
+				}
+			}
+		}
+	case StepKindPrompt, StepKindTemplate:
+		if source, exists := state.AgentDeliveries[record.StepID]; exists {
+			if err := validateAgentDelivery(record.StepID, source, state.Session); err != nil {
+				return err
+			}
+			if source.StepHash != record.StepHash || source.Kind != record.Kind || source.Status != agentDeliveryCompleted ||
+				source.PaneID != record.Body.PaneUsed || source.AgentType != record.Body.AgentType || source.Output != record.Body.Output {
+				return invalid()
+			}
+			if source.ResolutionAction != "" {
+				if _, err := agentDeliveryRecoveryEntry(state, source); err != nil {
+					return err
+				}
+			}
+		}
+	case StepKindMailSend:
+		if source, exists := state.MailSends[record.StepID]; exists {
+			if err := validateMailSend(record.StepID, source); err != nil {
+				return err
+			}
+			if source.StepHash != record.StepHash || source.Status != mailSendSent || source.Result.Status != StatusCompleted {
+				return invalid()
+			}
+		}
+	case StepKindReservationAcquire, StepKindReservationRelease:
+		if source, exists := state.ReservationSteps[record.StepID]; exists {
+			if err := validateReservationStep(record.StepID, source); err != nil {
+				return err
+			}
+			if source.StepHash != record.StepHash || source.Kind != record.Kind || source.Result.Status != StatusCompleted ||
+				(source.Status != reservationHeld && source.Status != reservationReleased) {
+				return invalid()
+			}
+		}
+	}
+	return nil
+}
+
+// The authored identity is checked even for completed dynamic tails that will
+// not be materialized again. The materialized identity remains a separate,
+// stricter check before a pending body can be adopted in its original scope.
+// Caller holds stateMu when state belongs to a live executor.
+func successHookAuthoredHash(graph *DependencyGraph, state *ExecutionState, step *Step) (string, error) {
+	if graph == nil {
+		return commandDefinitionHash(step)
+	}
+	resolve, err := successHookRuntimeStepResolver(graph, state)
+	if err != nil {
+		return "", err
+	}
+	authored, found := resolve(step.ID)
+	if !found {
+		return "", successHookRecoveryError("parent %q has no authored workflow definition", step.ID)
+	}
+	definition := cloneStep(*authored)
+	definition.ID = step.ID
+	return commandDefinitionHash(&definition)
+}
+
+func successHookRuntimeStepResolver(graph *DependencyGraph, state *ExecutionState) (func(string) (*Step, bool), error) {
+	resolve, err := resumeRuntimeStepResolver(graph, state)
+	if err != nil {
+		return nil, err
+	}
+	return func(id string) (*Step, bool) {
+		if step, found := resolve(id); found {
+			return step, true
+		}
+		// Cleanup hooks are intentionally absent from main scheduling, but
+		// own the same durable success-tail contract until the next attempt
+		// explicitly resets their settled cleanup scope.
+		if graph != nil {
+			for i := range graph.onCancelSteps {
+				if step, found := resolveHookRuntimeStep(&graph.onCancelSteps[i], "on_cancel", i+1, id); found {
+					return step, true
+				}
+			}
+		}
+		return nil, false
+	}, nil
+}
+
+func validateSuccessHookOutputs(step *Step, outputs map[string]interface{}) error {
+	for name := range outputs {
+		if step.OutputVar == "" || (name != step.OutputVar && name != step.OutputVar+"_parsed") {
+			return successHookRecoveryError("step %q contains foreign output alias %q", step.ID, name)
+		}
+	}
+	return nil
+}
+
+// Caller holds varMu. Foreach aggregates preserve their declared collection
+// shape instead of replacing it with the step's diagnostic output string.
+func successHookOutputBindings(state *ExecutionState, step *Step, result StepResult) map[string]interface{} {
+	outputs := make(map[string]interface{})
+	if result.Status != StatusCompleted || step.OutputVar == "" {
+		return outputs
+	}
+	if stepOwnsForeachOutputVar(step) {
+		return snapshotForeachOutputBindings(state, step.OutputVar)
+	}
+	outputs[step.OutputVar] = result.Output
+	if result.ParsedData != nil {
+		outputs[step.OutputVar+"_parsed"] = cloneInterfaceValue(result.ParsedData)
+	}
+	return outputs
+}
+
+// Caller holds varMu. Rebuilding aliases is deliberately shared by body and
+// child adoption so later hooks observe the same values after a restart.
+func restoreSuccessHookOutputs(state *ExecutionState, step *Step, result StepResult, outputs map[string]interface{}) {
+	if state.Variables == nil {
+		state.Variables = make(map[string]interface{})
+	}
+	if result.Status != StatusCompleted {
+		return
+	}
+	StoreStepOutput(state, step.ID, result.Output, cloneInterfaceValue(result.ParsedData))
+	if step.OutputVar != "" {
+		delete(state.Variables, step.OutputVar)
+		delete(state.Variables, step.OutputVar+"_parsed")
+	}
+	for name, value := range outputs {
+		state.Variables[name] = cloneInterfaceValue(value)
+	}
+}
+
+func (e *Executor) prepareSuccessHooks(ctx context.Context, parent *Step, body StepResult) error {
+	if parent == nil || len(parent.OnSuccess) == 0 || onSuccessDepth(ctx) >= maxOnSuccessDepth {
+		return nil
+	}
+	if body.StepID != parent.ID || body.Status != StatusCompleted {
+		return successHookRecoveryError("cannot prepare hooks without the completed body of %q", parent.ID)
+	}
+	if cause := unsettledSuccessHookError(body.Error); cause != nil {
+		return successHookRecoveryError("body %q still has unfinished recovery: %s", parent.ID, cause.Message)
+	}
+	digest, err := commandDefinitionHash(parent)
+	if err != nil {
+		return err
+	}
+	e.stateMu.Lock()
+	e.varMu.Lock()
+	record, exists := e.state.SuccessHooks[parent.ID]
+	authoredHash, authoredErr := successHookAuthoredHash(e.graph, e.state, parent)
+	if authoredErr != nil {
+		e.varMu.Unlock()
+		e.stateMu.Unlock()
+		return authoredErr
+	}
+	if exists {
+		err = validateSuccessHookState(parent.ID, record, e.state)
+		if err == nil && record.DefinitionHash != authoredHash {
+			err = successHookRecoveryError("step %q authored definition changed after its body completed", parent.ID)
+		}
+		if err == nil {
+			err = validateSuccessHookDefinition(parent, record)
+		}
+	} else {
+		record = SuccessHookState{Version: successHookStateVersion, StepID: parent.ID, StepHash: digest, DefinitionHash: authoredHash, Kind: stepKind(parent), Children: make(map[string]SuccessHookChildCheckpoint)}
+		for i, child := range parent.OnSuccess {
+			record.HookIDs = append(record.HookIDs, onSuccessChildStepID(parent.ID, child.ID, i+1))
+		}
+	}
+	if err == nil && (!exists || (parent.Command != "" && parent.Wait == WaitNone)) {
+		// A sidecar intentionally restarts with each eligible attempt. Its
+		// native journal still gates relaunch, while consumed hooks survive.
+		record.Body = cloneSuccessHookResult(body)
+		record.Outputs = make(map[string]interface{})
+		if stepOwnsForeachOutputVar(parent) && parent.OutputVar != "" {
+			record.Outputs = successHookOutputBindings(e.state, parent, body)
+			if capture, ok := ctx.Value(parallelOutputCaptureKey{}).(*parallelOutputCapture); ok && capture.stepID == parent.ID && capture.outputs != nil {
+				record.Outputs = cloneSuccessHookOutputs(capture.outputs)
+			}
+		}
+		record.BodyHash, err = successHookResultHash(record.Body, record.Outputs, false)
+		if err == nil {
+			if e.state.SuccessHooks == nil {
+				e.state.SuccessHooks = make(map[string]SuccessHookState)
+			}
+			e.state.SuccessHooks[parent.ID] = record
+			e.state.UpdatedAt = time.Now()
+		}
+	}
+	e.varMu.Unlock()
+	e.stateMu.Unlock()
+	if err != nil {
+		return err
+	}
+	// Cancellation after an observed completion does not erase the body.
+	// This checkpoint has no external effect and must precede any hook.
+	return e.persistState()
+}
+
+func (e *Executor) loadSuccessHookBody(step *Step) (StepResult, bool, error) {
+	e.stateMu.RLock()
+	record, exists := e.state.SuccessHooks[step.ID]
+	if !exists {
+		e.stateMu.RUnlock()
+		return StepResult{}, false, nil
+	}
+	err := validateSuccessHookState(step.ID, record, e.state)
+	if err == nil {
+		var digest string
+		digest, err = successHookAuthoredHash(e.graph, e.state, step)
+		if err == nil && digest != record.DefinitionHash {
+			err = successHookRecoveryError("step %q authored definition changed after its body completed", step.ID)
+		}
+	}
+	if err == nil {
+		err = validateSuccessHookDefinition(step, record)
+	}
+	if err == nil {
+		err = validateSuccessHookNativeBody(e.state, step, record)
+	}
+	record = cloneSuccessHookState(record)
+	e.stateMu.RUnlock()
+	if err != nil {
+		return StepResult{}, true, err
+	}
+	if step.Command != "" && step.Wait == WaitNone {
+		return StepResult{}, false, nil
+	}
+	e.varMu.Lock()
+	definition := *step
+	if !stepOwnsForeachOutputVar(step) {
+		// The containing scheduler publishes an ordinary body's named alias
+		// after its hooks. Preserve that same visibility on resumed attempts.
+		definition.OutputVar = ""
+	}
+	restoreSuccessHookOutputs(e.state, &definition, record.Body, record.Outputs)
+	e.varMu.Unlock()
+	return record.Body, true, nil
+}
+
+// Before pruning resume state, validate the complete consumption chain and
+// identify every ancestor whose scheduler must reach an unfinished tail.
+// Consumed failures remain inspectable but never become successful outputs.
+// Caller holds stateMu; returned maps and output values do not alias state.
+func prepareSuccessHookResume(graph *DependencyGraph, state *ExecutionState) (map[string]bool, map[string]bool, []resumeOutputEvent, error) {
+	pending, consumed := make(map[string]bool), make(map[string]bool)
+	var events []resumeOutputEvent
+	fail := func(err error) (map[string]bool, map[string]bool, []resumeOutputEvent, error) {
+		return nil, nil, nil, err
+	}
+	if err := validateSuccessHooks(state); err != nil {
+		return fail(err)
+	}
+	if state == nil || len(state.SuccessHooks) == 0 {
+		return pending, consumed, events, nil
+	}
+	resolve, err := successHookRuntimeStepResolver(graph, state)
+	if err != nil {
+		return fail(err)
+	}
+	ids := make([]string, 0, len(state.SuccessHooks))
+	for id := range state.SuccessHooks {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		record := state.SuccessHooks[id]
+		step, found := resolve(id)
+		if !found {
+			return fail(successHookRecoveryError("parent %q is missing from the workflow", id))
+		}
+		definition := cloneStep(*step)
+		definition.ID = id
+		authoredHash, err := commandDefinitionHash(&definition)
+		if err != nil {
+			return fail(err)
+		}
+		if authoredHash != record.DefinitionHash {
+			return fail(successHookRecoveryError("parent %q authored definition changed after its body completed", id))
+		}
+		if err := validateSuccessHookNativeBody(state, &definition, record); err != nil {
+			return fail(err)
+		}
+		if !successHookDynamicDefinition(state, id) {
+			if err := validateSuccessHookDefinition(&definition, record); err != nil {
+				return fail(err)
+			}
+		} else if len(record.HookIDs) != len(definition.OnSuccess) {
+			return fail(successHookRecoveryError("dynamic parent %q changed its success-hook shape", id))
+		}
+		current, exists := state.Steps[id]
+		if !exists || shouldRerunStep(current) || !successHooksSettled(record) {
+			pending[id] = true
+		}
+		if command, exists := state.CommandExecutions[id]; exists && command.Background && command.Status == commandExecutionSettled && command.Result.RerunOnResume {
+			pending[id] = true
+		}
+		if _, inFlight := state.InFlightSteps[id]; inFlight {
+			pending[id] = true
+		}
+		events = append(events, successHookOutputEvent(id, record.Body, record.Outputs))
+		for i, childID := range record.HookIDs {
+			receipt, recorded := record.Children[childID]
+			if !recorded {
+				break // Structural validation requires an ordered prefix.
+			}
+			if _, inFlight := state.InFlightSteps[childID]; inFlight {
+				return fail(successHookRecoveryError("consumed hook %q has contradictory in-flight evidence", childID))
+			}
+			childDefinition := definition.OnSuccess[i]
+			childDefinition.ID = childID
+			if !receipt.Restarting && successHookHasPendingEffects(state, &childDefinition) {
+				return fail(successHookRecoveryError("consumed hook %q contradicts pending native execution evidence", childID))
+			}
+			child := state.Steps[childID]
+			if nested, exists := state.SuccessHooks[childID]; exists && !successHooksSettled(nested) && !receipt.Restarting {
+				return fail(successHookRecoveryError("consumed hook %q has an unfinished nested tail", childID))
+			}
+			consumed[childID] = true
+			if successHookSidecarRerun(state, childID, receipt) {
+				pending[id] = true
+			}
+			if child.Status == StatusCompleted {
+				events = append(events, successHookOutputEvent(childID, child, receipt.Outputs))
+			}
+		}
+	}
+
+	// A body can be nested in a branch, parallel group, loop, or another
+	// hook. An already-completed ancestor must not hide its pending tail.
+	candidates := make(map[string]*Step)
+	for id := range state.Steps {
+		if step, found := resolve(id); found {
+			candidates[id] = step
+		}
+	}
+	if graph != nil {
+		for id, step := range graph.steps {
+			candidates[id] = step
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		for parentID, parent := range candidates {
+			if pending[parentID] || consumed[parentID] {
+				continue
+			}
+			for childID := range pending {
+				if _, _, owns := resolveScopedRuntimeChildren(parentID, childID, parent); owns {
+					pending[parentID], changed = true, true
+					break
+				}
+			}
+		}
+	}
+	return pending, consumed, events, nil
+}
+
+func successHookDynamicDefinition(state *ExecutionState, id string) bool {
+	for parentID := range state.ForeachState {
+		if iterationIndexFromID(id, parentID+"_iter") >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func successHookOutputEvent(id string, result StepResult, outputs map[string]interface{}) resumeOutputEvent {
+	event := resumeOutputEvent{stepID: id, finishedAt: result.FinishedAt,
+		output: result.Output, parsedData: cloneInterfaceValue(result.ParsedData)}
+	if len(outputs) > 0 {
+		event.merge = true
+		event.outputs = cloneSuccessHookOutputs(outputs)
+		event.outputs["steps."+id+".output"] = result.Output
+		event.clear = append(event.clear, "steps."+id+".data")
+		if result.ParsedData != nil {
+			event.outputs["steps."+id+".data"] = cloneInterfaceValue(result.ParsedData)
+		}
+		for name := range outputs {
+			event.clear = append(event.clear, name)
+			// A string-only output must also remove a previous producer's
+			// parsed alias. Captured bindings contain the named value and,
+			// optionally, its _parsed companion; do not clear unrelated aliases.
+			base := strings.TrimSuffix(name, "_parsed")
+			if _, companion := outputs[base]; base == name || !companion {
+				event.clear = append(event.clear, name+"_parsed")
+			}
+		}
+		sort.Strings(event.clear)
+	}
+	return event
+}
+
 func unsettledProcessStepFailure(result StepResult, err error) StepResult {
 	result.Status, result.FinishedAt = StatusFailed, time.Now()
 	diagnostic := &StepError{Type: "execution_unknown", Message: err.Error(), Timestamp: result.FinishedAt}
@@ -410,10 +1040,33 @@ func unsettledProcessStepFailure(result StepResult, err error) StepResult {
 }
 
 func successHookExecutionFailure(result StepResult, err error) StepResult {
-	if !isStepAdmissionError(err) && errors.Is(err, errStepProcessUnsettled) {
+	if isStepAdmissionError(err) {
+		return stepAdmissionExecutionFailure(result, err)
+	}
+	if errors.Is(err, errStepProcessUnsettled) {
 		return unsettledProcessStepFailure(result, err)
 	}
-	return stepAdmissionExecutionFailure(result, err)
+	result.Status, result.FinishedAt = StatusFailed, time.Now()
+	kind := "recovery"
+	switch {
+	case errors.Is(err, ErrCheckpointFailed):
+		kind = "checkpoint"
+	case errors.Is(err, errSuccessHookRecovery):
+		kind = "recovery"
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		result.Status = StatusCancelled
+		result.SkipKind, result.SkipReason = SkipKindCancelled, err.Error()
+		kind = "cancelled"
+		if errors.Is(err, context.DeadlineExceeded) {
+			kind = "timeout"
+		}
+	}
+	diagnostic := &StepError{Type: kind, Message: err.Error(), Timestamp: result.FinishedAt}
+	if result.Error != nil {
+		diagnostic.Aggregated = []StepError{cloneStepErrorValue(*result.Error)}
+	}
+	result.Error = diagnostic
+	return result
 }
 
 // runOnSuccessSteps walks Step.OnSuccess sequentially after a parent
@@ -442,70 +1095,241 @@ func (e *Executor) runOnSuccessSteps(ctx context.Context, parent *Step, workflow
 	}
 
 	childCtx := withOnSuccessDepth(ctx, depth+1)
-
 	for i := range parent.OnSuccess {
+		if err := e.stepAdmissionFailure(ctx); err != nil {
+			return err
+		}
+		if err := e.checkpointFailure(); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		child := parent.OnSuccess[i]
 		child.ID = onSuccessChildStepID(parent.ID, child.ID, i+1)
 		e.stateMu.RLock()
+		record, prepared := e.state.SuccessHooks[parent.ID]
+		var err error
+		if !prepared {
+			err = successHookRecoveryError("step %q has no completed-body checkpoint", parent.ID)
+		} else {
+			err = validateSuccessHookState(parent.ID, record, e.state)
+			if err == nil {
+				err = validateSuccessHookDefinition(parent, record)
+			}
+		}
+		receipt, consumed := record.Children[child.ID]
+		restartSidecar := consumed && successHookSidecarRerun(e.state, child.ID, receipt)
 		prior, exists := e.state.Steps[child.ID]
+		prior = cloneSuccessHookResult(prior)
+		_, inFlight := e.state.InFlightSteps[child.ID]
 		e.stateMu.RUnlock()
-		if exists && !shouldRerunStep(prior) {
-			// The parent command/delivery receipt can be durable before its
-			// StepResult. Adopting it must not repeat already-finished hooks.
+		if err != nil {
+			return err
+		}
+		if exists && prior.StepID != child.ID {
+			return successHookRecoveryError("hook %q has a mismatched saved result", child.ID)
+		}
+		if consumed && !restartSidecar {
+			if inFlight {
+				return successHookRecoveryError("consumed hook %q has contradictory in-flight evidence", child.ID)
+			}
+			e.varMu.Lock()
+			restoreSuccessHookOutputs(e.state, &child, prior, receipt.Outputs)
+			e.varMu.Unlock()
 			continue
 		}
 
-		result := e.executeStep(childCtx, &child, workflow)
+		var result StepResult
+		if exists && !shouldRerunStep(prior) && !restartSidecar {
+			if inFlight {
+				return successHookRecoveryError("completed hook %q still has in-flight evidence", child.ID)
+			}
+			result = prior
+			if result.Status == StatusCompleted {
+				// Older checkpoints may retain a completed hook body without a
+				// settled tail. Enter the same walker recursively; never rerun
+				// the completed body merely to reach a nested pending hook.
+				if err := e.prepareSuccessHooks(childCtx, &child, result); err != nil {
+					return err
+				}
+				if err := e.runOnSuccessSteps(childCtx, &child, workflow); err != nil {
+					return err
+				}
+			}
+		} else {
+			result = e.executeStep(childCtx, &child, workflow)
+		}
+		pendingErr := e.successHookPendingError(ctx, &child, result)
 		if !e.runtimeIDAdmitted(child.ID) {
-			if cause := findStepAdmissionError(result.Error); cause != nil {
-				return &stepAdmissionPropagationError{message: fmt.Sprintf("success hook %q was not admitted: %s", child.ID, cause.Message)}
+			if pendingErr != nil {
+				return pendingErr
 			}
-			if result.Error != nil {
-				return fmt.Errorf("success hook %q was not admitted: %s", child.ID, result.Error.Message)
-			}
-			return fmt.Errorf("success hook %q was not admitted", child.ID)
+			return successHookRecoveryError("hook %q was not admitted", child.ID)
 		}
 		if result.FinishedAt.IsZero() {
 			result.FinishedAt = time.Now()
 		}
-		var settlementErr error
-		if findStepAdmissionError(result.Error) == nil &&
-			(e.hasUnresolvedCommandExecutionForOutcome(&child, &result) || e.hasUnresolvedCommandEvaluation(&child)) {
-			settlementErr = fmt.Errorf("%w for success hook %q", errStepProcessUnsettled, child.ID)
-			result = unsettledProcessStepFailure(result, settlementErr)
+		if errors.Is(pendingErr, errStepProcessUnsettled) {
+			result = unsettledProcessStepFailure(result, pendingErr)
 		}
-
-		e.stateMu.Lock()
-		e.state.Steps[child.ID] = result
-		e.state.UpdatedAt = time.Now()
+		if err := e.checkpointSuccessHook(parent, &child, result, pendingErr == nil); err != nil {
+			return errors.Join(pendingErr, err)
+		}
 		if result.Status == StatusFailed && result.Error != nil {
-			slog.Warn("on_success step failed",
-				"run_id", e.state.RunID,
-				"workflow", workflow.Name,
-				"parent_step_id", parent.ID,
-				"step_id", child.ID,
-				"error", result.Error.Message,
-			)
+			slog.Warn("on_success step failed", "run_id", e.state.RunID,
+				"workflow", workflow.Name, "parent_step_id", parent.ID,
+				"step_id", child.ID, "error", result.Error.Message)
 		}
-		e.stateMu.Unlock()
-		if cause := findStepAdmissionError(result.Error); cause != nil {
-			return &stepAdmissionPropagationError{message: fmt.Sprintf("success hook %q exceeded capacity: %s", child.ID, cause.Message)}
-		}
-		if settlementErr != nil {
-			return settlementErr
-		}
-
-		if child.OutputVar != "" && result.Status == StatusCompleted {
-			e.varMu.Lock()
-			e.state.Variables[child.OutputVar] = result.Output
-			if result.ParsedData != nil {
-				e.state.Variables[child.OutputVar+"_parsed"] = result.ParsedData
-			}
-			StoreStepOutput(e.state, child.ID, result.Output, result.ParsedData)
-			e.varMu.Unlock()
+		if pendingErr != nil {
+			return pendingErr
 		}
 	}
-	return e.stepAdmissionFailure(ctx)
+	if err := e.stepAdmissionFailure(ctx); err != nil {
+		return err
+	}
+	return ctx.Err()
+}
+
+// A returned ordinary failure is advisory. Unfinished orchestration or an
+// uncertain external effect is not an advisory outcome and cannot advance
+// the parent's consumed prefix, even when a sibling also cancelled this run.
+func (e *Executor) successHookPendingError(ctx context.Context, child *Step, result StepResult) error {
+	if cause := findStepAdmissionError(result.Error); cause != nil {
+		return &stepAdmissionPropagationError{message: fmt.Sprintf("success hook %q exceeded capacity: %s", child.ID, cause.Message)}
+	}
+	if e.hasUnresolvedCommandExecutionForOutcome(child, &result) || e.hasUnresolvedCommandEvaluation(child) {
+		return fmt.Errorf("%w for success hook %q", errStepProcessUnsettled, child.ID)
+	}
+	if err := e.checkpointFailure(); err != nil {
+		return err
+	}
+	if err := e.reservationProtectionFailure(); err != nil {
+		return err
+	}
+	e.stateMu.RLock()
+	pending := successHookHasPendingEffects(e.state, child)
+	if nested, exists := e.state.SuccessHooks[child.ID]; exists && !successHooksSettled(nested) {
+		pending = true
+	}
+	e.stateMu.RUnlock()
+	if pending {
+		if result.Status == StatusCancelled {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return context.Canceled
+		}
+		return successHookRecoveryError("hook %q still has pending external work or success hooks", child.ID)
+	}
+	if result.Status == StatusCancelled {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return context.Canceled
+	}
+	if cause := unsettledSuccessHookError(result.Error); cause != nil {
+		return successHookRecoveryError("hook %q has unfinished recovery: %s", child.ID, cause.Message)
+	}
+	switch result.Status {
+	case StatusCompleted, StatusFailed:
+		return nil
+	case StatusSkipped:
+		if !shouldRerunStep(result) {
+			return nil
+		}
+	}
+	return successHookRecoveryError("hook %q did not reach a consumable outcome", child.ID)
+}
+
+func unsettledSuccessHookError(err *StepError) *StepError {
+	if err == nil {
+		return nil
+	}
+	switch err.Type {
+	case "checkpoint", "recovery", "branch_recovery", "execution_unknown", "delivery_unknown", "reservation_protection", "step_limit", "cancelled":
+		return err
+	}
+	for i := range err.Aggregated {
+		if cause := unsettledSuccessHookError(&err.Aggregated[i]); cause != nil {
+			return cause
+		}
+	}
+	return nil
+}
+
+// Caller holds stateMu. Structural ownership includes nested fallbacks and
+// containers, without treating a merely similar authored ID as a descendant.
+func successHookHasPendingEffects(state *ExecutionState, step *Step) bool {
+	owned := func(id string) bool {
+		if id == step.ID {
+			return true
+		}
+		_, _, found := resolveScopedRuntimeChildren(step.ID, id, step)
+		return found
+	}
+	for id, record := range state.AgentDeliveries {
+		if owned(id) && record.Status != agentDeliveryCompleted && record.Status != agentDeliveryNotSent {
+			return true
+		}
+	}
+	for id, record := range state.MailSends {
+		if owned(id) && record.Status == mailSendSending {
+			return true
+		}
+	}
+	for id, record := range state.ReservationSteps {
+		if owned(id) && (record.Status == reservationAcquiring || record.Status == reservationUncertain || record.Status == reservationReleasing || record.Status == reservationPartial) {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Executor) checkpointSuccessHook(parent, child *Step, result StepResult, consumed bool) error {
+	e.stateMu.Lock()
+	e.varMu.Lock()
+	record, exists := e.state.SuccessHooks[parent.ID]
+	var err error
+	if !exists {
+		err = successHookRecoveryError("parent %q lost its completed-body checkpoint", parent.ID)
+	} else {
+		result = cloneSuccessHookResult(result)
+		outputs := successHookOutputBindings(e.state, child, result)
+		if consumed {
+			result.SuccessHookParent = parent.ID
+			background := child.Command != "" && child.Wait == WaitNone
+			var digest string
+			digest, err = successHookResultHash(result, outputs, background)
+			if err == nil {
+				if record.Children == nil {
+					record.Children = make(map[string]SuccessHookChildCheckpoint)
+				}
+				record.Children[child.ID] = SuccessHookChildCheckpoint{ResultHash: digest, Outputs: outputs, Background: background}
+			}
+		} else if previous, restarting := record.Children[child.ID]; restarting && previous.Background {
+			result.SuccessHookParent = parent.ID
+			var digest string
+			digest, err = successHookResultHash(result, outputs, true)
+			if err == nil {
+				record.Children[child.ID] = SuccessHookChildCheckpoint{ResultHash: digest, Outputs: outputs, Background: true, Restarting: true}
+			}
+		}
+		if err == nil {
+			e.state.Steps[child.ID] = result
+			e.state.SuccessHooks[parent.ID] = record
+			e.state.UpdatedAt = time.Now()
+			if consumed {
+				restoreSuccessHookOutputs(e.state, child, result, outputs)
+			}
+		}
+	}
+	e.varMu.Unlock()
+	e.stateMu.Unlock()
+	if err != nil {
+		return err
+	}
+	return e.persistState()
 }
 
 // runPostPipelineSteps iterates Workflow.PostPipelineSteps in order after

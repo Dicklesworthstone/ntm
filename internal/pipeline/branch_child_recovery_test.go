@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func branchChildFixture(root string) (ExecutorConfig, *Workflow) {
@@ -227,6 +229,114 @@ func TestBranchChildRecoveryFinishesOnlyMissingHooks(t *testing.T) {
 	branchChildRead(t, root, "once", "original")
 	branchChildRead(t, root, "hook1", "original")
 	branchChildRead(t, root, "hook2", "saved")
+}
+
+func TestSuccessHookResumeKeepsRecoveredLegacyBranchBody(t *testing.T) {
+	for _, mutation := range []string{"none", "command_identity", "fallback_output"} {
+		t.Run(mutation, func(t *testing.T) {
+			root := t.TempDir()
+			cfg, workflow := branchChildFixture(root)
+			child := Step{ID: "once", Command: "printf duplicate > forbidden; exit 9",
+				OnFailure: OnFailureSpec{Fallback: map[string]interface{}{
+					"pane": 1, "template": "recovery.md", "wait": string(WaitNone), "suppress_failure": true,
+				}},
+				OnSuccess: []Step{{ID: "publish", Pane: PaneSpec{Index: 1},
+					Prompt: "Use recovered result: ${steps.route_once.output}", Wait: WaitNone}},
+			}
+			workflow.Steps[0].Branch = "a"
+			workflow.Steps[0].Branches = map[string]interface{}{"a": []Step{child}}
+			e := branchChildExecutor(t, root, workflow)
+			if _, _, err := e.prepareBranchDecision(context.Background(), &workflow.Steps[0]); err != nil {
+				t.Fatal(err)
+			}
+			child.ID = "route_once"
+			hash, err := commandDefinitionHash(&child)
+			if err != nil {
+				t.Fatal(err)
+			}
+			started := time.Now().UTC().Add(-4 * time.Second)
+			command := CommandExecutionState{Version: commandExecutionVersion, StepID: child.ID, StepHash: hash,
+				Status: commandExecutionSettled, ProcessID: 123, StartedAt: started, SettledAt: started.Add(time.Second),
+				Result: StepResult{StepID: child.ID, AgentType: "command", Status: StatusFailed,
+					StartedAt: started, FinishedAt: started.Add(time.Second), Output: "original failure",
+					Error: &StepError{Type: "command", Message: "command exited 9"}},
+			}
+			fallback, _, err := recoveryStepDefinition(child.ID, child.OnFailure.Fallback, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fallbackHash, err := agentStepHash(fallback)
+			if err != nil {
+				t.Fatal(err)
+			}
+			delivery := testAgentDelivery(fallback.ID, agentDeliveryCompleted)
+			delivery.Session, delivery.Kind, delivery.StepHash = cfg.Session, StepKindTemplate, fallbackHash
+			delivery.StartedAt, delivery.DeliveredAt, delivery.CompletedAt = started.Add(time.Second), started.Add(2*time.Second), started.Add(3*time.Second)
+			delivery.Output = "recovered body"
+			e.state.CommandExecutions = map[string]CommandExecutionState{child.ID: command}
+			e.state.AgentDeliveries = map[string]AgentDeliveryState{fallback.ID: delivery}
+			// This is the durable boundary after suppressing recovery completed,
+			// before its branch child and success tail were checkpointed.
+			e.state.Steps[child.ID] = StepResult{StepID: child.ID, Status: StatusCompleted, AgentType: "command",
+				Output: delivery.Output, StartedAt: started, FinishedAt: delivery.CompletedAt}
+			e.state.Status = StatusCancelled
+			e.state.StartedAt = started
+			if err := SaveState(root, e.state); err != nil {
+				t.Fatal(err)
+			}
+			client := NewMockTmuxClient(tmux.Pane{ID: "%1", Index: 1, Type: tmux.AgentCodex})
+			t.Cleanup(client.Reset)
+			for attempt := 0; attempt < 2; attempt++ {
+				prior, err := LoadState(root, cfg.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if attempt == 1 {
+					switch mutation {
+					case "command_identity":
+						changed := prior.CommandExecutions[child.ID]
+						changed.StepHash = strings.Repeat("f", 64)
+						prior.CommandExecutions[child.ID] = changed
+					case "fallback_output":
+						changed := prior.AgentDeliveries[fallback.ID]
+						changed.Output = "unrelated recovery result"
+						prior.AgentDeliveries[fallback.ID] = changed
+					}
+					if err := SaveState(root, prior); err != nil {
+						t.Fatal(err)
+					}
+				}
+				path := pipelineStatePath(root, cfg.RunID)
+				before, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resumed := NewExecutor(cfg)
+				resumed.SetTmuxClient(client)
+				state, resumeErr := resumed.Resume(context.Background(), workflow, prior, nil)
+				if attempt == 1 && mutation != "none" {
+					if resumeErr == nil || !strings.Contains(resumeErr.Error(), "native execution receipt") {
+						t.Fatalf("contradictory %s admitted: state=%+v error=%v", mutation, state, resumeErr)
+					}
+					after, err := os.ReadFile(path)
+					if err != nil || string(after) != string(before) {
+						t.Fatalf("rejected native evidence rewrote checkpoint: %v", err)
+					}
+				} else if resumeErr != nil || state.Status != StatusCompleted {
+					t.Fatalf("resume %d lost recovered command body: state=%+v error=%v", attempt, state, resumeErr)
+				} else if !reflect.DeepEqual(state.CommandExecutions[child.ID], command) || !reflect.DeepEqual(state.AgentDeliveries[fallback.ID], delivery) {
+					t.Fatal("recovery replaced original command or fallback evidence")
+				}
+			}
+			history := client.VerificationHistory()
+			if len(history) != 1 || history[0].Message != "Use recovered result: recovered body" {
+				t.Fatalf("recovery replayed or lost the hook's original body output: %+v", history)
+			}
+			if _, err := os.Stat(filepath.Join(root, "forbidden")); !os.IsNotExist(err) {
+				t.Fatalf("recovery repeated its settled command body: %v", err)
+			}
+		})
+	}
 }
 
 func TestBranchChildRecoveryRefusesDamagedCompletion(t *testing.T) {

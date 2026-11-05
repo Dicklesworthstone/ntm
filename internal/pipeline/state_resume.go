@@ -2412,6 +2412,16 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 		e.stateMu.RUnlock()
 		return err
 	}
+	if err := validateSuccessHooks(state); err != nil {
+		e.stateMu.RUnlock()
+		return err
+	}
+	if opts.KeepState {
+		if _, _, _, err := prepareSuccessHookResume(graph, state); err != nil {
+			e.stateMu.RUnlock()
+			return err
+		}
+	}
 	priorSession := state.Session
 	targetSession := e.config.Session
 	if err := e.validateCommandEvaluationResumeLocked(workflow, state, opts); err != nil {
@@ -2671,6 +2681,9 @@ func (e *Executor) resetSettledOnCancelState(workflow *Workflow) {
 	for id := range e.state.ReservationSteps {
 		collect(id)
 	}
+	for id := range e.state.SuccessHooks {
+		collect(id)
+	}
 	for id := range e.state.ForeachState {
 		collect(id)
 	}
@@ -2696,6 +2709,7 @@ func (e *Executor) resetSettledOnCancelState(workflow *Workflow) {
 			delete(e.state.ReservationSteps, id)
 		}
 		delete(e.state.Steps, id)
+		delete(e.state.SuccessHooks, id)
 		delete(e.state.ForeachState, id)
 		delete(e.state.ParallelState, id)
 		delete(e.state.InFlightSteps, id)
@@ -2756,6 +2770,9 @@ func (e *Executor) resetPostPipelineForMainAttempt(workflow *Workflow) {
 	for id := range e.state.ReservationSteps {
 		collect(id)
 	}
+	for id := range e.state.SuccessHooks {
+		collect(id)
+	}
 	for id := range e.state.ForeachState {
 		collect(id)
 	}
@@ -2784,6 +2801,7 @@ func (e *Executor) resetPostPipelineForMainAttempt(workflow *Workflow) {
 			delete(e.state.ReservationSteps, id)
 		}
 		delete(e.state.Steps, id)
+		delete(e.state.SuccessHooks, id)
 		delete(e.state.ForeachState, id)
 		delete(e.state.ParallelState, id)
 		delete(e.state.InFlightSteps, id)
@@ -2839,6 +2857,9 @@ func validateForceResumeIteration(workflow *Workflow, state *ExecutionState, opt
 	}
 	if _, recorded := state.ReservationSteps[opts.StepID]; recorded {
 		return fmt.Errorf("force-iter step %q has a leaf reservation receipt; inspect it before an explicit reset", opts.StepID)
+	}
+	if hooks, recorded := state.SuccessHooks[opts.StepID]; recorded && len(hooks.Children) > 0 {
+		return fmt.Errorf("force-iter step %q has already consumed success hooks from its previous aggregate; use an explicit whole-workflow reset rather than retaining stale hook effects", opts.StepID)
 	}
 	for _, step := range workflow.Steps {
 		if iterationIndexFromID(step.ID, opts.StepID+"_iter") >= opts.Iteration {
@@ -2896,6 +2917,7 @@ func validateForceResumeIteration(workflow *Workflow, state *ExecutionState, opt
 			hasRuntimeCheckpoint(state.CommandEvaluations, consumer) ||
 			hasRuntimeCheckpoint(state.MailSends, consumer) ||
 			hasRuntimeCheckpoint(state.ReservationSteps, consumer) ||
+			hasRuntimeCheckpoint(state.SuccessHooks, consumer) ||
 			hasRuntimeCheckpoint(state.InFlightSteps, consumer) ||
 			hasRuntimeCheckpoint(state.ForeachState, consumer) ||
 			hasRuntimeCheckpoint(state.ParallelState, consumer) {
@@ -3039,11 +3061,6 @@ func (e *Executor) validateLeafReplayScopeLocked(workflow *Workflow, state *Exec
 	if workflow == nil {
 		return fmt.Errorf("%s replay requires its saved workflow", kind)
 	}
-	for i := range workflow.Steps {
-		if workflow.Steps[i].ID == stepID && stepKind(&workflow.Steps[i]) == kind {
-			return nil // An independently scheduled leaf.
-		}
-	}
 	refuse := func(container string) error {
 		return fmt.Errorf("cannot replay %s %q independently of completed or unscheduled container %q; inspect the old %s and its effects, then use --mode=force-iter for a containing top-level iteration or --keep-state=false to deliberately repeat the whole workflow", kind, stepID, container, kind)
 	}
@@ -3054,6 +3071,31 @@ func (e *Executor) validateLeafReplayScopeLocked(workflow *Workflow, state *Exec
 	resolve, err := resumeRuntimeStepResolver(graph, state)
 	if err != nil {
 		return err
+	}
+	for parentID, hooks := range state.SuccessHooks {
+		for childID, receipt := range hooks.Children {
+			if childID == stepID {
+				if successHookSidecarRerun(state, stepID, receipt) {
+					command, exists := state.CommandExecutions[stepID]
+					if exists && command.Background && command.Status == commandExecutionSettled {
+						return nil // Deliberate native sidecar relaunch, not replay of advisory failure.
+					}
+				}
+				return refuse(parentID)
+			}
+			child, ok := resolve(childID)
+			if !ok {
+				continue
+			}
+			if _, _, owns := resolveScopedRuntimeChildren(childID, stepID, child); owns {
+				return refuse(parentID)
+			}
+		}
+	}
+	for i := range workflow.Steps {
+		if workflow.Steps[i].ID == stepID && stepKind(&workflow.Steps[i]) == kind {
+			return nil // An independently scheduled leaf.
+		}
 	}
 	if step, ok := resolve(stepID); !ok || stepKind(step) != kind {
 		// An unknown or differently typed leaf cannot be independently replayed.
@@ -3250,6 +3292,7 @@ func (e *Executor) resetResumeState(workflow *Workflow) {
 	e.state.CommandEvaluations = nil
 	e.state.MailSends = nil
 	e.state.ReservationSteps = nil
+	e.state.SuccessHooks = nil
 	e.state.CurrentStep = ""
 	e.state.Errors = nil
 	e.stateMu.Unlock()
@@ -3331,6 +3374,7 @@ func (e *Executor) forceResumeIteration(stepID string, iteration int) {
 	// Keeping a completed parent result would make applyResumeState mark the
 	// whole loop executed and silently skip the requested replay.
 	delete(e.state.Steps, stepID)
+	delete(e.state.SuccessHooks, stepID)
 	delete(e.state.InFlightSteps, stepID)
 	prunedStepIDs = append(prunedStepIDs, stepID)
 
@@ -3343,6 +3387,7 @@ func (e *Executor) forceResumeIteration(stepID string, iteration int) {
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.CommandEvaluations, prefix, iteration)...)
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.MailSends, prefix, iteration)...)
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.ReservationSteps, prefix, iteration)...)
+	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.SuccessHooks, prefix, iteration)...)
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.InFlightSteps, prefix, iteration)...)
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.ParallelState, prefix, iteration)...)
 	prunedStepIDs = append(prunedStepIDs, removeIterationEntries(e.state.ForeachState, prefix, iteration)...)
@@ -3569,6 +3614,7 @@ func (e *Executor) verifyForeachItemsFingerprint(stepID, fingerprint string) err
 		hasIterationEntries(e.state.CommandEvaluations, prefix) ||
 		hasIterationEntries(e.state.MailSends, prefix) ||
 		hasIterationEntries(e.state.ReservationSteps, prefix) ||
+		hasIterationEntries(e.state.SuccessHooks, prefix) ||
 		hasIterationEntries(e.state.InFlightSteps, prefix) ||
 		hasIterationEntries(e.state.ForeachState, prefix) ||
 		hasIterationEntries(e.state.ParallelState, prefix)
@@ -3947,6 +3993,9 @@ func resumeCheckpointTime(state *ExecutionState) time.Time {
 	}
 	for _, inFlight := range state.InFlightSteps {
 		checkpoint = mostRecentTime(checkpoint, inFlight.StartedAt)
+	}
+	for _, hooks := range state.SuccessHooks {
+		checkpoint = mostRecentTime(checkpoint, stepResultCheckpointTime(hooks.Body))
 	}
 
 	return checkpoint

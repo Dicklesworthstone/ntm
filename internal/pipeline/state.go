@@ -455,6 +455,9 @@ func decodeState(data []byte, runID string) (*ExecutionState, error) {
 	if err := validateStepAdmissions(state.StepAdmissions); err != nil {
 		return nil, err
 	}
+	if err := validateSuccessHooks(&state); err != nil {
+		return nil, err
+	}
 
 	return &state, nil
 }
@@ -464,6 +467,9 @@ func marshalStateForDisk(state *ExecutionState) ([]byte, error) {
 		return nil, err
 	}
 	if err := validateBranchDecisions(state); err != nil {
+		return nil, err
+	}
+	if err := validateSuccessHooks(state); err != nil {
 		return nil, err
 	}
 
@@ -722,6 +728,14 @@ func stateCleanupRetentionReason(state *ExecutionState) string {
 	}
 	if state.CommandEvaluationVersion != commandEvaluationVersion {
 		return "unsupported_journal"
+	}
+	if err := validateSuccessHooks(state); err != nil {
+		return "invalid_success_hook_receipt"
+	}
+	for _, record := range state.SuccessHooks {
+		if !successHooksSettled(record) {
+			return "unfinished_success_hooks"
+		}
 	}
 	for _, id := range cleanupReceiptIDs(state.CommandExecutions) {
 		record := state.CommandExecutions[id]

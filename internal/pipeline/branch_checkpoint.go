@@ -377,6 +377,9 @@ func (e *Executor) adoptBranchChild(ctx context.Context, decision branchDecision
 			// A native command journal can reconstruct the result of a child
 			// interrupted during hooks. The existing hook runner adopts its
 			// own completed children; do not run the original command again.
+			if err := e.prepareSuccessHooks(ctx, child, prior); err != nil {
+				return StepResult{}, false, err
+			}
 			if err := e.runOnSuccessSteps(ctx, child, workflow); err != nil {
 				return StepResult{}, false, err
 			}

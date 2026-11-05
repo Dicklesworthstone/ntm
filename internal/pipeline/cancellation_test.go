@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -1172,5 +1173,511 @@ func TestExecutorCancellationHooksFollowMainBackgroundSupervision(t *testing.T) 
 				t.Fatalf("main sidecar cancellation lost its settled receipt: %+v", mainReceipt)
 			}
 		})
+	}
+}
+
+// interruptedSuccessHookRun stops a real foreground run inside an admitted
+// shell hook, after both a successful and an advisory failed sibling have
+// produced observable effects. Recovery must consume those earlier outcomes,
+// not infer that a failed hook's effect is safe to repeat.
+func interruptedSuccessHookRun(t *testing.T, shape string, tail bool) (ExecutorConfig, *Workflow, *ExecutionState, string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX command cancellation fixture")
+	}
+	cfg := DefaultExecutorConfig("success-hook-recovery")
+	cfg.ProjectDir, cfg.RunID = t.TempDir(), "run-success-hook-recovery"
+	cfg.DefaultTimeout, cfg.GlobalTimeout = 10*time.Second, 20*time.Second
+	work := Step{ID: "work", Command: "printf 'parent\\n' >> parent-effects; printf parent-value", OutputVar: "body_output", OnSuccess: []Step{
+		{ID: "complete", Command: "printf 'complete\\n' >> complete-effects; printf hook-value", OutputVar: "hook_output"},
+		{ID: "advisory", Command: "printf 'failed\\n' >> failed-effects; exit 9"},
+		{ID: "interrupted", Command: "printf ready > hook-ready; while [ ! -f hook-release ]; do sleep 0.01; done; " +
+			"test '${vars.hook_output}' = hook-value && printf 'resumed\\n' >> resumed-effects; printf resumed-value"},
+	}}
+	if tail {
+		work.OnSuccess = append(work.OnSuccess, Step{ID: "tail", Command: "test '${vars.hook_output}' = hook-value && printf 'tail\\n' >> tail-effects"})
+	}
+	if shape == "background" {
+		interrupted := work.OnSuccess[2]
+		interrupted.Command = "while [ ! -f sidecar-ready ]; do sleep 0.01; done; " + interrupted.Command
+		hooks := []Step{work.OnSuccess[0], work.OnSuccess[1], {
+			ID: "sidecar", Wait: WaitNone,
+			Command: "printf 'sidecar\\n' >> sidecar-effects; printf ready > sidecar-ready; while :; do sleep 0.01; done",
+		}, interrupted}
+		work.OnSuccess = append(hooks, work.OnSuccess[3:]...)
+	}
+	root, parentID := work, "work"
+	switch shape {
+	case "command", "background":
+	case "branch":
+		root = Step{ID: "route", Branch: "chosen", Branches: map[string]interface{}{
+			"chosen": []Step{work},
+			"other":  []Step{{ID: "work", Command: "printf wrong >> forbidden"}},
+		}}
+		parentID = "route_work"
+	case "parallel":
+		root = Step{ID: "fan", Parallel: ParallelSpec{Steps: []Step{work}}}
+		parentID = "fan_work"
+	case "nested":
+		root = Step{ID: "outer", Command: "printf 'outer\\n' >> outer-effects", OnSuccess: []Step{
+			work, {ID: "tail", Command: "printf 'outer-tail\\n' >> outer-tail-effects"},
+		}}
+		parentID = "outer_on_success_work"
+	case "foreach", "rounds", "scoped-foreach":
+		root = Step{ID: "each", Foreach: &ForeachConfig{Items: `["item"]`, Steps: []Step{work}}}
+		parentID = "each_iter0_work"
+		if shape == "rounds" {
+			root.Foreach.MaxRounds = IntOrExpr{Value: 2}
+			parentID += "_round1"
+		}
+	default:
+		t.Fatalf("unknown success hook fixture shape %q", shape)
+	}
+	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "success-hook-recovery", Settings: DefaultWorkflowSettings(), Steps: []Step{
+		root, {ID: "dependent", DependsOn: []string{root.ID}, Command: "printf 'dependent\\n' >> dependent-effects"},
+	}}
+	if shape == "scoped-foreach" {
+		workflow.Steps[0].DependsOn = []string{"prefix"}
+		workflow.Steps = append([]Step{{ID: "prefix", Command: "printf 'prefix\\n' >> prefix-effects", OnSuccess: []Step{
+			{ID: "notify", Command: "printf 'prefix-hook\\n' >> prefix-hook-effects"},
+		}}}, workflow.Steps...)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	type outcome struct {
+		state *ExecutionState
+		err   error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		state, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+		done <- outcome{state, err}
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(15 * time.Second):
+			t.Error("success hook cancellation fixture did not join the foreground run")
+		}
+	})
+	awaitCommandCancellationFile(t, filepath.Join(cfg.ProjectDir, "hook-ready"), "ready")
+	cancel()
+	select {
+	case result := <-done:
+		if !errors.Is(result.err, context.Canceled) || result.state == nil || result.state.Status != StatusCancelled {
+			t.Fatalf("hook cancellation did not cancel the run: state=%+v error=%v", result.state, result.err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("foreground run did not settle after hook cancellation")
+	}
+	prior, err := LoadState(cfg.ProjectDir, cfg.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := prior.Steps[parentID]; got.Status != StatusCancelled || got.Error == nil || got.Error.Type != "cancelled" {
+		t.Fatalf("unfinished success hooks were marked complete or misclassified: %+v", got)
+	}
+	if got := prior.Steps[parentID+"_on_success_interrupted"]; got.Status != StatusCancelled {
+		t.Fatalf("interrupted hook lost its cancellation: %+v", got)
+	}
+	if got := prior.Steps[parentID+"_on_success_advisory"]; got.Status != StatusFailed || got.Error == nil || got.Error.Type != "exit" || !strings.Contains(got.Error.Details, "exit_code=9") {
+		t.Fatalf("advisory failure was erased: %+v", got)
+	}
+	if got := prior.CommandExecutions[parentID]; got.Status != commandExecutionSettled || got.Result.Status != StatusCompleted || got.ProcessID <= 0 {
+		t.Fatalf("parent lost its completed native command receipt: %+v", got)
+	}
+	for name, want := range map[string]string{"parent-effects": "parent\n", "complete-effects": "complete\n", "failed-effects": "failed\n"} {
+		if got, err := os.ReadFile(filepath.Join(cfg.ProjectDir, name)); err != nil || string(got) != want {
+			t.Fatalf("initial %s = %q, want %q: %v", name, got, want, err)
+		}
+	}
+	for _, name := range []string{"resumed-effects", "tail-effects", "dependent-effects", "outer-tail-effects", "forbidden"} {
+		if got, err := os.ReadFile(filepath.Join(cfg.ProjectDir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("cancellation allowed pending effect %s: %q %v", name, got, err)
+		}
+	}
+	frozen, validation, err := LoadResumeWorkflow(prior.WorkflowFile)
+	if err != nil || !validation.Valid {
+		t.Fatalf("reload frozen workflow: %+v %v", validation, err)
+	}
+	cfg.WorkflowFile = prior.WorkflowFile
+	return cfg, frozen, prior, parentID
+}
+
+func TestSuccessHookCancellationResumesWithoutReplayingConsumedEffects(t *testing.T) {
+	for _, tc := range []struct {
+		name, shape string
+		tail        bool
+	}{
+		{name: "last hook", shape: "command"},
+		{name: "pending tail", shape: "command", tail: true},
+		{name: "branch child", shape: "branch", tail: true},
+		{name: "parallel child", shape: "parallel", tail: true},
+		{name: "nested hook", shape: "nested", tail: true},
+		{name: "foreach body", shape: "foreach", tail: true},
+		{name: "foreach rounds", shape: "rounds", tail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, workflow, prior, parentID := interruptedSuccessHookRun(t, tc.shape, tc.tail)
+			parentReceipt := prior.CommandExecutions[parentID]
+			completedReceipt := prior.CommandExecutions[parentID+"_on_success_complete"]
+			failedReceipt := prior.CommandExecutions[parentID+"_on_success_advisory"]
+			if err := os.WriteFile(filepath.Join(cfg.ProjectDir, "hook-release"), []byte("finish"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			for attempt := 1; attempt <= 2; attempt++ {
+				if attempt == 2 {
+					// Completed outputs must be reconstructible from the durable
+					// results and hook receipts, even if a checkpoint's variable
+					// cache was lost. This must not dispatch any completed work.
+					prior.Variables = make(map[string]interface{})
+				}
+				owner, err := AcquireRunControl(context.Background(), cfg.ProjectDir, cfg.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				state, resumeErr := NewExecutor(cfg).Resume(owner.Context(), workflow, prior, nil)
+				owner.Close()
+				if resumeErr != nil || state == nil || state.Status != StatusCompleted {
+					t.Fatalf("resume %d did not finish the pending hooks: state=%+v error=%v", attempt, state, resumeErr)
+				}
+				prior, err = LoadState(cfg.ProjectDir, cfg.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := prior.Steps[parentID]; got.Status != StatusCompleted || got.Output != "parent-value" {
+					t.Fatalf("resume %d lost the successful body output: %+v", attempt, got)
+				}
+				if tc.shape == "command" {
+					for name, want := range map[string]string{
+						"body_output": "parent-value", "hook_output": "hook-value",
+						"steps.work.output": "parent-value", "steps.work_on_success_complete.output": "hook-value",
+					} {
+						if got := prior.Variables[name]; got != want {
+							t.Fatalf("resume %d did not restore %s: got %#v, want %q", attempt, name, got, want)
+						}
+					}
+				}
+				if got := prior.Steps[parentID+"_on_success_advisory"]; got.Status != StatusFailed || got.Error == nil || got.Error.Type != "exit" || !strings.Contains(got.Error.Details, "exit_code=9") {
+					t.Fatalf("resume %d discarded the consumed advisory failure: %+v", attempt, got)
+				}
+				for id, original := range map[string]CommandExecutionState{
+					parentID: parentReceipt, parentID + "_on_success_complete": completedReceipt, parentID + "_on_success_advisory": failedReceipt,
+				} {
+					got := prior.CommandExecutions[id]
+					if got.ProcessID != original.ProcessID || !got.StartedAt.Equal(original.StartedAt) || !got.SettledAt.Equal(original.SettledAt) || got.Result.Status != original.Result.Status {
+						t.Fatalf("resume %d replaced consumed command %q: before=%+v after=%+v", attempt, id, original, got)
+					}
+				}
+				count := 1
+				if tc.shape == "rounds" {
+					count = 2
+				}
+				wantEffects := map[string]string{
+					"parent-effects": strings.Repeat("parent\n", count), "complete-effects": strings.Repeat("complete\n", count),
+					"failed-effects": strings.Repeat("failed\n", count), "resumed-effects": strings.Repeat("resumed\n", count),
+					"dependent-effects": "dependent\n",
+				}
+				if tc.tail {
+					wantEffects["tail-effects"] = strings.Repeat("tail\n", count)
+				}
+				if tc.shape == "nested" {
+					wantEffects["outer-effects"], wantEffects["outer-tail-effects"] = "outer\n", "outer-tail\n"
+				}
+				for name, want := range wantEffects {
+					if got, err := os.ReadFile(filepath.Join(cfg.ProjectDir, name)); err != nil || string(got) != want {
+						t.Fatalf("resume %d repeated or omitted %s: got %q, want %q: %v", attempt, name, got, want, err)
+					}
+				}
+				if got, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "forbidden")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("resume %d changed the selected branch: %q %v", attempt, got, err)
+				}
+			}
+		})
+	}
+}
+
+func TestSuccessHookRecoveryRejectsChangedEvidenceBeforeEffects(t *testing.T) {
+	cfg, _, original, parentID := interruptedSuccessHookRun(t, "command", true)
+	snapshot, err := json.Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := pipelineStatePath(cfg.ProjectDir, cfg.RunID)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.ProjectDir, "hook-release"), []byte("finish"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name       string
+		structural bool
+		mutate     func(*ExecutionState, *Workflow)
+	}{
+		{name: "body output", structural: true, mutate: func(state *ExecutionState, _ *Workflow) {
+			record := state.SuccessHooks[parentID]
+			record.Body.Output = "forged body output"
+			state.SuccessHooks[parentID] = record
+		}},
+		{name: "missing consumed result", structural: true, mutate: func(state *ExecutionState, _ *Workflow) {
+			delete(state.Steps, parentID+"_on_success_advisory")
+		}},
+		{name: "missing parent journal", structural: true, mutate: func(state *ExecutionState, _ *Workflow) {
+			delete(state.SuccessHooks, parentID)
+		}},
+		{name: "changed consumed failure", structural: true, mutate: func(state *ExecutionState, _ *Workflow) {
+			result := state.Steps[parentID+"_on_success_advisory"]
+			result.Error.Message = "different failure"
+			state.Steps[result.StepID] = result
+		}},
+		{name: "nonsequential consumption", structural: true, mutate: func(state *ExecutionState, _ *Workflow) {
+			record := state.SuccessHooks[parentID]
+			delete(record.Children, parentID+"_on_success_complete")
+			state.SuccessHooks[parentID] = record
+		}},
+		{name: "changed output binding", structural: true, mutate: func(state *ExecutionState, _ *Workflow) {
+			record := state.SuccessHooks[parentID]
+			receipt := record.Children[parentID+"_on_success_complete"]
+			receipt.Outputs["hook_output"] = "forged output binding"
+			record.Children[parentID+"_on_success_complete"] = receipt
+			state.SuccessHooks[parentID] = record
+		}},
+		{name: "changed hook definition", mutate: func(_ *ExecutionState, workflow *Workflow) {
+			workflow.Steps[0].OnSuccess[0].Command = "printf changed >> forbidden"
+		}},
+		{name: "removed pending hook", mutate: func(_ *ExecutionState, workflow *Workflow) {
+			workflow.Steps[0].OnSuccess = workflow.Steps[0].OnSuccess[:2]
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var candidate ExecutionState
+			if err := json.Unmarshal(snapshot, &candidate); err != nil {
+				t.Fatal(err)
+			}
+			workflow, validation, err := LoadResumeWorkflow(original.WorkflowFile)
+			if err != nil || !validation.Valid {
+				t.Fatalf("reload original definition: %+v %v", validation, err)
+			}
+			tc.mutate(&candidate, workflow)
+			if tc.structural {
+				if err := SaveState(cfg.ProjectDir, &candidate); !errors.Is(err, errSuccessHookRecovery) {
+					t.Fatalf("malformed consumed evidence was allowed to replace the checkpoint: %v", err)
+				}
+			}
+			if _, err := NewExecutor(cfg).Resume(context.Background(), workflow, &candidate, nil); !errors.Is(err, errSuccessHookRecovery) {
+				t.Fatalf("changed hook evidence did not refuse recovery: %v", err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || string(after) != string(before) {
+				t.Fatalf("refused recovery rewrote the last valid checkpoint: %v", err)
+			}
+			for name, want := range map[string]string{"parent-effects": "parent\n", "complete-effects": "complete\n", "failed-effects": "failed\n"} {
+				if got, err := os.ReadFile(filepath.Join(cfg.ProjectDir, name)); err != nil || string(got) != want {
+					t.Fatalf("refused recovery repeated %s: %q %v", name, got, err)
+				}
+			}
+			for _, name := range []string{"resumed-effects", "tail-effects", "dependent-effects", "forbidden"} {
+				if got, err := os.ReadFile(filepath.Join(cfg.ProjectDir, name)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("refused recovery dispatched %s: %q %v", name, got, err)
+				}
+			}
+		})
+	}
+}
+
+func TestSuccessHookRecoveryRejectsChangedForeachDefinition(t *testing.T) {
+	cfg, workflow, prior, _ := interruptedSuccessHookRun(t, "foreach", true)
+	before, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep all IDs and the number of hooks unchanged. Materialized foreach
+	// IDs alone cannot prove that the authored work is still the same work.
+	workflow.Steps[0].Foreach.Steps[0].OnSuccess[0].Command = "printf changed >> forbidden"
+	if err := os.WriteFile(filepath.Join(cfg.ProjectDir, "hook-release"), []byte("finish"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewExecutor(cfg).Resume(context.Background(), workflow, prior, nil); !errors.Is(err, errSuccessHookRecovery) {
+		t.Fatalf("changed authored hook behind a dynamic ID was accepted: %v", err)
+	}
+	after, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("changed dynamic definition rewrote its valid checkpoint: %v", err)
+	}
+	for name, want := range map[string]string{"parent-effects": "parent\n", "complete-effects": "complete\n", "failed-effects": "failed\n"} {
+		if got, err := os.ReadFile(filepath.Join(cfg.ProjectDir, name)); err != nil || string(got) != want {
+			t.Fatalf("changed dynamic definition repeated %s: %q %v", name, got, err)
+		}
+	}
+	for _, name := range []string{"resumed-effects", "tail-effects", "dependent-effects", "forbidden"} {
+		if got, err := os.ReadFile(filepath.Join(cfg.ProjectDir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("changed dynamic definition dispatched %s: %q %v", name, got, err)
+		}
+	}
+}
+
+func TestSuccessHookReplayRequiresContainingScope(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		options       ResumeOptions
+		prefixRepeats bool
+		refuse        bool
+	}{
+		{name: "whole reset", options: ResumeOptions{Reset: true}, prefixRepeats: true},
+		{name: "selected iteration", options: ResumeOptions{Mode: ResumeModeForceIter, StepID: "each", Iteration: 0}},
+		{name: "consumed advisory failure", options: ResumeOptions{Mode: ResumeModeRestartFailed}, refuse: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, workflow, prior, parentID := interruptedSuccessHookRun(t, "scoped-foreach", true)
+			parentReceipt, prefixReceipt := prior.CommandExecutions[parentID], prior.CommandExecutions["prefix"]
+			before, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(cfg.ProjectDir, "hook-release"), []byte("finish"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg.ResumeOptions = tc.options
+			state, resumeErr := NewExecutor(cfg).Resume(context.Background(), workflow, prior, nil)
+			if tc.refuse {
+				if resumeErr == nil {
+					t.Fatal("restart-failed silently replayed or ignored an already-consumed hook failure")
+				}
+				after, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
+				if err != nil || string(after) != string(before) {
+					t.Fatalf("refused hook replay rewrote its recovery checkpoint: %v", err)
+				}
+				for name, want := range map[string]string{
+					"parent-effects": "parent\n", "complete-effects": "complete\n", "failed-effects": "failed\n",
+					"prefix-effects": "prefix\n", "prefix-hook-effects": "prefix-hook\n",
+				} {
+					if got, err := os.ReadFile(filepath.Join(cfg.ProjectDir, name)); err != nil || string(got) != want {
+						t.Fatalf("refused replay changed %s: %q %v", name, got, err)
+					}
+				}
+				for _, name := range []string{"resumed-effects", "tail-effects", "dependent-effects"} {
+					if got, err := os.ReadFile(filepath.Join(cfg.ProjectDir, name)); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("refused replay dispatched %s: %q %v", name, got, err)
+					}
+				}
+				return
+			}
+			if resumeErr != nil || state == nil || state.Status != StatusCompleted {
+				t.Fatalf("explicit replay did not finish its selected scope: %+v %v", state, resumeErr)
+			}
+			if state.CommandExecutions[parentID].StartedAt.Equal(parentReceipt.StartedAt) {
+				t.Fatal("explicit replay retained the old completed body")
+			}
+			prefixChanged := !state.CommandExecutions["prefix"].StartedAt.Equal(prefixReceipt.StartedAt)
+			if prefixChanged != tc.prefixRepeats {
+				t.Fatalf("explicit replay changed an unrelated prefix = %t, want %t", prefixChanged, tc.prefixRepeats)
+			}
+			// Once the requested replay is complete, ordinary continuation must
+			// again consume its new hook receipts, including the advisory failure.
+			cfg.ResumeOptions = ResumeOptions{}
+			prior, err = LoadState(cfg.ProjectDir, cfg.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, resumeErr = NewExecutor(cfg).Resume(context.Background(), workflow, prior, nil)
+			if resumeErr != nil || state == nil || state.Status != StatusCompleted {
+				t.Fatalf("ordinary resume after explicit replay failed: %+v %v", state, resumeErr)
+			}
+			prefixCount := 1
+			if tc.prefixRepeats {
+				prefixCount = 2
+			}
+			for name, want := range map[string]string{
+				"parent-effects": "parent\nparent\n", "complete-effects": "complete\ncomplete\n", "failed-effects": "failed\nfailed\n",
+				"resumed-effects": "resumed\n", "tail-effects": "tail\n", "dependent-effects": "dependent\n",
+				"prefix-effects": strings.Repeat("prefix\n", prefixCount), "prefix-hook-effects": strings.Repeat("prefix-hook\n", prefixCount),
+			} {
+				if got, err := os.ReadFile(filepath.Join(cfg.ProjectDir, name)); err != nil || string(got) != want {
+					t.Fatalf("replay scope repeated or omitted %s: got %q, want %q: %v", name, got, want, err)
+				}
+			}
+		})
+	}
+}
+
+func TestSuccessHookBackgroundCommandRelaunchPreservesConsumedSiblings(t *testing.T) {
+	cfg, workflow, prior, parentID := interruptedSuccessHookRun(t, "background", true)
+	sidecarID := parentID + "_on_success_sidecar"
+	if got := prior.Steps[sidecarID]; !got.RerunOnResume {
+		t.Fatalf("cancelled background hook lost its relaunch request: %+v", got)
+	}
+	if got := prior.CommandExecutions[sidecarID]; got.Status != commandExecutionSettled || got.Result.Status != StatusCancelled || !got.Result.RerunOnResume {
+		t.Fatalf("background hook did not settle before Run returned: %+v", got)
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		// Require each new sidecar and waiting sibling to announce readiness;
+		// old markers must not let cancellation miss the selected attempt.
+		for _, name := range []string{"sidecar-ready", "hook-ready"} {
+			if err := os.Rename(filepath.Join(cfg.ProjectDir, name), filepath.Join(cfg.ProjectDir, name+"."+strconv.Itoa(attempt))); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if attempt == 2 {
+			if err := os.WriteFile(filepath.Join(cfg.ProjectDir, "hook-release"), []byte("finish"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		type outcome struct {
+			state *ExecutionState
+			err   error
+		}
+		done := make(chan outcome, 1)
+		resumeState := prior
+		go func() {
+			state, err := NewExecutor(cfg).Resume(ctx, workflow, resumeState, nil)
+			done <- outcome{state, err}
+			close(done)
+		}()
+		t.Cleanup(func() {
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(15 * time.Second):
+				t.Error("sidecar hook resume did not join command cleanup")
+			}
+		})
+		awaitCommandCancellationFile(t, filepath.Join(cfg.ProjectDir, "sidecar-ready"), "ready")
+		awaitCommandCancellationFile(t, filepath.Join(cfg.ProjectDir, "hook-ready"), "ready")
+		if attempt == 1 {
+			cancel()
+		}
+		select {
+		case result := <-done:
+			if attempt == 1 {
+				if !errors.Is(result.err, context.Canceled) || result.state == nil || result.state.Status != StatusCancelled {
+					t.Fatalf("second cancellation corrupted the consumed hook journal: %+v %v", result.state, result.err)
+				}
+			} else if result.err != nil || result.state == nil || result.state.Status != StatusCompleted {
+				t.Fatalf("ordinary resume stranded a cancelled sidecar hook: %+v %v", result.state, result.err)
+			}
+		case <-time.After(15 * time.Second):
+			t.Fatal("sidecar hook resume did not settle")
+		}
+		var err error
+		prior, err = LoadState(cfg.ProjectDir, cfg.RunID)
+		if err != nil {
+			t.Fatalf("resume %d left an unreadable hook journal: %v", attempt, err)
+		}
+	}
+	for name, want := range map[string]string{
+		"parent-effects": "parent\n", "complete-effects": "complete\n", "failed-effects": "failed\n",
+		"sidecar-effects": "sidecar\nsidecar\nsidecar\n", "resumed-effects": "resumed\n", "tail-effects": "tail\n", "dependent-effects": "dependent\n",
+	} {
+		if got, err := os.ReadFile(filepath.Join(cfg.ProjectDir, name)); err != nil || string(got) != want {
+			t.Fatalf("sidecar continuation repeated or omitted %s: got %q, want %q: %v", name, got, want, err)
+		}
+	}
+	saved, err := LoadState(cfg.ProjectDir, cfg.RunID)
+	if err != nil || saved.CommandExecutions[sidecarID].Status != commandExecutionSettled {
+		t.Fatalf("resumed sidecar escaped terminal cleanup: %+v %v", saved, err)
 	}
 }
