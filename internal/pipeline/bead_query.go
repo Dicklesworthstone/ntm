@@ -49,7 +49,7 @@ func (e *Executor) executeBeadQuery(ctx context.Context, step *Step, workflow *W
 		AgentType: "bead_query",
 	}
 
-	resolvedQuery, err := e.substituteBeadQueryFields(step.BeadQuery)
+	resolvedQuery, err := e.substituteBeadQueryFields(ctx, step.BeadQuery)
 	if err != nil {
 		result.Status = StatusFailed
 		result.Error = stepRuntimeError(step, "bead_query", "bead_query",
@@ -169,7 +169,7 @@ func (e *Executor) executeBeadQuery(ctx context.Context, step *Step, workflow *W
 // unresolvable references as an explicit error rather than silently sending
 // the literal "${vars.X}" to br, which would otherwise produce empty result
 // sets without any diagnostic.
-func (e *Executor) substituteBeadQueryFields(in *BeadQueryStep) (BeadQueryStep, error) {
+func (e *Executor) substituteBeadQueryFields(ctx context.Context, in *BeadQueryStep) (BeadQueryStep, error) {
 	if in == nil {
 		return BeadQueryStep{}, nil
 	}
@@ -181,7 +181,7 @@ func (e *Executor) substituteBeadQueryFields(in *BeadQueryStep) (BeadQueryStep, 
 				labels = append(labels, label)
 				continue
 			}
-			resolved, err := e.substituteStrict(label)
+			resolved, err := e.substituteStrictCtx(ctx, label)
 			if err != nil {
 				return BeadQueryStep{}, fmt.Errorf("label[%d]: %w", i, err)
 			}
@@ -205,7 +205,7 @@ func (e *Executor) substituteBeadQueryFields(in *BeadQueryStep) (BeadQueryStep, 
 		if *f.ptr == "" {
 			continue
 		}
-		resolved, err := e.substituteStrict(*f.ptr)
+		resolved, err := e.substituteStrictCtx(ctx, *f.ptr)
 		if err != nil {
 			return BeadQueryStep{}, fmt.Errorf("%s: %w", f.name, err)
 		}
@@ -214,10 +214,9 @@ func (e *Executor) substituteBeadQueryFields(in *BeadQueryStep) (BeadQueryStep, 
 	return q, nil
 }
 
-// substituteStrict resolves variable references using the standard substitutor
-// stack and returns an error when any reference cannot be resolved. Mirrors
-// substituteVariables but propagates errors so callers can fail closed.
-func (e *Executor) substituteStrict(s string) (string, error) {
+// substituteStrictCtx resolves variable references with the execution's round
+// overrides and returns an error when any reference cannot be resolved.
+func (e *Executor) substituteStrictCtx(ctx context.Context, s string) (string, error) {
 	// bd-6vp7y: canonical lock order is stateMu before varMu (matches
 	// the bd-8wo27 / bd-eslpu convention). Pre-fix this site held
 	// varMu first, presenting the same AB-BA risk against any
@@ -229,6 +228,9 @@ func (e *Executor) substituteStrict(s string) (string, error) {
 	sub := NewSubstitutor(e.state, e.config.Session, e.state.WorkflowID)
 	sub.SetDefaults(e.defaults)
 	sub.SetMaxDepth(e.limits.MaxSubstitutionDepth)
+	if overrides := roundOverridesFromCtx(ctx); overrides != nil {
+		sub.SetLocalOverrides(overrides)
+	}
 	s = e.substituteRuntimeVariables(s)
 	return sub.SubstituteStrict(s)
 }

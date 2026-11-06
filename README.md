@@ -1126,6 +1126,15 @@ for accounting and cleanup details.
 Dry runs preview dynamic foreach sources without executing their shell commands
 or `br` queries; static item and model lists can still be expanded for preview.
 
+Foreach item bindings also apply to command `stdin`, native `bead_query` fields,
+Agent Mail send and inbox requests, and reservation acquisition and release
+requests. For example, a loop with `as: assignment` can send mail to
+`${assignment.agent}`, reserve `${assignment.path}`, and query beads labelled
+`${assignment.label}`. Each iteration receives its own request values, including
+inside selected branches, success hooks, and failure recovery handlers. Nested
+loops retain their own item bindings; round variables and downstream step
+outputs resolve when the corresponding operation executes.
+
 For a foreground command receipt:
 
 ```bash

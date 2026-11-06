@@ -158,13 +158,13 @@ func TestLockOrder_AuditedCallSitesAllRespectCanonicalOrder(t *testing.T) {
 		}(w)
 	}
 
-	// substituteStrict (bead_query.go) — flipped by bd-6vp7y.
+	// substituteStrictCtx (bead_query.go) — flipped by bd-6vp7y.
 	for r := 0; r < readers; r++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for j := 0; j < iterations; j++ {
-				_, _ = executor.substituteStrict("${vars.name}")
+				_, _ = executor.substituteStrictCtx(context.Background(), "${vars.name}")
 			}
 		}()
 	}

@@ -1,7 +1,9 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -1413,6 +1415,7 @@ func (e *Executor) substituteForeachStepFieldsProtected(step *Step, protected ma
 	step.Prompt = e.substituteForeachString(step.Prompt, protected)
 	step.PromptFile = e.substituteForeachString(step.PromptFile, protected)
 	step.Command = e.substituteForeachString(step.Command, protected)
+	step.Stdin = e.substituteForeachString(step.Stdin, protected)
 	step.Template = e.substituteForeachString(step.Template, protected)
 	step.Wait = WaitCondition(e.substituteForeachString(string(step.Wait), protected))
 	step.When = e.substituteForeachString(step.When, protected)
@@ -1421,6 +1424,29 @@ func (e *Executor) substituteForeachStepFieldsProtected(step *Step, protected ma
 	step.Args = substituteForeachInterfaceMap(e, step.Args, protected)
 	step.Params = substituteForeachInterfaceMap(e, step.Params, protected)
 	step.TemplateParams = substituteForeachInterfaceMap(e, step.TemplateParams, protected)
+	step.OnFailure.Action = e.substituteForeachString(step.OnFailure.Action, protected)
+	step.OnFailure.Fallback = substituteForeachInterfaceMap(e, step.OnFailure.Fallback, protected)
+	if query := step.BeadQuery; query != nil {
+		query.Label = e.substituteForeachStringList(query.Label, protected)
+		e.substituteForeachStrings(protected, &query.Status, &query.State, &query.Type,
+			&query.Priority, &query.Assignee, &query.Filter)
+	}
+	if mail := step.MailSend; mail != nil {
+		mail.To = e.substituteForeachStringList(mail.To, protected)
+		e.substituteForeachStrings(protected, &mail.ProjectKey, &mail.AgentName,
+			&mail.Subject, &mail.Body, &mail.ThreadID)
+	}
+	if reservation := step.FileReservationPaths; reservation != nil {
+		reservation.Paths = e.substituteForeachStringList(reservation.Paths, protected)
+		e.substituteForeachStrings(protected, &reservation.ProjectKey, &reservation.AgentName, &reservation.Reason)
+	}
+	if inbox := step.MailInboxCheck; inbox != nil {
+		e.substituteForeachStrings(protected, &inbox.ProjectKey, &inbox.AgentName)
+	}
+	if release := step.FileReservationRelease; release != nil {
+		release.Paths = e.substituteForeachStringList(release.Paths, protected)
+		e.substituteForeachStrings(protected, &release.ProjectKey, &release.AgentName)
+	}
 	if step.Pane.Expr != "" {
 		resolved := strings.TrimSpace(e.substituteForeachString(step.Pane.Expr, protected))
 		if idx, err := strconv.Atoi(resolved); err == nil {
@@ -1436,12 +1462,23 @@ func (e *Executor) substituteForeachStepFieldsProtected(step *Step, protected ma
 	for i := range step.OnSuccess {
 		e.substituteForeachStepFieldsProtected(&step.OnSuccess[i], protected)
 	}
+	for key, value := range step.Branches {
+		step.Branches[key] = e.substituteForeachBranchFields(value, protected)
+	}
 	if step.Loop != nil {
+		// Loop selectors and collection names are evaluated outside the
+		// nested iteration's scope. Only its body owns item and loop.*;
+		// legacy loops do not install a bare custom alias like foreach does.
+		e.substituteForeachStrings(protected, &step.Loop.Items, &step.Loop.While,
+			&step.Loop.Until, &step.Loop.Collect, &step.Loop.MaxIterations.Expr)
+		bodyProtected := cloneProtectedRoots(protected)
+		bodyProtected["item"] = struct{}{}
+		bodyProtected["loop"] = struct{}{}
 		for i := range step.Loop.Steps {
-			e.substituteForeachStepFieldsProtected(&step.Loop.Steps[i], protected)
+			e.substituteForeachStepFieldsProtected(&step.Loop.Steps[i], bodyProtected)
 		}
 		for i := range step.Loop.Body {
-			e.substituteForeachStepFieldsProtected(&step.Loop.Body[i], protected)
+			e.substituteForeachStepFieldsProtected(&step.Loop.Body[i], bodyProtected)
 		}
 	}
 	for _, config := range []*ForeachConfig{step.Foreach, step.ForeachPane} {
@@ -1450,7 +1487,11 @@ func (e *Executor) substituteForeachStepFieldsProtected(step *Step, protected ma
 		}
 		bodyProtected := cloneProtectedRoots(protected)
 		bodyProtected[foreachVarName(config)] = struct{}{}
+		bodyProtected["item"] = struct{}{}
 		bodyProtected["loop"] = struct{}{}
+		if config == step.ForeachPane || config.PaneStrategy != "" {
+			bodyProtected["pane"] = struct{}{}
+		}
 		if foreachVarName(config) == "item" && e.foreachLoopItemActive() {
 			slog.Debug("nested foreach item alias shadows outer item",
 				"run_id", e.state.RunID,
@@ -1464,6 +1505,7 @@ func (e *Executor) substituteForeachStepFieldsProtected(step *Step, protected ma
 		config.Pairs = e.substituteForeachString(config.Pairs, protected)
 		config.Debates = e.substituteForeachString(config.Debates, protected)
 		config.Filter = e.substituteForeachString(config.Filter, protected)
+		config.MaxRounds.Expr = e.substituteForeachString(config.MaxRounds.Expr, protected)
 		// bd-8bujt: foreach.models is a StringOrList that can hold either
 		// an inline literal list of model-family tokens or (single-entry)
 		// a shell command emitting one family per line. Both forms must
@@ -1483,6 +1525,64 @@ func (e *Executor) substituteForeachStepFieldsProtected(step *Step, protected ma
 			e.substituteForeachStepFieldsProtected(&config.Body[i], bodyProtected)
 		}
 	}
+}
+
+func (e *Executor) substituteForeachStrings(protected map[string]struct{}, fields ...*string) {
+	for _, field := range fields {
+		*field = e.substituteForeachString(*field, protected)
+	}
+}
+
+func (e *Executor) substituteForeachStringList(values StringOrList, protected map[string]struct{}) StringOrList {
+	if values == nil {
+		return nil
+	}
+	out := make(StringOrList, len(values))
+	for i, value := range values {
+		out[i] = e.substituteForeachString(value, protected)
+	}
+	return out
+}
+
+// Branch bodies use the same heterogeneous representation accepted by
+// parseBranchSteps. Decode their step fields so nested loop boundaries are
+// respected, without assigning IDs before the branch has its runtime scope.
+// Leave malformed values for the existing branch validation path, and retain
+// unchanged representations to keep existing checkpoint hashes stable.
+func (e *Executor) substituteForeachBranchFields(value interface{}, protected map[string]struct{}) interface{} {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	var steps []Step
+	if err := json.Unmarshal(data, &steps); err == nil && len(steps) > 0 {
+		before, err := json.Marshal(steps)
+		if err != nil {
+			return value
+		}
+		for i := range steps {
+			e.substituteForeachStepFieldsProtected(&steps[i], protected)
+		}
+		after, err := json.Marshal(steps)
+		if err != nil || bytes.Equal(before, after) {
+			return value
+		}
+		return steps
+	}
+	var step Step
+	if err := json.Unmarshal(data, &step); err != nil {
+		return value
+	}
+	before, err := json.Marshal(step)
+	if err != nil {
+		return value
+	}
+	e.substituteForeachStepFieldsProtected(&step, protected)
+	after, err := json.Marshal(step)
+	if err != nil || bytes.Equal(before, after) {
+		return value
+	}
+	return step
 }
 
 func foreachVarName(config *ForeachConfig) string {
@@ -1806,10 +1906,36 @@ func cloneStep(step Step) Step {
 	step.Args = cloneInterfaceMap(step.Args)
 	step.Params = cloneInterfaceMap(step.Params)
 	step.TemplateParams = cloneInterfaceMap(step.TemplateParams)
+	step.OnFailure.Fallback = cloneInterfaceMap(step.OnFailure.Fallback)
+	step.Branches = cloneInterfaceMap(step.Branches)
 	step.DependsOn = append([]string(nil), step.DependsOn...)
 	step.After = append(AfterRef(nil), step.After...)
 	step.OnSuccess = cloneSteps(step.OnSuccess)
 	step.Parallel.Steps = cloneSteps(step.Parallel.Steps)
+	if step.BeadQuery != nil {
+		query := *step.BeadQuery
+		query.Label = append(StringOrList(nil), query.Label...)
+		step.BeadQuery = &query
+	}
+	if step.MailSend != nil {
+		mail := *step.MailSend
+		mail.To = append(StringOrList(nil), mail.To...)
+		step.MailSend = &mail
+	}
+	if step.FileReservationPaths != nil {
+		reservation := *step.FileReservationPaths
+		reservation.Paths = append(StringOrList(nil), reservation.Paths...)
+		step.FileReservationPaths = &reservation
+	}
+	if step.MailInboxCheck != nil {
+		inbox := *step.MailInboxCheck
+		step.MailInboxCheck = &inbox
+	}
+	if step.FileReservationRelease != nil {
+		release := *step.FileReservationRelease
+		release.Paths = append(StringOrList(nil), release.Paths...)
+		step.FileReservationRelease = &release
+	}
 	if step.Loop != nil {
 		loop := *step.Loop
 		loop.Steps = cloneSteps(loop.Steps)
@@ -1864,6 +1990,16 @@ func cloneInterfaceMap(in map[string]interface{}) map[string]interface{} {
 
 func cloneInterfaceValue(value interface{}) interface{} {
 	switch v := value.(type) {
+	case Step:
+		return cloneStep(v)
+	case *Step:
+		if v == nil {
+			return (*Step)(nil)
+		}
+		step := cloneStep(*v)
+		return &step
+	case []Step:
+		return cloneSteps(v)
 	case map[string]interface{}:
 		return cloneInterfaceMap(v)
 	case map[string]string:
@@ -1913,6 +2049,12 @@ func substituteForeachInterfaceValue(e *Executor, value interface{}, protected m
 		return e.substituteForeachString(v, protected)
 	case map[string]interface{}:
 		return substituteForeachInterfaceMap(e, v, protected)
+	case map[string]string:
+		out := make(map[string]string, len(v))
+		for key, item := range v {
+			out[key] = e.substituteForeachString(item, protected)
+		}
+		return out
 	case []interface{}:
 		out := make([]interface{}, len(v))
 		for i, item := range v {
