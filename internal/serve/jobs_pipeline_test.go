@@ -127,7 +127,7 @@ func TestResumePipelineJobUsesSavedIdentityAndOverrides(t *testing.T) {
 }
 
 func TestResumePipelineJobPreflightFailuresNeverExecute(t *testing.T) {
-	for _, name := range []string{"missing id", "load failure", "nil state", "wrong run", "missing session", "invalid session", "canceled before load", "canceled during load"} {
+	for _, name := range []string{"missing id", "detached lifetime", "load failure", "nil state", "wrong run", "missing session", "invalid session", "canceled before load", "canceled during load"} {
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -136,6 +136,8 @@ func TestResumePipelineJobPreflightFailuresNeverExecute(t *testing.T) {
 			switch name {
 			case "missing id":
 				req.RunID = " "
+			case "detached lifetime":
+				req.Background = true
 			case "wrong run":
 				prior.RunID = "other"
 			case "missing session":
@@ -147,7 +149,7 @@ func TestResumePipelineJobPreflightFailuresNeverExecute(t *testing.T) {
 			}
 			_, err := executeResumePipelineJob(ctx, "/project", req,
 				func(string, string) (*pipeline.ExecutionState, error) {
-					if name == "canceled before load" || name == "missing id" {
+					if name == "canceled before load" || name == "missing id" || name == "detached lifetime" {
 						t.Fatal("preflight failure reached disk")
 					}
 					if name == "load failure" {
@@ -167,6 +169,9 @@ func TestResumePipelineJobPreflightFailuresNeverExecute(t *testing.T) {
 				})
 			if err == nil {
 				t.Fatal("invalid resume succeeded")
+			}
+			if name == "detached lifetime" && !strings.Contains(err.Error(), "own their execution lifetime") {
+				t.Fatalf("job did not explain its retained execution ownership: %v", err)
 			}
 			if strings.HasPrefix(name, "canceled") && !errors.Is(err, context.Canceled) {
 				t.Fatalf("cancellation lost: %v", err)

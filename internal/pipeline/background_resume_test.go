@@ -178,7 +178,7 @@ func TestBackgroundResumeSurvivesLauncherExit(t *testing.T) {
 func TestBackgroundResumeCancellationAndNewAttempt(t *testing.T) {
 	root, prior := resumeFixture(t, "run-resume-cancel")
 	for attempt := 0; attempt < 2; attempt++ {
-		out, err := startDetachedResume(context.Background(), root, prior.RunID, "", ResumeOptions{}, resumeTestCommand)
+		out, err := startDetachedResume(context.Background(), root, prior.RunID, "", ResumeOptions{}, false, resumeTestCommand)
 		if err != nil || out.RunID != prior.RunID {
 			t.Fatalf("resume attempt %d: %+v %v", attempt, out, err)
 		}
@@ -258,7 +258,7 @@ func TestBackgroundResumeRefusesLiveOwnerBeforeReadingState(t *testing.T) {
 	}
 	defer owner.Close()
 	writeResumeTestFile(t, pipelineStatePath(root, prior.RunID), "must not parse this checkpoint")
-	out, err := startDetachedResume(context.Background(), root, prior.RunID, "", ResumeOptions{}, resumeTestCommand)
+	out, err := startDetachedResume(context.Background(), root, prior.RunID, "", ResumeOptions{}, false, resumeTestCommand)
 	if out != nil || !errors.Is(err, ErrRunAlreadyOwned) {
 		t.Fatalf("owner contention lost its typed refusal or read the checkpoint: %+v %v", out, err)
 	}
@@ -277,7 +277,7 @@ func TestBackgroundResumeConcurrentAttemptsHaveOneOwner(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := startDetachedResume(context.Background(), root, prior.RunID, "", ResumeOptions{}, resumeTestCommand)
+			_, err := startDetachedResume(context.Background(), root, prior.RunID, "", ResumeOptions{}, false, resumeTestCommand)
 			results <- err
 		}()
 	}
@@ -385,7 +385,7 @@ func TestBackgroundResumeRefusalsPreserveRecoveryEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			out, err := startDetachedResume(context.Background(), root, prior.RunID, session, opts, resumeTestCommand)
+			out, err := startDetachedResume(context.Background(), root, prior.RunID, session, opts, false, resumeTestCommand)
 			if err == nil || out != nil {
 				t.Fatalf("invalid resume accepted: %+v %v", out, err)
 			}
@@ -403,7 +403,7 @@ func TestBackgroundResumeRefusalsPreserveRecoveryEvidence(t *testing.T) {
 func TestBackgroundResumeExplicitResetAndRosterOverride(t *testing.T) {
 	root, prior := resumeFixture(t, "run-reset")
 	writeResumeTestFile(t, filepath.Join(root, "release"), "go")
-	out, err := startDetachedResume(context.Background(), root, prior.RunID, "new-session", ResumeOptions{Reset: true, OnRosterChange: ResumeRosterProceed}, resumeTestCommand)
+	out, err := startDetachedResume(context.Background(), root, prior.RunID, "new-session", ResumeOptions{Reset: true, OnRosterChange: ResumeRosterProceed}, false, resumeTestCommand)
 	if err != nil || out.Session != "new-session" {
 		t.Fatalf("explicit recovery policy was lost: %+v %v", out, err)
 	}
@@ -431,7 +431,7 @@ func TestBackgroundResumeValidationDoesNotLaunch(t *testing.T) {
 				opts.Mode = "invalid"
 			}
 			called := false
-			_, err := startDetachedResume(ctx, root, id, "", opts, func(string, string) (*exec.Cmd, error) {
+			_, err := startDetachedResume(ctx, root, id, "", opts, false, func(string, string) (*exec.Cmd, error) {
 				called = true
 				return nil, errors.New("must not launch")
 			})
@@ -477,7 +477,7 @@ func TestBackgroundResumeFailedLaunchCanUseNewAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = startDetachedResume(context.Background(), root, prior.RunID, "", ResumeOptions{}, func(string, string) (*exec.Cmd, error) {
+	_, err = startDetachedResume(context.Background(), root, prior.RunID, "", ResumeOptions{}, false, func(string, string) (*exec.Cmd, error) {
 		return exec.Command("/bin/sh", "-c", "exit 7"), nil
 	})
 	if err == nil {
@@ -488,7 +488,7 @@ func TestBackgroundResumeFailedLaunchCanUseNewAttempt(t *testing.T) {
 		t.Fatal("failed launch changed its recovery checkpoint")
 	}
 	writeResumeTestFile(t, filepath.Join(root, "release"), "go")
-	if _, err := startDetachedResume(context.Background(), root, prior.RunID, "", ResumeOptions{}, resumeTestCommand); err != nil {
+	if _, err := startDetachedResume(context.Background(), root, prior.RunID, "", ResumeOptions{}, false, resumeTestCommand); err != nil {
 		t.Fatalf("a failed launch permanently prevented recovery: %v", err)
 	}
 	awaitResumeState(t, root, prior.RunID, StatusCompleted)
@@ -514,5 +514,192 @@ func TestBackgroundResumeSharedLauncherStillCreatesNewRuns(t *testing.T) {
 	}
 	if _, err := startDetachedPipeline(workflow, nil, cfg, resumeTestCommand); err == nil {
 		t.Fatal("new-run creation replaced an existing completed run")
+	}
+}
+
+// These fixtures exercise real worker ownership and authorization without
+// launching a native command. Path/session refusals must happen before either
+// the skipped step or a checkpoint write, and successful launches can settle
+// independently of the host's process-census support.
+func scopedBackgroundResumeFixture(t *testing.T) (string, *ExecutionState) {
+	t.Helper()
+	root, prior := resumeFixture(t, "run-project-resume")
+	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: prior.WorkflowID, Steps: []Step{
+		{ID: "remaining", When: "false", Command: "printf unexpected > started"},
+	}}
+	_, path, err := SnapshotWorkflow(context.Background(), root, workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior.WorkflowFile = path
+	prior.Steps = make(map[string]StepResult)
+	if err := SaveState(root, prior); err != nil {
+		t.Fatal(err)
+	}
+	previous := BackgroundWorkerFlags
+	BackgroundWorkerFlags = func() ([]string, error) {
+		return []string{"-test.run=^TestBackgroundResumeProcess$", "--"}, nil
+	}
+	t.Cleanup(func() { BackgroundWorkerFlags = previous })
+	return root, prior
+}
+
+func TestBackgroundResumeInProjectRefusesOwnedCheckpointEscapes(t *testing.T) {
+	for _, fault := range []string{"absolute", "relative", "file_symlink", "directory_symlink", "saved_session", "explicit_session", "changed_during_launch"} {
+		t.Run(fault, func(t *testing.T) {
+			root, prior := scopedBackgroundResumeFixture(t)
+			outside := filepath.Join(t.TempDir(), "outside.yaml")
+			data, err := os.ReadFile(prior.WorkflowFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeResumeTestFile(t, outside, string(data))
+			session, want := "", "project directory"
+			switch fault {
+			case "absolute":
+				prior.WorkflowFile = outside
+			case "relative":
+				prior.WorkflowFile, err = filepath.Rel(normalizeLockRoot(root), outside)
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "file_symlink":
+				prior.WorkflowFile = filepath.Join(normalizeLockRoot(root), "outside.yaml")
+				if err := os.Symlink(outside, prior.WorkflowFile); err != nil {
+					t.Fatal(err)
+				}
+			case "directory_symlink":
+				link := filepath.Join(normalizeLockRoot(root), "external")
+				if err := os.Symlink(filepath.Dir(outside), link); err != nil {
+					t.Fatal(err)
+				}
+				prior.WorkflowFile = filepath.Join(link, filepath.Base(outside))
+			case "saved_session":
+				prior.Session, want = "bad:session", "invalid background resume session"
+			case "explicit_session":
+				session, want = "bad:session", "invalid background resume session"
+			}
+			if err := SaveState(root, prior); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(pipelineStatePath(root, prior.RunID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fault == "changed_during_launch" {
+				// The transport invokes this after persisting its request and
+				// before starting the worker. Only its owned reload is current.
+				BackgroundWorkerFlags = func() ([]string, error) {
+					prior.WorkflowFile = outside
+					if err := SaveState(root, prior); err != nil {
+						return nil, err
+					}
+					before, err = os.ReadFile(pipelineStatePath(root, prior.RunID))
+					return []string{"-test.run=^TestBackgroundResumeProcess$", "--"}, err
+				}
+			}
+			out, err := StartBackgroundResumeInProject(context.Background(), root, prior.RunID, session, ResumeOptions{})
+			if err == nil || out != nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("project-scoped resume accepted %s: %+v %v", fault, out, err)
+			}
+			after, err := os.ReadFile(pipelineStatePath(root, prior.RunID))
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatal("scoped refusal rewrote the owned checkpoint")
+			}
+			if _, err := os.Stat(filepath.Join(root, "started")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("scoped refusal dispatched workflow work")
+			}
+		})
+	}
+}
+
+func TestBackgroundResumeInProjectPreservesManagedSnapshotVerification(t *testing.T) {
+	root, prior := scopedBackgroundResumeFixture(t)
+	originalDir := filepath.Dir(prior.WorkflowFile)
+	actualDir := filepath.Join(normalizeLockRoot(root), "stored-workflows")
+	if err := os.Rename(originalDir, actualDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(actualDir, originalDir); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(prior.WorkflowFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Still valid YAML with the same identity, but no longer the saved hash.
+	writeResumeTestFile(t, prior.WorkflowFile, string(data)+"\n# altered artifact\n")
+	before, err := os.ReadFile(pipelineStatePath(root, prior.RunID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := StartBackgroundResumeInProject(context.Background(), root, prior.RunID, "", ResumeOptions{})
+	if err == nil || out != nil || !strings.Contains(err.Error(), "content hash mismatch") {
+		t.Fatalf("in-project symlink bypassed saved workflow verification: %+v %v", out, err)
+	}
+	after, err := os.ReadFile(pipelineStatePath(root, prior.RunID))
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("damaged managed workflow rewrote the checkpoint")
+	}
+}
+
+func TestBackgroundResumeInProjectAcceptsSavedScope(t *testing.T) {
+	for _, form := range []string{"managed", "relative", "symlink", "session_override", "project_alias", "cli_external"} {
+		t.Run(form, func(t *testing.T) {
+			root, prior := scopedBackgroundResumeFixture(t)
+			project, session, wantSession := root, "", prior.Session
+			opts := ResumeOptions{}
+			switch form {
+			case "relative":
+				var err error
+				prior.WorkflowFile, err = filepath.Rel(normalizeLockRoot(root), prior.WorkflowFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "symlink", "cli_external":
+				data, err := os.ReadFile(prior.WorkflowFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+				target := filepath.Join(normalizeLockRoot(root), "saved.yaml")
+				if form == "cli_external" {
+					target = filepath.Join(t.TempDir(), "saved.yaml")
+				}
+				writeResumeTestFile(t, target, string(data))
+				prior.WorkflowFile = target
+				if form == "symlink" {
+					prior.WorkflowFile = filepath.Join(normalizeLockRoot(root), "linked.yaml")
+					if err := os.Symlink(target, prior.WorkflowFile); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "session_override":
+				session, wantSession = "selected-session", "selected-session"
+				opts.OnRosterChange = ResumeRosterProceed
+			case "project_alias":
+				project = filepath.Join(t.TempDir(), "project")
+				if err := os.Symlink(root, project); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := SaveState(root, prior); err != nil {
+				t.Fatal(err)
+			}
+			launch := StartBackgroundResumeInProject
+			if form == "cli_external" {
+				launch = StartBackgroundResume
+			}
+			out, err := launch(context.Background(), project, prior.RunID, session, opts)
+			if err != nil || out == nil || out.RunID != prior.RunID || out.WorkflowID != prior.WorkflowID || out.Session != wantSession {
+				t.Fatalf("saved workflow/session did not reach detached worker: %+v %v", out, err)
+			}
+			final := awaitResumeState(t, root, prior.RunID, StatusCompleted)
+			if final.Session != wantSession || final.Steps["remaining"].Status != StatusSkipped || final.Variables["payload"] != prior.Variables["payload"] {
+				t.Fatalf("detached resume lost saved execution state: %+v", final)
+			}
+			if _, err := os.Stat(filepath.Join(root, "started")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("conditional step unexpectedly ran")
+			}
+		})
 	}
 }

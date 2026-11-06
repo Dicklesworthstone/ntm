@@ -39,6 +39,9 @@ type backgroundRequest struct {
 	Config    backgroundExecutorConfig `json:"config"`
 	Variables map[string]interface{}   `json:"variables,omitempty"`
 	Resume    bool                     `json:"resume,omitempty"`
+	// REST callers restrict the owned checkpoint's workflow and final session;
+	// the worker applies this policy after loading, never to a stale parent copy.
+	RestrictResumeToProject bool `json:"restrict_resume_to_project,omitempty"`
 }
 
 // List the serializable execution options explicitly: ExecutorConfig also has

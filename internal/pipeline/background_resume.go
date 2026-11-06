@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // StartBackgroundResume continues a saved run in a detached, same-binary worker.
@@ -17,10 +19,18 @@ import (
 // the child acquires RunControl before loading and verifying recovery inputs.
 // A successful return acknowledges startup, not completion of the workflow.
 func StartBackgroundResume(ctx context.Context, projectDir, runID, session string, opts ResumeOptions) (*PipelineExecution, error) {
-	return startDetachedResume(ctx, projectDir, runID, session, opts, backgroundCommand)
+	return startDetachedResume(ctx, projectDir, runID, session, opts, false, backgroundCommand)
 }
 
-func startDetachedResume(ctx context.Context, projectDir, runID, session string, opts ResumeOptions, command func(string, string) (*exec.Cmd, error)) (*PipelineExecution, error) {
+// StartBackgroundResumeInProject gives web callers the detached resume lifetime
+// while restricting the saved workflow to their selected project. The worker
+// validates the resolved session and workflow after it owns and reloads the run.
+// This does not widen the local CLI's existing workflow-file policy.
+func StartBackgroundResumeInProject(ctx context.Context, projectDir, runID, session string, opts ResumeOptions) (*PipelineExecution, error) {
+	return startDetachedResume(ctx, projectDir, runID, session, opts, true, backgroundCommand)
+}
+
+func startDetachedResume(ctx context.Context, projectDir, runID, session string, opts ResumeOptions, projectScoped bool, command func(string, string) (*exec.Cmd, error)) (*PipelineExecution, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -48,7 +58,7 @@ func startDetachedResume(ctx context.Context, projectDir, runID, session string,
 	deadline, _ := ctx.Deadline()
 	req := backgroundRequest{
 		Version: backgroundRequestVersion, Token: hex.EncodeToString(token[:]),
-		ExpiresAt: deadline, Resume: true,
+		ExpiresAt: deadline, Resume: true, RestrictResumeToProject: projectScoped,
 		Config: backgroundExecutorConfig{
 			Session: cfg.Session, ProjectDir: root, RunID: runID,
 			DefaultTimeout: cfg.DefaultTimeout, GlobalTimeout: cfg.GlobalTimeout,
@@ -93,12 +103,22 @@ func prepareBackgroundResume(ctx context.Context, root string, req backgroundReq
 	if strings.TrimSpace(cfg.Session) == "" {
 		return fail(errors.New("background resume requires a saved session or an explicit session"))
 	}
+	if req.RestrictResumeToProject {
+		if err := tmux.ValidateSessionName(cfg.Session); err != nil {
+			return fail(fmt.Errorf("invalid background resume session: %w", err))
+		}
+	}
 	path := strings.TrimSpace(prior.WorkflowFile)
 	if path == "" {
 		return fail(errors.New("background resume checkpoint is missing its workflow file"))
 	}
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(root, path)
+	}
+	if req.RestrictResumeToProject {
+		if err := validateBackgroundResumeWorkflowPath(root, path); err != nil {
+			return fail(err)
+		}
 	}
 	workflow, validation, err := LoadResumeWorkflow(path)
 	if err != nil {
@@ -126,4 +146,22 @@ func prepareBackgroundResume(ctx context.Context, root string, req backgroundReq
 	}
 	prior.WorkflowFile = path
 	return workflow, prior, cfg, nil
+}
+
+// Check both the saved locator and its resolved target. Keep the original
+// locator for LoadResumeWorkflow: resolving away workflow-snapshots would skip
+// its content-hash verification. A missing or unreadable target fails closed.
+func validateBackgroundResumeWorkflowPath(root, path string) error {
+	withinProject := func(candidate string) bool {
+		rel, err := filepath.Rel(root, candidate)
+		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	}
+	if !withinProject(filepath.Clean(path)) {
+		return errors.New("background resume workflow must be inside the project directory")
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil || !withinProject(resolved) {
+		return errors.New("background resume workflow must resolve inside the project directory")
+	}
+	return nil
 }

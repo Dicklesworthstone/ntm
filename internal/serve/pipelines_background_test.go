@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -258,6 +259,27 @@ func TestAPIDetachedPipelineProcess(t *testing.T) {
 		pipeline.BackgroundWorkerFlags = func() ([]string, error) {
 			return []string{"-test.run=^TestAPIDetachedPipelineProcess$", "--"}, nil
 		}
+		if mode == "resume" {
+			srv := NewHermeticServer("test")
+			srv.projectDir = root
+			httpServer := httptest.NewServer(srv.Router())
+			defer httpServer.Close()
+			client := &http.Client{Timeout: 5 * time.Second}
+			response, err := client.Post(httpServer.URL+"/api/v1/pipelines/"+apiDetachedResumeRunID+"/resume",
+				"application/json", strings.NewReader(`{"background":true}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := io.ReadAll(response.Body)
+			response.Body.Close()
+			if err != nil || response.StatusCode != http.StatusAccepted {
+				t.Fatalf("POST background resume: %v %d %s", err, response.StatusCode, result)
+			}
+			awaitAPIDetachedState(t, root, apiDetachedResumeRunID, pipeline.StatusRunning)
+			fmt.Fprint(os.Stdout, string(result))
+			// The worker must continue after the entire HTTP server exits.
+			os.Exit(0)
+		}
 		gate := fmt.Sprintf("printf ready > %q; n=0; while [ ! -f %q ]; do n=$((n+1)); [ \"$n\" -ge 200 ] && exit 9; sleep 0.05; done", filepath.Join(root, "started"), filepath.Join(root, "release"))
 		workflow := map[string]interface{}{
 			"schema_version": "2.0", "name": "detached-http",
@@ -417,5 +439,296 @@ func TestRESTPipelineInspectionNeverFallsBackToForeignRegistry(t *testing.T) {
 		if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "foreign-secret") || foreignCtx.Err() != nil {
 			t.Fatalf("cwd-scoped request used a foreign registry entry: %d %s", rec.Code, rec.Body.String())
 		}
+	}
+}
+
+const apiDetachedResumeRunID = "run-http-detached-resume"
+
+// The canonical executor completes a prefix and then stops during a loop's
+// delay. No workflow command is dispatched: the authored conditions are false.
+// This exercises real worker ownership and persistence without requiring tmux
+// or native process-group supervision on the test host.
+func interruptedAPIDetachedResume(t *testing.T, root string) *pipeline.ExecutionState {
+	t.Helper()
+	workflow := &pipeline.Workflow{
+		SchemaVersion: pipeline.SchemaVersion, Name: "http-detached-resume",
+		Settings: pipeline.WorkflowSettings{OnError: pipeline.ErrorActionFail}, Steps: []pipeline.Step{
+			{ID: "once", Loop: &pipeline.LoopConfig{Times: 1, Steps: []pipeline.Step{
+				{ID: "once_body", When: "false", Command: "exit 91"},
+			}}},
+			{ID: "delay", DependsOn: []string{"once"}, Loop: &pipeline.LoopConfig{
+				Items: `[0,1,2]`, Delay: pipeline.Duration{Duration: time.Second},
+				Steps: []pipeline.Step{{ID: "tick", When: "false", Command: "exit 92"}},
+			}},
+			{ID: "finish", DependsOn: []string{"delay"}, Loop: &pipeline.LoopConfig{Times: 1, Steps: []pipeline.Step{
+				{ID: "finish_body", When: "false", Command: "exit 93"},
+			}}},
+		},
+	}
+	cfg := pipeline.DefaultExecutorConfig("saved-resume-session")
+	cfg.ProjectDir, cfg.RunID = root, apiDetachedResumeRunID
+	cfg.GlobalTimeout = 5 * time.Second
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	progress := make(chan pipeline.ProgressEvent, 32)
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		for event := range progress {
+			if event.Type == "loop_start" && event.StepID == "delay" {
+				cancel()
+			}
+		}
+	}()
+	state, err := pipeline.RunControlledPipeline(ctx, workflow, map[string]interface{}{"saved": "keep"}, cfg, progress)
+	close(progress)
+	<-watchDone
+	if !errors.Is(err, context.Canceled) || state == nil || state.Status != pipeline.StatusCancelled || state.Steps["once"].Status != pipeline.StatusCompleted {
+		t.Fatalf("fixture did not persist a completed prefix before interruption: state=%+v error=%v", state, err)
+	}
+	prior, err := pipeline.LoadState(root, cfg.RunID)
+	if err != nil || prior.Steps["once"].Status != pipeline.StatusCompleted || prior.Steps["finish"].Status == pipeline.StatusCompleted || len(prior.CommandExecutions) != 0 {
+		t.Fatalf("interrupted checkpoint lost its prefix or dispatched a skipped command: state=%+v error=%v", prior, err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if state, err := pipeline.LoadState(root, cfg.RunID); err == nil && (state.Status == pipeline.StatusRunning || state.Status == pipeline.StatusPending) {
+			_ = pipeline.RequestRunCancellation(ctx, root, cfg.RunID)
+		}
+	})
+	return prior
+}
+
+func useAPIDetachedResumeWorker(t *testing.T) {
+	t.Helper()
+	previous := pipeline.BackgroundWorkerFlags
+	pipeline.BackgroundWorkerFlags = func() ([]string, error) {
+		return []string{"-test.run=^TestAPIDetachedPipelineProcess$", "--"}, nil
+	}
+	t.Cleanup(func() { pipeline.BackgroundWorkerFlags = previous })
+}
+
+func TestRESTBackgroundResumeSurvivesServerExit(t *testing.T) {
+	root := t.TempDir()
+	prior := interruptedAPIDetachedResume(t, root)
+	id := launchAPIDetachedFixture(t, root, "resume")
+	if id != prior.RunID {
+		t.Fatalf("resume replaced its saved run ID: got %q want %q", id, prior.RunID)
+	}
+	state := awaitAPIDetachedState(t, root, id, pipeline.StatusCompleted)
+	if !reflect.DeepEqual(state.Steps["once"], prior.Steps["once"]) || state.Steps["delay"].Status != pipeline.StatusCompleted || state.Steps["finish"].Status != pipeline.StatusCompleted {
+		t.Fatalf("detached continuation repeated its prefix or lost downstream work: %+v", state.Steps)
+	}
+	if state.Session != prior.Session || state.Variables["saved"] != "keep" || len(state.CommandExecutions) != 0 {
+		t.Fatalf("detached continuation changed saved inputs or ran an excluded command: %+v", state)
+	}
+	// A new server has no in-process registry entry for the resumed worker.
+	srv := &Server{projectDir: root}
+	rec := httptest.NewRecorder()
+	srv.handleGetPipeline(rec, apiDetachedRequest(http.MethodGet, id))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"completed"`) {
+		t.Fatalf("fresh server cannot inspect detached resume: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestRESTBackgroundResumeOwnsLifetimeAfterRequestCancellation(t *testing.T) {
+	root := t.TempDir()
+	prior := interruptedAPIDetachedResume(t, root)
+	useAPIDetachedResumeWorker(t)
+	srv := NewHermeticServer("test")
+	defer srv.Stop()
+	srv.projectDir = root
+	ctx, cancelRequest := context.WithCancel(context.Background())
+	defer cancelRequest()
+	path := "/api/v1/pipelines/" + prior.RunID + "/resume"
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"background":true,"variables":{},"max_selector_output_bytes_total":12345,"max_step_count_total":40,"max_materialized_step_nodes":50}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	var accepted struct {
+		Success    bool   `json:"success"`
+		RunID      string `json:"run_id"`
+		Session    string `json:"session"`
+		Status     string `json:"status"`
+		Background bool   `json:"background"`
+		Resumed    bool   `json:"resumed"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &accepted); err != nil || rec.Code != http.StatusAccepted || !accepted.Success || !accepted.Background || !accepted.Resumed || accepted.RunID != prior.RunID || accepted.Session != prior.Session || accepted.Status != "pending" {
+		t.Fatalf("detached startup did not acknowledge the original run: %d %s error=%v", rec.Code, rec.Body, err)
+	}
+	cancelRequest()
+	awaitAPIDetachedState(t, root, prior.RunID, pipeline.StatusRunning)
+	// Inspect the actual immutable worker request: the HTTP overrides must
+	// reach child preparation, while omission of session retains its default.
+	requests, err := filepath.Glob(filepath.Join(root, ".ntm", "pipelines", "background", "resume-*.json"))
+	if err != nil || len(requests) != 1 {
+		t.Fatalf("resume did not create one private attempt: %v %v", requests, err)
+	}
+	data, err := os.ReadFile(requests[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var launch struct {
+		Resume    bool                   `json:"resume"`
+		Variables map[string]interface{} `json:"variables"`
+		Config    struct {
+			RunID         string                 `json:"run_id"`
+			Session       string                 `json:"session"`
+			ResumeOptions pipeline.ResumeOptions `json:"resume_options"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(data, &launch); err != nil || !launch.Resume || launch.Config.RunID != prior.RunID || launch.Config.Session != "" || len(launch.Variables) != 0 || launch.Config.ResumeOptions.MaxSelectorOutputBytesTotal != 12345 || launch.Config.ResumeOptions.MaxStepCountTotal != 40 || launch.Config.ResumeOptions.MaxMaterializedStepNodes != 50 {
+		t.Fatalf("HTTP resume changed the detached worker inputs: %s error=%v", data, err)
+	}
+	// Cancellation is addressed to the same run through a fresh server,
+	// not to the already-ended request or a process-local registry handle.
+	fresh := &Server{projectDir: root}
+	cancelled := httptest.NewRecorder()
+	fresh.handleCancelPipeline(cancelled, apiDetachedRequest(http.MethodPost, prior.RunID))
+	if cancelled.Code != http.StatusAccepted || !strings.Contains(cancelled.Body.String(), "cancellation_requested") {
+		t.Fatalf("fresh server could not cancel the resumed worker: %d %s", cancelled.Code, cancelled.Body)
+	}
+	final := awaitAPIDetachedState(t, root, prior.RunID, pipeline.StatusCancelled)
+	if !reflect.DeepEqual(final.Steps["once"], prior.Steps["once"]) || final.Steps["finish"].Status == pipeline.StatusCompleted || len(final.CommandExecutions) != 0 {
+		t.Fatalf("cancellation repeated the prefix or dispatched downstream work: %+v", final)
+	}
+}
+
+func TestRESTBackgroundResumeRejectsInvalidInputsBeforeLaunch(t *testing.T) {
+	for _, body := range []string{
+		`{"background":true,"variables":{"saved":"replace"}}`,
+		`{"background":true,"session":"bad:session"}`,
+		`{"background":true,"max_selector_output_bytes_total":-1}`,
+		`{"background":true,"max_step_count_total":-1}`,
+		`{"background":true,"max_materialized_step_nodes":-1}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			root := t.TempDir()
+			prior := interruptedAPIDetachedResume(t, root)
+			before := pipelineRecoveryHTTPJournal(t, root, prior.RunID)
+			srv := NewHermeticServer("test")
+			defer srv.Stop()
+			srv.projectDir = root
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/"+prior.RunID+"/resume", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			srv.Router().ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), ErrCodeBadRequest) {
+				t.Fatalf("unsupported background request was accepted: %d %s", rec.Code, rec.Body)
+			}
+			if !bytes.Equal(before, pipelineRecoveryHTTPJournal(t, root, prior.RunID)) {
+				t.Fatal("rejected request rewrote its checkpoint")
+			}
+			if _, err := os.Stat(filepath.Join(root, ".ntm", "pipelines", "background")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("invalid inputs reached detached launch: %v", err)
+			}
+		})
+	}
+}
+
+func TestRESTBackgroundResumeRefusesUnacceptedStartup(t *testing.T) {
+	for _, failure := range []string{"live owner", "cancelled request", "launcher failure", "outside workflow", "unconfigured project"} {
+		t.Run(failure, func(t *testing.T) {
+			root := t.TempDir()
+			prior := interruptedAPIDetachedResume(t, root)
+			useAPIDetachedResumeWorker(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			wantStatus, wantCode := http.StatusBadRequest, ErrCodePipelineFailed
+			var owner *pipeline.RunControl
+			var err error
+			switch failure {
+			case "live owner":
+				owner, err = pipeline.AcquireRunControl(context.Background(), root, prior.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer owner.Close()
+				wantStatus, wantCode = http.StatusConflict, ErrCodePipelineRunning
+			case "cancelled request":
+				cancel()
+				wantStatus, wantCode = http.StatusGatewayTimeout, ErrCodeTimeout
+			case "launcher failure":
+				pipeline.BackgroundWorkerFlags = func() ([]string, error) { return nil, errors.New("worker configuration unavailable") }
+			case "outside workflow":
+				foreign := filepath.Join(t.TempDir(), "outside.yaml")
+				if err := os.WriteFile(foreign, []byte("must not load this outside workflow"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				prior.WorkflowFile = foreign
+				if err := pipeline.SaveState(root, prior); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := pipelineRecoveryHTTPJournal(t, root, prior.RunID)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/"+prior.RunID+"/resume", strings.NewReader(`{"background":true}`)).WithContext(ctx)
+			req.Header.Set("Content-Type", "application/json")
+			srv := NewHermeticServer("test")
+			defer srv.Stop()
+			srv.projectDir = root
+			if failure == "unconfigured project" {
+				t.Chdir(root)
+				srv.projectDir = ""
+				wantCode = ErrCodeInvalidWorkflow
+			}
+			rec := httptest.NewRecorder()
+			srv.Router().ServeHTTP(rec, req)
+			if rec.Code != wantStatus || !strings.Contains(rec.Body.String(), wantCode) {
+				t.Fatalf("unaccepted worker startup reported success or lost its cause: %d %s", rec.Code, rec.Body)
+			}
+			if !bytes.Equal(before, pipelineRecoveryHTTPJournal(t, root, prior.RunID)) || (owner != nil && owner.Context().Err() != nil) {
+				t.Fatal("refused startup changed the checkpoint or cancelled its existing owner")
+			}
+			if failure == "outside workflow" && strings.Contains(rec.Body.String(), "must not load") {
+				t.Fatal("out-of-project workflow was read before confinement")
+			}
+		})
+	}
+}
+
+func TestRESTBackgroundResumeKeepsPermissionAndProjectScope(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	srv.auth = AuthConfig{Mode: AuthModeAPIKey, APIKey: "pipeline-recovery-test-key", Role: RoleViewer}
+	projectA, projectB := srv.projectDir, t.TempDir()
+	prior := interruptedAPIDetachedResume(t, projectA)
+	other := interruptedAPIDetachedResume(t, projectB)
+	useAPIDetachedResumeWorker(t)
+	path := "/api/v1/pipelines/" + prior.RunID + "/resume"
+	const body = `{"background":true}`
+	beforeA, beforeB := pipelineRecoveryHTTPJournal(t, projectA, prior.RunID), pipelineRecoveryHTTPJournal(t, projectB, other.RunID)
+	rec, _ := pipelineRecoveryHTTPServe(t, srv, pipelineRecoveryHTTPRequest(http.MethodPost, path, body))
+	if rec.Code != http.StatusForbidden || !bytes.Equal(beforeA, pipelineRecoveryHTTPJournal(t, projectA, prior.RunID)) {
+		t.Fatalf("viewer launched or changed a pipeline: %d %s", rec.Code, rec.Body)
+	}
+	if _, err := os.Stat(filepath.Join(projectA, ".ntm", "pipelines", "background")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("permission refusal reached detached launch: %v", err)
+	}
+	srv.auth.Role = RoleAdmin
+	owner, err := pipeline.AcquireRunControl(context.Background(), projectB, other.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	const key = "detached-resume-scope"
+	rec, accepted := pipelineScopeHTTPSwitchDuringAdmission(t, srv, path, body, key, projectB)
+	if rec.Code != http.StatusAccepted || !accepted.Success || accepted.RunID != prior.RunID {
+		t.Fatalf("admitted resume followed the new project's owner: %d %s", rec.Code, rec.Body)
+	}
+	if !bytes.Equal(beforeB, pipelineRecoveryHTTPJournal(t, projectB, other.RunID)) || owner.Context().Err() != nil {
+		t.Fatal("project A's resume mutated or cancelled project B")
+	}
+	pipelineScopeHTTPPatchProject(t, srv, projectA)
+	rec, replayed := pipelineScopeHTTPPost(t, srv, path, body, key)
+	if rec.Code != http.StatusAccepted || !replayed.Success || rec.Header().Get("X-Idempotent-Replay") != "true" {
+		t.Fatalf("accepted resume lost its HTTP replay identity: %d %s", rec.Code, rec.Body)
+	}
+	requests, err := filepath.Glob(filepath.Join(projectA, ".ntm", "pipelines", "background", "resume-*.json"))
+	if err != nil || len(requests) != 1 {
+		t.Fatalf("HTTP replay launched another resume attempt: %v %v", requests, err)
+	}
+	final := awaitAPIDetachedState(t, projectA, prior.RunID, pipeline.StatusCompleted)
+	if !reflect.DeepEqual(final.Steps["once"], prior.Steps["once"]) || final.Steps["finish"].Status != pipeline.StatusCompleted {
+		t.Fatalf("project-scoped continuation lost its completed prefix or tail: %+v", final.Steps)
 	}
 }

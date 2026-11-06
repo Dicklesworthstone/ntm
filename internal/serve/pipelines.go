@@ -211,6 +211,7 @@ type PipelineCleanupRequest struct {
 type PipelineResumeRequest struct {
 	Session                     string                 `json:"session,omitempty"`
 	Variables                   map[string]interface{} `json:"variables,omitempty"`
+	Background                  bool                   `json:"background,omitempty"`
 	MaxSelectorOutputBytesTotal int64                  `json:"max_selector_output_bytes_total,omitempty"`
 	MaxStepCountTotal           int                    `json:"max_step_count_total,omitempty"`
 	MaxMaterializedStepNodes    int                    `json:"max_materialized_step_nodes,omitempty"`
@@ -584,7 +585,60 @@ func (s *Server) handleResumePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("pipeline resume", "request_id", reqID, "run_id", runID)
+	resumeOptions := pipeline.ResumeOptions{
+		MaxSelectorOutputBytesTotal: req.MaxSelectorOutputBytesTotal,
+		MaxStepCountTotal:           req.MaxStepCountTotal,
+		MaxMaterializedStepNodes:    req.MaxMaterializedStepNodes,
+	}
+	slog.Info("pipeline resume", "request_id", reqID, "run_id", runID, "background", req.Background)
+
+	if req.Background {
+		if strings.TrimSpace(s.projectDirSnapshot()) == "" {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidWorkflow,
+				"server has no project directory configured", nil, reqID)
+			return
+		}
+		if len(req.Variables) != 0 {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+				"background resume uses saved variables; variable overrides require synchronous resume or a pipeline_resume job", nil, reqID)
+			return
+		}
+		if req.Session != "" {
+			if err := tmux.ValidateSessionName(req.Session); err != nil {
+				writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+					fmt.Sprintf("invalid session name: %s", err.Error()), nil, reqID)
+				return
+			}
+		}
+		// The worker resolves an omitted session and reloads the checkpoint
+		// under its own run lock. Do not pin a parent-read session, hold a
+		// competing lock, or register an in-server executor for this attempt.
+		execution, err := pipeline.StartBackgroundResumeInProject(r.Context(), s.pipelineProjectDir(), runID, req.Session, resumeOptions)
+		if err != nil {
+			statusCode, code := http.StatusBadRequest, ErrCodePipelineFailed
+			if errors.Is(err, pipeline.ErrRunAlreadyOwned) {
+				statusCode, code = http.StatusConflict, ErrCodePipelineRunning
+			} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				statusCode, code = http.StatusGatewayTimeout, ErrCodeTimeout
+			}
+			writeErrorResponse(w, statusCode, code, err.Error(), nil, reqID)
+			return
+		}
+		if execution == nil {
+			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
+				"background resume returned no startup acknowledgment", nil, reqID)
+			return
+		}
+		// Resume attempts have independent event journals. Existing clients
+		// poll this run's durable state; following its original launch stream
+		// here would replay events from the wrong execution attempt.
+		writeSuccessResponse(w, http.StatusAccepted, map[string]interface{}{
+			"run_id": execution.RunID, "workflow_id": execution.WorkflowID,
+			"session": execution.Session, "status": execution.Status,
+			"progress": execution.Progress, "resumed": true, "background": true,
+		}, reqID)
+		return
+	}
 
 	// Try to load state from disk
 	state, err := pipeline.LoadState(s.pipelineProjectDir(), runID)
@@ -611,11 +665,7 @@ func (s *Server) handleResumePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := s.resumePipelineWithResult(r.Context(), runID, session, req.Variables, state, pipeline.ResumeOptions{
-		MaxSelectorOutputBytesTotal: req.MaxSelectorOutputBytesTotal,
-		MaxStepCountTotal:           req.MaxStepCountTotal,
-		MaxMaterializedStepNodes:    req.MaxMaterializedStepNodes,
-	})
+	result := s.resumePipelineWithResult(r.Context(), runID, session, req.Variables, state, resumeOptions)
 
 	if !result.Success {
 		statusCode := http.StatusBadRequest

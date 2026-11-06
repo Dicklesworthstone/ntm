@@ -732,6 +732,20 @@ ntm pipeline resume run-20241230-123456-abcd --mode=continue
 ntm pipeline cleanup --older=7d
 ```
 
+The dashboard resumes pipelines in a detached worker, so closing the browser or
+restarting the HTTP server does not cancel an authorized resume. REST clients can
+request the same lifetime with `POST /api/v1/pipelines/{id}/resume` and
+`{"background":true}`. HTTP `202 Accepted` acknowledges worker startup, not
+workflow completion. Poll the existing pipeline status endpoint and cancel
+through `POST /api/v1/pipelines/{id}/cancel`; the run ID stays unchanged.
+
+The worker acquires exclusive run ownership before reloading the saved state and
+validating its workflow inside the configured project. Omit `session` to use the
+session from that owned checkpoint. Detached resume retains saved variables and
+rejects nonempty variable overrides. Omitting `background`, or setting it to
+`false`, retains synchronous REST resume; `pipeline_resume` jobs also keep their
+own execution and cancellation lifetime.
+
 Pipeline cleanup removes old checkpoints only after acquiring the run's ownership
 lock and verifying that execution and every saved command, selector, delivery,
 mail, and reservation receipt have settled. Active runs and unresolved receipts

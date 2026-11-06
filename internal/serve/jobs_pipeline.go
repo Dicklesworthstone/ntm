@@ -123,6 +123,9 @@ func executeResumePipelineJob(ctx context.Context, projectDir string, req jobPip
 	if strings.TrimSpace(req.RunID) == "" {
 		return nil, fmt.Errorf("run_id is required")
 	}
+	if req.Background {
+		return nil, fmt.Errorf("pipeline_resume jobs own their execution lifetime; use the pipeline resume endpoint for background=true")
+	}
 	if req.MaxSelectorOutputBytesTotal < 0 {
 		return nil, fmt.Errorf("max_selector_output_bytes_total must be zero or positive")
 	}

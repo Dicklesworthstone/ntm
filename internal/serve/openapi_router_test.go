@@ -43,6 +43,34 @@ func TestRouterSpecAgentMailProjectSelector(t *testing.T) {
 	}
 }
 
+func TestRouterSpecPipelineDetachedResumeContract(t *testing.T) {
+	spec, err := GenerateOpenAPISpecFromRouter("test", "http://localhost:7337")
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := spec.Paths["/api/v1/pipelines/{id}/resume"].Post
+	if op == nil || op.RequestBody == nil {
+		t.Fatal("served resume route has no request contract")
+	}
+	for _, status := range []string{"200", "202", "400", "403", "409", "504"} {
+		if _, ok := op.Responses[status]; !ok {
+			t.Errorf("resume contract omits HTTP %s", status)
+		}
+	}
+	request := op.RequestBody.Content["application/json"].Schema
+	if request == nil || request.Properties["background"] == nil || request.Properties["background"].Type != "boolean" {
+		t.Fatal("resume contract does not expose detached startup")
+	}
+	if request.Properties["variables"] == nil || !strings.Contains(request.Properties["variables"].Description, "rejected") {
+		t.Fatal("resume contract silently accepts unsupported detached variable overrides")
+	}
+	for _, behavior := range []string{"client disconnection", "server exit", "not workflow completion", "poll", "cancel"} {
+		if !strings.Contains(op.Description, behavior) {
+			t.Errorf("resume contract omits %q", behavior)
+		}
+	}
+}
+
 // TestRouterSpecDeterminism verifies two independent generations are
 // byte-identical — the property the openapi-drift CI job depends on.
 func TestRouterSpecDeterminism(t *testing.T) {

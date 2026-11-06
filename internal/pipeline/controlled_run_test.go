@@ -165,7 +165,7 @@ func TestRobotPipelineCrashRequiresExplicitCommandReplay(t *testing.T) {
 	worker := func(project, id string) (*exec.Cmd, error) {
 		return exec.Command(os.Args[0], "-test.run=^TestBackgroundProcess$", "--", "__pipeline-worker", project, id), nil
 	}
-	if _, err := startDetachedResume(ctx, root, prior.RunID, "", ResumeOptions{}, worker); err == nil || !strings.Contains(err.Error(), "unresolved launch") || !strings.Contains(err.Error(), "may still be running") {
+	if _, err := startDetachedResume(ctx, root, prior.RunID, "", ResumeOptions{}, false, worker); err == nil || !strings.Contains(err.Error(), "unresolved launch") || !strings.Contains(err.Error(), "may still be running") {
 		t.Fatalf("ordinary resume did not reject the ambiguous command: %v", err)
 	}
 	after, err := os.ReadFile(pipelineStatePath(root, prior.RunID))
@@ -191,7 +191,7 @@ func TestRobotPipelineCrashRequiresExplicitCommandReplay(t *testing.T) {
 		t.Fatal("original command did not survive the executor crash and finish its side effects")
 	}
 	// Only after settling the old work do we deliberately authorize repetition.
-	if _, err := startDetachedResume(ctx, root, prior.RunID, "", ResumeOptions{Mode: ResumeModeRestartFailed}, worker); err != nil {
+	if _, err := startDetachedResume(ctx, root, prior.RunID, "", ResumeOptions{Mode: ResumeModeRestartFailed}, false, worker); err != nil {
 		t.Fatalf("explicit replay did not start: %v", err)
 	}
 	final := awaitBackgroundState(t, root, prior.RunID, StatusCompleted)

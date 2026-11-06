@@ -6607,7 +6607,7 @@
           "pipelines"
         ],
         "summary": "Resume pipeline",
-        "description": "Served route `POST /api/v1/pipelines/{id}/resume`. Handler: `handleResumePipeline`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
+        "description": "Served route `POST /api/v1/pipelines/{id}/resume`. Handler: `handleResumePipeline`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields. By default this request waits for the resumed workflow and remains tied to the HTTP connection. Set background=true to continue the saved run in a detached worker that survives client disconnection and server exit. A 202 response acknowledges worker startup, not workflow completion; poll the existing run ID for status and use its cancel endpoint to stop it. Detached resume uses saved variables and rejects nonempty variable overrides. An omitted session is resolved from the checkpoint by the worker after it acquires run ownership.",
         "operationId": "post_api_v1_pipelines_id_resume",
         "parameters": [
           {
@@ -6621,10 +6621,39 @@
           }
         ],
         "requestBody": {
+          "description": "Resume the saved run; an empty body preserves synchronous behavior and saved session/variables.",
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
+                "properties": {
+                  "background": {
+                    "type": "boolean",
+                    "description": "Start a detached worker and return 202 after startup is accepted. Defaults to false; does not opt into restarting completed work."
+                  },
+                  "max_materialized_step_nodes": {
+                    "type": "integer",
+                    "description": "Zero or a positive transient step-planning limit for this attempt. Zero uses the saved workflow."
+                  },
+                  "max_selector_output_bytes_total": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "Zero or a positive selector-output byte budget for this attempt. Zero uses the saved workflow."
+                  },
+                  "max_step_count_total": {
+                    "type": "integer",
+                    "description": "Zero or a positive distinct runtime-step admission limit for this attempt. Zero uses the saved workflow."
+                  },
+                  "session": {
+                    "type": "string",
+                    "description": "Optional session override; omitted keeps the saved session subject to normal resume identity checks."
+                  },
+                  "variables": {
+                    "type": "object",
+                    "description": "Variable overrides for synchronous resume only. A nonempty object is rejected when background=true; detached resume retains saved variables.",
+                    "additionalProperties": true
+                  }
+                },
                 "additionalProperties": true
               }
             }
@@ -6632,7 +6661,17 @@
         },
         "responses": {
           "200": {
-            "description": "Successful operation",
+            "description": "Synchronous resume completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessEnvelope"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Detached resume accepted; response includes the saved run_id, workflow_id, session, pending status, progress, resumed=true, and background=true",
             "content": {
               "application/json": {
                 "schema": {
@@ -6661,6 +6700,16 @@
               }
             }
           },
+          "403": {
+            "description": "Missing pipelines:write permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Not found",
             "content": {
@@ -6671,8 +6720,28 @@
               }
             }
           },
+          "409": {
+            "description": "Pipeline already has a live execution owner",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Detached startup canceled or timed out before authorization",
             "content": {
               "application/json": {
                 "schema": {

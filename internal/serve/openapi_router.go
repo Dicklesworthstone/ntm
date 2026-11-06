@@ -380,6 +380,17 @@ func buildRouterOperation(rt RouterRoute, components *OpenAPIComponents) *Operat
 	case "handleCancelJob":
 		op.Responses["409"] = errorResponse("Job is not cancellable in its current state")
 		op.Responses["503"] = errorResponse("Cancellation signalled but its receipt could not be checkpointed")
+	case "handleResumePipeline":
+		op.Description += " By default this request waits for the resumed workflow and remains tied to the HTTP connection. Set background=true to continue the saved run in a detached worker that survives client disconnection and server exit. A 202 response acknowledges worker startup, not workflow completion; poll the existing run ID for status and use its cancel endpoint to stop it. Detached resume uses saved variables and rejects nonempty variable overrides. An omitted session is resolved from the checkpoint by the worker after it acquires run ownership."
+		synchronous := op.Responses["200"]
+		synchronous.Description = "Synchronous resume completed"
+		op.Responses["200"] = synchronous
+		accepted := synchronous
+		accepted.Description = "Detached resume accepted; response includes the saved run_id, workflow_id, session, pending status, progress, resumed=true, and background=true"
+		op.Responses["202"] = accepted
+		op.Responses["403"] = errorResponse("Missing pipelines:write permission")
+		op.Responses["409"] = errorResponse("Pipeline already has a live execution owner")
+		op.Responses["504"] = errorResponse("Detached startup canceled or timed out before authorization")
 	case "handleRecoverPipeline":
 		op.Description += " Uses the server's configured project, fixed for execution and HTTP idempotency replay; project and session overrides are not accepted. GET returns deliveries, commands, and selectors arrays containing receipt identities and acceptance eligibility without prompt, transcript, or captured output contents. POST records one explicit acceptance only; it does not launch work, signal processes, or infer settlement from a saved PID. Before accepting command or selector output, independently verify that the original process and all descendants have finished. Use the ordinary resume endpoint or a pipeline_resume job to continue."
 		op.Responses["403"] = errorResponse("Missing pipelines:read for inspection or pipelines:write for acceptance")
@@ -400,6 +411,20 @@ func buildRouterOperation(rt RouterRoute, components *OpenAPIComponents) *Operat
 				},
 			},
 		}
+	}
+	if rt.Handler == "handleResumePipeline" && rt.Method == http.MethodPost {
+		op.RequestBody.Description = "Resume the saved run; an empty body preserves synchronous behavior and saved session/variables."
+		op.RequestBody.Content["application/json"] = MediaType{Schema: &Schema{
+			Type: "object", AdditionalProperties: true,
+			Properties: map[string]*Schema{
+				"session":                         {Type: "string", Description: "Optional session override; omitted keeps the saved session subject to normal resume identity checks."},
+				"variables":                       {Type: "object", AdditionalProperties: true, Description: "Variable overrides for synchronous resume only. A nonempty object is rejected when background=true; detached resume retains saved variables."},
+				"background":                      {Type: "boolean", Description: "Start a detached worker and return 202 after startup is accepted. Defaults to false; does not opt into restarting completed work."},
+				"max_selector_output_bytes_total": {Type: "integer", Format: "int64", Description: "Zero or a positive selector-output byte budget for this attempt. Zero uses the saved workflow."},
+				"max_step_count_total":            {Type: "integer", Description: "Zero or a positive distinct runtime-step admission limit for this attempt. Zero uses the saved workflow."},
+				"max_materialized_step_nodes":     {Type: "integer", Description: "Zero or a positive transient step-planning limit for this attempt. Zero uses the saved workflow."},
+			},
+		}}
 	}
 	if rt.Handler == "handleRecoverPipeline" && rt.Method == http.MethodPost {
 		op.RequestBody.Required = true

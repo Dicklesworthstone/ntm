@@ -74,6 +74,7 @@ interface TemplatesResponse extends ApiEnvelope {
 
 type Notice = { type: "success" | "error"; message: string };
 type StatusFilter = "all" | "running" | "completed" | "failed" | "cancelled";
+const PIPELINE_STARTUP_TIMEOUT_MS = 30_000;
 
 async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   const baseUrl = getBaseUrl();
@@ -276,6 +277,7 @@ export default function PipelinesPage() {
       }
       await apiFetch<ApiEnvelope>("/api/v1/pipelines/run", {
         method: "POST",
+        signal: runForm.background ? apiRequestSignal(PIPELINE_STARTUP_TIMEOUT_MS) : undefined,
         body: JSON.stringify({
           workflow_file: runForm.workflowFile,
           session: runForm.session,
@@ -323,10 +325,11 @@ export default function PipelinesPage() {
       }
       await apiFetch<ApiEnvelope>(`/api/v1/pipelines/${selectedRunId}/resume`, {
         method: "POST",
-        body: JSON.stringify({ session: selectedPipeline.session }),
+        signal: apiRequestSignal(PIPELINE_STARTUP_TIMEOUT_MS),
+        body: JSON.stringify({ background: true }),
       });
       queryClient.invalidateQueries({ queryKey: ["pipelines"] });
-      setStatusNotice({ type: "success", message: "Pipeline resumed." });
+      setStatusNotice({ type: "success", message: "Pipeline resume started." });
     } catch (error) {
       setStatusNotice({ type: "error", message: getErrorMessage(error) });
     } finally {
