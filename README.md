@@ -804,6 +804,14 @@ The original command receipt remains intact. Parent and fallback definition
 checks still apply, and the parent failure is suppressed only when the saved
 workflow explicitly configures `suppress_failure: true`.
 
+The dashboard exposes these decisions for failed or cancelled runs under
+**Recovery decisions**. Review the original agent or process, open the relevant
+receipt, enter your observation, and explicitly confirm what you verified.
+Command and selector decisions require the original exit code and complete
+output, including an explicitly verified empty output. Changed receipts require
+a fresh review. Recording a decision does not restart execution; use **Resume**
+separately when ready to continue in the detached worker.
+
 REST clients can perform the same recovery through the server's configured
 project. `GET /api/v1/pipelines/{id}/recover` requires `pipelines:read` and returns
 the `deliveries`, `commands`, and `selectors` arrays, including receipt identities,
