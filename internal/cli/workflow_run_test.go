@@ -554,9 +554,8 @@ func TestWorkflowRunnerReviewGateNonReviewerRoleNonTerminalTarget(t *testing.T) 
 
 // recordTransitionLocked runs on the main loop (under dispatchMu, via
 // advanceObservation) while the TimeoutMonitor goroutine's Pause action
-// writes the same WorkflowState; both must synchronize on r.mu. Pause does
-// not take dispatchMu, so holding it here does not serialize the two writers.
-// Run with -race: this test exists to catch the unlocked r.state access.
+// writes the same WorkflowState. Both serialize the action with dispatchMu
+// and keep r.mu held through the checkpoint write.
 func TestWorkflowRunnerPauseAndRecordTransitionAreRaceFree(t *testing.T) {
 	fake := newFakeWorkflowSession()
 	agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}}
@@ -577,7 +576,7 @@ func TestWorkflowRunnerPauseAndRecordTransitionAreRaceFree(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < 25; i++ {
 			runner.dispatchMu.Lock()
-			runner.recordTransitionLocked("green")
+			runner.recordTransitionLocked("green", nil)
 			runner.dispatchMu.Unlock()
 		}
 	}()
@@ -590,6 +589,122 @@ func TestWorkflowRunnerPauseAndRecordTransitionAreRaceFree(t *testing.T) {
 	wg.Wait()
 	if reason, stopErr := runner.stopped(); reason != "paused" || stopErr == nil {
 		t.Fatalf("stopped() = (%q, %v), want paused reason with error", reason, stopErr)
+	}
+}
+
+// Hold the manual coordinator's successful return so the timeout can arrive
+// after an edge is selected but before its destination checkpoint is saved.
+// The barrier changes scheduling only; the real coordinator selects the edge.
+type workflowManualCommitBarrier struct {
+	workflow.Coordinator
+	manual interface {
+		AdvanceManual(*workflow.TriggerContext, int) error
+	}
+	selected chan struct{}
+	release  chan struct{}
+}
+
+func (c *workflowManualCommitBarrier) AdvanceManual(ctx *workflow.TriggerContext, index int) error {
+	if err := c.manual.AdvanceManual(ctx, index); err != nil {
+		return err
+	}
+	close(c.selected)
+	<-c.release
+	return nil
+}
+
+func TestWorkflowManualPauseAndTerminalCommitHaveOneWinner(t *testing.T) {
+	for _, terminalFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("terminal-first=%t", terminalFirst), func(t *testing.T) {
+			opts := resumeWorkflowOptions(t)
+			opts.FireManual, opts.MaxTransitions = false, 8
+			template := resumeWorkflowTemplate()
+			template.Flow.Stages = []string{"build", "done"}
+			template.Flow.Transitions = []workflow.Transition{{
+				From: "build", To: "done", Trigger: workflow.Trigger{Type: workflow.TriggerManual, Label: "complete"},
+			}}
+			fake := newFakeWorkflowSession()
+			run := startWorkflowManualRunner(t, template, opts, fake)
+			run.nextPoll(t)
+			state := mustLoadWorkflowCheckpoint(t, opts)
+			decision, err := run.runner.store.RequestManualTransition(t.Context(), opts.Session, state.ManualGate.Token, 0, "Completion verified")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if terminalFirst {
+				manual := run.runner.coordinator.(interface {
+					AdvanceManual(*workflow.TriggerContext, int) error
+				})
+				barrier := &workflowManualCommitBarrier{
+					Coordinator: run.runner.coordinator, manual: manual,
+					selected: make(chan struct{}), release: make(chan struct{}),
+				}
+				run.runner.coordinator = barrier
+				var release sync.Once
+				t.Cleanup(func() { release.Do(func() { close(barrier.release) }) })
+				run.continuePoll(t)
+				select {
+				case <-barrier.selected:
+				case <-time.After(2 * time.Second):
+					t.Fatal("manual coordinator did not select the terminal edge")
+				}
+				paused := make(chan error, 1)
+				go func() { paused <- (workflowRunActions{r: run.runner}).Pause(t.Context(), "stage timeout") }()
+				release.Do(func() { close(barrier.release) })
+				result, err := run.finish(t)
+				if err != nil || !result.Completed || result.Transitions != 1 {
+					t.Fatalf("late pause interrupted the accepted terminal transition: %+v, %v", result, err)
+				}
+				select {
+				case err := <-paused:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatal("late pause did not finish after terminal commit")
+				}
+				state = mustLoadWorkflowCheckpoint(t, opts)
+				if !state.Completed || state.Paused || state.CurrentStage != "done" {
+					t.Fatalf("late timeout left an invalid terminal checkpoint: %+v", state)
+				}
+			} else {
+				if err := (workflowRunActions{r: run.runner}).Pause(t.Context(), "stage timeout"); err != nil {
+					t.Fatal(err)
+				}
+				result, err := run.finish(t)
+				if err == nil || result.Reason != "paused" || result.Transitions != 0 {
+					t.Fatalf("pause did not stop the pending manual advance: %+v, %v", result, err)
+				}
+				cancelled, cancel := context.WithCancel(t.Context())
+				cancel()
+				if fired, _, err := run.runner.advanceManualDecision(cancelled); err == nil || fired {
+					t.Fatalf("cancelled manual advance ignored the winning pause: fired=%v, error=%v", fired, err)
+				}
+				state = mustLoadWorkflowCheckpoint(t, opts)
+				if state.Completed || !state.Paused || state.CurrentStage != "build" {
+					t.Fatalf("pause changed the pending stage: %+v", state)
+				}
+				pending, err := run.runner.store.ReadManualDecision(state)
+				if err != nil || pending == nil || pending.Token != decision.Token {
+					t.Fatalf("pause lost the operator's durable decision: %+v, %v", pending, err)
+				}
+			}
+
+			// Both outcomes remain resumable: a completed checkpoint returns
+			// immediately, while a paused checkpoint applies the same decision.
+			opts.Resume, opts.Vars = true, nil
+			resumed := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, fake.ports())
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+			defer cancel()
+			result, err := resumed.Run(ctx)
+			if err != nil || !result.Completed || len(fake.dispatchedPanes()) != 1 {
+				t.Fatalf("pause/approval outcome could not resume without duplicate work: %+v, %v, sends=%v", result, err, fake.dispatchedPanes())
+			}
+			state = mustLoadWorkflowCheckpoint(t, opts)
+			if !state.Completed || state.Paused || len(state.StageHistory) != 1 || state.StageHistory[0].ManualDecision == nil || state.StageHistory[0].ManualDecision.Token != decision.Token {
+				t.Fatalf("terminal history lost or duplicated the winning approval: %+v", state)
+			}
+		})
 	}
 }
 

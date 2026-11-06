@@ -4,15 +4,326 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+func manualWorkflowCheckpoint(t *testing.T) (*WorkflowTemplate, *WorkflowState) {
+	t.Helper()
+	template := &WorkflowTemplate{
+		Name: "manual-review", Coordination: CoordPipeline,
+		Agents: []WorkflowAgent{{Profile: "cod", Role: "review"}},
+		Flow: &FlowConfig{Initial: "review", Stages: []string{"review", "automatic", "done", "revise"}, Transitions: []Transition{
+			{From: "review", To: "automatic", Trigger: Trigger{Type: TriggerAgentSays, Pattern: "APPROVED"}},
+			{From: "review", To: "done", Trigger: Trigger{Type: TriggerManual, Label: "choose"}},
+			{From: "review", To: "revise", Trigger: Trigger{Type: TriggerManual, Label: "choose"}},
+		}},
+	}
+	hash, err := template.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().UTC().Add(-time.Minute)
+	state := &WorkflowState{
+		WorkflowName: template.Name, SessionName: "manual-session", CurrentStage: "review",
+		StageStartedAt: started, ResumeVersion: 1, TemplateHash: hash, ProjectRoot: t.TempDir(),
+		Agents: map[string]string{"%1": "review"}, PanePIDs: map[string]int{"%1": 41},
+		Variables: map[string]string{"task": "private task contents"}, Turn: 1,
+		Dispatches: []StageDispatch{{Pane: "%1", Role: "review", Turn: 1, Status: "delivered"}},
+		Evidence: &StageEvidence{
+			Version: 1, Stage: "review", StartedAt: started, Round: 1,
+			Panes: map[string]StagePaneEvidence{"%1": {PID: 41, Capture: "private transcript", LastActivity: started}},
+		},
+	}
+	if err := state.RefreshManualGate(template); err != nil {
+		t.Fatal(err)
+	}
+	return template, state
+}
+
+func TestWorkflowManualGateBindsVisitWithoutCaptureChurn(t *testing.T) {
+	template, state := manualWorkflowCheckpoint(t)
+	initial := *state.ManualGate
+	if len(initial.Transitions) != 2 || initial.Transitions[0].Index != 1 || initial.Transitions[1].Index != 2 {
+		t.Fatalf("manual choices included an automatic edge or lost full-template indexes: %+v", initial.Transitions)
+	}
+	state.Paused, state.PauseReason = true, "operator pause"
+	state.Evidence.Panes["%1"] = StagePaneEvidence{PID: 41, Capture: "new private output", Fresh: "new output", LastActivity: time.Now().UTC()}
+	state.Evidence.Matches = map[int][]string{0: {"%1"}}
+	if err := state.RefreshManualGate(template); err != nil {
+		t.Fatal(err)
+	}
+	if state.ManualGate.Token != initial.Token || state.ManualGate.VisitHash != initial.VisitHash {
+		t.Fatal("observation or pause updates invalidated a current operator decision")
+	}
+	store := &StateStore{Dir: t.TempDir()}
+	status, err := store.ManualStatus(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(status)
+	if err != nil || bytes.Contains(data, []byte("private")) || bytes.Contains(data, []byte("visit_hash")) {
+		t.Fatalf("manual status exposed bound private data: %s (%v)", data, err)
+	}
+	status.Transitions[0].To = "mutated"
+	if state.ManualGate.Transitions[0].To != "done" {
+		t.Fatal("manual status aliases the live checkpoint choices")
+	}
+
+	for _, change := range []struct {
+		name   string
+		mutate func(*WorkflowState)
+	}{
+		{"variables", func(s *WorkflowState) { s.Variables["task"] = "different work" }},
+		{"project", func(s *WorkflowState) { s.ProjectRoot += "-different" }},
+		{"session", func(s *WorkflowState) { s.SessionName += "-different" }},
+		{"new visit", func(s *WorkflowState) {
+			s.StageStartedAt = s.StageStartedAt.Add(time.Second)
+			s.Evidence.StartedAt = s.StageStartedAt
+		}},
+		{"retry", func(s *WorkflowState) { s.Turn++; s.Dispatches[0].Turn = s.Turn; s.Evidence.Round = s.Turn }},
+		{"rebind", func(s *WorkflowState) {
+			s.PanePIDs["%1"]++
+			p := s.Evidence.Panes["%1"]
+			p.PID++
+			s.Evidence.Panes["%1"] = p
+		}},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			template, state := manualWorkflowCheckpoint(t)
+			old := state.ManualGate.Token
+			change.mutate(state)
+			if err := validateManualGate(state); err == nil {
+				t.Fatal("old gate accepted a changed execution identity")
+			}
+			if err := state.RefreshManualGate(template); err != nil {
+				t.Fatal(err)
+			}
+			if state.ManualGate.Token == old {
+				t.Fatal("changed execution reused an old approval token")
+			}
+		})
+	}
+	for _, deliveryStatus := range []string{"pending", "sending"} {
+		state.Dispatches[0].Status = deliveryStatus
+		if err := state.RefreshManualGate(template); err != nil || state.ManualGate != nil {
+			t.Fatalf("%s delivery exposed a manual gate: %+v, %v", deliveryStatus, state.ManualGate, err)
+		}
+	}
+	state.Dispatches[0].Status = "delivered"
+	if err := state.RefreshManualGate(template); err != nil || state.ManualGate == nil || state.ManualGate.Token == initial.Token {
+		t.Fatalf("completed replacement delivery did not publish a fresh gate: %+v, %v", state.ManualGate, err)
+	}
+}
+
+func TestWorkflowManualDecisionPersistsWithoutRunnerLeaseAndReplaysExactly(t *testing.T) {
+	template, state := manualWorkflowCheckpoint(t)
+	store := &StateStore{Dir: t.TempDir()}
+	if err := store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	checkpointPath, _ := store.path(state.SessionName)
+	checkpointBefore, err := os.ReadFile(checkpointPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := store.Acquire(t.Context(), state.SessionName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	token := state.ManualGate.Token
+	decision, err := store.RequestManualTransition(ctx, state.SessionName, token, 2, "  reviewed the proposed changes  ")
+	if err != nil || decision == nil || decision.Replayed || decision.To != "revise" || decision.Reason != "reviewed the proposed changes" {
+		t.Fatalf("request while runner owns its lease: %+v, %v", decision, err)
+	}
+	checkpointAfter, err := os.ReadFile(checkpointPath)
+	if err != nil || !bytes.Equal(checkpointBefore, checkpointAfter) {
+		t.Fatal("request modified the runner-owned checkpoint")
+	}
+	decisionPath, _ := store.manualDecisionPath(state.SessionName, token)
+	before, err := os.ReadFile(decisionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, request := range []struct {
+		index  int
+		reason string
+		ok     bool
+	}{{2, decision.Reason, true}, {1, decision.Reason, false}, {2, "different reason", false}} {
+		replayed, err := store.RequestManualTransition(ctx, state.SessionName, token, request.index, request.reason)
+		if request.ok {
+			if err != nil || !replayed.Replayed || !replayed.RequestedAt.Equal(decision.RequestedAt) {
+				t.Fatalf("identical request did not replay the original receipt: %+v, %v", replayed, err)
+			}
+		} else if err == nil {
+			t.Fatal("conflicting request replaced an immutable decision")
+		}
+		after, err := os.ReadFile(decisionPath)
+		if err != nil || !bytes.Equal(before, after) {
+			t.Fatal("request rewrote an existing receipt")
+		}
+	}
+	loaded, err := store.ReadManualDecision(state)
+	if err != nil || loaded == nil || loaded.TransitionIndex != 2 || loaded.Replayed {
+		t.Fatalf("runner could not read the canonical decision: %+v, %v", loaded, err)
+	}
+	state.StageHistory = append(state.StageHistory, StageRecord{Stage: state.CurrentStage, ManualDecision: loaded})
+	state.CurrentStage, state.Completed = "revise", true
+	state.Dispatches, state.Evidence = nil, nil
+	if err := state.RefreshManualGate(template); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := store.RequestManualTransition(ctx, state.SessionName, token, 2, decision.Reason)
+	if err != nil || !replayed.Replayed || !replayed.RequestedAt.Equal(decision.RequestedAt) {
+		t.Fatalf("retry after stage advancement did not preserve the original receipt: %+v, %v", replayed, err)
+	}
+	if pending, err := store.ReadManualDecision(state); err != nil || pending != nil {
+		t.Fatalf("completed stage retained a consumable decision: %+v, %v", pending, err)
+	}
+	reloaded, err := store.Load(state.SessionName)
+	if err != nil || len(reloaded.StageHistory) != 1 || reloaded.StageHistory[0].ManualDecision.Token != token {
+		t.Fatalf("transition history lost the accepted operator decision: %+v, %v", reloaded, err)
+	}
+}
+
+func TestWorkflowManualRequestsChooseOneImmutableDecision(t *testing.T) {
+	_, state := manualWorkflowCheckpoint(t)
+	store := &StateStore{Dir: t.TempDir()}
+	if err := store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	const requests = 16
+	start := make(chan struct{})
+	type result struct {
+		decision *ManualDecision
+		err      error
+	}
+	results := make(chan result, requests)
+	var workers sync.WaitGroup
+	for i := 0; i < requests; i++ {
+		workers.Add(1)
+		go func(index int) {
+			defer workers.Done()
+			<-start
+			decision, err := store.RequestManualTransition(t.Context(), state.SessionName, state.ManualGate.Token, index, "review complete")
+			results <- result{decision, err}
+		}(1 + i%2)
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	winner, err := store.ReadManualDecision(state)
+	if err != nil || winner == nil {
+		t.Fatalf("concurrent requests produced no durable winner: %+v, %v", winner, err)
+	}
+	fresh, replayed, conflicts := 0, 0, 0
+	for result := range results {
+		if result.err != nil {
+			conflicts++
+			continue
+		}
+		if result.decision.TransitionIndex != winner.TransitionIndex || !result.decision.RequestedAt.Equal(winner.RequestedAt) {
+			t.Fatal("concurrent requests acknowledged different decisions")
+		}
+		if result.decision.Replayed {
+			replayed++
+		} else {
+			fresh++
+		}
+	}
+	if fresh != 1 || replayed != requests/2-1 || conflicts != requests/2 {
+		t.Fatalf("concurrent results fresh=%d replayed=%d conflicts=%d", fresh, replayed, conflicts)
+	}
+}
+
+func TestWorkflowManualRejectsStaleGateAndUnsafeReceipt(t *testing.T) {
+	t.Run("stale gate", func(t *testing.T) {
+		template, state := manualWorkflowCheckpoint(t)
+		store := &StateStore{Dir: t.TempDir()}
+		oldToken := state.ManualGate.Token
+		state.Turn++
+		state.Dispatches[0].Turn = state.Turn
+		state.Evidence.Round = state.Turn
+		if err := state.RefreshManualGate(template); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Save(state); err != nil {
+			t.Fatal(err)
+		}
+		for _, request := range []struct {
+			token  string
+			index  int
+			reason string
+		}{{oldToken, 1, "old visit"}, {state.ManualGate.Token, 0, "automatic edge"}, {state.ManualGate.Token, 1, "  "}, {state.ManualGate.Token, 1, strings.Repeat("x", manualReasonMaxBytes+1)}} {
+			if _, err := store.RequestManualTransition(t.Context(), state.SessionName, request.token, request.index, request.reason); err == nil {
+				t.Fatalf("accepted invalid manual request: %+v", request)
+			}
+		}
+		if decision, err := store.ReadManualDecision(state); err != nil || decision != nil {
+			t.Fatalf("refused requests left a runnable decision: %+v, %v", decision, err)
+		}
+	})
+	for _, corrupt := range []string{"invalid JSON", "wrong visit", "oversized", "symlink", "directory"} {
+		t.Run(corrupt, func(t *testing.T) {
+			_, state := manualWorkflowCheckpoint(t)
+			store := &StateStore{Dir: t.TempDir()}
+			if err := store.Save(state); err != nil {
+				t.Fatal(err)
+			}
+			path, _ := store.manualDecisionPath(state.SessionName, state.ManualGate.Token)
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			switch corrupt {
+			case "invalid JSON":
+				if err := os.WriteFile(path, []byte("{"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "wrong visit":
+				decision := ManualDecision{Version: 1, Session: state.SessionName, Token: state.ManualGate.Token, VisitHash: strings.Repeat("0", 64), Stage: state.CurrentStage, TransitionIndex: 1, To: "done", Reason: "reviewed", RequestedAt: time.Now().UTC()}
+				data, err := json.Marshal(decision)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "oversized":
+				if err := os.WriteFile(path, []byte(strings.Repeat(" ", manualDecisionMaxBytes+1)), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				if err := os.Symlink(filepath.Join(store.Dir, "other.json"), path); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			case "directory":
+				if err := os.Mkdir(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := store.ReadManualDecision(state); err == nil {
+				t.Fatal("runner accepted unsafe or mismatched decision evidence")
+			}
+			if _, err := store.ManualStatus(state); err == nil {
+				t.Fatal("status hid an unsafe decision")
+			}
+		})
+	}
+}
 
 // Exercise the same store used by --robot-sequence from independent processes.
 // Goroutine-only tests cannot detect a process-local mutex protecting disk state.

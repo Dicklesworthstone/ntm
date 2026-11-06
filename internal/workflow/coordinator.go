@@ -231,6 +231,34 @@ func (c *RuntimeCoordinator) Transition(trigger string) error {
 	return fmt.Errorf("no transition from %q is triggered by %q", c.stage, trigger)
 }
 
+// AdvanceManual selects one exact active manual edge. It cannot acknowledge an
+// agent_says verdict or fall through to a similarly labelled automatic edge.
+func (c *RuntimeCoordinator) AdvanceManual(ctx *TriggerContext, transitionIndex int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.started {
+		return errors.New("workflow coordinator is not started")
+	}
+	if ctx == nil {
+		return errors.New("workflow manual transition context is required")
+	}
+	if ctx.Context != nil {
+		if err := ctx.Context.Err(); err != nil {
+			return err
+		}
+	}
+	for _, active := range c.active {
+		if active.index != transitionIndex {
+			continue
+		}
+		if active.transition.Trigger.Type != TriggerManual {
+			return fmt.Errorf("transition %d is not a manual transition", transitionIndex)
+		}
+		return c.transitionLocked(ctx, active.transition)
+	}
+	return fmt.Errorf("transition %d is not active at workflow stage %q", transitionIndex, c.stage)
+}
+
 func (c *RuntimeCoordinator) transitionLocked(ctx *TriggerContext, transition Transition) error {
 	previousStage := c.stage
 	previousCtx := cloneTriggerContext(c.triggerCtx)

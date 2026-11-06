@@ -732,6 +732,29 @@ ntm pipeline resume run-20241230-123456-abcd --mode=continue
 ntm pipeline cleanup --older=7d
 ```
 
+Workflow templates with manual gates, including `review-pipeline` and
+`specialist-team`, can wait for an operator to select a specific transition:
+
+```bash
+ntm workflow status --session payments --json
+ntm workflow trigger --session payments --token "MANUAL_GATE_TOKEN_FROM_STATUS" \
+  --transition 0 --reason "Design reviewed and ready for implementation"
+```
+
+Choose the exact index from `manual_gate.transitions`, together with that gate's
+`token`. A gate appears after the stage's prompts have been delivered. Its token
+stays stable while output is observed, and changes when work is retried, an agent
+is replaced, or another stage visit begins. The command records one immutable
+decision; the active runner applies it on its next poll and records it in stage
+history. Repeating the same choice and reason returns the original receipt.
+
+Decisions can also be recorded while a runner is offline or paused. Continue
+with `ntm workflow run TEMPLATE --session payments --resume` to apply the saved
+decision and continue from the existing delivery checkpoint. Each later manual
+gate requires its own choice. Use `--project-root DIR` with status and trigger
+when the project is elsewhere; `workflow run --fire-manual` remains the explicit
+option for automatically advancing every manual gate.
+
 The dashboard resumes pipelines in a detached worker, so closing the browser or
 restarting the HTTP server does not cancel an authorized resume. REST clients can
 request the same lifetime with `POST /api/v1/pipelines/{id}/resume` and

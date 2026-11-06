@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -222,10 +223,16 @@ func TestWorkflowResumeRejectsMismatchedOrInvalidCheckpointWithoutMutation(t *te
 			state := mustLoadWorkflowCheckpoint(t, opts)
 			state.Paused = true
 			tc.change(state)
-			if err := (&workflow.StateStore{Dir: opts.StateDir}).Save(state); err != nil {
+			// Inject corrupt on-disk input directly: the normal save path
+			// correctly refuses these inconsistent execution identities.
+			data, err := json.MarshalIndent(state, "", "  ")
+			if err != nil {
 				t.Fatal(err)
 			}
 			path := filepath.Join(opts.StateDir, opts.Session+".json")
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
 			before, _ := os.ReadFile(path)
 			opts.Resume, opts.Vars = true, nil
 			resumed := mustResumeWorkflowRunner(t, resumeWorkflowTemplate(), resumeWorkflowAgents(), opts, resumeWorkflowPorts(&sent))

@@ -42,6 +42,8 @@ type WorkflowState struct {
 	// boundary is saved before prompts, and observed verdicts are saved before
 	// advancing. Resuming never substitutes old pane history for that boundary.
 	Evidence *StageEvidence `json:"evidence,omitempty"`
+	// ManualGate is published only after this stage's deliveries complete.
+	ManualGate *ManualGate `json:"manual_gate,omitempty"`
 }
 
 // StageEvidence binds incremental pane observations to one stage dispatch.
@@ -98,12 +100,13 @@ type StageDispatch struct {
 	ResolutionToken    string     `json:"resolution_token,omitempty"`
 }
 type StageRecord struct {
-	Stage       string    `json:"stage"`
-	StartedAt   time.Time `json:"started_at"`
-	CompletedAt time.Time `json:"completed_at"`
-	DurationSec int       `json:"duration_sec"`
-	Result      string    `json:"result"`
-	Trigger     string    `json:"trigger"`
+	Stage          string          `json:"stage"`
+	StartedAt      time.Time       `json:"started_at"`
+	CompletedAt    time.Time       `json:"completed_at"`
+	DurationSec    int             `json:"duration_sec"`
+	Result         string          `json:"result"`
+	Trigger        string          `json:"trigger"`
+	ManualDecision *ManualDecision `json:"manual_decision,omitempty"`
 }
 
 type StateStore struct{ Dir string }
@@ -544,9 +547,30 @@ func (s *StateStore) Save(state *WorkflowState) error {
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return fmt.Errorf("create workflow state directory: %w", err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), manualCheckpointTimeout)
+	defer cancel()
+	unlock, err := s.lockManualCheckpoint(ctx, state.SessionName)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if state.ManualGate != nil {
+		ready, err := manualStageReady(state)
+		if err != nil {
+			return err
+		}
+		if !ready {
+			state.ManualGate = nil
+		} else if err := validateManualGate(state); err != nil {
+			return err
+		}
+	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode workflow state: %w", err)
+	}
+	if len(data) > workflowStateMaxBytes {
+		return fmt.Errorf("workflow checkpoint exceeds %d bytes", workflowStateMaxBytes)
 	}
 	if err := util.AtomicWriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("write workflow state: %w", err)
@@ -558,7 +582,7 @@ func (s *StateStore) Load(session string) (*WorkflowState, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
+	data, err := readWorkflowRegularFile(path, workflowStateMaxBytes)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}

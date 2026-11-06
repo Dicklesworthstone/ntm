@@ -161,6 +161,7 @@ Examples:
 	cmd.AddCommand(newWorkflowsRunCmd())
 	cmd.AddCommand(newWorkflowCheckpointCmd("status"))
 	cmd.AddCommand(newWorkflowCheckpointCmd("recover"))
+	cmd.AddCommand(newWorkflowTriggerCmd())
 
 	return cmd
 }

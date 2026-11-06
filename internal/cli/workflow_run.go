@@ -617,6 +617,9 @@ func (r *workflowRunner) saveCheckpointLocked() error {
 	if r.store == nil {
 		return nil
 	}
+	if err := r.state.RefreshManualGate(r.template); err != nil {
+		return fmt.Errorf("prepare workflow manual gate: %w", err)
+	}
 	if err := r.store.Save(r.state); err != nil {
 		return fmt.Errorf("persist workflow checkpoint before further execution: %w", err)
 	}
@@ -769,13 +772,7 @@ func (r *workflowRunner) validateSavedEvidence(state *workflow.WorkflowState) er
 }
 
 func (r *workflowRunner) templateHash() (string, error) {
-	copy := *r.template
-	copy.Source = "" // Same definition may be addressed by name or file path.
-	data, err := json.Marshal(copy)
-	if err != nil {
-		return "", fmt.Errorf("fingerprint workflow template: %w", err)
-	}
-	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
+	return r.template.Fingerprint()
 }
 
 func (r *workflowRunner) completeCheckpoint() error {
@@ -785,6 +782,7 @@ func (r *workflowRunner) completeCheckpoint() error {
 		return nil
 	}
 	r.state.Completed = true
+	r.state.ManualGate = nil
 	if r.store != nil {
 		return r.store.RecordStage(r.state, "completed", "terminal", r.ports.now())
 	}
@@ -1201,11 +1199,56 @@ func (r *workflowRunner) advanceObservation(ctx context.Context, observed *workf
 		newStage = r.coordinator.CurrentStage()
 	}
 	if fired || newStage != observed.stage {
-		if err := r.recordTransitionLocked(newStage); err != nil {
+		if err := r.recordTransitionLocked(newStage, nil); err != nil {
 			return false, newStage, false, err
 		}
 	}
 	return fired, newStage, false, nil
+}
+
+// advanceManualDecision consumes only the operator's exact current gate. It
+// runs before output observation: approving an authored manual edge requires
+// verified stage delivery and live pane identity, not an agent_says verdict or
+// an intact scrollback window. The immutable decision remains on disk until
+// the destination checkpoint commits, so a crash cannot lose an approval.
+func (r *workflowRunner) advanceManualDecision(ctx context.Context) (bool, string, error) {
+	if r.store == nil {
+		return false, "", nil
+	}
+	r.dispatchMu.Lock()
+	defer r.dispatchMu.Unlock()
+	stage := r.coordinator.CurrentStage()
+	r.mu.Lock()
+	if r.state == nil || r.state.CurrentStage != stage || r.state.ManualGate == nil {
+		r.mu.Unlock()
+		return false, stage, nil
+	}
+	decision, err := r.store.ReadManualDecision(r.state)
+	r.mu.Unlock()
+	if err != nil || decision == nil {
+		return false, stage, err
+	}
+	if err := r.validatePanes(ctx); err != nil {
+		return false, stage, err
+	}
+	manual, ok := r.coordinator.(interface {
+		AdvanceManual(*workflow.TriggerContext, int) error
+	})
+	if !ok {
+		return false, stage, errors.New("workflow coordinator does not support indexed manual transitions")
+	}
+	tctx := &workflow.TriggerContext{
+		Context: ctx, ProjectRoot: r.opts.ProjectRoot, Session: r.opts.Session,
+		CurrentRole: r.stageRole(stage), Now: r.ports.now,
+	}
+	if err := manual.AdvanceManual(tctx, decision.TransitionIndex); err != nil {
+		return false, stage, err
+	}
+	next := r.coordinator.CurrentStage()
+	if err := r.recordTransitionLocked(next, decision); err != nil {
+		return false, next, err
+	}
+	return true, next, nil
 }
 
 func containsWorkflowPane(panes []string, pane string) bool {
@@ -1340,10 +1383,20 @@ func (r *workflowRunner) rebindRestartedPaneLocked(ctx context.Context, pane str
 	return r.state.CurrentStage, redeliver, r.saveCheckpointLocked()
 }
 
-func (a workflowRunActions) Pause(_ context.Context, reason string) error {
-	// Hold r.mu across the store write: recordTransitionLocked mutates the same
-	// WorkflowState from the main run loop under the same lock.
+func (a workflowRunActions) Pause(ctx context.Context, reason string) error {
+	// A pause and a transition must commit in the same order as their
+	// decisions. In particular, a late timeout cannot pause an already
+	// completed stage or slip between manual acceptance and its checkpoint.
+	a.r.dispatchMu.Lock()
+	defer a.r.dispatchMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	a.r.mu.Lock()
+	if a.r.state != nil && a.r.state.Completed {
+		a.r.mu.Unlock()
+		return nil
+	}
 	var saveErr error
 	if a.r.store != nil && a.r.state != nil {
 		saveErr = a.r.store.Pause(a.r.state, reason, a.r.ports.now())
@@ -1353,6 +1406,8 @@ func (a workflowRunActions) Pause(_ context.Context, reason string) error {
 		a.r.stop("checkpoint-failed", saveErr)
 		return saveErr
 	}
+	// Cancel before releasing dispatchMu: any waiting manual advance must
+	// observe the pause before it can select an edge.
 	a.r.stop("paused", fmt.Errorf("workflow paused: %s", reason))
 	return nil
 }
@@ -1407,6 +1462,7 @@ func (a workflowRunActions) RetryStage(ctx context.Context) error {
 	// crash recovery. Save that new intent before assigning fresh turns.
 	a.r.state.Dispatches = nil
 	a.r.state.Evidence = nil
+	a.r.state.ManualGate = nil
 	err := a.r.saveCheckpointLocked()
 	a.r.mu.Unlock()
 	if err != nil {
@@ -1579,22 +1635,27 @@ func (r *workflowRunner) stopped() (string, error) {
 // caller must hold r.dispatchMu (advanceObservation does). It holds r.mu for
 // the duration: the TimeoutMonitor goroutine's Pause writes the same
 // WorkflowState under the same lock.
-func (r *workflowRunner) recordTransitionLocked(newStage string) error {
+func (r *workflowRunner) recordTransitionLocked(newStage string, decision *workflow.ManualDecision) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.state == nil {
 		return nil
 	}
 	now := r.ports.now()
+	trigger := "trigger"
+	if decision != nil {
+		trigger = "manual"
+	}
 	r.state.StageHistory = append(r.state.StageHistory, workflow.StageRecord{
 		Stage: r.state.CurrentStage, StartedAt: r.state.StageStartedAt,
 		CompletedAt: now, DurationSec: int(now.Sub(r.state.StageStartedAt).Seconds()),
-		Result: "advanced", Trigger: "trigger",
+		Result: "advanced", Trigger: trigger, ManualDecision: decision,
 	})
 	r.state.CurrentStage = newStage
 	r.state.StageStartedAt = now
 	r.state.Dispatches = nil
 	r.state.Evidence = nil
+	r.state.ManualGate = nil
 	r.state.Completed = r.stageIsTerminal(newStage)
 	// History and destination commit in ONE snapshot. A crash between two
 	// separate saves must not resurrect a stage already marked advanced.
@@ -1809,23 +1870,28 @@ func (r *workflowRunner) Run(ctx context.Context) (WorkflowRunResult, error) {
 			continue
 		}
 
-		observed, err := r.observe(runCtx)
-		if err != nil {
-			if runCtx.Err() != nil {
-				continue // Classify cancellation/timeout at the loop boundary.
+		fired, newStage, err := r.advanceManualDecision(runCtx)
+		if err == nil && !fired {
+			var observed *workflowObservation
+			observed, err = r.observe(runCtx)
+			if err != nil {
+				if runCtx.Err() != nil {
+					continue // Classify cancellation/timeout at the loop boundary.
+				}
+				r.mu.Lock()
+				if r.state != nil {
+					now := r.ports.now()
+					r.state.Paused, r.state.PausedAt, r.state.PauseReason = true, &now, "output evidence unavailable: "+err.Error()
+					err = errors.Join(err, r.saveCheckpointLocked())
+				}
+				r.mu.Unlock()
+				return fail("observation-failed", err)
 			}
-			r.mu.Lock()
-			if r.state != nil {
-				now := r.ports.now()
-				r.state.Paused, r.state.PausedAt, r.state.PauseReason = true, &now, "output evidence unavailable: "+err.Error()
-				err = errors.Join(err, r.saveCheckpointLocked())
+			var stale bool
+			fired, newStage, stale, err = r.advanceObservation(runCtx, observed)
+			if stale {
+				continue
 			}
-			r.mu.Unlock()
-			return fail("observation-failed", err)
-		}
-		fired, newStage, stale, err := r.advanceObservation(runCtx, observed)
-		if stale {
-			continue
 		}
 		if err != nil {
 			if runCtx.Err() != nil {
@@ -2243,6 +2309,13 @@ pane lifetimes. Confirmed prompts are not sent again; pending prompts resume
 their saved plan. An interrupted send with an unknown outcome is refused.
 Unfinished checkpoints require --resume, or --restart to deliberately repeat
 the entire workflow. --resume never silently means restart.
+
+For an authored manual transition, inspect 'ntm workflow status --session SESSION
+--json', then use 'ntm workflow trigger --session SESSION --token TOKEN
+--transition INDEX --reason TEXT' with the exact manual_gate token and transition
+index. The runner applies that one decision on its next poll. A recorded decision
+survives interruption and can be applied by --resume. --fire-manual explicitly
+automates all manual gates instead of waiting for individual operator choices.
 
 Every poll checks all of the workflow's agent panes. A crash (the pane left
 the session or died, or the agent CLI exited back to its shell) runs the
