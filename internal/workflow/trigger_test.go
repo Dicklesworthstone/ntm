@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -240,6 +241,138 @@ func TestFileModifiedTriggerStatFallbackDetectsLaterWrite(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 	waitForTrigger(t, trigger, ctx)
+}
+
+func TestFileModifiedTriggerDetectsAtomicReplacement(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "source.go")
+	if err := os.WriteFile(path, []byte("before"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trigger, err := newFileModifiedTrigger(Trigger{Pattern: "*.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = trigger.Stop() })
+	ctx := &TriggerContext{ProjectRoot: root}
+	if err := trigger.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	temporary := filepath.Join(root, "replacement.tmp")
+	if err := os.WriteFile(temporary, []byte("after!"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(temporary, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(temporary, path); err != nil {
+		t.Fatal(err)
+	}
+	// Editors commonly replace the inode instead of writing the watched file.
+	// Neither the replacement's size nor its timestamp proves this change.
+	waitForTrigger(t, trigger, ctx)
+}
+
+func TestFileCreatedTriggerDetectsPopulatedDirectoryMove(t *testing.T) {
+	root, staging := t.TempDir(), t.TempDir()
+	prepared := filepath.Join(staging, "prepared")
+	if err := os.MkdirAll(filepath.Join(prepared, "deep"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prepared, "deep", "result.go"), []byte("package result"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	trigger, err := newFileCreatedTrigger(Trigger{Pattern: "newdir/**/*.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = trigger.Stop() })
+	ctx := &TriggerContext{ProjectRoot: root}
+	if err := trigger.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(prepared, filepath.Join(root, "newdir")); err != nil {
+		t.Fatal(err)
+	}
+	// No later write is made. A parent-directory notification can arrive
+	// after all descendants have been populated, before their watches exist.
+	if fired, err := trigger.Check(ctx); err != nil || !fired {
+		t.Fatalf("populated subtree was lost: fired=%v err=%v", fired, err)
+	}
+}
+
+func TestFileTriggerIgnoresSymlinksAndControlState(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	external := filepath.Join(outside, "external.go")
+	if err := os.WriteFile(external, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "linked-directory")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := os.Symlink(external, filepath.Join(root, "linked.go")); err != nil {
+		t.Fatal(err)
+	}
+	trigger, err := newFileCreatedTrigger(Trigger{Pattern: "*.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = trigger.Stop() })
+	ctx := &TriggerContext{ProjectRoot: root, FileTriggerExcludes: []string{"runtime/state"}}
+	if err := trigger.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if baseline := trigger.(*fileTrigger).fileState().Baseline; len(baseline) != 0 {
+		t.Fatalf("symlink targets entered baseline: %+v", baseline)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "runtime", "state"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "runtime", "state", "checkpoint.go"), []byte("control state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "new.go"), []byte("outside again"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if fired, err := trigger.Check(ctx); err != nil || fired {
+		t.Fatalf("unrelated state or outside work fired trigger: %v, %v", fired, err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "runtime", "state-extra"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "runtime", "state-extra", "work.go"), []byte("real work"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitForTrigger(t, trigger, ctx)
+}
+
+func TestFileTriggerRejectsOversizedBaseline(t *testing.T) {
+	root := t.TempDir()
+	file, err := os.Create(filepath.Join(root, "huge.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = file.Truncate(maxFileTriggerBytes + 1)
+	closeErr := file.Close()
+	if err != nil || closeErr != nil {
+		t.Fatalf("prepare sparse oversized file: %v, %v", err, closeErr)
+	}
+	runtime, err := newFileModifiedTrigger(Trigger{Pattern: "*.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trigger := runtime.(*fileTrigger)
+	t.Cleanup(func() { _ = trigger.Stop() })
+	if err := trigger.Start(&TriggerContext{ProjectRoot: root}); err == nil || !strings.Contains(err.Error(), "content bytes") {
+		t.Fatalf("oversized baseline accepted: %v", err)
+	}
+	if trigger.watcher != nil || trigger.directory != nil {
+		t.Fatal("failed baseline left filesystem resources open")
+	}
 }
 
 func TestCommandTriggers(t *testing.T) {

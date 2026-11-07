@@ -182,6 +182,25 @@ after its text scrolls out of the retained response buffer. `--resume` also
 observes responses produced while the runner was stopped without sending
 confirmed prompts again.
 
+`file_created` and `file_modified` also retain a durable boundary. Before a
+stage sends its first prompt, NTM checkpoints the matching regular files and
+their fingerprints. On `--resume`, it compares the current tree with that
+original boundary, so a matching file created or changed while the runner was
+stopped can complete the stage without another prompt. An unchanged file that
+already existed when the stage began does not complete new work. Content
+fingerprints detect offline changes even when file size and timestamps were
+preserved. Symlinks and the workflow checkpoint directory are excluded from
+this evidence, so NTM's own state writes cannot satisfy a broad file pattern.
+
+Observed file completions are retained until the destination stage commits,
+even if the matching file is removed afterward. Each visit to a stage and
+each intentional retry receives a fresh file boundary. A checkpoint with
+missing, mismatched, or invalid filesystem evidence cannot resume an
+already-dispatched file-triggered stage; inspect the work before using
+`--restart`. Filesystem inventories and fingerprint reads are bounded, and an
+unreadable or oversized matching set is reported explicitly. Narrow the
+trigger pattern when an inventory exceeds its limits.
+
 A review gate requiring several replies must prompt those reviewers: use
 `parallel_within_stage = true` or stage-to-role routing that selects the full
 reviewer role. A stage named exactly after its role otherwise uses the

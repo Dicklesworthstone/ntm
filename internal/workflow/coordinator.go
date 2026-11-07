@@ -171,6 +171,128 @@ func (c *RuntimeCoordinator) RoutingState() map[string]int {
 	return result
 }
 
+// FileTriggerStates reconciles live filesystem changes and returns a detached
+// checkpoint. Runners save this evidence before supplying it to Evaluate;
+// events arriving after the snapshot are considered on the following poll.
+func (c *RuntimeCoordinator) FileTriggerStates() (map[int]FileTriggerState, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.started {
+		return nil, errors.New("workflow coordinator is not started")
+	}
+	states := make(map[int]FileTriggerState)
+	for _, active := range c.active {
+		if !isFileTrigger(active.transition.Trigger.Type) {
+			continue
+		}
+		file, ok := active.trigger.(*fileTrigger)
+		if !ok {
+			return nil, fmt.Errorf("file trigger %d does not support durable checkpoints", active.index)
+		}
+		if _, err := file.Check(nil); err != nil {
+			return nil, fmt.Errorf("checkpoint file trigger %d: %w", active.index, err)
+		}
+		states[active.index] = file.fileState()
+	}
+	return states, nil
+}
+
+// ValidateFileTriggerStates checks a complete saved set without starting any
+// watchers. A nil set is invalid when the stage has file transitions; callers
+// that are deliberately starting a new attempt omit restoration instead.
+func ValidateFileTriggerStates(template *WorkflowTemplate, projectRoot, stage string, states map[int]FileTriggerState, excludes []string) error {
+	if template == nil {
+		return errors.New("workflow template is required for file trigger evidence")
+	}
+	expected := make(map[int]Transition)
+	if template.Flow != nil {
+		for index, transition := range template.Flow.Transitions {
+			if transition.From == stage && isFileTrigger(transition.Trigger.Type) {
+				expected[index] = transition
+			}
+		}
+	}
+	if len(states) != len(expected) {
+		return fmt.Errorf("workflow stage %q has incomplete or extraneous file trigger evidence", stage)
+	}
+	if len(expected) == 0 {
+		return nil
+	}
+	normalized, err := normalizeFileTriggerExcludes(excludes)
+	if err != nil {
+		return err
+	}
+	root, err := canonicalFileTriggerRoot(projectRoot)
+	if err != nil {
+		return err
+	}
+	for index, transition := range expected {
+		state, ok := states[index]
+		if !ok {
+			return fmt.Errorf("workflow stage %q is missing evidence for file trigger %d", stage, index)
+		}
+		if err := validateFileTriggerState(state, root, stage, index, transition.Trigger.Type, transition.Trigger.Pattern, normalized); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func isFileTrigger(kind TriggerType) bool {
+	return kind == TriggerFileCreated || kind == TriggerFileModified
+}
+
+// RestartStage refreshes triggers for a deliberately retried delivery. File
+// baselines start again, while elapsed-time triggers keep the original visit
+// clock. Routing cursors are untouched. A failed refresh restores the old
+// baseline and latched observations rather than losing the waiting work.
+func (c *RuntimeCoordinator) RestartStage(ctx *TriggerContext, startedAt time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.started {
+		return errors.New("workflow coordinator is not started")
+	}
+	if ctx == nil || startedAt.IsZero() || startedAt.After(ctx.now()) {
+		return errors.New("workflow stage restart has an invalid start time")
+	}
+	return c.activateStageLocked(ctx, c.stage, startedAt)
+}
+
+// StopWithFileTriggerStates closes the last checkpoint race: reconcile while
+// watchers run, stop and join all of them, then copy their final sticky latches.
+// A notification already observed after the scan remains durable even if the
+// file has disappeared. Events never observed while offline are not invented.
+func (c *RuntimeCoordinator) StopWithFileTriggerStates() (map[int]FileTriggerState, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	active := c.active
+	var errs []error
+	for _, transition := range active {
+		if file, ok := transition.trigger.(*fileTrigger); ok {
+			if _, err := file.Check(nil); err != nil {
+				errs = append(errs, fmt.Errorf("checkpoint file trigger %d: %w", transition.index, err))
+			}
+		} else if isFileTrigger(transition.transition.Trigger.Type) {
+			errs = append(errs, fmt.Errorf("file trigger %d does not support durable checkpoints", transition.index))
+		}
+	}
+	if err := c.stopTriggersLocked(); err != nil {
+		errs = append(errs, err)
+	}
+	c.started = false
+	c.triggerCtx = nil
+	var states map[int]FileTriggerState
+	for _, transition := range active {
+		if file, ok := transition.trigger.(*fileTrigger); ok {
+			if states == nil {
+				states = make(map[int]FileTriggerState)
+			}
+			states[transition.index] = file.fileState()
+		}
+	}
+	return states, errors.Join(errs...)
+}
+
 // Stop stops all active trigger watchers. It may be called repeatedly.
 func (c *RuntimeCoordinator) Stop() error {
 	c.mu.Lock()
@@ -195,10 +317,17 @@ func (c *RuntimeCoordinator) Evaluate(ctx *TriggerContext) (bool, error) {
 	if !c.started {
 		return false, errors.New("workflow coordinator is not started")
 	}
+	if ctx != nil && ctx.FileTriggerStates != nil {
+		if err := ValidateFileTriggerStates(c.template, ctx.ProjectRoot, c.stage, ctx.FileTriggerStates, ctx.FileTriggerExcludes); err != nil {
+			return false, err
+		}
+	}
 	for _, active := range c.active {
 		var fired bool
 		if active.transition.Trigger.Type == TriggerAgentSays && ctx != nil && ctx.TransitionEvidence != nil {
 			fired = ctx.TransitionEvidence[active.index]
+		} else if isFileTrigger(active.transition.Trigger.Type) && ctx != nil && ctx.FileTriggerStates != nil {
+			fired = ctx.FileTriggerStates[active.index].Fired
 		} else {
 			var err error
 			fired, err = active.trigger.Check(ctx)
@@ -260,14 +389,40 @@ func (c *RuntimeCoordinator) AdvanceManual(ctx *TriggerContext, transitionIndex 
 }
 
 func (c *RuntimeCoordinator) transitionLocked(ctx *TriggerContext, transition Transition) error {
+	return c.activateStageLocked(ctx, transition.To, time.Time{})
+}
+
+func (c *RuntimeCoordinator) activateStageLocked(ctx *TriggerContext, stage string, startedAt time.Time) error {
 	previousStage := c.stage
 	previousCtx := cloneTriggerContext(c.triggerCtx)
+	previousActive := c.active
 	if err := c.stopTriggersLocked(); err != nil {
 		return err
 	}
-	c.stage = transition.To
-	c.triggerCtx = cloneTriggerContext(ctx)
-	if err := c.startStageLocked(ctx); err != nil {
+	// Snapshot after Stop has joined every notification reader, so its final
+	// latches survive a failed destination startup. No new filesystem scan is
+	// needed here; the preserved baseline reconciles changes during rollback.
+	previousFiles := make(map[int]FileTriggerState)
+	for _, active := range previousActive {
+		if file, ok := active.trigger.(*fileTrigger); ok {
+			previousFiles[active.index] = file.fileState()
+		}
+	}
+	if previousCtx != nil {
+		previousCtx.FileTriggerStates = previousFiles
+	}
+	c.stage = stage
+	nextCtx := cloneTriggerContext(ctx)
+	if nextCtx != nil {
+		nextCtx.FileTriggerStates = nil
+		nextCtx.TransitionEvidence = nil
+	}
+	c.triggerCtx = cloneTriggerContext(nextCtx)
+	startCtx := cloneTriggerContext(nextCtx)
+	if !startedAt.IsZero() {
+		startCtx.Now = func() time.Time { return startedAt }
+	}
+	if err := c.startStageLocked(startCtx); err != nil {
 		// A failed destination trigger must not leave a coordinator marked as
 		// started but without any active transitions. Restore the source stage
 		// so an operator can correct the transient failure and retry the same
@@ -277,14 +432,22 @@ func (c *RuntimeCoordinator) transitionLocked(ctx *TriggerContext, transition Tr
 		if restoreErr := c.startStageLocked(previousCtx); restoreErr != nil {
 			c.started = false
 			c.triggerCtx = nil
-			return fmt.Errorf("activate stage %q: %w", transition.To, errors.Join(err, fmt.Errorf("restore source stage %q: %w", previousStage, restoreErr)))
+			return fmt.Errorf("activate stage %q: %w", stage, errors.Join(err, fmt.Errorf("restore source stage %q: %w", previousStage, restoreErr)))
 		}
-		return fmt.Errorf("activate stage %q: %w", transition.To, err)
+		return fmt.Errorf("activate stage %q: %w", stage, err)
 	}
 	return nil
 }
 
 func (c *RuntimeCoordinator) startStageLocked(ctx *TriggerContext) error {
+	if ctx != nil && ctx.FileTriggerStates != nil {
+		if err := ValidateFileTriggerStates(c.template, ctx.ProjectRoot, c.stage, ctx.FileTriggerStates, ctx.FileTriggerExcludes); err != nil {
+			return err
+		}
+	}
+	if c.template.Flow == nil {
+		return nil
+	}
 	for index, transition := range c.template.Flow.Transitions {
 		if transition.From != c.stage {
 			continue
@@ -293,6 +456,18 @@ func (c *RuntimeCoordinator) startStageLocked(ctx *TriggerContext) error {
 		if err != nil {
 			_ = c.stopTriggersLocked()
 			return fmt.Errorf("create %s trigger: %w", transition.Trigger.Type, err)
+		}
+		if file, ok := trigger.(*fileTrigger); ok {
+			file.stage, file.transitionIndex = c.stage, index
+			if ctx != nil && ctx.FileTriggerStates != nil {
+				state := ctx.FileTriggerStates[index]
+				state.Baseline = cloneFileTriggerBaseline(state.Baseline)
+				state.Excludes = append([]string(nil), state.Excludes...)
+				file.restore = &state
+			}
+		} else if isFileTrigger(transition.Trigger.Type) && ctx != nil && ctx.FileTriggerStates != nil {
+			_ = c.stopTriggersLocked()
+			return fmt.Errorf("file trigger %d does not support checkpoint restoration", index)
 		}
 		if err := trigger.Start(ctx); err != nil {
 			_ = trigger.Stop()
@@ -317,6 +492,8 @@ func cloneTriggerContext(ctx *TriggerContext) *TriggerContext {
 			clone.TransitionEvidence[index] = matched
 		}
 	}
+	clone.FileTriggerStates = cloneFileTriggerStates(ctx.FileTriggerStates)
+	clone.FileTriggerExcludes = append([]string(nil), ctx.FileTriggerExcludes...)
 	return &clone
 }
 

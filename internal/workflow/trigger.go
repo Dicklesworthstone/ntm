@@ -2,12 +2,18 @@ package workflow
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -57,6 +63,16 @@ type TriggerContext struct {
 	// durable receipts to survive scrollback rollover and runner restarts.
 	// Nil preserves ordinary trigger evaluation against Outputs.
 	TransitionEvidence map[int]bool
+
+	// FileTriggerStates is the complete filesystem evidence set for this
+	// stage visit, keyed by the template's complete transition indexes. At
+	// startup it restores the original file baselines; at evaluation it only
+	// authorizes transitions whose Fired evidence the caller has saved. Nil
+	// starts fresh baselines and evaluates live filesystem observations.
+	FileTriggerStates map[int]FileTriggerState
+	// FileTriggerExcludes names project-relative state directories whose
+	// writes are made by the runner itself, never by the workflow's work.
+	FileTriggerExcludes []string
 }
 
 func (c *TriggerContext) now() time.Time {
@@ -116,8 +132,45 @@ func (r *TriggerRegistry) Create(config Trigger) (RuntimeTrigger, error) {
 	return factory(config)
 }
 
-// fileBaseline is the size/mtime of a just-created file, recorded so a write
-// that the notification backend never reports can still be detected by stat.
+const (
+	fileTriggerStateVersion = 1
+	maxFileTriggerFiles     = 16384
+	maxFileTriggerBytes     = 256 << 20
+	maxFileTriggerPaths     = 4 << 20
+	maxFileTriggerEntries   = 262144
+)
+
+// FileTriggerStamp records a regular file's original content and metadata.
+// Hashes detect offline replacements even when size and modification time
+// are preserved; file contents are never copied into the checkpoint.
+type FileTriggerStamp struct {
+	Size    int64     `json:"size"`
+	ModTime time.Time `json:"mod_time"`
+	SHA256  string    `json:"sha256"`
+}
+
+// FileTriggerState belongs to one outgoing transition in a stage visit. The
+// runner additionally binds the complete set to its stage visit and delivery
+// round. Baseline is immutable for that attempt; Fired is sticky evidence,
+// including a notification for a file that has since been removed.
+type FileTriggerState struct {
+	Version         int                         `json:"version"`
+	ProjectRoot     string                      `json:"project_root"`
+	Stage           string                      `json:"stage"`
+	TransitionIndex int                         `json:"transition_index"`
+	Kind            TriggerType                 `json:"kind"`
+	Pattern         string                      `json:"pattern"`
+	Excludes        []string                    `json:"excludes,omitempty"`
+	Baseline        map[string]FileTriggerStamp `json:"baseline"`
+	Fired           bool                        `json:"fired"`
+}
+
+type fileDigestCache struct {
+	info  os.FileInfo
+	stamp FileTriggerStamp
+}
+
+// fileBaseline tracks a newly created empty file until it is written.
 type fileBaseline struct {
 	size    int64
 	modTime time.Time
@@ -128,13 +181,23 @@ type fileTrigger struct {
 	pattern string
 	op      fsnotify.Op
 
-	mu      sync.Mutex
-	root    string
-	fired   bool
-	err     error
-	watcher *fsnotify.Watcher
-	done    chan struct{}
-	wg      sync.WaitGroup
+	// scanMu excludes scans from Stop, which closes the rooted filesystem.
+	// Notification handling never takes scanMu and continues during scans.
+	scanMu          sync.Mutex
+	mu              sync.Mutex
+	root            string
+	excludes        []string
+	directory       *os.Root
+	stage           string
+	transitionIndex int
+	restore         *FileTriggerState
+	baseline        map[string]FileTriggerStamp
+	cache           map[string]fileDigestCache
+	fired           bool
+	err             error
+	watcher         *fsnotify.Watcher
+	done            chan struct{}
+	wg              sync.WaitGroup
 	// pending tracks pattern-matching files whose Create event has been seen
 	// but whose first Write event may never arrive: on kqueue platforms
 	// (macOS/BSD) fsnotify registers the new file's own watch asynchronously
@@ -157,27 +220,41 @@ func (t *fileTrigger) Start(ctx *TriggerContext) error {
 	if ctx == nil || strings.TrimSpace(ctx.ProjectRoot) == "" {
 		return errors.New("file trigger requires a project root")
 	}
-	root, err := filepath.Abs(ctx.ProjectRoot)
+	root, err := canonicalFileTriggerRoot(ctx.ProjectRoot)
 	if err != nil {
-		return fmt.Errorf("resolve project root: %w", err)
+		return err
+	}
+	excludes, err := normalizeFileTriggerExcludes(ctx.FileTriggerExcludes)
+	if err != nil {
+		return err
+	}
+	if t.restore != nil {
+		if err := validateFileTriggerState(*t.restore, root, t.stage, t.transitionIndex, t.kind, t.pattern, excludes); err != nil {
+			return err
+		}
+	}
+	if err := t.Stop(); err != nil {
+		return err
+	}
+	t.scanMu.Lock()
+	defer t.scanMu.Unlock()
+	directory, err := os.OpenRoot(root)
+	if err != nil {
+		return fmt.Errorf("open workflow project root: %w", err)
 	}
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
+		_ = directory.Close()
 		return fmt.Errorf("create filesystem watcher: %w", err)
-	}
-	if err := addDirectoryTree(watcher, root); err != nil {
-		_ = watcher.Close()
-		return fmt.Errorf("watch project tree: %w", err)
-	}
-
-	if err := t.Stop(); err != nil {
-		_ = watcher.Close()
-		return err
 	}
 	t.mu.Lock()
 	t.root = root
+	t.excludes = excludes
+	t.directory = directory
 	t.fired = false
 	t.err = nil
+	t.baseline = nil
+	t.cache = nil
 	t.pending = make(map[string]fileBaseline)
 	t.watcher = watcher
 	t.done = make(chan struct{})
@@ -185,11 +262,36 @@ func (t *fileTrigger) Start(ctx *TriggerContext) error {
 	t.wg.Add(1)
 	t.mu.Unlock()
 
-	go t.run(watcher, done)
+	// Drain notifications while installing watches and taking the baseline.
+	// Each directory is watched before its children are listed, so a change
+	// during the initial scan is either in the baseline or latched by run.
+	go t.run(watcher, directory, root, done)
+	if t.restore != nil && t.restore.Fired {
+		// A saved notification is already proof. Later deletion or an
+		// unrelated unreadable subtree must not erase that completed work.
+		t.mu.Lock()
+		t.baseline = cloneFileTriggerBaseline(t.restore.Baseline)
+		t.fired = true
+		t.mu.Unlock()
+		return nil
+	}
+	current, cache, err := snapshotFileTriggerTree(directory, root, t.pattern, excludes, watcher, nil)
+	if err != nil {
+		return errors.Join(err, t.stopLocked())
+	}
+	t.mu.Lock()
+	t.cache = cache
+	if t.restore == nil {
+		t.baseline = current
+	} else {
+		t.baseline = cloneFileTriggerBaseline(t.restore.Baseline)
+		t.fired = t.fired || t.restore.Fired || fileTriggerChanged(t.kind, t.baseline, current)
+	}
+	t.mu.Unlock()
 	return nil
 }
 
-func (t *fileTrigger) run(watcher *fsnotify.Watcher, done <-chan struct{}) {
+func (t *fileTrigger) run(watcher *fsnotify.Watcher, directory *os.Root, root string, done <-chan struct{}) {
 	defer t.wg.Done()
 	for {
 		select {
@@ -199,32 +301,48 @@ func (t *fileTrigger) run(watcher *fsnotify.Watcher, done <-chan struct{}) {
 			if !ok {
 				return
 			}
-			if event.Op&fsnotify.Create != 0 {
-				info, statErr := os.Stat(event.Name)
-				if statErr == nil && info.IsDir() {
-					if err := addDirectoryTree(watcher, event.Name); err != nil {
-						t.mu.Lock()
-						t.err = fmt.Errorf("watch created directory %q: %w", event.Name, err)
-						t.mu.Unlock()
-					}
+			rel, relErr := filepath.Rel(root, event.Name)
+			if relErr != nil || !filepath.IsLocal(rel) {
+				continue
+			}
+			if fileTriggerExcluded(t.excludes, filepath.ToSlash(rel)) {
+				continue
+			}
+			// Rooted reads cannot follow a replaced directory or symlink out
+			// of the project. Symlink and directory events are not file work.
+			info, statErr := directory.Lstat(rel)
+			if statErr == nil && info.IsDir() && event.Op&fsnotify.Create != 0 {
+				if err := watchFileTriggerDirectories(directory, root, filepath.ToSlash(rel), t.excludes, watcher); err != nil && !errors.Is(err, os.ErrNotExist) {
+					t.mu.Lock()
+					t.err = fmt.Errorf("watch created directory %q: %w", rel, err)
+					t.mu.Unlock()
 				}
+			}
+			if statErr != nil || !info.Mode().IsRegular() || !t.matches(event.Name) {
+				continue
+			}
+			if event.Op&fsnotify.Create != 0 {
 				// kqueue write-loss fallback: fsnotify registers a brand-new
 				// file's own watch asynchronously after its Create event, so a
 				// write landing immediately after creation can produce no Write
 				// event at all. For write triggers, treat a matching file that
 				// already has content as written, and remember empty ones so
 				// Check can detect the write by stat.
-				if t.op&fsnotify.Write != 0 && statErr == nil && info.Mode().IsRegular() && t.matches(event.Name) {
+				if t.op&fsnotify.Write != 0 {
 					t.mu.Lock()
 					if info.Size() > 0 {
 						t.fired = true
 					} else if t.pending != nil {
-						t.pending[event.Name] = fileBaseline{size: info.Size(), modTime: info.ModTime()}
+						if len(t.pending) >= maxFileTriggerFiles {
+							t.err = fmt.Errorf("file trigger exceeds %d pending files; narrow its pattern", maxFileTriggerFiles)
+						} else {
+							t.pending[event.Name] = fileBaseline{size: info.Size(), modTime: info.ModTime()}
+						}
 					}
 					t.mu.Unlock()
 				}
 			}
-			if event.Op&t.op == 0 || !t.matches(event.Name) {
+			if event.Op&t.op == 0 {
 				continue
 			}
 			t.mu.Lock()
@@ -245,34 +363,289 @@ func (t *fileTrigger) matches(name string) bool {
 	t.mu.Lock()
 	root := t.root
 	pattern := t.pattern
+	excludes := t.excludes
 	t.mu.Unlock()
 	rel, err := filepath.Rel(root, name)
-	if err != nil || strings.HasPrefix(rel, "..") {
+	if err != nil || !filepath.IsLocal(rel) || rel == "." {
 		return false
 	}
-	if matchPathPattern(pattern, rel) {
+	rel = filepath.ToSlash(rel)
+	return !fileTriggerExcluded(excludes, rel) && fileTriggerMatches(pattern, rel)
+}
+
+func fileTriggerMatches(pattern, relative string) bool {
+	if matchPathPattern(pattern, relative) {
 		return true
 	}
-	matched, _ := filepath.Match(pattern, filepath.Base(rel))
+	matched, _ := filepath.Match(pattern, filepath.Base(relative))
 	return matched
 }
 
-// addDirectoryTree registers every existing directory beneath root. fsnotify
-// watches directories individually, so watching only the project root misses
-// events produced in nested source trees.
-func addDirectoryTree(watcher *fsnotify.Watcher, root string) error {
-	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+func canonicalFileTriggerRoot(root string) (string, error) {
+	absolute, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve workflow project root: %w", err)
+	}
+	canonical, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return "", fmt.Errorf("resolve workflow project root: %w", err)
+	}
+	return filepath.Clean(canonical), nil
+}
+
+func cloneFileTriggerBaseline(source map[string]FileTriggerStamp) map[string]FileTriggerStamp {
+	if source == nil {
+		return nil
+	}
+	copy := make(map[string]FileTriggerStamp, len(source))
+	for path, stamp := range source {
+		copy[path] = stamp
+	}
+	return copy
+}
+
+func cloneFileTriggerStates(source map[int]FileTriggerState) map[int]FileTriggerState {
+	if source == nil {
+		return nil
+	}
+	copy := make(map[int]FileTriggerState, len(source))
+	for index, state := range source {
+		state.Baseline = cloneFileTriggerBaseline(state.Baseline)
+		state.Excludes = slices.Clone(state.Excludes)
+		copy[index] = state
+	}
+	return copy
+}
+
+func normalizeFileTriggerExcludes(excludes []string) ([]string, error) {
+	if len(excludes) > 128 {
+		return nil, errors.New("too many workflow file trigger exclusions")
+	}
+	normalized := make([]string, 0, len(excludes))
+	paths := 0
+	for _, path := range excludes {
+		if !filepath.IsLocal(filepath.FromSlash(path)) || strings.IndexByte(path, 0) >= 0 {
+			return nil, fmt.Errorf("invalid workflow file trigger exclusion %q", path)
+		}
+		clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(path)))
+		if clean == "." || !fs.ValidPath(clean) {
+			return nil, fmt.Errorf("invalid workflow file trigger exclusion %q", path)
+		}
+		paths += len(clean)
+		if paths > maxFileTriggerPaths {
+			return nil, errors.New("workflow file trigger exclusions are oversized")
+		}
+		normalized = append(normalized, clean)
+	}
+	sort.Strings(normalized)
+	return slices.Compact(normalized), nil
+}
+
+func fileTriggerExcluded(excludes []string, path string) bool {
+	for _, excluded := range excludes {
+		if path == excluded || strings.HasPrefix(path, excluded+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func validateFileTriggerState(state FileTriggerState, root, stage string, index int, kind TriggerType, pattern string, excludes []string) error {
+	if state.Version != fileTriggerStateVersion || state.ProjectRoot != root || state.Stage != stage || state.TransitionIndex != index || state.Kind != kind || state.Pattern != pattern {
+		return fmt.Errorf("file trigger checkpoint does not match project, stage or transition %d", index)
+	}
+	if !slices.Equal(state.Excludes, excludes) {
+		return fmt.Errorf("file trigger %d checkpoint has different state-directory exclusions", index)
+	}
+	if state.Baseline == nil || len(state.Baseline) > maxFileTriggerFiles {
+		return fmt.Errorf("file trigger %d has missing or oversized baseline", index)
+	}
+	var bytes int64
+	paths := 0
+	for name, stamp := range state.Baseline {
+		if name == "." || !fs.ValidPath(name) || strings.IndexByte(name, 0) >= 0 || !filepath.IsLocal(filepath.FromSlash(name)) || filepath.ToSlash(filepath.Clean(filepath.FromSlash(name))) != name || fileTriggerExcluded(excludes, name) || !fileTriggerMatches(pattern, name) {
+			return fmt.Errorf("file trigger %d has invalid baseline path %q", index, name)
+		}
+		paths += len(name)
+		if paths > maxFileTriggerPaths || stamp.Size < 0 || stamp.Size > maxFileTriggerBytes || stamp.ModTime.IsZero() {
+			return fmt.Errorf("file trigger %d has invalid or oversized baseline metadata", index)
+		}
+		bytes += stamp.Size
+		if bytes > maxFileTriggerBytes {
+			return fmt.Errorf("file trigger %d baseline exceeds %d bytes", index, maxFileTriggerBytes)
+		}
+		digest, err := hex.DecodeString(stamp.SHA256)
+		if err != nil || len(digest) != sha256.Size || hex.EncodeToString(digest) != stamp.SHA256 {
+			return fmt.Errorf("file trigger %d has invalid baseline digest for %q", index, name)
+		}
+	}
+	return nil
+}
+
+// watchFileTriggerDirectories repairs watches for a new directory subtree.
+// Its children may already exist before fsnotify reports the parent create;
+// Check reconciles those files without requiring another write notification.
+func watchFileTriggerDirectories(directory *os.Root, root, relative string, excludes []string, watcher *fsnotify.Watcher) error {
+	entries := 0
+	return fs.WalkDir(directory.FS(), relative, func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if fileTriggerExcluded(excludes, name) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		entries++
+		if entries > maxFileTriggerEntries {
+			return fmt.Errorf("file trigger project tree exceeds %d entries", maxFileTriggerEntries)
 		}
 		if !entry.IsDir() {
 			return nil
 		}
-		if err := watcher.Add(path); err != nil {
-			return fmt.Errorf("watch %q: %w", path, err)
+		return watcher.Add(filepath.Join(root, filepath.FromSlash(name)))
+	})
+}
+
+// snapshotFileTriggerTree never follows symlink entries. All reads use os.Root
+// so a directory swapped for an escaping symlink cannot disclose file contents.
+// Metadata and file identity let steady-state polls reuse digests; restoration
+// deliberately supplies no cache and hashes every matching file again.
+func snapshotFileTriggerTree(directory *os.Root, root, pattern string, excludes []string, watcher *fsnotify.Watcher, cache map[string]fileDigestCache) (map[string]FileTriggerStamp, map[string]fileDigestCache, error) {
+	liveRoot, err := os.Stat(root)
+	if err != nil {
+		return nil, nil, fmt.Errorf("stat workflow project root: %w", err)
+	}
+	openedRoot, err := directory.Stat(".")
+	if err != nil {
+		return nil, nil, fmt.Errorf("stat open workflow project root: %w", err)
+	}
+	if !os.SameFile(liveRoot, openedRoot) {
+		return nil, nil, errors.New("workflow project root changed while watching files")
+	}
+	files := make(map[string]FileTriggerStamp)
+	nextCache := make(map[string]fileDigestCache)
+	watched := make(map[string]struct{})
+	for _, path := range watcher.WatchList() {
+		watched[path] = struct{}{}
+	}
+	entries, paths := 0, 0
+	var bytes int64
+	err = fs.WalkDir(directory.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			// A vanished path cannot satisfy either file predicate. Other
+			// read failures must not certify an incomplete baseline as empty.
+			if errors.Is(walkErr, os.ErrNotExist) && name != "." {
+				return nil
+			}
+			return walkErr
 		}
+		if fileTriggerExcluded(excludes, name) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		entries++
+		if entries > maxFileTriggerEntries {
+			return fmt.Errorf("file trigger project tree exceeds %d entries; use a smaller project root", maxFileTriggerEntries)
+		}
+		if entry.IsDir() {
+			path := filepath.Join(root, filepath.FromSlash(name))
+			if _, exists := watched[path]; !exists {
+				if err := watcher.Add(path); err != nil {
+					if errors.Is(err, os.ErrNotExist) && name != "." {
+						return fs.SkipDir
+					}
+					return fmt.Errorf("watch workflow directory %q: %w", name, err)
+				}
+				watched[path] = struct{}{}
+			}
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 || !fileTriggerMatches(pattern, name) {
+			return nil
+		}
+		info, err := directory.Lstat(filepath.FromSlash(name))
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("stat workflow file %q: %w", name, err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		paths += len(name)
+		if len(files) >= maxFileTriggerFiles || paths > maxFileTriggerPaths {
+			return fmt.Errorf("file trigger baseline exceeds %d files or %d path bytes; narrow its pattern", maxFileTriggerFiles, maxFileTriggerPaths)
+		}
+		if info.Size() < 0 || info.Size() > maxFileTriggerBytes-bytes {
+			return fmt.Errorf("file trigger baseline exceeds %d content bytes; narrow its pattern", maxFileTriggerBytes)
+		}
+		bytes += info.Size()
+		if cached, ok := cache[name]; ok && os.SameFile(info, cached.info) && info.Size() == cached.stamp.Size && info.ModTime().Equal(cached.stamp.ModTime) {
+			files[name], nextCache[name] = cached.stamp, cached
+			return nil
+		}
+		stamp, err := readFileTriggerStamp(directory, name, info)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		files[name] = stamp
+		nextCache[name] = fileDigestCache{info: info, stamp: stamp}
 		return nil
 	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("snapshot workflow files: %w", err)
+	}
+	return files, nextCache, nil
+}
+
+func readFileTriggerStamp(directory *os.Root, name string, observed os.FileInfo) (FileTriggerStamp, error) {
+	file, err := directory.Open(filepath.FromSlash(name))
+	if err != nil {
+		return FileTriggerStamp{}, fmt.Errorf("open workflow file %q: %w", name, err)
+	}
+	defer file.Close()
+	before, err := file.Stat()
+	if err != nil {
+		return FileTriggerStamp{}, fmt.Errorf("stat open workflow file %q: %w", name, err)
+	}
+	if !before.Mode().IsRegular() || !os.SameFile(observed, before) || before.Size() != observed.Size() || !before.ModTime().Equal(observed.ModTime()) {
+		return FileTriggerStamp{}, fmt.Errorf("workflow file %q changed while taking its baseline; retry when the file is stable", name)
+	}
+	hash := sha256.New()
+	n, readErr := io.Copy(hash, io.LimitReader(file, before.Size()+1))
+	if readErr != nil {
+		return FileTriggerStamp{}, fmt.Errorf("hash workflow file %q: %w", name, readErr)
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return FileTriggerStamp{}, fmt.Errorf("stat hashed workflow file %q: %w", name, err)
+	}
+	if n != before.Size() || after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+		return FileTriggerStamp{}, fmt.Errorf("workflow file %q changed while hashing its baseline; retry when the file is stable", name)
+	}
+	return FileTriggerStamp{Size: n, ModTime: after.ModTime().UTC(), SHA256: hex.EncodeToString(hash.Sum(nil))}, nil
+}
+
+func fileTriggerChanged(kind TriggerType, baseline, current map[string]FileTriggerStamp) bool {
+	for name, after := range current {
+		before, existed := baseline[name]
+		if kind == TriggerFileCreated {
+			if !existed {
+				return true
+			}
+		} else if (!existed && after.Size > 0) || (existed && (before.Size != after.Size || !before.ModTime.Equal(after.ModTime) || before.SHA256 != after.SHA256)) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchPathPattern matches slash-separated relative paths and gives ** its
@@ -301,6 +674,8 @@ func matchPathPattern(pattern, rel string) bool {
 }
 
 func (t *fileTrigger) Check(_ *TriggerContext) (bool, error) {
+	t.scanMu.Lock()
+	defer t.scanMu.Unlock()
 	t.mu.Lock()
 	if t.err != nil {
 		err := t.err
@@ -311,62 +686,90 @@ func (t *fileTrigger) Check(_ *TriggerContext) (bool, error) {
 		t.mu.Unlock()
 		return true, nil
 	}
-	// Stat fallback for writes whose notification was lost (see run): compare
-	// each pending created file against its creation-time baseline.
+	if t.directory == nil || t.watcher == nil || t.baseline == nil {
+		t.mu.Unlock()
+		return false, errors.New("file trigger has not been started")
+	}
+	directory, root, watcher := t.directory, t.root, t.watcher
+	baseline, cache := t.baseline, t.cache
+	// Snapshot pending empty creates as well: even a zero-byte write can be
+	// recovered by its modification time after notification loss.
 	pending := make(map[string]fileBaseline, len(t.pending))
 	for name, baseline := range t.pending {
 		pending[name] = baseline
 	}
 	t.mu.Unlock()
 
-	fired := false
-	var settled []string
+	current, nextCache, err := snapshotFileTriggerTree(directory, root, t.pattern, t.excludes, watcher, cache)
+	if err != nil {
+		return false, err
+	}
+	fired := fileTriggerChanged(t.kind, baseline, current)
 	for name, baseline := range pending {
-		info, err := os.Stat(name)
-		if err != nil {
-			// Removed (or unreadable): a future rewrite produces a fresh
-			// Create event, so stop tracking this instance.
-			settled = append(settled, name)
-			continue
-		}
-		if info.Size() != baseline.size || info.ModTime().After(baseline.modTime) {
+		rel, err := filepath.Rel(root, name)
+		stamp, exists := current[filepath.ToSlash(rel)]
+		if err == nil && exists && (stamp.Size != baseline.size || !stamp.ModTime.Equal(baseline.modTime)) {
 			fired = true
-			settled = append(settled, name)
 		}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if fired {
-		t.fired = true
+	if t.err != nil {
+		return false, fmt.Errorf("watch filesystem: %w", t.err)
 	}
-	for _, name := range settled {
-		// Only drop the entry we actually judged: between the snapshot and
-		// this re-lock, run() may have recorded a FRESH baseline for the same
-		// name (file deleted and recreated), and deleting that would lose the
-		// very tracking the kqueue fallback exists to provide.
-		if current, ok := t.pending[name]; ok && current == pending[name] {
+	t.cache = nextCache
+	t.fired = t.fired || fired
+	for name, before := range pending {
+		rel, err := filepath.Rel(root, name)
+		if _, exists := current[filepath.ToSlash(rel)]; err == nil && !exists && t.pending[name] == before {
 			delete(t.pending, name)
 		}
 	}
 	return t.fired, nil
 }
 
+// fileState is also usable after Stop when rolling a failed transition back;
+// stopping a watcher does not erase the last observed evidence.
+func (t *fileTrigger) fileState() FileTriggerState {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return FileTriggerState{
+		Version: fileTriggerStateVersion, ProjectRoot: t.root, Stage: t.stage,
+		TransitionIndex: t.transitionIndex, Kind: t.kind, Pattern: t.pattern,
+		Excludes: slices.Clone(t.excludes),
+		Baseline: cloneFileTriggerBaseline(t.baseline), Fired: t.fired,
+	}
+}
+
 func (t *fileTrigger) Stop() error {
+	t.scanMu.Lock()
+	defer t.scanMu.Unlock()
+	return t.stopLocked()
+}
+
+func (t *fileTrigger) stopLocked() error {
 	t.mu.Lock()
 	watcher := t.watcher
 	done := t.done
+	directory := t.directory
 	t.watcher = nil
 	t.done = nil
+	t.directory = nil
 	t.mu.Unlock()
 	if done != nil {
 		close(done)
 	}
+	var err error
 	if watcher != nil {
-		if err := watcher.Close(); err != nil {
-			return fmt.Errorf("close filesystem watcher: %w", err)
-		}
+		err = watcher.Close()
 	}
 	t.wg.Wait()
+	if directory != nil {
+		err = errors.Join(err, directory.Close())
+	}
+	if err != nil {
+		return fmt.Errorf("close filesystem trigger: %w", err)
+	}
 	return nil
 }
 

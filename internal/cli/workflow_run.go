@@ -175,6 +175,9 @@ type workflowRunner struct {
 
 	store *workflow.StateStore
 	state *workflow.WorkflowState
+	// Checkpoints are control data, never evidence that an agent finished a
+	// file task. The actual store can be inside or outside the project tree.
+	fileTriggerExcludes []string
 
 	errorHandler   *workflow.ErrorHandler
 	timeoutMonitor *workflow.TimeoutMonitor
@@ -462,6 +465,10 @@ func (r *workflowRunner) dispatchStageLocked(ctx context.Context, stage string, 
 			return err
 		}
 	}
+	files, err := r.snapshotFileTriggers(stage)
+	if err != nil {
+		return err
+	}
 	r.mu.Lock()
 	if r.state == nil || r.state.CurrentStage != stage {
 		r.mu.Unlock()
@@ -491,6 +498,12 @@ func (r *workflowRunner) dispatchStageLocked(ctx context.Context, stage string, 
 		r.state.Evidence = &workflow.StageEvidence{
 			Version: workflowEvidenceVersion, Stage: stage, StartedAt: r.state.StageStartedAt,
 			Round: r.state.Turn, Panes: boundary, Matches: make(map[int][]string),
+		}
+	}
+	if files != nil {
+		r.state.Files = &workflow.StageFileEvidence{
+			Version: workflowEvidenceVersion, Stage: stage, StartedAt: r.state.StageStartedAt,
+			Round: r.state.Turn, Triggers: files,
 		}
 	}
 	if err := r.saveCheckpointLocked(); err != nil {
@@ -710,6 +723,9 @@ func (r *workflowRunner) loadCheckpoint() error {
 	if err := r.validateSavedEvidence(prior); err != nil {
 		return err
 	}
+	if err := r.validateSavedFileEvidence(prior); err != nil {
+		return err
+	}
 	r.opts.Vars = prior.Variables
 	r.state = prior
 	r.turn = prior.Turn
@@ -725,6 +741,139 @@ func (r *workflowRunner) stageHasVerdict(stage string) bool {
 		}
 	}
 	return false
+}
+
+func (r *workflowRunner) stageHasFileTrigger(stage string) bool {
+	if r.template.Flow != nil {
+		for _, tr := range r.template.Flow.Transitions {
+			if tr.From == stage && (tr.Trigger.Type == workflow.TriggerFileCreated || tr.Trigger.Type == workflow.TriggerFileModified) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// The run lease has created the state directory before this is called, so
+// both roots can be resolved without guessing where a symlink points. Exclude
+// the physical checkpoint subtree even when StateDir uses another alias.
+func (r *workflowRunner) resolveFileTriggerExclusions() error {
+	if r.store == nil || r.template.Flow == nil {
+		return nil
+	}
+	usesFiles := false
+	for _, transition := range r.template.Flow.Transitions {
+		usesFiles = usesFiles || transition.Trigger.Type == workflow.TriggerFileCreated || transition.Trigger.Type == workflow.TriggerFileModified
+	}
+	if !usesFiles {
+		return nil
+	}
+	root, err := filepath.EvalSymlinks(r.opts.ProjectRoot)
+	if err != nil {
+		return fmt.Errorf("resolve workflow file-trigger root: %w", err)
+	}
+	stateRoot, err := filepath.Abs(r.store.Dir)
+	if err != nil {
+		return fmt.Errorf("resolve workflow state directory: %w", err)
+	}
+	stateRoot, err = filepath.EvalSymlinks(stateRoot)
+	if err != nil {
+		return fmt.Errorf("resolve workflow state directory: %w", err)
+	}
+	relative, err := filepath.Rel(root, stateRoot)
+	if err != nil {
+		return fmt.Errorf("locate workflow state directory: %w", err)
+	}
+	if relative == "." {
+		return errors.New("file-triggered workflows require a state directory separate from the project root")
+	}
+	if filepath.IsLocal(relative) {
+		r.fileTriggerExcludes = []string{filepath.ToSlash(relative)}
+	}
+	return nil
+}
+
+func (r *workflowRunner) validateSavedFileEvidence(state *workflow.WorkflowState) error {
+	if state.Files == nil {
+		if !state.Completed && r.stageHasFileTrigger(state.CurrentStage) {
+			if state.Dispatches == nil && state.Evidence != nil {
+				return errors.New("workflow checkpoint has filesystem work evidence without an unattempted delivery plan")
+			}
+			for _, delivery := range state.Dispatches {
+				if delivery.Status != "pending" {
+					return errors.New("workflow checkpoint lacks the filesystem boundary for an already-dispatched file-triggered stage; inspect the stage before a deliberate --restart")
+				}
+			}
+		}
+		return nil
+	}
+	evidence := state.Files
+	if evidence.Version != workflowEvidenceVersion || evidence.Stage != state.CurrentStage ||
+		!evidence.StartedAt.Equal(state.StageStartedAt) || evidence.Round <= 0 || evidence.Round != state.Turn ||
+		!r.stageHasFileTrigger(state.CurrentStage) || evidence.Triggers == nil {
+		return errors.New("workflow checkpoint has invalid stage filesystem evidence")
+	}
+	return workflow.ValidateFileTriggerStates(r.template, r.opts.ProjectRoot, state.CurrentStage, evidence.Triggers, r.fileTriggerExcludes)
+}
+
+// snapshotFileTriggers must be called without r.mu: coordinator factories may
+// acquire that lock. Callers serialize stage changes with dispatchMu.
+func (r *workflowRunner) snapshotFileTriggers(stage string) (map[int]workflow.FileTriggerState, error) {
+	if !r.stageHasFileTrigger(stage) {
+		return nil, nil
+	}
+	observer, ok := r.coordinator.(interface {
+		FileTriggerStates() (map[int]workflow.FileTriggerState, error)
+	})
+	if !ok {
+		return nil, errors.New("workflow coordinator cannot checkpoint filesystem triggers")
+	}
+	return observer.FileTriggerStates()
+}
+
+func workflowFileEvidenceChanged(prior *workflow.StageFileEvidence, current map[int]workflow.FileTriggerState) bool {
+	if prior == nil || len(prior.Triggers) != len(current) {
+		return true
+	}
+	for index, state := range current {
+		old, ok := prior.Triggers[index]
+		if !ok || old.Fired != state.Fired {
+			return true
+		}
+	}
+	return false
+}
+
+// Join watchers before taking the final sticky receipts: a completion latched
+// between the last poll and shutdown must not disappear just because its file
+// was removed before a later resume. The caller still holds the run lease.
+func (r *workflowRunner) stopAndCheckpointFileTriggers() error {
+	r.dispatchMu.Lock()
+	defer r.dispatchMu.Unlock()
+	stage := r.coordinator.CurrentStage()
+	observer, ok := r.coordinator.(interface {
+		StopWithFileTriggerStates() (map[int]workflow.FileTriggerState, error)
+	})
+	if !ok {
+		return r.coordinator.Stop()
+	}
+	files, err := observer.StopWithFileTriggerStates()
+	if err != nil || files == nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.state == nil || r.state.Completed || r.state.CurrentStage != stage || r.state.Evidence == nil {
+		return nil
+	}
+	if workflowFileEvidenceChanged(r.state.Files, files) {
+		r.state.Files = &workflow.StageFileEvidence{
+			Version: workflowEvidenceVersion, Stage: stage, StartedAt: r.state.StageStartedAt,
+			Round: r.state.Turn, Triggers: files,
+		}
+		return r.saveCheckpointLocked()
+	}
+	return nil
 }
 
 func (r *workflowRunner) validateSavedEvidence(state *workflow.WorkflowState) error {
@@ -1015,6 +1164,10 @@ func (r *workflowRunner) observe(ctx context.Context) (*workflowObservation, err
 		return observation, nil
 	}
 	r.mu.Unlock()
+	files, err := r.snapshotFileTriggers(coordinatorStage)
+	if err != nil {
+		return nil, err
+	}
 	current, err := r.captureStageBoundary(ctx)
 	if err != nil {
 		return nil, err
@@ -1032,7 +1185,8 @@ func (r *workflowRunner) observe(ctx context.Context) (*workflowObservation, err
 	}
 	tctx := &workflow.TriggerContext{
 		Context: ctx, ProjectRoot: r.opts.ProjectRoot, Session: r.opts.Session,
-		Now: r.ports.now, TransitionEvidence: make(map[int]bool),
+		Now: r.ports.now, TransitionEvidence: make(map[int]bool), FileTriggerStates: files,
+		FileTriggerExcludes: r.fileTriggerExcludes,
 	}
 	changed := false
 	for _, agent := range r.agents {
@@ -1163,6 +1317,13 @@ func (r *workflowRunner) observe(ctx context.Context) (*workflowObservation, err
 	if r.state.CurrentStage != stage || r.state.Evidence.Round != evidence.Round {
 		return nil, errors.New("workflow stage changed while collecting output evidence")
 	}
+	if files != nil && workflowFileEvidenceChanged(r.state.Files, files) {
+		r.state.Files = &workflow.StageFileEvidence{
+			Version: workflowEvidenceVersion, Stage: stage, StartedAt: r.state.StageStartedAt,
+			Round: r.state.Turn, Triggers: files,
+		}
+		changed = true
+	}
 	if changed {
 		r.state.Evidence = &evidence
 		if err := r.saveCheckpointLocked(); err != nil {
@@ -1240,6 +1401,7 @@ func (r *workflowRunner) advanceManualDecision(ctx context.Context) (bool, strin
 	tctx := &workflow.TriggerContext{
 		Context: ctx, ProjectRoot: r.opts.ProjectRoot, Session: r.opts.Session,
 		CurrentRole: r.stageRole(stage), Now: r.ports.now,
+		FileTriggerExcludes: r.fileTriggerExcludes,
 	}
 	if err := manual.AdvanceManual(tctx, decision.TransitionIndex); err != nil {
 		return false, stage, err
@@ -1462,12 +1624,27 @@ func (a workflowRunActions) RetryStage(ctx context.Context) error {
 	// crash recovery. Save that new intent before assigning fresh turns.
 	a.r.state.Dispatches = nil
 	a.r.state.Evidence = nil
+	a.r.state.Files = nil
 	a.r.state.ManualGate = nil
+	startedAt := a.r.state.StageStartedAt
 	err := a.r.saveCheckpointLocked()
 	a.r.mu.Unlock()
 	if err != nil {
 		a.r.stop("checkpoint-failed", err)
 		return err
+	}
+	if restarter, ok := a.r.coordinator.(interface {
+		RestartStage(*workflow.TriggerContext, time.Time) error
+	}); ok {
+		if err := restarter.RestartStage(&workflow.TriggerContext{
+			Context: ctx, ProjectRoot: a.r.opts.ProjectRoot, Session: a.r.opts.Session, Now: a.r.ports.now,
+			FileTriggerExcludes: a.r.fileTriggerExcludes,
+		}, startedAt); err != nil {
+			a.r.stop("trigger-failed", err)
+			return err
+		}
+	} else {
+		return errors.New("workflow coordinator cannot reset triggers for a retry")
 	}
 	targets, err := a.r.stagePanes(stage)
 	if err != nil {
@@ -1655,6 +1832,7 @@ func (r *workflowRunner) recordTransitionLocked(newStage string, decision *workf
 	r.state.StageStartedAt = now
 	r.state.Dispatches = nil
 	r.state.Evidence = nil
+	r.state.Files = nil
 	r.state.ManualGate = nil
 	r.state.Completed = r.stageIsTerminal(newStage)
 	// History and destination commit in ONE snapshot. A crash between two
@@ -1665,7 +1843,7 @@ func (r *workflowRunner) recordTransitionLocked(newStage string, decision *workf
 // Run drives the workflow until completion, the transition budget, a
 // configured pause/abort, or context expiry. It always returns a populated
 // WorkflowRunResult mirror of what happened.
-func (r *workflowRunner) Run(ctx context.Context) (WorkflowRunResult, error) {
+func (r *workflowRunner) Run(ctx context.Context) (out WorkflowRunResult, runErr error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	r.mu.Lock()
@@ -1698,6 +1876,9 @@ func (r *workflowRunner) Run(ctx context.Context) (WorkflowRunResult, error) {
 		}
 		defer unlock()
 	}
+	if err := r.resolveFileTriggerExclusions(); err != nil {
+		return fail("checkpoint-failed", err)
+	}
 	if err := r.loadCheckpoint(); err != nil {
 		return fail("resume-rejected", err)
 	}
@@ -1724,12 +1905,16 @@ func (r *workflowRunner) Run(ctx context.Context) (WorkflowRunResult, error) {
 	}
 
 	tctx := &workflow.TriggerContext{
-		Context:     runCtx,
-		ProjectRoot: r.opts.ProjectRoot,
-		Session:     r.opts.Session,
-		Now:         r.ports.now,
+		Context:             runCtx,
+		ProjectRoot:         r.opts.ProjectRoot,
+		Session:             r.opts.Session,
+		Now:                 r.ports.now,
+		FileTriggerExcludes: r.fileTriggerExcludes,
 	}
 	if r.state != nil {
+		if r.state.Files != nil {
+			tctx.FileTriggerStates = r.state.Files.Triggers
+		}
 		restorer, ok := r.coordinator.(interface {
 			StartAt(*workflow.TriggerContext, string, time.Time, map[string]int) error
 		})
@@ -1747,8 +1932,13 @@ func (r *workflowRunner) Run(ctx context.Context) (WorkflowRunResult, error) {
 		if r.timeoutMonitor != nil {
 			r.timeoutMonitor.StopAndWait()
 		}
-		if err := r.coordinator.Stop(); err != nil {
-			r.ports.notify("workflow %s: stop coordinator: %v", r.template.Name, err)
+		if err := r.stopAndCheckpointFileTriggers(); err != nil {
+			if runErr == nil {
+				out.Reason = "checkpoint-failed"
+			}
+			runErr = errors.Join(runErr, fmt.Errorf("retain workflow filesystem evidence: %w", err))
+			out.Success = false
+			out.Error = runErr.Error()
 		}
 	}()
 

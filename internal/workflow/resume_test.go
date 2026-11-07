@@ -3,13 +3,307 @@ package workflow
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 )
+
+func fileRecoveryTemplate(kind TriggerType) *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Name: "file-recovery", Coordination: CoordPingPong,
+		Agents: []WorkflowAgent{{Profile: "cod", Role: "work"}},
+		Flow: &FlowConfig{Initial: "work", Transitions: []Transition{
+			{From: "work", To: "done", Trigger: Trigger{Type: kind, Pattern: "*.go"}},
+		}},
+	}
+}
+
+func fileRecoveryCoordinator(t *testing.T, template *WorkflowTemplate, registry *TriggerRegistry) *RuntimeCoordinator {
+	t.Helper()
+	coordinator, err := NewCoordinator(template, nil, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := coordinator.(*PingPongCoordinator).RuntimeCoordinator
+	t.Cleanup(func() { _ = runtime.Stop() })
+	return runtime
+}
+
+func TestFileTriggerResumeRecoversOfflineChanges(t *testing.T) {
+	for _, scenario := range []struct {
+		name string
+		kind TriggerType
+		edit bool
+	}{
+		{"created while stopped", TriggerFileCreated, true},
+		{"unchanged existing creation", TriggerFileCreated, false},
+		{"same size and timestamp rewrite", TriggerFileModified, true},
+		{"unchanged existing modification", TriggerFileModified, false},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "existing.go")
+			if err := os.WriteFile(path, []byte("before"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			template := fileRecoveryTemplate(scenario.kind)
+			ctx := &TriggerContext{ProjectRoot: root}
+			original := fileRecoveryCoordinator(t, template, nil)
+			if err := original.Start(ctx); err != nil {
+				t.Fatal(err)
+			}
+			saved, err := original.FileTriggerStates()
+			if err != nil || saved[0].Fired {
+				t.Fatalf("initial evidence = %+v, %v", saved, err)
+			}
+			encoded, err := json.Marshal(saved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := original.Stop(); err != nil {
+				t.Fatal(err)
+			}
+			if scenario.edit {
+				if scenario.kind == TriggerFileCreated {
+					if err := os.WriteFile(filepath.Join(root, "finished.go"), nil, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					if err := os.WriteFile(path, []byte("after!"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Chtimes(path, before.ModTime(), before.ModTime()); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			var restored map[int]FileTriggerState
+			if err := json.Unmarshal(encoded, &restored); err != nil {
+				t.Fatal(err)
+			}
+			ctx.FileTriggerStates = restored
+			resumed := fileRecoveryCoordinator(t, template, nil)
+			if err := resumed.StartAt(ctx, "work", time.Now().Add(-time.Minute), nil); err != nil {
+				t.Fatal(err)
+			}
+			fresh, err := resumed.FileTriggerStates()
+			if err != nil || fresh[0].Fired != scenario.edit {
+				t.Fatalf("resumed evidence = %+v, %v, want fired=%v", fresh, err, scenario.edit)
+			}
+			if len(fresh[0].Baseline) != 1 || fresh[0].Baseline["existing.go"].SHA256 != saved[0].Baseline["existing.go"].SHA256 {
+				t.Fatal("resume replaced the original baseline with the current tree")
+			}
+			ctx.FileTriggerStates = fresh
+			if advanced, err := resumed.Evaluate(ctx); err != nil || advanced != scenario.edit {
+				t.Fatalf("resume advance = %v, %v, want %v", advanced, err, scenario.edit)
+			}
+		})
+	}
+}
+
+func TestFileTriggerSnapshotsDetachAndGateEvaluation(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "existing.go"), []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := &TriggerContext{ProjectRoot: root, FileTriggerExcludes: []string{"control"}}
+	coordinator := fileRecoveryCoordinator(t, fileRecoveryTemplate(TriggerFileCreated), nil)
+	if err := coordinator.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	copy, err := coordinator.FileTriggerStates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(copy[0].Baseline, "existing.go")
+	copy[0].Excludes[0] = "different"
+	saved, err := coordinator.FileTriggerStates()
+	if err != nil || len(saved[0].Baseline) != 1 || saved[0].Excludes[0] != "control" {
+		t.Fatalf("caller mutated runtime evidence: %+v, %v", saved, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "finished.go"), []byte("new work"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx.FileTriggerStates = saved // This is the snapshot already made durable.
+	if advanced, err := coordinator.Evaluate(ctx); err != nil || advanced {
+		t.Fatalf("unsaved event advanced workflow: %v, %v", advanced, err)
+	}
+	fresh, err := coordinator.FileTriggerStates()
+	if err != nil || !fresh[0].Fired {
+		t.Fatalf("new evidence was not retained: %+v, %v", fresh, err)
+	}
+	ctx.FileTriggerStates = fresh
+	if advanced, err := coordinator.Evaluate(ctx); err != nil || !advanced || coordinator.CurrentStage() != "done" {
+		t.Fatalf("saved event did not advance: %v, %v", advanced, err)
+	}
+}
+
+func TestFileTriggerStoppedSnapshotRetainsDeletedCompletion(t *testing.T) {
+	root := t.TempDir()
+	ctx := &TriggerContext{ProjectRoot: root}
+	template := fileRecoveryTemplate(TriggerFileCreated)
+	coordinator := fileRecoveryCoordinator(t, template, nil)
+	if err := coordinator.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	before, err := coordinator.FileTriggerStates()
+	if err != nil || before[0].Fired {
+		t.Fatal("initial snapshot was not pending")
+	}
+	path := filepath.Join(root, "temporary.go")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitForTrigger(t, coordinator.active[0].trigger, ctx)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := coordinator.StopWithFileTriggerStates()
+	if err != nil || !stopped[0].Fired {
+		t.Fatalf("shutdown erased completion after last snapshot: %+v, %v", stopped, err)
+	}
+	resumed := fileRecoveryCoordinator(t, template, nil)
+	ctx.FileTriggerStates = stopped
+	if err := resumed.StartAt(ctx, "work", time.Now().Add(-time.Minute), nil); err != nil {
+		t.Fatal(err)
+	}
+	if advanced, err := resumed.Evaluate(ctx); err != nil || !advanced {
+		t.Fatalf("latched completion was lost after file deletion: %v, %v", advanced, err)
+	}
+}
+
+func TestFileTriggerRollbackRetainsCompletion(t *testing.T) {
+	root := t.TempDir()
+	template := fileRecoveryTemplate(TriggerFileCreated)
+	template.Flow.Transitions[0].To = "review"
+	template.Flow.Transitions = append(template.Flow.Transitions, Transition{From: "review", To: "done", Trigger: Trigger{Type: TriggerTimeElapsed, Minutes: 1}})
+	registry := NewTriggerRegistry()
+	destinationErr := errors.New("review trigger unavailable")
+	registry.Register(TriggerTimeElapsed, func(Trigger) (RuntimeTrigger, error) { return nil, destinationErr })
+	coordinator := fileRecoveryCoordinator(t, template, registry)
+	ctx := &TriggerContext{ProjectRoot: root}
+	if err := coordinator.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "completed.go")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitForTrigger(t, coordinator.active[0].trigger, ctx)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if advanced, err := coordinator.Evaluate(ctx); advanced || !errors.Is(err, destinationErr) {
+		t.Fatalf("failed destination unexpectedly advanced: %v, %v", advanced, err)
+	}
+	saved, err := coordinator.FileTriggerStates()
+	if err != nil || !saved[0].Fired || coordinator.CurrentStage() != "work" {
+		t.Fatalf("rollback erased source evidence: %+v, %v", saved, err)
+	}
+	registry.Register(TriggerTimeElapsed, newTimeElapsedTrigger)
+	ctx.FileTriggerStates = saved
+	if advanced, err := coordinator.Evaluate(ctx); err != nil || !advanced || coordinator.CurrentStage() != "review" {
+		t.Fatalf("recovered destination could not consume saved completion: %v, %v", advanced, err)
+	}
+}
+
+func TestFileTriggerRetryStartsNewBaseline(t *testing.T) {
+	root := t.TempDir()
+	ctx := &TriggerContext{ProjectRoot: root}
+	coordinator := fileRecoveryCoordinator(t, fileRecoveryTemplate(TriggerFileCreated), nil)
+	if err := coordinator.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "old-attempt.go"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prior, err := coordinator.FileTriggerStates()
+	if err != nil || !prior[0].Fired {
+		t.Fatalf("initial attempt not observed: %+v, %v", prior, err)
+	}
+	ctx.FileTriggerStates = prior
+	if err := coordinator.RestartStage(ctx, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := coordinator.FileTriggerStates()
+	if err != nil || fresh[0].Fired || len(fresh[0].Baseline) != 1 {
+		t.Fatalf("retry inherited old completion: %+v, %v", fresh, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "new-attempt.go"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err = coordinator.FileTriggerStates()
+	if err != nil || !fresh[0].Fired {
+		t.Fatalf("retry did not observe new completion: %+v, %v", fresh, err)
+	}
+}
+
+func TestFileTriggerCheckpointRejectsMismatchedEvidence(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "existing.go"), []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	template := fileRecoveryTemplate(TriggerFileCreated)
+	coordinator := fileRecoveryCoordinator(t, template, nil)
+	ctx := &TriggerContext{ProjectRoot: root, FileTriggerExcludes: []string{"control"}}
+	if err := coordinator.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := coordinator.FileTriggerStates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(map[int]FileTriggerState)
+	}{
+		{"missing", func(s map[int]FileTriggerState) { delete(s, 0) }},
+		{"extra", func(s map[int]FileTriggerState) { s[1] = s[0] }},
+		{"root", func(s map[int]FileTriggerState) { v := s[0]; v.ProjectRoot = t.TempDir(); s[0] = v }},
+		{"stage", func(s map[int]FileTriggerState) { v := s[0]; v.Stage = "old-stage"; s[0] = v }},
+		{"index", func(s map[int]FileTriggerState) { v := s[0]; v.TransitionIndex = 9; s[0] = v }},
+		{"kind", func(s map[int]FileTriggerState) { v := s[0]; v.Kind = TriggerFileModified; s[0] = v }},
+		{"pattern", func(s map[int]FileTriggerState) { v := s[0]; v.Pattern = "*.txt"; s[0] = v }},
+		{"version", func(s map[int]FileTriggerState) { v := s[0]; v.Version++; s[0] = v }},
+		{"exclusion", func(s map[int]FileTriggerState) { s[0].Excludes[0] = "other" }},
+		{"missing baseline", func(s map[int]FileTriggerState) { v := s[0]; v.Baseline = nil; s[0] = v }},
+		{"traversal", func(s map[int]FileTriggerState) { s[0].Baseline["../outside.go"] = s[0].Baseline["existing.go"] }},
+		{"excluded path", func(s map[int]FileTriggerState) { s[0].Baseline["control/state.go"] = s[0].Baseline["existing.go"] }},
+		{"nonmatching path", func(s map[int]FileTriggerState) { s[0].Baseline["unrelated.txt"] = s[0].Baseline["existing.go"] }},
+		{"negative size", func(s map[int]FileTriggerState) {
+			v := s[0].Baseline["existing.go"]
+			v.Size = -1
+			s[0].Baseline["existing.go"] = v
+		}},
+		{"invalid digest", func(s map[int]FileTriggerState) {
+			v := s[0].Baseline["existing.go"]
+			v.SHA256 = "not-a-digest"
+			s[0].Baseline["existing.go"] = v
+		}},
+		{"missing time", func(s map[int]FileTriggerState) {
+			v := s[0].Baseline["existing.go"]
+			v.ModTime = time.Time{}
+			s[0].Baseline["existing.go"] = v
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bad := cloneFileTriggerStates(saved)
+			test.mutate(bad)
+			if err := ValidateFileTriggerStates(template, root, "work", bad, ctx.FileTriggerExcludes); err == nil {
+				t.Fatal("invalid checkpoint accepted")
+			}
+		})
+	}
+}
 
 func TestCoordinatorStartAtRestoresElapsedTimeAndRouting(t *testing.T) {
 	now := time.Now().UTC()

@@ -74,6 +74,312 @@ func mustLoadWorkflowCheckpoint(t *testing.T, opts workflowRunOptions) *workflow
 	return state
 }
 
+func fileResumeWorkflowTemplate(kind workflow.TriggerType) *workflow.WorkflowTemplate {
+	template := resumeWorkflowTemplate()
+	template.Flow.Stages = []string{"build", "done"}
+	template.Flow.Transitions = []workflow.Transition{{
+		From: "build", To: "done", Trigger: workflow.Trigger{Type: kind, Pattern: "artifacts/**/*.ready"},
+	}}
+	return template
+}
+
+// Collect through the production observation/checkpoint path without asking
+// the coordinator to advance yet, so tests can stop at the durable boundary.
+func (r *workflowRunner) checkpointFileTriggers() error {
+	_, err := r.observe(context.Background())
+	return err
+}
+
+func stopFileWorkflowAfterDispatch(t *testing.T, template *workflow.WorkflowTemplate, opts workflowRunOptions, sent *[]string) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ports := resumeWorkflowPorts(sent)
+	dispatch := ports.dispatch
+	ports.dispatch = func(ctx context.Context, session, pane, prompt string) error {
+		checkpoint := mustLoadWorkflowCheckpoint(t, opts)
+		if checkpoint.Files == nil || checkpoint.Files.Round != checkpoint.Turn || checkpoint.Files.Triggers == nil {
+			t.Fatal("file-trigger prompt dispatched without its durable baseline")
+		}
+		if err := dispatch(ctx, session, pane, prompt); err != nil {
+			return err
+		}
+		cancel()
+		return nil
+	}
+	runner := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, ports)
+	result, err := runner.Run(ctx)
+	if !errors.Is(err, context.Canceled) || result.Reason != "canceled" || len(*sent) != 1 {
+		t.Fatalf("stop after delivery = %+v, %v, sends=%d", result, err, len(*sent))
+	}
+}
+
+func TestWorkflowResumeObservesFilesChangedWhileStopped(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		kind             workflow.TriggerType
+		preexisting      bool
+		preserveMetadata bool
+	}{
+		{name: "created in a new nested directory", kind: workflow.TriggerFileCreated},
+		{name: "modified existing file", kind: workflow.TriggerFileModified, preexisting: true},
+		{name: "same size and restored timestamp", kind: workflow.TriggerFileModified, preexisting: true, preserveMetadata: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := resumeWorkflowOptions(t)
+			opts.FireManual, opts.MaxTransitions = false, 8
+			template := fileResumeWorkflowTemplate(tc.kind)
+			path := filepath.Join(opts.ProjectRoot, "artifacts", "nested", "result.ready")
+			var previous os.FileInfo
+			if tc.preexisting {
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("before"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				previous, err = os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			var sent []string
+			stopFileWorkflowAfterDispatch(t, template, opts, &sent)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("after!"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.preserveMetadata {
+				if err := os.Chtimes(path, previous.ModTime(), previous.ModTime()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			opts.Resume, opts.Vars = true, nil
+			runner := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, resumeWorkflowPorts(&sent))
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			result, err := runner.Run(ctx)
+			if err != nil || !result.Completed || result.Transitions != 1 || len(sent) != 1 {
+				t.Fatalf("offline file completion = %+v, %v, sends=%d", result, err, len(sent))
+			}
+			checkpoint := mustLoadWorkflowCheckpoint(t, opts)
+			if !checkpoint.Completed || len(checkpoint.StageHistory) != 1 || checkpoint.Files != nil {
+				t.Fatalf("file completion did not commit exactly one destination: %+v", checkpoint)
+			}
+		})
+	}
+}
+
+func TestWorkflowResumeUnchangedFilesDoNotCompleteStage(t *testing.T) {
+	for _, kind := range []workflow.TriggerType{workflow.TriggerFileCreated, workflow.TriggerFileModified} {
+		t.Run(string(kind), func(t *testing.T) {
+			opts := resumeWorkflowOptions(t)
+			opts.FireManual = false
+			template := fileResumeWorkflowTemplate(kind)
+			if err := os.MkdirAll(filepath.Join(opts.ProjectRoot, "artifacts"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(opts.ProjectRoot, "artifacts", "old.ready"), []byte("old task"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var sent []string
+			stopFileWorkflowAfterDispatch(t, template, opts, &sent)
+			opts.Resume, opts.Vars = true, nil
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			ports := resumeWorkflowPorts(&sent)
+			polls := 0
+			ports.sleep = func(context.Context, time.Duration) {
+				polls++
+				if polls == 3 {
+					cancel()
+				}
+			}
+			runner := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, ports)
+			result, err := runner.Run(ctx)
+			if !errors.Is(err, context.Canceled) || result.Transitions != 0 || result.Completed || len(sent) != 1 {
+				t.Fatalf("preexisting file approved new work: %+v, %v, sends=%d", result, err, len(sent))
+			}
+		})
+	}
+}
+
+func TestWorkflowResumeRetainsObservedFileAfterRemoval(t *testing.T) {
+	opts := resumeWorkflowOptions(t)
+	opts.FireManual = false
+	template := fileResumeWorkflowTemplate(workflow.TriggerFileCreated)
+	var sent []string
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ports := resumeWorkflowPorts(&sent)
+	var runner *workflowRunner
+	ports.sleep = func(context.Context, time.Duration) {
+		path := filepath.Join(opts.ProjectRoot, "artifacts", "result.ready")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("finished"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := runner.checkpointFileTriggers(); err != nil {
+			t.Fatal(err)
+		}
+		if state := mustLoadWorkflowCheckpoint(t, opts); !state.Files.Triggers[0].Fired {
+			t.Fatal("file completion was not durable before removal")
+		}
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		cancel()
+	}
+	runner = mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, ports)
+	if result, err := runner.Run(ctx); !errors.Is(err, context.Canceled) || result.Transitions != 0 {
+		t.Fatalf("stopped run = %+v, %v", result, err)
+	}
+	opts.Resume, opts.Vars = true, nil
+	resumed := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, resumeWorkflowPorts(&sent))
+	resumeCtx, stop := context.WithTimeout(t.Context(), 3*time.Second)
+	defer stop()
+	if result, err := resumed.Run(resumeCtx); err != nil || !result.Completed || len(sent) != 1 {
+		t.Fatalf("lost durable file completion: %+v, %v, sends=%d", result, err, len(sent))
+	}
+}
+
+func TestWorkflowRetryStartsNewFilesystemBoundary(t *testing.T) {
+	opts := resumeWorkflowOptions(t)
+	opts.FireManual = false
+	template := fileResumeWorkflowTemplate(workflow.TriggerFileCreated)
+	var sent []string
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ports := resumeWorkflowPorts(&sent)
+	var runner *workflowRunner
+	polls := 0
+	ports.sleep = func(context.Context, time.Duration) {
+		polls++
+		if polls != 1 {
+			cancel()
+			return
+		}
+		path := filepath.Join(opts.ProjectRoot, "artifacts", "old.ready")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("previous attempt"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := runner.checkpointFileTriggers(); err != nil {
+			t.Fatal(err)
+		}
+		if err := (workflowRunActions{r: runner}).RetryStage(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner = mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, ports)
+	result, err := runner.Run(ctx)
+	if !errors.Is(err, context.Canceled) || result.Completed || result.Transitions != 0 || len(sent) != 2 {
+		t.Fatalf("retry inherited old file completion: %+v, %v, sends=%d", result, err, len(sent))
+	}
+	checkpoint := mustLoadWorkflowCheckpoint(t, opts)
+	if checkpoint.Files == nil || checkpoint.Files.Round != 2 || checkpoint.Files.Triggers[0].Fired {
+		t.Fatalf("retry retained old file evidence: %+v", checkpoint.Files)
+	}
+}
+
+func TestWorkflowResumeRejectsMissingOrStaleFilesystemEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*workflow.WorkflowState)
+	}{
+		{"missing", func(s *workflow.WorkflowState) { s.Files = nil }},
+		{"old round", func(s *workflow.WorkflowState) { s.Files.Round++ }},
+		{"old visit", func(s *workflow.WorkflowState) { s.Files.StartedAt = s.Files.StartedAt.Add(-time.Second) }},
+		{"wrong stage", func(s *workflow.WorkflowState) { s.Files.Stage = "review" }},
+		{"missing transition", func(s *workflow.WorkflowState) { s.Files.Triggers = map[int]workflow.FileTriggerState{} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := resumeWorkflowOptions(t)
+			opts.FireManual = false
+			template := fileResumeWorkflowTemplate(workflow.TriggerFileCreated)
+			var sent []string
+			stopFileWorkflowAfterDispatch(t, template, opts, &sent)
+			state := mustLoadWorkflowCheckpoint(t, opts)
+			tc.change(state)
+			if err := (&workflow.StateStore{Dir: opts.StateDir}).Save(state); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(opts.StateDir, opts.Session+".json")
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			opts.Resume, opts.Vars = true, nil
+			runner := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, resumeWorkflowPorts(&sent))
+			result, err := runner.Run(t.Context())
+			if err == nil || result.Success || result.Reason != "resume-rejected" || len(sent) != 1 {
+				t.Fatalf("invalid file evidence resumed: %+v, %v, sends=%d", result, err, len(sent))
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || string(after) != string(before) {
+				t.Fatalf("rejected resume changed checkpoint: %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkflowFileTriggersIgnoreCheckpointWrites(t *testing.T) {
+	for _, location := range []string{"default", "custom", "symlink alias"} {
+		t.Run(location, func(t *testing.T) {
+			opts := resumeWorkflowOptions(t)
+			opts.FireManual = false
+			if location != "default" {
+				opts.StateDir = filepath.Join(opts.ProjectRoot, "runtime-checkpoints")
+			}
+			if location == "symlink alias" {
+				if err := os.MkdirAll(opts.StateDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				alias := filepath.Join(t.TempDir(), "checkpoint-alias")
+				if err := os.Symlink(opts.StateDir, alias); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+				opts.StateDir = alias
+			}
+			template := fileResumeWorkflowTemplate(workflow.TriggerFileCreated)
+			template.Flow.Transitions[0].Trigger.Pattern = "**/*.json"
+			var sent []string
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			ports := resumeWorkflowPorts(&sent)
+			polls := 0
+			ports.sleep = func(context.Context, time.Duration) {
+				polls++
+				if polls == 3 {
+					cancel()
+				}
+			}
+			runner := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, ports)
+			result, err := runner.Run(ctx)
+			if !errors.Is(err, context.Canceled) || result.Transitions != 0 || result.Completed || len(sent) != 1 {
+				t.Fatalf("checkpoint writes completed file work: %+v, %v, sends=%d", result, err, len(sent))
+			}
+			if err := os.WriteFile(filepath.Join(opts.ProjectRoot, "answer.json"), []byte(`{"done":true}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			opts.Resume, opts.Vars = true, nil
+			resumed := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, resumeWorkflowPorts(&sent))
+			resumeCtx, stop := context.WithTimeout(t.Context(), 3*time.Second)
+			defer stop()
+			if result, err := resumed.Run(resumeCtx); err != nil || !result.Completed || len(sent) != 1 {
+				t.Fatalf("checkpoint exclusion suppressed real file work: %+v, %v, sends=%d", result, err, len(sent))
+			}
+		})
+	}
+}
+
 func TestWorkflowResumeContinuesSavedStageWithoutRepeatingPrompts(t *testing.T) {
 	opts := resumeWorkflowOptions(t)
 	var sent []string

@@ -42,8 +42,22 @@ type WorkflowState struct {
 	// boundary is saved before prompts, and observed verdicts are saved before
 	// advancing. Resuming never substitutes old pane history for that boundary.
 	Evidence *StageEvidence `json:"evidence,omitempty"`
+	// Files retains the original filesystem boundary and observed file
+	// transitions for this stage visit and prompt round, including downtime.
+	Files *StageFileEvidence `json:"files,omitempty"`
 	// ManualGate is published only after this stage's deliveries complete.
 	ManualGate *ManualGate `json:"manual_gate,omitempty"`
+}
+
+// StageFileEvidence binds filesystem observations to exactly the same stage
+// visit and dispatch round as pane evidence. A loop or intentional retry must
+// establish a new boundary instead of inheriting an earlier file verdict.
+type StageFileEvidence struct {
+	Version   int                      `json:"version"`
+	Stage     string                   `json:"stage"`
+	StartedAt time.Time                `json:"started_at"`
+	Round     int                      `json:"round"`
+	Triggers  map[int]FileTriggerState `json:"triggers"`
 }
 
 // StageEvidence binds incremental pane observations to one stage dispatch.
