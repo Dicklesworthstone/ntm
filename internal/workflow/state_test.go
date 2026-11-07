@@ -49,6 +49,38 @@ func manualWorkflowCheckpoint(t *testing.T) (*WorkflowTemplate, *WorkflowState) 
 	return template, state
 }
 
+func TestWorkflowRecoveryBudgetsCheckpointRoundTrip(t *testing.T) {
+	_, state := manualWorkflowCheckpoint(t)
+	state.Recovery = &RecoveryBudgets{
+		Retries: map[string]int{"review": 2, "revise": 1}, Restarts: map[string]int{"%1": 3},
+	}
+	store := &StateStore{Dir: t.TempDir()}
+	if err := store.Pause(state, "operator pause", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := store.Load(state.SessionName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved == nil || !saved.Paused || saved.Recovery == nil {
+		t.Fatalf("lost paused workflow recovery state: %+v", saved)
+	}
+	if err := store.Resume(saved); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := store.Load(state.SessionName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Paused || resumed.Recovery == nil || resumed.Recovery.Retries["review"] != 2 || resumed.Recovery.Retries["revise"] != 1 || resumed.Recovery.Restarts["%1"] != 3 {
+		t.Fatalf("resume reset consumed recovery budgets: %+v", resumed.Recovery)
+	}
+	resumed.Recovery.Retries["review"] = 0
+	if state.Recovery.Retries["review"] != 2 || saved.Recovery.Retries["review"] != 2 {
+		t.Fatal("loaded recovery budgets alias another checkpoint")
+	}
+}
+
 func TestWorkflowManualGateBindsVisitWithoutCaptureChurn(t *testing.T) {
 	template, state := manualWorkflowCheckpoint(t)
 	initial := *state.ManualGate

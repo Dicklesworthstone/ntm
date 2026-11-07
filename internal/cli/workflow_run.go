@@ -726,10 +726,74 @@ func (r *workflowRunner) loadCheckpoint() error {
 	if err := r.validateSavedFileEvidence(prior); err != nil {
 		return err
 	}
+	if err := r.validateRecoveryBudgets(prior); err != nil {
+		return err
+	}
 	r.opts.Vars = prior.Variables
 	r.state = prior
 	r.turn = prior.Turn
 	return nil
+}
+
+// Recovery allowances belong to the durable workflow, not the current
+// process. Old checkpoints cannot prove how much recovery they consumed.
+func (r *workflowRunner) validateRecoveryBudgets(state *workflow.WorkflowState) error {
+	if state.Recovery == nil {
+		if !state.Completed && r.template.ErrorHandling != nil {
+			eh := r.template.ErrorHandling
+			for _, action := range []workflow.ErrorAction{eh.OnAgentCrash, eh.OnAgentError, eh.OnTimeout} {
+				if action == workflow.ErrorActionRetry || action == workflow.ErrorActionRestartAgent {
+					return errors.New("workflow checkpoint lacks recovery budget evidence; inspect the run before a deliberate --restart")
+				}
+			}
+		}
+		return nil
+	}
+	if state.Recovery.Retries == nil || state.Recovery.Restarts == nil {
+		return errors.New("workflow checkpoint has incomplete recovery budgets")
+	}
+	stages := make(map[string]bool)
+	if flow := r.template.Flow; flow != nil {
+		stages[flow.Initial] = true
+		for _, stage := range flow.Stages {
+			stages[stage] = true
+		}
+		for _, transition := range flow.Transitions {
+			stages[transition.From], stages[transition.To] = true, true
+		}
+	}
+	for stage, count := range state.Recovery.Retries {
+		if strings.TrimSpace(stage) == "" || !stages[stage] || count < 0 {
+			return fmt.Errorf("workflow checkpoint has invalid retry budget for stage %q", stage)
+		}
+	}
+	for pane, count := range state.Recovery.Restarts {
+		if _, known := state.Agents[pane]; !known || strings.TrimSpace(pane) == "" || count < 0 {
+			return fmt.Errorf("workflow checkpoint has invalid restart budget for pane %q", pane)
+		}
+	}
+	return nil
+}
+
+// configureRecoveryBudgets installs a write-ahead reservation for every
+// retry and agent restart. A failed save stops the runner before the action
+// can send a prompt or replace a pane process.
+func (r *workflowRunner) configureRecoveryBudgets() error {
+	if r.state.Recovery == nil {
+		r.state.Recovery = &workflow.RecoveryBudgets{
+			Retries: make(map[string]int), Restarts: make(map[string]int),
+		}
+	}
+	return r.errorHandler.ConfigureRecovery(*r.state.Recovery, func(budgets workflow.RecoveryBudgets) error {
+		r.mu.Lock()
+		r.state.Recovery = &budgets
+		err := r.saveCheckpointLocked()
+		r.mu.Unlock()
+		if err != nil {
+			r.stop("checkpoint-failed", err)
+		}
+		return err
+	})
 }
 
 func (r *workflowRunner) stageHasVerdict(stage string) bool {
@@ -1972,6 +2036,9 @@ func (r *workflowRunner) Run(ctx context.Context) (out WorkflowRunResult, runErr
 			TemplateHash:   hash,
 			ProjectRoot:    r.opts.ProjectRoot,
 			PanePIDs:       panePIDs,
+			Recovery: &workflow.RecoveryBudgets{
+				Retries: make(map[string]int), Restarts: make(map[string]int),
+			},
 		}
 		r.mu.Lock()
 		r.state = state
@@ -1984,6 +2051,9 @@ func (r *workflowRunner) Run(ctx context.Context) (out WorkflowRunResult, runErr
 		if err := r.store.Resume(r.state); err != nil {
 			return fail("checkpoint-failed", err)
 		}
+	}
+	if err := r.configureRecoveryBudgets(); err != nil {
+		return fail("resume-rejected", fmt.Errorf("restore workflow recovery budgets: %w", err))
 	}
 
 	// Parallel workflows without a flow dispatch everyone and are done. There

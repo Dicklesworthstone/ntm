@@ -47,6 +47,17 @@ type WorkflowState struct {
 	Files *StageFileEvidence `json:"files,omitempty"`
 	// ManualGate is published only after this stage's deliveries complete.
 	ManualGate *ManualGate `json:"manual_gate,omitempty"`
+	// Recovery retains consumed attempts for the entire workflow, including
+	// resumed runs and later visits to the same stage or agent.
+	Recovery *RecoveryBudgets `json:"recovery,omitempty"`
+}
+
+// RecoveryBudgets records attempts reserved before retrying a stage or
+// restarting an agent. Failed or uncertain side effects still consume their
+// reservation, so process restarts cannot replenish recovery budgets.
+type RecoveryBudgets struct {
+	Retries  map[string]int `json:"retries"`
+	Restarts map[string]int `json:"restarts"`
 }
 
 // StageFileEvidence binds filesystem observations to exactly the same stage

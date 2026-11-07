@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -62,14 +63,93 @@ type ErrorHandler struct {
 	mu       sync.Mutex
 	retries  map[string]int // by stage
 	restarts map[string]int // by agent
+	persist  func(RecoveryBudgets) error
 }
 
 func NewErrorHandler(config ErrorHandlingConfig, actions WorkflowErrorActions) *ErrorHandler {
 	return &ErrorHandler{config: config, actions: actions, retries: make(map[string]int), restarts: make(map[string]int)}
 }
+
+// ConfigureRecovery restores consumed retry and restart budgets for a resumed
+// workflow. persist must save the supplied snapshot before returning success;
+// it runs under the handler lock and must not call back into the handler.
+// Both restored and published snapshots are detached from the live counters.
+func (h *ErrorHandler) ConfigureRecovery(state RecoveryBudgets, persist func(RecoveryBudgets) error) error {
+	for _, budget := range []struct {
+		name   string
+		counts map[string]int
+	}{{"retry", state.Retries}, {"restart", state.Restarts}} {
+		for key, count := range budget.counts {
+			if strings.TrimSpace(key) == "" || count < 0 {
+				return fmt.Errorf("invalid workflow %s budget for %q: %d", budget.name, key, count)
+			}
+		}
+	}
+	copy := copyRecoveryBudgets(state)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.retries = copy.Retries
+	h.restarts = copy.Restarts
+	h.persist = persist
+	return nil
+}
+
+func copyRecoveryBudgets(state RecoveryBudgets) RecoveryBudgets {
+	copy := RecoveryBudgets{
+		Retries:  make(map[string]int, len(state.Retries)),
+		Restarts: make(map[string]int, len(state.Restarts)),
+	}
+	for stage, count := range state.Retries {
+		copy.Retries[stage] = count
+	}
+	for agent, count := range state.Restarts {
+		copy.Restarts[agent] = count
+	}
+	return copy
+}
+
+// consumeRecovery reserves one attempt durably before its side effect. A failed
+// save leaves the current counters untouched and never authorizes the action.
+func (h *ErrorHandler) consumeRecovery(ctx context.Context, key string, restart bool) (bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(key) == "" {
+		return false, fmt.Errorf("workflow recovery requires a nonempty stage or agent identity")
+	}
+	counts, limit := h.retries, h.config.MaxRetriesPerStage
+	if restart {
+		counts, limit = h.restarts, h.config.MaxRestartsPerAgent
+	}
+	if counts[key] >= limit {
+		return false, nil
+	}
+	proposed := copyRecoveryBudgets(RecoveryBudgets{Retries: h.retries, Restarts: h.restarts})
+	if restart {
+		proposed.Restarts[key]++
+	} else {
+		proposed.Retries[key]++
+	}
+	if h.persist != nil {
+		if err := h.persist(copyRecoveryBudgets(proposed)); err != nil {
+			return false, fmt.Errorf("persist workflow recovery budget before action: %w", err)
+		}
+	}
+	h.retries, h.restarts = proposed.Retries, proposed.Restarts
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (h *ErrorHandler) Handle(ctx context.Context, err *WorkflowError) error {
 	if err == nil {
 		return nil
+	}
+	if cause := ctx.Err(); cause != nil {
+		return cause
 	}
 	if err.Timestamp.IsZero() {
 		err.Timestamp = time.Now()
@@ -83,14 +163,13 @@ func (h *ErrorHandler) Handle(ctx context.Context, err *WorkflowError) error {
 		if err.AgentID == "" {
 			return fmt.Errorf("restart_agent needs the faulted agent, but %s names none", err.Type)
 		}
-		h.mu.Lock()
-		restarts := h.restarts[err.AgentID]
-		if restarts < h.config.MaxRestartsPerAgent {
-			h.restarts[err.AgentID] = restarts + 1
-			h.mu.Unlock()
+		allowed, reserveErr := h.consumeRecovery(ctx, err.AgentID, true)
+		if reserveErr != nil {
+			return reserveErr
+		}
+		if allowed {
 			return h.actions.RestartAgent(ctx, err.AgentID)
 		}
-		h.mu.Unlock()
 		return h.actions.Abort(ctx, fmt.Errorf("agent %s exhausted its restart budget (%d restart(s)): %w", err.AgentID, h.config.MaxRestartsPerAgent, err))
 	case ErrorActionPause:
 		return h.actions.Pause(ctx, err.Message)
@@ -101,14 +180,13 @@ func (h *ErrorHandler) Handle(ctx context.Context, err *WorkflowError) error {
 	case ErrorActionNotify:
 		return h.actions.Notify(ctx, err, "workflow error")
 	case ErrorActionRetry:
-		h.mu.Lock()
-		retries := h.retries[err.Stage]
-		if retries < h.config.MaxRetriesPerStage {
-			h.retries[err.Stage] = retries + 1
-			h.mu.Unlock()
+		allowed, reserveErr := h.consumeRecovery(ctx, err.Stage, false)
+		if reserveErr != nil {
+			return reserveErr
+		}
+		if allowed {
 			return h.actions.RetryStage(ctx)
 		}
-		h.mu.Unlock()
 		return h.actions.Abort(ctx, err)
 	default:
 		return fmt.Errorf("no error action configured for %s", err.Type)

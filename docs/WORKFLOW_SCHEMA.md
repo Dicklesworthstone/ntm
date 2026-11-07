@@ -272,6 +272,15 @@ checkpoint's `errors` list and in the `faults` list of the `--json` result
 | `skip_stage` | Leaves the current stage through its first usable outgoing transition. |
 | `retry` | Sends the current stage prompt to its panes again, up to `max_retries_per_stage` times, then aborts. It does not restart a crashed agent. |
 
+Retry and restart allowances belong to the saved workflow run. `--resume`
+retains the counts already consumed, including across repeated resumes.
+Each allowance is checkpointed before another prompt is sent or an agent
+process is restarted. If that write fails, the runner stops with
+`checkpoint-failed` without performing the recovery action. An unfinished
+checkpoint created before recovery budgets were recorded cannot safely
+resume a retry/restart policy; inspect the existing work before choosing a
+deliberate `--restart`.
+
 `stage_timeout_minutes` starts a timer for each stage. If the stage is still
 current when the timer expires, `on_timeout` runs; it accepts any action
 except `restart_agent`. A `parallel` template without a flow sends its

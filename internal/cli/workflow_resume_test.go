@@ -416,6 +416,244 @@ func TestWorkflowResumeContinuesSavedStageWithoutRepeatingPrompts(t *testing.T) 
 	}
 }
 
+func TestWorkflowResumePreservesConsumedRecoveryBudget(t *testing.T) {
+	for _, action := range []workflow.ErrorAction{workflow.ErrorActionRestartAgent, workflow.ErrorActionRetry} {
+		t.Run(string(action), func(t *testing.T) {
+			opts := resumeWorkflowOptions(t)
+			opts.FireManual, opts.MaxAgentRestarts = false, 1
+			template := resumeWorkflowTemplate()
+			template.ErrorHandling = &workflow.ErrorConfig{OnAgentCrash: action, MaxRetriesPerStage: 1}
+			agents := newFakeWorkflowAgents(pingPongPIDs())
+			var sent []string
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			ports := resumeWorkflowPorts(&sent)
+			baseDispatch := ports.dispatch
+			ports.dispatch = func(ctx context.Context, session, pane, prompt string) error {
+				if len(sent) == 1 {
+					// The recovery attempt must already be durable when the
+					// retried prompt reaches the external transport.
+					state := mustLoadWorkflowCheckpoint(t, opts)
+					if state.Recovery == nil {
+						t.Fatal("recovery prompt dispatched without durable budget evidence")
+					}
+					if action == workflow.ErrorActionRetry && state.Recovery.Retries["build"] != 1 {
+						t.Fatalf("retry dispatched before its budget was consumed: %+v", state.Recovery)
+					}
+					if action == workflow.ErrorActionRestartAgent && state.Recovery.Restarts[pane] != 1 {
+						t.Fatalf("restart prompt dispatched before its budget was consumed: %+v", state.Recovery)
+					}
+				}
+				if err := baseDispatch(ctx, session, pane, prompt); err != nil {
+					return err
+				}
+				if len(sent) == 1 {
+					agents.set(pane, crashFault("agent exited during its first turn"))
+				}
+				return nil
+			}
+			ports.sleep = func(context.Context, time.Duration) {
+				if len(sent) >= 2 {
+					cancel() // Stop after the recovery action and receipt complete.
+				}
+			}
+			var first *workflowRunner
+			agents.wire(&ports, &first)
+			baseRestart := ports.restart
+			ports.restart = func(ctx context.Context, session, pane string) (int, error) {
+				state := mustLoadWorkflowCheckpoint(t, opts)
+				if state.Recovery == nil || state.Recovery.Restarts[pane] != 1 {
+					t.Fatalf("agent restarted before reserving its durable budget: %+v", state.Recovery)
+				}
+				return baseRestart(ctx, session, pane)
+			}
+			first = mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, ports)
+			result, err := first.Run(ctx)
+			if !errors.Is(err, context.Canceled) || result.Reason != "canceled" || len(sent) != 2 {
+				t.Fatalf("initial recovery = %+v, %v, sends=%d", result, err, len(sent))
+			}
+			state := mustLoadWorkflowCheckpoint(t, opts)
+			if state.Recovery == nil || len(state.Dispatches) != 1 || state.Dispatches[0].Status != "delivered" {
+				t.Fatalf("successful recovery did not preserve its checkpoint: %+v", state)
+			}
+			wantRestarts := 0
+			if action == workflow.ErrorActionRestartAgent {
+				wantRestarts = 1
+				if state.PanePIDs["%1"] == opts.PanePIDs["%1"] {
+					t.Fatal("recovery did not bind the replacement agent process")
+				}
+			}
+			if got := len(agents.restarted()); got != wantRestarts {
+				t.Fatalf("initial restarts = %d, want %d", got, wantRestarts)
+			}
+
+			// Reconstruct the runner, including its handler and the live pane
+			// identity. Repeated resumes must not grant another recovery attempt.
+			opts.Resume, opts.Vars, opts.PanePIDs = true, nil, state.PanePIDs
+			for attempt := 1; attempt <= 2; attempt++ {
+				agents.set("%1", crashFault("replacement agent exited"))
+				resumePorts := resumeWorkflowPorts(&sent)
+				resumePorts.dispatch = func(_ context.Context, _, pane, prompt string) error {
+					sent = append(sent, pane+":"+prompt)
+					return errors.New("resumed runner repeated recovered work")
+				}
+				var resumed *workflowRunner
+				agents.wire(&resumePorts, &resumed)
+				resumed = mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, resumePorts)
+				resumeCtx, stop := context.WithTimeout(t.Context(), 5*time.Second)
+				result, err := resumed.Run(resumeCtx)
+				stop()
+				if err == nil || result.Reason != "aborted" || !result.Resumed || result.Restarts != 0 {
+					t.Fatalf("resume %d reset recovery budget: %+v, %v", attempt, result, err)
+				}
+				if len(sent) != 2 || len(agents.restarted()) != wantRestarts {
+					t.Fatalf("resume %d repeated a recovery side effect: sends=%d restarts=%v", attempt, len(sent), agents.restarted())
+				}
+				resumedState := mustLoadWorkflowCheckpoint(t, opts)
+				if !reflect.DeepEqual(resumedState.Recovery, state.Recovery) {
+					t.Fatalf("resume %d changed exhausted budgets: got %+v, want %+v", attempt, resumedState.Recovery, state.Recovery)
+				}
+			}
+		})
+	}
+}
+
+func TestWorkflowRecoveryBudgetWriteFailureRefusesSideEffects(t *testing.T) {
+	for _, action := range []workflow.ErrorAction{workflow.ErrorActionRestartAgent, workflow.ErrorActionRetry} {
+		t.Run(string(action), func(t *testing.T) {
+			opts := resumeWorkflowOptions(t)
+			opts.FireManual, opts.MaxAgentRestarts = false, 1
+			template := resumeWorkflowTemplate()
+			template.ErrorHandling = &workflow.ErrorConfig{OnAgentCrash: action, MaxRetriesPerStage: 1}
+			agents := newFakeWorkflowAgents(pingPongPIDs())
+			var sent []string
+			ports := resumeWorkflowPorts(&sent)
+			baseDispatch := ports.dispatch
+			ports.dispatch = func(ctx context.Context, session, pane, prompt string) error {
+				if err := baseDispatch(ctx, session, pane, prompt); err != nil {
+					return err
+				}
+				agents.set(pane, crashFault("agent exited"))
+				return nil
+			}
+			blocked := filepath.Join(opts.ProjectRoot, "not-a-directory")
+			if err := os.WriteFile(blocked, []byte("fixture"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var runner *workflowRunner
+			agents.wire(&ports, &runner)
+			injected := false
+			ports.notify = func(_ string, _ ...any) {
+				if injected || runner.state == nil || len(runner.state.Errors) == 0 {
+					return
+				}
+				// Agent supervision has saved the fault before notifying. Fail
+				// only the ensuing recovery reservation, not initial dispatch or
+				// fault detection, so this exercises the write-before-action gate.
+				state := mustLoadWorkflowCheckpoint(t, opts)
+				if len(state.Errors) != 1 || state.Recovery == nil {
+					t.Fatalf("fault was not checkpointed before recovery: %+v", state)
+				}
+				injected = true
+				runner.store.Dir = blocked
+			}
+			runner = mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, ports)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			result, err := runner.Run(ctx)
+			if !injected || err == nil || result.Success || result.Reason != "checkpoint-failed" {
+				t.Fatalf("failed recovery reservation was not surfaced: %+v, %v, injected=%v", result, err, injected)
+			}
+			if len(sent) != 1 || len(agents.restarted()) != 0 {
+				t.Fatalf("failed reservation performed an external action: sends=%d restarts=%v", len(sent), agents.restarted())
+			}
+			if len(runner.state.Dispatches) != 1 || runner.state.Dispatches[0].Status != "delivered" || runner.state.Evidence == nil {
+				t.Fatalf("failed reservation entered the retry action and cleared delivery evidence: %+v", runner.state)
+			}
+			state := mustLoadWorkflowCheckpoint(t, opts)
+			if state.Recovery.Retries["build"] != 0 || state.Recovery.Restarts["%1"] != 0 || len(state.Dispatches) != 1 || state.Dispatches[0].Status != "delivered" {
+				t.Fatalf("failed reservation altered the durable recovery state: %+v", state)
+			}
+		})
+	}
+}
+
+func TestWorkflowResumeRejectsMissingOrInvalidRecoveryEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*workflow.WorkflowState)
+	}{
+		{"legacy missing budgets", func(s *workflow.WorkflowState) { s.Recovery = nil }},
+		{"missing retry ledger", func(s *workflow.WorkflowState) { s.Recovery.Retries = nil }},
+		{"missing restart ledger", func(s *workflow.WorkflowState) { s.Recovery.Restarts = nil }},
+		{"unknown retry stage", func(s *workflow.WorkflowState) { s.Recovery.Retries = map[string]int{"missing-stage": 1} }},
+		{"unknown restarted pane", func(s *workflow.WorkflowState) { s.Recovery.Restarts = map[string]int{"%99": 1} }},
+		{"negative retry count", func(s *workflow.WorkflowState) { s.Recovery.Retries = map[string]int{"build": -1} }},
+		{"negative restart count", func(s *workflow.WorkflowState) { s.Recovery.Restarts = map[string]int{"%1": -1} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := resumeWorkflowOptions(t)
+			opts.MaxAgentRestarts = 1
+			template := resumeWorkflowTemplate()
+			template.ErrorHandling = &workflow.ErrorConfig{OnAgentCrash: workflow.ErrorActionRestartAgent, MaxRetriesPerStage: 1}
+			var sent []string
+			runner := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, resumeWorkflowPorts(&sent))
+			if result, err := runner.Run(t.Context()); err != nil || result.Reason != "max-transitions" {
+				t.Fatalf("initial run = %+v, %v", result, err)
+			}
+			state := mustLoadWorkflowCheckpoint(t, opts)
+			if state.Recovery == nil {
+				t.Fatal("new checkpoint lacks recovery evidence")
+			}
+			state.Paused = true
+			tc.change(state)
+			// Inject old or damaged input rather than asking the normal save
+			// path to construct an invalid execution checkpoint.
+			data, err := json.MarshalIndent(state, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(opts.StateDir, opts.Session+".json")
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			opts.Resume, opts.Vars = true, nil
+			resumed := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, resumeWorkflowPorts(&sent))
+			result, err := resumed.Run(t.Context())
+			if err == nil || result.Success || result.Reason != "resume-rejected" || len(sent) != 2 {
+				t.Fatalf("unsafe recovery evidence resumed: %+v, %v, sends=%d", result, err, len(sent))
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || string(after) != string(data) {
+				t.Fatalf("recovery rejection changed the saved checkpoint: %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkflowResumeCompletedCheckpointDoesNotRequireRecoveryEvidence(t *testing.T) {
+	opts := resumeWorkflowOptions(t)
+	opts.MaxTransitions, opts.MaxAgentRestarts = 3, 1
+	template := resumeWorkflowTemplate()
+	template.ErrorHandling = &workflow.ErrorConfig{OnAgentCrash: workflow.ErrorActionRestartAgent}
+	var sent []string
+	first := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, resumeWorkflowPorts(&sent))
+	if result, err := first.Run(t.Context()); err != nil || !result.Completed || len(sent) != 2 {
+		t.Fatalf("completed run = %+v, %v, sends=%d", result, err, len(sent))
+	}
+	state := mustLoadWorkflowCheckpoint(t, opts)
+	state.Recovery = nil // A completed checkpoint from before recovery journaling.
+	if err := (&workflow.StateStore{Dir: opts.StateDir}).Save(state); err != nil {
+		t.Fatal(err)
+	}
+	opts.Resume, opts.Vars = true, nil
+	resumed := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, resumeWorkflowPorts(&sent))
+	result, err := resumed.Run(t.Context())
+	if err != nil || !result.Success || !result.Completed || !result.Resumed || len(sent) != 2 {
+		t.Fatalf("completed legacy checkpoint did not remain observational: %+v, %v, sends=%d", result, err, len(sent))
+	}
+}
+
 func TestWorkflowResumePartiallyDispatchedParallelStage(t *testing.T) {
 	opts := resumeWorkflowOptions(t)
 	template := resumeWorkflowTemplate()
