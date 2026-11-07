@@ -514,6 +514,10 @@ func (c *Client) SummarizeThread(ctx context.Context, opts SummarizeThreadOption
 		"project_key": opts.ProjectKey,
 		"thread_id":   opts.ThreadID,
 	}
+	if opts.AgentName != "" {
+		args["agent_name"] = opts.AgentName
+		c.attachRegistrationToken(args)
+	}
 	if opts.IncludeExamples != nil {
 		args["include_examples"] = *opts.IncludeExamples
 	}

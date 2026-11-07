@@ -70,7 +70,7 @@ case "$action" in
   list-panes)
     current=''
     if [ -f "$root/launched" ]; then current='claude'; fi
-    printf '%%91_NTM_SEP_0_NTM_SEP_handoff-spawn__cc_1_NTM_SEP_%s_NTM_SEP_100_NTM_SEP_30_NTM_SEP_1_NTM_SEP_4242_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$current" ;;
+    printf '%%91_NTM_SEP_0_NTM_SEP_handoff-spawn__cc_1_NTM_SEP_%s_NTM_SEP_100_NTM_SEP_30_NTM_SEP_1_NTM_SEP_4242_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0_NTM_SEP_[]\n' "$current" ;;
   display-message)
     for arg do last="$arg"; done
     case "$last" in
@@ -79,6 +79,7 @@ case "$action" in
       '#{pane_id}') printf '%%91\n' ;;
       '#{session_name}') printf 'handoff-spawn\n' ;;
       '#{pane_title}') printf 'handoff-spawn__cc_1\n' ;;
+      '[#{@ntm_rotation_token}]') printf '[]\n' ;;
       *) printf '0\n' ;;
     esac ;;
   send-keys)

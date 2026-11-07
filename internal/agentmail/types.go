@@ -475,8 +475,11 @@ type ContactPolicyResult struct {
 
 // SummarizeThreadOptions contains options for summarizing a thread.
 type SummarizeThreadOptions struct {
-	ProjectKey      string
-	ThreadID        string
+	ProjectKey string
+	ThreadID   string
+	// AgentName selects an existing identity on servers that authenticate
+	// thread reads. Its cached registration token is attached by the client.
+	AgentName       string
 	IncludeExamples *bool
 	LLMMode         *bool
 	LLMModel        string

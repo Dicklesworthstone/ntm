@@ -1315,6 +1315,34 @@ proceed with its other available context.
 Remote tmux sessions skip local handoffs and report that source as unavailable;
 NTM does not treat a matching local path as proof of the remote project's identity.
 
+To continue a specific Agent Mail conversation in newly spawned agents, use
+`--thread`:
+
+```bash
+ntm spawn payments --cc=2 --thread=FEAT-123
+ntm spawn payments --label=follow-up --cc=2 --thread=FEAT-123 --prompt="Finish the agreed tests"
+# For servers requiring an authenticated thread reader:
+ntm spawn payments --cc=1 --thread=FEAT-123 --thread-agent=BlueLake
+```
+
+NTM reads the thread summary once from the resolved project's Agent Mail scope,
+then includes its key points and action items in each agent's initial prompt.
+Per-agent defaults, `--prompt`, and pane-specific marching orders follow that
+context. Delivery uses the existing readiness checks and configured secret
+redaction. The new agents keep their own assigned identities; the read does not
+create an extra identity. `--thread-agent` uses an existing registration token
+cached by NTM for that project when the server requires authenticated reads.
+
+Thread continuation requires `agent_mail.enabled = true` and the server's
+`summarize_thread` tool. It requests a deterministic summary with LLM refinement
+and raw message examples disabled. A missing, unavailable, mismatched, empty,
+or oversized summary stops the command before project-directory creation,
+hooks, or tmux changes; the prepared context is limited to 32 KiB. The flag
+accepts one thread ID and is unavailable with remote tmux sessions. It remains
+active with `--no-recovery` and `--no-cass-context`, since it is an explicit
+request. Successful JSON output identifies the context with `thread_id` without
+echoing the conversation contents.
+
 Checkpoint restoration accepts `--as` to recover into a different tmux session
 without replacing the source session or rewriting its checkpoint. The REST
 restore endpoint accepts the same option as `target_session`. A separate session

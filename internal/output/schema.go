@@ -153,6 +153,9 @@ type SpawnResponse struct {
 	Stagger          *StaggerConfig                      `json:"stagger,omitempty"`
 	AgentMail        *spawnidentity.AgentMailSpawnStatus `json:"agent_mail,omitempty"`
 	Recovery         *RecoverySpawnStatus                `json:"recovery,omitempty"`
+	// ThreadID identifies the explicitly requested Agent Mail context included
+	// in the agents' initial prompts; summary contents are never echoed here.
+	ThreadID string `json:"thread_id,omitempty"`
 	// ProfileSet is the --profile-set name when the session was spawned from a
 	// persona set. Combined with each pane's `persona` field this gives an
 	// orchestrator a deterministic persona→pane mapping (ntm#149).

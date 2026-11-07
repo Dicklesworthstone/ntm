@@ -18,6 +18,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
@@ -1323,6 +1324,12 @@ type SpawnOptions struct {
 	NoRecovery bool
 	Prompt     string
 	InitPrompt string
+	// ThreadID explicitly resumes an Agent Mail conversation. The summary
+	// is fetched once before spawn mutations and delivered with each pane's
+	// initial prompt through the canonical readiness/redaction path.
+	ThreadID      string
+	ThreadAgent   string // Optional existing identity for authenticated thread reads.
+	threadContext string
 	// InitPromptWithAgentName, when true, prepends a deterministic
 	// `You are agent <session>_<type>_<idx>` preamble to the init prompt
 	// for each pane. Helps multi-agent prompts that key off identity
@@ -1702,6 +1709,8 @@ func newSpawnCmd() *cobra.Command {
 	var contextDays int
 	var prompt string
 	var initPrompt string
+	var threadID string
+	var threadAgent string
 	var initPromptWithAgentName bool
 	var noHooks bool
 	var profilesFlag string
@@ -1817,6 +1826,18 @@ CASS Context Injection:
   Automatically finds relevant past sessions and injects context into agents.
   Use --cass-context="query" to be specific, or rely on prompt/recipe context.
 
+Agent Mail thread continuation (--thread):
+  Fetches an existing thread's key points and action items once, before creating
+  the session, and includes them in every agent's initial prompt. The summary
+  is read from the resolved project and uses no additional LLM call.
+  Missing, unavailable, or unusable summaries fail the spawn before mutation.
+  This explicit context is independent of --no-recovery and --no-cass-context.
+  Servers requiring authenticated reads can use --thread-agent=NAME with an
+  existing NTM-cached registration token; no new identity is created for the read.
+
+  ntm spawn myproject --cc=1 --thread=FEAT-123
+  ntm spawn myproject --cc=2 --thread=FEAT-123 --prompt="Finish the agreed tests"
+
 Stagger mode (--stagger-mode):
   Prevents thundering herd and rate limiting when spawning multiple agents.
   All panes are created immediately for dashboard visibility, but prompts
@@ -1877,6 +1898,12 @@ Examples:
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sessionName := args[0]
+			if cmd.Flags().Changed("thread") && strings.TrimSpace(threadID) == "" {
+				return errors.New("--thread requires one non-empty Agent Mail thread ID")
+			}
+			if cmd.Flags().Changed("thread-agent") && strings.TrimSpace(threadAgent) == "" {
+				return errors.New("--thread-agent requires an existing Agent Mail agent name")
+			}
 
 			// Reject project names containing "--" (reserved separator) (bd-1933u)
 			if err := config.ValidateProjectName(sessionName); err != nil {
@@ -2122,6 +2149,8 @@ Examples:
 				NoRecovery:              noRecovery,
 				Prompt:                  prompt,
 				InitPrompt:              initPrompt,
+				ThreadID:                threadID,
+				ThreadAgent:             threadAgent,
 				InitPromptWithAgentName: initPromptWithAgentName,
 				LocalModel:              localModel,
 				LocalHost:               localHost,
@@ -2214,6 +2243,8 @@ Examples:
 	cmd.Flags().IntVar(&contextDays, "cass-context-days", 0, "Look back N days")
 	cmd.Flags().StringVar(&prompt, "prompt", "", "Prompt to initialize agents with")
 	cmd.Flags().StringVar(&initPrompt, "init-prompt", "", "Prompt to send after agents are ready (used with --assign)")
+	cmd.Flags().StringVar(&threadID, "thread", "", "Continue one existing Agent Mail thread in each agent's initial prompt")
+	cmd.Flags().StringVar(&threadAgent, "thread-agent", "", "Existing Agent Mail identity for authenticated --thread reads (uses its cached token)")
 	cmd.Flags().BoolVar(&initPromptWithAgentName, "with-agent-name", false, "Prepend a `You are agent <name>` preamble to --init-prompt for each pane so agents know their deterministic identity. See ntm#138.")
 	cmd.Flags().BoolVar(&noHooks, "no-hooks", false, "Disable command hooks")
 	cmd.Flags().BoolVar(&safety, "safety", false, "Fail if session already exists (prevents accidental reuse)")
@@ -2357,6 +2388,9 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	if err := validateSpawnPaneEnv(opts.PaneEnv); err != nil {
 		return outputError(err)
 	}
+	if err := validateSpawnThreadOptions(opts); err != nil {
+		return outputError(err)
+	}
 	if err := validateSpawnAgentTypes(opts.Agents, opts.PluginMap, opts.PersonaMap); err != nil {
 		return outputError(err)
 	}
@@ -2386,6 +2420,14 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	}
 	if err := validateSpawnWorktreeOptions(opts); err != nil {
 		return outputError(err)
+	}
+	if opts.ThreadID != "" {
+		opts.ThreadID = strings.TrimSpace(opts.ThreadID)
+		opts.ThreadAgent = strings.TrimSpace(opts.ThreadAgent)
+		opts.threadContext, err = prepareSpawnThreadContext(ctx, dir, opts.ThreadID, opts.ThreadAgent)
+		if err != nil {
+			return outputError(err)
+		}
 	}
 	if opts.Assign {
 		admission, preflightErr := preflightSpawnAssignment(
@@ -3869,6 +3911,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			Stagger:             staggerCfg,
 			AgentMail:           agentMailStatus,
 			Recovery:            newRecoverySpawnStatus(recoveryEnabled, rc),
+			ThreadID:            opts.ThreadID,
 			ProfileSet:          opts.ProfileSetName,
 			SeatSkips:           seatSkips,
 		}
@@ -4110,6 +4153,116 @@ func runSpawnAssignmentTextContext(
 	return nil
 }
 
+const maxSpawnThreadContextBytes = 32 * 1024
+
+func validateSpawnThreadOptions(opts SpawnOptions) error {
+	if opts.ThreadID == "" {
+		if opts.ThreadAgent != "" {
+			return errors.New("--thread-agent requires --thread")
+		}
+		return nil
+	}
+	threadID := strings.TrimSpace(opts.ThreadID)
+	if threadID == "" || !utf8.ValidString(threadID) || strings.ContainsRune(threadID, ',') || strings.IndexFunc(threadID, unicode.IsControl) >= 0 {
+		return errors.New("--thread requires one non-empty UTF-8 thread ID without commas or control characters")
+	}
+	if opts.ThreadAgent != "" {
+		agentName := strings.TrimSpace(opts.ThreadAgent)
+		if agentName == "" || !utf8.ValidString(agentName) || strings.IndexFunc(agentName, unicode.IsControl) >= 0 {
+			return errors.New("--thread-agent requires a non-empty UTF-8 agent name without control characters")
+		}
+	}
+	return nil
+}
+
+// prepareSpawnThreadContext is an explicit, read-only preflight. In particular,
+// macro_prepare_thread may register a competing agent identity, so it must not
+// be used to prepare context for the separate per-pane identity lifecycle.
+func prepareSpawnThreadContext(ctx context.Context, projectDir, threadID, agentName string) (string, error) {
+	if ctx == nil {
+		return "", errors.New("Agent Mail thread continuation requires a command context")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if cfg == nil || !cfg.AgentMail.Enabled {
+		return "", errors.New("--thread requires Agent Mail; enable agent_mail.enabled in config")
+	}
+	if tmux.DefaultClient != nil && tmux.DefaultClient.Remote != "" {
+		return "", errors.New("--thread cannot resolve local Agent Mail project context for a remote tmux session")
+	}
+	projectKey := agentmail.CanonicalProjectKey(projectDir)
+	client := newAgentMailClient(projectKey)
+	if agentName != "" && client.RegistrationToken(projectKey, agentName) == "" &&
+		projectDir != projectKey && agentmail.ProjectKeysEquivalent(projectDir, projectKey) {
+		// Spawn registries retain the configured project path, which may be
+		// a symlink. Read that known equivalent scope and copy only the
+		// selected reader's token into the canonical request scope.
+		aliasClient := newAgentMailClient(projectDir)
+		if token := aliasClient.RegistrationToken(projectDir, agentName); token != "" {
+			client.SetRegistrationToken(projectKey, agentName, token)
+		}
+	}
+	if agentName != "" && client.RegistrationToken(projectKey, agentName) == "" {
+		return "", fmt.Errorf("--thread-agent %q has no cached registration token for project %q; use an existing NTM-registered identity", agentName, projectKey)
+	}
+	// The server's deterministic summary supplies existing conversation
+	// context without starting an LLM request or including raw message bodies.
+	disabled := false
+	summary, err := client.SummarizeThread(ctx, agentmail.SummarizeThreadOptions{
+		ProjectKey:      projectKey,
+		ThreadID:        threadID,
+		AgentName:       agentName,
+		IncludeExamples: &disabled,
+		LLMMode:         &disabled,
+	})
+	if err != nil {
+		return "", fmt.Errorf("read Agent Mail thread %q before spawn (authenticated servers may require --thread-agent): %w", threadID, err)
+	}
+	if summary == nil || summary.ThreadID != threadID || (summary.Summary.ThreadID != "" && summary.Summary.ThreadID != threadID) {
+		return "", fmt.Errorf("Agent Mail returned a missing or mismatched summary for thread %q", threadID)
+	}
+
+	var prompt strings.Builder
+	fmt.Fprintf(&prompt, "# Agent Mail thread continuation\n\nThread: %q\nProject: %q\n\n", threadID, projectKey)
+	prompt.WriteString("Continue the work discussed below, checking the current repository state. Use the identity assigned to this pane; participants identify the prior conversation.\n")
+	usablePoints := 0
+	for _, section := range []struct {
+		title  string
+		values []string
+	}{
+		{"Participants", summary.Summary.Participants},
+		{"Key points", summary.Summary.KeyPoints},
+		{"Action items", summary.Summary.ActionItems},
+	} {
+		wroteHeading := false
+		for _, value := range section.values {
+			if !utf8.ValidString(value) || strings.ContainsRune(value, '\x00') {
+				return "", fmt.Errorf("Agent Mail thread %q contains malformed summary text", threadID)
+			}
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			if !wroteHeading {
+				fmt.Fprintf(&prompt, "\n## %s\n", section.title)
+				wroteHeading = true
+			}
+			if prompt.Len()+len(value)+3 > maxSpawnThreadContextBytes {
+				return "", fmt.Errorf("Agent Mail thread %q summary exceeds the %d-byte continuation limit; select a smaller thread or provide a concise --prompt without --thread", threadID, maxSpawnThreadContextBytes)
+			}
+			fmt.Fprintf(&prompt, "- %s\n", value)
+			if section.title != "Participants" {
+				usablePoints++
+			}
+		}
+	}
+	if usablePoints == 0 {
+		return "", fmt.Errorf("Agent Mail thread %q was not found or has no usable key points or action items", threadID)
+	}
+	return strings.TrimSpace(prompt.String()), nil
+}
+
 func resolveSpawnPanePrompt(opts SpawnOptions, agentType AgentType, agentOrder int) (string, error) {
 	panePrompt := opts.Prompt
 	if mo, ok := opts.MarchingOrders[agentOrder]; ok {
@@ -4120,13 +4273,20 @@ func resolveSpawnPanePrompt(opts SpawnOptions, agentType AgentType, agentOrder i
 	if err != nil {
 		return panePrompt, err
 	}
-	if defaultPrompt == "" {
-		return panePrompt, nil
+	if defaultPrompt != "" {
+		if panePrompt == "" {
+			panePrompt = defaultPrompt
+		} else {
+			panePrompt = defaultPrompt + "\n\n" + panePrompt
+		}
 	}
-	if panePrompt == "" {
-		return defaultPrompt, nil
+	if opts.threadContext != "" {
+		if panePrompt == "" {
+			return opts.threadContext, nil
+		}
+		return opts.threadContext + "\n\n## Initial instructions\n\n" + panePrompt, nil
 	}
-	return defaultPrompt + "\n\n" + panePrompt, nil
+	return panePrompt, nil
 }
 
 func spawnHasPromptDelivery(opts SpawnOptions) bool {
