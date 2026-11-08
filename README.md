@@ -755,6 +755,20 @@ gate requires its own choice. Use `--project-root DIR` with status and trigger
 when the project is elsewhere; `workflow run --fire-manual` remains the explicit
 option for automatically advancing every manual gate.
 
+Workflow checkpoints also retain the selected tmux endpoint: local, or the exact
+SSH target. `workflow status` reports it, and `--resume` requires that original
+endpoint even if another host has matching pane IDs and PIDs. Legacy checkpoints
+without an endpoint remain inspectable, but require independent inspection and
+an explicit `--restart` before running the workflow again. Changing an endpoint
+also invalidates its manual gate decisions.
+
+SSH workflows can use agent-output, idle, elapsed-time, and manual triggers.
+File and command triggers require NTM to run on the agents' host; remote workflows
+reject those triggers before starting, including triggers in later stages.
+A same-named local directory or explicit `--project-root` does not establish a
+shared filesystem. For SSH workflows, `--project-root` selects the local project
+directory containing the checkpoint and defaults to the local current directory.
+
 The dashboard resumes pipelines in a detached worker, so closing the browser or
 restarting the HTTP server does not cancel an authorized resume. REST clients can
 request the same lifetime with `POST /api/v1/pipelines/{id}/resume` and

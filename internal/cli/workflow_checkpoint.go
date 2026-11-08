@@ -19,6 +19,7 @@ type WorkflowCheckpointResult struct {
 	Success         bool                       `json:"success"`
 	Workflow        string                     `json:"workflow"`
 	Session         string                     `json:"session"`
+	TmuxEndpoint    string                     `json:"tmux_endpoint,omitempty"`
 	CurrentStage    string                     `json:"current_stage"`
 	Paused          bool                       `json:"paused"`
 	Completed       bool                       `json:"completed"`
@@ -52,6 +53,11 @@ func newWorkflowCheckpointCmd(action string) *cobra.Command {
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "workflow %s session %s: stage %s (paused=%t completed=%t)\n",
 				result.Workflow, result.Session, stageLabel(result.CurrentStage), result.Paused, result.Completed)
+			if result.TmuxEndpoint != "" {
+				fmt.Fprintf(out, "  tmux endpoint: %s\n", result.TmuxEndpoint)
+			} else {
+				fmt.Fprintln(out, "  tmux endpoint: unknown (legacy checkpoint; inspect the original agents before restarting)")
+			}
 			fmt.Fprintf(out, "  checkpoint token: %s\n", result.CheckpointToken)
 			for _, delivery := range result.Dispatches {
 				fmt.Fprintf(out, "  pane %s role %s turn %d: %s", delivery.Pane, delivery.Role, delivery.Turn, delivery.Status)
@@ -138,6 +144,7 @@ func getWorkflowCheckpoint(ctx context.Context, projectRoot, session, pane, toke
 	}
 	return WorkflowCheckpointResult{
 		Success: true, Workflow: state.WorkflowName, Session: state.SessionName,
+		TmuxEndpoint: state.TmuxEndpoint,
 		CurrentStage: state.CurrentStage, Paused: state.Paused, Completed: state.Completed,
 		Dispatches:      append([]workflow.StageDispatch{}, state.Dispatches...),
 		CheckpointToken: currentToken,

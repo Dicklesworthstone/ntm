@@ -654,6 +654,99 @@ func TestWorkflowResumeCompletedCheckpointDoesNotRequireRecoveryEvidence(t *test
 	}
 }
 
+func TestWorkflowResumeBindsTmuxEndpointBeforeObservation(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		original        string
+		resume          string
+		missingIdentity bool
+		completed       bool
+		allowed         bool
+	}{
+		{name: "same local endpoint", original: "local", resume: "local", allowed: true},
+		{name: "same SSH endpoint", original: "ssh:build-host", resume: "ssh:build-host", allowed: true},
+		{name: "another SSH host", original: "ssh:build-host", resume: "ssh:other-host"},
+		{name: "local to SSH", original: "local", resume: "ssh:build-host"},
+		{name: "SSH to local", original: "ssh:build-host", resume: "local"},
+		{name: "legacy local checkpoint", original: "local", resume: "local", missingIdentity: true},
+		{name: "legacy SSH checkpoint", original: "ssh:build-host", resume: "ssh:build-host", missingIdentity: true},
+		{name: "completed checkpoint on another host", original: "ssh:build-host", resume: "ssh:other-host", completed: true},
+		{name: "completed legacy checkpoint", original: "local", resume: "local", missingIdentity: true, completed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := resumeWorkflowOptions(t)
+			opts.TmuxEndpoint = tc.original
+			if tc.completed {
+				opts.MaxTransitions = 3
+			}
+			var sent []string
+			first := mustResumeWorkflowRunner(t, resumeWorkflowTemplate(), resumeWorkflowAgents(), opts, resumeWorkflowPorts(&sent))
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			result, err := first.Run(ctx)
+			if err != nil || !result.Success || result.Completed != tc.completed || len(sent) != 2 {
+				t.Fatalf("initial run = %+v, %v, sends=%v", result, err, sent)
+			}
+			prior := mustLoadWorkflowCheckpoint(t, opts)
+			if prior.TmuxEndpoint != tc.original {
+				t.Fatalf("checkpoint endpoint = %q, want %q", prior.TmuxEndpoint, tc.original)
+			}
+			if !tc.completed {
+				if err := (&workflow.StateStore{Dir: opts.StateDir}).Pause(prior, "operator pause", time.Now()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			path := filepath.Join(opts.StateDir, opts.Session+".json")
+			if tc.missingIdentity {
+				// Reproduce an older checkpoint without allowing the current
+				// writer to infer which host originally received its prompts.
+				prior.TmuxEndpoint = ""
+				data, err := json.MarshalIndent(prior, "", "  ")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			opts.Resume, opts.Vars, opts.TmuxEndpoint = true, nil, tc.resume
+			ports := resumeWorkflowPorts(&sent)
+			observations := 0
+			ports.endpoint = func() string { return tc.resume }
+			ports.capture = func(context.Context, string, int) (string, error) {
+				observations++
+				return "", nil
+			}
+			ports.faults = func(context.Context, map[string]int) (map[string]workflowAgentFault, error) {
+				observations++
+				return nil, nil
+			}
+			resumed := mustResumeWorkflowRunner(t, resumeWorkflowTemplate(), resumeWorkflowAgents(), opts, ports)
+			result, err = resumed.Run(ctx)
+			if tc.allowed {
+				if err != nil || !result.Success || !result.Completed || !result.Resumed || len(sent) != 2 {
+					t.Fatalf("same endpoint lost progress or repeated prompts: %+v, %v, sends=%v", result, err, sent)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "endpoint") || result.Success || result.Reason != "resume-rejected" || observations != 0 || len(sent) != 2 {
+				t.Fatalf("foreign or unbound checkpoint was observed or acted on: %+v, %v, observations=%d sends=%v", result, err, observations, sent)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(before) != string(after) {
+				t.Fatal("endpoint refusal cleared the pause or changed the checkpoint")
+			}
+		})
+	}
+}
+
 func TestWorkflowResumePartiallyDispatchedParallelStage(t *testing.T) {
 	opts := resumeWorkflowOptions(t)
 	template := resumeWorkflowTemplate()

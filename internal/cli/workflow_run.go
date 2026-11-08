@@ -110,6 +110,10 @@ type workflowRunPorts struct {
 	// validate binds production observations to the same physical pane/PID
 	// throughout the run. Custom test transports own their pane identities.
 	validate func(context.Context) error
+	// endpoint returns the currently configured tmux host. It is checked
+	// around observations as well as before dispatch, so matching pane IDs
+	// cannot redirect a saved workflow when the transport changes.
+	endpoint func() string
 	// faults classifies the run's agent panes (pane → bound shell PID) with
 	// ntm's shared health observation; panes absent from the result are
 	// healthy. Nil disables agent crash/error supervision.
@@ -146,6 +150,7 @@ func (p *workflowRunPorts) fillDefaults() {
 type workflowRunOptions struct {
 	Session        string
 	ProjectRoot    string
+	TmuxEndpoint   string // "local" or "ssh:<target>"; durable host identity.
 	Vars           map[string]string
 	PanePIDs       map[string]int    // Live pane lifetimes, supplied by the tmux adapter.
 	PaneTypes      map[string]string // Agent types captured alongside those lifetimes.
@@ -216,6 +221,12 @@ func newWorkflowRunner(template *workflow.WorkflowTemplate, agents []workflow.Co
 	}
 	if ports.dispatch == nil || ports.capture == nil {
 		return nil, errors.New("workflow dispatch and capture ports are required")
+	}
+	if opts.TmuxEndpoint == "" {
+		opts.TmuxEndpoint = "local"
+	}
+	if err := validateWorkflowEndpoint(template, opts.TmuxEndpoint); err != nil {
+		return nil, err
 	}
 	root, err := filepath.Abs(opts.ProjectRoot)
 	if err != nil {
@@ -666,6 +677,12 @@ func (r *workflowRunner) loadCheckpoint() error {
 	if prior.ResumeVersion != 1 || prior.TemplateHash != hash || prior.WorkflowName != r.template.Name || prior.ProjectRoot != r.opts.ProjectRoot {
 		return errors.New("workflow checkpoint version, template, or project differs; refusing unsafe resume (use --restart for a deliberate fresh run)")
 	}
+	if prior.TmuxEndpoint == "" {
+		return errors.New("workflow checkpoint lacks its tmux endpoint; inspect the original agents before a deliberate --restart")
+	}
+	if prior.TmuxEndpoint != r.opts.TmuxEndpoint {
+		return fmt.Errorf("workflow checkpoint belongs to tmux endpoint %q, not %q; resume with the original endpoint", prior.TmuxEndpoint, r.opts.TmuxEndpoint)
+	}
 	if prior.StageStartedAt.IsZero() || prior.StageStartedAt.After(r.ports.now()) || prior.Turn < 0 {
 		return errors.New("workflow checkpoint has invalid timing or turn state")
 	}
@@ -1006,10 +1023,20 @@ func (r *workflowRunner) validatePanes(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := r.validateEndpoint(); err != nil {
+		return err
+	}
 	if r.ports.validate != nil {
 		if err := r.ports.validate(ctx); err != nil {
 			return fmt.Errorf("workflow pane identity changed; no further dispatch or transition: %w", err)
 		}
+	}
+	return r.validateEndpoint()
+}
+
+func (r *workflowRunner) validateEndpoint() error {
+	if r.ports.endpoint != nil && r.ports.endpoint() != r.opts.TmuxEndpoint {
+		return fmt.Errorf("workflow tmux endpoint changed from %q; no further observation, dispatch, or transition", r.opts.TmuxEndpoint)
 	}
 	return nil
 }
@@ -1541,9 +1568,15 @@ func (a workflowRunActions) RestartAgent(ctx context.Context, pane string) error
 		return failRestart(fmt.Errorf("restart_agent: no agent restart transport for pane %s", pane))
 	}
 	r.ports.notify("workflow %s: restarting agent in pane %s (%s)", r.template.Name, pane, role)
+	if err := r.validateEndpoint(); err != nil {
+		return failRestart(err)
+	}
 	pid, err := r.ports.restart(ctx, r.opts.Session, pane)
 	if err != nil {
 		return failRestart(fmt.Errorf("restart agent in pane %s (%s): %w", pane, role, err))
+	}
+	if err := r.validateEndpoint(); err != nil {
+		return failRestart(err)
 	}
 	stage, redeliver, err := r.rebindRestartedPaneLocked(ctx, pane, pid)
 	if err != nil {
@@ -1618,6 +1651,9 @@ func (a workflowRunActions) Pause(ctx context.Context, reason string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := a.r.validateEndpoint(); err != nil {
+		return err
+	}
 	a.r.mu.Lock()
 	if a.r.state != nil && a.r.state.Completed {
 		a.r.mu.Unlock()
@@ -1641,6 +1677,9 @@ func (a workflowRunActions) Pause(ctx context.Context, reason string) error {
 func (a workflowRunActions) SkipStage(_ context.Context) error {
 	a.r.dispatchMu.Lock()
 	defer a.r.dispatchMu.Unlock()
+	if err := a.r.validateEndpoint(); err != nil {
+		return err
+	}
 	stage := a.r.coordinator.CurrentStage()
 	if a.r.template.Flow != nil {
 		for _, tr := range a.r.template.Flow.Transitions {
@@ -1668,6 +1707,9 @@ func (a workflowRunActions) Abort(_ context.Context, err error) error {
 func (a workflowRunActions) RetryStage(ctx context.Context) error {
 	a.r.dispatchMu.Lock()
 	defer a.r.dispatchMu.Unlock()
+	if err := a.r.validateEndpoint(); err != nil {
+		return err
+	}
 	stage := a.r.coordinator.CurrentStage()
 	a.r.mu.Lock()
 	if a.r.state == nil || a.r.state.CurrentStage != stage {
@@ -1757,6 +1799,9 @@ func (r *workflowRunner) superviseAgents(ctx context.Context) error {
 	if r.ports.faults == nil || r.errorHandler == nil {
 		return nil
 	}
+	if err := r.validateEndpoint(); err != nil {
+		return err
+	}
 	r.dispatchMu.Lock()
 	expected := make(map[string]int, len(r.agents))
 	for _, agent := range r.agents {
@@ -1764,6 +1809,9 @@ func (r *workflowRunner) superviseAgents(ctx context.Context) error {
 	}
 	r.dispatchMu.Unlock()
 	faults, err := r.ports.faults(ctx, expected)
+	if endpointErr := r.validateEndpoint(); endpointErr != nil {
+		return endpointErr
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
@@ -1931,6 +1979,9 @@ func (r *workflowRunner) Run(ctx context.Context) (out WorkflowRunResult, runErr
 		}
 		return *result, err
 	}
+	if err := r.validateEndpoint(); err != nil {
+		return fail("endpoint-changed", err)
+	}
 	if r.store != nil {
 		lockCtx, lockCancel := context.WithTimeout(runCtx, time.Second)
 		unlock, err := r.store.Acquire(lockCtx, r.opts.Session)
@@ -2035,6 +2086,7 @@ func (r *workflowRunner) Run(ctx context.Context) (out WorkflowRunResult, runErr
 			ResumeVersion:  1,
 			TemplateHash:   hash,
 			ProjectRoot:    r.opts.ProjectRoot,
+			TmuxEndpoint:   r.opts.TmuxEndpoint,
 			PanePIDs:       panePIDs,
 			Recovery: &workflow.RecoveryBudgets{
 				Retries: make(map[string]int), Restarts: make(map[string]int),
@@ -2586,6 +2638,14 @@ actions only report the fault. restart_agent restarts the pane with the same
 engine as 'ntm respawn' and sends the current stage prompt again, at most
 [resilience] max_restarts times per pane per run; the next fault aborts.
 
+Checkpoints bind the configured tmux endpoint (local or the exact SSH target).
+Resume requires the original endpoint even when pane IDs and PIDs match.
+SSH workflows support agent-output, idle, elapsed-time, and manual triggers.
+File and command triggers require running ntm on the host that owns the agents;
+they never inspect a same-named local directory for a remote session.
+For SSH workflows, --project-root selects the local checkpoint directory's
+project root and defaults to the current local directory.
+
 Examples:
   ntm workflow run red-green --var feature="parser rewrite"
   ntm workflow run specialist-team --session myproj --fire-manual
@@ -2609,7 +2669,7 @@ Examples:
 	}
 
 	cmd.Flags().StringVarP(&sessionFlag, "session", "s", "", "target session (default: inferred like 'ntm send')")
-	cmd.Flags().StringVar(&projectRoot, "project-root", "", "project root for file/command triggers (default: session working dir, else cwd)")
+	cmd.Flags().StringVar(&projectRoot, "project-root", "", "local project root for checkpoints and file/command triggers (default: local session working dir, else cwd)")
 	cmd.Flags().StringArrayVar(&varFlags, "var", nil, "workflow setup variable key=value (repeatable); required prompts without defaults must be supplied")
 	cmd.Flags().IntVar(&maxTransitions, "max-transitions", 8, "stop after this many stage transitions")
 	cmd.Flags().DurationVar(&interval, "interval", 2*time.Second, "trigger poll interval")
@@ -2633,6 +2693,36 @@ type workflowRunCLIFlags struct {
 	TriggerTimeout time.Duration
 	Resume         bool
 	Restart        bool
+}
+
+// Match the pipeline delivery contract: endpoint selection is an identity
+// boundary even when unrelated hosts happen to assign the same pane and PID.
+func workflowTmuxEndpoint() string {
+	if tmux.DefaultClient.Remote == "" {
+		return "local"
+	}
+	return "ssh:" + tmux.DefaultClient.Remote
+}
+
+func validateWorkflowEndpoint(template *workflow.WorkflowTemplate, endpoint string) error {
+	if template == nil {
+		return errors.New("workflow template is required")
+	}
+	if endpoint == "local" {
+		return nil
+	}
+	if !strings.HasPrefix(endpoint, "ssh:") || strings.TrimSpace(strings.TrimPrefix(endpoint, "ssh:")) == "" {
+		return fmt.Errorf("invalid workflow tmux endpoint %q", endpoint)
+	}
+	if template.Flow != nil {
+		for _, transition := range template.Flow.Transitions {
+			switch transition.Trigger.Type {
+			case workflow.TriggerFileCreated, workflow.TriggerFileModified, workflow.TriggerCommandSuccess, workflow.TriggerCommandFailure:
+				return fmt.Errorf("workflow %q uses %s at stage %q, which observes the local host and cannot drive SSH agents; run ntm workflow on the remote host instead", template.Name, transition.Trigger.Type, transition.From)
+			}
+		}
+	}
+	return nil
 }
 
 func runWorkflowRun(ctx context.Context, ref string, flags workflowRunCLIFlags) error {
@@ -2659,8 +2749,12 @@ func runWorkflowRun(ctx context.Context, ref string, flags workflowRunCLIFlags) 
 		return err
 	}
 
+	endpoint := workflowTmuxEndpoint()
 	template, err := resolveWorkflowForRun(ref)
 	if err != nil {
+		return failEarly(err)
+	}
+	if err := validateWorkflowEndpoint(template, endpoint); err != nil {
 		return failEarly(err)
 	}
 	varsTemplate := *template
@@ -2708,7 +2802,7 @@ func runWorkflowRun(ctx context.Context, ref string, flags workflowRunCLIFlags) 
 	}
 
 	projectRoot := strings.TrimSpace(flags.ProjectRoot)
-	if projectRoot == "" {
+	if projectRoot == "" && endpoint == "local" {
 		projectRoot = getSessionWorkingDir(ctx, session, false)
 	}
 	if projectRoot == "" {
@@ -2724,6 +2818,7 @@ func runWorkflowRun(ctx context.Context, ref string, flags workflowRunCLIFlags) 
 	opts := workflowRunOptions{
 		Session:          session,
 		ProjectRoot:      projectRoot,
+		TmuxEndpoint:     endpoint,
 		Vars:             vars,
 		PanePIDs:         panePIDs,
 		PaneTypes:        paneTypes,
@@ -2747,7 +2842,13 @@ func runWorkflowRun(ctx context.Context, ref string, flags workflowRunCLIFlags) 
 	// Identity checks read the runner's pane binding, which restart_agent
 	// moves to a replacement process. Every caller holds runner.dispatchMu.
 	validatePanes := func(ctx context.Context) error {
-		return validateWorkflowPaneLifetimes(ctx, session, runner.opts.PanePIDs)
+		if err := runner.validateEndpoint(); err != nil {
+			return err
+		}
+		if err := validateWorkflowPaneLifetimes(ctx, session, runner.opts.PanePIDs); err != nil {
+			return err
+		}
+		return runner.validateEndpoint()
 	}
 	beforeDispatch := func(ctx context.Context, request dispatchsvc.Request, deliveries []dispatchsvc.Delivery) error {
 		if request.Session != session || len(deliveries) != 1 {
@@ -2791,6 +2892,7 @@ func runWorkflowRun(ctx context.Context, ref string, flags workflowRunCLIFlags) 
 		dispatch: workflowGatedDispatch(template.Name, beforeDispatch),
 		capture:  tmux.CapturePaneOutputContext,
 		validate: validatePanes,
+		endpoint: workflowTmuxEndpoint,
 		faults: func(ctx context.Context, expected map[string]int) (map[string]workflowAgentFault, error) {
 			return workflowAgentFaults(ctx, session, expected)
 		},

@@ -30,14 +30,17 @@ type WorkflowState struct {
 	// ResumeVersion distinguishes execution checkpoints with a write-ahead
 	// delivery journal from older observational snapshots. Missing evidence
 	// must never be interpreted as permission to resend a stage.
-	ResumeVersion int             `json:"resume_version,omitempty"`
-	TemplateHash  string          `json:"template_hash,omitempty"`
-	ProjectRoot   string          `json:"project_root,omitempty"`
-	PanePIDs      map[string]int  `json:"pane_pids,omitempty"`
-	NextByRole    map[string]int  `json:"next_by_role,omitempty"`
-	Turn          int             `json:"turn"`
-	Dispatches    []StageDispatch `json:"dispatches"`
-	Completed     bool            `json:"completed"`
+	ResumeVersion int    `json:"resume_version,omitempty"`
+	TemplateHash  string `json:"template_hash,omitempty"`
+	ProjectRoot   string `json:"project_root,omitempty"`
+	// TmuxEndpoint binds physical pane IDs and PIDs to their host namespace.
+	// Equal numeric identities on a different SSH target are unrelated work.
+	TmuxEndpoint string          `json:"tmux_endpoint,omitempty"`
+	PanePIDs     map[string]int  `json:"pane_pids,omitempty"`
+	NextByRole   map[string]int  `json:"next_by_role,omitempty"`
+	Turn         int             `json:"turn"`
+	Dispatches   []StageDispatch `json:"dispatches"`
+	Completed    bool            `json:"completed"`
 	// Evidence belongs to this particular visit to a stage. Its capture
 	// boundary is saved before prompts, and observed verdicts are saved before
 	// advancing. Resuming never substitutes old pane history for that boundary.

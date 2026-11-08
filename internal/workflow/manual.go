@@ -184,16 +184,20 @@ func manualStageReady(state *WorkflowState) (bool, error) {
 func manualVisitHash(state *WorkflowState, choices []ManualTransitionChoice) (string, error) {
 	identity := struct {
 		Workflow, Session, Template, Project, Stage string
-		StartedAt                                   time.Time
-		Agents, Variables                           map[string]string
-		PanePIDs                                    map[string]int
-		Turn, EvidenceRound                         int
-		Dispatches                                  []StageDispatch
-		Transitions                                 []ManualTransitionChoice
+		// Omission keeps legacy checkpoints inspectable without inferring
+		// their host. The runner independently refuses their resume.
+		Endpoint            string `json:"Endpoint,omitempty"`
+		StartedAt           time.Time
+		Agents, Variables   map[string]string
+		PanePIDs            map[string]int
+		Turn, EvidenceRound int
+		Dispatches          []StageDispatch
+		Transitions         []ManualTransitionChoice
 	}{
 		Workflow: state.WorkflowName, Session: state.SessionName, Template: state.TemplateHash,
 		Project: state.ProjectRoot, Stage: state.CurrentStage, StartedAt: state.StageStartedAt,
-		Agents: state.Agents, Variables: state.Variables, PanePIDs: state.PanePIDs,
+		Endpoint: state.TmuxEndpoint,
+		Agents:   state.Agents, Variables: state.Variables, PanePIDs: state.PanePIDs,
 		Turn: state.Turn, EvidenceRound: state.Evidence.Round, Dispatches: state.Dispatches, Transitions: choices,
 	}
 	data, err := json.Marshal(identity)

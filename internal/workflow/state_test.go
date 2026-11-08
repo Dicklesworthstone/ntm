@@ -35,7 +35,8 @@ func manualWorkflowCheckpoint(t *testing.T) (*WorkflowTemplate, *WorkflowState) 
 	state := &WorkflowState{
 		WorkflowName: template.Name, SessionName: "manual-session", CurrentStage: "review",
 		StageStartedAt: started, ResumeVersion: 1, TemplateHash: hash, ProjectRoot: t.TempDir(),
-		Agents: map[string]string{"%1": "review"}, PanePIDs: map[string]int{"%1": 41},
+		TmuxEndpoint: "ssh:original-host",
+		Agents:       map[string]string{"%1": "review"}, PanePIDs: map[string]int{"%1": 41},
 		Variables: map[string]string{"task": "private task contents"}, Turn: 1,
 		Dispatches: []StageDispatch{{Pane: "%1", Role: "review", Turn: 1, Status: "delivered"}},
 		Evidence: &StageEvidence{
@@ -117,6 +118,8 @@ func TestWorkflowManualGateBindsVisitWithoutCaptureChurn(t *testing.T) {
 		{"variables", func(s *WorkflowState) { s.Variables["task"] = "different work" }},
 		{"project", func(s *WorkflowState) { s.ProjectRoot += "-different" }},
 		{"session", func(s *WorkflowState) { s.SessionName += "-different" }},
+		{"endpoint", func(s *WorkflowState) { s.TmuxEndpoint = "ssh:another-host" }},
+		{"missing endpoint", func(s *WorkflowState) { s.TmuxEndpoint = "" }},
 		{"new visit", func(s *WorkflowState) {
 			s.StageStartedAt = s.StageStartedAt.Add(time.Second)
 			s.Evidence.StartedAt = s.StageStartedAt

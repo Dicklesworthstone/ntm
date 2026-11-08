@@ -15,7 +15,8 @@ func TestWorkflowCheckpointStatusAndRecoverySurface(t *testing.T) {
 	store := &workflow.StateStore{Dir: filepath.Join(root, ".ntm", "workflows", "state")}
 	state := &workflow.WorkflowState{
 		SessionName: "s", WorkflowName: "flow", CurrentStage: "review", ResumeVersion: 1, Turn: 4,
-		Agents: map[string]string{"%1": "review"}, Variables: map[string]string{"secret": "PRIVATE_SETUP_CONTEXT"},
+		TmuxEndpoint: "ssh:original-host",
+		Agents:       map[string]string{"%1": "review"}, Variables: map[string]string{"secret": "PRIVATE_SETUP_CONTEXT"},
 		Dispatches: []workflow.StageDispatch{{Pane: "%1", Role: "review", Turn: 4, Status: "sending"}},
 	}
 	if err := store.Save(state); err != nil {
@@ -24,6 +25,9 @@ func TestWorkflowCheckpointStatusAndRecoverySurface(t *testing.T) {
 	status, err := getWorkflowCheckpoint(context.Background(), root, "s", "", "", "", false)
 	if err != nil || !status.Success || len(status.Dispatches) != 1 || status.Dispatches[0].Status != "sending" {
 		t.Fatalf("status = %+v %v", status, err)
+	}
+	if status.TmuxEndpoint != "ssh:original-host" {
+		t.Fatalf("status omitted the host needed to inspect the original delivery: %+v", status)
 	}
 	data, err := json.Marshal(status)
 	if err != nil || strings.Contains(string(data), "PRIVATE_SETUP_CONTEXT") || strings.Contains(string(data), "variables") {

@@ -3,8 +3,10 @@ package cli
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,6 +121,194 @@ func TestWorkflowRunnerPingPongAlternates(t *testing.T) {
 	wantPanes := []string{"%1", "%2", "%1"}
 	if got := fake.dispatchedPanes(); strings.Join(got, ",") != strings.Join(wantPanes, ",") {
 		t.Fatalf("dispatch order = %v, want %v", got, wantPanes)
+	}
+}
+
+func TestWorkflowRunnerEndpointDriftCannotDispatchOrRestart(t *testing.T) {
+	for _, scenario := range []string{"initial capture", "verdict capture", "fault observation", "before restart"} {
+		t.Run(scenario, func(t *testing.T) {
+			template := pingPongTemplate()
+			template.ErrorHandling = &workflow.ErrorConfig{OnAgentCrash: workflow.ErrorActionRestartAgent}
+			fake := newFakeWorkflowSession()
+			ports := fake.ports()
+			endpoint := "ssh:original-host"
+			delivered, drifted := false, false
+			fake.onDispatch = func(string, string) { delivered = true }
+			ports.endpoint = func() string { return endpoint }
+			ports.capture = func(context.Context, string, int) (string, error) {
+				if scenario == "initial capture" || (scenario == "verdict capture" && delivered) {
+					endpoint, drifted = "ssh:other-host", true
+					// The replacement host has identical pane IDs and PIDs,
+					// and even a verdict that would advance this workflow.
+					return "RED-HANDOFF", nil
+				}
+				return "", nil
+			}
+			ports.faults = func(context.Context, map[string]int) (map[string]workflowAgentFault, error) {
+				if delivered && (scenario == "fault observation" || scenario == "before restart") {
+					if scenario == "fault observation" {
+						endpoint, drifted = "ssh:other-host", true
+					}
+					return map[string]workflowAgentFault{"%1": *crashFault("agent exited")}, nil
+				}
+				return nil, nil
+			}
+			ports.notify = func(format string, args ...any) {
+				if scenario == "before restart" && strings.Contains(fmt.Sprintf(format, args...), "on_agent_crash") {
+					endpoint, drifted = "ssh:other-host", true
+				}
+			}
+			restarts := 0
+			ports.restart = func(context.Context, string, string) (int, error) {
+				restarts++
+				return 9001, nil
+			}
+			opts := workflowRunOptions{
+				Session: "endpoint-drift", ProjectRoot: t.TempDir(), StateDir: t.TempDir(),
+				TmuxEndpoint: "ssh:original-host", PanePIDs: pingPongPIDs(),
+				MaxAgentRestarts: 2, MaxTransitions: 1, Interval: time.Millisecond,
+			}
+			runner, err := newWorkflowRunner(template, []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}}, opts, ports)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			result, err := runner.Run(ctx)
+			wantSends := 1
+			if scenario == "initial capture" {
+				wantSends = 0
+			}
+			if !drifted || err == nil || !strings.Contains(err.Error(), "endpoint") || result.Success || result.Completed || result.Transitions != 0 || result.Restarts != 0 || restarts != 0 || len(fake.dispatchedPanes()) != wantSends {
+				t.Fatalf("endpoint drift was acted on: %+v, %v, drifted=%v restarts=%d sends=%v", result, err, drifted, restarts, fake.dispatchedPanes())
+			}
+			checkpoint := mustLoadWorkflowCheckpoint(t, opts)
+			if checkpoint.TmuxEndpoint != "ssh:original-host" || checkpoint.CurrentStage != "red" || checkpoint.PanePIDs["%1"] != 1001 {
+				t.Fatalf("endpoint drift changed the bound execution identity: %+v", checkpoint)
+			}
+			if scenario == "fault observation" && len(checkpoint.Errors) != 0 {
+				t.Fatalf("another host's fault was retained as workflow evidence: %+v", checkpoint.Errors)
+			}
+		})
+	}
+}
+
+func TestWorkflowRemoteLocalTriggerPreflight(t *testing.T) {
+	for _, trigger := range []workflow.Trigger{
+		{Type: workflow.TriggerFileCreated, Pattern: "*.ready"},
+		{Type: workflow.TriggerFileModified, Pattern: "*.ready"},
+		{Type: workflow.TriggerCommandSuccess, Command: "go test ./..."},
+		{Type: workflow.TriggerCommandFailure, Command: "go test ./..."},
+	} {
+		t.Run(string(trigger.Type), func(t *testing.T) {
+			template := resumeWorkflowTemplate()
+			// The first stage is remote-safe. The whole flow must be checked
+			// before its first prompt, not when a later local trigger starts.
+			template.Flow.Transitions[1].Trigger = trigger
+			opts := resumeWorkflowOptions(t)
+			var sent []string
+			ports := resumeWorkflowPorts(&sent)
+			observations := 0
+			ports.capture = func(context.Context, string, int) (string, error) {
+				observations++
+				return "", nil
+			}
+			if _, err := newWorkflowRunner(template, resumeWorkflowAgents(), opts, ports); err != nil {
+				t.Fatalf("local workflow was incorrectly refused: %v", err)
+			}
+			opts.TmuxEndpoint = "ssh:build-host"
+			if _, err := newWorkflowRunner(template, resumeWorkflowAgents(), opts, ports); err == nil || !strings.Contains(err.Error(), string(trigger.Type)) || !strings.Contains(err.Error(), "SSH") {
+				t.Fatalf("remote workflow with a later local trigger was accepted: %v", err)
+			}
+			if observations != 0 || len(sent) != 0 {
+				t.Fatalf("constructor refusal observed or dispatched work: observations=%d sends=%v", observations, sent)
+			}
+
+			// Exercise the actual Cobra command as well. Both SSH and local
+			// tmux transports point at a canary, so a misplaced preflight
+			// cannot contact a real host or mutate any real session.
+			projectRoot := t.TempDir()
+			logPath := filepath.Join(projectRoot, "transport-calls")
+			canary := filepath.Join(projectRoot, "ssh")
+			if err := os.WriteFile(canary, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$NTM_WORKFLOW_ENDPOINT_CALL_LOG\"\nexit 97\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("NTM_WORKFLOW_ENDPOINT_CALL_LOG", logPath)
+			t.Setenv("NTM_TMUX_BINARY", canary)
+			t.Setenv("PATH", projectRoot)
+			oldClient, oldJSON := tmux.DefaultClient, jsonOutput
+			t.Cleanup(func() { tmux.DefaultClient, jsonOutput = oldClient, oldJSON })
+			tmux.DefaultClient, jsonOutput = tmux.NewClient("build-host"), true
+			path := filepath.Join(projectRoot, "remote-flow.toml")
+			content := fmt.Sprintf(`name = "remote-flow"
+coordination = "pipeline"
+[[agents]]
+profile = "cc"
+role = "build"
+[[agents]]
+profile = "cc"
+role = "review"
+[flow]
+initial = "build"
+stages = ["build", "review", "done"]
+[[flow.transitions]]
+from = "build"
+to = "review"
+[flow.transitions.trigger]
+type = "manual"
+[[flow.transitions]]
+from = "review"
+to = "done"
+[flow.transitions.trigger]
+type = %q
+pattern = %q
+command = %q
+`, trigger.Type, trigger.Pattern, trigger.Command)
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := newWorkflowsRunCmd()
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{path, "--session", "matching-session", "--project-root", projectRoot})
+			stdout, runErr := captureStdout(t, func() error { return cmd.ExecuteContext(t.Context()) })
+			var result WorkflowRunResult
+			if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+				t.Fatalf("decode refusal: %v, stdout=%q command error=%v", err, stdout, runErr)
+			}
+			if runErr == nil || !strings.Contains(runErr.Error(), string(trigger.Type)) || !strings.Contains(runErr.Error(), "SSH") || result.Success || result.Completed {
+				t.Fatalf("remote CLI did not reject local trigger before work: %+v, %v", result, runErr)
+			}
+			if data, err := os.ReadFile(logPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("preflight reached a pane transport: log=%q error=%v", data, err)
+			}
+			if _, err := os.Stat(filepath.Join(projectRoot, ".ntm", "workflows", "state")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("preflight created workflow execution state: %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkflowRunnerRemoteOutputTriggersRemainAvailable(t *testing.T) {
+	fake := newFakeWorkflowSession()
+	fake.onDispatch = func(pane, _ string) {
+		if pane == "%1" {
+			fake.say(pane, "RED-HANDOFF")
+		}
+	}
+	ports := fake.ports()
+	ports.endpoint = func() string { return "ssh:build-host" }
+	runner, err := newWorkflowRunner(pingPongTemplate(), []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}},
+		workflowRunOptions{Session: "remote-flow", TmuxEndpoint: "ssh:build-host", PanePIDs: pingPongPIDs(), MaxTransitions: 1, Interval: time.Millisecond}, ports)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	result, err := runner.Run(ctx)
+	if err != nil || !result.Success || result.Transitions != 1 || strings.Join(fake.dispatchedPanes(), ",") != "%1,%2" {
+		t.Fatalf("remote output workflow stopped progressing: %+v, %v, sends=%v", result, err, fake.dispatchedPanes())
 	}
 }
 
