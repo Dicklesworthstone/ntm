@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 type recordingActions struct {
@@ -21,8 +20,7 @@ func (a *recordingActions) add(s string) {
 	a.calls = append(a.calls, s)
 }
 
-// snapshot reads calls under the same lock add uses: the TimeoutMonitor
-// invokes actions on its own goroutine.
+// snapshot reads calls under the same lock used by action callbacks.
 func (a *recordingActions) snapshot() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -270,23 +268,5 @@ func TestErrorHandlerRecoveryDoesNotActAfterCancellation(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestTimeoutMonitorFiresOnlyForCurrentStage(t *testing.T) {
-	actions := &recordingActions{}
-	h := NewErrorHandler(ErrorHandlingConfig{OnTimeout: ErrorActionNotify}, actions)
-	m := NewTimeoutMonitor(time.Millisecond, h, func() string { return "build" })
-	m.Start(context.Background(), "build")
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		calls := actions.snapshot()
-		if len(calls) == 1 && calls[0] == "notify" {
-			return
-		}
-		if len(calls) > 1 || time.Now().After(deadline) {
-			t.Fatalf("calls=%v", calls)
-		}
-		time.Sleep(2 * time.Millisecond)
 	}
 }

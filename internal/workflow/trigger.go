@@ -49,13 +49,17 @@ type AgentActivity struct {
 // TriggerContext supplies runtime observations without coupling workflow
 // templates to tmux or a particular session coordinator.
 type TriggerContext struct {
-	Context     context.Context
-	ProjectRoot string
-	Session     string
-	CurrentRole string
-	Outputs     []AgentOutput
-	Activities  []AgentActivity
-	Now         func() time.Time
+	Context context.Context
+	// CheckContext optionally bounds one evaluation without shortening the
+	// lifetime of triggers started by its destination stage. Callers derive
+	// it from Context and cancel it after checking this observation.
+	CheckContext context.Context
+	ProjectRoot  string
+	Session      string
+	CurrentRole  string
+	Outputs      []AgentOutput
+	Activities   []AgentActivity
+	Now          func() time.Time
 
 	// TransitionEvidence contains verified agent_says receipts for the current
 	// stage visit, keyed by the template's complete Flow.Transitions indexes.
@@ -73,6 +77,21 @@ type TriggerContext struct {
 	// FileTriggerExcludes names project-relative state directories whose
 	// writes are made by the runner itself, never by the workflow's work.
 	FileTriggerExcludes []string
+}
+
+func (c *TriggerContext) checkErr() error {
+	if c == nil {
+		return nil
+	}
+	if c.Context != nil {
+		if err := c.Context.Err(); err != nil {
+			return err
+		}
+	}
+	if c.CheckContext != nil {
+		return c.CheckContext.Err()
+	}
+	return nil
 }
 
 func (c *TriggerContext) now() time.Time {

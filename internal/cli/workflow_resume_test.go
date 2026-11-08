@@ -416,6 +416,442 @@ func TestWorkflowResumeContinuesSavedStageWithoutRepeatingPrompts(t *testing.T) 
 	}
 }
 
+func TestWorkflowTimeoutRetriesRearmAndRemainBoundedAcrossResume(t *testing.T) {
+	opts := resumeWorkflowOptions(t)
+	opts.FireManual, opts.Interval = false, 5*time.Minute
+	template := resumeWorkflowTemplate()
+	template.ErrorHandling = &workflow.ErrorConfig{StageTimeoutMinutes: 1, OnTimeout: workflow.ErrorActionRetry, MaxRetriesPerStage: 2}
+	started := time.Now().UTC()
+	now := started
+	var sent []string
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ports := resumeWorkflowPorts(&sent)
+	ports.now = func() time.Time { return now }
+	baseDispatch := ports.dispatch
+	ports.dispatch = func(ctx context.Context, session, pane, prompt string) error {
+		state := mustLoadWorkflowCheckpoint(t, opts)
+		if state.Recovery.Retries["build"] != len(sent) || state.Timeout == nil || state.Timeout.Handling || state.Timeout.Handled ||
+			state.Timeout.Round != state.Turn || state.Timeout.Round != len(sent)+1 || !state.Timeout.StartedAt.Equal(started) ||
+			!state.Timeout.Deadline.Equal(now.Add(time.Minute)) {
+			t.Fatalf("prompt preceded its fresh deadline or recovery debit: sent=%d state=%+v timeout=%+v", len(sent), state, state.Timeout)
+		}
+		if err := baseDispatch(ctx, session, pane, prompt); err != nil {
+			return err
+		}
+		if len(sent) == 2 {
+			cancel() // Interrupt after the first retry's successful delivery.
+		}
+		return nil
+	}
+	firstSleeps := 0
+	ports.sleep = func(ctx context.Context, d time.Duration) {
+		if ctx.Err() != nil {
+			return
+		}
+		firstSleeps++
+		if firstSleeps > 2 {
+			t.Fatal("the initial timeout did not retry the stalled stage")
+		}
+		if d != time.Minute {
+			t.Fatalf("poll ignored stage deadline: %s", d)
+		}
+		now = now.Add(d)
+	}
+	first := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, ports)
+	result, err := first.Run(ctx)
+	if !errors.Is(err, context.Canceled) || result.Reason != "canceled" || len(sent) != 2 {
+		t.Fatalf("initial timed retry = %+v, %v, sends=%d", result, err, len(sent))
+	}
+	state := mustLoadWorkflowCheckpoint(t, opts)
+	if state.Timeout.Handled || state.Timeout.Handling || len(state.Errors) != 1 || state.Recovery.Retries["build"] != 1 {
+		t.Fatalf("old timeout acknowledged the replacement round: %+v", state)
+	}
+
+	// Downtime consumes the existing round's deadline, but not another retry.
+	now = now.Add(30 * time.Second)
+	opts.Resume, opts.Vars = true, nil
+	resumePorts := resumeWorkflowPorts(&sent)
+	resumePorts.now = func() time.Time { return now }
+	resumeDispatch := resumePorts.dispatch
+	resumePorts.dispatch = func(ctx context.Context, session, pane, prompt string) error {
+		state := mustLoadWorkflowCheckpoint(t, opts)
+		if len(sent) != 2 || state.Recovery.Retries["build"] != 2 || state.Timeout.Round != 3 || state.Timeout.Handled ||
+			!state.Timeout.Deadline.Equal(now.Add(time.Minute)) {
+			t.Fatalf("resumed retry lost its bounded round: sends=%d state=%+v timeout=%+v", len(sent), state, state.Timeout)
+		}
+		return resumeDispatch(ctx, session, pane, prompt)
+	}
+	var sleeps []time.Duration
+	resumePorts.sleep = func(_ context.Context, d time.Duration) {
+		sleeps = append(sleeps, d)
+		if len(sleeps) > 2 {
+			t.Fatal("timeout retries did not exhaust their budget")
+		}
+		now = now.Add(d)
+	}
+	resumed := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, resumePorts)
+	result, err = resumed.Run(t.Context())
+	if err == nil || result.Reason != "aborted" || !result.Resumed || len(sent) != 3 ||
+		!reflect.DeepEqual(sleeps, []time.Duration{30 * time.Second, time.Minute}) {
+		t.Fatalf("bounded resumed retries = %+v, %v, sends=%d sleeps=%v", result, err, len(sent), sleeps)
+	}
+	state = mustLoadWorkflowCheckpoint(t, opts)
+	if state.Recovery.Retries["build"] != 2 || len(state.Errors) != 3 || !state.Timeout.Handled || state.Timeout.StopReason != "aborted" {
+		t.Fatalf("exhaustion did not preserve its durable receipt: %+v", state)
+	}
+	if result, err := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, resumePorts).Run(t.Context()); err == nil || result.Reason != "resume-rejected" || len(sent) != 3 {
+		t.Fatalf("resume revived an exhausted timeout policy: %+v, %v, sends=%d", result, err, len(sent))
+	}
+}
+
+func TestWorkflowResumeRetainsTimeoutDeadlineAndAcknowledgesOnce(t *testing.T) {
+	for _, action := range []workflow.ErrorAction{workflow.ErrorActionPause, workflow.ErrorActionNotify, ""} {
+		t.Run("policy="+string(action), func(t *testing.T) {
+			opts := resumeWorkflowOptions(t)
+			opts.FireManual, opts.Interval = false, 5*time.Minute
+			template := resumeWorkflowTemplate()
+			template.ErrorHandling = &workflow.ErrorConfig{StageTimeoutMinutes: 1, OnTimeout: action}
+			started := time.Now().UTC()
+			now := started
+			var sent []string
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			ports := resumeWorkflowPorts(&sent)
+			ports.now = func() time.Time { return now }
+			ports.sleep = func(context.Context, time.Duration) { now = now.Add(20 * time.Second); cancel() }
+			first := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, ports)
+			if result, err := first.Run(ctx); !errors.Is(err, context.Canceled) || result.Reason != "canceled" || len(sent) != 1 {
+				t.Fatalf("interrupted stage = %+v, %v, sends=%d", result, err, len(sent))
+			}
+			deadline := mustLoadWorkflowCheckpoint(t, opts).Timeout.Deadline
+			if !deadline.Equal(started.Add(time.Minute)) {
+				t.Fatalf("initial deadline = %s", deadline)
+			}
+			now = started.Add(45 * time.Second)
+			opts.Resume, opts.Vars = true, nil
+			resumeCtx, stop := context.WithCancel(t.Context())
+			defer stop()
+			resumePorts := resumeWorkflowPorts(&sent)
+			resumePorts.now = func() time.Time { return now }
+			sleeps := 0
+			resumePorts.sleep = func(_ context.Context, d time.Duration) {
+				sleeps++
+				if sleeps == 1 {
+					if d != 15*time.Second {
+						t.Fatalf("resume granted a fresh timeout: sleep=%s", d)
+					}
+					now = now.Add(d)
+				} else {
+					stop() // Notify continues; pause stops before another poll.
+				}
+			}
+			resumed := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, resumePorts)
+			result, err := resumed.Run(resumeCtx)
+			wantReason := "canceled"
+			if action == workflow.ErrorActionPause {
+				wantReason = "paused"
+			}
+			if err == nil || result.Reason != wantReason || len(sent) != 1 {
+				t.Fatalf("remaining deadline = %+v, %v, sends=%d", result, err, len(sent))
+			}
+			state := mustLoadWorkflowCheckpoint(t, opts)
+			if !state.Timeout.Deadline.Equal(deadline) || !state.Timeout.Handled || state.Timeout.Handling || len(state.Errors) != 1 {
+				t.Fatalf("timeout receipt was lost: %+v", state)
+			}
+			// Resuming the handled round must neither pause/notify again nor
+			// replace its elapsed deadline with another one.
+			lastCtx, lastCancel := context.WithCancel(t.Context())
+			defer lastCancel()
+			lastPorts := resumeWorkflowPorts(&sent)
+			lastPorts.now = func() time.Time { return now }
+			lastPorts.sleep = func(_ context.Context, d time.Duration) {
+				if d != opts.Interval {
+					t.Fatalf("handled receipt still shortened polling: %s", d)
+				}
+				lastCancel()
+			}
+			result, err = mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, lastPorts).Run(lastCtx)
+			state = mustLoadWorkflowCheckpoint(t, opts)
+			if !errors.Is(err, context.Canceled) || result.Reason != "canceled" || len(sent) != 1 || len(state.Errors) != 1 || !state.Timeout.Deadline.Equal(deadline) {
+				t.Fatalf("handled timeout replayed: %+v, %v, state=%+v", result, err, state)
+			}
+		})
+	}
+}
+
+func TestWorkflowExpiredResumeHandlesTimeoutBeforePendingDeliveries(t *testing.T) {
+	for _, action := range []workflow.ErrorAction{workflow.ErrorActionPause, workflow.ErrorActionSkipStage, workflow.ErrorActionRetry} {
+		t.Run(string(action), func(t *testing.T) {
+			opts := resumeWorkflowOptions(t)
+			opts.FireManual = false
+			template := resumeWorkflowTemplate()
+			template.Agents = []workflow.WorkflowAgent{{Profile: "build", Role: "build", Count: 2}}
+			template.Flow.Stages = []string{"build", "done"}
+			template.Flow.ParallelWithinStage = true
+			template.Flow.Transitions = []workflow.Transition{{From: "build", To: "done", Trigger: workflow.Trigger{Type: workflow.TriggerManual, Label: "done"}}}
+			template.ErrorHandling = &workflow.ErrorConfig{StageTimeoutMinutes: 1, OnTimeout: action, MaxRetriesPerStage: 2}
+			agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "build"}, {ID: "%2", Role: "build"}}
+			now := time.Now().UTC()
+			var sent []string
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			ports := resumeWorkflowPorts(&sent)
+			ports.now = func() time.Time { return now }
+			dispatch := ports.dispatch
+			ports.dispatch = func(ctx context.Context, session, pane, prompt string) error {
+				if err := dispatch(ctx, session, pane, prompt); err != nil {
+					return err
+				}
+				cancel() // The second recipient remains durably pending.
+				return nil
+			}
+			first := mustResumeWorkflowRunner(t, template, agents, opts, ports)
+			if result, err := first.Run(ctx); !errors.Is(err, context.Canceled) || len(sent) != 1 {
+				t.Fatalf("partial delivery = %+v, %v, sends=%d", result, err, len(sent))
+			}
+			state := mustLoadWorkflowCheckpoint(t, opts)
+			if len(state.Dispatches) != 2 || state.Dispatches[0].Status != "delivered" || state.Dispatches[1].Status != "pending" {
+				t.Fatalf("fixture lost partial delivery: %+v", state.Dispatches)
+			}
+			now = now.Add(2 * time.Minute)
+			opts.Resume, opts.Vars = true, nil
+			resumePorts := resumeWorkflowPorts(&sent)
+			resumePorts.now = func() time.Time { return now }
+			resumePorts.dispatch = func(context.Context, string, string, string) error {
+				t.Fatal("expired resume sent its pending prompt before applying timeout policy")
+				return nil
+			}
+			result, err := mustResumeWorkflowRunner(t, template, agents, opts, resumePorts).Run(t.Context())
+			state = mustLoadWorkflowCheckpoint(t, opts)
+			switch action {
+			case workflow.ErrorActionPause:
+				if err == nil || result.Reason != "paused" || !state.Paused || !state.Timeout.Handled {
+					t.Fatalf("expired pending stage did not pause: %+v, %v, state=%+v", result, err, state)
+				}
+			case workflow.ErrorActionSkipStage:
+				if err != nil || !result.Completed || !state.Completed || state.CurrentStage != "done" || len(state.StageHistory) != 1 || state.Timeout != nil {
+					t.Fatalf("expired pending stage did not durably skip: %+v, %v, state=%+v", result, err, state)
+				}
+			case workflow.ErrorActionRetry:
+				if err == nil || result.Reason != "error-handler-failed" || !state.Timeout.Handling || state.Timeout.Handled || state.Recovery.Retries["build"] != 1 {
+					t.Fatalf("unsafe partial retry was not stopped: %+v, %v, state=%+v", result, err, state)
+				}
+				if result, err := mustResumeWorkflowRunner(t, template, agents, opts, resumePorts).Run(t.Context()); err == nil || result.Reason != "resume-rejected" {
+					t.Fatalf("unknown timeout action replayed: %+v, %v", result, err)
+				}
+			}
+		})
+	}
+}
+
+func TestWorkflowTimeoutSkipCommitsBeforeDestinationDelivery(t *testing.T) {
+	opts := resumeWorkflowOptions(t)
+	opts.FireManual, opts.Interval = false, time.Minute
+	template := resumeWorkflowTemplate()
+	template.ErrorHandling = &workflow.ErrorConfig{StageTimeoutMinutes: 1, OnTimeout: workflow.ErrorActionSkipStage}
+	now := time.Now().UTC()
+	var sent []string
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ports := resumeWorkflowPorts(&sent)
+	ports.now = func() time.Time { return now }
+	ports.sleep = func(_ context.Context, d time.Duration) { now = now.Add(d) }
+	ports.notify = func(format string, _ ...any) {
+		if !strings.Contains(format, "skipped stage") {
+			return
+		}
+		state := mustLoadWorkflowCheckpoint(t, opts)
+		if state.CurrentStage != "review" || len(state.StageHistory) != 1 || state.Timeout != nil || state.Dispatches != nil {
+			t.Fatalf("skip announced before destination committed: %+v", state)
+		}
+		cancel() // Simulate stopping after the skip commit, before next dispatch.
+	}
+	first := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, ports)
+	if result, err := first.Run(ctx); !errors.Is(err, context.Canceled) || len(sent) != 1 {
+		t.Fatalf("interrupted skip = %+v, %v, sends=%d", result, err, len(sent))
+	}
+	opts.Resume, opts.Vars, opts.FireManual, opts.Interval = true, nil, true, time.Millisecond
+	resumePorts := resumeWorkflowPorts(&sent)
+	resumePorts.now = func() time.Time { return now }
+	resumePorts.sleep = func(_ context.Context, d time.Duration) { now = now.Add(d) }
+	resumed := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, resumePorts)
+	result, err := resumed.Run(t.Context())
+	state := mustLoadWorkflowCheckpoint(t, opts)
+	if err != nil || !result.Completed || len(sent) != 2 || !strings.HasPrefix(sent[1], "%2:") || len(state.StageHistory) != 2 || state.Timeout != nil {
+		t.Fatalf("resume repeated a skipped stage: %+v, %v, sends=%v state=%+v", result, err, sent, state)
+	}
+}
+
+func TestWorkflowTimeoutSkipSelfTransitionStartsFreshVisit(t *testing.T) {
+	opts := resumeWorkflowOptions(t)
+	opts.FireManual, opts.Interval, opts.MaxTransitions = false, time.Minute, 2
+	template := resumeWorkflowTemplate()
+	template.Flow.Transitions = []workflow.Transition{{From: "build", To: "build", Trigger: workflow.Trigger{Type: workflow.TriggerManual, Label: "again"}}}
+	template.ErrorHandling = &workflow.ErrorConfig{StageTimeoutMinutes: 1, OnTimeout: workflow.ErrorActionSkipStage}
+	started := time.Now().UTC()
+	now := started
+	var sent []string
+	ports := resumeWorkflowPorts(&sent)
+	ports.now = func() time.Time { return now }
+	ports.sleep = func(_ context.Context, d time.Duration) {
+		if now.Sub(started) >= 2*time.Minute {
+			t.Fatal("self-transition was not counted or did not establish a fresh round")
+		}
+		now = now.Add(d)
+	}
+	result, err := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, ports).Run(t.Context())
+	state := mustLoadWorkflowCheckpoint(t, opts)
+	if err != nil || result.Reason != "max-transitions" || result.Transitions != 2 || len(sent) != 3 || len(state.StageHistory) != 2 ||
+		state.Timeout == nil || state.Timeout.Round != 3 || state.Timeout.Handled || !state.StageStartedAt.Equal(started.Add(2*time.Minute)) ||
+		!state.Timeout.Deadline.Equal(started.Add(3*time.Minute)) {
+		t.Fatalf("self-transition reused expired evidence: %+v, %v, sends=%d state=%+v", result, err, len(sent), state)
+	}
+}
+
+func TestWorkflowTimeoutCheckpointFailureStopsBeforeFurtherAction(t *testing.T) {
+	for _, failAcknowledgment := range []bool{false, true} {
+		name := "handling intent"
+		if failAcknowledgment {
+			name = "action acknowledgment"
+		}
+		t.Run(name, func(t *testing.T) {
+			opts := resumeWorkflowOptions(t)
+			opts.FireManual, opts.Interval = false, time.Minute
+			template := resumeWorkflowTemplate()
+			template.ErrorHandling = &workflow.ErrorConfig{StageTimeoutMinutes: 1, OnTimeout: workflow.ErrorActionNotify}
+			now := time.Now().UTC()
+			var sent []string
+			blocked := filepath.Join(opts.ProjectRoot, "not-a-directory")
+			if err := os.WriteFile(blocked, []byte("fixture"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var runner *workflowRunner
+			ports := resumeWorkflowPorts(&sent)
+			ports.now = func() time.Time { return now }
+			ports.sleep = func(_ context.Context, d time.Duration) {
+				now = now.Add(d)
+				if !failAcknowledgment {
+					runner.store.Dir = blocked
+				}
+			}
+			notifications := 0
+			ports.notify = func(_ string, args ...any) {
+				for _, arg := range args {
+					if fault, ok := arg.(*workflow.WorkflowError); ok && fault.Type == workflow.ErrorTimeout {
+						notifications++
+						state := mustLoadWorkflowCheckpoint(t, opts)
+						if !state.Timeout.Handling || state.Timeout.Handled || len(state.Errors) != 1 {
+							t.Fatalf("timeout acted before its durable intent: %+v", state)
+						}
+						if failAcknowledgment {
+							runner.store.Dir = blocked
+						}
+					}
+				}
+			}
+			runner = mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, ports)
+			result, err := runner.Run(t.Context())
+			if err == nil || result.Reason != "checkpoint-failed" || result.Success || len(sent) != 1 {
+				t.Fatalf("timeout checkpoint failure did not stop: %+v, %v, sends=%d", result, err, len(sent))
+			}
+			state := mustLoadWorkflowCheckpoint(t, opts)
+			wantNotifications := 0
+			if failAcknowledgment {
+				wantNotifications = 1
+			}
+			if notifications != wantNotifications || len(state.Errors) != wantNotifications || state.Timeout.Handled || state.Timeout.Handling != failAcknowledgment {
+				t.Fatalf("failed timeout write changed action evidence: notifications=%d state=%+v", notifications, state)
+			}
+			if failAcknowledgment {
+				opts.Resume, opts.Vars = true, nil
+				resumePorts := resumeWorkflowPorts(&sent)
+				resumePorts.now = func() time.Time { return now }
+				result, err := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, resumePorts).Run(t.Context())
+				if err == nil || result.Reason != "resume-rejected" || len(sent) != 1 {
+					t.Fatalf("unacknowledged timeout action replayed: %+v, %v", result, err)
+				}
+			}
+		})
+	}
+}
+
+func TestWorkflowResumeRejectsMissingOrStaleTimeoutReceipt(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*workflow.StageTimeout) *workflow.StageTimeout
+	}{
+		{"missing deadline", func(*workflow.StageTimeout) *workflow.StageTimeout { return nil }},
+		{"unknown version", func(r *workflow.StageTimeout) *workflow.StageTimeout { r.Version++; return r }},
+		{"different stage", func(r *workflow.StageTimeout) *workflow.StageTimeout { r.Stage = "review"; return r }},
+		{"previous visit", func(r *workflow.StageTimeout) *workflow.StageTimeout {
+			r.StartedAt = r.StartedAt.Add(-time.Second)
+			return r
+		}},
+		{"different round", func(r *workflow.StageTimeout) *workflow.StageTimeout { r.Round++; return r }},
+		{"missing timestamp", func(r *workflow.StageTimeout) *workflow.StageTimeout { r.Deadline = time.Time{}; return r }},
+		{"deadline before visit", func(r *workflow.StageTimeout) *workflow.StageTimeout { r.Deadline = r.StartedAt; return r }},
+		{"deadline extended", func(r *workflow.StageTimeout) *workflow.StageTimeout {
+			r.Deadline = r.Deadline.Add(time.Minute)
+			return r
+		}},
+		{"changed action", func(r *workflow.StageTimeout) *workflow.StageTimeout {
+			r.Action = workflow.ErrorActionSkipStage
+			return r
+		}},
+		{"unknown action outcome", func(r *workflow.StageTimeout) *workflow.StageTimeout { r.Handling = true; return r }},
+		{"conflicting action receipt", func(r *workflow.StageTimeout) *workflow.StageTimeout {
+			r.Handling, r.Handled = true, true
+			return r
+		}},
+		{"unhandled stop reason", func(r *workflow.StageTimeout) *workflow.StageTimeout { r.StopReason = "paused"; return r }},
+		{"invalid handled reason", func(r *workflow.StageTimeout) *workflow.StageTimeout {
+			r.Handled, r.StopReason = true, "unknown"
+			return r
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := resumeWorkflowOptions(t)
+			opts.FireManual = false
+			template := resumeWorkflowTemplate()
+			template.ErrorHandling = &workflow.ErrorConfig{StageTimeoutMinutes: 1, OnTimeout: workflow.ErrorActionPause}
+			now := time.Now().UTC()
+			var sent []string
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			ports := resumeWorkflowPorts(&sent)
+			ports.now = func() time.Time { return now }
+			ports.sleep = func(context.Context, time.Duration) { cancel() }
+			if result, err := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, ports).Run(ctx); !errors.Is(err, context.Canceled) || len(sent) != 1 {
+				t.Fatalf("seed stage = %+v, %v, sends=%d", result, err, len(sent))
+			}
+			state := mustLoadWorkflowCheckpoint(t, opts)
+			state.Timeout = tc.change(state.Timeout)
+			data, err := json.MarshalIndent(state, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(opts.StateDir, opts.Session+".json")
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			opts.Resume, opts.Vars = true, nil
+			resumePorts := resumeWorkflowPorts(&sent)
+			resumePorts.now = func() time.Time { return now }
+			resumeCtx, stop := context.WithTimeout(t.Context(), time.Second)
+			defer stop()
+			result, err := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, resumePorts).Run(resumeCtx)
+			if err == nil || result.Success || result.Reason != "resume-rejected" || len(sent) != 1 {
+				t.Fatalf("unsafe timeout receipt resumed: %+v, %v, sends=%d", result, err, len(sent))
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || string(after) != string(data) {
+				t.Fatalf("rejected timeout receipt was mutated: %v", err)
+			}
+		})
+	}
+}
+
 func TestWorkflowResumePreservesConsumedRecoveryBudget(t *testing.T) {
 	for _, action := range []workflow.ErrorAction{workflow.ErrorActionRestartAgent, workflow.ErrorActionRetry} {
 		t.Run(string(action), func(t *testing.T) {

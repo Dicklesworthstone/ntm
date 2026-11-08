@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -345,6 +346,9 @@ func (e *ErrorConfig) Validate() error {
 	}
 	if e.StageTimeoutMinutes < 0 {
 		return fmt.Errorf("stage_timeout_minutes cannot be negative")
+	}
+	if int64(e.StageTimeoutMinutes) > int64((1<<63-1)/time.Minute) {
+		return fmt.Errorf("stage_timeout_minutes exceeds the supported duration")
 	}
 	if e.MaxRetriesPerStage < 0 {
 		return fmt.Errorf("max_retries_per_stage cannot be negative")

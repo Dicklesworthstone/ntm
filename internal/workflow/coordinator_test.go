@@ -331,6 +331,129 @@ func TestCoordinatorTransitionEvidenceDoesNotOverrideOtherTriggers(t *testing.T)
 	}
 }
 
+func TestCoordinatorCheckDeadlineBoundsCommandEvaluation(t *testing.T) {
+	for _, kind := range []TriggerType{TriggerCommandSuccess, TriggerCommandFailure} {
+		t.Run(string(kind), func(t *testing.T) {
+			template := &WorkflowTemplate{
+				Name: "bounded-check", Coordination: CoordPipeline,
+				Agents: []WorkflowAgent{{Profile: "cc", Role: "review"}},
+				Flow: &FlowConfig{Initial: "review", Stages: []string{"review", "done"}, Transitions: []Transition{
+					{From: "review", To: "done", Trigger: Trigger{Type: kind, Command: "sleep 2"}},
+				}},
+			}
+			coordinator, err := NewCoordinator(template, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtime := coordinator.(*PipelineCoordinator)
+			runCtx, cancelRun := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancelRun()
+			ctx := &TriggerContext{Context: runCtx, ProjectRoot: t.TempDir()}
+			if err := runtime.Start(ctx); err != nil {
+				t.Fatal(err)
+			}
+			defer runtime.Stop()
+			checkCtx, cancelCheck := context.WithTimeout(runCtx, 50*time.Millisecond)
+			defer cancelCheck()
+			ctx.CheckContext = checkCtx
+			started := time.Now()
+			fired, err := runtime.Evaluate(ctx)
+			if fired || !errors.Is(err, context.DeadlineExceeded) || runtime.CurrentStage() != "review" {
+				t.Fatalf("expired command check advanced workflow: fired=%v err=%v stage=%s", fired, err, runtime.CurrentStage())
+			}
+			if elapsed := time.Since(started); elapsed >= time.Second {
+				t.Fatalf("evaluation ignored its shorter deadline: elapsed=%s", elapsed)
+			}
+			if err := runCtx.Err(); err != nil {
+				t.Fatalf("check deadline canceled the workflow lifecycle: %v", err)
+			}
+		})
+	}
+}
+
+func TestCoordinatorExpiredCheckCannotAdvanceFromReceiptsOrLateResults(t *testing.T) {
+	for _, receipt := range []bool{false, true} {
+		name := "late trigger result"
+		trigger := Trigger{Type: TriggerTimeElapsed, Minutes: 1}
+		if receipt {
+			name = "saved verdict receipt"
+			trigger = Trigger{Type: TriggerAgentSays, Pattern: "APPROVED"}
+		}
+		t.Run(name, func(t *testing.T) {
+			template := &WorkflowTemplate{
+				Name: "expired-check", Coordination: CoordPipeline,
+				Agents: []WorkflowAgent{{Profile: "cc", Role: "review"}},
+				Flow:   &FlowConfig{Initial: "review", Stages: []string{"review", "done"}, Transitions: []Transition{{From: "review", To: "done", Trigger: trigger}}},
+			}
+			coordinator, err := NewCoordinator(template, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtime := coordinator.(*PipelineCoordinator)
+			start := time.Now()
+			ctx := &TriggerContext{Context: t.Context(), Now: func() time.Time { return start }}
+			if err := runtime.Start(ctx); err != nil {
+				t.Fatal(err)
+			}
+			defer runtime.Stop()
+			checkCtx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			ctx.CheckContext = checkCtx
+			if receipt {
+				ctx.TransitionEvidence = map[int]bool{0: true}
+				cancel()
+			} else {
+				ctx.Now = func() time.Time {
+					cancel() // The check returns a valid match after its lease ended.
+					return start.Add(time.Minute)
+				}
+			}
+			if fired, err := runtime.Evaluate(ctx); fired || !errors.Is(err, context.Canceled) || runtime.CurrentStage() != "review" {
+				t.Fatalf("expired observation advanced: fired=%v err=%v stage=%s", fired, err, runtime.CurrentStage())
+			}
+		})
+	}
+}
+
+func TestCoordinatorCheckContextDoesNotCancelDestinationStage(t *testing.T) {
+	projectRoot := t.TempDir()
+	template := &WorkflowTemplate{
+		Name: "check-lifetime", Coordination: CoordPipeline,
+		Agents: []WorkflowAgent{{Profile: "cc", Role: "watch"}},
+		Flow: &FlowConfig{Initial: "prepare", Stages: []string{"prepare", "watch", "done"}, Transitions: []Transition{
+			{From: "prepare", To: "watch", Trigger: Trigger{Type: TriggerTimeElapsed, Minutes: 1}},
+			{From: "watch", To: "done", Trigger: Trigger{Type: TriggerFileCreated, Pattern: "*.done"}},
+		}},
+	}
+	coordinator, err := NewCoordinator(template, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := coordinator.(*PipelineCoordinator)
+	now := time.Now()
+	ctx := &TriggerContext{Context: t.Context(), ProjectRoot: projectRoot, Now: func() time.Time { return now }}
+	if err := runtime.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Stop()
+	checkCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ctx.CheckContext = checkCtx
+	now = now.Add(time.Minute)
+	if fired, err := runtime.Evaluate(ctx); err != nil || !fired || runtime.CurrentStage() != "watch" {
+		t.Fatalf("initial transition failed: fired=%v err=%v stage=%s", fired, err, runtime.CurrentStage())
+	}
+	cancel() // The completed poll ends while the destination stage keeps running.
+	if err := os.WriteFile(filepath.Join(projectRoot, "ready.done"), []byte("ready"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Exercise the destination's retained lifecycle context, including its
+	// live filesystem trigger, after the earlier operation was canceled.
+	if fired, err := runtime.Evaluate(runtime.triggerCtx); err != nil || !fired || runtime.CurrentStage() != "done" {
+		t.Fatalf("old check canceled destination work: fired=%v err=%v stage=%s", fired, err, runtime.CurrentStage())
+	}
+}
+
 func TestCoordinatorRetainsIndependentTransitionEvidenceSnapshot(t *testing.T) {
 	template := &WorkflowTemplate{
 		Name: "evidence-snapshot", Coordination: CoordPingPong,

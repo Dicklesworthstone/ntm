@@ -53,6 +53,25 @@ type WorkflowState struct {
 	// Recovery retains consumed attempts for the entire workflow, including
 	// resumed runs and later visits to the same stage or agent.
 	Recovery *RecoveryBudgets `json:"recovery,omitempty"`
+	// Timeout belongs to one stage visit and prompt round. Its absolute
+	// deadline and action receipt survive runner restarts.
+	Timeout *StageTimeout `json:"timeout,omitempty"`
+}
+
+// StageTimeout records a deadline before the round's first delivery. Handling
+// is written before entering the policy; an interrupted action must never be
+// replayed when its outcome is unknown. Handled acknowledges pause/notify/abort
+// for this round, while retry and skip replace the entire receipt.
+type StageTimeout struct {
+	Version    int         `json:"version"`
+	Stage      string      `json:"stage"`
+	StartedAt  time.Time   `json:"started_at"`
+	Round      int         `json:"round"`
+	Deadline   time.Time   `json:"deadline"`
+	Action     ErrorAction `json:"action"`
+	Handling   bool        `json:"handling"`
+	Handled    bool        `json:"handled"`
+	StopReason string      `json:"stop_reason,omitempty"`
 }
 
 // RecoveryBudgets records attempts reserved before retrying a stage or

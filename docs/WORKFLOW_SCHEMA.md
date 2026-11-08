@@ -268,8 +268,8 @@ checkpoint's `errors` list and in the `faults` list of the `--json` result
 | `restart_agent` | Restarts the faulted pane with the same engine as `ntm respawn`: respawns the pane, replays its saved launch command, and waits until the agent is ready. The run then binds to the replacement process. If the pane had already received the current stage's prompt, the prompt is sent again, and any verdict the previous process gave in this stage is discarded. Each pane may restart at most `[resilience] max_restarts` times per run (default 3); the next fault aborts the run, so a crash loop cannot restart forever. If a restart does not end with a ready agent, the run stops with reason `restart-failed`. Not valid for `on_timeout`, because a timeout names no agent. |
 | `pause` | Saves a paused checkpoint and stops with reason `paused`. Continue with `--resume` once the agent is healthy. |
 | `abort` | Stops with reason `aborted`. |
-| `notify` | Reports the fault and keeps running. An unset `on_agent_crash` or `on_agent_error` behaves the same way. |
-| `skip_stage` | Leaves the current stage through its first usable outgoing transition. |
+| `notify` | Reports the fault and keeps running. An unset `on_agent_crash`, `on_agent_error`, or `on_timeout` behaves the same way. |
+| `skip_stage` | Leaves the current stage through its first configured outgoing transition. The destination and history are checkpointed before its prompts are sent; a failed transition or checkpoint stops recovery. |
 | `retry` | Sends the current stage prompt to its panes again, up to `max_retries_per_stage` times, then aborts. It does not restart a crashed agent. |
 
 Retry and restart allowances belong to the saved workflow run. `--resume`
@@ -281,11 +281,27 @@ checkpoint created before recovery budgets were recorded cannot safely
 resume a retry/restart policy; inspect the existing work before choosing a
 deliberate `--restart`.
 
-`stage_timeout_minutes` starts a timer for each stage. If the stage is still
-current when the timer expires, `on_timeout` runs; it accepts any action
-except `restart_agent`. A `parallel` template without a flow sends its
-prompts once and completes, so its agents are checked once, just before that
-dispatch, and that single check acts only on confirmed crashes.
+`stage_timeout_minutes` saves an absolute deadline for each stage visit and
+prompt round before its first delivery. Downtime counts toward that deadline;
+an expired resumed round runs `on_timeout` before sending any pending prompts.
+The policy accepts any action except `restart_agent`, and defaults to `notify`
+when omitted. A deliberate `retry` receives a fresh deadline while retaining
+the consumed retry allowance. Polling, pane observations, and command-trigger
+checks honor the remaining time instead of extending the round.
+
+The runner records timeout intent before acting and acknowledges completed
+`pause`, `notify`, and `abort` actions afterward. Resuming a handled pause or
+notification does not replay it or rearm that round. A previously aborted
+timeout or an interrupted action with an unknown outcome cannot be resumed;
+inspect the work before a deliberate `--restart`. The same refusal applies
+when a saved timed round lacks its original deadline or contains mismatched
+stage, visit, or prompt-round evidence. A successful skip commits its new stage
+and clears the previous deadline atomically, including a transition back to
+the same stage.
+
+A `parallel` template without a flow sends its prompts once and completes, so
+its agents are checked once, just before that dispatch, and that single check
+acts only on confirmed crashes.
 
 ### Best Practices
 

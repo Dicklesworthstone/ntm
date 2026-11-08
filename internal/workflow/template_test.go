@@ -740,6 +740,13 @@ func TestErrorConfig_Validate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "overflowing timeout",
+			config: ErrorConfig{
+				StageTimeoutMinutes: int(^uint(0) >> 1),
+			},
+			wantErr: true,
+		},
+		{
 			name: "negative retries",
 			config: ErrorConfig{
 				MaxRetriesPerStage: -1,

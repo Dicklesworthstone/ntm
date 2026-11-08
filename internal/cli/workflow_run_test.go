@@ -742,10 +742,8 @@ func TestWorkflowRunnerReviewGateNonReviewerRoleNonTerminalTarget(t *testing.T) 
 	}
 }
 
-// recordTransitionLocked runs on the main loop (under dispatchMu, via
-// advanceObservation) while the TimeoutMonitor goroutine's Pause action
-// writes the same WorkflowState. Both serialize the action with dispatchMu
-// and keep r.mu held through the checkpoint write.
+// Pause and transition checkpoints share dispatchMu and r.mu, so callers
+// cannot interleave state writes even when invoked concurrently.
 func TestWorkflowRunnerPauseAndRecordTransitionAreRaceFree(t *testing.T) {
 	fake := newFakeWorkflowSession()
 	agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}}
@@ -898,32 +896,207 @@ func TestWorkflowManualPauseAndTerminalCommitHaveOneWinner(t *testing.T) {
 	}
 }
 
-// A stage timeout with on_timeout=pause must stop the run loop with the
-// "paused" reason (the monitor fires on its own goroutine mid-run).
+// A stage timeout with on_timeout=pause must stop the owner loop with the
+// "paused" reason, even when the polling interval exceeds the deadline.
 func TestWorkflowRunnerStageTimeoutPausesRun(t *testing.T) {
 	fake := newFakeWorkflowSession() // triggers never fire; stage stalls
 	agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}}
-	runner, err := newWorkflowRunner(pingPongTemplate(), agents,
-		workflowRunOptions{Session: "s", Interval: time.Millisecond, StateDir: t.TempDir()}, fake.ports())
+	template := pingPongTemplate()
+	template.ErrorHandling = &workflow.ErrorConfig{StageTimeoutMinutes: 1, OnTimeout: workflow.ErrorActionPause}
+	now := time.Now()
+	ports := fake.ports()
+	ports.now = func() time.Time { return now }
+	var waits []time.Duration
+	ports.sleep = func(_ context.Context, duration time.Duration) {
+		waits = append(waits, duration)
+		now = now.Add(duration)
+	}
+	runner, err := newWorkflowRunner(template, agents,
+		workflowRunOptions{Session: "s", Interval: 2 * time.Minute, StateDir: t.TempDir(), PanePIDs: pingPongPIDs()}, ports)
 	if err != nil {
 		t.Fatalf("newWorkflowRunner: %v", err)
 	}
-	runner.errorHandler = workflow.NewErrorHandler(workflow.ErrorHandlingConfig{
-		OnTimeout: workflow.ErrorActionPause,
-	}, workflowRunActions{r: runner})
-	runner.timeoutMonitor = workflow.NewTimeoutMonitor(5*time.Millisecond, runner.errorHandler, runner.coordinator.CurrentStage)
-	defer runner.timeoutMonitor.Stop()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	result, err := runner.Run(ctx)
 	if err == nil || result.Reason != "paused" {
 		t.Fatalf("want paused result, got err=%v result=%+v", err, result)
 	}
+	if len(waits) != 1 || waits[0] != time.Minute {
+		t.Fatalf("polling slept beyond the stage deadline: %v", waits)
+	}
 	// The pause must be persisted so a rerun fails closed without --resume.
 	store := &workflow.StateStore{Dir: runner.opts.StateDir}
 	state, loadErr := store.Load("s")
 	if loadErr != nil || state == nil || !state.Paused {
 		t.Fatalf("persisted state = %+v (err=%v), want Paused", state, loadErr)
+	}
+	if state.Timeout == nil || !state.Timeout.Handled || state.Timeout.Handling || state.Timeout.StopReason != "paused" ||
+		len(state.Errors) != 1 || state.Errors[0].Type != workflow.ErrorTimeout {
+		t.Fatalf("pause did not retain its acknowledged timeout: %+v", state)
+	}
+}
+
+func TestWorkflowRunnerResumedDeadlineBoundsObservationAndCommands(t *testing.T) {
+	for _, scenario := range []string{"pane capture", "command_success", "command_failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			opts := resumeWorkflowOptions(t)
+			opts.FireManual = false
+			opts.TriggerTimeout = 10 * time.Second
+			template := resumeWorkflowTemplate()
+			template.ErrorHandling = &workflow.ErrorConfig{StageTimeoutMinutes: 1, OnTimeout: workflow.ErrorActionPause}
+			marker := filepath.Join(opts.ProjectRoot, "command-started")
+			if scenario != "pane capture" {
+				testutil.RequireUnix(t)
+				// exec replaces the shell so cancellation kills the blocking
+				// command itself, without leaving a sleeping child behind.
+				command := filepath.Join(opts.ProjectRoot, "wait-for-stage-timeout")
+				if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf started > \"$NTM_WORKFLOW_TIMEOUT_STARTED\"\nexec sleep 10\n"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("NTM_WORKFLOW_TIMEOUT_STARTED", marker)
+				template.Flow.Transitions[0].Trigger = workflow.Trigger{Type: workflow.TriggerType(scenario), Command: "./wait-for-stage-timeout"}
+			}
+
+			fake := newFakeWorkflowSession()
+			seedCtx, stopSeed := context.WithCancel(t.Context())
+			defer stopSeed()
+			fake.onDispatch = func(string, string) { stopSeed() }
+			first := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, fake.ports())
+			initial, err := first.Run(seedCtx)
+			if !errors.Is(err, context.Canceled) || initial.Reason != "canceled" || len(fake.dispatchedPanes()) != 1 {
+				t.Fatalf("seed stage = %+v, %v, sends=%v", initial, err, fake.dispatchedPanes())
+			}
+			checkpoint := mustLoadWorkflowCheckpoint(t, opts)
+			if checkpoint.Timeout == nil || checkpoint.Timeout.Handled || len(checkpoint.Dispatches) != 1 || checkpoint.Dispatches[0].Status != "delivered" {
+				t.Fatalf("seed did not leave a live delivered round: %+v", checkpoint)
+			}
+			if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("seed unexpectedly ran a command: %v", err)
+			}
+
+			fake.onDispatch = nil
+			ports := fake.ports()
+			// Model downtime without changing the saved receipt. The resumed
+			// clock then advances in real time so a blocking operation must
+			// honor the remaining stage deadline, not its own longer limit.
+			resumeWallTime := time.Now()
+			ports.now = func() time.Time {
+				return checkpoint.Timeout.Deadline.Add(-250 * time.Millisecond).Add(time.Since(resumeWallTime))
+			}
+			captures := 0
+			if scenario == "pane capture" {
+				ports.capture = func(ctx context.Context, _ string, _ int) (string, error) {
+					captures++
+					<-ctx.Done()
+					return "", ctx.Err()
+				}
+			}
+			opts.Resume, opts.Vars = true, nil
+			resumed := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, ports)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			result, err := resumed.Run(ctx)
+			if err == nil || result.Success || result.Completed || result.Reason != "paused" || result.Transitions != 0 || ctx.Err() != nil || len(fake.dispatchedPanes()) != 1 {
+				t.Fatalf("stage expiry became a trigger result or waited for the run deadline: %+v, %v, context=%v sends=%v", result, err, ctx.Err(), fake.dispatchedPanes())
+			}
+			if scenario == "pane capture" {
+				if captures != 1 {
+					t.Fatalf("expected one interrupted pane capture, got %d", captures)
+				}
+			} else if data, err := os.ReadFile(marker); err != nil || string(data) != "started" {
+				t.Fatalf("test did not exercise the real blocking command: %q, %v", data, err)
+			}
+			state := mustLoadWorkflowCheckpoint(t, opts)
+			if state.CurrentStage != "build" || !state.Paused || len(state.StageHistory) != 0 ||
+				state.Timeout == nil || !state.Timeout.Handled || state.Timeout.Handling || state.Timeout.StopReason != "paused" ||
+				len(state.Errors) != 1 || state.Errors[0].Type != workflow.ErrorTimeout {
+				t.Fatalf("expired operation lost its timeout policy or committed a late transition: %+v", state)
+			}
+		})
+	}
+}
+
+func TestWorkflowRunnerPendingResumeDeadlineBoundsValidation(t *testing.T) {
+	for _, uncertainSend := range []bool{false, true} {
+		name := "pending validation"
+		if uncertainSend {
+			name = "uncertain send"
+		}
+		t.Run(name, func(t *testing.T) {
+			opts := resumeWorkflowOptions(t)
+			opts.FireManual = false
+			template := resumeWorkflowTemplate()
+			template.Agents = []workflow.WorkflowAgent{{Profile: "build", Role: "build", Count: 2}}
+			template.Flow.Stages = []string{"build", "done"}
+			template.Flow.ParallelWithinStage = true
+			template.Flow.Transitions = []workflow.Transition{{From: "build", To: "done", Trigger: workflow.Trigger{Type: workflow.TriggerManual, Label: "done"}}}
+			template.ErrorHandling = &workflow.ErrorConfig{StageTimeoutMinutes: 1, OnTimeout: workflow.ErrorActionPause}
+			agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "build"}, {ID: "%2", Role: "build"}}
+			var sent []string
+			seedCtx, stopSeed := context.WithCancel(t.Context())
+			defer stopSeed()
+			ports := resumeWorkflowPorts(&sent)
+			dispatch := ports.dispatch
+			ports.dispatch = func(ctx context.Context, session, pane, prompt string) error {
+				if err := dispatch(ctx, session, pane, prompt); err != nil {
+					return err
+				}
+				stopSeed()
+				return nil
+			}
+			initial, err := mustResumeWorkflowRunner(t, template, agents, opts, ports).Run(seedCtx)
+			if !errors.Is(err, context.Canceled) || len(sent) != 1 {
+				t.Fatalf("partial delivery seed = %+v, %v, sends=%d", initial, err, len(sent))
+			}
+			checkpoint := mustLoadWorkflowCheckpoint(t, opts)
+			if checkpoint.Timeout == nil || len(checkpoint.Dispatches) != 2 || checkpoint.Dispatches[0].Status != "delivered" || checkpoint.Dispatches[1].Status != "pending" {
+				t.Fatalf("seed lost the pending recipient or deadline: %+v", checkpoint)
+			}
+
+			ports = resumeWorkflowPorts(&sent)
+			resumeWallTime := time.Now()
+			ports.now = func() time.Time {
+				return checkpoint.Timeout.Deadline.Add(-250 * time.Millisecond).Add(time.Since(resumeWallTime))
+			}
+			blocked := 0
+			if uncertainSend {
+				ports.dispatch = func(ctx context.Context, _, pane, _ string) error {
+					if pane != "%2" {
+						t.Fatalf("resume repeated completed delivery to %s", pane)
+					}
+					blocked++
+					<-ctx.Done()
+					return ctx.Err()
+				}
+			} else {
+				ports.validate = func(ctx context.Context) error {
+					blocked++
+					<-ctx.Done()
+					return ctx.Err()
+				}
+			}
+			opts.Resume, opts.Vars = true, nil
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			result, err := mustResumeWorkflowRunner(t, template, agents, opts, ports).Run(ctx)
+			if err == nil || result.Success || result.Completed || result.Transitions != 0 || ctx.Err() != nil || blocked != 1 || len(sent) != 1 {
+				t.Fatalf("pending deadline ignored or repeated work: %+v, %v, context=%v blocked=%d sends=%d", result, err, ctx.Err(), blocked, len(sent))
+			}
+			state := mustLoadWorkflowCheckpoint(t, opts)
+			if state.Timeout == nil || len(state.Dispatches) != 2 || state.Dispatches[0].Status != "delivered" || state.CurrentStage != "build" || len(state.StageHistory) != 0 {
+				t.Fatalf("expiry corrupted the partial delivery plan: %+v", state)
+			}
+			if uncertainSend {
+				if result.Reason != "dispatch-failed" || !errors.Is(err, context.DeadlineExceeded) || state.Dispatches[1].Status != "sending" ||
+					state.Paused || state.Timeout.Handling || state.Timeout.Handled || len(state.Errors) != 0 {
+					t.Fatalf("unknown send ran a timeout policy or lost its intent: %+v, %v, state=%+v", result, err, state)
+				}
+			} else if result.Reason != "paused" || state.Dispatches[1].Status != "pending" || !state.Paused ||
+				state.Timeout.Handling || !state.Timeout.Handled || state.Timeout.StopReason != "paused" || len(state.Errors) != 1 || state.Errors[0].Type != workflow.ErrorTimeout {
+				t.Fatalf("known pending delivery did not apply its timeout policy: %+v, %v, state=%+v", result, err, state)
+			}
+		})
 	}
 }
 
@@ -1461,6 +1634,35 @@ func (f *fakeWorkflowAgents) wire(ports *workflowRunPorts, runner **workflowRunn
 }
 
 func pingPongPIDs() map[string]int { return map[string]int{"%1": 1001, "%2": 1002} }
+
+func TestWorkflowRunnerSimultaneousFaultsCannotSkipUndeliveredStage(t *testing.T) {
+	template := resumeWorkflowTemplate()
+	template.ErrorHandling = &workflow.ErrorConfig{OnAgentCrash: workflow.ErrorActionSkipStage}
+	opts := resumeWorkflowOptions(t)
+	opts.FireManual = false
+	opts.MaxTransitions = 1
+	fake := newFakeWorkflowSession()
+	ports := fake.ports()
+	ports.faults = func(context.Context, map[string]int) (map[string]workflowAgentFault, error) {
+		return map[string]workflowAgentFault{
+			"%1": *crashFault("build agent exited"),
+			"%2": *crashFault("review agent exited"),
+		}, nil
+	}
+	runner := mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, ports)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	result, err := runner.Run(ctx)
+	if err != nil || !result.Success || result.Completed || result.Reason != "max-transitions" || result.Transitions != 1 ||
+		strings.Join(result.Stages, ",") != "build,review" || strings.Join(fake.dispatchedPanes(), ",") != "%1,%2" {
+		t.Fatalf("old-stage fault skipped work or escaped the transition bound: %+v, %v, sends=%v", result, err, fake.dispatchedPanes())
+	}
+	state := mustLoadWorkflowCheckpoint(t, opts)
+	if state.Completed || state.CurrentStage != "review" || len(state.StageHistory) != 1 || state.StageHistory[0].Stage != "build" ||
+		len(state.Dispatches) != 1 || state.Dispatches[0].Pane != "%2" || state.Dispatches[0].Status != "delivered" {
+		t.Fatalf("simultaneous faults bypassed the destination delivery: %+v", state)
+	}
+}
 
 // A crashed agent pane runs on_agent_crash=restart_agent: the agent is
 // relaunched, the run rebinds to the replacement process and its fresh

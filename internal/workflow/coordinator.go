@@ -317,6 +317,16 @@ func (c *RuntimeCoordinator) Evaluate(ctx *TriggerContext) (bool, error) {
 	if !c.started {
 		return false, errors.New("workflow coordinator is not started")
 	}
+	if err := ctx.checkErr(); err != nil {
+		return false, err
+	}
+	checkCtx := ctx
+	if ctx != nil && ctx.CheckContext != nil {
+		observation := *ctx
+		observation.Context = ctx.CheckContext
+		observation.CheckContext = nil
+		checkCtx = &observation
+	}
 	if ctx != nil && ctx.FileTriggerStates != nil {
 		if err := ValidateFileTriggerStates(c.template, ctx.ProjectRoot, c.stage, ctx.FileTriggerStates, ctx.FileTriggerExcludes); err != nil {
 			return false, err
@@ -330,10 +340,19 @@ func (c *RuntimeCoordinator) Evaluate(ctx *TriggerContext) (bool, error) {
 			fired = ctx.FileTriggerStates[active.index].Fired
 		} else {
 			var err error
-			fired, err = active.trigger.Check(ctx)
+			fired, err = active.trigger.Check(checkCtx)
 			if err != nil {
+				if cause := ctx.checkErr(); cause != nil {
+					return false, cause
+				}
 				return false, fmt.Errorf("check %s trigger: %w", active.transition.Trigger.Type, err)
 			}
+		}
+		// A trigger may finish at its deadline or ignore cancellation. Its
+		// result cannot authorize a late transition, including when a saved
+		// receipt bypassed Check entirely.
+		if err := ctx.checkErr(); err != nil {
+			return false, err
 		}
 		if fired {
 			if err := c.transitionLocked(ctx, active.transition); err != nil {
@@ -371,10 +390,8 @@ func (c *RuntimeCoordinator) AdvanceManual(ctx *TriggerContext, transitionIndex 
 	if ctx == nil {
 		return errors.New("workflow manual transition context is required")
 	}
-	if ctx.Context != nil {
-		if err := ctx.Context.Err(); err != nil {
-			return err
-		}
+	if err := ctx.checkErr(); err != nil {
+		return err
 	}
 	for _, active := range c.active {
 		if active.index != transitionIndex {
@@ -414,6 +431,7 @@ func (c *RuntimeCoordinator) activateStageLocked(ctx *TriggerContext, stage stri
 	c.stage = stage
 	nextCtx := cloneTriggerContext(ctx)
 	if nextCtx != nil {
+		nextCtx.CheckContext = nil
 		nextCtx.FileTriggerStates = nil
 		nextCtx.TransitionEvidence = nil
 	}

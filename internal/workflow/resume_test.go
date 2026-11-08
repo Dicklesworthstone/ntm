@@ -432,22 +432,36 @@ func (a *resumeTimeoutActions) RetryStage(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func TestTimeoutMonitorDrainsActionBeforeLeaseRelease(t *testing.T) {
+func TestRecoveryHandlerWaitsForActionBeforeReturning(t *testing.T) {
 	actions := &resumeTimeoutActions{entered: make(chan struct{}), exited: make(chan struct{})}
 	handler := NewErrorHandler(ErrorHandlingConfig{OnTimeout: ErrorActionRetry, MaxRetriesPerStage: 1}, actions)
-	monitor := NewTimeoutMonitor(time.Millisecond, handler, func() string { return "review" })
-	monitor.Start(context.Background(), "review")
-	defer monitor.StopAndWait()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	finished := make(chan error, 1)
+	go func() { finished <- handler.Handle(ctx, &WorkflowError{Type: ErrorTimeout, Stage: "review"}) }()
 	select {
 	case <-actions.entered:
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout action never started")
 	}
-	monitor.StopAndWait()
+	select {
+	case err := <-finished:
+		t.Fatalf("handler returned while its action still owns the checkpoint: %v", err)
+	default:
+	}
+	cancel()
+	select {
+	case err := <-finished:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("handler swallowed the action failure: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled action did not return")
+	}
 	select {
 	case <-actions.exited:
 	default:
-		t.Fatal("StopAndWait returned with a checkpoint writer still active")
+		t.Fatal("handler returned with a checkpoint writer still active")
 	}
 }
 

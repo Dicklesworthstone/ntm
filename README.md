@@ -769,6 +769,20 @@ A same-named local directory or explicit `--project-root` does not establish a
 shared filesystem. For SSH workflows, `--project-root` selects the local project
 directory containing the checkpoint and defaults to the local current directory.
 
+Workflow `stage_timeout_minutes` deadlines are saved before each prompt round.
+Downtime counts toward the deadline: `--resume` handles an expired stage before
+sending any remaining prompts. A timeout policy of `retry` starts another timed
+round, bounded by `max_retries_per_stage`; retry and agent-restart allowances
+remain consumed across resumes. Command checks and pane observations are bounded
+by the current round's remaining time.
+
+Successful timeout `pause` and `notify` actions retain receipts, so resuming does
+not repeat them or silently grant a fresh timeout for the same round. A timeout
+`abort`, an interrupted action with an unknown outcome, or an older timed
+checkpoint without its original deadline requires inspection and a deliberate
+`--restart`. Timeout-driven skips commit the destination stage before its prompts
+are sent, including transitions that revisit the same stage.
+
 The dashboard resumes pipelines in a detached worker, so closing the browser or
 restarting the HTTP server does not cancel an authorized resume. REST clients can
 request the same lifetime with `POST /api/v1/pipelines/{id}/resume` and
