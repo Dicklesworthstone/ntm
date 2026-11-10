@@ -506,6 +506,18 @@ func validateStep(step *Step, stepField string, stepIDs map[string]bool, result 
 			Hint:    "bead_query runs a structured br query and stores its result through output_var",
 		})
 	}
+	// Literal filters can be checked by pipeline validate before any earlier
+	// step runs. Dynamic filters must instead be compiled after substitution,
+	// which executeBeadQuery does before invoking br (including dry runs).
+	if hasBeadQuery && !strings.Contains(step.BeadQuery.Filter, "${") {
+		if _, err := compileBeadFilter(step.BeadQuery.Filter); err != nil {
+			result.addError(ParseError{
+				Field:   stepField + ".bead_query.filter",
+				Message: fmt.Sprintf("invalid bead query filter: %v", err),
+				Hint:    "Use field==value or field!=value with &&, ||, and parentheses; quote values containing spaces or operators",
+			})
+		}
+	}
 
 	// bd-nz63w: branch steps must have both the selector predicate and a
 	// branches map. The executor only dispatches when step.Branch is set, so

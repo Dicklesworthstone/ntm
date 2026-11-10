@@ -124,3 +124,43 @@ func TestEvaluateForeachFilterBarePaneScalar(t *testing.T) {
 		t.Fatal("EvaluateForeachFilter(pane==main:1) for Pane='main:1' = false, want true")
 	}
 }
+
+func TestSharedFilterGrammarQuotedValuesAndUnicode(t *testing.T) {
+	ctx := FilterContext{Item: map[string]string{"title": `éclair || (a && b)`, "role": "reviewer"}}
+	for _, expr := range []string{
+		`title=="éclair || (a && b)" && role==reviewer`,
+		"title\u2003==\u00a0\"éclair || (a && b)\"\u2003&&\u2003role==reviewer",
+	} {
+		got, err := EvaluateForeachFilter(expr, ctx)
+		if err != nil || !got {
+			t.Fatalf("EvaluateForeachFilter(%q) = %t, %v", expr, got, err)
+		}
+	}
+	for _, expr := range []string{`title==unquoted"suffix"`, `role=="reviewer"suffix`, `role=="reviewer" == author`} {
+		if _, err := EvaluateForeachFilter(expr, ctx); err == nil {
+			t.Fatalf("EvaluateForeachFilter(%q) accepted an ambiguous literal", expr)
+		}
+	}
+}
+
+func TestSharedFilterGrammarBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		expr string
+		want string
+	}{
+		{"bytes", `title=="` + strings.Repeat("x", maxFilterExpressionBytes) + `"`, "bytes"},
+		{"tokens", strings.Repeat("role==a || ", maxFilterExpressionTokens/4) + "role==a", "tokens"},
+		{"depth", strings.Repeat("(", maxFilterExpressionDepth+1) + "role==a" + strings.Repeat(")", maxFilterExpressionDepth+1), "levels"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := EvaluateForeachFilter(tc.expr, FilterContext{Item: map[string]string{"role": "a"}}); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("unbounded filter error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	expr := strings.Repeat("(", maxFilterExpressionDepth) + "role==a" + strings.Repeat(")", maxFilterExpressionDepth)
+	if got, err := EvaluateForeachFilter(expr, FilterContext{Item: map[string]string{"role": "a"}}); err != nil || !got {
+		t.Fatalf("maximum supported depth = %t, %v", got, err)
+	}
+}

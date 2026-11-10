@@ -59,6 +59,16 @@ func (e *Executor) executeBeadQuery(ctx context.Context, step *Step, workflow *W
 		result.FinishedAt = time.Now()
 		return result
 	}
+	filter, err := compileBeadFilter(resolvedQuery.Filter)
+	if err != nil {
+		result.Status = StatusFailed
+		result.Error = stepRuntimeError(step, "bead_query", "bead_query",
+			fmt.Sprintf("filter failed: %v", err),
+			"use field==value or field!=value with &&, ||, and parentheses; quote values containing spaces or operators",
+			err.Error())
+		result.FinishedAt = time.Now()
+		return result
+	}
 	args := resolvedQuery.brListArgs()
 	if e.config.DryRun {
 		result.Status = StatusCompleted
@@ -117,12 +127,12 @@ func (e *Executor) executeBeadQuery(ctx context.Context, step *Step, workflow *W
 		result.FinishedAt = time.Now()
 		return result
 	}
-	records, err = filterBeadRecords(records, resolvedQuery.Filter)
+	records, err = filterBeadRecords(records, filter)
 	if err != nil {
 		result.Status = StatusFailed
 		result.Error = stepRuntimeError(step, "bead_query", "bead_query",
 			fmt.Sprintf("filter failed: %v", err),
-			"use simple field==value or field!=value clauses joined by && or ||",
+			"use field==value or field!=value with &&, ||, and parentheses; quote values containing spaces or operators",
 			err.Error())
 		result.FinishedAt = time.Now()
 		return result
@@ -280,14 +290,13 @@ func parseBeadQueryRecords(out []byte) ([]BeadRecord, error) {
 	return doc.Issues, nil
 }
 
-func filterBeadRecords(records []BeadRecord, filter string) ([]BeadRecord, error) {
-	filter = strings.TrimSpace(filter)
-	if filter == "" {
+func filterBeadRecords(records []BeadRecord, filter filterNode) ([]BeadRecord, error) {
+	if filter == nil {
 		return records, nil
 	}
 	out := make([]BeadRecord, 0, len(records))
 	for _, record := range records {
-		ok, err := matchBeadFilter(record, filter)
+		ok, err := filter.eval(FilterContext{Item: record})
 		if err != nil {
 			return nil, err
 		}
@@ -298,102 +307,87 @@ func filterBeadRecords(records []BeadRecord, filter string) ([]BeadRecord, error
 	return out, nil
 }
 
-func matchBeadFilter(record BeadRecord, expr string) (bool, error) {
-	// bd-3at8h: the existing string-split parser cannot handle the
-	// parenthesized E2.6 filter shapes the docs imply (e.g.
-	// `status==open && (label==hypothesis || label==phase-4)`). Splitting
-	// on `||` first chops the parens into clauses like `(label==hypothesis`
-	// and `label==phase-4)` that then fail with confusing field/value
-	// errors or silently match the wrong record set. Reject parentheses
-	// up front with an actionable error so authors don't get a wrong-set
-	// surprise; the deeper "reuse foreach filter parser" path is tracked
-	// for a follow-up.
-	if strings.ContainsAny(expr, "()") {
-		return false, fmt.Errorf("bead_query.filter does not yet support parenthesized expressions (got %q): rewrite without grouping (e.g. status==open && label==hypothesis || status==open && label==phase-4) or pre-narrow with bead_query.labels/status", expr)
+// compileBeadFilter reuses the foreach expression grammar while retaining
+// bead-specific semantics: labels are membership tests, priority is an
+// integer, and other fields compare exact strings. Every comparison is
+// validated before br is invoked, rather than only along a matching row's
+// short-circuit path. The compiled predicate is reused for the whole result.
+func compileBeadFilter(expr string) (filterNode, error) {
+	if strings.TrimSpace(expr) == "" {
+		return nil, nil
 	}
-	orParts := strings.Split(expr, "||")
-	for _, orPart := range orParts {
-		andParts := strings.Split(orPart, "&&")
-		all := true
-		for _, rawClause := range andParts {
-			ok, err := matchBeadFilterClause(record, rawClause)
-			if err != nil {
-				return false, err
-			}
-			if !ok {
-				all = false
-				break
-			}
-		}
-		if all {
-			return true, nil
-		}
+	node, err := parseFilterExpression(expr)
+	if err != nil {
+		return nil, err
 	}
-	return false, nil
+	return compileBeadFilterNode(node)
 }
 
-func matchBeadFilterClause(record BeadRecord, rawClause string) (bool, error) {
-	clause := strings.TrimSpace(rawClause)
-	if clause == "" {
-		return false, fmt.Errorf("empty filter clause")
-	}
-
-	// bd-o4ji9: detect the operator by the earliest occurrence of `==` or
-	// `!=`. Preferring `==` regardless of position mis-parsed clauses like
-	// `field!=foo==bar`, where SplitN(clause, "==", 2) splits cleanly into
-	// two parts but locks `op` to `==` and assigns the literal `field!=foo`
-	// as the field name.
-	eqIdx := strings.Index(clause, "==")
-	neIdx := strings.Index(clause, "!=")
-	op := ""
-	splitIdx := -1
-	switch {
-	case eqIdx >= 0 && neIdx >= 0:
-		if eqIdx <= neIdx {
-			op, splitIdx = "==", eqIdx
-		} else {
-			op, splitIdx = "!=", neIdx
+func compileBeadFilterNode(node filterNode) (filterNode, error) {
+	switch n := node.(type) {
+	case filterLogicalNode:
+		left, err := compileBeadFilterNode(n.left)
+		if err != nil {
+			return nil, err
 		}
-	case eqIdx >= 0:
-		op, splitIdx = "==", eqIdx
-	case neIdx >= 0:
-		op, splitIdx = "!=", neIdx
+		right, err := compileBeadFilterNode(n.right)
+		if err != nil {
+			return nil, err
+		}
+		return filterLogicalNode{op: n.op, left: left, right: right}, nil
+	case filterCompareNode:
+		field := strings.ToLower(strings.TrimSpace(n.left.value))
+		if n.left.quoted {
+			return nil, fmt.Errorf("bead field %q must not be quoted", field)
+		}
+		if _, ok := beadRecordField(BeadRecord{}, field); !ok {
+			return nil, fmt.Errorf("unknown bead field %q", field)
+		}
+		compiled := beadFilterComparison{field: field, value: n.right.value, negate: n.op == "!="}
+		if field == "priority" {
+			priority, err := strconv.Atoi(n.right.value)
+			if err != nil {
+				return nil, fmt.Errorf("bead priority requires an integer, got %q", n.right.value)
+			}
+			compiled.priority = priority
+		}
+		return compiled, nil
+	default:
+		return nil, fmt.Errorf("bead filters require field==value or field!=value comparisons")
 	}
-	if splitIdx < 0 {
-		return false, fmt.Errorf("unsupported filter clause %q", clause)
-	}
-	parts := []string{clause[:splitIdx], clause[splitIdx+2:]}
+}
 
-	// bd-6uylc: beadRecordField lowercases the field internally, so the
-	// label/labels list-membership branch must compare against the same
-	// canonical form. Otherwise "Label==alpha" returned the comma-joined
-	// label string, mismatched the user's value, and silently excluded
-	// records that should match.
-	field := strings.ToLower(strings.TrimSpace(parts[0]))
-	want := trimFilterValue(parts[1])
-	got, ok := beadRecordField(record, field)
+type beadFilterComparison struct {
+	field    string
+	value    string
+	priority int
+	negate   bool
+}
+
+func (n beadFilterComparison) eval(ctx FilterContext) (bool, error) {
+	record, ok := ctx.Item.(BeadRecord)
 	if !ok {
-		return false, fmt.Errorf("unknown bead field %q", field)
+		return false, fmt.Errorf("bead filter requires a bead record")
 	}
-
-	matches := got == want
-	if field == "label" || field == "labels" {
-		matches = false
+	var matches bool
+	switch n.field {
+	case "label", "labels":
 		for _, label := range record.Labels {
-			if label == want {
+			if label == n.value {
 				matches = true
 				break
 			}
 		}
+	case "priority":
+		matches = record.Priority == n.priority
+	default:
+		got, _ := beadRecordField(record, n.field) // Validated during compilation.
+		matches = got == n.value
 	}
-	if op == "!=" {
+	if n.negate {
 		return !matches, nil
 	}
 	return matches, nil
-}
-
-func trimFilterValue(raw string) string {
-	return strings.Trim(strings.TrimSpace(raw), `"'`)
 }
 
 func beadRecordField(record BeadRecord, field string) (string, bool) {

@@ -10,6 +10,7 @@ NTM workflows define multi-step automation pipelines for orchestrating AI agents
 - [Variables](#variables)
 - [Settings](#settings)
 - [Steps](#steps)
+- [Bead Queries](#bead-queries)
 - [Agent Selection](#agent-selection)
 - [Wait Configuration](#wait-configuration)
 - [Error Handling](#error-handling)
@@ -587,6 +588,76 @@ steps:
     output_var: result
     output_parse: json
 ```
+
+## Bead Queries
+
+A `bead_query` step reads structured Beads records without a shell pipeline.
+Use the tracker fields to narrow the query, then `filter` for grouped work
+selection:
+
+```yaml
+schema_version: "2.0"
+name: select-priority-work
+steps:
+  - id: collect
+    bead_query:
+      status: open
+      filter: '(label==hypothesis || label==phase-4) && priority==1'
+    output_var: selected_beads
+```
+
+The step emits a JSON array and makes it available as `selected_beads`.
+`selected_beads_parsed` contains the typed record list for downstream steps.
+An empty result is `[]` and is a successful query. `bead_query` is a complete
+step kind and cannot be combined with an agent prompt, command, or another
+step kind on the same step.
+
+| Query field | Meaning |
+|-------------|---------|
+| `label` | A label string or a list of labels passed to the tracker |
+| `status` | Tracker status filter |
+| `state` | Alias used when `status` is absent |
+| `type` | Tracker issue type filter |
+| `priority` | Tracker priority filter |
+| `assignee` | Tracker assignee filter |
+| `filter` | Expression applied to the returned records |
+
+### Filter Expressions
+
+Filters support `==`, `!=`, `&&`, `||`, and nested parentheses. `&&` binds
+more tightly than `||`; use parentheses to group alternatives. Field names
+are case insensitive, while string values and labels match exactly.
+
+| Filter field | Comparison |
+|--------------|------------|
+| `id`, `title`, `description`, `status`, `assignee` | Exact string equality or inequality |
+| `state` | Exact string comparison, falling back to the record's `status` when its `state` is empty |
+| `type`, `issue_type` | Exact issue type comparison |
+| `label`, `labels` | Membership or non-membership in the record's label list |
+| `priority` | Integer equality or inequality; quoted integers are accepted |
+
+Quote values containing whitespace, parentheses, or operators. Both single
+and double quotes are supported; a backslash escapes a quote or backslash
+inside a quoted value. For example:
+
+```yaml
+bead_query:
+  filter: 'status==open && (label=="api || (parser)" || title=="Review A && B")'
+```
+
+Numeric-looking strings stay strings: `label=="01"` differs from `label==1`.
+Priorities are integers, so `priority=="01"` and `priority==1` select the same
+priority. Chained comparisons such as `priority!=1==something` are invalid.
+
+Query fields support normal variable substitution, for example
+`filter: 'priority==${vars.target_priority}'`. Literal filters are checked by
+`ntm pipeline validate` before execution. Substituted filters are checked in
+full after substitution and before invoking `br`, including during dry runs.
+An unknown field, invalid integer, or malformed unused branch is an error
+even if another branch would match or the tracker would return no records.
+
+The shared foreach and bead-query expression parser accepts at most 64 KiB,
+4,096 tokens, and 128 levels of parentheses per expression.
 
 ## Agent Selection
 

@@ -18,19 +18,39 @@ type FilterContext struct {
 // EvaluateForeachFilter evaluates a foreach filter expression against the
 // current iteration item and pane metadata.
 func EvaluateForeachFilter(expr string, ctx FilterContext) (bool, error) {
-	tokens, err := tokenizeFilter(expr)
+	node, err := parseFilterExpression(expr)
 	if err != nil {
 		return false, err
-	}
-	parser := filterParser{tokens: tokens, ctx: ctx}
-	node, err := parser.parseOr()
-	if err != nil {
-		return false, err
-	}
-	if !parser.atEnd() {
-		return false, fmt.Errorf("unexpected filter token %q", parser.peek().value)
 	}
 	return node.eval(ctx)
+}
+
+const (
+	maxFilterExpressionBytes  = 64 * 1024
+	maxFilterExpressionTokens = 4096
+	maxFilterExpressionDepth  = 128
+)
+
+// parseFilterExpression is shared by foreach and bead_query. Parsing is
+// separate from evaluation so callers can validate every branch before
+// querying external tools, including when a query will return no records.
+func parseFilterExpression(expr string) (filterNode, error) {
+	if len(expr) > maxFilterExpressionBytes {
+		return nil, fmt.Errorf("filter exceeds %d bytes", maxFilterExpressionBytes)
+	}
+	tokens, err := tokenizeFilter(expr)
+	if err != nil {
+		return nil, err
+	}
+	parser := filterParser{tokens: tokens}
+	node, err := parser.parseOr()
+	if err != nil {
+		return nil, err
+	}
+	if !parser.atEnd() {
+		return nil, fmt.Errorf("unexpected filter token %q", parser.peek().value)
+	}
+	return node, nil
 }
 
 type filterTokenKind int
@@ -55,6 +75,9 @@ type filterToken struct {
 func tokenizeFilter(expr string) ([]filterToken, error) {
 	var tokens []filterToken
 	for i := 0; i < len(expr); {
+		if len(tokens) >= maxFilterExpressionTokens {
+			return nil, fmt.Errorf("filter exceeds %d tokens", maxFilterExpressionTokens)
+		}
 		r, size := utf8.DecodeRuneInString(expr[i:])
 		if unicode.IsSpace(r) {
 			i += size
@@ -88,8 +111,12 @@ func tokenizeFilter(expr string) ([]filterToken, error) {
 			i = next
 		default:
 			start := i
-			for i < len(expr) && !isFilterDelimiter(expr[i]) {
-				i++
+			for i < len(expr) {
+				r, size := utf8.DecodeRuneInString(expr[i:])
+				if unicode.IsSpace(r) || isFilterDelimiter(expr[i]) {
+					break
+				}
+				i += size
 			}
 			value := strings.TrimSpace(expr[start:i])
 			if value == "" {
@@ -103,7 +130,7 @@ func tokenizeFilter(expr string) ([]filterToken, error) {
 }
 
 func isFilterDelimiter(b byte) bool {
-	return unicode.IsSpace(rune(b)) || strings.ContainsRune("()=!&|", rune(b))
+	return strings.ContainsRune("()=!&|\"'", rune(b))
 }
 
 func scanFilterString(expr string, start int) (string, int, error) {
@@ -126,7 +153,7 @@ func scanFilterString(expr string, start int) (string, int, error) {
 type filterParser struct {
 	tokens []filterToken
 	pos    int
-	ctx    FilterContext
+	depth  int
 }
 
 func (p *filterParser) parseOr() (filterNode, error) {
@@ -161,7 +188,12 @@ func (p *filterParser) parseAnd() (filterNode, error) {
 
 func (p *filterParser) parseComparison() (filterNode, error) {
 	if p.match(filterTokenLeftParen) {
+		if p.depth >= maxFilterExpressionDepth {
+			return nil, fmt.Errorf("filter exceeds %d levels of parentheses", maxFilterExpressionDepth)
+		}
+		p.depth++
 		node, err := p.parseOr()
+		p.depth--
 		if err != nil {
 			return nil, err
 		}

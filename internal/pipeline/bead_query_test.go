@@ -115,6 +115,39 @@ func TestBeadQuery_ValidationConflict(t *testing.T) {
 	t.Fatalf("Validate() errors = %+v, want bead_query conflict", result.Errors)
 }
 
+func TestBeadQueryValidateLiteralFilters(t *testing.T) {
+	for _, tc := range []struct {
+		expr  string
+		valid bool
+	}{
+		{"", true},
+		{`status==open && (label==hypothesis || label==phase-4)`, true},
+		{`title=="a && (b || c)"`, true},
+		{`priority==${vars.target_priority}`, true},
+		{`${steps.previous.output}`, true},
+		{`status==open || missing==x`, false},
+		{`status==open && priority==high`, false},
+		{`status==open && (label==hypothesis`, false},
+		{`status==open ||`, false},
+	} {
+		t.Run(tc.expr, func(t *testing.T) {
+			result := Validate(&Workflow{
+				SchemaVersion: SchemaVersion,
+				Name:          "validate-bead-filter",
+				Steps:         []Step{{ID: "collect", BeadQuery: &BeadQueryStep{Filter: tc.expr}}},
+			})
+			if result.Valid != tc.valid {
+				t.Fatalf("Validate().Valid = %t, want %t; errors = %+v", result.Valid, tc.valid, result.Errors)
+			}
+			if !tc.valid {
+				if len(result.Errors) != 1 || result.Errors[0].Field != "steps[0].bead_query.filter" {
+					t.Fatalf("filter diagnostic = %+v", result.Errors)
+				}
+			}
+		})
+	}
+}
+
 func TestExecuteBeadQueryCapturesTypedRecords(t *testing.T) {
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
@@ -181,7 +214,11 @@ func TestBeadQueryFilterOperators(t *testing.T) {
 		{ID: "bd-3", Labels: []string{"hypothesis"}, Status: "closed", Priority: 2},
 	}
 
-	got, err := filterBeadRecords(records, `label==hypothesis && status!=closed || id=="bd-2"`)
+	filter, err := compileBeadFilter(`label==hypothesis && status!=closed || id=="bd-2"`)
+	if err != nil {
+		t.Fatalf("compileBeadFilter() error = %v", err)
+	}
+	got, err := filterBeadRecords(records, filter)
 	if err != nil {
 		t.Fatalf("filterBeadRecords() error = %v", err)
 	}
@@ -194,23 +231,148 @@ func TestBeadQueryFilterOperators(t *testing.T) {
 	}
 }
 
-func TestBeadQueryFilterRejectsParens(t *testing.T) {
-	// bd-3at8h: the string-split parser cannot honor parens, so silently
-	// chopping `(label==hypothesis || label==phase-4)` into clauses with
-	// the parens attached (`(label==hypothesis` / `label==phase-4)`) used
-	// to either return an unknown-field error or, worse, the wrong result
-	// set. Reject parens up front with a clear hint instead of producing
-	// a misleading match. (Replacing matchBeadFilter with the foreach
-	// filter parser is tracked for a follow-up.)
+func TestBeadQueryFilterGroupingAndLiteralTypes(t *testing.T) {
 	records := []BeadRecord{
-		{ID: "bd-1", Labels: []string{"hypothesis"}, Status: "open"},
+		{ID: "bd-1", Labels: []string{"hypothesis", "01"}, Status: "open", Priority: 1, Title: `Parser (a && b) || "fallback"`},
+		{ID: "bd-2", Labels: []string{"phase-4", "1"}, Status: "open", State: "queued", Priority: 2, Title: "Don't split != or =="},
+		{ID: "bd-3", Labels: []string{"phase-4"}, Status: "closed", Priority: 1},
+		{ID: "bd-4", Labels: []string{"other"}, Status: "open", Priority: 1},
 	}
-	_, err := filterBeadRecords(records, `status==open && (label==hypothesis || label==phase-4)`)
-	if err == nil {
-		t.Fatal("filterBeadRecords() error = nil, want parens-rejection error")
+	for _, tc := range []struct {
+		expr string
+		want []string
+	}{
+		{`status==open && (label==hypothesis || label==phase-4)`, []string{"bd-1", "bd-2"}},
+		{`(status==open && label==hypothesis) || label==phase-4`, []string{"bd-1", "bd-2", "bd-3"}},
+		{`status==open && ((label==hypothesis || label==phase-4) && priority!="2")`, []string{"bd-1"}},
+		{`Title=="Parser (a && b) || \"fallback\""`, []string{"bd-1"}},
+		{`title=='Don\'t split != or =='`, []string{"bd-2"}},
+		{`label=="01"`, []string{"bd-1"}},
+		{`label==1`, []string{"bd-2"}},
+		{`PRIORITY=="01"`, []string{"bd-1", "bd-3", "bd-4"}},
+		{`state==open`, []string{"bd-1", "bd-4"}},
+		{`state==queued`, []string{"bd-2"}},
+		{`assignee=="" && label!=phase-4`, []string{"bd-1", "bd-4"}},
+	} {
+		t.Run(tc.expr, func(t *testing.T) {
+			filter, err := compileBeadFilter(tc.expr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := filterBeadRecords(records, filter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids := make([]string, 0, len(got))
+			for _, record := range got {
+				ids = append(ids, record.ID)
+			}
+			if !reflect.DeepEqual(ids, tc.want) {
+				t.Fatalf("filtered IDs = %v, want %v", ids, tc.want)
+			}
+		})
 	}
-	if !strings.Contains(err.Error(), "parenthesized expressions") {
-		t.Fatalf("filterBeadRecords() error = %q, want parens hint", err.Error())
+}
+
+func TestBeadQueryGroupedFilterRunsWorkflow(t *testing.T) {
+	workflow, err := ParseString(`
+schema_version: "2.0"
+name: grouped-bead-selection
+vars:
+  target_priority:
+    type: string
+    default: "1"
+steps:
+  - id: collect
+    bead_query:
+      filter: 'status==open && (Label=="api || (parser)" || issue_type==bug) && priority==${vars.target_priority}'
+    output_var: selected
+`, "yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	config := DefaultExecutorConfig("session")
+	config.ProjectDir = t.TempDir()
+	config.BeadQueryRunBr = func(ctx context.Context, args []string) ([]byte, error) {
+		calls++
+		if want := []string{"list", "--json", "--limit", "0"}; !reflect.DeepEqual(args, want) {
+			return nil, fmt.Errorf("br args = %v, want %v", args, want)
+		}
+		return []byte(`{"issues":[
+			{"id":"bd-source","labels":["api || (parser)"],"status":"open","priority":1,"issue_type":"feature"},
+			{"id":"bd-bug","labels":[],"status":"open","priority":1,"issue_type":"bug"},
+			{"id":"bd-closed","labels":["api || (parser)"],"status":"closed","priority":1,"issue_type":"bug"},
+			{"id":"bd-later","labels":[],"status":"open","priority":2,"issue_type":"bug"},
+			{"id":"bd-other","labels":[],"status":"open","priority":1,"issue_type":"feature"}
+		]}`), nil
+	}
+	state, err := NewExecutor(config).Run(context.Background(), workflow, nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("br called %d times, want 1", calls)
+	}
+	var selected []BeadRecord
+	if err := json.Unmarshal([]byte(state.Steps["collect"].Output), &selected); err != nil {
+		t.Fatal(err)
+	}
+	if len(selected) != 2 || selected[0].ID != "bd-source" || selected[1].ID != "bd-bug" {
+		t.Fatalf("selected = %+v", selected)
+	}
+	// The typed output retains br's empty label list. The JSON representation
+	// omits that field via omitempty, so decoding it produces a nil slice.
+	wantTyped := []BeadRecord{
+		{ID: "bd-source", Labels: []string{"api || (parser)"}, Status: "open", Priority: 1, IssueType: "feature"},
+		{ID: "bd-bug", Labels: []string{}, Status: "open", Priority: 1, IssueType: "bug"},
+	}
+	if got := state.Variables["selected_parsed"]; !reflect.DeepEqual(got, wantTyped) {
+		t.Fatalf("downstream typed records = %#v, want %#v", got, wantTyped)
+	}
+}
+
+func TestBeadQueryInvalidFiltersFailBeforeQuery(t *testing.T) {
+	for _, expr := range []string{
+		`status==open || missing==x`,
+		`status==closed && priority==high`,
+		`status==open ||`,
+		`status==open && (label==a`,
+		`status==open)`,
+		`label=="unterminated`,
+		`"status"==open`,
+		`status`,
+		`priority!=1==something`,
+	} {
+		for _, dryRun := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/dry_run=%t", expr, dryRun), func(t *testing.T) {
+				workflow := &Workflow{
+					SchemaVersion: SchemaVersion,
+					Name:          "invalid-bead-filter",
+					Vars:          map[string]VarDef{"selection": {Type: VarTypeString, Default: expr}},
+					Steps:         []Step{{ID: "collect", BeadQuery: &BeadQueryStep{Filter: "${vars.selection}"}}},
+				}
+				config := DefaultExecutorConfig("session")
+				config.ProjectDir = t.TempDir()
+				config.DryRun = dryRun
+				queryCalls := 0
+				config.BeadQueryRunBr = func(context.Context, []string) ([]byte, error) {
+					queryCalls++
+					return []byte(`{"issues":[]}`), nil
+				}
+				state, err := NewExecutor(config).Run(context.Background(), workflow, nil, nil)
+				if queryCalls != 0 {
+					t.Fatal("invalid filter invoked br; even an empty result must not hide invalid syntax or fields")
+				}
+				if err == nil {
+					t.Fatal("Run() succeeded with an invalid filter")
+				}
+				result := state.Steps["collect"]
+				if result.Status != StatusFailed || result.Error == nil || !strings.Contains(result.Error.Message, "filter failed") {
+					t.Fatalf("filter failure = %+v", result)
+				}
+			})
+		}
 	}
 }
 
@@ -327,15 +489,13 @@ func TestBeadQueryBrErrorFailsStep(t *testing.T) {
 	}
 }
 
-// TestMatchBeadFilterClause_OperatorByFirstOccurrence covers bd-o4ji9:
-// when both `==` and `!=` appear in a clause, the operator is the one
-// that appears first. Previously `==` was always preferred, so a clause
-// like `priority!=1==broken` parsed `priority!=1` as the field and
-// failed with "unknown bead field".
-func TestMatchBeadFilterClause_OperatorByFirstOccurrence(t *testing.T) {
+// Operator-looking values require quotes; an accidental chained comparison
+// must never become a silently different work selection.
+func TestBeadFilterComparisonOperators(t *testing.T) {
 	record := BeadRecord{
 		ID:       "bd-test",
 		Priority: 1,
+		Title:    "1==something",
 	}
 	cases := []struct {
 		clause  string
@@ -344,39 +504,35 @@ func TestMatchBeadFilterClause_OperatorByFirstOccurrence(t *testing.T) {
 	}{
 		{clause: "priority!=2", want: true},
 		{clause: "priority==1", want: true},
-		// Earliest operator wins: with `!=` first, the LHS is `priority`
-		// and the RHS is the literal `1==something`. priority field is
-		// "1", so "priority != 1==something" → not equal, true.
-		{clause: "priority!=1==something", want: true},
-		// `==` first, LHS is `priority`, RHS is `2!=junk`. priority is
-		// "1", so equality with literal "2!=junk" → false.
-		{clause: "priority==2!=junk", want: false},
+		{clause: "priority!=1==something", wantErr: true},
+		{clause: "priority==2!=junk", wantErr: true},
+		{clause: `priority!="not-an-integer"`, wantErr: true},
+		{clause: `title=="1==something"`, want: true},
+		{clause: `title!="2!=junk"`, want: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.clause, func(t *testing.T) {
-			got, err := matchBeadFilterClause(record, tc.clause)
+			filter, err := compileBeadFilter(tc.clause)
 			if tc.wantErr {
 				if err == nil {
-					t.Fatalf("matchBeadFilterClause(%q) err = nil, want error", tc.clause)
+					t.Fatalf("compileBeadFilter(%q) err = nil, want error", tc.clause)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("matchBeadFilterClause(%q) err = %v", tc.clause, err)
+				t.Fatalf("compileBeadFilter(%q) err = %v", tc.clause, err)
+			}
+			got, err := filter.eval(FilterContext{Item: record})
+			if err != nil {
+				t.Fatal(err)
 			}
 			if got != tc.want {
-				t.Errorf("matchBeadFilterClause(%q) = %v, want %v", tc.clause, got, tc.want)
+				t.Errorf("filter %q = %v, want %v", tc.clause, got, tc.want)
 			}
 		})
 	}
 }
 
-// TestMatchBeadFilterClause_LabelCaseInsensitive covers bd-6uylc: the
-// `label`/`labels` list-membership branch was case-sensitive on the field
-// name, so `Label==alpha` silently returned false even when the record had
-// `alpha` in record.Labels (because beadRecordField returned the joined
-// string and the special-case branch didn't fire). Field name comparison
-// is now case-insensitive, matching beadRecordField.
 // TestExecuteBeadQuery_DryRun_SanitizesControlBytes covers bd-g3mfx: the
 // dry-run banner emitted by executeBeadQuery must scrub ANSI/OSC/C0 control
 // bytes from the substituted args. bead_query scalar fields support
@@ -427,7 +583,8 @@ func TestExecuteBeadQuery_DryRun_SanitizesControlBytes(t *testing.T) {
 	}
 }
 
-func TestMatchBeadFilterClause_LabelCaseInsensitive(t *testing.T) {
+// Label aliases retain membership semantics regardless of field-name case.
+func TestBeadFilterLabelCaseInsensitive(t *testing.T) {
 	record := BeadRecord{
 		ID:     "bd-test",
 		Labels: []string{"alpha", "beta", "gamma"},
@@ -447,12 +604,16 @@ func TestMatchBeadFilterClause_LabelCaseInsensitive(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.clause, func(t *testing.T) {
-			got, err := matchBeadFilterClause(record, tc.clause)
+			filter, err := compileBeadFilter(tc.clause)
 			if err != nil {
-				t.Fatalf("matchBeadFilterClause(%q) err = %v", tc.clause, err)
+				t.Fatalf("compileBeadFilter(%q) err = %v", tc.clause, err)
+			}
+			got, err := filter.eval(FilterContext{Item: record})
+			if err != nil {
+				t.Fatal(err)
 			}
 			if got != tc.want {
-				t.Errorf("matchBeadFilterClause(%q) = %v, want %v", tc.clause, got, tc.want)
+				t.Errorf("filter %q = %v, want %v", tc.clause, got, tc.want)
 			}
 		})
 	}
