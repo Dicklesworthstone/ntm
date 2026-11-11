@@ -497,13 +497,65 @@ func (s *Substitutor) substituteOnce(template string) (string, int, error) {
 		// placeholder so the outer Substitute loop sees them as opaque
 		// data; restoreEscapedSubstitutions converts them back to literal
 		// `${` in the final output.
-		if isTerminalSubstitutionNamespace(varPath) {
+		if s.isTerminalSubstitutionPath(varPath) {
 			formatted = sealTerminalValue(formatted)
 		}
 		return formatted
 	})
 
 	return result, resolved, firstErr
+}
+
+// isTerminalSubstitutionPath extends the fixed terminal namespaces with
+// named output_var aliases. Those aliases intentionally live under vars for
+// workflow ergonomics, but their values come from commands, agents, bead
+// queries, mail and other runtime sources. Persisting the marker on state keeps
+// that provenance across checkpoints/resume without modifying the raw value.
+func (s *Substitutor) isTerminalSubstitutionPath(varPath string) bool {
+	if isTerminalSubstitutionNamespace(varPath) {
+		return true
+	}
+	path := strings.TrimSpace(varPath)
+	parts := strings.Split(path, ".")
+	if len(parts) < 2 || parts[0] != "vars" || s.state == nil || s.state.TerminalVariables == nil {
+		return false
+	}
+	return s.state.TerminalVariables[parts[1]]
+}
+
+func markTerminalVariable(state *ExecutionState, name string) {
+	if state == nil || name == "" {
+		return
+	}
+	if state.TerminalVariables == nil {
+		state.TerminalVariables = make(map[string]bool)
+	}
+	state.TerminalVariables[name] = true
+}
+
+func clearTerminalVariable(state *ExecutionState, name string) {
+	if state == nil || state.TerminalVariables == nil || name == "" {
+		return
+	}
+	delete(state.TerminalVariables, name)
+}
+
+func storeOutputVar(state *ExecutionState, name string, output string, parsedData interface{}) {
+	if state == nil || name == "" {
+		return
+	}
+	if state.Variables == nil {
+		state.Variables = make(map[string]interface{})
+	}
+	state.Variables[name] = output
+	markTerminalVariable(state, name)
+	if parsedData != nil {
+		state.Variables[name+"_parsed"] = parsedData
+		markTerminalVariable(state, name+"_parsed")
+	} else {
+		delete(state.Variables, name+"_parsed")
+		clearTerminalVariable(state, name+"_parsed")
+	}
 }
 
 // isTerminalSubstitutionNamespace reports whether values resolved from this

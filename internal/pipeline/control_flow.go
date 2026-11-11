@@ -1411,10 +1411,7 @@ func (e *Executor) runPostPipelineSteps(ctx context.Context, workflow *Workflow)
 
 		if step.OutputVar != "" && result.Status == StatusCompleted {
 			e.varMu.Lock()
-			e.state.Variables[step.OutputVar] = result.Output
-			if result.ParsedData != nil {
-				e.state.Variables[step.OutputVar+"_parsed"] = result.ParsedData
-			}
+			storeOutputVar(e.state, step.OutputVar, result.Output, result.ParsedData)
 			StoreStepOutput(e.state, step.ID, result.Output, result.ParsedData)
 			e.varMu.Unlock()
 		}

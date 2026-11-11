@@ -1392,10 +1392,7 @@ func (e *Executor) storeForeachNestedResult(step *Step, result StepResult) {
 	// already written the declared aggregate shape there, so overwriting it with
 	// result.Output (the human summary line) would discard the collected data.
 	if step.OutputVar != "" && !stepOwnsForeachOutputVar(step) {
-		e.state.Variables[step.OutputVar] = result.Output
-		if result.ParsedData != nil {
-			e.state.Variables[step.OutputVar+"_parsed"] = result.ParsedData
-		}
+		storeOutputVar(e.state, step.OutputVar, result.Output, result.ParsedData)
 	}
 	StoreStepOutput(e.state, result.StepID, result.Output, result.ParsedData)
 	e.varMu.Unlock()

@@ -1395,7 +1395,8 @@ type ExecutionState struct {
 	CurrentStep    string                 `json:"current_step,omitempty"`
 	Steps          map[string]StepResult  `json:"steps"`
 	StepAdmissions *StepAdmissionState    `json:"step_admissions,omitempty"`
-	Variables      map[string]interface{} `json:"variables"` // Runtime variables including step outputs
+	Variables         map[string]interface{} `json:"variables"` // Runtime variables including step outputs
+	TerminalVariables map[string]bool        `json:"terminal_variables,omitempty"` // Output aliases whose contents are external data, not templates
 	Errors         []ExecutionError       `json:"errors,omitempty"`
 
 	// Phase-B resume metadata. This is ntm's internal persisted execution

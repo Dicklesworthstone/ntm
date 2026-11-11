@@ -218,8 +218,10 @@ func (e *Executor) storeParallelOutputVars(parent *Step, results []StepResult, c
 				}
 			}
 			e.state.Variables[name] = outputs
+			markTerminalVariable(e.state, name)
 			if hasParsed {
 				e.state.Variables[name+"_parsed"] = parsed
+				markTerminalVariable(e.state, name+"_parsed")
 			}
 		default:
 			// bd-iw5bw + bd-i3eah: aggregate stores a []string in
@@ -243,8 +245,10 @@ func (e *Executor) storeParallelOutputVars(parent *Step, results []StepResult, c
 				}
 			}
 			e.state.Variables[name] = outputs
+			markTerminalVariable(e.state, name)
 			if hasParsed {
 				e.state.Variables[name+"_parsed"] = parsed
+				markTerminalVariable(e.state, name+"_parsed")
 			}
 		}
 	}
@@ -254,10 +258,7 @@ func storeSingleParallelOutputVar(state *ExecutionState, name string, result Ste
 	if name == "" || result.Status != StatusCompleted {
 		return
 	}
-	state.Variables[name] = result.Output
-	if result.ParsedData != nil {
-		state.Variables[name+"_parsed"] = result.ParsedData
-	}
+	storeOutputVar(state, name, result.Output, result.ParsedData)
 }
 
 func lastCompletedParallelResult(indices []int, results []StepResult, completionOrder []string) (StepResult, bool) {

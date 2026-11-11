@@ -777,10 +777,7 @@ func (e *Executor) runOnCancelSteps(workflow *Workflow) {
 
 		if step.OutputVar != "" && result.Status == StatusCompleted {
 			e.varMu.Lock()
-			e.state.Variables[step.OutputVar] = result.Output
-			if result.ParsedData != nil {
-				e.state.Variables[step.OutputVar+"_parsed"] = result.ParsedData
-			}
+			storeOutputVar(e.state, step.OutputVar, result.Output, result.ParsedData)
 			StoreStepOutput(e.state, step.ID, result.Output, result.ParsedData)
 			e.varMu.Unlock()
 		}
@@ -903,10 +900,7 @@ func (e *Executor) executeWorkflow(ctx context.Context, workflow *Workflow) erro
 		// and downstream consumers read a status string instead of the data.
 		if step.OutputVar != "" && result.Status == StatusCompleted && !stepOwnsForeachOutputVar(step) {
 			e.varMu.Lock()
-			e.state.Variables[step.OutputVar] = result.Output
-			if result.ParsedData != nil {
-				e.state.Variables[step.OutputVar+"_parsed"] = result.ParsedData
-			}
+			storeOutputVar(e.state, step.OutputVar, result.Output, result.ParsedData)
 			StoreStepOutput(e.state, stepID, result.Output, result.ParsedData)
 			e.varMu.Unlock()
 		} else if result.Status == StatusCompleted && stepOwnsForeachOutputVar(step) {
@@ -4300,6 +4294,9 @@ func (e *Executor) snapshotState() *ExecutionState {
 	}
 	e.stateMu.RUnlock()
 
+	if e.state.TerminalVariables != nil {
+		snapshot.TerminalVariables = maps.Clone(e.state.TerminalVariables)
+	}
 	if e.state.Variables != nil {
 		snapshot.Variables = make(map[string]interface{}, len(e.state.Variables))
 		for key, value := range e.state.Variables {
@@ -4624,10 +4621,7 @@ func (e *Executor) applyStartFrom(workflow *Workflow) error {
 		if result.Output != "" || result.ParsedData != nil {
 			StoreStepOutput(e.state, id, result.Output, result.ParsedData)
 			if step, ok := e.graph.GetStep(id); ok && step.OutputVar != "" {
-				e.state.Variables[step.OutputVar] = result.Output
-				if result.ParsedData != nil {
-					e.state.Variables[step.OutputVar+"_parsed"] = result.ParsedData
-				}
+				storeOutputVar(e.state, step.OutputVar, result.Output, result.ParsedData)
 			}
 		}
 	}

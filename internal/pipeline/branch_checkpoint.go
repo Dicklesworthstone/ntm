@@ -364,12 +364,10 @@ func (e *Executor) adoptBranchChild(ctx context.Context, decision branchDecision
 			if captured {
 				for name, value := range receipt.Outputs {
 					e.state.Variables[name] = cloneInterfaceValue(value)
+					markTerminalVariable(e.state, name)
 				}
 			} else {
-				e.state.Variables[child.OutputVar] = prior.Output
-				if prior.ParsedData != nil {
-					e.state.Variables[child.OutputVar+"_parsed"] = cloneInterfaceValue(prior.ParsedData)
-				}
+				storeOutputVar(e.state, child.OutputVar, prior.Output, cloneInterfaceValue(prior.ParsedData))
 			}
 		}
 		e.varMu.Unlock()
