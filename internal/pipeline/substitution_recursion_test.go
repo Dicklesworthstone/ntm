@@ -233,6 +233,47 @@ func TestSubstituteErrorMessageReflectsConfiguredLimit(t *testing.T) {
 	}
 }
 
+// Runtime loop aliases are a data boundary too. A bead/step value can flow
+// through foreach as ${item.*} / ${loop.item.*}; preserving the terminal
+// fence here prevents that indirection from re-enabling recursive expansion.
+func TestSubstituteLoopItemDoesNotInjectEnvVariable(t *testing.T) {
+	t.Setenv("BD_447SE_LOOP_SECRET", "must-not-leak")
+	item := map[string]interface{}{"title": "${env.BD_447SE_LOOP_SECRET}"}
+	state := &ExecutionState{Variables: map[string]interface{}{
+		"loop.item": item,
+		"loop.task": item,
+	}}
+	sub := NewSubstitutor(state, "sess", "wf")
+
+	for _, template := range []string{"${item.title}", "${loop.item.title}", "${loop.task.title}"} {
+		got, err := sub.Substitute(template)
+		if err != nil {
+			t.Fatalf("Substitute(%q) error = %v", template, err)
+		}
+		if got != "${env.BD_447SE_LOOP_SECRET}" {
+			t.Fatalf("Substitute(%q) = %q, want literal env reference", template, got)
+		}
+		if strings.Contains(got, "must-not-leak") {
+			t.Fatalf("Substitute(%q) leaked env value: %q", template, got)
+		}
+	}
+}
+
+func TestSubstituteLoopItemKeepsAlreadyResolvedScalarValues(t *testing.T) {
+	state := &ExecutionState{Variables: map[string]interface{}{
+		"loop.item":  "ready",
+		"loop.index": 2,
+	}}
+	sub := NewSubstitutor(state, "sess", "wf")
+	got, err := sub.Substitute("item=${loop.item} index=${loop.index}")
+	if err != nil {
+		t.Fatalf("Substitute() error = %v", err)
+	}
+	if got != "item=ready index=2" {
+		t.Fatalf("Substitute() = %q, want ordinary loop values preserved", got)
+	}
+}
+
 func chainKey(i int) string {
 	if i < 10 {
 		return "l0" + string(rune('0'+i))

@@ -524,7 +524,13 @@ func isTerminalSubstitutionNamespace(varPath string) bool {
 		root = path[:idx]
 	}
 	switch root {
-	case "steps", "env", "bead_query", "agent":
+	case "steps", "env", "bead_query", "agent", "loop", "item":
+		// Loop/item values are materialized runtime data. Their source
+		// expression is resolved before iteration starts, so any ${...}
+		// that remains inside an item is data from the source and must not
+		// gain a second evaluation pass when referenced as ${item.*} or
+		// ${loop.item.*}. This preserves the terminal-data fence when
+		// bead/step output flows through foreach aliases.
 		return true
 	}
 	return false
