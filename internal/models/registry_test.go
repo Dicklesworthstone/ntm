@@ -202,3 +202,58 @@ func TestSuggestModelDeterministicTies(t *testing.T) {
 		}
 	}
 }
+
+func TestGetTokenBudgetForModel(t *testing.T) {
+	tests := []struct {
+		name, agentType, model string
+		window, want          int
+		wantErr               bool
+	}{
+		{"agent default", "claude", "", 0, 180000, false},
+		{"current large model", "cc", "claude-opus-5", 0, 900000, false},
+		{"smaller model", "gmi", "gemini-pro", 0, 3200, false},
+		{"codex model", "openai-codex", "gpt-4o-mini", 0, 120320, false},
+		{"model normalization", "cc", " Claude-Opus-5 ", 0, 900000, false},
+		{"reported window wins", "cc", "claude-opus-5", 32000, 28800, false},
+		{"custom reported window", "cc", "custom-provider-model", 8192, 7372, false},
+		{"unknown agent with window", "unknown", "", 10000, 7800, false},
+		{"legacy unknown agent", "unknown", "", 0, 100000, false},
+		{"unknown model", "cc", "custom-provider-model", 0, 0, true},
+		{"negative window", "cc", "claude-opus-5", -1, 0, true},
+		{"no working space", "gmi", "gemini-pro", 1, 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := GetTokenBudgetForModel(tt.agentType, tt.model, tt.window)
+			if (err != nil) != tt.wantErr || got != tt.want {
+				t.Fatalf("budget = %d, %v; want %d, error=%t", got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestGetTokenBudgetForModelUsesOverrides(t *testing.T) {
+	original := GetContextLimit("claude-opus-5")
+	t.Cleanup(func() { ApplyOverrides(map[string]int{"claude-opus-5": original}) })
+	ApplyOverrides(map[string]int{"claude-opus-5": 10000})
+	got, err := GetTokenBudgetForModel("cc", "claude-opus-5", 0)
+	if err != nil || got != 9000 {
+		t.Fatalf("model override was ignored: %d, %v", got, err)
+	}
+	got, err = GetTokenBudgetForModel("cc", "claude-opus-5", 20000)
+	if err != nil || got != 18000 {
+		t.Fatalf("reported window did not override registry: %d, %v", got, err)
+	}
+}
+
+func TestGetTokenBudgetForModelDoesNotOverflow(t *testing.T) {
+	window := int(^uint(0) >> 1)
+	want := window - window/10
+	if window%10 != 0 {
+		want-- // floor(90% of window), computed without multiplication
+	}
+	got, err := GetTokenBudgetForModel("cc", "custom-model", window)
+	if err != nil || got != want {
+		t.Fatalf("large window overflowed: %d, %v; want %d", got, err, want)
+	}
+}

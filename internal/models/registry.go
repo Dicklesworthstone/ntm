@@ -5,6 +5,7 @@
 package models
 
 import (
+	"fmt"
 	"log/slog"
 	"regexp"
 	"sort"
@@ -366,18 +367,18 @@ func editDistance(a, b string) int {
 	return prev[len(b)]
 }
 
-// agentTypeBudgetPct defines what fraction of the model's context limit
-// to allocate as a safe working budget per agent type. The remainder is
-// reserved for system prompts, tool definitions, and overhead.
-var agentTypeBudgetPct = map[string]float64{
-	"cc":       0.90, // Claude: 90% of limit (well-documented system prompt overhead)
-	"cod":      0.94, // Codex: 94% of limit
-	"gmi":      0.10, // Gemini: 10% of 1M (still 100K tokens, avoids excessive context)
-	"agy":      0.10, // Antigravity (Gemini successor): mirrors Gemini's budget
-	"cursor":   0.85, // Cursor
-	"windsurf": 0.85, // Windsurf
-	"aider":    0.85, // Aider
-	"ollama":   0.90, // Ollama
+// agentTypeBudgetPct defines the fraction of an available context window
+// allocated to one pack. It leaves headroom and applies each agent's
+// conservative pack-size policy; it is not a maximum session occupancy.
+var agentTypeBudgetPct = map[string]int{
+	"cc":       90, // Claude: 90% of limit (well-documented system prompt overhead)
+	"cod":      94, // Codex: 94% of limit
+	"gmi":      10, // Gemini: 10% of 1M (still 100K tokens, avoids excessive context)
+	"agy":      10, // Antigravity (Gemini successor): mirrors Gemini's budget
+	"cursor":   85, // Cursor
+	"windsurf": 85, // Windsurf
+	"aider":    85, // Aider
+	"ollama":   90, // Ollama
 }
 
 // agentTypeDefaultModels maps agent types to their default model for budget calculation.
@@ -396,17 +397,45 @@ var agentTypeDefaultModels = map[string]string{
 // This is derived from the model's context limit and a per-agent-type
 // overhead percentage.
 func GetTokenBudget(agentType string) int {
-	agentType = string(agent.AgentType(agentType).Canonical())
-	model, ok := agentTypeDefaultModels[agentType]
-	if !ok {
-		return 100000 // Safe default
+	budget, err := GetTokenBudgetForModel(agentType, "", 0)
+	if err != nil {
+		return 0
 	}
+	return budget
+}
 
-	limit := GetContextLimit(model)
+// GetTokenBudgetForModel sizes a context pack for the actual target window.
+// A positive reported window takes precedence over the model registry. An
+// explicit unknown model requires a reported window instead of silently using
+// the registry fallback. Empty model/window inputs retain the agent defaults.
+// The percentage limits the pack size, not the session's total occupancy.
+func GetTokenBudgetForModel(agentType, model string, contextWindow int) (int, error) {
+	if contextWindow < 0 {
+		return 0, fmt.Errorf("context window must be nonnegative, got %d", contextWindow)
+	}
+	agentType = string(agent.AgentType(agentType).Canonical())
+	model = strings.ToLower(strings.TrimSpace(model))
+	if contextWindow == 0 {
+		if model == "" {
+			var ok bool
+			model, ok = agentTypeDefaultModels[agentType]
+			if !ok {
+				return 100000, nil
+			}
+		} else if !KnownModel(model) {
+			return 0, fmt.Errorf("unknown model %q: provide an explicit context window", model)
+		}
+		contextWindow = GetContextLimit(model)
+	}
 	pct, ok := agentTypeBudgetPct[agentType]
 	if !ok {
-		pct = 0.78 // Conservative default
+		pct = 78
 	}
-
-	return int(float64(limit) * pct)
+	// Divide before multiplying: even a valid int-sized custom window must
+	// not overflow or become negative during percentage allocation.
+	budget := contextWindow/100*pct + contextWindow%100*pct/100
+	if budget <= 0 {
+		return 0, fmt.Errorf("context window %d leaves no working token budget", contextWindow)
+	}
+	return budget, nil
 }

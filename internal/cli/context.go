@@ -39,10 +39,13 @@ func newContextCmd() *cobra.Command {
 
 func newContextBuildCmd() *cobra.Command {
 	var (
-		beadID    string
-		agentType string
-		task      string
-		files     []string
+		beadID        string
+		agentType     string
+		model         string
+		contextWindow int
+		maxTokens     int
+		task          string
+		files         []string
 	)
 
 	cmd := &cobra.Command{
@@ -53,6 +56,10 @@ func newContextBuildCmd() *cobra.Command {
 - CM rules (learned guidelines)
 - CASS history (prior solutions)
 - Native, project-confined file context
+
+Use --model to size the pack for a specific model, --context-window to
+supply its actual window, and --max-tokens to impose a smaller pack limit.
+These are standalone preparation limits; delivery checks each target again.
 
 			The context is rendered in agent-appropriate format:
 			- Claude (cc), Cursor, Windsurf, Aider: XML format
@@ -89,6 +96,9 @@ func newContextBuildCmd() *cobra.Command {
 			opts := ntmctx.BuildOptions{
 				BeadID:          beadID,
 				AgentType:       agentType,
+				Model:           model,
+				ContextWindow:   contextWindow,
+				MaxTokens:       maxTokens,
 				RepoRev:         repoRev,
 				Task:            task,
 				Files:           files,
@@ -116,6 +126,13 @@ func newContextBuildCmd() *cobra.Command {
 			fmt.Printf("Context Pack: %s\n", pack.ID)
 			fmt.Printf("Agent Type:   %s\n", pack.AgentType)
 			fmt.Printf("Token Count:  %d\n", pack.TokenCount)
+			fmt.Printf("Token Budget: %d (estimated)\n", pack.TokenBudget)
+			if pack.Model != "" {
+				fmt.Printf("Model:        %s\n", pack.Model)
+			}
+			if pack.ContextWindow > 0 {
+				fmt.Printf("Window:       %d tokens\n", pack.ContextWindow)
+			}
 			fmt.Println()
 
 			for name, comp := range pack.Components {
@@ -140,6 +157,9 @@ func newContextBuildCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&beadID, "bead", "", "Bead ID for context")
 	cmd.Flags().StringVar(&agentType, "agent", "cc", "Agent type (cc, cod, gmi, cursor, windsurf, aider)")
+	cmd.Flags().StringVar(&model, "model", "", "Model identifier for the context pack budget")
+	cmd.Flags().IntVar(&contextWindow, "context-window", 0, "Actual model context window in tokens (0 uses the registry)")
+	cmd.Flags().IntVar(&maxTokens, "max-tokens", 0, "Maximum estimated tokens in the complete pack (0 uses the model budget)")
 	cmd.Flags().StringVar(&task, "task", "", "Task description for CM context")
 	cmd.Flags().StringSliceVar(&files, "files", nil, "Project-relative files or globs to include in native source context")
 	cmd.Flags().Bool("verbose", false, "Show full rendered prompt")

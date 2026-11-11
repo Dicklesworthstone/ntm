@@ -59,13 +59,19 @@ type PackComponent struct {
 // ContextPackFull extends the basic state.ContextPack with component data
 type ContextPackFull struct {
 	state.ContextPack
-	Components map[string]*PackComponent `json:"components,omitempty"`
+	Model         string                    `json:"model,omitempty"`
+	ContextWindow int                       `json:"context_window,omitempty"`
+	TokenBudget   int                       `json:"token_budget"`
+	Components    map[string]*PackComponent `json:"components,omitempty"`
 }
 
 // BuildOptions configures how a context pack is built
 type BuildOptions struct {
 	BeadID          string
 	AgentType       string // Canonical short code or alias (cc/cod/gmi/cursor/windsurf/aider, etc.)
+	Model           string // Actual model; empty retains the agent default
+	ContextWindow   int    // Positive native/custom window overrides the registry
+	MaxTokens       int    // Positive cap on the complete pack; zero uses the model budget
 	RepoRev         string
 	Task            string   // Task description for CM context
 	Files           []string // Project-relative files or globs for native source context
@@ -116,6 +122,8 @@ func cacheKey(opts BuildOptions, alloc BudgetAllocation) string {
 	writePart(opts.RepoRev)
 	writePart(opts.BeadID)
 	writePart(canonicalContextPackAgentType(opts.AgentType))
+	writePart(strings.ToLower(strings.TrimSpace(opts.Model)))
+	writePart(fmt.Sprintf("window:%d:max:%d", opts.ContextWindow, opts.MaxTokens))
 	writePart(opts.Task)
 	writePart(opts.CorrelationID)
 	writePart(opts.ProjectDir)
@@ -142,6 +150,20 @@ func (b *ContextPackBuilder) Build(ctx context.Context, opts BuildOptions) (*Con
 		return nil, ErrRemoteContextPreparation
 	}
 	opts.AgentType = canonicalContextPackAgentType(opts.AgentType)
+	opts.Model = strings.ToLower(strings.TrimSpace(opts.Model))
+	if opts.MaxTokens < 0 {
+		return nil, fmt.Errorf("maximum context tokens must be nonnegative, got %d", opts.MaxTokens)
+	}
+	if opts.ContextWindow == 0 && opts.Model != "" && models.KnownModel(opts.Model) {
+		opts.ContextWindow = models.GetContextLimit(opts.Model)
+	}
+	budget, err := models.GetTokenBudgetForModel(opts.AgentType, opts.Model, opts.ContextWindow)
+	if err != nil {
+		return nil, fmt.Errorf("context pack budget: %w", err)
+	}
+	if opts.MaxTokens > 0 {
+		budget = min(budget, opts.MaxTokens)
+	}
 	if opts.ProjectDir == "" {
 		opts.ProjectDir = "."
 	}
@@ -154,7 +176,7 @@ func (b *ContextPackBuilder) Build(ctx context.Context, opts BuildOptions) (*Con
 	// A revision and filename list cannot describe working-tree edits, new
 	// glob matches, or a previously missing file. Always rebuild source packs.
 	useCache := len(opts.Files) == 0
-	key := cacheKey(opts, b.allocation)
+	key := fmt.Sprintf("%s:%d", cacheKey(opts, b.allocation), budget)
 	if useCache {
 		globalCacheMu.RLock()
 		cached, ok := globalCache[key]
@@ -167,9 +189,6 @@ func (b *ContextPackBuilder) Build(ctx context.Context, opts BuildOptions) (*Con
 		}
 	}
 
-	// Determine budget from canonical registry
-	budget := GetTokenBudget(opts.AgentType)
-
 	// Initialize pack
 	pack := &ContextPackFull{
 		ContextPack: state.ContextPack{
@@ -180,17 +199,24 @@ func (b *ContextPackBuilder) Build(ctx context.Context, opts BuildOptions) (*Con
 			CorrelationID: opts.CorrelationID,
 			CreatedAt:     time.Now(),
 		},
-		Components: make(map[string]*PackComponent),
+		Model:         opts.Model,
+		ContextWindow: opts.ContextWindow,
+		TokenBudget:   budget,
+		Components:    make(map[string]*PackComponent),
 	}
 
-	triageBudget := budget * b.allocation.Triage / 100
-	cmBudget := budget * b.allocation.CM / 100
-	cassBudget := budget * b.allocation.CASS / 100
-	s2pBudget := budget * b.allocation.S2P / 100
+	portion := func(pct int) int {
+		pct = min(100, max(0, pct))
+		return budget/100*pct + budget%100*pct/100
+	}
+	triageBudget := portion(b.allocation.Triage)
+	cmBudget := portion(b.allocation.CM)
+	cassBudget := portion(b.allocation.CASS)
+	s2pBudget := portion(b.allocation.S2P)
 	msBudget := 0
 	if opts.IncludeMSSkills {
 		// Reserve a small slice for optional MS hints by borrowing from S2P.
-		msBudget = budget * 5 / 100
+		msBudget = portion(5)
 		if msBudget < 200 {
 			msBudget = 200
 		}

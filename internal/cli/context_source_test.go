@@ -62,7 +62,7 @@ func TestContextBuildCommandNativeSource(t *testing.T) {
 	os.Stdout = capture
 	t.Cleanup(func() { os.Stdout = oldStdout })
 	cmd := newContextCmd()
-	cmd.SetArgs([]string{"build", "--agent", "cod", "--files", "main.go,src,lib/**/*.go"})
+	cmd.SetArgs([]string{"build", "--agent", "cod", "--model", "gpt-4o-mini", "--context-window", "8192", "--max-tokens", "512", "--files", "main.go,src,lib/**/*.go"})
 	err = cmd.Execute()
 	os.Stdout = oldStdout
 	if err != nil {
@@ -75,6 +75,9 @@ func TestContextBuildCommandNativeSource(t *testing.T) {
 	var pack ntmctx.ContextPackFull
 	if err := json.Unmarshal(raw, &pack); err != nil {
 		t.Fatalf("context build did not emit a JSON pack: %v: %s", err, raw)
+	}
+	if pack.Model != "gpt-4o-mini" || pack.ContextWindow != 8192 || pack.TokenBudget != 512 || len(pack.RenderedPrompt) > 512*4 {
+		t.Fatalf("context build ignored its explicit model/window/cap: %+v", pack)
 	}
 	source := pack.Components["s2p"]
 	if source == nil || source.Error != "" || !strings.Contains(pack.RenderedPrompt, "cli-native-source-proof") {
