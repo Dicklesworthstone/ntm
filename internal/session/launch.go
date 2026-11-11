@@ -45,10 +45,16 @@ func preflightSavedLaunches(ctx context.Context, state *SessionState, cmds Agent
 	if state == nil {
 		return nil, errors.New("session state is nil")
 	}
+	if tmux.DefaultClient.Remote != "" || state.RemoteHost != "" {
+		// Replay preflight reads local provider stores, account launchers,
+		// prompt files, and credential configuration. None of those checks
+		// proves that an SSH target can safely launch the saved command.
+		return nil, errors.New("saved-session agent relaunch over SSH is unavailable; save and relaunch agents with NTM on the target host, or use topology-only restore without --launch")
+	}
 	if err := ValidateAutomatedRelaunch(state); err != nil {
 		return nil, err
 	}
-	directory, err := restoreWorkingDirectory(state.WorkDir)
+	directory, err := restoreWorkingDirectory(ctx, state.WorkDir)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +64,7 @@ func preflightSavedLaunches(ctx context.Context, state *SessionState, cmds Agent
 		launch := &launches[i]
 		launch.pane = pane
 		launch.outcome = ResumePane{Index: pane.Index, WindowIndex: pane.WindowIndex, Title: pane.Title, AgentType: pane.AgentType, Action: "skipped"}
-		launch.directory, err = restorePaneDirectory(pane, directory)
+		launch.directory, err = restorePaneDirectory(ctx, pane, directory)
 		if err != nil {
 			return nil, fmt.Errorf("saved pane %d.%d: %w", pane.WindowIndex, pane.Index, err)
 		}

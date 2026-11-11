@@ -501,6 +501,31 @@ func runSSHContext(ctx context.Context, args ...string) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
+// ValidateRemoteDirectoryContext checks the filesystem on this client's SSH
+// target. It does not consult or create a same-named local directory, and it
+// also works before a remote tmux server exists.
+func (c *Client) ValidateRemoteDirectoryContext(ctx context.Context, directory string) error {
+	if c.Remote == "" {
+		return errors.New("remote directory validation requires an SSH target")
+	}
+	if !strings.HasPrefix(directory, "/") {
+		return fmt.Errorf("saved remote working directory must be absolute: %q", directory)
+	}
+	if _, err := SanitizePaneCommand(directory); err != nil {
+		return fmt.Errorf("invalid saved remote working directory: %w", err)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, DefaultCommandTimeout)
+	defer cancel()
+	command := buildRemoteShellCommand("test", "-d", directory) + " && " + buildRemoteShellCommand("test", "-x", directory)
+	if _, err := runSSHContext(ctx, "--", c.Remote, command); err != nil {
+		return fmt.Errorf("saved working directory %q is unavailable on SSH host %q: %w", directory, c.Remote, err)
+	}
+	return nil
+}
+
 // RunSilent executes a tmux command ignoring output
 func (c *Client) RunSilent(args ...string) error {
 	_, err := c.Run(args...)

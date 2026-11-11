@@ -1541,6 +1541,7 @@ case "$1" in
       echo "can't find session" >&2
       exit 1
     fi ;;
+  list-sessions) printf 'saved_NTM_SEP_1_NTM_SEP_0\n' ;;
   list-windows) echo 0 ;;
   list-panes)
     i=0

@@ -42,6 +42,9 @@ func restoreSession(ctx context.Context, state *SessionState, opts RestoreOption
 	if state == nil {
 		return fmt.Errorf("session state is nil")
 	}
+	if state.RemoteHost != "" && state.RemoteHost != tmux.DefaultClient.Remote {
+		return fmt.Errorf("saved session belongs to SSH host %q; select the same --ssh host for topology-only restore", state.RemoteHost)
+	}
 
 	name := opts.Name
 	if name == "" {
@@ -60,12 +63,12 @@ func restoreSession(ctx context.Context, state *SessionState, opts RestoreOption
 		}
 		seen[coord] = true
 	}
-	workDir, err := restoreWorkingDirectory(state.WorkDir)
+	workDir, err := restoreWorkingDirectory(ctx, state.WorkDir)
 	if err != nil {
 		return err
 	}
 	for _, pane := range state.Panes {
-		if _, err := restorePaneDirectory(pane, workDir); err != nil {
+		if _, err := restorePaneDirectory(ctx, pane, workDir); err != nil {
 			return fmt.Errorf("saved pane %d.%d: %w", pane.WindowIndex, pane.Index, err)
 		}
 		if pane.LaunchSpec != nil {
@@ -154,7 +157,7 @@ func restoreSession(ctx context.Context, state *SessionState, opts RestoreOption
 		lastWindowIndex := -1
 		createdWindowIndex := 0
 		for i, p := range panes {
-			paneDir, err := restorePaneDirectory(p, workDir)
+			paneDir, err := restorePaneDirectory(ctx, p, workDir)
 			if err != nil {
 				return fmt.Errorf("saved pane %d.%d working directory changed: %w", p.WindowIndex, p.Index, err)
 			}
@@ -235,7 +238,7 @@ func restoreSession(ctx context.Context, state *SessionState, opts RestoreOption
 	restoreWindowFidelity(name, state, panes, tmuxPanes)
 
 	// Check git branch if requested
-	if !opts.SkipGitCheck && state.GitBranch != "" {
+	if tmux.DefaultClient.Remote == "" && !opts.SkipGitCheck && state.GitBranch != "" {
 		currentBranch := getCurrentGitBranch(workDir)
 		if currentBranch != "" && currentBranch != state.GitBranch {
 			// Just warn, don't fail
@@ -251,15 +254,21 @@ func restoreSession(ctx context.Context, state *SessionState, opts RestoreOption
 
 // Explicit pane directories identify worktrees, so their disappearance is an
 // error. Creating an empty directory would discard the saved worktree context.
-func restorePaneDirectory(pane PaneState, sessionDir string) (string, error) {
+func restorePaneDirectory(ctx context.Context, pane PaneState, sessionDir string) (string, error) {
 	if pane.WorkDir == "" {
 		return sessionDir, nil
 	}
 	if _, err := tmux.SanitizePaneCommand(pane.WorkDir); err != nil {
 		return "", fmt.Errorf("invalid saved pane working directory: %w", err)
 	}
-	if !filepath.IsAbs(pane.WorkDir) {
+	if !savedDirectoryIsAbsolute(pane.WorkDir) {
 		return "", fmt.Errorf("saved pane working directory must be absolute: %q", pane.WorkDir)
+	}
+	if tmux.DefaultClient.Remote != "" {
+		if err := tmux.DefaultClient.ValidateRemoteDirectoryContext(ctx, pane.WorkDir); err != nil {
+			return "", err
+		}
+		return pane.WorkDir, nil
 	}
 	info, err := os.Stat(pane.WorkDir)
 	if err != nil {
@@ -274,7 +283,15 @@ func restorePaneDirectory(pane PaneState, sessionDir string) (string, error) {
 // restoreWorkingDirectory resolves the same directory for both the tmux
 // topology and agent commands. An explicit missing/unusable directory must not
 // silently move a recovery into another project, especially before --force.
-func restoreWorkingDirectory(workDir string) (string, error) {
+func restoreWorkingDirectory(ctx context.Context, workDir string) (string, error) {
+	if tmux.DefaultClient.Remote != "" {
+		// Remote paths must never be resolved against this process's cwd or
+		// home, and must not create local directories while restoring SSH state.
+		if err := tmux.DefaultClient.ValidateRemoteDirectoryContext(ctx, workDir); err != nil {
+			return "", err
+		}
+		return workDir, nil
+	}
 	if workDir == "" {
 		var err error
 		workDir, err = os.UserHomeDir()
@@ -303,6 +320,14 @@ func restoreWorkingDirectory(workDir string) (string, error) {
 		return "", fmt.Errorf("saved working directory %q is not a directory", workDir)
 	}
 	return workDir, nil
+}
+
+func savedDirectoryIsAbsolute(directory string) bool {
+	if tmux.DefaultClient.Remote != "" {
+		// SSH tmux runs on a POSIX host, even if the client is on Windows.
+		return strings.HasPrefix(directory, "/")
+	}
+	return filepath.IsAbs(directory)
 }
 
 // buildRestoreCommand validates the final payload, including the quoted cwd.

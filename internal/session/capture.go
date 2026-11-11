@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -73,6 +72,9 @@ func Capture(sessionName string) (state *SessionState, err error) {
 	if err := capturePaneLaunchState(context.Background(), paneStates); err != nil {
 		return nil, err
 	}
+	if tmux.DefaultClient.Remote != "" && !savedDirectoryIsAbsolute(cwd) {
+		return nil, fmt.Errorf("capturing remote session working directory: no absolute path was observed on the SSH host")
+	}
 	// Discovery can outlive its deadline while a provider finishes a filesystem
 	// read. Keep its inputs separate from the states enriched after that deadline.
 	paneWorkDirs := make(map[string]string, len(paneStates))
@@ -83,7 +85,19 @@ func Capture(sessionName string) (state *SessionState, err error) {
 	bindingCtx, cancelBindings := context.WithTimeout(context.Background(), paneSessionBindingTimeout)
 	defer cancelBindings()
 	bindingResults := make(chan []agentsession.BindingObservation, 1)
-	if hasResumablePane(panes) {
+	if tmux.DefaultClient.Remote != "" {
+		// Remote tmux PIDs and paths belong to another host. Local provider
+		// discovery can otherwise turn an unrelated PID or transcript with the
+		// same path into a seemingly fresh, resumable remote conversation.
+		bindings := make([]agentsession.BindingObservation, len(panes))
+		for i, pane := range panes {
+			if agentsession.ResumeProvider(string(pane.Type)) != "" {
+				bindings[i] = unavailablePaneSessionBinding(string(pane.Type), bindingObservedAt, nil)
+				bindings[i].FailureCode = "remote_host"
+			}
+		}
+		bindingResults <- bindings
+	} else if hasResumablePane(panes) {
 		go func() {
 			bindingResults <- samplePaneSessionBindings(
 				bindingCtx,
@@ -103,8 +117,11 @@ func Capture(sessionName string) (state *SessionState, err error) {
 		bindingResults <- make([]agentsession.BindingObservation, len(panes))
 	}
 
-	// Get git info if in a repo
-	gitBranch, gitRemote, gitCommit := getGitInfo(cwd)
+	// Local git metadata is not evidence about a same-named remote directory.
+	var gitBranch, gitRemote, gitCommit string
+	if tmux.DefaultClient.Remote == "" {
+		gitBranch, gitRemote, gitCommit = getGitInfo(cwd)
+	}
 
 	// Get layout (whole-session fallback) and per-window fidelity metadata.
 	layout := getLayout(sessionName)
@@ -134,18 +151,19 @@ func Capture(sessionName string) (state *SessionState, err error) {
 	}
 
 	state = &SessionState{
-		Name:      sessionName,
-		SavedAt:   time.Now().UTC(),
-		WorkDir:   cwd,
-		GitBranch: gitBranch,
-		GitRemote: gitRemote,
-		GitCommit: gitCommit,
-		Agents:    agents,
-		Panes:     paneStates,
-		Layout:    layout,
-		Windows:   windows,
-		CreatedAt: createdAt,
-		Version:   StateVersion,
+		Name:       sessionName,
+		SavedAt:    time.Now().UTC(),
+		RemoteHost: tmux.DefaultClient.Remote,
+		WorkDir:    cwd,
+		GitBranch:  gitBranch,
+		GitRemote:  gitRemote,
+		GitCommit:  gitCommit,
+		Agents:     agents,
+		Panes:      paneStates,
+		Layout:     layout,
+		Windows:    windows,
+		CreatedAt:  createdAt,
+		Version:    StateVersion,
 	}
 
 	return state, nil
@@ -263,7 +281,7 @@ func capturePaneLaunchState(ctx context.Context, states []PaneState) error {
 			return fmt.Errorf("capturing pane %d.%d working directory: %w", pane.WindowIndex, pane.Index, err)
 		}
 		pane.WorkDir = strings.TrimSpace(cwd)
-		if !filepath.IsAbs(pane.WorkDir) {
+		if !savedDirectoryIsAbsolute(pane.WorkDir) {
 			return fmt.Errorf("capturing pane %d.%d: working directory is not absolute", pane.WindowIndex, pane.Index)
 		}
 		agentType := tmux.ParsePaneAgentTypeOption(pane.AgentType)
@@ -447,6 +465,9 @@ func detectWorkDir(sessionName string, panes []tmux.Pane) string {
 	}
 
 	// Fallback: try to determine from current process working directory
+	if tmux.DefaultClient.Remote != "" {
+		return "" // A local cwd or home cannot identify the remote project.
+	}
 	if cwd, err := os.Getwd(); err == nil {
 		return cwd
 	}

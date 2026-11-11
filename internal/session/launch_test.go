@@ -705,19 +705,7 @@ func TestSavedSessionMonitorStopOnlyAppliesToForcedReplacement(t *testing.T) {
 func TestSavedSessionForceOnRemoteHostLeavesLocalMonitorRunning(t *testing.T) {
 	logPath := savedSessionRestoreFixture(t)
 	dir := filepath.Dir(logPath)
-	sshLog := filepath.Join(dir, "ssh-calls")
-	t.Setenv("NTM_SESSION_SSH_LOG", sshLog)
-	const script = `#!/bin/sh
-set -eu
-printf '%s\n' "$*" >> "$NTM_SESSION_SSH_LOG"
-[ "$1" = '--' ] && [ "$2" = 'operator@remote.example' ] || exit 42
-exec /bin/sh -c "$3"
-`
-	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	tmux.DefaultClient = tmux.NewClient("operator@remote.example")
+	sshLog := savedSessionRemoteFixture(t, dir)
 	previousStop := stopRestoreSessionMonitor
 	t.Cleanup(func() { stopRestoreSessionMonitor = previousStop })
 	stops := 0
@@ -743,5 +731,196 @@ exec /bin/sh -c "$3"
 	transport, err := os.ReadFile(sshLog)
 	if err != nil || !strings.Contains(string(transport), "-- operator@remote.example") || !strings.Contains(string(transport), "'kill-session'") {
 		t.Fatalf("restore did not use its SSH target: calls=%s error=%v", transport, err)
+	}
+}
+
+func savedSessionRemoteFixture(t *testing.T, dir string) string {
+	t.Helper()
+	sshLog := filepath.Join(dir, "ssh-calls")
+	t.Setenv("NTM_SESSION_SSH_LOG", sshLog)
+	t.Setenv("NTM_SESSION_REMOTE_DIRECTORIES", "check")
+	const script = `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$NTM_SESSION_SSH_LOG"
+[ "$1" = '--' ] && [ "$2" = 'operator@remote.example' ] || exit 42
+case "$3" in
+  *"test "*)
+    case "$NTM_SESSION_REMOTE_DIRECTORIES" in
+      allow) exit 0 ;;
+      deny) echo 'remote directory unavailable' >&2; exit 1 ;;
+    esac ;;
+esac
+exec /bin/sh -c "$3"
+`
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	tmux.DefaultClient = tmux.NewClient("operator@remote.example")
+	return sshLog
+}
+
+func TestRemoteCaptureDoesNotAdoptLocalProviderOrGitEvidence(t *testing.T) {
+	logPath := savedSessionRestoreFixture(t)
+	dir := filepath.Dir(logPath)
+	savedSessionRemoteFixture(t, dir)
+	t.Setenv("NTM_SESSION_TEST_PANES", "1")
+	localProbes := filepath.Join(dir, "local-probes")
+	t.Setenv("NTM_SESSION_LOCAL_PROBES", localProbes)
+	for _, tool := range []string{"git", "casr"} {
+		if err := os.WriteFile(filepath.Join(dir, tool), []byte("#!/bin/sh\nprintf '%s\\n' \"$0 $*\" >> \"$NTM_SESSION_LOCAL_PROBES\"\nexit 1\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dayDir := filepath.Join(dir, ".codex", "sessions", "2026", "11", "11")
+	if err := os.MkdirAll(dayDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	const localSessionID = "019f4e56-c2ba-7652-91d4-e4173bc0f302"
+	metadata, err := json.Marshal(map[string]interface{}{"type": "session_meta", "payload": map[string]string{"id": localSessionID, "cwd": dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transcript := filepath.Join(dayDir, "rollout-2026-11-11T10-00-00-"+localSessionID+".jsonl")
+	if err := os.WriteFile(transcript, append(metadata, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	localBinding := agentsession.NewDiscoverer().ObserveBinding(t.Context(), "cod", dir, 0, time.Now())
+	if localBinding.SessionID != localSessionID || localBinding.Freshness != agentsession.BindingFresh {
+		t.Fatalf("local collision fixture is not a fresh provider binding: %+v", localBinding)
+	}
+	probesBefore, _ := os.ReadFile(localProbes)
+	state, err := Capture("remote_capture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.RemoteHost != "operator@remote.example" || state.WorkDir != dir || len(state.Panes) != 1 {
+		t.Fatalf("remote topology lost its host or path: %+v", state)
+	}
+	pane := state.Panes[0]
+	if pane.SessionID != "" || pane.SessionProvider != "" || pane.HasFreshSessionBinding() || pane.SessionFreshness != agentsession.BindingUnavailable || pane.SessionFailureCode != "remote_host" {
+		t.Fatalf("remote save borrowed local provider evidence: %+v", pane)
+	}
+	if state.GitBranch != "" || state.GitRemote != "" || state.GitCommit != "" {
+		t.Fatalf("remote save borrowed local git metadata: %+v", state)
+	}
+	if probesAfter, _ := os.ReadFile(localProbes); string(probesAfter) != string(probesBefore) {
+		t.Fatalf("remote capture invoked local provider or git tools: %s", probesAfter)
+	}
+	if _, err := Save(state, SaveOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(state.Name)
+	if err != nil || loaded.RemoteHost != state.RemoteHost || loaded.Panes[0].SessionFailureCode != "remote_host" {
+		t.Fatalf("saved remote provenance did not survive reload: %+v, %v", loaded, err)
+	}
+}
+
+func TestRemoteTopologyRestoreUsesTargetHostDirectories(t *testing.T) {
+	for _, scenario := range []string{"remote only", "quoted path"} {
+		t.Run(scenario, func(t *testing.T) {
+			logPath := savedSessionRestoreFixture(t)
+			dir := filepath.Dir(logPath)
+			sshLog := savedSessionRemoteFixture(t, dir)
+			remoteDir := filepath.Join(dir, "remote-only-project")
+			paneDir := filepath.Join(dir, "remote-only-worktree")
+			if scenario == "remote only" {
+				t.Setenv("NTM_SESSION_REMOTE_DIRECTORIES", "allow")
+			} else {
+				remoteDir = filepath.Join(dir, "work 'quote' $(false)")
+				paneDir = remoteDir
+				if err := os.MkdirAll(remoteDir, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			state := &SessionState{Name: "remote_restore", RemoteHost: "operator@remote.example", WorkDir: remoteDir,
+				Panes: []PaneState{{Index: 0, AgentType: "cod", WorkDir: paneDir}}}
+			if err := RestoreContext(t.Context(), state, RestoreOptions{Force: true}); err != nil {
+				t.Fatalf("remote topology restore: %v", err)
+			}
+			if scenario == "remote only" {
+				for _, directory := range []string{remoteDir, paneDir} {
+					if _, err := os.Stat(directory); !os.IsNotExist(err) {
+						t.Fatalf("remote restore created a local directory %q: %v", directory, err)
+					}
+				}
+			}
+			calls, err := os.ReadFile(logPath)
+			if err != nil || !strings.Contains(string(calls), "kill-session") || !strings.Contains(string(calls), "new-session") || !strings.Contains(string(calls), paneDir) || strings.Contains(string(calls), "send-keys") {
+				t.Fatalf("remote topology did not restore without agent dispatch: %s, %v", calls, err)
+			}
+			transport, err := os.ReadFile(sshLog)
+			check, kill := strings.Index(string(transport), "test "), strings.Index(string(transport), "kill-session")
+			if err != nil || check < 0 || kill <= check {
+				t.Fatalf("remote directory proof was not acquired before replacement: %s, %v", transport, err)
+			}
+		})
+	}
+}
+
+func TestRemoteTopologyPreflightPreservesExistingSession(t *testing.T) {
+	for _, scenario := range []string{"local target", "different host", "missing directory", "empty directory", "relative directory", "cancelled"} {
+		t.Run(scenario, func(t *testing.T) {
+			logPath := savedSessionRestoreFixture(t)
+			dir := filepath.Dir(logPath)
+			savedSessionRemoteFixture(t, dir)
+			state := &SessionState{Name: "keep_me", RemoteHost: "operator@remote.example", WorkDir: dir}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			switch scenario {
+			case "local target":
+				tmux.DefaultClient = tmux.NewClient("")
+			case "different host":
+				tmux.DefaultClient = tmux.NewClient("operator@other.example")
+			case "missing directory":
+				t.Setenv("NTM_SESSION_REMOTE_DIRECTORIES", "deny")
+			case "empty directory":
+				state.WorkDir = ""
+			case "relative directory":
+				state.WorkDir = "relative/project"
+			case "cancelled":
+				cancel()
+			}
+			if err := RestoreContext(ctx, state, RestoreOptions{Force: true}); err == nil {
+				t.Fatal("unproven remote restore was allowed")
+			}
+			if calls, _ := os.ReadFile(logPath); len(calls) != 0 {
+				t.Fatalf("remote preflight failure touched existing tmux session: %s", calls)
+			}
+		})
+	}
+}
+
+func TestRemoteAgentRelaunchRefusesBeforeForceReplacement(t *testing.T) {
+	for _, operation := range []string{"restore", "resume"} {
+		for _, target := range []string{"ssh", "local from remote save"} {
+			t.Run(operation+"/"+target, func(t *testing.T) {
+				logPath := savedSessionRestoreFixture(t)
+				dir := filepath.Dir(logPath)
+				state := &SessionState{Name: "keep_agents", WorkDir: filepath.Join(dir, "must-not-create"),
+					Panes: []PaneState{{Index: 0, AgentType: "cod", Command: "codex", SessionID: "foreign-session", SessionFreshness: agentsession.BindingFresh, SessionConfidence: 1}}}
+				if target == "ssh" {
+					savedSessionRemoteFixture(t, dir)
+				} else {
+					state.RemoteHost = "operator@remote.example"
+				}
+				var result *ResumeResult
+				var err error
+				if operation == "restore" {
+					result, err = RestoreWithAgents(t.Context(), state, AgentCommands{}, nil, RestoreOptions{Force: true})
+				} else {
+					result, err = ResumeContext(t.Context(), state, AgentCommands{}, ResumeOptions{Force: true})
+				}
+				if result != nil || err == nil || !strings.Contains(err.Error(), "SSH") {
+					t.Fatalf("remote launch was not refused before effects: %+v, %v", result, err)
+				}
+				if calls, _ := os.ReadFile(logPath); len(calls) != 0 {
+					t.Fatalf("remote relaunch touched existing session: %s", calls)
+				}
+				if _, statErr := os.Stat(state.WorkDir); !os.IsNotExist(statErr) {
+					t.Fatalf("remote relaunch performed local filesystem preparation: %v", statErr)
+				}
+			})
+		}
 	}
 }

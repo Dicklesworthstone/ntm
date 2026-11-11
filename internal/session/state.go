@@ -18,6 +18,9 @@ type SessionState struct {
 	// Identity
 	Name    string    `json:"name"`
 	SavedAt time.Time `json:"saved_at"`
+	// RemoteHost binds a remotely captured topology to the SSH target that
+	// owns its paths and pane identities. Empty means a local or legacy save.
+	RemoteHost string `json:"remote_host,omitempty"`
 
 	// Context
 	WorkDir   string `json:"cwd"`
