@@ -352,6 +352,10 @@ func TestContextInjectCommandRemoteStoredPackRemainsAvailable(t *testing.T) {
 					t.Fatal("stored artifact delivery must not rebuild local context")
 					return nil, nil
 				},
+				usage: func(context.Context, tmux.Pane) (*ntmctx.TranscriptUsage, bool) {
+					t.Fatal("remote artifact delivery must not inspect a local process")
+					return nil, false
+				},
 				send: func(_ context.Context, pane tmux.Pane, text string) error {
 					sent++
 					if pane.ID != "%7" || text != artifact {
@@ -384,6 +388,11 @@ func TestContextInjectCommandRemoteStoredPackRemainsAvailable(t *testing.T) {
 			}
 			if result.Deliveries[0].PackID != "pack-selected" || result.Deliveries[0].Status != wantStatus {
 				t.Fatalf("remote artifact receipt lost its source or outcome: %+v", result.Deliveries[0])
+			}
+			capacity := result.Deliveries[0].Capacity
+			if capacity == nil || capacity.Status != "unknown" || capacity.BudgetSource != "agent_default" ||
+				capacity.UsedTokens != nil || capacity.AvailableTokens != nil || len(result.Warnings) == 0 {
+				t.Fatalf("remote delivery invented local occupancy: %+v", result)
 			}
 		})
 	}

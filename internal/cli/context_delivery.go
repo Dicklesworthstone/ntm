@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
+	"github.com/Dicklesworthstone/ntm/internal/models"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -22,19 +24,48 @@ import (
 // finished processing the context. A failed send may have written some bytes:
 // uncertain is deliberately distinct from not_attempted and is never retried.
 type ContextPaneDelivery struct {
-	Pane      int    `json:"pane"`
-	Target    string `json:"target"`
-	AgentType string `json:"agent_type"`
-	PackID    string `json:"pack_id,omitempty"`
-	Bytes     int    `json:"bytes"`
-	Status    string `json:"status"` // planned | delivered | uncertain | not_attempted
-	Error     string `json:"error,omitempty"`
+	Pane      int                  `json:"pane"`
+	Target    string               `json:"target"`
+	AgentType string               `json:"agent_type"`
+	PackID    string               `json:"pack_id,omitempty"`
+	Bytes     int                  `json:"bytes"`
+	Status    string               `json:"status"` // planned | delivered | uncertain | not_attempted
+	Error     string               `json:"error,omitempty"`
+	Capacity  *ContextPaneCapacity `json:"capacity,omitempty"`
+}
+
+// ContextPaneCapacity distinguishes native accounting from an unverified
+// fallback. Token budgets use the builder's approximate four-byte convention;
+// measured occupancy never means that the payload was provider-tokenized.
+type ContextPaneCapacity struct {
+	Status          string     `json:"status"` // measured | stale | unknown
+	BudgetSource    string     `json:"budget_source"`
+	Model           string     `json:"model,omitempty"`
+	ContextWindow   int        `json:"context_window,omitempty"`
+	UsedTokens      *int       `json:"used_tokens,omitempty"`
+	AvailableTokens *int       `json:"available_tokens,omitempty"`
+	BudgetTokens    int        `json:"budget_tokens"`
+	UpdatedAt       *time.Time `json:"updated_at,omitempty"`
+	Reason          string     `json:"reason,omitempty"`
+}
+
+type contextPackObservation struct {
+	capacity ContextPaneCapacity
+	usage    *ntmctx.TranscriptUsage
+}
+
+type contextPackBuildKey struct {
+	agentType agent.AgentType
+	model     string
+	window    int
+	budget    int
 }
 
 type contextInjectionRequest struct {
-	Pane    tmux.Pane
-	Content string
-	PackID  string
+	Pane     tmux.Pane
+	Content  string
+	PackID   string
+	Capacity *ContextPaneCapacity
 }
 
 type contextPaneSender func(context.Context, tmux.Pane, string) error
@@ -62,7 +93,7 @@ func dispatchContextRequests(ctx context.Context, session string, requests []con
 	for i, req := range requests {
 		receipts[i] = ContextPaneDelivery{
 			Pane: req.Pane.Index, Target: req.Pane.ID, AgentType: string(req.Pane.Type),
-			PackID: req.PackID, Bytes: len(req.Content), Status: "not_attempted",
+			PackID: req.PackID, Bytes: len(req.Content), Status: "not_attempted", Capacity: req.Capacity,
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -157,6 +188,7 @@ type contextInjectDeps struct {
 	panes     func(string) ([]tmux.Pane, error)
 	build     func(context.Context, ntmctx.BuildOptions) (*ntmctx.ContextPackFull, error)
 	load      func(string) (*state.ContextPack, error)
+	usage     func(context.Context, tmux.Pane) (*ntmctx.TranscriptUsage, bool)
 	send      contextPaneSender
 	includeMS bool
 	remote    bool
@@ -306,6 +338,14 @@ func runContextInjection(ctx context.Context, opts contextInjectOptions, deps co
 		})
 	}
 	if opts.Build || hasPack {
+		observations, observeErr := observeContextPackTargets(ctx, panes, deps)
+		for i := range observations {
+			requests[i].Capacity = &observations[i].capacity
+			result.Deliveries[i].Capacity = requests[i].Capacity
+		}
+		if observeErr != nil {
+			return result, observeErr
+		}
 		var stored *state.ContextPack
 		if hasPack {
 			if deps.load == nil {
@@ -330,18 +370,24 @@ func runContextInjection(ctx context.Context, opts contextInjectOptions, deps co
 			}
 			result.SelectedFiles = append([]string{}, files...)
 		}
-		built := make(map[agent.AgentType]*ntmctx.ContextPackFull)
+		built := make(map[contextPackBuildKey]*ntmctx.ContextPackFull)
 		for i, pane := range panes {
 			if err := ctx.Err(); err != nil {
 				return result, err
 			}
 			typ := agent.AgentType(pane.Type).Canonical()
+			capacity := observations[i].capacity
+			key := contextPackBuildKey{agentType: typ, budget: capacity.BudgetTokens}
+			if capacity.Status == "measured" {
+				key.model, key.window = capacity.Model, capacity.ContextWindow
+			}
 			pack := stored
 			if opts.Build {
-				full, ok := built[typ]
+				full, ok := built[key]
 				if !ok {
 					full, err = deps.build(ctx, ntmctx.BuildOptions{
 						AgentType: string(typ), ProjectDir: projectDir, SessionID: session,
+						Model: key.model, ContextWindow: key.window, MaxTokens: key.budget,
 						Remote:  deps.remote,
 						RepoRev: getRepoRev(projectDir), Files: append([]string{}, files...),
 						Task: opts.Task, BeadID: opts.BeadID, IncludeMSSkills: deps.includeMS,
@@ -362,7 +408,7 @@ func runContextInjection(ctx context.Context, opts contextInjectOptions, deps co
 							return result, fmt.Errorf("build %s context: selected source files were not prepared", typ)
 						}
 					}
-					built[typ] = full
+					built[key] = full
 					keys := make([]string, 0, len(full.Components))
 					for name := range full.Components {
 						keys = append(keys, name)
@@ -381,10 +427,24 @@ func runContextInjection(ctx context.Context, opts contextInjectOptions, deps co
 				}
 				pack = &full.ContextPack
 			}
-			if err := validateContextPackForPane(pack, pane, opts.MaxBytes); err != nil {
+			if err := validateContextPackForPane(pack, pane, opts.MaxBytes, key.budget); err != nil {
 				return result, err
 			}
 			requests[i].Content, requests[i].PackID = pack.RenderedPrompt, pack.ID
+			result.Deliveries[i].PackID, result.Deliveries[i].Bytes = pack.ID, len(pack.RenderedPrompt)
+		}
+		latest, recheckErr := recheckContextPackTargets(ctx, session, requests, observations, deps)
+		for i := range latest {
+			requests[i].Capacity = &latest[i].capacity
+			result.Deliveries[i].Capacity = requests[i].Capacity
+			if latest[i].capacity.Status != "measured" {
+				result.Warnings = append(result.Warnings, fmt.Sprintf(
+					"pane %d (%s): %s; using an unverified agent-default pack limit of %d estimated tokens",
+					panes[i].Index, panes[i].ID, latest[i].capacity.Reason, latest[i].capacity.BudgetTokens))
+			}
+		}
+		if recheckErr != nil {
+			return result, recheckErr
 		}
 	}
 	for _, req := range requests {
@@ -416,7 +476,7 @@ func selectContextPackPanes(panes []tmux.Pane, selector string, all bool, sessio
 	return selected, nil
 }
 
-func validateContextPackForPane(pack *state.ContextPack, pane tmux.Pane, maxBytes int) error {
+func validateContextPackForPane(pack *state.ContextPack, pane tmux.Pane, maxBytes, budget int) error {
 	if pack == nil || strings.TrimSpace(pack.ID) == "" || strings.TrimSpace(pack.RenderedPrompt) == "" {
 		return fmt.Errorf("context pack is empty or invalid")
 	}
@@ -431,17 +491,170 @@ func validateContextPackForPane(pack *state.ContextPack, pane tmux.Pane, maxByte
 	// Measure the actual payload, not the stored TokenCount. This deliberately
 	// uses the same approximate four-byte convention as the context builder.
 	bytes := len(pack.RenderedPrompt)
-	tokens := bytes / 4
-	if bytes%4 != 0 {
-		tokens++
-	}
-	if tokens > ntmctx.GetTokenBudget(string(typ)) {
-		return fmt.Errorf("pack %s exceeds the token budget for %s", pack.ID, typ)
+	if budget <= 0 || contextPayloadTokens(pack.RenderedPrompt) > budget {
+		return fmt.Errorf("pack %s exceeds pane %d (%s) context budget of %d estimated tokens", pack.ID, pane.Index, pane.ID, budget)
 	}
 	if maxBytes > 0 && bytes > maxBytes {
 		return fmt.Errorf("pack %s exceeds --max-bytes; refusing to truncate a rendered artifact", pack.ID)
 	}
 	return nil
+}
+
+// observeContextPackTargets bounds a whole observation phase, not each pane.
+// Only process-bound transcripts may supply occupancy; remote PIDs must never
+// be inspected locally. Classify timestamps after all probes have completed.
+func observeContextPackTargets(ctx context.Context, panes []tmux.Pane, deps contextInjectDeps) ([]contextPackObservation, error) {
+	observations := make([]contextPackObservation, len(panes))
+	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	for i, pane := range panes {
+		if err := ctx.Err(); err != nil {
+			return observations, err
+		}
+		if pane.Dead || pane.IsServicePane() || pane.RotationToken != "" {
+			return observations, fmt.Errorf("pane %d (%s) is not available for context delivery", pane.Index, pane.ID)
+		}
+		if deps.remote || deps.usage == nil || probeCtx.Err() != nil {
+			continue
+		}
+		if usage, ok := deps.usage(probeCtx, pane); ok && usage != nil && probeCtx.Err() == nil {
+			copy := *usage
+			observations[i].usage = &copy
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return observations, err
+	}
+	now := time.Now()
+	var failures []error
+	for i, pane := range panes {
+		capacity, err := contextCapacityForPane(pane, observations[i].usage, deps.remote, now)
+		observations[i].capacity = capacity
+		if err == nil && capacity.BudgetTokens <= 0 {
+			err = fmt.Errorf("pane %d (%s) has no usable context pack budget", pane.Index, pane.ID)
+		}
+		if err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return observations, errors.Join(failures...)
+}
+
+func contextCapacityForPane(pane tmux.Pane, usage *ntmctx.TranscriptUsage, remote bool, now time.Time) (ContextPaneCapacity, error) {
+	typ := string(agent.AgentType(pane.Type).Canonical())
+	capacity := ContextPaneCapacity{
+		Status: "unknown", BudgetSource: "agent_default",
+		BudgetTokens: ntmctx.GetTokenBudget(typ),
+		Reason:       "fresh process-bound context accounting is unavailable",
+	}
+	if remote {
+		capacity.Reason = "remote context occupancy is unavailable; local process evidence was not used"
+		return capacity, nil
+	}
+	if usage == nil || usage.Path == "" {
+		return capacity, nil
+	}
+	if !usage.UpdatedAt.IsZero() {
+		updated := usage.UpdatedAt
+		capacity.UpdatedAt = &updated
+	}
+	if usage.Tokens < 0 || usage.ContextWindow < 0 {
+		capacity.Reason = "native context accounting contains invalid counters"
+		return capacity, nil
+	}
+	if ntmctx.TranscriptConfidence(usage.UpdatedAt, now) != "high" {
+		capacity.Status = "stale"
+		capacity.Reason = "native context accounting is not current"
+		return capacity, nil
+	}
+	model := strings.ToLower(strings.TrimSpace(usage.Model))
+	window := usage.ContextWindow
+	if window == 0 {
+		if !models.KnownModel(model) {
+			capacity.Reason = "native accounting has no recognized model or reported context window"
+			return capacity, nil
+		}
+		window = models.GetContextLimit(model)
+	}
+	capacity.Status = "measured"
+	capacity.BudgetSource = "remaining_context"
+	capacity.Model, capacity.ContextWindow = model, window
+	used, available := usage.Tokens, max(0, window-usage.Tokens)
+	capacity.UsedTokens, capacity.AvailableTokens = &used, &available
+	capacity.Reason = ""
+	capacity.BudgetTokens = 0
+	if available == 0 {
+		return capacity, fmt.Errorf("pane %d (%s) has no remaining context capacity", pane.Index, pane.ID)
+	}
+	// Apply the pack policy to remaining space. Subtracting occupancy from
+	// the full-window pack budget would wrongly reject a Gemini session
+	// after 10% occupancy, because its 10% policy limits one pack.
+	budget, err := models.GetTokenBudgetForModel(typ, model, available)
+	if err != nil {
+		return capacity, fmt.Errorf("pane %d (%s) remaining context budget: %w", pane.Index, pane.ID, err)
+	}
+	capacity.BudgetTokens = budget
+	return capacity, nil
+}
+
+// recheckContextPackTargets refreshes the entire batch before the first send.
+// Losing evidence used to prepare a pack is an admission failure, not license
+// to fall back to an assumed empty session. Newly available evidence also
+// constrains a pack that was prepared with an unverified default.
+func recheckContextPackTargets(ctx context.Context, session string, requests []contextInjectionRequest, initial []contextPackObservation, deps contextInjectDeps) ([]contextPackObservation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	current, err := deps.panes(session)
+	if err != nil {
+		return nil, fmt.Errorf("refresh context targets: %w", err)
+	}
+	byID := make(map[string]tmux.Pane, len(current))
+	for _, pane := range current {
+		if _, exists := byID[pane.ID]; exists {
+			return nil, fmt.Errorf("duplicate physical pane %s in context target refresh", pane.ID)
+		}
+		byID[pane.ID] = pane
+	}
+	panes := make([]tmux.Pane, len(requests))
+	for i, req := range requests {
+		pane, exists := byID[req.Pane.ID]
+		if !exists || pane.PID != req.Pane.PID ||
+			agent.AgentType(pane.Type).Canonical() != agent.AgentType(req.Pane.Type).Canonical() ||
+			pane.Dead || pane.IsServicePane() || pane.RotationToken != "" {
+			return nil, fmt.Errorf("context target %s changed or became unavailable during preparation", req.Pane.ID)
+		}
+		panes[i] = pane
+	}
+	latest, err := observeContextPackTargets(ctx, panes, deps)
+	if err != nil {
+		return latest, err
+	}
+	for i, req := range requests {
+		before, after := initial[i], latest[i]
+		if before.capacity.Status == "measured" {
+			if after.capacity.Status != "measured" {
+				return latest, fmt.Errorf("pane %d (%s) lost fresh context capacity evidence before delivery", req.Pane.Index, req.Pane.ID)
+			}
+			if before.usage.Path != after.usage.Path || before.usage.ProviderSessionID != after.usage.ProviderSessionID ||
+				before.capacity.Model != after.capacity.Model || before.capacity.ContextWindow != after.capacity.ContextWindow ||
+				after.usage.UpdatedAt.Before(before.usage.UpdatedAt) {
+				return latest, fmt.Errorf("pane %d (%s) context session or model changed during preparation", req.Pane.Index, req.Pane.ID)
+			}
+		}
+		if contextPayloadTokens(req.Content) > after.capacity.BudgetTokens {
+			return latest, fmt.Errorf("pack %s exceeds pane %d (%s) context budget of %d estimated tokens before delivery", req.PackID, req.Pane.Index, req.Pane.ID, after.capacity.BudgetTokens)
+		}
+	}
+	return latest, nil
+}
+
+func contextPayloadTokens(content string) int {
+	tokens := len(content) / 4
+	if len(content)%4 != 0 {
+		tokens++
+	}
+	return tokens
 }
 
 type contextPackStore interface {

@@ -570,11 +570,15 @@ in a single-window session or window N in a multi-window session; the selected
 window must contain exactly one pane. Use --all to include shell panes in
 file mode; context packs require agent targets.
 Use --build to assemble native source, BV triage, CM rules, and CASS history
-once per target agent type, with that agent's format and token budget.
+for each distinct target model, context window, and remaining pack budget.
+Fresh process-bound accounting limits the pack to a fraction of remaining
+space. Every target is checked again before any send. Unknown or stale usage,
+including remote occupancy, is reported with an unverified agent-default
+limit; it is never presented as an empty session or a measured fit.
 These on-demand packs are transient; use context build to store an artifact.
 Use --pack ID to send a previously built artifact to matching agent types.
-Pack modes never truncate a rendered artifact; --max-bytes rejects an
-oversized pack instead. --dry-run prepares and validates but sends no keys.
+Pack modes never truncate a rendered artifact; --max-bytes and measured
+capacity reject oversized packs. --dry-run validates but sends no keys.
 Failed sends may have partially written input: inspect uncertain receipts
 before retrying, rather than replaying the entire batch.`,
 		Args: cobra.ExactArgs(1),
@@ -605,6 +609,9 @@ before retrying, rather than replaying the entire batch.`,
 				if receipt.PackID != "" {
 					fmt.Fprintf(w, ", pack=%s", receipt.PackID)
 				}
+				if receipt.Capacity != nil {
+					fmt.Fprintf(w, ", capacity=%s, pack-limit=%d estimated tokens", receipt.Capacity.Status, receipt.Capacity.BudgetTokens)
+				}
 				fmt.Fprintln(w)
 			}
 			for _, warning := range result.Warnings {
@@ -622,7 +629,7 @@ before retrying, rather than replaying the entire batch.`,
 	cmd.Flags().BoolVar(&opts.All, "all", false, "Select all panes (pack modes require every target to be an agent)")
 	cmd.Flags().StringVar(&opts.Pane, "pane", "", "Inject to one target: N (pane/window), W.P, or %N (pane ID)")
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "Prepare and validate without sending")
-	cmd.Flags().BoolVar(&opts.Build, "build", false, "Build a fresh context pack for each target agent type")
+	cmd.Flags().BoolVar(&opts.Build, "build", false, "Build context for each target model and remaining capacity")
 	cmd.Flags().StringVar(&opts.PackID, "pack", "", "Inject a stored context pack into matching agent types")
 	cmd.Flags().StringVar(&opts.Task, "task", "", "Task description for context retrieval (requires --build)")
 	cmd.Flags().StringVar(&opts.BeadID, "bead", "", "Bead ID to include in built packs (requires --build)")
@@ -646,6 +653,12 @@ func defaultContextInjectDeps(w io.Writer) contextInjectDeps {
 		project: resolveExplicitProjectDirForSessionContext,
 		panes:   tmux.GetPanes,
 		build:   builder.Build,
+		usage: func(ctx context.Context, pane tmux.Pane) (*ntmctx.TranscriptUsage, bool) {
+			if tmux.DefaultClient.Remote != "" || pane.PID <= 0 {
+				return nil, false
+			}
+			return ntmctx.ProcessTranscriptUsage(ctx, string(agent.AgentType(pane.Type).Canonical()), pane.PID)
+		},
 		load: func(id string) (*state.ContextPack, error) {
 			store, err := state.Open("")
 			if err != nil {

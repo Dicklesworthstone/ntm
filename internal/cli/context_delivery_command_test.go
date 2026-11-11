@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/state"
@@ -459,6 +460,197 @@ func TestContextInjectionRetainsPaneIdentityThroughPreparationAndSubmission(t *t
 						})
 					}
 				})
+			}
+		})
+	}
+}
+
+func TestContextInjectCobraUsesPerTargetRemainingCapacity(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	oldJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSON })
+	deps := packInjectionTestDeps(t)
+	dir, err := deps.project(t.Context(), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(strings.Repeat("// context-capacity-source\n", 40000)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	panes := []tmux.Pane{
+		{ID: "%10", Index: 0, PID: 110, Type: tmux.AgentClaude},
+		{ID: "%11", Index: 1, PID: 111, Type: tmux.AgentClaude},
+		{ID: "%12", Index: 2, PID: 112, Type: tmux.AgentClaude},
+		{ID: "%13", Index: 3, PID: 113, Type: tmux.AgentGemini},
+	}
+	deps.panes = func(string) ([]tmux.Pane, error) { return panes, nil }
+	now := time.Now()
+	usage := map[string]ntmctx.TranscriptUsage{
+		"%10": {Path: "/test/large", Model: "claude-opus-5", ContextWindow: 1000000, UpdatedAt: now},
+		"%11": {Path: "/test/full", Model: "claude-opus-5", ContextWindow: 1000000, Tokens: 999000, UpdatedAt: now},
+		"%12": {Path: "/test/small", Model: "claude-opus-4", ContextWindow: 4000, Tokens: 1000, UpdatedAt: now},
+		"%13": {Path: "/test/gemini", Model: "gemini-2.0-flash", ContextWindow: 1000000, Tokens: 200000, UpdatedAt: now},
+	}
+	budgets := map[string]int{"%10": 900000, "%11": 900, "%12": 2700, "%13": 80000}
+	observed := 0
+	deps.usage = func(_ context.Context, pane tmux.Pane) (*ntmctx.TranscriptUsage, bool) {
+		observed++
+		value := usage[pane.ID]
+		return &value, true
+	}
+	builder := ntmctx.NewContextPackBuilder(nil)
+	builder.ClearCache()
+	t.Cleanup(builder.ClearCache)
+	var builds []ntmctx.BuildOptions
+	deps.build = func(ctx context.Context, opts ntmctx.BuildOptions) (*ntmctx.ContextPackFull, error) {
+		builds = append(builds, opts)
+		return builder.Build(ctx, opts)
+	}
+	sent := make(map[string]string)
+	deps.send = func(_ context.Context, pane tmux.Pane, text string) error {
+		if len(builds) != len(panes) || observed != 2*len(panes) {
+			t.Fatalf("delivery preceded complete preparation/admission: builds=%d observations=%d", len(builds), observed)
+		}
+		if len(text) > budgets[pane.ID]*4 || !strings.Contains(text, "context-capacity-source") {
+			t.Fatalf("wrong source or oversized payload for %s: %d bytes", pane.ID, len(text))
+		}
+		sent[pane.ID] = text
+		return nil
+	}
+	cmd := newContextInjectCmdWithDeps(&deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"demo", "--build", "--files", "main.go"})
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("capacity-aware injection failed: %v: %s", err, out.String())
+	}
+	var result ContextInjectResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Success || len(sent) != len(panes) || len(result.Deliveries) != len(panes) {
+		t.Fatalf("incomplete capacity-aware batch: %+v", result)
+	}
+	for i, pane := range panes {
+		want := usage[pane.ID]
+		if builds[i].Model != want.Model || builds[i].ContextWindow != want.ContextWindow || builds[i].MaxTokens != budgets[pane.ID] {
+			t.Fatalf("target %s reused another target's budget: %+v", pane.ID, builds[i])
+		}
+		capacity := result.Deliveries[i].Capacity
+		if capacity == nil || capacity.Status != "measured" || capacity.BudgetSource != "remaining_context" ||
+			capacity.BudgetTokens != budgets[pane.ID] || capacity.UsedTokens == nil || *capacity.UsedTokens != want.Tokens {
+			t.Fatalf("target capacity provenance lost: %+v", result.Deliveries[i])
+		}
+	}
+	if len(sent["%10"]) <= ntmctx.GetTokenBudget("cc")*4 {
+		t.Fatal("large-model fixture did not exercise delivery beyond the old agent-default limit")
+	}
+	if result.Deliveries[0].PackID == result.Deliveries[1].PackID {
+		t.Fatal("same model with different remaining capacity shared a pack")
+	}
+}
+
+func TestContextInjectCobraRechecksWholeStoredPackBatch(t *testing.T) {
+	oldJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSON })
+	for _, scenario := range []string{
+		"filled", "lost", "stale", "session_changed", "model_changed", "window_changed",
+		"accounting_regressed", "newly_known", "replaced", "dead", "service", "rotation", "canceled",
+	} {
+		t.Run(scenario, func(t *testing.T) {
+			deps := packInjectionTestDeps(t)
+			panes := []tmux.Pane{
+				{ID: "%1", Index: 0, PID: 101, Type: tmux.AgentClaude},
+				{ID: "%2", Index: 1, PID: 102, Type: tmux.AgentClaude},
+			}
+			lists := 0
+			deps.panes = func(string) ([]tmux.Pane, error) {
+				lists++
+				current := append([]tmux.Pane(nil), panes...)
+				if lists == 2 {
+					switch scenario {
+					case "replaced":
+						current[1].PID++
+					case "dead":
+						current[1].Dead = true
+					case "service":
+						current[1].Service = "cm"
+					case "rotation":
+						current[1].RotationToken = "handoff-owner"
+					}
+				}
+				return current, nil
+			}
+			artifact := strings.Repeat("x", 800)
+			stored := &state.ContextPack{ID: "pack-kept", AgentType: "cc", RenderedPrompt: artifact, TokenCount: 1}
+			deps.load = func(string) (*state.ContextPack, error) { return stored, nil }
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			counts := make(map[string]int)
+			stamp := time.Now().Add(-time.Second)
+			deps.usage = func(_ context.Context, pane tmux.Pane) (*ntmctx.TranscriptUsage, bool) {
+				counts[pane.ID]++
+				u := &ntmctx.TranscriptUsage{
+					Path: "/test/" + pane.ID, Model: "claude-opus-4",
+					ContextWindow: 4000, Tokens: 1000, UpdatedAt: stamp,
+				}
+				if pane.ID != "%2" {
+					return u, true
+				}
+				if counts[pane.ID] == 1 {
+					if scenario == "newly_known" {
+						return nil, false
+					}
+					return u, true
+				}
+				switch scenario {
+				case "filled":
+					u.Tokens = 3900
+				case "lost":
+					return nil, false
+				case "stale":
+					u.UpdatedAt = time.Now().Add(-ntmctx.TranscriptFreshness - time.Second)
+				case "session_changed":
+					u.Path = "/test/restarted"
+				case "model_changed":
+					u.Model = "claude-opus-5"
+				case "window_changed":
+					u.ContextWindow = 8000
+				case "accounting_regressed":
+					u.UpdatedAt = stamp.Add(-time.Second)
+				case "newly_known":
+					u.ContextWindow, u.Tokens = 1000, 900
+				case "canceled":
+					cancel()
+				}
+				return u, true
+			}
+			sends := 0
+			deps.send = func(context.Context, tmux.Pane, string) error { sends++; return nil }
+			cmd := newContextInjectCmdWithDeps(&deps)
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(io.Discard)
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			cmd.SetArgs([]string{"demo", "--pack", "pack-kept"})
+			err := cmd.ExecuteContext(ctx)
+			var result ContextInjectResult
+			if decodeErr := json.Unmarshal(out.Bytes(), &result); decodeErr != nil {
+				t.Fatalf("invalid refusal result: %v: %s", decodeErr, out.String())
+			}
+			if err == nil || result.Success || sends != 0 || len(result.Deliveries) != 2 || len(result.PanesInjected) != 0 {
+				t.Fatalf("changed later target allowed a partial batch: result=%+v sends=%d err=%v", result, sends, err)
+			}
+			for _, receipt := range result.Deliveries {
+				if receipt.Status != "not_attempted" {
+					t.Fatalf("preflight refusal claimed an attempted send: %+v", receipt)
+				}
+			}
+			if stored.RenderedPrompt != artifact || stored.TokenCount != 1 {
+				t.Fatal("capacity refusal rewrote the stored artifact")
 			}
 		})
 	}

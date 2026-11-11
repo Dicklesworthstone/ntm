@@ -61,11 +61,11 @@ func TestNativeAccountingBeyondFastTail(t *testing.T) {
 
 func TestNativeAccountingDoesNotBorrowFutureModel(t *testing.T) {
 	usage, _ := json.Marshal(nativeAccountingFixture(t, "codex", time.Now().UTC()))
-	// No model before this reading. A later turn's model does not describe it.
+	// A later model cannot justify this earlier window or occupancy.
 	path := nativeAccountingFile(t, string(usage)+"\n"+`{"type":"turn_context","payload":{"model":"future-model"}}`+"\n")
 	got, err := ReadLatestTranscriptUsage(path)
-	if err != nil || got == nil || got.Tokens != 120 || got.Model != "" {
-		t.Fatalf("a future model was attributed to an earlier reading: %+v, %v", got, err)
+	if err != nil || got != nil {
+		t.Fatalf("accounting without its preceding model survived a later declaration: %+v, %v", got, err)
 	}
 }
 
@@ -389,5 +389,116 @@ func TestNativeAccountingPreservesAdditionalNativeTokens(t *testing.T) {
 				t.Fatalf("native total was replaced with an incomplete component sum: %+v, %v", got, err)
 			}
 		})
+	}
+}
+
+func TestNativeAccountingModelDeclarationsFencePriorUsage(t *testing.T) {
+	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
+	cases := []struct {
+		name        string
+		provider    string
+		declaration string
+		qualifier   string
+	}{
+		{"Claude assistant without usage", "claude", `{"type":"assistant","message":{"role":"assistant","model":%q}}`, ""},
+		{"Codex turn context", "codex", `{"type":"turn_context","payload":{"model":%q}}`, ""},
+		{"OMP model change", "omp", `{"type":"model_change","model":%q}`, ""},
+		{"OMP assistant without usage", "omp", `{"type":"message","message":{"role":"assistant","model":%q}}`, ""},
+		{"OMP qualified model change", "omp", `{"type":"model_change","model":%q}`, "anthropic"},
+	}
+	for _, tc := range cases {
+		for _, changed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/changed=%v", tc.name, changed), func(t *testing.T) {
+				body := nativeAccountingFixture(t, tc.provider, at)
+				if tc.qualifier != "" {
+					body["message"].(map[string]interface{})["provider"] = tc.qualifier
+				}
+				before, err := json.Marshal(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				original := ompQualifiedModel(tc.qualifier, "original-model")
+				declared := original
+				if changed {
+					declared = ompQualifiedModel(tc.qualifier, "next-model")
+				}
+				prefix := fmt.Sprintf(`{"type":"turn_context","payload":{"model":%q}}`, original)
+				data := prefix + "\n" + string(before) + "\n" + fmt.Sprintf(tc.declaration, declared) + "\n" + `{"type":"progress"}` + "\n"
+				got, err := ReadLatestTranscriptUsage(nativeAccountingFile(t, data))
+				if changed {
+					if err != nil || got != nil {
+						t.Fatalf("previous model accounting survived a model change: %+v, %v", got, err)
+					}
+				} else {
+					if err != nil || got == nil || got.Tokens != 120 || got.Model != original || !got.UpdatedAt.Equal(at) {
+						t.Fatalf("same-model declaration lost or refreshed accounting: %+v, %v", got, err)
+					}
+					if tc.provider == "codex" && got.ContextWindow != 200000 {
+						t.Fatalf("same-model declaration changed the native window: %+v", got)
+					}
+					return
+				}
+
+				after := nativeAccountingFixture(t, tc.provider, at.Add(time.Second))
+				if tc.provider == "codex" {
+					after["payload"].(map[string]interface{})["info"].(map[string]interface{})["model_context_window"] = 8192
+				} else {
+					message := after["message"].(map[string]interface{})
+					message["model"] = "next-model"
+					if tc.qualifier != "" {
+						message["provider"] = tc.qualifier
+					}
+				}
+				fresh, err := json.Marshal(after)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err = ReadLatestTranscriptUsage(nativeAccountingFile(t, data+string(fresh)+"\n"))
+				if err != nil || got == nil || got.Tokens != 120 || got.Model != declared || !got.UpdatedAt.Equal(at.Add(time.Second)) {
+					t.Fatalf("fresh accounting after model change did not recover: %+v, %v", got, err)
+				}
+				if tc.provider == "codex" && got.ContextWindow != 8192 {
+					t.Fatalf("fresh accounting retained the previous model window: %+v", got)
+				}
+			})
+		}
+	}
+}
+
+func TestNativeAccountingModelDeclarationAcrossTailExpansion(t *testing.T) {
+	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
+	usage, err := json.Marshal(nativeAccountingFixture(t, "codex", at))
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := `{"type":"turn_context","payload":{"model":"original-model"}}`
+	tool := `{"type":"response_item","payload":{"type":"function_call_output","output":"` + strings.Repeat("x", 3*transcriptTailWindow) + `"}}`
+	for _, placement := range []string{"usage-before-tool", "usage-after-tool"} {
+		for _, changed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/changed=%v", placement, changed), func(t *testing.T) {
+				model := "original-model"
+				if changed {
+					model = "next-model"
+				}
+				declaration := fmt.Sprintf(`{"type":"turn_context","payload":{"model":%q}}`, model)
+				lines := []string{head, string(usage), tool, declaration}
+				if placement == "usage-after-tool" {
+					lines = []string{head, tool, string(usage), declaration}
+				}
+				data := strings.Join(lines, "\n") + "\n"
+				trace := &nativeAccountingReadTrace{ReaderAt: strings.NewReader(data)}
+				got, err := readNativeTranscriptTail(trace, int64(len(data)))
+				if len(trace.spans) < 2 || trace.bytes > int64(transcriptScanLimit)+1 {
+					t.Fatalf("expected bounded tail expansion, spans=%v bytes=%d", trace.spans, trace.bytes)
+				}
+				if changed {
+					if err != nil || got != nil {
+						t.Fatalf("tail expansion resurrected accounting for the previous model: %+v, %v", got, err)
+					}
+				} else if err != nil || got == nil || got.Model != "original-model" || got.Tokens != 120 || got.ContextWindow != 200000 || !got.UpdatedAt.Equal(at) {
+					t.Fatalf("tail expansion lost same-model accounting: %+v, %v", got, err)
+				}
+			})
+		}
 	}
 }

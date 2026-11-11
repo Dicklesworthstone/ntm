@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
@@ -203,6 +204,15 @@ func packInjectionTestDeps(t *testing.T) contextInjectDeps {
 					"cm":  {Error: "cm not installed"},
 				},
 			}, nil
+		},
+		usage: func(_ context.Context, pane tmux.Pane) (*ntmctx.TranscriptUsage, bool) {
+			model := "claude-opus-4"
+			if agent.AgentType(pane.Type).Canonical() == agent.AgentTypeCodex {
+				model = "gpt-5-codex"
+			}
+			return &ntmctx.TranscriptUsage{
+				Path: "/test/" + pane.ID, Model: model, UpdatedAt: time.Now(),
+			}, true
 		},
 		send: func(context.Context, tmux.Pane, string) error { t.Fatal("unexpected send"); return nil },
 	}

@@ -204,14 +204,17 @@ func readNativeTranscriptTail(src io.ReaderAt, size int64) (*TranscriptUsage, er
 // record, with its preceding model. The second result permits looking farther
 // back only when no corruption or history-rewrite barrier was encountered.
 // Native compaction/branch records invalidate old accounting; their pre-counts
-// and projected after-counts are not a new provider measurement.
+// and projected after-counts are not a new provider measurement. A model switch
+// also invalidates the preceding model's window and occupancy until fresh usage.
 func parseLastUsage(buf []byte) (*TranscriptUsage, bool) {
 	var last *TranscriptUsage
 	lastModel := ""
+	unresolvedModel := false
 	mayLookBack := true
 	invalidate := func() {
 		last = nil
 		lastModel = ""
+		unresolvedModel = false
 		mayLookBack = false
 	}
 
@@ -262,12 +265,25 @@ func parseLastUsage(buf []byte) (*TranscriptUsage, bool) {
 			continue
 		}
 
+		declaredModel := ""
 		if (e.Type == "assistant" || (e.Type == "message" && e.Message.Role == "assistant")) && e.Message.Model != "" {
-			lastModel = ompQualifiedModel(e.Message.Provider, e.Message.Model)
+			declaredModel = ompQualifiedModel(e.Message.Provider, e.Message.Model)
 		} else if e.Type == "turn_context" && e.Payload.Model != "" {
-			lastModel = e.Payload.Model
+			declaredModel = e.Payload.Model
 		} else if e.Type == "model_change" && e.Model != "" {
-			lastModel = e.Model // omp: already provider-qualified
+			declaredModel = e.Model // omp: already provider-qualified
+		}
+		if declaredModel != "" {
+			if last != nil {
+				if last.Model == "" {
+					// Its preceding declaration may be outside the fast tail.
+					// Expand the scan before trusting its window or occupancy.
+					unresolvedModel = true
+				} else if !strings.EqualFold(last.Model, declaredModel) {
+					invalidate()
+				}
+			}
+			lastModel = declaredModel
 		}
 
 		switch {
@@ -337,12 +353,16 @@ func parseLastUsage(buf []byte) (*TranscriptUsage, bool) {
 		default:
 			continue
 		}
+		unresolvedModel = false
 		if last.Model == "" {
 			last.Model = lastModel
 		}
 		last.UpdatedAt, _ = time.Parse(time.RFC3339Nano, e.Timestamp)
 	}
 
+	if unresolvedModel {
+		return nil, mayLookBack
+	}
 	return last, mayLookBack
 }
 
