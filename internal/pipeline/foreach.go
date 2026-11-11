@@ -1337,9 +1337,9 @@ func matchingForeachBodyResult(plans []foreachIterationPlan, planIdx int, result
 }
 
 // foreachIterationKey derives a stable identity for an iteration suitable
-// for keying into a collect-mode map. Prefers structured fields ("id",
-// "key", "name") on map items; falls back to the raw string item; final
-// fallback is "iter_<index>" so keys stay distinct even for opaque items.
+// for keying into a collect-mode map. Prefers a native bead ID or structured
+// fields ("id", "key", "name") on map items; falls back to the raw string
+// item; final fallback is "iter_<index>" so keys stay distinct for opaque items.
 func foreachIterationKey(iter foreachIterationResult) string {
 	switch v := iter.Item.(type) {
 	case map[string]interface{}:
@@ -1357,6 +1357,10 @@ func foreachIterationKey(iter foreachIterationResult) string {
 					return s
 				}
 			}
+		}
+	case BeadRecord:
+		if v.ID != "" {
+			return v.ID
 		}
 	case string:
 		if v != "" {

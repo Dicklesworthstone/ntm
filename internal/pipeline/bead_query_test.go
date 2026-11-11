@@ -321,8 +321,8 @@ steps:
 	if len(selected) != 2 || selected[0].ID != "bd-source" || selected[1].ID != "bd-bug" {
 		t.Fatalf("selected = %+v", selected)
 	}
-	// The typed output retains br's empty label list. The JSON representation
-	// omits that field via omitempty, so decoding it produces a nil slice.
+	// Typed output and serialized records retain empty label lists so a
+	// checkpoint reload exposes the same downstream data.
 	wantTyped := []BeadRecord{
 		{ID: "bd-source", Labels: []string{"api || (parser)"}, Status: "open", Priority: 1, IssueType: "feature"},
 		{ID: "bd-bug", Labels: []string{}, Status: "open", Priority: 1, IssueType: "bug"},
@@ -614,6 +614,186 @@ func TestBeadFilterLabelCaseInsensitive(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Errorf("filter %q = %v, want %v", tc.clause, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBeadQueryRecordsFlowThroughFreshAndResumedWorkflows(t *testing.T) {
+	for _, resumeBeforeConsumption := range []bool{false, true} {
+		t.Run(fmt.Sprintf("resume=%t", resumeBeforeConsumption), func(t *testing.T) {
+			workflow := &Workflow{
+				SchemaVersion: SchemaVersion,
+				Name:          "native-bead-data",
+				Settings:      DefaultWorkflowSettings(),
+				Steps: []Step{
+					{
+						ID:        "collect",
+						BeadQuery: &BeadQueryStep{},
+						OutputVar: "selected",
+					},
+					{
+						ID:        "gate",
+						DependsOn: []string{"collect"},
+						OnError:   ErrorActionFail,
+						BeadQuery: &BeadQueryStep{
+							Label: StringOrList{"checkpoint-gate"},
+						},
+					},
+					{
+						ID:        "inspect",
+						DependsOn: []string{"gate"},
+						BeadQuery: &BeadQueryStep{
+							Label: StringOrList{
+								"${steps.collect.data[0].id}",
+								"${vars.selected_parsed.1.title}",
+							},
+							Type:     "${steps.collect.data[0].issue_type}",
+							Priority: "${steps.collect.data[0].priority}",
+							Assignee: "${steps.collect.data[0].assignee}",
+						},
+					},
+					{
+						ID:            "fanout",
+						DependsOn:     []string{"inspect"},
+						OutputVar:     "details",
+						OutputVarMode: OutputVarModeCollect,
+						Foreach: &ForeachConfig{
+							Items:  "${vars.selected_parsed}",
+							As:     "task",
+							Filter: `priority==0 && assignee==""`,
+							Steps: []Step{
+								{
+									ID: "detail",
+									BeadQuery: &BeadQueryStep{
+										Label: StringOrList{
+											"${task.id}",
+											"${item.title}",
+											"${loop.item.id}",
+										},
+										Type:     "${item.issue_type}",
+										Priority: "${task.priority}",
+										Assignee: "${task.assignee}",
+									},
+									OutputVar: "details",
+								},
+							},
+						},
+					},
+				},
+			}
+
+			cfg := DefaultExecutorConfig("native-bead-data")
+			cfg.ProjectDir = t.TempDir()
+			allowGate := !resumeBeforeConsumption
+			collectionCalls := 0
+			var consumedQueries [][]string
+			cfg.BeadQueryRunBr = func(_ context.Context, args []string) ([]byte, error) {
+				if reflect.DeepEqual(args, []string{"list", "--json", "--limit", "0"}) {
+					collectionCalls++
+					return []byte(`{"issues":[
+						{"id":"bd-critical","title":"Critical work","labels":null,"status":"open","priority":0,"issue_type":"bug","assignee":""},
+						{"id":"bd-high","title":"High work","status":"open","priority":1,"issue_type":"task","assignee":""}
+					]}`), nil
+				}
+				if reflect.DeepEqual(args, []string{
+					"list", "--json", "--limit", "0", "--label", "checkpoint-gate",
+				}) {
+					if !allowGate {
+						return nil, fmt.Errorf("temporary bead query failure")
+					}
+					return []byte(`{"issues":[]}`), nil
+				}
+				consumedQueries = append(consumedQueries, append([]string(nil), args...))
+				return []byte(`{"issues":[]}`), nil
+			}
+
+			state, err := NewExecutor(cfg).Run(context.Background(), workflow, nil, nil)
+			if state == nil {
+				t.Fatalf("Run() returned no state: %v", err)
+			}
+			records, ok := state.Steps["collect"].ParsedData.([]BeadRecord)
+			if !ok || len(records) != 2 {
+				t.Fatalf("native query lost typed records: %#v", state.Steps["collect"].ParsedData)
+			}
+			if records[0].Priority != 0 || records[0].Labels == nil || records[1].Labels == nil {
+				t.Fatalf("native records lost zero/empty values: %#v", records)
+			}
+
+			if resumeBeforeConsumption {
+				if err == nil || state.Steps["gate"].Status != StatusFailed {
+					t.Fatalf("first Run() must stop at the gate: state=%+v error=%v", state, err)
+				}
+				if len(consumedQueries) != 0 {
+					t.Fatalf("downstream work ran before the failed gate: %#v", consumedQueries)
+				}
+				prior, loadErr := LoadState(cfg.ProjectDir, state.RunID)
+				if loadErr != nil {
+					t.Fatalf("LoadState() error = %v", loadErr)
+				}
+				allowGate = true
+				state, err = NewExecutor(cfg).ResumeWithOptions(
+					context.Background(), workflow, prior, ResumeOptions{
+						Mode:           ResumeModeContinue,
+						KeepState:      true,
+						OnRosterChange: ResumeRosterAbort,
+					}, nil,
+				)
+			}
+			if err != nil || state == nil || state.Status != StatusCompleted {
+				t.Fatalf("workflow did not consume its native records: state=%+v error=%v", state, err)
+			}
+			if collectionCalls != 1 {
+				t.Fatalf("completed collection ran %d times, want 1", collectionCalls)
+			}
+
+			wantQueries := [][]string{
+				{
+					"list", "--json", "--limit", "0",
+					"--label", "bd-critical", "--label", "High work",
+					"--type", "bug", "--priority", "0",
+				},
+				{
+					"list", "--json", "--limit", "0",
+					"--label", "bd-critical", "--label", "Critical work",
+					"--label", "bd-critical", "--type", "bug", "--priority", "0",
+				},
+			}
+			if !reflect.DeepEqual(consumedQueries, wantQueries) {
+				t.Fatalf("downstream br requests = %#v, want %#v", consumedQueries, wantQueries)
+			}
+			if got := state.Variables["details"]; !reflect.DeepEqual(got, map[string]string{
+				"bd-critical": "[]",
+			}) {
+				t.Fatalf("collect output lost stable bead identity: %#v", got)
+			}
+
+			var wireRecords []map[string]interface{}
+			if err := json.Unmarshal([]byte(state.Steps["collect"].Output), &wireRecords); err != nil {
+				t.Fatal(err)
+			}
+			if len(wireRecords) != 2 || wireRecords[0]["priority"] != float64(0) {
+				t.Fatalf("serialized query lost P0 priority: %#v", wireRecords)
+			}
+			if assignee, exists := wireRecords[0]["assignee"]; !exists || assignee != "" {
+				t.Fatalf("serialized query lost empty assignee: %#v", wireRecords[0])
+			}
+			if labels, ok := wireRecords[0]["labels"].([]interface{}); !ok || len(labels) != 0 {
+				t.Fatalf("serialized query labels = %#v, want []", wireRecords[0]["labels"])
+			}
+
+			sub := NewSubstitutor(state, cfg.Session, workflow.Name)
+			for _, ref := range []string{
+				"${steps.collect.data[0].unknown}",
+				"${steps.collect.data[0].ID}",
+				"${steps.collect.data[-1].id}",
+				"${steps.collect.data[2].id}",
+				"${steps.collect.data[invalid].id}",
+				"${vars.selected_parsed.0.unknown}",
+			} {
+				if value, err := sub.SubstituteStrict(ref); err == nil {
+					t.Fatalf("invalid native-record reference %q resolved as %q", ref, value)
+				}
 			}
 		})
 	}

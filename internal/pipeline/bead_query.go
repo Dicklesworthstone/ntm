@@ -24,21 +24,23 @@ type BeadQueryStep struct {
 }
 
 // BeadRecord is the typed subset of `br list --json` issue fields that
-// pipeline authors commonly consume downstream.
+// pipeline authors commonly consume downstream. Keep zero and empty fields
+// in the wire representation: persisted execution state decodes records into
+// maps, which must expose the same fields as fresh native records.
 type BeadRecord struct {
 	ID          string   `json:"id"`
-	Title       string   `json:"title,omitempty"`
-	Description string   `json:"description,omitempty"`
-	Labels      []string `json:"labels,omitempty"`
-	Status      string   `json:"status,omitempty"`
-	State       string   `json:"state,omitempty"`
-	Priority    int      `json:"priority,omitempty"`
-	IssueType   string   `json:"issue_type,omitempty"`
-	Assignee    string   `json:"assignee,omitempty"`
-	CreatedAt   string   `json:"created_at,omitempty"`
-	UpdatedAt   string   `json:"updated_at,omitempty"`
-	ClosedAt    string   `json:"closed_at,omitempty"`
-	SourceRepo  string   `json:"source_repo,omitempty"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Labels      []string `json:"labels"`
+	Status      string   `json:"status"`
+	State       string   `json:"state"`
+	Priority    int      `json:"priority"`
+	IssueType   string   `json:"issue_type"`
+	Assignee    string   `json:"assignee"`
+	CreatedAt   string   `json:"created_at"`
+	UpdatedAt   string   `json:"updated_at"`
+	ClosedAt    string   `json:"closed_at"`
+	SourceRepo  string   `json:"source_repo"`
 }
 
 func (e *Executor) executeBeadQuery(ctx context.Context, step *Step, workflow *Workflow) StepResult {
@@ -286,6 +288,11 @@ func parseBeadQueryRecords(out []byte) ([]BeadRecord, error) {
 	}
 	if doc.Issues == nil {
 		return []BeadRecord{}, nil
+	}
+	for i := range doc.Issues {
+		if doc.Issues[i].Labels == nil {
+			doc.Issues[i].Labels = []string{}
+		}
 	}
 	return doc.Issues, nil
 }

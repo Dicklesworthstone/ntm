@@ -958,6 +958,35 @@ func navigateNested(value interface{}, parts []string) (interface{}, error) {
 			}
 			current = v[idx]
 
+		case []BeadRecord:
+			idx, err := strconv.Atoi(part)
+			if err != nil {
+				return nil, fmt.Errorf("invalid array index '%s': must be numeric", part)
+			}
+			if idx < 0 || idx >= len(v) {
+				return nil, fmt.Errorf("array index %d out of bounds (length: %d)", idx, len(v))
+			}
+			current = v[idx]
+
+		case BeadRecord:
+			// Native bead_query results stay typed in memory. Navigate their
+			// public JSON fields so fresh execution and a decoded checkpoint
+			// use identical names and values, without exposing arbitrary Go
+			// structs or accepting unknown fields.
+			data, err := json.Marshal(v)
+			if err != nil {
+				return nil, fmt.Errorf("encode bead record fields: %w", err)
+			}
+			var fields map[string]interface{}
+			if err := json.Unmarshal(data, &fields); err != nil {
+				return nil, fmt.Errorf("decode bead record fields: %w", err)
+			}
+			var ok bool
+			current, ok = fields[part]
+			if !ok {
+				return nil, fmt.Errorf("field '%s' not found", part)
+			}
+
 		default:
 			return nil, fmt.Errorf("cannot access field '%s' on type %T", part, current)
 		}
