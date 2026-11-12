@@ -70,7 +70,7 @@
           "legacy-robot"
         ],
         "summary": "Robot health",
-        "description": "Served route `GET /api/robot/health`. Handler: `handleRobotHealth`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
+        "description": "Served route `GET /api/robot/health`. Handler: `handleRobotHealth`. Response shape joined from robot schema registry type `health`; the envelope fields success/timestamp/request_id are merged at the top level.",
         "operationId": "get_api_robot_health",
         "responses": {
           "200": {
@@ -78,7 +78,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessEnvelope"
+                  "$ref": "#/components/schemas/HealthOutput"
                 }
               }
             }
@@ -1629,6 +1629,68 @@
         "summary": "Attention stream",
         "description": "Served route `GET /api/v1/attention/stream`. Handler: `handleAttentionStreamV1`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
         "operationId": "get_api_v1_attention_stream",
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/ws-ticket": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Issue w s ticket",
+        "description": "Served route `POST /api/v1/auth/ws-ticket`. Handler: `handleIssueWSTicketV1`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
+        "operationId": "post_api_v1_auth_ws_ticket",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful operation",
@@ -3964,6 +4026,58 @@
           },
           "503": {
             "description": "Cancellation signalled but its receipt could not be checkpointed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/kernel/commands": {
+      "get": {
+        "tags": [
+          "kernel"
+        ],
+        "summary": "Kernel commands",
+        "description": "Served route `GET /api/v1/kernel/commands`. Handler: `handleKernelCommands`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
+        "operationId": "get_api_v1_kernel_commands",
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
             "content": {
               "application/json": {
                 "schema": {
@@ -6977,6 +7091,58 @@
         }
       }
     },
+    "/api/v1/policy/decisions": {
+      "get": {
+        "tags": [
+          "policy"
+        ],
+        "summary": "Policy decisions",
+        "description": "Served route `GET /api/v1/policy/decisions`. Handler: `handlePolicyDecisionsV1`. Response shape joined from robot schema registry type `policy_decisions`; the envelope fields success/timestamp/request_id are merged at the top level.",
+        "operationId": "get_api_v1_policy_decisions",
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyDecisionsOutput"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/policy/reset": {
       "post": {
         "tags": [
@@ -7819,7 +7985,7 @@
           "robot"
         ],
         "summary": "Robot attention",
-        "description": "Served route `GET /api/v1/robot/attention`. Handler: `handleRobotAttentionV1`. Response shape joined from robot schema registry type `digest`; the envelope fields success/timestamp/request_id are merged at the top level.",
+        "description": "Served route `GET /api/v1/robot/attention`. Handler: `handleRobotAttentionV1`. Response shape joined from robot schema registry type `attention`; the envelope fields success/timestamp/request_id are merged at the top level.",
         "operationId": "get_api_v1_robot_attention",
         "responses": {
           "200": {
@@ -7827,7 +7993,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DigestOutput"
+                  "$ref": "#/components/schemas/AttentionOutput"
                 }
               }
             }
@@ -12750,6 +12916,33 @@
           "features"
         ]
       },
+      "AttentionCursorInfo": {
+        "type": "object",
+        "properties": {
+          "end_cursor": {
+            "type": "integer",
+            "description": "End cursor"
+          },
+          "next_command": {
+            "type": "string",
+            "description": "Next command"
+          },
+          "oldest_cursor": {
+            "type": "integer",
+            "description": "Oldest cursor"
+          },
+          "start_cursor": {
+            "type": "integer",
+            "description": "Start cursor"
+          }
+        },
+        "required": [
+          "start_cursor",
+          "end_cursor",
+          "oldest_cursor",
+          "next_command"
+        ]
+      },
       "AttentionEvent": {
         "type": "object",
         "properties": {
@@ -12845,6 +13038,87 @@
           }
         }
       },
+      "AttentionOutput": {
+        "type": "object",
+        "description": "The canonical tending primitive: wait until attention is needed, then return a digest with wake reason and next cursor. This is the one obvious way to implement an operator loop. Combines wait + digest semantics with cursor handoff for mechanical replay.",
+        "properties": {
+          "_meta": {
+            "description": "Meta",
+            "$ref": "#/components/schemas/ResponseMeta"
+          },
+          "counts": {
+            "type": "object",
+            "description": "Counts",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "cursor_info": {
+            "description": "Cursor info",
+            "$ref": "#/components/schemas/AttentionCursorInfo"
+          },
+          "error": {
+            "type": "string",
+            "description": "Error"
+          },
+          "error_code": {
+            "type": "string",
+            "description": "Error code"
+          },
+          "hint": {
+            "type": "string",
+            "description": "Hint"
+          },
+          "items": {
+            "type": "array",
+            "description": "Items",
+            "items": {
+              "$ref": "#/components/schemas/AttentionEvent"
+            }
+          },
+          "output_format": {
+            "type": "string",
+            "description": "Output format"
+          },
+          "profile": {
+            "type": "string",
+            "description": "Profile"
+          },
+          "replay_window": {
+            "description": "Replay window",
+            "$ref": "#/components/schemas/SnapshotReplayWindowInfo"
+          },
+          "structured_error": {
+            "description": "Structured error",
+            "$ref": "#/components/schemas/StructuredError"
+          },
+          "success": {
+            "type": "boolean",
+            "description": "Success"
+          },
+          "suggested_actions": {
+            "type": "array",
+            "description": "Suggested actions",
+            "items": {
+              "$ref": "#/components/schemas/NextAction"
+            }
+          },
+          "timestamp": {
+            "type": "string",
+            "description": "Timestamp"
+          },
+          "version": {
+            "type": "string",
+            "description": "Version"
+          }
+        },
+        "required": [
+          "success",
+          "timestamp",
+          "items",
+          "counts"
+        ]
+      },
       "AttentionProfile": {
         "type": "object",
         "properties": {
@@ -12865,6 +13139,61 @@
           "name",
           "description",
           "filters"
+        ]
+      },
+      "AuditDecision": {
+        "type": "object",
+        "properties": {
+          "actor_id": {
+            "type": "string",
+            "description": "Actor i d"
+          },
+          "actor_type": {
+            "type": "string",
+            "description": "Actor type"
+          },
+          "audit_event_id": {
+            "type": "integer",
+            "description": "Audit event i d"
+          },
+          "decision_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "RFC3339 timestamp"
+          },
+          "decision_type": {
+            "type": "string",
+            "description": "Decision type"
+          },
+          "entity_id": {
+            "type": "string",
+            "description": "Entity i d"
+          },
+          "entity_type": {
+            "type": "string",
+            "description": "Entity type"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "RFC3339 timestamp"
+          },
+          "id": {
+            "type": "integer",
+            "description": "I d"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Reason"
+          }
+        },
+        "required": [
+          "id",
+          "decision_type",
+          "decision_at",
+          "actor_type",
+          "entity_type",
+          "entity_id"
         ]
       },
       "BeadAction": {
@@ -15254,6 +15583,78 @@
           "generated_at",
           "recommendation",
           "actions"
+        ]
+      },
+      "PolicyDecisionsOutput": {
+        "type": "object",
+        "description": "List durable policy and operator audit decisions from the runtime state store.",
+        "properties": {
+          "_meta": {
+            "description": "Meta",
+            "$ref": "#/components/schemas/ResponseMeta"
+          },
+          "count": {
+            "type": "integer",
+            "description": "Count"
+          },
+          "decisions": {
+            "type": "array",
+            "description": "Decisions",
+            "items": {
+              "$ref": "#/components/schemas/AuditDecision"
+            }
+          },
+          "entity_id": {
+            "type": "string",
+            "description": "Entity i d"
+          },
+          "entity_type": {
+            "type": "string",
+            "description": "Entity type"
+          },
+          "error": {
+            "type": "string",
+            "description": "Error"
+          },
+          "error_code": {
+            "type": "string",
+            "description": "Error code"
+          },
+          "hint": {
+            "type": "string",
+            "description": "Hint"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Limit"
+          },
+          "output_format": {
+            "type": "string",
+            "description": "Output format"
+          },
+          "structured_error": {
+            "description": "Structured error",
+            "$ref": "#/components/schemas/StructuredError"
+          },
+          "success": {
+            "type": "boolean",
+            "description": "Success"
+          },
+          "timestamp": {
+            "type": "string",
+            "description": "Timestamp"
+          },
+          "version": {
+            "type": "string",
+            "description": "Version"
+          }
+        },
+        "required": [
+          "success",
+          "timestamp",
+          "decisions",
+          "count",
+          "limit"
         ]
       },
       "PriorityRecommendation": {
@@ -17760,6 +18161,10 @@
             "type": "string",
             "description": "Agent mail name"
           },
+          "credential_isolated": {
+            "type": "boolean",
+            "description": "Credential isolated"
+          },
           "error": {
             "type": "string",
             "description": "Error"
@@ -19592,6 +19997,10 @@
       "description": "Operations related to attention"
     },
     {
+      "name": "auth",
+      "description": "Operations related to auth"
+    },
+    {
       "name": "beads",
       "description": "Operations related to beads"
     },
@@ -19634,6 +20043,10 @@
     {
       "name": "jobs",
       "description": "Operations related to jobs"
+    },
+    {
+      "name": "kernel",
+      "description": "Operations related to kernel"
     },
     {
       "name": "legacy-kernel",

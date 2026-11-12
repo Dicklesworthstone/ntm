@@ -1,9 +1,9 @@
 # Canonical Projection Section Model
 
-> **Authoritative reference** for the normalized section model shared across robot surfaces.
-> All robot outputs MUST project from this model.
+> **Status: SUPERSEDED BY [`docs/robot-section-model.md`](robot-section-model.md).**
+> Retained in-place for historical `bd-j9jo3.1.2` design provenance per `AGENTS.md` Rule 1.
 
-**Status:** AUTHORITATIVE
+**Status:** SUPERSEDED
 **Bead:** bd-j9jo3.1.2
 **Created:** 2026-03-22
 

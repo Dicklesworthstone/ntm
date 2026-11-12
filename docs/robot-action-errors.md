@@ -1,9 +1,9 @@
 # Robot Action Handoff, Remediation, and Error Semantics Contract
 
-> **Authoritative reference** for follow-up actions, recoverable errors, and retry semantics.
-> All robot surfaces MUST follow this contract.
+> **Status: SUPERSEDED BY [`docs/robot-action-handoff-contract.md`](robot-action-handoff-contract.md).**
+> Retained in-place for historical `bd-j9jo3.1.7` design provenance per `AGENTS.md` Rule 1.
 
-**Status:** AUTHORITATIVE
+**Status:** SUPERSEDED
 **Bead:** bd-j9jo3.1.7
 **Created:** 2026-03-22
 

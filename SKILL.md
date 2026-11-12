@@ -206,7 +206,7 @@ ntm --robot-status
 ntm --robot-snapshot
 ntm --robot-plan
 ntm --robot-dashboard
-ntm --robot-markdown --md-compact
+ntm --robot-markdown --compact
 ntm --robot-terse
 ```
 
@@ -215,11 +215,11 @@ Common task-specific robot surfaces:
 ```bash
 ntm --robot-spawn=myproject --spawn-cc=3 --spawn-prompt="Read AGENTS.md and start on ready work" --spawn-stagger-mode=fixed --spawn-stagger-delay=90s
 ntm --robot-send=myproject --msg="Summarize blockers." --type=claude
-ntm --robot-ack=myproject --ack-timeout=30s
+ntm --robot-ack=myproject --timeout=30s
 ntm --robot-tail=myproject --lines=50
 ntm --robot-mail-check --mail-project=myproject --urgent-only
 ntm --robot-cass-search="authentication error"
-ntm --robot-beads-list --beads-status=open
+ntm --robot-beads-list --status=open
 ntm --robot-bead-claim=br-123 --bead-assignee=agent1
 ntm --robot-bead-close=br-123 --bead-close-reason="Completed"
 ```

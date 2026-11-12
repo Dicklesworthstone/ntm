@@ -1567,18 +1567,45 @@ ntm openapi generate
 ntm openapi generate --stdout
 ```
 
+### Embedded Web Dashboard (`ntm web`)
+
+Launch the embedded Next.js operator dashboard together with the REST and WebSocket control plane:
+
+```bash
+# Local loopback mode (binds 127.0.0.1:7337)
+ntm web
+
+# Remote / LAN deployment with API-key authentication
+ntm web --host 0.0.0.0 --port 7337 --auth-mode api_key --api-key "$NTM_API_KEY"
+
+# OIDC JWT authentication
+ntm web --host 0.0.0.0 --port 7337 --auth-mode oidc --oidc-issuer https://idp.example.com --oidc-audience ntm-web --oidc-jwks-url https://idp.example.com/.well-known/jwks.json
+
+# Mutual TLS (mTLS) client-certificate authentication
+ntm web --host 0.0.0.0 --port 7337 --auth-mode mtls --mtls-cert server.pem --mtls-key server-key.pem --mtls-ca ca.pem
+```
+
+When `--auth-mode` is set to `api_key`, `oidc`, or `mtls`:
+
+- Static dashboard HTML/JS/CSS assets (`/`, `/connect`, `/_next/*`) load without credentials so the browser can render `/connect` and prompt for an API key or bearer token.
+- Every `/api/*`, `/ws/*`, and `/events` endpoint enforces authentication and RBAC.
+- Real-time WebSocket connections exchange the credential via `POST /api/v1/auth/ws-ticket` for a 30-second single-use upgrade ticket (`GET /api/v1/ws?ticket=...`) so bearer tokens and API keys never appear in URLs or request logs.
+
 ## Command Map
 
-| Command group | What it covers |
-| --- | --- |
-| `quick`, `init`, `spawn`, `add`, `attach`, `view`, `zoom`, `dashboard`, `palette`, `kill` | Project bootstrap and session lifecycle |
-| `send`, `interrupt`, `watch`, `activity`, `health`, `extract`, `diff`, `grep`, `analytics` | Day-to-day operator loop |
-| `work`, `assign`, `coordinator` | Graph-aware prioritization, assignment, and conflict management |
-| `mail`, `locks`, `worktrees` | Agent Mail coordination and file reservations |
-| `safety`, `policy`, `approve`, `guards` | Safe-by-default operations and approval workflows |
-| `checkpoint`, `timeline`, `history`, `audit`, `changes`, `resume` | Durable state and forensic surfaces |
-| `recipes`, `workflows`, `template`, `session-templates`, `pipeline`, `ensemble` | Reusable orchestration assets |
-| `serve`, `openapi`, `config`, `deps`, `upgrade`, `tutorial` | Integration, configuration, and operations |
+| Command group | Commands | What it covers |
+| --- | --- | --- |
+| **Bootstrap & Setup** | `quick`, `init`, `setup`, `deps`, `doctor`, `shell`, `bind`, `completion`, `level`, `tutorial`, `version`, `upgrade` | Project initialization, environment diagnostics, shell/tmux integration, and CLI lifecycle |
+| **Session Lifecycle & Navigation** | `create`, `spawn`, `add`, `adopt`, `scale`, `respawn`, `list`, `sessions`, `status`, `attach`, `view`, `zoom`, `switch`, `overlay`, `dashboard`, `palette`, `kill`, `cleanup` | Creating, scaling, adopting, inspecting, focusing, and tearing down tmux agent sessions |
+| **Prompting & Operator Loop** | `send`, `preflight`, `replay`, `interrupt`, `wait`, `watch`, `codex`, `controller`, `rotate`, `quota` | Prompt validation/delivery, state waits, live pane control, controller agents, and seat/quota rotation |
+| **Output Inspection & Analytics** | `activity`, `attention`, `summary`, `health`, `logs`, `errors`, `extract`, `copy`, `save`, `get-all-session-text`, `diff`, `grep`, `analytics`, `metrics` | Pane output capture, operator attention state (`ack`/`snooze`/`pin`/`dismiss`), error/code extraction, cross-pane diffs, regex search, and telemetry |
+| **Work Triage & Swarm Orchestration** | `work`, `work-snapshot`, `beads`, `claim`, `assign`, `rebalance`, `review-queue`, `coordinator`, `swarm` | Graph-aware Beads prioritization, restart-safe snapshots, assignment, load balancing, and multi-project swarms |
+| **Agent Mail, Git & File Locks** | `mail`, `message`, `mapping`, `lock`, `locks`, `unlock`, `conflicts`, `git`, `repo`, `worktrees` | Agent Mail messaging, pane-to-agent identity mapping, advisory file reservations, and Git worktree isolation |
+| **Context, Memory & Search** | `context`, `cass`, `search`, `memory`, `handoff`, `resume` | Token-budgeted context packs, CASS cross-agent search, procedural memory (`cm`), and session handoffs |
+| **Safety, Policy & Redaction** | `safety`, `policy`, `approve`, `guards`, `hooks`, `scan`, `bugs`, `redact`, `scrub` | Destructive command protection, SLB approvals, pre-commit guards, UBS bug scanning, and secret redaction |
+| **Durable State & Forensics** | `checkpoint`, `rollback`, `timeline`, `history`, `audit`, `changes`, `support-bundle`, `webhook-outbox` | Session checkpoints/rollbacks, cryptographic audit trails, file attribution, support bundles, and webhook recovery |
+| **Ensembles, Pipelines & Templates** | `ensemble`, `modes`, `pipeline`, `workflows`, `recipes`, `template`, `session-templates`, `agents`, `personas`, `profiles`, `profile`, `models`, `plugins` | Multi-agent reasoning ensembles, DAG pipelines, reusable recipes/personas, local models, and plugins |
+| **Control Plane & Web Surfaces** | `serve`, `web`, `openapi`, `kernel`, `config`, `help` | HTTP/REST/SSE/WebSocket daemon, embedded Next.js dashboard, OpenAPI schema generation, kernel registry, and strict TOML config |
 
 `ntm --help` remains the canonical full command reference.
 
@@ -1872,9 +1899,9 @@ brew install dicklesworthstone/tap/ntm
 
 ### Docker
 
-Multi-arch images (`linux/amd64`, `linux/arm64`) are pushed to GitHub Container
-Registry by the release workflow, tagged by semver (`1`, `1.22`, `1.22.0`) and
-commit SHA:
+Multi-arch images (`linux/amd64`, `linux/arm64`) are published to GitHub
+Container Registry via DSR (`ghcr.io/dicklesworthstone/ntm`), tagged by semver
+(`1`, `1.38`, `1.38.0`) and commit SHA:
 
 ```bash
 docker pull ghcr.io/dicklesworthstone/ntm:1

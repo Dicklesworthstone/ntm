@@ -1,10 +1,9 @@
 # SQLite Runtime Tables Design
 
-> **Authoritative schema design for ntm runtime projection layer.**
-> All runtime state persists in SQLite. This document defines table structure,
-> keys, indexes, retention, and migration strategy.
+> **Status: SUPERSEDED BY [`internal/state/migrations/`](../internal/state/migrations/) (executable DDL truth) and [`docs/runtime-schema-design.md`](runtime-schema-design.md).**
+> Retained in-place for historical `bd-j9jo3.2.1` design provenance per `AGENTS.md` Rule 1.
 
-**Status:** RATIFIED
+**Status:** SUPERSEDED
 **Bead:** bd-j9jo3.2.1
 **Created:** 2026-03-22
 **Part of:** bd-j9jo3 (robot-redesign epic)

@@ -1,10 +1,9 @@
 # Projection Section Model
 
-> **Authoritative definition of the normalized section model for ntm robot surfaces.**
-> All major surfaces (snapshot, status, digest, attention) project from this shared model.
-> Downstream tasks MUST implement these sections exactly as specified.
+> **Status: SUPERSEDED BY [`docs/robot-section-model.md`](robot-section-model.md).**
+> Retained in-place for historical `bd-j9jo3.1.2` design provenance per `AGENTS.md` Rule 1.
 
-**Status:** RATIFIED
+**Status:** SUPERSEDED
 **Bead:** bd-j9jo3.1.2
 **Created:** 2026-03-22
 **Part of:** bd-j9jo3 (robot-redesign epic)

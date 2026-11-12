@@ -1,6 +1,6 @@
 {
   "source": "chi-router-walk",
-  "count": 180,
+  "count": 183,
   "endpoints": [
     {
       "method": "GET",
@@ -10,7 +10,8 @@
     {
       "method": "GET",
       "path": "/api/robot/health",
-      "handler": "handleRobotHealth"
+      "handler": "handleRobotHealth",
+      "robot_schema": "health"
     },
     {
       "method": "GET",
@@ -135,6 +136,11 @@
       "method": "GET",
       "path": "/api/v1/attention/stream",
       "handler": "handleAttentionStreamV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/ws-ticket",
+      "handler": "handleIssueWSTicketV1"
     },
     {
       "method": "GET",
@@ -326,6 +332,11 @@
       "method": "GET",
       "path": "/api/v1/jobs/{id}",
       "handler": "handleGetJob"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/kernel/commands",
+      "handler": "handleKernelCommands"
     },
     {
       "method": "GET",
@@ -538,6 +549,12 @@
       "handler": "handlePolicyAutomationUpdateV1"
     },
     {
+      "method": "GET",
+      "path": "/api/v1/policy/decisions",
+      "handler": "handlePolicyDecisionsV1",
+      "robot_schema": "policy_decisions"
+    },
+    {
       "method": "POST",
       "path": "/api/v1/policy/reset",
       "handler": "handlePolicyResetV1"
@@ -603,7 +620,7 @@
       "method": "GET",
       "path": "/api/v1/robot/attention",
       "handler": "handleRobotAttentionV1",
-      "robot_schema": "digest"
+      "robot_schema": "attention"
     },
     {
       "method": "GET",

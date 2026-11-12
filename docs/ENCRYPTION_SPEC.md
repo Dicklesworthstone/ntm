@@ -18,10 +18,10 @@ covered in the encryption library task (`bd-z7ses`).
 - Key escrow or cloud KMS integration.
 - Automatic key generation for persistent data.
 
-## Supported Artifacts (Initial)
-- Prompt history
-- Event logs
-- Checkpoint exports
+## Supported Artifacts
+- Prompt history (`ENC:v1:` line-level AES-256-GCM)
+- Event logs (`ENC:v1:` line-level AES-256-GCM)
+- Checkpoint pane scrollback captures, git patches, and exported `.tar.gz` / `.zip` archives (`NTMENC1\n` binary AEAD envelope, integrated with `ArtifactIntegrity` digest verification)
 - Support bundles (if encrypted output requested)
 
 ## Configuration
@@ -32,13 +32,13 @@ Add an `[encryption]` section to `config.toml` and `.ntm/config.toml`.
 # Top-level toggle for encryption-at-rest (default false).
 enabled = false
 
-# Key source: env | file | command
+# Key source: env | file | command | keyring
 key_source = "env"
 
-# For key_source = "env"
+# For key_source = "env" (also used as headless fallback when key_source = "keyring")
 key_env = "NTM_ENCRYPTION_KEY"
 
-# For key_source = "file"
+# For key_source = "file" (also used as headless fallback when key_source = "keyring")
 key_file = "~/.config/ntm/keys/ntm.key"
 
 # For key_source = "command"

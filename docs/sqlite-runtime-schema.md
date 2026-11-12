@@ -1,9 +1,9 @@
 # SQLite Runtime Schema Design
 
-> **Authoritative schema design for ntm robot mode runtime projection tables.**
-> These tables hold derived state for robot surfaces, separate from tmux/bead source-of-truth.
+> **Status: SUPERSEDED BY [`internal/state/migrations/`](../internal/state/migrations/) (executable DDL truth) and [`docs/runtime-schema-design.md`](runtime-schema-design.md).**
+> Retained in-place for historical `bd-j9jo3.2.1` design provenance per `AGENTS.md` Rule 1.
 
-**Status:** RATIFIED
+**Status:** SUPERSEDED
 **Bead:** bd-j9jo3.2.1
 **Created:** 2026-03-22
 **Part of:** bd-j9jo3 (robot-redesign epic)

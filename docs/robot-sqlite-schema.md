@@ -1,9 +1,9 @@
 # Robot SQLite Schema Design
 
-> **Authoritative reference** for ntm robot mode runtime SQLite tables.
-> All persistent robot state MUST use this schema.
+> **Status: SUPERSEDED BY [`internal/state/migrations/`](../internal/state/migrations/) (executable DDL truth) and [`docs/runtime-schema-design.md`](runtime-schema-design.md).**
+> Retained in-place for historical `bd-j9jo3.2.1` design provenance per `AGENTS.md` Rule 1.
 
-**Status:** AUTHORITATIVE
+**Status:** SUPERSEDED
 **Bead:** bd-j9jo3.2.1
 **Created:** 2026-03-22
 **Prerequisite:** docs/robot-section-model.md (bd-j9jo3.1.2)

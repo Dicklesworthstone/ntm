@@ -89,7 +89,7 @@ We only use **Go** in this project. This is a pure Go project — never introduc
 | `charmbracelet/bubbles` | TUI component library |
 | `charmbracelet/lipgloss` | Terminal styling |
 | `charmbracelet/glamour` | Markdown rendering |
-| `mattn/go-sqlite3` | SQLite database driver |
+| `modernc.org/sqlite` | Pure-Go SQLite database driver |
 | `go-chi/chi/v5` | HTTP router |
 | `gorilla/websocket` | WebSocket support |
 | `fsnotify/fsnotify` | File system event watching |
@@ -367,9 +367,9 @@ Robot command outputs follow consistent semantics for absent, null, and empty fi
 |------|-------------|---------|
 | `--robot-send=SESSION` | Send message to panes | `ntm --robot-send=proj --msg='Fix auth' --type=claude` |
 | `--robot-send-receipt=OP_ID` | Query durable receipt of an idempotent send | `ntm --robot-send-receipt=deploy-42` |
-| `--robot-ack=SESSION` | Watch for agent responses | `ntm --robot-ack=proj --ack-timeout=30s` |
+| `--robot-ack=SESSION` | Watch for agent responses | `ntm --robot-ack=proj --timeout=30s` |
 | `--robot-spawn=SESSION` | Create session with agents | `ntm --robot-spawn=proj --spawn-cc=2 --spawn-wait` |
-| `--robot-interrupt=SESSION` | Send Ctrl+C, optionally new task | `ntm --robot-interrupt=proj --interrupt-msg='Stop'` |
+| `--robot-interrupt=SESSION` | Send Ctrl+C, optionally new task | `ntm --robot-interrupt=proj --msg='Stop'` |
 
 **Supporting Flags:**
 
@@ -389,11 +389,11 @@ Robot command outputs follow consistent semantics for absent, null, and empty fi
 
 | Flag | Description | Example |
 |------|-------------|---------|
-| `--robot-cass-search=QUERY` | Search past conversations | `ntm --robot-cass-search='auth error' --cass-since=7d` |
+| `--robot-cass-search=QUERY` | Search past conversations | `ntm --robot-cass-search='auth error' --since=7d` |
 | `--robot-cass-status` | Get CASS health/stats | `ntm --robot-cass-status` |
 | `--robot-cass-context=QUERY` | Get relevant past context | `ntm --robot-cass-context='how to implement auth'` |
-| `--cass-agent` | Filter by agent type | `--cass-agent=claude` |
-| `--cass-since` | Filter by recency | `--cass-since=7d` |
+| `--agent` | Filter by agent type | `ntm --robot-cass-search='auth error' --agent=claude` |
+| `--since` | Filter by recency | `ntm --robot-cass-search='auth error' --since=7d` |
 
 ---
 

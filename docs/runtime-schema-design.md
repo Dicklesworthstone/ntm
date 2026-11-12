@@ -1,9 +1,9 @@
 # Runtime Schema Design
 
-> **SQLite schema design for the robot-redesign runtime projection layer.**
-> This document defines tables that hold runtime projections, source health, attention events, incidents, and output watermarks.
+> **Canonical architectural overview for the robot-redesign SQLite runtime projection layer.**
+> Executable DDL truth lives in [`internal/state/migrations/`](../internal/state/migrations/); if any table column below diverges from a numbered migration, the migration governs.
 
-**Status:** RATIFIED
+**Status:** RATIFIED (DDL governed by `internal/state/migrations/`)
 **Bead:** bd-j9jo3.2.1
 **Created:** 2026-03-22
 **Part of:** bd-j9jo3 (robot-redesign epic)

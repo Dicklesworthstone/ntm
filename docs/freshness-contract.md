@@ -1,10 +1,9 @@
 # Freshness, Degraded-State, and Provenance Contract
 
-> **Authoritative definition of data quality semantics for ntm robot surfaces.**
-> All surfaces that report external data MUST include these quality markers.
-> Downstream tasks MUST implement these semantics exactly as specified.
+> **Status: SUPERSEDED BY [`docs/freshness-degraded-state-contract.md`](freshness-degraded-state-contract.md).**
+> Retained in-place for historical `bd-j9jo3.1.4` design provenance per `AGENTS.md` Rule 1.
 
-**Status:** RATIFIED
+**Status:** SUPERSEDED
 **Bead:** bd-j9jo3.1.4
 **Created:** 2026-03-22
 **Part of:** bd-j9jo3 (robot-redesign epic)

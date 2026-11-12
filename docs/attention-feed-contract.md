@@ -55,7 +55,9 @@ If a cursor expires (events have been garbage-collected), the events command ret
 {
   "success": false,
   "error_code": "CURSOR_EXPIRED",
-  "error": "Cursor 'evt_2026032102300000' has expired. Events before this cursor have been garbage-collected.",
+  "error": "Cursor 18 has expired. Events before cursor 25 have been garbage-collected.",
+  "requested_cursor": 18,
+  "earliest_cursor": 25,
   "hint": "Call --robot-snapshot to resync full state and obtain a fresh cursor.",
   "resync_required": true
 }
@@ -71,7 +73,7 @@ All events share a normalized envelope:
 
 ```json
 {
-  "cursor": "evt_20260321023045123456",
+  "cursor": 42,
   "ts": "2026-03-21T02:30:45.123456Z",
   "session": "myproject",
   "pane": "0.2",
@@ -104,7 +106,7 @@ All events share a normalized envelope:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `cursor` | string | Yes | Monotonically increasing cursor for replay. Format: `evt_<timestamp_nanos>` |
+| `cursor` | int64 | Yes | Monotonically increasing integer sequence cursor for replay (`> 0`). |
 | `ts` | string | Yes | RFC3339Nano timestamp when event occurred |
 | `session` | string | No | Session name if event is session-scoped. Absent for global events. |
 | `pane` | string | No | Pane identifier (`window.pane`) if event is pane-scoped. Absent otherwise. |
@@ -242,15 +244,15 @@ The `next_actions` array provides mechanical follow-up commands. These are NOT s
 
 ### 6.1 Format
 
-Cursors are opaque strings with the format: `evt_<timestamp_nanos>`
+Cursors are monotonically increasing signed 64-bit integers (`int64`, e.g., `42`) assigned by the durable attention journal (`internal/robot/attention_contract.go`).
 
-Example: `evt_20260321023045123456789`
+Example: `42`
 
 ### 6.2 Properties
 
-1. **Monotonically increasing:** cursor A < cursor B iff A's timestamp < B's timestamp
+1. **Monotonically increasing:** cursor A < cursor B iff event A was committed before event B
 2. **Globally ordered:** Cursors are ordered across all event sources
-3. **Replay-safe:** Requesting events with cursor X returns all events with cursor > X
+3. **Replay-safe:** Requesting events with `--since-cursor=X` returns all events with `cursor > X`
 4. **Idempotent:** Same cursor always returns same events (modulo garbage collection)
 
 ### 6.3 Retention and Expiration
@@ -261,12 +263,12 @@ Example: `evt_20260321023045123456789`
 
 ### 6.4 Cursor in Snapshot
 
-`--robot-snapshot` always returns a `cursor` field representing the current event position:
+`--robot-snapshot` always returns integer cursor bounds (`latest_cursor` / `cursor`) representing the current event position:
 
 ```json
 {
   "success": true,
-  "cursor": "evt_20260321023045123456789",
+  "cursor": 42,
   "ts": "2026-03-21T02:30:45Z",
   "sessions": [...]
 }
@@ -290,7 +292,7 @@ ntm --robot-snapshot --since=2026-03-21T00:00:00Z  # Delta since timestamp
 {
   "success": true,
   "timestamp": "2026-03-21T02:30:45Z",
-  "cursor": "evt_20260321023045123456789",
+  "cursor": 42,
   "ts": "2026-03-21T02:30:45Z",
   "sessions": [...],
   "beads_summary": {...},
@@ -354,7 +356,7 @@ ntm --robot-digest --profile=minimal
 {
   "success": true,
   "timestamp": "2026-03-21T02:31:00Z",
-  "cursor": "evt_20260321023100987654321",
+  "cursor": 54,
   "digest": {
     "period_start": "2026-03-21T02:30:45Z",
     "period_end": "2026-03-21T02:31:00Z",
@@ -423,9 +425,9 @@ ntm --robot-wait=myproject --condition=action_required --timeout=10m
   "condition": "idle",
   "met": true,
   "waited_ms": 45230,
-  "cursor": "evt_20260321023500123456789",
+  "cursor": 55,
   "triggering_event": {
-    "cursor": "evt_20260321023459987654321",
+    "cursor": 55,
     "type": "agent.state_change",
     "summary": "Agent cc_2 became idle"
   }
@@ -488,21 +490,21 @@ All attention feed commands MUST produce identical JSON schemas across:
 
 ```
 event: ntm_event
-data: {"cursor":"evt_...","type":"agent.state_change",...}
+data: {"cursor":56,"type":"agent.state_change",...}
 
 event: ntm_event
-data: {"cursor":"evt_...","type":"bead.ready",...}
+data: {"cursor":57,"type":"bead.ready",...}
 
 event: ntm_heartbeat
-data: {"cursor":"evt_...","ts":"2026-03-21T02:31:00Z"}
+data: {"cursor":57,"ts":"2026-03-21T02:31:00Z"}
 ```
 
 ### 8.2 WebSocket Format
 
 ```json
-{"type":"event","payload":{"cursor":"evt_...","type":"agent.state_change",...}}
-{"type":"event","payload":{"cursor":"evt_...","type":"bead.ready",...}}
-{"type":"heartbeat","payload":{"cursor":"evt_...","ts":"2026-03-21T02:31:00Z"}}
+{"type":"event","payload":{"cursor":56,"type":"agent.state_change",...}}
+{"type":"event","payload":{"cursor":57,"type":"bead.ready",...}}
+{"type":"heartbeat","payload":{"cursor":57,"ts":"2026-03-21T02:31:00Z"}}
 ```
 
 ---
@@ -594,7 +596,7 @@ For long-lived connections (SSE, WebSocket), a heartbeat event is sent every **3
 
 ```json
 {
-  "cursor": "evt_20260321023100000000000",
+  "cursor": 58,
   "ts": "2026-03-21T02:31:00Z",
   "category": "system",
   "type": "heartbeat",
@@ -638,9 +640,9 @@ Schema version follows semver:
       "category": "attention",
       "description": "Get events since cursor",
       "parameters": [
-        {"name": "cursor", "type": "string", "required": true},
-        {"name": "limit", "type": "int", "default": 100},
-        {"name": "category", "type": "string", "default": "all"},
+        {"name": "since-cursor", "type": "int64", "default": 0},
+        {"name": "events-limit", "type": "int", "default": 100},
+        {"name": "events-category", "type": "string", "default": "all"},
         {"name": "profile", "type": "string", "default": "default"}
       ]
     },
@@ -882,7 +884,7 @@ Log contract mismatches when commands cannot satisfy guarantees:
 
 ```json
 {
-  "cursor": "evt_20260321023045123456789",
+  "cursor": 59,
   "ts": "2026-03-21T02:30:45.123456789Z",
   "session": "myproject",
   "pane": "0.2",
@@ -912,7 +914,7 @@ Log contract mismatches when commands cannot satisfy guarantees:
 
 ```json
 {
-  "cursor": "evt_20260321023100987654321",
+  "cursor": 60,
   "ts": "2026-03-21T02:31:00.987654321Z",
   "category": "bead",
   "type": "ready",
@@ -944,7 +946,7 @@ Log contract mismatches when commands cannot satisfy guarantees:
 
 ```json
 {
-  "cursor": "evt_20260321023200123456789",
+  "cursor": 61,
   "ts": "2026-03-21T02:32:00.123456789Z",
   "session": "myproject",
   "pane": "0.3",
@@ -978,7 +980,7 @@ Log contract mismatches when commands cannot satisfy guarantees:
 
 ```json
 {
-  "cursor": "evt_20260321023300000000000",
+  "cursor": 62,
   "ts": "2026-03-21T02:33:00Z",
   "category": "system",
   "type": "heartbeat",

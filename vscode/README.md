@@ -8,7 +8,7 @@ Companion extension for [NTM (Named Tmux Manager)](https://github.com/Dickleswor
 - **file decorations** marking files locked/watched by agent file reservations,
 - commands: spawn agents, send selection/current file to agents, open palette, attach terminal, show status.
 
-Requires an `ntm` binary (v1.20+) on PATH and VS Code `^1.120.0`.
+Requires an `ntm` binary (v1.20+) on PATH and VS Code `^1.90.0`.
 
 ## Install (from .vsix)
 

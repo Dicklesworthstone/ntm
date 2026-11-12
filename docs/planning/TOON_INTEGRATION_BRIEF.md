@@ -19,8 +19,7 @@ Core renderer + encoder:
 - `internal/robot/types.go`: `outputJSON(v)` just calls `encodeJSON`
 
 TOON encoder backend:
-- `internal/robot/toon.go`: `toonEncode(payload, delimiter)` shells out to `tru --encode`
-  - Accepts `TOON_TRU_BIN` or `TOON_BIN` env overrides
+- `internal/robot/toon.go`: `toonEncode(payload, delimiter)` delegates to `tru --encode` when `tru` is installed (`TOON_TRU_BIN` / `TOON_BIN`), and automatically falls back to the built-in pure-Go encoder `toonEncodePureGo(payload, delimiter)` when `tru` is absent
   - Refuses Node.js `toon` CLI; verifies `tru` via `--help/--version`
 
 Most robot commands call `encodeJSON(...)` directly in `internal/robot/*.go`.
@@ -29,7 +28,8 @@ Most robot commands call `encodeJSON(...)` directly in `internal/robot/*.go`.
 Output format is already implemented and wired:
 1. CLI flag: `--robot-format=json|toon|auto`
 2. Env var: `NTM_ROBOT_FORMAT`
-3. Default: `auto` (currently resolves to JSON in `GetRenderer`)
+3. Config: `~/.config/ntm/config.toml` → `[robot.output] format = "json|toon|auto"`
+4. Default: `auto` (currently resolves to JSON in `GetRenderer`)
 
 Verbosity is separate:
 1. CLI flag: `--robot-verbosity=terse|default|debug`
@@ -39,8 +39,6 @@ Verbosity is separate:
 
 Special case:
 - `--robot-terse` emits a **single-line** compact format and ignores `--robot-format` / `--robot-verbosity`.
-
-Note: `config.toml` has `[robot.output] format = "json|toon"`, but this is **not wired** into `resolveRobotFormat()` today; only flag/env are honored.
 
 ## 4) TOON Strategy (already implemented)
 - Use `--robot-format=toon` to switch to TOON output.
