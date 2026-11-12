@@ -152,6 +152,11 @@ func ApplyOverrides(overrides map[string]int) {
 	defer registryMu.Unlock()
 
 	for model, limit := range overrides {
+		model = strings.ToLower(strings.TrimSpace(model))
+		if model == "" {
+			slog.Warn("ignoring context limit override with an empty model")
+			continue
+		}
 		if limit <= 0 {
 			// A non-positive limit is a division-by-zero waiting to happen in
 			// every usage-percentage computation, and the resulting NaN/+Inf
@@ -161,7 +166,7 @@ func ApplyOverrides(overrides map[string]int) {
 				"model", model, "limit", limit)
 			continue
 		}
-		ContextLimits[strings.ToLower(model)] = limit
+		ContextLimits[model] = limit
 	}
 
 	// Force rebuild of sorted keys cache
@@ -174,10 +179,40 @@ func ApplyOverrides(overrides map[string]int) {
 //  2. Alias resolution → exact match
 //  3. Strip date suffix (e.g., -20260101) → exact match
 //  4. Longest-prefix match in ContextLimits
-//  5. DefaultContextLimit fallback
+//  5. Repeat for the model after each provider namespace (e.g.,
+//     openrouter/anthropic/claude-opus-4-6 → anthropic/claude-opus-4-6
+//     → claude-opus-4-6), keeping qualified overrides ahead of the fallback
+//  6. DefaultContextLimit fallback
 func GetContextLimit(model string) int {
+	if limit, ok := lookupContextLimit(model); ok {
+		return limit
+	}
+	return DefaultContextLimit
+}
+
+// KnownModel reports whether a model identifier resolves to a real registry
+// value through the same rules GetContextLimit uses, including provider
+// namespaces. The default limit is not evidence of a known model.
+func KnownModel(model string) bool {
+	_, ok := lookupContextLimit(model)
+	return ok
+}
+
+// lookupContextLimit is the shared resolution path for both occupancy
+// admission and budget sizing. Never erase the provider in stored/native
+// identity: it is stripped only while looking up an unqualified fallback.
+func lookupContextLimit(model string) (int, bool) {
+	model = strings.ToLower(strings.TrimSpace(model))
 	if model == "" {
-		return DefaultContextLimit
+		return 0, false
+	}
+	// An empty namespace or leaf is not a provider-qualified model. In
+	// particular, do not turn "provider//model" into a known model by
+	// repeatedly discarding invalid path segments.
+	for _, part := range strings.Split(model, "/") {
+		if part == "" || strings.TrimSpace(part) != part {
+			return 0, false
+		}
 	}
 
 	registryMu.RLock()
@@ -193,17 +228,31 @@ func GetContextLimit(model string) int {
 	}
 	defer registryMu.RUnlock()
 
-	lower := strings.ToLower(model)
+	for {
+		if limit, ok := lookupModelLocked(model); ok {
+			return limit, true
+		}
+		_, unqualified, qualified := strings.Cut(model, "/")
+		if !qualified {
+			return 0, false
+		}
+		model = unqualified
+	}
+}
+
+// lookupModelLocked resolves one spelling without changing its namespace.
+// registryMu must be held and sortedKeys initialized by the caller.
+func lookupModelLocked(lower string) (int, bool) {
 
 	// 1. Exact match
 	if limit, ok := ContextLimits[lower]; ok {
-		return limit
+		return limit, true
 	}
 
 	// 2. Alias resolution
 	if canonical, ok := Aliases[lower]; ok {
 		if limit, ok := ContextLimits[canonical]; ok {
-			return limit
+			return limit, true
 		}
 	}
 
@@ -211,62 +260,24 @@ func GetContextLimit(model string) int {
 	stripped := dateSuffixRe.ReplaceAllString(lower, "")
 	if stripped != lower {
 		if limit, ok := ContextLimits[stripped]; ok {
-			return limit
+			return limit, true
 		}
 		if canonical, ok := Aliases[stripped]; ok {
 			if limit, ok := ContextLimits[canonical]; ok {
-				return limit
+				return limit, true
 			}
 		}
 	}
 
-	// 4. Longest-prefix match
+	// 4. Longest-prefix match within this namespace. A model-like provider
+	// name such as "gpt-4/unknown" must not resolve to the provider's prefix.
 	for _, key := range sortedKeys {
-		if strings.HasPrefix(lower, key) || strings.HasPrefix(stripped, key) {
-			return ContextLimits[key]
+		if strings.HasPrefix(lower, key) && !strings.Contains(lower[len(key):], "/") {
+			return ContextLimits[key], true
 		}
 	}
 
-	return DefaultContextLimit
-}
-
-// KnownModel reports whether a model identifier resolves in the registry
-// through the same rules GetContextLimit uses (exact match, alias, date-suffix
-// strip, or longest-prefix match) — i.e. whether GetContextLimit would return
-// a real registry value rather than the DefaultContextLimit fallback.
-func KnownModel(model string) bool {
-	if model == "" {
-		return false
-	}
-	registryMu.RLock()
-	defer registryMu.RUnlock()
-
-	lower := strings.ToLower(model)
-	if _, ok := ContextLimits[lower]; ok {
-		return true
-	}
-	if canonical, ok := Aliases[lower]; ok {
-		if _, ok := ContextLimits[canonical]; ok {
-			return true
-		}
-	}
-	stripped := dateSuffixRe.ReplaceAllString(lower, "")
-	if stripped != lower {
-		if _, ok := ContextLimits[stripped]; ok {
-			return true
-		}
-		if canonical, ok := Aliases[stripped]; ok {
-			if _, ok := ContextLimits[canonical]; ok {
-				return true
-			}
-		}
-	}
-	for key := range ContextLimits {
-		if strings.HasPrefix(lower, key) || strings.HasPrefix(stripped, key) {
-			return true
-		}
-	}
-	return false
+	return 0, false
 }
 
 // SuggestModel returns the canonical registry identifier closest to an

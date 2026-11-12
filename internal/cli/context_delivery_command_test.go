@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -549,6 +550,197 @@ func TestContextInjectCobraUsesPerTargetRemainingCapacity(t *testing.T) {
 	}
 	if result.Deliveries[0].PackID == result.Deliveries[1].PackID {
 		t.Fatal("same model with different remaining capacity shared a pack")
+	}
+}
+
+func writeOMPContextUsage(t *testing.T, path, provider, model string, tokens int, stamp time.Time) {
+	t.Helper()
+	line := fmt.Sprintf(`{"type":"message","timestamp":%q,"message":{"role":"assistant","provider":%q,"model":%q,"usage":{"input":%d,"cacheRead":7,"cacheWrite":5,"output":5,"totalTokens":%d}}}`,
+		stamp.UTC().Format(time.RFC3339Nano), provider, model, tokens-17, tokens)
+	if err := os.WriteFile(path, []byte(line+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestContextInjectCobraUsesProviderQualifiedNativeCapacity(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	oldJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSON })
+	deps := packInjectionTestDeps(t)
+	dir, err := deps.project(t.Context(), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(strings.Repeat("// qualified-context-source\n", 4000)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	panes := []tmux.Pane{
+		{ID: "%10", Index: 0, PID: 110, Type: tmux.AgentOmp},
+		{ID: "%11", Index: 1, PID: 111, Type: tmux.AgentOmp},
+		{ID: "%12", Index: 2, PID: 112, Type: tmux.AgentOmp},
+	}
+	deps.panes = func(string) ([]tmux.Pane, error) { return panes, nil }
+	targets := []struct {
+		provider, model      string
+		used, window, budget int
+	}{
+		{"anthropic", "claude-opus-4-6", 999000, 1000000, 780},
+		{"openrouter", "anthropic/claude-opus-4-6", 998000, 1000000, 1560},
+		{"google", "gemini-pro", 31000, 32000, 780},
+	}
+	paths := make(map[string]string)
+	for i, target := range targets {
+		path := filepath.Join(t.TempDir(), "transcript.jsonl")
+		writeOMPContextUsage(t, path, target.provider, target.model, target.used, time.Now().Add(-time.Second))
+		paths[panes[i].ID] = path
+	}
+	observed := 0
+	deps.usage = func(_ context.Context, pane tmux.Pane) (*ntmctx.TranscriptUsage, bool) {
+		observed++
+		usage, err := ntmctx.ReadLatestTranscriptUsage(paths[pane.ID])
+		if err != nil || usage == nil || usage.ContextWindow != 0 {
+			t.Fatalf("native OMP fixture did not require model resolution: %+v, %v", usage, err)
+		}
+		return usage, true
+	}
+	builder := ntmctx.NewContextPackBuilder(nil)
+	builder.ClearCache()
+	t.Cleanup(builder.ClearCache)
+	var builds []ntmctx.BuildOptions
+	deps.build = func(ctx context.Context, opts ntmctx.BuildOptions) (*ntmctx.ContextPackFull, error) {
+		builds = append(builds, opts)
+		return builder.Build(ctx, opts)
+	}
+	sent := make(map[string]string)
+	deps.send = func(_ context.Context, pane tmux.Pane, text string) error {
+		if len(builds) != len(panes) || observed != 2*len(panes) {
+			t.Fatalf("delivery preceded whole-batch native admission: builds=%d observations=%d", len(builds), observed)
+		}
+		if len(text) > targets[pane.Index].budget*4 || !strings.Contains(text, "qualified-context-source") {
+			t.Fatalf("incorrect or oversized payload for %s: %d bytes", pane.ID, len(text))
+		}
+		sent[pane.ID] = text
+		return nil
+	}
+	cmd := newContextInjectCmdWithDeps(&deps)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"demo", "--build", "--files", "main.go"})
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("qualified native context injection failed: %v: %s", err, out.String())
+	}
+	var result ContextInjectResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Success || len(sent) != len(panes) || len(result.Deliveries) != len(panes) || len(builds) != len(panes) {
+		t.Fatalf("incomplete qualified-model delivery: %+v", result)
+	}
+	for i, target := range targets {
+		model := target.provider + "/" + target.model
+		capacity := result.Deliveries[i].Capacity
+		if capacity == nil || capacity.Status != "measured" || capacity.BudgetSource != "remaining_context" ||
+			capacity.Model != model || capacity.ContextWindow != target.window || capacity.BudgetTokens != target.budget ||
+			capacity.UsedTokens == nil || *capacity.UsedTokens != target.used {
+			t.Fatalf("provider identity or measured capacity lost for %s: %+v", panes[i].ID, capacity)
+		}
+		if builds[i].Model != model || builds[i].ContextWindow != target.window || builds[i].MaxTokens != target.budget {
+			t.Fatalf("builder did not receive native model/window/budget: %+v", builds[i])
+		}
+	}
+	if result.Deliveries[0].PackID == result.Deliveries[1].PackID {
+		t.Fatal("different provider identities shared a context artifact")
+	}
+}
+
+func TestContextInjectCobraRejectsFullOrChangedQualifiedNativeSession(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	oldJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSON })
+	for _, scenario := range []string{"full", "filled_during_build", "provider_changed_during_build"} {
+		t.Run(scenario, func(t *testing.T) {
+			deps := packInjectionTestDeps(t)
+			dir, err := deps.project(t.Context(), "demo")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("// native-session-admission\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			panes := []tmux.Pane{
+				{ID: "%1", Index: 0, PID: 101, Type: tmux.AgentOmp},
+				{ID: "%2", Index: 1, PID: 102, Type: tmux.AgentOmp},
+			}
+			deps.panes = func(string) ([]tmux.Pane, error) { return panes, nil }
+			paths := map[string]string{"%1": filepath.Join(t.TempDir(), "first.jsonl"), "%2": filepath.Join(t.TempDir(), "second.jsonl")}
+			stamp := time.Now().Add(-time.Second)
+			writeOMPContextUsage(t, paths["%1"], "anthropic", "claude-opus-4-6", 998000, stamp)
+			used := 999000
+			if scenario == "full" {
+				used = 1000000
+			}
+			writeOMPContextUsage(t, paths["%2"], "anthropic", "claude-opus-4-6", used, stamp)
+			deps.usage = func(_ context.Context, pane tmux.Pane) (*ntmctx.TranscriptUsage, bool) {
+				usage, err := ntmctx.ReadLatestTranscriptUsage(paths[pane.ID])
+				if err != nil || usage == nil {
+					t.Fatalf("read native fixture: %+v, %v", usage, err)
+				}
+				return usage, true
+			}
+			builder := ntmctx.NewContextPackBuilder(nil)
+			builder.ClearCache()
+			t.Cleanup(builder.ClearCache)
+			builds := 0
+			deps.build = func(ctx context.Context, opts ntmctx.BuildOptions) (*ntmctx.ContextPackFull, error) {
+				builds++
+				pack, err := builder.Build(ctx, opts)
+				switch scenario {
+				case "filled_during_build":
+					writeOMPContextUsage(t, paths["%2"], "anthropic", "claude-opus-4-6", 1000000, stamp.Add(time.Millisecond))
+				case "provider_changed_during_build":
+					writeOMPContextUsage(t, paths["%2"], "openrouter", "anthropic/claude-opus-4-6", 999000, stamp.Add(time.Millisecond))
+				}
+				return pack, err
+			}
+			sends := 0
+			deps.send = func(context.Context, tmux.Pane, string) error { sends++; return nil }
+			cmd := newContextInjectCmdWithDeps(&deps)
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(io.Discard)
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			cmd.SetArgs([]string{"demo", "--build", "--files", "main.go"})
+			err = cmd.ExecuteContext(t.Context())
+			var result ContextInjectResult
+			if decodeErr := json.Unmarshal(out.Bytes(), &result); decodeErr != nil {
+				t.Fatalf("invalid refusal envelope: %v: %s", decodeErr, out.String())
+			}
+			if err == nil || result.Success || sends != 0 || len(result.Deliveries) != len(panes) || len(result.PanesInjected) != 0 {
+				t.Fatalf("full/changed native session admitted a partial batch: %+v; sends=%d err=%v", result, sends, err)
+			}
+			wantBuilds := len(panes)
+			if scenario == "full" {
+				wantBuilds = 0
+			}
+			if builds != wantBuilds {
+				t.Fatalf("native admission reached %d builds, want %d", builds, wantBuilds)
+			}
+			wantError := "no remaining context capacity"
+			if scenario == "provider_changed_during_build" {
+				wantError = "context session or model changed"
+			}
+			if !strings.Contains(err.Error(), wantError) {
+				t.Fatalf("refused for the wrong reason: %v; want %q", err, wantError)
+			}
+			for _, receipt := range result.Deliveries {
+				if receipt.Status != "not_attempted" {
+					t.Fatalf("refused native batch claimed a send: %+v", receipt)
+				}
+			}
+		})
 	}
 }
 
