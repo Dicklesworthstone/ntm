@@ -15,6 +15,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
+	"github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/models"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -78,10 +79,33 @@ func uniformContextRequests(panes []tmux.Pane, content string) []contextInjectio
 	return requests
 }
 
-// sendContextToPane preserves the pane identity observed before preparation.
-// The existing guarded protocol checks every chunk or paste and the final
-// Enter, including when the pane changes during the submission delay.
+// sendContextToPane uses the shared live gates and submission protocol while
+// preserving the pane identity observed before context preparation. The agent
+// guard also covers composer rescue keys after the initial prompt was staged.
 func sendContextToPane(ctx context.Context, pane tmux.Pane, content string) error {
+	target := dispatch.Target{
+		Pane: pane, Ref: pane.Ref(), Address: pane.Ref().Physical(), AgentType: pane.Type,
+	}
+	plan, err := (dispatch.DefaultProtocolPlanner{}).PlanDelivery(ctx, target, true)
+	if err != nil {
+		return dispatch.GuaranteeNoDeliveryActuation(err)
+	}
+	delivery := dispatch.Delivery{
+		Target: target, Message: content, Protocol: plan.Protocol,
+		EnterDelay: plan.EnterDelay, SecondEnterDelay: plan.SecondEnterDelay,
+	}
+	if plan.Protocol == dispatch.ProtocolDoubleEnter {
+		guarded, err := tmux.WithPaneMutationGuard(ctx, pane.ID, pane.PID)
+		if err != nil {
+			return dispatch.GuaranteeNoDeliveryActuation(err)
+		}
+		return (dispatch.TMUXDeliverer{}).Deliver(guarded, delivery)
+	}
+	// Explicit user/unknown targets keep their single-Enter, PID-bound
+	// transport. The agent-only mutation guard would reject their shell.
+	if _, err := dispatch.PrepareTMUXDelivery(ctx, delivery); err != nil {
+		return err
+	}
 	return tmux.DefaultClient.SendKeysForAgentIfCurrentContext(ctx, pane.ID, content, true, pane.Type, pane.PID, false)
 }
 
@@ -140,6 +164,9 @@ func dispatchContextRequests(ctx context.Context, session string, requests []con
 		}
 		if err := send(ctx, req.Pane, req.Content); err != nil {
 			receipts[i].Status = "uncertain"
+			if dispatch.IsGuaranteedNoDeliveryActuation(err) {
+				receipts[i].Status = "not_attempted"
+			}
 			receipts[i].Error = err.Error()
 			failures = append(failures, fmt.Errorf("pane %d (%s): %w", req.Pane.Index, req.Pane.ID, err))
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

@@ -209,10 +209,17 @@ func installContextMutationTMUX(t *testing.T, kind tmux.AgentType, afterWrite st
 	}
 
 	dir := t.TempDir()
+	capture := "❯ \n"
+	if kind == tmux.AgentCodex {
+		capture = "› \n"
+	}
 	for name, content := range map[string]string{
 		"pid":       "321\n",
 		"rotation":  "\n",
 		"command":   "agent\n",
+		"capture":   capture,
+		"enters":    "0\n",
+		"calls":     "",
 		"mutations": "",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0600); err != nil {
@@ -222,6 +229,7 @@ func installContextMutationTMUX(t *testing.T, kind tmux.AgentType, afterWrite st
 
 	script := `#!/bin/sh
 set -eu
+printf '%s\n' "$*" >> "$NTM_CONTEXT_GUARD_DIR/calls"
 record_input() {
   printf '%s\n' "$1" >> "$NTM_CONTEXT_GUARD_DIR/mutations"
   if [ ! -f "$NTM_CONTEXT_GUARD_DIR/first" ]; then
@@ -229,15 +237,39 @@ record_input() {
     case "$NTM_CONTEXT_GUARD_AFTER_WRITE" in
       replace) printf '999\n' > "$NTM_CONTEXT_GUARD_DIR/pid" ;;
       shell) printf 'bash\n' > "$NTM_CONTEXT_GUARD_DIR/command" ;;
+      codex_*) printf '› [Pasted 2 lines]\n' > "$NTM_CONTEXT_GUARD_DIR/capture" ;;
     esac
   fi
+  case "$1" in
+    *"'Enter'")
+      read -r enters < "$NTM_CONTEXT_GUARD_DIR/enters"
+      enters=$((enters + 1))
+      printf '%s\n' "$enters" > "$NTM_CONTEXT_GUARD_DIR/enters"
+      if [ "$NTM_CONTEXT_GUARD_AFTER_WRITE" = codex_rescue ] && [ "$enters" -ge 3 ]; then
+        printf '› \n' > "$NTM_CONTEXT_GUARD_DIR/capture"
+      fi
+      ;;
+  esac
 }
 case "$1" in
   load-buffer)
     cat > /dev/null
     ;;
   display-message)
-    printf '[%s]\n' "$NTM_CONTEXT_GUARD_TYPE"
+    case "$*" in
+      *'@ntm_rotation_token'*)
+        read -r rotation < "$NTM_CONTEXT_GUARD_DIR/rotation"
+        printf '[%s]\n' "$rotation"
+        ;;
+      *) printf '[%s]\n' "$NTM_CONTEXT_GUARD_TYPE" ;;
+    esac
+    ;;
+  capture-pane)
+    read -r enters < "$NTM_CONTEXT_GUARD_DIR/enters"
+    if [ "$NTM_CONTEXT_GUARD_AFTER_WRITE" = codex_rescue_replaced ] && [ "$enters" -ge 2 ]; then
+      printf '999\n' > "$NTM_CONTEXT_GUARD_DIR/pid"
+    fi
+    cat "$NTM_CONTEXT_GUARD_DIR/capture"
     ;;
   if-shell)
     if [ "$2" != "-F" ] || [ "$3" != "-t" ] || [ "$4" != "%41" ]; then
@@ -314,13 +346,13 @@ func TestContextInjectionRetainsPaneIdentityThroughPreparationAndSubmission(t *t
 			name:    "bracketed_paste",
 			kind:    tmux.AgentClaude,
 			content: "project context\nsecond line",
-			writes:  2,
+			writes:  3,
 		},
 		{
 			name:    "literal_chunks",
 			kind:    tmux.AgentGrok,
 			content: strings.Repeat("x", 8193),
-			writes:  4,
+			writes:  5,
 		},
 	}
 	scenarios := []struct {
@@ -402,6 +434,9 @@ func TestContextInjectionRetainsPaneIdentityThroughPreparationAndSubmission(t *t
 								wantStatus := "delivered"
 								if scenario.fail {
 									wantStatus = "uncertain"
+									if scenario.name == "rotation_during_preparation" {
+										wantStatus = "not_attempted"
+									}
 								}
 								if result.Deliveries[0].Status != wantStatus {
 									t.Fatalf("wrong delivery receipt: %+v", result.Deliveries[0])
@@ -426,7 +461,11 @@ func TestContextInjectionRetainsPaneIdentityThroughPreparationAndSubmission(t *t
 								t.Fatalf("wrong delivery error: %v; injected=%v", deliveryErr, injected)
 							}
 							if scenario.fail {
-								if len(injected) != 0 || !strings.Contains(failureText, tmux.ErrPaneIdentityChanged.Error()) {
+								wantError := tmux.ErrPaneIdentityChanged.Error()
+								if scenario.name == "rotation_during_preparation" {
+									wantError = "rotation_pending"
+								}
+								if len(injected) != 0 || !strings.Contains(failureText, wantError) {
 									t.Fatalf("changed target was reported delivered: injected=%v error=%q", injected, failureText)
 								}
 							} else if !reflect.DeepEqual(injected, []int{1}) {
@@ -451,7 +490,7 @@ func TestContextInjectionRetainsPaneIdentityThroughPreparationAndSubmission(t *t
 							if got := strings.Count(log, "\n"); got != wantWrites {
 								t.Fatalf("accepted %d input mutations, want %d: %s", got, wantWrites, log)
 							}
-							wantEnters := 1
+							wantEnters := 2
 							if scenario.fail {
 								wantEnters = 0
 							}
@@ -845,5 +884,214 @@ func TestContextInjectCobraRechecksWholeStoredPackBatch(t *testing.T) {
 				t.Fatal("capacity refusal rewrote the stored artifact")
 			}
 		})
+	}
+}
+
+func TestContextInjectCobraUsesSharedDeliveryGates(t *testing.T) {
+	oldJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSON })
+
+	for _, mode := range []string{"files", "build", "pack"} {
+		t.Run(mode, func(t *testing.T) {
+			for _, tc := range []struct {
+				name      string
+				kind      tmux.AgentType
+				capture   string
+				wantError string
+			}{
+				{
+					name: "claude trust", kind: tmux.AgentClaude,
+					capture:   "Quick safety check: Is this a project you created or one you trust?\n❯ No, exit\n  Yes, I trust this folder\nEnter to confirm · Esc to cancel\n",
+					wantError: "PANE_INTERACTIVE_GATE",
+				},
+				{
+					name: "codex trust", kind: tmux.AgentCodex,
+					capture:   "Do you trust the contents of this directory?\n› 1. Yes, continue\n  2. No, quit\n",
+					wantError: "composer not visible",
+				},
+				{
+					name: "antigravity trust", kind: tmux.AgentAntigravity,
+					capture:   "Do you trust the contents of this project?\n> Yes, I trust this folder\n  No, exit\n↑/↓ Navigate · enter Confirm\n",
+					wantError: "PANE_INTERACTIVE_GATE",
+				},
+				{
+					name: "grok trust", kind: tmux.AgentGrok,
+					capture:   "Grok Build may run or modify contents in this directory,\nposing security risks.\nYes, proceed  y\nNo, quit  n\n",
+					wantError: "PANE_INTERACTIVE_GATE",
+				},
+				{
+					name: "codex transcript history", kind: tmux.AgentCodex,
+					capture:   "› an earlier user prompt\nBrowsing transcript · ↑↓/jk scroll · ←→/hl prompts · ⌃t details · ↵ rewind · esc back\n",
+					wantError: "Enter would rewind",
+				},
+				{name: "claude initializing", kind: tmux.AgentClaude, capture: "Loading agent configuration...\n", wantError: "composer not visible"},
+				{name: "omp initializing", kind: tmux.AgentOmp, wantError: "composer not drawn yet"},
+				{name: "ready claude", kind: tmux.AgentClaude, capture: "❯ \n"},
+				{name: "ready codex", kind: tmux.AgentCodex, capture: "› \n"},
+				{name: "ready grok", kind: tmux.AgentGrok, capture: "❯ \n"},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					dir, mutationsPath := installContextMutationTMUX(t, tc.kind, "")
+					if err := os.WriteFile(filepath.Join(dir, "capture"), []byte(tc.capture), 0600); err != nil {
+						t.Fatal(err)
+					}
+					pane := tmux.Pane{ID: "%41", Index: 1, PID: 321, Type: tc.kind, Command: "agent", Width: 120}
+					deps := packInjectionTestDeps(t)
+					deps.panes = func(string) ([]tmux.Pane, error) { return []tmux.Pane{pane}, nil }
+					deps.usage = nil
+					deps.send = defaultContextInjectDeps(io.Discard).send
+					deps.load = func(id string) (*state.ContextPack, error) {
+						return &state.ContextPack{
+							ID: id, AgentType: state.AgentType(tc.kind.Canonical()),
+							RenderedPrompt: "new project context\nsecond line",
+						}, nil
+					}
+					args := []string{"demo"}
+					switch mode {
+					case "files":
+						projectDir, err := deps.project(t.Context(), "demo")
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := os.WriteFile(filepath.Join(projectDir, "context.txt"), []byte("new project context\nsecond line"), 0600); err != nil {
+							t.Fatal(err)
+						}
+						args = append(args, "--files", "context.txt")
+					case "build":
+						args = append(args, "--build", "--files", "main.go")
+					case "pack":
+						args = append(args, "--pack", "saved-context")
+					}
+
+					cmd := newContextInjectCmdWithDeps(&deps)
+					var stdout bytes.Buffer
+					cmd.SetOut(&stdout)
+					cmd.SetErr(io.Discard)
+					cmd.SilenceErrors, cmd.SilenceUsage = true, true
+					cmd.SetArgs(args)
+					runErr := cmd.ExecuteContext(t.Context())
+					var result ContextInjectResult
+					if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+						t.Fatalf("invalid command result: %v; output=%q", err, stdout.String())
+					}
+					mutations, err := os.ReadFile(mutationsPath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					calls, err := os.ReadFile(filepath.Join(dir, "calls"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(result.Deliveries) != 1 || result.Deliveries[0].Target != pane.ID {
+						t.Fatalf("lost physical target receipt: %+v", result)
+					}
+					if !strings.Contains(string(calls), "capture-pane") {
+						t.Fatalf("production sender never inspected the input surface: %s", calls)
+					}
+					if tc.wantError != "" {
+						if runErr == nil || result.Success || len(result.PanesInjected) != 0 ||
+							result.Deliveries[0].Status != "not_attempted" || !strings.Contains(result.Error, tc.wantError) {
+							t.Fatalf("unsafe context input was not refused: result=%+v error=%v", result, runErr)
+						}
+						if len(mutations) != 0 || strings.Contains(string(calls), "load-buffer") {
+							t.Fatalf("refused context reached transport: mutations=%s calls=%s", mutations, calls)
+						}
+						return
+					}
+					if runErr != nil || !result.Success || !reflect.DeepEqual(result.PanesInjected, []int{1}) ||
+						result.Deliveries[0].Status != "delivered" {
+						t.Fatalf("ready agent did not receive context: result=%+v error=%v", result, runErr)
+					}
+					if strings.Contains(string(mutations), "unguarded:") || strings.Count(string(mutations), "'Enter'") != 2 {
+						t.Fatalf("context bypassed the guarded agent submission protocol: %s", mutations)
+					}
+					for _, key := range []string{"'Escape'", "'C-u'", "'C-c'", "'C-e'"} {
+						if strings.Contains(string(mutations), key) {
+							t.Fatalf("context unexpectedly cleared or interrupted the composer: %s", mutations)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestContextInjectCobraVerifiesSubmissionWithPaneGuard(t *testing.T) {
+	oldJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSON })
+
+	for _, tc := range []struct {
+		name       string
+		wantError  string
+		wantEnters int
+	}{
+		{name: "codex_rescue", wantEnters: 3},
+		{name: "codex_rescue_replaced", wantError: tmux.ErrPaneIdentityChanged.Error(), wantEnters: 2},
+		{name: "codex_stuck", wantError: "submission unconfirmed", wantEnters: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, mutationsPath := installContextMutationTMUX(t, tmux.AgentCodex, tc.name)
+			pane := tmux.Pane{ID: "%41", Index: 1, PID: 321, Type: tmux.AgentCodex, Command: "codex", Width: 120}
+			deps := packInjectionTestDeps(t)
+			deps.panes = func(string) ([]tmux.Pane, error) { return []tmux.Pane{pane}, nil }
+			deps.usage = nil
+			deps.send = defaultContextInjectDeps(io.Discard).send
+			deps.load = func(id string) (*state.ContextPack, error) {
+				return &state.ContextPack{ID: id, AgentType: "cod", RenderedPrompt: "project context\nsecond line"}, nil
+			}
+			cmd := newContextInjectCmdWithDeps(&deps)
+			var stdout bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetErr(io.Discard)
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			cmd.SetArgs([]string{"demo", "--pack", "saved-context"})
+			runErr := cmd.ExecuteContext(t.Context())
+			var result ContextInjectResult
+			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+				t.Fatalf("invalid command result: %v; output=%q", err, stdout.String())
+			}
+			if len(result.Deliveries) != 1 {
+				t.Fatalf("missing submission receipt: %+v", result)
+			}
+			if tc.wantError == "" {
+				if runErr != nil || !result.Success || result.Deliveries[0].Status != "delivered" {
+					t.Fatalf("stranded context was not submitted: result=%+v error=%v", result, runErr)
+				}
+			} else if runErr == nil || result.Success || len(result.PanesInjected) != 0 ||
+				result.Deliveries[0].Status != "uncertain" || !strings.Contains(result.Error, tc.wantError) {
+				t.Fatalf("unconfirmed context was reported delivered: result=%+v error=%v", result, runErr)
+			}
+			mutations, err := os.ReadFile(mutationsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(mutations), "unguarded:") || strings.Count(string(mutations), "'Enter'") != tc.wantEnters {
+				t.Fatalf("submission rescue lost its original pane binding: %s", mutations)
+			}
+			if strings.Count(string(mutations), "'paste-buffer'") != 1 {
+				t.Fatalf("submission verification replayed the context payload: %s", mutations)
+			}
+		})
+	}
+}
+
+func TestContextRobotInjectionPreservesExplicitShellProtocol(t *testing.T) {
+	dir, mutationsPath := installContextMutationTMUX(t, tmux.AgentUser, "")
+	if err := os.WriteFile(filepath.Join(dir, "command"), []byte("bash\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	pane := tmux.Pane{ID: "%41", Index: 0, PID: 321, Type: tmux.AgentUser, Command: "bash"}
+	injected, err := injectContextIntoPanes(t.Context(), "demo", []tmux.Pane{pane}, "explicit shell input", false, sendContextToPane)
+	if err != nil || !reflect.DeepEqual(injected, []int{0}) {
+		t.Fatalf("explicit shell target was blocked: injected=%v error=%v", injected, err)
+	}
+	mutations, err := os.ReadFile(mutationsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(mutations), "unguarded:") || strings.Count(string(mutations), "'Enter'") != 1 {
+		t.Fatalf("explicit shell lost its single-Enter identity guard: %s", mutations)
 	}
 }
