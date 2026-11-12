@@ -2201,3 +2201,40 @@ func TestPiManagedSpawnAndAddPreserveDistinctSessionBindings(t *testing.T) {
 		})
 	}
 }
+
+func TestSpawnWindsurfIDEOnlyHarnessAndRobotSpawnFlagParity(t *testing.T) {
+	origCfg := cfg
+	t.Cleanup(func() { cfg = origCfg })
+	cfg = config.Default()
+
+	_, _, err := spawnAgentCommandTemplate(AgentTypeWindsurf, nil, "")
+	if err == nil || !strings.Contains(err.Error(), config.ErrCodeIDEOnlyHarness) {
+		t.Fatalf("expected default windsurf template to fail with %s, got %v", config.ErrCodeIDEOnlyHarness, err)
+	}
+	code, _ := classifyRobotExecuteError(err)
+	if code != "INVALID_FLAG" {
+		t.Fatalf("classifyRobotExecuteError(windsurf) = %q, want INVALID_FLAG", code)
+	}
+
+	cfg.Agents.Windsurf = `windsurf-cli --headless{{if .Model}} --model {{shellQuote .Model}}{{end}}`
+	tmpl, _, err := spawnAgentCommandTemplate(AgentTypeWindsurf, nil, "")
+	if err != nil || !strings.Contains(tmpl, "windsurf-cli") {
+		t.Fatalf("expected custom terminal windsurf command to succeed, got tmpl=%q err=%v", tmpl, err)
+	}
+
+	// Verify --robot-spawn registers terminal harness parity flags on rootCmd.
+	for _, flagName := range []string{"spawn-ollama", "spawn-aider", "spawn-cursor", "spawn-pi", "spawn-windsurf"} {
+		if rootCmd.Flags().Lookup(flagName) == nil {
+			t.Fatalf("rootCmd missing --%s flag", flagName)
+		}
+	}
+
+	// Verify Ollama model tags with colons survive parseTypedAgentSpec.
+	spec, err := parseTypedAgentSpec("2:qwen2.5-coder:32b", AgentTypeOllama)
+	if err != nil {
+		t.Fatalf("parseTypedAgentSpec(ollama, 2:qwen2.5-coder:32b): %v", err)
+	}
+	if spec.Count != 2 || spec.Model != "qwen2.5-coder:32b" {
+		t.Fatalf("parseTypedAgentSpec(ollama) = %+v, want count=2 model=qwen2.5-coder:32b", spec)
+	}
+}

@@ -18,6 +18,7 @@ import (
 
 	approvalpkg "github.com/Dicklesworthstone/ntm/internal/approval"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
@@ -40,6 +41,7 @@ func (s *Server) registerSafetyRoutes(r chi.Router) {
 		r.With(s.RequirePermission(PermSystemConfig)).Post("/reset", s.handlePolicyResetV1)
 		r.With(s.RequirePermission(PermReadHealth)).Get("/automation", s.handlePolicyAutomationGetV1)
 		r.With(s.RequirePermission(PermSystemConfig)).Put("/automation", s.handlePolicyAutomationUpdateV1)
+		r.With(s.RequirePermission(PermSystemConfig)).Get("/decisions", s.handlePolicyDecisionsV1)
 	})
 
 	// Approvals API - dangerous action gating
@@ -1082,6 +1084,24 @@ func approvalIdentity(r *http.Request) string {
 	return "unknown"
 }
 
+func (s *Server) httpActorProvenance(r *http.Request) string {
+	if rc := RoleFromContext(r.Context()); rc != nil && rc.UserID != "" && rc.UserID != "anonymous" {
+		mode := string(s.auth.Mode)
+		if mode == "" {
+			mode = string(AuthModeLocal)
+		}
+		return fmt.Sprintf("auth=%s;principal=%s", mode, strings.NewReplacer(";", "_", "=", "_").Replace(rc.UserID))
+	}
+	parts := []string{"http_local=1", fmt.Sprintf("uid=%d", os.Getuid())}
+	if slbSess := strings.TrimSpace(r.Header.Get("X-SLB-Session-ID")); slbSess != "" {
+		parts = append(parts, "slb_session="+strings.NewReplacer(";", "_", "=", "_").Replace(slbSess))
+	}
+	if pane := strings.TrimSpace(r.Header.Get("X-TMUX-Pane")); pane != "" {
+		parts = append(parts, "pane="+strings.NewReplacer(";", "_", "=", "_").Replace(pane))
+	}
+	return strings.Join(parts, ";")
+}
+
 // writeApprovalActionError maps engine failures onto the HTTP statuses the
 // approval API has always used: unknown ID → 404, two-person-rule violation →
 // 403, already-decided/expired/raced → 409, anything else → 500.
@@ -1281,11 +1301,12 @@ func (s *Server) handleApprovalApproveV1(w http.ResponseWriter, r *http.Request)
 	}
 
 	approver := approvalIdentity(r)
+	approveCtx := approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r))
 
 	// The engine enforces the guarded pending->approved transition (terminal
 	// state checked before expiry so a late retry cannot rewrite a resolved
 	// record), expiry, and the SLB two-person rule against the durable record.
-	if err := eng.Approve(r.Context(), id, approver); err != nil {
+	if err := eng.Approve(approveCtx, id, approver); err != nil {
 		writeApprovalActionError(w, err, reqID)
 		return
 	}
@@ -1433,7 +1454,7 @@ func (s *Server) handleApprovalRequestV1(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	record, err := eng.Request(r.Context(), approvalpkg.RequestParams{
+	record, err := eng.Request(approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r)), approvalpkg.RequestParams{
 		Action:      req.Action,
 		Resource:    req.Resource,
 		Reason:      req.Reason,
@@ -1658,4 +1679,50 @@ func safetyEscapeYAMLDoubleQuote(s string) string {
 	s = strings.ReplaceAll(s, "\r", "\\r")
 	s = strings.ReplaceAll(s, "\t", "\\t")
 	return s
+}
+
+// handlePolicyDecisionsV1 handles GET /api/v1/policy/decisions.
+func (s *Server) handlePolicyDecisionsV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	if s.stateStore == nil {
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeServiceUnavail, "state store not available", nil, reqID)
+		return
+	}
+
+	q := r.URL.Query()
+	limit := 100
+	if rawLimit := strings.TrimSpace(q.Get("limit")); rawLimit != "" {
+		parsed, err := strconv.Atoi(rawLimit)
+		if err != nil || parsed <= 0 {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid limit parameter", nil, reqID)
+			return
+		}
+		limit = parsed
+	}
+
+	output, err := robot.GetPolicyDecisionsForStore(s.stateStore, robot.PolicyDecisionsOptions{
+		EntityType: strings.TrimSpace(q.Get("entity_type")),
+		EntityID:   strings.TrimSpace(q.Get("entity_id")),
+		Limit:      limit,
+	})
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
+	if !output.Success {
+		writeErrorResponse(w, http.StatusInternalServerError, output.ErrorCode, output.Error, nil, reqID)
+		return
+	}
+
+	data, err := toJSONMap(output)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to encode policy decisions", map[string]interface{}{
+			"error": err.Error(),
+		}, reqID)
+		return
+	}
+	if reqID != "" {
+		data["request_id"] = reqID
+	}
+	writeJSON(w, http.StatusOK, data)
 }

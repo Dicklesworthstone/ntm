@@ -907,7 +907,14 @@ func spawnAgentCommandTemplate(agentType AgentType, pluginMap map[string]plugins
 	case AgentTypeCursor:
 		return cfg.Agents.Cursor, nil, nil
 	case AgentTypeWindsurf:
-		return cfg.Agents.Windsurf, nil, nil
+		configured := ""
+		if cfg != nil {
+			configured = cfg.Agents.Windsurf
+		}
+		if err := config.ValidateWindsurfTerminalHarness(configured); err != nil {
+			return "", nil, markCLIInvalidInput(err)
+		}
+		return configured, nil, nil
 	case AgentTypeAider:
 		return cfg.Agents.Aider, nil, nil
 	case AgentTypeOpencode:
@@ -2202,7 +2209,7 @@ Examples:
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeClaude, &agentSpecs), "cc", "Claude agents (N, N:model, N:model:effort, or N:model@effort)")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeCodex, &agentSpecs), "cod", "Codex agents (N, N:model, N:model:effort, or N:model@effort)")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeGemini, &agentSpecs), "gmi", "Gemini agents (N or N:model, model charset: a-zA-Z0-9._/@:+-)")
-	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeAntigravity, &agentSpecs), "agy", "Antigravity (agy) agents (N; model is pinned to Gemini 4 Argon (High))")
+	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeAntigravity, &agentSpecs), "agy", fmt.Sprintf("Antigravity (agy) agents (N; default model %s via [models] default_antigravity)", models.DefaultAntigravityModel))
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeGrok, &agentSpecs), "grok", "Grok Build agents (N, N:model, N:model:effort, or N:model@effort)")
 	cmd.Flags().IntVar(&localCount, "local", 0, "Local agents via Ollama (alias: --ollama)")
 	cmd.Flags().IntVar(&ollamaCount, "ollama", 0, "Alias for --local (explicit Ollama)")

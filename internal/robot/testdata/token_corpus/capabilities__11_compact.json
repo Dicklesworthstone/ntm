@@ -1560,6 +1560,19 @@
       "schema_source": "built_in"
     },
     {
+      "name": "policy-decisions",
+      "flag": "--robot-policy-decisions",
+      "category": "utility",
+      "summary": "List durable policy and operator audit decisions from the runtime state store.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:policy-decisions:v1",
+      "schema_type": "policy_decisions",
+      "schema_source": "built_in"
+    },
+    {
       "name": "profile-list",
       "flag": "--robot-profile-list",
       "category": "utility",

@@ -105,6 +105,7 @@ var SchemaPagination = map[string]SchemaPaginationFlag{
 	"palette":          {Reason: "bounded: fixed palette command catalog"},
 	"pane_address":     {Reason: "bounded: address forms for one pane"},
 	"plan":             {Reason: "bounded: execution tracks for one plan request"},
+	"policy_decisions": {Reason: "bounded: recent audit decisions capped by --limit truncation"},
 	"probe":            {Reason: "bounded: probe findings for one session"},
 	"productivity":     {Reason: "bounded: per-agent productivity rows for one window"},
 	"rch_workers":      {Reason: "bounded: one row per remote compilation worker"},

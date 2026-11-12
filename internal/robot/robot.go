@@ -1344,7 +1344,8 @@ func GetMSShow(id string) (*MSShowOutput, error) {
 	data, err := adapter.Show(ctx, id)
 	if err != nil {
 		code := "MS_SHOW_FAILED"
-		if strings.Contains(err.Error(), "not found") {
+		lowerErr := strings.ToLower(err.Error())
+		if strings.Contains(lowerErr, "not found") || strings.Contains(lowerErr, "not_found") || strings.Contains(lowerErr, "no such skill") {
 			code = "NOT_FOUND"
 		}
 		output.RobotResponse = NewErrorResponse(
@@ -1421,6 +1422,13 @@ func currentProjectionStore() *state.Store {
 	projectionStoreMu.RLock()
 	defer projectionStoreMu.RUnlock()
 	return projectionStore
+}
+
+func resolveProjectionStore(explicit *state.Store, hasExplicit bool) *state.Store {
+	if hasExplicit {
+		return explicit
+	}
+	return currentProjectionStore()
 }
 
 // SessionInfo contains machine-readable session information
@@ -2067,7 +2075,7 @@ func GetStatusWithOptions(opts PaginationOptions) (*StatusOutput, error) {
 		cfg = config.Default()
 	}
 
-	if store := currentProjectionStore(); store != nil {
+	if store := opts.resolveStore(); store != nil {
 		output, err := buildProjectionBackedStatus(store, cfg, opts)
 		if err == nil {
 			return output, nil
@@ -3753,6 +3761,14 @@ func detectModel(agentType, title string) string {
 		return "o3"
 	case strings.Contains(titleLower, "o4-mini"):
 		return "o4-mini"
+	case strings.Contains(titleLower, "grok-4-fast"):
+		return "grok-4-fast"
+	case strings.Contains(titleLower, "grok-4.6") || strings.Contains(titleLower, "grok-4-6"):
+		return "grok-4.6"
+	case strings.Contains(titleLower, "grok-4"):
+		return "grok-4"
+	case strings.Contains(titleLower, "grok-3"):
+		return "grok-3"
 	case strings.Contains(titleLower, "flash"):
 		return "flash"
 	case strings.Contains(titleLower, "pro"):
@@ -3766,8 +3782,12 @@ func detectModel(agentType, title string) string {
 		return "sonnet" // Default Claude model
 	case "codex":
 		return "gpt4" // Default Codex model
-	case "gemini", "antigravity":
-		return "gemini" // Default Gemini-class model (agy shares Gemini models)
+	case "gemini":
+		return "gemini" // Default Gemini-class model
+	case "antigravity":
+		return models.DefaultAntigravityModel
+	case "grok":
+		return "grok-4"
 	default:
 		return "unknown"
 	}
@@ -4785,7 +4805,8 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 		return output, nil
 	}
 
-	if store := currentProjectionStore(); store != nil {
+	store := opts.resolveStore()
+	if store != nil {
 		projectionOutput, err := buildProjectionBackedSnapshot(store, cfg, opts, output, sessions, projectKey)
 		if err == nil {
 			return projectionOutput, nil
@@ -4947,12 +4968,12 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 		}
 	}
 
-	if incidents, err := snapshotIncidentsFromStore(currentProjectionStore()); err == nil {
+	if incidents, err := snapshotIncidentsFromStore(store); err == nil {
 		output.ActiveIncidents = incidents
 	} else {
 		output.Alerts = append(output.Alerts, fmt.Sprintf("failed to list active incidents: %v", err))
 	}
-	if store := currentProjectionStore(); store != nil {
+	if store != nil {
 		output.Work = verifiedRobotWork(store, projectKey, BeadLimit)
 		if rows, err := store.GetAllSourceHealth(); err == nil {
 			applySnapshotSourceHealth(output, rows)
@@ -6030,10 +6051,13 @@ func modelNameForPane(pane tmux.Pane, cfg *config.Config) string {
 			if cfg.Models.DefaultCodex != "" {
 				return cfg.Models.DefaultCodex
 			}
-		case tmux.AgentGemini, tmux.AgentAntigravity:
-			// agy (Antigravity) shares Gemini-class models.
+		case tmux.AgentGemini:
 			if cfg.Models.DefaultGemini != "" {
 				return cfg.Models.DefaultGemini
+			}
+		case tmux.AgentAntigravity:
+			if cfg.Models.DefaultAntigravity != "" {
+				return cfg.Models.DefaultAntigravity
 			}
 		case tmux.AgentGrok:
 			if cfg.Models.DefaultGrok != "" {
@@ -6066,8 +6090,10 @@ func modelNameForPane(pane tmux.Pane, cfg *config.Config) string {
 		return config.ClaudeEstimationModel
 	case tmux.AgentCodex:
 		return defaults.DefaultCodex
-	case tmux.AgentGemini, tmux.AgentAntigravity:
+	case tmux.AgentGemini:
 		return defaults.DefaultGemini
+	case tmux.AgentAntigravity:
+		return defaults.DefaultAntigravity
 	case tmux.AgentGrok:
 		return defaults.DefaultGrok
 	case tmux.AgentCursor:
@@ -6234,6 +6260,10 @@ type SendOptions struct {
 	// its input. It is request-local policy,
 	// never part of the caller's durable command identity or serialized options.
 	MessageGuard func(context.Context, string, []tmux.Pane) error `json:"-"`
+	Store        *state.Store                                     `json:"-"`
+	// ExplicitStore binds durable idempotency to Store (even when nil) rather
+	// than the process-global projection store.
+	ExplicitStore bool `json:"-"`
 
 	// CASS injection options
 	WithCASS     bool          // Enable CASS context injection
@@ -6987,7 +7017,7 @@ func robotDispatchPrepareErrorResponse(err error) RobotResponse {
 	switch dispatchErr.Code {
 	case dispatchsvc.ErrPromptDeliveryUnsupported:
 		errorCode = ErrCodeNotImplemented
-		hint = agent.GrokPromptDeliveryCapabilityHint
+		hint = agent.PromptDeliveryCapabilityHint
 	case dispatchsvc.ErrInvalidRequest, dispatchsvc.ErrInvalidSelector, dispatchsvc.ErrNoTargets:
 		errorCode = ErrCodeInvalidFlag
 		hint = "Check pane selectors, agent filters, delay, and message options"
@@ -7007,6 +7037,10 @@ func robotPreparedDispatchRequest(allPanes, targetPanes []tmux.Pane, opts SendOp
 			// A title-only omp pane must still plan the omp composer gate,
 			// Ctrl+C clear, and submission verifier.
 			planningPanes[i].Type = tmux.AgentOmp
+		case "oc":
+			planningPanes[i].Type = tmux.AgentOpencode
+		case "antigravity":
+			planningPanes[i].Type = tmux.AgentAntigravity
 		}
 	}
 	selectors := make([]string, 0, len(targetPanes))
@@ -7339,12 +7373,14 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 	var owned *durableOperation
 	if trace.IdempotencyKey != "" && !opts.DryRun {
 		claim := claimRobotOperation(operationClaimRequest{
-			Kind:        state.OperationKindSend,
-			OperationID: trace.IdempotencyKey,
-			Session:     opts.Session,
-			BindingHash: sendOperationBindingHash(opts),
-			Payload:     messageToSend,
-			Targets:     output.Targets,
+			Kind:          state.OperationKindSend,
+			OperationID:   trace.IdempotencyKey,
+			Session:       opts.Session,
+			BindingHash:   sendOperationBindingHash(opts),
+			Payload:       messageToSend,
+			Targets:       output.Targets,
+			Store:         opts.Store,
+			ExplicitStore: opts.ExplicitStore,
 		})
 		switch claim.Verdict {
 		case operationRefused:
@@ -7975,12 +8011,19 @@ func RefreshNormalizedProjection(ctx context.Context, store *state.Store, projec
 	if tmuxErr != nil {
 		return fmt.Errorf("collect tmux projection: %w", tmuxErr)
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if err := persistNormalizedProjection(store, signals, tmuxSnapshot, normalizedProjectionStaleAfter); err != nil {
 		return err
 	}
 
 	publishNormalizedAttentionSignals(GetAttentionFeed(), store, sessionName, signals)
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// The work just collected is source-verified. Publish it as the project's
 	// durable observation so the snapshot and status that follow read it back
@@ -10231,7 +10274,15 @@ type TerseOutput struct {
 
 // GetTerse retrieves ultra-compact single-line state for token-constrained scenarios.
 func GetTerse(cfg *config.Config) (*TerseOutput, error) {
-	snapshot, err := GetSnapshot(cfg)
+	return GetTerseForStore(currentProjectionStore(), cfg)
+}
+
+// GetTerseForStore returns compact state using an explicit projection store.
+func GetTerseForStore(store *state.Store, cfg *config.Config) (*TerseOutput, error) {
+	snapshot, err := GetSnapshotWithOptions(cfg, PaginationOptions{
+		Store:         store,
+		ExplicitStore: true,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -10755,6 +10806,13 @@ func ompStatusBarUsage(agentType, cleanCapture string, capturedAt time.Time) (*n
 	return ntmctx.OmpStatusBarUsage(cleanCapture, capturedAt)
 }
 
+func opencodeStatusBarUsage(agentType, cleanCapture string, fallbackLimit int, capturedAt time.Time) (*ntmctx.TranscriptUsage, bool) {
+	if agent.AgentType(agentType).Canonical() != agent.AgentTypeOpencode {
+		return nil, false
+	}
+	return ntmctx.OpencodeStatusBarUsage(cleanCapture, fallbackLimit, capturedAt)
+}
+
 // GetContext retrieves context window usage information for all agents in a session.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetContext(session string, lines int) (*ContextOutput, error) {
@@ -10813,6 +10871,11 @@ func GetContext(session string, lines int) (*ContextOutput, error) {
 		scrollback, _ := tmux.CapturePaneOutput(pane.ID, lines)
 		cleanText := stripANSI(scrollback)
 		state := determineState(cleanText, agentType)
+		if agentType == "grok" && paneLaunchModel(pane.ID) == "" {
+			if statusModel := agent.GrokStatusLineModel(cleanText); statusModel != "" {
+				model = statusModel
+			}
+		}
 
 		charCount := len(cleanText)
 		// Rough token estimate: ~4 chars per token
@@ -10859,6 +10922,13 @@ func GetContext(session string, lines int) (*ContextOutput, error) {
 			agentInfo.ContextLimit = gauge.ContextWindow
 			// Multiply before dividing so a whole-percent gauge reads back
 			// exactly ("7", not "7.000000000000001").
+			agentInfo.UsagePercent = float64(gauge.Tokens) * 100 / float64(gauge.ContextWindow)
+			agentInfo.Confidence = "high"
+		} else if gauge, ok := opencodeStatusBarUsage(agentType, cleanText, contextLimit, output.CapturedAt); ok {
+			agentInfo.Source = "status_bar"
+			agentInfo.EstimatedTokens = gauge.Tokens
+			agentInfo.WithOverhead = gauge.Tokens
+			agentInfo.ContextLimit = gauge.ContextWindow
 			agentInfo.UsagePercent = float64(gauge.Tokens) * 100 / float64(gauge.ContextWindow)
 			agentInfo.Confidence = "high"
 		} else if usage, ok := paneTranscripts[pane.ID]; ok {
@@ -10936,9 +11006,11 @@ func PrintContext(session string, lines int) error {
 
 // ActivityOptions holds options for the activity API.
 type ActivityOptions struct {
-	Session    string   // Required: session name
-	Panes      []string // Optional: filter to specific pane indices
-	AgentTypes []string // Optional: filter to specific agent types (claude, codex, antigravity, grok, gemini)
+	Session       string       // Required: session name
+	Panes         []string     // Optional: filter to specific pane indices
+	AgentTypes    []string     // Optional: filter to specific agent types (claude, codex, antigravity, grok, gemini)
+	Store         *state.Store `json:"-"`
+	ExplicitStore bool         `json:"-"`
 }
 
 // ActivityOutput represents the output for --robot-activity
@@ -11265,7 +11337,8 @@ func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
 			ObservationFreshness:  string(paneObservation.Current.Freshness),
 			ObservationConfidence: paneObservation.Current.Confidence,
 			SafeToDispatch:        paneObservation.SafeToDispatch(),
-			OutputSequence: observeOutputSequence(
+			OutputSequence: observeOutputSequenceWithStore(
+				resolveProjectionStore(opts.Store, opts.ExplicitStore),
 				opts.Session, pane.ID, paneObservation.RawOutput,
 				paneObservation.Current.ObservedAt,
 			),

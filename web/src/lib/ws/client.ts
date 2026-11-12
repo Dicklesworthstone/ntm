@@ -8,7 +8,12 @@
  * - Integration with TanStack Query for cache updates
  */
 
-import { getBaseUrl, getConnectionConfig } from "../api/client";
+import {
+  apiRequestSignal,
+  getBaseUrl,
+  getConnectionConfig,
+  handleUnauthorizedRedirect,
+} from "../api/client";
 
 // WebSocket message types from server
 export type WSMessageType =
@@ -62,6 +67,60 @@ export type EventHandler = (event: WSEvent) => void;
 export type StateHandler = (state: ConnectionState) => void;
 export type ErrorHandler = (error: WSError) => void;
 
+export interface PaneOutputEventData {
+  lines?: string[];
+  output?: string;
+  line?: string;
+  seq?: number;
+  ts?: string;
+  is_full?: boolean;
+  full?: boolean;
+}
+
+/**
+ * Apply a `pane.output` WebSocket payload from `PaneStreamer` to the current
+ * line buffer. Full snapshots (`is_full: true`) replace the buffer; incremental
+ * deltas (`is_full: false` or omitted) append lines bounded by `maxLines`.
+ */
+export function applyPaneOutputEvent(
+  currentLines: string[],
+  data: unknown,
+  maxLines = 2000
+): string[] {
+  const limit = Math.max(1, maxLines);
+  let incomingLines: string[] = [];
+  let isFull = false;
+
+  if (typeof data === "string") {
+    incomingLines = data.length > 0 ? data.split("\n") : [];
+  } else if (data && typeof data === "object") {
+    const record = data as PaneOutputEventData;
+    isFull = record.is_full === true || record.full === true;
+    if (Array.isArray(record.lines)) {
+      incomingLines = record.lines.map((line) => String(line));
+    } else if (typeof record.output === "string") {
+      incomingLines = record.output.length > 0 ? record.output.split("\n") : [];
+    } else if (typeof record.line === "string") {
+      incomingLines = [record.line];
+    }
+  } else {
+    return currentLines;
+  }
+
+  if (isFull) {
+    return incomingLines.length > limit
+      ? incomingLines.slice(-limit)
+      : incomingLines;
+  }
+
+  if (incomingLines.length === 0) {
+    return currentLines;
+  }
+
+  const combined = [...currentLines, ...incomingLines];
+  return combined.length > limit ? combined.slice(-limit) : combined;
+}
+
 /**
  * WebSocket client for NTM server.
  */
@@ -82,25 +141,119 @@ export class NtmWebSocket {
   private pendingAcks = new Map<string, { resolve: () => void; reject: (err: Error) => void }>();
   private lastSeq: number | null = null;
   private refCounter = 0;
+  private connectGeneration = 0;
+  private ticketAbortController: AbortController | null = null;
 
   /**
    * Connect to the WebSocket server.
+   * When an auth token is configured, exchanges it via POST /api/v1/auth/ws-ticket
+   * for a single-use ?ticket= query parameter so the raw bearer secret never
+   * appears in WebSocket URLs.
    */
   connect(): void {
     if (this.state === "connected" || this.state === "connecting") {
       return;
     }
 
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    const generation = ++this.connectGeneration;
     this.setState("connecting");
     const config = getConnectionConfig();
     const baseUrl = getBaseUrl();
 
     // Convert HTTP URL to WebSocket URL
     const wsUrl = baseUrl.replace(/^http/, "ws") + "/api/v1/ws";
-    const url = config?.authToken ? `${wsUrl}?token=${config.authToken}` : wsUrl;
+    const authToken = config?.authToken?.trim() || "";
 
+    if (!authToken) {
+      this.openSocket(wsUrl, wsUrl);
+      return;
+    }
+
+    void this.connectWithTicket(generation, baseUrl, wsUrl, authToken);
+  }
+
+  private async connectWithTicket(
+    generation: number,
+    baseUrl: string,
+    wsUrl: string,
+    authToken: string
+  ): Promise<void> {
+    const controller =
+      typeof AbortController !== "undefined" ? new AbortController() : null;
+    this.ticketAbortController = controller;
+
+    try {
+      const response = await fetch(`${baseUrl}/api/v1/auth/ws-ticket`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+        signal: controller?.signal ?? apiRequestSignal(),
+      });
+
+      if (this.ticketAbortController === controller) {
+        this.ticketAbortController = null;
+      }
+      if (generation !== this.connectGeneration) {
+        return;
+      }
+
+      if (response.status === 401) {
+        const authError: WSError = {
+          type: "error",
+          ts: new Date().toISOString(),
+          code: "UNAUTHORIZED",
+          message: "WebSocket authentication failed (401)",
+        };
+        this.errorHandlers.forEach((h) => h(authError));
+        this.setState("disconnected");
+        handleUnauthorizedRedirect();
+        return;
+      }
+
+      if (!response.ok) {
+        throw new Error(`WS ticket exchange failed (${response.status})`);
+      }
+
+      const payload = (await response.json()) as {
+        success?: boolean;
+        ticket?: string;
+        error?: string;
+      };
+
+      if (generation !== this.connectGeneration) {
+        return;
+      }
+
+      const ticket =
+        typeof payload?.ticket === "string" ? payload.ticket.trim() : "";
+      if (payload?.success === false || !ticket) {
+        throw new Error(payload?.error || "WS ticket response missing ticket");
+      }
+
+      const url = `${wsUrl}?ticket=${encodeURIComponent(ticket)}`;
+      this.openSocket(url, wsUrl);
+    } catch (err) {
+      if (this.ticketAbortController === controller) {
+        this.ticketAbortController = null;
+      }
+      if (generation !== this.connectGeneration) {
+        return;
+      }
+      console.error("[WS] Ticket exchange error:", err);
+      this.scheduleReconnect();
+    }
+  }
+
+  private openSocket(url: string, logUrl: string): void {
     if (process.env.NODE_ENV === "development") {
-      console.log("[WS] Connecting to", wsUrl);
+      console.log("[WS] Connecting to", logUrl);
     }
 
     try {
@@ -116,6 +269,11 @@ export class NtmWebSocket {
    * Disconnect from the server.
    */
   disconnect(): void {
+    this.connectGeneration++;
+    if (this.ticketAbortController) {
+      this.ticketAbortController.abort();
+      this.ticketAbortController = null;
+    }
     this.clearTimers();
     this.rejectPendingAcks("WebSocket disconnected");
     if (this.ws) {
@@ -292,8 +450,14 @@ export class NtmWebSocket {
           }
 
           case "event":
-          case "pane.output": {
-            const event = message as WSEvent;
+          case "pane.output":
+          case "pane.output.dropped": {
+            const event: WSEvent = {
+              ...(message as WSEvent),
+              event_type:
+                (message as Partial<WSEvent>).event_type || message.type,
+              topic: message.topic || "",
+            };
             this.eventHandlers.forEach((h) => h(event));
             break;
           }

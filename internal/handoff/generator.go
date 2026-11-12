@@ -57,14 +57,11 @@ func requireGeneratorContext(ctx context.Context, operation string) error {
 	return nil
 }
 
-func generatorCancellationError(ctx context.Context, err error, operation string) error {
+func generatorCancellationError(ctx context.Context, _ error, operation string) error {
 	if ctx != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return fmt.Errorf("%s: %w", operation, ctxErr)
 		}
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("%s: %w", operation, err)
 	}
 	return nil
 }
@@ -431,6 +428,19 @@ type GenerateHandoffOptions struct {
 	TransferGraceSeconds int
 }
 
+// DisableIntegrations turns off all external enrichment integrations (Beads/BV,
+// Agent Mail, and CASS) for offline or hermetic handoff generation.
+func (opts *GenerateHandoffOptions) DisableIntegrations() *GenerateHandoffOptions {
+	if opts == nil {
+		return nil
+	}
+	disabled := false
+	opts.IncludeBeads = &disabled
+	opts.IncludeAgentMail = &disabled
+	opts.IncludeCASS = &disabled
+	return opts
+}
+
 // GenerateHandoff creates a complete handoff with BV and Agent Mail integration.
 // This is the main entry point for handoff generation, gathering:
 //   - Git state (uncommitted changes, branch, recent commits)
@@ -503,7 +513,8 @@ func (g *Generator) GenerateHandoff(ctx context.Context, opts GenerateHandoffOpt
 			if cancelErr := generatorCancellationError(ctx, err, "generate complete handoff"); cancelErr != nil {
 				return nil, cancelErr
 			}
-			g.logger.Warn("BV enrichment failed", "error", err)
+			g.logger.Warn("handoff enrichment degraded", "integration", "bv", "error", err)
+			h.AddWarning(fmt.Sprintf("bv enrichment degraded: %v", err))
 			// Non-fatal - continue without bead info
 		}
 	}
@@ -515,7 +526,8 @@ func (g *Generator) GenerateHandoff(ctx context.Context, opts GenerateHandoffOpt
 			if cancelErr := generatorCancellationError(ctx, err, "generate complete handoff"); cancelErr != nil {
 				return nil, cancelErr
 			}
-			g.logger.Warn("Agent Mail enrichment failed", "error", err)
+			g.logger.Warn("handoff enrichment degraded", "integration", "agentmail", "error", err)
+			h.AddWarning(fmt.Sprintf("agentmail enrichment degraded: %v", err))
 			// Non-fatal - continue without Agent Mail info
 		}
 	}
@@ -527,7 +539,12 @@ func (g *Generator) GenerateHandoff(ctx context.Context, opts GenerateHandoffOpt
 			if cancelErr := generatorCancellationError(ctx, err, "generate complete handoff"); cancelErr != nil {
 				return nil, cancelErr
 			}
-			g.logger.Warn("CASS enrichment failed", "error", err)
+			g.logger.Warn("handoff enrichment degraded",
+				"integration", "cass",
+				"timeout_ms", resolveCASSTimeout(opts.CASSTimeout).Milliseconds(),
+				"error", err,
+			)
+			h.AddWarning(fmt.Sprintf("cass enrichment degraded: %v", err))
 			// Non-fatal - continue without CASS context
 		}
 	}

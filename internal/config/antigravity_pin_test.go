@@ -117,3 +117,37 @@ func TestAntigravityTemplateRendersLockedBinaryAndQuotedModel(t *testing.T) {
 		t.Errorf("rendered agy command = %q, want %q", cmd, want)
 	}
 }
+
+func TestAntigravityDefaultModelConfigurable(t *testing.T) {
+	defaults := DefaultModels()
+	if defaults.DefaultAntigravity != AntigravityRequiredModel {
+		t.Fatalf("DefaultModels().DefaultAntigravity = %q, want %q", defaults.DefaultAntigravity, AntigravityRequiredModel)
+	}
+	custom := &ModelsConfig{DefaultAntigravity: "Gemini 4.5 Ultra (High)"}
+	if got := custom.GetModelName("agy", ""); got != "Gemini 4.5 Ultra (High)" {
+		t.Fatalf("custom DefaultAntigravity GetModelName(agy) = %q, want Gemini 4.5 Ultra (High)", got)
+	}
+}
+
+func TestWindsurfGUIHarnessValidation(t *testing.T) {
+	for _, guiCmd := range []string{
+		"",
+		DefaultWindsurfCommand,
+		"windsurf",
+		"windsurf --reuse-window",
+		"/Applications/Windsurf.app/Contents/MacOS/windsurf --model {{shellQuote .Model}}",
+	} {
+		err := ValidateWindsurfTerminalHarness(guiCmd)
+		if err == nil || !strings.Contains(err.Error(), ErrCodeIDEOnlyHarness) {
+			t.Fatalf("ValidateWindsurfTerminalHarness(%q) = %v, want %s refusal", guiCmd, err, ErrCodeIDEOnlyHarness)
+		}
+	}
+	for _, termCmd := range []string{
+		"windsurf-cli --headless --model {{shellQuote .Model}}",
+		"FOO=1 custom-terminal-agent",
+	} {
+		if err := ValidateWindsurfTerminalHarness(termCmd); err != nil {
+			t.Fatalf("ValidateWindsurfTerminalHarness(%q) unexpected error: %v", termCmd, err)
+		}
+	}
+}

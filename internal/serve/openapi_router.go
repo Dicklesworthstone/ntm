@@ -112,17 +112,17 @@ func endpointHandlerName(handler http.Handler) string {
 // envelope's request_id/success/timestamp fields).
 //
 // The table is deliberately explicit rather than name-derived, because names
-// lie: handleRobotAttentionV1 actually serves robot.DigestOutput, and the
-// legacy handleRobotHealth serves a stub note map, not robot.HealthOutput.
-// Unlisted handlers get the honest generic envelope schema — honest generic
-// beats invented specific. Add entries only after reading the handler body.
+// alone can mislead (for example /api/v1/version returns an ad hoc map rather
+// than robot.VersionOutput). Unlisted handlers get the honest generic envelope
+// schema — honest generic beats invented specific. Add entries only after
+// reading the handler body.
 var verifiedRobotHandlers = map[string]string{
 	// Robot read surface (thin adapters in server.go).
 	"handleRobotStatusV1":    "status",
 	"handleRobotHealthV1":    "health",
 	"handleRobotSnapshotV1":  "snapshot",
 	"handleRobotDigestV1":    "digest",
-	"handleRobotAttentionV1": "digest", // serves GetDigest with an attention profile, NOT AttentionOutput
+	"handleRobotAttentionV1": "attention",
 	"handleRobotDashboardV1": "dashboard",
 	"handleRobotTerseV1":     "terse",
 	"handleRobotTriageV1":    "triage",
@@ -130,15 +130,16 @@ var verifiedRobotHandlers = map[string]string{
 	"handleRobotGraphV1":     "graph",
 	"handleRobotActivityV1":  "activity",
 	"handleRobotAlertsV1":    "alerts",
-	// Legacy /api/robot/status serves robot.StatusOutput directly.
-	// (Legacy /api/robot/health serves a stub map and is intentionally absent.)
+	// Legacy /api/robot/* endpoints delegate directly to robot.GetStatus / robot.GetHealth.
 	"handleRobotStatus": "status",
-	// System and agent-lifecycle handlers verified to serialize robot outputs.
-	"handleCapabilitiesV1":   "capabilities",
-	"handleAgentSpawnV1":     "spawn",
-	"handleAgentSendV1":      "send",
-	"handleAgentInterruptV1": "interrupt",
-	"handleAgentWaitV1":      "wait",
+	"handleRobotHealth": "health",
+	// System, policy, and agent-lifecycle handlers verified to serialize robot outputs.
+	"handleCapabilitiesV1":    "capabilities",
+	"handlePolicyDecisionsV1": "policy_decisions",
+	"handleAgentSpawnV1":      "spawn",
+	"handleAgentSendV1":       "send",
+	"handleAgentInterruptV1":  "interrupt",
+	"handleAgentWaitV1":       "wait",
 }
 
 // robotSchemaForHandler joins a handler name to a robot schema registry key

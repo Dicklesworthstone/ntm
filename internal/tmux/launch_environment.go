@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -143,26 +144,16 @@ func NewLaunchEnvironment(ctx context.Context, environment map[string]string) (*
 		_ = launch.Close()
 		return nil, err
 	}
+	slog.Debug("prepared private launch environment", "handoff", launch.String(), "go_repr", launch.GoString(), "keys", len(launch.environment))
 	return launch, nil
-}
-
-// Send launches a preflighted command with the explicit environment. Only the
-// interpreter and FIFO pathname are typed into the pane. /bin/sh -p ignores
-// inherited shell startup and tracing controls; the script also disables tracing
-// before reading any value. A complete compound command must be read before any
-// export or launch executes, so a truncated/canceled write cannot launch a
-// partially constructed command. Reading the script by pathname preserves the
-// agent's terminal stdin (feeding the script over stdin would detach its TUI).
-func (launch *LaunchEnvironment) Send(ctx context.Context, target, command string, enter bool, agentType AgentType) error {
-	if !enter {
-		return errors.New("recovery environment handoff requires an immediate launch")
-	}
-	return launch.send(ctx, target, command, agentType, DefaultClient.SendKeysForAgentContext)
 }
 
 // SendIfCurrent fences the value-free launcher with the replacement pane PID.
 // The environment remains in the private FIFO if the pane changed before any
 // paste, literal chunk, or Enter; no recovery input is typed into that pane.
+// Only the interpreter and FIFO pathname are typed into the pane; /bin/sh -p
+// ignores inherited shell startup and tracing controls, and reading by pathname
+// preserves the agent's terminal stdin.
 func (launch *LaunchEnvironment) SendIfCurrent(ctx context.Context, target, command string, enter bool, agentType AgentType, expectedPID int) error {
 	if !enter {
 		return errors.New("recovery environment handoff requires an immediate launch")

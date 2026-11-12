@@ -1055,7 +1055,7 @@ func TestGetIsWorking_LiveAdoptedSessionIncludesPaneOne(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, pane := range panes {
-		if err := tmux.DefaultClient.SetPaneAgentType(pane.ID, tmux.AgentOmp); err != nil {
+		if err := tmux.DefaultClient.SetPaneAgentTypeContext(t.Context(), pane.ID, tmux.AgentOmp); err != nil {
 			t.Fatalf("record omp on %s: %v", pane.ID, err)
 		}
 	}

@@ -53,6 +53,7 @@ type DryRunSynthesis struct {
 	SynthesizerModeID  string  `json:"synthesizer_mode_id,omitempty"`
 	MinConfidence      float64 `json:"min_confidence,omitempty"`
 	MaxFindings        int     `json:"max_findings,omitempty"`
+	IncludeRawOutputs  bool    `json:"include_raw_outputs,omitempty"`
 	ConflictResolution string  `json:"conflict_resolution,omitempty"`
 }
 

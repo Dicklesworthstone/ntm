@@ -3,6 +3,7 @@ package approval
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +19,11 @@ import (
 
 func setupTestStore(t *testing.T) *state.Store {
 	t.Helper()
+	// Isolate baseline approval unit tests from ambient tmux/agent shell env.
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("SLB_SESSION_ID", "")
+	t.Setenv("AGENT_NAME", "")
+
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
@@ -730,5 +736,98 @@ func TestRequestWithNilContext(t *testing.T) {
 	}
 	if appr.ID == "" {
 		t.Error("approval should have an ID")
+	}
+}
+
+func TestSLBActorProvenanceBlocksSamePaneSameSessionAndEnvStripping(t *testing.T) {
+	store := setupTestStore(t)
+	cfg := DefaultConfig()
+	cfg.EnableSLB = false // exercise native SLB provenance guard deterministically
+	engine := New(store, nil, nil, cfg)
+	ctx := context.Background()
+
+	// 1. Agent in tmux pane %3 requests SLB approval as "alice".
+	t.Setenv("TMUX_PANE", "%3")
+	t.Setenv("AGENT_NAME", "CobaltBear")
+	apprPane, err := engine.Request(ctx, RequestParams{
+		Action:      "force_release",
+		Resource:    "internal/serve/**",
+		Reason:      "holder stalled",
+		RequestedBy: "alice",
+		RequiresSLB: true,
+	})
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	if !strings.Contains(apprPane.RequestedProvenance, "pane=%3") || !strings.Contains(apprPane.RequestedProvenance, "agent=CobaltBear") {
+		t.Fatalf("RequestedProvenance = %q, want pane=%%3 and agent=CobaltBear", apprPane.RequestedProvenance)
+	}
+
+	// Same pane spoofing NTM_USER="reviewer" MUST be rejected.
+	if err := engine.Approve(ctx, apprPane.ID, "reviewer"); !errors.Is(err, ErrSLBSelfApproval) {
+		t.Fatalf("same-pane NTM_USER spoof: got err=%v, want ErrSLBSelfApproval", err)
+	}
+
+	// Stripping TMUX_PANE and AGENT_NAME via `env -u TMUX_PANE -u AGENT_NAME NTM_USER=reviewer` MUST also be rejected.
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("AGENT_NAME", "")
+	if err := engine.Approve(ctx, apprPane.ID, "reviewer"); !errors.Is(err, ErrSLBSelfApproval) {
+		t.Fatalf("env-stripped NTM_USER spoof: got err=%v, want ErrSLBSelfApproval", err)
+	}
+
+	// Reviewer in distinct tmux pane %0 succeeds and persists ApprovedProvenance.
+	t.Setenv("TMUX_PANE", "%0")
+	t.Setenv("AGENT_NAME", "OperatorPane")
+	if err := engine.Approve(ctx, apprPane.ID, "reviewer"); err != nil {
+		t.Fatalf("distinct-pane reviewer should succeed, got: %v", err)
+	}
+	stored, err := store.GetApproval(apprPane.ID)
+	if err != nil {
+		t.Fatalf("GetApproval: %v", err)
+	}
+	if !strings.Contains(stored.ApprovedProvenance, "pane=%0") {
+		t.Fatalf("ApprovedProvenance = %q, want pane=%%0", stored.ApprovedProvenance)
+	}
+
+	// 2. Same SLB_SESSION_ID across panes must still be rejected; distinct SLB_SESSION_ID succeeds.
+	t.Setenv("TMUX_PANE", "%4")
+	t.Setenv("SLB_SESSION_ID", "slb-sess-alpha")
+	t.Setenv("AGENT_NAME", "")
+	apprSLB, err := engine.Request(ctx, RequestParams{
+		Action:      "force_release",
+		Resource:    "internal/robot/**",
+		RequestedBy: "agent-a",
+		RequiresSLB: true,
+	})
+	if err != nil {
+		t.Fatalf("Request SLB session: %v", err)
+	}
+	t.Setenv("TMUX_PANE", "%9") // even from another pane, same SLB session is same actor
+	if err := engine.Approve(ctx, apprSLB.ID, "agent-b"); !errors.Is(err, ErrSLBSelfApproval) {
+		t.Fatalf("same SLB_SESSION_ID spoof: got err=%v, want ErrSLBSelfApproval", err)
+	}
+	t.Setenv("SLB_SESSION_ID", "slb-sess-beta")
+	if err := engine.Approve(ctx, apprSLB.ID, "agent-b"); err != nil {
+		t.Fatalf("distinct SLB_SESSION_ID reviewer should succeed, got: %v", err)
+	}
+
+	// 3. Authenticated HTTP principal provenance blocks same principal even if display name differs,
+	// and permits distinct authenticated principal.
+	reqCtx := WithActorProvenance(ctx, "auth=oidc;principal=alice@example.com")
+	apprHTTP, err := engine.Request(reqCtx, RequestParams{
+		Action:      "force_release",
+		Resource:    "cmd/ntm/**",
+		RequestedBy: "alice",
+		RequiresSLB: true,
+	})
+	if err != nil {
+		t.Fatalf("Request HTTP provenance: %v", err)
+	}
+	if err := engine.Approve(reqCtx, apprHTTP.ID, "spoofed-display-bob"); !errors.Is(err, ErrSLBSelfApproval) {
+		t.Fatalf("same HTTP principal spoof: got err=%v, want ErrSLBSelfApproval", err)
+	}
+	reviewerCtx := WithActorProvenance(ctx, "auth=oidc;principal=bob@example.com")
+	if err := engine.Approve(reviewerCtx, apprHTTP.ID, "bob"); err != nil {
+		t.Fatalf("distinct HTTP principal reviewer should succeed, got: %v", err)
 	}
 }

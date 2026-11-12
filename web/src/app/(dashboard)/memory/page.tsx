@@ -11,15 +11,7 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { apiRequestSignal, getAuthHeaders, getBaseUrl } from "@/lib/api/client";
-
-interface ApiEnvelope {
-  success: boolean;
-  timestamp: string;
-  request_id?: string;
-  error?: string;
-  error_code?: string;
-}
+import { apiFetch, type ApiEnvelope } from "@/lib/api/client";
 
 interface MemoryDaemonStatusResponse extends ApiEnvelope {
   installed: boolean;
@@ -53,29 +45,6 @@ interface MemoryRulesResponse extends ApiEnvelope {
   anti_patterns: MemoryRule[];
 }
 
-async function apiFetch<T>(path: string): Promise<T> {
-  const response = await fetch(`${getBaseUrl()}${path}`, {
-    signal: apiRequestSignal(),
-    headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-  });
-
-  const raw = await response.text();
-  let data: unknown = null;
-  if (raw) {
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      throw new Error("Invalid response from server.");
-    }
-  }
-
-  const envelope = data as ApiEnvelope | null;
-  if (!response.ok || !envelope?.success) {
-    throw new Error(envelope?.error || `Request failed (${response.status})`);
-  }
-  return data as T;
-}
-
 function formatBytes(bytes?: number): string {
   if (!bytes || bytes <= 0) return "—";
   const units = ["B", "KB", "MB", "GB"];
@@ -94,20 +63,20 @@ function errorMessage(error: unknown): string {
 
 export default function MemoryPage() {
   const daemonQuery = useQuery({
-    queryKey: ["memory-daemon-status"],
+    queryKey: ["memory", "daemon-status"],
     queryFn: () =>
       apiFetch<MemoryDaemonStatusResponse>("/api/v1/memory/daemon/status"),
     refetchInterval: 15000,
   });
 
   const cassQuery = useQuery({
-    queryKey: ["cass-status"],
+    queryKey: ["memory", "cass-status"],
     queryFn: () => apiFetch<CASSStatusResponse>("/api/v1/cass/status"),
     refetchInterval: 30000,
   });
 
   const rulesQuery = useQuery({
-    queryKey: ["memory-rules"],
+    queryKey: ["memory", "rules"],
     queryFn: () => apiFetch<MemoryRulesResponse>("/api/v1/memory/rules"),
     staleTime: 60000,
     retry: false,

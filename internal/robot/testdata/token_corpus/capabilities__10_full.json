@@ -2633,6 +2633,20 @@
           "type": "bool",
           "required": false,
           "description": "Relaunch the agent CLI in the preserved shell and verify boot"
+        },
+        {
+          "name": "respawn-shell",
+          "flag": "--respawn-shell",
+          "type": "bool",
+          "required": false,
+          "description": "Replace an exited direct-exec root agent with a fresh interactive shell in the same cwd"
+        },
+        {
+          "name": "allow-pane-close",
+          "flag": "--allow-pane-close",
+          "type": "bool",
+          "required": false,
+          "description": "Permit a direct-exec root agent pane to close cleanly upon graceful exit"
         }
       ],
       "examples": [
@@ -2937,7 +2951,7 @@
           "flag": "--dry-run",
           "type": "bool",
           "required": false,
-          "description": "Preview restart targets without executing"
+          "description": "Validate saved launch dependencies and explicit recovery environment, then preview restart targets without executing"
         },
         {
           "name": "restart-bead",
@@ -2966,13 +2980,21 @@
           "type": "string",
           "required": false,
           "description": "Raw arguments appended to the relaunch command after configured args (last-flag-wins)"
+        },
+        {
+          "name": "restart-env-file",
+          "flag": "--restart-env-file",
+          "type": "string",
+          "required": false,
+          "description": "Private JSON file supplying exactly the saved launch's omitted environment names for one explicitly selected agent pane; values are never persisted or inferred from ambient environment"
         }
       ],
       "examples": [
         "ntm --robot-restart-pane=proj --panes=1,2",
         "ntm --robot-restart-pane=proj --type=claude --dry-run",
         "ntm --robot-restart-pane=proj --panes=2 --restart-bead=bd-abc12",
-        "ntm --robot-restart-pane=proj --panes=2 --restart-model=gpt-5.6-terra@high"
+        "ntm --robot-restart-pane=proj --panes=2 --restart-model=gpt-5.6-terra@high",
+        "ntm --robot-restart-pane=proj --panes=%7 --restart-env-file=/private/recovery.json --dry-run"
       ],
       "transports": [
         {
@@ -3660,6 +3682,34 @@
           "description": "OpenCode (oc) agents: count[:model], model as provider/model (no model = OpenCode's own default; no effort knob)"
         },
         {
+          "name": "spawn-ollama",
+          "flag": "--spawn-ollama",
+          "type": "string",
+          "required": false,
+          "description": "Ollama local agents: count[:model] (default model: codellama:latest)"
+        },
+        {
+          "name": "spawn-aider",
+          "flag": "--spawn-aider",
+          "type": "string",
+          "required": false,
+          "description": "Aider agents: count[:model]"
+        },
+        {
+          "name": "spawn-cursor",
+          "flag": "--spawn-cursor",
+          "type": "string",
+          "required": false,
+          "description": "Cursor Agent CLI (cursor-agent) agents: count[:model]"
+        },
+        {
+          "name": "spawn-pi",
+          "flag": "--spawn-pi",
+          "type": "string",
+          "required": false,
+          "description": "Pi coding agent (pi) agents: count[:model[:effort]] (effort maps to pi --thinking; no model = pi's own configured default)"
+        },
+        {
           "name": "spawn-preset",
           "flag": "--spawn-preset",
           "type": "string",
@@ -3759,6 +3809,7 @@
         "ntm --robot-spawn=myproject --spawn-grok=1",
         "ntm --robot-spawn=myproject --spawn-omp=8 --spawn-no-user --spawn-wait",
         "ntm --robot-spawn=myproject --spawn-oc=2:opencode/big-pickle --spawn-wait",
+        "ntm --robot-spawn=myproject --spawn-pi=2 --spawn-cursor=1 --spawn-aider=1 --spawn-ollama=1:qwen2.5-coder:32b",
         "ntm --robot-spawn=myproject --spawn-preset=standard",
         "ntm --robot-spawn=myproject --spawn-label=frontend --spawn-cc=3",
         "ntm --robot-spawn=myproject --spawn-assign-work --strategy=dependency-aware",
@@ -5981,6 +6032,56 @@
       ]
     },
     {
+      "name": "policy-decisions",
+      "flag": "--robot-policy-decisions",
+      "category": "utility",
+      "summary": "List durable policy and operator audit decisions from the runtime state store.",
+      "description": "List durable policy and operator audit decisions from the runtime state store.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:policy-decisions:v1",
+      "schema_type": "policy_decisions",
+      "schema_source": "built_in",
+      "sections": [
+        "events"
+      ],
+      "parameters": [
+        {
+          "name": "entity_type",
+          "flag": "--policy-entity-type",
+          "type": "string",
+          "required": false,
+          "description": "Filter decisions by entity type (e.g. attention_item, approval)"
+        },
+        {
+          "name": "entity_id",
+          "flag": "--policy-entity-id",
+          "type": "string",
+          "required": false,
+          "description": "Filter decisions by entity ID"
+        },
+        {
+          "name": "limit",
+          "flag": "--limit",
+          "type": "int",
+          "required": false,
+          "description": "Maximum decisions to return (default 100)"
+        }
+      ],
+      "examples": [
+        "ntm --robot-policy-decisions",
+        "ntm --robot-policy-decisions --policy-entity-type=attention_item --limit=25"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-policy-decisions"
+        }
+      ]
+    },
+    {
       "name": "profile-list",
       "flag": "--robot-profile-list",
       "category": "utility",
@@ -7795,6 +7896,15 @@
       "name": "palette",
       "paginated": false,
       "paginated_reason": "bounded: fixed palette command catalog"
+    },
+    {
+      "name": "policy-decisions",
+      "paginated": false,
+      "paginated_reason": "bounded: recent audit decisions capped by --limit truncation",
+      "consumer_guidance": {
+        "intended_use": "Inspect durable policy and operator audit decisions recorded in the runtime state store",
+        "summary_hint": "Filter by --policy-entity-type and --policy-entity-id when auditing a specific resource"
+      }
     },
     {
       "name": "profile-list"

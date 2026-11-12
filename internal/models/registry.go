@@ -18,6 +18,10 @@ import (
 // DefaultContextLimit is the fallback when a model is not recognized.
 const DefaultContextLimit = 128000
 
+// DefaultAntigravityModel is the default display model identifier for the
+// Antigravity CLI (agy).
+const DefaultAntigravityModel = "Gemini 4 Argon (High)"
+
 // dateSuffixRe strips date suffixes like -20260101 from model names.
 var dateSuffixRe = regexp.MustCompile(`-\d{8}$`)
 
@@ -82,6 +86,19 @@ var ContextLimits = map[string]int{
 	// the input limit when agy was pinned to it (2026-10-13).
 	"gemini-4-argon": 1000000,
 	"gemini-pro":     32000,
+
+	// xAI Grok models
+	"grok-4":      256000,
+	"grok-4-6":    256000,
+	"grok-4.6":    256000,
+	"grok-4-fast": 2000000,
+	"grok-3":      131072,
+	"grok-3-mini": 131072,
+	"grok-2":      131072,
+
+	// Common local / Ollama models
+	"llama3":    128000,
+	"codellama": 16384,
 }
 
 // Aliases maps short names and common variants to canonical model names.
@@ -113,14 +130,19 @@ var Aliases = map[string]string{
 	"gpt5":       "gpt-5",
 	"codex":      "gpt-5-codex",
 
-	// Gemini aliases
-	"gemini":       "gemini-2.0-flash",
-	"pro":          "gemini-1.5-pro",
-	"flash":        "gemini-2.0-flash",
-	"flash2":       "gemini-2.0-flash",
-	"ultra":        "gemini-2.0-flash",
-	"gemini-flash": "gemini-2.0-flash",
-	"gemini-ultra": "gemini-2.0-flash",
+	// Gemini & Antigravity aliases
+	"gemini":                "gemini-2.0-flash",
+	"pro":                   "gemini-1.5-pro",
+	"flash":                 "gemini-2.0-flash",
+	"flash2":                "gemini-2.0-flash",
+	"ultra":                 "gemini-2.0-flash",
+	"gemini-flash":          "gemini-2.0-flash",
+	"gemini-ultra":          "gemini-2.0-flash",
+	"gemini 4 argon (high)": "gemini-4-argon",
+	"gemini-4-argon-high":   "gemini-4-argon",
+
+	// Grok aliases
+	"grok": "grok-4",
 }
 
 var (
@@ -392,6 +414,8 @@ var agentTypeBudgetPct = map[string]int{
 	"cod":      94, // Codex: 94% of limit
 	"gmi":      10, // Gemini: 10% of 1M (still 100K tokens, avoids excessive context)
 	"agy":      10, // Antigravity (Gemini successor): mirrors Gemini's budget
+	"grok":     85, // Grok Build
+	"oc":       85, // OpenCode
 	"cursor":   85, // Cursor
 	"windsurf": 85, // Windsurf
 	"aider":    85, // Aider
@@ -403,7 +427,10 @@ var agentTypeDefaultModels = map[string]string{
 	"cc":       "claude-opus-4",
 	"cod":      "gpt-5-codex",
 	"gmi":      "gemini-2.0-flash",
-	"agy":      "gemini-4-argon", // Antigravity pins Gemini 4 Argon (High)
+	"agy":      "gemini-4-argon", // Antigravity default: Gemini 4 Argon (High)
+	"grok":     "grok-4",
+	"oc":       "claude-sonnet-4",
+	"omp":      "claude-sonnet-4",
 	"cursor":   "claude-3.5-sonnet",
 	"windsurf": "claude-3.5-sonnet",
 	"aider":    "claude-3.5-sonnet",

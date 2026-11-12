@@ -4,6 +4,7 @@ package state
 // record progress.
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -161,5 +162,75 @@ func TestRuntimeAgentContextPercentRoundTripsUnknownAndZero(t *testing.T) {
 	legacy, err := store.GetRuntimeAgent("context:legacy")
 	if err != nil || legacy == nil || legacy.ContextPercent != nil {
 		t.Fatalf("legacy context should remain unknown: %+v, %v", legacy, err)
+	}
+}
+
+func TestRunGCCompactsAuditDecisionLogAndGetDecisionHistoryFilters(t *testing.T) {
+	store := testStore(t)
+
+	empty, err := store.GetDecisionHistory("nonexistent", "", 10)
+	if err != nil {
+		t.Fatalf("GetDecisionHistory empty: %v", err)
+	}
+	if empty == nil || len(empty) != 0 {
+		t.Fatalf("empty decisions = %#v, want non-nil empty slice", empty)
+	}
+
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	for i := 0; i < 12; i++ {
+		entityType := "attention_item"
+		if i%2 == 1 {
+			entityType = "approval"
+		}
+		_, err := store.RecordAuditDecision(&AuditDecision{
+			DecisionType: "ack",
+			DecisionAt:   base.Add(time.Duration(i) * time.Second),
+			ActorType:    "user",
+			ActorID:      "operator",
+			EntityType:   entityType,
+			EntityID:     fmt.Sprintf("item-%02d", i),
+			Reason:       "routine triage",
+		})
+		if err != nil {
+			t.Fatalf("RecordAuditDecision(%d): %v", i, err)
+		}
+	}
+
+	all, err := store.GetDecisionHistory("", "", 0)
+	if err != nil {
+		t.Fatalf("GetDecisionHistory all: %v", err)
+	}
+	if len(all) != 12 {
+		t.Fatalf("len(all) = %d, want 12", len(all))
+	}
+	if all[0].EntityID != "item-11" {
+		t.Fatalf("newest decision = %q, want item-11", all[0].EntityID)
+	}
+
+	onlyAttention, err := store.GetDecisionHistory("attention_item", "", 0)
+	if err != nil {
+		t.Fatalf("GetDecisionHistory filtered by type: %v", err)
+	}
+	if len(onlyAttention) != 6 {
+		t.Fatalf("len(onlyAttention) = %d, want 6", len(onlyAttention))
+	}
+
+	gcRes, err := store.RunGC(RuntimeGCConfig{MaxAuditDecisionRows: 5})
+	if err != nil {
+		t.Fatalf("RunGC: %v", err)
+	}
+	if gcRes.CompactedAuditDecisions != 7 {
+		t.Fatalf("CompactedAuditDecisions = %d, want 7", gcRes.CompactedAuditDecisions)
+	}
+
+	remaining, err := store.GetDecisionHistory("", "", 0)
+	if err != nil {
+		t.Fatalf("GetDecisionHistory after GC: %v", err)
+	}
+	if len(remaining) != 5 {
+		t.Fatalf("len(remaining) = %d, want 5", len(remaining))
+	}
+	if remaining[0].EntityID != "item-11" || remaining[4].EntityID != "item-07" {
+		t.Fatalf("remaining window = [%s..%s], want [item-11..item-07]", remaining[0].EntityID, remaining[4].EntityID)
 	}
 }

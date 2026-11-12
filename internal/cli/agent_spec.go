@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/models"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
 )
@@ -140,6 +140,10 @@ func ParseAgentSpec(value string) (AgentSpec, error) {
 // shorthand; callers that know the agent type pass it per
 // agentTypeSupportsEffortSuffix.
 func parseAgentSpec(value string, relaxedModel bool, effortAtSuffix bool) (AgentSpec, error) {
+	return parseAgentSpecWithSplit(value, relaxedModel, effortAtSuffix, 3)
+}
+
+func parseAgentSpecWithSplit(value string, relaxedModel bool, effortAtSuffix bool, maxColonParts int) (AgentSpec, error) {
 	var spec AgentSpec
 
 	modelRe := modelPattern
@@ -149,7 +153,10 @@ func parseAgentSpec(value string, relaxedModel bool, effortAtSuffix bool) (Agent
 		allowedDesc = "letters, numbers, spaces, parentheses, . _ / @ : + -"
 	}
 
-	parts := strings.SplitN(value, ":", 3)
+	if maxColonParts < 2 {
+		maxColonParts = 2
+	}
+	parts := strings.SplitN(value, ":", maxColonParts)
 	if len(parts) == 0 || parts[0] == "" {
 		return spec, fmt.Errorf("invalid agent spec: %q", value)
 	}
@@ -261,10 +268,22 @@ func (s AgentSpecs) Flatten() []FlatAgent {
 	return result
 }
 
+func configuredAntigravityModel() string {
+	if cfg != nil {
+		if m := strings.TrimSpace(cfg.Models.GetModelName("antigravity", "")); m != "" {
+			return m
+		}
+	}
+	return models.DefaultAntigravityModel
+}
+
 // ResolveModel resolves a model alias to its full name using config
 // Returns the default model if alias is empty
 func ResolveModel(agentType AgentType, modelSpec string) string {
 	if cfg == nil {
+		if agentType == AgentTypeAntigravity {
+			return models.DefaultAntigravityModel
+		}
 		return modelSpec
 	}
 	return cfg.Models.GetModelName(string(agentType), modelSpec)
@@ -302,8 +321,8 @@ func resolveAgentModel(agentType AgentType, modelSpec string, pluginMap map[stri
 func validateAgentModelOverride(agentType AgentType, model string) error {
 	if agentType == AgentTypeAntigravity && strings.TrimSpace(model) != "" {
 		return fmt.Errorf(
-			"antigravity model overrides are not supported; model is pinned to %q (use --agy=N)",
-			config.AntigravityRequiredModel,
+			"antigravity model overrides are not supported; model is pinned to %q (use --agy=N or [models] default_antigravity)",
+			configuredAntigravityModel(),
 		)
 	}
 	return nil
@@ -314,14 +333,15 @@ func validateAntigravityPersonaModel(p *persona.Persona) error {
 		return nil
 	}
 	model := strings.TrimSpace(p.Model)
-	if model == "" || model == config.AntigravityRequiredModel {
+	allowed := configuredAntigravityModel()
+	if model == "" || model == models.DefaultAntigravityModel || model == allowed {
 		return nil
 	}
 	return fmt.Errorf(
 		"antigravity persona %q requests model %q, but model is pinned to %q",
 		p.Name,
 		model,
-		config.AntigravityRequiredModel,
+		allowed,
 	)
 }
 
@@ -382,7 +402,13 @@ func validateAgentSpecModelOverrides(specs AgentSpecs, personaMap map[string]*pe
 }
 
 func parseTypedAgentSpec(value string, agentType AgentType) (AgentSpec, error) {
-	spec, err := parseAgentSpec(value, agentType == AgentTypeAntigravity, agentTypeSupportsEffortSuffix(agentType))
+	maxColonParts := 3
+	if agentType == AgentTypeOllama {
+		// Ollama model identifiers routinely carry a `:tag` suffix (e.g.
+		// `codellama:latest`, `qwen2.5-coder:32b`) and have no effort knob.
+		maxColonParts = 2
+	}
+	spec, err := parseAgentSpecWithSplit(value, agentType == AgentTypeAntigravity, agentTypeSupportsEffortSuffix(agentType), maxColonParts)
 	if err != nil {
 		return AgentSpec{}, err
 	}

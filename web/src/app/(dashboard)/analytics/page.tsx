@@ -2,7 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { apiRequestSignal, getAuthHeaders, getBaseUrl } from "@/lib/api/client";
+import {
+  apiRequestSignal,
+  getAuthHeaders,
+  getBaseUrl,
+  handleUnauthorizedRedirect,
+} from "@/lib/api/client";
 
 interface ApiEnvelope {
   success?: boolean;
@@ -51,6 +56,10 @@ async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
       ...options?.headers,
     },
   });
+
+  if (res.status === 401) {
+    handleUnauthorizedRedirect();
+  }
 
   const raw = await res.text();
   let data: unknown = null;

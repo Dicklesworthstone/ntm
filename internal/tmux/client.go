@@ -603,20 +603,6 @@ func (c *Client) IsInstalled() bool {
 	return err == nil
 }
 
-// RespawnPane respawns a pane, optionally killing the current process (-k)
-func (c *Client) RespawnPane(target string, kill bool) error {
-	return c.RespawnPaneContext(context.Background(), target, kill)
-}
-
-// RespawnPaneContext respawns a pane with cancellation support
-func (c *Client) RespawnPaneContext(ctx context.Context, target string, kill bool) error {
-	args := []string{"respawn-pane", "-t", ExactTarget(target)}
-	if kill {
-		args = append(args, "-k")
-	}
-	return c.RunSilentContext(ctx, args...)
-}
-
 // PreflightRestartShellContext checks the fixed shell used for a two-stage
 // agent restart. It performs no pane mutation and belongs in dry-run preflight
 // as well as immediately before respawn.
@@ -787,11 +773,6 @@ func (c *Client) runPaneMutationIfCurrentContext(ctx context.Context, target str
 		return fmt.Errorf("pane %s: %w", target, ErrPaneIdentityChanged)
 	}
 	return nil
-}
-
-// RespawnPaneContext respawns a pane with cancellation support (default client)
-func RespawnPaneContext(ctx context.Context, target string, kill bool) error {
-	return DefaultClient.RespawnPaneContext(ctx, target, kill)
 }
 
 // ApplyTiledLayout applies tiled layout to all windows

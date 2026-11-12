@@ -92,6 +92,7 @@ Examples:
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Output file path (use '-' for stdout)")
 	cmd.Flags().StringVar(&format, "format", "yaml", "Output format: yaml, json, or markdown")
 	cmd.Flags().BoolVar(&includeGit, "include-git", true, "Include git state in handoff")
+	cmd.Flags().Bool("no-integrations", false, "Disable external enrichment integrations (BV, Agent Mail, CASS)")
 
 	return cmd
 }
@@ -273,6 +274,11 @@ func runHandoffCreate(cmd *cobra.Command, sessionName, goal, now, fromFile strin
 			TransferTTLSeconds:   transferTTLSeconds,
 			TransferGraceSeconds: 2,
 		}
+		if cmd != nil {
+			if noIntegrations, flagErr := cmd.Flags().GetBool("no-integrations"); flagErr == nil && noIntegrations {
+				opts.DisableIntegrations()
+			}
+		}
 		h, err = generator.GenerateHandoff(ctx, opts)
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return fmt.Errorf("auto-generation failed: %w", ctxErr)
@@ -359,7 +365,7 @@ func runHandoffCreate(cmd *cobra.Command, sessionName, goal, now, fromFile strin
 	)
 
 	if format == "json" {
-		return outputHandoffJSON(cmd, map[string]interface{}{
+		payload := map[string]interface{}{
 			"success":       true,
 			"path":          path,
 			"session":       h.Session,
@@ -368,7 +374,11 @@ func runHandoffCreate(cmd *cobra.Command, sessionName, goal, now, fromFile strin
 			"status":        h.Status,
 			"file_count":    h.TotalFileChanges(),
 			"blocker_count": len(h.Blockers),
-		})
+		}
+		if len(h.Warnings) > 0 {
+			payload["warnings"] = h.Warnings
+		}
+		return outputHandoffJSON(cmd, payload)
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Handoff created: %s\n", path)

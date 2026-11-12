@@ -510,7 +510,28 @@ var (
 	// status-line chrome ("Grok 4.6 (high) · always-approve") and the welcome
 	// banner ("Grok Build  1.0.5") are both matched.
 	grokHeaderPattern = regexp.MustCompile(`(?i)(grok\s+build|grok\s+\d+\.\d+\s*\()`)
+
+	// grokStatusModelRe matches Grok Build's bottom-border model label, e.g.
+	// "─ Grok 4.6 (high) · always-approve ─╯" or "─ Grok 4 Fast · … ─╯".
+	grokStatusModelRe = regexp.MustCompile(`(?i)[─━]\s*Grok\s+(\d+(?:\.\d+)?(?:\s+fast|\s+mini)?)\b`)
 )
+
+// GrokStatusLineModel extracts the canonical model identifier rendered on a
+// Grok Build composer's bottom border (e.g. "Grok 4.6 (high)" -> "grok-4.6"),
+// or returns "" when no Grok status border is visible.
+func GrokStatusLineModel(output string) string {
+	clean := stripANSICodes(output)
+	tail := util.GetLastNLines(clean, grokLiveTailLines)
+	matches := grokStatusModelRe.FindAllStringSubmatch(tail, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	suffix := strings.ToLower(strings.Join(strings.Fields(matches[len(matches)-1][1]), "-"))
+	if suffix == "" {
+		return ""
+	}
+	return "grok-" + suffix
+}
 
 // grokLiveTailLines bounds the live-tail window scanned for grok working
 // classification. Grok pins its composer and activity line to the bottom of
@@ -576,6 +597,48 @@ func OpencodeActivelyWorking(output string, paneWidth int) bool {
 	clean := stripANSICodes(output)
 	tail := util.GetLastNLines(clean, util.WidthAdaptiveTailLines(paneWidth, ocLiveTailLines))
 	return ocInterruptHintRe.MatchString(tail)
+}
+
+var (
+	ocSidebarHeaderRe = regexp.MustCompile(`(?:^|\s{2,})Context\s*$`)
+	ocSidebarTokensRe = regexp.MustCompile(`(?:^|\s{2,})([\d,]+(?:\.\d+)?)\s*([kKmM])?\s+tokens\s*$`)
+	ocSidebarPctRe    = regexp.MustCompile(`(?:^|\s{2,})(\d+(?:\.\d+)?)%\s+used\s*$`)
+)
+
+// OpencodeContextUsage extracts OpenCode's live right-hand session sidebar
+// context block ("Context" / "<N> tokens" / "<P>% used"). Requiring all three
+// consecutive right-aligned sidebar rows prevents false matches on ordinary
+// transcript prose.
+func OpencodeContextUsage(output string) (usedPct float64, tokensUsed int64, ok bool) {
+	clean := strings.ReplaceAll(stripANSICodes(output), "\r\n", "\n")
+	lines := strings.Split(clean, "\n")
+	for i := len(lines) - 3; i >= 0; i-- {
+		if !ocSidebarHeaderRe.MatchString(lines[i]) {
+			continue
+		}
+		tokMatch := ocSidebarTokensRe.FindStringSubmatch(lines[i+1])
+		pctMatch := ocSidebarPctRe.FindStringSubmatch(lines[i+2])
+		if tokMatch == nil || pctMatch == nil {
+			continue
+		}
+		rawTok := strings.ReplaceAll(tokMatch[1], ",", "")
+		tokVal, err := strconv.ParseFloat(rawTok, 64)
+		if err != nil || tokVal < 0 {
+			continue
+		}
+		switch strings.ToLower(tokMatch[2]) {
+		case "k":
+			tokVal *= 1000
+		case "m":
+			tokVal *= 1000000
+		}
+		pctVal, err := strconv.ParseFloat(pctMatch[1], 64)
+		if err != nil || pctVal < 0 || pctVal > 100 {
+			continue
+		}
+		return pctVal, int64(tokVal + 0.5), true
+	}
+	return 0, 0, false
 }
 
 // Oh My Pi (omp, https://omp.sh) patterns for state detection.

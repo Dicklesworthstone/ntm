@@ -235,7 +235,19 @@ func (p *parserImpl) extractMetrics(output string, state *AgentState) {
 			}
 		}
 
-	case AgentTypeCursor, AgentTypeWindsurf, AgentTypeAider, AgentTypeOpencode, AgentTypeOllama:
+	case AgentTypeOpencode:
+		// OpenCode renders a live session sidebar ("Context" / "<N> tokens" /
+		// "<P>% used") in wide panes once a session is active.
+		if usedPct, tokensUsed, ok := OpencodeContextUsage(output); ok {
+			remaining := 100 - usedPct
+			state.ContextRemaining = &remaining
+			state.TokensUsed = &tokensUsed
+			if remaining < p.config.ContextLowThreshold {
+				state.IsContextLow = true
+			}
+		}
+
+	case AgentTypeGrok, AgentTypeCursor, AgentTypeWindsurf, AgentTypeAider, AgentTypeOllama:
 		// No specific metrics yet for these agents
 	}
 }

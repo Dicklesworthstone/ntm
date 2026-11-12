@@ -15,7 +15,7 @@ import (
 type MarkdownOptions struct {
 	// IncludeSections specifies which sections to include.
 	// Empty means the registry-backed markdown defaults.
-	// Valid: "summary", "sessions", "work", "alerts", "attention"
+	// Valid: "summary", "sessions", "work", "alerts", "attention", "beads"
 	IncludeSections []string
 
 	// MaxBeads limits the number of work items shown per category.
@@ -52,6 +52,14 @@ func PrintMarkdown(cfg *config.Config, opts MarkdownOptions) error {
 	snapshot, err := GetSnapshot(cfg)
 	if err != nil {
 		return err
+	}
+	if sections, secErr := resolveMarkdownSections(opts.IncludeSections); secErr == nil && containsMarkdownSection(sections, "beads") {
+		limit := markdownBeadLimit(opts.MaxBeads)
+		if snapshot.BeadsSummary == nil || !snapshot.BeadsSummary.Available || (limit > BeadLimit && len(snapshot.BeadsSummary.ReadyPreview) == BeadLimit) {
+			if summary := bv.GetBeadsSummary("", limit); summary != nil && (summary.Available || snapshot.BeadsSummary == nil) {
+				snapshot.BeadsSummary = summary
+			}
+		}
 	}
 	return printMarkdownSnapshot(snapshot, opts)
 }
@@ -116,18 +124,38 @@ func renderMarkdownFromSnapshot(snapshot *SnapshotOutput, opts MarkdownOptions) 
 			writeSnapshotAlertsMarkdown(&sb, snapshot, opts)
 		case "attention":
 			writeSnapshotAttentionMarkdown(&sb, snapshot.AttentionSummary, opts)
+		case "beads":
+			writeSnapshotBeadsMarkdown(&sb, snapshot, opts)
 		}
 	}
 
 	return sb.String(), nil
 }
 
+// ValidMarkdownSections returns the canonical list of section names accepted by
+// --robot-markdown (--md-sections / --sections).
+func ValidMarkdownSections() []string {
+	base := markdownSurfaceSections()
+	valid := make([]string, 0, len(base)+1)
+	hasBeads := false
+	for _, section := range base {
+		valid = append(valid, section)
+		if section == "beads" {
+			hasBeads = true
+		}
+	}
+	if !hasBeads {
+		valid = append(valid, "beads")
+	}
+	return valid
+}
+
 func resolveMarkdownSections(requested []string) ([]string, error) {
-	supported := markdownSurfaceSections()
 	if len(requested) == 0 {
-		return append([]string(nil), supported...), nil
+		return append([]string(nil), markdownSurfaceSections()...), nil
 	}
 
+	supported := ValidMarkdownSections()
 	supportedSet := make(map[string]struct{}, len(supported))
 	for _, section := range supported {
 		supportedSet[section] = struct{}{}
@@ -152,6 +180,25 @@ func resolveMarkdownSections(requested []string) ([]string, error) {
 		}
 	}
 	return ordered, nil
+}
+
+func containsMarkdownSection(sections []string, target string) bool {
+	for _, section := range sections {
+		if section == target {
+			return true
+		}
+	}
+	return false
+}
+
+func markdownBeadLimit(maxBeads int) int {
+	if maxBeads > 0 {
+		return maxBeads
+	}
+	if BeadLimit > 0 {
+		return BeadLimit
+	}
+	return 5
 }
 
 func markdownSurfaceSections() []string {
@@ -456,6 +503,141 @@ func writeFallbackWorkMarkdown(sb *strings.Builder, summary *bv.BeadsSummary, op
 		return
 	}
 	sb.WriteString("_Detailed work items unavailable in snapshot; showing shared summary counts only._\n\n")
+}
+
+// writeSnapshotBeadsMarkdown writes the beads section using snapshot.BeadsSummary
+// or falling back to bv.GetBeadsSummary("", limit), gracefully degrading when
+// br/bv are unavailable.
+func writeSnapshotBeadsMarkdown(sb *strings.Builder, snapshot *SnapshotOutput, opts MarkdownOptions) {
+	limit := markdownBeadLimit(opts.MaxBeads)
+	var beads *bv.BeadsSummary
+	if snapshot != nil {
+		beads = snapshot.BeadsSummary
+		if beads == nil && snapshot.Work != nil && snapshot.Work.Available {
+			beads = beadsSummaryFromWork(snapshot.Work, "", limit)
+		}
+	}
+	if beads == nil {
+		beads = bv.GetBeadsSummary("", limit)
+	}
+
+	if beads == nil || !beads.Available {
+		if opts.Compact {
+			sb.WriteString("### Beads: unavailable\n\n")
+			return
+		}
+		if beads != nil && strings.TrimSpace(beads.Reason) != "" {
+			fmt.Fprintf(sb, "### Beads\n_Beads summary unavailable: %s._\n\n", escapeMarkdownCell(beads.Reason, 160))
+		} else {
+			sb.WriteString("### Beads\n_Beads summary unavailable._\n\n")
+		}
+		return
+	}
+
+	if opts.Compact {
+		fmt.Fprintf(
+			sb,
+			"### Beads (total:%d open:%d ready:%d in_progress:%d blocked:%d closed:%d)\n",
+			beads.Total, beads.Open, beads.Ready, beads.InProgress, beads.Blocked, beads.Closed,
+		)
+		if len(beads.ReadyPreview) > 0 {
+			shown := limitBeadPreviews(beads.ReadyPreview, opts.MaxBeads)
+			parts := make([]string, 0, len(shown))
+			for _, b := range shown {
+				if strings.TrimSpace(b.Priority) != "" {
+					parts = append(parts, fmt.Sprintf("%s (%s)", b.ID, b.Priority))
+				} else {
+					parts = append(parts, b.ID)
+				}
+			}
+			fmt.Fprintf(sb, "- **Ready**: %s\n", strings.Join(parts, ", "))
+		}
+		if len(beads.InProgressList) > 0 {
+			shown := limitBeadsInProgress(beads.InProgressList, opts.MaxBeads)
+			parts := make([]string, 0, len(shown))
+			for _, b := range shown {
+				if strings.TrimSpace(b.Assignee) != "" {
+					parts = append(parts, fmt.Sprintf("%s→%s", b.ID, b.Assignee))
+				} else {
+					parts = append(parts, b.ID)
+				}
+			}
+			fmt.Fprintf(sb, "- **In Progress**: %s\n", strings.Join(parts, ", "))
+		}
+		sb.WriteString("\n")
+		return
+	}
+
+	sb.WriteString("### Beads\n")
+	sb.WriteString("| Total | Open | In Progress | Blocked | Ready | Closed |\n")
+	sb.WriteString("|---:|---:|---:|---:|---:|---:|\n")
+	fmt.Fprintf(sb, "| %d | %d | %d | %d | %d | %d |\n\n",
+		beads.Total, beads.Open, beads.InProgress, beads.Blocked, beads.Ready, beads.Closed)
+
+	if len(beads.ReadyPreview) > 0 {
+		shown := limitBeadPreviews(beads.ReadyPreview, opts.MaxBeads)
+		sb.WriteString("**Ready:**\n")
+		sb.WriteString("| ID | Priority | Title |\n")
+		sb.WriteString("|---|---|---|\n")
+		for _, b := range shown {
+			fmt.Fprintf(sb, "| %s | %s | %s |\n",
+				escapeMarkdownCell(b.ID, 32),
+				escapeMarkdownCell(b.Priority, 8),
+				escapeMarkdownCell(b.Title, 140))
+		}
+		totalReady := beads.Ready
+		if len(beads.ReadyPreview) > totalReady {
+			totalReady = len(beads.ReadyPreview)
+		}
+		if totalReady > len(shown) {
+			fmt.Fprintf(sb, "_Truncated: showing %d of %d ready beads._\n", len(shown), totalReady)
+		}
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString("_No ready beads._\n\n")
+	}
+
+	if len(beads.InProgressList) > 0 {
+		shown := limitBeadsInProgress(beads.InProgressList, opts.MaxBeads)
+		sb.WriteString("**In Progress:**\n")
+		sb.WriteString("| ID | Assignee | Title | Updated |\n")
+		sb.WriteString("|---|---|---|---|\n")
+		for _, b := range shown {
+			updated := ""
+			if !b.UpdatedAt.IsZero() {
+				updated = b.UpdatedAt.UTC().Format(time.RFC3339)
+			}
+			fmt.Fprintf(sb, "| %s | %s | %s | %s |\n",
+				escapeMarkdownCell(b.ID, 32),
+				escapeMarkdownCell(b.Assignee, 40),
+				escapeMarkdownCell(b.Title, 120),
+				escapeMarkdownCell(updated, 40))
+		}
+		totalInProg := beads.InProgress
+		if len(beads.InProgressList) > totalInProg {
+			totalInProg = len(beads.InProgressList)
+		}
+		if totalInProg > len(shown) {
+			fmt.Fprintf(sb, "_Truncated: showing %d of %d in-progress beads._\n", len(shown), totalInProg)
+		}
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString("_No in-progress beads._\n\n")
+	}
+}
+
+func limitBeadPreviews(items []bv.BeadPreview, max int) []bv.BeadPreview {
+	if max <= 0 || len(items) <= max {
+		return items
+	}
+	return items[:max]
+}
+
+func limitBeadsInProgress(items []bv.BeadInProgress, max int) []bv.BeadInProgress {
+	if max <= 0 || len(items) <= max {
+		return items
+	}
+	return items[:max]
 }
 
 func writeSnapshotAlertsMarkdown(sb *strings.Builder, snapshot *SnapshotOutput, opts MarkdownOptions) {

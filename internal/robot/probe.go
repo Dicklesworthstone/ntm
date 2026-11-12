@@ -690,7 +690,7 @@ func probeResolvedPane(session string, targetPane tmux.Pane, multiWindow bool, s
 	}
 
 	if err := validateProbePane(targetPane); err != nil {
-		code, hint := ErrCodeNotImplemented, agent.GrokPromptDeliveryCapabilityHint
+		code, hint := ErrCodeNotImplemented, agent.PromptDeliveryCapabilityHint
 		if errors.Is(err, ErrProbeTargetChanged) {
 			code, hint = ErrCodePaneNotFound, "Inspect current pane identities before retrying the probe"
 		}
@@ -976,7 +976,7 @@ func GetProbeSession(opts ProbeSessionOptions) (*ProbeSessionOutput, int) {
 				output.RobotResponse = NewErrorResponse(err, ErrCodePaneNotFound, "Select live, non-service panes")
 				return output, 1
 			}
-			output.RobotResponse = NewErrorResponse(err, ErrCodeNotImplemented, agent.GrokPromptDeliveryCapabilityHint)
+			output.RobotResponse = NewErrorResponse(err, ErrCodeNotImplemented, agent.PromptDeliveryCapabilityHint)
 			return output, 2
 		}
 		if canonical := target.physical.Type.Canonical(); opts.Flags.Method == ProbeMethodWakePing && (canonical == tmux.AgentUser || !canonical.IsValid()) {

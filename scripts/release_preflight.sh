@@ -30,11 +30,10 @@
 #   vX.Y.Z | X.Y.Z     full pre-flight for that tag (DSR step 0); also asserts
 #                      the VERSION file matches the tag
 #
-# goreleaser adaptation (recorded on the bead): CI has no goreleaser binary,
-# so the dry-run replicates the `goreleaser --snapshot` stamp check by
-# building with the identical ldflags -X target (see the ntm-binary probe in
-# release_artifacts.toml) and asserting .goreleaser.yaml still stamps
-# internal/cli.Version.
+# DSR build adaptation (bd-rc-track-d-release-docs-3ho85.1): goreleaser is
+# retired (AGENTS.md); release metadata and build lockstep are verified solely
+# against release_artifacts.toml, VERSION, Makefile, and install.sh (zero
+# dependency on .goreleaser.yaml).
 set -u
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -177,13 +176,39 @@ $out"
 }
 
 # ---------------------------------------------------------------------------
-# goreleaser lockstep asserts against the REAL release config (dry-run + full).
-check_goreleaser_lockstep() {
-  if ! grep -q 'internal/cli\.Version={{\.Version}}' "$REPO_ROOT/.goreleaser.yaml"; then
-    flunk '.goreleaser.yaml no longer stamps internal/cli.Version — the ntm-binary probe and "ntm version" would drift from the tag'
+# DSR build lockstep asserts against Makefile + install.sh + release_artifacts.toml
+# with zero dependency on .goreleaser.yaml (bd-rc-track-d-release-docs-3ho85.1).
+check_dsr_build_lockstep() {
+  local root="${1:-$REPO_ROOT}"
+  if [ ! -f "$root/Makefile" ]; then
+    flunk "Makefile missing at $root/Makefile"
+    return 1
   fi
-  if ! grep -q '^project_name: ntm$' "$REPO_ROOT/.goreleaser.yaml"; then
-    flunk ".goreleaser.yaml project_name changed — install.sh asset resolution (BIN_NAME=ntm) would break"
+  if ! grep -q 'internal/cli\.Version=\$(VERSION)' "$root/Makefile"; then
+    flunk 'Makefile no longer stamps internal/cli.Version=$(VERSION) — DSR builds and "ntm version" would drift from the tag'
+  fi
+  local os arch
+  for os in darwin linux; do
+    for arch in amd64 arm64; do
+      if ! grep -qE "GOOS=${os}[[:space:]]+GOARCH=${arch}" "$root/Makefile"; then
+        flunk "Makefile build-all missing DSR target GOOS=${os} GOARCH=${arch}"
+      fi
+    done
+  done
+  if [ ! -f "$root/install.sh" ] || ! grep -q 'BIN_NAME="ntm"' "$root/install.sh"; then
+    flunk 'install.sh missing BIN_NAME="ntm" asset resolution contract'
+  fi
+}
+
+check_tag_reality_audit() {
+  local root="$1" tag="$2"
+  if [ "${NTM_PREFLIGHT_SKIP_REALITY_AUDIT:-0}" = "1" ]; then
+    say "skipping docs/reality/<tag> check (NTM_PREFLIGHT_SKIP_REALITY_AUDIT=1)"
+    return 0
+  fi
+  local norm_tag="v${tag#v}"
+  if [ ! -f "$root/docs/reality/audit-${norm_tag}.md" ] || [ ! -f "$root/docs/reality/checklist-${norm_tag}.md" ]; then
+    flunk "missing fresh reality audit artifacts docs/reality/audit-${norm_tag}.md and docs/reality/checklist-${norm_tag}.md — run 'bash scripts/reality_audit.sh ${norm_tag}' before DSR release"
   fi
 }
 
@@ -216,7 +241,29 @@ self_test() {
   fi
   fail_count=$pre
 
-  say "--self-test OK (both canaries fired; known-good fixture passed)"
+  # Canary 4: DSR lockstep must pass WITHOUT .goreleaser.yaml and fail when Makefile loses Version stamp.
+  local dsr_tmp
+  dsr_tmp="$(mktemp -d)"
+  cp "$REPO_ROOT/Makefile" "$REPO_ROOT/install.sh" "$dsr_tmp/"
+  pre=$fail_count
+  check_dsr_build_lockstep "$dsr_tmp" >/dev/null 2>&1
+  if [ $fail_count -ne $pre ]; then
+    rm -rf "$dsr_tmp"
+    echo "release_preflight: CANARY FAILURE — check_dsr_build_lockstep failed when .goreleaser.yaml is absent" >&2
+    exit 1
+  fi
+  sed 's/internal\/cli\.Version=/internal\/cli.Broken=/' "$REPO_ROOT/Makefile" > "$dsr_tmp/Makefile"
+  pre=$fail_count
+  check_dsr_build_lockstep "$dsr_tmp" >/dev/null 2>&1
+  if [ $fail_count -eq $pre ]; then
+    rm -rf "$dsr_tmp"
+    echo "release_preflight: CANARY FAILURE — check_dsr_build_lockstep accepted Makefile missing Version stamp" >&2
+    exit 1
+  fi
+  fail_count=$pre
+  rm -rf "$dsr_tmp"
+
+  say "--self-test OK (all canaries fired; known-good and goreleaser-free fixtures passed)"
   exit 0
 }
 
@@ -242,6 +289,7 @@ case "$mode" in
     ;;
   *)
     expected="${mode#v}"
+    is_tag_mode=1
     say "full pre-flight for tag $mode (expected version $expected)"
     file_version="$(tr -d ' \n' < "$REPO_ROOT/VERSION")"
     if [ "$file_version" != "$expected" ]; then
@@ -250,7 +298,10 @@ case "$mode" in
     ;;
 esac
 
-check_goreleaser_lockstep
+check_dsr_build_lockstep "$REPO_ROOT"
+if [ "${is_tag_mode:-0}" -eq 1 ]; then
+  check_tag_reality_audit "$REPO_ROOT" "$expected"
+fi
 run_preflight "$REPO_ROOT" "$REPO_ROOT/release_artifacts.toml" "$expected" || true
 
 if [ $fail_count -gt 0 ]; then

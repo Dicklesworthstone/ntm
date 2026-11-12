@@ -165,15 +165,29 @@ func (c *OutputCapture) capturePane(pane string) (string, error) {
 
 func (c *OutputCapture) extractYAML(raw string) (string, bool) {
 	clean := status.StripANSI(raw)
-	parser := codeblock.NewParser().WithLanguageFilter([]string{"yaml"})
+	parser := codeblock.NewParser().WithLanguageFilter([]string{"yaml", "yml", "json"})
 	blocks := parser.Parse(clean)
 
 	if len(blocks) > 0 {
-		best := blocks[0].Content
+		// Prefer the latest schema-parseable block that is not an echoed prompt template.
+		for i := len(blocks) - 1; i >= 0; i-- {
+			content := blocks[i].Content
+			if strings.Contains(content, "{{mode_id}}") {
+				continue
+			}
+			if parsed, errs, err := c.validator.ParseNormalizeAndValidate(content, ""); err == nil && len(errs) == 0 && parsed != nil {
+				return content, true
+			}
+		}
+
+		best := blocks[len(blocks)-1].Content
 		bestValid := ""
 		bestValidLen := -1
 
 		for _, block := range blocks {
+			if strings.Contains(block.Content, "{{mode_id}}") {
+				continue
+			}
 			if _, err := c.validator.ParseYAML(block.Content); err == nil {
 				if len(block.Content) > bestValidLen {
 					bestValid = block.Content
@@ -191,7 +205,10 @@ func (c *OutputCapture) extractYAML(raw string) (string, bool) {
 	lines := strings.Split(clean, "\n")
 	for i, line := range lines {
 		if strings.HasPrefix(strings.TrimSpace(line), "thesis:") {
-			return strings.Join(lines[i:], "\n"), true
+			candidate := strings.Join(lines[i:], "\n")
+			if !strings.Contains(candidate, "Your one-sentence main insight or conclusion") {
+				return candidate, true
+			}
 		}
 	}
 

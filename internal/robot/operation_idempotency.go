@@ -30,6 +30,7 @@
 package robot
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -215,7 +216,9 @@ type operationClaimRequest struct {
 	Payload string
 	// Targets are the resolved targets, reported as outcome-unknown when a
 	// live claimant holds the operation.
-	Targets []string
+	Targets       []string
+	Store         *state.Store `json:"-"`
+	ExplicitStore bool         `json:"-"`
 }
 
 // operationClaimVerdict tells an actuation how to proceed after a claim.
@@ -257,7 +260,7 @@ func claimRobotOperation(req operationClaimRequest) operationClaimResult {
 		return operationClaimResult{Verdict: operationRefused, Response: resp, Info: info}
 	}
 
-	store := currentProjectionStore()
+	store := resolveProjectionStore(req.Store, req.ExplicitStore)
 	if store == nil {
 		return refuse(NewErrorResponse(
 			fmt.Errorf("idempotent %s requires the runtime projection store", req.Kind),
@@ -301,6 +304,13 @@ func claimRobotOperation(req operationClaimRequest) operationClaimResult {
 	if stored.Status == state.SendOperationCompleted {
 		return operationClaimResult{Verdict: operationReplay, Record: stored}
 	}
+	if stored.Status == state.SendOperationCanceled {
+		return refuse(NewErrorResponse(
+			fmt.Errorf("operation '%s' was canceled before dispatch", req.OperationID),
+			"OPERATION_CANCELED",
+			"Use a fresh operation ID if you want to dispatch this actuation now",
+		), operationInfoFromRecord(stored, false))
+	}
 
 	staleBefore := time.Now().UTC().Add(-operationStaleClaimWindow)
 	if stored.DispatchStartedAt == nil && stored.CreatedAt.Before(staleBefore) {
@@ -332,6 +342,13 @@ func claimRobotOperation(req operationClaimRequest) operationClaimResult {
 			}
 			if stored.Status == state.SendOperationCompleted {
 				return operationClaimResult{Verdict: operationReplay, Record: stored}
+			}
+			if stored.Status == state.SendOperationCanceled {
+				return refuse(NewErrorResponse(
+					fmt.Errorf("operation '%s' was canceled before dispatch", req.OperationID),
+					"OPERATION_CANCELED",
+					"Use a fresh operation ID if you want to dispatch this actuation now",
+				), operationInfoFromRecord(stored, false))
 			}
 		}
 	}
@@ -524,4 +541,345 @@ func PrintSendReceipt(operationID string) error {
 		return err
 	}
 	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot send-receipt failed")
+}
+
+// ActionStatusOutput is the unified request/operation inspection output for
+// --robot-action-status and --robot-wait-request (docs/robot-request-identity.md).
+type ActionStatusOutput struct {
+	RobotResponse
+	RequestID         string                   `json:"request_id"`
+	Source            string                   `json:"source,omitempty"` // send_operation | wait_handle
+	Kind              string                   `json:"kind,omitempty"`   // send | interrupt | wait
+	Session           string                   `json:"session,omitempty"`
+	Status            string                   `json:"status,omitempty"` // in_progress | completed | canceled
+	Terminal          bool                     `json:"terminal"`
+	Cancellable       bool                     `json:"cancellable"`
+	CreatedAt         string                   `json:"created_at,omitempty"`
+	DispatchStartedAt string                   `json:"dispatch_started_at,omitempty"`
+	CompletedAt       string                   `json:"completed_at,omitempty"`
+	WaitedMs          int64                    `json:"waited_ms,omitempty"`
+	Warnings          []string                 `json:"warnings,omitempty"`
+	Operation         *OperationInfo           `json:"operation,omitempty"`
+	Outcome           *SendReceiptOutcome      `json:"outcome,omitempty"`
+	InterruptOutcome  *InterruptReceiptOutcome `json:"interrupt_outcome,omitempty"`
+}
+
+// WaitRequestOptions configures --robot-wait-request polling.
+type WaitRequestOptions struct {
+	RequestID    string
+	Timeout      time.Duration
+	PollInterval time.Duration
+}
+
+// CancelRequestOutput is the structured output for --robot-cancel-request.
+type CancelRequestOutput struct {
+	RobotResponse
+	RequestID   string         `json:"request_id"`
+	Source      string         `json:"source,omitempty"`
+	Kind        string         `json:"kind,omitempty"`
+	Session     string         `json:"session,omitempty"`
+	Status      string         `json:"status,omitempty"`
+	Canceled    bool           `json:"canceled"`
+	CompletedAt string         `json:"completed_at,omitempty"`
+	Operation   *OperationInfo `json:"operation,omitempty"`
+}
+
+// GetActionStatus inspects any durable robot operation or wait handle by ID.
+func GetActionStatus(requestID string) (*ActionStatusOutput, error) {
+	requestID = strings.TrimSpace(requestID)
+	output := &ActionStatusOutput{
+		RobotResponse: NewRobotResponse(true),
+		RequestID:     requestID,
+	}
+	if requestID == "" {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("request ID is required"),
+			ErrCodeInvalidFlag,
+			"Pass --robot-action-status=OP_ID or --robot-action-status --request-id=OP_ID",
+		)
+		return output, nil
+	}
+
+	store := currentProjectionStore()
+	if store == nil {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("request status inspection requires the runtime projection store"),
+			ErrCodeNotImplemented,
+			"The runtime state store is unavailable in this invocation",
+		)
+		return output, nil
+	}
+
+	ops, err := store.GetSendOperationsByID(requestID)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Failed to read operation record")
+		return output, nil
+	}
+	if len(ops) > 0 {
+		op := &ops[0]
+		if len(ops) > 1 {
+			sessions := make([]string, 0, len(ops))
+			for _, other := range ops {
+				sessions = append(sessions, other.SessionName)
+			}
+			output.Warnings = append(output.Warnings, fmt.Sprintf(
+				"request ID %q exists in %d sessions (%s); showing the most recent (%s)",
+				requestID, len(ops), strings.Join(sessions, ", "), op.SessionName,
+			))
+		}
+		kind := operationRecordKind(op)
+		output.Source = "send_operation"
+		output.Kind = kind
+		output.Session = op.SessionName
+		output.Status = op.Status
+		output.Terminal = op.Status == state.SendOperationCompleted || op.Status == state.SendOperationCanceled
+		output.Cancellable = op.Status == state.SendOperationInProgress && op.DispatchStartedAt == nil
+		output.CreatedAt = FormatTimestamp(op.CreatedAt)
+		if op.DispatchStartedAt != nil {
+			output.DispatchStartedAt = FormatTimestamp(*op.DispatchStartedAt)
+		}
+		if op.CompletedAt != nil {
+			output.CompletedAt = FormatTimestamp(*op.CompletedAt)
+		}
+		output.Operation = operationInfoFromRecord(op, false)
+		if op.Status == state.SendOperationCompleted && op.OutcomeJSON != "" {
+			var decodeErr error
+			switch kind {
+			case state.OperationKindSend:
+				output.Outcome, decodeErr = sendReceiptOutcomeFromJSON(op.OutcomeJSON)
+			case state.OperationKindInterrupt:
+				output.InterruptOutcome, decodeErr = interruptReceiptOutcomeFromJSON(op.OutcomeJSON)
+			}
+			if decodeErr != nil {
+				output.Warnings = append(output.Warnings, fmt.Sprintf("recorded outcome could not be decoded: %v", decodeErr))
+			}
+		} else if op.Status == state.SendOperationInProgress && op.DispatchStartedAt != nil &&
+			op.CreatedAt.Before(time.Now().UTC().Add(-operationStaleClaimWindow)) {
+			output.Hint = unresolvedOperationHint(op.OperationID)
+		}
+		return output, nil
+	}
+
+	waitHandle, err := store.GetRobotWaitHandle(requestID)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Failed to read wait handle")
+		return output, nil
+	}
+	if waitHandle != nil {
+		output.Source = "wait_handle"
+		output.Kind = "wait"
+		output.Session = waitHandle.SessionName
+		output.CreatedAt = FormatTimestamp(waitHandle.CreatedAt)
+		switch {
+		case waitHandle.CanceledAt != nil:
+			output.Status = state.SendOperationCanceled
+			output.Terminal = true
+			output.CompletedAt = FormatTimestamp(*waitHandle.CanceledAt)
+		case waitHandle.CompletedAt != nil:
+			output.Status = state.SendOperationCompleted
+			output.Terminal = true
+			output.CompletedAt = FormatTimestamp(*waitHandle.CompletedAt)
+		default:
+			output.Status = state.SendOperationInProgress
+			output.Terminal = false
+			output.Cancellable = true
+		}
+		return output, nil
+	}
+
+	output.RobotResponse = NewErrorResponse(
+		fmt.Errorf("request '%s' not found", requestID),
+		ErrCodeNotFound,
+		"Unknown request/operation ID; pass an --op-id from --robot-send/--robot-interrupt, a REST Idempotency-Key, or a wait_id from --robot-wait",
+	)
+	return output, nil
+}
+
+// PrintActionStatus executes --robot-action-status.
+func PrintActionStatus(requestID string) error {
+	output, err := GetActionStatus(requestID)
+	if err != nil {
+		return err
+	}
+	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot action-status failed")
+}
+
+// GetWaitRequest blocks until a durable operation or wait handle reaches a
+// terminal state, or returns TIMEOUT when opts.Timeout elapses.
+func GetWaitRequest(ctx context.Context, opts WaitRequestOptions) (*ActionStatusOutput, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	poll := opts.PollInterval
+	if poll <= 0 {
+		poll = 100 * time.Millisecond
+	}
+
+	started := time.Now()
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	for {
+		status, err := GetActionStatus(opts.RequestID)
+		if err != nil {
+			return nil, err
+		}
+		status.WaitedMs = time.Since(started).Milliseconds()
+		if !status.Success || status.Terminal {
+			return status, nil
+		}
+
+		timer := time.NewTimer(poll)
+		select {
+		case <-waitCtx.Done():
+			timer.Stop()
+			status.WaitedMs = time.Since(started).Milliseconds()
+			if errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
+				status.RobotResponse = NewErrorResponse(
+					fmt.Errorf("timed out after %s waiting for request '%s' (status=%s)", timeout, strings.TrimSpace(opts.RequestID), status.Status),
+					ErrCodeTimeout,
+					fmt.Sprintf("Re-check with --robot-action-status=%s or increase --timeout", strings.TrimSpace(opts.RequestID)),
+				)
+			} else {
+				status.RobotResponse = NewErrorResponse(
+					waitCtx.Err(),
+					ErrCodeInternalError,
+					"Wait interrupted before request reached a terminal state",
+				)
+			}
+			return status, nil
+		case <-timer.C:
+		}
+	}
+}
+
+// PrintWaitRequest executes --robot-wait-request.
+func PrintWaitRequest(ctx context.Context, opts WaitRequestOptions) error {
+	output, err := GetWaitRequest(ctx, opts)
+	if err != nil {
+		return err
+	}
+	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot wait-request failed")
+}
+
+// GetCancelRequest cancels a pre-dispatch durable operation claim or an active
+// --robot-wait handle, refusing safely if dispatch already crossed the pane
+// mutation boundary or the request is already terminal.
+func GetCancelRequest(requestID string) (*CancelRequestOutput, error) {
+	requestID = strings.TrimSpace(requestID)
+	output := &CancelRequestOutput{
+		RobotResponse: NewRobotResponse(true),
+		RequestID:     requestID,
+	}
+	if requestID == "" {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("request ID is required"),
+			ErrCodeInvalidFlag,
+			"Pass --robot-cancel-request=OP_ID or --robot-cancel-request --request-id=OP_ID",
+		)
+		return output, nil
+	}
+
+	store := currentProjectionStore()
+	if store == nil {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("request cancellation requires the runtime projection store"),
+			ErrCodeNotImplemented,
+			"The runtime state store is unavailable in this invocation",
+		)
+		return output, nil
+	}
+
+	now := time.Now().UTC()
+	op, canceled, err := store.CancelSendOperationByID(requestID, now)
+	if errors.Is(err, state.ErrSendOperationDispatched) && op != nil {
+		output.Source = "send_operation"
+		output.Kind = operationRecordKind(op)
+		output.Session = op.SessionName
+		output.Status = op.Status
+		output.Operation = operationInfoFromRecord(op, false)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("request '%s' already started dispatch and cannot be canceled safely", requestID),
+			"REQUEST_ALREADY_DISPATCHED",
+			unresolvedOperationHint(requestID),
+		)
+		return output, nil
+	}
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Failed to cancel operation")
+		return output, nil
+	}
+	if op != nil {
+		output.Source = "send_operation"
+		output.Kind = operationRecordKind(op)
+		output.Session = op.SessionName
+		output.Status = op.Status
+		if op.CompletedAt != nil {
+			output.CompletedAt = FormatTimestamp(*op.CompletedAt)
+		}
+		output.Operation = operationInfoFromRecord(op, false)
+		if !canceled {
+			output.RobotResponse = NewErrorResponse(
+				fmt.Errorf("request '%s' is already %s and cannot be canceled", requestID, op.Status),
+				"REQUEST_NOT_CANCELLABLE",
+				fmt.Sprintf("Inspect final state via --robot-action-status=%s", requestID),
+			)
+			return output, nil
+		}
+		output.Canceled = true
+		return output, nil
+	}
+
+	waitHandle, err := store.GetRobotWaitHandle(requestID)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Failed to read wait handle")
+		return output, nil
+	}
+	if waitHandle != nil {
+		output.Source = "wait_handle"
+		output.Kind = "wait"
+		output.Session = waitHandle.SessionName
+		waitCanceled, cancelErr := store.CancelRobotWaitHandle(requestID, now)
+		if cancelErr != nil {
+			output.RobotResponse = NewErrorResponse(cancelErr, ErrCodeInternalError, "Failed to cancel wait handle")
+			return output, nil
+		}
+		if !waitCanceled {
+			status := state.SendOperationCompleted
+			if waitHandle.CanceledAt != nil {
+				status = state.SendOperationCanceled
+			}
+			output.Status = status
+			output.RobotResponse = NewErrorResponse(
+				fmt.Errorf("wait '%s' is already %s and cannot be canceled", requestID, status),
+				"REQUEST_NOT_CANCELLABLE",
+				fmt.Sprintf("Inspect final state via --robot-action-status=%s", requestID),
+			)
+			return output, nil
+		}
+		output.Status = state.SendOperationCanceled
+		output.Canceled = true
+		output.CompletedAt = FormatTimestamp(now)
+		return output, nil
+	}
+
+	output.RobotResponse = NewErrorResponse(
+		fmt.Errorf("request '%s' not found", requestID),
+		ErrCodeNotFound,
+		"Unknown request/operation ID; pass an --op-id from --robot-send/--robot-interrupt, a REST Idempotency-Key, or a wait_id from --robot-wait",
+	)
+	return output, nil
+}
+
+// PrintCancelRequest executes --robot-cancel-request.
+func PrintCancelRequest(requestID string) error {
+	output, err := GetCancelRequest(requestID)
+	if err != nil {
+		return err
+	}
+	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot cancel-request failed")
 }

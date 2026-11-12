@@ -33,6 +33,10 @@ const (
 	// Pruning is contract-safe: the next observation of that scope mints a
 	// fresh epoch, which is exactly what consumers must handle anyway.
 	DefaultOutputSeqWatermarkRetention = 30 * 24 * time.Hour
+	// DefaultMaxAuditDecisionRows caps the durable audit_decision_log table
+	// during periodic runtime GC so non-expiring decisions cannot grow without
+	// bound across long-lived ntm serve/web instances.
+	DefaultMaxAuditDecisionRows = 10000
 )
 
 // RuntimeGCConfig defines the bounded cleanup windows for the runtime layer.
@@ -40,23 +44,25 @@ type RuntimeGCConfig struct {
 	ProjectionGracePeriod     time.Duration
 	SourceHealthRetention     time.Duration
 	ResolvedIncidentRetention time.Duration
+	MaxAuditDecisionRows      int
 }
 
 // RuntimeGCResult captures how many rows a runtime GC pass pruned.
 type RuntimeGCResult struct {
-	StaleSessions          int64 `json:"stale_sessions"`
-	StaleAgents            int64 `json:"stale_agents"`
-	StaleWork              int64 `json:"stale_work"`
-	StaleCoordination      int64 `json:"stale_coordination"`
-	StaleHandoff           int64 `json:"stale_handoff"`
-	StaleQuota             int64 `json:"stale_quota"`
-	StaleSourceHealth      int64 `json:"stale_source_health"`
-	ExpiredIncidents       int64 `json:"expired_incidents"`
-	ExpiredAttentionEvents int64 `json:"expired_attention_events"`
-	ExpiredAuditEvents     int64 `json:"expired_audit_events"`
-	ExpiredAuditDecisions  int64 `json:"expired_audit_decisions"`
-	ExpiredSendOperations  int64 `json:"expired_send_operations"`
-	ExpiredOutputSeqRows   int64 `json:"expired_output_seq_rows"`
+	StaleSessions           int64 `json:"stale_sessions"`
+	StaleAgents             int64 `json:"stale_agents"`
+	StaleWork               int64 `json:"stale_work"`
+	StaleCoordination       int64 `json:"stale_coordination"`
+	StaleHandoff            int64 `json:"stale_handoff"`
+	StaleQuota              int64 `json:"stale_quota"`
+	StaleSourceHealth       int64 `json:"stale_source_health"`
+	ExpiredIncidents        int64 `json:"expired_incidents"`
+	ExpiredAttentionEvents  int64 `json:"expired_attention_events"`
+	ExpiredAuditEvents      int64 `json:"expired_audit_events"`
+	ExpiredAuditDecisions   int64 `json:"expired_audit_decisions"`
+	CompactedAuditDecisions int64 `json:"compacted_audit_decisions"`
+	ExpiredSendOperations   int64 `json:"expired_send_operations"`
+	ExpiredOutputSeqRows    int64 `json:"expired_output_seq_rows"`
 }
 
 func normalizeRuntimeGCConfig(cfg RuntimeGCConfig) RuntimeGCConfig {
@@ -68,6 +74,9 @@ func normalizeRuntimeGCConfig(cfg RuntimeGCConfig) RuntimeGCConfig {
 	}
 	if cfg.ResolvedIncidentRetention <= 0 {
 		cfg.ResolvedIncidentRetention = DefaultResolvedIncidentRetention
+	}
+	if cfg.MaxAuditDecisionRows == 0 {
+		cfg.MaxAuditDecisionRows = DefaultMaxAuditDecisionRows
 	}
 	return cfg
 }
@@ -619,6 +628,37 @@ func (s *Store) CompleteRobotWaitHandle(id string, completedAt time.Time) error 
 		return fmt.Errorf("complete robot wait handle: %w", err)
 	}
 	return nil
+}
+
+// GetRobotWaitHandle returns one durable robot wait handle by ID, or nil when unknown.
+func (s *Store) GetRobotWaitHandle(id string) (*RobotWaitHandle, error) {
+	if id == "" {
+		return nil, nil
+	}
+	var (
+		h           RobotWaitHandle
+		canceledAt  sql.NullTime
+		completedAt sql.NullTime
+	)
+	err := s.db.QueryRow(
+		`SELECT id, session_name, created_at, canceled_at, completed_at FROM robot_wait_handles WHERE id = ?`,
+		id,
+	).Scan(&h.ID, &h.SessionName, &h.CreatedAt, &canceledAt, &completedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get robot wait handle: %w", err)
+	}
+	if canceledAt.Valid {
+		t := canceledAt.Time.UTC()
+		h.CanceledAt = &t
+	}
+	if completedAt.Valid {
+		t := completedAt.Time.UTC()
+		h.CompletedAt = &t
+	}
+	return &h, nil
 }
 
 // UpsertRuntimeAgent inserts or updates a runtime agent projection in an existing transaction.
@@ -1412,6 +1452,7 @@ func (s *Store) GCStaleRuntimeData(cfg RuntimeGCConfig) (RuntimeGCResult, error)
 
 // RunGC performs the bounded runtime cleanup pass used by periodic maintenance loops.
 func (s *Store) RunGC(cfg RuntimeGCConfig) (RuntimeGCResult, error) {
+	cfg = normalizeRuntimeGCConfig(cfg)
 	result, err := s.GCStaleRuntimeData(cfg)
 	if err != nil {
 		return result, err
@@ -1427,6 +1468,11 @@ func (s *Store) RunGC(cfg RuntimeGCConfig) (RuntimeGCResult, error) {
 	}
 	if result.ExpiredAuditDecisions, err = s.GCExpiredAuditDecisions(); err != nil {
 		return result, err
+	}
+	if cfg.MaxAuditDecisionRows > 0 {
+		if result.CompactedAuditDecisions, err = s.CompactAuditDecisionLog(cfg.MaxAuditDecisionRows); err != nil {
+			return result, err
+		}
 	}
 	if result.ExpiredSendOperations, err = s.GCCompletedSendOperations(0); err != nil {
 		return result, err
@@ -2989,13 +3035,25 @@ func recordAuditDecisionExec(exec sqlExecer, decision *AuditDecision) (int64, er
 		decision.DecisionAt = time.Now().UTC()
 	}
 
+	var evidenceJSON any
+	if decision.Evidence != nil {
+		if decision.Evidence.SchemaVersion == "" {
+			decision.Evidence.SchemaVersion = "evidence_ledger.v1"
+		}
+		encoded, marshalErr := json.Marshal(decision.Evidence)
+		if marshalErr != nil {
+			return 0, fmt.Errorf("marshal decision evidence ledger: %w", marshalErr)
+		}
+		evidenceJSON = string(encoded)
+	}
+
 	result, err := exec.Exec(`
 		INSERT INTO audit_decision_log (
 			decision_type, decision_at, actor_type, actor_id,
-			entity_type, entity_id, reason, expires_at, audit_event_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			entity_type, entity_id, reason, evidence_json, expires_at, audit_event_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		decision.DecisionType, decision.DecisionAt, decision.ActorType, nullableString(decision.ActorID),
-		decision.EntityType, decision.EntityID, nullableString(decision.Reason), decision.ExpiresAt, decision.AuditEventID,
+		decision.EntityType, decision.EntityID, nullableString(decision.Reason), evidenceJSON, decision.ExpiresAt, decision.AuditEventID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("record audit decision: %w", err)
@@ -3020,33 +3078,63 @@ func (tx *Tx) RecordAuditDecision(decision *AuditDecision) (int64, error) {
 	return recordAuditDecisionExec(tx.tx, decision)
 }
 
-// GetDecisionHistory returns compact decision history for an entity.
+// GetDecisionHistory returns compact decision history filtered optionally by entityType and/or entityID.
 func (s *Store) GetDecisionHistory(entityType, entityID string, limit int) ([]AuditDecision, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`
+	if limit <= 0 {
+		limit = 100
+	} else if limit > DefaultMaxAuditDecisionRows {
+		limit = DefaultMaxAuditDecisionRows
+	}
+
+	entityType = strings.TrimSpace(entityType)
+	entityID = strings.TrimSpace(entityID)
+
+	query := `
 		SELECT id, decision_type, decision_at, actor_type, COALESCE(actor_id, ''),
-			entity_type, entity_id, COALESCE(reason, ''), expires_at, audit_event_id
-		FROM audit_decision_log
-		WHERE entity_type = ? AND entity_id = ?
-		ORDER BY decision_at DESC, id DESC
-		LIMIT ?`, entityType, entityID, limit)
+			entity_type, entity_id, COALESCE(reason, ''), COALESCE(evidence_json, ''), expires_at, audit_event_id
+		FROM audit_decision_log`
+	var clauses []string
+	var args []any
+	if entityType != "" {
+		clauses = append(clauses, "entity_type = ?")
+		args = append(args, entityType)
+	}
+	if entityID != "" {
+		clauses = append(clauses, "entity_id = ?")
+		args = append(args, entityID)
+	}
+	if len(clauses) > 0 {
+		query += "\n\t\tWHERE " + strings.Join(clauses, " AND ")
+	}
+	query += "\n\t\tORDER BY decision_at DESC, id DESC\n\t\tLIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("get decision history: %w", err)
 	}
 	defer rows.Close()
 
-	var decisions []AuditDecision
+	decisions := make([]AuditDecision, 0)
 	for rows.Next() {
 		var decision AuditDecision
+		var evidenceRaw string
 		var auditEventID sql.NullInt64
 		if err := rows.Scan(
 			&decision.ID, &decision.DecisionType, &decision.DecisionAt, &decision.ActorType,
 			&decision.ActorID, &decision.EntityType, &decision.EntityID, &decision.Reason,
-			&decision.ExpiresAt, &auditEventID,
+			&evidenceRaw, &decision.ExpiresAt, &auditEventID,
 		); err != nil {
 			return nil, fmt.Errorf("scan audit decision: %w", err)
+		}
+		if evidenceRaw != "" {
+			var ledger EvidenceLedger
+			if err := json.Unmarshal([]byte(evidenceRaw), &ledger); err == nil {
+				decision.Evidence = &ledger
+			}
 		}
 		if auditEventID.Valid {
 			decision.AuditEventID = &auditEventID.Int64
@@ -3491,7 +3579,93 @@ func (s *Store) GetSendOperationsByID(operationID string) ([]SendOperation, erro
 	return ops, rows.Err()
 }
 
-// GCCompletedSendOperations prunes completed operation records older than
+// ErrSendOperationDispatched reports that an operation already crossed the
+// dispatch boundary (dispatch_started_at IS NOT NULL), so NTM cannot cancel it
+// without risking lying about input already delivered to a pane.
+var ErrSendOperationDispatched = errors.New("send operation already started dispatch and cannot be canceled")
+
+// CancelSendOperationByID cancels the newest matching pre-dispatch operation
+// claim (status == in_progress && dispatch_started_at IS NULL), fencing out any
+// concurrent claimant via the status transition to SendOperationCanceled.
+// Returns (nil, false, nil) if unknown, (op, false, nil) if already terminal,
+// or (op, false, ErrSendOperationDispatched) if dispatch already started.
+func (s *Store) CancelSendOperationByID(operationID string, canceledAt time.Time) (*SendOperation, bool, error) {
+	if operationID == "" {
+		return nil, false, fmt.Errorf("cancel send operation: operation ID is required")
+	}
+	if canceledAt.IsZero() {
+		canceledAt = time.Now().UTC()
+	} else {
+		canceledAt = canceledAt.UTC()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rows, err := s.db.Query(`SELECT `+sendOperationSelectColumns+`
+		FROM send_operations WHERE operation_id = ?
+		ORDER BY created_at DESC`,
+		operationID,
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("query send operation for cancel: %w", err)
+	}
+	var ops []SendOperation
+	for rows.Next() {
+		op, scanErr := scanSendOperation(rows)
+		if scanErr != nil {
+			rows.Close()
+			return nil, false, fmt.Errorf("scan send operation for cancel: %w", scanErr)
+		}
+		ops = append(ops, *op)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, false, err
+	}
+	rows.Close()
+	if len(ops) == 0 {
+		return nil, false, nil
+	}
+
+	target := ops[0]
+	if target.Status != SendOperationInProgress {
+		return &target, false, nil
+	}
+	if target.DispatchStartedAt != nil {
+		return &target, false, ErrSendOperationDispatched
+	}
+
+	affected, err := execRowsAffected(s.db, `
+		UPDATE send_operations
+		SET status = ?, completed_at = ?
+		WHERE operation_id = ? AND session_name = ? AND claim_token = ?
+			AND status = ? AND dispatch_started_at IS NULL`,
+		"cancel send operation",
+		SendOperationCanceled, canceledAt,
+		target.OperationID, target.SessionName, target.ClaimToken,
+		SendOperationInProgress,
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	if affected == 1 {
+		target.Status = SendOperationCanceled
+		target.CompletedAt = &canceledAt
+		return &target, true, nil
+	}
+
+	updated, err := s.getSendOperationLocked(target.OperationID, target.SessionName)
+	if err != nil || updated == nil {
+		return nil, false, err
+	}
+	if updated.Status == SendOperationInProgress && updated.DispatchStartedAt != nil {
+		return updated, false, ErrSendOperationDispatched
+	}
+	return updated, false, nil
+}
+
+// GCCompletedSendOperations prunes completed or canceled operation records older than
 // the retention window so the receipt table stays bounded.
 func (s *Store) GCCompletedSendOperations(retention time.Duration) (int64, error) {
 	if retention <= 0 {
@@ -3503,8 +3677,8 @@ func (s *Store) GCCompletedSendOperations(retention time.Duration) (int64, error
 	defer s.mu.Unlock()
 
 	return execRowsAffected(s.db,
-		`DELETE FROM send_operations WHERE status = ? AND completed_at < ?`,
-		"gc completed send operations", SendOperationCompleted, cutoff)
+		`DELETE FROM send_operations WHERE status IN (?, ?) AND completed_at < ?`,
+		"gc completed send operations", SendOperationCompleted, SendOperationCanceled, cutoff)
 }
 
 func (s *Store) getSendOperationLocked(operationID, sessionName string) (*SendOperation, error) {

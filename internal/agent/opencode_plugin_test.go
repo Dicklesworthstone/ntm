@@ -214,3 +214,28 @@ func TestParser_OmpBuiltinClassifiesEarlierV18Chrome(t *testing.T) {
 		t.Fatalf("context window = %d (ok=%v), want 1M", window, ok)
 	}
 }
+
+func TestOpencodeContextUsageAndGrokStatusLineModel(t *testing.T) {
+	sidebar := strings.Join([]string{
+		"  ┃  step 073: check module                Context",
+		"  ┃  step 074: check module                14,200 tokens",
+		"  ┃  step 075: check module                11% used",
+		"  ┃  step 076: check module                $0.04 spent",
+	}, "\n")
+	pct, tok, ok := OpencodeContextUsage(sidebar)
+	if !ok || pct != 11 || tok != 14200 {
+		t.Fatalf("OpencodeContextUsage = (pct=%v, tok=%d, ok=%v), want (11, 14200, true)", pct, tok, ok)
+	}
+	state, err := NewParser().ParseWithHint(sidebar, AgentTypeOpencode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ContextRemaining == nil || *state.ContextRemaining != 89 || state.TokensUsed == nil || *state.TokensUsed != 14200 {
+		t.Fatalf("ParseWithHint(opencode) = remaining=%v tokens=%v, want 89 and 14200", state.ContextRemaining, state.TokensUsed)
+	}
+
+	grokFrame := "│ ❯                                      │\n╰─ Grok 4.6 (high) · always-approve ─╯\n"
+	if got := GrokStatusLineModel(grokFrame); got != "grok-4.6" {
+		t.Fatalf("GrokStatusLineModel = %q, want grok-4.6", got)
+	}
+}

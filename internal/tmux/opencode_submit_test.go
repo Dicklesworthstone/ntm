@@ -175,3 +175,48 @@ func TestVerifyOpencodeSubmission_LivePane(t *testing.T) {
 		}
 	})
 }
+
+func TestInterruptKeyForAgent_OpencodeUsesEscape(t *testing.T) {
+	for _, oc := range []AgentType{AgentOpencode, "oc", "opencode", "opencode-cli"} {
+		if got := InterruptKeyForAgent(oc); got != "Escape" {
+			t.Fatalf("InterruptKeyForAgent(%q) = %q, want Escape", oc, got)
+		}
+		if got := InterruptKeyLabel(oc); got != "Escape" {
+			t.Fatalf("InterruptKeyLabel(%q) = %q, want Escape", oc, got)
+		}
+	}
+	for _, ctrlC := range []AgentType{AgentClaude, AgentCodex, AgentGrok, AgentAntigravity} {
+		if got := InterruptKeyForAgent(ctrlC); got != "C-c" {
+			t.Fatalf("InterruptKeyForAgent(%q) = %q, want C-c", ctrlC, got)
+		}
+	}
+}
+
+func TestInspectComposerAndVisibleForDelivery_AntigravityAndOpencode(t *testing.T) {
+	agyIdle := "Antigravity\n\n  >\n\n  ? for shortcuts\n  Gemini 4 Argon (High)\n"
+	if !AntigravityComposerVisible(agyIdle) || !ComposerVisibleForDelivery(agyIdle, AgentAntigravity) {
+		t.Fatal("expected Antigravity idle composer to be visible")
+	}
+	if st := InspectComposer(agyIdle, AgentAntigravity); !st.MarkerVisible || st.HoldsText {
+		t.Fatalf("InspectComposer(agyIdle) = %+v, want MarkerVisible=true HoldsText=false", st)
+	}
+
+	agyDraft := "Antigravity\n\n  > fix the race condition\n\n  ? for shortcuts\n  Gemini 4 Argon (High)\n"
+	if st := InspectComposer(agyDraft, AgentAntigravity); !st.MarkerVisible || !st.HoldsText {
+		t.Fatalf("InspectComposer(agyDraft) = %+v, want MarkerVisible=true HoldsText=true", st)
+	}
+
+	agyTrust := "Do you trust the contents of this project?\n> Yes, I trust this folder\n  No, exit\n↑/↓ Navigate · enter Confirm"
+	if AntigravityComposerVisible(agyTrust) || InspectComposer(agyTrust, AgentAntigravity).MarkerVisible {
+		t.Fatal("Antigravity trust dialog must not match composer")
+	}
+
+	ocIdle := ompFixture(t, "opencode_idle.txt")
+	if st := InspectComposer(ocIdle, AgentOpencode); !st.MarkerVisible || st.HoldsText {
+		t.Fatalf("InspectComposer(ocIdle) = %+v, want MarkerVisible=true HoldsText=false", st)
+	}
+	ocDraft := ompFixture(t, "opencode_draft.txt")
+	if st := InspectComposer(ocDraft, AgentOpencode); !st.MarkerVisible || !st.HoldsText {
+		t.Fatalf("InspectComposer(ocDraft) = %+v, want MarkerVisible=true HoldsText=true", st)
+	}
+}

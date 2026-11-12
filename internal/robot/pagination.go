@@ -1,9 +1,18 @@
 package robot
 
-// PaginationOptions configures limit/offset pagination.
+import "github.com/Dicklesworthstone/ntm/internal/state"
+
+// PaginationOptions configures limit/offset pagination and optional request-scoped
+// runtime projection store selection.
 type PaginationOptions struct {
-	Limit  int
-	Offset int
+	Limit         int
+	Offset        int
+	Store         *state.Store `json:"-"`
+	ExplicitStore bool         `json:"-"`
+}
+
+func (opts PaginationOptions) resolveStore() *state.Store {
+	return resolveProjectionStore(opts.Store, opts.ExplicitStore)
 }
 
 // PaginationInfo describes pagination state for array outputs.

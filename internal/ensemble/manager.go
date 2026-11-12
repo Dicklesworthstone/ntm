@@ -1,6 +1,3 @@
-//go:build ensemble_experimental
-// +build ensemble_experimental
-
 package ensemble
 
 import (
@@ -12,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -70,6 +68,87 @@ func NewEnsembleManager() *EnsembleManager {
 		PaneLauncher:        swarm.NewPaneLauncher(),
 		PromptInjector:      swarm.NewPromptInjector(),
 		Logger:              slog.Default(),
+	}
+}
+
+// ConfigureAgentCommands wires explicit agent command overrides or custom [agents]
+// templates into PaneLauncher so ensemble panes launch configured binaries or mock scripts.
+func (m *EnsembleManager) ConfigureAgentCommands(agentCmd string, agentsCfg config.AgentConfig) {
+	if m == nil {
+		return
+	}
+	launcher := m.paneLauncher()
+	m.PaneLauncher = launcher
+	defaults := config.Default().Agents
+
+	launcher.BuildLaunchSpec = func(session string, pane swarm.PaneSpec) (*tmux.AgentLaunchSpec, error) {
+		tmpl := strings.TrimSpace(agentCmd)
+		if tmpl == "" {
+			canon := tmux.AgentType(pane.AgentType).Canonical()
+			switch canon {
+			case tmux.AgentClaude:
+				if c := strings.TrimSpace(agentsCfg.Claude); c != "" && c != strings.TrimSpace(defaults.Claude) {
+					tmpl = c
+				}
+			case tmux.AgentCodex:
+				if c := strings.TrimSpace(agentsCfg.Codex); c != "" && c != strings.TrimSpace(defaults.Codex) {
+					tmpl = c
+				}
+			case tmux.AgentGemini:
+				if c := strings.TrimSpace(agentsCfg.Gemini); c != "" && c != strings.TrimSpace(defaults.Gemini) {
+					tmpl = c
+				}
+			case tmux.AgentAntigravity:
+				if c := strings.TrimSpace(agentsCfg.Antigravity); c != "" && c != strings.TrimSpace(defaults.Antigravity) {
+					tmpl = c
+				}
+			case tmux.AgentGrok:
+				if c := strings.TrimSpace(agentsCfg.Grok); c != "" && c != strings.TrimSpace(defaults.Grok) {
+					tmpl = c
+				}
+			case tmux.AgentOllama:
+				if c := strings.TrimSpace(agentsCfg.Ollama); c != "" && c != strings.TrimSpace(defaults.Ollama) {
+					tmpl = c
+				}
+			case tmux.AgentCursor:
+				if c := strings.TrimSpace(agentsCfg.Cursor); c != "" && c != strings.TrimSpace(defaults.Cursor) {
+					tmpl = c
+				}
+			case tmux.AgentWindsurf:
+				if c := strings.TrimSpace(agentsCfg.Windsurf); c != "" && c != strings.TrimSpace(defaults.Windsurf) {
+					tmpl = c
+				}
+			case tmux.AgentAider:
+				if c := strings.TrimSpace(agentsCfg.Aider); c != "" && c != strings.TrimSpace(defaults.Aider) {
+					tmpl = c
+				}
+			case tmux.AgentOpencode:
+				if c := strings.TrimSpace(agentsCfg.Opencode); c != "" && c != strings.TrimSpace(defaults.Opencode) {
+					tmpl = c
+				}
+			case tmux.AgentOmp:
+				if c := strings.TrimSpace(agentsCfg.Omp); c != "" && c != strings.TrimSpace(defaults.Omp) {
+					tmpl = c
+				}
+			}
+		}
+		if tmpl == "" {
+			return nil, nil
+		}
+		rendered, err := config.GenerateAgentCommand(tmpl, config.AgentTemplateVars{
+			SessionName: session,
+			PaneIndex:   pane.Index,
+			ProjectDir:  pane.Project,
+			AgentType:   pane.AgentType,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &tmux.AgentLaunchSpec{
+			Version:   tmux.AgentLaunchSpecVersion,
+			AgentType: tmux.AgentType(pane.AgentType),
+			Command:   rendered,
+		}, nil
 	}
 }
 
@@ -200,10 +279,13 @@ func (m *EnsembleManager) SpawnEnsemble(ctx context.Context, cfg *EnsembleConfig
 
 	injector := m.ensembleInjector()
 	contextGenerator, cacheCfg := m.contextPackGenerator(cfg.ProjectDir, resolvedCfg.cache)
+	if resolvedCfg.budget.ContextReserveTokens > 0 {
+		contextGenerator.MaxTokens = resolvedCfg.budget.ContextReserveTokens
+	}
 	var sharedContext *ContextPack
 	if cacheCfg.ShareAcrossModes {
 		if pack, err := contextGenerator.Generate(cfg.Question, "", cacheCfg); err == nil {
-			sharedContext = pack
+			sharedContext = CapContextPackTokens(pack, resolvedCfg.budget.ContextReserveTokens)
 		} else {
 			logger.Warn("context pack generation failed", "session", cfg.SessionName, "error", err)
 		}
@@ -237,66 +319,109 @@ func (m *EnsembleManager) SpawnEnsemble(ctx context.Context, cfg *EnsembleConfig
 		)
 	}
 
-	for orderIndex, assignmentIndex := range order {
-		if timeboxExpired(deadline, time.Now()) {
-			skippedModes = append(skippedModes, markAssignmentsSkipped(
-				state.Assignments,
-				order[orderIndex:],
-				"skipped: total timeout reached before injection",
-			)...)
-			break
+	if deadline.IsZero() && cacheCfg.ShareAcrossModes {
+		batchAssignments := make([]ModeAssignment, 0, len(order))
+		for _, assignmentIndex := range order {
+			a := state.Assignments[assignmentIndex]
+			if target := targets[a.PaneName]; target != "" {
+				a.PaneName = target
+			}
+			state.Assignments[assignmentIndex].Status = AssignmentInjecting
+			batchAssignments = append(batchAssignments, a)
 		}
-
-		assignment := &state.Assignments[assignmentIndex]
-		mode := catalog.GetMode(assignment.ModeID)
-		if mode == nil {
-			err := fmt.Errorf("mode not found: %s", assignment.ModeID)
-			assignment.Status = AssignmentError
-			assignment.Error = err.Error()
-			injectErrors = append(injectErrors, err)
-			continue
-		}
-
-		target := targets[assignment.PaneName]
-		if target == "" {
-			target = assignment.PaneName
-		}
-
-		assignment.Status = AssignmentInjecting
-		contextPack := sharedContext
-		if contextPack == nil && !cacheCfg.ShareAcrossModes {
-			if pack, err := contextGenerator.Generate(cfg.Question, assignment.ModeID, cacheCfg); err == nil {
-				contextPack = pack
-			} else {
-				logger.Warn("context pack generation failed", "session", cfg.SessionName, "mode", assignment.ModeID, "error", err)
+		batchRes, batchErr := injector.InjectEnsemble(
+			batchAssignments,
+			cfg.Question,
+			catalog,
+			sharedContext,
+			resolvedCfg.budget.MaxTokensPerMode,
+		)
+		if batchErr != nil && (batchRes == nil || len(batchRes.Results) == 0) {
+			injectErrors = append(injectErrors, batchErr)
+			for _, assignmentIndex := range order {
+				state.Assignments[assignmentIndex].Status = AssignmentError
+				state.Assignments[assignmentIndex].Error = batchErr.Error()
+			}
+		} else if batchRes != nil {
+			for i, assignmentIndex := range order {
+				assignment := &state.Assignments[assignmentIndex]
+				if i < len(batchRes.Results) && batchRes.Results[i].Success {
+					assignment.Status = AssignmentActive
+					assignment.Error = ""
+					successes++
+				} else {
+					assignment.Status = AssignmentError
+					errMsg := "inject failed"
+					if i < len(batchRes.Results) && batchRes.Results[i].Error != "" {
+						errMsg = batchRes.Results[i].Error
+					}
+					assignment.Error = errMsg
+					injectErrors = append(injectErrors, fmt.Errorf("inject failed for %s: %s", assignment.PaneName, errMsg))
+				}
 			}
 		}
-		injResult, err := injector.InjectWithMode(
-			target,
-			mode,
-			cfg.Question,
-			assignment.AgentType,
-			contextPack,
-			resolvedCfg.budget.MaxTokensPerMode,
-			"",
-		)
-		if err != nil || injResult == nil || !injResult.Success {
-			assignment.Status = AssignmentError
-			if err != nil {
+	} else {
+		for orderIndex, assignmentIndex := range order {
+			if timeboxExpired(deadline, time.Now()) {
+				skippedModes = append(skippedModes, markAssignmentsSkipped(
+					state.Assignments,
+					order[orderIndex:],
+					"skipped: total timeout reached before injection",
+				)...)
+				break
+			}
+
+			assignment := &state.Assignments[assignmentIndex]
+			mode := catalog.GetMode(assignment.ModeID)
+			if mode == nil {
+				err := fmt.Errorf("mode not found: %s", assignment.ModeID)
+				assignment.Status = AssignmentError
 				assignment.Error = err.Error()
 				injectErrors = append(injectErrors, err)
-			} else if injResult != nil {
-				assignment.Error = injResult.Error
-				injectErrors = append(injectErrors, fmt.Errorf("inject failed for %s: %s", assignment.PaneName, injResult.Error))
-			} else {
-				assignment.Error = "inject failed"
-				injectErrors = append(injectErrors, fmt.Errorf("inject failed for %s", assignment.PaneName))
+				continue
 			}
-			continue
-		}
 
-		assignment.Status = AssignmentActive
-		successes++
+			target := targets[assignment.PaneName]
+			if target == "" {
+				target = assignment.PaneName
+			}
+
+			assignment.Status = AssignmentInjecting
+			contextPack := sharedContext
+			if contextPack == nil && !cacheCfg.ShareAcrossModes {
+				if pack, err := contextGenerator.Generate(cfg.Question, assignment.ModeID, cacheCfg); err == nil {
+					contextPack = CapContextPackTokens(pack, resolvedCfg.budget.ContextReserveTokens)
+				} else {
+					logger.Warn("context pack generation failed", "session", cfg.SessionName, "mode", assignment.ModeID, "error", err)
+				}
+			}
+			injResult, err := injector.InjectWithMode(
+				target,
+				mode,
+				cfg.Question,
+				assignment.AgentType,
+				contextPack,
+				resolvedCfg.budget.MaxTokensPerMode,
+				"",
+			)
+			if err != nil || injResult == nil || !injResult.Success {
+				assignment.Status = AssignmentError
+				if err != nil {
+					assignment.Error = err.Error()
+					injectErrors = append(injectErrors, err)
+				} else if injResult != nil {
+					assignment.Error = injResult.Error
+					injectErrors = append(injectErrors, fmt.Errorf("inject failed for %s: %s", assignment.PaneName, injResult.Error))
+				} else {
+					assignment.Error = "inject failed"
+					injectErrors = append(injectErrors, fmt.Errorf("inject failed for %s", assignment.PaneName))
+				}
+				continue
+			}
+
+			assignment.Status = AssignmentActive
+			successes++
+		}
 	}
 
 	state.Status = spawnCompletionStatus(false, successes, len(injectErrors), len(skippedModes))
@@ -496,6 +621,24 @@ func applyConfigOverrides(cfg *EnsembleConfig, resolved *resolvedEnsembleConfig)
 	if cfg.Synthesis.Strategy != "" {
 		resolved.synthesis.Strategy = cfg.Synthesis.Strategy
 	}
+	if cfg.Synthesis.MinConfidence > 0 {
+		resolved.synthesis.MinConfidence = cfg.Synthesis.MinConfidence
+	}
+	if cfg.Synthesis.MaxFindings > 0 {
+		resolved.synthesis.MaxFindings = cfg.Synthesis.MaxFindings
+	}
+	if cfg.Synthesis.IncludeRawOutputs {
+		resolved.synthesis.IncludeRawOutputs = true
+	}
+	if strings.TrimSpace(cfg.Synthesis.ConflictResolution) != "" {
+		resolved.synthesis.ConflictResolution = strings.TrimSpace(cfg.Synthesis.ConflictResolution)
+	}
+	if cfg.Synthesis.IncludeExplanation {
+		resolved.synthesis.IncludeExplanation = true
+	}
+	if cfg.Synthesis.MaxSynthesisTokens > 0 {
+		resolved.synthesis.MaxSynthesisTokens = cfg.Synthesis.MaxSynthesisTokens
+	}
 	if cfg.Budget.MaxTokensPerMode > 0 {
 		resolved.budget.MaxTokensPerMode = cfg.Budget.MaxTokensPerMode
 	}
@@ -504,6 +647,9 @@ func applyConfigOverrides(cfg *EnsembleConfig, resolved *resolvedEnsembleConfig)
 	}
 	if cfg.Budget.SynthesisReserveTokens > 0 {
 		resolved.budget.SynthesisReserveTokens = cfg.Budget.SynthesisReserveTokens
+	}
+	if resolved.budget.SynthesisReserveTokens > 0 && resolved.synthesis.MaxSynthesisTokens == 0 {
+		resolved.synthesis.MaxSynthesisTokens = resolved.budget.SynthesisReserveTokens
 	}
 	if cfg.Budget.ContextReserveTokens > 0 {
 		resolved.budget.ContextReserveTokens = cfg.Budget.ContextReserveTokens

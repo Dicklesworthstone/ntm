@@ -510,15 +510,19 @@ func TestRealCaptureZeroLines(t *testing.T) {
 	panes, _ := GetPanes(session)
 	paneID := panes[0].ID
 
-	// Request 0 lines - should still work (implementation may adjust)
+	_ = SendKeys(paneID, "printf 'LINE_ONE\\nLINE_TWO\\nLINE_THREE\\n'", true)
+	time.Sleep(200 * time.Millisecond)
+
+	// Request 0 lines - must capture visible pane viewport (not just top row -S -0)
 	output, err := CapturePaneOutput(paneID, 0)
 	if err != nil {
-		// Some implementations may reject 0 lines
-		t.Logf("0 lines request: %v", err)
-		return
+		t.Fatalf("0 lines capture failed: %v", err)
 	}
-
-	t.Logf("0 lines capture returned %d bytes", len(output))
+	for _, want := range []string{"LINE_ONE", "LINE_TWO", "LINE_THREE"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("CapturePaneOutput(0) missing visible viewport content %q; got:\n%s", want, output)
+		}
+	}
 }
 
 func TestRealCaptureNegativeLines(t *testing.T) {

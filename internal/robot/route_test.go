@@ -619,7 +619,7 @@ func TestGetRoute_AffinityRoutesToReservationHolder(t *testing.T) {
 		if _, err := tmux.DefaultClient.Run("respawn-pane", "-k", "-t", pane.ID, "cat"); err != nil {
 			t.Fatalf("respawn %s: %v", pane.ID, err)
 		}
-		if err := tmux.DefaultClient.SetPaneAgentType(pane.ID, tmux.AgentClaude); err != nil {
+		if err := tmux.DefaultClient.SetPaneAgentTypeContext(t.Context(), pane.ID, tmux.AgentClaude); err != nil {
 			t.Fatalf("record agent type on %s: %v", pane.ID, err)
 		}
 	}

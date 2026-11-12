@@ -316,17 +316,19 @@ func (e *Executor) executeOnFailureRecovery(ctx context.Context, step *Step, wor
 	if step == nil || len(step.OnFailure.Fallback) == 0 {
 		return failed
 	}
+	ctx = context.WithValue(ctx, reservationReleaseKey{}, false)
+	if delivery, exists := e.loadAgentDelivery(onFailureStepID(step.ID)); exists && delivery.Status != agentDeliveryNotSent {
+		// An accepted child cannot suppress a failure caused by changing its
+		// parent or its own materialized definition during recovery, nor can
+		// an unresolved/tampered parent receipt bypass validation here.
+		if err := e.validateOnFailureDelivery(ctx, step, delivery); err != nil {
+			return e.recordRecoveryFailure(failed, step.ID, err)
+		}
+	}
 	// Even a nonsuppressing fallback creates owned child evidence that can
 	// make an unresolved selector ineligible for explicit acceptance.
 	if e.hasUnresolvedCommandExecution(step) || e.hasUnresolvedCommandEvaluation(step) {
 		return failed
-	}
-	if delivery, exists := e.loadAgentDelivery(onFailureStepID(step.ID)); exists && delivery.Status != agentDeliveryNotSent {
-		// An accepted child cannot suppress a failure caused by changing its
-		// parent or its own materialized definition during recovery.
-		if err := e.validateOnFailureDelivery(ctx, step, delivery); err != nil {
-			return e.recordRecoveryFailure(failed, step.ID, err)
-		}
 	}
 	if err := e.admitRuntimeIDs(ctx, []string{onFailureStepID(step.ID)}); err != nil {
 		return e.recordRecoveryFailure(failed, step.ID, err)
@@ -683,7 +685,7 @@ func validateSuccessHookNativeBody(state *ExecutionState, step *Step, record Suc
 // not be materialized again. The materialized identity remains a separate,
 // stricter check before a pending body can be adopted in its original scope.
 // Caller holds stateMu when state belongs to a live executor.
-func successHookAuthoredHash(graph *DependencyGraph, state *ExecutionState, step *Step) (string, error) {
+func successHookAuthoredHash(graph *DependencyGraph, state *ExecutionState, step *Step, requireGraphOwner bool) (string, error) {
 	if graph == nil {
 		return commandDefinitionHash(step)
 	}
@@ -693,6 +695,9 @@ func successHookAuthoredHash(graph *DependencyGraph, state *ExecutionState, step
 	}
 	authored, found := resolve(step.ID)
 	if !found {
+		if !requireGraphOwner {
+			return commandDefinitionHash(step)
+		}
 		return "", successHookRecoveryError("parent %q has no authored workflow definition", step.ID)
 	}
 	definition := cloneStep(*authored)
@@ -785,7 +790,7 @@ func (e *Executor) prepareSuccessHooks(ctx context.Context, parent *Step, body S
 	e.stateMu.Lock()
 	e.varMu.Lock()
 	record, exists := e.state.SuccessHooks[parent.ID]
-	authoredHash, authoredErr := successHookAuthoredHash(e.graph, e.state, parent)
+	authoredHash, authoredErr := successHookAuthoredHash(e.graph, e.state, parent, exists)
 	if authoredErr != nil {
 		e.varMu.Unlock()
 		e.stateMu.Unlock()
@@ -845,7 +850,7 @@ func (e *Executor) loadSuccessHookBody(step *Step) (StepResult, bool, error) {
 	err := validateSuccessHookState(step.ID, record, e.state)
 	if err == nil {
 		var digest string
-		digest, err = successHookAuthoredHash(e.graph, e.state, step)
+		digest, err = successHookAuthoredHash(e.graph, e.state, step, true)
 		if err == nil && digest != record.DefinitionHash {
 			err = successHookRecoveryError("step %q authored definition changed after its body completed", step.ID)
 		}
@@ -1094,7 +1099,7 @@ func (e *Executor) runOnSuccessSteps(ctx context.Context, parent *Step, workflow
 		return nil
 	}
 
-	childCtx := withOnSuccessDepth(ctx, depth+1)
+	childCtx := context.WithValue(withOnSuccessDepth(ctx, depth+1), reservationReleaseKey{}, false)
 	for i := range parent.OnSuccess {
 		if err := e.stepAdmissionFailure(ctx); err != nil {
 			return err
@@ -1144,6 +1149,14 @@ func (e *Executor) runOnSuccessSteps(ctx context.Context, parent *Step, workflow
 		if exists && !shouldRerunStep(prior) && !restartSidecar {
 			if inFlight {
 				return successHookRecoveryError("completed hook %q still has in-flight evidence", child.ID)
+			}
+			if !e.runtimeIDAdmitted(child.ID) {
+				e.stateMu.Lock()
+				seedErr := e.seedStepAdmissionsLocked(workflow, e.graph)
+				e.stateMu.Unlock()
+				if seedErr != nil {
+					return seedErr
+				}
 			}
 			result = prior
 			if result.Status == StatusCompleted {
@@ -1677,17 +1690,6 @@ func (e *Executor) validateOnFailureDelivery(ctx context.Context, parent *Step, 
 			return err
 		}
 	}
-	child, _, err := e.recoveryStepFromFallback(ctx, parent)
-	if err != nil {
-		return err
-	}
-	digest, err := agentStepHash(child)
-	if err != nil {
-		return err
-	}
-	if record.Kind != StepKindTemplate || record.StepHash != digest {
-		return fmt.Errorf("saved failure recovery for %q belongs to a different materialized definition; refusing to repeat its parent or delivery", parent.ID)
-	}
 	if parent.Command != "" {
 		original, exists := e.loadCommandExecution(parent.ID)
 		if !exists {
@@ -1712,6 +1714,17 @@ func (e *Executor) validateOnFailureDelivery(ctx context.Context, parent *Step, 
 			original.StepHash != digest || original.StartedAt.After(record.StartedAt) {
 			return fmt.Errorf("failure recovery for %q no longer belongs to the original settled failed command; refusing to suppress or repeat it", parent.ID)
 		}
+	}
+	child, _, err := e.recoveryStepFromFallback(ctx, parent)
+	if err != nil {
+		return err
+	}
+	digest, err := agentStepHash(child)
+	if err != nil {
+		return err
+	}
+	if record.Kind != StepKindTemplate || record.StepHash != digest {
+		return fmt.Errorf("saved failure recovery for %q belongs to a different materialized definition; refusing to repeat its parent or delivery", parent.ID)
 	}
 	return nil
 }

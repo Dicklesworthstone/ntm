@@ -1,0 +1,14 @@
+# ci/allowlists/binary_bloat.txt — WS0 binary & archive bloat gate allowlist
+# (bd-rc-track-d-release-docs-3ho85.2 / GH #346).
+#
+# Format: <class>:<repo-relative-path><TAB><bead-id><TAB><reason>
+# Classes:
+#   binary:<path>    ELF, Mach-O, or PE/COFF executable tracked in git ls-files
+#   oversize:<path>  Non-binary tracked file > 2 MiB (excluding .beads/*.jsonl)
+#
+# Both entries below are pre-existing tracked binaries from GH #346 awaiting
+# explicit written operator confirmation under AGENTS.md Rule 1 before git rm.
+binary:cmd/ntm/ntm	bd-rc-track-d-release-docs-3ho85.2	pre-existing 59.8 MB ELF binary (GH #346); pending Rule-1 operator git rm approval
+binary:fakeshell	bd-rc-track-d-release-docs-3ho85.2	pre-existing 2.8 MB Mach-O arm64 binary (GH #346); replaced by e2e/fakeshell/main.go, pending Rule-1 operator git rm approval
+
+# permanent:

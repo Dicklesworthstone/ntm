@@ -165,7 +165,7 @@ export function handleWsEvent(queryClient: QueryClient, event: WSEvent): void {
   // Pane events
   if (topic.startsWith("panes:") || event_type.startsWith("pane.")) {
     // panes:sessionName:paneIdx
-    const match = topic.match(/^panes:([^:]+):(\d+)$/);
+    const match = topic.match(/^panes:(.+):(\d+)$/);
     if (match) {
       const [, sessionName, paneIdx] = match;
       const parsedPaneIdx = parseInt(paneIdx, 10);
@@ -175,13 +175,33 @@ export function handleWsEvent(queryClient: QueryClient, event: WSEvent): void {
       queryClient.invalidateQueries({
         queryKey: ["pane-output", sessionName, parsedPaneIdx],
       });
+      if (event_type !== "pane.output") {
+        queryClient.invalidateQueries({
+          queryKey: ["session-panes", sessionName],
+        });
+      }
     }
     queryClient.invalidateQueries({ queryKey: ["panes"] });
   }
 
   // Agent events
-  if (event_type.startsWith("agent.")) {
+  if (
+    topic === "agents" ||
+    topic.startsWith("agents:") ||
+    event_type.startsWith("agent.")
+  ) {
     queryClient.invalidateQueries({ queryKey: ["agents"] });
+  }
+
+  // Memory / CASS Memory (cm) events
+  if (
+    topic === "memory" ||
+    topic.startsWith("memory:") ||
+    event_type.startsWith("memory.") ||
+    event_type.startsWith("cm.")
+  ) {
+    queryClient.invalidateQueries({ queryKey: ["memory"] });
+    queryClient.invalidateQueries({ queryKey: ["cm"] });
   }
 
   // Bead events

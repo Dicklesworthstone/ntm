@@ -21,7 +21,7 @@ ntm --robot-status
 ntm --robot-snapshot
 ntm --robot-plan
 ntm --robot-dashboard
-ntm --robot-markdown --md-compact
+ntm --robot-markdown --compact
 ntm --robot-terse
 ```
 
@@ -55,10 +55,10 @@ Example flow:
 
 ```bash
 ntm --robot-snapshot
-ntm --robot-events --since-cursor=42 --limit=50 --category=agent
+ntm --robot-events --since-cursor=42 --events-limit=50 --events-category=agent
 ntm --robot-digest --since-cursor=42
 ntm --robot-attention --since-cursor=42
-ntm --robot-overlay=myproject --overlay-no-wait
+ntm --robot-overlay --overlay-session=myproject --overlay-no-wait
 ```
 
 ### Attention Profiles
@@ -109,16 +109,16 @@ ntm --robot-wait=myproject --condition=mail_pending,reservation_conflict
 
 ```bash
 ntm --robot-send=myproject --msg="Fix auth" --type=claude
-ntm --robot-ack=myproject --ack-timeout=30s
+ntm --robot-ack=myproject --timeout=30s
 ntm --robot-tail=myproject --lines=50
 ntm --robot-interrupt=myproject
-ntm --robot-inspect-pane=myproject --inspect-index=2
+ntm --robot-inspect-pane=myproject --index=2
 ```
 
 ## Beads, Mail, and CASS
 
 ```bash
-ntm --robot-beads-list --beads-status=open
+ntm --robot-beads-list --status=open
 ntm --robot-bead-claim=br-123 --bead-assignee=agent1
 ntm --robot-bead-close=br-123 --bead-close-reason="Completed"
 
@@ -135,7 +135,7 @@ When JSON is too heavy but you still need automation-friendly output:
 
 ```bash
 ntm --robot-markdown
-ntm --robot-markdown --md-compact
+ntm --robot-markdown --compact
 ntm --robot-terse
 ```
 

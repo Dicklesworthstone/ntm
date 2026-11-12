@@ -8,15 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiRequestSignal, getAuthHeaders, getBaseUrl } from "@/lib/api/client";
-
-interface ApiEnvelope {
-  success: boolean;
-  timestamp: string;
-  request_id?: string;
-  error?: string;
-  error_code?: string;
-}
+import { apiFetch, type ApiEnvelope } from "@/lib/api/client";
 
 interface Agent {
   id: number;
@@ -92,39 +84,6 @@ type Notice = { type: "success" | "error"; message: string };
 type ImportanceFilter = "all" | "normal" | "high" | "urgent";
 
 const AGENT_STORAGE_KEY = "ntm-mail-agent";
-
-async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const baseUrl = getBaseUrl();
-  const headers: HeadersInit = {
-    "Content-Type": "application/json",
-    ...getAuthHeaders(),
-    ...(options.headers || {}),
-  };
-
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...options,
-    signal: options.signal ?? apiRequestSignal(),
-    headers,
-  });
-
-  const raw = await response.text();
-  let data: unknown = null;
-  if (raw) {
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      throw new Error("Invalid response from server.");
-    }
-  }
-
-  const envelope = data as ApiEnvelope | null;
-  if (!response.ok || !envelope?.success) {
-    const message = envelope?.error || `Request failed (${response.status})`;
-    throw new Error(message);
-  }
-
-  return data as T;
-}
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -306,7 +265,9 @@ export default function MailPage() {
     queryKey: ["mail", "thread", selectedMessage?.thread_id],
     queryFn: () =>
       apiFetch<ThreadSummaryResponse>(
-        `/api/v1/mail/threads/${selectedMessage?.thread_id}/summary`
+        `/api/v1/mail/threads/${encodeURIComponent(
+          selectedMessage?.thread_id ?? ""
+        )}/summary`
       ),
     enabled: Boolean(selectedMessage?.thread_id),
   });

@@ -1,6 +1,3 @@
-//go:build ensemble_experimental
-// +build ensemble_experimental
-
 package ensemble
 
 import (
@@ -25,6 +22,7 @@ type PaneSynthesisCollector struct {
 	Client       PaneCapturer
 	PollInterval time.Duration
 	MaxLines     int
+	Baseline     string
 }
 
 // NewPaneSynthesisCollector creates a collector backed by a tmux client.
@@ -69,10 +67,15 @@ func (c *PaneSynthesisCollector) CollectSynthesisResponse(ctx context.Context, p
 		raw, err := c.Client.CapturePaneOutput(paneTarget, maxLines)
 		if err != nil {
 			lastErr = err
-		} else if _, parseErr := ParseLeadSynthesisResponse(raw); parseErr == nil {
-			return raw, nil
 		} else {
-			lastErr = parseErr
+			candidate := stripBaselineScrollback(raw, c.Baseline)
+			if strings.TrimSpace(candidate) == "" {
+				lastErr = errors.New("waiting for new synthesis output after baseline")
+			} else if _, parseErr := ParseLeadSynthesisResponse(candidate); parseErr == nil {
+				return candidate, nil
+			} else {
+				lastErr = parseErr
+			}
 		}
 
 		select {
@@ -84,4 +87,26 @@ func (c *PaneSynthesisCollector) CollectSynthesisResponse(ctx context.Context, p
 		case <-ticker.C:
 		}
 	}
+}
+
+func stripBaselineScrollback(raw, baseline string) string {
+	base := strings.TrimRight(baseline, " \t\r\n")
+	if base == "" {
+		return raw
+	}
+	rawTrim := strings.TrimRight(raw, " \t\r\n")
+	if rawTrim == base {
+		return ""
+	}
+	if strings.HasPrefix(raw, base) {
+		return raw[len(base):]
+	}
+	anchor := base
+	if len(anchor) > 200 {
+		anchor = anchor[len(anchor)-200:]
+	}
+	if idx := strings.LastIndex(raw, anchor); idx >= 0 {
+		return raw[idx+len(anchor):]
+	}
+	return raw
 }

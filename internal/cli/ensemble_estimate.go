@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 )
@@ -64,13 +65,18 @@ type ensembleEstimateOutput struct {
 	Suggestions []ensembleEstimateSuggestion `json:"suggestions,omitempty" yaml:"suggestions,omitempty"`
 }
 
+type ensembleEstimateOptions struct {
+	Format            string
+	PresetName        string
+	ModesRaw          string
+	BudgetOverride    int
+	BudgetPerAgent    int
+	BudgetSynthesis   int
+	BudgetContextPack int
+}
+
 func newEnsembleEstimateCmd() *cobra.Command {
-	var (
-		format         string
-		presetName     string
-		modesRaw       string
-		budgetOverride int
-	)
+	var opts ensembleEstimateOptions
 
 	cmd := &cobra.Command{
 		Use:   "estimate [preset]",
@@ -83,26 +89,29 @@ Examples:
   ntm ensemble estimate --modes=deductive,edge-case,root-cause --budget=12000`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if presetName == "" && len(args) > 0 {
-				presetName = strings.TrimSpace(args[0])
+			if opts.PresetName == "" && len(args) > 0 {
+				opts.PresetName = strings.TrimSpace(args[0])
 			}
-			if presetName == "" && strings.TrimSpace(modesRaw) == "" {
+			if opts.PresetName == "" && strings.TrimSpace(opts.ModesRaw) == "" {
 				return fmt.Errorf("preset name or --modes is required")
 			}
-			if presetName != "" && strings.TrimSpace(modesRaw) != "" {
+			if opts.PresetName != "" && strings.TrimSpace(opts.ModesRaw) != "" {
 				return fmt.Errorf("use either a preset name or --modes, not both")
 			}
 
-			modes := splitCommaSeparated(modesRaw)
-			return runEnsembleEstimate(cmd.OutOrStdout(), presetName, modes, budgetOverride, format)
+			modes := splitCommaSeparated(opts.ModesRaw)
+			return runEnsembleEstimate(cmd, cmd.OutOrStdout(), opts.PresetName, modes, opts)
 		},
 	}
 
-	cmd.Flags().StringVarP(&format, "format", "f", "table", "Output format: table, json, yaml")
-	cmd.Flags().StringVar(&presetName, "preset", "", "Ensemble preset name (alternative to positional arg)")
-	cmd.Flags().StringVar(&modesRaw, "modes", "", "Explicit mode IDs or codes (comma-separated)")
-	cmd.Flags().IntVar(&budgetOverride, "budget", 0, "Total token budget override for warnings")
-	cmd.Flags().IntVar(&budgetOverride, "budget-total", 0, "Total token budget override for warnings (alias)")
+	cmd.Flags().StringVarP(&opts.Format, "format", "f", "table", "Output format: table, json, yaml")
+	cmd.Flags().StringVar(&opts.PresetName, "preset", "", "Ensemble preset name (alternative to positional arg)")
+	cmd.Flags().StringVar(&opts.ModesRaw, "modes", "", "Explicit mode IDs or codes (comma-separated)")
+	cmd.Flags().IntVar(&opts.BudgetOverride, "budget", 0, "Total token budget override for warnings")
+	cmd.Flags().IntVar(&opts.BudgetOverride, "budget-total", 0, "Total token budget override for warnings (alias)")
+	cmd.Flags().IntVar(&opts.BudgetPerAgent, "budget-per-agent", 0, "Per-agent token budget override")
+	cmd.Flags().IntVar(&opts.BudgetSynthesis, "budget-synthesis", 0, "Synthesis reserve token budget override")
+	cmd.Flags().IntVar(&opts.BudgetContextPack, "budget-context-pack", 0, "Context pack reserve token budget override")
 
 	cmd.ValidArgsFunction = completeEnsemblePresetArgs
 	_ = cmd.RegisterFlagCompletionFunc("preset", completeEnsemblePresetNames)
@@ -111,8 +120,8 @@ Examples:
 	return cmd
 }
 
-func runEnsembleEstimate(w io.Writer, presetName string, modes []string, budgetOverride int, format string) error {
-	format = strings.ToLower(strings.TrimSpace(format))
+func runEnsembleEstimate(cmd *cobra.Command, w io.Writer, presetName string, modes []string, opts ensembleEstimateOptions) error {
+	format := strings.ToLower(strings.TrimSpace(opts.Format))
 	if format == "" {
 		format = "table"
 	}
@@ -167,8 +176,26 @@ func runEnsembleEstimate(w io.Writer, presetName string, modes []string, budgetO
 		allowAdvanced = true
 	}
 
-	if budgetOverride > 0 {
-		budget.MaxTotalTokens = budgetOverride
+	if cfg != nil {
+		budget = ensemble.BudgetConfigFromTOML(budget, cfg.Ensemble.Budget)
+	} else {
+		budget = ensemble.BudgetConfigFromTOML(budget, config.Default().Ensemble.Budget)
+	}
+
+	flagChanged := func(name string) bool {
+		return cmd != nil && cmd.Flags().Lookup(name) != nil && cmd.Flags().Changed(name)
+	}
+	if flagChanged("budget") || flagChanged("budget-total") || opts.BudgetOverride > 0 {
+		budget.MaxTotalTokens = opts.BudgetOverride
+	}
+	if flagChanged("budget-per-agent") || opts.BudgetPerAgent > 0 {
+		budget.MaxTokensPerMode = opts.BudgetPerAgent
+	}
+	if flagChanged("budget-synthesis") || opts.BudgetSynthesis > 0 {
+		budget.SynthesisReserveTokens = opts.BudgetSynthesis
+	}
+	if flagChanged("budget-context-pack") || opts.BudgetContextPack > 0 {
+		budget.ContextReserveTokens = opts.BudgetContextPack
 	}
 
 	projectDir, err := os.Getwd()
@@ -185,7 +212,7 @@ func runEnsembleEstimate(w io.Writer, presetName string, modes []string, budgetO
 		AllowAdvanced: allowAdvanced,
 	}
 
-	payload, err := buildEnsembleEstimate(catalog, input, ensemble.EstimateOptions{}, budgetOverride)
+	payload, err := buildEnsembleEstimate(catalog, input, ensemble.EstimateOptions{}, opts.BudgetOverride)
 	if err != nil {
 		return err
 	}

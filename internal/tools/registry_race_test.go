@@ -24,7 +24,7 @@ func TestRegistry_ParallelRace(t *testing.T) {
 	// Concurrently call GetAllInfo and GetHealthReport
 	go func() {
 		defer wg.Done()
-		reg.GetAllInfo(context.Background())
+		reg.GetAllInfoExcept(context.Background(), nil)
 	}()
 
 	go func() {

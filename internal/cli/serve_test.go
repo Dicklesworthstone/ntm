@@ -1,13 +1,22 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/spf13/pflag"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -43,7 +52,7 @@ func TestServeStateMaintenanceCollectsStaleRuntimeRows(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		serveStateMaintenance(ctx, store, time.Hour, time.Hour)
+		serveStateMaintenance(ctx, store, "", time.Hour, time.Hour, nil)
 	}()
 	t.Cleanup(func() { cancel(); <-done })
 
@@ -273,5 +282,228 @@ func TestServeProcessTriageFeedsAgentHealthAndAttention(t *testing.T) {
 	if health == nil || health.Classification != "stuck" || health.Source != "pt_agent_watch" || health.Recommendation != "kill" ||
 		health.AbandonmentProbability == nil || *health.AbandonmentProbability != 0.9731842 {
 		t.Fatalf("pt_health = %+v (panes=%+v)", health, out.Panes)
+	}
+}
+
+func TestNewWebCmdExposesAllServerAuthTLSAndCORSFlags(t *testing.T) {
+	serveCmd := newServeCmd()
+	webCmd := newWebCmd()
+
+	required := []string{
+		"host", "port", "project-dir", "job-concurrency", "job-queue-capacity",
+		"auth-mode", "api-key", "oidc-issuer", "oidc-audience", "oidc-jwks-url",
+		"mtls-cert", "mtls-key", "mtls-ca", "mtls-client-cn",
+		"cors-allow-origin", "public-base-url",
+	}
+	for _, flagName := range required {
+		if webCmd.Flags().Lookup(flagName) == nil {
+			t.Errorf("ntm web is missing required server flag --%s", flagName)
+		}
+	}
+
+	serveCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		if f.Name == "web" {
+			return
+		}
+		if webCmd.Flags().Lookup(f.Name) == nil {
+			t.Errorf("ntm serve flag --%s is not registered on ntm web", f.Name)
+		}
+	})
+}
+
+func TestServeSubprocessHelper(t *testing.T) {
+	if os.Getenv("NTM_SERVE_SUBPROCESS_HELPER") != "1" {
+		return
+	}
+	portStr := os.Getenv("NTM_SERVE_TEST_PORT")
+	projectDir := os.Getenv("NTM_SERVE_TEST_PROJECT")
+	cmd := newServeCmd()
+	cmd.SetArgs([]string{"--host", "127.0.0.1", "--port", portStr, "--project-dir", projectDir})
+	if err := cmd.Execute(); err != nil {
+		fmt.Fprintf(os.Stderr, "serve helper error: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+func TestServeBindsUnder200msWithSlowBVAndShutsDownUnder500msOnSIGTERM(t *testing.T) {
+	// Reserve a free loopback port.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve ephemeral port: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+
+	// Create a project directory with .beads so WorkCoordinationAdapter invokes bv/br.
+	projectDir := t.TempDir()
+	beadsDir := filepath.Join(projectDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "issues.jsonl"), []byte(`{"id":"bd-slow","title":"slow test","status":"open","issue_type":"task","priority":1}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Inject a 15-second slow bv stub first in PATH.
+	binDir := t.TempDir()
+	slowScript := "#!/bin/sh\nexec sleep 15\n"
+	for _, tool := range []string{"bv", "br"} {
+		if err := os.WriteFile(filepath.Join(binDir, tool), []byte(slowScript), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	homeDir := t.TempDir()
+	xdgConfigHome := filepath.Join(homeDir, "config")
+	// Pre-initialize state.db schema outside the bind latency window so -race
+	// instrumentation of 15 cold SQLite DDL migrations does not mask HTTP bind time.
+	preStore, err := state.Open(filepath.Join(xdgConfigHome, "ntm", "state.db"))
+	if err != nil {
+		t.Fatalf("pre-open state store: %v", err)
+	}
+	if err := preStore.Migrate(); err != nil {
+		_ = preStore.Close()
+		t.Fatalf("pre-migrate state store: %v", err)
+	}
+	if err := preStore.Close(); err != nil {
+		t.Fatalf("close pre-migrated state store: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	child := exec.Command(exe, "-test.run=^TestServeSubprocessHelper$")
+	child.Env = append(os.Environ(),
+		"NTM_SERVE_SUBPROCESS_HELPER=1",
+		"NTM_SERVE_TEST_PORT="+strconv.Itoa(port),
+		"NTM_SERVE_TEST_PROJECT="+projectDir,
+		"HOME="+homeDir,
+		"XDG_CONFIG_HOME="+xdgConfigHome,
+		"XDG_DATA_HOME="+filepath.Join(homeDir, "data"),
+		"XDG_STATE_HOME="+filepath.Join(homeDir, "state"),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+	)
+	child.Stdout = &stdout
+	child.Stderr = &stderr
+
+	startTime := time.Now()
+	if err := child.Start(); err != nil {
+		t.Fatalf("start serve subprocess: %v", err)
+	}
+	t.Cleanup(func() {
+		if child.Process != nil {
+			_ = child.Process.Kill()
+			_, _ = child.Process.Wait()
+		}
+	})
+
+	healthURL := fmt.Sprintf("http://127.0.0.1:%d/health", port)
+	client := &http.Client{Timeout: 50 * time.Millisecond}
+	var (
+		healthBody  map[string]any
+		bindLatency time.Duration
+	)
+	deadline := startTime.Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, reqErr := client.Get(healthURL)
+		if reqErr == nil {
+			_ = json.NewDecoder(resp.Body).Decode(&healthBody)
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				bindLatency = time.Since(startTime)
+				break
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if bindLatency == 0 {
+		t.Fatalf("ntm serve never bound %s within 2s (stdout=%s stderr=%s)", healthURL, stdout.String(), stderr.String())
+	}
+
+	projState, _ := healthBody["projection_state"].(string)
+	t.Logf(`{"event":"serve_bind_verified","bind_latency_ms":%d,"projection_state":%q}`, bindLatency.Milliseconds(), projState)
+	if bindLatency >= 200*time.Millisecond {
+		t.Fatalf("bind_latency_ms = %d, want < 200ms even when bv/br sleep 15s", bindLatency.Milliseconds())
+	}
+	if projState != "warming_up" {
+		t.Fatalf("projection_state = %q while bv sleeps 15s, want \"warming_up\"", projState)
+	}
+
+	sigStart := time.Now()
+	if err := child.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("send SIGTERM: %v", err)
+	}
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- child.Wait()
+	}()
+	select {
+	case waitErr := <-waitDone:
+		shutdownLatency := time.Since(sigStart)
+		t.Logf(`{"event":"serve_sigterm_verified","shutdown_latency_ms":%d}`, shutdownLatency.Milliseconds())
+		if waitErr != nil {
+			t.Fatalf("serve exited with error on SIGTERM: %v (stderr=%s)", waitErr, stderr.String())
+		}
+		if shutdownLatency >= 500*time.Millisecond {
+			t.Fatalf("shutdown_latency_ms = %d, want < 500ms on SIGTERM", shutdownLatency.Milliseconds())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("serve subprocess hung >2s after SIGTERM (stdout=%s stderr=%s)", stdout.String(), stderr.String())
+	}
+}
+
+func TestRobotPolicyDecisionsCLIFlagAndStoreQuery(t *testing.T) {
+	if rootCmd.Flags().Lookup("robot-policy-decisions") == nil {
+		t.Fatal("--robot-policy-decisions flag not registered on rootCmd")
+	}
+	if !robotSurfacesWithoutProjection["robot-policy-decisions"] {
+		t.Fatal("robot-policy-decisions should skip projection refresh")
+	}
+
+	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open state store: %v", err)
+	}
+	if err := store.Migrate(); err != nil {
+		t.Fatalf("migrate state store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	outEmpty, err := robot.GetPolicyDecisionsForStore(store, robot.PolicyDecisionsOptions{})
+	if err != nil {
+		t.Fatalf("GetPolicyDecisionsForStore empty: %v", err)
+	}
+	rawEmpty, err := json.Marshal(outEmpty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rawEmpty), `"decisions":null`) {
+		t.Fatalf("empty decisions serialized as null: %s", string(rawEmpty))
+	}
+
+	if _, err := store.RecordAuditDecision(&state.AuditDecision{
+		DecisionType: "snooze",
+		DecisionAt:   time.Now().UTC(),
+		ActorType:    "user",
+		ActorID:      "cli-op",
+		EntityType:   "attention_item",
+		EntityID:     "item-99",
+		Reason:       "scheduled maintenance",
+	}); err != nil {
+		t.Fatalf("RecordAuditDecision: %v", err)
+	}
+
+	out, err := robot.GetPolicyDecisionsForStore(store, robot.PolicyDecisionsOptions{
+		EntityType: "attention_item",
+		Limit:      10,
+	})
+	if err != nil {
+		t.Fatalf("GetPolicyDecisionsForStore: %v", err)
+	}
+	if !out.Success || out.Count != 1 || out.Decisions[0].EntityID != "item-99" {
+		t.Fatalf("PolicyDecisionsOutput = %+v, want 1 item-99 decision", out)
 	}
 }

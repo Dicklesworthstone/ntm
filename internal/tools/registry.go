@@ -46,11 +46,6 @@ func (r *Registry) Get(name ToolName) (Adapter, bool) {
 	return adapter, ok
 }
 
-// GetAllInfo returns ToolInfo for all registered tools
-func (r *Registry) GetAllInfo(ctx context.Context) []*ToolInfo {
-	return r.GetAllInfoExcept(ctx, nil)
-}
-
 // GetAllInfoExcept returns ToolInfo for all registered tools, reporting every
 // tool named in disabled as a not-probed entry instead of running its
 // detection, version, and health subprocesses.
@@ -181,11 +176,6 @@ func Register(adapter Adapter) {
 // Get returns an adapter from the global registry
 func Get(name ToolName) (Adapter, bool) {
 	return globalRegistry.Get(name)
-}
-
-// GetAllInfo returns all tool info from the global registry
-func GetAllInfo(ctx context.Context) []*ToolInfo {
-	return globalRegistry.GetAllInfo(ctx)
 }
 
 // GetAllInfoExcept returns all tool info from the global registry without

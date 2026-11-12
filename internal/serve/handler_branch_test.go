@@ -10155,7 +10155,41 @@ func TestHandleExportCheckpoint_Download(t *testing.T) {
 	}
 }
 
-// --- handleRollback: dry run with fake checkpoint ---
+// --- handleRollback: dry run with verified git preflight ---
+
+func initRollbackTestGitRepo(t *testing.T, gitDir string) string {
+	t.Helper()
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", gitDir, err)
+	}
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+		{"config", "commit.gpgsign", "false"},
+	} {
+		runRollbackTestGit(t, gitDir, args...)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "hello.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("WriteFile(hello.txt): %v", err)
+	}
+	runRollbackTestGit(t, gitDir, "add", ".")
+	runRollbackTestGit(t, gitDir, "commit", "-qm", "initial")
+	return runRollbackTestGit(t, gitDir, "rev-parse", "HEAD")
+}
+
+func runRollbackTestGit(t *testing.T, gitDir string, args ...string) string {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "git", args...)
+	cmd.Dir = gitDir
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "GIT_OPTIONAL_LOCKS=0")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
 
 func TestHandleRollback_DryRun(t *testing.T) {
 	s, _ := setupTestServer(t)
@@ -10163,8 +10197,12 @@ func TestHandleRollback_DryRun(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 
+	gitDir := filepath.Join(tmpHome, "work-dryrun")
+	commitHash := initRollbackTestGitRepo(t, gitDir)
+	s.projectDir = gitDir
+
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "test-session", "test-rb")
-	metadata := fmt.Sprintf(`{"version":1,"id":"test-rb","name":"rollback-test","session_name":"test-session","working_dir":%q,"created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def","branch":"main"}}`, s.projectDirSnapshot())
+	metadata := fmt.Sprintf(`{"version":1,"id":"test-rb","name":"rollback-test","session_name":"test-session","working_dir":%q,"created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":%q,"branch":"main"}}`, gitDir, commitHash)
 	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
@@ -10177,9 +10215,21 @@ func TestHandleRollback_DryRun(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	s.handleRollback(rec, req)
+	t.Logf("rollback dry_run response: status=%d commit=%s body=%s", rec.Code, commitHash, rec.Body.String())
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	bodyStr := rec.Body.String()
+	wantWarn := fmt.Sprintf("would rollback to commit %s on branch main", commitHash[:8])
+	if !strings.Contains(bodyStr, wantWarn) {
+		t.Fatalf("expected dry-run warning %q, got: %s", wantWarn, bodyStr)
+	}
+	if strings.Contains(bodyStr, `"git_restored":true`) {
+		t.Fatalf("dry_run must not report git_restored=true: %s", bodyStr)
+	}
+	if gotHead := runRollbackTestGit(t, gitDir, "rev-parse", "HEAD"); gotHead != commitHash {
+		t.Fatalf("dry_run mutated HEAD: got %s, want %s", gotHead, commitHash)
 	}
 }
 
@@ -10508,9 +10558,21 @@ func TestHandleRollback_DryRunDirtyStash(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 
+	gitDir := filepath.Join(tmpHome, "work-dryrun-dirty")
+	commitHash := initRollbackTestGitRepo(t, gitDir)
+	s.projectDir = gitDir
+
+	// Make tracked and untracked changes to verify dry_run leaves working tree untouched.
+	if err := os.WriteFile(filepath.Join(gitDir, "hello.txt"), []byte("dirty tracked"), 0o644); err != nil {
+		t.Fatalf("WriteFile(hello.txt): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "untracked.txt"), []byte("untracked content"), 0o644); err != nil {
+		t.Fatalf("WriteFile(untracked.txt): %v", err)
+	}
+
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-dirty", "cp-dirty")
 	// IsDirty=true to exercise the stash warning path
-	metadata := fmt.Sprintf(`{"version":1,"id":"cp-dirty","name":"dirty-test","session_name":"rb-dirty","working_dir":%q,"created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890","branch":"main","is_dirty":true}}`, s.projectDirSnapshot())
+	metadata := fmt.Sprintf(`{"version":1,"id":"cp-dirty","name":"dirty-test","session_name":"rb-dirty","working_dir":%q,"created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":%q,"branch":"main","is_dirty":true}}`, gitDir, commitHash)
 	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
@@ -10523,6 +10585,7 @@ func TestHandleRollback_DryRunDirtyStash(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	s.handleRollback(rec, req)
+	t.Logf("rollback dry_run dirty response: status=%d body=%s", rec.Code, rec.Body.String())
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -10534,6 +10597,15 @@ func TestHandleRollback_DryRunDirtyStash(t *testing.T) {
 	}
 	if !strings.Contains(body2, "would stash") {
 		t.Fatalf("expected stash warning for dirty checkpoint, got: %s", body2)
+	}
+	if gotTracked, err := os.ReadFile(filepath.Join(gitDir, "hello.txt")); err != nil || string(gotTracked) != "dirty tracked" {
+		t.Fatalf("dry_run altered dirty tracked file: %q, err=%v", gotTracked, err)
+	}
+	if gotUntracked, err := os.ReadFile(filepath.Join(gitDir, "untracked.txt")); err != nil || string(gotUntracked) != "untracked content" {
+		t.Fatalf("dry_run altered untracked file: %q, err=%v", gotUntracked, err)
+	}
+	if stashes := runRollbackTestGit(t, gitDir, "stash", "list"); stashes != "" {
+		t.Fatalf("dry_run unexpectedly created stash: %s", stashes)
 	}
 }
 
@@ -11430,7 +11502,7 @@ func TestHandleImportCheckpoint_TarGzMagic(t *testing.T) {
 	}
 }
 
-// --- handleRollback: fake checkpoint with git state but restore fails ---
+// --- handleRollback: fake checkpoint with git state rejected by preflight ---
 
 func TestHandleRollback_FakeGitCheckpointNoGit(t *testing.T) {
 	s, _ := setupTestServer(t)
@@ -11438,7 +11510,8 @@ func TestHandleRollback_FakeGitCheckpointNoGit(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 
-	// Create fake checkpoint with git state
+	// Case 1: non-git working directory is rejected during read-only preflight (400 BAD_REQUEST)
+	// before any checkout/mutation attempt (61f900e6 / GH #374).
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-git", "cp-git")
 	metadata := fmt.Sprintf(`{"version":1,"id":"cp-git","name":"git-test","session_name":"rb-git","working_dir":%q,"created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890abc12345def67890abc12345","branch":"main","is_dirty":false}}`, s.projectDirSnapshot())
 	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
@@ -11446,7 +11519,6 @@ func TestHandleRollback_FakeGitCheckpointNoGit(t *testing.T) {
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "rb-git")
 
-	// Request non-dry-run rollback (will fail at git checkout since /tmp is not a git repo)
 	body := `{"checkpoint_ref":"cp-git","dry_run":false,"no_stash":true}`
 	req := httptest.NewRequest("POST", "/api/v1/sessions/rb-git/rollback", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -11454,14 +11526,59 @@ func TestHandleRollback_FakeGitCheckpointNoGit(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	s.handleRollback(rec, req)
+	t.Logf("rollback non-git preflight response: status=%d body=%s", rec.Code, rec.Body.String())
 
-	// Should fail at git checkout (not a git repo)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500 for git checkout in non-git dir, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for preflight rejection in non-git dir, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "resolving git worktree root") || !strings.Contains(rec.Body.String(), `"error_code":"BAD_REQUEST"`) {
+		t.Fatalf("expected BAD_REQUEST worktree root preflight error, got: %s", rec.Body.String())
+	}
+
+	// Case 2: real git repository with missing commit fails preflight without mutating dirty/untracked files.
+	gitDir := filepath.Join(tmpHome, "work-missing-commit")
+	headCommit := initRollbackTestGitRepo(t, gitDir)
+	s.projectDir = gitDir
+	if err := os.WriteFile(filepath.Join(gitDir, "hello.txt"), []byte("dirty tracked"), 0o644); err != nil {
+		t.Fatalf("WriteFile(hello.txt): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "untracked.txt"), []byte("keep untracked"), 0o644); err != nil {
+		t.Fatalf("WriteFile(untracked.txt): %v", err)
+	}
+
+	cpMissingDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-git", "cp-missing-commit")
+	missingMeta := fmt.Sprintf(`{"version":1,"id":"cp-missing-commit","name":"missing-commit","session_name":"rb-git","working_dir":%q,"created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","branch":"main","is_dirty":false}}`, gitDir)
+	writeCheckpointFixtureFromMetadataJSON(t, cpMissingDir, missingMeta)
+
+	reqMissing := httptest.NewRequest("POST", "/api/v1/sessions/rb-git/rollback", strings.NewReader(`{"checkpoint_ref":"cp-missing-commit","dry_run":false,"no_stash":false}`))
+	reqMissing.Header.Set("Content-Type", "application/json")
+	reqMissing = reqMissing.WithContext(context.WithValue(reqMissing.Context(), chi.RouteCtxKey, rctx))
+	recMissing := httptest.NewRecorder()
+
+	s.handleRollback(recMissing, reqMissing)
+	t.Logf("rollback missing-commit preflight response: status=%d body=%s", recMissing.Code, recMissing.Body.String())
+
+	if recMissing.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing commit preflight failure, got %d: %s", recMissing.Code, recMissing.Body.String())
+	}
+	if !strings.Contains(recMissing.Body.String(), "rollback preflight failed; repository unchanged") || !strings.Contains(recMissing.Body.String(), "resolving checkpoint commit") {
+		t.Fatalf("expected missing commit preflight failure message, got: %s", recMissing.Body.String())
+	}
+	if gotHead := runRollbackTestGit(t, gitDir, "rev-parse", "HEAD"); gotHead != headCommit {
+		t.Fatalf("missing-commit preflight changed HEAD: got %s, want %s", gotHead, headCommit)
+	}
+	if gotTracked, err := os.ReadFile(filepath.Join(gitDir, "hello.txt")); err != nil || string(gotTracked) != "dirty tracked" {
+		t.Fatalf("missing-commit preflight altered dirty tracked file: %q, err=%v", gotTracked, err)
+	}
+	if gotUntracked, err := os.ReadFile(filepath.Join(gitDir, "untracked.txt")); err != nil || string(gotUntracked) != "keep untracked" {
+		t.Fatalf("missing-commit preflight altered untracked file: %q, err=%v", gotUntracked, err)
+	}
+	if stashes := runRollbackTestGit(t, gitDir, "stash", "list"); stashes != "" {
+		t.Fatalf("missing-commit preflight unexpectedly stashed work: %s", stashes)
 	}
 }
 
-// --- handleRollback: fake checkpoint with git state, dry_run=true, no_stash=false, dirty ---
+// --- handleRollback: checkpoint with git state, dry_run=true, stash vs no_stash ---
 
 func TestHandleRollback_DryRunDirtyNoStash(t *testing.T) {
 	s, _ := setupTestServer(t)
@@ -11469,8 +11586,12 @@ func TestHandleRollback_DryRunDirtyNoStash(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 
+	gitDir := filepath.Join(tmpHome, "work-dryrun-dns")
+	commitHash := initRollbackTestGitRepo(t, gitDir)
+	s.projectDir = gitDir
+
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-dns", "cp-dns")
-	metadata := fmt.Sprintf(`{"version":1,"id":"cp-dns","name":"dns-test","session_name":"rb-dns","working_dir":%q,"created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890abc12345def67890abc12345","branch":"main","is_dirty":true}}`, s.projectDirSnapshot())
+	metadata := fmt.Sprintf(`{"version":1,"id":"cp-dns","name":"dns-test","session_name":"rb-dns","working_dir":%q,"created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":%q,"branch":"main","is_dirty":true}}`, gitDir, commitHash)
 	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
@@ -11484,6 +11605,7 @@ func TestHandleRollback_DryRunDirtyNoStash(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	s.handleRollback(rec, req)
+	t.Logf("rollback dry_run no_stash=false response: status=%d body=%s", rec.Code, rec.Body.String())
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 for dry_run, got %d: %s", rec.Code, rec.Body.String())
@@ -11495,6 +11617,25 @@ func TestHandleRollback_DryRunDirtyNoStash(t *testing.T) {
 	}
 	if !strings.Contains(bodyStr, "would stash") {
 		t.Fatalf("expected stash warning, got: %s", bodyStr)
+	}
+
+	// Verify no_stash=true omits the stash warning while still reporting rollback target.
+	reqNoStash := httptest.NewRequest("POST", "/api/v1/sessions/rb-dns/rollback", strings.NewReader(`{"checkpoint_ref":"cp-dns","dry_run":true,"no_git":false,"no_stash":true}`))
+	reqNoStash.Header.Set("Content-Type", "application/json")
+	reqNoStash = reqNoStash.WithContext(context.WithValue(reqNoStash.Context(), chi.RouteCtxKey, rctx))
+	recNoStash := httptest.NewRecorder()
+
+	s.handleRollback(recNoStash, reqNoStash)
+	t.Logf("rollback dry_run no_stash=true response: status=%d body=%s", recNoStash.Code, recNoStash.Body.String())
+
+	if recNoStash.Code != http.StatusOK {
+		t.Fatalf("expected 200 for dry_run with no_stash=true, got %d: %s", recNoStash.Code, recNoStash.Body.String())
+	}
+	if !strings.Contains(recNoStash.Body.String(), "would rollback") {
+		t.Fatalf("expected rollback warning with no_stash=true, got: %s", recNoStash.Body.String())
+	}
+	if strings.Contains(recNoStash.Body.String(), "would stash") {
+		t.Fatalf("unexpected stash warning when no_stash=true, got: %s", recNoStash.Body.String())
 	}
 }
 
@@ -11518,49 +11659,24 @@ func TestHandleRollback_FullGitIntegration(t *testing.T) {
 	gitDir := filepath.Join(tmpHome, "work")
 	// The server serves this repository, so rollback is confined to it.
 	s.projectDir = gitDir
-	os.MkdirAll(gitDir, 0755)
+	commitHash := initRollbackTestGitRepo(t, gitDir)
 
-	// Initialize git repo and create initial commit
-	cmds := []struct {
-		args []string
-		dir  string
-	}{
-		{[]string{"git", "init"}, gitDir},
-		{[]string{"git", "config", "user.email", "test@test.com"}, gitDir},
-		{[]string{"git", "config", "user.name", "Test"}, gitDir},
+	// Advance HEAD with a second commit, then dirty both a tracked file and an untracked file.
+	if err := os.WriteFile(filepath.Join(gitDir, "hello.txt"), []byte("committed later"), 0o644); err != nil {
+		t.Fatalf("WriteFile(hello.txt): %v", err)
 	}
-	for _, c := range cmds {
-		cmd := exec.Command(c.args[0], c.args[1:]...)
-		cmd.Dir = c.dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git command %v failed: %v\n%s", c.args, err, out)
-		}
+	runRollbackTestGit(t, gitDir, "add", "hello.txt")
+	runRollbackTestGit(t, gitDir, "commit", "-qm", "second")
+	if err := os.WriteFile(filepath.Join(gitDir, "hello.txt"), []byte("dirty tracked change"), 0o644); err != nil {
+		t.Fatalf("WriteFile(hello.txt dirty): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "dirty.txt"), []byte("dirty untracked"), 0o644); err != nil {
+		t.Fatalf("WriteFile(dirty.txt): %v", err)
 	}
 
-	// Create a file and initial commit
-	os.WriteFile(filepath.Join(gitDir, "hello.txt"), []byte("hello"), 0644)
-	cmd := exec.Command("git", "add", ".")
-	cmd.Dir = gitDir
-	cmd.CombinedOutput()
-	cmd = exec.Command("git", "commit", "-m", "initial")
-	cmd.Dir = gitDir
-	cmd.CombinedOutput()
-
-	// Get the commit hash
-	cmd = exec.Command("git", "rev-parse", "HEAD")
-	cmd.Dir = gitDir
-	commitOut, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("git rev-parse failed: %v", err)
-	}
-	commitHash := strings.TrimSpace(string(commitOut))
-
-	// Make the repo dirty
-	os.WriteFile(filepath.Join(gitDir, "dirty.txt"), []byte("dirty"), 0644)
-
-	// Create fake checkpoint pointing to this commit
+	// Create fake checkpoint pointing to the initial commit
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-full", "cp-full")
-	metadata := fmt.Sprintf(`{"version":1,"id":"cp-full","name":"full-test","session_name":"rb-full","working_dir":%q,"created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"%s","branch":"main","is_dirty":true}}`, gitDir, commitHash)
+	metadata := fmt.Sprintf(`{"version":1,"id":"cp-full","name":"full-test","session_name":"rb-full","working_dir":%q,"created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":%q,"branch":"main","is_dirty":true}}`, gitDir, commitHash)
 	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
@@ -11573,17 +11689,30 @@ func TestHandleRollback_FullGitIntegration(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	s.handleRollback(rec, req)
+	t.Logf("rollback full git integration response: status=%d body=%s", rec.Code, rec.Body.String())
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	bodyStr := rec.Body.String()
-	if !strings.Contains(bodyStr, "git_restored") {
-		t.Fatalf("expected git_restored in response, got: %s", bodyStr)
+	if !strings.Contains(bodyStr, `"git_restored":true`) {
+		t.Fatalf("expected git_restored=true in response, got: %s", bodyStr)
 	}
-	if !strings.Contains(bodyStr, "stash_created") {
-		t.Fatalf("expected stash_created in response, got: %s", bodyStr)
+	if !strings.Contains(bodyStr, `"stash_created":true`) {
+		t.Fatalf("expected stash_created=true in response, got: %s", bodyStr)
+	}
+	if gotHead := runRollbackTestGit(t, gitDir, "rev-parse", "HEAD"); gotHead != commitHash {
+		t.Fatalf("expected HEAD=%s after rollback, got %s", commitHash, gotHead)
+	}
+	if gotRestored, err := os.ReadFile(filepath.Join(gitDir, "hello.txt")); err != nil || string(gotRestored) != "hello" {
+		t.Fatalf("expected hello.txt restored to initial content, got %q (err=%v)", gotRestored, err)
+	}
+	if stashedTracked := runRollbackTestGit(t, gitDir, "show", "stash@{0}:hello.txt"); stashedTracked != "dirty tracked change" {
+		t.Fatalf("expected dirty tracked file preserved in stash@{0}, got %q", stashedTracked)
+	}
+	if stashedUntracked := runRollbackTestGit(t, gitDir, "show", "stash@{0}^3:dirty.txt"); stashedUntracked != "dirty untracked" {
+		t.Fatalf("expected untracked file preserved in stash@{0}^3, got %q", stashedUntracked)
 	}
 }
 
@@ -11877,36 +12006,26 @@ func TestHandleRollback_WithInvalidGitPatchPathWarns(t *testing.T) {
 	gitDir := filepath.Join(tmpHome, "work-patch-invalid")
 	// The server serves this repository, so rollback is confined to it.
 	s.projectDir = gitDir
-	os.MkdirAll(gitDir, 0755)
-	for _, args := range [][]string{
-		{"git", "init"},
-		{"git", "config", "user.email", "test@test.com"},
-		{"git", "config", "user.name", "Test"},
-	} {
-		cmd := exec.Command(args[0], args[1:]...)
-		cmd.Dir = gitDir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git command %v failed: %v\n%s", args, err, out)
-		}
-	}
+	commitHash := initRollbackTestGitRepo(t, gitDir)
 
-	os.WriteFile(filepath.Join(gitDir, "hello.txt"), []byte("hello"), 0644)
-	cmd := exec.Command("git", "add", ".")
-	cmd.Dir = gitDir
-	cmd.CombinedOutput()
-	cmd = exec.Command("git", "commit", "-m", "initial")
-	cmd.Dir = gitDir
-	cmd.CombinedOutput()
-	cmd = exec.Command("git", "rev-parse", "HEAD")
-	cmd.Dir = gitDir
-	commitOut, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("git rev-parse failed: %v", err)
+	// Advance repository and leave dirty tracked + untracked files to verify preflight failure leaves repository unchanged.
+	if err := os.WriteFile(filepath.Join(gitDir, "hello.txt"), []byte("second commit"), 0o644); err != nil {
+		t.Fatalf("WriteFile(hello.txt): %v", err)
 	}
-	commitHash := strings.TrimSpace(string(commitOut))
+	runRollbackTestGit(t, gitDir, "add", "hello.txt")
+	runRollbackTestGit(t, gitDir, "commit", "-qm", "second")
+	headBefore := runRollbackTestGit(t, gitDir, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(gitDir, "hello.txt"), []byte("dirty tracked before invalid rollback"), 0o644); err != nil {
+		t.Fatalf("WriteFile(hello.txt dirty): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "keep.txt"), []byte("untracked before invalid rollback"), 0o644); err != nil {
+		t.Fatalf("WriteFile(keep.txt): %v", err)
+	}
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-patch-invalid", "cp-patch-invalid")
-	os.MkdirAll(cpDir, 0755)
+	if err := os.MkdirAll(cpDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", cpDir, err)
+	}
 	cp := checkpoint.Checkpoint{
 		Version:     1,
 		ID:          "cp-patch-invalid",
@@ -11931,33 +12050,54 @@ func TestHandleRollback_WithInvalidGitPatchPathWarns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal checkpoint failed: %v", err)
 	}
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), metadata, 0644)
+	if err := os.WriteFile(filepath.Join(cpDir, "metadata.json"), metadata, 0o644); err != nil {
+		t.Fatalf("WriteFile(metadata.json): %v", err)
+	}
 	sessionJSON, err := json.Marshal(cp.Session)
 	if err != nil {
 		t.Fatalf("Marshal session state failed: %v", err)
 	}
-	os.WriteFile(filepath.Join(cpDir, "session.json"), sessionJSON, 0644)
+	if err := os.WriteFile(filepath.Join(cpDir, "session.json"), sessionJSON, 0o644); err != nil {
+		t.Fatalf("WriteFile(session.json): %v", err)
+	}
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "rb-patch-invalid")
 
-	body := `{"checkpoint_ref":"cp-patch-invalid","dry_run":false,"no_git":false,"no_stash":true}`
+	body := `{"checkpoint_ref":"cp-patch-invalid","dry_run":false,"no_git":false,"no_stash":false}`
 	req := httptest.NewRequest("POST", "/api/v1/sessions/rb-patch-invalid/rollback", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	rec := httptest.NewRecorder()
 
 	s.handleRollback(rec, req)
+	t.Logf("rollback invalid patch path preflight response: status=%d body=%s", rec.Code, rec.Body.String())
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	// Shared read-only preflight (61f900e6 / GH #374) rejects path-traversal patch paths with 400 before mutating HEAD.
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid git patch path preflight failure, got %d: %s", rec.Code, rec.Body.String())
 	}
 	bodyStr := rec.Body.String()
-	if !strings.Contains(bodyStr, "patch load failed") {
-		t.Fatalf("expected patch load warning, got: %s", bodyStr)
+	if !strings.Contains(bodyStr, "rollback preflight failed; repository unchanged") {
+		t.Fatalf("expected preflight unchanged error, got: %s", bodyStr)
 	}
-	if !strings.Contains(bodyStr, "invalid artifact path") {
-		t.Fatalf("expected invalid artifact path warning, got: %s", bodyStr)
+	if !strings.Contains(bodyStr, "invalid git patch path") || !strings.Contains(bodyStr, "path traversal attempt") {
+		t.Fatalf("expected invalid git patch path traversal error, got: %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, `"git_restored":false`) {
+		t.Fatalf("expected git_restored=false in error details, got: %s", bodyStr)
+	}
+	if gotHead := runRollbackTestGit(t, gitDir, "rev-parse", "HEAD"); gotHead != headBefore {
+		t.Fatalf("preflight failure mutated HEAD: got %s, want %s", gotHead, headBefore)
+	}
+	if gotTracked, err := os.ReadFile(filepath.Join(gitDir, "hello.txt")); err != nil || string(gotTracked) != "dirty tracked before invalid rollback" {
+		t.Fatalf("preflight failure altered dirty tracked file: %q, err=%v", gotTracked, err)
+	}
+	if gotUntracked, err := os.ReadFile(filepath.Join(gitDir, "keep.txt")); err != nil || string(gotUntracked) != "untracked before invalid rollback" {
+		t.Fatalf("preflight failure altered untracked file: %q, err=%v", gotUntracked, err)
+	}
+	if stashes := runRollbackTestGit(t, gitDir, "stash", "list"); stashes != "" {
+		t.Fatalf("preflight failure unexpectedly created stash: %s", stashes)
 	}
 }
 

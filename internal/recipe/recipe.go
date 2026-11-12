@@ -85,11 +85,11 @@ func builtinRecipes() []Recipe {
 		},
 		{
 			Name:        "full-stack",
-			Description: "Full-stack team: 3 Claude, 2 Codex, 1 Gemini",
+			Description: "Full-stack team: 3 Claude, 2 Codex, 1 Antigravity",
 			Agents: []AgentSpec{
 				{Type: "cc", Count: 3},
 				{Type: "cod", Count: 2},
-				{Type: "gmi", Count: 1},
+				{Type: "agy", Count: 1},
 			},
 			Source: "builtin",
 		},
@@ -112,11 +112,11 @@ func builtinRecipes() []Recipe {
 		},
 		{
 			Name:        "balanced",
-			Description: "Balanced team: 2 of each agent type",
+			Description: "Balanced team: 2 Claude, 2 Codex, 2 Antigravity",
 			Agents: []AgentSpec{
 				{Type: "cc", Count: 2},
 				{Type: "cod", Count: 2},
-				{Type: "gmi", Count: 2},
+				{Type: "agy", Count: 2},
 			},
 			Source: "builtin",
 		},

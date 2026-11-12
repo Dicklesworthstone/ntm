@@ -81,6 +81,10 @@ type InterruptOptions struct {
 	// interrupts do not dispatch a message and do not invoke this guard. The
 	// ready subset is checked again immediately before follow-up delivery.
 	MessageGuard func(context.Context, string, []tmux.Pane) error `json:"-"`
+	Store        *state.Store                                     `json:"-"`
+	// ExplicitStore binds durable idempotency to Store (even when nil) rather
+	// than the process-global projection store.
+	ExplicitStore bool `json:"-"`
 }
 
 // GetInterrupt sends Ctrl+C to panes and optionally a follow-up message, returning the result.
@@ -246,12 +250,14 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 	// recorded as terminal rather than released.
 	if trace.IdempotencyKey != "" {
 		claim := claimRobotOperation(operationClaimRequest{
-			Kind:        state.OperationKindInterrupt,
-			OperationID: trace.IdempotencyKey,
-			Session:     opts.Session,
-			BindingHash: operationBinding,
-			Payload:     opts.Message,
-			Targets:     targetKeys,
+			Kind:          state.OperationKindInterrupt,
+			OperationID:   trace.IdempotencyKey,
+			Session:       opts.Session,
+			BindingHash:   operationBinding,
+			Payload:       opts.Message,
+			Targets:       targetKeys,
+			Store:         opts.Store,
+			ExplicitStore: opts.ExplicitStore,
 		})
 		switch claim.Verdict {
 		case operationRefused:

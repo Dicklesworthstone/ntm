@@ -201,8 +201,25 @@ awk -F'\t' '
   }
 ' "$ALLOWLIST" "$tmp/dead.txt" | sort -u > "$tmp/pairs.txt"
 
+gate_rc=0
 if ! ratchet_compare "$ALLOWLIST" "$tmp/pairs.txt"; then
   echo "deadcode_gate.sh: FAILED — see ci/allowlists/README.md (waiver protocol: bead FIRST, then the allowlist line)" >&2
-  exit 1
+  gate_rc=1
 fi
-echo "deadcode_gate.sh: OK (canary fired on a+c+d, passed b+e; $(wc -l < "$tmp/dead.txt" | tr -d ' ') dead entries all ratchet-matched against $ALLOWLIST)"
+
+# --- graduated build-tag check (ensemble_experimental split-brain guard) -----
+if command -v rg >/dev/null 2>&1; then
+  split_tag_files="$(rg -l --glob '*.go' '^[[:space:]]*//[[:space:]]*(go:build|\+build).*ensemble_experimental' internal/ cmd/ || true)"
+else
+  split_tag_files="$(grep -rlE --include='*.go' '^[[:space:]]*//[[:space:]]*(go:build|\+build).*ensemble_experimental' internal/ cmd/ || true)"
+fi
+if [ -n "$split_tag_files" ]; then
+  echo "deadcode_gate: FAIL — retired ensemble_experimental build tag found in .go file(s):" >&2
+  printf '%s\n' "$split_tag_files" | sed 's/^/  /' >&2
+  gate_rc=1
+fi
+
+if [ "$gate_rc" -ne 0 ]; then
+  exit "$gate_rc"
+fi
+echo "deadcode_gate.sh: OK (canary fired on a+c+d, passed b+e; $(wc -l < "$tmp/dead.txt" | tr -d ' ') dead entries all ratchet-matched against $ALLOWLIST; zero ensemble_experimental build tags)"

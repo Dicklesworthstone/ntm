@@ -2,6 +2,8 @@ package checkpoint
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -236,16 +238,17 @@ func (s *Storage) PanesDirPath(sessionName, checkpointID string) string {
 	return filepath.Join(s.CheckpointDir(sessionName, checkpointID), PanesDir)
 }
 
-// GenerateID creates a unique checkpoint ID from timestamp and name.
+// GenerateID creates a unique checkpoint ID from a sortable UTC timestamp,
+// 64-bit cryptographic random hex suffix, and optional sanitized name.
 func GenerateID(name string) string {
-	// Use milliseconds + random suffix to prevent collisions
-	now := time.Now()
+	now := time.Now().UTC()
 	timestamp := now.Format("20060102-150405.000")
 
-	// Add 4 random hex digits (pseudo-random based on time is sufficient here)
-	// We don't need crypto/rand complexity for this, just collision avoidance
-	randSuffix := now.UnixNano() % 0xffff
-	id := fmt.Sprintf("%s-%04x", timestamp, randSuffix)
+	var randBytes [8]byte
+	if _, err := rand.Read(randBytes[:]); err != nil {
+		panic("checkpoint: crypto/rand unavailable: " + err.Error())
+	}
+	id := fmt.Sprintf("%s-%s", timestamp, hex.EncodeToString(randBytes[:]))
 
 	// Sanitize name for filesystem safety
 	safeName := sanitizeName(name)

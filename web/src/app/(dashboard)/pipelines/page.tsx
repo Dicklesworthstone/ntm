@@ -8,16 +8,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiRequestSignal, getAuthHeaders, getBaseUrl } from "@/lib/api/client";
+import { apiFetch, apiRequestSignal, type ApiEnvelope } from "@/lib/api/client";
 import PipelineRecoveryPanel from "@/components/pipelines/PipelineRecoveryPanel";
-
-interface ApiEnvelope {
-  success: boolean;
-  timestamp: string;
-  request_id?: string;
-  error?: string;
-  error_code?: string;
-}
 
 interface PipelineProgress {
   completed: number;
@@ -76,39 +68,6 @@ interface TemplatesResponse extends ApiEnvelope {
 type Notice = { type: "success" | "error"; message: string };
 type StatusFilter = "all" | "running" | "completed" | "failed" | "cancelled";
 const PIPELINE_STARTUP_TIMEOUT_MS = 30_000;
-
-async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const baseUrl = getBaseUrl();
-  const headers: HeadersInit = {
-    "Content-Type": "application/json",
-    ...getAuthHeaders(),
-    ...(options.headers || {}),
-  };
-
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...options,
-    signal: options.signal ?? apiRequestSignal(),
-    headers,
-  });
-
-  const raw = await response.text();
-  let data: unknown = null;
-  if (raw) {
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      throw new Error("Invalid response from server.");
-    }
-  }
-
-  const envelope = data as ApiEnvelope | null;
-  if (!response.ok || !envelope?.success) {
-    const message = envelope?.error || `Request failed (${response.status})`;
-    throw new Error(message);
-  }
-
-  return data as T;
-}
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -221,7 +180,9 @@ export default function PipelinesPage() {
   const detailQuery = useQuery({
     queryKey: ["pipelines", selectedRunId],
     queryFn: () =>
-      apiFetch<PipelineDetailResponse>(`/api/v1/pipelines/${selectedRunId}`),
+      apiFetch<PipelineDetailResponse>(
+        `/api/v1/pipelines/${encodeURIComponent(selectedRunId ?? "")}`
+      ),
     enabled: selectedRunId !== null,
     refetchInterval: 2000,
   });
@@ -318,9 +279,12 @@ export default function PipelinesPage() {
       if (process.env.NODE_ENV === "development") {
         console.log("[Pipelines] Cancel", selectedRunId);
       }
-      await apiFetch<ApiEnvelope>(`/api/v1/pipelines/${selectedRunId}/cancel`, {
-        method: "POST",
-      });
+      await apiFetch<ApiEnvelope>(
+        `/api/v1/pipelines/${encodeURIComponent(selectedRunId)}/cancel`,
+        {
+          method: "POST",
+        }
+      );
       queryClient.invalidateQueries({ queryKey: ["pipelines"] });
       setStatusNotice({ type: "success", message: "Cancellation requested." });
     } catch (error) {
@@ -338,11 +302,14 @@ export default function PipelinesPage() {
       if (process.env.NODE_ENV === "development") {
         console.log("[Pipelines] Resume", selectedRunId);
       }
-      await apiFetch<ApiEnvelope>(`/api/v1/pipelines/${selectedRunId}/resume`, {
-        method: "POST",
-        signal: apiRequestSignal(PIPELINE_STARTUP_TIMEOUT_MS),
-        body: JSON.stringify({ background: true }),
-      });
+      await apiFetch<ApiEnvelope>(
+        `/api/v1/pipelines/${encodeURIComponent(selectedRunId)}/resume`,
+        {
+          method: "POST",
+          signal: apiRequestSignal(PIPELINE_STARTUP_TIMEOUT_MS),
+          body: JSON.stringify({ background: true }),
+        }
+      );
       queryClient.invalidateQueries({ queryKey: ["pipelines"] });
       setStatusNotice({ type: "success", message: "Pipeline resume started." });
     } catch (error) {

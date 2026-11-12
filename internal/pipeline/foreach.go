@@ -435,6 +435,7 @@ func (e *Executor) materializeForeachSteps(parent *Step, config *ForeachConfig, 
 	scope := e.pushForeachVars(varName, plan.Item, plan.Index, total, plan.PaneVars)
 	defer e.popForeachVars(scope)
 
+	protected := e.foreachBodyProtectedPaths(parent, config, body, nil)
 	steps := make([]Step, 0, len(body))
 	for bodyIndex, nested := range body {
 		materialized := cloneStep(nested)
@@ -445,7 +446,7 @@ func (e *Executor) materializeForeachSteps(parent *Step, config *ForeachConfig, 
 		if plan.PaneIndex > 0 && materialized.Pane.Index == 0 && materialized.Pane.Expr == "" {
 			materialized.Pane.Index = plan.PaneIndex
 		}
-		e.substituteForeachStepFields(&materialized)
+		e.substituteForeachStepFieldsProtected(&materialized, protected)
 		steps = append(steps, materialized)
 	}
 	return steps, nil
@@ -1405,10 +1406,6 @@ func stepOwnsForeachOutputVar(step *Step) bool {
 	return step != nil && (step.Foreach != nil || step.ForeachPane != nil)
 }
 
-func (e *Executor) substituteForeachStepFields(step *Step) {
-	e.substituteForeachStepFieldsProtected(step, nil)
-}
-
 func (e *Executor) substituteForeachStepFieldsProtected(step *Step, protected map[string]struct{}) {
 	step.Name = e.substituteForeachString(step.Name, protected)
 	step.Description = e.substituteForeachString(step.Description, protected)
@@ -1475,6 +1472,8 @@ func (e *Executor) substituteForeachStepFieldsProtected(step *Step, protected ma
 		bodyProtected := cloneProtectedRoots(protected)
 		bodyProtected["item"] = struct{}{}
 		bodyProtected["loop"] = struct{}{}
+		loopBody := append(append([]Step(nil), step.Loop.Steps...), step.Loop.Body...)
+		bodyProtected = e.foreachBodyProtectedPaths(step, nil, loopBody, bodyProtected)
 		for i := range step.Loop.Steps {
 			e.substituteForeachStepFieldsProtected(&step.Loop.Steps[i], bodyProtected)
 		}
@@ -1493,6 +1492,8 @@ func (e *Executor) substituteForeachStepFieldsProtected(step *Step, protected ma
 		if config == step.ForeachPane || config.PaneStrategy != "" {
 			bodyProtected["pane"] = struct{}{}
 		}
+		nestedBody := append(append([]Step(nil), config.Steps...), config.Body...)
+		bodyProtected = e.foreachBodyProtectedPaths(step, config, nestedBody, bodyProtected)
 		if foreachVarName(config) == "item" && e.foreachLoopItemActive() {
 			slog.Debug("nested foreach item alias shadows outer item",
 				"run_id", e.state.RunID,
@@ -1611,6 +1612,87 @@ func (e *Executor) foreachLoopItemActive() bool {
 	return ok
 }
 
+func (e *Executor) foreachBodyProtectedPaths(parent *Step, config *ForeachConfig, body []Step, base map[string]struct{}) map[string]struct{} {
+	protected := cloneProtectedRoots(base)
+	for _, key := range []string{
+		"timestamp",
+		"round", "rounds_remaining", "max_rounds",
+		"loop.round", "loop.rounds_remaining", "loop.max_rounds",
+	} {
+		protected[key] = struct{}{}
+	}
+	varName := foreachVarName(config)
+	addOutputVar := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		var candidates []string
+		if !strings.Contains(raw, "${") {
+			candidates = append(candidates, raw)
+		} else if e != nil {
+			resolved := strings.TrimSpace(e.substituteForeachString(raw, protected))
+			if resolved != "" && !strings.Contains(resolved, "${") {
+				candidates = append(candidates, resolved)
+			}
+		}
+		for _, name := range candidates {
+			protected["vars."+name] = struct{}{}
+			protected["vars."+name+"_parsed"] = struct{}{}
+			if name != varName && !knownSubstitutionNamespace(name) {
+				protected[name] = struct{}{}
+				protected[name+"_parsed"] = struct{}{}
+			}
+		}
+	}
+	if parent != nil {
+		if parent.ID != "" {
+			protected["steps."+parent.ID] = struct{}{}
+			protected["steps.iter_prefix:"+parent.ID+"_iter"] = struct{}{}
+			protected["runtime.iter_prefix:"+parent.ID+"_iter"] = struct{}{}
+		}
+		addOutputVar(parent.OutputVar)
+	}
+	var walkSteps func(steps []Step)
+	walkSteps = func(steps []Step) {
+		for i := range steps {
+			s := &steps[i]
+			addOutputVar(s.OutputVar)
+			walkSteps(s.Parallel.Steps)
+			walkSteps(s.OnSuccess)
+			for _, branchVal := range s.Branches {
+				data, err := json.Marshal(branchVal)
+				if err != nil {
+					continue
+				}
+				var branchSteps []Step
+				if err := json.Unmarshal(data, &branchSteps); err == nil && len(branchSteps) > 0 {
+					walkSteps(branchSteps)
+					continue
+				}
+				var branchStep Step
+				if err := json.Unmarshal(data, &branchStep); err == nil {
+					walkSteps([]Step{branchStep})
+				}
+			}
+			if s.Loop != nil {
+				addOutputVar(s.Loop.Collect)
+				walkSteps(s.Loop.Steps)
+				walkSteps(s.Loop.Body)
+			}
+			for _, nestedCfg := range []*ForeachConfig{s.Foreach, s.ForeachPane} {
+				if nestedCfg == nil {
+					continue
+				}
+				walkSteps(nestedCfg.Steps)
+				walkSteps(nestedCfg.Body)
+			}
+		}
+	}
+	walkSteps(body)
+	return protected
+}
+
 func (e *Executor) substituteForeachString(s string, protected map[string]struct{}) string {
 	if s == "" {
 		return ""
@@ -1625,8 +1707,7 @@ func (e *Executor) substituteForeachString(s string, protected map[string]struct
 	rewritten := varPattern.ReplaceAllStringFunc(escaped, func(match string) string {
 		expr := strings.TrimSpace(match[2 : len(match)-1])
 		varPath, defaultVal, hasDefault := parseDefault(expr)
-		root := foreachVarRoot(varPath)
-		if _, ok := protected[root]; ok {
+		if isForeachProtectedPath(varPath, protected) {
 			token := fmt.Sprintf("\x00FOREACH_PROTECTED_%d\x00", len(refs))
 			refs = append(refs, protectedRef{token: token, match: match})
 			return token
@@ -1655,15 +1736,45 @@ func (e *Executor) substituteForeachString(s string, protected map[string]struct
 	return out
 }
 
-func foreachVarRoot(varPath string) string {
+func foreachBaseSegment(seg string) string {
+	seg = strings.TrimSpace(seg)
+	if idx := strings.IndexByte(seg, '['); idx >= 0 {
+		return seg[:idx]
+	}
+	return seg
+}
+
+func isForeachProtectedPath(varPath string, protected map[string]struct{}) bool {
+	if len(protected) == 0 {
+		return false
+	}
 	varPath = strings.TrimSpace(varPath)
 	if varPath == "" {
-		return ""
+		return false
 	}
-	if idx := strings.IndexByte(varPath, '.'); idx >= 0 {
-		return varPath[:idx]
+	parts := strings.Split(varPath, ".")
+	root := foreachBaseSegment(parts[0])
+	if _, ok := protected[root]; ok {
+		return true
 	}
-	return varPath
+	if len(parts) < 2 {
+		return false
+	}
+	second := foreachBaseSegment(parts[1])
+	if _, ok := protected[root+"."+second]; ok {
+		return true
+	}
+	if root == "steps" || root == "runtime" {
+		keyPrefix := root + ".iter_prefix:"
+		for key := range protected {
+			if iterPrefix, ok := strings.CutPrefix(key, keyPrefix); ok {
+				if iterationIndexFromID(second, iterPrefix) >= 0 {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (e *Executor) resolveForeachAlias(varPath string) (interface{}, bool, error) {

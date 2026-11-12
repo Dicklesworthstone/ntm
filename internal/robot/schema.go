@@ -107,6 +107,7 @@ var SchemaCommand = map[string]interface{}{
 	"palette":          PaletteOutput{},
 	"restore":          RestoreResult{},
 	"safety_simulate":  SafetySimulationOutput{},
+	"policy_decisions": PolicyDecisionsOutput{},
 	"save":             SaveResult{},
 
 	// Pane inspection

@@ -169,6 +169,12 @@ const (
 	// file scope was refused before its claim: the bead names no files, or
 	// Agent Mail is unavailable. `ntm assign --json` emits the same string.
 	ErrCodeReservationRequired = "RESERVATION_REQUIRED"
+
+	// ErrCodeIDEOnlyHarness means a desktop-GUI-only harness (such as
+	// Windsurf's default `windsurf` Electron launcher) was requested for a
+	// headless tmux pane without an explicit terminal command override in
+	// [agents].
+	ErrCodeIDEOnlyHarness = "IDE_ONLY_HARNESS"
 )
 
 // ResponseMeta provides optional metadata about response generation.

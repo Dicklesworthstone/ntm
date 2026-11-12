@@ -1262,6 +1262,10 @@ func (e *Executor) executeMailInboxCheckStep(ctx context.Context, step *Step, re
 		return failMailStep(result, "substitution", fmt.Sprintf("mail_inbox_check agent_name: %v", err))
 	}
 
+	if e.stopBeforeDispatch(ctx, &result) {
+		return result
+	}
+
 	client := e.mailClient(projectKey)
 	messages, err := client.FetchInbox(ctx, agentmail.FetchInboxOptions{
 		ProjectKey: projectKey,

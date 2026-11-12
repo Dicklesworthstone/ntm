@@ -1,15 +1,11 @@
-//go:build ensemble_experimental
-// +build ensemble_experimental
-
 package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
-	"regexp"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -23,39 +19,50 @@ import (
 )
 
 type ensembleSpawnOptions struct {
-	Session          string
-	Question         string
-	Preset           string
-	Modes            []string
-	AllowAdvanced    bool
-	AgentMix         string
-	Assignment       string
-	Synthesis        string
-	BudgetTotal      int
-	BudgetPerMode    int
-	NoCache          bool
-	NoInject         bool
-	Project          string
-	DryRun           bool
-	ShowPreambles    bool
-	PreamblePreviewN int
+	Session            string
+	Question           string
+	Preset             string
+	Modes              []string
+	AllowAdvanced      bool
+	AgentMix           string
+	Assignment         string
+	Synthesis          string
+	MinConfidence      float64
+	MaxFindings        int
+	IncludeRawOutputs  bool
+	ConflictResolution string
+	BudgetTotal        int
+	BudgetPerMode      int
+	BudgetSynthesis    int
+	BudgetContextPack  int
+	NoCache            bool
+	NoInject           bool
+	Project            string
+	AgentCmd           string
+	Collect            bool
+	CollectTimeout     time.Duration
+	DryRun             bool
+	ShowPreambles      bool
+	PreamblePreviewN   int
 }
 
 type ensembleSpawnOutput struct {
-	Success     bool                  `json:"success"`
-	GeneratedAt time.Time             `json:"generated_at"`
-	Session     string                `json:"session"`
-	ProjectDir  string                `json:"project_dir"`
-	Question    string                `json:"question"`
-	Preset      string                `json:"preset,omitempty"`
-	Modes       []string              `json:"modes"`
-	Assignment  string                `json:"assignment"`
-	AgentMix    map[string]int        `json:"agent_mix,omitempty"`
-	Synthesis   string                `json:"synthesis"`
-	Budget      ensemble.BudgetConfig `json:"budget"`
-	Status      string                `json:"status"`
-	Injected    bool                  `json:"injected"`
-	Error       string                `json:"error,omitempty"`
+	Success         bool                      `json:"success"`
+	GeneratedAt     time.Time                 `json:"generated_at"`
+	Session         string                    `json:"session"`
+	ProjectDir      string                    `json:"project_dir"`
+	Question        string                    `json:"question"`
+	Preset          string                    `json:"preset,omitempty"`
+	Modes           []string                  `json:"modes"`
+	Assignment      string                    `json:"assignment"`
+	AgentMix        map[string]int            `json:"agent_mix,omitempty"`
+	Synthesis       string                    `json:"synthesis"`
+	Budget          ensemble.BudgetConfig     `json:"budget"`
+	Status          string                    `json:"status"`
+	Injected        bool                      `json:"injected"`
+	DurationMs      int64                     `json:"duration_ms,omitempty"`
+	SynthesisReport *ensemble.SynthesisReport `json:"synthesis_report,omitempty"`
+	Error           string                    `json:"error,omitempty"`
 }
 
 func newEnsembleSpawnCmd() *cobra.Command {
@@ -88,6 +95,8 @@ func bindEnsembleSpawnFlags(cmd *cobra.Command, opts *ensembleSpawnOptions) {
 	cmd.Flags().StringVarP(&opts.Question, "question", "q", "", "Question for agents to analyze (required)")
 	cmd.Flags().StringVarP(&opts.Preset, "preset", "p", "", "Use pre-configured ensemble (preferred)")
 	cmd.Flags().StringSliceVarP(&opts.Modes, "modes", "m", nil, "Explicit mode IDs or codes (advanced usage)")
+	cmd.Flags().BoolVar(&opts.Collect, "collect", false, "Wait for mode outputs and run synthesis pipeline")
+	cmd.Flags().DurationVar(&opts.CollectTimeout, "collect-timeout", 0, "Timeout for collecting mode outputs when --collect is set")
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "Preview spawn plan without creating session or state")
 	cmd.Flags().BoolVar(&opts.ShowPreambles, "show-preambles", false, "Include preamble previews in dry-run output")
 	cmd.Flags().IntVar(&opts.PreamblePreviewN, "preamble-preview-n", 500, "Max chars for preamble preview (0=full)")
@@ -98,11 +107,18 @@ func bindEnsembleSharedFlags(cmd *cobra.Command, opts *ensembleSpawnOptions) {
 	cmd.Flags().StringVar(&opts.AgentMix, "agent-mix", "", "Agent distribution (e.g., 'cc=3,cod=2,agy=1')")
 	cmd.Flags().StringVar(&opts.Assignment, "assignment", "affinity", "Assignment strategy: round-robin, affinity, category, explicit")
 	cmd.Flags().StringVar(&opts.Synthesis, "synthesis", "", "Synthesis strategy override")
+	cmd.Flags().Float64Var(&opts.MinConfidence, "min-confidence", 0, "Minimum finding confidence threshold [0.0-1.0]")
+	cmd.Flags().IntVar(&opts.MaxFindings, "max-findings", 0, "Maximum findings retained in synthesis")
+	cmd.Flags().BoolVar(&opts.IncludeRawOutputs, "include-raw-outputs", false, "Include raw mode outputs in synthesis artifacts")
+	cmd.Flags().StringVar(&opts.ConflictResolution, "conflict-resolution", "", "Conflict resolution policy (highlight, consensus, confidence, drop)")
 	cmd.Flags().IntVar(&opts.BudgetTotal, "budget-total", 0, "Override total token budget")
 	cmd.Flags().IntVar(&opts.BudgetPerMode, "budget-per-agent", 0, "Override per-agent token cap")
+	cmd.Flags().IntVar(&opts.BudgetSynthesis, "budget-synthesis", 0, "Override synthesis token budget")
+	cmd.Flags().IntVar(&opts.BudgetContextPack, "budget-context-pack", 0, "Override context pack token budget")
 	cmd.Flags().BoolVar(&opts.NoCache, "no-cache", false, "Bypass context pack cache")
 	cmd.Flags().BoolVar(&opts.NoInject, "no-inject", false, "Create session without injecting prompts")
 	cmd.Flags().StringVar(&opts.Project, "project", "", "Project directory (default: current dir)")
+	cmd.Flags().StringVar(&opts.AgentCmd, "agent-cmd", "", "Override agent command launched inside ensemble panes")
 }
 
 func applyEnsembleConfigDefaults(cmd *cobra.Command, opts *ensembleSpawnOptions) {
@@ -146,55 +162,81 @@ func applyEnsembleConfigDefaults(cmd *cobra.Command, opts *ensembleSpawnOptions)
 }
 
 func applyEnsembleConfigOverrides(target *ensemble.EnsembleConfig, ensCfg config.EnsembleConfig) {
-	if target == nil {
-		return
+	ensemble.ApplyTOMLConfig(target, ensCfg)
+}
+
+func populateEnsembleSpawnConfig(cmd *cobra.Command, opts ensembleSpawnOptions, ensembleCfg *ensemble.EnsembleConfig) error {
+	ensDefaults := config.Default().Ensemble
+	if cfg != nil {
+		ensDefaults = cfg.Ensemble
+	}
+	applyEnsembleConfigOverrides(ensembleCfg, ensDefaults)
+
+	flagChanged := func(name string) bool {
+		return cmd != nil && cmd.Flags().Lookup(name) != nil && cmd.Flags().Changed(name)
 	}
 
-	if target.Synthesis.Strategy == "" && strings.TrimSpace(ensCfg.Synthesis.Strategy) != "" {
-		target.Synthesis.Strategy = ensemble.SynthesisStrategy(strings.TrimSpace(ensCfg.Synthesis.Strategy))
-	}
-	if ensCfg.Synthesis.MinConfidence > 0 {
-		target.Synthesis.MinConfidence = ensemble.Confidence(ensCfg.Synthesis.MinConfidence)
-	}
-	if ensCfg.Synthesis.MaxFindings > 0 {
-		target.Synthesis.MaxFindings = ensCfg.Synthesis.MaxFindings
-	}
-	if ensCfg.Synthesis.IncludeRawOutputs {
-		target.Synthesis.IncludeRawOutputs = true
-	}
-	if strings.TrimSpace(ensCfg.Synthesis.ConflictResolution) != "" {
-		target.Synthesis.ConflictResolution = strings.TrimSpace(ensCfg.Synthesis.ConflictResolution)
+	if opts.NoCache {
+		ensembleCfg.Cache = ensemble.CacheConfig{Enabled: false}
+		ensembleCfg.CacheOverride = true
 	}
 
-	if ensCfg.Budget.Synthesis > 0 {
-		target.Budget.SynthesisReserveTokens = ensCfg.Budget.Synthesis
+	if strings.TrimSpace(opts.Synthesis) != "" {
+		strategy, err := ensemble.ValidateOrMigrateStrategy(strings.TrimSpace(opts.Synthesis))
+		if err != nil {
+			return err
+		}
+		ensembleCfg.Synthesis.Strategy = strategy
 	}
-	if ensCfg.Budget.ContextPack > 0 {
-		target.Budget.ContextReserveTokens = ensCfg.Budget.ContextPack
+	if flagChanged("min-confidence") || opts.MinConfidence > 0 {
+		if opts.MinConfidence < 0 || opts.MinConfidence > 1 {
+			return fmt.Errorf("--min-confidence must be between 0.0 and 1.0 (got %v)", opts.MinConfidence)
+		}
+		ensembleCfg.Synthesis.MinConfidence = ensemble.Confidence(opts.MinConfidence)
+	}
+	if flagChanged("max-findings") || opts.MaxFindings > 0 {
+		if opts.MaxFindings < 0 {
+			return fmt.Errorf("--max-findings must be non-negative")
+		}
+		ensembleCfg.Synthesis.MaxFindings = opts.MaxFindings
+	}
+	if flagChanged("include-raw-outputs") {
+		ensembleCfg.Synthesis.IncludeRawOutputs = opts.IncludeRawOutputs
+	} else if opts.IncludeRawOutputs {
+		ensembleCfg.Synthesis.IncludeRawOutputs = true
+	}
+	if flagChanged("conflict-resolution") || strings.TrimSpace(opts.ConflictResolution) != "" {
+		ensembleCfg.Synthesis.ConflictResolution = strings.TrimSpace(opts.ConflictResolution)
 	}
 
-	target.Cache.Enabled = ensCfg.Cache.Enabled
-	if ensCfg.Cache.TTLMinutes > 0 {
-		target.Cache.TTL = time.Duration(ensCfg.Cache.TTLMinutes) * time.Minute
+	if flagChanged("budget-synthesis") || opts.BudgetSynthesis > 0 {
+		if opts.BudgetSynthesis < 0 {
+			return fmt.Errorf("--budget-synthesis must be non-negative")
+		}
+		ensembleCfg.Budget.SynthesisReserveTokens = opts.BudgetSynthesis
+		ensembleCfg.Synthesis.MaxSynthesisTokens = opts.BudgetSynthesis
 	}
-	if strings.TrimSpace(ensCfg.Cache.CacheDir) != "" {
-		target.Cache.CacheDir = config.ExpandHome(strings.TrimSpace(ensCfg.Cache.CacheDir))
-	}
-	if ensCfg.Cache.MaxEntries > 0 {
-		target.Cache.MaxEntries = ensCfg.Cache.MaxEntries
-	}
-	target.Cache.ShareAcrossModes = ensCfg.Cache.ShareAcrossModes
-	if ensCfg.Cache.CacheDir != "" || ensCfg.Cache.TTLMinutes > 0 || ensCfg.Cache.MaxEntries > 0 || !ensCfg.Cache.Enabled {
-		target.CacheOverride = true
+	if flagChanged("budget-context-pack") || opts.BudgetContextPack > 0 {
+		if opts.BudgetContextPack < 0 {
+			return fmt.Errorf("--budget-context-pack must be non-negative")
+		}
+		ensembleCfg.Budget.ContextReserveTokens = opts.BudgetContextPack
 	}
 
-	target.EarlyStop = ensemble.EarlyStopConfig{
-		Enabled:             ensCfg.EarlyStop.Enabled,
-		MinAgentsBeforeStop: ensCfg.EarlyStop.MinAgents,
-		FindingsThreshold:   ensCfg.EarlyStop.FindingsThreshold,
-		SimilarityThreshold: ensCfg.EarlyStop.SimilarityThreshold,
-		WindowSize:          ensCfg.EarlyStop.WindowSize,
+	if opts.BudgetPerMode > 0 {
+		ensembleCfg.Budget.MaxTokensPerMode = opts.BudgetPerMode
 	}
+	if opts.BudgetTotal > 0 {
+		ensembleCfg.Budget.MaxTotalTokens = opts.BudgetTotal
+		if !flagChanged("budget-synthesis") && !flagChanged("budget-context-pack") &&
+			ensembleCfg.Budget.SynthesisReserveTokens+ensembleCfg.Budget.ContextReserveTokens > opts.BudgetTotal {
+			ensembleCfg.Budget.SynthesisReserveTokens = opts.BudgetTotal / 4
+			ensembleCfg.Budget.ContextReserveTokens = opts.BudgetTotal / 8
+			ensembleCfg.Synthesis.MaxSynthesisTokens = ensembleCfg.Budget.SynthesisReserveTokens
+		}
+	}
+
+	return nil
 }
 
 func runEnsembleSpawn(cmd *cobra.Command, opts ensembleSpawnOptions) error {
@@ -246,7 +288,7 @@ func runEnsembleSpawn(cmd *cobra.Command, opts ensembleSpawnOptions) error {
 		return outputError(fmt.Errorf("explicit assignment requires --modes mode:agent specs"))
 	}
 
-	if opts.BudgetPerMode < 0 || opts.BudgetTotal < 0 {
+	if opts.BudgetPerMode < 0 || opts.BudgetTotal < 0 || opts.BudgetSynthesis < 0 || opts.BudgetContextPack < 0 {
 		return outputError(fmt.Errorf("budget overrides must be non-negative"))
 	}
 
@@ -261,7 +303,7 @@ func runEnsembleSpawn(cmd *cobra.Command, opts ensembleSpawnOptions) error {
 		return outputError(err)
 	}
 
-	manager, err := buildEnsembleManager(projectDir)
+	manager, err := buildEnsembleManager(projectDir, opts.AgentCmd)
 	if err != nil {
 		return outputError(err)
 	}
@@ -283,60 +325,76 @@ func runEnsembleSpawn(cmd *cobra.Command, opts ensembleSpawnOptions) error {
 		SkipInject:    opts.NoInject,
 	}
 
-	ensDefaults := config.Default().Ensemble
-	if cfg != nil {
-		ensDefaults = cfg.Ensemble
-	}
-	applyEnsembleConfigOverrides(ensembleCfg, ensDefaults)
-
-	if opts.NoCache {
-		ensembleCfg.Cache = ensemble.CacheConfig{Enabled: false}
-		ensembleCfg.CacheOverride = true
-	}
-
-	if strings.TrimSpace(opts.Synthesis) != "" {
-		strategy, err := ensemble.ValidateOrMigrateStrategy(strings.TrimSpace(opts.Synthesis))
-		if err != nil {
-			return outputError(err)
-		}
-		ensembleCfg.Synthesis.Strategy = strategy
-	}
-
-	if opts.BudgetPerMode > 0 {
-		ensembleCfg.Budget.MaxTokensPerMode = opts.BudgetPerMode
-	}
-	if opts.BudgetTotal > 0 {
-		ensembleCfg.Budget.MaxTotalTokens = opts.BudgetTotal
-	}
-
-	state, err := manager.SpawnEnsemble(context.Background(), ensembleCfg)
-	if err != nil && state == nil {
+	if err := populateEnsembleSpawnConfig(cmd, opts, ensembleCfg); err != nil {
 		return outputError(err)
 	}
 
+	runCtx := context.Background()
+	if cmd != nil && cmd.Context() != nil {
+		runCtx = cmd.Context()
+	}
+
+	var (
+		state      *ensemble.EnsembleSession
+		spawnErr   error
+		pipeResult *ensemble.EnsembleResult
+	)
+	if opts.Collect {
+		pipeResult, spawnErr = manager.Run(runCtx, ensembleCfg, ensemble.RunConfig{
+			CollectTimeout: opts.CollectTimeout,
+			EarlyStop:      ensembleCfg.EarlyStop,
+		})
+		if spawnErr != nil {
+			var pipeErr *ensemble.PipelineError
+			if errors.As(spawnErr, &pipeErr) {
+				slog.Default().Warn("ensemble pipeline failed",
+					"session", opts.Session,
+					"stage", pipeErr.Stage,
+					"error", pipeErr.Error(),
+					"cause", pipeErr.Unwrap(),
+				)
+			}
+		}
+		state, _ = ensemble.LoadSession(opts.Session)
+	} else {
+		state, spawnErr = manager.SpawnEnsemble(runCtx, ensembleCfg)
+	}
+
+	if spawnErr != nil && state == nil && pipeResult == nil {
+		return outputError(spawnErr)
+	}
+
 	out := buildEnsembleSpawnOutput(state, ensembleCfg, manager.Registry)
-	if err != nil {
+	if pipeResult != nil {
+		out.DurationMs = pipeResult.Duration().Milliseconds()
+		out.SynthesisReport = pipeResult.Synthesis
+		if state == nil && spawnErr == nil {
+			out.Success = true
+			out.Status = string(pipeResult.Stage)
+		}
+	}
+	if spawnErr != nil {
 		out.Success = false
-		out.Error = err.Error()
+		out.Error = spawnErr.Error()
 	}
 
 	if IsJSONOutput() {
 		if !out.Success {
-			return emitJSONFailureEnvelopeWithCause(out, err)
+			return emitJSONFailureEnvelopeWithCause(out, spawnErr)
 		}
-		return output.PrintJSON(out)
+		return output.WriteJSON(cmd.OutOrStdout(), out, true)
 	}
 
 	if err := renderEnsembleSpawnText(cmd.OutOrStdout(), out); err != nil {
 		return err
 	}
-	if err != nil {
-		return err
+	if spawnErr != nil {
+		return spawnErr
 	}
 	return nil
 }
 
-func buildEnsembleManager(projectDir string) (*ensemble.EnsembleManager, error) {
+func buildEnsembleManager(projectDir, agentCmd string) (*ensemble.EnsembleManager, error) {
 	modeLoader := ensemble.NewModeLoader()
 	if projectDir != "" {
 		modeLoader.ProjectDir = projectDir
@@ -355,9 +413,15 @@ func buildEnsembleManager(projectDir string) (*ensemble.EnsembleManager, error) 
 		return nil, err
 	}
 
+	effectiveCfg := cfg
+	if effectiveCfg == nil {
+		effectiveCfg = config.Default()
+	}
+
 	manager := ensemble.NewEnsembleManager()
 	manager.Catalog = catalog
 	manager.Registry = ensemble.NewEnsembleRegistry(presets, catalog)
+	manager.ConfigureAgentCommands(agentCmd, effectiveCfg.Agents)
 	return manager, nil
 }
 
@@ -404,6 +468,12 @@ func resolveEnsembleSpawnBudget(cfg *ensemble.EnsembleConfig, registry *ensemble
 	if cfg.Budget.MaxTotalTokens > 0 {
 		budget.MaxTotalTokens = cfg.Budget.MaxTotalTokens
 	}
+	if cfg.Budget.SynthesisReserveTokens > 0 {
+		budget.SynthesisReserveTokens = cfg.Budget.SynthesisReserveTokens
+	}
+	if cfg.Budget.ContextReserveTokens > 0 {
+		budget.ContextReserveTokens = cfg.Budget.ContextReserveTokens
+	}
 	return budget
 }
 
@@ -446,44 +516,6 @@ func renderEnsembleSpawnText(w io.Writer, out ensembleSpawnOutput) error {
 		_, _ = fmt.Fprintln(w, "Prompts not injected (--no-inject)")
 	}
 	return nil
-}
-
-func resolveEnsembleProjectDir(value string) (string, error) {
-	if strings.TrimSpace(value) == "" {
-		dir, err := os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("get current directory: %w", err)
-		}
-		return dir, nil
-	}
-	abs, err := filepath.Abs(value)
-	if err != nil {
-		return "", fmt.Errorf("resolve project directory: %w", err)
-	}
-	return abs, nil
-}
-
-var sessionNameSanitizer = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
-
-func defaultEnsembleSessionName(projectDir string) string {
-	base := filepath.Base(projectDir)
-	if base == "" || base == "." || base == string(filepath.Separator) {
-		base = "ensemble"
-	}
-	sanitized := sessionNameSanitizer.ReplaceAllString(base, "-")
-	sanitized = strings.Trim(sanitized, "-_")
-	if sanitized == "" {
-		sanitized = "ensemble"
-	}
-	return sanitized
-}
-
-func uniqueEnsembleSessionName(base string) string {
-	name := base
-	for i := 1; tmux.SessionExists(name); i++ {
-		name = fmt.Sprintf("%s-%d", base, i)
-	}
-	return name
 }
 
 func isValidEnsembleAssignment(value string) bool {
@@ -578,6 +610,7 @@ type ensembleDryRunSynthesis struct {
 	SynthesizerModeID  string  `json:"synthesizer_mode_id,omitempty"`
 	MinConfidence      float64 `json:"min_confidence,omitempty"`
 	MaxFindings        int     `json:"max_findings,omitempty"`
+	IncludeRawOutputs  bool    `json:"include_raw_outputs,omitempty"`
 	ConflictResolution string  `json:"conflict_resolution,omitempty"`
 }
 
@@ -619,31 +652,8 @@ func runEnsembleDryRun(cmd *cobra.Command, opts ensembleSpawnOptions, manager *e
 		Assignment:    opts.Assignment,
 	}
 
-	// Apply config defaults
-	ensDefaults := config.Default().Ensemble
-	if cfg != nil {
-		ensDefaults = cfg.Ensemble
-	}
-	applyEnsembleConfigOverrides(ensembleCfg, ensDefaults)
-
-	if opts.NoCache {
-		ensembleCfg.Cache = ensemble.CacheConfig{Enabled: false}
-		ensembleCfg.CacheOverride = true
-	}
-
-	if strings.TrimSpace(opts.Synthesis) != "" {
-		strategy, err := ensemble.ValidateOrMigrateStrategy(strings.TrimSpace(opts.Synthesis))
-		if err != nil {
-			return outputError(err)
-		}
-		ensembleCfg.Synthesis.Strategy = strategy
-	}
-
-	if opts.BudgetPerMode > 0 {
-		ensembleCfg.Budget.MaxTokensPerMode = opts.BudgetPerMode
-	}
-	if opts.BudgetTotal > 0 {
-		ensembleCfg.Budget.MaxTotalTokens = opts.BudgetTotal
+	if err := populateEnsembleSpawnConfig(cmd, opts, ensembleCfg); err != nil {
+		return outputError(err)
 	}
 
 	dryRunOpts := ensemble.DryRunOptions{
@@ -666,7 +676,7 @@ func runEnsembleDryRun(cmd *cobra.Command, opts ensembleSpawnOptions, manager *e
 			}
 			return emitJSONFailureEnvelopeWithCause(out, validationErr)
 		}
-		return output.PrintJSON(out)
+		return output.WriteJSON(cmd.OutOrStdout(), out, true)
 	}
 
 	return renderEnsembleDryRunText(cmd.OutOrStdout(), out)
@@ -696,6 +706,7 @@ func convertDryRunPlanToOutput(plan *ensemble.DryRunPlan, projectDir string) ens
 			SynthesizerModeID:  plan.Synthesis.SynthesizerModeID,
 			MinConfidence:      plan.Synthesis.MinConfidence,
 			MaxFindings:        plan.Synthesis.MaxFindings,
+			IncludeRawOutputs:  plan.Synthesis.IncludeRawOutputs,
 			ConflictResolution: plan.Synthesis.ConflictResolution,
 		},
 		Validation: ensembleDryRunValidation{

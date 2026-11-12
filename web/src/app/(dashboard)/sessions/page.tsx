@@ -13,16 +13,13 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiRequestSignal, getAuthHeaders, getBaseUrl } from "@/lib/api/client";
+import { apiFetch, type ApiEnvelope } from "@/lib/api/client";
 import { useConnection } from "@/lib/hooks/use-query";
-
-interface ApiEnvelope {
-  success: boolean;
-  timestamp: string;
-  request_id?: string;
-  error?: string;
-  error_code?: string;
-}
+import {
+  applyPaneOutputEvent,
+  getWsClient,
+  type ConnectionState,
+} from "@/lib/ws/client";
 
 interface Session {
   name: string;
@@ -67,39 +64,7 @@ interface PaneInputResponse extends ApiEnvelope {
 type Notice = { type: "success" | "error"; message: string };
 
 const DEFAULT_OUTPUT_LINES = 200;
-
-async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const baseUrl = getBaseUrl();
-  const headers: HeadersInit = {
-    "Content-Type": "application/json",
-    ...getAuthHeaders(),
-    ...(options.headers || {}),
-  };
-
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...options,
-    signal: options.signal ?? apiRequestSignal(),
-    headers,
-  });
-
-  const raw = await response.text();
-  let data: unknown = null;
-  if (raw) {
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      throw new Error("Invalid response from server.");
-    }
-  }
-
-  const envelope = data as ApiEnvelope | null;
-  if (!response.ok || !envelope?.success) {
-    const message = envelope?.error || `Request failed (${response.status})`;
-    throw new Error(message);
-  }
-
-  return data as T;
-}
+const MAX_STREAM_BUFFER_LINES = 2000;
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -146,15 +111,37 @@ function SessionDetail() {
 
 function SessionDetailView({ sessionId }: { sessionId: string }) {
   const queryClient = useQueryClient();
-  const { isConnected } = useConnection();
+  const { isConnected: providerConnected } = useConnection();
+  const [wsClientState, setWsClientState] = useState<ConnectionState>(() =>
+    getWsClient().getState()
+  );
+  const isConnected = providerConnected || wsClientState === "connected";
+
   const outputRef = useRef<HTMLDivElement | null>(null);
   const noticeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wsFullSnapshotKeyRef = useRef<string | null>(null);
 
   const [selectedPane, setSelectedPane] = useState<number | null>(null);
   const [outputLines, setOutputLines] = useState(DEFAULT_OUTPUT_LINES);
   const [autoScroll, setAutoScroll] = useState(true);
   const [prompt, setPrompt] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [liveOutputState, setLiveOutputState] = useState<{
+    key: string | null;
+    lines: string[];
+  }>({ key: null, lines: [] });
+
+  const encodedSessionId = useMemo(
+    () => encodeURIComponent(sessionId),
+    [sessionId]
+  );
+
+  useEffect(() => {
+    const ws = getWsClient();
+    return ws.onStateChange((state) => {
+      setWsClientState(state);
+    });
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -177,27 +164,122 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
 
   const sessionQuery = useQuery({
     queryKey: ["sessions", sessionId],
-    queryFn: () => apiFetch<SessionResponse>(`/api/v1/sessions/${sessionId}`),
-    refetchInterval: 15000,
+    queryFn: () =>
+      apiFetch<SessionResponse>(`/api/v1/sessions/${encodedSessionId}`),
+    refetchInterval: isConnected ? false : 15000,
   });
 
   const panesQuery = useQuery({
-    queryKey: ["panes", sessionId],
-    queryFn: () => apiFetch<PaneListResponse>(`/api/v1/sessions/${sessionId}/panes`),
-    refetchInterval: 5000,
+    queryKey: ["session-panes", sessionId],
+    queryFn: () =>
+      apiFetch<PaneListResponse>(`/api/v1/sessions/${encodedSessionId}/panes`),
+    refetchInterval: isConnected ? false : 5000,
   });
 
   const paneIndex = selectedPane ?? panesQuery.data?.panes?.[0]?.index ?? null;
+  const activePaneKey =
+    paneIndex !== null ? `${sessionId}:${paneIndex}` : null;
 
   const outputQuery = useQuery({
-    queryKey: ["pane-output", sessionId, paneIndex, outputLines],
-    queryFn: () =>
-      apiFetch<PaneOutputResponse>(
-        `/api/v1/sessions/${sessionId}/panes/${paneIndex}/output?lines=${outputLines}`
-      ),
+    queryKey: ["pane-output-backfill", sessionId, paneIndex, outputLines],
+    queryFn: () => {
+      const encodedPaneIndex = encodeURIComponent(String(paneIndex));
+      return apiFetch<PaneOutputResponse>(
+        `/api/v1/sessions/${encodedSessionId}/panes/${encodedPaneIndex}/output?lines=${outputLines}`
+      );
+    },
     enabled: paneIndex !== null,
-    refetchInterval: 2500,
+    refetchInterval: isConnected ? false : 2500,
+    refetchOnWindowFocus: !isConnected,
   });
+  const refetchOutputBackfill = outputQuery.refetch;
+
+  // Seed or refresh the output buffer whenever REST backfill completes.
+  useEffect(() => {
+    if (!activePaneKey || !outputQuery.data) {
+      return;
+    }
+    const rawOutput = outputQuery.data.output || "";
+    const backfillLines = rawOutput ? rawOutput.split("\n") : [];
+    const maxBuffer = Math.max(outputLines, MAX_STREAM_BUFFER_LINES);
+
+    setLiveOutputState((prev) => {
+      if (prev.key !== activePaneKey) {
+        return {
+          key: activePaneKey,
+          lines: backfillLines.slice(-maxBuffer),
+        };
+      }
+      if (!isConnected) {
+        return {
+          key: activePaneKey,
+          lines: backfillLines.slice(-maxBuffer),
+        };
+      }
+      // If a full WS snapshot already arrived for this pane, keep live stream state.
+      if (wsFullSnapshotKeyRef.current === activePaneKey && prev.lines.length > 0) {
+        return prev;
+      }
+      // Merge initial REST backfill with any early incremental WS lines.
+      if (prev.lines.length > 0) {
+        const merged = [...backfillLines, ...prev.lines].slice(-maxBuffer);
+        return { key: activePaneKey, lines: merged };
+      }
+      return {
+        key: activePaneKey,
+        lines: backfillLines.slice(-maxBuffer),
+      };
+    });
+  }, [activePaneKey, isConnected, outputLines, outputQuery.data, outputQuery.dataUpdatedAt]);
+
+  // Subscribe to WebSocket PaneStreamer topic panes:${sessionId}:${paneIndex}
+  // for real-time output frames without 2.5s REST polling.
+  useEffect(() => {
+    if (paneIndex === null || !activePaneKey) {
+      return;
+    }
+
+    const ws = getWsClient();
+    const paneTopic = `panes:${sessionId}:${paneIndex}`;
+    const maxBuffer = Math.max(outputLines, MAX_STREAM_BUFFER_LINES);
+    wsFullSnapshotKeyRef.current = null;
+
+    const unsubEvent = ws.onEvent((event) => {
+      if (event.topic !== paneTopic) {
+        return;
+      }
+
+      if (event.event_type === "pane.output") {
+        const record =
+          event.data && typeof event.data === "object"
+            ? (event.data as { is_full?: boolean; full?: boolean })
+            : null;
+        if (record?.is_full === true || record?.full === true) {
+          wsFullSnapshotKeyRef.current = activePaneKey;
+        }
+        setLiveOutputState((prev) => {
+          const base = prev.key === activePaneKey ? prev.lines : [];
+          return {
+            key: activePaneKey,
+            lines: applyPaneOutputEvent(base, event.data, maxBuffer),
+          };
+        });
+      } else if (event.event_type === "pane.output.dropped") {
+        void refetchOutputBackfill();
+      }
+    });
+
+    void ws.subscribe(paneTopic, { mode: "lines" }).catch((err) => {
+      if (process.env.NODE_ENV === "development") {
+        console.error("[Sessions] WS pane subscribe error", paneTopic, err);
+      }
+    });
+
+    return () => {
+      unsubEvent();
+      void ws.unsubscribe(paneTopic).catch(() => {});
+    };
+  }, [activePaneKey, outputLines, paneIndex, refetchOutputBackfill, sessionId]);
 
   useEffect(() => {
     const panes = panesQuery.data?.panes ?? [];
@@ -217,21 +299,25 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
     }
   }, [panesQuery.data, selectedPane]);
 
+  const outputSnapshot = useMemo(() => {
+    const fallbackRaw = outputQuery.data?.output || "";
+    const fallbackLines = fallbackRaw ? fallbackRaw.split("\n") : [];
+    const allLines =
+      activePaneKey && liveOutputState.key === activePaneKey
+        ? liveOutputState.lines
+        : fallbackLines;
+    if (allLines.length === 0) {
+      return { lines: [] as string[], total: 0, truncated: false };
+    }
+    const truncated = allLines.length > outputLines;
+    const lines = truncated ? allLines.slice(-outputLines) : allLines;
+    return { lines, total: allLines.length, truncated };
+  }, [activePaneKey, liveOutputState, outputLines, outputQuery.data]);
+
   useEffect(() => {
     if (!autoScroll || !outputRef.current) return;
     outputRef.current.scrollTop = outputRef.current.scrollHeight;
-  }, [autoScroll, outputQuery.data]);
-
-  const outputSnapshot = useMemo(() => {
-    const output = outputQuery.data?.output || "";
-    if (!output) {
-      return { lines: [], total: 0, truncated: false };
-    }
-    const list = output.split("\n");
-    const truncated = list.length > outputLines;
-    const lines = truncated ? list.slice(-outputLines) : list;
-    return { lines, total: list.length, truncated };
-  }, [outputLines, outputQuery.data]);
+  }, [autoScroll, outputSnapshot.lines]);
 
   const agentCounts = useMemo(() => {
     const panes = panesQuery.data?.panes || [];
@@ -249,9 +335,10 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
       return;
     }
 
+    const encodedPaneIndex = encodeURIComponent(String(paneIndex));
     try {
       await apiFetch<PaneInputResponse>(
-        `/api/v1/sessions/${sessionId}/panes/${paneIndex}/input`,
+        `/api/v1/sessions/${encodedSessionId}/panes/${encodedPaneIndex}/input`,
         {
           method: "POST",
           body: JSON.stringify({ text: prompt.trim(), enter: true }),
@@ -259,7 +346,7 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
       );
 
       if (process.env.NODE_ENV === "development") {
-        console.log("[Command Palette] send prompt", {
+        console.log("[Sessions] send prompt", {
           sessionId,
           paneIndex,
           length: prompt.length,
@@ -267,29 +354,32 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
       }
 
       setPrompt("");
-      queryClient.invalidateQueries({
-        queryKey: ["pane-output", sessionId, paneIndex],
-      });
+      if (!isConnected) {
+        void queryClient.invalidateQueries({
+          queryKey: ["pane-output-backfill", sessionId, paneIndex],
+        });
+      }
     } catch (error) {
       if (process.env.NODE_ENV === "development") {
-        console.error("[Command Palette] send prompt error", error);
+        console.error("[Sessions] send prompt error", error);
       }
       setStatusNotice({ type: "error", message: getErrorMessage(error) });
     }
-  }, [prompt, paneIndex, queryClient, sessionId, setStatusNotice]);
+  }, [encodedSessionId, isConnected, prompt, paneIndex, queryClient, sessionId, setStatusNotice]);
 
   const interruptPane = useCallback(async () => {
     if (paneIndex === null) return;
+    const encodedPaneIndex = encodeURIComponent(String(paneIndex));
     try {
       await apiFetch(
-        `/api/v1/sessions/${sessionId}/panes/${paneIndex}/interrupt`,
+        `/api/v1/sessions/${encodedSessionId}/panes/${encodedPaneIndex}/interrupt`,
         { method: "POST" }
       );
       setStatusNotice({ type: "success", message: "Interrupt sent." });
     } catch (error) {
       setStatusNotice({ type: "error", message: getErrorMessage(error) });
     }
-  }, [paneIndex, sessionId, setStatusNotice]);
+  }, [encodedSessionId, paneIndex, setStatusNotice]);
 
   return (
     <div className="space-y-6">

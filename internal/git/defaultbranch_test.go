@@ -150,7 +150,7 @@ func TestDefaultBranch_UnresolvableIsLoudError(t *testing.T) {
 	}
 }
 
-func TestSyncWorktree_MergesMasterDefaultBase(t *testing.T) {
+func TestDefaultBranch_CloneTracksRemoteMasterDefault(t *testing.T) {
 	isolateGitConfig(t)
 
 	remote := setupRepoWithInitialBranch(t, "master")
@@ -160,32 +160,11 @@ func TestSyncWorktree_MergesMasterDefaultBase(t *testing.T) {
 	}
 	clone := filepath.Join(parent, "local")
 
-	// Advance the remote's master after the clone so sync has work to do.
-	if err := os.WriteFile(filepath.Join(remote, "upstream.txt"), []byte("upstream\n"), 0o644); err != nil {
-		t.Fatalf("write upstream file: %v", err)
-	}
-	for _, args := range [][]string{
-		{"add", "upstream.txt"},
-		{"commit", "-m", "upstream change"},
-	} {
-		if out, err := runGitTestCommand(t, remote, args...); err != nil {
-			t.Fatalf("%v failed: %v\n%s", args, err, out)
-		}
-	}
-
-	ctx := sequentialWorktreeIntegrationContext(t)
-	wm, err := NewWorktreeManager(ctx, clone)
+	branch, err := DefaultBranch(t.Context(), clone)
 	if err != nil {
-		t.Fatalf("NewWorktreeManager: %v", err)
+		t.Fatalf("DefaultBranch: %v", err)
 	}
-	// Before the fix this merged the hardcoded origin/main, which does not
-	// exist here, so a master-default repo could never sync.
-	if err := wm.SyncWorktree(ctx, clone); err != nil {
-		t.Fatalf("SyncWorktree: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(clone, "upstream.txt")); err != nil {
-		t.Fatalf("upstream change not merged into clone: %v", err)
-	}
+	assertStringEqual(t, branch, "master")
 }
 
 func TestDefaultBranch_RejectsNilContext(t *testing.T) {

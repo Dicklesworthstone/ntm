@@ -3,6 +3,7 @@ package approval
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -326,6 +327,10 @@ func TestSLBLinkFailureDoesNotRemirrorOrInferAuthority(t *testing.T) {
 	if err != nil || strings.Count(string(calls), "request|") != 1 || strings.Contains(string(calls), "status|") {
 		t.Fatalf("uncertain link caused resubmission or unbound lookup: %q %v", calls, err)
 	}
+	if err := engine.Approve(context.Background(), "unlinked", "bob"); !errors.Is(err, ErrSLBSelfApproval) {
+		t.Fatalf("expected same SLB_SESSION_ID to block spoofed bob approval, got: %v", err)
+	}
+	t.Setenv("SLB_SESSION_ID", "reviewer-session")
 	if err := engine.Approve(context.Background(), "unlinked", "bob"); err != nil {
 		t.Fatalf("native two-person fallback became unavailable: %v", err)
 	}

@@ -646,12 +646,30 @@ type AuditActor struct {
 // =============================================================================
 
 // AuditDecision is a compact summary of an operator decision.
+// EvidenceLedger is the machine-readable Graveyard §0.19 decision-provenance
+// record persisted in audit_decision_log.evidence_json for automated control
+// policies (ensemble EarlyStopController, assign RouteWithRelaxation, etc.).
+type EvidenceLedger struct {
+	SchemaVersion        string             `json:"schema_version"`
+	TraceID              string             `json:"trace_id,omitempty"`
+	DecisionID           string             `json:"decision_id"`
+	Component            string             `json:"component"`
+	Action               string             `json:"action"`
+	ExpectedLossByAction map[string]float64 `json:"expected_loss_by_action"`
+	ChosenExpectedLoss   float64            `json:"chosen_expected_loss"`
+	RegretByAction       map[string]float64 `json:"regret_by_action"`
+	CalibrationScore     float64            `json:"calibration_score"`
+	FallbackActive       bool               `json:"fallback_active"`
+	FallbackReason       string             `json:"fallback_reason,omitempty"`
+	TopFeatures          map[string]float64 `json:"top_features,omitempty"`
+}
+
 type AuditDecision struct {
 	// Identity
 	ID int64 `json:"id"`
 
 	// Decision
-	DecisionType string    `json:"decision_type"` // ack, pin, snooze, override, mute, resolve
+	DecisionType string    `json:"decision_type"` // ack, pin, snooze, override, mute, resolve, early_stop, assign_relax
 	DecisionAt   time.Time `json:"decision_at"`
 
 	// Actor
@@ -663,8 +681,9 @@ type AuditDecision struct {
 	EntityID   string `json:"entity_id"`
 
 	// Context
-	Reason    string     `json:"reason,omitempty"`
-	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	Reason    string          `json:"reason,omitempty"`
+	Evidence  *EvidenceLedger `json:"evidence_ledger,omitempty"`
+	ExpiresAt *time.Time      `json:"expires_at,omitempty"`
 
 	// Reference
 	AuditEventID *int64 `json:"audit_event_id,omitempty"`
@@ -678,6 +697,7 @@ type AuditDecision struct {
 const (
 	SendOperationInProgress = "in_progress"
 	SendOperationCompleted  = "completed"
+	SendOperationCanceled   = "canceled"
 )
 
 // Operation kinds: the robot actuation an operation ID is bound to. Operation

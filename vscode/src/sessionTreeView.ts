@@ -1,30 +1,42 @@
 import * as vscode from 'vscode';
-import { NtmClient, SessionInfo, AgentInfo } from './ntmClient';
+import {
+    AgentInfo,
+    buildNtmTerminalCommand,
+    NtmClient,
+    SessionInfo,
+} from './ntmClient';
 
 /**
  * Tree item representing a session or agent.
  */
-class NtmTreeItem extends vscode.TreeItem {
+export class NtmTreeItem extends vscode.TreeItem {
     constructor(
         public readonly label: string,
         public readonly collapsibleState: vscode.TreeItemCollapsibleState,
         public readonly itemType: 'session' | 'agent',
-        public readonly data?: SessionInfo | AgentInfo
+        public readonly data?: SessionInfo | AgentInfo,
+        public readonly sessionName?: string
     ) {
         super(label, collapsibleState);
 
         if (itemType === 'session') {
             const session = data as SessionInfo;
+            const agentCount = session?.agents?.length || session?.agent_count || 0;
+            const paneCount = session?.panes ?? agentCount;
             this.contextValue = 'session';
             this.iconPath = new vscode.ThemeIcon(session?.attached ? 'broadcast' : 'terminal');
-            this.description = session?.attached ? 'attached' : 'detached';
-            this.tooltip = `${session?.panes ?? 0} panes • ${session?.agents?.length ?? 0} agents`;
+            const healthSuffix = session?.health?.status && session.health.status !== 'healthy'
+                ? ` (${session.health.status})`
+                : '';
+            this.description = `${session?.attached ? 'attached' : 'detached'}${healthSuffix}`;
+            this.tooltip = `${paneCount} panes • ${agentCount} agents`;
         } else if (itemType === 'agent') {
             const agent = data as AgentInfo;
             this.contextValue = 'agent';
             this.iconPath = new vscode.ThemeIcon(agent?.is_active ? 'debug-start' : 'debug-pause');
-            this.description = agent?.variant || agent?.type;
-            this.tooltip = `Pane: ${agent?.pane}`;
+            const descParts = [agent?.variant || agent?.type, agent?.state].filter(Boolean);
+            this.description = descParts.join(' • ');
+            this.tooltip = `Pane: ${agent?.pane}${agent?.state ? ` • State: ${agent.state}` : ''}`;
         }
     }
 }
@@ -59,7 +71,6 @@ export class NtmSessionTreeProvider implements vscode.TreeDataProvider<NtmTreeIt
 
     getChildren(element?: NtmTreeItem): Thenable<NtmTreeItem[]> {
         if (!element) {
-            // Root level: return sessions
             return Promise.resolve(
                 this.sessions.map(session => new NtmTreeItem(
                     session.name,
@@ -67,11 +78,11 @@ export class NtmSessionTreeProvider implements vscode.TreeDataProvider<NtmTreeIt
                         ? vscode.TreeItemCollapsibleState.Expanded
                         : vscode.TreeItemCollapsibleState.None,
                     'session',
-                    session
+                    session,
+                    session.name
                 ))
             );
         } else if (element.itemType === 'session') {
-            // Session level: return agents
             const session = element.data as SessionInfo;
             const agents = session.agents || [];
             return Promise.resolve(
@@ -79,7 +90,8 @@ export class NtmSessionTreeProvider implements vscode.TreeDataProvider<NtmTreeIt
                     agent.pane || agent.type,
                     vscode.TreeItemCollapsibleState.None,
                     'agent',
-                    agent
+                    agent,
+                    session.name
                 ))
             );
         }
@@ -105,25 +117,21 @@ export function registerSessionTreeView(
         showCollapseAll: true,
     });
 
-    // Register refresh command
     const refreshCmd = vscode.commands.registerCommand('ntm.refreshSessions', () => {
         provider.refresh();
     });
 
-    // Register attach command for sessions
-    const attachCmd = vscode.commands.registerCommand('ntm.attachSession', (item: NtmTreeItem) => {
-        if (item.itemType === 'session') {
+    const attachCmd = vscode.commands.registerCommand('ntm.attachSession', (item?: NtmTreeItem) => {
+        if (item?.itemType === 'session') {
             const session = item.data as SessionInfo;
             const terminal = vscode.window.createTerminal({ name: `NTM: ${session.name}` });
             terminal.show(true);
-            terminal.sendText(`ntm attach ${session.name}`, true);
+            terminal.sendText(buildNtmTerminalCommand(client.getBinaryPath(), 'attach', session.name), true);
         }
     });
 
-    // Initial refresh
     provider.refresh();
 
-    // Refresh periodically
     const interval = setInterval(() => provider.refresh(), 10000);
 
     context.subscriptions.push(

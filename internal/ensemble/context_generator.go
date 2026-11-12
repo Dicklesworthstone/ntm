@@ -16,6 +16,7 @@ import (
 	"time"
 
 	tokenpkg "github.com/Dicklesworthstone/ntm/internal/tokens"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 const (
@@ -28,6 +29,7 @@ type ContextPackGenerator struct {
 	ProjectDir string
 	Logger     *slog.Logger
 	Cache      *ContextPackCache
+	MaxTokens  int
 }
 
 // NewContextPackGenerator returns a generator instance.
@@ -51,6 +53,9 @@ func (g *ContextPackGenerator) Generate(question string, modeKey string, cacheCf
 				"key", cacheKey,
 				"project", projectRoot,
 			)
+			if g.MaxTokens > 0 {
+				return CapContextPackTokens(pack, g.MaxTokens), nil
+			}
 			return pack, nil
 		}
 		g.loggerSafe().Info("context pack cache miss",
@@ -82,6 +87,9 @@ func (g *ContextPackGenerator) Generate(question string, modeKey string, cacheCf
 
 	pack.TokenEstimate = tokenpkg.EstimateTokensWithLanguageHint(formatContextPack(pack), tokenpkg.ContentMarkdown)
 	pack.Hash = hashContextPack(pack)
+	if g.MaxTokens > 0 {
+		pack = CapContextPackTokens(pack, g.MaxTokens)
+	}
 
 	if cacheCfg.Enabled && g.Cache != nil {
 		if err := g.Cache.Put(cacheKey, pack, fingerprint); err != nil {
@@ -627,4 +635,113 @@ func hashContextPack(pack *ContextPack) string {
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])[:16]
+}
+
+// CapContextPackTokens returns a ContextPack trimmed to stay within maxTokens when maxTokens > 0.
+func CapContextPackTokens(pack *ContextPack, maxTokens int) *ContextPack {
+	if pack == nil || maxTokens <= 0 {
+		return pack
+	}
+	estimate := func(cp *ContextPack) int {
+		return tokenpkg.EstimateTokensWithLanguageHint(formatContextPack(cp), tokenpkg.ContentMarkdown)
+	}
+	if pack.TokenEstimate <= 0 {
+		pack.TokenEstimate = estimate(pack)
+	}
+	if pack.TokenEstimate <= maxTokens {
+		return pack
+	}
+
+	capped := *pack
+	if pack.Questions != nil {
+		capped.Questions = append([]TargetedQuestion(nil), pack.Questions...)
+	}
+	if pack.ProjectBrief != nil {
+		b := *pack.ProjectBrief
+		b.Languages = append([]string(nil), pack.ProjectBrief.Languages...)
+		b.Frameworks = append([]string(nil), pack.ProjectBrief.Frameworks...)
+		b.RecentActivity = append([]CommitSummary(nil), pack.ProjectBrief.RecentActivity...)
+		if pack.ProjectBrief.Structure != nil {
+			s := *pack.ProjectBrief.Structure
+			s.EntryPoints = append([]string(nil), pack.ProjectBrief.Structure.EntryPoints...)
+			s.CorePackages = append([]string(nil), pack.ProjectBrief.Structure.CorePackages...)
+			b.Structure = &s
+		}
+		capped.ProjectBrief = &b
+	}
+	if pack.UserContext != nil {
+		u := *pack.UserContext
+		u.FocusAreas = append([]string(nil), pack.UserContext.FocusAreas...)
+		u.Constraints = append([]string(nil), pack.UserContext.Constraints...)
+		u.Stakeholders = append([]string(nil), pack.UserContext.Stakeholders...)
+		u.Decisions = append([]string(nil), pack.UserContext.Decisions...)
+		u.History = append([]string(nil), pack.UserContext.History...)
+		u.SuccessCriteria = append([]string(nil), pack.UserContext.SuccessCriteria...)
+		capped.UserContext = &u
+	}
+
+	recompute := func() bool {
+		capped.TokenEstimate = estimate(&capped)
+		return capped.TokenEstimate <= maxTokens
+	}
+
+	for len(capped.Questions) > 0 && !recompute() {
+		capped.Questions = capped.Questions[:len(capped.Questions)-1]
+	}
+	if capped.ProjectBrief != nil {
+		for len(capped.ProjectBrief.RecentActivity) > 0 && !recompute() {
+			capped.ProjectBrief.RecentActivity = capped.ProjectBrief.RecentActivity[:len(capped.ProjectBrief.RecentActivity)-1]
+		}
+		for len(capped.ProjectBrief.Description) > 0 && !recompute() {
+			nextLen := len(capped.ProjectBrief.Description) / 2
+			if nextLen < 24 {
+				capped.ProjectBrief.Description = ""
+			} else {
+				capped.ProjectBrief.Description = util.SafeSlice(capped.ProjectBrief.Description, nextLen)
+			}
+		}
+		if capped.ProjectBrief.Structure != nil {
+			for len(capped.ProjectBrief.Structure.CorePackages) > 0 && !recompute() {
+				capped.ProjectBrief.Structure.CorePackages = capped.ProjectBrief.Structure.CorePackages[:len(capped.ProjectBrief.Structure.CorePackages)-1]
+			}
+			for len(capped.ProjectBrief.Structure.EntryPoints) > 0 && !recompute() {
+				capped.ProjectBrief.Structure.EntryPoints = capped.ProjectBrief.Structure.EntryPoints[:len(capped.ProjectBrief.Structure.EntryPoints)-1]
+			}
+			if !recompute() {
+				capped.ProjectBrief.Structure = nil
+			}
+		}
+	}
+	if capped.UserContext != nil {
+		trimSlice := func(items *[]string) {
+			for len(*items) > 0 && !recompute() {
+				*items = (*items)[:len(*items)-1]
+			}
+		}
+		trimSlice(&capped.UserContext.History)
+		trimSlice(&capped.UserContext.Decisions)
+		trimSlice(&capped.UserContext.Stakeholders)
+		trimSlice(&capped.UserContext.Constraints)
+		trimSlice(&capped.UserContext.FocusAreas)
+		trimSlice(&capped.UserContext.SuccessCriteria)
+		for len(capped.UserContext.ProblemStatement) > 16 && !recompute() {
+			nextLen := len(capped.UserContext.ProblemStatement) / 2
+			if nextLen < 16 {
+				nextLen = 16
+			}
+			capped.UserContext.ProblemStatement = util.SafeSlice(capped.UserContext.ProblemStatement, nextLen)
+			if nextLen == 16 {
+				break
+			}
+		}
+	}
+	if !recompute() && capped.ProjectBrief != nil {
+		capped.ProjectBrief = nil
+		_ = recompute()
+	}
+	if capped.TokenEstimate > maxTokens {
+		capped.TokenEstimate = maxTokens
+	}
+	capped.Hash = hashContextPack(&capped)
+	return &capped
 }

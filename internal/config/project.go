@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -247,7 +248,7 @@ func InitProjectConfig(force bool) error {
 		return err
 	}
 
-	fmt.Printf("Initialized project config in %s\n", result.NTMDir)
+	slog.Info("initialized project config", "dir", result.NTMDir)
 	return nil
 }
 

@@ -201,7 +201,24 @@ func (a *MSAdapter) runCommand(ctx context.Context, args ...string) (json.RawMes
 		if strings.Contains(err.Error(), ErrOutputLimitExceeded.Error()) {
 			return nil, fmt.Errorf("ms output exceeded 10MB limit")
 		}
-		return nil, fmt.Errorf("ms %s failed: %w: %s", strings.Join(args, " "), err, cliErrorLine(stderr.String()))
+		detail := cliErrorLine(stderr.String())
+		if detail == "" && len(stdout.Bytes()) > 0 {
+			var errEnv struct {
+				Message string `json:"message"`
+				Error   any    `json:"error"`
+			}
+			if json.Unmarshal(stdout.Bytes(), &errEnv) == nil {
+				if strings.TrimSpace(errEnv.Message) != "" {
+					detail = strings.TrimSpace(errEnv.Message)
+				} else if errStr, ok := errEnv.Error.(string); ok && strings.TrimSpace(errStr) != "" {
+					detail = strings.TrimSpace(errStr)
+				}
+			}
+			if detail == "" {
+				detail = cliErrorLine(stdout.String())
+			}
+		}
+		return nil, fmt.Errorf("ms %s failed: %w: %s", strings.Join(args, " "), err, detail)
 	}
 
 	output := stdout.Bytes()

@@ -1,6 +1,3 @@
-//go:build ensemble_experimental
-// +build ensemble_experimental
-
 package ensemble
 
 import (
@@ -117,6 +114,7 @@ func (m *EnsembleManager) DryRunEnsemble(ctx context.Context, cfg *EnsembleConfi
 		SynthesizerModeID:  "", // Synthesizer mode determined at runtime by strategy
 		MinConfidence:      float64(resolvedCfg.synthesis.MinConfidence),
 		MaxFindings:        resolvedCfg.synthesis.MaxFindings,
+		IncludeRawOutputs:  resolvedCfg.synthesis.IncludeRawOutputs,
 		ConflictResolution: resolvedCfg.synthesis.ConflictResolution,
 	}
 

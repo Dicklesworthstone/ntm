@@ -108,6 +108,7 @@ func init() {
 	}
 	// Per-provider default model fallbacks read directly (robot.go).
 	config.RegisterReader("models.default_gemini", modelNameForPane)
+	config.RegisterReader("models.default_antigravity", modelNameForPane)
 	config.RegisterReader("models.default_grok", modelNameForPane)
 	config.RegisterReader("models.default_ollama", modelNameForPane)
 	config.RegisterReader("models.default_opencode", modelNameForPane)

@@ -508,7 +508,7 @@ type DigestOutput struct {
 	Profile string `json:"profile,omitempty"`
 }
 
-// AttentionOutput is the response for --robot-attention.
+// AttentionOutput is the response for --robot-attention and GET /api/v1/robot/attention.
 type AttentionOutput struct {
 	RobotResponse
 
@@ -521,6 +521,15 @@ type AttentionOutput struct {
 
 	// Counts summarizes attention items by severity.
 	Counts map[Severity]int `json:"counts"`
+
+	// Profile is the filter preset applied to this query (if any).
+	Profile string `json:"profile,omitempty"`
+
+	// CursorInfo provides cursor handoff for follow-up queries.
+	CursorInfo *AttentionCursorInfo `json:"cursor_info,omitempty"`
+
+	// ReplayWindow describes the available cursor range in the journal.
+	ReplayWindow *SnapshotReplayWindowInfo `json:"replay_window,omitempty"`
 }
 
 // =============================================================================

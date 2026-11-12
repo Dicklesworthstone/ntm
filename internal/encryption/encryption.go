@@ -1,6 +1,7 @@
 package encryption
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -16,6 +17,10 @@ const (
 	NonceSize = 12
 	// FormatVersion is the current encryption format version.
 	FormatVersion byte = 1
+	// ArtifactEnvelopeMagic prefixes binary/text checkpoint and archive
+	// artifacts encrypted at rest so readers can distinguish AEAD envelopes
+	// from legacy plaintext, gzip, zip, or UTF-8 files unambiguously.
+	ArtifactEnvelopeMagic = "NTMENC1\n"
 )
 
 const headerSize = 1 + NonceSize // version + nonce
@@ -141,4 +146,45 @@ func newCipher(key []byte) (cipher.Block, error) {
 		return nil, &Error{Kind: ErrInvalidKey, Err: err}
 	}
 	return block, nil
+}
+
+// IsEncryptedArtifact reports whether data begins with ArtifactEnvelopeMagic.
+func IsEncryptedArtifact(data []byte) bool {
+	return bytes.HasPrefix(data, []byte(ArtifactEnvelopeMagic))
+}
+
+// EncryptArtifact encrypts arbitrary file/archive bytes with AES-256-GCM and
+// prepends ArtifactEnvelopeMagic so readers can detect encrypted artifacts
+// without guessing based on content heuristics.
+func EncryptArtifact(key, plaintext []byte) ([]byte, error) {
+	ciphertext, err := Encrypt(key, plaintext)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, len(ArtifactEnvelopeMagic)+len(ciphertext))
+	out = append(out, ArtifactEnvelopeMagic...)
+	out = append(out, ciphertext...)
+	return out, nil
+}
+
+// DecryptArtifactWithKeyring verifies the ArtifactEnvelopeMagic prefix and
+// tries each key in order until AES-256-GCM authentication succeeds.
+func DecryptArtifactWithKeyring(keys [][]byte, data []byte) ([]byte, error) {
+	if !IsEncryptedArtifact(data) {
+		return nil, &Error{Kind: ErrUnsupportedFormat, Err: fmt.Errorf("missing %q artifact header", ArtifactEnvelopeMagic)}
+	}
+	if len(keys) == 0 {
+		return nil, &Error{Kind: ErrInvalidKey, Err: fmt.Errorf("encrypted artifact requires at least one decryption key")}
+	}
+	payload := data[len(ArtifactEnvelopeMagic):]
+	for _, key := range keys {
+		plaintext, err := Decrypt(key, payload)
+		if err == nil {
+			return plaintext, nil
+		}
+		if !IsWrongKey(err) {
+			return nil, err
+		}
+	}
+	return nil, &Error{Kind: ErrWrongKey, Err: fmt.Errorf("no key in keyring could decrypt artifact")}
 }

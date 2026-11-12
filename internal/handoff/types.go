@@ -50,6 +50,7 @@ type Handoff struct {
 	ActiveBeads      []string `yaml:"active_beads,omitempty"`       // From BV
 	AgentMailThreads []string `yaml:"agent_mail_threads,omitempty"` // From Agent Mail
 	CMMemories       []string `yaml:"cm_memories,omitempty"`        // From CM
+	Warnings         []string `yaml:"warnings,omitempty"`           // Non-fatal enrichment degradations
 
 	// Agent info for multi-agent sessions
 	AgentID   string `yaml:"agent_id,omitempty"`
@@ -143,6 +144,14 @@ func (h *Handoff) AddTask(task string, files ...string) *Handoff {
 // AddBlocker adds a blocker to the list.
 func (h *Handoff) AddBlocker(blocker string) *Handoff {
 	h.Blockers = append(h.Blockers, blocker)
+	return h
+}
+
+// AddWarning records a non-fatal enrichment degradation on the handoff.
+func (h *Handoff) AddWarning(warning string) *Handoff {
+	if warning != "" {
+		h.Warnings = append(h.Warnings, warning)
+	}
 	return h
 }
 

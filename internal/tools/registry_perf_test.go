@@ -32,7 +32,7 @@ func TestGetAllInfo_Concurrency(t *testing.T) {
 	}
 
 	start := time.Now()
-	reg.GetAllInfo(context.Background())
+	reg.GetAllInfoExcept(context.Background(), nil)
 	duration := time.Since(start)
 
 	// If sequential, duration ~= count * delay (1s)

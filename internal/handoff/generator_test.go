@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -464,6 +465,7 @@ func TestGenerateHandoffBasic(t *testing.T) {
 		Goal:        "Implemented feature X",
 		Now:         "Write tests next",
 	}
+	opts.DisableIntegrations()
 
 	h, err := g.GenerateHandoff(ctx, opts)
 	if err != nil {
@@ -502,6 +504,7 @@ func TestGenerateHandoffWithOutputAnalysis(t *testing.T) {
 		SessionName: "test-session",
 		Output:      []byte("I've completed implementing the auth module.\nNext: add tests"),
 	}
+	opts.DisableIntegrations()
 
 	h, err := g.GenerateHandoff(ctx, opts)
 	if err != nil {
@@ -524,6 +527,7 @@ func TestGenerateHandoffExplicitGoalOverridesAnalysis(t *testing.T) {
 		Goal:        "Explicit goal",
 		Output:      []byte("I've completed implementing something else.\nNext: do stuff"),
 	}
+	opts.DisableIntegrations()
 
 	h, err := g.GenerateHandoff(ctx, opts)
 	if err != nil {
@@ -548,6 +552,7 @@ func TestGenerateHandoffWithTokenInfo(t *testing.T) {
 		TokensUsed:  80000,
 		TokensMax:   100000,
 	}
+	opts.DisableIntegrations()
 
 	h, err := g.GenerateHandoff(ctx, opts)
 	if err != nil {
@@ -568,29 +573,41 @@ func TestGenerateHandoffWithTokenInfo(t *testing.T) {
 func TestGenerateHandoffDisableIntegrations(t *testing.T) {
 	tmpDir := t.TempDir()
 	g := NewGenerator(tmpDir)
+	g.commandOutput = func(_ context.Context, _ string, _ time.Duration, name string, _ ...string) ([]byte, error) {
+		if name == "br" {
+			t.Fatalf("DisableIntegrations unexpectedly invoked br")
+		}
+		return nil, errors.New("not a git repo")
+	}
+	cassSpy := &mockCASSSearcher{installed: true}
 	ctx := context.Background()
 
-	falseVal := false
 	opts := GenerateHandoffOptions{
-		SessionName:      "test-session",
-		AgentName:        "test-agent",
-		Goal:             "Test goal",
-		Now:              "Test now",
-		IncludeBeads:     &falseVal,
-		IncludeAgentMail: &falseVal,
+		SessionName: "test-session",
+		AgentName:   "test-agent",
+		Goal:        "Test goal",
+		Now:         "Test now",
+		CASSClient:  cassSpy,
 	}
+	opts.DisableIntegrations()
 
 	h, err := g.GenerateHandoff(ctx, opts)
 	if err != nil {
 		t.Fatalf("GenerateHandoff failed: %v", err)
 	}
 
-	// Should not have beads or agent mail data
+	if cassSpy.calls != 0 {
+		t.Fatalf("expected 0 CASS calls when DisableIntegrations() used, got %d", cassSpy.calls)
+	}
+	// Should not have beads, agent mail, or CASS data
 	if len(h.ActiveBeads) > 0 {
 		t.Errorf("expected no active beads when disabled, got %d", len(h.ActiveBeads))
 	}
 	if len(h.AgentMailThreads) > 0 {
 		t.Errorf("expected no agent mail threads when disabled, got %d", len(h.AgentMailThreads))
+	}
+	if len(h.CMMemories) > 0 {
+		t.Errorf("expected no cass memories when disabled, got %d", len(h.CMMemories))
 	}
 }
 
@@ -628,14 +645,12 @@ func TestGenerateHandoffStatusInference(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			falseVal := false
 			opts := GenerateHandoffOptions{
-				SessionName:      "test",
-				Goal:             tt.goal,
-				Output:           tt.output,
-				IncludeBeads:     &falseVal,
-				IncludeAgentMail: &falseVal,
+				SessionName: "test",
+				Goal:        tt.goal,
+				Output:      tt.output,
 			}
+			opts.DisableIntegrations()
 
 			h, err := g.GenerateHandoff(ctx, opts)
 			if err != nil {
@@ -657,18 +672,16 @@ func TestGenerateHandoffJSONSerializable(t *testing.T) {
 	g := NewGenerator(tmpDir)
 	ctx := context.Background()
 
-	falseVal := false
 	opts := GenerateHandoffOptions{
-		SessionName:      "test-session",
-		AgentName:        "test-agent",
-		AgentType:        "cc",
-		Goal:             "Implemented feature",
-		Now:              "Write tests",
-		TokensUsed:       50000,
-		TokensMax:        100000,
-		IncludeBeads:     &falseVal,
-		IncludeAgentMail: &falseVal,
+		SessionName: "test-session",
+		AgentName:   "test-agent",
+		AgentType:   "cc",
+		Goal:        "Implemented feature",
+		Now:         "Write tests",
+		TokensUsed:  50000,
+		TokensMax:   100000,
 	}
+	opts.DisableIntegrations()
 
 	h, err := g.GenerateHandoff(ctx, opts)
 	if err != nil {
@@ -1098,6 +1111,69 @@ func TestGenerateHandoffPreservesCASSCancellation(t *testing.T) {
 	}
 	if client.calls != 1 {
 		t.Fatalf("CASS calls = %d, want 1", client.calls)
+	}
+}
+
+func TestGenerateHandoffChildCASSTimeoutDegradesGracefully(t *testing.T) {
+	tmpDir := t.TempDir()
+	g := NewGenerator(tmpDir)
+	ctx := context.Background()
+
+	includeBeads := false
+	includeAgentMail := false
+	includeCASS := true
+	client := &mockCASSSearcher{
+		installed: true,
+		search: func(callCtx context.Context, _ cass.SearchOptions) (*cass.SearchResponse, error) {
+			childCtx, cancel := context.WithTimeout(callCtx, time.Millisecond)
+			defer cancel()
+			<-childCtx.Done()
+			return nil, fmt.Errorf("cass search failed: %w", childCtx.Err())
+		},
+	}
+
+	h, err := g.GenerateHandoff(ctx, GenerateHandoffOptions{
+		SessionName:      "test-session",
+		Goal:             "Resilient handoff",
+		Now:              "Verify child timeout degradation",
+		IncludeBeads:     &includeBeads,
+		IncludeAgentMail: &includeAgentMail,
+		IncludeCASS:      &includeCASS,
+		CASSTimeout:      5 * time.Millisecond,
+		CASSClient:       client,
+	})
+	if err != nil {
+		t.Fatalf("GenerateHandoff unexpectedly aborted on child CASS timeout: %v", err)
+	}
+	if h == nil {
+		t.Fatal("expected non-nil handoff on child CASS timeout")
+	}
+	if client.calls != 1 {
+		t.Fatalf("CASS calls = %d, want 1", client.calls)
+	}
+	if len(h.Warnings) == 0 || !strings.Contains(h.Warnings[0], "cass enrichment degraded") {
+		t.Fatalf("expected cass degradation warning, got %v", h.Warnings)
+	}
+}
+
+func TestGenerateHandoffParentDeadlineExceededAborts(t *testing.T) {
+	g := NewGenerator(t.TempDir())
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Millisecond))
+	defer cancel()
+
+	opts := GenerateHandoffOptions{
+		SessionName: "test-session",
+		Goal:        "Expired caller deadline",
+		Now:         "Abort immediately",
+	}
+	opts.DisableIntegrations()
+
+	h, err := g.GenerateHandoff(ctx, opts)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("GenerateHandoff error = %v, want context.DeadlineExceeded", err)
+	}
+	if h != nil {
+		t.Fatalf("handoff = %#v, want nil on parent deadline exceeded", h)
 	}
 }
 

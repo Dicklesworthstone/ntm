@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -56,22 +57,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.Host, "host", opts.Host, "HTTP bind host (default 127.0.0.1)")
-	cmd.Flags().IntVar(&opts.Port, "port", opts.Port, "HTTP server port")
-	cmd.Flags().StringVar(&opts.ProjectDir, "project-dir", "", "Server-wide project directory for mail, beads, and jobs (optional)")
-	cmd.Flags().IntVar(&opts.JobConcurrency, "job-concurrency", serve.DefaultJobConcurrency, "Maximum concurrent async jobs")
-	cmd.Flags().IntVar(&opts.JobQueueCapacity, "job-queue-capacity", serve.DefaultJobQueueCapacity, "Maximum waiting async jobs")
-	cmd.Flags().StringVar(&opts.AuthMode, "auth-mode", opts.AuthMode, "Auth mode: local|api_key|oidc|mtls")
-	cmd.Flags().StringVar(&opts.APIKey, "api-key", "", "API key for api_key auth mode")
-	cmd.Flags().StringVar(&opts.OIDCIssuer, "oidc-issuer", "", "OIDC issuer URL for oidc auth mode")
-	cmd.Flags().StringVar(&opts.OIDCAudience, "oidc-audience", "", "OIDC audience for oidc auth mode")
-	cmd.Flags().StringVar(&opts.OIDCJWKSURL, "oidc-jwks-url", "", "JWKS URL for oidc auth mode")
-	cmd.Flags().StringVar(&opts.MTLSCert, "mtls-cert", "", "Server TLS cert file for mtls auth mode")
-	cmd.Flags().StringVar(&opts.MTLSKey, "mtls-key", "", "Server TLS key file for mtls auth mode")
-	cmd.Flags().StringVar(&opts.MTLSCA, "mtls-ca", "", "Client CA bundle for mtls auth mode")
-	cmd.Flags().StringArrayVar(&opts.CORSAllowOrigins, "cors-allow-origin", nil, "Allowed CORS origins (repeatable). Defaults to localhost only.")
-	cmd.Flags().StringVar(&opts.PublicBaseURL, "public-base-url", "", "Public base URL for external clients (optional)")
-	cmd.Flags().BoolVar(&opts.Web, "web", false, "Also serve the embedded web dashboard at / (same as `ntm web`)")
+	registerServerFlags(cmd, &opts, true)
 
 	return cmd
 }
@@ -95,13 +81,20 @@ with the binary.
 Examples:
   ntm web                    # Dashboard + API on http://127.0.0.1:7337
   ntm web --port 8080        # Custom port
-  ntm web --project-dir .    # Scope the dashboard and API to this project`,
+  ntm web --project-dir .    # Scope the dashboard and API to this project
+  ntm web --host 0.0.0.0 --auth-mode oidc --oidc-issuer https://issuer --oidc-jwks-url https://issuer/.well-known/jwks.json`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runServe(opts)
 		},
 	}
 
+	registerServerFlags(cmd, &opts, false)
+
+	return cmd
+}
+
+func registerServerFlags(cmd *cobra.Command, opts *serveOptions, includeWebToggle bool) {
 	cmd.Flags().StringVar(&opts.Host, "host", opts.Host, "HTTP bind host (default 127.0.0.1)")
 	cmd.Flags().IntVar(&opts.Port, "port", opts.Port, "HTTP server port")
 	cmd.Flags().StringVar(&opts.ProjectDir, "project-dir", "", "Server-wide project directory for mail, beads, and jobs (optional)")
@@ -109,8 +102,18 @@ Examples:
 	cmd.Flags().IntVar(&opts.JobQueueCapacity, "job-queue-capacity", serve.DefaultJobQueueCapacity, "Maximum waiting async jobs")
 	cmd.Flags().StringVar(&opts.AuthMode, "auth-mode", opts.AuthMode, "Auth mode: local|api_key|oidc|mtls")
 	cmd.Flags().StringVar(&opts.APIKey, "api-key", "", "API key for api_key auth mode")
-
-	return cmd
+	cmd.Flags().StringVar(&opts.OIDCIssuer, "oidc-issuer", "", "OIDC issuer URL for oidc auth mode")
+	cmd.Flags().StringVar(&opts.OIDCAudience, "oidc-audience", "", "OIDC audience for oidc auth mode")
+	cmd.Flags().StringVar(&opts.OIDCJWKSURL, "oidc-jwks-url", "", "JWKS URL for oidc auth mode")
+	cmd.Flags().StringVar(&opts.MTLSCert, "mtls-cert", "", "Server TLS cert file for mtls auth mode")
+	cmd.Flags().StringVar(&opts.MTLSKey, "mtls-key", "", "Server TLS key file for mtls auth mode")
+	cmd.Flags().StringVar(&opts.MTLSCA, "mtls-ca", "", "Client CA bundle for mtls auth mode")
+	cmd.Flags().StringVar(&opts.MTLSClientCN, "mtls-client-cn", "", "Required client certificate Common Name (CN) for mtls auth mode (optional)")
+	cmd.Flags().StringArrayVar(&opts.CORSAllowOrigins, "cors-allow-origin", nil, "Allowed CORS origins (repeatable). Defaults to localhost only.")
+	cmd.Flags().StringVar(&opts.PublicBaseURL, "public-base-url", "", "Public base URL for external clients (optional)")
+	if includeWebToggle {
+		cmd.Flags().BoolVar(&opts.Web, "web", false, "Also serve the embedded web dashboard at / (same as `ntm web`)")
+	}
 }
 
 type serveOptions struct {
@@ -130,17 +133,22 @@ type serveOptions struct {
 	MTLSCert         string
 	MTLSKey          string
 	MTLSCA           string
+	MTLSClientCN     string
 	CORSAllowOrigins []string
 }
 
 // serveStateMaintenance keeps serve's runtime state current and bounded until
-// ctx ends: the normalized projection refresh every refreshEvery, and a full
+// ctx ends: an immediate asynchronous projection refresh after listener bind
+// (transitioning projection_state from "warming_up" to "ready" or "degraded"),
+// periodic normalized projection refreshes every refreshEvery, and a full
 // state-store GC (stale projections and source health, resolved incidents,
-// expired attention and audit rows, completed send operations, idle output
-// watermarks) at start and every gcEvery. Nothing else runs the full GC, so
-// without it those tables grow for as long as the state DB exists (bd-a25g6).
-func serveStateMaintenance(ctx context.Context, store *state.Store, refreshEvery, gcEvery time.Duration) {
+// expired attention and audit rows, compacted audit_decision_log, completed
+// send operations, idle output watermarks) at start and every gcEvery.
+func serveStateMaintenance(ctx context.Context, store *state.Store, projectDir string, refreshEvery, gcEvery time.Duration, setProjectionState func(string)) {
 	collect := func() {
+		if ctx.Err() != nil {
+			return
+		}
 		result, err := store.RunGC(state.RuntimeGCConfig{})
 		if err != nil {
 			slog.Warn("state store GC failed", "err", err)
@@ -148,7 +156,29 @@ func serveStateMaintenance(ctx context.Context, store *state.Store, refreshEvery
 		}
 		slog.Debug("state store GC", "result", result)
 	}
+	refreshOnce := func() {
+		if ctx.Err() != nil {
+			return
+		}
+		refreshCtx, refreshCancel := context.WithTimeout(ctx, 10*time.Second)
+		err := robot.RefreshNormalizedProjection(refreshCtx, store, projectDir, "")
+		refreshCancel()
+		if err != nil {
+			if ctx.Err() == nil {
+				slog.Warn("normalized projection refresh failed", "err", err)
+				if setProjectionState != nil {
+					setProjectionState("degraded")
+				}
+			}
+			return
+		}
+		if setProjectionState != nil {
+			setProjectionState("ready")
+		}
+	}
+
 	collect()
+	refreshOnce()
 
 	refresh := time.NewTicker(refreshEvery)
 	defer refresh.Stop()
@@ -159,11 +189,7 @@ func serveStateMaintenance(ctx context.Context, store *state.Store, refreshEvery
 		case <-ctx.Done():
 			return
 		case <-refresh.C:
-			refreshCtx, refreshCancel := context.WithTimeout(ctx, 10*time.Second)
-			if err := robot.RefreshNormalizedProjection(refreshCtx, store, "", ""); err != nil {
-				slog.Warn("normalized projection refresh failed", "err", err)
-			}
-			refreshCancel()
+			refreshOnce()
 		case <-gc.C:
 			collect()
 		}
@@ -240,10 +266,6 @@ func runServe(opts serveOptions) error {
 		unsubscribeBus()
 	}()
 
-	if stopPT := startServeProcessTriage(cfg, feed); stopPT != nil {
-		defer stopPT()
-	}
-
 	mode, err := serve.ParseAuthMode(opts.AuthMode)
 	if err != nil {
 		return err
@@ -308,6 +330,7 @@ func runServe(opts serveOptions) error {
 				CertFile:     opts.MTLSCert,
 				KeyFile:      opts.MTLSKey,
 				ClientCAFile: opts.MTLSCA,
+				ClientCN:     opts.MTLSClientCN,
 			},
 		},
 	}
@@ -345,17 +368,54 @@ func runServe(opts serveOptions) error {
 		}
 	}()
 
-	// Setup signal handling for graceful shutdown
+	// Setup signal handling for graceful shutdown. Wait for background state
+	// maintenance and process triage init to observe cancellation before
+	// stateStore.Close() runs.
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ptDone := make(chan struct{})
+	var (
+		ptMu   sync.Mutex
+		stopPT func()
+	)
+	defer func() {
+		<-ptDone
+		ptMu.Lock()
+		fn := stopPT
+		ptMu.Unlock()
+		if fn != nil {
+			fn()
+		}
+	}()
 
-	refreshCtx, refreshCancel := context.WithTimeout(ctx, 10*time.Second)
-	if err := robot.RefreshNormalizedProjection(refreshCtx, stateStore, "", ""); err != nil {
-		slog.Warn("normalized projection refresh failed", "err", err)
-	}
-	refreshCancel()
+	maintenanceDone := make(chan struct{})
+	defer func() {
+		cancel()
+		<-maintenanceDone
+	}()
 
-	go serveStateMaintenance(ctx, stateStore, 15*time.Second, time.Hour)
+	go func() {
+		defer close(ptDone)
+		if ctx.Err() != nil {
+			return
+		}
+		fn := startServeProcessTriage(cfg, feed)
+		if fn == nil {
+			return
+		}
+		ptMu.Lock()
+		if ctx.Err() != nil {
+			ptMu.Unlock()
+			fn()
+			return
+		}
+		stopPT = fn
+		ptMu.Unlock()
+	}()
+
+	go func() {
+		defer close(maintenanceDone)
+		serveStateMaintenance(ctx, stateStore, projectDir, 15*time.Second, time.Hour, srv.SetProjectionState)
+	}()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

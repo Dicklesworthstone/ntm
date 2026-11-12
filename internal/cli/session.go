@@ -1880,11 +1880,13 @@ func modelNameForPane(p tmux.Pane) string {
 			if cfg.Models.DefaultCodex != "" {
 				return cfg.Models.DefaultCodex
 			}
-		case tmux.AgentGemini, tmux.AgentAntigravity:
-			// agy (Antigravity) shares Gemini-class models, so it mirrors
-			// Gemini's default model selection.
+		case tmux.AgentGemini:
 			if cfg.Models.DefaultGemini != "" {
 				return cfg.Models.DefaultGemini
+			}
+		case tmux.AgentAntigravity:
+			if cfg.Models.DefaultAntigravity != "" {
+				return cfg.Models.DefaultAntigravity
 			}
 		case tmux.AgentGrok:
 			if cfg.Models.DefaultGrok != "" {
@@ -1917,8 +1919,10 @@ func modelNameForPane(p tmux.Pane) string {
 		return config.ClaudeEstimationModel
 	case tmux.AgentCodex:
 		return defaults.DefaultCodex
-	case tmux.AgentGemini, tmux.AgentAntigravity:
+	case tmux.AgentGemini:
 		return defaults.DefaultGemini
+	case tmux.AgentAntigravity:
+		return defaults.DefaultAntigravity
 	case tmux.AgentGrok:
 		return defaults.DefaultGrok
 	case tmux.AgentOmp:

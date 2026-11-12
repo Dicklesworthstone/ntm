@@ -11,13 +11,13 @@ import (
 	"strings"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/models"
 	"github.com/Dicklesworthstone/ntm/internal/shellword"
 )
 
-// antigravityModel is the model the Antigravity CLI (agy) must be pinned to on
-// every (re)launch. The agy resume path is invalid without an explicit --model,
-// and the migration mandate fixes it to this exact human-readable name.
-const antigravityModel = "Gemini 4 Argon (High)"
+// antigravityModel is the default model the Antigravity CLI (agy) runs on
+// when resuming a session without an explicit --model.
+const antigravityModel = models.DefaultAntigravityModel
 
 // ResumeLaunchOptions provides evidence for NTM-generated launch syntax that
 // contains a file expansion. The caller must verify the recorded prompt file's

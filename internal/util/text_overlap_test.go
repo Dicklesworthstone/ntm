@@ -7,6 +7,92 @@ import (
 	"testing"
 )
 
+// ExtractNewOutput isolates the text added to the pane after the before state.
+// Retained alongside its KMP overlap test/benchmark suite after pipeline delta
+// extraction moved to internal/pipeline.
+func ExtractNewOutput(before, after string) string {
+	if before == "" {
+		return after
+	}
+	if after == "" {
+		return ""
+	}
+	if len(after) >= len(before) && after[:len(before)] == before {
+		return after[len(before):]
+	}
+	const chunkSize = 40
+	var searchChunk string
+	if len(after) >= chunkSize {
+		searchChunk = after[:chunkSize]
+	} else {
+		searchChunk = after
+	}
+	scanStart := len(before) - len(after)
+	if scanStart < 0 {
+		scanStart = 0
+	}
+	searchRegion := before[scanStart:]
+	const maxCandidateChecks = 4
+	remaining := searchRegion
+	for checked := 0; checked < maxCandidateChecks; checked++ {
+		idx := strings.Index(remaining, searchChunk)
+		if idx < 0 {
+			break
+		}
+		suffix := remaining[idx:]
+		suffixLen := len(suffix)
+		if after[:suffixLen] == suffix {
+			return after[suffixLen:]
+		}
+		remaining = suffix[1:]
+		if checked == maxCandidateChecks-1 {
+			return after[suffixPrefixOverlap(remaining, after):]
+		}
+	}
+	maxOverlap := len(after) - 1
+	if maxOverlap > len(before) {
+		maxOverlap = len(before)
+	}
+	if maxOverlap >= chunkSize {
+		maxOverlap = chunkSize - 1
+	}
+	for k := maxOverlap; k > 0; k-- {
+		if before[len(before)-k:] == after[:k] {
+			return after[k:]
+		}
+	}
+	return after
+}
+
+func suffixPrefixOverlap(before, after string) int {
+	n := min(len(before), len(after))
+	if n == 0 {
+		return 0
+	}
+	pattern := after[:n]
+	failure := make([]int, n)
+	matched := 0
+	for i := 1; i < n; i++ {
+		for matched > 0 && pattern[i] != pattern[matched] {
+			matched = failure[matched-1]
+		}
+		if pattern[i] == pattern[matched] {
+			matched++
+		}
+		failure[i] = matched
+	}
+	matched = 0
+	for i := len(before) - n; i < len(before); i++ {
+		for matched > 0 && before[i] != pattern[matched] {
+			matched = failure[matched-1]
+		}
+		if before[i] == pattern[matched] {
+			matched++
+		}
+	}
+	return matched
+}
+
 // The oracle deliberately does not share chunk search or prefix-function
 // logic with production. Exhaust small inputs and sample repetitive captures
 // large enough to enter the long-overlap fallback.

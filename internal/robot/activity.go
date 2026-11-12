@@ -689,7 +689,10 @@ func outputSeqContentHash(rawContent string) string {
 // missing store both degrade to nil: the signal is additive and must never
 // break the surface that carries it.
 func observeOutputSequence(sessionName, paneID, rawContent string, observedAt time.Time) *OutputSequenceInfo {
-	store := currentProjectionStore()
+	return observeOutputSequenceWithStore(currentProjectionStore(), sessionName, paneID, rawContent, observedAt)
+}
+
+func observeOutputSequenceWithStore(store *state.Store, sessionName, paneID, rawContent string, observedAt time.Time) *OutputSequenceInfo {
 	if store == nil {
 		return nil
 	}

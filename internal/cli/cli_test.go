@@ -361,6 +361,15 @@ func resetFlags() {
 	robotSpawnGrok = ""
 	robotSpawnOmp = ""
 	robotSpawnOc = ""
+	robotSpawnOllama = ""
+	robotSpawnAider = ""
+	robotSpawnCursor = ""
+	robotSpawnWindsurf = ""
+	for _, ptr := range robotSpawnPlugins {
+		if ptr != nil {
+			*ptr = ""
+		}
+	}
 	robotSpawnPreset = ""
 	robotSpawnNoUser = false
 	robotSpawnWait = false

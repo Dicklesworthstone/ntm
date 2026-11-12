@@ -221,7 +221,14 @@ func resolveAddAgentCommandTemplate(agentType AgentType, pluginMap map[string]pl
 	case AgentTypeCursor:
 		return cfg.Agents.Cursor, nil, nil
 	case AgentTypeWindsurf:
-		return cfg.Agents.Windsurf, nil, nil
+		configured := ""
+		if cfg != nil {
+			configured = cfg.Agents.Windsurf
+		}
+		if err := config.ValidateWindsurfTerminalHarness(configured); err != nil {
+			return "", nil, markCLIInvalidInput(err)
+		}
+		return configured, nil, nil
 	case AgentTypeAider:
 		return cfg.Agents.Aider, nil, nil
 	case AgentTypeOpencode:
@@ -374,7 +381,7 @@ func newAddCmd() *cobra.Command {
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeClaude, &agentSpecs), "cc", "Claude agents (N or N:model)")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeCodex, &agentSpecs), "cod", "Codex agents (N or N:model)")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeGemini, &agentSpecs), "gmi", "Gemini agents (N or N:model)")
-	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeAntigravity, &agentSpecs), "agy", "Antigravity (agy) agents (N; model pinned to Gemini 4 Argon (High))")
+	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeAntigravity, &agentSpecs), "agy", fmt.Sprintf("Antigravity (agy) agents (N; default model %s via [models] default_antigravity)", config.AntigravityRequiredModel))
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeGrok, &agentSpecs), "grok", "Grok Build agents (N or N:model[:effort])")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeOllama, &agentSpecs), "ollama", "Ollama agents (N or N:model)")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeCursor, &agentSpecs), "cursor", "Cursor agents (N or N:model)")
@@ -495,6 +502,17 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 	}
 	if err := validateGrokPhaseOneAdd(opts); err != nil {
 		return outputError(err)
+	}
+	for _, spec := range opts.Agents {
+		if spec.Count > 0 && spec.Type == AgentTypeWindsurf {
+			configured := ""
+			if cfg != nil {
+				configured = cfg.Agents.Windsurf
+			}
+			if err := config.ValidateWindsurfTerminalHarness(configured); err != nil {
+				return outputError(markCLIInvalidInput(err))
+			}
+		}
 	}
 
 	if err := tmux.EnsureInstalled(); err != nil {

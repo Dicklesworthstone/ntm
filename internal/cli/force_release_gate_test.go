@@ -159,6 +159,9 @@ func TestRunForceReleaseApprovalLifecycle(t *testing.T) {
 	t.Cleanup(func() { cfg = oldCfg })
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 	t.Setenv("NTM_USER", "alice")
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("SLB_SESSION_ID", "")
+	t.Setenv("AGENT_NAME", "")
 	t.Setenv("NTM_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
 	// Never invoke a developer's external SLB/tmux binary from this fixture.
 	t.Setenv("PATH", t.TempDir())

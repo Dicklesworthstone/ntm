@@ -1,5 +1,49 @@
 import * as vscode from 'vscode';
-import { NtmClient, MailReservation } from './ntmClient';
+import { MailReservation, NtmClient } from './ntmClient';
+
+/**
+ * Normalize a workspace URI's relative path to POSIX `/` separators.
+ */
+export function normalizeWorkspaceRelativePath(uri: vscode.Uri): string {
+    return vscode.workspace.asRelativePath(uri, false)
+        .replace(/\\/g, '/')
+        .replace(/^\.\//, '');
+}
+
+/**
+ * Match a workspace-relative path against an Agent Mail glob reservation pattern.
+ * Normalizes both path and pattern to POSIX `/` separators and supports `*`, `**`, and `?`.
+ */
+export function matchesReservationPattern(rawPath: string, rawPattern: string): boolean {
+    const normPath = rawPath.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+    const normPattern = rawPattern.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+
+    if (!normPath || !normPattern) {
+        return false;
+    }
+
+    let regexPattern = normPattern
+        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+        .replace(/\/\*\*\//g, '<<<GLOBSTAR_MID>>>')
+        .replace(/^\*\*\//, '<<<GLOBSTAR_START>>>')
+        .replace(/\/\*\*$/, '<<<GLOBSTAR_END>>>')
+        .replace(/\*\*/g, '<<<GLOBSTAR_ANY>>>')
+        .replace(/\*/g, '[^/]*')
+        .replace(/\?/g, '[^/]')
+        .replace(/<<<GLOBSTAR_MID>>>/g, '(?:/|/.*/)')
+        .replace(/<<<GLOBSTAR_START>>>/g, '(?:.*/)?')
+        .replace(/<<<GLOBSTAR_END>>>/g, '/.+')
+        .replace(/<<<GLOBSTAR_ANY>>>/g, '.*');
+
+    regexPattern = '^' + regexPattern + '$';
+
+    try {
+        const regex = new RegExp(regexPattern);
+        return regex.test(normPath);
+    } catch {
+        return normPath === normPattern;
+    }
+}
 
 /**
  * FileDecorationProvider for showing NTM file reservation status in the explorer.
@@ -23,28 +67,43 @@ export class NtmFileDecorationProvider implements vscode.FileDecorationProvider 
         try {
             const mail = await this.client.getMail();
             this.reservations = mail.file_reservations || [];
-            this._onDidChangeFileDecorations.fire(undefined); // Refresh all decorations
+            this._onDidChangeFileDecorations.fire(undefined);
         } catch {
-            // Mail unavailable - clear reservations
             this.reservations = [];
             this._onDidChangeFileDecorations.fire(undefined);
         }
     }
 
     /**
+     * Set reservations directly (useful for testing and immediate state sync).
+     */
+    public setReservations(reservations: MailReservation[]): void {
+        this.reservations = reservations;
+        this._onDidChangeFileDecorations.fire(undefined);
+    }
+
+    /**
      * Provide decoration for a URI if it matches a reservation pattern.
      */
     provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
-        if (!this.workspaceRoot || this.reservations.length === 0) {
+        const currentRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? this.workspaceRoot;
+        if (!currentRoot || this.reservations.length === 0) {
             return undefined;
         }
 
-        // Get path relative to workspace
-        const relativePath = uri.fsPath.replace(this.workspaceRoot + '/', '');
+        const relativePath = normalizeWorkspaceRelativePath(uri);
+        const normalizedFull = (uri.fsPath || '').replace(/\\/g, '/');
+        const normalizedRoot = currentRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+        if (
+            normalizedFull &&
+            relativePath === normalizedFull &&
+            !normalizedFull.startsWith(normalizedRoot + '/')
+        ) {
+            return undefined;
+        }
 
-        // Check if any reservation matches this file
         for (const res of this.reservations) {
-            if (this.matchesPattern(relativePath, res.pattern)) {
+            if (matchesReservationPattern(relativePath, res.pattern)) {
                 return {
                     badge: res.exclusive ? '🔒' : '👁',
                     tooltip: `${res.exclusive ? 'Locked' : 'Watched'} by ${res.agent}${res.reason ? ` (${res.reason})` : ''}`,
@@ -56,30 +115,6 @@ export class NtmFileDecorationProvider implements vscode.FileDecorationProvider 
         }
 
         return undefined;
-    }
-
-    /**
-     * Simple glob-like pattern matching.
-     * Supports * (any characters) and ** (any path segments).
-     */
-    private matchesPattern(path: string, pattern: string): boolean {
-        // Convert glob pattern to regex
-        let regexPattern = pattern
-            .replace(/[.+^${}()|[\]\\]/g, '\\$&')  // Escape regex special chars except * and ?
-            .replace(/\*\*/g, '<<<GLOBSTAR>>>')    // Temp replace ** to avoid double processing
-            .replace(/\*/g, '[^/]*')               // Single * matches within path segment
-            .replace(/<<<GLOBSTAR>>>/g, '.*')      // ** matches across path segments
-            .replace(/\?/g, '.');                  // ? matches single char
-
-        regexPattern = '^' + regexPattern + '$';
-
-        try {
-            const regex = new RegExp(regexPattern);
-            return regex.test(path);
-        } catch {
-            // Invalid pattern - try exact match
-            return path === pattern;
-        }
     }
 
     dispose(): void {
@@ -97,13 +132,10 @@ export function registerFileDecorations(
 ): { provider: NtmFileDecorationProvider; disposable: vscode.Disposable } {
     const provider = new NtmFileDecorationProvider(client);
 
-    // Register the decoration provider
     const disposable = vscode.window.registerFileDecorationProvider(provider);
 
-    // Initial refresh
     provider.refresh();
 
-    // Refresh periodically (every 10 seconds)
     const interval = setInterval(() => provider.refresh(), 10000);
     context.subscriptions.push({ dispose: () => clearInterval(interval) });
 

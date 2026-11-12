@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -154,6 +155,23 @@ func GetWaitContext(ctx context.Context, opts WaitOptions) (*WaitResponse, int) 
 	startTime := time.Now()
 	if err := ctx.Err(); err != nil {
 		return waitContextCanceledResponse(opts, startTime, err), 1
+	}
+	if opts.AgentType != "" {
+		rawAgentType := strings.TrimSpace(opts.AgentType)
+		canonical := agent.AgentType(rawAgentType).Canonical()
+		if (!canonical.IsValid() && !agent.IsPluginType(canonical)) || canonical == agent.AgentTypeUser {
+			return &WaitResponse{
+				RobotResponse: NewErrorResponse(
+					fmt.Errorf("invalid agent type %q", rawAgentType),
+					ErrCodeInvalidFlag,
+					"Use a supported agent type such as claude, codex, gemini, or agy",
+				),
+				Session:   opts.Session,
+				Condition: opts.Condition,
+				Agents:    []WaitAgentInfo{},
+			}, 1
+		}
+		opts.AgentType = ResolveAgentType(rawAgentType)
 	}
 
 	// Bound lookup, polling, and captures by both caller cancellation and the

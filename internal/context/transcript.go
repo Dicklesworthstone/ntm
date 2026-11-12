@@ -626,6 +626,33 @@ func OmpStatusBarUsage(captured string, capturedAt time.Time) (*TranscriptUsage,
 	}, true
 }
 
+// OpencodeStatusBarUsage converts OpenCode's live right-sidebar context block
+// ("Context" / "<N> tokens" / "<P>% used") into a usage reading. When the
+// sidebar shows 0% used on a fresh session, fallbackWindow supplies the
+// context window; when usedPct > 0 and tokensUsed > 0, the effective context
+// window is derived directly from OpenCode's own accounting.
+func OpencodeStatusBarUsage(captured string, fallbackWindow int, capturedAt time.Time) (*TranscriptUsage, bool) {
+	usedPct, tokensUsed, ok := agent.OpencodeContextUsage(captured)
+	if !ok {
+		return nil, false
+	}
+	window := fallbackWindow
+	if usedPct > 0 && tokensUsed > 0 {
+		derived := int(float64(tokensUsed)*100/usedPct + 0.5)
+		if derived > 0 {
+			window = derived
+		}
+	}
+	if window <= 0 {
+		return nil, false
+	}
+	return &TranscriptUsage{
+		Tokens:        int(tokensUsed),
+		ContextWindow: window,
+		UpdatedAt:     capturedAt,
+	}, true
+}
+
 // LatestAgentTranscriptUsage finds the transcript for an agent pane by agent
 // type and working directory and returns its last usage record. agentType is
 // NTM's normalized agent type string ("claude", "codex", ...). newerThan
@@ -738,22 +765,24 @@ func maxPaneContextUsage(ctx stdcontext.Context, panes []tmux.Pane, stopAt int, 
 		seen[pane.ID] = true
 		agentType := agent.AgentType(pane.Type).Canonical()
 		switch agentType {
-		case agent.AgentTypeClaudeCode, agent.AgentTypeCodex, agent.AgentTypeGemini, agent.AgentTypeOmp:
+		case agent.AgentTypeClaudeCode, agent.AgentTypeCodex, agent.AgentTypeGemini, agent.AgentTypeOmp, agent.AgentTypeOpencode:
 		default:
 			continue
 		}
 		var used float64
 		var measured bool
 		// Only these existing parsers establish a native context gauge from
-		// its live composer/footer structure. Codex's generic percentage regex
-		// can match quoted history, so Codex uses exact transcript binding.
-		if agentType == agent.AgentTypeGemini || agentType == agent.AgentTypeOmp {
+		// its live composer/footer/sidebar structure. Codex's generic percentage
+		// regex can match quoted history, so Codex uses exact transcript binding.
+		if agentType == agent.AgentTypeGemini || agentType == agent.AgentTypeOmp || agentType == agent.AgentTypeOpencode {
 			if visible, err := capture(ctx, pane.ID); err == nil && ctx.Err() == nil {
 				if agentType == agent.AgentTypeOmp {
 					composer := agent.ParseOmpComposer(visible)
 					if composer.Found && composer.RowsBelow == 0 {
 						used, _, measured = agent.OmpContextUsage(visible)
 					}
+				} else if agentType == agent.AgentTypeOpencode {
+					used, _, measured = agent.OpencodeContextUsage(visible)
 				} else if parsed, err := agent.NewParser().ParseWithHint(visible, agentType); err == nil && parsed.ContextRemaining != nil {
 					used, measured = 100-*parsed.ContextRemaining, true
 				}

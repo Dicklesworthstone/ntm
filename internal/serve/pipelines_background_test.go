@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -212,14 +213,81 @@ func launchAPIDetachedFixture(t *testing.T, root, mode string) string {
 	if err := json.Unmarshal(data, &out); err != nil || !out.Success || out.RunID == "" {
 		t.Fatalf("background HTTP response: %v %s\n%s", err, data, stderr.String())
 	}
+	registerAPIDetachedCleanup(t, root, out.RunID)
+	return out.RunID
+}
+
+func registerAPIDetachedCleanup(t *testing.T, root, runID string) {
+	t.Helper()
+	// Registered AFTER t.TempDir() so LIFO runs this cleanup BEFORE TempDir's RemoveAll.
+	// Fencing on AcquireRunControl guarantees the detached worker process has finished
+	// RunControl.Close() (including its atomic .owner write and lock release) before
+	// TempDir removes .ntm/pipelines/control (GH #376).
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		controlDir := filepath.Join(root, ".ntm", "pipelines", "control")
+		if _, err := os.Stat(controlDir); errors.Is(err, os.ErrNotExist) {
+			t.Logf("detached run control cleanup: run_id=%s control_dir=%s state=absent", runID, controlDir)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if st, err := pipeline.LoadState(root, out.RunID); err == nil && (st.Status == pipeline.StatusRunning || st.Status == pipeline.StatusPending) {
-			_ = pipeline.RequestRunCancellation(ctx, root, out.RunID)
+
+		var (
+			wg              sync.WaitGroup
+			lockReleasedAt  string
+			controlClosedAt string
+			lastCancelErr   error
+			fenceErr        error
+		)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ticker := time.NewTicker(10 * time.Millisecond)
+			defer ticker.Stop()
+
+			if st, err := pipeline.LoadState(root, runID); err == nil && (st.Status == pipeline.StatusRunning || st.Status == pipeline.StatusPending) {
+				if cancelErr := pipeline.RequestRunCancellation(ctx, root, runID); cancelErr != nil && !errors.Is(cancelErr, pipeline.ErrRunControlUnavailable) {
+					lastCancelErr = cancelErr
+				}
+			}
+			for {
+				fence, err := pipeline.AcquireRunControl(ctx, root, runID)
+				if err == nil {
+					lockReleasedAt = time.Now().UTC().Format(time.RFC3339Nano)
+					fence.Close()
+					controlClosedAt = time.Now().UTC().Format(time.RFC3339Nano)
+					return
+				}
+				if ctx.Err() != nil {
+					fenceErr = err
+					return
+				}
+				if errors.Is(err, pipeline.ErrRunAlreadyOwned) {
+					if st, loadErr := pipeline.LoadState(root, runID); loadErr == nil && (st.Status == pipeline.StatusRunning || st.Status == pipeline.StatusPending) {
+						if cancelErr := pipeline.RequestRunCancellation(ctx, root, runID); cancelErr != nil && !errors.Is(cancelErr, pipeline.ErrRunControlUnavailable) {
+							lastCancelErr = cancelErr
+						}
+					}
+					continue
+				}
+				select {
+				case <-ctx.Done():
+					fenceErr = ctx.Err()
+					return
+				case <-ticker.C:
+				}
+			}
+		}()
+
+		wg.Wait()
+		goroutineJoinedAt := time.Now().UTC().Format(time.RFC3339Nano)
+		t.Logf("detached run control cleanup: run_id=%s control_dir=%s lock_released_at=%s control_closed_at=%s goroutine_joined_at=%s cancel_err=%v err=%v",
+			runID, controlDir, lockReleasedAt, controlClosedAt, goroutineJoinedAt, lastCancelErr, fenceErr)
+		if fenceErr != nil {
+			t.Errorf("detached worker for run %s did not release run control before TempDir cleanup: %v", runID, fenceErr)
 		}
 	})
-	return out.RunID
 }
 
 func awaitAPIDetachedState(t *testing.T, root, id string, want pipeline.ExecutionStatus) *pipeline.ExecutionState {
@@ -490,13 +558,7 @@ func interruptedAPIDetachedResume(t *testing.T, root string) *pipeline.Execution
 	if err != nil || prior.Steps["once"].Status != pipeline.StatusCompleted || prior.Steps["finish"].Status == pipeline.StatusCompleted || len(prior.CommandExecutions) != 0 {
 		t.Fatalf("interrupted checkpoint lost its prefix or dispatched a skipped command: state=%+v error=%v", prior, err)
 	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		if state, err := pipeline.LoadState(root, cfg.RunID); err == nil && (state.Status == pipeline.StatusRunning || state.Status == pipeline.StatusPending) {
-			_ = pipeline.RequestRunCancellation(ctx, root, cfg.RunID)
-		}
-	})
+	registerAPIDetachedCleanup(t, root, cfg.RunID)
 	return prior
 }
 

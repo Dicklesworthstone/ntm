@@ -35,6 +35,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/spawnidentity"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
+	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/worksource"
 )
@@ -77,6 +78,10 @@ type SpawnOptions struct {
 	GrokCount     int                        // Grok Build agents
 	OmpCount      int                        // Oh My Pi (omp) agents
 	OcCount       int                        // OpenCode (oc) agents
+	OllamaCount   int                        // Ollama local agents
+	AiderCount    int                        // Aider agents
+	CursorCount   int                        // Cursor Agent CLI agents
+	WindsurfCount int                        // Windsurf agents (refused as IDE_ONLY_HARNESS unless [agents] windsurf is overridden)
 	PluginAgents  map[string]PluginSpawnSpec // Registered plugin name or alias -> request
 	// Definitions are frozen from the selected config before any pane mutation.
 	pluginDefinitions map[string]plugins.AgentPlugin
@@ -97,6 +102,10 @@ type SpawnOptions struct {
 	OmpModel            string        // Oh My Pi model override (omp fuzzy-matches it); empty = omp's own default
 	OmpReasoningEffort  string        // Oh My Pi --thinking level override
 	OcModel             string        // OpenCode provider/model override; empty = OpenCode's own default (no effort knob: the TUI has no --variant)
+	OllamaModel         string        // Ollama model override (e.g., codellama:latest)
+	AiderModel          string        // Aider model override
+	CursorModel         string        // Cursor Agent CLI model override
+	WindsurfModel       string        // Windsurf model override (only used when [agents] windsurf is overridden to a terminal CLI)
 	Preset              string        // Recipe/preset name
 	NoUserPane          bool          // Don't create user pane
 	WorkingDir          string        // Override working directory
@@ -372,6 +381,8 @@ func (opts SpawnOptions) agentCounts() []spawnAgentCount {
 		{"claude", opts.CCCount}, {"codex", opts.CodCount},
 		{"gemini", opts.GmiCount}, {"antigravity", opts.AgyCount},
 		{"grok", opts.GrokCount}, {"omp", opts.OmpCount}, {"oc", opts.OcCount},
+		{"ollama", opts.OllamaCount}, {"aider", opts.AiderCount},
+		{"cursor", opts.CursorCount}, {"windsurf", opts.WindsurfCount},
 	}
 	names := make([]string, 0, len(opts.PluginAgents))
 	for name := range opts.PluginAgents {
@@ -538,14 +549,15 @@ type SpawnedAgent struct {
 	PaneID string `json:"pane_id,omitempty"`
 	// AgentMailName is the canonical Agent Mail identity published for the
 	// pane before launch; absent when registration is disabled or failed.
-	AgentMailName string `json:"agent_mail_name,omitempty"`
-	Name          string `json:"name,omitempty"`
-	Type          string `json:"type"`
-	Variant       string `json:"variant,omitempty"`
-	Title         string `json:"title"`
-	Ready         bool   `json:"ready"`
-	StartupMs     int64  `json:"startup_ms"`
-	Error         string `json:"error,omitempty"`
+	AgentMailName      string `json:"agent_mail_name,omitempty"`
+	Name               string `json:"name,omitempty"`
+	Type               string `json:"type"`
+	Variant            string `json:"variant,omitempty"`
+	Title              string `json:"title"`
+	Ready              bool   `json:"ready"`
+	StartupMs          int64  `json:"startup_ms"`
+	CredentialIsolated *bool  `json:"credential_isolated,omitempty"`
+	Error              string `json:"error,omitempty"`
 }
 
 func collectSpawnAdmissionInputWithPanes(
@@ -563,6 +575,8 @@ func collectSpawnAdmissionInputWithPanes(
 			"claude": opts.CCCount, "codex": opts.CodCount,
 			"gemini": opts.GmiCount, "antigravity": opts.AgyCount,
 			"grok": opts.GrokCount, "omp": opts.OmpCount, "opencode": opts.OcCount,
+			"ollama": opts.OllamaCount, "aider": opts.AiderCount,
+			"cursor": opts.CursorCount, "windsurf": opts.WindsurfCount,
 		},
 		RunningByType: make(map[string]int),
 	}
@@ -795,6 +809,17 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		output.Error = recipeErr.Error()
 		output.RobotResponse = NewErrorResponse(recipeErr, ErrCodeInvalidFlag,
 			"Choose a valid recipe without explicit counts; inspect ntm recipes show <name>")
+		if strings.Contains(recipeErr.Error(), config.ErrCodeIDEOnlyHarness) {
+			output.RobotResponse = NewErrorResponse(
+				recipeErr,
+				ErrCodeInvalidFlag,
+				"Override [agents] windsurf in config.toml with a custom terminal command, or use a terminal harness in the recipe",
+			)
+			output.StructuredError = NewStructuredError(ErrCodeIDEOnlyHarness, recipeErr.Error()).
+				WithPhase("preflight").
+				WithDetails(NewErrorDetails().WithAgentType("windsurf")).
+				WithRecoveryHint("Override [agents] windsurf in config.toml with a non-GUI terminal command, or replace windsurf in the recipe")
+		}
 		return output, nil
 	}
 	opts = expanded
@@ -811,6 +836,25 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		output.Error = validationErr.Error()
 		output.RobotResponse = NewErrorResponse(validationErr, ErrCodeInvalidFlag, "Use non-negative agent counts and a supported assignment strategy")
 		return output, nil
+	}
+	if opts.WindsurfCount > 0 {
+		configuredWindsurf := ""
+		if cfg != nil {
+			configuredWindsurf = cfg.Agents.Windsurf
+		}
+		if wsErr := config.ValidateWindsurfTerminalHarness(configuredWindsurf); wsErr != nil {
+			output.Error = wsErr.Error()
+			output.RobotResponse = NewErrorResponse(
+				wsErr,
+				ErrCodeInvalidFlag,
+				"Override [agents] windsurf in config.toml with a custom terminal command, or spawn a terminal harness (cc, cod, agy, cursor, aider, oc, omp, ollama, pi)",
+			)
+			output.StructuredError = NewStructuredError(ErrCodeIDEOnlyHarness, wsErr.Error()).
+				WithPhase("preflight").
+				WithDetails(NewErrorDetails().WithAgentType("windsurf")).
+				WithRecoveryHint("Override [agents] windsurf in config.toml with a non-GUI terminal command, or use a terminal harness")
+			return output, nil
+		}
 	}
 	// Advisory model did-you-mean: a requested model override that resolves
 	// to an ID unknown to the model registry but a small edit away from a
@@ -1333,6 +1377,27 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		if agentsession.ResumeProvider(request.agentType) == "pi" {
 			command = agentsession.PinPiLaunchSession(command)
 		}
+		var claudeCredIsolated *bool
+		if request.agentType == "claude" && cfg != nil && cfg.Agents.ClaudeIsolateCredentials {
+			claudeEnv, isoErr := swarm.ProvisionClaudeIsolation(cfg, dir, opts.Session, request.number)
+			if isoErr != nil {
+				failed := SpawnedAgent{
+					Pane:   fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index),
+					PaneID: pane.ID,
+					Type:   request.agentType,
+					Title:  fmt.Sprintf("%s__%s_%d", opts.Session, agentTypeShort(request.agentType), request.number),
+					Name:   nameMap.AssignNew(request.agentType, fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index)),
+					Error:  isoErr.Error(),
+				}
+				output.Agents = append(output.Agents, failed)
+				launchErrors = append(launchErrors, fmt.Errorf("%s agent %d: %w", request.agentType, request.number, isoErr))
+				continue
+			}
+			command = claudeEnv.ApplyToCommand(command)
+			if isolated, checkErr := swarm.NewClaudeConfigProvisioner(dir).CredentialIsolated(opts.Session, strconv.Itoa(request.number)); checkErr == nil {
+				claudeCredIsolated = &isolated
+			}
+		}
 		title := fmt.Sprintf("%s__%s_%d", opts.Session, agentTypeShort(request.agentType), request.number)
 		// Publish this pane's Agent Mail identity BEFORE its agent command is
 		// sent, exactly as `ntm spawn` does (gh#255): a process resolving its
@@ -1378,6 +1443,9 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			if output.AgentMail != nil {
 				agent.AgentMailName = output.AgentMail.AgentMap[pane.ID]
 			}
+		}
+		if claudeCredIsolated != nil {
+			agent.CredentialIsolated = claudeCredIsolated
 		}
 		if launchErr != nil && agent.Error == "" {
 			agent.Error = launchErr.Error()
@@ -1892,6 +1960,12 @@ func isAgentReady(output, agentType string) bool {
 		// or on the "OpenCode" splash, before the composer exists.
 		return tmux.OpencodeComposerVisible(output) || strings.Contains(strings.ToLower(output), "ask anything")
 	}
+	if tmux.AgentType(agentType).Canonical() == tmux.AgentAntigravity {
+		// Antigravity draws its `>` prompt above `? for shortcuts` once
+		// ready to accept input; checking the composer avoids matching a
+		// bare shell `>` prompt or startup splash.
+		return tmux.AntigravityComposerVisible(output)
+	}
 	// Registered plugin composers need the same live-work veto and idle
 	// patterns used by status and dispatch. Pi has no generic prompt glyph;
 	// falling through below made a successfully restarted pi pane time out.
@@ -1998,6 +2072,8 @@ func spawnModelHints(cfg *config.Config, opts SpawnOptions) []string {
 		{"grok", opts.GrokModel},
 		{"omp", opts.OmpModel},
 		{"oc", opts.OcModel},
+		{"aider", opts.AiderModel},
+		{"cursor", opts.CursorModel},
 	}
 	var hints []string
 	for _, req := range requested {
@@ -2018,6 +2094,7 @@ func spawnModelHints(cfg *config.Config, opts SpawnOptions) []string {
 }
 
 func getAgentCommandsWithOverrides(cfg *config.Config, opts SpawnOptions) (map[string]string, error) {
+	defaultTmpls := config.DefaultAgentTemplates()
 	defaults := map[string]string{
 		"claude":      "claude",
 		"codex":       "codex",
@@ -2026,6 +2103,10 @@ func getAgentCommandsWithOverrides(cfg *config.Config, opts SpawnOptions) (map[s
 		"grok":        "grok --always-approve",
 		"omp":         config.DefaultOmpCommand,
 		"oc":          config.DefaultOpencodeCommand,
+		"ollama":      defaultTmpls.Ollama,
+		"aider":       defaultTmpls.Aider,
+		"cursor":      defaultTmpls.Cursor,
+		"windsurf":    config.DefaultWindsurfCommand,
 	}
 
 	if cfg != nil && cfg.Agents.Claude != "" {
@@ -2048,6 +2129,18 @@ func getAgentCommandsWithOverrides(cfg *config.Config, opts SpawnOptions) (map[s
 	}
 	if cfg != nil && cfg.Agents.Opencode != "" {
 		defaults["oc"] = cfg.Agents.Opencode
+	}
+	if cfg != nil && cfg.Agents.Ollama != "" {
+		defaults["ollama"] = cfg.Agents.Ollama
+	}
+	if cfg != nil && cfg.Agents.Aider != "" {
+		defaults["aider"] = cfg.Agents.Aider
+	}
+	if cfg != nil && cfg.Agents.Cursor != "" {
+		defaults["cursor"] = cfg.Agents.Cursor
+	}
+	if cfg != nil && cfg.Agents.Windsurf != "" {
+		defaults["windsurf"] = cfg.Agents.Windsurf
 	}
 
 	launchModels := spawnLaunchModels(cfg, opts)
@@ -2111,6 +2204,10 @@ func spawnLaunchModels(cfg *config.Config, opts SpawnOptions) map[string]spawnLa
 		"grok":        {opts.GrokModel, opts.GrokReasoningEffort},
 		"omp":         {opts.OmpModel, opts.OmpReasoningEffort},
 		"oc":          {opts.OcModel, ""},
+		"ollama":      {opts.OllamaModel, ""},
+		"aider":       {opts.AiderModel, ""},
+		"cursor":      {opts.CursorModel, ""},
+		"windsurf":    {opts.WindsurfModel, ""},
 	}
 	launches := make(map[string]spawnLaunchModel, len(overrides))
 	for agentType, override := range overrides {

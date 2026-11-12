@@ -606,9 +606,11 @@ func (s *DefaultPaneSpawner) agentLaunchSpec(session, agentType string, index in
 			}
 		}
 	}
-	if agent.AgentType(agentType).Canonical() == agent.AgentTypeAntigravity &&
-		vars.ModelAlias != "" && vars.ModelAlias != config.AntigravityRequiredModel {
-		return tmux.AgentLaunchSpec{}, fmt.Errorf("antigravity model is pinned to %q, cannot restore model %q", config.AntigravityRequiredModel, vars.ModelAlias)
+	if agent.AgentType(agentType).Canonical() == agent.AgentTypeAntigravity {
+		allowed := models.GetModelName("antigravity", "")
+		if vars.ModelAlias != "" && vars.ModelAlias != config.AntigravityRequiredModel && vars.ModelAlias != allowed {
+			return tmux.AgentLaunchSpec{}, fmt.Errorf("antigravity model is pinned to %q, cannot restore model %q", allowed, vars.ModelAlias)
+		}
 	}
 	vars.Model = models.GetModelName(agentType, vars.ModelAlias)
 	if agent.AgentType(agentType).Canonical() == agent.AgentTypeClaudeCode {
@@ -758,7 +760,7 @@ func rotationPromptReady(captured string, pane tmux.Pane) (bool, string) {
 	}
 	composer := tmux.InspectComposer(captured, pane.Type)
 	switch pane.Type.Canonical() {
-	case agent.AgentTypeClaudeCode, agent.AgentTypeCodex, agent.AgentTypeGrok, agent.AgentTypeOmp:
+	case agent.AgentTypeClaudeCode, agent.AgentTypeCodex, agent.AgentTypeGrok, agent.AgentTypeOmp, agent.AgentTypeOpencode, agent.AgentTypeAntigravity:
 		if !composer.MarkerVisible {
 			return false, "agent composer is not visible"
 		}
@@ -983,6 +985,8 @@ func (s *DefaultPaneSpawner) DeliverHandoffContext(ctx stdcontext.Context, sessi
 		confirmed, _, err = tmux.VerifyGrokSubmissionContext(deliveryCtx, ready.ID, prompt, ready.Width)
 	case agent.AgentTypeOmp:
 		confirmed, _, err = tmux.VerifyOmpSubmissionContext(deliveryCtx, ready.ID, prompt, ready.Width)
+	case agent.AgentTypeOpencode:
+		confirmed, _, err = tmux.VerifyOpencodeSubmissionContext(deliveryCtx, ready.ID, prompt, ready.Width)
 	}
 	if err != nil {
 		return fmt.Errorf("checking handoff submission: %w", err)
@@ -1188,6 +1192,10 @@ func agentTypeShort(agentType string) string {
 		return "gmi"
 	case agent.AgentTypeAntigravity:
 		return "agy"
+	case agent.AgentTypeGrok:
+		return "grok"
+	case agent.AgentTypeOpencode:
+		return "oc"
 	case agent.AgentTypeOmp:
 		return "omp"
 	case agent.AgentTypeCursor:
@@ -1216,6 +1224,10 @@ func agentTypeLong(shortType string) string {
 		return "gemini"
 	case agent.AgentTypeAntigravity:
 		return "antigravity"
+	case agent.AgentTypeGrok:
+		return "grok"
+	case agent.AgentTypeOpencode:
+		return "opencode"
 	case agent.AgentTypeOmp:
 		return "omp"
 	case agent.AgentTypeCursor:

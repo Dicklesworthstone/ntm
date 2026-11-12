@@ -112,11 +112,6 @@ type CASSQueryResult struct {
 	Keywords     []string      `json:"keywords,omitempty"`
 }
 
-// QueryCASS queries CASS for relevant historical context based on the prompt.
-func QueryCASS(ctx context.Context, prompt string, config CASSConfig) CASSQueryResult {
-	return queryCASSContext(ctx, prompt, config, "")
-}
-
 // Both ordinary send and robot assignments use Client.SearchContext for
 // candidate retrieval. Do not add another subprocess or reduced wire decoder
 // here: that bypasses output bounds and loses indexed workspace/time evidence.

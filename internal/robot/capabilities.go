@@ -1093,6 +1093,8 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "session", Flag: "--robot-exit-cli", Type: "string", Required: true, Description: "Session name"},
 				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Comma-separated N, W.P, or %N pane selectors (default: all agent panes)"},
 				{Name: "relaunch", Flag: "--relaunch", Type: "bool", Required: false, Description: "Relaunch the agent CLI in the preserved shell and verify boot"},
+				{Name: "respawn-shell", Flag: "--respawn-shell", Type: "bool", Required: false, Description: "Replace an exited direct-exec root agent with a fresh interactive shell in the same cwd"},
+				{Name: "allow-pane-close", Flag: "--allow-pane-close", Type: "bool", Required: false, Description: "Permit a direct-exec root agent pane to close cleanly upon graceful exit"},
 			},
 			Examples: []string{
 				"ntm --robot-exit-cli=proj --panes=1",
@@ -1291,6 +1293,10 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "spawn-grok", Flag: "--spawn-grok", Type: "string", Required: false, Description: "Grok Build agents: count[:model[:effort]]"},
 				{Name: "spawn-omp", Flag: "--spawn-omp", Type: "string", Required: false, Description: "Oh My Pi (omp) agents: count[:model[:effort]] (effort maps to omp --thinking; no model = omp's own configured default)"},
 				{Name: "spawn-oc", Flag: "--spawn-oc", Type: "string", Required: false, Description: "OpenCode (oc) agents: count[:model], model as provider/model (no model = OpenCode's own default; no effort knob)"},
+				{Name: "spawn-ollama", Flag: "--spawn-ollama", Type: "string", Required: false, Description: "Ollama local agents: count[:model] (default model: codellama:latest)"},
+				{Name: "spawn-aider", Flag: "--spawn-aider", Type: "string", Required: false, Description: "Aider agents: count[:model]"},
+				{Name: "spawn-cursor", Flag: "--spawn-cursor", Type: "string", Required: false, Description: "Cursor Agent CLI (cursor-agent) agents: count[:model]"},
+				{Name: "spawn-pi", Flag: "--spawn-pi", Type: "string", Required: false, Description: "Pi coding agent (pi) agents: count[:model[:effort]] (effort maps to pi --thinking; no model = pi's own configured default)"},
 				{Name: "spawn-preset", Flag: "--spawn-preset", Type: "string", Required: false, Description: "Use recipe preset instead of counts"},
 				{Name: "spawn-no-user", Flag: "--spawn-no-user", Type: "bool", Required: false, Description: "Skip user pane creation"},
 				{Name: "spawn-wait", Flag: "--spawn-wait", Type: "bool", Required: false, Description: "Wait for agents to show ready state before returning"},
@@ -1311,6 +1317,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 				"ntm --robot-spawn=myproject --spawn-grok=1",
 				"ntm --robot-spawn=myproject --spawn-omp=8 --spawn-no-user --spawn-wait",
 				"ntm --robot-spawn=myproject --spawn-oc=2:opencode/big-pickle --spawn-wait",
+				"ntm --robot-spawn=myproject --spawn-pi=2 --spawn-cursor=1 --spawn-aider=1 --spawn-ollama=1:qwen2.5-coder:32b",
 				"ntm --robot-spawn=myproject --spawn-preset=standard",
 				"ntm --robot-spawn=myproject --spawn-label=frontend --spawn-cc=3",
 				"ntm --robot-spawn=myproject --spawn-assign-work --strategy=dependency-aware",
@@ -1940,6 +1947,21 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Examples: []string{
 				"ntm --robot-safety-simulate --command='git reset --hard HEAD~1'",
 				"ntm --robot-safety-simulate --step='git status' --step='git reset --hard HEAD~1'",
+			},
+		},
+		{
+			Name:        "policy-decisions",
+			Flag:        "--robot-policy-decisions",
+			Category:    "utility",
+			Description: "List durable policy and operator audit decisions from the runtime state store.",
+			Parameters: []RobotParameter{
+				{Name: "entity_type", Flag: "--policy-entity-type", Type: "string", Required: false, Description: "Filter decisions by entity type (e.g. attention_item, approval)"},
+				{Name: "entity_id", Flag: "--policy-entity-id", Type: "string", Required: false, Description: "Filter decisions by entity ID"},
+				{Name: "limit", Flag: "--limit", Type: "int", Required: false, Description: "Maximum decisions to return (default 100)"},
+			},
+			Examples: []string{
+				"ntm --robot-policy-decisions",
+				"ntm --robot-policy-decisions --policy-entity-type=attention_item --limit=25",
 			},
 		},
 		{

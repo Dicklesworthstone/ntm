@@ -51,6 +51,7 @@ Common user-level locations:
 - `~/.config/ntm/personas.toml`
 - `~/.config/ntm/templates/`
 - `~/.ntm/policy.yaml`
+- `~/.local/share/ntm/checkpoints/`
 
 ## Project-Level Assets
 
@@ -58,12 +59,13 @@ Project-local assets usually live under `.ntm/` and override user defaults where
 
 Common examples:
 
+- `.ntm/config.toml`
+- `.ntm/policy.yaml`
 - `.ntm/workflows/`
 - `.ntm/pipelines/`
 - `.ntm/templates/`
 - `.ntm/personas.toml`
 - `.ntm/recipes.toml`
-- `.ntm/checkpoints/`
 
 These matter because session templates, prompt templates, workflows, pipelines, and
 persona definitions are often project-specific rather than globally shared.

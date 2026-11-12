@@ -610,7 +610,16 @@ func (h *WSHub) handleReplay(req *wsReplayRequest) {
 	}
 	// Filter before limiting, and request one extra matching event so a
 	// bounded prefix can never masquerade as a complete reconnect history.
-	events, needsReset, err := store.getSinceTopics(req.since, req.topics, wsReplayLimit+1)
+	var (
+		events     []WSStoredEvent
+		needsReset bool
+		err        error
+	)
+	if len(req.topics) <= 1 {
+		events, needsReset, err = store.GetSince(req.since, topicFilter, wsReplayLimit+1)
+	} else {
+		events, needsReset, err = store.getSinceTopics(req.since, req.topics, wsReplayLimit+1)
+	}
 	res.cursor = store.CurrentSeq()
 	if err != nil {
 		log.Printf("ws_events: replay query failed client=%s since=%d: %v", req.client.id, req.since, err)

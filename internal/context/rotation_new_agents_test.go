@@ -33,6 +33,9 @@ func TestDeriveAgentTypeFromID_NewAgents(t *testing.T) {
 		{"myproject__ws_2", "windsurf"},
 		{"myproject__aider_3", "aider"},
 		{"myproject__ollama_4", "ollama"},
+		{"myproject__oc_1", "opencode"},
+		{"myproject__grok_2", "grok"},
+		{"myproject__agy_1", "antigravity"},
 		{"myproject__cursor_1_variant", "cursor"},
 	}
 
@@ -58,6 +61,10 @@ func TestAgentTypeShort_NewAgents(t *testing.T) {
 		{"ws", "windsurf"},
 		{"aider", "aider"},
 		{"ollama", "ollama"},
+		{"opencode", "oc"},
+		{"oc", "oc"},
+		{"grok", "grok"},
+		{"antigravity", "agy"},
 	}
 
 	for _, tt := range tests {
@@ -82,6 +89,10 @@ func TestAgentTypeLong_NewAgents(t *testing.T) {
 		{"ws", "windsurf"},
 		{"aider", "aider"},
 		{"ollama", "ollama"},
+		{"oc", "opencode"},
+		{"opencode", "opencode"},
+		{"grok", "grok"},
+		{"agy", "antigravity"},
 	}
 
 	for _, tt := range tests {
@@ -732,4 +743,24 @@ esac
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(workDir, "config"))
 	t.Setenv("XDG_DATA_HOME", filepath.Join(workDir, "data"))
 	return workDir, logPath
+}
+
+func TestRotationPromptReady_AntigravityAndOpencode(t *testing.T) {
+	t.Parallel()
+
+	agyPane := tmux.Pane{ID: "%10", Type: tmux.AgentAntigravity, Command: "agy-locked", Width: 120}
+	agyIdle := "Antigravity\n\n  >\n\n  ? for shortcuts\n  Gemini 4 Argon (High)\n"
+	if ready, reason := rotationPromptReady(agyIdle, agyPane); !ready {
+		t.Fatalf("rotationPromptReady(agyIdle) = false (%q), want true", reason)
+	}
+	agyDraft := "Antigravity\n\n  > unsubmitted draft\n\n  ? for shortcuts\n  Gemini 4 Argon (High)\n"
+	if ready, _ := rotationPromptReady(agyDraft, agyPane); ready {
+		t.Fatal("rotationPromptReady(agyDraft) = true, want false for unsubmitted draft")
+	}
+
+	ocPane := tmux.Pane{ID: "%11", Type: tmux.AgentOpencode, Command: "opencode", Width: 120}
+	ocIdle := "  ┃\n  ┃  Ask anything…\n  ┃\n  ┃  Build · Big Pickle\n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n"
+	if ready, reason := rotationPromptReady(ocIdle, ocPane); !ready {
+		t.Fatalf("rotationPromptReady(ocIdle) = false (%q), want true", reason)
+	}
 }

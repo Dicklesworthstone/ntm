@@ -242,7 +242,6 @@ internal/state/routing_state.go:Store.SaveRoutingState	bd-ld4j2	reachable only t
 internal/state/runtime_schema.go:AttentionReplayWindow.EarliestReplayCursor	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/state/runtime_schema.go:RuntimeHandoff.IsFresh	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/state/runtime_store.go:Store.ClearStaleProjections	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/state/runtime_store.go:Store.CompactAuditDecisionLog	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/state/runtime_store.go:Store.CreateIncident	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/state/runtime_store.go:Store.DeleteRuntimeAgent	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/state/runtime_store.go:Store.DeleteRuntimeCoordination	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
@@ -255,13 +254,11 @@ internal/state/runtime_store.go:Store.DeleteSourceHealth	bd-ld4j2	reachable only
 internal/state/runtime_store.go:Store.GetActorActivity	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/state/runtime_store.go:Store.GetAuditActor	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/state/runtime_store.go:Store.GetAuditHistory	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/state/runtime_store.go:Store.GetDecisionHistory	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/state/runtime_store.go:Store.GetDegradedSources	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/state/runtime_store.go:Store.GetIncidentByFingerprint	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/state/runtime_store.go:Store.GetRequestTrace	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/state/runtime_store.go:Store.GetRuntimeHandoffByScope	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/state/runtime_store.go:Store.GetSourceHealth	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/state/runtime_store.go:Store.RecordAuditDecision	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/state/runtime_store.go:Store.RecordAuditEvent	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/state/runtime_store.go:Store.ReopenIncident	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/state/runtime_store.go:Store.UpsertAttentionItemState	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
@@ -384,7 +381,6 @@ internal/tmux/capture_helpers.go:Client.CaptureForCheckpoint	bd-ld4j2	reachable 
 internal/tmux/capture_helpers.go:Client.CaptureForCheckpointContext	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/tmux/capture_helpers.go:Client.CaptureForFullContext	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/tmux/capture_helpers.go:Client.CaptureForHealthCheck	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/tmux/client.go:Client.RespawnPane	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/tmux/pane_badge.go:Client.ReadPaneBadgeContext	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/tmux/pane_border.go:Client.ResetPaneBorderStyle	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/tmux/pane_border.go:Client.ResetPaneBorderStyleContext	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it

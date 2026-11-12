@@ -36,7 +36,11 @@ const (
 // as a hint; those paths are now unreachable for grok.
 const GrokPhaseOneCapabilityHint = "Grok Build phase 2 (GH#251) implements automated prompt delivery, interrupt, and relaunch; update ntm if you see this refusal"
 
-// GrokPromptDeliveryCapabilityHint is retained for error-path callers; the
+// PromptDeliveryCapabilityHint is the generic capability hint attached when an
+// agent harness does not implement automated interactive prompt delivery.
+const PromptDeliveryCapabilityHint = "Automated prompt delivery is not supported for this agent harness; inspect capability metadata before dispatching"
+
+// GrokPromptDeliveryCapabilityHint is retained for legacy callers; the
 // phase-one prompt-delivery refusal it annotated no longer fires (GH#251).
 const GrokPromptDeliveryCapabilityHint = GrokPhaseOneCapabilityHint
 
@@ -73,7 +77,7 @@ func (t AgentType) Canonical() AgentType {
 		return AgentTypeWindsurf
 	case "aider":
 		return AgentTypeAider
-	case "oc", "opencode":
+	case "oc", "opencode", "opencode-cli", "opencode_cli", "opencodecli", "open-code":
 		return AgentTypeOpencode
 	case "omp", "oh-my-pi", "oh_my_pi", "ohmypi":
 		return AgentTypeOmp

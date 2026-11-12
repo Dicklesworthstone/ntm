@@ -1,6 +1,3 @@
-//go:build ensemble_experimental
-// +build ensemble_experimental
-
 package robot
 
 import "testing"

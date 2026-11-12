@@ -917,3 +917,46 @@ func (m *WorktreeManager) GetWorktreeForAgent(ctx context.Context, agentName str
 
 	return info, nil
 }
+
+// Prune removes stale Git worktree administrative files for directories that no
+// longer exist on disk. When dryRun is true, it previews prunable entries
+// without modifying repository metadata.
+func (m *WorktreeManager) Prune(ctx context.Context, dryRun bool) (string, error) {
+	if ctx == nil {
+		return "", errors.New("prune worktrees requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	isRepo, err := git.IsGitRepository(ctx, m.projectPath)
+	if err != nil {
+		return "", fmt.Errorf("validate git repository %s: %w", m.projectPath, err)
+	}
+	if !isRepo {
+		return "", fmt.Errorf("not a git repository: %s", m.projectPath)
+	}
+
+	if !dryRun {
+		fence, err := acquireMergeFence(ctx, m.projectPath)
+		if err != nil {
+			return "", fmt.Errorf("prune worktrees: %w", err)
+		}
+		defer fence.close()
+		if err := fence.requireSettledMerge(); err != nil {
+			return "", fmt.Errorf("prune worktrees: %w", err)
+		}
+	}
+
+	args := []string{"worktree", "prune", "-v"}
+	if dryRun {
+		args = []string{"worktree", "prune", "--dry-run", "-v"}
+	}
+	out, err := gitCombinedOutput(ctx, m.projectPath, args...)
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("prune worktrees canceled: %w", ctx.Err())
+		}
+		return "", fmt.Errorf("git worktree prune failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}

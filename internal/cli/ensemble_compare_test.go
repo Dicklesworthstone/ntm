@@ -341,6 +341,8 @@ func TestNewEnsembleCheckpointStoreForSessionUsesSessionProjectDir(t *testing.T)
 }
 
 func TestRunEnsembleResumeUsesConfiguredRunProjectWhenCWDDiffers(t *testing.T) {
+	env := setupIsolatedEnsembleTmuxEnv(t, nil)
+
 	projectsBase := t.TempDir()
 	sessionProject := filepath.Join(projectsBase, "mysession")
 	if err := os.MkdirAll(sessionProject, 0o755); err != nil {
@@ -360,7 +362,10 @@ func TestRunEnsembleResumeUsesConfiguredRunProjectWhenCWDDiffers(t *testing.T) {
 	}
 
 	oldCfg := cfg
-	cfg = &config.Config{ProjectsBase: projectsBase}
+	testCfg := config.Default()
+	testCfg.ProjectsBase = projectsBase
+	testCfg.Agents.Claude = env.AgentScript
+	cfg = testCfg
 	t.Cleanup(func() { cfg = oldCfg })
 
 	store, err := newEnsembleCheckpointStoreForSession(t.Context(), "mysession")
@@ -373,13 +378,14 @@ func TestRunEnsembleResumeUsesConfiguredRunProjectWhenCWDDiffers(t *testing.T) {
 		SessionName:  "mysession",
 		Question:     "Resume me",
 		Status:       ensemble.EnsembleActive,
-		CompletedIDs: []string{"mode-a"},
-		PendingIDs:   []string{"mode-b"},
+		CompletedIDs: []string{"deductive"},
+		PendingIDs:   []string{"inductive"},
 		TotalModes:   2,
 	}
 	if err := store.SaveMetadata(meta); err != nil {
 		t.Fatalf("SaveMetadata() error = %v", err)
 	}
+	seedCompletedModeCheckpoint(t, store, meta.RunID, "deductive", "Deductive thesis", "Deductive finding", 0.85, time.Now().UTC())
 
 	oldWd, _ := os.Getwd()
 	if err := os.Chdir(nestedDir); err != nil {
@@ -388,7 +394,13 @@ func TestRunEnsembleResumeUsesConfiguredRunProjectWhenCWDDiffers(t *testing.T) {
 	defer os.Chdir(oldWd)
 
 	var buf bytes.Buffer
-	if err := runEnsembleResume(&buf, meta.RunID, "json", false, true); err != nil {
+	if err := runEnsembleResume(t.Context(), nil, &buf, ensembleResumeCommandOptions{
+		RunID:    meta.RunID,
+		Format:   "json",
+		Quiet:    false,
+		SkipDone: true,
+		Timeout:  20 * time.Second,
+	}); err != nil {
 		t.Fatalf("runEnsembleResume() error = %v", err)
 	}
 
@@ -402,9 +414,14 @@ func TestRunEnsembleResumeUsesConfiguredRunProjectWhenCWDDiffers(t *testing.T) {
 	if payload.RunID != meta.RunID || payload.Session != meta.SessionName {
 		t.Fatalf("payload = %+v, want run %q session %q", payload, meta.RunID, meta.SessionName)
 	}
+	if payload.Status != string(ensemble.EnsembleComplete) {
+		t.Fatalf("Status = %q, want %q", payload.Status, ensemble.EnsembleComplete)
+	}
 }
 
 func TestRunEnsembleResumeSkipDoneFalseIncludesCompletedModes(t *testing.T) {
+	env := setupIsolatedEnsembleTmuxEnv(t, nil)
+
 	projectDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectDir, ".ntm"), 0o755); err != nil {
 		t.Fatalf("mkdir .ntm: %v", err)
@@ -412,6 +429,12 @@ func TestRunEnsembleResumeSkipDoneFalseIncludesCompletedModes(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(projectDir, ".ntm", "config.toml"), []byte(""), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
+
+	oldCfg := cfg
+	testCfg := config.Default()
+	testCfg.Agents.Claude = env.AgentScript
+	cfg = testCfg
+	t.Cleanup(func() { cfg = oldCfg })
 
 	oldWd, _ := os.Getwd()
 	if err := os.Chdir(projectDir); err != nil {
@@ -429,17 +452,24 @@ func TestRunEnsembleResumeSkipDoneFalseIncludesCompletedModes(t *testing.T) {
 		SessionName:  "mysession",
 		Question:     "Resume me",
 		Status:       ensemble.EnsembleActive,
-		CompletedIDs: []string{"mode-a"},
-		PendingIDs:   []string{"mode-b"},
-		ErrorIDs:     []string{"mode-c"},
+		CompletedIDs: []string{"deductive"},
+		PendingIDs:   []string{"inductive"},
+		ErrorIDs:     []string{"systems-thinking"},
 		TotalModes:   3,
 	}
 	if err := store.SaveMetadata(meta); err != nil {
 		t.Fatalf("SaveMetadata() error = %v", err)
 	}
+	seedCompletedModeCheckpoint(t, store, meta.RunID, "deductive", "Deductive thesis", "Deductive finding", 0.85, time.Now().UTC())
 
 	var buf bytes.Buffer
-	if err := runEnsembleResume(&buf, meta.RunID, "json", false, false); err != nil {
+	if err := runEnsembleResume(t.Context(), nil, &buf, ensembleResumeCommandOptions{
+		RunID:    meta.RunID,
+		Format:   "json",
+		Quiet:    false,
+		SkipDone: false,
+		Timeout:  25 * time.Second,
+	}); err != nil {
 		t.Fatalf("runEnsembleResume() error = %v", err)
 	}
 
@@ -477,7 +507,12 @@ func TestRunEnsembleResume_InvalidMetadataReturnsStructuredFailure(t *testing.T)
 	defer os.Chdir(oldWd)
 
 	var buf bytes.Buffer
-	if err := runEnsembleResume(&buf, "resume-invalid-meta-run", "json", false, true); err != nil && !errors.Is(err, errJSONFailure) {
+	if err := runEnsembleResume(t.Context(), nil, &buf, ensembleResumeCommandOptions{
+		RunID:    "resume-invalid-meta-run",
+		Format:   "json",
+		Quiet:    false,
+		SkipDone: true,
+	}); err != nil && !errors.Is(err, errJSONFailure) {
 		t.Fatalf("runEnsembleResume() error = %v", err)
 	}
 
@@ -509,7 +544,12 @@ func TestRunEnsembleResume_InvalidRunIDReturnsStructuredFailure(t *testing.T) {
 	defer os.Chdir(oldWd)
 
 	var buf bytes.Buffer
-	if err := runEnsembleResume(&buf, "../escape", "json", false, true); err != nil && !errors.Is(err, errJSONFailure) {
+	if err := runEnsembleResume(t.Context(), nil, &buf, ensembleResumeCommandOptions{
+		RunID:    "../escape",
+		Format:   "json",
+		Quiet:    false,
+		SkipDone: true,
+	}); err != nil && !errors.Is(err, errJSONFailure) {
 		t.Fatalf("runEnsembleResume() error = %v", err)
 	}
 
@@ -526,6 +566,8 @@ func TestRunEnsembleResume_InvalidRunIDReturnsStructuredFailure(t *testing.T) {
 }
 
 func TestRunEnsembleRerunModeUsesConfiguredRunProjectWhenCWDDiffers(t *testing.T) {
+	env := setupIsolatedEnsembleTmuxEnv(t, nil)
+
 	projectsBase := t.TempDir()
 	sessionProject := filepath.Join(projectsBase, "mysession")
 	if err := os.MkdirAll(sessionProject, 0o755); err != nil {
@@ -545,7 +587,10 @@ func TestRunEnsembleRerunModeUsesConfiguredRunProjectWhenCWDDiffers(t *testing.T
 	}
 
 	oldCfg := cfg
-	cfg = &config.Config{ProjectsBase: projectsBase}
+	testCfg := config.Default()
+	testCfg.ProjectsBase = projectsBase
+	testCfg.Agents.Claude = env.AgentScript
+	cfg = testCfg
 	t.Cleanup(func() { cfg = oldCfg })
 
 	store, err := newEnsembleCheckpointStoreForSession(t.Context(), "mysession")
@@ -558,12 +603,13 @@ func TestRunEnsembleRerunModeUsesConfiguredRunProjectWhenCWDDiffers(t *testing.T
 		SessionName:  "mysession",
 		Question:     "Rerun me",
 		Status:       ensemble.EnsembleActive,
-		CompletedIDs: []string{"mode-a"},
+		CompletedIDs: []string{"deductive"},
 		TotalModes:   1,
 	}
 	if err := store.SaveMetadata(meta); err != nil {
 		t.Fatalf("SaveMetadata() error = %v", err)
 	}
+	seedCompletedModeCheckpoint(t, store, meta.RunID, "deductive", "Deductive thesis", "Deductive finding", 0.85, time.Now().UTC())
 
 	oldWd, _ := os.Getwd()
 	if err := os.Chdir(nestedDir); err != nil {
@@ -572,7 +618,13 @@ func TestRunEnsembleRerunModeUsesConfiguredRunProjectWhenCWDDiffers(t *testing.T
 	defer os.Chdir(oldWd)
 
 	var buf bytes.Buffer
-	if err := runEnsembleRerunMode(&buf, meta.RunID, "mode-a", "json", false); err != nil {
+	if err := runEnsembleRerunMode(t.Context(), nil, &buf, ensembleRerunCommandOptions{
+		RunID:   meta.RunID,
+		ModeRef: "deductive",
+		Format:  "json",
+		Quiet:   false,
+		Timeout: 20 * time.Second,
+	}); err != nil {
 		t.Fatalf("runEnsembleRerunMode() error = %v", err)
 	}
 
@@ -621,7 +673,12 @@ func TestRunEnsembleRerunModeRejectsUnknownModeInCheckpointRun(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := runEnsembleRerunMode(&buf, meta.RunID, "bayesian", "json", false); err != nil && !errors.Is(err, errJSONFailure) {
+	if err := runEnsembleRerunMode(t.Context(), nil, &buf, ensembleRerunCommandOptions{
+		RunID:   meta.RunID,
+		ModeRef: "bayesian",
+		Format:  "json",
+		Quiet:   false,
+	}); err != nil && !errors.Is(err, errJSONFailure) {
 		t.Fatalf("runEnsembleRerunMode() error = %v", err)
 	}
 
@@ -656,7 +713,12 @@ func TestRunEnsembleRerunMode_InvalidMetadataReturnsStructuredFailure(t *testing
 	defer os.Chdir(oldWd)
 
 	var buf bytes.Buffer
-	if err := runEnsembleRerunMode(&buf, "rerun-invalid-meta-run", "deductive", "json", false); err != nil && !errors.Is(err, errJSONFailure) {
+	if err := runEnsembleRerunMode(t.Context(), nil, &buf, ensembleRerunCommandOptions{
+		RunID:   "rerun-invalid-meta-run",
+		ModeRef: "deductive",
+		Format:  "json",
+		Quiet:   false,
+	}); err != nil && !errors.Is(err, errJSONFailure) {
 		t.Fatalf("runEnsembleRerunMode() error = %v", err)
 	}
 

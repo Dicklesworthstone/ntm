@@ -112,6 +112,12 @@ type SynthesisReport struct {
 	// ModeContributions shows how each mode contributed.
 	ModeContributions []ModeContribution `json:"mode_contributions,omitempty"`
 
+	// RawOutputs preserves original per-mode payloads when IncludeRawOutputs is enabled.
+	RawOutputs map[string]string `json:"raw_outputs,omitempty"`
+
+	// TokensUsed estimates the synthesis token consumption.
+	TokensUsed int `json:"tokens_used,omitempty"`
+
 	// AuditLog records synthesis decisions for transparency.
 	AuditLog []AuditEntry `json:"audit_log,omitempty"`
 }

@@ -122,7 +122,7 @@ func GetAgentCapabilities(agentType string) AgentCapabilities {
 			BuiltinCompactCommand:  "/compact",
 			HistoryClearCommand:    "/clear",
 		}
-	case agent.AgentTypeCursor, agent.AgentTypeWindsurf, agent.AgentTypeAider, agent.AgentTypeOpencode, agent.AgentTypeOllama:
+	case agent.AgentTypeGrok, agent.AgentTypeCursor, agent.AgentTypeWindsurf, agent.AgentTypeAider, agent.AgentTypeOpencode, agent.AgentTypeOllama:
 		// These IDE-based agents typically manage their own context or don't support explicit compaction commands yet
 		return AgentCapabilities{
 			SupportsBuiltinCompact: false,

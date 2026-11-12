@@ -84,6 +84,11 @@ func TestBuiltinRecipes(t *testing.T) {
 		if err := r.Validate(); err != nil {
 			t.Errorf("builtin recipe %q is invalid: %v", r.Name, err)
 		}
+		for _, spec := range r.Agents {
+			if spec.Type == "gmi" || spec.Type == "gemini" {
+				t.Errorf("builtin recipe %q still allocates panes to legacy %q; expected supported harnesses (cc, cod, agy)", r.Name, spec.Type)
+			}
+		}
 	}
 }
 

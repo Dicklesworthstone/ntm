@@ -291,3 +291,52 @@ func randomKey(t *testing.T) []byte {
 	}
 	return key
 }
+
+func TestEncryptDecryptArtifactRoundTripTamperAndRotation(t *testing.T) {
+	t.Parallel()
+
+	oldKey := randomKey(t)
+	newKey := randomKey(t)
+	plaintext := []byte("diff --git a/secret.go b/secret.go\n+API_TOKEN=sk-live-super-secret\n")
+
+	if IsEncryptedArtifact(plaintext) {
+		t.Fatal("plaintext should not be classified as encrypted artifact")
+	}
+
+	envelope, err := EncryptArtifact(oldKey, plaintext)
+	if err != nil {
+		t.Fatalf("EncryptArtifact: %v", err)
+	}
+	if !IsEncryptedArtifact(envelope) {
+		t.Fatal("EncryptArtifact output must carry ArtifactEnvelopeMagic")
+	}
+	if bytes.Contains(envelope, []byte("sk-live-super-secret")) {
+		t.Fatal("ciphertext envelope leaked plaintext secret")
+	}
+
+	// Key rotation: newKey first, oldKey second in keyring.
+	got, err := DecryptArtifactWithKeyring([][]byte{newKey, oldKey}, envelope)
+	if err != nil {
+		t.Fatalf("DecryptArtifactWithKeyring rotated: %v", err)
+	}
+	if !bytes.Equal(got, plaintext) {
+		t.Fatalf("decrypted = %q, want %q", got, plaintext)
+	}
+
+	// Missing keys refuses with ErrInvalidKey.
+	if _, err := DecryptArtifactWithKeyring(nil, envelope); !IsKind(err, ErrInvalidKey) {
+		t.Fatalf("DecryptArtifactWithKeyring(nil) = %v, want ErrInvalidKey", err)
+	}
+
+	// Wrong key refuses with ErrWrongKey.
+	if _, err := DecryptArtifactWithKeyring([][]byte{newKey}, envelope); !IsWrongKey(err) {
+		t.Fatalf("DecryptArtifactWithKeyring(wrongKey) = %v, want ErrWrongKey", err)
+	}
+
+	// Tampered ciphertext refuses authentication.
+	tampered := append([]byte(nil), envelope...)
+	tampered[len(tampered)-1] ^= 0xff
+	if _, err := DecryptArtifactWithKeyring([][]byte{oldKey}, tampered); !IsWrongKey(err) {
+		t.Fatalf("DecryptArtifactWithKeyring(tampered) = %v, want ErrWrongKey", err)
+	}
+}

@@ -137,7 +137,7 @@ func TestSendContextDecodesIndexedEvidence(t *testing.T) {
 		t.Run(fmt.Sprint(timestamp), func(t *testing.T) {
 			workspace := t.TempDir()
 			cfg, _ := sendContextProcess(t, sendContextFixture{Global: sendContextBody(workspace, "SNIPPET_HISTORY", timestamp)})
-			search := QueryCASS(t.Context(), "authentication middleware", cfg)
+			search := queryCASSContext(t.Context(), "authentication middleware", cfg, "")
 			if !search.Success || len(search.Hits) != 1 || search.Hits[0].Content != "SNIPPET_HISTORY" {
 				t.Fatalf("snippet or response lost: %+v", search)
 			}

@@ -1,6 +1,3 @@
-//go:build ensemble_experimental
-// +build ensemble_experimental
-
 // Package robot provides machine-readable output for AI agents.
 // ensemble_spawn.go implements --robot-ensemble-spawn for creating ensembles.
 package robot
@@ -13,7 +10,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
@@ -21,18 +17,9 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
-// Availability markers consumed by the capabilities catalog so operators
-// learn up front (not at call time) whether this build can spawn ensembles.
-const (
-	ensembleSpawnAvailable         = true
-	ensembleSpawnUnavailableReason = ""
-)
-
 func init() {
-	// The experimental build's EnsembleSpawnOutput is list-shaped (Modes,
-	// Warnings); the stub build's output has no list fields, so this flag is
-	// declared here rather than in schema_pagination.go to keep both build
-	// flavors violation-free.
+	// EnsembleSpawnOutput is list-shaped (Modes, Warnings); register its bounded
+	// pagination exemption alongside the spawn payload definition.
 	MustRegisterSchemaPagination("ensemble_spawn", SchemaPaginationFlag{
 		Reason: "bounded: per-request spawn echo (one row per spawned mode)",
 	})
@@ -262,6 +249,7 @@ func GetEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) (*EnsembleS
 	if cfg == nil {
 		cfg = config.Default()
 	}
+	manager.ConfigureAgentCommands("", cfg.Agents)
 	applyEnsembleConfigOverrides(ensembleCfg, cfg.Ensemble)
 
 	if opts.NoCache {
@@ -273,6 +261,11 @@ func GetEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) (*EnsembleS
 	}
 	if opts.BudgetTotal > 0 {
 		ensembleCfg.Budget.MaxTotalTokens = opts.BudgetTotal
+		if ensembleCfg.Budget.SynthesisReserveTokens+ensembleCfg.Budget.ContextReserveTokens > opts.BudgetTotal {
+			ensembleCfg.Budget.SynthesisReserveTokens = opts.BudgetTotal / 4
+			ensembleCfg.Budget.ContextReserveTokens = opts.BudgetTotal / 8
+			ensembleCfg.Synthesis.MaxSynthesisTokens = ensembleCfg.Budget.SynthesisReserveTokens
+		}
 	}
 
 	output.Budget = resolveEnsembleSpawnBudget(ensembleCfg, registry)
@@ -336,55 +329,7 @@ func applyEnsembleSpawnDefaults(opts EnsembleSpawnOptions, cfg *config.Config) E
 }
 
 func applyEnsembleConfigOverrides(target *ensemble.EnsembleConfig, ensCfg config.EnsembleConfig) {
-	if target == nil {
-		return
-	}
-
-	if target.Synthesis.Strategy == "" && strings.TrimSpace(ensCfg.Synthesis.Strategy) != "" {
-		target.Synthesis.Strategy = ensemble.SynthesisStrategy(strings.TrimSpace(ensCfg.Synthesis.Strategy))
-	}
-	if ensCfg.Synthesis.MinConfidence > 0 {
-		target.Synthesis.MinConfidence = ensemble.Confidence(ensCfg.Synthesis.MinConfidence)
-	}
-	if ensCfg.Synthesis.MaxFindings > 0 {
-		target.Synthesis.MaxFindings = ensCfg.Synthesis.MaxFindings
-	}
-	if ensCfg.Synthesis.IncludeRawOutputs {
-		target.Synthesis.IncludeRawOutputs = true
-	}
-	if strings.TrimSpace(ensCfg.Synthesis.ConflictResolution) != "" {
-		target.Synthesis.ConflictResolution = strings.TrimSpace(ensCfg.Synthesis.ConflictResolution)
-	}
-
-	if ensCfg.Budget.Synthesis > 0 {
-		target.Budget.SynthesisReserveTokens = ensCfg.Budget.Synthesis
-	}
-	if ensCfg.Budget.ContextPack > 0 {
-		target.Budget.ContextReserveTokens = ensCfg.Budget.ContextPack
-	}
-
-	target.Cache.Enabled = ensCfg.Cache.Enabled
-	if ensCfg.Cache.TTLMinutes > 0 {
-		target.Cache.TTL = time.Duration(ensCfg.Cache.TTLMinutes) * time.Minute
-	}
-	if strings.TrimSpace(ensCfg.Cache.CacheDir) != "" {
-		target.Cache.CacheDir = config.ExpandHome(strings.TrimSpace(ensCfg.Cache.CacheDir))
-	}
-	if ensCfg.Cache.MaxEntries > 0 {
-		target.Cache.MaxEntries = ensCfg.Cache.MaxEntries
-	}
-	target.Cache.ShareAcrossModes = ensCfg.Cache.ShareAcrossModes
-	if ensCfg.Cache.CacheDir != "" || ensCfg.Cache.TTLMinutes > 0 || ensCfg.Cache.MaxEntries > 0 || !ensCfg.Cache.Enabled {
-		target.CacheOverride = true
-	}
-
-	target.EarlyStop = ensemble.EarlyStopConfig{
-		Enabled:             ensCfg.EarlyStop.Enabled,
-		MinAgentsBeforeStop: ensCfg.EarlyStop.MinAgents,
-		FindingsThreshold:   ensCfg.EarlyStop.FindingsThreshold,
-		SimilarityThreshold: ensCfg.EarlyStop.SimilarityThreshold,
-		WindowSize:          ensCfg.EarlyStop.WindowSize,
-	}
+	ensemble.ApplyTOMLConfig(target, ensCfg)
 }
 
 func resolveEnsembleSpawnBudget(cfg *ensemble.EnsembleConfig, registry *ensemble.EnsembleRegistry) EnsembleSpawnBudget {

@@ -1257,6 +1257,9 @@ type SynthesisConfig struct {
 
 	// IncludeExplanation generates detailed reasoning for each conclusion.
 	IncludeExplanation bool `json:"include_explanation,omitempty" toml:"include_explanation" yaml:"include_explanation,omitempty"`
+
+	// MaxSynthesisTokens caps token usage for synthesis prompt/output when > 0.
+	MaxSynthesisTokens int `json:"max_synthesis_tokens,omitempty" toml:"-" yaml:"max_synthesis_tokens,omitempty"`
 }
 
 // DefaultSynthesisConfig returns sensible default synthesis settings.

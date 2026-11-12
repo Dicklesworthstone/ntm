@@ -77,6 +77,14 @@ func prepareSpawnPlugins(opts SpawnOptions) (SpawnOptions, error) {
 			definitions[name] = plugin
 		}
 	}
+	if _, exists := definitions["pi"]; !exists && definitionErrors["pi"] == nil {
+		shippedPi := plugins.ShippedPiPlugin()
+		if err := agentpkg.RegisterPlugin("pi", shippedPi.Readiness.IdlePatterns, shippedPi.Readiness.WorkingPatterns, shippedPi.Readiness.ErrorPatterns); err != nil {
+			definitionErrors["pi"] = err
+		} else {
+			definitions["pi"] = shippedPi
+		}
+	}
 	var requested map[string]PluginSpawnSpec
 	if len(opts.PluginAgents) > 0 {
 		requested = make(map[string]PluginSpawnSpec, len(opts.PluginAgents))
@@ -204,7 +212,7 @@ func loadSpawnRecipe(opts SpawnOptions, cfg *config.Config) (SpawnOptions, *reci
 	if err != nil {
 		return opts, nil, fmt.Errorf("load spawn preset %q: %w", name, err)
 	}
-	expanded, err := expandSpawnRecipe(opts, selected)
+	expanded, err := expandSpawnRecipe(opts, selected, cfg)
 	if err != nil {
 		return opts, nil, err
 	}
@@ -215,7 +223,7 @@ func loadSpawnRecipe(opts SpawnOptions, cfg *config.Config) (SpawnOptions, *reci
 	return expanded, &frozen, nil
 }
 
-func expandSpawnRecipe(opts SpawnOptions, selected *recipe.Recipe) (SpawnOptions, error) {
+func expandSpawnRecipe(opts SpawnOptions, selected *recipe.Recipe, cfg *config.Config) (SpawnOptions, error) {
 	if selected == nil {
 		return opts, errors.New("spawn preset returned no recipe")
 	}
@@ -226,6 +234,7 @@ func expandSpawnRecipe(opts SpawnOptions, selected *recipe.Recipe) (SpawnOptions
 	expanded := opts
 	expanded.CCCount, expanded.CodCount, expanded.GmiCount, expanded.AgyCount = 0, 0, 0, 0
 	expanded.GrokCount, expanded.OmpCount, expanded.OcCount = 0, 0, 0
+	expanded.OllamaCount, expanded.AiderCount, expanded.CursorCount, expanded.WindsurfCount = 0, 0, 0, 0
 	expanded.PluginAgents = nil
 	total := 0
 	for i, spec := range selected.Agents {
@@ -253,6 +262,21 @@ func expandSpawnRecipe(opts SpawnOptions, selected *recipe.Recipe) (SpawnOptions
 			expanded.OmpCount += spec.Count
 		case tmux.AgentOpencode:
 			expanded.OcCount += spec.Count
+		case tmux.AgentOllama:
+			expanded.OllamaCount += spec.Count
+		case tmux.AgentAider:
+			expanded.AiderCount += spec.Count
+		case tmux.AgentCursor:
+			expanded.CursorCount += spec.Count
+		case tmux.AgentWindsurf:
+			configured := ""
+			if cfg != nil {
+				configured = cfg.Agents.Windsurf
+			}
+			if err := config.ValidateWindsurfTerminalHarness(configured); err != nil {
+				return opts, fmt.Errorf("spawn preset %q agent[%d]: %w", selected.Name, i, err)
+			}
+			expanded.WindsurfCount += spec.Count
 		default:
 			name := strings.ToLower(strings.TrimSpace(spec.Type))
 			if err := opts.pluginErrors[name]; err != nil {
@@ -322,6 +346,17 @@ func renderSpawnRecipe(opts SpawnOptions, selected *recipe.Recipe, cfg *config.C
 			kind, modelOverride, effortOverride = "omp", &perType.OmpModel, &perType.OmpReasoningEffort
 		case tmux.AgentOpencode:
 			kind, modelOverride = string(tmux.AgentOpencode), &perType.OcModel
+		case tmux.AgentOllama:
+			kind, modelOverride = "ollama", &perType.OllamaModel
+		case tmux.AgentAider:
+			kind, modelOverride = "aider", &perType.AiderModel
+		case tmux.AgentCursor:
+			kind, modelOverride = "cursor", &perType.CursorModel
+		case tmux.AgentWindsurf:
+			if err := config.ValidateWindsurfTerminalHarness(cfg.Agents.Windsurf); err != nil {
+				return nil, fmt.Errorf("spawn preset %q agent[%d]: %w", selected.Name, i, err)
+			}
+			kind, modelOverride = "windsurf", &perType.WindsurfModel
 		default:
 			return nil, fmt.Errorf("spawn preset %q agent[%d]: unsupported robot agent type %q", selected.Name, i, spec.Type)
 		}

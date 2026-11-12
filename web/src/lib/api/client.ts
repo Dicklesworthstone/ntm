@@ -121,6 +121,50 @@ export function clearConnectionConfig(): void {
   localStorage.removeItem(CONNECTION_KEY);
 }
 
+export interface ApiEnvelope {
+  success?: boolean;
+  timestamp?: string;
+  request_id?: string;
+  error?: string;
+  error_code?: string;
+  message?: string;
+}
+
+/**
+ * Browser navigation adapter used for 401 redirects so tests can observe or
+ * stub navigation cleanly without JSDOM Location descriptor issues.
+ */
+export const browserNavigation = {
+  getPathname(): string {
+    if (typeof window === "undefined") return "";
+    return window.location?.pathname ?? "";
+  },
+  redirect(path: string): void {
+    if (typeof window === "undefined") return;
+    if (typeof window.location?.assign === "function") {
+      window.location.assign(path);
+    } else if (window.location) {
+      window.location.href = path;
+    }
+  },
+};
+
+/**
+ * Redirect cleanly to /connect when a 401 Unauthorized response is received in
+ * the browser, unless already on /connect (preventing infinite reload loops).
+ */
+export function handleUnauthorizedRedirect(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  const pathname = browserNavigation.getPathname();
+  if (pathname.startsWith("/connect")) {
+    return false;
+  }
+  browserNavigation.redirect("/connect");
+  return true;
+}
+
 /**
  * Create the NTM API client with current connection config.
  */
@@ -132,7 +176,72 @@ export function createNtmClient() {
     headers: Object.keys(authHeaders).length > 0 ? authHeaders : undefined,
   });
 
+  client.use({
+    async onResponse({ response }) {
+      if (response.status === 401) {
+        handleUnauthorizedRedirect();
+      }
+      return response;
+    },
+  });
+
   return client;
+}
+
+/**
+ * Shared JSON envelope fetch helper with Bearer auth, timeout signal, and
+ * loop-safe /connect redirect on 401 Unauthorized.
+ */
+export async function apiFetch<T>(
+  path: string,
+  options: RequestInit = {}
+): Promise<T> {
+  const baseUrl = getBaseUrl();
+  const headers: HeadersInit = {
+    "Content-Type": "application/json",
+    ...getAuthHeaders(),
+    ...(options.headers || {}),
+  };
+
+  const response = await fetch(`${baseUrl}${path}`, {
+    ...options,
+    signal: options.signal ?? apiRequestSignal(),
+    headers,
+  });
+
+  if (response.status === 401) {
+    handleUnauthorizedRedirect();
+  }
+
+  const raw = await response.text();
+  let data: unknown = null;
+  if (raw) {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      throw new ApiError(
+        response.status,
+        "INVALID_JSON",
+        "Invalid response from server."
+      );
+    }
+  }
+
+  const envelope = data as ApiEnvelope | null;
+  if (!response.ok || !envelope || envelope.success === false) {
+    const message =
+      envelope?.error ||
+      envelope?.message ||
+      `Request failed (${response.status})`;
+    throw new ApiError(
+      response.status,
+      envelope?.error_code || `HTTP_${response.status}`,
+      message,
+      data
+    );
+  }
+
+  return data as T;
 }
 
 /**
@@ -172,6 +281,64 @@ export class ApiError extends Error {
     super(message);
     this.name = "ApiError";
   }
+}
+
+const KERNEL_PATH_PARAM_REGEX = /\{([a-zA-Z0-9_]+)\}/g;
+
+/**
+ * Extract unique `{param}` placeholder names from a kernel REST path template
+ * in order of appearance (e.g. `/sessions/{sessionId}/panes/{paneIdx}` ->
+ * `["sessionId", "paneIdx"]`).
+ */
+export function extractKernelPathParams(pathTemplate: string): string[] {
+  if (!pathTemplate) return [];
+  const seen = new Set<string>();
+  const params: string[] = [];
+  for (const match of pathTemplate.matchAll(KERNEL_PATH_PARAM_REGEX)) {
+    const name = match[1];
+    if (name && !seen.has(name)) {
+      seen.add(name);
+      params.push(name);
+    }
+  }
+  return params;
+}
+
+/**
+ * Normalize a kernel `RESTBinding.Path` into a full `/api/...` request path and
+ * substitute `{param}` segments using `encodeURIComponent`.
+ *
+ * Kernel command paths are registered relative to `/api/v1` (e.g. `/sessions`,
+ * `/deps`, `/sessions/{sessionId}/events`), while paths already starting with
+ * `/api/` (e.g. `/api/v1/sessions`, `/api/kernel/commands`) are preserved.
+ */
+export function resolveKernelRESTPath(
+  rawPath: string,
+  params: Record<string, string> = {}
+): string {
+  const trimmed = rawPath.trim();
+  if (!trimmed) {
+    throw new Error("Command REST path is empty.");
+  }
+
+  const withLeadingSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  const normalizedTemplate =
+    withLeadingSlash === "/api" || withLeadingSlash.startsWith("/api/")
+      ? withLeadingSlash
+      : withLeadingSlash === "/"
+        ? "/api/v1"
+        : `/api/v1${withLeadingSlash}`;
+
+  return normalizedTemplate.replace(
+    KERNEL_PATH_PARAM_REGEX,
+    (_placeholder, paramName: string) => {
+      const value = params[paramName];
+      if (value === undefined || value === null || value.trim() === "") {
+        throw new Error(`Missing required parameter: ${paramName}`);
+      }
+      return encodeURIComponent(value.trim());
+    }
+  );
 }
 
 /**

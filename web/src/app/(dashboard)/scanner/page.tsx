@@ -2,7 +2,12 @@
 
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { apiRequestSignal, getAuthHeaders, getBaseUrl } from '@/lib/api/client';
+import {
+  apiRequestSignal,
+  getAuthHeaders,
+  getBaseUrl,
+  handleUnauthorizedRedirect,
+} from '@/lib/api/client';
 
 // Types based on scanner.go REST API
 interface ScanOptions {
@@ -97,6 +102,10 @@ async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
       ...options?.headers,
     },
   });
+
+  if (res.status === 401) {
+    handleUnauthorizedRedirect();
+  }
 
   const raw = await res.text();
   let data: unknown = null;
@@ -317,7 +326,10 @@ export default function ScannerPage() {
     error: findingsError,
   } = useQuery({
     queryKey: ['scanner', 'findings', severityFilter, showDismissed],
-    queryFn: () => fetchJSON<{ findings: FindingRecord[]; count: number }>(`/api/v1/scanner/findings?severity=${severityFilter}&include_dismissed=${showDismissed}&limit=100`),
+    queryFn: () =>
+      fetchJSON<{ findings: FindingRecord[]; count: number }>(
+        `/api/v1/scanner/findings?severity=${encodeURIComponent(severityFilter)}&include_dismissed=${encodeURIComponent(String(showDismissed))}&limit=100`
+      ),
     refetchInterval: 10000,
   });
 
@@ -344,9 +356,10 @@ export default function ScannerPage() {
 
   // Dismiss finding mutation
   const dismissMutation = useMutation({
-    mutationFn: (findingId: string) => fetchJSON(`/api/v1/scanner/findings/${findingId}/dismiss`, {
-      method: 'POST',
-    }),
+    mutationFn: (findingId: string) =>
+      fetchJSON(`/api/v1/scanner/findings/${encodeURIComponent(findingId)}/dismiss`, {
+        method: 'POST',
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['scanner', 'findings'] });
       queryClient.invalidateQueries({ queryKey: ['bugs', 'summary'] });
@@ -358,9 +371,13 @@ export default function ScannerPage() {
 
   // Create bead mutation
   const createBeadMutation = useMutation({
-    mutationFn: (findingId: string) => fetchJSON<{ bead_id: string }>(`/api/v1/scanner/findings/${findingId}/create-bead`, {
-      method: 'POST',
-    }),
+    mutationFn: (findingId: string) =>
+      fetchJSON<{ bead_id: string }>(
+        `/api/v1/scanner/findings/${encodeURIComponent(findingId)}/create-bead`,
+        {
+          method: 'POST',
+        }
+      ),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['scanner', 'findings'] });
       queryClient.invalidateQueries({ queryKey: ['bugs', 'summary'] });

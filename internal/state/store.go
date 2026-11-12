@@ -655,9 +655,9 @@ func (s *Store) CreateApproval(appr *Approval) error {
 	defer s.mu.Unlock()
 
 	_, err := s.db.Exec(`
-		INSERT INTO approvals (id, action, resource, reason, requested_by, correlation_id, requires_slb, created_at, expires_at, status)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		appr.ID, appr.Action, appr.Resource, appr.Reason, appr.RequestedBy, appr.CorrelationID, appr.RequiresSLB, appr.CreatedAt, appr.ExpiresAt, appr.Status,
+		INSERT INTO approvals (id, action, resource, reason, requested_by, requested_provenance, correlation_id, requires_slb, created_at, expires_at, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		appr.ID, appr.Action, appr.Resource, appr.Reason, appr.RequestedBy, appr.RequestedProvenance, appr.CorrelationID, appr.RequiresSLB, appr.CreatedAt, appr.ExpiresAt, appr.Status,
 	)
 	if err != nil {
 		return fmt.Errorf("create approval: %w", err)
@@ -672,9 +672,9 @@ func (s *Store) GetApproval(id string) (*Approval, error) {
 
 	appr := &Approval{}
 	err := s.db.QueryRow(`
-		SELECT id, action, resource, COALESCE(reason, ''), requested_by, COALESCE(correlation_id, ''), requires_slb, created_at, expires_at, status, COALESCE(approved_by, ''), approved_at, COALESCE(denied_reason, '')
+		SELECT id, action, resource, COALESCE(reason, ''), requested_by, COALESCE(requested_provenance, ''), COALESCE(correlation_id, ''), requires_slb, created_at, expires_at, status, COALESCE(approved_by, ''), COALESCE(approved_provenance, ''), approved_at, COALESCE(denied_reason, '')
 		FROM approvals WHERE id = ?`, id,
-	).Scan(&appr.ID, &appr.Action, &appr.Resource, &appr.Reason, &appr.RequestedBy, &appr.CorrelationID, &appr.RequiresSLB, &appr.CreatedAt, &appr.ExpiresAt, &appr.Status, &appr.ApprovedBy, &appr.ApprovedAt, &appr.DeniedReason)
+	).Scan(&appr.ID, &appr.Action, &appr.Resource, &appr.Reason, &appr.RequestedBy, &appr.RequestedProvenance, &appr.CorrelationID, &appr.RequiresSLB, &appr.CreatedAt, &appr.ExpiresAt, &appr.Status, &appr.ApprovedBy, &appr.ApprovedProvenance, &appr.ApprovedAt, &appr.DeniedReason)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -723,9 +723,9 @@ func (s *Store) UpdateApprovalFrom(appr *Approval, from ApprovalStatus) (bool, e
 	defer s.mu.Unlock()
 
 	result, err := s.db.Exec(`
-		UPDATE approvals SET status = ?, approved_by = ?, approved_at = ?, denied_reason = ?
+		UPDATE approvals SET status = ?, approved_by = ?, approved_provenance = ?, approved_at = ?, denied_reason = ?
 		WHERE id = ? AND status = ?`,
-		appr.Status, appr.ApprovedBy, appr.ApprovedAt, appr.DeniedReason, appr.ID, from,
+		appr.Status, appr.ApprovedBy, appr.ApprovedProvenance, appr.ApprovedAt, appr.DeniedReason, appr.ID, from,
 	)
 	if err != nil {
 		return false, fmt.Errorf("update approval: %w", err)
@@ -743,9 +743,9 @@ func (s *Store) UpdateApproval(appr *Approval) error {
 	defer s.mu.Unlock()
 
 	result, err := s.db.Exec(`
-		UPDATE approvals SET status = ?, approved_by = ?, approved_at = ?, denied_reason = ?
+		UPDATE approvals SET status = ?, approved_by = ?, approved_provenance = ?, approved_at = ?, denied_reason = ?
 		WHERE id = ?`,
-		appr.Status, appr.ApprovedBy, appr.ApprovedAt, appr.DeniedReason, appr.ID,
+		appr.Status, appr.ApprovedBy, appr.ApprovedProvenance, appr.ApprovedAt, appr.DeniedReason, appr.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update approval: %w", err)
@@ -767,7 +767,7 @@ func (s *Store) ListPendingApprovals() ([]Approval, error) {
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(`
-		SELECT id, action, resource, COALESCE(reason, ''), requested_by, COALESCE(correlation_id, ''), requires_slb, created_at, expires_at, status, COALESCE(approved_by, ''), approved_at, COALESCE(denied_reason, '')
+		SELECT id, action, resource, COALESCE(reason, ''), requested_by, COALESCE(requested_provenance, ''), COALESCE(correlation_id, ''), requires_slb, created_at, expires_at, status, COALESCE(approved_by, ''), COALESCE(approved_provenance, ''), approved_at, COALESCE(denied_reason, '')
 		FROM approvals WHERE status = 'pending' AND expires_at > ?
 		ORDER BY created_at`, time.Now().UTC())
 
@@ -779,7 +779,7 @@ func (s *Store) ListPendingApprovals() ([]Approval, error) {
 	var approvals []Approval
 	for rows.Next() {
 		var appr Approval
-		if err := rows.Scan(&appr.ID, &appr.Action, &appr.Resource, &appr.Reason, &appr.RequestedBy, &appr.CorrelationID, &appr.RequiresSLB, &appr.CreatedAt, &appr.ExpiresAt, &appr.Status, &appr.ApprovedBy, &appr.ApprovedAt, &appr.DeniedReason); err != nil {
+		if err := rows.Scan(&appr.ID, &appr.Action, &appr.Resource, &appr.Reason, &appr.RequestedBy, &appr.RequestedProvenance, &appr.CorrelationID, &appr.RequiresSLB, &appr.CreatedAt, &appr.ExpiresAt, &appr.Status, &appr.ApprovedBy, &appr.ApprovedProvenance, &appr.ApprovedAt, &appr.DeniedReason); err != nil {
 			return nil, fmt.Errorf("scan approval: %w", err)
 		}
 		approvals = append(approvals, appr)
@@ -797,7 +797,7 @@ func (s *Store) ListApprovalHistory() ([]Approval, error) {
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(`
-		SELECT id, action, resource, COALESCE(reason, ''), requested_by, COALESCE(correlation_id, ''), requires_slb, created_at, expires_at, status, COALESCE(approved_by, ''), approved_at, COALESCE(denied_reason, '')
+		SELECT id, action, resource, COALESCE(reason, ''), requested_by, COALESCE(requested_provenance, ''), COALESCE(correlation_id, ''), requires_slb, created_at, expires_at, status, COALESCE(approved_by, ''), COALESCE(approved_provenance, ''), approved_at, COALESCE(denied_reason, '')
 		FROM approvals
 		ORDER BY created_at DESC, id DESC`)
 	if err != nil {
@@ -808,7 +808,7 @@ func (s *Store) ListApprovalHistory() ([]Approval, error) {
 	var approvals []Approval
 	for rows.Next() {
 		var appr Approval
-		if err := rows.Scan(&appr.ID, &appr.Action, &appr.Resource, &appr.Reason, &appr.RequestedBy, &appr.CorrelationID, &appr.RequiresSLB, &appr.CreatedAt, &appr.ExpiresAt, &appr.Status, &appr.ApprovedBy, &appr.ApprovedAt, &appr.DeniedReason); err != nil {
+		if err := rows.Scan(&appr.ID, &appr.Action, &appr.Resource, &appr.Reason, &appr.RequestedBy, &appr.RequestedProvenance, &appr.CorrelationID, &appr.RequiresSLB, &appr.CreatedAt, &appr.ExpiresAt, &appr.Status, &appr.ApprovedBy, &appr.ApprovedProvenance, &appr.ApprovedAt, &appr.DeniedReason); err != nil {
 			return nil, fmt.Errorf("scan approval: %w", err)
 		}
 		approvals = append(approvals, appr)
@@ -822,7 +822,7 @@ func (s *Store) ListExpiredPendingApprovals() ([]Approval, error) {
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(`
-		SELECT id, action, resource, COALESCE(reason, ''), requested_by, COALESCE(correlation_id, ''), requires_slb, created_at, expires_at, status, COALESCE(approved_by, ''), approved_at, COALESCE(denied_reason, '')
+		SELECT id, action, resource, COALESCE(reason, ''), requested_by, COALESCE(requested_provenance, ''), COALESCE(correlation_id, ''), requires_slb, created_at, expires_at, status, COALESCE(approved_by, ''), COALESCE(approved_provenance, ''), approved_at, COALESCE(denied_reason, '')
 		FROM approvals WHERE status = 'pending' AND expires_at <= ?
 		ORDER BY created_at`, time.Now().UTC())
 
@@ -834,7 +834,7 @@ func (s *Store) ListExpiredPendingApprovals() ([]Approval, error) {
 	var approvals []Approval
 	for rows.Next() {
 		var appr Approval
-		if err := rows.Scan(&appr.ID, &appr.Action, &appr.Resource, &appr.Reason, &appr.RequestedBy, &appr.CorrelationID, &appr.RequiresSLB, &appr.CreatedAt, &appr.ExpiresAt, &appr.Status, &appr.ApprovedBy, &appr.ApprovedAt, &appr.DeniedReason); err != nil {
+		if err := rows.Scan(&appr.ID, &appr.Action, &appr.Resource, &appr.Reason, &appr.RequestedBy, &appr.RequestedProvenance, &appr.CorrelationID, &appr.RequiresSLB, &appr.CreatedAt, &appr.ExpiresAt, &appr.Status, &appr.ApprovedBy, &appr.ApprovedProvenance, &appr.ApprovedAt, &appr.DeniedReason); err != nil {
 			return nil, fmt.Errorf("scan approval: %w", err)
 		}
 		approvals = append(approvals, appr)

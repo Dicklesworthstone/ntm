@@ -1,5 +1,8 @@
-# Binaries (only at root, not cmd/ntm/)
+# Binaries (root, cmd/*, and root test helpers)
 /ntm
+/cmd/ntm/ntm
+/cmd/*/ntm
+/fakeshell
 *.exe
 dist/
 # ...except the committed web-UI embed source (go:embed all:dist in internal/webui)

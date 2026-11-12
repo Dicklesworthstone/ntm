@@ -58,7 +58,7 @@ func newSelectorSurfaceSession(t *testing.T) selectorSurfaceSession {
 		if _, err := tmux.DefaultClient.Run("respawn-pane", "-k", "-t", pane.ID, "sh", "-c", script); err != nil {
 			t.Fatalf("respawn %s: %v", pane.ID, err)
 		}
-		if err := tmux.DefaultClient.SetPaneAgentType(pane.ID, tmux.AgentClaude); err != nil {
+		if err := tmux.DefaultClient.SetPaneAgentTypeContext(t.Context(), pane.ID, tmux.AgentClaude); err != nil {
 			t.Fatalf("record agent type on %s: %v", pane.ID, err)
 		}
 	}

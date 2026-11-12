@@ -301,7 +301,7 @@ func TestLaunchEnvironmentPrivateTransport(t *testing.T) {
 	if _, err := os.Stat(launch.directory); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("consumed environment handoff was not removed")
 	}
-	if err := launch.Send(ctx, "%7", "true", true, AgentCodex); err == nil {
+	if err := launch.SendIfCurrent(ctx, "%7", "true", true, AgentCodex, 1); err == nil {
 		t.Fatal("one-shot environment handoff was reused")
 	}
 	if err := launch.Close(); err != nil {
@@ -432,9 +432,12 @@ func TestLaunchEnvironmentPreflightAndUnusedCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = launch.Close() })
+	if formatted := fmt.Sprintf("%s / %#v", launch, launch); formatted != "LaunchEnvironment{redacted} / LaunchEnvironment{redacted}" || strings.Contains(formatted, "secret-marker") {
+		t.Fatalf("LaunchEnvironment formatting leaked or drifted: %q", formatted)
+	}
 	called := false
 	send := func(context.Context, string, string, bool, AgentType) error { called = true; return nil }
-	if err := launch.Send(t.Context(), "%7", "true", false, AgentCodex); err == nil {
+	if err := launch.SendIfCurrent(t.Context(), "%7", "true", false, AgentCodex, 1); err == nil {
 		t.Fatal("deferred Enter could leave a blocked recovery reader")
 	}
 	if err := launch.send(t.Context(), "session:0.0", "true", AgentCodex, send); err == nil {

@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 )
 
@@ -293,5 +295,157 @@ func TestRenderMarkdownFromSnapshotRendersLegacyAlerts(t *testing.T) {
 	}
 	if strings.Contains(rendered, "failed to list active incidents") {
 		t.Fatalf("markdown rendered legacy alert beyond MaxAlerts:\n%s", rendered)
+	}
+}
+
+func TestValidMarkdownSectionsIncludesBeads(t *testing.T) {
+	sections := ValidMarkdownSections()
+	want := []string{"summary", "sessions", "work", "alerts", "attention", "beads"}
+	if strings.Join(sections, ",") != strings.Join(want, ",") {
+		t.Fatalf("ValidMarkdownSections() = %v, want %v", sections, want)
+	}
+
+	defaults, err := resolveMarkdownSections(nil)
+	if err != nil {
+		t.Fatalf("resolveMarkdownSections(nil) error: %v", err)
+	}
+	if containsMarkdownSection(defaults, "beads") {
+		t.Fatalf("default markdown sections unexpectedly include beads: %v", defaults)
+	}
+
+	explicit, err := resolveMarkdownSections([]string{"beads", "sessions"})
+	if err != nil {
+		t.Fatalf("resolveMarkdownSections([beads sessions]) error: %v", err)
+	}
+	if strings.Join(explicit, ",") != "sessions,beads" {
+		t.Fatalf("resolveMarkdownSections([beads sessions]) = %v, want [sessions beads]", explicit)
+	}
+}
+
+func TestRenderMarkdownFromSnapshotSessionsAndBeads(t *testing.T) {
+	updatedAt := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
+	snapshot := &SnapshotOutput{
+		Timestamp: "2026-02-03T04:05:06Z",
+		Sessions: []SnapshotSession{
+			{
+				Name:     "proj",
+				Attached: true,
+				Agents: []SnapshotAgent{
+					{Type: "claude", State: "working"},
+				},
+			},
+		},
+		BeadsSummary: &bv.BeadsSummary{
+			Available:  true,
+			Total:      12,
+			Open:       7,
+			InProgress: 2,
+			Blocked:    1,
+			Ready:      4,
+			Closed:     5,
+			ReadyPreview: []bv.BeadPreview{
+				{ID: "bd-101", Priority: "P1", Title: "Wire beads markdown section"},
+				{ID: "bd-102", Priority: "P2", Title: "Extend docs conformance"},
+			},
+			InProgressList: []bv.BeadInProgress{
+				{ID: "bd-201", Assignee: "agent-a", Title: "Upgrade config liveness", UpdatedAt: updatedAt},
+				{ID: "bd-202", Assignee: "agent-b", Title: "Audit allowlists", UpdatedAt: updatedAt},
+			},
+		},
+	}
+
+	rendered, err := renderMarkdownFromSnapshot(snapshot, MarkdownOptions{
+		IncludeSections: []string{"sessions", "beads"},
+		MaxBeads:        1,
+	})
+	if err != nil {
+		t.Fatalf("renderMarkdownFromSnapshot error: %v", err)
+	}
+	for _, needle := range []string{
+		"### Sessions (1)",
+		"### Beads",
+		"| Total | Open | In Progress | Blocked | Ready | Closed |",
+		"| 12 | 7 | 2 | 1 | 4 | 5 |",
+		"| bd-101 | P1 | Wire beads markdown section |",
+		"_Truncated: showing 1 of 4 ready beads._",
+		"| bd-201 | agent-a | Upgrade config liveness | 2026-02-03T04:05:06Z |",
+		"_Truncated: showing 1 of 2 in-progress beads._",
+	} {
+		if !strings.Contains(rendered, needle) {
+			t.Fatalf("rendered markdown missing %q:\n%s", needle, rendered)
+		}
+	}
+	if strings.Contains(rendered, "bd-102") || strings.Contains(rendered, "bd-202") {
+		t.Fatalf("rendered markdown exceeded MaxBeads=1:\n%s", rendered)
+	}
+
+	compact, err := renderMarkdownFromSnapshot(snapshot, MarkdownOptions{
+		IncludeSections: []string{"beads"},
+		MaxBeads:        1,
+		Compact:         true,
+	})
+	if err != nil {
+		t.Fatalf("compact renderMarkdownFromSnapshot error: %v", err)
+	}
+	for _, needle := range []string{
+		"### Beads (total:12 open:7 ready:4 in_progress:2 blocked:1 closed:5)",
+		"- **Ready**: bd-101 (P1)",
+		"- **In Progress**: bd-201→agent-a",
+	} {
+		if !strings.Contains(compact, needle) {
+			t.Fatalf("compact markdown missing %q:\n%s", needle, compact)
+		}
+	}
+}
+
+func TestRenderMarkdownFromSnapshotBeadsUnavailable(t *testing.T) {
+	snapshot := &SnapshotOutput{
+		BeadsSummary: &bv.BeadsSummary{
+			Available: false,
+			Reason:    "br not installed",
+		},
+	}
+	rendered, err := renderMarkdownFromSnapshot(snapshot, MarkdownOptions{
+		IncludeSections: []string{"beads"},
+	})
+	if err != nil {
+		t.Fatalf("renderMarkdownFromSnapshot error: %v", err)
+	}
+	if !strings.Contains(rendered, "_Beads summary unavailable: br not installed._") {
+		t.Fatalf("expected unavailable reason in markdown:\n%s", rendered)
+	}
+
+	compact, err := renderMarkdownFromSnapshot(snapshot, MarkdownOptions{
+		IncludeSections: []string{"beads"},
+		Compact:         true,
+	})
+	if err != nil {
+		t.Fatalf("compact renderMarkdownFromSnapshot error: %v", err)
+	}
+	if !strings.Contains(compact, "### Beads: unavailable") {
+		t.Fatalf("expected compact unavailable marker:\n%s", compact)
+	}
+
+	// Also exercise live fallback to bv.GetBeadsSummary("", limit) when br/bv are absent from PATH.
+	emptyBin := t.TempDir()
+	emptyWorkDir := t.TempDir()
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+	if err := os.Chdir(emptyWorkDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", emptyBin)
+
+	fallbackOut, err := renderMarkdownFromSnapshot(&SnapshotOutput{}, MarkdownOptions{
+		IncludeSections: []string{"beads"},
+	})
+	if err != nil {
+		t.Fatalf("fallback renderMarkdownFromSnapshot error: %v", err)
+	}
+	if !strings.Contains(fallbackOut, "### Beads") || !strings.Contains(fallbackOut, "unavailable") {
+		t.Fatalf("expected graceful unavailable fallback when br/bv missing:\n%s", fallbackOut)
 	}
 }

@@ -288,3 +288,58 @@ func TestDecodeKey_Empty(t *testing.T) {
 		t.Error("expected error for empty key")
 	}
 }
+
+func TestResolveKey_OSKeyringAndHeadlessFallback(t *testing.T) {
+	keyBytes := make([]byte, KeySize)
+	for i := range keyBytes {
+		keyBytes[i] = byte(i + 77)
+	}
+	hexKey := hex.EncodeToString(keyBytes)
+
+	prev := osKeyringLookupFunc
+	t.Cleanup(func() { osKeyringLookupFunc = prev })
+
+	// 1. OS keyring succeeds directly.
+	osKeyringLookupFunc = func(service, account string) (string, error) {
+		if service != DefaultKeyringService || account != "k-prod" {
+			t.Fatalf("unexpected lookup (%q, %q)", service, account)
+		}
+		return hexKey, nil
+	}
+	got, err := ResolveKey(KeyConfig{
+		KeySource:   "keyring",
+		ActiveKeyID: "k-prod",
+		KeyFormat:   "hex",
+	})
+	if err != nil {
+		t.Fatalf("ResolveKey(keyring) error: %v", err)
+	}
+	if !bytes.Equal(got, keyBytes) {
+		t.Fatalf("keyring key mismatch")
+	}
+
+	// 2. Headless fallback to KeyFile when OS keyring daemon is unavailable.
+	osKeyringLookupFunc = func(service, account string) (string, error) {
+		return "", os.ErrNotExist
+	}
+	keyFile := filepath.Join(t.TempDir(), "fallback.key")
+	if err := os.WriteFile(keyFile, []byte(hexKey+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fallbackKey, err := ResolveKey(KeyConfig{
+		KeySource: "keyring",
+		KeyFile:   keyFile,
+		KeyFormat: "hex",
+	})
+	if err != nil {
+		t.Fatalf("ResolveKey(keyring -> file fallback) error: %v", err)
+	}
+	if !bytes.Equal(fallbackKey, keyBytes) {
+		t.Fatalf("fallback key mismatch")
+	}
+
+	// 3. Fails closed when both OS keyring and fallbacks are unavailable.
+	if _, err := ResolveKey(KeyConfig{KeySource: "keyring", KeyFormat: "hex"}); err == nil {
+		t.Fatal("expected fail-closed error when OS keyring and fallbacks are empty")
+	}
+}

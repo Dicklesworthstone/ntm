@@ -2652,9 +2652,15 @@ Shell Integration:
 				paneFilter = strings.Split(robotPanes, ",")
 			}
 			opts := robot.LifecycleOptions{
-				Session:  session,
-				Panes:    paneFilter,
-				Relaunch: robotLifecycleRelaunch,
+				Session:        session,
+				Panes:          paneFilter,
+				Relaunch:       robotLifecycleRelaunch,
+				RespawnShell:   robotExitCLIRespawnShell,
+				AllowPaneClose: robotExitCLIAllowPaneClose,
+			}
+			if verb == "kill-agent" && (robotExitCLIRespawnShell || robotExitCLIAllowPaneClose) {
+				failRobotCommand(fmt.Errorf("--respawn-shell and --allow-pane-close apply only to --robot-exit-cli"), robot.ErrCodeInvalidFlag, "Use --robot-exit-cli=SESSION with --respawn-shell or --allow-pane-close", flagName)
+				return
 			}
 			if verb == "exit-cli" {
 				err = robot.PrintExitCLI(cmd.Context(), opts)
@@ -3247,6 +3253,21 @@ Shell Integration:
 			}
 			return
 		}
+		if robotPolicyDecisions {
+			limit := 0
+			if cmd.Flags().Changed("limit") {
+				limit = cassLimit
+			}
+			opts := robot.PolicyDecisionsOptions{
+				EntityType: robotPolicyEntityType,
+				EntityID:   robotPolicyEntityID,
+				Limit:      limit,
+			}
+			if err := robot.PrintPolicyDecisions(opts); err != nil {
+				recordRobotProcessExit(err)
+			}
+			return
+		}
 
 		// Robot-quota-status handler for caut quota status
 		if robotQuotaStatus {
@@ -3582,7 +3603,9 @@ var robotSurfacesWithoutProjection = map[string]bool{
 	"robot-proxy-status": true, "robot-quota-status": true, "robot-quota-check": true,
 	"robot-account-status": true, "robot-accounts-list": true, "robot-switch-account": true,
 	"robot-ru-sync": true, "robot-dcg-status": true, "robot-dcg-check": true, "robot-guard": true,
+	"robot-safety-simulate": true, "robot-policy-decisions": true,
 	"robot-mail": true, "robot-mail-check": true, "robot-rano-stats": true, "robot-giil-fetch": true,
+	"robot-exit-cli": true, "robot-kill-agent": true, "robot-kill-pane": true, "robot-restart-pane": true, "robot-smart-restart": true,
 }
 
 func initializeRobotPersistence(ctx context.Context, refreshProjection bool) error {
@@ -4126,6 +4149,10 @@ var (
 	robotSpawnGrok       string             // Grok Build agents: count[:model[:effort]]
 	robotSpawnOmp        string             // Oh My Pi (omp) agents: count[:model[:effort]]
 	robotSpawnOc         string             // OpenCode (oc) agents: count[:model]
+	robotSpawnOllama     string             // Ollama local agents: count[:model]
+	robotSpawnAider      string             // Aider agents: count[:model]
+	robotSpawnCursor     string             // Cursor Agent CLI agents: count[:model]
+	robotSpawnWindsurf   string             // Windsurf agents: count[:model] (IDE_ONLY_HARNESS unless [agents] windsurf is overridden)
 	robotSpawnPlugins    map[string]*string // Canonical registered plugin -> dynamic flag value
 	robotSpawnPreset     string             // recipe/preset name
 	robotSpawnNoUser     bool               // don't create user pane
@@ -4298,41 +4325,43 @@ var (
 	robotSharedSession     string // shared --session flag: canonical form for the deprecated *-session prefixed flags (ntm#214)
 
 	// TUI Parity robot flags - expose TUI dashboard functionality to AI agents
-	robotFiles             string // session name for file changes query
-	robotFilesWindow       string // time window: 5m, 15m, 1h, all (default: 15m)
-	robotFilesLimit        int    // max changes to return
-	robotInspectWork       string // bead id for projection-backed work inspection
-	robotInspectCoord      string // agent mail identity for projection-backed coordination inspection
-	robotInspectQuota      string // provider/account for projection-backed quota inspection
-	robotInspectIncident   string // incident id for store-backed incident inspection
-	robotIncidentResolve   string // incident id to mark resolved (write verb for the incident lifecycle)
-	robotExitCLI           string // session for graceful agent-CLI exit without destroying the pane
-	robotKillAgent         string // session for hard agent-process kill preserving the pane shell
-	robotLifecycleRelaunch bool   // relaunch the agent CLI after --robot-exit-cli/--robot-kill-agent
-	robotKillPane          string // session for per-pane removal (session and siblings survive)
-	robotDialogs           string // session for per-pane dialog classification
-	robotAnswerDialog      string // session for policy-gated dialog answering
-	robotDialogChoice      string // choice for --robot-answer-dialog
-	robotIncidentNote      string // optional resolution note recorded with --robot-incident-resolve
-	robotInspectSession    string // session name for projection-backed session inspection
-	robotInspectAgent      string // runtime agent id for projection-backed agent inspection
-	robotInspectPane       string // session name for pane inspection
-	robotInspectIndex      int    // pane index to inspect
-	robotInspectLines      int    // lines to capture for inspection
-	robotInspectCode       bool   // parse code blocks in output
-	robotMetrics           string // session name for metrics
-	robotMetricsPeriod     string // period: 1h, 24h, 7d, all
-	robotDiskAttribution   bool   // include per-pane build-dir disk attribution in metrics
-	robotReplay            string // session name for replay
-	robotReplayID          string // history entry ID to replay
-	robotReplayDryRun      bool   // just show what would be replayed
-	robotPaletteInfo       bool   // query palette information
-	robotPaletteSession    string // filter to session
-	robotPaletteCategory   string // filter by category
-	robotPaletteSearch     string // search query
-	robotDismissAlert      string // alert ID to dismiss
-	robotDismissSession    string // session scope for alert dismissal
-	robotDismissAll        bool   // dismiss all matching alerts
+	robotFiles                 string // session name for file changes query
+	robotFilesWindow           string // time window: 5m, 15m, 1h, all (default: 15m)
+	robotFilesLimit            int    // max changes to return
+	robotInspectWork           string // bead id for projection-backed work inspection
+	robotInspectCoord          string // agent mail identity for projection-backed coordination inspection
+	robotInspectQuota          string // provider/account for projection-backed quota inspection
+	robotInspectIncident       string // incident id for store-backed incident inspection
+	robotIncidentResolve       string // incident id to mark resolved (write verb for the incident lifecycle)
+	robotExitCLI               string // session for graceful agent-CLI exit without destroying the pane
+	robotKillAgent             string // session for hard agent-process kill preserving the pane shell
+	robotLifecycleRelaunch     bool   // relaunch the agent CLI after --robot-exit-cli/--robot-kill-agent
+	robotExitCLIRespawnShell   bool   // replace exited direct-exec root agent with a fresh shell in the same cwd
+	robotExitCLIAllowPaneClose bool   // permit direct-exec root agent exit to close its pane cleanly
+	robotKillPane              string // session for per-pane removal (session and siblings survive)
+	robotDialogs               string // session for per-pane dialog classification
+	robotAnswerDialog          string // session for policy-gated dialog answering
+	robotDialogChoice          string // choice for --robot-answer-dialog
+	robotIncidentNote          string // optional resolution note recorded with --robot-incident-resolve
+	robotInspectSession        string // session name for projection-backed session inspection
+	robotInspectAgent          string // runtime agent id for projection-backed agent inspection
+	robotInspectPane           string // session name for pane inspection
+	robotInspectIndex          int    // pane index to inspect
+	robotInspectLines          int    // lines to capture for inspection
+	robotInspectCode           bool   // parse code blocks in output
+	robotMetrics               string // session name for metrics
+	robotMetricsPeriod         string // period: 1h, 24h, 7d, all
+	robotDiskAttribution       bool   // include per-pane build-dir disk attribution in metrics
+	robotReplay                string // session name for replay
+	robotReplayID              string // history entry ID to replay
+	robotReplayDryRun          bool   // just show what would be replayed
+	robotPaletteInfo           bool   // query palette information
+	robotPaletteSession        string // filter to session
+	robotPaletteCategory       string // filter by category
+	robotPaletteSearch         string // search query
+	robotDismissAlert          string // alert ID to dismiss
+	robotDismissSession        string // session scope for alert dismissal
+	robotDismissAll            bool   // dismiss all matching alerts
 
 	// Robot-diff flags for comparing agent activity
 	robotDiff      string // session name for diff
@@ -4469,13 +4498,16 @@ var (
 	robotEnv string // --robot-env flag (session name or "global")
 
 	// Robot-dcg-status flag for DCG status
-	robotDCGStatus      bool     // --robot-dcg-status flag
-	robotDCGCheck       bool     // --robot-dcg-check / --robot-guard flag
-	robotDCGCmd         string   // --command / --cmd flag (required with --robot-dcg-check / --robot-guard)
-	robotDCGContext     string   // --context flag (intent/context for the command)
-	robotDCGCwd         string   // --cwd flag (working directory context)
-	robotSafetySimulate bool     // --robot-safety-simulate flag
-	robotSafetySteps    []string // repeated --step values for --robot-safety-simulate
+	robotDCGStatus        bool     // --robot-dcg-status flag
+	robotDCGCheck         bool     // --robot-dcg-check / --robot-guard flag
+	robotDCGCmd           string   // --command / --cmd flag (required with --robot-dcg-check / --robot-guard)
+	robotDCGContext       string   // --context flag (intent/context for the command)
+	robotDCGCwd           string   // --cwd flag (working directory context)
+	robotSafetySimulate   bool     // --robot-safety-simulate flag
+	robotSafetySteps      []string // repeated --step values for --robot-safety-simulate
+	robotPolicyDecisions  bool     // --robot-policy-decisions flag
+	robotPolicyEntityType string   // --policy-entity-type filter for --robot-policy-decisions
+	robotPolicyEntityID   string   // --policy-entity-id filter for --robot-policy-decisions
 
 	// Robot-slb flags for SLB approvals
 	robotSLBPending bool   // --robot-slb-pending flag
@@ -4808,10 +4840,14 @@ func init() {
 	rootCmd.Flags().StringVar(&robotSpawnCC, "spawn-cc", "", "Claude Code agents to spawn: count[:model[:effort]] (effort also as model@effort). Use with --robot-spawn. Example: --spawn-cc=2 or --spawn-cc=2:opus:high")
 	rootCmd.Flags().StringVar(&robotSpawnCod, "spawn-cod", "", "Codex CLI agents to spawn: count[:model[:effort]] (effort also as model@effort). Use with --robot-spawn. Example: --spawn-cod=1 or --spawn-cod=8:gpt-5.3-codex:high")
 	rootCmd.Flags().StringVar(&robotSpawnGmi, "spawn-gmi", "", "Gemini CLI agents to spawn: count[:model]. Use with --robot-spawn. Example: --spawn-gmi=1")
-	rootCmd.Flags().StringVar(&robotSpawnAgy, "spawn-agy", "", "Antigravity CLI agents to spawn: count (model is pinned to Gemini 4 Argon (High)). Use with --robot-spawn. Example: --spawn-agy=1")
+	rootCmd.Flags().StringVar(&robotSpawnAgy, "spawn-agy", "", fmt.Sprintf("Antigravity CLI agents to spawn: count (default model %s via [models] default_antigravity). Use with --robot-spawn. Example: --spawn-agy=1", config.AntigravityRequiredModel))
 	rootCmd.Flags().StringVar(&robotSpawnGrok, "spawn-grok", "", "Grok Build agents to spawn: count[:model[:effort]] (effort also as model@effort). Use with --robot-spawn. Example: --spawn-grok=1")
 	rootCmd.Flags().StringVar(&robotSpawnOmp, "spawn-omp", "", "Oh My Pi (omp) agents to spawn: count[:model[:effort]] (effort maps to omp --thinking; no model = omp's own default). Use with --robot-spawn. Example: --spawn-omp=8 or --spawn-omp=2:opus:high")
 	rootCmd.Flags().StringVar(&robotSpawnOc, "spawn-oc", "", "OpenCode (oc) agents to spawn: count[:model] (model is OpenCode's provider/model; no model = OpenCode's own default). Use with --robot-spawn. Example: --spawn-oc=2 or --spawn-oc=1:opencode/big-pickle")
+	rootCmd.Flags().StringVar(&robotSpawnOllama, "spawn-ollama", "", "Ollama local agents to spawn: count[:model] (default model: codellama:latest). Use with --robot-spawn. Example: --spawn-ollama=2 or --spawn-ollama=1:qwen2.5-coder:32b")
+	rootCmd.Flags().StringVar(&robotSpawnAider, "spawn-aider", "", "Aider agents to spawn: count[:model]. Use with --robot-spawn. Example: --spawn-aider=2 or --spawn-aider=1:sonnet")
+	rootCmd.Flags().StringVar(&robotSpawnCursor, "spawn-cursor", "", "Cursor Agent CLI (cursor-agent) agents to spawn: count[:model]. Use with --robot-spawn. Example: --spawn-cursor=2")
+	rootCmd.Flags().StringVar(&robotSpawnWindsurf, "spawn-windsurf", "", "Windsurf agents to spawn: count[:model] (refused as IDE_ONLY_HARNESS unless [agents] windsurf is overridden to a terminal command). Use with --robot-spawn")
 	rootCmd.Flags().StringVar(&robotSpawnPreset, "spawn-preset", "", "Use recipe preset instead of counts. See --robot-recipes. Example: --spawn-preset=standard")
 	rootCmd.Flags().BoolVar(&robotSpawnNoUser, "spawn-no-user", false, "Skip user pane creation. Optional with --robot-spawn. For headless/automation")
 	rootCmd.Flags().BoolVar(&robotSpawnWait, "spawn-wait", false, "Wait for agents to show ready state before returning. Recommended for automation")
@@ -5024,9 +5060,11 @@ func init() {
 	rootCmd.Flags().StringVar(&robotInspectQuota, "robot-inspect-quota", "", "Projection-backed quota drill-down. Required: PROVIDER/ACCOUNT. Canonical aliases like claude/default are accepted. Example: ntm --robot-inspect-quota=claude/default")
 	rootCmd.Flags().StringVar(&robotInspectIncident, "robot-inspect-incident", "", "Store-backed incident drill-down. Required: INCIDENT_ID. Example: ntm --robot-inspect-incident=inc_20260323_abc123")
 	rootCmd.Flags().StringVar(&robotIncidentResolve, "robot-incident-resolve", "", "Mark a store-backed incident resolved. Required: INCIDENT_ID. Example: ntm --robot-incident-resolve=inc_20260323_abc123")
-	rootCmd.Flags().StringVar(&robotExitCLI, "robot-exit-cli", "", "Gracefully exit agent CLIs (double Ctrl+C choreography) without destroying panes. Required: SESSION. Optional: --panes, --relaunch. Example: ntm --robot-exit-cli=myproject --panes=1")
+	rootCmd.Flags().StringVar(&robotExitCLI, "robot-exit-cli", "", "Gracefully exit agent CLIs (double Ctrl+C choreography) without destroying panes. Required: SESSION. Optional: --panes, --relaunch, --respawn-shell, --allow-pane-close. Example: ntm --robot-exit-cli=myproject --panes=1")
 	rootCmd.Flags().StringVar(&robotKillAgent, "robot-kill-agent", "", "SIGTERM/SIGKILL agent process trees while preserving panes and shells. Required: SESSION. Optional: --panes, --relaunch. Example: ntm --robot-kill-agent=myproject --panes=2")
 	rootCmd.Flags().BoolVar(&robotLifecycleRelaunch, "relaunch", false, "Relaunch the agent CLI after --robot-exit-cli/--robot-kill-agent and verify boot")
+	rootCmd.Flags().BoolVar(&robotExitCLIRespawnShell, "respawn-shell", false, "Replace an exited direct-exec agent root process with a fresh interactive shell in the same working directory (--robot-exit-cli)")
+	rootCmd.Flags().BoolVar(&robotExitCLIAllowPaneClose, "allow-pane-close", false, "Permit --robot-exit-cli on a direct-exec agent pane to close the pane cleanly after exit")
 	rootCmd.Flags().StringVar(&robotKillPane, "robot-kill-pane", "", "Remove specific panes; session and sibling panes survive. Required: SESSION and --panes. Example: ntm --robot-kill-pane=myproject --panes=2")
 	rootCmd.Flags().StringVar(&robotDialogs, "robot-dialogs", "", "Classify in-pane interactive dialogs (trust prompt, rate-limit options, usage overlay, paste limbo, destructive confirm) with extracted options. Required: SESSION. Optional: --panes. Example: ntm --robot-dialogs=myproject")
 	rootCmd.Flags().StringVar(&robotAnswerDialog, "robot-answer-dialog", "", "Answer a classified dialog by label with policy gating (accept-side refused on destructive confirms). Required: SESSION, --panes (one pane), --choice. Example: ntm --robot-answer-dialog=myproject --panes=1 --choice=decline")
@@ -5114,6 +5152,9 @@ func init() {
 	rootCmd.Flags().StringVar(&robotDCGCwd, "cwd", "", "Working directory context (defaults to current directory). Example: --cwd=/tmp/scratch")
 	rootCmd.Flags().BoolVar(&robotSafetySimulate, "robot-safety-simulate", false, "Simulate a safety policy command plan without execution. JSON output. Use --command and/or repeated --step.")
 	rootCmd.Flags().StringArrayVar(&robotSafetySteps, "step", nil, "Command step for --robot-safety-simulate; repeat for multi-step plans")
+	rootCmd.Flags().BoolVar(&robotPolicyDecisions, "robot-policy-decisions", false, "List durable policy and operator audit decisions. JSON output. Optional: --policy-entity-type, --policy-entity-id, --limit.")
+	rootCmd.Flags().StringVar(&robotPolicyEntityType, "policy-entity-type", "", "Filter --robot-policy-decisions by entity type (e.g. attention_item)")
+	rootCmd.Flags().StringVar(&robotPolicyEntityID, "policy-entity-id", "", "Filter --robot-policy-decisions by entity ID")
 
 	// Robot-slb flags for SLB approvals
 	rootCmd.Flags().BoolVar(&robotSLBPending, "robot-slb-pending", false, "List pending SLB approval requests. JSON output. Example: ntm --robot-slb-pending")
@@ -5604,6 +5645,16 @@ func init() {
 	// Register after every built-in root flag so presets cannot replace a
 	// robot control flag such as --spawn-timeout or --spawn-omp.
 	loadedAgents, _ := plugins.LoadAgentPlugins(pluginAgentsDirForArgs(os.Args[1:]))
+	hasPiPlugin := false
+	for _, p := range loadedAgents {
+		if strings.EqualFold(strings.TrimSpace(p.Name), "pi") || strings.EqualFold(strings.TrimSpace(p.Alias), "pi") {
+			hasPiPlugin = true
+			break
+		}
+	}
+	if !hasPiPlugin {
+		loadedAgents = append(loadedAgents, plugins.ShippedPiPlugin())
+	}
 	robotSpawnPlugins = registerRobotPluginSpawnFlags(rootCmd, loadedAgents)
 }
 
@@ -5827,6 +5878,10 @@ func parseRobotSpawnAgentSpecs() (map[AgentType]AgentSpec, error) {
 		{name: "--spawn-grok", value: robotSpawnGrok, agentType: AgentTypeGrok},
 		{name: "--spawn-omp", value: robotSpawnOmp, agentType: AgentTypeOmp},
 		{name: "--spawn-oc", value: robotSpawnOc, agentType: AgentTypeOpencode},
+		{name: "--spawn-ollama", value: robotSpawnOllama, agentType: AgentTypeOllama},
+		{name: "--spawn-aider", value: robotSpawnAider, agentType: AgentTypeAider},
+		{name: "--spawn-cursor", value: robotSpawnCursor, agentType: AgentTypeCursor},
+		{name: "--spawn-windsurf", value: robotSpawnWindsurf, agentType: AgentTypeWindsurf},
 	}
 	names := make([]string, 0, len(robotSpawnPlugins))
 	for name := range robotSpawnPlugins {
@@ -5870,6 +5925,10 @@ func robotSpawnOptionsFromFlags(cmd *cobra.Command, readyTimeout time.Duration, 
 		GrokCount:     specs[AgentTypeGrok].Count,
 		OmpCount:      specs[AgentTypeOmp].Count,
 		OcCount:       specs[AgentTypeOpencode].Count,
+		OllamaCount:   specs[AgentTypeOllama].Count,
+		AiderCount:    specs[AgentTypeAider].Count,
+		CursorCount:   specs[AgentTypeCursor].Count,
+		WindsurfCount: specs[AgentTypeWindsurf].Count,
 		// Model/effort overrides from the count[:model[:effort]] specs. agy is
 		// intentionally absent: its model is hard-pinned by config, and parsing
 		// rejects any --spawn-agy model override before options are built.
@@ -5886,6 +5945,10 @@ func robotSpawnOptionsFromFlags(cmd *cobra.Command, readyTimeout time.Duration, 
 		OmpModel:            specs[AgentTypeOmp].Model,
 		OmpReasoningEffort:  specs[AgentTypeOmp].ReasoningEffort,
 		OcModel:             specs[AgentTypeOpencode].Model,
+		OllamaModel:         specs[AgentTypeOllama].Model,
+		AiderModel:          specs[AgentTypeAider].Model,
+		CursorModel:         specs[AgentTypeCursor].Model,
+		WindsurfModel:       specs[AgentTypeWindsurf].Model,
 		Preset:              robotSpawnPreset,
 		NoUserPane:          robotSpawnNoUser,
 		WorkingDir:          robotSpawnDir,
@@ -6677,6 +6740,9 @@ Examples:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := config.InitProjectConfig(projectInitForce); err != nil {
 				return err
+			}
+			if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+				fmt.Fprintf(cmd.OutOrStdout(), "Initialized project config in %s\n", filepath.Join(cwd, ".ntm"))
 			}
 
 			projectPath, err := os.Getwd()

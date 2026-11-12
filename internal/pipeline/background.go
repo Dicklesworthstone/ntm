@@ -23,7 +23,7 @@ import (
 const (
 	backgroundRequestVersion  = 1
 	maxBackgroundRequestBytes = 8 << 20
-	backgroundStartupTimeout  = 15 * time.Second
+	backgroundStartupTimeout  = 30 * time.Second
 )
 
 // BackgroundWorkerFlags supplies CLI-owned global options to the re-exec.
@@ -73,6 +73,7 @@ func (c backgroundExecutorConfig) executorConfig() ExecutorConfig {
 
 type backgroundReady struct {
 	Token      string `json:"token"`
+	PID        int    `json:"pid,omitempty"`
 	Error      string `json:"error,omitempty"`
 	ErrorCode  string `json:"error_code,omitempty"`
 	WorkflowID string `json:"workflow_id,omitempty"`
@@ -481,7 +482,7 @@ func RunBackgroundWorker(ctx context.Context, projectDir, requestID string, inpu
 			retErr = fmt.Errorf("background worker panic: %v", recovered)
 		}
 		if retErr != nil && publishReady {
-			ready := backgroundReady{Token: req.Token, Error: retErr.Error()}
+			ready := backgroundReady{Token: req.Token, PID: os.Getpid(), Error: retErr.Error()}
 			if errors.Is(retErr, ErrRunAlreadyOwned) {
 				ready.ErrorCode = "PIPELINE_RUNNING"
 			}
@@ -580,7 +581,7 @@ func RunBackgroundWorker(ctx context.Context, projectDir, requestID string, inpu
 			return err
 		}
 	}
-	ready, _ := json.Marshal(backgroundReady{Token: req.Token, WorkflowID: workflow.Name, Session: cfg.Session, Total: len(workflow.Steps)})
+	ready, _ := json.Marshal(backgroundReady{Token: req.Token, PID: os.Getpid(), WorkflowID: workflow.Name, Session: cfg.Session, Total: len(workflow.Steps)})
 	if err := util.AtomicWriteFile(filepath.Join(dir, requestID+".ready"), ready, 0600); err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -62,11 +63,12 @@ func (f *SynthesisFormatter) FormatResult(w io.Writer, result *SynthesisResult, 
 
 // formatJSON outputs the result as JSON.
 func (f *SynthesisFormatter) formatJSON(w io.Writer, result *SynthesisResult, audit *AuditReport) error {
+	synth := f.prepareResultForOutput(result)
 	output := struct {
 		Synthesis *SynthesisResult `json:"synthesis"`
 		Audit     *AuditReport     `json:"audit,omitempty"`
 	}{
-		Synthesis: result,
+		Synthesis: synth,
 	}
 
 	if f.IncludeAudit && audit != nil {
@@ -80,11 +82,12 @@ func (f *SynthesisFormatter) formatJSON(w io.Writer, result *SynthesisResult, au
 
 // formatYAML outputs the result as YAML.
 func (f *SynthesisFormatter) formatYAML(w io.Writer, result *SynthesisResult, audit *AuditReport) error {
+	synth := f.prepareResultForOutput(result)
 	output := struct {
 		Synthesis *SynthesisResult `yaml:"synthesis"`
 		Audit     *AuditReport     `yaml:"audit,omitempty"`
 	}{
-		Synthesis: result,
+		Synthesis: synth,
 	}
 
 	if f.IncludeAudit && audit != nil {
@@ -94,6 +97,19 @@ func (f *SynthesisFormatter) formatYAML(w io.Writer, result *SynthesisResult, au
 	encoder := yaml.NewEncoder(w)
 	encoder.SetIndent(2)
 	return encoder.Encode(output)
+}
+
+func (f *SynthesisFormatter) prepareResultForOutput(result *SynthesisResult) *SynthesisResult {
+	if result == nil || f.IncludeRaw {
+		return result
+	}
+	if result.RawOutput == "" && len(result.RawOutputs) == 0 {
+		return result
+	}
+	sanitized := *result
+	sanitized.RawOutput = ""
+	sanitized.RawOutputs = nil
+	return &sanitized
 }
 
 // formatMarkdown outputs the result as formatted Markdown.
@@ -315,6 +331,24 @@ func (f *SynthesisFormatter) formatMarkdown(w io.Writer, result *SynthesisResult
 					b.WriteString("\n")
 				}
 			}
+		}
+	}
+
+	// Raw Mode Outputs
+	if f.IncludeRaw && (len(result.RawOutputs) > 0 || result.RawOutput != "") {
+		b.WriteString("## Raw Mode Outputs\n\n")
+		if len(result.RawOutputs) > 0 {
+			modes := make([]string, 0, len(result.RawOutputs))
+			for modeID := range result.RawOutputs {
+				modes = append(modes, modeID)
+			}
+			sort.Strings(modes)
+			for _, modeID := range modes {
+				b.WriteString(fmt.Sprintf("### %s\n\n```yaml\n%s\n```\n\n", modeID, strings.TrimSpace(result.RawOutputs[modeID])))
+			}
+		}
+		if result.RawOutput != "" {
+			b.WriteString(fmt.Sprintf("### Lead Synthesizer\n\n```yaml\n%s\n```\n\n", strings.TrimSpace(result.RawOutput)))
 		}
 	}
 

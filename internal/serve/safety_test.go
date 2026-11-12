@@ -2,9 +2,18 @@ package serve
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +21,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	approvalpkg "github.com/Dicklesworthstone/ntm/internal/approval"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
@@ -355,5 +365,232 @@ func TestApprovalEndpointsFailClosedWithoutStateStore(t *testing.T) {
 	s.handleApprovalApproveV1(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("approve without store: got %d, want 503: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRobotHealthAndAttentionParityPolicyDecisionsAndMTLSClientCN(t *testing.T) {
+	s, store := setupTestServer(t)
+
+	// 1. GET /api/robot/health delegates to real robot.GetHealth() with deprecation headers and zero stub notes.
+	req := httptest.NewRequest(http.MethodGet, "/api/robot/health", nil)
+	rec := httptest.NewRecorder()
+	s.handleRobotHealth(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/robot/health status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "requires robot package integration") {
+		t.Fatalf("GET /api/robot/health still returned stub note: %s", rec.Body.String())
+	}
+	if rec.Header().Get("Deprecation") != "true" {
+		t.Fatalf("Deprecation header = %q, want \"true\"", rec.Header().Get("Deprecation"))
+	}
+	if !strings.Contains(rec.Header().Get("Link"), "/api/v1/robot/health") {
+		t.Fatalf("Link header = %q, want /api/v1/robot/health successor", rec.Header().Get("Link"))
+	}
+
+	// 2. GET /api/v1/robot/attention returns cursor-replayable AttentionOutput sorted by severity.
+	prevFeed := robot.GetAttentionFeed()
+	feedCfg := robot.DefaultAttentionFeedConfig()
+	feedCfg.JournalSize = 4
+	feed := robot.NewAttentionFeed(feedCfg)
+	robot.SetAttentionFeed(feed)
+	t.Cleanup(func() {
+		feed.Stop()
+		robot.SetAttentionFeed(prevFeed)
+	})
+
+	feed.Append(robot.AttentionEvent{
+		Session:       "alpha",
+		Category:      robot.EventCategoryAlert,
+		Type:          robot.EventTypeAlertWarning,
+		Actionability: robot.ActionabilityInteresting,
+		Severity:      robot.SeverityWarning,
+		Summary:       "warning event",
+	})
+	evCrit := feed.Append(robot.AttentionEvent{
+		Session:       "alpha",
+		Category:      robot.EventCategoryAlert,
+		Type:          robot.EventTypeAlertAttentionRequired,
+		Actionability: robot.ActionabilityActionRequired,
+		Severity:      robot.SeverityCritical,
+		Summary:       "critical event",
+		NextActions: []robot.NextAction{
+			{Action: "robot-tail", Args: "--robot-tail=alpha"},
+		},
+	})
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/robot/attention?cursor=0", nil)
+	rec = httptest.NewRecorder()
+	s.handleRobotAttentionV1(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/robot/attention status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var attnOut robot.AttentionOutput
+	if err := json.Unmarshal(rec.Body.Bytes(), &attnOut); err != nil {
+		t.Fatalf("decode AttentionOutput: %v (%s)", err, rec.Body.String())
+	}
+	if !attnOut.Success || len(attnOut.Items) != 2 {
+		t.Fatalf("AttentionOutput = %+v, want 2 items", attnOut)
+	}
+	if attnOut.Items[0].Severity != robot.SeverityCritical || attnOut.Items[1].Severity != robot.SeverityWarning {
+		t.Fatalf("items order = [%s, %s], want [critical, warning]", attnOut.Items[0].Severity, attnOut.Items[1].Severity)
+	}
+	if attnOut.CursorInfo == nil || attnOut.CursorInfo.EndCursor != evCrit.Cursor {
+		t.Fatalf("cursor_info = %+v, want end_cursor=%d", attnOut.CursorInfo, evCrit.Cursor)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/robot/attention?cursor=0&action_required=true", nil)
+	rec = httptest.NewRecorder()
+	s.handleRobotAttentionV1(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("action_required filter status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &attnOut); err != nil {
+		t.Fatalf("decode filtered AttentionOutput: %v", err)
+	}
+	if len(attnOut.Items) != 1 || attnOut.Items[0].Severity != robot.SeverityCritical {
+		t.Fatalf("action_required items = %+v, want only critical item", attnOut.Items)
+	}
+
+	// Overflow ring buffer (size 4) so cursor 1 expires and verify 409 CURSOR_EXPIRED.
+	for i := 0; i < 6; i++ {
+		feed.Append(robot.AttentionEvent{
+			Session:       "alpha",
+			Category:      robot.EventCategorySystem,
+			Type:          robot.EventTypeAlertWarning,
+			Actionability: robot.ActionabilityInteresting,
+			Severity:      robot.SeverityInfo,
+			Summary:       "churn",
+		})
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/robot/attention?cursor=1", nil)
+	rec = httptest.NewRecorder()
+	s.handleRobotAttentionV1(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expired cursor status = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+
+	// 3. GET /api/v1/policy/decisions enforces PermSystemConfig RBAC and exposes durable AuditDecision rows.
+	if _, err := store.RecordAuditDecision(&state.AuditDecision{
+		DecisionType: "ack",
+		DecisionAt:   time.Now().UTC(),
+		ActorType:    "user",
+		ActorID:      "admin-1",
+		EntityType:   "attention_item",
+		EntityID:     "attn-42",
+		Reason:       "verified",
+	}); err != nil {
+		t.Fatalf("RecordAuditDecision: %v", err)
+	}
+
+	s.auth.Mode = AuthModeOIDC // enable RBAC enforcement on router
+	viewerReq := httptest.NewRequest(http.MethodGet, "/api/v1/policy/decisions", nil)
+	viewerReq = viewerReq.WithContext(withRoleContext(viewerReq.Context(), &RoleContext{Role: RoleViewer, UserID: "viewer-1"}))
+	viewerRec := httptest.NewRecorder()
+	s.RequirePermission(PermSystemConfig)(http.HandlerFunc(s.handlePolicyDecisionsV1)).ServeHTTP(viewerRec, viewerReq)
+	if viewerRec.Code != http.StatusForbidden {
+		t.Fatalf("viewer status = %d, want 403: %s", viewerRec.Code, viewerRec.Body.String())
+	}
+
+	adminReq := httptest.NewRequest(http.MethodGet, "/api/v1/policy/decisions?entity_type=attention_item", nil)
+	adminReq = adminReq.WithContext(withRoleContext(adminReq.Context(), &RoleContext{Role: RoleAdmin, UserID: "admin-1"}))
+	adminRec := httptest.NewRecorder()
+	s.RequirePermission(PermSystemConfig)(http.HandlerFunc(s.handlePolicyDecisionsV1)).ServeHTTP(adminRec, adminReq)
+	if adminRec.Code != http.StatusOK {
+		t.Fatalf("admin status = %d, want 200: %s", adminRec.Code, adminRec.Body.String())
+	}
+	var decOut robot.PolicyDecisionsOutput
+	if err := json.Unmarshal(adminRec.Body.Bytes(), &decOut); err != nil {
+		t.Fatalf("decode PolicyDecisionsOutput: %v", err)
+	}
+	if !decOut.Success || decOut.Count != 1 || decOut.Decisions[0].EntityID != "attn-42" {
+		t.Fatalf("PolicyDecisionsOutput = %+v, want 1 attn-42 decision", decOut)
+	}
+
+	// 4. buildMTLSConfig() enforces MTLS.ClientCN when configured.
+	certDir := t.TempDir()
+	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caPath := filepath.Join(certDir, "ca.pem")
+	if err := os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	certPath := filepath.Join(certDir, "server.pem")
+	keyPath := filepath.Join(certDir, "server.key")
+	if err := os.WriteFile(certPath, []byte("placeholder"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, []byte("placeholder"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mtlsSrv := New(Config{
+		Auth: AuthConfig{
+			Mode: AuthModeMTLS,
+			MTLS: MTLSConfig{
+				CertFile:     certPath,
+				KeyFile:      keyPath,
+				ClientCAFile: caPath,
+				ClientCN:     "trusted-agent",
+			},
+		},
+	})
+	tlsCfg, err := mtlsSrv.buildMTLSConfig()
+	if err != nil {
+		t.Fatalf("buildMTLSConfig: %v", err)
+	}
+	if tlsCfg.VerifyConnection == nil {
+		t.Fatal("expected VerifyConnection hook when ClientCN is set")
+	}
+
+	makeLeaf := func(cn string) *x509.Certificate {
+		t.Helper()
+		leafKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatal(err)
+		}
+		leafTmpl := &x509.Certificate{
+			SerialNumber: big.NewInt(2),
+			Subject:      pkix.Name{CommonName: cn},
+			NotBefore:    time.Now().Add(-time.Hour),
+			NotAfter:     time.Now().Add(time.Hour),
+			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		}
+		der, err := x509.CreateCertificate(rand.Reader, leafTmpl, caTmpl, &leafKey.PublicKey, caKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		leaf, err := x509.ParseCertificate(der)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = caCert
+		return leaf
+	}
+
+	if err := tlsCfg.VerifyConnection(tls.ConnectionState{PeerCertificates: []*x509.Certificate{makeLeaf("trusted-agent")}}); err != nil {
+		t.Fatalf("VerifyConnection rejected matching CN: %v", err)
+	}
+	if err := tlsCfg.VerifyConnection(tls.ConnectionState{PeerCertificates: []*x509.Certificate{makeLeaf("rogue-agent")}}); err == nil {
+		t.Fatal("VerifyConnection accepted mismatched CN")
 	}
 }

@@ -20,9 +20,13 @@
 set -u
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "$REPO_ROOT"
+cd "$REPO_ROOT" || exit 1
 
-ALLOWLIST=ci/allowlists/config.txt
+ALLOWLIST="${NTM_CONFIG_LIVENESS_ALLOWLIST:-ci/allowlists/config.txt}"
+if [[ "$ALLOWLIST" != /* ]]; then
+  ALLOWLIST="$REPO_ROOT/$ALLOWLIST"
+fi
+export NTM_CONFIG_LIVENESS_ALLOWLIST="$ALLOWLIST"
 
 # --- allowlist entry-shape validation (runs everywhere, incl. bare CI) ------
 # Entries are dotted TOML leaf-key paths, e.g. "integrations.caut.enabled".

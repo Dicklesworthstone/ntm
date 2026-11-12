@@ -13,34 +13,52 @@ import (
 
 func newWorktreesCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "worktrees",
-		Short: "Manage Git worktrees for agent isolation",
+		Use:     "worktrees",
+		Aliases: []string{"worktree"},
+		Short:   "Manage Git worktrees for agent isolation",
 		Long: `Manage Git worktrees for agent isolation.
 
 Worktrees allow multiple agents to work in parallel on different branches
 without interfering with each other. Each agent gets its own working
-directory with its own branch.`,
+directory (.ntm/worktrees/<session>/<agent>) and branch (ntm/<session>/<agent>).`,
 	}
 
 	cmd.AddCommand(
 		newWorktreesListCmd(),
+		newWorktreesCreateCmd(),
 		newWorktreesMergeCmd(),
 		newWorktreesMergeStatusCmd(),
 		newWorktreesMergeRecoverCmd(),
 		newWorktreesCleanCmd(),
 		newWorktreesRemoveCmd(),
+		newWorktreesPruneCmd(),
 	)
 
 	return cmd
 }
 
 func newWorktreesListCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "list",
-		Short: "List all worktrees for the current session",
-		Long:  `List all Git worktrees created for agents in the current session.`,
+	var (
+		sessionName  string
+		outputFormat string
+	)
+
+	cmd := &cobra.Command{
+		Use:     "list [session]",
+		Aliases: []string{"ls", "status"},
+		Short:   "List all worktrees for a session",
+		Long:    `List all Git worktrees created for agents in the specified or current session.`,
+		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dir, session, err := resolveWorktreeScope(cmd.Context(), "")
+			jsonMode, err := isWorktreesJSONOutput(outputFormat)
+			if err != nil {
+				return err
+			}
+			requestedSession := sessionName
+			if requestedSession == "" && len(args) == 1 {
+				requestedSession = args[0]
+			}
+			dir, session, err := resolveWorktreeScopeWithJSON(cmd.Context(), requestedSession, jsonMode)
 			if err != nil {
 				return err
 			}
@@ -51,7 +69,7 @@ func newWorktreesListCmd() *cobra.Command {
 				return fmt.Errorf("failed to list worktrees: %w", err)
 			}
 
-			if IsJSONOutput() {
+			if jsonMode {
 				return output.PrintJSON(map[string]interface{}{
 					"session":   session,
 					"worktrees": worktreeList,
@@ -60,27 +78,30 @@ func newWorktreesListCmd() *cobra.Command {
 			}
 
 			if len(worktreeList) == 0 {
-				fmt.Printf("No worktrees found for session: %s\n", session)
+				cmd.Printf("No worktrees found for session: %s\n", session)
 				return nil
 			}
 
-			fmt.Printf("Worktrees for session: %s\n\n", session)
+			cmd.Printf("Worktrees for session: %s\n\n", session)
 			for _, wt := range worktreeList {
 				status := "✓ Active"
 				if wt.Error != "" {
 					status = "✗ " + wt.Error
 				}
 
-				fmt.Printf("Agent: %s\n", wt.AgentName)
-				fmt.Printf("  Path:   %s\n", wt.Path)
-				fmt.Printf("  Branch: %s\n", wt.BranchName)
-				fmt.Printf("  Status: %s\n", status)
-				fmt.Println()
+				cmd.Printf("Agent: %s\n", wt.AgentName)
+				cmd.Printf("  Path:   %s\n", wt.Path)
+				cmd.Printf("  Branch: %s\n", wt.BranchName)
+				cmd.Printf("  Status: %s\n\n", status)
 			}
 
 			return nil
 		},
 	}
+
+	cmd.Flags().StringVar(&sessionName, "session", "", "Session name to inspect (defaults to current session)")
+	cmd.Flags().StringVarP(&outputFormat, "output", "o", "table", "Output format: table or json")
+	return cmd
 }
 
 func newWorktreesMergeCmd() *cobra.Command {
@@ -187,19 +208,31 @@ mutation starts, inspect git status before retrying; NTM never resets the work.`
 
 func newWorktreesCleanCmd() *cobra.Command {
 	var (
-		sessionName string
-		force       bool
+		sessionName  string
+		force        bool
+		dryRun       bool
+		outputFormat string
 	)
 
 	cmd := &cobra.Command{
-		Use:   "clean",
-		Short: "Clean up worktrees for a session",
+		Use:     "clean [session]",
+		Aliases: []string{"cleanup", "clean-session"},
+		Short:   "Clean up worktrees for a session",
 		Long: `Remove all worktrees and branches for the specified session.
 
-By default, cleans up the current session. Use --session to specify
-		a different session.`,
+By default, cleans up the current session. Use --session (or pass the session
+name positionally) to specify a different session, and --dry-run to preview.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dir, session, err := resolveWorktreeScope(cmd.Context(), sessionName)
+			jsonMode, err := isWorktreesJSONOutput(outputFormat)
+			if err != nil {
+				return err
+			}
+			requestedSession := sessionName
+			if requestedSession == "" && len(args) == 1 {
+				requestedSession = args[0]
+			}
+			dir, session, err := resolveWorktreeScopeWithJSON(cmd.Context(), requestedSession, jsonMode)
 			if err != nil {
 				return err
 			}
@@ -212,12 +245,42 @@ By default, cleans up the current session. Use --session to specify
 				return fmt.Errorf("failed to list worktrees: %w", err)
 			}
 
+			if dryRun {
+				if jsonMode {
+					return output.PrintJSON(map[string]interface{}{
+						"session":   session,
+						"dry_run":   true,
+						"worktrees": worktreeList,
+						"total":     len(worktreeList),
+					})
+				}
+				if len(worktreeList) == 0 {
+					cmd.Printf("No worktrees found for session: %s\n", session)
+					return nil
+				}
+				cmd.Printf("Dry run: %d worktree(s) would be removed for session %s:\n", len(worktreeList), session)
+				for _, wt := range worktreeList {
+					cmd.Printf("  - %s (%s)\n", wt.AgentName, wt.Path)
+				}
+				return nil
+			}
+
 			if len(worktreeList) == 0 {
-				fmt.Printf("No worktrees found for session: %s\n", session)
+				if jsonMode {
+					return output.PrintJSON(map[string]interface{}{
+						"success": true,
+						"session": session,
+						"removed": 0,
+					})
+				}
+				cmd.Printf("No worktrees found for session: %s\n", session)
 				return nil
 			}
 
 			if !force {
+				if jsonMode {
+					return fmt.Errorf("refusing to clean worktrees for session %s without confirmation in JSON mode: re-run with --force", session)
+				}
 				fmt.Printf("The following worktrees will be removed for session %s:\n", session)
 				for _, wt := range worktreeList {
 					fmt.Printf("  - %s (%s)\n", wt.AgentName, wt.Path)
@@ -237,22 +300,37 @@ By default, cleans up the current session. Use --session to specify
 				return fmt.Errorf("failed to cleanup worktrees: %w", err)
 			}
 
-			fmt.Printf("Successfully cleaned up %d worktrees for session: %s\n", len(worktreeList), session)
+			if jsonMode {
+				return output.PrintJSON(map[string]interface{}{
+					"success": true,
+					"session": session,
+					"removed": len(worktreeList),
+				})
+			}
+
+			cmd.Printf("Successfully cleaned up %d worktrees for session: %s\n", len(worktreeList), session)
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&sessionName, "session", "", "Session name to clean up (defaults to current session)")
 	cmd.Flags().BoolVar(&force, "force", false, "Skip confirmation prompt")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview worktrees that would be removed without deleting them")
+	cmd.Flags().StringVarP(&outputFormat, "output", "o", "table", "Output format: table or json")
 	return cmd
 }
 
 func newWorktreesRemoveCmd() *cobra.Command {
-	var force bool
+	var (
+		force        bool
+		sessionName  string
+		outputFormat string
+	)
 
 	cmd := &cobra.Command{
-		Use:   "remove <agent-name>",
-		Short: "Remove a specific agent's worktree",
+		Use:     "remove <agent-name>",
+		Aliases: []string{"rm"},
+		Short:   "Remove a specific agent's worktree",
 		Long: `Remove the worktree and branch for a specific agent.
 
 This will remove the worktree directory and delete the associated branch.
@@ -263,8 +341,12 @@ Prompts for confirmation, reporting the uncommitted changes and unmerged
 commits that would be destroyed. Pass --force to skip the prompt.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			jsonMode, err := isWorktreesJSONOutput(outputFormat)
+			if err != nil {
+				return err
+			}
 			agentName := args[0]
-			dir, session, err := resolveWorktreeScope(cmd.Context(), "")
+			dir, session, err := resolveWorktreeScopeWithJSON(cmd.Context(), sessionName, jsonMode)
 			if err != nil {
 				return err
 			}
@@ -288,7 +370,7 @@ commits that would be destroyed. Pass --force to skip the prompt.`,
 			if !force {
 				// Never prompt into a JSON stream: a half-written question would
 				// corrupt the caller's output, and answering for them is worse.
-				if IsJSONOutput() {
+				if jsonMode {
 					return fmt.Errorf("refusing to remove worktree for agent %s without confirmation in JSON mode: re-run with --force", agentName)
 				}
 				risk, riskErr := manager.AssessRemovalRisk(cmd.Context(), agentName)
@@ -304,12 +386,24 @@ commits that would be destroyed. Pass --force to skip the prompt.`,
 				return fmt.Errorf("failed to remove worktree: %w", err)
 			}
 
-			fmt.Printf("Successfully removed worktree for agent: %s\n", agentName)
+			if jsonMode {
+				return output.PrintJSON(map[string]interface{}{
+					"success":     true,
+					"session":     session,
+					"agent_name":  info.AgentName,
+					"path":        info.Path,
+					"branch_name": info.BranchName,
+				})
+			}
+
+			cmd.Printf("Successfully removed worktree for agent: %s\n", agentName)
 			return nil
 		},
 	}
 
 	cmd.Flags().BoolVar(&force, "force", false, "Skip confirmation prompt")
+	cmd.Flags().StringVar(&sessionName, "session", "", "Session owning the agent worktree (defaults to current session)")
+	cmd.Flags().StringVarP(&outputFormat, "output", "o", "table", "Output format: table or json")
 	return cmd
 }
 
@@ -351,9 +445,13 @@ func countNoun(n int, singular, plural string) string {
 }
 
 func resolveWorktreeScope(ctx context.Context, session string) (string, string, error) {
+	return resolveWorktreeScopeWithJSON(ctx, session, IsJSONOutput())
+}
+
+func resolveWorktreeScopeWithJSON(ctx context.Context, session string, jsonMode bool) (string, string, error) {
 	session = strings.TrimSpace(session)
 	if session != "" {
-		resolved, err := normalizeProjectScopedSessionName(ctx, session, !IsJSONOutput())
+		resolved, err := normalizeProjectScopedSessionName(ctx, session, !jsonMode)
 		if err != nil {
 			return "", "", err
 		}

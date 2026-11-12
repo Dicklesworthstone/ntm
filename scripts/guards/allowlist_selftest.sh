@@ -87,6 +87,24 @@ ratchet_compare "$allow" "$cur" >/dev/null 2>&1 && fail "ratchet accepted NEW DE
 : > "$cur"
 ratchet_compare "$allow" "$cur" >/dev/null 2>&1 && fail "ratchet accepted a STALE allowlist line"
 
+# 7. Config external field-read verifier (WS0-G2 upgrade, bd-rc-track-a-gates-j7pun.2):
+#    Marking an unread Config struct field `permanent` must FAIL with structured
+#    diagnostic fields (unread_toml_key, struct_path, declared_at).
+if command -v go >/dev/null 2>&1; then
+  {
+    cat ci/allowlists/config.txt
+    printf 'ensemble.synthesis.min_confidence\tpermanent\tfixture: false permanent on unread field\n'
+  } > "$TMP/bad_config_perm.txt"
+  if bad_out="$(NTM_CONFIG_LIVENESS_ALLOWLIST="$TMP/bad_config_perm.txt" NTM_CONFIG_LIVENESS_SELFTEST_FORCE_UNREAD="ensemble.synthesis.min_confidence" bash scripts/guards/config_liveness.sh 2>&1)"; then
+    fail "config_liveness accepted permanent on an unread Config struct field"
+  else
+    case "$bad_out" in
+      *UNREAD_PERMANENT_FORBIDDEN*unread_toml_key*struct_path*declared_at*) ;;
+      *) fail "config_liveness missing structured diagnostic on false-permanent unread field: $bad_out" ;;
+    esac
+  fi
+fi
+
 if [ "$rc" -ne 0 ]; then
   echo "allowlist_selftest.sh: FAILED" >&2
   exit 1

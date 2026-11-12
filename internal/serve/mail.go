@@ -636,7 +636,7 @@ func (s *Server) handleListMailProjects(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r)), 10*time.Second)
 	defer cancel()
 
 	project, err := client.EnsureProject(ctx, s.mailProjectKey(r))
@@ -666,7 +666,7 @@ func (s *Server) handleListMailAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r)), 10*time.Second)
 	defer cancel()
 
 	agents, err := client.ListAgents(ctx, s.mailProjectKey(r))
@@ -707,7 +707,7 @@ func (s *Server) handleCreateMailAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r)), 10*time.Second)
 	defer cancel()
 
 	agent, err := client.RegisterAgent(ctx, agentmail.RegisterAgentOptions{
@@ -749,7 +749,7 @@ func (s *Server) handleGetMailAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r)), 10*time.Second)
 	defer cancel()
 
 	agent, err := client.Whois(ctx, s.mailProjectKey(r), agentName, true)
@@ -785,7 +785,7 @@ func (s *Server) handleMailInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r)), 10*time.Second)
 	defer cancel()
 
 	opts := agentmail.FetchInboxOptions{
@@ -916,7 +916,7 @@ func (s *Server) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r)), 10*time.Second)
 	defer cancel()
 
 	message, err := client.GetMessage(ctx, s.mailProjectKey(r), messageID)
@@ -1021,7 +1021,7 @@ func (s *Server) handleMarkMessageRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r)), 10*time.Second)
 	defer cancel()
 
 	readResult, err := client.MarkMessageRead(ctx, s.mailProjectKey(r), agentName, messageID)
@@ -1082,7 +1082,7 @@ func (s *Server) handleAckMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r)), 10*time.Second)
 	defer cancel()
 
 	ackResult, err := client.AcknowledgeMessage(ctx, s.mailProjectKey(r), agentName, messageID)
@@ -1265,7 +1265,7 @@ func (s *Server) handleListContacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r)), 10*time.Second)
 	defer cancel()
 
 	contacts, err := client.ListContacts(ctx, s.mailProjectKey(r), agentName)
@@ -1306,7 +1306,7 @@ func (s *Server) handleRequestContact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r)), 10*time.Second)
 	defer cancel()
 
 	result, err := client.RequestContact(ctx, agentmail.RequestContactOptions{
@@ -1363,7 +1363,7 @@ func (s *Server) handleRespondContact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r)), 10*time.Second)
 	defer cancel()
 
 	result, err := client.RespondContact(ctx, agentmail.RespondContactOptions{
@@ -1432,7 +1432,7 @@ func (s *Server) handleSetContactPolicy(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r)), 10*time.Second)
 	defer cancel()
 
 	result, err := client.SetContactPolicy(ctx, s.mailProjectKey(r), req.AgentName, req.Policy)
@@ -1477,7 +1477,7 @@ func (s *Server) handleListReservations(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r)), 10*time.Second)
 	defer cancel()
 
 	// If no agent specified, list all reservations
@@ -1606,7 +1606,7 @@ func (s *Server) handleReleaseReservations(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r)), 10*time.Second)
 	defer cancel()
 
 	releaseResult, err := client.ReleaseReservations(ctx, projectKey, req.AgentName, req.Paths, req.IDs)
@@ -1664,7 +1664,7 @@ func (s *Server) handleReservationConflicts(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r)), 10*time.Second)
 	defer cancel()
 
 	conflicts, err := client.CheckConflicts(ctx, projectKey, paths)
@@ -1711,7 +1711,7 @@ func (s *Server) handleGetReservation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r)), 10*time.Second)
 	defer cancel()
 
 	reservation, err := client.GetReservation(ctx, projectKey, reservationID)
@@ -1755,7 +1755,7 @@ func (s *Server) handleReleaseReservationByID(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r)), 10*time.Second)
 	defer cancel()
 
 	releaseResult, err := client.ReleaseReservations(ctx, projectKey, agentName, nil, []int{reservationID})
@@ -1823,7 +1823,7 @@ func (s *Server) handleRenewReservation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r)), 10*time.Second)
 	defer cancel()
 
 	extendSeconds := req.ExtendSeconds
@@ -1911,7 +1911,7 @@ func (s *Server) handleForceReleaseReservation(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(approvalpkg.WithActorProvenance(r.Context(), s.httpActorProvenance(r)), 10*time.Second)
 	defer cancel()
 	var client *agentmail.Client
 	loadClient := func() error {

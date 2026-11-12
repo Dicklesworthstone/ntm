@@ -1591,3 +1591,44 @@ func TestRunHandoffCreateValidation(t *testing.T) {
 		t.Fatalf("runHandoffCreate() with goal and now should succeed: %v", err)
 	}
 }
+
+func TestRunHandoffCreateAutoDegradesOnSlowCASS(t *testing.T) {
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	cassScript := filepath.Join(binDir, "cass")
+	if err := os.WriteFile(cassScript, []byte("#!/bin/sh\nexec sleep 15\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Chdir(tmpDir)
+
+	cmd := newHandoffCreateCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"general", "--auto", "--goal", "Slow CASS resilience", "--now", "Verify degraded JSON", "--format", "json"})
+
+	start := time.Now()
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("handoff create --auto failed on slow cass: %v; output=%s", err, buf.String())
+	}
+	elapsed := time.Since(start)
+	if elapsed >= 6*time.Second {
+		t.Fatalf("handoff create --auto did not bound 15s slow cass: elapsed=%v", elapsed)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("decode JSON output: %v; raw=%s", err, buf.String())
+	}
+	if result["success"] != true {
+		t.Fatalf("expected success=true, got %+v", result)
+	}
+	warnings, ok := result["warnings"].([]interface{})
+	if !ok || len(warnings) == 0 {
+		t.Fatalf("expected structured cass degradation warning in JSON output, got %+v", result)
+	}
+}

@@ -9,7 +9,7 @@
     "url": "https://github.com/Dicklesworthstone/ntm"
   },
   "engines": {
-    "vscode": "^1.120.0"
+    "vscode": "^1.90.0"
   },
   "categories": [
     "Other"
@@ -22,6 +22,9 @@
     "onCommand:ntm.openPalette"
   ],
   "main": "./out/extension.js",
+  "vsce": {
+    "dependencies": false
+  },
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -51,6 +54,10 @@
         "title": "NTM: Show Session Status"
       },
       {
+        "command": "ntm.sendPrompt",
+        "title": "NTM: Send Prompt to Agent"
+      },
+      {
         "command": "ntm.sendSelection",
         "title": "NTM: Send Selection to Agent"
       },
@@ -61,6 +68,20 @@
       {
         "command": "ntm.openTerminal",
         "title": "NTM: Open Terminal (Attach)"
+      },
+      {
+        "command": "ntm.viewSession",
+        "title": "NTM: View Session Panes",
+        "icon": "$(split-horizontal)"
+      },
+      {
+        "command": "ntm.zoomPane",
+        "title": "NTM: Zoom Agent Pane",
+        "icon": "$(screen-full)"
+      },
+      {
+        "command": "ntm.terminalDashboard",
+        "title": "NTM: Open TUI Dashboard in Terminal"
       },
       {
         "command": "ntm.openPalette",
@@ -94,6 +115,16 @@
           "command": "ntm.attachSession",
           "when": "view == ntmSessions && viewItem == session",
           "group": "inline"
+        },
+        {
+          "command": "ntm.viewSession",
+          "when": "view == ntmSessions && viewItem == session",
+          "group": "navigation"
+        },
+        {
+          "command": "ntm.zoomPane",
+          "when": "view == ntmSessions && viewItem == agent",
+          "group": "inline"
         }
       ]
     },
@@ -111,11 +142,12 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "test": "npm run compile && node --test out/test/extension.test.js"
   },
   "devDependencies": {
     "@types/node": "^25.8.0",
-    "@types/vscode": "^1.120.0",
+    "@types/vscode": "^1.90.0",
     "@vscode/vsce": "3.9.2",
     "typescript": "^6.0.3"
   }

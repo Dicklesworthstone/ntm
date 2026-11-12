@@ -11,15 +11,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { apiRequestSignal, getAuthHeaders, getBaseUrl } from "@/lib/api/client";
-
-interface ApiEnvelope {
-  success: boolean;
-  timestamp: string;
-  request_id?: string;
-  error?: string;
-  error_code?: string;
-}
+import { apiFetch, type ApiEnvelope } from "@/lib/api/client";
 
 interface SessionRecord {
   name: string;
@@ -51,29 +43,6 @@ interface SessionAgentsResponse extends ApiEnvelope {
   count: number;
 }
 
-async function apiFetch<T>(path: string): Promise<T> {
-  const response = await fetch(`${getBaseUrl()}${path}`, {
-    signal: apiRequestSignal(),
-    headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-  });
-
-  const raw = await response.text();
-  let data: unknown = null;
-  if (raw) {
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      throw new Error("Invalid response from server.");
-    }
-  }
-
-  const envelope = data as ApiEnvelope | null;
-  if (!response.ok || !envelope?.success) {
-    throw new Error(envelope?.error || `Request failed (${response.status})`);
-  }
-  return data as T;
-}
-
 const AGENT_TYPE_LABELS: Record<string, string> = {
   cc: "Claude Code",
   cod: "Codex",
@@ -99,7 +68,7 @@ export default function AgentsPage() {
     isLoading,
     error,
   } = useQuery({
-    queryKey: ["all-agents"],
+    queryKey: ["agents", "all"],
     queryFn: async () => {
       const sessionsResponse = await apiFetch<SessionsResponse>("/api/v1/sessions");
       const sessions = sessionsResponse.sessions ?? [];

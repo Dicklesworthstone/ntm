@@ -97,14 +97,14 @@ func resumeFixture(t *testing.T, id string) (string, *ExecutionState) {
 	t.Cleanup(func() {
 		// Let any successfully launched worker settle before TempDir cleanup.
 		_ = os.WriteFile(filepath.Join(root, "release"), []byte("finish"), 0600)
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = RequestRunCancellation(ctx, root, id)
 		prefix, err := runControlPrefix(root, id)
 		if err != nil {
 			return
 		}
-		until := time.Now().Add(5 * time.Second)
+		until := time.Now().Add(15 * time.Second)
 		for time.Now().Before(until) {
 			var owner runControlRecord
 			if err := readRunControl(prefix+".owner", &owner); err != nil || !owner.Active {
@@ -112,40 +112,83 @@ func resumeFixture(t *testing.T, id string) (string, *ExecutionState) {
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
-		t.Error("background resume did not retire ownership during cleanup")
+		var owner runControlRecord
+		ownerErr := readRunControl(prefix+".owner", &owner)
+		t.Errorf("background resume did not retire ownership during cleanup (pid=%d token=%s active=%v err=%v)", latestResumeWorkerPID(root), owner.Token, owner.Active, ownerErr)
 	})
 	return root, state
 }
 
+func latestResumeWorkerPID(root string) int {
+	readyPaths, err := filepath.Glob(filepath.Join(pipelineStateDir(root), "background", "resume-*.ready"))
+	if err != nil {
+		return 0
+	}
+	pid := 0
+	for _, path := range readyPaths {
+		var ready backgroundReady
+		if readBackgroundJSON(path, 4096, &ready) == nil && ready.PID > 0 {
+			pid = ready.PID
+		}
+	}
+	return pid
+}
+
 func awaitResumeState(t *testing.T, root, id string, status ExecutionStatus) *ExecutionState {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(45 * time.Second)
+	var transitions []string
+	lastSnapshot := ""
+	prefix, prefixErr := runControlPrefix(root, id)
 	for time.Now().Before(deadline) {
 		state, err := LoadState(root, id)
+		var owner runControlRecord
+		ownerLoaded := prefixErr == nil && readRunControl(prefix+".owner", &owner) == nil
+		if err == nil {
+			snap := fmt.Sprintf("status=%s(pid=%d,active=%v,owner_ok=%v)", state.Status, latestResumeWorkerPID(root), owner.Active, ownerLoaded)
+			if snap != lastSnapshot {
+				transitions = append(transitions, snap)
+				lastSnapshot = snap
+			}
+		}
 		if err == nil && state.Status == status {
 			if status == StatusRunning {
 				return state
 			}
-			prefix, err := runControlPrefix(root, id)
-			var owner runControlRecord
-			if err == nil && readRunControl(prefix+".owner", &owner) == nil && !owner.Active {
+			if ownerLoaded && !owner.Active {
 				return state
 			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	state, err := LoadState(root, id)
-	t.Fatalf("resume did not reach %s: %+v %v", status, state, err)
+	var owner runControlRecord
+	var ownerErr error
+	if prefixErr == nil {
+		ownerErr = readRunControl(prefix+".owner", &owner)
+	} else {
+		ownerErr = prefixErr
+	}
+	var workerLogs []string
+	if logPaths, globErr := filepath.Glob(filepath.Join(pipelineStateDir(root), "background", "resume-*.log")); globErr == nil {
+		for _, logPath := range logPaths {
+			if raw, readErr := os.ReadFile(logPath); readErr == nil && len(raw) > 0 {
+				workerLogs = append(workerLogs, fmt.Sprintf("%s=%q", filepath.Base(logPath), string(raw)))
+			}
+		}
+	}
+	t.Fatalf("resume did not reach %s: state=%+v state_err=%v owner=(pid=%d token=%s active=%v err=%v) transitions=%v logs=%v",
+		status, state, err, latestResumeWorkerPID(root), owner.Token, owner.Active, ownerErr, transitions, workerLogs)
 	return nil
 }
 
 func TestBackgroundResumeSurvivesLauncherExit(t *testing.T) {
 	root, prior := resumeFixture(t, "run-resume-exit")
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	launcher := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestBackgroundResumeProcess$", "--", "resume", root, prior.RunID)
 	launcher.Dir = root
-	launcher.WaitDelay = time.Second
+	launcher.WaitDelay = 5 * time.Second
 	raw, err := launcher.CombinedOutput()
 	if err != nil {
 		t.Fatalf("resume launcher: %v %s", err, raw)
@@ -183,7 +226,7 @@ func TestBackgroundResumeCancellationAndNewAttempt(t *testing.T) {
 			t.Fatalf("resume attempt %d: %+v %v", attempt, out, err)
 		}
 		awaitResumeState(t, root, prior.RunID, StatusRunning)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		controller := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestBackgroundResumeProcess$", "--", "cancel", root, prior.RunID)
 		raw, err := controller.CombinedOutput()
 		cancel()

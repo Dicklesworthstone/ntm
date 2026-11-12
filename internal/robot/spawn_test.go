@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1299,7 +1300,7 @@ func TestSpawnOptions_NoAgentsSpecified(t *testing.T) {
 	if resp.Error == "" {
 		t.Error("[E2E-SPAWN] Expected error for no agents specified")
 	}
-	if resp.Error != "no agents specified (use cc, cod, gmi, agy, grok, omp, or oc counts)" {
+	if resp.Error != "no agents specified (use built-in or registered plugin spawn counts)" {
 		t.Errorf("[E2E-SPAWN] Unexpected error message: %s", resp.Error)
 	}
 
@@ -3112,5 +3113,150 @@ func TestIsAgentReadyOpencodeWaitsForComposer(t *testing.T) {
 	// but the OpenCode TUI is not up until its composer is drawn.
 	if isAgentReady("user@host:~/proj$ opencode --model 'x/y'\n$ ", "oc") {
 		t.Fatal("bare shell prompt reported an OpenCode pane ready")
+	}
+}
+
+func TestGetSpawnClaudeIsolationReportsCredentialIsolated(t *testing.T) {
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		t.Skip("file-backed Claude credential isolation requires Linux config dir storage")
+	}
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(homeDir, ".claude"))
+	if err := os.MkdirAll(filepath.Join(homeDir, ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	workDir := t.TempDir()
+	panes := []tmux.Pane{{ID: "%1", WindowIndex: 0, Index: 0}}
+	deps := testSpawnLifecycleDependencies(panes)
+	var gotCommand string
+	deps.LaunchAgent = func(_ context.Context, _ tmux.Pane, session, agentType string, number int, _, command string) (SpawnedAgent, error) {
+		gotCommand = command
+		return SpawnedAgent{Pane: "0.0", Type: agentType, Title: fmt.Sprintf("%s__cc_%d", session, number)}, nil
+	}
+
+	cfg := testSpawnConfig()
+	cfg.Agents.ClaudeIsolateCredentials = true
+
+	out, err := GetSpawn(t.Context(), SpawnOptions{
+		Session: "iso-claude", CCCount: 1, NoUserPane: true, WorkingDir: workDir, LifecycleDeps: deps,
+	}, cfg)
+	if err != nil || !out.Success {
+		t.Fatalf("GetSpawn output=%+v err=%v", out, err)
+	}
+	if !strings.Contains(gotCommand, "CLAUDE_CONFIG_DIR=") {
+		t.Fatalf("expected CLAUDE_CONFIG_DIR in launch command, got %q", gotCommand)
+	}
+	if len(out.Agents) != 1 || out.Agents[0].CredentialIsolated == nil || !*out.Agents[0].CredentialIsolated {
+		t.Fatalf("expected credential_isolated=true on spawned Claude agent, got %+v", out.Agents)
+	}
+}
+
+func TestGetSpawnRefusesWindsurfIDEOnlyHarnessUnlessOverridden(t *testing.T) {
+	cfg := config.Default()
+	out, err := GetSpawn(t.Context(), SpawnOptions{
+		Session:       "windsurf_gui",
+		WindsurfCount: 1,
+		NoUserPane:    true,
+		DryRun:        true,
+	}, cfg)
+	if err != nil {
+		t.Fatalf("GetSpawn returned error: %v", err)
+	}
+	if out.Success || out.ErrorCode != ErrCodeInvalidFlag {
+		t.Fatalf("expected INVALID_FLAG refusal for default windsurf GUI template, got %+v", out)
+	}
+	if out.StructuredError == nil || out.StructuredError.Code != ErrCodeIDEOnlyHarness {
+		t.Fatalf("expected structured_error.code=%q, got %+v", ErrCodeIDEOnlyHarness, out.StructuredError)
+	}
+
+	cfg.Agents.Windsurf = `windsurf-cli --headless{{if .Model}} --model {{shellQuote .Model}}{{end}}`
+	allowed, err := GetSpawn(t.Context(), SpawnOptions{
+		Session:       "windsurf_term",
+		WindsurfCount: 1,
+		WindsurfModel: "sonnet",
+		NoUserPane:    true,
+		DryRun:        true,
+	}, cfg)
+	if err != nil {
+		t.Fatalf("GetSpawn with terminal windsurf override: %v", err)
+	}
+	if !allowed.Success || len(allowed.WouldCreate) != 1 || allowed.WouldCreate[0].Type != "windsurf" {
+		t.Fatalf("expected overridden windsurf dry-run to succeed, got %+v", allowed)
+	}
+}
+
+func TestSpawnDryRunPlansOllamaAiderCursorPiParity(t *testing.T) {
+	cfg := config.Default()
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	opts := SpawnOptions{
+		Session:     "harness_parity",
+		ConfigPath:  cfgPath,
+		OllamaCount: 1,
+		OllamaModel: "qwen2.5-coder:32b",
+		AiderCount:  1,
+		AiderModel:  "sonnet",
+		CursorCount: 1,
+		PluginAgents: map[string]PluginSpawnSpec{
+			"pi": {Count: 1},
+		},
+		NoUserPane: true,
+		DryRun:     true,
+	}
+	out, err := GetSpawn(t.Context(), opts, cfg)
+	if err != nil {
+		t.Fatalf("GetSpawn: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("dry run failed: %s (%+v)", out.Error, out.StructuredError)
+	}
+	gotTypes := make([]string, 0, len(out.WouldCreate))
+	for _, p := range out.WouldCreate {
+		gotTypes = append(gotTypes, p.Type)
+	}
+	wantTypes := []string{"ollama", "aider", "cursor", "pi"}
+	if !reflect.DeepEqual(gotTypes, wantTypes) {
+		t.Fatalf("WouldCreate types = %v, want %v (full: %+v)", gotTypes, wantTypes, out.WouldCreate)
+	}
+	cmds, err := getAgentCommandsWithOverrides(cfg, opts)
+	if err != nil {
+		t.Fatalf("getAgentCommandsWithOverrides: %v", err)
+	}
+	if !strings.Contains(cmds["ollama"], "qwen2.5-coder:32b") {
+		t.Fatalf("ollama command = %q, want model tag preserved", cmds["ollama"])
+	}
+	prepared, err := prepareSpawnPlugins(opts)
+	if err != nil {
+		t.Fatalf("prepareSpawnPlugins: %v", err)
+	}
+	pluginLaunches, err := renderSpawnPluginRequests(prepared, cfg, t.TempDir())
+	if err != nil {
+		t.Fatalf("renderSpawnPluginRequests: %v", err)
+	}
+	piLaunch, ok := pluginLaunches[spawnRecipeKey{agentType: "pi", number: 1}]
+	if !ok || !strings.Contains(piLaunch.command, "pi") {
+		t.Fatalf("shipped pi fallback launch = %+v (ok=%v), want pi command", piLaunch, ok)
+	}
+}
+
+func TestIsAgentReadyAntigravityWaitsForComposer(t *testing.T) {
+	composer := strings.Join([]string{
+		"Antigravity",
+		"",
+		"  >",
+		"",
+		"  ? for shortcuts",
+		"  Gemini 4 Argon (High)",
+	}, "\n")
+	if !isAgentReady(composer, "agy") {
+		t.Fatal("Antigravity composer not recognized as ready")
+	}
+	if isAgentReady("user@host:~/proj$ agy-locked\n> ", "agy") {
+		t.Fatal("bare shell '>' without Antigravity shortcuts footer reported ready")
+	}
+	trustDialog := "Do you trust the contents of this project?\n> Yes, I trust this folder\n  No, exit\n↑/↓ Navigate · enter Confirm"
+	if isAgentReady(trustDialog, "agy") {
+		t.Fatal("trust dialog reported Antigravity pane ready")
 	}
 }

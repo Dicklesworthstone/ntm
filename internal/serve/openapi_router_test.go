@@ -228,26 +228,25 @@ func TestRouterSpecUnjoinedRoutesGetHonestGenerics(t *testing.T) {
 		t.Errorf("GET /api/v1/version 200 ref = %q, want generic SuccessEnvelope (handler builds an ad hoc map)", ref)
 	}
 
-	// Legacy /api/robot/health serves a stub note map, not robot.HealthOutput,
-	// so it must stay generic even though its V1 sibling joins.
+	// Legacy /api/robot/health delegates to robot.GetHealth() and joins to HealthOutput.
 	item, ok = spec.Paths["/api/robot/health"]
 	if !ok || item.Get == nil {
 		t.Fatal("GET /api/robot/health missing from spec")
 	}
 	ref = item.Get.Responses["200"].Content["application/json"].Schema.Ref
-	if ref != "#/components/schemas/SuccessEnvelope" {
-		t.Errorf("GET /api/robot/health 200 ref = %q, want generic SuccessEnvelope (legacy stub handler)", ref)
+	if ref != "#/components/schemas/HealthOutput" {
+		t.Errorf("GET /api/robot/health 200 ref = %q, want HealthOutput (handler serves robot.GetHealth)", ref)
 	}
 
-	// /api/v1/robot/attention serves GetDigest output, so it must join to
-	// DigestOutput, not AttentionOutput.
+	// /api/v1/robot/attention serves robot.GetAttention output, so it must join
+	// to AttentionOutput.
 	item, ok = spec.Paths["/api/v1/robot/attention"]
 	if !ok || item.Get == nil {
 		t.Fatal("GET /api/v1/robot/attention missing from spec")
 	}
 	ref = item.Get.Responses["200"].Content["application/json"].Schema.Ref
-	if ref != "#/components/schemas/DigestOutput" {
-		t.Errorf("GET /api/v1/robot/attention 200 ref = %q, want DigestOutput (handler serves GetDigest)", ref)
+	if ref != "#/components/schemas/AttentionOutput" {
+		t.Errorf("GET /api/v1/robot/attention 200 ref = %q, want AttentionOutput (handler serves GetAttention)", ref)
 	}
 
 	// Same for /api/v1/health: {"status":"healthy"} envelope, not robot.HealthOutput.
@@ -372,8 +371,10 @@ func TestParityMatrixGeneratedFromRouter(t *testing.T) {
 		}
 	}
 	for route, want := range map[string]string{
+		"GET /api/robot/health":                          "health",
 		"GET /api/v1/robot/status":                       "status",
-		"GET /api/v1/robot/attention":                    "digest",
+		"GET /api/v1/robot/attention":                    "attention",
+		"GET /api/v1/policy/decisions":                   "policy_decisions",
 		"POST /api/v1/sessions/{sessionId}/agents/spawn": "spawn",
 	} {
 		if got := joins[route]; got != want {

@@ -146,6 +146,7 @@ Examples:
 					return fmt.Errorf("--by-window requires exactly one agent type flag (e.g. --by-window --cc), got %d", selectedCount)
 				}
 				opts := AdoptOptions{
+					Context:      cmd.Context(),
 					Session:      sessionName,
 					AutoName:     autoName,
 					DryRun:       dryRun,
@@ -165,6 +166,7 @@ Examples:
 			}
 
 			opts := AdoptOptions{
+				Context:         cmd.Context(),
 				Session:         sessionName,
 				AutoName:        autoName,
 				DryRun:          dryRun,
@@ -192,6 +194,7 @@ Examples:
 
 // AdoptOptions configures session adoption
 type AdoptOptions struct {
+	Context  context.Context
 	Session  string
 	AutoName bool
 	DryRun   bool
@@ -364,6 +367,10 @@ func (r *AdoptResult) JSON() interface{} {
 }
 
 func runAdopt(opts AdoptOptions) error {
+	adoptCtx := opts.Context
+	if adoptCtx == nil {
+		adoptCtx = context.Background()
+	}
 	// bd-usgfy: emitAdoptFailure writes the success:false JSON envelope and
 	// signals non-zero exit via errJSONFailure so automation scripts gating
 	// on `$?` don't treat the failure as success (parity with #125).
@@ -492,7 +499,7 @@ func runAdopt(opts AdoptOptions) error {
 			// 3.0+, and the title-based path still works where they are
 			// unavailable.
 			if !opts.DryRun {
-				if err := tmux.SetPaneAgentType(pane.ID, canonicalType); err != nil && !jsonOutput {
+				if err := tmux.SetPaneAgentTypeContext(adoptCtx, pane.ID, canonicalType); err != nil && !jsonOutput {
 					output.PrintWarningf("Could not record agent type on pane %s (%v); type detection will rely on the pane title", req, err)
 				}
 			}

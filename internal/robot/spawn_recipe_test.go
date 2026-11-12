@@ -221,7 +221,7 @@ func TestSpawnRecipeExpansionPreservesControlsAndRepeatedTypes(t *testing.T) {
 		ReservationPaths: []string{"src/**"}, CCReasoningEffort: "high",
 		LifecycleDeps: &SpawnLifecycleDependencies{},
 	}
-	got, err := expandSpawnRecipe(opts, r)
+	got, err := expandSpawnRecipe(opts, r, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestSpawnRecipeRejectsUnsupportedIntentBeforeExpansion(t *testing.T) {
 		{"missing", nil},
 		{"empty", &recipe.Recipe{Name: "empty"}},
 		{"unknown type", &recipe.Recipe{Name: "bad", Agents: []recipe.AgentSpec{{Type: "typo", Count: 1}}}},
-		{"unsupported robot type", &recipe.Recipe{Name: "bad", Agents: []recipe.AgentSpec{{Type: "cursor", Count: 1}}}},
+		{"ide only harness", &recipe.Recipe{Name: "bad", Agents: []recipe.AgentSpec{{Type: "windsurf", Count: 1}}}},
 		{"persona", &recipe.Recipe{Name: "bad", Agents: []recipe.AgentSpec{{Type: "cc", Count: 1, Persona: "reviewer"}}}},
 		{"zero count", &recipe.Recipe{Name: "bad", Agents: []recipe.AgentSpec{{Type: "cc", Count: 0}}}},
 		{"negative count", &recipe.Recipe{Name: "bad", Agents: []recipe.AgentSpec{{Type: "cc", Count: -1}}}},
@@ -249,7 +249,7 @@ func TestSpawnRecipeRejectsUnsupportedIntentBeforeExpansion(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			opts := SpawnOptions{Session: "original", Preset: "bad", Safety: true}
-			got, err := expandSpawnRecipe(opts, tc.r)
+			got, err := expandSpawnRecipe(opts, tc.r, nil)
 			if err == nil || !reflect.DeepEqual(got, opts) {
 				t.Fatalf("invalid recipe accepted or partially changed request: %+v %v", got, err)
 			}
@@ -266,7 +266,7 @@ func TestSpawnRecipeRenderPreservesPerInstanceModelsAndEffort(t *testing.T) {
 		{Type: "cod", Count: 1, Model: "other-model", ReasoningEffort: "medium"},
 		{Type: "claude", Count: 1, Model: "second-model", ReasoningEffort: "high"},
 	}}
-	opts, err := expandSpawnRecipe(SpawnOptions{Preset: "mixed"}, r)
+	opts, err := expandSpawnRecipe(SpawnOptions{Preset: "mixed"}, r, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

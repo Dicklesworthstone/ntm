@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,12 +22,12 @@ func TestGenerateID(t *testing.T) {
 		{
 			name:    "simple name",
 			input:   "backup",
-			wantLen: 31, // YYYYMMDD-HHMMSS.mmm-XXXX-backup (with random suffix)
+			wantLen: 43, // YYYYMMDD-HHMMSS.mmm-<16-hex-crypto-rand>-backup
 		},
 		{
 			name:    "empty name",
 			input:   "",
-			wantLen: 24, // YYYYMMDD-HHMMSS.mmm-XXXX (with random suffix)
+			wantLen: 36, // YYYYMMDD-HHMMSS.mmm-<16-hex-crypto-rand>
 		},
 		{
 			name:     "name with spaces",
@@ -52,6 +53,34 @@ func TestGenerateID(t *testing.T) {
 				t.Errorf("GenerateID(%q) = %q, want to contain %q", tt.input, id, tt.contains)
 			}
 		})
+	}
+}
+
+func TestGenerateID_ParallelCollisionFree10000(t *testing.T) {
+	const total = 10000
+	const workers = 16
+	perWorker := total / workers
+
+	ids := make([]string, total)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			base := worker * perWorker
+			for i := 0; i < perWorker; i++ {
+				ids[base+i] = GenerateID("snap")
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	seen := make(map[string]struct{}, total)
+	for _, id := range ids {
+		if _, dup := seen[id]; dup {
+			t.Fatalf("duplicate checkpoint ID generated: %q", id)
+		}
+		seen[id] = struct{}{}
 	}
 }
 

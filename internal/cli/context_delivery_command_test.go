@@ -771,8 +771,8 @@ func TestContextInjectCobraRejectsFullOrChangedQualifiedNativeSession(t *testing
 			if scenario == "provider_changed_during_build" {
 				wantError = "context session or model changed"
 			}
-			if !strings.Contains(err.Error(), wantError) {
-				t.Fatalf("refused for the wrong reason: %v; want %q", err, wantError)
+			if !strings.Contains(result.Error, wantError) {
+				t.Fatalf("refused for the wrong reason: result.Error=%q err=%v; want %q", result.Error, err, wantError)
 			}
 			for _, receipt := range result.Deliveries {
 				if receipt.Status != "not_attempted" {

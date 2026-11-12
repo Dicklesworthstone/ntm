@@ -3,12 +3,15 @@ package robot
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -413,4 +416,149 @@ func TestLifecycleShellTransportHelper(t *testing.T) {
 	if keys != wantKeys {
 		t.Fatalf("exit keys = %q, want %q; an already-exited agent must receive no follow-up input", keys, wantKeys)
 	}
+}
+
+func TestDirectExecMockAgentHelper(t *testing.T) {
+	if os.Getenv("NTM_MOCK_DIRECT_EXEC_AGENT") != "1" {
+		return
+	}
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	doneCh := make(chan struct{})
+	go func() {
+		var buf [16]byte
+		for {
+			n, err := os.Stdin.Read(buf[:])
+			for i := 0; i < n; i++ {
+				if buf[i] == 0x03 || buf[i] == 0x04 {
+					close(doneCh)
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	select {
+	case <-sigCh:
+	case <-doneCh:
+	case <-time.After(30 * time.Second):
+	}
+	os.Exit(0)
+}
+
+func TestExitCLI_DirectExecProtectionAndOptInFlags(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("real tmux lifecycle test requires POSIX")
+	}
+	if !tmux.DefaultClient.IsInstalled() {
+		t.Skip("tmux not installed")
+	}
+
+	tmpDir := t.TempDir()
+	workDir := filepath.Join(tmpDir, "agent-workdir")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	selfExe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	directExecCmd := fmt.Sprintf("env NTM_MOCK_DIRECT_EXEC_AGENT=1 %s -test.run=^TestDirectExecMockAgentHelper$", tmux.ShellQuote(selfExe))
+
+	waitForForegroundAgent := func(t *testing.T, session string) tmux.Pane {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			panes, err := tmux.GetPanes(session)
+			if err == nil && len(panes) > 0 && panes[0].PID > 0 && !panes[0].Dead &&
+				panes[0].Command != "" && panes[0].Command != "tmux" && panes[0].Command != "env" &&
+				!tmux.PaneCommandIsShell(panes[0].Command) {
+				return panes[0]
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		panes, _ := tmux.GetPanes(session)
+		t.Fatalf("agent foreground process never appeared in %s: panes=%+v", session, panes)
+		return tmux.Pane{}
+	}
+
+	t.Run("default refuses direct-exec root agent and leaves pane untouched", func(t *testing.T) {
+		session := fmt.Sprintf("ntm-direct-refuse-%d", time.Now().UnixNano())
+		t.Cleanup(func() { _ = tmux.KillSession(session) })
+		if err := tmux.DefaultClient.RunSilent("new-session", "-d", "-s", session, "-c", workDir, directExecCmd); err != nil {
+			t.Fatalf("new-session: %v", err)
+		}
+		pane := waitForForegroundAgent(t, session)
+		if err := tmux.SetPaneAgentIdentityContext(t.Context(), pane.ID, session+"__cc_1", tmux.AgentClaude); err != nil {
+			t.Fatalf("SetPaneAgentIdentityContext: %v", err)
+		}
+
+		out, err := GetExitCLI(t.Context(), LifecycleOptions{Session: session})
+		if err != nil {
+			t.Fatalf("GetExitCLI: %v", err)
+		}
+		if out.Success || out.ErrorCode != ErrCodeInvalidFlag || !strings.Contains(out.Error, "DIRECT_EXEC_NO_SHELL") || !strings.Contains(out.Hint, "--respawn-shell") {
+			t.Fatalf("expected DIRECT_EXEC_NO_SHELL refusal with --respawn-shell hint, got %+v", out)
+		}
+		if !process.IsAlive(pane.PID) || !tmux.SessionExists(session) {
+			t.Fatalf("refusal destroyed direct-exec pane or session (pid=%d)", pane.PID)
+		}
+	})
+
+	t.Run("respawn-shell replaces direct-exec single-pane agent with interactive shell in same cwd", func(t *testing.T) {
+		session := fmt.Sprintf("ntm-direct-respawn-%d", time.Now().UnixNano())
+		t.Cleanup(func() { _ = tmux.KillSession(session) })
+		if err := tmux.DefaultClient.RunSilent("new-session", "-d", "-s", session, "-c", workDir, directExecCmd); err != nil {
+			t.Fatalf("new-session: %v", err)
+		}
+		pane := waitForForegroundAgent(t, session)
+		if err := tmux.SetPaneAgentIdentityContext(t.Context(), pane.ID, session+"__cc_1", tmux.AgentClaude); err != nil {
+			t.Fatalf("SetPaneAgentIdentityContext: %v", err)
+		}
+
+		out, err := GetExitCLI(t.Context(), LifecycleOptions{Session: session, RespawnShell: true})
+		if err != nil {
+			t.Fatalf("GetExitCLI --respawn-shell: %v", err)
+		}
+		if !out.Success || len(out.Results) != 1 {
+			t.Fatalf("expected success with 1 result, got %+v", out)
+		}
+		res := out.Results[0]
+		if !res.Exited || !res.ShellPreserved || res.Status != "respawned_shell" || res.LineageMode != "direct_exec" || res.VerificationFailed {
+			t.Fatalf("unexpected respawn-shell result: %+v", res)
+		}
+		if !tmux.SessionExists(session) {
+			t.Fatal("single-pane session was destroyed during --respawn-shell")
+		}
+		gotCwd, err := restartPaneWorkingDirectory(t.Context(), pane.ID)
+		if err != nil || gotCwd != workDir {
+			t.Fatalf("respawned shell cwd = %q (err=%v), want %q", gotCwd, err, workDir)
+		}
+	})
+
+	t.Run("allow-pane-close exits direct-exec pane cleanly without false verification_failed", func(t *testing.T) {
+		session := fmt.Sprintf("ntm-direct-close-%d", time.Now().UnixNano())
+		t.Cleanup(func() { _ = tmux.KillSession(session) })
+		if err := tmux.DefaultClient.RunSilent("new-session", "-d", "-s", session, "-c", workDir, directExecCmd); err != nil {
+			t.Fatalf("new-session: %v", err)
+		}
+		pane := waitForForegroundAgent(t, session)
+		if err := tmux.SetPaneAgentIdentityContext(t.Context(), pane.ID, session+"__cc_1", tmux.AgentClaude); err != nil {
+			t.Fatalf("SetPaneAgentIdentityContext: %v", err)
+		}
+
+		out, err := GetExitCLI(t.Context(), LifecycleOptions{Session: session, AllowPaneClose: true})
+		if err != nil {
+			t.Fatalf("GetExitCLI --allow-pane-close: %v", err)
+		}
+		if !out.Success || len(out.Results) != 1 {
+			t.Fatalf("expected success with 1 result, got %+v", out)
+		}
+		res := out.Results[0]
+		if !res.Exited || !res.PaneClosed || res.Status != "pane_closed" || res.VerificationFailed {
+			t.Fatalf("expected pane_closed without verification_failed, got %+v", res)
+		}
+	})
 }

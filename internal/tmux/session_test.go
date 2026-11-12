@@ -1555,6 +1555,36 @@ func TestCapturePaneOutputWithContent(t *testing.T) {
 	}
 }
 
+func TestCapturePaneOutputZeroAndNegativeBoundaries(t *testing.T) {
+	skipIfNoTmux(t)
+
+	session := createTestSession(t)
+	panes, err := GetPanes(session)
+	if err != nil || len(panes) == 0 {
+		t.Fatalf("GetPanes(%s): %v", session, err)
+	}
+	target := panes[0].ID
+
+	if err := SendKeys(target, "printf 'ZERO_TOP\\nZERO_MID\\nZERO_BOT\\n'", true); err != nil {
+		t.Fatalf("SendKeys: %v", err)
+	}
+	time.Sleep(250 * time.Millisecond)
+
+	for _, lines := range []int{0, -10, 1, 500} {
+		out, err := CapturePaneOutput(target, lines)
+		if err != nil {
+			t.Fatalf("CapturePaneOutput(lines=%d) failed: %v", lines, err)
+		}
+		if lines == 0 || lines == -10 || lines == 500 {
+			for _, want := range []string{"ZERO_TOP", "ZERO_MID", "ZERO_BOT"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("CapturePaneOutput(lines=%d) missing %q; got:\n%s", lines, want, out)
+				}
+			}
+		}
+	}
+}
+
 // ============== Layout Tests ==============
 
 func TestApplyTiledLayout(t *testing.T) {

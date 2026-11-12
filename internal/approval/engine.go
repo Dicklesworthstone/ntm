@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -105,14 +106,114 @@ func New(store *state.Store, notifier *notify.Notifier, eventBus *events.EventBu
 
 // RequestParams contains parameters for creating an approval request.
 type RequestParams struct {
-	Action        string        // What action needs approval (e.g., "force_release")
-	Resource      string        // What resource is being acted on
-	Reason        string        // Why approval is needed
-	RequestedBy   string        // Who is requesting (agent or user identity)
-	CorrelationID string        // Optional correlation ID for tracing
-	RequiresSLB   bool          // Whether two-person rule applies
-	ExpiresIn     time.Duration // Override default expiry (0 = use default)
-	ProjectDir    string        // SLB project directory (empty = current working directory)
+	Action              string        // What action needs approval (e.g., "force_release")
+	Resource            string        // What resource is being acted on
+	Reason              string        // Why approval is needed
+	RequestedBy         string        // Who is requesting (agent or user identity)
+	RequestedProvenance string        // Non-spoofable actor provenance (UID/pane/SLB session/auth)
+	CorrelationID       string        // Optional correlation ID for tracing
+	RequiresSLB         bool          // Whether two-person rule applies
+	ExpiresIn           time.Duration // Override default expiry (0 = use default)
+	ProjectDir          string        // SLB project directory (empty = current working directory)
+}
+
+type actorProvenanceContextKey struct{}
+
+// WithActorProvenance attaches explicit actor provenance (such as HTTP auth
+// principal or local daemon request origin) to ctx for Request and Approve.
+func WithActorProvenance(ctx context.Context, provenance string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, actorProvenanceContextKey{}, strings.TrimSpace(provenance))
+}
+
+func resolveActorProvenance(ctx context.Context, explicit string) string {
+	if p := strings.TrimSpace(explicit); p != "" {
+		return p
+	}
+	if ctx != nil {
+		if p, ok := ctx.Value(actorProvenanceContextKey{}).(string); ok && p != "" {
+			return p
+		}
+	}
+	return LocalActorProvenance()
+}
+
+// LocalActorProvenance builds non-spoofable local caller provenance binding OS
+// UID, tmux pane ID, SLB session ID, and Agent Mail identity when present.
+func LocalActorProvenance() string {
+	parts := []string{"uid=" + strconv.Itoa(os.Getuid())}
+	if pane := sanitizeProvenanceValue(os.Getenv("TMUX_PANE")); pane != "" {
+		parts = append(parts, "pane="+pane)
+	}
+	if slbSess := sanitizeProvenanceValue(os.Getenv("SLB_SESSION_ID")); slbSess != "" {
+		parts = append(parts, "slb_session="+slbSess)
+	}
+	if agent := sanitizeProvenanceValue(os.Getenv("AGENT_NAME")); agent != "" {
+		parts = append(parts, "agent="+agent)
+	}
+	return strings.Join(parts, ";")
+}
+
+func sanitizeProvenanceValue(v string) string {
+	v = strings.TrimSpace(v)
+	v = strings.ReplaceAll(v, ";", "_")
+	v = strings.ReplaceAll(v, "=", "_")
+	return v
+}
+
+func parseActorProvenance(raw string) map[string]string {
+	out := make(map[string]string)
+	for _, token := range strings.Split(strings.TrimSpace(raw), ";") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(token), "="); ok && k != "" && v != "" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func slbActorProvenanceConflict(requestedProv, approverProv string) bool {
+	req := parseActorProvenance(requestedProv)
+	if len(req) == 0 {
+		return false
+	}
+	app := parseActorProvenance(approverProv)
+	if app["slb_verified"] == "1" {
+		return false
+	}
+	if req["auth"] != "" && app["auth"] != "" {
+		return req["auth"] == app["auth"] && req["principal"] != "" && req["principal"] == app["principal"]
+	}
+	appAuthenticated := app["auth"] != "" && app["principal"] != ""
+	appHasDistinctSession := (app["slb_session"] != "" && app["slb_session"] != req["slb_session"]) ||
+		(app["pane"] != "" && app["pane"] != req["pane"])
+
+	if req["slb_session"] != "" {
+		if app["slb_session"] == req["slb_session"] {
+			return true
+		}
+		if !appAuthenticated && !appHasDistinctSession {
+			return true
+		}
+	}
+	if req["pane"] != "" {
+		if app["pane"] == req["pane"] && req["uid"] == app["uid"] {
+			return true
+		}
+		if !appAuthenticated && !appHasDistinctSession {
+			return true
+		}
+	}
+	if req["agent"] != "" {
+		if app["agent"] == req["agent"] && req["uid"] == app["uid"] {
+			return true
+		}
+		if !appAuthenticated && !appHasDistinctSession && (app["agent"] == "" || app["agent"] == req["agent"]) {
+			return true
+		}
+	}
+	return false
 }
 
 // Request creates a new approval request.
@@ -149,16 +250,17 @@ func (e *Engine) requestWithID(ctx context.Context, params RequestParams, id str
 
 	now := time.Now().UTC()
 	approval := &state.Approval{
-		ID:            id,
-		Action:        params.Action,
-		Resource:      params.Resource,
-		Reason:        params.Reason,
-		RequestedBy:   params.RequestedBy,
-		CorrelationID: params.CorrelationID,
-		RequiresSLB:   params.RequiresSLB,
-		CreatedAt:     now,
-		ExpiresAt:     now.Add(expiry),
-		Status:        state.ApprovalPending,
+		ID:                  id,
+		Action:              params.Action,
+		Resource:            params.Resource,
+		Reason:              params.Reason,
+		RequestedBy:         params.RequestedBy,
+		RequestedProvenance: resolveActorProvenance(ctx, params.RequestedProvenance),
+		CorrelationID:       params.CorrelationID,
+		RequiresSLB:         params.RequiresSLB,
+		CreatedAt:           now,
+		ExpiresAt:           now.Add(expiry),
+		Status:              state.ApprovalPending,
 	}
 
 	// Persist admission before contacting SLB. Only the winner of this
@@ -359,7 +461,7 @@ func (e *Engine) syncSLBDecision(ctx context.Context, approval *state.Approval) 
 		return false
 	}
 	if status.Status == "approved" {
-		err = e.Approve(ctx, approval.ID, "slb:"+deciding.Reviewer)
+		err = e.Approve(WithActorProvenance(ctx, "slb_verified=1;reviewer="+sanitizeProvenanceValue(deciding.Reviewer)), approval.ID, "slb:"+deciding.Reviewer)
 	} else {
 		err = e.Deny(ctx, approval.ID, "slb:"+deciding.Reviewer, deciding.Comments)
 	}
@@ -436,7 +538,11 @@ func (e *Engine) Approve(ctx context.Context, id string, approverID string) erro
 	if len(e.config.ApproverList) > 0 && !contains(e.config.ApproverList, approverID) {
 		return fmt.Errorf("%s is not an authorized approver", approverID)
 	}
-	if approval.RequiresSLB && approverID == approval.RequestedBy {
+	approverProv := resolveActorProvenance(ctx, "")
+	if strings.HasPrefix(approverID, "slb:") && (ctx == nil || ctx.Value(actorProvenanceContextKey{}) == nil) {
+		approverProv = "slb_verified=1;reviewer=" + sanitizeProvenanceValue(strings.TrimPrefix(approverID, "slb:"))
+	}
+	if approval.RequiresSLB && (approverID == approval.RequestedBy || slbActorProvenanceConflict(approval.RequestedProvenance, approverProv)) {
 		return ErrSLBSelfApproval
 	}
 
@@ -447,6 +553,7 @@ func (e *Engine) Approve(ctx context.Context, id string, approverID string) erro
 	// letting this write silently flip a landed denial to approved.
 	approval.Status = state.ApprovalApproved
 	approval.ApprovedBy = approverID
+	approval.ApprovedProvenance = approverProv
 	approval.ApprovedAt = &now
 
 	ok, err := e.store.UpdateApprovalFrom(approval, state.ApprovalPending)

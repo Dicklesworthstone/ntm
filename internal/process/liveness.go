@@ -364,31 +364,41 @@ var processStateNames = map[string]string{
 // it launched with job control owns the terminal under a different group.
 // ok is false when the fields cannot be read (non-Linux, process gone).
 func TerminalForeground(pid int) (tpgid, pgrp int, ok bool) {
+	tpgid, pgrp, _, ok = SessionTerminalForeground(pid)
+	return tpgid, pgrp, ok
+}
+
+// SessionTerminalForeground returns tpgid, pgrp, and session ID (sid) from
+// /proc/<pid>/stat. A tmux pane's root process is the session leader of its
+// PTY (sid == pid); when sid != pid, any controlling terminal was inherited
+// from an outer session rather than owned by pid.
+func SessionTerminalForeground(pid int) (tpgid, pgrp, sid int, ok bool) {
 	if pid <= 0 {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
 	// "pid (comm) state ppid pgrp session tty_nr tpgid ..." — comm may contain
 	// spaces and parentheses, so split after the LAST ')'.
 	text := string(data)
 	end := strings.LastIndex(text, ")")
 	if end < 0 || end+2 > len(text) {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
 	fields := strings.Fields(text[end+2:])
 	// fields[0]=state fields[1]=ppid fields[2]=pgrp fields[3]=session fields[4]=tty_nr fields[5]=tpgid
 	if len(fields) < 6 {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
 	pg, err1 := strconv.Atoi(fields[2])
-	tp, err2 := strconv.Atoi(fields[5])
-	if err1 != nil || err2 != nil || pg <= 0 {
-		return 0, 0, false
+	s, err2 := strconv.Atoi(fields[3])
+	tp, err3 := strconv.Atoi(fields[5])
+	if err1 != nil || err2 != nil || err3 != nil || pg <= 0 {
+		return 0, 0, 0, false
 	}
-	return tp, pg, true
+	return tp, pg, s, true
 }
 
 func GetProcessState(pid int) (string, string, error) {

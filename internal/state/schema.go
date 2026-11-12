@@ -137,19 +137,21 @@ type Reservation struct {
 
 // Approval represents a pending approval request for a sensitive action.
 type Approval struct {
-	ID            string         `json:"id"`
-	Action        string         `json:"action"`
-	Resource      string         `json:"resource"`
-	Reason        string         `json:"reason,omitempty"`
-	RequestedBy   string         `json:"requested_by"`
-	CorrelationID string         `json:"correlation_id,omitempty"`
-	RequiresSLB   bool           `json:"requires_slb"` // "Stop, Look, Broadcast"
-	CreatedAt     time.Time      `json:"created_at"`
-	ExpiresAt     time.Time      `json:"expires_at"`
-	Status        ApprovalStatus `json:"status"`
-	ApprovedBy    string         `json:"approved_by,omitempty"`
-	ApprovedAt    *time.Time     `json:"approved_at,omitempty"`
-	DeniedReason  string         `json:"denied_reason,omitempty"`
+	ID                  string         `json:"id"`
+	Action              string         `json:"action"`
+	Resource            string         `json:"resource"`
+	Reason              string         `json:"reason,omitempty"`
+	RequestedBy         string         `json:"requested_by"`
+	RequestedProvenance string         `json:"requested_provenance,omitempty"`
+	CorrelationID       string         `json:"correlation_id,omitempty"`
+	RequiresSLB         bool           `json:"requires_slb"` // "Stop, Look, Broadcast"
+	CreatedAt           time.Time      `json:"created_at"`
+	ExpiresAt           time.Time      `json:"expires_at"`
+	Status              ApprovalStatus `json:"status"`
+	ApprovedBy          string         `json:"approved_by,omitempty"`
+	ApprovedProvenance  string         `json:"approved_provenance,omitempty"`
+	ApprovedAt          *time.Time     `json:"approved_at,omitempty"`
+	DeniedReason        string         `json:"denied_reason,omitempty"`
 }
 
 // ContextPack represents a pre-built context prompt for a task.

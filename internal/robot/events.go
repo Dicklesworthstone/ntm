@@ -6,10 +6,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -52,6 +54,10 @@ type EventsOptions struct {
 
 	// SeverityFilter restricts to specific severity levels.
 	SeverityFilter []string
+
+	// Store overrides the process-global projection store when ExplicitStore is true.
+	Store         *state.Store `json:"-"`
+	ExplicitStore bool         `json:"-"`
 }
 
 // EventsOutput is the JSON response for --robot-events.
@@ -199,7 +205,7 @@ func BuildEventsOutput(opts EventsOptions) (EventsOutput, int) {
 				Events:        []AttentionEvent{},
 			}, status
 		}
-		if store := currentProjectionStore(); store != nil {
+		if store := resolveProjectionStore(opts.Store, opts.ExplicitStore); store != nil {
 			if incident, incidentErr := store.GetIncident(opts.IncidentID); incidentErr == nil && incident != nil {
 				summary := snapshotIncidentFromState(*incident)
 				incidentSummary = &summary
@@ -703,6 +709,10 @@ type DigestOptions struct {
 
 	// IncludeTrace enables detailed decision tracing for debugging.
 	IncludeTrace bool
+
+	// Store overrides the process-global projection store when ExplicitStore is true.
+	Store         *state.Store `json:"-"`
+	ExplicitStore bool         `json:"-"`
 }
 
 // DigestResponse is the JSON response for --robot-digest.
@@ -856,7 +866,7 @@ func PrintDigest(opts DigestOptions) error {
 		RetentionPeriod: stats.RetentionPeriod.String(),
 		ResyncCommand:   "ntm --robot-snapshot",
 	}
-	activeIncidents, err := snapshotIncidentsFromStore(currentProjectionStore())
+	activeIncidents, err := snapshotIncidentsFromStore(resolveProjectionStore(opts.Store, opts.ExplicitStore))
 	if err != nil {
 		activeIncidents = []SnapshotIncident{}
 	}
@@ -981,7 +991,7 @@ func GetDigest(opts DigestOptions) (*DigestResponse, error) {
 		RetentionPeriod: stats.RetentionPeriod.String(),
 		ResyncCommand:   "ntm --robot-snapshot",
 	}
-	activeIncidents, err := snapshotIncidentsFromStore(currentProjectionStore())
+	activeIncidents, err := snapshotIncidentsFromStore(resolveProjectionStore(opts.Store, opts.ExplicitStore))
 	if err != nil {
 		activeIncidents = []SnapshotIncident{}
 	}
@@ -1050,6 +1060,10 @@ type AttentionOptions struct {
 
 	// IncludeTrace enables detailed decision tracing for debugging.
 	IncludeTrace bool
+
+	// Store overrides the process-global projection store when ExplicitStore is true.
+	Store         *state.Store `json:"-"`
+	ExplicitStore bool         `json:"-"`
 }
 
 // AttentionResponse is the JSON response for --robot-attention.
@@ -1292,4 +1306,148 @@ func PrintAttention(opts AttentionOptions) int {
 		CursorInfo:       cursorInfo,
 		ReplayWindow:     replayWindow,
 	}, exitCode)
+}
+
+// AttentionQueryOptions configures non-blocking cursor-based attention queries
+// (such as GET /api/v1/robot/attention).
+type AttentionQueryOptions struct {
+	Cursor             int64
+	Limit              int
+	Session            string
+	Profile            string
+	CategoryFilter     []string
+	ActionRequiredOnly bool
+}
+
+// GetAttention returns a non-blocking, cursor-replayable AttentionOutput sorted
+// by severity (critical first) and timestamp.
+func GetAttention(opts AttentionQueryOptions) (*AttentionOutput, error) {
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 100
+	} else if limit > 1000 {
+		limit = 1000
+	}
+
+	resp := NewRobotResponse(true)
+	resp.Version = AttentionContractVersion
+
+	feed := GetAttentionFeed()
+	if feed == nil {
+		return &AttentionOutput{
+			RobotResponse: resp,
+			Items:         make([]AttentionEvent, 0),
+			Counts:        make(map[Severity]int),
+			Profile:       strings.TrimSpace(opts.Profile),
+			CursorInfo: &AttentionCursorInfo{
+				StartCursor: opts.Cursor,
+				EndCursor:   opts.Cursor,
+				NextCommand: fmt.Sprintf("ntm --robot-attention --attention-cursor=%d", opts.Cursor),
+			},
+		}, nil
+	}
+
+	events, newestCursor, err := feed.Replay(opts.Cursor, limit+1)
+	if err != nil {
+		return nil, err
+	}
+
+	var actionabilityFilter []string
+	if opts.ActionRequiredOnly {
+		actionabilityFilter = []string{string(ActionabilityActionRequired)}
+	} else if strings.TrimSpace(opts.Profile) == "" && len(opts.CategoryFilter) == 0 {
+		actionabilityFilter = []string{
+			string(ActionabilityActionRequired),
+			string(ActionabilityInteresting),
+		}
+	}
+
+	filtered := filterEventsForRobot(events, EventsOptions{
+		SinceCursor:         opts.Cursor,
+		Limit:               limit,
+		Session:             strings.TrimSpace(opts.Session),
+		Profile:             strings.TrimSpace(opts.Profile),
+		CategoryFilter:      opts.CategoryFilter,
+		ActionabilityFilter: actionabilityFilter,
+	})
+	if len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+
+	endCursor := opts.Cursor
+	switch {
+	case len(filtered) > 0:
+		for _, item := range filtered {
+			if item.Cursor > endCursor {
+				endCursor = item.Cursor
+			}
+		}
+	case len(events) > 0:
+		if last := events[len(events)-1].Cursor; last > endCursor {
+			endCursor = last
+		}
+	case newestCursor > endCursor:
+		endCursor = newestCursor
+	}
+
+	items := make([]AttentionEvent, len(filtered))
+	copy(items, filtered)
+	sort.SliceStable(items, func(i, j int) bool {
+		ri := attentionSeverityRank(items[i].Severity)
+		rj := attentionSeverityRank(items[j].Severity)
+		if ri != rj {
+			return ri > rj
+		}
+		if items[i].Ts != items[j].Ts {
+			return items[i].Ts < items[j].Ts
+		}
+		return items[i].Cursor < items[j].Cursor
+	})
+
+	counts := make(map[Severity]int)
+	var suggested []NextAction
+	seenActions := make(map[string]struct{})
+	for _, item := range items {
+		counts[item.Severity]++
+		for _, act := range item.NextActions {
+			key := act.Action + "\x00" + act.Args
+			if _, exists := seenActions[key]; exists {
+				continue
+			}
+			seenActions[key] = struct{}{}
+			suggested = append(suggested, act)
+		}
+	}
+
+	stats := feed.Stats()
+	if endCursor == 0 && stats.NewestCursor > 0 {
+		endCursor = stats.NewestCursor
+	}
+	replayWindow := &SnapshotReplayWindowInfo{
+		Supported:       true,
+		OldestCursor:    stats.OldestCursor,
+		LatestCursor:    stats.NewestCursor,
+		EventCount:      stats.Count,
+		RetentionPeriod: stats.RetentionPeriod.String(),
+		ResyncCommand:   "ntm --robot-snapshot",
+	}
+	cursorInfo := &AttentionCursorInfo{
+		StartCursor:  opts.Cursor,
+		EndCursor:    endCursor,
+		OldestCursor: stats.OldestCursor,
+		NextCommand: buildAttentionNextCommand(AttentionOptions{
+			Session: strings.TrimSpace(opts.Session),
+			Profile: strings.TrimSpace(opts.Profile),
+		}, endCursor),
+	}
+
+	return &AttentionOutput{
+		RobotResponse:    resp,
+		Items:            items,
+		SuggestedActions: suggested,
+		Counts:           counts,
+		Profile:          strings.TrimSpace(opts.Profile),
+		CursorInfo:       cursorInfo,
+		ReplayWindow:     replayWindow,
+	}, nil
 }

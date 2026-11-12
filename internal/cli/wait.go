@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	sessionPkg "github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -117,12 +118,13 @@ func runWait(ctx context.Context, w, diagnostics io.Writer, opts robot.WaitOptio
 			robot.ErrCodeInvalidFlag, "Check --timeout, --poll, and --count")
 	}
 	if opts.AgentType != "" {
-		rawAgentType := opts.AgentType
-		opts.AgentType = robot.ResolveAgentType(rawAgentType)
-		if opts.AgentType == "" || opts.AgentType == "unknown" || opts.AgentType == "user" {
-			return fail(fmt.Errorf("invalid agent type %q", strings.TrimSpace(rawAgentType)),
+		rawAgentType := strings.TrimSpace(opts.AgentType)
+		canonical := agent.AgentType(rawAgentType).Canonical()
+		if (!canonical.IsValid() && !agent.IsPluginType(canonical)) || canonical == agent.AgentTypeUser {
+			return fail(fmt.Errorf("invalid agent type %q", rawAgentType),
 				robot.ErrCodeInvalidFlag, "Use a supported agent type such as claude, codex, gemini, or agy")
 		}
+		opts.AgentType = robot.ResolveAgentType(rawAgentType)
 	}
 	if opts.Session != "" {
 		if err := tmux.ValidateSessionName(opts.Session); err != nil {

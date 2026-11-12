@@ -11,6 +11,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -22,9 +24,11 @@ import (
 
 // LifecycleOptions configures --robot-exit-cli / --robot-kill-agent.
 type LifecycleOptions struct {
-	Session  string
-	Panes    []string // pane selectors (N, W.P, %N); empty = all agent panes
-	Relaunch bool     // relaunch the agent CLI after exit/kill and verify
+	Session        string
+	Panes          []string // pane selectors (N, W.P, %N); empty = all agent panes
+	Relaunch       bool     // relaunch the agent CLI after exit/kill and verify
+	RespawnShell   bool     // opt-in for --robot-exit-cli: replace exited direct-exec root agent with a fresh shell in the same cwd
+	AllowPaneClose bool     // opt-in for --robot-exit-cli: permit a direct-exec root agent to exit and close its pane cleanly
 
 	// ExpectedPane binds a compound caller's next action to the original
 	// pane ID, root PID and agent type. Nil starts a new lifecycle operation.
@@ -36,9 +40,12 @@ type LifecyclePaneResult struct {
 	Pane           string `json:"pane"`
 	Target         string `json:"target"`
 	AgentType      string `json:"agent_type"`
+	Status         string `json:"status,omitempty"`
+	LineageMode    string `json:"lineage_mode,omitempty"`
 	ShellPID       int    `json:"shell_pid,omitempty"`
 	AgentPIDs      []int  `json:"agent_pids,omitempty"`
 	Exited         bool   `json:"exited"`
+	PaneClosed     bool   `json:"pane_closed,omitempty"`
 	Killed         []int  `json:"killed,omitempty"`
 	ShellPreserved bool   `json:"shell_preserved"`
 	Relaunched     bool   `json:"relaunched,omitempty"`
@@ -433,6 +440,230 @@ func joinLifecycleDetail(existing, extra string) string {
 	return existing + "; " + extra
 }
 
+// classifyExitCLILineage inspects a pane's root PID and process arguments.
+// Returns ("shell_backed", rootCmd, nil) when a persistent interactive shell
+// hosts the pane, ("direct_exec", rootCmd, nil) when a live root command exists
+// without an underlying interactive shell, or an admission error when the pane
+// is dead, service-tagged, quarantined, or unreadable.
+func classifyExitCLILineage(ctx context.Context, pane tmux.Pane) (string, string, error) {
+	if pane.RotationToken != "" {
+		return "", "", fmt.Errorf("pane %s has an unresolved context rotation; lifecycle action withheld", pane.ID)
+	}
+	shellErr := tmux.DefaultClient.ValidatePanePersistentShellContext(ctx, pane)
+	if shellErr == nil {
+		argv := process.GetCmdlineContext(ctx, pane.PID)
+		rootCmd := strings.TrimSpace(pane.Command)
+		if len(argv) > 0 {
+			rootCmd = filepath.Base(strings.TrimSpace(argv[0]))
+		}
+		return "shell_backed", rootCmd, nil
+	}
+	if pane.PID <= 0 || pane.Dead || pane.IsServicePane() {
+		return "", "", shellErr
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, tmux.DefaultCommandTimeout)
+	defer cancel()
+	argv := process.GetCmdlineContext(probeCtx, pane.PID)
+	if err := probeCtx.Err(); err != nil {
+		return "", "", fmt.Errorf("verify pane %s root process: %w", pane.ID, err)
+	}
+	if len(argv) == 0 {
+		return "", "", shellErr
+	}
+	rootCmd := filepath.Base(strings.TrimSpace(argv[0]))
+	return "direct_exec", rootCmd, nil
+}
+
+func validateExitCLITargets(ctx context.Context, opts LifecycleOptions, targets []tmux.Pane) (map[string]string, map[string]string, error) {
+	lineages := make(map[string]string, len(targets))
+	rootCmds := make(map[string]string, len(targets))
+	for _, pane := range targets {
+		lineage, rootCmd, err := classifyExitCLILineage(ctx, pane)
+		if err != nil {
+			return nil, nil, err
+		}
+		if lineage == "direct_exec" && !opts.RespawnShell && !opts.AllowPaneClose {
+			return nil, nil, fmt.Errorf("DIRECT_EXEC_NO_SHELL: pane %s has no persistent interactive shell (root=%s); exiting its root process would destroy the pane", pane.ID, rootCmd)
+		}
+		lineages[pane.ID] = lineage
+		rootCmds[pane.ID] = rootCmd
+	}
+	if opts.RespawnShell {
+		for _, lineage := range lineages {
+			if lineage == "direct_exec" {
+				if err := tmux.DefaultClient.PreflightRestartShellContext(ctx); err != nil {
+					return nil, nil, err
+				}
+				break
+			}
+		}
+	}
+	return lineages, rootCmds, nil
+}
+
+func restorePaneRemainOnExit(ctx context.Context, paneID, previous string) {
+	restoreCtx := ctx
+	if restoreCtx == nil || restoreCtx.Err() != nil {
+		var cancel context.CancelFunc
+		restoreCtx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+	}
+	trimmed := strings.TrimSpace(previous)
+	if trimmed == "" {
+		_ = tmux.DefaultClient.RunSilentContext(restoreCtx, "set-option", "-p", "-u", "-t", tmux.ExactTarget(paneID), "remain-on-exit")
+		return
+	}
+	_ = tmux.DefaultClient.RunSilentContext(restoreCtx, "set-option", "-p", "-t", tmux.ExactTarget(paneID), "remain-on-exit", trimmed)
+}
+
+func waitForDirectExecExit(ctx context.Context, session, paneID string, rootPID int, timeout time.Duration) (tmux.Pane, paneLookup, bool) {
+	deadline := time.Now().Add(timeout)
+	for {
+		pane, lookup := refreshLifecyclePane(ctx, session, paneID)
+		switch lookup {
+		case paneAbsent:
+			return pane, lookup, true
+		case paneFound:
+			if pane.Dead || (rootPID > 0 && pane.PID == rootPID && !process.IsAlive(rootPID)) {
+				return pane, lookup, true
+			}
+			if pane.PID != rootPID {
+				return pane, lookup, false
+			}
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return pane, lookup, false
+		}
+		time.Sleep(lifecyclePollInterval)
+	}
+}
+
+func exitDirectExecPane(ctx context.Context, opts LifecycleOptions, original tmux.Pane, result *LifecyclePaneResult) (tmux.Pane, bool) {
+	refreshed, lookup := refreshLifecyclePane(ctx, opts.Session, original.ID)
+	result.ShellPreserved = false
+	result.VerificationFailed = lookup == paneLookupFailed
+	if lookup != paneFound || !lifecyclePaneIdentityMatches(original, refreshed) {
+		result.Status = "withheld"
+		result.Detail = joinLifecycleDetail(result.Detail, "lifecycle action withheld: original live agent pane identity could not be verified")
+		return refreshed, false
+	}
+
+	if opts.AllowPaneClose {
+		var exitErr error
+		var exited bool
+		var obs tmux.Pane
+		var obsLookup paneLookup
+		for attempt := 0; attempt < 2 && !exited; attempt++ {
+			if attempt > 0 {
+				refreshed, obsLookup = refreshLifecyclePane(ctx, opts.Session, original.ID)
+				if obsLookup == paneAbsent || (obsLookup == paneFound && refreshed.Dead) {
+					exited = true
+					break
+				}
+				if obsLookup != paneFound || !lifecyclePaneIdentityMatches(original, refreshed) {
+					break
+				}
+			}
+			exitErr = sendExitChoreography(ctx, refreshed)
+			obs, obsLookup, exited = waitForDirectExecExit(ctx, opts.Session, original.ID, original.PID, lifecycleExitTimeout)
+			if errors.Is(exitErr, tmux.ErrPaneIdentityChanged) && (obsLookup == paneAbsent || (obsLookup == paneFound && obs.Dead)) {
+				exitErr = nil
+				exited = true
+			}
+			if exitErr != nil && !exited {
+				break
+			}
+		}
+		if exited && (obsLookup == paneAbsent || (obsLookup == paneFound && obs.Dead)) {
+			result.Exited = true
+			result.PaneClosed = true
+			result.Status = "pane_closed"
+			result.VerificationFailed = false
+			result.Detail = "direct-exec agent exited and pane closed as permitted by --allow-pane-close"
+			return obs, false
+		}
+		result.VerificationFailed = obsLookup == paneLookupFailed
+		result.Status = "failed"
+		if exitErr != nil {
+			result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf("exit keystrokes stopped: %v", exitErr))
+		} else {
+			result.Detail = joinLifecycleDetail(result.Detail, "direct-exec agent did not exit within timeout")
+		}
+		return obs, false
+	}
+
+	// --respawn-shell: retain pane on exit, gracefully exit direct-exec root,
+	// then replace with a fresh interactive shell in the exact working directory.
+	workingDir, dirErr := restartPaneWorkingDirectory(ctx, original.ID)
+	if dirErr != nil {
+		result.Status = "failed"
+		result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf("cannot capture pane working directory before respawn: %v", dirErr))
+		return refreshed, false
+	}
+	prevRemain, _ := tmux.DefaultClient.RunContext(ctx, "show-options", "-p", "-v", "-t", tmux.ExactTarget(original.ID), "remain-on-exit")
+	if err := tmux.DefaultClient.RunSilentContext(ctx, "set-option", "-p", "-t", tmux.ExactTarget(original.ID), "remain-on-exit", "on"); err != nil {
+		result.Status = "failed"
+		result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf("cannot enable remain-on-exit before direct-exec exit: %v", err))
+		return refreshed, false
+	}
+	defer restorePaneRemainOnExit(ctx, original.ID, prevRemain)
+
+	var exitErr error
+	var exited bool
+	var obs tmux.Pane
+	var obsLookup paneLookup
+	for attempt := 0; attempt < 2 && !exited; attempt++ {
+		if attempt > 0 {
+			refreshed, obsLookup = refreshLifecyclePane(ctx, opts.Session, original.ID)
+			if obsLookup == paneFound && refreshed.Dead {
+				obs = refreshed
+				exited = true
+				break
+			}
+			if obsLookup != paneFound || !lifecyclePaneIdentityMatches(original, refreshed) {
+				break
+			}
+		}
+		exitErr = sendExitChoreography(ctx, refreshed)
+		obs, obsLookup, exited = waitForDirectExecExit(ctx, opts.Session, original.ID, original.PID, lifecycleExitTimeout)
+		if errors.Is(exitErr, tmux.ErrPaneIdentityChanged) && obsLookup == paneFound && obs.Dead {
+			exitErr = nil
+			exited = true
+		}
+		if exitErr != nil && !exited {
+			break
+		}
+	}
+	if !exited {
+		result.VerificationFailed = obsLookup == paneLookupFailed
+		result.Status = "failed"
+		if exitErr != nil {
+			result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf("exit keystrokes stopped: %v", exitErr))
+		} else {
+			result.Detail = joinLifecycleDetail(result.Detail, "direct-exec agent still running after graceful exit attempts; inspect before killing")
+		}
+		return obs, false
+	}
+
+	if err := tmux.DefaultClient.RespawnPaneIfCurrentContext(ctx, original.ID, original.PID, true, workingDir, true); err != nil {
+		result.Status = "failed"
+		result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf("respawn shell failed: %v", err))
+		return obs, false
+	}
+	shellPane, shellReady := waitForBareShell(ctx, opts.Session, original.ID, lifecycleExitTimeout)
+	if !shellReady || tmux.DefaultClient.ValidatePanePersistentShellContext(ctx, shellPane) != nil {
+		result.Status = "failed"
+		result.Detail = joinLifecycleDetail(result.Detail, "respawned shell could not be verified as an idle persistent shell")
+		return shellPane, false
+	}
+	result.Exited = true
+	result.ShellPreserved = true
+	result.ShellPID = shellPane.PID
+	result.Status = "respawned_shell"
+	result.Detail = "direct-exec agent exited and replaced with a fresh interactive shell"
+	return shellPane, true
+}
+
 // GetExitCLI performs the graceful agent-CLI exit choreography on each target
 // pane, verifying via the pane's foreground command instead of assuming.
 func GetExitCLI(ctx context.Context, opts LifecycleOptions) (*ExitCLIOutput, error) {
@@ -445,6 +676,22 @@ func GetExitCLI(ctx context.Context, opts LifecycleOptions) (*ExitCLIOutput, err
 		output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, remoteAgentProcessOperationsHint)
 		return output, nil
 	}
+	if opts.RespawnShell && opts.AllowPaneClose {
+		output.RobotResponse = NewErrorResponse(
+			errors.New("--respawn-shell and --allow-pane-close are mutually exclusive"),
+			ErrCodeInvalidFlag,
+			"Choose either --respawn-shell (preserve pane with fresh shell) or --allow-pane-close (permit pane termination)",
+		)
+		return output, nil
+	}
+	if opts.AllowPaneClose && opts.Relaunch {
+		output.RobotResponse = NewErrorResponse(
+			errors.New("--allow-pane-close cannot be combined with --relaunch"),
+			ErrCodeInvalidFlag,
+			"Use --respawn-shell --relaunch to replace a direct-exec agent and relaunch inside a persistent shell",
+		)
+		return output, nil
+	}
 	targets, multiWindow, failure := resolveLifecycleTargets(ctx, opts, "exit-cli")
 	if failure != nil {
 		output.RobotResponse = *failure
@@ -455,9 +702,10 @@ func GetExitCLI(ctx context.Context, opts LifecycleOptions) (*ExitCLIOutput, err
 			"Inspect the current pane before starting a new lifecycle operation; no agent was changed")
 		return output, nil
 	}
-	if err := validateLifecycleShells(ctx, targets); err != nil {
+	lineages, rootCmds, err := validateExitCLITargets(ctx, opts, targets)
+	if err != nil {
 		output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag,
-			"Select agents running under a persistent interactive shell; no exit keys were sent")
+			"Select agents running under a persistent interactive shell, or pass --respawn-shell to replace a direct-exec agent with a fresh shell in the same cwd (or --allow-pane-close to permit pane termination); no exit keys were sent")
 		return output, nil
 	}
 	var launchPlan restartLaunchPlan
@@ -469,20 +717,54 @@ func GetExitCLI(ctx context.Context, opts LifecycleOptions) (*ExitCLIOutput, err
 			return output, nil
 		}
 	}
+	exitPolicy := "refuse"
+	if opts.RespawnShell {
+		exitPolicy = "respawn_shell"
+	} else if opts.AllowPaneClose {
+		exitPolicy = "allow_close"
+	}
 	for _, pane := range targets {
+		started := time.Now()
+		lineage := lineages[pane.ID]
+		rootCmd := rootCmds[pane.ID]
+		childPIDs := collectProcessTree(pane.PID, lifecycleChildPIDLimit, 2)
 		result := LifecyclePaneResult{
-			Pane:      paneTargetKey(pane, multiWindow),
-			Target:    pane.ID,
-			AgentType: restartPaneAgentType(pane),
-			ShellPID:  pane.PID,
+			Pane:        paneTargetKey(pane, multiWindow),
+			Target:      pane.ID,
+			AgentType:   restartPaneAgentType(pane),
+			LineageMode: lineage,
+			ShellPID:    pane.PID,
+		}
+		relaunchTarget := pane
+		if lineage == "direct_exec" {
+			var canRelaunch bool
+			relaunchTarget, canRelaunch = exitDirectExecPane(ctx, opts, pane, &result)
+			if opts.Relaunch && canRelaunch && result.Exited && result.ShellPreserved {
+				relaunchAgentCLI(ctx, opts.Session, relaunchTarget, launchPlan, &result)
+			}
+			slog.Info("[robot.exit-cli] completed pane lifecycle",
+				"session", opts.Session,
+				"pane_id", pane.ID,
+				"pane_pid", pane.PID,
+				"root_command", rootCmd,
+				"child_pids", childPIDs,
+				"lineage_mode", lineage,
+				"exit_policy", exitPolicy,
+				"status", result.Status,
+				"elapsed_ms", time.Since(started).Milliseconds(),
+			)
+			output.Results = append(output.Results, result)
+			continue
 		}
 		current, verified := verifyLifecycleShell(ctx, opts.Session, pane, &result)
 		if !verified {
+			result.Status = "withheld"
 			output.Results = append(output.Results, result)
 			continue
 		}
 		if current.AgentCLIDead() {
 			result.Exited = true
+			result.Status = "exited"
 			result.Detail = "agent CLI already exited; pane is at a bare shell"
 		} else {
 			exited := false
@@ -536,14 +818,31 @@ func GetExitCLI(ctx context.Context, opts LifecycleOptions) (*ExitCLIOutput, err
 			if exitErr != nil && !result.Exited {
 				result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf("exit keystrokes stopped: %v", exitErr))
 			}
+			if result.Exited && result.ShellPreserved {
+				result.Status = "exited"
+			} else {
+				result.Status = "failed"
+			}
 		}
 		if opts.Relaunch && result.Exited && result.ShellPreserved {
-			relaunchAgentCLI(ctx, opts.Session, pane, launchPlan, &result)
+			relaunchAgentCLI(ctx, opts.Session, relaunchTarget, launchPlan, &result)
 		}
+		slog.Info("[robot.exit-cli] completed pane lifecycle",
+			"session", opts.Session,
+			"pane_id", pane.ID,
+			"pane_pid", pane.PID,
+			"root_command", rootCmd,
+			"child_pids", childPIDs,
+			"lineage_mode", lineage,
+			"exit_policy", exitPolicy,
+			"status", result.Status,
+			"elapsed_ms", time.Since(started).Milliseconds(),
+		)
 		output.Results = append(output.Results, result)
 	}
 	for _, result := range output.Results {
-		if !result.Exited || !result.ShellPreserved || (opts.Relaunch && !result.Relaunched) {
+		paneOK := result.Exited && (result.ShellPreserved || (opts.AllowPaneClose && result.PaneClosed))
+		if !paneOK || (opts.Relaunch && !result.Relaunched) {
 			output.Success = false
 			break
 		}

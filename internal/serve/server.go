@@ -153,6 +153,16 @@ type Server struct {
 
 	// webUI is the embedded static dashboard; nil when not mounted.
 	webUI fs.FS
+
+	// wsTicketsMu guards single-use short-lived WebSocket upgrade tickets issued
+	// via POST /api/v1/auth/ws-ticket.
+	wsTicketsMu sync.Mutex
+	wsTickets   map[string]wsTicketRecord
+
+	// projectionState reports whether the runtime projection store is still
+	// performing its initial asynchronous refresh ("warming_up"), up to date
+	// ("ready"), or degraded ("degraded"). Guarded by mu.
+	projectionState string
 }
 
 type attentionHeartbeatSourceSummary struct {
@@ -221,6 +231,7 @@ type MTLSConfig struct {
 	CertFile     string
 	KeyFile      string
 	ClientCAFile string
+	ClientCN     string
 }
 
 // Config holds server configuration.
@@ -1297,6 +1308,10 @@ func New(cfg Config) *Server {
 	if projectDir, err := ResolveProjectDir(cfg.ProjectDir); err == nil {
 		cfg.ProjectDir = projectDir
 	}
+	initialProjectionState := "ready"
+	if cfg.StateStore != nil {
+		initialProjectionState = "warming_up"
+	}
 	s := &Server{
 		host:               cfg.Host,
 		port:               cfg.Port,
@@ -1309,6 +1324,7 @@ func New(cfg Config) *Server {
 		auth:               cfg.Auth,
 		auditStore:         cfg.AuditStore,
 		webUI:              cfg.WebUI,
+		projectionState:    initialProjectionState,
 		sseClients:         make(map[chan events.BusEvent]struct{}),
 		corsAllowedOrigins: cfg.AllowedOrigins,
 		jwksCache:          newJWKSCache(cfg.Auth.OIDC.CacheTTL),
@@ -1354,6 +1370,30 @@ func New(cfg Config) *Server {
 
 	s.router = s.buildRouter()
 	return s
+}
+
+// ProjectionState returns the current runtime projection readiness state
+// ("warming_up", "ready", or "degraded").
+func (s *Server) ProjectionState() string {
+	s.mu.RLock()
+	state := s.projectionState
+	s.mu.RUnlock()
+	if state == "" {
+		return "ready"
+	}
+	return state
+}
+
+// SetProjectionState updates the runtime projection readiness state reported on
+// health endpoints.
+func (s *Server) SetProjectionState(state string) {
+	state = strings.TrimSpace(state)
+	if state == "" {
+		return
+	}
+	s.mu.Lock()
+	s.projectionState = state
+	s.mu.Unlock()
 }
 
 // DefaultAuditDir is where REST/WS audit records live when a caller does not
@@ -1462,6 +1502,8 @@ func (s *Server) buildRouter() chi.Router {
 		r.With(s.RequirePermission(PermReadHealth)).Get("/doctor", s.handleDoctorV1)
 		r.With(s.RequirePermission(PermReadHealth)).Get("/config", s.handleGetConfigV1)
 		r.With(s.RequirePermission(PermSystemConfig)).Patch("/config", s.handlePatchConfigV1)
+		r.With(s.RequirePermission(PermReadHealth)).Get("/kernel/commands", s.handleKernelCommands)
+		r.With(s.RequirePermission(PermReadWebSocket)).Post("/auth/ws-ticket", s.handleIssueWSTicketV1)
 
 		// Sessions - read endpoints
 		r.With(s.RequirePermission(PermReadSessions)).Get("/sessions", s.handleSessionsV1)
@@ -1593,23 +1635,8 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 
-	// Set the robot projection store once for the server's lifetime.
-	// The store never changes, so there is no need to set it per-handler.
-	if s.stateStore != nil {
-		robot.SetProjectionStore(s.stateStore)
-	}
-
-	// Reconcile state store with tmux reality on startup.
-	// Marks sessions as "terminated" if their tmux session no longer exists.
-	if s.stateStore != nil {
-		if result, err := s.stateStore.ReconcileSessions(); err != nil {
-			slog.Warn("state-tmux reconciliation failed on startup", "error", err)
-		} else if len(result.Terminated) > 0 {
-			slog.Info("state-tmux reconciliation completed",
-				"terminated", result.Terminated,
-				"checked", result.Checked)
-		}
-	}
+	var reconcileWG sync.WaitGroup
+	defer reconcileWG.Wait()
 
 	// Wire WS event persistence/replay before the hub starts broadcasting so
 	// every published event is Store()d and carries a durable seq. Stopped
@@ -1658,31 +1685,67 @@ func (s *Server) Start(ctx context.Context) error {
 		IdleTimeout:  60 * time.Second,
 	}
 
+	var tlsConfig *tls.Config
+	if s.auth.Mode == AuthModeMTLS {
+		var tlsErr error
+		tlsConfig, tlsErr = s.buildMTLSConfig()
+		if tlsErr != nil {
+			return tlsErr
+		}
+		s.server.TLSConfig = tlsConfig
+	}
+
+	ln, err := net.Listen("tcp", s.server.Addr)
+	if err != nil {
+		return err
+	}
+	if tcpAddr, ok := ln.Addr().(*net.TCPAddr); ok {
+		s.mu.Lock()
+		if s.port == 0 {
+			s.port = tcpAddr.Port
+		}
+		s.server.Addr = tcpAddr.String()
+		s.mu.Unlock()
+	}
+
 	scheme := "http"
 	if s.auth.Mode == AuthModeMTLS {
 		scheme = "https"
 	}
-	log.Printf("Starting NTM server on %s://%s:%d (auth=%s)", scheme, s.host, s.port, s.auth.Mode)
+	log.Printf("Starting NTM server on %s://%s (auth=%s)", scheme, s.server.Addr, s.auth.Mode)
 
-	// Start server in goroutine
+	// Start serving accepted connections in goroutine
 	errCh := make(chan error, 1)
 	go func() {
-		var err error
+		var serveErr error
 		if s.auth.Mode == AuthModeMTLS {
-			tlsConfig, tlsErr := s.buildMTLSConfig()
-			if tlsErr != nil {
-				errCh <- tlsErr
-				return
-			}
-			s.server.TLSConfig = tlsConfig
-			err = s.server.ListenAndServeTLS(s.auth.MTLS.CertFile, s.auth.MTLS.KeyFile)
+			serveErr = s.server.ServeTLS(ln, s.auth.MTLS.CertFile, s.auth.MTLS.KeyFile)
 		} else {
-			err = s.server.ListenAndServe()
+			serveErr = s.server.Serve(ln)
 		}
-		if err != nil && err != http.ErrServerClosed {
-			errCh <- err
+		if serveErr != nil && serveErr != http.ErrServerClosed {
+			errCh <- serveErr
 		}
 	}()
+
+	// Reconcile state store with tmux reality asynchronously after binding TCP so
+	// slow tmux sockets never delay /health readiness.
+	if s.stateStore != nil {
+		reconcileWG.Add(1)
+		go func() {
+			defer reconcileWG.Done()
+			if ctx.Err() != nil {
+				return
+			}
+			if result, err := s.stateStore.ReconcileSessions(); err != nil {
+				slog.Warn("state-tmux reconciliation failed on startup", "error", err)
+			} else if len(result.Terminated) > 0 {
+				slog.Info("state-tmux reconciliation completed",
+					"terminated", result.Terminated,
+					"checked", result.Checked)
+			}
+		}()
+	}
 
 	// Wait for context cancellation or error
 	select {
@@ -1783,11 +1846,24 @@ func (s *Server) buildMTLSConfig() (*tls.Config, error) {
 	if !caPool.AppendCertsFromPEM(caPEM) {
 		return nil, fmt.Errorf("parse mtls CA: no certs found")
 	}
-	return &tls.Config{
+	tlsCfg := &tls.Config{
 		ClientCAs:  caPool,
 		ClientAuth: tls.RequireAndVerifyClientCert,
 		MinVersion: tls.VersionTLS12,
-	}, nil
+	}
+	if expectedCN := strings.TrimSpace(s.auth.MTLS.ClientCN); expectedCN != "" {
+		tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
+				return fmt.Errorf("mtls client certificate required")
+			}
+			gotCN := cs.PeerCertificates[0].Subject.CommonName
+			if gotCN != expectedCN {
+				return fmt.Errorf("mtls client certificate CN %q does not match required %q", gotCN, expectedCN)
+			}
+			return nil
+		}
+	}
+	return tlsCfg, nil
 }
 
 // maxBytesMiddleware limits the size of request bodies to prevent DoS via OOM.
@@ -1883,6 +1959,13 @@ func (s *Server) corsMiddlewareFunc(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, Idempotency-Key, "+requestIDHeader)
 		}
 
+		if (s.auth.Mode == AuthModeLocal || s.auth.Mode == "") &&
+			strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")), "cross-site") {
+			reqID := requestIDFromContext(r.Context())
+			writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden, "cross-site browser request rejected in local auth mode", nil, reqID)
+			return
+		}
+
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -1892,10 +1975,27 @@ func (s *Server) corsMiddlewareFunc(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) isPublicUnauthenticatedRequest(r *http.Request) bool {
+	if r == nil || r.URL == nil {
+		return false
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	p := r.URL.Path
+	if p == "/health" || p == "/docs" || p == "/docs/" {
+		return true
+	}
+	if s.webUI != nil && !isReservedAPIPath(p) {
+		return true
+	}
+	return false
+}
+
 // authMiddlewareFunc is the chi middleware version.
 func (s *Server) authMiddlewareFunc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodOptions {
+		if r.Method == http.MethodOptions || s.isPublicUnauthenticatedRequest(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -2311,7 +2411,123 @@ func sanitizeRequestID(id string) string {
 	return b.String()
 }
 
+const (
+	wsTicketTTL        = 30 * time.Second
+	maxActiveWSTickets = 4096
+)
+
+type wsTicketRecord struct {
+	claims    map[string]interface{}
+	principal string
+	expiresAt time.Time
+}
+
+func cloneAuthClaims(src map[string]interface{}) map[string]interface{} {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]interface{}, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func (s *Server) handleIssueWSTicketV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to generate websocket ticket", nil, reqID)
+		return
+	}
+	ticket := hex.EncodeToString(raw[:])
+
+	var claims map[string]interface{}
+	if existing, ok := r.Context().Value(authContextKey).(map[string]interface{}); ok {
+		claims = cloneAuthClaims(existing)
+	}
+	principal := "local"
+	if rc := RoleFromContext(r.Context()); rc != nil {
+		if rc.UserID != "" {
+			principal = rc.UserID
+		}
+		if claims == nil {
+			claims = map[string]interface{}{
+				"role": string(rc.Role),
+				"sub":  principal,
+			}
+		}
+	}
+	if claims == nil {
+		claims = map[string]interface{}{"role": string(RoleAdmin)}
+	}
+
+	now := time.Now().UTC()
+	s.wsTicketsMu.Lock()
+	if s.wsTickets == nil {
+		s.wsTickets = make(map[string]wsTicketRecord)
+	}
+	for k, rec := range s.wsTickets {
+		if !now.Before(rec.expiresAt) {
+			delete(s.wsTickets, k)
+		}
+	}
+	if len(s.wsTickets) >= maxActiveWSTickets {
+		for k := range s.wsTickets {
+			delete(s.wsTickets, k)
+			if len(s.wsTickets) < maxActiveWSTickets {
+				break
+			}
+		}
+	}
+	s.wsTickets[ticket] = wsTicketRecord{
+		claims:    claims,
+		principal: principal,
+		expiresAt: now.Add(wsTicketTTL),
+	}
+	s.wsTicketsMu.Unlock()
+
+	slog.Info("ws ticket issued", "auth_mode", s.auth.Mode, "principal", principal, "expires_in_sec", int(wsTicketTTL/time.Second), "request_id", reqID)
+	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
+		"ticket":         ticket,
+		"expires_in_sec": int(wsTicketTTL / time.Second),
+	}, reqID)
+}
+
+func (s *Server) redeemWSTicket(ticket string) (wsTicketRecord, bool) {
+	now := time.Now().UTC()
+	s.wsTicketsMu.Lock()
+	defer s.wsTicketsMu.Unlock()
+	if len(s.wsTickets) == 0 {
+		return wsTicketRecord{}, false
+	}
+	rec, ok := s.wsTickets[ticket]
+	delete(s.wsTickets, ticket)
+	if !ok || !now.Before(rec.expiresAt) {
+		return wsTicketRecord{}, false
+	}
+	return rec, true
+}
+
 func (s *Server) authenticateRequest(r *http.Request) (map[string]interface{}, error) {
+	if r != nil && r.URL != nil && (r.Method == http.MethodGet || r.Method == "") && r.URL.Path == "/api/v1/ws" {
+		if ticket := strings.TrimSpace(r.URL.Query().Get("ticket")); ticket != "" {
+			q := r.URL.Query()
+			q.Del("ticket")
+			r.URL.RawQuery = q.Encode()
+			rec, ok := s.redeemWSTicket(ticket)
+			if !ok {
+				return nil, errors.New("invalid or expired websocket ticket")
+			}
+			slog.Info("ws ticket redeemed",
+				"auth_mode", s.auth.Mode,
+				"principal", rec.principal,
+				"ticket_redeemed", true,
+				"request_id", requestIDFromContext(r.Context()),
+			)
+			return cloneAuthClaims(rec.claims), nil
+		}
+	}
 	// Every successful path must return claims carrying a role. Returning nil
 	// claims left RBAC with an empty claim set, and extractRoleFromClaims only
 	// short-circuits to admin for local mode — so api_key and mtls callers fell
@@ -2519,9 +2735,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-		"status":  "healthy",
-		"time":    time.Now().UTC().Format(time.RFC3339),
+		"success":          true,
+		"status":           "healthy",
+		"projection_state": s.ProjectionState(),
+		"time":             time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
@@ -2646,12 +2863,19 @@ func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request, ses
 }
 
 // handleRobotStatus handles /api/robot/status - proxies to robot status.
+func (s *Server) robotPaginationOptions() robot.PaginationOptions {
+	return robot.PaginationOptions{
+		Store:         s.stateStore,
+		ExplicitStore: true,
+	}
+}
+
 func (s *Server) handleRobotStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	output, err := robot.GetStatusWithOptions(robot.PaginationOptions{})
+	output, err := robot.GetStatusWithOptions(s.robotPaginationOptions())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -2659,18 +2883,20 @@ func (s *Server) handleRobotStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, output)
 }
 
-// handleRobotHealth handles /api/robot/health.
+// handleRobotHealth handles /api/robot/health by delegating to real robot.GetHealth().
 func (s *Server) handleRobotHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success":   true,
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
-		"note":      "full robot health requires robot package integration",
-	})
+	output, err := robot.GetHealth()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Deprecation", "true")
+	w.Header().Set("Link", `</api/v1/robot/health>; rel="successor-version"`)
+	writeJSON(w, http.StatusOK, output)
 }
 
 const sseMaxFrameBytes = 10 << 20
@@ -3202,7 +3428,8 @@ func parseRSAPublicKey(nStr, eStr string) (*rsa.PublicKey, error) {
 func (s *Server) handleHealthV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"status": "healthy",
+		"status":           "healthy",
+		"projection_state": s.ProjectionState(),
 	}, reqID)
 }
 
@@ -3335,7 +3562,9 @@ func (s *Server) handlePatchConfigV1(w http.ResponseWriter, r *http.Request) {
 	slog.Info("config patch", "request_id", reqID)
 
 	var req struct {
-		AllowedOrigins []string `json:"allowed_origins,omitempty"`
+		AllowedOrigins     []string        `json:"allowed_origins,omitempty"`
+		CORSAllowedOrigins []string        `json:"cors_allowed_origins,omitempty"`
+		Auth               json.RawMessage `json:"auth,omitempty"`
 		// Raw so that an explicit "" or null (reset) is distinguishable from
 		// an omitted field (unchanged).
 		ProjectDir json.RawMessage `json:"project_dir,omitempty"`
@@ -3367,11 +3596,29 @@ func (s *Server) handlePatchConfigV1(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if len(req.Auth) > 0 {
+		s.recordConfigPatchRefusal(r, "auth", "runtime auth reconfiguration is forbidden")
+		writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden,
+			"auth configuration is immutable at runtime; restart ntm serve with explicit auth flags", nil, reqID)
+		return
+	}
+
+	originsPatch := req.AllowedOrigins
+	if originsPatch == nil && req.CORSAllowedOrigins != nil {
+		originsPatch = req.CORSAllowedOrigins
+	}
+	if originsPatch != nil && (s.auth.Mode == AuthModeLocal || s.auth.Mode == "") {
+		s.recordConfigPatchRefusal(r, "allowed_origins", "runtime CORS origin mutation forbidden in local auth mode")
+		writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden,
+			"allowed_origins cannot be modified at runtime in local auth mode; restart with --cors-origins or enable authenticated mode", nil, reqID)
+		return
+	}
+
 	// Apply updates and snapshot the result under the lock so the log
 	// and response body see a consistent view.
 	s.mu.Lock()
-	if req.AllowedOrigins != nil {
-		s.corsAllowedOrigins = req.AllowedOrigins
+	if originsPatch != nil {
+		s.corsAllowedOrigins = originsPatch
 	}
 	if updateProject {
 		s.projectDir = projectDir
@@ -3393,6 +3640,25 @@ func (s *Server) handlePatchConfigV1(w http.ResponseWriter, r *http.Request) {
 			"project_dir":     currentProjectDir,
 		},
 	}, reqID)
+}
+
+func (s *Server) recordConfigPatchRefusal(r *http.Request, field, reason string) {
+	if s.stateStore == nil {
+		return
+	}
+	actorID := "local"
+	if rc := RoleFromContext(r.Context()); rc != nil && rc.UserID != "" {
+		actorID = rc.UserID
+	}
+	_, _ = s.stateStore.RecordAuditDecision(&state.AuditDecision{
+		DecisionType: "reject_config_patch",
+		DecisionAt:   time.Now().UTC(),
+		ActorType:    "http",
+		ActorID:      actorID,
+		EntityType:   "server_config",
+		EntityID:     field,
+		Reason:       reason,
+	})
 }
 
 // performDoctorCheckAPI runs doctor checks for the REST API.
@@ -3723,7 +3989,7 @@ func (s *Server) handleSessionEventsV1(w http.ResponseWriter, r *http.Request, s
 // handleRobotStatusV1 handles GET /api/v1/robot/status.
 func (s *Server) handleRobotStatusV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	output, err := robot.GetStatusWithOptions(robot.PaginationOptions{})
+	output, err := robot.GetStatusWithOptions(s.robotPaginationOptions())
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
@@ -3765,7 +4031,7 @@ func (s *Server) handleRobotHealthV1(w http.ResponseWriter, r *http.Request) {
 // handleRobotSnapshotV1 handles GET /api/v1/robot/snapshot.
 func (s *Server) handleRobotSnapshotV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	output, err := robot.GetSnapshotWithOptions(nil, robot.PaginationOptions{})
+	output, err := robot.GetSnapshotWithOptions(nil, s.robotPaginationOptions())
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
@@ -3786,7 +4052,10 @@ func (s *Server) handleRobotSnapshotV1(w http.ResponseWriter, r *http.Request) {
 // handleRobotDigestV1 handles GET /api/v1/robot/digest.
 func (s *Server) handleRobotDigestV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	output, err := robot.GetDigest(robot.DigestOptions{})
+	output, err := robot.GetDigest(robot.DigestOptions{
+		Store:         s.stateStore,
+		ExplicitStore: true,
+	})
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
@@ -3805,20 +4074,71 @@ func (s *Server) handleRobotDigestV1(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRobotAttentionV1 handles GET /api/v1/robot/attention.
-// Returns attention digest with focus on action-required items (non-blocking).
+// Returns cursor-replayable AttentionOutput (non-blocking).
 func (s *Server) handleRobotAttentionV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	// Use digest with attention-focused profile
-	output, err := robot.GetDigest(robot.DigestOptions{
-		Profile:             r.URL.Query().Get("profile"),
-		ActionRequiredLimit: 10,
-		InterestingLimit:    5,
-		BackgroundLimit:     3,
+	q := r.URL.Query()
+
+	var cursor int64
+	rawCursor := strings.TrimSpace(q.Get("cursor"))
+	if rawCursor == "" {
+		rawCursor = strings.TrimSpace(q.Get("since_cursor"))
+	}
+	if rawCursor != "" {
+		parsed, err := strconv.ParseInt(rawCursor, 10, 64)
+		if err != nil || parsed < 0 {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid cursor parameter", nil, reqID)
+			return
+		}
+		cursor = parsed
+	}
+
+	limit := 100
+	if rawLimit := strings.TrimSpace(q.Get("limit")); rawLimit != "" {
+		parsed, err := strconv.Atoi(rawLimit)
+		if err != nil || parsed <= 0 {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid limit parameter", nil, reqID)
+			return
+		}
+		limit = parsed
+	}
+
+	var actionRequiredOnly bool
+	if rawAR := strings.TrimSpace(q.Get("action_required")); rawAR != "" {
+		parsed, err := strconv.ParseBool(rawAR)
+		if err != nil {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid action_required parameter", nil, reqID)
+			return
+		}
+		actionRequiredOnly = parsed
+	}
+
+	output, err := robot.GetAttention(robot.AttentionQueryOptions{
+		Cursor:             cursor,
+		Limit:              limit,
+		Session:            strings.TrimSpace(q.Get("session")),
+		Profile:            strings.TrimSpace(q.Get("profile")),
+		CategoryFilter:     parseCSVParam(q.Get("category")),
+		ActionRequiredOnly: actionRequiredOnly,
 	})
 	if err != nil {
+		var cursorErr *robot.CursorExpiredError
+		if errors.As(err, &cursorErr) {
+			newestCursor := int64(0)
+			if feed := robot.GetAttentionFeed(); feed != nil {
+				newestCursor = feed.CurrentCursor()
+			}
+			payload := attentionCursorExpiredPayload(cursorErr, newestCursor)
+			if reqID != "" {
+				payload["request_id"] = reqID
+			}
+			writeJSON(w, http.StatusConflict, payload)
+			return
+		}
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
+
 	data, err := toJSONMap(output)
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to encode robot attention", map[string]interface{}{
@@ -3856,7 +4176,7 @@ func (s *Server) handleRobotDashboardV1(w http.ResponseWriter, r *http.Request) 
 // handleRobotTerseV1 handles GET /api/v1/robot/terse.
 func (s *Server) handleRobotTerseV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	output, err := robot.GetTerse(nil)
+	output, err := robot.GetTerseForStore(s.stateStore, nil)
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
@@ -3941,7 +4261,11 @@ func (s *Server) handleRobotGraphV1(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRobotActivityV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	session := r.URL.Query().Get("session")
-	output, err := robot.GetActivity(robot.ActivityOptions{Session: session})
+	output, err := robot.GetActivity(robot.ActivityOptions{
+		Session:       session,
+		Store:         s.stateStore,
+		ExplicitStore: true,
+	})
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
@@ -5193,6 +5517,8 @@ func (s *Server) handleAgentSendV1(w http.ResponseWriter, r *http.Request) {
 		CorrelationID:  reqID,
 		IdempotencyKey: r.Header.Get("Idempotency-Key"),
 		MessageGuard:   s.agentMessageGuard(r.Context(), &policyRefusal),
+		Store:          s.stateStore,
+		ExplicitStore:  true,
 	}
 
 	sendAgents := robot.GetSend
@@ -5274,6 +5600,8 @@ func (s *Server) handleAgentInterruptV1(w http.ResponseWriter, r *http.Request) 
 		CorrelationID:  reqID,
 		IdempotencyKey: r.Header.Get("Idempotency-Key"),
 		MessageGuard:   s.agentMessageGuard(r.Context(), &policyRefusal),
+		Store:          s.stateStore,
+		ExplicitStore:  true,
 	}
 
 	interruptAgents := robot.GetInterrupt
@@ -6996,6 +7324,8 @@ func (s *Server) handleAttentionEventsV1(w http.ResponseWriter, r *http.Request)
 		CategoryFilter:      parseCSVParam(r.URL.Query().Get("category")),
 		ActionabilityFilter: parseCSVParam(r.URL.Query().Get("actionability")),
 		IncidentID:          strings.TrimSpace(r.URL.Query().Get("incident_id")),
+		Store:               s.stateStore,
+		ExplicitStore:       true,
 	}
 
 	if sc := r.URL.Query().Get("since_cursor"); sc != "" {

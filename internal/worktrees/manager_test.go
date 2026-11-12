@@ -233,6 +233,15 @@ func TestWorktreeManagerContextCancellation(t *testing.T) {
 	})
 
 	t.Run("merge preserves cancellation during git", func(t *testing.T) {
+		projectDir := t.TempDir()
+		manager := NewManager(projectDir, "test-session")
+		worktreePath := manager.worktreePath("agent-1")
+		if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+			t.Fatalf("create worktree fixture: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(worktreePath, ".git"), []byte("gitdir: /nonexistent\n"), 0o600); err != nil {
+			t.Fatalf("write worktree .git fixture: %v", err)
+		}
 		fakeBin := t.TempDir()
 		if err := os.WriteFile(filepath.Join(fakeBin, "git"), []byte("#!/bin/sh\nexec sleep 10\n"), 0o700); err != nil {
 			t.Fatalf("write blocking git: %v", err)
@@ -240,7 +249,7 @@ func TestWorktreeManagerContextCancellation(t *testing.T) {
 		t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 		defer cancel()
-		err := NewManager(t.TempDir(), "test-session").MergeBack(ctx, "agent-1")
+		err := manager.MergeBack(ctx, "agent-1")
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("MergeBack() error = %v, want context deadline", err)
 		}
@@ -1162,5 +1171,41 @@ func TestMergeBack_MasterDefaultRepo(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(tmp, "agent.txt")); err != nil {
 		t.Fatalf("agent work not merged into master: %v", err)
+	}
+}
+
+func TestPrune_RealGitRepo(t *testing.T) {
+	tmp := setupWorktreeGitRepo(t)
+	manager := NewManager(tmp, "prune-sess")
+
+	info, err := manager.CreateForAgent(t.Context(), "cc-1")
+	if err != nil {
+		t.Fatalf("CreateForAgent: %v", err)
+	}
+	// Simulate an externally vanished worktree checkout directory by moving it aside.
+	relocated := filepath.Join(t.TempDir(), "moved-worktree")
+	if err := os.Rename(info.Path, relocated); err != nil {
+		t.Fatalf("rename worktree dir: %v", err)
+	}
+
+	preview, err := manager.Prune(t.Context(), true)
+	if err != nil {
+		t.Fatalf("Prune(dryRun=true): %v", err)
+	}
+	if !strings.Contains(preview, "Removing worktrees/") {
+		t.Fatalf("dry-run prune output = %q, want Removing worktrees/ entry", preview)
+	}
+
+	applied, err := manager.Prune(t.Context(), false)
+	if err != nil {
+		t.Fatalf("Prune(dryRun=false): %v", err)
+	}
+	if !strings.Contains(applied, "Removing worktrees/") {
+		t.Fatalf("prune output = %q, want Removing worktrees/ entry", applied)
+	}
+
+	nonRepo := NewManager(t.TempDir(), "prune-sess")
+	if _, err := nonRepo.Prune(t.Context(), true); err == nil {
+		t.Fatal("Prune on non-git directory succeeded, want error")
 	}
 }

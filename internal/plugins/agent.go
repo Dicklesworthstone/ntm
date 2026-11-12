@@ -118,3 +118,16 @@ func LoadAgentPlugins(dir string) ([]AgentPlugin, error) {
 
 	return plugins, nil
 }
+
+// ShippedPiPlugin returns the built-in default preset definition for the pi
+// coding agent (matching examples/agents/pi.toml) so --spawn-pi works out of
+// the box while remaining overridable by a user-installed agents/pi.toml.
+func ShippedPiPlugin() AgentPlugin {
+	var p AgentPlugin
+	p.Name = "pi"
+	p.Command = "pi{{if .Model}} --model {{shellQuote .Model}}{{end}}{{if .ReasoningEffort}} --thinking {{shellQuote .ReasoningEffort}}{{end}}{{if .SystemPromptFile}} --append-system-prompt {{shellQuote .SystemPromptFile}}{{end}}"
+	p.Description = "pi coding agent (N[:model[:effort]])"
+	p.Readiness.IdlePatterns = []string{`^\s*─{4,}\s*$`}
+	p.Readiness.WorkingPatterns = []string{`^\s*─+\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏].*─+\s*$`}
+	return p
+}

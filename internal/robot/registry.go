@@ -895,6 +895,13 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 				EvidenceSummaryField: "steps[].policy",
 			},
 		},
+		"policy-decisions": {
+			Sections: []string{"events"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Inspect durable policy and operator audit decisions recorded in the runtime state store",
+				SummaryHint: "Filter by --policy-entity-type and --policy-entity-id when auditing a specific resource",
+			},
+		},
 		"xf-search": {
 			Sections: []string{"events"},
 		},

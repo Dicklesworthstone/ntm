@@ -705,7 +705,7 @@ func DefaultAgentTemplates() AgentConfig {
 		// Override [agents].cursor to opt into different flags or a different
 		// binary name.
 		Cursor:   `cursor-agent --yolo{{if .Model}} --model {{shellQuote .Model}}{{end}}`,
-		Windsurf: `windsurf{{if .Model}} --model {{shellQuote .Model}}{{end}}`,
+		Windsurf: DefaultWindsurfCommand,
 		Aider:    `aider{{if .Model}} --model {{shellQuote .Model}}{{end}}`,
 		// Opencode (oc): the upstream `opencode` binary takes `-m/--model
 		// provider/model`. Without the {{.Model}} placeholder a
@@ -755,3 +755,95 @@ func OmpCommandOrDefault(configured string) string {
 // `--variant` effort flag lives on the `opencode run` subcommand only — see
 // the note in DefaultAgentTemplates). See ntm#193.
 const DefaultOpencodeCommand = `opencode{{if .Model}} --model {{shellQuote .Model}}{{end}}`
+
+// ErrCodeIDEOnlyHarness classifies a desktop-GUI-only harness (such as
+// Windsurf's default Electron `windsurf` launcher) that opens an IDE window
+// and exits rather than running an interactive terminal agent inside tmux.
+const ErrCodeIDEOnlyHarness = "IDE_ONLY_HARNESS"
+
+// DefaultWindsurfCommand is the default Windsurf command entry in
+// DefaultAgentTemplates(). Tmux pane spawns refuse this GUI launcher with
+// ErrCodeIDEOnlyHarness unless the operator overrides [agents] windsurf in
+// config.toml with a non-GUI terminal command.
+const DefaultWindsurfCommand = `windsurf{{if .Model}} --model {{shellQuote .Model}}{{end}}`
+
+func stripTemplateActions(raw string) string {
+	var out strings.Builder
+	rest := raw
+	for {
+		start := strings.Index(rest, "{{")
+		if start < 0 {
+			out.WriteString(rest)
+			break
+		}
+		out.WriteString(rest[:start])
+		end := strings.Index(rest[start+2:], "}}")
+		if end < 0 {
+			break
+		}
+		rest = rest[start+2+end+2:]
+	}
+	return out.String()
+}
+
+func templatePrimaryExecutable(configured string) string {
+	candidate := strings.TrimSpace(configured)
+	if candidate == "" {
+		return ""
+	}
+	if rendered, err := GenerateAgentCommand(candidate, AgentTemplateVars{AgentType: "windsurf"}); err == nil && strings.TrimSpace(rendered) != "" {
+		candidate = rendered
+	} else {
+		candidate = stripTemplateActions(candidate)
+	}
+	if words, err := shellword.Literal(candidate); err == nil && len(words) > 0 {
+		for _, w := range words {
+			val := strings.TrimSpace(w.Value)
+			if val == "" {
+				continue
+			}
+			if strings.Contains(val, "=") && !strings.HasPrefix(val, "=") {
+				continue
+			}
+			return val
+		}
+	}
+	for _, field := range strings.Fields(candidate) {
+		token := strings.Trim(field, `"'`)
+		if token == "" {
+			continue
+		}
+		if strings.Contains(token, "=") && !strings.HasPrefix(token, "=") {
+			continue
+		}
+		return token
+	}
+	return ""
+}
+
+// IsWindsurfGUIHarness reports whether [agents] windsurf is unset/default or
+// resolves to the desktop Electron `windsurf` GUI launcher binary.
+func IsWindsurfGUIHarness(configured string) bool {
+	trimmed := strings.TrimSpace(configured)
+	if trimmed == "" || trimmed == DefaultWindsurfCommand {
+		return true
+	}
+	exe := templatePrimaryExecutable(trimmed)
+	if exe == "" {
+		return true
+	}
+	base := strings.ToLower(filepath.Base(exe))
+	return base == "windsurf" || base == "windsurf.exe"
+}
+
+// ValidateWindsurfTerminalHarness refuses tmux pane spawns for windsurf unless
+// [agents] windsurf has been explicitly overridden away from the GUI binary.
+func ValidateWindsurfTerminalHarness(configured string) error {
+	if !IsWindsurfGUIHarness(configured) {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s: windsurf launches a desktop Electron GUI window and cannot run as a headless tmux pane agent; override [agents] windsurf in config.toml with a custom terminal command or use a terminal harness (cc, cod, agy, cursor, aider, oc, omp, ollama)",
+		ErrCodeIDEOnlyHarness,
+	)
+}

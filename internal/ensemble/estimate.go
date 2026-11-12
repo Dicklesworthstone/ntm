@@ -134,11 +134,15 @@ func (e *Estimator) Estimate(_ context.Context, input EstimateInput, opts Estima
 			}
 		}
 		generator := NewContextPackGenerator(projectDir, cache, logger)
+		generator.MaxTokens = budget.ContextReserveTokens
 		if generated, genErr := generator.Generate(question, "", cacheCfg); genErr == nil {
 			pack = generated
 		} else {
 			logger.Warn("context pack generation failed", "error", genErr)
 		}
+	}
+	if pack != nil && budget.ContextReserveTokens > 0 {
+		pack = CapContextPackTokens(pack, budget.ContextReserveTokens)
 	}
 
 	engine := NewPreambleEngine()

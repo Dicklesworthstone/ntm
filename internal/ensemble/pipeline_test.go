@@ -40,8 +40,7 @@ func TestEnsembleResult_Duration(t *testing.T) {
 	})
 }
 
-// TestValidatePipelineConfig is in pipeline_experimental_test.go
-// since EnsembleConfig requires the ensemble_experimental build tag.
+// TestValidatePipelineConfig lives in pipeline_experimental_test.go.
 
 func TestDefaultOutputCollectorConfig(t *testing.T) {
 	cfg := DefaultOutputCollectorConfig()

@@ -1724,11 +1724,12 @@ func DefaultXFConfig() XFConfig {
 
 // ModelsConfig holds model alias configuration for each agent type
 type ModelsConfig struct {
-	DefaultClaude string `toml:"default_claude"` // Default model for Claude
-	DefaultCodex  string `toml:"default_codex"`  // Default model for Codex
-	DefaultGemini string `toml:"default_gemini"` // Default model for Gemini
-	DefaultGrok   string `toml:"default_grok"`   // Optional Grok Build default; empty delegates to the CLI
-	DefaultOllama string `toml:"default_ollama"` // Default model for Ollama
+	DefaultClaude      string `toml:"default_claude"`      // Default model for Claude
+	DefaultCodex       string `toml:"default_codex"`       // Default model for Codex
+	DefaultGemini      string `toml:"default_gemini"`      // Default model for Gemini
+	DefaultAntigravity string `toml:"default_antigravity"` // Default model for Antigravity (agy)
+	DefaultGrok        string `toml:"default_grok"`        // Optional Grok Build default; empty delegates to the CLI
+	DefaultOllama      string `toml:"default_ollama"`      // Default model for Ollama
 	// DefaultOpencode is the optional OpenCode default; empty delegates model
 	// selection to OpenCode's own config (ntm#261).
 	DefaultOpencode string            `toml:"default_opencode"`
@@ -1756,12 +1757,13 @@ func DefaultModels() ModelsConfig {
 		// Empty: no --model is injected, so Claude Code launches with its own
 		// default / saved model and context setting. A hard-coded model ID went
 		// stale with every model release (ntm#15, #71, #78, #196, #334).
-		DefaultClaude:   "",
-		DefaultCodex:    DefaultCodexModel,
-		DefaultGemini:   "gemini-3-pro-preview",
-		DefaultGrok:     "",
-		DefaultOllama:   "llama3",
-		DefaultOpencode: "",
+		DefaultClaude:      "",
+		DefaultCodex:       DefaultCodexModel,
+		DefaultGemini:      "gemini-3-pro-preview",
+		DefaultAntigravity: models.DefaultAntigravityModel,
+		DefaultGrok:        "",
+		DefaultOllama:      "llama3",
+		DefaultOpencode:    "",
 		// Empty: omp's own config (modelRoles.default) chooses the model and
 		// no --model is injected.
 		DefaultOmp: "",
@@ -1826,10 +1828,9 @@ func canonicalModelLookupAgentType(agentType string) string {
 	}
 }
 
-// AntigravityRequiredModel is the ONLY model agy (Antigravity CLI) may run on.
-// agy is hard-pinned to it everywhere (never an Anthropic/other tier) per
-// the model guard (bd-47kjh.1.7); it is intentionally NOT user-configurable.
-const AntigravityRequiredModel = "Gemini 4 Argon (High)"
+// AntigravityRequiredModel is the default model agy (Antigravity CLI) runs on
+// unless overridden in [models] default_antigravity.
+const AntigravityRequiredModel = models.DefaultAntigravityModel
 
 // GetModelName resolves a model alias to its full model name.
 // Returns the alias itself if no mapping is found.
@@ -1870,9 +1871,12 @@ func (m *ModelsConfig) AliasesFor(agentType string) map[string]string {
 func (m *ModelsConfig) GetModelName(agentType, alias string) string {
 	normalizedAgentType := canonicalModelLookupAgentType(agentType)
 
-	// agy is hard-pinned: ignore any requested alias/model and always resolve to
-	// the single allowed model (model guard, bd-47kjh.1.7).
+	// agy ignores per-flag alias overrides and resolves through [models]
+	// default_antigravity (falling back to models.DefaultAntigravityModel).
 	if normalizedAgentType == "antigravity" {
+		if m != nil && strings.TrimSpace(m.DefaultAntigravity) != "" {
+			return strings.TrimSpace(m.DefaultAntigravity)
+		}
 		return AntigravityRequiredModel
 	}
 
@@ -2349,12 +2353,12 @@ func ValidateEncryptionConfig(cfg *EncryptionConfig) error {
 		return nil
 	}
 	switch cfg.KeySource {
-	case "env", "file", "command":
+	case "env", "file", "command", "keyring":
 		// valid
 	case "":
 		return fmt.Errorf("encryption.key_source is required when encryption is enabled")
 	default:
-		return fmt.Errorf("invalid encryption.key_source %q: must be env, file, or command", cfg.KeySource)
+		return fmt.Errorf("invalid encryption.key_source %q: must be env, file, command, or keyring", cfg.KeySource)
 	}
 	switch cfg.KeyFormat {
 	case "hex", "base64", "":
@@ -4042,6 +4046,7 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "default_claude = %q  # Empty passes no --model: Claude Code uses its own default/saved model\n", cfg.Models.DefaultClaude)
 	fmt.Fprintf(w, "default_codex = %q\n", cfg.Models.DefaultCodex)
 	fmt.Fprintf(w, "default_gemini = %q\n", cfg.Models.DefaultGemini)
+	fmt.Fprintf(w, "default_antigravity = %q\n", cfg.Models.DefaultAntigravity)
 	fmt.Fprintf(w, "default_grok = %q  # Empty delegates model selection to Grok Build\n", cfg.Models.DefaultGrok)
 	fmt.Fprintf(w, "default_opencode = %q  # Empty delegates model selection to OpenCode's own config\n", cfg.Models.DefaultOpencode)
 	fmt.Fprintf(w, "default_omp = %q  # Empty delegates model selection to omp's own config (modelRoles.default)\n", cfg.Models.DefaultOmp)
@@ -4928,6 +4933,8 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Models.DefaultCodex, nil
 		case "default_gemini":
 			return cfg.Models.DefaultGemini, nil
+		case "default_antigravity":
+			return cfg.Models.DefaultAntigravity, nil
 		case "default_grok":
 			return cfg.Models.DefaultGrok, nil
 		case "default_opencode":
@@ -5815,6 +5822,7 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("models.default_claude", defaults.Models.DefaultClaude, cfg.Models.DefaultClaude)
 	addDiff("models.default_codex", defaults.Models.DefaultCodex, cfg.Models.DefaultCodex)
 	addDiff("models.default_gemini", defaults.Models.DefaultGemini, cfg.Models.DefaultGemini)
+	addDiff("models.default_antigravity", defaults.Models.DefaultAntigravity, cfg.Models.DefaultAntigravity)
 	addDiff("models.default_grok", defaults.Models.DefaultGrok, cfg.Models.DefaultGrok)
 	addDiff("models.default_opencode", defaults.Models.DefaultOpencode, cfg.Models.DefaultOpencode)
 	addDiff("models.default_omp", defaults.Models.DefaultOmp, cfg.Models.DefaultOmp)

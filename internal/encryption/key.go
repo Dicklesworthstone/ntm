@@ -7,14 +7,23 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
 )
 
+// DefaultKeyringService is the OS keyring service/item name queried when
+// key_source="keyring".
+const DefaultKeyringService = "ntm-encryption-key"
+
+// osKeyringLookupFunc queries the OS keyring (Linux Secret Service via
+// secret-tool or macOS Keychain via security). Overridable in tests.
+var osKeyringLookupFunc = lookupOSKeyring
+
 // KeyConfig holds key resolution parameters.
 type KeyConfig struct {
-	KeySource   string            // env, file, or command
+	KeySource   string            // env, file, command, or keyring
 	KeyEnv      string            // Environment variable name
 	KeyFile     string            // Path to key file
 	KeyCommand  string            // Shell command to retrieve key
@@ -44,8 +53,10 @@ func ResolveKey(cfg KeyConfig) ([]byte, error) {
 		encoded, err = resolveFromFile(cfg.KeyFile)
 	case "command":
 		encoded, err = resolveFromCommand(cfg.KeyCommand)
+	case "keyring":
+		encoded, err = resolveFromOSKeyring(cfg)
 	default:
-		return nil, fmt.Errorf("unsupported key_source %q: use env, file, or command", cfg.KeySource)
+		return nil, fmt.Errorf("unsupported key_source %q: use env, file, command, or keyring", cfg.KeySource)
 	}
 	if err != nil {
 		return nil, err
@@ -130,6 +141,61 @@ func resolveFromCommand(cmd string) (string, error) {
 		return "", fmt.Errorf("key command failed: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func resolveFromOSKeyring(cfg KeyConfig) (string, error) {
+	account := strings.TrimSpace(cfg.ActiveKeyID)
+	if account == "" {
+		account = DefaultKeyringService
+	}
+	val, krErr := osKeyringLookupFunc(DefaultKeyringService, account)
+	if krErr == nil && strings.TrimSpace(val) != "" {
+		return strings.TrimSpace(val), nil
+	}
+	// Headless fallback when the operator explicitly configured key_env or key_file.
+	if envName := strings.TrimSpace(cfg.KeyEnv); envName != "" {
+		if envVal := strings.TrimSpace(os.Getenv(envName)); envVal != "" {
+			return envVal, nil
+		}
+	}
+	if filePath := strings.TrimSpace(cfg.KeyFile); filePath != "" {
+		if data, fileErr := os.ReadFile(filePath); fileErr == nil && strings.TrimSpace(string(data)) != "" {
+			return strings.TrimSpace(string(data)), nil
+		}
+	}
+	if krErr != nil {
+		return "", fmt.Errorf("OS keyring lookup failed for %q (%v); populate your OS keyring or set key_env/key_file for headless fallback", account, krErr)
+	}
+	return "", fmt.Errorf("OS keyring entry %q is empty; populate your OS keyring or set key_env/key_file for headless fallback", account)
+}
+
+func lookupOSKeyring(service, account string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	switch runtime.GOOS {
+	case "darwin":
+		if _, err := exec.LookPath("security"); err != nil {
+			return "", fmt.Errorf("macOS security CLI not found: %w", err)
+		}
+		out, err := exec.CommandContext(ctx, "security", "find-generic-password", "-s", service, "-a", account, "-w").Output()
+		if err != nil {
+			out, err = exec.CommandContext(ctx, "security", "find-generic-password", "-s", service, "-w").Output()
+			if err != nil {
+				return "", fmt.Errorf("keychain query failed: %w", err)
+			}
+		}
+		return strings.TrimSpace(string(out)), nil
+	default:
+		if _, err := exec.LookPath("secret-tool"); err != nil {
+			return "", fmt.Errorf("secret-tool (libsecret) not found on PATH: %w", err)
+		}
+		out, err := exec.CommandContext(ctx, "secret-tool", "lookup", "service", service, "account", account).Output()
+		if err != nil {
+			return "", fmt.Errorf("secret-tool lookup failed: %w", err)
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
 }
 
 func decodeKey(encoded, format string) ([]byte, error) {

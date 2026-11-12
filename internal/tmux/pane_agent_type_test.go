@@ -631,11 +631,11 @@ func TestSetPaneAgentTypeRejectsUnknownType(t *testing.T) {
 	t.Parallel()
 
 	c := &Client{}
-	if err := c.SetPaneAgentType("%1", AgentType("nope")); err == nil {
-		t.Fatal("SetPaneAgentType accepted an unknown agent type")
+	if err := c.SetPaneAgentTypeContext(t.Context(), "%1", AgentType("nope")); err == nil {
+		t.Fatal("SetPaneAgentTypeContext accepted an unknown agent type")
 	}
-	if err := c.SetPaneAgentType("", AgentOpencode); err == nil {
-		t.Fatal("SetPaneAgentType accepted an empty pane ID")
+	if err := c.SetPaneAgentTypeContext(t.Context(), "", AgentOpencode); err == nil {
+		t.Fatal("SetPaneAgentTypeContext accepted an empty pane ID")
 	}
 	if err := c.SetPaneAgentIdentityContext(t.Context(), "%1", "proj__bad_1", AgentType("nope")); err == nil {
 		t.Fatal("SetPaneAgentIdentityContext accepted an unknown agent type")
@@ -687,7 +687,7 @@ func TestRealSetPaneAgentTypeSurvivesTitleRewrite(t *testing.T) {
 	}
 	paneID := panes[0].ID
 
-	if err := SetPaneAgentType(paneID, AgentOpencode); err != nil {
+	if err := SetPaneAgentTypeContext(t.Context(), paneID, AgentOpencode); err != nil {
 		t.Skipf("pane options unsupported by this tmux: %v", err)
 	}
 	// Simulate OpenCode overwriting the title after adopt renamed it.

@@ -54,6 +54,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/cli"
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
 
 const (
@@ -124,7 +125,7 @@ func docsWithShippedAgents(t *testing.T) bool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"-test.run=^" + regexp.QuoteMeta(t.Name()) + "$", "-test.count=1", "-test.timeout=2m"}
+	args := []string{"-test.run=^" + regexp.QuoteMeta(t.Name()) + "$", "-test.count=1", "-test.timeout=2m", "-test.v"}
 	if testing.Short() {
 		args = append(args, "-test.short")
 	}
@@ -140,6 +141,11 @@ func docsWithShippedAgents(t *testing.T) bool {
 	if err != nil {
 		t.Fatalf("docs gate with installed shipped presets failed: %v\n%s", err, output)
 	}
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.Contains(line, "docs conformance scanned") {
+			t.Log(strings.TrimSpace(line))
+		}
+	}
 	return false // The child ran this complete test against the initialized tree.
 }
 
@@ -152,10 +158,11 @@ type docExample struct {
 }
 
 // extractExamples walks a markdown file and returns every `ntm ` line found
-// inside fenced code blocks, honoring backslash continuations and the
-// `<!-- ntm-docs: skip -->` marker. A marker directly above a fenced block
-// waives every ntm-line in that block; a marker inside a block waives the
-// remaining ntm-lines of that block.
+// inside fenced code blocks as well as standalone “ `ntm ...` “ command
+// cells in markdown tables, honoring backslash continuations and the
+// `<!-- ntm-docs: skip -->` marker. A marker directly above a fenced block or
+// table waives every ntm-example in that block/table; a marker inside a block
+// waives the remaining ntm-lines of that block.
 func extractExamples(relPath string, content string) []docExample {
 	var out []docExample
 	lines := strings.Split(content, "\n")
@@ -163,9 +170,16 @@ func extractExamples(relPath string, content string) []docExample {
 	fenceSkipped := false
 	pendingSkip := false
 
+	inTable := false
+	tableSkipped := false
+	var tableHeaders []string
+
 	for i := 0; i < len(lines); i++ {
 		trimmed := strings.TrimSpace(lines[i])
 		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inTable = false
+			tableSkipped = false
+			tableHeaders = nil
 			if inFence {
 				inFence = false
 				fenceSkipped = false
@@ -176,7 +190,7 @@ func extractExamples(relPath string, content string) []docExample {
 			}
 			continue
 		}
-		if strings.Contains(trimmed, docsSkipMarker) {
+		if strings.Contains(trimmed, docsSkipMarker) && !strings.HasPrefix(trimmed, "|") {
 			if inFence {
 				fenceSkipped = true
 			} else {
@@ -185,6 +199,48 @@ func extractExamples(relPath string, content string) []docExample {
 			continue
 		}
 		if !inFence {
+			rowSkipped := false
+			rowText := trimmed
+			if strings.Contains(rowText, docsSkipMarker) {
+				rowSkipped = true
+				rowText = strings.TrimSpace(strings.ReplaceAll(rowText, docsSkipMarker, ""))
+			}
+
+			if cells, ok := splitMarkdownTableRow(rowText); ok {
+				if !inTable {
+					if i+1 < len(lines) {
+						if nextCells, nextOK := splitMarkdownTableRow(strings.TrimSpace(lines[i+1])); nextOK && isMarkdownTableSeparator(nextCells) {
+							inTable = true
+							tableSkipped = pendingSkip
+							pendingSkip = false
+							tableHeaders = cells
+							i++ // consume separator row
+							continue
+						}
+					}
+				} else {
+					for colIdx, cell := range cells {
+						header := ""
+						if colIdx < len(tableHeaders) {
+							header = tableHeaders[colIdx]
+						}
+						for _, cmd := range extractTableCellCommands(header, cell) {
+							out = append(out, docExample{
+								file:    relPath,
+								line:    i + 1,
+								raw:     cmd,
+								skipped: tableSkipped || rowSkipped,
+							})
+						}
+					}
+					continue
+				}
+			}
+
+			inTable = false
+			tableSkipped = false
+			tableHeaders = nil
+
 			// A marker only reaches across blank lines, not across prose.
 			if pendingSkip && trimmed != "" {
 				pendingSkip = false
@@ -210,6 +266,104 @@ func extractExamples(relPath string, content string) []docExample {
 		})
 	}
 	return out
+}
+
+var tableSepCellRE = regexp.MustCompile(`^:?-{2,}:?$`)
+
+func splitMarkdownTableRow(trimmed string) ([]string, bool) {
+	if !strings.HasPrefix(trimmed, "|") || !strings.HasSuffix(trimmed, "|") || len(trimmed) < 2 {
+		return nil, false
+	}
+	inner := trimmed[1 : len(trimmed)-1]
+	var cells []string
+	var cur strings.Builder
+	inCode := false
+	runes := []rune(inner)
+	for i := 0; i < len(runes); i++ {
+		c := runes[i]
+		if c == '\\' && i+1 < len(runes) && runes[i+1] == '|' {
+			cur.WriteRune('|')
+			i++
+			continue
+		}
+		if c == '`' {
+			inCode = !inCode
+			cur.WriteRune(c)
+			continue
+		}
+		if c == '|' && !inCode {
+			cells = append(cells, strings.TrimSpace(cur.String()))
+			cur.Reset()
+			continue
+		}
+		cur.WriteRune(c)
+	}
+	cells = append(cells, strings.TrimSpace(cur.String()))
+	return cells, len(cells) > 0
+}
+
+func isMarkdownTableSeparator(cells []string) bool {
+	if len(cells) == 0 {
+		return false
+	}
+	for _, cell := range cells {
+		if !tableSepCellRE.MatchString(cell) {
+			return false
+		}
+	}
+	return true
+}
+
+func extractTableCellCommands(header string, cell string) []string {
+	headerLower := strings.ToLower(strings.TrimSpace(header))
+	isExampleCol := strings.Contains(headerLower, "example")
+
+	if strings.HasPrefix(cell, "`") && strings.HasSuffix(cell, "`") && strings.Count(cell, "`") == 2 {
+		inner := strings.TrimSpace(cell[1 : len(cell)-1])
+		if cmd, ok := docsCommandLine(inner); ok && isStandaloneTableCommand(cmd, isExampleCol) {
+			return []string{cmd}
+		}
+		return nil
+	}
+
+	if !isExampleCol {
+		return nil
+	}
+
+	var cmds []string
+	rest := cell
+	for {
+		start := strings.IndexByte(rest, '`')
+		if start < 0 {
+			break
+		}
+		rest = rest[start+1:]
+		end := strings.IndexByte(rest, '`')
+		if end < 0 {
+			break
+		}
+		span := strings.TrimSpace(rest[:end])
+		rest = rest[end+1:]
+		if cmd, ok := docsCommandLine(span); ok && isStandaloneTableCommand(cmd, true) {
+			cmds = append(cmds, cmd)
+		}
+	}
+	return cmds
+}
+
+func isStandaloneTableCommand(cmd string, inExampleCol bool) bool {
+	if strings.Contains(cmd, "...") || strings.Contains(cmd, "/--") {
+		return false
+	}
+	if inExampleCol {
+		return strings.HasPrefix(cmd, "ntm ")
+	}
+	// Outside an explicit Example(s) column, only check full command examples
+	// (with `=value` or multiple flags/args), not bare single-flag reference labels.
+	if !strings.HasPrefix(cmd, "ntm --") {
+		return false
+	}
+	return strings.Contains(cmd, "=") || len(strings.Fields(cmd)) >= 3
 }
 
 // docsCommandLine reports whether a fenced-block line is an ntm example,
@@ -326,6 +480,10 @@ func shellTokens(s string) ([]string, error) {
 // checkExample resolves argv against the real cobra tree and parses its flags
 // without executing anything. Returns a non-nil error describing the drift.
 func checkExample(root *cobra.Command, argv []string) error {
+	return checkExampleForFile(root, "", argv)
+}
+
+func checkExampleForFile(root *cobra.Command, rel string, argv []string) error {
 	cmd, rest, err := root.Find(argv)
 	if err != nil {
 		return fmt.Errorf("unknown command: %v", err)
@@ -336,6 +494,22 @@ func checkExample(root *cobra.Command, argv []string) error {
 	fs.SetOutput(io.Discard)
 	fs.AddFlagSet(cmd.Flags())
 	fs.AddFlagSet(cmd.InheritedFlags())
+	fs.VisitAll(func(f *pflag.Flag) {
+		f.Changed = false
+	})
+	defer func() {
+		fs.VisitAll(func(f *pflag.Flag) {
+			if !f.Changed {
+				return
+			}
+			if sv, ok := f.Value.(pflag.SliceValue); ok && (f.DefValue == "[]" || f.DefValue == "") {
+				_ = sv.Replace(nil)
+			} else {
+				_ = f.Value.Set(f.DefValue)
+			}
+			f.Changed = false
+		})
+	}()
 	if err := fs.Parse(rest); err != nil {
 		return fmt.Errorf("flag parse failed for %q: %v", cmd.CommandPath(), err)
 	}
@@ -346,6 +520,88 @@ func checkExample(root *cobra.Command, argv []string) error {
 	if cmd.HasSubCommands() && !cmd.Runnable() {
 		if pos := fs.Args(); len(pos) > 0 {
 			return fmt.Errorf("unknown subcommand %q for %q", pos[0], cmd.CommandPath())
+		}
+	}
+
+	if err := checkMarkdownSectionsFlag(fs); err != nil {
+		return err
+	}
+	if err := checkRobotEventsModifierFlags(fs); err != nil {
+		return err
+	}
+	if err := checkNoDeprecatedFlagsInAgentDocs(rel, fs); err != nil {
+		return err
+	}
+	return nil
+}
+
+func checkNoDeprecatedFlagsInAgentDocs(rel string, fs *pflag.FlagSet) error {
+	if rel != "SKILL.md" && rel != "AGENTS.md" && !strings.HasPrefix(rel, "references/") {
+		return nil
+	}
+	var found error
+	fs.VisitAll(func(f *pflag.Flag) {
+		if found != nil || !f.Changed || f.Deprecated == "" {
+			return
+		}
+		if rel == "AGENTS.md" && f.Name == "md-sections" {
+			return
+		}
+		found = fmt.Errorf("deprecated flag --%s in %s (%s)", f.Name, rel, f.Deprecated)
+	})
+	return found
+}
+
+func checkMarkdownSectionsFlag(fs *pflag.FlagSet) error {
+	valid := robot.ValidMarkdownSections()
+	validSet := make(map[string]struct{}, len(valid))
+	for _, sec := range valid {
+		validSet[sec] = struct{}{}
+	}
+
+	flagNames := []string{}
+	if fs.Changed("md-sections") {
+		flagNames = append(flagNames, "md-sections")
+	}
+	if fs.Changed("sections") && fs.Changed("robot-markdown") {
+		flagNames = append(flagNames, "sections")
+	}
+
+	for _, flagName := range flagNames {
+		raw, err := fs.GetString(flagName)
+		if err != nil {
+			continue
+		}
+		parts := strings.Split(raw, ",")
+		hasAny := false
+		for _, part := range parts {
+			sec := strings.ToLower(strings.TrimSpace(part))
+			if sec == "" {
+				continue
+			}
+			hasAny = true
+			if _, ok := validSet[sec]; !ok {
+				return fmt.Errorf("invalid --%s value %q (valid sections: %s)", flagName, part, strings.Join(valid, ", "))
+			}
+		}
+		if !hasAny {
+			return fmt.Errorf("empty --%s value (valid sections: %s)", flagName, strings.Join(valid, ", "))
+		}
+	}
+	return nil
+}
+
+func checkRobotEventsModifierFlags(fs *pflag.FlagSet) error {
+	if !fs.Changed("robot-events") {
+		return nil
+	}
+	for _, pair := range [][2]string{
+		{"limit", "events-limit"},
+		{"category", "events-category"},
+		{"session", "events-session"},
+	} {
+		if fs.Changed(pair[0]) {
+			return fmt.Errorf("--robot-events ignores --%s; use --%s instead", pair[0], pair[1])
 		}
 	}
 	return nil
@@ -403,54 +659,63 @@ func loadDocsAllowlist(t *testing.T, root string) docsAllowlist {
 // docsFileSet returns the repo-relative markdown files the gate executes.
 func docsFileSet(t *testing.T, root string) []string {
 	t.Helper()
-	files := []string{"README.md", "SKILL.md", "command_palette.md"}
-	err := filepath.Walk(filepath.Join(root, "docs"), func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
+	files := []string{"AGENTS.md", "README.md", "SKILL.md", "command_palette.md"}
+	for _, dirName := range []string{"docs", "references"} {
+		dirPath := filepath.Join(root, dirName)
+		if _, statErr := os.Stat(dirPath); os.IsNotExist(statErr) {
+			continue
 		}
-		rel, relErr := filepath.Rel(root, path)
-		if relErr != nil {
-			return relErr
-		}
-		rel = filepath.ToSlash(rel)
-		if info.IsDir() {
-			if rel == "docs/planning" { // proposals archive: hypothetical designs, excluded by design
-				return filepath.SkipDir
+		err := filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
 			}
+			rel, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				return relErr
+			}
+			rel = filepath.ToSlash(rel)
+			if info.IsDir() {
+				if rel == "docs/planning" { // proposals archive: hypothetical designs, excluded by design
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".md") {
+				return nil
+			}
+			files = append(files, rel)
 			return nil
+		})
+		if err != nil {
+			t.Fatalf("walking %s/: %v", dirName, err)
 		}
-		if !strings.HasSuffix(path, ".md") {
-			return nil
-		}
-		files = append(files, rel)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walking docs/: %v", err)
 	}
 	sort.Strings(files)
 	return files
 }
 
 // runDocsCheck extracts and checks every example in the given files.
-// Returns violations (one string per broken example) and the skipped examples.
-func runDocsCheck(t *testing.T, root string, files []string) (violations []string, skips []docExample) {
+// Returns violations (one string per broken example), skipped examples, and total extracted examples.
+func runDocsCheck(t *testing.T, root string, files []string) (violations []string, skips []docExample, totalExamples int) {
 	t.Helper()
 	for _, rel := range files {
 		data, err := os.ReadFile(filepath.Join(root, rel))
 		if err != nil {
 			t.Fatalf("reading %s: %v", rel, err)
 		}
-		v, s := runDocsCheckOn(t, rel, string(data))
+		v, s, n := runDocsCheckCountOn(t, rel, string(data))
 		violations = append(violations, v...)
 		skips = append(skips, s...)
+		totalExamples += n
 	}
-	return violations, skips
+	return violations, skips, totalExamples
 }
 
 // TestDocsExamplesCanary is the mandatory merge-blocking canary: the checker
-// must FIRE on the fixture doc's bogus flag and bogus subcommand, or the gate
-// is a placebo and this test fails hard.
+// must FIRE on the fixture doc's bogus flag and bogus subcommand, as well as
+// bool-flag non-bool values, invalid --md-sections values, mismatched
+// --robot-events modifier flags, and broken markdown table examples, or the
+// gate is a placebo and this test fails hard.
 func TestDocsExamplesCanary(t *testing.T) {
 	if !docsWithShippedAgents(t) {
 		return
@@ -475,6 +740,45 @@ func TestDocsExamplesCanary(t *testing.T) {
 	// The fixture's valid example must NOT be flagged (no false positives).
 	if strings.Contains(joined, "ntm version --short") {
 		t.Fatalf("CANARY FAILURE — gate false-positived on the fixture's valid example.\nViolations:\n%s", joined)
+	}
+
+	// Extended G3 canaries: bool-flag=non-bool, invalid --md-sections,
+	// --robot-events unprefixed modifiers, and markdown table extraction.
+	syntheticDoc := strings.Join([]string{
+		"```bash",
+		"ntm --robot-overlay=myproject",
+		"ntm --robot-markdown --md-sections=sessions,not_a_real_section",
+		"ntm --robot-events --since-cursor=42 --limit=20",
+		"ntm --robot-markdown --md-sections=sessions,beads",
+		"```",
+		"",
+		"| Flag | Description | Example |",
+		"|------|-------------|---------|",
+		"| `--robot-markdown` | Valid table example | `ntm --robot-markdown --md-sections=sessions,beads` |",
+		"| `--robot-bogus` | Broken table example | `ntm --no-such-table-flag` |",
+	}, "\n")
+	synViolations, synSkips := runDocsCheckOn(t, "synthetic-canary.md", syntheticDoc)
+	if len(synSkips) != 0 {
+		t.Fatalf("CANARY FAILURE — unexpected skips in synthetic canary: %v", synSkips)
+	}
+	synJoined := strings.Join(synViolations, "\n")
+	for _, mustCatch := range []string{
+		"--robot-overlay=myproject",
+		"not_a_real_section",
+		"--robot-events ignores --limit",
+		"--no-such-table-flag",
+	} {
+		if !strings.Contains(synJoined, mustCatch) {
+			t.Fatalf("CANARY FAILURE — gate did not catch %q.\nViolations:\n%s", mustCatch, synJoined)
+		}
+	}
+	if len(synViolations) != 4 {
+		t.Fatalf("CANARY FAILURE — expected exactly 4 synthetic violations (no false positive on valid beads section), got %d:\n%s", len(synViolations), synJoined)
+	}
+
+	depViolations, _ := runDocsCheckOn(t, "SKILL.md", "```bash\nntm --robot-ack=myproject --ack-timeout=30s\n```\n")
+	if len(depViolations) != 1 || !strings.Contains(depViolations[0], "deprecated flag --ack-timeout") {
+		t.Fatalf("CANARY FAILURE — gate did not catch deprecated flag in SKILL.md: %v", depViolations)
 	}
 }
 
@@ -530,8 +834,15 @@ func TestCheckExampleShippedPluginsUseProductionFlags(t *testing.T) {
 
 func runDocsCheckOn(t *testing.T, rel, content string) (violations []string, skips []docExample) {
 	t.Helper()
+	v, s, _ := runDocsCheckCountOn(t, rel, content)
+	return v, s
+}
+
+func runDocsCheckCountOn(t *testing.T, rel, content string) (violations []string, skips []docExample, total int) {
+	t.Helper()
 	cobraRoot := cli.RootCommand()
-	for _, ex := range extractExamples(rel, content) {
+	examples := extractExamples(rel, content)
+	for _, ex := range examples {
 		if ex.skipped {
 			skips = append(skips, ex)
 			continue
@@ -541,15 +852,15 @@ func runDocsCheckOn(t *testing.T, rel, content string) (violations []string, ski
 			violations = append(violations, fmt.Sprintf("%s:%d: %v (line: %s)", ex.file, ex.line, err, ex.raw))
 			continue
 		}
-		if err := checkExample(cobraRoot, argv); err != nil {
+		if err := checkExampleForFile(cobraRoot, rel, argv); err != nil {
 			violations = append(violations, fmt.Sprintf("%s:%d: %v (line: %s)", ex.file, ex.line, err, ex.raw))
 		}
 	}
-	return violations, skips
+	return violations, skips, len(examples)
 }
 
-// TestDocsExamplesConform executes every fenced `ntm` example in the real
-// docs against the real cobra tree, and ratchets the skip budget in both
+// TestDocsExamplesConform executes every fenced and table `ntm` example in the
+// real docs against the real cobra tree, and ratchets the skip budget in both
 // directions against ci/allowlists/docs.txt.
 func TestDocsExamplesConform(t *testing.T) {
 	if !docsWithShippedAgents(t) {
@@ -558,7 +869,9 @@ func TestDocsExamplesConform(t *testing.T) {
 	root := docsRepoRoot(t)
 	al := loadDocsAllowlist(t, root)
 	files := docsFileSet(t, root)
-	violations, skips := runDocsCheck(t, root, files)
+	violations, skips, totalExamples := runDocsCheck(t, root, files)
+	t.Logf("docs conformance scanned %d markdown files and extracted %d ntm examples (%d executed, %d skip-marked)",
+		len(files), totalExamples, totalExamples-len(skips), len(skips))
 
 	if len(violations) > 0 {
 		t.Errorf("docs-example conformance FAIL — %d example(s) do not parse against the real ntm command tree:\n  %s\n%s\n%s",

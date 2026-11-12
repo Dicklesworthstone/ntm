@@ -21,6 +21,10 @@ const (
 	checkpointDirName = "ensemble-checkpoints"
 	// checkpointMetaFile is the metadata filename within a checkpoint.
 	checkpointMetaFile = "_meta.json"
+	// checkpointContextFile stores the saved ContextPack for resume/rerun.
+	checkpointContextFile = "_context.json"
+	// checkpointReportFile stores the persisted SynthesisReport artifact.
+	checkpointReportFile = "_synthesis_report.json"
 	// checkpointSynthesisFile stores streaming synthesis resume state.
 	checkpointSynthesisFile = "synthesis.json"
 )
@@ -125,6 +129,16 @@ type SynthesisCheckpoint struct {
 	Error       string    `json:"error,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// SynthesisArtifact persists the synthesized report for a checkpoint run
+// and supports non-destructive invalidation when a mode is re-run.
+type SynthesisArtifact struct {
+	RunID         string           `json:"run_id"`
+	Invalidated   bool             `json:"invalidated,omitempty"`
+	InvalidatedAt time.Time        `json:"invalidated_at,omitempty"`
+	UpdatedAt     time.Time        `json:"updated_at"`
+	Report        *SynthesisReport `json:"report,omitempty"`
 }
 
 // ModeCheckpoint stores a single mode's output for recovery.
@@ -302,6 +316,202 @@ func (s *CheckpointStore) LoadSynthesisCheckpoint(runID string) (*SynthesisCheck
 	return &checkpoint, nil
 }
 
+// SaveCheckpoint saves or updates a specific mode's checkpoint artifact.
+func (s *CheckpointStore) SaveCheckpoint(runID string, checkpoint ModeCheckpoint) error {
+	if s == nil {
+		return errors.New("checkpoint store is nil")
+	}
+	normalizedRunID, err := NormalizeCheckpointRunID(runID)
+	if err != nil {
+		return err
+	}
+	normalizedModeID, err := normalizeCheckpointModeID(checkpoint.ModeID)
+	if err != nil {
+		return err
+	}
+	runID = normalizedRunID
+	checkpoint.ModeID = normalizedModeID
+	if checkpoint.Output != nil && checkpoint.Output.ModeID == "" {
+		checkpoint.Output.ModeID = normalizedModeID
+	}
+	if checkpoint.CapturedAt.IsZero() {
+		checkpoint.CapturedAt = time.Now().UTC()
+	}
+
+	runDir, err := s.ensureRunDir(runID)
+	if err != nil {
+		return err
+	}
+
+	filename := filepath.Join(runDir, checkpoint.ModeID+".json")
+	data, err := json.MarshalIndent(checkpoint, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal mode checkpoint: %w", err)
+	}
+	if err := util.AtomicWriteFile(filename, data, 0o644); err != nil {
+		return fmt.Errorf("write mode checkpoint: %w", err)
+	}
+
+	s.logger.Info("mode checkpoint saved",
+		"run_id", runID,
+		"mode_id", checkpoint.ModeID,
+		"status", checkpoint.Status,
+		"tokens_used", checkpoint.TokensUsed,
+	)
+	return nil
+}
+
+// SaveContextPack persists the run's ContextPack so resume and rerun-mode reuse identical context.
+func (s *CheckpointStore) SaveContextPack(runID string, pack *ContextPack) error {
+	if s == nil {
+		return errors.New("checkpoint store is nil")
+	}
+	if pack == nil {
+		return errors.New("context pack is nil")
+	}
+	normalizedRunID, err := NormalizeCheckpointRunID(runID)
+	if err != nil {
+		return err
+	}
+	runDir, err := s.ensureRunDir(normalizedRunID)
+	if err != nil {
+		return err
+	}
+	filename := filepath.Join(runDir, checkpointContextFile)
+	data, err := json.MarshalIndent(pack, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal context pack: %w", err)
+	}
+	if err := util.AtomicWriteFile(filename, data, 0o644); err != nil {
+		return fmt.Errorf("write context pack: %w", err)
+	}
+	return nil
+}
+
+// LoadContextPack loads a persisted ContextPack for the run.
+func (s *CheckpointStore) LoadContextPack(runID string) (*ContextPack, error) {
+	if s == nil {
+		return nil, errors.New("checkpoint store is nil")
+	}
+	normalizedRunID, err := NormalizeCheckpointRunID(runID)
+	if err != nil {
+		return nil, err
+	}
+	runDir, err := s.safeRunDir(normalizedRunID)
+	if err != nil {
+		return nil, err
+	}
+	filename := filepath.Join(runDir, checkpointContextFile)
+	data, err := readRegularCheckpointFile(filename, "context pack file")
+	if err != nil {
+		return nil, err
+	}
+	var pack ContextPack
+	if err := json.Unmarshal(data, &pack); err != nil {
+		return nil, fmt.Errorf("unmarshal context pack: %w", err)
+	}
+	return &pack, nil
+}
+
+// SaveSynthesisReport persists the completed Stage 3 synthesis report for a run.
+func (s *CheckpointStore) SaveSynthesisReport(runID string, report *SynthesisReport) error {
+	if s == nil {
+		return errors.New("checkpoint store is nil")
+	}
+	if report == nil {
+		return errors.New("synthesis report is nil")
+	}
+	normalizedRunID, err := NormalizeCheckpointRunID(runID)
+	if err != nil {
+		return err
+	}
+	runDir, err := s.ensureRunDir(normalizedRunID)
+	if err != nil {
+		return err
+	}
+	artifact := SynthesisArtifact{
+		RunID:       normalizedRunID,
+		Invalidated: false,
+		UpdatedAt:   time.Now().UTC(),
+		Report:      report,
+	}
+	filename := filepath.Join(runDir, checkpointReportFile)
+	data, err := json.MarshalIndent(artifact, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal synthesis report: %w", err)
+	}
+	if err := util.AtomicWriteFile(filename, data, 0o644); err != nil {
+		return fmt.Errorf("write synthesis report: %w", err)
+	}
+	s.logger.Info("synthesis report saved",
+		"run_id", normalizedRunID,
+		"findings", len(report.TopFindings),
+	)
+	return nil
+}
+
+// InvalidateSynthesis marks any persisted synthesis report or streaming checkpoint as stale
+// without deleting files.
+func (s *CheckpointStore) InvalidateSynthesis(runID string) error {
+	if s == nil {
+		return errors.New("checkpoint store is nil")
+	}
+	normalizedRunID, err := NormalizeCheckpointRunID(runID)
+	if err != nil {
+		return err
+	}
+	runDir, err := s.ensureRunDir(normalizedRunID)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	artifact := SynthesisArtifact{
+		RunID:         normalizedRunID,
+		Invalidated:   true,
+		InvalidatedAt: now,
+		UpdatedAt:     now,
+		Report:        nil,
+	}
+	filename := filepath.Join(runDir, checkpointReportFile)
+	data, err := json.MarshalIndent(artifact, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal invalidated synthesis artifact: %w", err)
+	}
+	if err := util.AtomicWriteFile(filename, data, 0o644); err != nil {
+		return fmt.Errorf("write invalidated synthesis artifact: %w", err)
+	}
+	return nil
+}
+
+// LoadSynthesisReport loads the current valid synthesis report for a run,
+// returning os.ErrNotExist when missing or invalidated.
+func (s *CheckpointStore) LoadSynthesisReport(runID string) (*SynthesisReport, error) {
+	if s == nil {
+		return nil, errors.New("checkpoint store is nil")
+	}
+	normalizedRunID, err := NormalizeCheckpointRunID(runID)
+	if err != nil {
+		return nil, err
+	}
+	runDir, err := s.safeRunDir(normalizedRunID)
+	if err != nil {
+		return nil, err
+	}
+	filename := filepath.Join(runDir, checkpointReportFile)
+	data, err := readRegularCheckpointFile(filename, "synthesis report file")
+	if err != nil {
+		return nil, err
+	}
+	var artifact SynthesisArtifact
+	if err := json.Unmarshal(data, &artifact); err != nil {
+		return nil, fmt.Errorf("unmarshal synthesis report: %w", err)
+	}
+	if artifact.Invalidated || artifact.Report == nil {
+		return nil, os.ErrNotExist
+	}
+	return artifact.Report, nil
+}
+
 // LoadCheckpoint loads a specific mode's checkpoint.
 func (s *CheckpointStore) LoadCheckpoint(runID, modeID string) (*ModeCheckpoint, error) {
 	if s == nil {
@@ -411,8 +621,8 @@ func (s *CheckpointStore) LoadAllCheckpoints(runID string) ([]ModeCheckpoint, er
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		// Skip metadata and synthesis checkpoint files
-		if entry.Name() == checkpointMetaFile || entry.Name() == checkpointSynthesisFile {
+		// Skip internal metadata, context, and synthesis checkpoint files
+		if strings.HasPrefix(entry.Name(), "_") || entry.Name() == checkpointSynthesisFile {
 			continue
 		}
 
