@@ -29,9 +29,9 @@ func (rc *rotationChecker) reportContextForecasts(panes []tmux.Pane, usages map[
 			strings.TrimSpace(pane.Command) == "" || tmux.PaneCommandIsStarting(pane.Command) || pane.IdleShell() {
 			continue
 		}
-		limit := usage.ContextWindow
-		if limit <= 0 && usage.Model != "" && usage.Model != "unknown" && rc.contextLimit != nil {
-			limit = rc.contextLimit(usage.Model)
+		limit, known := rc.contextWindow(usage)
+		if !known {
+			continue
 		}
 		observations = append(observations, ntmctx.ForecastObservation{
 			Key: pane.ID,

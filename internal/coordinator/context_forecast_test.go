@@ -54,7 +54,7 @@ func newForecastTickFixture() *forecastTickFixture {
 			f.captures++
 			return "✻ Simmering… (esc to interrupt · 12s)\n\n ❯\n", nil
 		},
-		contextLimit: func(string) int { return 100000 },
+		contextLimit: func(string) (int, bool) { return 100000, true },
 		enqueue: func(string, string, float64) *ntmctx.PendingRotation {
 			f.mutations++
 			return nil
@@ -220,5 +220,52 @@ func TestRotationCheckerForecastWiringAndDisabled(t *testing.T) {
 	}
 	if len(f.events) != 0 || f.rc.forecaster != nil {
 		t.Fatal("disabled checker retained forecasting state")
+	}
+}
+
+func TestRotationCheckerForecastRequiresRecognizedOrReportedCapacity(t *testing.T) {
+	for _, tc := range []struct {
+		name, model string
+		window      int
+		start, step int
+		want        bool
+	}{
+		{name: "unknown model cannot borrow display fallback", model: "private-provider/new-model", start: 90000, step: 4000},
+		{name: "known model supplies registry capacity", model: "claude-opus-4", start: 140000, step: 4000, want: true},
+		{name: "unknown model supplies native capacity", model: "private-provider/new-model", window: 100000, start: 70000, step: 2000, want: true},
+		{name: "negative native window is invalid", model: "claude-opus-4", window: -1, start: 140000, step: 4000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newForecastTickFixture()
+			production := newRotationChecker("forecast", "/work", CoordinatorConfig{RotationUsageThreshold: 95}, nil)
+			f.rc.contextLimit = production.contextLimit
+			for i := 0; i < 3; i++ {
+				f.usages[101] = &ntmctx.TranscriptUsage{
+					Path: "/transcripts/native.jsonl", Model: tc.model,
+					Tokens: tc.start + i*tc.step, ContextWindow: tc.window, UpdatedAt: f.now,
+				}
+				if decisions := f.rc.runOnce(context.Background()); len(decisions) != 0 {
+					t.Fatalf("forecast evidence triggered rotation: %+v", decisions)
+				}
+				f.now = f.now.Add(30 * time.Second)
+			}
+			if tc.want {
+				if len(f.events) != 1 {
+					t.Fatalf("verified capacity produced %d forecasts, want one", len(f.events))
+				}
+				source := "model_registry"
+				if tc.window > 0 {
+					source = "transcript"
+				}
+				if f.events[0].Details["context_limit_source"] != source {
+					t.Fatalf("capacity source = %v, want %s", f.events[0].Details["context_limit_source"], source)
+				}
+			} else if len(f.events) != 0 {
+				t.Fatalf("unknown capacity produced an exhaustion forecast: %+v", f.events)
+			}
+			if f.mutations != 0 || f.captures != 0 {
+				t.Fatalf("capacity evaluation mutated or captured the pane: mutations=%d captures=%d", f.mutations, f.captures)
+			}
+		})
 	}
 }

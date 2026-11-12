@@ -116,10 +116,10 @@ func newRotationTestEnv(t *testing.T, threshold float64, autoConfirm bool, panes
 			}
 			return captures[paneID], nil
 		},
-		contextLimit: func(model string) int {
-			// Deterministic registry window for the decision table; the
+		contextLimit: func(model string) (int, bool) {
+			// Deterministic recognized window for the decision table; the
 			// transcript-window path is exercised by the Codex fixtures.
-			return 200000
+			return 200000, true
 		},
 		storedPending: ntmctx.GetPendingRotationByID,
 		publish: func(record robot.ActuationRecord) {
@@ -311,7 +311,10 @@ func TestRotationChecker_CodexTranscriptWindow(t *testing.T) {
 	)
 	// The registry seam would report a wrong window; the transcript's own
 	// window must win.
-	env.rc.contextLimit = func(string) int { t.Error("registry consulted despite transcript window"); return 1 }
+	env.rc.contextLimit = func(string) (int, bool) {
+		t.Error("registry consulted despite transcript window")
+		return 1, true
+	}
 
 	decisions := env.rc.runOnce(t.Context())
 	for _, d := range decisions {
@@ -440,7 +443,10 @@ func TestRotationChecker_OmpStatusBarGauge(t *testing.T) {
 		},
 		nil,
 	)
-	env.rc.contextLimit = func(string) int { t.Error("registry consulted despite omp's own window"); return 1 }
+	env.rc.contextLimit = func(string) (int, bool) {
+		t.Error("registry consulted despite omp's own window")
+		return 1, true
+	}
 
 	decisions := env.rc.runOnce(t.Context())
 	for _, d := range decisions {
@@ -646,5 +652,124 @@ func TestMaybeCheckContextRotation_DefaultOffBuildsNothing(t *testing.T) {
 	c.maybeCheckContextRotation(t.Context())
 	if c.rotation != nil {
 		t.Fatal("rotation checker constructed despite threshold 0")
+	}
+}
+
+func TestRotationCheckerProductionCapacityEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name, model, kind string
+		tokens, window    int
+		age               time.Duration
+		wantLimit         int
+	}{
+		{name: "unknown model never uses display fallback", model: "private-provider/new-model", tokens: 190000},
+		{name: "missing model has unknown capacity", tokens: 190000},
+		{name: "known model resolves registry", model: "claude-opus-4", tokens: 190000, wantLimit: 200000},
+		{name: "qualified known model resolves registry", model: "anthropic/claude-opus-4-6", tokens: 950000, wantLimit: 1000000},
+		{name: "unknown model with reported window", model: "private-provider/new-model", kind: "codex", tokens: 190000, window: 200000, wantLimit: 200000},
+		{name: "reported window without model", kind: "codex", tokens: 190000, window: 200000, wantLimit: 200000},
+		{name: "idle process bound occupancy remains usable", model: "claude-opus-4", tokens: 190000, age: ntmctx.TranscriptFreshness + time.Minute, wantLimit: 200000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			store := redirectPendingStore(t)
+			now := time.Now().UTC().Add(-time.Second)
+			stamp := now.Add(-tc.age).Format(time.RFC3339Nano)
+			path := filepath.Join(t.TempDir(), "native.jsonl")
+			pane := ccPane("%7", "rotsess__cc_1")
+			pane.PID = 101
+			data := fmt.Sprintf("{\"type\":\"assistant\",\"timestamp\":%q,\"message\":{\"role\":\"assistant\",\"model\":%q,\"usage\":{\"input_tokens\":%d}}}\n",
+				stamp, tc.model, tc.tokens)
+			if tc.kind == "codex" {
+				pane = codPane("%7", "rotsess__cod_1")
+				pane.PID = 101
+				data = fmt.Sprintf("{\"type\":\"turn_context\",\"payload\":{\"model\":%q}}\n{\"type\":\"event_msg\",\"timestamp\":%q,\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":%d,\"total_tokens\":%d},\"model_context_window\":%d}}}\n",
+					tc.model, stamp, tc.tokens, tc.tokens, tc.window)
+			}
+			if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			env := newRotationTestEnv(t, 80, true, []tmux.Pane{pane},
+				map[string]string{"%7": "/work"}, map[string]string{"%7": idleCapture}, nil)
+			// Exercise the real configured resolver, native parser, tick,
+			// pending store, and auto-confirm boundary. Only process binding
+			// and terminal actuation are injected.
+			production := newRotationChecker("rotsess", "/work", CoordinatorConfig{
+				RotationUsageThreshold: 80, RotationAutoConfirm: true,
+			}, nil)
+			env.rc.contextLimit = production.contextLimit
+			env.rc.now = func() time.Time { return now }
+			reads := 0
+			env.rc.processUsage = func(_ string, pid int) (*ntmctx.TranscriptUsage, bool) {
+				if pid != pane.PID {
+					t.Fatalf("read accounting for wrong process: %d", pid)
+				}
+				reads++
+				usage, err := ntmctx.ReadLatestTranscriptUsage(path)
+				if err != nil || usage == nil || usage.Model != tc.model || usage.Tokens != tc.tokens {
+					t.Fatalf("native accounting fixture = %+v, %v", usage, err)
+				}
+				return usage, true
+			}
+
+			decisions := env.rc.runOnce(t.Context())
+			if reads != 1 {
+				t.Fatalf("native process accounting reads = %d, want 1", reads)
+			}
+			pending, err := store.Get(pane.Title)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantLimit == 0 {
+				if len(decisions) != 0 || len(env.confirmed) != 0 || pending != nil || len(env.published) != 0 {
+					t.Fatalf("unknown capacity authorized rotation: decisions=%+v confirmed=%v pending=%+v", decisions, env.confirmed, pending)
+				}
+				return
+			}
+			if len(decisions) != 1 || decisions[0].Action != "auto_confirmed" ||
+				decisions[0].Limit != tc.wantLimit || len(env.confirmed) != 1 || pending == nil {
+				t.Fatalf("verified capacity did not rotate: decisions=%+v confirmed=%v pending=%+v", decisions, env.confirmed, pending)
+			}
+			if tc.age > ntmctx.TranscriptFreshness && decisions[0].Confidence != "medium" {
+				t.Fatalf("idle accounting freshness was misreported: %+v", decisions[0])
+			}
+		})
+	}
+}
+
+func TestRotationCheckerInvalidAccountingCannotUseOtherTriggers(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		tokens, limit int
+		known         bool
+	}{
+		{name: "negative occupancy", tokens: -1, known: true},
+		{name: "negative reported window", tokens: 190000, limit: -1, known: true},
+		{name: "fallback without recognition", tokens: 190000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			store := redirectPendingStore(t)
+			pane := ccPane("%7", "rotsess__cc_1")
+			pane.PID = 101
+			env := newRotationTestEnv(t, 80, true, []tmux.Pane{pane},
+				map[string]string{"%7": "/work"}, map[string]string{"%7": idleCapture}, nil)
+			env.rc.processUsage = func(string, int) (*ntmctx.TranscriptUsage, bool) {
+				return &ntmctx.TranscriptUsage{
+					Path: "/native/session.jsonl", Model: "claude-opus-4",
+					Tokens: tc.tokens, ContextWindow: tc.limit, UpdatedAt: time.Now(),
+				}, true
+			}
+			env.rc.contextLimit = func(string) (int, bool) { return 200000, tc.known }
+			env.rc.restartTokensAbove = 1
+			env.rc.restartSessionAge = time.Hour
+			env.rc.sessionCreated = func(string) (time.Time, bool) { return time.Now().Add(-2 * time.Hour), true }
+			if decisions := env.rc.runOnce(t.Context()); len(decisions) != 0 || len(env.confirmed) != 0 {
+				t.Fatalf("invalid accounting authorized another trigger: %+v, confirmed=%v", decisions, env.confirmed)
+			}
+			if pending, err := store.Get(pane.Title); err != nil || pending != nil {
+				t.Fatalf("invalid accounting persisted rotation: %+v, %v", pending, err)
+			}
+		})
 	}
 }

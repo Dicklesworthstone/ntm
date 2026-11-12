@@ -47,7 +47,13 @@ model, usage source, capacity source, current tokens, usage percentage,
 `tokens_per_minute`, `minutes_to_exhaustion`, sample count, window duration, and
 observation timestamp. `advisory` is always `true`. A model-registry capacity is
 labelled `model_registry`, distinct from a transcript- or status-bar-reported
-capacity; a registry fallback is not a measured window size.
+capacity. A registry capacity is accepted only for a recognized model, including
+configured overrides and provider-qualified names. An unknown model without a
+positive native window has unknown capacity and produces no exhaustion forecast
+or automatic rotation; the generic display fallback does not authorize either.
+Negative native counters or windows are invalid. Existing freshness policies
+remain separate: growth forecasts require recent observations, while an idle
+process-bound transcript can retain usable occupancy for rotation.
 
 Only live, non-service, non-shell panes with an observed PID are sampled. A
 cached timestamp is not a new observation. Missing, ambiguous, stale (older than
