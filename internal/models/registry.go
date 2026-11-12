@@ -184,7 +184,7 @@ func ApplyOverrides(overrides map[string]int) {
 //     → claude-opus-4-6), keeping qualified overrides ahead of the fallback
 //  6. DefaultContextLimit fallback
 func GetContextLimit(model string) int {
-	if limit, ok := lookupContextLimit(model); ok {
+	if limit, ok := LookupContextLimit(model); ok {
 		return limit
 	}
 	return DefaultContextLimit
@@ -194,14 +194,17 @@ func GetContextLimit(model string) int {
 // value through the same rules GetContextLimit uses, including provider
 // namespaces. The default limit is not evidence of a known model.
 func KnownModel(model string) bool {
-	_, ok := lookupContextLimit(model)
+	_, ok := LookupContextLimit(model)
 	return ok
 }
 
-// lookupContextLimit is the shared resolution path for both occupancy
-// admission and budget sizing. Never erase the provider in stored/native
-// identity: it is stripped only while looking up an unqualified fallback.
-func lookupContextLimit(model string) (int, bool) {
+// LookupContextLimit resolves a model through the canonical registry without
+// inventing capacity for an unknown model. It returns (0, false) when no
+// positive window is known. Admission and automatic actions must use this
+// result instead of treating GetContextLimit's display fallback as evidence.
+// Provider namespaces are stripped only during lookup, never from stored or
+// native identity.
+func LookupContextLimit(model string) (int, bool) {
 	model = strings.ToLower(strings.TrimSpace(model))
 	if model == "" {
 		return 0, false
@@ -230,6 +233,9 @@ func lookupContextLimit(model string) (int, bool) {
 
 	for {
 		if limit, ok := lookupModelLocked(model); ok {
+			if limit <= 0 {
+				return 0, false
+			}
 			return limit, true
 		}
 		_, unqualified, qualified := strings.Cut(model, "/")

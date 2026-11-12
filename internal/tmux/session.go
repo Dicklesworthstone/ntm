@@ -813,6 +813,41 @@ func (p Pane) IdleShell() bool {
 	return !shellHasLiveDescendant(p.PID, 4)
 }
 
+// ValidatePanePersistentShellContext verifies that the pane's root process is
+// an interactive shell which can outlive its foreground agent. A foreground
+// command or a positive pane PID alone cannot prove this: direct-exec agents,
+// shell scripts and "sh -c" command lists all lose the pane when they exit.
+// Process evidence is local to this client; remote PIDs must never be looked
+// up in the local process table.
+func (c *Client) ValidatePanePersistentShellContext(ctx context.Context, pane Pane) error {
+	if c.Remote != "" {
+		return errors.New("persistent shell verification requires local tmux")
+	}
+	if ctx == nil {
+		return errors.New("persistent shell verification requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if pane.PID <= 0 || pane.Dead || pane.IsServicePane() {
+		return fmt.Errorf("pane %s has no live agent shell with a known PID", pane.ID)
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, DefaultCommandTimeout)
+	defer cancel()
+	argv := process.GetCmdlineContext(probeCtx, pane.PID)
+	if err := probeCtx.Err(); err != nil {
+		return fmt.Errorf("verify pane %s root process: %w", pane.ID, err)
+	}
+	if len(argv) == 0 {
+		return fmt.Errorf("cannot verify a persistent shell for pane %s: root process arguments are unavailable", pane.ID)
+	}
+	name := strings.TrimPrefix(filepath.Base(strings.TrimSpace(argv[0])), "-")
+	if !PaneCommandIsShell(name) || !shellArgvLooksInteractive(argv) {
+		return fmt.Errorf("pane %s has no persistent interactive shell; exiting its root process could destroy the pane", pane.ID)
+	}
+	return nil
+}
+
 // ForegroundJobRunning reports whether a job other than the pane's root shell
 // owns the pane's terminal: the shell launched something with job control and
 // that process group is now in the foreground. This is the precise "the agent
@@ -887,12 +922,28 @@ func shellArgvLooksInteractive(argv []string) bool {
 	if len(argv) == 0 {
 		return true // unreadable (no /proc, process gone): the command decides
 	}
-	for _, arg := range argv[1:] {
+	for i, arg := range argv[1:] {
 		arg = strings.TrimSpace(arg)
 		if arg == "" {
 			continue
 		}
-		if arg == "-c" || !strings.HasPrefix(arg, "-") {
+		if arg == "--" {
+			return i == len(argv)-2 // A following operand is a script, not a prompt.
+		}
+		if !strings.HasPrefix(arg, "-") {
+			return false
+		}
+		if strings.HasPrefix(arg, "--") {
+			name, _, _ := strings.Cut(strings.ToLower(arg), "=")
+			if name == "--command" || name == "--file" {
+				return false
+			}
+			continue
+		}
+		// Command flags also occur in clusters such as -lc and -ic. An
+		// interactive flag does not make a -c shell persistent. The -s
+		// flag still permits interactive stdin and is not a command string.
+		if strings.ContainsRune(arg[1:], 'c') {
 			return false
 		}
 	}

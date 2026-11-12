@@ -85,7 +85,7 @@ type rotationChecker struct {
 	// Production leaves this nil and checks the entire tmux server below.
 	transcriptUsage func(agentType, cwd string) (*ntmctx.TranscriptUsage, bool)
 	capturePane     func(paneID string, lines int) (string, error)
-	contextLimit    func(model string) int
+	contextLimit    func(model string) (int, bool)
 	sessionCreated  func(session string) (time.Time, bool)
 	storedPending   func(agentID string) (*ntmctx.PendingRotation, error)
 	enqueue         func(agentID, paneID string, usagePct float64) *ntmctx.PendingRotation
@@ -153,7 +153,7 @@ func newRotationChecker(session, workDir string, coordCfg CoordinatorConfig, ntm
 			return cwd, err == nil && cwd != ""
 		},
 		capturePane:   tmux.CapturePaneOutput,
-		contextLimit:  models.GetContextLimit,
+		contextLimit:  models.LookupContextLimit,
 		storedPending: ntmctx.GetPendingRotationByID,
 		publish: func(record robot.ActuationRecord) {
 			robot.GetAttentionFeed().PublishActuation(record)
@@ -222,20 +222,38 @@ func (rc *rotationChecker) runOnce(ctx context.Context) []rotationDecision {
 	return decisions
 }
 
+// contextWindow admits only nonnegative native accounting with a reported
+// positive window or a recognized registry model. The default display window
+// is not evidence for a rotation or a forecast. Freshness remains a separate
+// consumer policy: an idle, process-bound transcript may retain valid occupancy
+// even when it is too old to establish a growth trend.
+func (rc *rotationChecker) contextWindow(usage *ntmctx.TranscriptUsage) (int, bool) {
+	if usage == nil || usage.Tokens < 0 || usage.ContextWindow < 0 {
+		return 0, false
+	}
+	if usage.ContextWindow > 0 {
+		return usage.ContextWindow, true
+	}
+	if rc.contextLimit == nil {
+		return 0, false
+	}
+	limit, known := rc.contextLimit(usage.Model)
+	if !known || limit <= 0 {
+		return 0, false
+	}
+	return limit, true
+}
+
 // checkPane evaluates one pane's transcript usage against the threshold and,
 // when exceeded, runs the safety gates and enqueues/auto-confirms a rotation.
 // The bool result reports whether a decision (enqueue/confirm/skip) was made.
 func (rc *rotationChecker) checkPane(ctx context.Context, pane tmux.Pane, usage *ntmctx.TranscriptUsage) (rotationDecision, bool) {
 	now := rc.now()
 
-	// Usage percent: transcript-reported window when available (Codex),
-	// otherwise the models registry window for the transcript's model —
-	// mirroring internal/robot's snapshot computation.
-	limit := usage.ContextWindow
-	if limit <= 0 {
-		limit = rc.contextLimit(usage.Model)
-	}
-	if limit <= 0 {
+	// Native windows take precedence; unknown capacity cannot authorize
+	// replacement, including the token-count and session-age triggers.
+	limit, known := rc.contextWindow(usage)
+	if !known {
 		return rotationDecision{}, false
 	}
 	pct := float64(usage.Tokens) / float64(limit) * 100

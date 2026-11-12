@@ -778,18 +778,16 @@ func maxPaneContextUsage(ctx stdcontext.Context, panes []tmux.Pane, stopAt int, 
 }
 
 func freshTranscriptUsagePercent(usage *TranscriptUsage, now time.Time) (float64, bool) {
-	if usage == nil || usage.Tokens < 0 || TranscriptConfidence(usage.UpdatedAt, now) != "high" {
+	if usage == nil || usage.Tokens < 0 || usage.ContextWindow < 0 || TranscriptConfidence(usage.UpdatedAt, now) != "high" {
 		return 0, false
 	}
 	limit := usage.ContextWindow
-	if limit <= 0 {
-		if !models.KnownModel(usage.Model) {
+	if limit == 0 {
+		var known bool
+		limit, known = models.LookupContextLimit(usage.Model)
+		if !known {
 			return 0, false
 		}
-		limit = models.GetContextLimit(usage.Model)
-	}
-	if limit <= 0 {
-		return 0, false
 	}
 	return min(float64(usage.Tokens)*100/float64(limit), 100), true
 }

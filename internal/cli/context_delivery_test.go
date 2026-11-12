@@ -11,6 +11,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
+	"github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -457,5 +458,30 @@ func TestContextPackPersistenceCancellationPreventsWrite(t *testing.T) {
 	err := persistContextPack(ctx, store, &state.ContextPack{ID: "pack-test"})
 	if !errors.Is(err, context.Canceled) || store.writes != 0 {
 		t.Fatalf("canceled persistence mutated storage: %v writes=%d", err, store.writes)
+	}
+}
+
+func TestContextDeliveryKeepsProvenRefusalsDistinctFromUncertainWrites(t *testing.T) {
+	t.Parallel()
+	refusal := errors.New("workspace decision required")
+	var called []string
+	receipts, err := dispatchContextRequests(t.Context(), "demo", deliveryTestRequests(), false,
+		func(_ context.Context, pane tmux.Pane, _ string) error {
+			called = append(called, pane.ID)
+			if pane.ID == "%2" {
+				return dispatch.GuaranteeNoDeliveryActuation(refusal)
+			}
+			return nil
+		})
+	if !errors.Is(err, refusal) || !reflect.DeepEqual(called, []string{"%1", "%2", "%3"}) {
+		t.Fatalf("refusal lost its cause or retried independent work: called=%v error=%v", called, err)
+	}
+	if len(receipts) != 3 || receipts[0].Status != "delivered" ||
+		receipts[1].Status != "not_attempted" || receipts[1].Error == "" || receipts[2].Status != "delivered" {
+		t.Fatalf("proven preflight refusal was marked outcome-unknown: %+v", receipts)
+	}
+	result := contextInjectionResult("demo", nil, 28, false, false, receipts, err)
+	if result.Success || !reflect.DeepEqual(result.PanesInjected, []int{1, 3}) {
+		t.Fatalf("partial batch lost actual delivery outcomes: %+v", result)
 	}
 }

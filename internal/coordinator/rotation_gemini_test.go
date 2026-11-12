@@ -83,14 +83,14 @@ func TestGeminiNativeAccountingCoordinatorTick(t *testing.T) {
 					return ntmctx.LatestAgentTranscriptUsage(agentType, cwd, time.Time{})
 				},
 				capturePane: func(string, int) (string, error) { return tc.capture, nil },
-				contextLimit: func(model string) int {
+				contextLimit: func(model string) (int, bool) {
 					if tc.unknownLimit {
-						return 0
+						return 0, false
 					}
 					if model != "gemini-test-model" {
 						t.Errorf("wrong model: %q", model)
 					}
-					return 1000
+					return 1000, true
 				},
 				enqueue: func(agentID, paneID string, usage float64) *ntmctx.PendingRotation {
 					queued++
@@ -255,7 +255,7 @@ func TestRotationServerScopedNativeAccounting(t *testing.T) {
 				}
 				return ">\n? for shortcuts", nil
 			}
-			rc.contextLimit = func(string) int { return 1000 }
+			rc.contextLimit = func(string) (int, bool) { return 1000, true }
 			rc.now = func() time.Time { return now }
 			rc.publish = nil
 			queued := 0

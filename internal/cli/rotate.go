@@ -524,8 +524,14 @@ func executeForcedRotation(ctx context.Context, session string, paneIdx int, pan
 	if outcome == nil {
 		return fmt.Errorf("pane %s produced no lifecycle result: %s", paneID, result.Error)
 	}
+	if outcome.VerificationFailed || !outcome.ShellPreserved {
+		return fmt.Errorf("refusing to escalate or relaunch pane %s: the original shell was not verified after graceful exit (%s)", paneID, outcome.Detail)
+	}
 	if !outcome.Exited {
 		fmt.Println("  CLI did not exit gracefully; escalating to process-tree kill...")
+		opts.ExpectedPane = &tmux.Pane{
+			ID: outcome.Target, PID: outcome.ShellPID, Type: tmux.AgentType(outcome.AgentType),
+		}
 		killResult, err := robot.GetKillAgent(ctx, opts)
 		if err != nil {
 			return err
@@ -533,6 +539,9 @@ func executeForcedRotation(ctx context.Context, session string, paneIdx int, pan
 		outcome = lifecycleOutcomeForPane(killResult.Results, paneID)
 		if outcome == nil {
 			return fmt.Errorf("pane %s produced no lifecycle result: %s", paneID, killResult.Error)
+		}
+		if outcome.VerificationFailed || !outcome.ShellPreserved {
+			return fmt.Errorf("could not verify the original shell after process-tree kill in pane %s (%s); further recovery requires fresh inspection", paneID, outcome.Detail)
 		}
 		if !outcome.Exited {
 			return fmt.Errorf("agent process survived SIGKILL (%s); the pane may need --robot-restart-pane", outcome.Detail)

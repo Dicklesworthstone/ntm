@@ -348,3 +348,30 @@ func TestGetTokenBudgetForModelDoesNotOverflow(t *testing.T) {
 		t.Fatalf("large window overflowed: %d, %v; want %d", got, err, want)
 	}
 }
+
+func TestLookupContextLimitDistinguishesKnownCapacityFromDefault(t *testing.T) {
+	for _, tc := range []struct {
+		model string
+		want  int
+		known bool
+	}{
+		{"gpt-4", 128000, true},
+		{"openrouter/anthropic/claude-opus-4-6", 1000000, true},
+		{"anthropic/opus-4.6", 1000000, true},
+		{"claude-opus-4-20250514", 200000, true},
+		{"private-provider/new-model", 0, false},
+		{"gpt-4/unknown-model", 0, false},
+		{"anthropic//claude-opus-4-6", 0, false},
+		{"", 0, false},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			limit, known := LookupContextLimit(tc.model)
+			if limit != tc.want || known != tc.known {
+				t.Fatalf("capacity = (%d, %t), want (%d, %t)", limit, known, tc.want, tc.known)
+			}
+			if !known && GetContextLimit(tc.model) != DefaultContextLimit {
+				t.Fatal("display fallback changed while separating unknown capacity")
+			}
+		})
+	}
+}
