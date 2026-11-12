@@ -3473,3 +3473,74 @@ func TestShellArgvLooksInteractiveRejectsCommandModes(t *testing.T) {
 		})
 	}
 }
+
+func TestValidatePanePersistentShellRootIdentity(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("persistent shell verification requires Linux or macOS")
+	}
+	for _, tc := range []struct {
+		name  string
+		file  string
+		args  []string
+		argv0 string
+		want  bool
+	}{
+		{name: "interactive shell", file: "sh", args: []string{"-i"}, want: true},
+		{name: "direct process", file: "sleep", args: []string{"30"}},
+		{name: "direct process with shell argv zero", file: "sleep", args: []string{"30"}, argv0: "bash"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(tc.file, tc.args...)
+			if tc.argv0 != "" {
+				cmd.Args[0] = tc.argv0
+			}
+			stdin, err := cmd.StdinPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stdin.Close()
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+			}()
+			pane := Pane{ID: "%99", PID: cmd.Process.Pid, Type: AgentCodex, Command: "codex"}
+			err = NewClient("").ValidatePanePersistentShellContext(t.Context(), pane)
+			if (err == nil) != tc.want {
+				t.Fatalf("persistent shell proof error = %v, want success=%t", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidatePanePersistentShellRejectsGoneRoot(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("persistent shell verification requires Linux or macOS")
+	}
+	cmd := exec.Command("sh", "-c", "exit 0")
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	pane := Pane{ID: "%99", PID: cmd.Process.Pid, Type: AgentCodex, Command: "sh"}
+	if err := NewClient("").ValidatePanePersistentShellContext(t.Context(), pane); err == nil {
+		t.Fatal("an exited root process was accepted as a persistent shell")
+	}
+}
+
+func TestValidatePanePersistentShellRejectsFailedObservation(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("persistent shell verification requires Linux or macOS")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	pane := Pane{ID: "%99", PID: os.Getpid(), Type: AgentCodex, Command: "sh"}
+	err := NewClient("").ValidatePanePersistentShellContext(t.Context(), pane)
+	if err == nil || !strings.Contains(err.Error(), "process snapshot") {
+		t.Fatalf("failed process observation was not reported: %v", err)
+	}
+}

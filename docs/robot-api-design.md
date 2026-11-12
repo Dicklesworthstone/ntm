@@ -250,7 +250,24 @@ as complete.
 | `--robot-tail=SESSION --fresh` | Per-pane `capture_collected_at`, `capture_provenance`, and optional `capture_error` | A direct post-action observation. `capture_provenance: "live"` is fresh capture evidence; `"unavailable"` means the pane was not observed and is not evidence of no effect. |
 | `--robot-spawn` with `--spawn-wait` | The command waits up to `--spawn-timeout` for ready observations | Readiness-gated spawn evidence. A timeout is an error rather than a claim that all agents booted; inspect the resulting session with a fresh tail. |
 | `--robot-spawn` with `--spawn-prompt` | Per-agent `prompt_deliveries[]` (`prompt_sent`, `delivered_at`, `error`) and the `stagger.schedule[]` it was paced on | Dispatch evidence after the implied readiness wait, through the same idle-gated dispatch port as robot send. Any `prompt_sent: false` fails the envelope with `PROMPT_SEND_FAILED`; like `--robot-send` without `--track`, it does not prove the agent processed the prompt. |
-| `--robot-exit-cli`, `--robot-kill-agent`, and restart/relaunch paths | Per-pane `results`, including `shell_pid`, `agent_pids`, `shell_preserved`, and `verification_failed`; restart output also includes `pane_shell_pids`, `process_alive`, and relaunch status | Process/lifecycle evidence. `verification_failed` means observation failed, not that a pane was destroyed. A respawn must show a changed `pane_shell_pids.after`; unchanged or absent PID evidence is not a verified restart. |
+| `--robot-exit-cli` and `--robot-kill-agent` | Per-pane `pane_state` (`present`, `missing`, `unknown`), `process_state` (`running`, `exited`, `unknown`), `shell_pid`, `agent_pids`, `exited`, `shell_preserved`, `refused`, and `verification_failed` | Process and pane evidence are independent. `exited` refers to the original observed process tree, including when its pane disappeared; a missing or retained dead pane never counts as a preserved shell or overall success. `verification_failed` means an observation failed and can coexist with a confirmed process exit. `refused` means further mutation was withheld. Relaunch requires fresh evidence of the same idle shell. |
+| Restart/respawn paths | `pane_shell_pids`, `process_alive`, and relaunch status | A respawn must show a changed `pane_shell_pids.after`; unchanged or absent PID evidence is not a verified restart. |
+
+Pane-preserving lifecycle operations require local process evidence and a live,
+persistent interactive shell at the pane root. Direct-exec agents and shells
+running a one-shot command or script are refused before exit keys or signals.
+An `exec agent` launch has replaced the shell and is also refused. In a batch,
+all selected roots must pass this admission check before any pane is changed.
+
+Exit keys are bound to the original pane, shell, and observed foreground process
+lifetimes. A late second key or retry is withheld if the original agent exited,
+the foreground job changed, or observation failed. Cancellation stops input and
+signals; a bounded read-only reconciliation can still confirm that an earlier
+key completed the exit. An already idle, verified shell is a successful no-op.
+Do not infer that an unknown process is stuck or escalate on a failed query.
+`--robot-kill-agent` can terminate observed stopped/background descendants and
+their helpers, but never signals the root shell. Relaunch preserves the saved
+launch specification and occurs only after a freshly verified idle-shell result.
 
 #### Explicit environment recovery for a saved launch
 

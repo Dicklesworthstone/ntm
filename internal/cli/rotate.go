@@ -524,14 +524,22 @@ func executeForcedRotation(ctx context.Context, session string, paneIdx int, pan
 	if outcome == nil {
 		return fmt.Errorf("pane %s produced no lifecycle result: %s", paneID, result.Error)
 	}
-	if outcome.VerificationFailed || !outcome.ShellPreserved {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if outcome.Refused || outcome.VerificationFailed || outcome.PaneState != "present" ||
+		outcome.ProcessState == "unknown" || !outcome.ShellPreserved {
 		return fmt.Errorf("refusing to escalate or relaunch pane %s: the original shell was not verified after graceful exit (%s)", paneID, outcome.Detail)
 	}
 	if !outcome.Exited {
+		if outcome.ProcessState != "running" || outcome.ProcessIdentity == nil {
+			return fmt.Errorf("refusing to escalate pane %s without a confirmed original live process", paneID)
+		}
 		fmt.Println("  CLI did not exit gracefully; escalating to process-tree kill...")
 		opts.ExpectedPane = &tmux.Pane{
 			ID: outcome.Target, PID: outcome.ShellPID, Type: tmux.AgentType(outcome.AgentType),
 		}
+		opts.ExpectedProcesses = outcome.ProcessIdentity
 		killResult, err := robot.GetKillAgent(ctx, opts)
 		if err != nil {
 			return err
@@ -540,11 +548,15 @@ func executeForcedRotation(ctx context.Context, session string, paneIdx int, pan
 		if outcome == nil {
 			return fmt.Errorf("pane %s produced no lifecycle result: %s", paneID, killResult.Error)
 		}
-		if outcome.VerificationFailed || !outcome.ShellPreserved {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if outcome.Refused || outcome.VerificationFailed || outcome.PaneState != "present" ||
+			outcome.ProcessState == "unknown" || !outcome.ShellPreserved {
 			return fmt.Errorf("could not verify the original shell after process-tree kill in pane %s (%s); further recovery requires fresh inspection", paneID, outcome.Detail)
 		}
 		if !outcome.Exited {
-			return fmt.Errorf("agent process survived SIGKILL (%s); the pane may need --robot-restart-pane", outcome.Detail)
+			return fmt.Errorf("original agent process remains active after process-tree kill (%s); inspect the pane before further recovery", outcome.Detail)
 		}
 		fmt.Printf("  ✓ Killed agent process tree %v (shell preserved: %v)\n", outcome.Killed, outcome.ShellPreserved)
 	} else {

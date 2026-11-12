@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
@@ -581,9 +582,7 @@ case "$1" in
         kill-unverified) printf 'temporary kill verification failure\n' >&2; exit 79 ;;
         kill-replaced) pid="$NTM_FORCED_ROTATION_OTHER_PID" ;;
         kill-exited-shell-lost)
-          if [ -f "$root/kill-shell-observed" ]; then exit 0; fi
-          command=sh
-          : > "$root/kill-shell-observed"
+          if ! kill -0 "$NTM_FORCED_ROTATION_AGENT_PID" 2>/dev/null; then exit 0; fi
           ;;
       esac
     fi
@@ -626,20 +625,33 @@ case "$1" in
     ;;
   if-shell)
     [ "$2" = '-F' ] && [ "$4" = '%7' ] || exit 76
+    eval "set -- $6"
+    [ "$1" = send-keys ] && [ "$3" = '%7' ] && [ "$4" = C-c ] || exit 80
     : > "$root/exit-attempted"
-    printf 'ntm_pane_identity_changed\n'
+    printf 'C-c\n' >> "$root/keys"
+    case "$mode" in
+      gone|unverified|replaced|failed-send)
+        # Failed delivery cannot authorize an automatic process-kill retry,
+        # even when the original child remains positively observable.
+        printf 'ntm_pane_identity_changed\n'
+        ;;
+      *)
+        # A successfully delivered pair may leave a wedged agent active.
+        # Exercise both complete grace periods before admitting escalation.
+        ;;
+    esac
     ;;
   *) printf 'unexpected fixture command %s\n' "$1" >&2; exit 77 ;;
 esac
 `
-	for _, mode := range []string{"gone", "unverified", "replaced", "still-running", "replacement-at-fallback", "provider-at-fallback", "kill-unverified", "kill-replaced", "kill-exited-shell-lost"} {
+	for _, mode := range []string{"gone", "unverified", "replaced", "failed-send", "still-running", "replacement-at-fallback", "provider-at-fallback", "kill-unverified", "kill-replaced", "kill-exited-shell-lost"} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
 			tmuxPath := filepath.Join(root, "tmux")
 			if err := os.WriteFile(tmuxPath, []byte(script), 0700); err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestForcedRotationLifecycleHelper$")
 			cmd.Env = envWithOverrides(os.Environ(),
@@ -658,7 +670,7 @@ func TestForcedRotationLifecycleHelper(t *testing.T) {
 	if root == "" {
 		return
 	}
-	startShell := func() int {
+	startShell := func(active bool) (int, int) {
 		t.Helper()
 		cmd := exec.Command("/bin/sh", "-i")
 		stdin, err := cmd.StdinPipe()
@@ -669,15 +681,68 @@ func TestForcedRotationLifecycleHelper(t *testing.T) {
 			_ = stdin.Close()
 			t.Fatal(err)
 		}
+		var childPID int
 		t.Cleanup(func() {
+			if childPID > 0 {
+				if child, err := os.FindProcess(childPID); err == nil {
+					_ = child.Kill()
+				}
+			}
 			_ = stdin.Close()
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
 		})
-		return cmd.Process.Pid
+		if active {
+			if _, err := fmt.Fprintln(stdin, "sleep 60"); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				children := process.GetChildPIDs(cmd.Process.Pid, 16)
+				if len(children) == 1 && process.IsAlive(children[0]) {
+					childPID = children[0]
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if childPID == 0 {
+				t.Fatal("owned shell did not start the active fixture child")
+			}
+		}
+		return cmd.Process.Pid, childPID
 	}
-	t.Setenv("NTM_FORCED_ROTATION_SHELL_PID", strconv.Itoa(startShell()))
-	t.Setenv("NTM_FORCED_ROTATION_OTHER_PID", strconv.Itoa(startShell()))
+	shellPID, agentPID := startShell(true)
+	otherPID, _ := startShell(false)
+	t.Setenv("NTM_FORCED_ROTATION_SHELL_PID", strconv.Itoa(shellPID))
+	t.Setenv("NTM_FORCED_ROTATION_AGENT_PID", strconv.Itoa(agentPID))
+	t.Setenv("NTM_FORCED_ROTATION_OTHER_PID", strconv.Itoa(otherPID))
+	// Keep real lifetimes and parentage, modeling only terminal groups that a
+	// pipe-backed interactive shell lacks. Native robot tests cover real TTYs.
+	realPS, err := exec.LookPath("ps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const psScript = `#!/bin/sh
+set -eu
+if [ "$*" != '-ww -axo pid=,ppid=,pgid=,tpgid=,stat=,lstart=,ucomm=' ]; then
+  exec "$NTM_FORCED_ROTATION_REAL_PS" "$@"
+fi
+"$NTM_FORCED_ROTATION_REAL_PS" "$@" | awk -v root="$NTM_FORCED_ROTATION_SHELL_PID" '
+  { rows[NR] = $0; if ($2 == root && $5 !~ /^[ZX]/) child = $1 }
+  END {
+    for (i = 1; i <= NR; i++) {
+      n = split(rows[i], fields)
+      if (fields[1] == root) { fields[3] = root; fields[4] = child ? child : root }
+      if (fields[2] == root) { fields[3] = fields[1]; fields[4] = fields[1] }
+      for (j = 1; j <= n; j++) printf "%s%s", fields[j], j == n ? "\n" : " "
+    }
+  }'
+`
+	if err := os.WriteFile(filepath.Join(root, "ps"), []byte(psScript), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_FORCED_ROTATION_REAL_PS", realPS)
+	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
 	if err := os.WriteFile(filepath.Join(root, "config.toml"), []byte("[agents]\nclaude = \"cat\"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -705,6 +770,24 @@ func TestForcedRotationLifecycleHelper(t *testing.T) {
 	}
 	_, fallbackErr := os.Stat(filepath.Join(root, "kill-fallback"))
 	mode := os.Getenv("NTM_FORCED_ROTATION_TEST_MODE")
+	if !process.IsAlive(shellPID) || !process.IsAlive(otherPID) {
+		t.Fatal("forced rotation terminated an owned pane root")
+	}
+	wantAgentAlive := mode != "kill-exited-shell-lost"
+	if process.IsAlive(agentPID) != wantAgentAlive {
+		t.Fatalf("forced rotation acted on an unverified child or missed a confirmed exit: mode=%s agentAlive=%t result=%v", mode, process.IsAlive(agentPID), err)
+	}
+	keys, readErr := os.ReadFile(filepath.Join(root, "keys"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	wantKeys := "C-c\nC-c\nC-c\nC-c\n"
+	if mode == "gone" || mode == "unverified" || mode == "replaced" || mode == "failed-send" {
+		wantKeys = "C-c\n"
+	}
+	if string(keys) != wantKeys {
+		t.Fatalf("forced rotation skipped completed grace periods or replayed failed input: keys=%q want=%q result=%v", keys, wantKeys, err)
+	}
 	if mode == "replacement-at-fallback" || mode == "provider-at-fallback" {
 		_, forbiddenErr := os.Stat(filepath.Join(root, "forbidden-fallback"))
 		if fallbackErr != nil || !errors.Is(forbiddenErr, os.ErrNotExist) || !strings.Contains(err.Error(), "identity changed") {

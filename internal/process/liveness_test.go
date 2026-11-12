@@ -1,14 +1,185 @@
 package process
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestParseProcessSnapshot(t *testing.T) {
+	const shell = "101 1 101 202 Ss Thu Nov 12 16:10:14 2026 bash\n"
+	const agent = "202 101 202 202 T+ Thu Nov 12 16:10:15 2026 codex\n"
+	const zombie = "203 101 203 -1 Z Thu Nov 12 16:10:16 2026 codex\n"
+	got, err := parseProcessSnapshot([]byte(shell + agent + zombie))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[101].Command != "bash" || got[202].PPID != 101 || got[202].State != "T+" || got[203].State != "Z" || got[203].TPGID != -1 {
+		t.Fatalf("snapshot lost process evidence: %+v", got)
+	}
+	if got[101].Started != "Thu Nov 12 16:10:14 2026" {
+		t.Fatalf("unexpected process start identity: %q", got[101].Started)
+	}
+	for _, tt := range []struct {
+		name string
+		text string
+	}{
+		{"empty", ""},
+		{"blank", "\n"},
+		{"missing_final_newline", strings.TrimSuffix(shell, "\n")},
+		{"missing_command", "101 1 101 202 Ss Thu Nov 12 16:10:14 2026\n"},
+		{"partial_last_row", shell + "202 101 202\n"},
+		{"duplicate_pid", shell + shell},
+		{"invalid_pid", strings.Replace(shell, "101", "invalid", 1)},
+		{"invalid_parent", strings.Replace(shell, "101 1", "101 -1", 1)},
+		{"invalid_foreground", strings.Replace(shell, "101 202 Ss", "101 -2 Ss", 1)},
+		{"invalid_state", strings.Replace(shell, "Ss", "???", 1)},
+		{"invalid_start", strings.Replace(shell, "Nov", "Foo", 1)},
+		{"nul", shell + "\x00\n"},
+		{"blank_row", shell + "\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if table, err := parseProcessSnapshot([]byte(tt.text)); err == nil || table != nil {
+				t.Fatalf("invalid snapshot returned table=%v, err=%v", table, err)
+			}
+		})
+	}
+}
+
+func TestSnapshotContextCurrentProcess(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("snapshot requires Linux or macOS ps")
+	}
+	got, err := SnapshotContext(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	self, exists := got[os.Getpid()]
+	if !exists || self.PID != os.Getpid() || self.Started == "" || self.Command == "" || self.State == "" {
+		t.Fatalf("snapshot did not observe the calling process: %+v", self)
+	}
+}
+
+func TestSnapshotContextRejectsFailedObservations(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("snapshot requires Linux or macOS ps")
+	}
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
+		{"failed_command", "printf '%s\\n' '101 1 101 202 Ss Thu Nov 12 16:10:14 2026 bash'\nprintf '%s\\n' 'private-arguments' >&2\nexit 7\n"},
+		{"malformed_output", "printf '%s\\n' 'partial-private-arguments'\n"},
+		{"empty_output", "exit 0\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "ps"), []byte("#!/bin/sh\n"+tt.body), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			got, err := SnapshotContext(t.Context())
+			if err == nil || got != nil {
+				t.Fatalf("failed observation returned table=%v, err=%v", got, err)
+			}
+			if strings.Contains(err.Error(), "private-arguments") {
+				t.Fatalf("snapshot error exposed process output: %v", err)
+			}
+		})
+	}
+}
+
+func TestSnapshotContextPinsFormatAndLocale(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("snapshot requires Linux or macOS ps")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"[ \"$LC_ALL\" = C ] || exit 2\n" +
+		"[ \"$*\" = '-ww -axo pid=,ppid=,pgid=,tpgid=,stat=,lstart=,ucomm=' ] || exit 3\n" +
+		"printf '%s\\n' '101 1 101 -1 Ss Thu Nov 12 16:10:14 2026 bash'\n"
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("LC_ALL", "invalid-locale")
+	got, err := SnapshotContext(t.Context())
+	if err != nil || len(got) != 1 || got[101].Command != "bash" {
+		t.Fatalf("snapshot command format/locale changed: table=%v, err=%v", got, err)
+	}
+}
+
+func TestSnapshotContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if got, err := SnapshotContext(ctx); !errors.Is(err, context.Canceled) || got != nil {
+		t.Fatalf("canceled observation returned table=%v, err=%v", got, err)
+	}
+	if got, err := SnapshotContext(nil); err == nil || got != nil {
+		t.Fatalf("nil context returned table=%v, err=%v", got, err)
+	}
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		return
+	}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "started")
+	t.Setenv("NTM_SNAPSHOT_STARTED", marker)
+	script := "#!/bin/sh\n: > \"$NTM_SNAPSHOT_STARTED\"\nexec sleep 30\n"
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	ctx, cancel = context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := SnapshotContext(ctx)
+		done <- err
+	}()
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("snapshot command did not start")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("running snapshot ignored cancellation: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("running snapshot did not stop after cancellation")
+	}
+}
+
+func TestSnapshotOutputIsBounded(t *testing.T) {
+	var output processSnapshotBuffer
+	data := bytes.Repeat([]byte{'x'}, processSnapshotOutputLimit+1)
+	// exec.Cmd copies pipe output through io.Copy; a promoted ReaderFrom must
+	// not bypass the bounded Write implementation.
+	if n, err := io.Copy(&output, io.LimitReader(bytes.NewReader(data), int64(len(data)))); err != nil || n != int64(len(data)) {
+		t.Fatalf("snapshot output copy = %d, %v", n, err)
+	}
+	if !output.exceeded || output.Len() != processSnapshotOutputLimit {
+		t.Fatalf("snapshot output was not capped: size=%d, exceeded=%v", output.Len(), output.exceeded)
+	}
+	if _, err := output.Write(data[:1]); err != nil || output.Len() != processSnapshotOutputLimit {
+		t.Fatalf("snapshot output grew beyond the bound: size=%d, err=%v", output.Len(), err)
+	}
+}
 
 func TestContextProcessQueriesCancelPortableCommands(t *testing.T) {
 	if runtime.GOOS == "windows" {

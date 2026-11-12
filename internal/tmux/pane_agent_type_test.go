@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -315,10 +316,112 @@ func TestPaneMutationGuardRejectsUnboundTargetsAndCancellation(t *testing.T) {
 	if _, err := WithPaneMutationGuard(guarded, "%8", 123); err == nil {
 		t.Fatal("a nested helper replaced the guarded pane binding")
 	}
+	check := func(context.Context) error { return nil }
+	if _, err := WithPaneMutationGuard(guarded, "%7", 123, check, check); err == nil {
+		t.Fatal("a guard accepted multiple observation callbacks")
+	}
 	canceled, cancel := context.WithCancel(guarded)
 	cancel()
 	if err := client.RunSilentContext(canceled, "send-keys", "-t", "%7", "Enter"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("guard swallowed caller cancellation: %v", err)
+	}
+}
+
+func TestPaneMutationGuardBeforeInput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("recording tmux fixture requires a POSIX shell")
+	}
+	for _, outcome := range []string{"allow", "refuse", "cancel"} {
+		t.Run(outcome, func(t *testing.T) {
+			dir := t.TempDir()
+			logPath := filepath.Join(dir, "events")
+			binary := filepath.Join(dir, "tmux")
+			script := "#!/bin/sh\ncase \"$1\" in\n" +
+				"display-message) printf '%s\\n' observe >> \"$NTM_GUARD_EVENTS\"; printf '%s\\n' '[cod]' ;;\n" +
+				"if-shell) printf '%s\\n' input >> \"$NTM_GUARD_EVENTS\" ;;\n" +
+				"*) exit 2 ;;\nesac\n"
+			if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("NTM_TMUX_BINARY", binary)
+			t.Setenv("NTM_GUARD_EVENTS", logPath)
+			record := func(event string) {
+				file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, writeErr := file.WriteString(event + "\n")
+				closeErr := file.Close()
+				if writeErr != nil || closeErr != nil {
+					t.Fatalf("record callback: write=%v, close=%v", writeErr, closeErr)
+				}
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			refused := errors.New("original process is no longer eligible")
+			guarded, err := WithPaneMutationGuard(ctx, "%7", 123, func(context.Context) error {
+				record("first")
+				if outcome == "refuse" {
+					return refused
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Omitting a callback or passing nil must retain earlier checks.
+			guarded, err = WithPaneMutationGuard(guarded, "%7", 123)
+			if err != nil {
+				t.Fatal(err)
+			}
+			guarded, err = WithPaneMutationGuard(guarded, "%7", 123, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			guarded, err = WithPaneMutationGuard(guarded, "%7", 123, func(context.Context) error {
+				record("second")
+				if outcome == "cancel" {
+					cancel()
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := NewClient("")
+			err = client.RunSilentContext(guarded, "send-keys", "-t", "%7", "C-c")
+			want := "observe\nfirst\nsecond\ninput\n"
+			switch outcome {
+			case "allow":
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := client.RunSilentContext(guarded, "paste-buffer", "-b", "fixture", "-t", "%7"); err != nil {
+					t.Fatal(err)
+				}
+				want += want // Each key and paste reruns both checks.
+			case "refuse":
+				if !errors.Is(err, refused) {
+					t.Fatalf("observation refusal was not preserved: %v", err)
+				}
+				want = "observe\nfirst\n"
+			case "cancel":
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("cancellation after observation was not preserved: %v", err)
+				}
+				want = "observe\nfirst\nsecond\n"
+			}
+			if outcome != "cancel" {
+				if err := client.RunSilentContext(guarded, "display-message", "-p", "fixture"); err != nil {
+					t.Fatal(err)
+				}
+				want += "observe\n" // Read-only commands do not invoke checks.
+			}
+			got, err := os.ReadFile(logPath)
+			if err != nil || string(got) != want {
+				t.Fatalf("mutation/callback ordering = %q, err=%v; want %q", got, err, want)
+			}
+		})
 	}
 }
 
