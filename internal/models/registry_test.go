@@ -212,8 +212,8 @@ func TestProviderQualifiedOverridesTakePrecedence(t *testing.T) {
 	overrides := map[string]int{
 		"anthropic/claude-opus-4-6":            4096,
 		"openrouter/anthropic/claude-opus-4-6": 8192,
-		"openrouter/stealth/union-alpha":      262144,
-		"test-provider":                      1234,
+		"openrouter/stealth/union-alpha":       262144,
+		"test-provider":                        1234,
 	}
 	registryMu.RLock()
 	original := make(map[string]int)
@@ -297,8 +297,8 @@ func TestSuggestModelDeterministicTies(t *testing.T) {
 func TestGetTokenBudgetForModel(t *testing.T) {
 	tests := []struct {
 		name, agentType, model string
-		window, want          int
-		wantErr               bool
+		window, want           int
+		wantErr                bool
 	}{
 		{"agent default", "claude", "", 0, 180000, false},
 		{"current large model", "cc", "claude-opus-5", 0, 900000, false},
