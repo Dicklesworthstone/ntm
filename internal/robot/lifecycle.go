@@ -25,6 +25,10 @@ type LifecycleOptions struct {
 	Session  string
 	Panes    []string // pane selectors (N, W.P, %N); empty = all agent panes
 	Relaunch bool     // relaunch the agent CLI after exit/kill and verify
+
+	// ExpectedPane binds a compound caller's next action to the original
+	// pane ID, root PID and agent type. Nil starts a new lifecycle operation.
+	ExpectedPane *tmux.Pane
 }
 
 // LifecyclePaneResult is per-pane structured evidence for a lifecycle verb.
@@ -81,7 +85,8 @@ const remoteAgentProcessOperationsHint = "Remote pane process IDs and sessions c
 
 // requireLocalAgentProcessOperations prevents remote pane PIDs, or a same-named
 // local session, from being mistaken for local process inspection or control.
-// Tmux-native exit and respawn operations do not require this restriction.
+// Pane-preserving exits also need local root-process evidence; a foreground
+// command cannot prove that a persistent parent shell exists.
 func requireLocalAgentProcessOperations() error {
 	if tmux.DefaultClient.Remote != "" {
 		return errRemoteAgentProcessOperations
@@ -246,6 +251,9 @@ func waitForBareShell(ctx context.Context, session, paneID string, timeout time.
 			continue
 		}
 		last = pane
+		if pane.Dead {
+			return pane, false
+		}
 		if pane.AgentCLIDead() {
 			return pane, true
 		}
@@ -260,11 +268,18 @@ func waitForBareShell(ctx context.Context, session, paneID string, timeout time.
 // timing window encapsulated. omp gets its own sequence: its Ctrl+C clears
 // the draft rather than interrupting, so a double tap with text in the
 // composer would never quit.
-func sendExitChoreography(ctx context.Context, paneID string, agentType tmux.AgentType) error {
-	if agentType.Canonical() == tmux.AgentOmp {
-		return tmux.SendOmpExitContext(ctx, paneID)
+func sendExitChoreography(ctx context.Context, pane tmux.Pane) error {
+	// Every key is fenced in the tmux server. If an earlier key already
+	// returned to the shell, a later Ctrl+D (omp) must not close that shell,
+	// and a delayed second interrupt must not reach a replacement process.
+	guardedCtx, err := tmux.WithPaneMutationGuard(ctx, pane.ID, pane.PID)
+	if err != nil {
+		return err
 	}
-	if err := tmux.DefaultClient.SendInterrupt(paneID); err != nil {
+	if tmux.AgentType(restartPaneAgentType(pane)).Canonical() == tmux.AgentOmp {
+		return tmux.SendOmpExitContext(guardedCtx, pane.ID)
+	}
+	if err := tmux.DefaultClient.RunSilentContext(guardedCtx, "send-keys", "-t", tmux.ExactTarget(pane.ID), "C-c"); err != nil {
 		return err
 	}
 	select {
@@ -272,7 +287,7 @@ func sendExitChoreography(ctx context.Context, paneID string, agentType tmux.Age
 		return ctx.Err()
 	case <-time.After(lifecycleDoubleTapGap):
 	}
-	return tmux.DefaultClient.SendInterrupt(paneID)
+	return tmux.DefaultClient.RunSilentContext(guardedCtx, "send-keys", "-t", tmux.ExactTarget(pane.ID), "C-c")
 }
 
 // prepareLifecycleRelaunch validates the entire batch before any quit or kill.
@@ -292,17 +307,60 @@ func prepareLifecycleRelaunch(ctx context.Context, session string, panes []tmux.
 
 func lifecyclePaneIdentityMatches(original, refreshed tmux.Pane) bool {
 	return original.ID == refreshed.ID && original.PID > 0 && original.PID == refreshed.PID &&
-		original.Type.Canonical() == refreshed.Type.Canonical() && !refreshed.IsServicePane() && !refreshed.Dead
+		original.Type.Canonical() == refreshed.Type.Canonical() && !refreshed.IsServicePane() &&
+		!refreshed.Dead && refreshed.RotationToken == ""
+}
+
+// validateLifecycleExpectedPane prevents a fallback from silently rebinding
+// an earlier result's physical pane ID to a replacement process or provider.
+func validateLifecycleExpectedPane(opts LifecycleOptions, panes []tmux.Pane) error {
+	if opts.ExpectedPane == nil {
+		return nil
+	}
+	if len(panes) != 1 || !lifecyclePaneIdentityMatches(*opts.ExpectedPane, panes[0]) {
+		return fmt.Errorf("pane %s identity changed since the preceding lifecycle action; refusing to target a replacement", opts.ExpectedPane.ID)
+	}
+	return nil
+}
+
+// validateLifecycleShells admits the whole batch before any pane is changed.
+// A direct-exec root is not a shell, even if tmux labels the pane as an agent.
+func validateLifecycleShells(ctx context.Context, panes []tmux.Pane) error {
+	for _, pane := range panes {
+		if pane.RotationToken != "" {
+			return fmt.Errorf("pane %s has an unresolved context rotation; lifecycle action withheld", pane.ID)
+		}
+		if err := tmux.DefaultClient.ValidatePanePersistentShellContext(ctx, pane); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// verifyLifecycleShell repeats admission immediately before an action. A pane
+// may have been respawned or its shell may have exec'd an agent since preflight.
+func verifyLifecycleShell(ctx context.Context, session string, original tmux.Pane, result *LifecyclePaneResult) (tmux.Pane, bool) {
+	refreshed, lookup := refreshLifecyclePane(ctx, session, original.ID)
+	result.ShellPreserved = false
+	result.VerificationFailed = lookup == paneLookupFailed
+	if lookup != paneFound || !lifecyclePaneIdentityMatches(original, refreshed) {
+		result.Detail = joinLifecycleDetail(result.Detail, "lifecycle action withheld: original live agent pane identity could not be verified")
+		return refreshed, false
+	}
+	if err := tmux.DefaultClient.ValidatePanePersistentShellContext(ctx, refreshed); err != nil {
+		result.Detail = joinLifecycleDetail(result.Detail, "lifecycle action withheld: "+err.Error())
+		return refreshed, false
+	}
+	result.ShellPreserved = true
+	return refreshed, true
 }
 
 // verifyLifecycleRelaunchShell requires fresh evidence that the original pane
 // shell is idle. A stale exit result must not allow typing into another agent.
 func verifyLifecycleRelaunchShell(ctx context.Context, session string, pane tmux.Pane, result *LifecyclePaneResult) bool {
-	refreshed, lookup := refreshLifecyclePane(ctx, session, pane.ID)
-	if lookup != paneFound || !lifecyclePaneIdentityMatches(pane, refreshed) {
-		result.ShellPreserved = lookup == paneFound && pane.PID > 0 && refreshed.PID == pane.PID && !refreshed.Dead
-		result.VerificationFailed = lookup == paneLookupFailed || pane.PID <= 0
-		result.Detail = joinLifecycleDetail(result.Detail, "relaunch withheld: original agent pane identity could not be verified")
+	refreshed, verified := verifyLifecycleShell(ctx, session, pane, result)
+	if !verified {
+		result.Detail = joinLifecycleDetail(result.Detail, "relaunch withheld: original persistent shell could not be verified")
 		return false
 	}
 	if !refreshed.AgentCLIDead() {
@@ -338,11 +396,11 @@ func relaunchAgentCLI(ctx context.Context, session string, pane tmux.Pane, plan 
 			return
 		}
 	}
-	if err := tmux.SetPaneLaunchSpecContext(ctx, pane.ID, spec); err != nil {
+	if err := tmux.DefaultClient.SetPaneLaunchSpecIfCurrentContext(ctx, pane.ID, pane.PID, spec); err != nil {
 		result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf("record relaunch specification failed: %v", err))
 		return
 	}
-	if err := tmux.SendKeysContext(ctx, pane.ID, launchCmd, true); err != nil {
+	if err := tmux.DefaultClient.SendKeysForAgentIfCurrentContext(ctx, pane.ID, launchCmd, true, tmux.AgentUser, pane.PID, true); err != nil {
 		// A tmux command error can contain the command's private arguments.
 		result.Detail = joinLifecycleDetail(result.Detail, "relaunch command delivery failed")
 		return
@@ -383,9 +441,23 @@ func GetExitCLI(ctx context.Context, opts LifecycleOptions) (*ExitCLIOutput, err
 		Session:       strings.TrimSpace(opts.Session),
 		Results:       []LifecyclePaneResult{},
 	}
+	if err := requireLocalAgentProcessOperations(); err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, remoteAgentProcessOperationsHint)
+		return output, nil
+	}
 	targets, multiWindow, failure := resolveLifecycleTargets(ctx, opts, "exit-cli")
 	if failure != nil {
 		output.RobotResponse = *failure
+		return output, nil
+	}
+	if err := validateLifecycleExpectedPane(opts, targets); err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag,
+			"Inspect the current pane before starting a new lifecycle operation; no agent was changed")
+		return output, nil
+	}
+	if err := validateLifecycleShells(ctx, targets); err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag,
+			"Select agents running under a persistent interactive shell; no exit keys were sent")
 		return output, nil
 	}
 	var launchPlan restartLaunchPlan
@@ -404,34 +476,65 @@ func GetExitCLI(ctx context.Context, opts LifecycleOptions) (*ExitCLIOutput, err
 			AgentType: restartPaneAgentType(pane),
 			ShellPID:  pane.PID,
 		}
-		if pane.AgentCLIDead() {
+		current, verified := verifyLifecycleShell(ctx, opts.Session, pane, &result)
+		if !verified {
+			output.Results = append(output.Results, result)
+			continue
+		}
+		if current.AgentCLIDead() {
 			result.Exited = true
-			result.ShellPreserved = true
 			result.Detail = "agent CLI already exited; pane is at a bare shell"
 		} else {
 			exited := false
+			var exitErr error
 			for attempt := 0; attempt < 2 && !exited; attempt++ {
-				if err := sendExitChoreography(ctx, pane.ID, tmux.AgentType(restartPaneAgentType(pane))); err != nil {
-					result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf("exit keystrokes failed: %v", err))
+				if attempt > 0 {
+					current, verified = verifyLifecycleShell(ctx, opts.Session, pane, &result)
+					if !verified {
+						break
+					}
+					if current.AgentCLIDead() {
+						break
+					}
+				}
+				if exitErr = sendExitChoreography(ctx, current); exitErr != nil {
 					break
 				}
 				_, exited = waitForBareShell(ctx, opts.Session, pane.ID, lifecycleExitTimeout)
 			}
-			result.Exited = exited
 			refreshed, lookup := refreshLifecyclePane(ctx, opts.Session, pane.ID)
-			result.ShellPreserved = lookup == paneFound
+			result.ShellPreserved = false
+			result.VerificationFailed = lookup == paneLookupFailed
 			switch lookup {
 			case paneLookupFailed:
-				// Nothing was proven either way; say so instead of implying
-				// the pane was destroyed.
-				result.VerificationFailed = true
 				result.Detail = joinLifecycleDetail(result.Detail,
 					"could not re-read the pane after exit; shell_preserved is unverified, not false")
+			case paneAbsent:
+				result.Detail = joinLifecycleDetail(result.Detail,
+					"pane is gone; no further exit or kill attempt was made")
 			case paneFound:
-				if !exited {
-					result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf(
-						"agent CLI still in foreground (%s) after two graceful exit attempts; escalate with --robot-kill-agent", refreshed.Command))
+				if refreshed.Dead {
+					result.Detail = joinLifecycleDetail(result.Detail,
+						"pane process exited and tmux retained a dead pane; no live shell remains")
+				} else if !lifecyclePaneIdentityMatches(pane, refreshed) {
+					result.Detail = joinLifecycleDetail(result.Detail,
+						"pane identity changed during exit; no action was taken against the replacement")
+				} else if err := tmux.DefaultClient.ValidatePanePersistentShellContext(ctx, refreshed); err != nil {
+					result.Detail = joinLifecycleDetail(result.Detail, err.Error())
+				} else {
+					result.ShellPreserved = true
+					result.Exited = refreshed.AgentCLIDead()
+					if !result.Exited && exitErr == nil {
+						result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf(
+							"agent CLI still in foreground (%s) after graceful exit attempts; inspect the pane before using --robot-kill-agent", refreshed.Command))
+					}
 				}
+			}
+			// A guarded follow-up key can be refused because the previous key
+			// already exited the agent. Fresh shell evidence is success, not an
+			// error that tells the caller to escalate an already-ended process.
+			if exitErr != nil && !result.Exited {
+				result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf("exit keystrokes stopped: %v", exitErr))
 			}
 		}
 		if opts.Relaunch && result.Exited && result.ShellPreserved {
@@ -465,6 +568,16 @@ func GetKillAgent(ctx context.Context, opts LifecycleOptions) (*KillAgentOutput,
 		output.RobotResponse = *failure
 		return output, nil
 	}
+	if err := validateLifecycleExpectedPane(opts, targets); err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag,
+			"Inspect the current pane before starting a new lifecycle operation; no agent was changed")
+		return output, nil
+	}
+	if err := validateLifecycleShells(ctx, targets); err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag,
+			"Select agents running under a persistent interactive shell; no process was signaled")
+		return output, nil
+	}
 	var launchPlan restartLaunchPlan
 	if opts.Relaunch {
 		var err error
@@ -481,8 +594,7 @@ func GetKillAgent(ctx context.Context, opts LifecycleOptions) (*KillAgentOutput,
 			AgentType: restartPaneAgentType(pane),
 			ShellPID:  pane.PID,
 		}
-		if pane.PID <= 0 {
-			result.Detail = "pane shell PID unavailable; cannot locate the agent process tree"
+		if _, verified := verifyLifecycleShell(ctx, opts.Session, pane, &result); !verified {
 			output.Results = append(output.Results, result)
 			continue
 		}
@@ -507,7 +619,8 @@ func GetKillAgent(ctx context.Context, opts LifecycleOptions) (*KillAgentOutput,
 					fmt.Sprintf("processes survived SIGKILL: %v", survivors))
 			}
 			refreshed, lookup := refreshLifecyclePane(ctx, opts.Session, pane.ID)
-			result.ShellPreserved = lookup == paneFound && refreshed.PID == pane.PID
+			result.ShellPreserved = lookup == paneFound && lifecyclePaneIdentityMatches(pane, refreshed) &&
+				tmux.DefaultClient.ValidatePanePersistentShellContext(ctx, refreshed) == nil
 			switch {
 			case lookup == paneLookupFailed:
 				result.VerificationFailed = true

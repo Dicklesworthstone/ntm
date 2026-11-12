@@ -3446,3 +3446,30 @@ esac
 		})
 	}
 }
+
+func TestShellArgvLooksInteractiveRejectsCommandModes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		argv []string
+		want bool
+	}{
+		{"login shell", []string{"-zsh"}, true},
+		{"interactive shell", []string{"/bin/sh", "-i"}, true},
+		{"interactive noclobber", []string{"bash", "-iC"}, true},
+		{"interactive login flags", []string{"bash", "--noprofile", "--norc", "-il"}, true},
+		{"command", []string{"sh", "-c", "agent"}, false},
+		{"combined command flags", []string{"bash", "-lc", "agent"}, false},
+		{"interactive command still exits", []string{"sh", "-ic", "agent"}, false},
+		{"long command", []string{"fish", "--command=agent"}, false},
+		{"script", []string{"sh", "/tmp/agent-wrapper"}, false},
+		{"script after separator", []string{"sh", "--", "/tmp/agent-wrapper"}, false},
+		{"stdin shell on pane terminal", []string{"bash", "-s"}, true},
+		{"explicit interactive stdin", []string{"sh", "-is"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shellArgvLooksInteractive(tc.argv); got != tc.want {
+				t.Fatalf("shellArgvLooksInteractive(%q) = %t, want %t", tc.argv, got, tc.want)
+			}
+		})
+	}
+}

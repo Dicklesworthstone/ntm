@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +45,12 @@ exit 79
 	}
 
 	for _, relaunch := range []bool{false, true} {
+		exit, err := GetExitCLI(t.Context(), LifecycleOptions{Session: "remote-fixture", Relaunch: relaunch})
+		if err != nil || exit == nil || exit.Success || exit.ErrorCode != ErrCodeInvalidFlag ||
+			len(exit.Results) != 0 || !strings.Contains(exit.Error, "without --ssh") {
+			t.Fatalf("exit-cli relaunch=%t response=%+v err=%v", relaunch, exit, err)
+		}
+		assertUnobserved(t)
 		out, err := GetKillAgent(t.Context(), LifecycleOptions{Session: "remote-fixture", Relaunch: relaunch})
 		if err != nil || out == nil || out.Success || out.ErrorCode != ErrCodeInvalidFlag ||
 			len(out.Results) != 0 || !strings.Contains(out.Error, "without --ssh") {
@@ -169,5 +176,241 @@ func TestLifecyclePaneResult_VerificationFailedIsDistinctFromDestroyed(t *testin
 
 	if unverified.VerificationFailed == destroyed.VerificationFailed {
 		t.Fatal("an unverified result is indistinguishable from a destroyed pane")
+	}
+}
+
+func TestLifecycleShellAdmissionAndExitEvidence(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("lifecycle transport fixture requires POSIX processes")
+	}
+	type testCase struct {
+		mode     string
+		verb     string
+		relaunch bool
+	}
+	var cases []testCase
+	for _, verb := range []string{"exit", "kill"} {
+		for _, mode := range []string{"direct", "command", "unreadable", "missing-pid", "dead", "mixed", "rotation", "expected-pid", "expected-agent"} {
+			for _, relaunch := range []bool{false, true} {
+				cases = append(cases, testCase{mode: mode, verb: verb, relaunch: relaunch})
+			}
+		}
+	}
+	for _, mode := range []string{"single", "double", "omp", "guard-race", "gone", "dead-after", "lookup-failure", "replaced-before", "replaced-after", "already-shell"} {
+		cases = append(cases, testCase{mode: mode, verb: "exit"})
+	}
+	cases = append(cases, testCase{mode: "already-shell", verb: "kill"})
+	const script = `#!/bin/sh
+set -eu
+root="$NTM_LIFECYCLE_SHELL_TEST_ROOT"
+mode="$NTM_LIFECYCLE_SHELL_TEST_MODE"
+printf '%s\n' "$1" >> "$root/calls"
+case "$1" in
+  has-session) ;;
+  list-panes)
+    pid="$NTM_LIFECYCLE_ROOT_PID"
+    command=claude
+    agent=cc
+    dead=0
+    rotation=''
+    if [ "$mode" = dead ]; then dead=1; fi
+    if [ "$mode" = rotation ]; then rotation=handoff-in-progress; fi
+    if [ "$mode" = already-shell ]; then command=sh; fi
+    if [ "$mode" = omp ]; then agent=omp; command=omp; fi
+    if [ "$mode" = replaced-before ] && [ -f "$root/listed" ]; then pid="$NTM_LIFECYCLE_OTHER_PID"; fi
+    if [ -f "$root/changed" ]; then
+      case "$mode" in
+        gone) exit 0 ;;
+        dead-after) dead=1; command='' ;;
+        lookup-failure) printf 'temporary transport failure\n' >&2; exit 77 ;;
+        replaced-after) pid="$NTM_LIFECYCLE_OTHER_PID"; command=sh ;;
+        *) command=sh ;;
+      esac
+    fi
+    printf '%%7_NTM_SEP_1_NTM_SEP_session__%s_1_NTM_SEP_%s_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_%s_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_%s_NTM_SEP_[%s]\n' "$agent" "$command" "$pid" "$agent" "$dead" "$rotation"
+    if [ "$mode" = mixed ]; then
+      printf '%%8_NTM_SEP_2_NTM_SEP_session__cc_2_NTM_SEP_claude_NTM_SEP_80_NTM_SEP_24_NTM_SEP_0_NTM_SEP_%s_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0_NTM_SEP_[]\n' "$NTM_LIFECYCLE_OTHER_PID"
+    fi
+    : > "$root/listed"
+    ;;
+  display-message)
+    [ "$5" = '[#{@ntm_agent_type}]' ] || exit 51
+    if [ "$mode" = omp ]; then printf '[omp]\n'; else printf '[cc]\n'; fi
+    ;;
+  if-shell)
+    [ "$2" = '-F' ] && [ "$4" = '%7' ] || exit 52
+    case "$5" in
+      *"#{==:#{pane_pid},$NTM_LIFECYCLE_ROOT_PID}"*) ;;
+      *) exit 53 ;;
+    esac
+    if [ "$mode" = guard-race ]; then : > "$root/changed"; fi
+    if [ -f "$root/changed" ]; then
+      printf 'ntm_pane_identity_changed\n'
+      exit 0
+    fi
+    eval "set -- $6"
+    [ "$1" = send-keys ] && [ "$3" = '%7' ] || exit 54
+    printf '%s\n' "$4" >> "$root/keys"
+    if [ "$4" = Escape ]; then exit 0; fi
+    [ "$4" = C-c ] || exit 55
+    if [ "$mode" = double ] && [ ! -f "$root/interrupted" ]; then
+      : > "$root/interrupted"
+    else
+      : > "$root/changed"
+    fi
+    ;;
+  send-keys)
+    printf 'unguarded pane input\n' >&2
+    exit 56
+    ;;
+  *) exit 57 ;;
+esac
+`
+	for _, tc := range cases {
+		t.Run(tc.verb+"/"+tc.mode+"/relaunch="+strconv.FormatBool(tc.relaunch), func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "tmux")
+			if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLifecycleShellTransportHelper$")
+			cmd.Env = append(os.Environ(),
+				"NTM_TEST_TMUX_ENV_OWNED=1", "NTM_TMUX_BINARY="+path,
+				"NTM_LIFECYCLE_SHELL_TEST_ROOT="+root, "NTM_LIFECYCLE_SHELL_TEST_MODE="+tc.mode,
+				"NTM_LIFECYCLE_SHELL_TEST_VERB="+tc.verb, "NTM_LIFECYCLE_SHELL_TEST_RELAUNCH="+strconv.FormatBool(tc.relaunch),
+				"HOME="+root, "NTM_CONFIG="+filepath.Join(root, "config.toml"))
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("lifecycle shell evidence: %v\n%s", err, output)
+			}
+		})
+	}
+}
+
+// Use real process arguments for shell admission, independently of the tmux
+// transport's foreground command. Keeping stdin open leaves both interactive
+// shells and command-mode read fixtures alive without spawning agent children.
+func startLifecycleRootProcess(t *testing.T, name string, args ...string) int {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	return cmd.Process.Pid
+}
+
+func TestLifecycleShellTransportHelper(t *testing.T) {
+	root := os.Getenv("NTM_LIFECYCLE_SHELL_TEST_ROOT")
+	if root == "" {
+		return
+	}
+	mode := os.Getenv("NTM_LIFECYCLE_SHELL_TEST_MODE")
+	verb := os.Getenv("NTM_LIFECYCLE_SHELL_TEST_VERB")
+	shellPID := startLifecycleRootProcess(t, "/bin/sh", "-i")
+	otherPID := startLifecycleRootProcess(t, "cat")
+	rootPID := shellPID
+	switch mode {
+	case "direct":
+		rootPID = otherPID
+	case "command":
+		rootPID = startLifecycleRootProcess(t, "/bin/sh", "-ic", "read ignored")
+	case "unreadable":
+		rootPID = 2000000001
+	case "missing-pid":
+		rootPID = 0
+	}
+	t.Setenv("NTM_LIFECYCLE_ROOT_PID", strconv.Itoa(rootPID))
+	t.Setenv("NTM_LIFECYCLE_OTHER_PID", strconv.Itoa(otherPID))
+	opts := LifecycleOptions{
+		Session:  "session",
+		Relaunch: os.Getenv("NTM_LIFECYCLE_SHELL_TEST_RELAUNCH") == "true",
+	}
+	if mode == "expected-pid" || mode == "expected-agent" {
+		opts.ExpectedPane = &tmux.Pane{ID: "%7", PID: shellPID, Type: tmux.AgentClaude}
+		if mode == "expected-pid" {
+			opts.ExpectedPane.PID = otherPID
+		} else {
+			opts.ExpectedPane.Type = tmux.AgentCodex
+		}
+	}
+	var success bool
+	var errorCode string
+	var results []LifecyclePaneResult
+	if verb == "exit" {
+		out, err := GetExitCLI(t.Context(), opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		success, errorCode, results = out.Success, out.ErrorCode, out.Results
+	} else {
+		out, err := GetKillAgent(t.Context(), opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		success, errorCode, results = out.Success, out.ErrorCode, out.Results
+	}
+	read := func(name string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(root, name))
+		if errors.Is(err, os.ErrNotExist) {
+			return ""
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	keys, calls := read("keys"), read("calls")
+	if !process.IsAlive(shellPID) || !process.IsAlive(otherPID) {
+		t.Fatal("pane-preserving lifecycle action terminated a fixture root")
+	}
+	switch mode {
+	case "direct", "command", "unreadable", "missing-pid", "dead", "mixed", "rotation", "expected-pid", "expected-agent":
+		if success || errorCode != ErrCodeInvalidFlag || len(results) != 0 ||
+			keys != "" || strings.Contains(calls, "if-shell") || strings.Contains(calls, "send-keys") {
+			t.Fatalf("unsafe shell admission crossed the mutation boundary: success=%t code=%s results=%+v calls=%s keys=%q",
+				success, errorCode, results, calls, keys)
+		}
+		return
+	case "replaced-before":
+		if success || len(results) != 1 || results[0].ShellPreserved || keys != "" || strings.Contains(calls, "if-shell") {
+			t.Fatalf("replaced pane was acted on: success=%t results=%+v calls=%s keys=%q", success, results, calls, keys)
+		}
+		return
+	case "gone", "dead-after", "lookup-failure", "replaced-after":
+		if success || len(results) != 1 || results[0].Exited || results[0].ShellPreserved ||
+			results[0].VerificationFailed != (mode == "lookup-failure") ||
+			strings.Contains(results[0].Detail, "--robot-kill-agent") || keys != "C-c\n" {
+			t.Fatalf("unavailable or replaced pane got misleading exit evidence or extra input: success=%t results=%+v keys=%q",
+				success, results, keys)
+		}
+		return
+	}
+	if !success || len(results) != 1 || !results[0].Exited || !results[0].ShellPreserved || results[0].VerificationFailed ||
+		results[0].ShellPID != shellPID || strings.Contains(results[0].Detail, "failed") {
+		t.Fatalf("verified shell exit was not successful: success=%t results=%+v keys=%q", success, results, keys)
+	}
+	wantKeys := "C-c\n"
+	switch mode {
+	case "double":
+		wantKeys = "C-c\nC-c\n"
+	case "omp":
+		wantKeys = "Escape\nC-c\n"
+	case "already-shell", "guard-race":
+		wantKeys = ""
+	}
+	if keys != wantKeys {
+		t.Fatalf("exit keys = %q, want %q; an already-exited agent must receive no follow-up input", keys, wantKeys)
 	}
 }
