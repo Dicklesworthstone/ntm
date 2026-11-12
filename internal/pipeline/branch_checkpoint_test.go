@@ -153,7 +153,7 @@ func TestBranchChildHashMatchesDurableJSONRepresentation(t *testing.T) {
 		StepID: "route_fanout", Status: StatusCompleted, Output: "done",
 		StartedAt: now, FinishedAt: now,
 		ParsedData: map[string]interface{}{
-			"ratio": json.Number("1.0"),
+			"ratio":  json.Number("1.0"),
 			"nested": []interface{}{map[string]interface{}{"score": json.Number("2.50")}},
 		},
 	}

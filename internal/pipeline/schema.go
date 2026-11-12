@@ -1383,21 +1383,21 @@ type StepError struct {
 
 // ExecutionState contains the complete state of a workflow execution
 type ExecutionState struct {
-	RunID          string                 `json:"run_id"`
-	WorkflowID     string                 `json:"workflow_id"`
-	WorkflowFile   string                 `json:"workflow_file,omitempty"`
-	Session        string                 `json:"session,omitempty"`
-	Status         ExecutionStatus        `json:"status"`
-	StartedAt      time.Time              `json:"started_at"`
-	UpdatedAt      time.Time              `json:"updated_at"`
-	FinishedAt     time.Time              `json:"finished_at,omitempty"`
-	CancelledAt    *time.Time             `json:"cancelled_at,omitempty"`
-	CurrentStep    string                 `json:"current_step,omitempty"`
-	Steps          map[string]StepResult  `json:"steps"`
-	StepAdmissions *StepAdmissionState    `json:"step_admissions,omitempty"`
-	Variables         map[string]interface{} `json:"variables"` // Runtime variables including step outputs
+	RunID             string                 `json:"run_id"`
+	WorkflowID        string                 `json:"workflow_id"`
+	WorkflowFile      string                 `json:"workflow_file,omitempty"`
+	Session           string                 `json:"session,omitempty"`
+	Status            ExecutionStatus        `json:"status"`
+	StartedAt         time.Time              `json:"started_at"`
+	UpdatedAt         time.Time              `json:"updated_at"`
+	FinishedAt        time.Time              `json:"finished_at,omitempty"`
+	CancelledAt       *time.Time             `json:"cancelled_at,omitempty"`
+	CurrentStep       string                 `json:"current_step,omitempty"`
+	Steps             map[string]StepResult  `json:"steps"`
+	StepAdmissions    *StepAdmissionState    `json:"step_admissions,omitempty"`
+	Variables         map[string]interface{} `json:"variables"`                    // Runtime variables including step outputs
 	TerminalVariables map[string]bool        `json:"terminal_variables,omitempty"` // Output aliases whose contents are external data, not templates
-	Errors         []ExecutionError       `json:"errors,omitempty"`
+	Errors            []ExecutionError       `json:"errors,omitempty"`
 
 	// Phase-B resume metadata. This is ntm's internal persisted execution
 	// format and may change between pipeline schema revisions.

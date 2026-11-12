@@ -112,7 +112,7 @@ func TestPipelineValidateDecodedWorkflowPermittedByExplicitPolicy(t *testing.T) 
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		t.Run(string(mode), func(t *testing.T) {
 			cfg := redaction.Config{
-				Mode: mode,
+				Mode:      mode,
 				Allowlist: []string{"^" + regexp.QuoteMeta(wiringFakeSecret) + "$"},
 			}
 			requirePipelineOuterJSONClean(t, content, cfg)

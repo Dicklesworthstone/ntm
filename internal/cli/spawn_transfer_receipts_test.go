@@ -338,7 +338,7 @@ func TestRecoveryPromptKeepsTransferUncertaintyAheadOfCompensation(t *testing.T)
 		t.Run(mode, func(t *testing.T) {
 			result := &handoff.ReservationTransferResult{
 				OutcomeUnknown: true, Error: "remote outcome could not be confirmed",
-				Conflicts: []agentmail.ReservationConflict{{Path: "a.go", Holders: []string{"peer"}}},
+				Conflicts:  []agentmail.ReservationConflict{{Path: "a.go", Holders: []string{"peer"}}},
 				RolledBack: mode == "restored source",
 			}
 			recovery := &RecoveryContext{ReservationTransfer: result}

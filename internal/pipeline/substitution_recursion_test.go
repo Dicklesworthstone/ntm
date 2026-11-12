@@ -286,16 +286,26 @@ func TestSubstituteOutputVarAliasPreservesTerminalProvenance(t *testing.T) {
 	for _, template := range []string{"${vars.answer}", "${vars.answer_parsed.text}"} {
 		sub := NewSubstitutor(state, "sess", "wf")
 		got, err := sub.Substitute(template)
-		if err != nil { t.Fatalf("Substitute(%q): %v", template, err) }
-		if strings.Contains(got, "must-not-leak") { t.Fatalf("output_var alias leaked env value: %q", got) }
+		if err != nil {
+			t.Fatalf("Substitute(%q): %v", template, err)
+		}
+		if strings.Contains(got, "must-not-leak") {
+			t.Fatalf("output_var alias leaked env value: %q", got)
+		}
 	}
 
 	raw, err := json.Marshal(state)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	var restored ExecutionState
-	if err := json.Unmarshal(raw, &restored); err != nil { t.Fatal(err) }
+	if err := json.Unmarshal(raw, &restored); err != nil {
+		t.Fatal(err)
+	}
 	got, err := NewSubstitutor(&restored, "sess", "wf").Substitute("${vars.answer}")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got != "literal ${env.BD_447SE_ALIAS_SECRET}" {
 		t.Fatalf("restored output_var provenance lost: %q", got)
 	}
