@@ -286,6 +286,8 @@ type ContextInjectResult struct {
 	Truncated     bool                  `json:"truncated"`
 	PanesInjected []int                 `json:"panes_injected"`
 	Error         string                `json:"error,omitempty"`
+	ErrorCode     string                `json:"error_code,omitempty"`
+	Hint          string                `json:"hint,omitempty"`
 	DryRun        bool                  `json:"dry_run"`
 	PanesPlanned  []int                 `json:"panes_planned,omitempty"`
 	Deliveries    []ContextPaneDelivery `json:"deliveries,omitempty"`
@@ -384,17 +386,14 @@ func selectContextInjectionPanes(panes []tmux.Pane, selector string, targetAll b
 }
 
 // injectContextIntoPanes adapts the uniform-content robot injection path to
-// the same batch dispatcher used by context inject. Its error includes the
-// delivered pane IDs so a partial delivery must not be blindly replayed.
-func injectContextIntoPanes(ctx context.Context, session string, panes []tmux.Pane, content string, dryRun bool, send contextPaneSender) ([]int, error) {
-	receipts, err := dispatchContextRequests(ctx, session, uniformContextRequests(panes, content), dryRun, send)
-	injected := make([]int, 0, len(receipts))
-	for _, receipt := range receipts {
-		if receipt.Status == "delivered" || (dryRun && receipt.Status == "planned") {
-			injected = append(injected, receipt.Pane)
-		}
+// the same batch dispatcher and safe receipts used by context inject.
+func injectContextIntoPanes(ctx context.Context, session string, panes []tmux.Pane, content string, maxBytes int, dryRun bool, send contextPaneSender) (ContextInjectResult, error) {
+	requests := uniformContextRequests(panes, content)
+	for i := range requests {
+		requests[i].MaxBytes = maxBytes
 	}
-	return injected, err
+	receipts, err := dispatchContextRequests(ctx, session, requests, dryRun, send)
+	return contextInjectionResult(session, nil, len(content), false, dryRun, receipts, err), err
 }
 
 // formatContextInjectContent reads project-confined regular text files. A positive
@@ -579,6 +578,9 @@ These on-demand packs are transient; use context build to store an artifact.
 Use --pack ID to send a previously built artifact to matching agent types.
 Pack modes never truncate a rendered artifact; --max-bytes and measured
 capacity reject oversized packs. --dry-run validates but sends no keys.
+All modes apply the configured --redact policy to each complete outbound
+message before any pane is written. Redaction that exceeds a byte or context
+budget is rejected; stored packs are never modified.
 Failed sends may have partially written input: inspect uncertain receipts
 before retrying, rather than replaying the entire batch.`,
 		Args: cobra.ExactArgs(1),
@@ -619,6 +621,9 @@ before retrying, rather than replaying the entire batch.`,
 			}
 			if result.Truncated {
 				fmt.Fprintln(w, "  Content was truncated to fit its budget.")
+			}
+			if result.Hint != "" {
+				fmt.Fprintf(w, "  Hint: %s\n", result.Hint)
 			}
 			return err
 		},

@@ -331,7 +331,7 @@ func TestInjectContextIntoPanesAcceptsMixedGrokBatch(t *testing.T) {
 				{ID: "%3", Index: 3, Type: tmux.AgentCodex},
 			}
 			calls := 0
-			injected, err := injectContextIntoPanes(t.Context(), "demo", panes, "context", false, func(context.Context, tmux.Pane, string) error {
+			result, err := injectContextIntoPanes(t.Context(), "demo", panes, "context", 0, false, func(context.Context, tmux.Pane, string) error {
 				calls++
 				return nil
 			})
@@ -342,8 +342,8 @@ func TestInjectContextIntoPanesAcceptsMixedGrokBatch(t *testing.T) {
 			if calls != 3 {
 				t.Fatalf("sender calls = %d, want 3", calls)
 			}
-			if len(injected) != 3 {
-				t.Fatalf("injected panes = %v, want 3 entries", injected)
+			if len(result.PanesInjected) != 3 {
+				t.Fatalf("injected panes = %v, want 3 entries", result.PanesInjected)
 			}
 		})
 	}

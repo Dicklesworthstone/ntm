@@ -456,14 +456,18 @@ func TestGenerateHandoffBasic(t *testing.T) {
 	tmpDir := t.TempDir()
 	g := NewGenerator(tmpDir)
 	ctx := context.Background()
+	no := false
 
 	opts := GenerateHandoffOptions{
-		SessionName: "test-session",
-		AgentName:   "test-agent",
-		AgentType:   "cc",
-		PaneID:      "test__cc_1",
-		Goal:        "Implemented feature X",
-		Now:         "Write tests next",
+		SessionName:      "test-session",
+		AgentName:        "test-agent",
+		AgentType:        "cc",
+		PaneID:           "test__cc_1",
+		Goal:             "Implemented feature X",
+		Now:              "Write tests next",
+		IncludeBeads:     &no,
+		IncludeAgentMail: &no,
+		IncludeCASS:      &no,
 	}
 	opts.DisableIntegrations()
 
@@ -499,10 +503,14 @@ func TestGenerateHandoffWithOutputAnalysis(t *testing.T) {
 	tmpDir := t.TempDir()
 	g := NewGenerator(tmpDir)
 	ctx := context.Background()
+	no := false
 
 	opts := GenerateHandoffOptions{
-		SessionName: "test-session",
-		Output:      []byte("I've completed implementing the auth module.\nNext: add tests"),
+		SessionName:      "test-session",
+		Output:           []byte("I've completed implementing the auth module.\nNext: add tests"),
+		IncludeBeads:     &no,
+		IncludeAgentMail: &no,
+		IncludeCASS:      &no,
 	}
 	opts.DisableIntegrations()
 
@@ -521,11 +529,15 @@ func TestGenerateHandoffExplicitGoalOverridesAnalysis(t *testing.T) {
 	tmpDir := t.TempDir()
 	g := NewGenerator(tmpDir)
 	ctx := context.Background()
+	no := false
 
 	opts := GenerateHandoffOptions{
-		SessionName: "test-session",
-		Goal:        "Explicit goal",
-		Output:      []byte("I've completed implementing something else.\nNext: do stuff"),
+		SessionName:      "test-session",
+		Goal:             "Explicit goal",
+		Output:           []byte("I've completed implementing something else.\nNext: do stuff"),
+		IncludeBeads:     &no,
+		IncludeAgentMail: &no,
+		IncludeCASS:      &no,
 	}
 	opts.DisableIntegrations()
 
@@ -544,13 +556,17 @@ func TestGenerateHandoffWithTokenInfo(t *testing.T) {
 	tmpDir := t.TempDir()
 	g := NewGenerator(tmpDir)
 	ctx := context.Background()
+	no := false
 
 	opts := GenerateHandoffOptions{
-		SessionName: "test-session",
-		Goal:        "Test goal",
-		Now:         "Test now",
-		TokensUsed:  80000,
-		TokensMax:   100000,
+		SessionName:      "test-session",
+		Goal:             "Test goal",
+		Now:              "Test now",
+		TokensUsed:       80000,
+		TokensMax:        100000,
+		IncludeBeads:     &no,
+		IncludeAgentMail: &no,
+		IncludeCASS:      &no,
 	}
 	opts.DisableIntegrations()
 
@@ -582,13 +598,16 @@ func TestGenerateHandoffDisableIntegrations(t *testing.T) {
 	cassSpy := &mockCASSSearcher{installed: true}
 	ctx := context.Background()
 
+	falseVal := false
 	opts := GenerateHandoffOptions{
-		SessionName: "test-session",
-		AgentName:   "test-agent",
-		Goal:        "Test goal",
-		Now:         "Test now",
-		CASSClient:  cassSpy,
-	}
+		SessionName:      "test-session",
+		AgentName:        "test-agent",
+		Goal:             "Test goal",
+		Now:              "Test now",
+		IncludeBeads:     &falseVal,
+		IncludeAgentMail: &falseVal,
+		IncludeCASS:      &falseVal,
+		CASSClient:       cassSpy}
 	opts.DisableIntegrations()
 
 	h, err := g.GenerateHandoff(ctx, opts)
@@ -606,8 +625,8 @@ func TestGenerateHandoffDisableIntegrations(t *testing.T) {
 	if len(h.AgentMailThreads) > 0 {
 		t.Errorf("expected no agent mail threads when disabled, got %d", len(h.AgentMailThreads))
 	}
-	if len(h.CMMemories) > 0 {
-		t.Errorf("expected no cass memories when disabled, got %d", len(h.CMMemories))
+	if cassSpy.installChecks != 0 || cassSpy.calls != 0 || len(h.CMMemories) != 0 {
+		t.Fatalf("disabled CASS was consulted: checks=%d calls=%d memories=%v", cassSpy.installChecks, cassSpy.calls, h.CMMemories)
 	}
 }
 
@@ -648,8 +667,7 @@ func TestGenerateHandoffStatusInference(t *testing.T) {
 			opts := GenerateHandoffOptions{
 				SessionName: "test",
 				Goal:        tt.goal,
-				Output:      tt.output,
-			}
+				Output:      tt.output}
 			opts.DisableIntegrations()
 
 			h, err := g.GenerateHandoff(ctx, opts)
@@ -679,8 +697,7 @@ func TestGenerateHandoffJSONSerializable(t *testing.T) {
 		Goal:        "Implemented feature",
 		Now:         "Write tests",
 		TokensUsed:  50000,
-		TokensMax:   100000,
-	}
+		TokensMax:   100000}
 	opts.DisableIntegrations()
 
 	h, err := g.GenerateHandoff(ctx, opts)
@@ -723,6 +740,8 @@ func TestGenerateHandoffJSONSerializable(t *testing.T) {
 
 func TestGenerateHandoffOptionsDefault(t *testing.T) {
 	tmpDir := t.TempDir()
+	// Exercise nil integration switches without querying host installations.
+	t.Setenv("PATH", t.TempDir())
 	g := NewGenerator(tmpDir)
 	ctx := context.Background()
 
@@ -941,15 +960,17 @@ func TestGetInProgressBeadsPreservesMidflightCancellation(t *testing.T) {
 }
 
 type mockCASSSearcher struct {
-	installed bool
-	resp      *cass.SearchResponse
-	err       error
-	search    func(context.Context, cass.SearchOptions) (*cass.SearchResponse, error)
-	calls     int
-	lastOpts  cass.SearchOptions
+	installed     bool
+	installChecks int
+	resp          *cass.SearchResponse
+	err           error
+	search        func(context.Context, cass.SearchOptions) (*cass.SearchResponse, error)
+	calls         int
+	lastOpts      cass.SearchOptions
 }
 
 func (m *mockCASSSearcher) IsInstalled() bool {
+	m.installChecks++
 	return m.installed
 }
 
@@ -1080,6 +1101,146 @@ func TestGenerateHandoffCASSGracefulDegradation(t *testing.T) {
 	}
 }
 
+type handoffCASSExecutor func(context.Context, ...string) ([]byte, error)
+
+func (run handoffCASSExecutor) Run(ctx context.Context, args ...string) ([]byte, error) {
+	return run(ctx, args...)
+}
+
+func TestGenerateHandoffDistinguishesChildAndCallerCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		parentTimeout time.Duration
+		childTimeout  time.Duration
+		cancelParent  bool
+		childError    error
+		wantError     error
+	}{
+		{name: "child deadline preserves handoff", childTimeout: 20 * time.Millisecond},
+		{name: "child cancellation preserves handoff", childTimeout: time.Second, childError: fmt.Errorf("history request canceled: %w", context.Canceled)},
+		{name: "caller cancellation aborts", childTimeout: time.Second, cancelParent: true, wantError: context.Canceled},
+		{name: "caller deadline aborts", parentTimeout: 20 * time.Millisecond, childTimeout: time.Second, wantError: context.DeadlineExceeded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if tc.parentTimeout > 0 {
+				deadlineCtx, deadlineCancel := context.WithTimeout(ctx, tc.parentTimeout)
+				defer deadlineCancel()
+				ctx = deadlineCtx
+			}
+			calls := 0
+			client := cass.NewClient(cass.WithTimeout(tc.childTimeout), cass.WithExecutor(handoffCASSExecutor(
+				func(callCtx context.Context, args ...string) ([]byte, error) {
+					calls++
+					if len(args) == 0 || args[0] != "search" {
+						t.Fatalf("unexpected CASS operation: %v", args)
+					}
+					if tc.cancelParent {
+						cancel()
+					}
+					if tc.childError != nil {
+						return nil, tc.childError
+					}
+					<-callCtx.Done()
+					return nil, callCtx.Err()
+				},
+			)))
+			no := false
+			h, err := NewGenerator("").GenerateHandoff(ctx, GenerateHandoffOptions{
+				SessionName: "source-timeout", Goal: "Implemented recovery", Now: "Continue validating recovery",
+				IncludeBeads: &no, IncludeAgentMail: &no, CASSClient: client,
+			})
+			if calls != 1 {
+				t.Fatalf("CASS calls = %d, want one real-client search", calls)
+			}
+			if tc.wantError != nil {
+				if !errors.Is(err, tc.wantError) || h != nil {
+					t.Fatalf("caller cancellation was not fatal: handoff=%+v error=%v, want %v", h, err, tc.wantError)
+				}
+				return
+			}
+			if err != nil || ctx.Err() != nil || h == nil {
+				t.Fatalf("optional source aborted healthy caller: handoff=%+v error=%v parent=%v", h, err, ctx.Err())
+			}
+			if h.Goal != "Implemented recovery" || h.Now != "Continue validating recovery" ||
+				h.Status != StatusComplete || h.Outcome != OutcomeSucceeded || len(h.CMMemories) != 0 {
+				t.Fatalf("optional source changed saved work or invented history: %+v", h)
+			}
+			if len(h.Warnings) != 1 || h.Warnings[0].Source != "cass" || h.Warnings[0].Message == "" {
+				t.Fatalf("missing source degradation evidence: %+v", h.Warnings)
+			}
+
+			projectDir := t.TempDir()
+			path, err := NewWriter(projectDir).Write(h, "source-timeout")
+			if err != nil {
+				t.Fatalf("save degraded handoff: %v", err)
+			}
+			restored, err := NewReader(projectDir).Read(path)
+			if err != nil || len(restored.Warnings) != 1 || restored.Warnings[0] != h.Warnings[0] || restored.Goal != h.Goal || restored.Now != h.Now {
+				t.Fatalf("saved handoff lost degradation evidence: restored=%+v error=%v", restored, err)
+			}
+		})
+	}
+}
+
+func TestGenerateHandoffMailTimeoutPreservesOtherEnrichment(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
+		var rpc struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params struct {
+				Name string `json:"name"`
+				URI  string `json:"uri"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil {
+			t.Errorf("decode enrichment request: %v", err)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		var result any
+		switch {
+		case rpc.Method == "tools/call" && rpc.Params.Name == "fetch_inbox":
+			http.Error(w, "inbox request timed out", http.StatusRequestTimeout)
+			return
+		case rpc.Method == "resources/read" && strings.HasPrefix(rpc.Params.URI, "resource://file_reservations/"):
+			result = map[string]any{"contents": []map[string]any{{"text": `[{"id":91,"project_id":73,"agent_name":"BlueLake","path_pattern":"internal/**","exclusive":true,"reason":"implementation","created_ts":"2026-01-02T03:04:05Z","expires_ts":"2099-01-01T00:00:00Z"}]`}}}
+		case rpc.Method == "resources/read" && strings.HasPrefix(rpc.Params.URI, "resource://project/"):
+			result = map[string]any{"contents": []map[string]any{{"text": `{"id":73,"slug":"project","human_key":"/project"}`}}}
+		default:
+			t.Errorf("unexpected enrichment request: %s %+v", rpc.Method, rpc.Params)
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": rpc.ID, "result": result})
+	}))
+	defer server.Close()
+	no := false
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	h, err := NewGenerator("").GenerateHandoff(ctx, GenerateHandoffOptions{
+		SessionName: "mail-timeout", AgentName: "BlueLake", ProjectKey: "/project",
+		Goal: "Preserve work and reservations", Now: "Continue safely from the saved leases",
+		IncludeBeads: &no, IncludeCASS: &no,
+		AgentMailClient: agentmail.NewClient(agentmail.WithBaseURL(server.URL), agentmail.WithToken("")),
+	})
+	if err != nil || ctx.Err() != nil || h == nil {
+		t.Fatalf("inbox timeout aborted handoff: handoff=%+v error=%v parent=%v", h, err, ctx.Err())
+	}
+	if len(h.AgentMailThreads) != 0 || h.ReservationTransfer == nil || len(h.ReservationTransfer.Reservations) != 1 || h.ReservationTransfer.Reservations[0].ID != 91 {
+		t.Fatalf("inbox timeout discarded independently available reservations: %+v", h)
+	}
+	if len(h.Warnings) != 1 || h.Warnings[0].Source != "agent_mail_threads" {
+		t.Fatalf("incomplete inbox was not distinguished from an empty inbox: %+v", h.Warnings)
+	}
+}
+
 func TestGenerateHandoffPreservesCASSCancellation(t *testing.T) {
 	g := NewGenerator("")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1151,7 +1312,14 @@ func TestGenerateHandoffChildCASSTimeoutDegradesGracefully(t *testing.T) {
 	if client.calls != 1 {
 		t.Fatalf("CASS calls = %d, want 1", client.calls)
 	}
-	if len(h.Warnings) == 0 || !strings.Contains(h.Warnings[0], "cass enrichment degraded") {
+	foundCASSWarning := false
+	for _, w := range h.Warnings {
+		if w.Source == "cass" && w.Message != "" {
+			foundCASSWarning = true
+			break
+		}
+	}
+	if !foundCASSWarning {
 		t.Fatalf("expected cass degradation warning, got %v", h.Warnings)
 	}
 }

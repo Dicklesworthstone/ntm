@@ -2,7 +2,9 @@
 package process
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +16,120 @@ import (
 
 	gopsutil "github.com/shirou/gopsutil/v4/process"
 )
+
+// SnapshotProcess is one process lifetime observed by SnapshotContext. Started
+// is ps's locale-independent start timestamp; Command is the kernel process
+// name, not argv[0] (which the process may replace).
+type SnapshotProcess struct {
+	PID     int
+	PPID    int
+	PGID    int
+	TPGID   int
+	State   string
+	Started string
+	Command string
+}
+
+const (
+	processSnapshotTimeout     = 5 * time.Second
+	processSnapshotOutputLimit = 16 << 20
+)
+
+// SnapshotContext observes the local process table without collapsing a failed
+// observation into an empty table. Only a successful, complete snapshot can
+// establish that a previously observed process is absent. Zombies remain in
+// the result so callers can distinguish termination from a missing observation.
+// No command arguments or command stderr are included in the result or errors.
+func SnapshotContext(ctx context.Context) (map[int]SnapshotProcess, error) {
+	if ctx == nil {
+		return nil, errors.New("process snapshot requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		return nil, fmt.Errorf("process snapshots are unsupported on %s", runtime.GOOS)
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, processSnapshotTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(probeCtx, "ps", "-ww", "-axo", "pid=,ppid=,pgid=,tpgid=,stat=,lstart=,ucomm=")
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	cmd.WaitDelay = 100 * time.Millisecond
+	var output processSnapshotBuffer
+	cmd.Stdout = &output
+	if err := cmd.Run(); err != nil {
+		if probeCtx.Err() != nil {
+			return nil, fmt.Errorf("process snapshot: %w", probeCtx.Err())
+		}
+		return nil, fmt.Errorf("process snapshot command failed: %w", err)
+	}
+	if err := probeCtx.Err(); err != nil {
+		return nil, fmt.Errorf("process snapshot: %w", err)
+	}
+	if output.exceeded {
+		return nil, errors.New("process snapshot exceeds the output limit")
+	}
+	return parseProcessSnapshot(output.Bytes())
+}
+
+// Keep even a malfunctioning ps bounded without retaining private stderr.
+type processSnapshotBuffer struct {
+	buffer   bytes.Buffer
+	exceeded bool
+}
+
+func (b *processSnapshotBuffer) Bytes() []byte { return b.buffer.Bytes() }
+func (b *processSnapshotBuffer) Len() int      { return b.buffer.Len() }
+
+func (b *processSnapshotBuffer) Write(data []byte) (int, error) {
+	n := len(data)
+	remaining := processSnapshotOutputLimit - b.Len()
+	if n > remaining {
+		b.exceeded = true
+		data = data[:remaining]
+	}
+	_, _ = b.buffer.Write(data)
+	return n, nil
+}
+
+func parseProcessSnapshot(output []byte) (map[int]SnapshotProcess, error) {
+	if len(output) == 0 || len(output) > processSnapshotOutputLimit || output[len(output)-1] != '\n' || bytes.IndexByte(output, 0) >= 0 {
+		return nil, errors.New("process snapshot is empty, oversized or incomplete")
+	}
+	rows := strings.Split(string(output[:len(output)-1]), "\n")
+	result := make(map[int]SnapshotProcess, len(rows))
+	for i, row := range rows {
+		fields := strings.Fields(row)
+		if len(fields) < 11 {
+			return nil, fmt.Errorf("process snapshot row %d is incomplete", i+1)
+		}
+		pid, pidErr := strconv.Atoi(fields[0])
+		ppid, ppidErr := strconv.Atoi(fields[1])
+		pgid, pgidErr := strconv.Atoi(fields[2])
+		tpgid, tpgidErr := strconv.Atoi(fields[3])
+		if pidErr != nil || ppidErr != nil || pgidErr != nil || tpgidErr != nil || pid <= 0 || ppid < 0 || pgid < 0 || tpgid < -1 {
+			return nil, fmt.Errorf("process snapshot row %d has invalid process identifiers", i+1)
+		}
+		if _, exists := result[pid]; exists {
+			return nil, fmt.Errorf("process snapshot row %d repeats a process identifier", i+1)
+		}
+		state := fields[4]
+		if !strings.ContainsRune("RSDTtZXxIKWPUE", rune(state[0])) || strings.IndexFunc(state, func(r rune) bool {
+			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r == '<' || r == '>' || r == '+')
+		}) >= 0 {
+			return nil, fmt.Errorf("process snapshot row %d has an invalid process state", i+1)
+		}
+		started := strings.Join(fields[5:10], " ")
+		if _, err := time.Parse("Mon Jan 2 15:04:05 2006", started); err != nil {
+			return nil, fmt.Errorf("process snapshot row %d has an invalid start time", i+1)
+		}
+		result[pid] = SnapshotProcess{
+			PID: pid, PPID: ppid, PGID: pgid, TPGID: tpgid,
+			State: state, Started: started, Command: strings.Join(fields[10:], " "),
+		}
+	}
+	return result, nil
+}
 
 // StartTime returns the process's start time. Used as the pane-age source
 // (tmux has no per-pane creation-time format variable): a pane's shell PID is

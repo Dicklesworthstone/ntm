@@ -25,14 +25,15 @@ import (
 // finished processing the context. A failed send may have written some bytes:
 // uncertain is deliberately distinct from not_attempted and is never retried.
 type ContextPaneDelivery struct {
-	Pane      int                  `json:"pane"`
-	Target    string               `json:"target"`
-	AgentType string               `json:"agent_type"`
-	PackID    string               `json:"pack_id,omitempty"`
-	Bytes     int                  `json:"bytes"`
-	Status    string               `json:"status"` // planned | delivered | uncertain | not_attempted
-	Error     string               `json:"error,omitempty"`
-	Capacity  *ContextPaneCapacity `json:"capacity,omitempty"`
+	Pane      int                        `json:"pane"`
+	Target    string                     `json:"target"`
+	AgentType string                     `json:"agent_type"`
+	PackID    string                     `json:"pack_id,omitempty"`
+	Bytes     int                        `json:"bytes"`
+	Status    string                     `json:"status"` // planned | delivered | uncertain | not_attempted
+	Error     string                     `json:"error,omitempty"`
+	Capacity  *ContextPaneCapacity       `json:"capacity,omitempty"`
+	Redaction *dispatch.RedactionReceipt `json:"redaction,omitempty"`
 }
 
 // ContextPaneCapacity distinguishes native accounting from an unverified
@@ -67,6 +68,7 @@ type contextInjectionRequest struct {
 	Content  string
 	PackID   string
 	Capacity *ContextPaneCapacity
+	MaxBytes int
 }
 
 type contextPaneSender func(context.Context, tmux.Pane, string) error
@@ -138,8 +140,60 @@ func dispatchContextRequests(ctx context.Context, session string, requests []con
 		if strings.TrimSpace(req.Content) == "" {
 			return receipts, fmt.Errorf("context injection for pane %d has empty content", req.Pane.Index)
 		}
+		if req.MaxBytes < 0 {
+			return receipts, fmt.Errorf("context injection maxBytes must be >= 0")
+		}
 		if err := req.Pane.Type.ValidateAutomatedPromptDelivery(); err != nil {
 			return receipts, fmt.Errorf("context injection for pane %d: %w", req.Pane.Index, err)
+		}
+	}
+	if !dryRun && send == nil {
+		return receipts, fmt.Errorf("context injection sender is required")
+	}
+	service, err := dispatch.NewService(dispatch.Ports{
+		Redactor: shellFinalMessageRedactor(activeShellDispatchRedactionConfig().DeepCopy()),
+		Deliverer: dispatch.DelivererFunc(func(ctx context.Context, delivery dispatch.Delivery) error {
+			return send(ctx, delivery.Target.Pane, delivery.Message)
+		}),
+	})
+	if err != nil {
+		return receipts, err
+	}
+	// Preflight every final, per-pane payload before dispatching any of them.
+	// Keeping the prepared intents also ensures the bytes scanned by policy are
+	// exactly those sent, without modifying a cached or persisted context pack.
+	prepared := make([]*dispatch.Prepared, len(requests))
+	for i, req := range requests {
+		prepared[i], err = service.Prepare(ctx, dispatch.Request{
+			Session: session, Panes: []tmux.Pane{req.Pane}, Selectors: []string{req.Pane.ID},
+			Message: req.Content, Submit: true, DryRun: dryRun,
+		})
+		if prepared[i] != nil {
+			preflight := prepared[i].PreflightResult()
+			if len(preflight.Receipts) == 1 {
+				summary := preflight.Receipts[0].Redaction
+				receipts[i].Redaction = &summary
+			}
+		}
+		if err != nil {
+			receipts[i].Error = err.Error()
+			return receipts, err
+		}
+		message, messageErr := prepared[i].FinalMessageForSingleTarget()
+		if messageErr != nil {
+			return receipts, messageErr
+		}
+		receipts[i].Bytes = len(message)
+		// Placeholders can be longer than the matched secret. A successful raw
+		// budget check must never authorize an oversized redacted message.
+		if req.MaxBytes > 0 && len(message) > req.MaxBytes {
+			err = fmt.Errorf("final context for pane %d (%s) exceeds --max-bytes after redaction; refusing to truncate", req.Pane.Index, req.Pane.ID)
+		} else if req.Capacity != nil && (req.Capacity.BudgetTokens <= 0 || contextPayloadTokens(message) > req.Capacity.BudgetTokens) {
+			err = fmt.Errorf("final context for pane %d (%s) exceeds context budget of %d estimated tokens after redaction", req.Pane.Index, req.Pane.ID, req.Capacity.BudgetTokens)
+		}
+		if err != nil {
+			receipts[i].Error = err.Error()
+			return receipts, err
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -151,10 +205,6 @@ func dispatchContextRequests(ctx context.Context, session string, requests []con
 		}
 		return receipts, nil
 	}
-	if send == nil {
-		return receipts, fmt.Errorf("context injection sender is required")
-	}
-
 	var failures []error
 	delivered := make([]int, 0, len(requests))
 	for i, req := range requests {
@@ -162,9 +212,10 @@ func dispatchContextRequests(ctx context.Context, session string, requests []con
 			failures = append(failures, err)
 			break
 		}
-		if err := send(ctx, req.Pane, req.Content); err != nil {
+		outcome, err := service.Dispatch(ctx, prepared[i])
+		if err != nil {
 			receipts[i].Status = "uncertain"
-			if dispatch.IsGuaranteedNoDeliveryActuation(err) {
+			if dispatch.IsGuaranteedNoDeliveryActuation(err) || (len(outcome.Receipts) == 1 && outcome.Receipts[0].Status == dispatch.ReceiptSkipped) {
 				receipts[i].Status = "not_attempted"
 			}
 			receipts[i].Error = err.Error()
@@ -189,7 +240,25 @@ func contextInjectionResult(session string, files []string, size int, truncated,
 		TotalBytes: size, Truncated: truncated, DryRun: dryRun,
 		PanesInjected: []int{}, Deliveries: receipts,
 	}
+	if len(receipts) > 0 {
+		result.TotalBytes = 0
+	}
 	for _, receipt := range receipts {
+		// Uniform file injections retain their per-message size; mixed packs
+		// report the largest final payload, with exact per-pane byte counts.
+		if receipt.Bytes > result.TotalBytes {
+			result.TotalBytes = receipt.Bytes
+		}
+		if summary := receipt.Redaction; summary != nil && summary.Findings > 0 {
+			action := "potential secrets detected in context"
+			if summary.Mode == "redact" {
+				action = "redacted potential secrets in context"
+			} else if summary.Blocked {
+				action = "blocked potential secrets in context"
+			}
+			result.Warnings = append(result.Warnings, fmt.Sprintf("pane %d (%s): %s (redaction mode: %s; %s)",
+				receipt.Pane, receipt.Target, action, summary.Mode, formatRedactionCategoryCounts(summary.Categories)))
+		}
 		switch receipt.Status {
 		case "delivered":
 			result.PanesInjected = append(result.PanesInjected, receipt.Pane)
@@ -199,6 +268,7 @@ func contextInjectionResult(session string, files []string, size int, truncated,
 	}
 	if err != nil {
 		result.Error = err.Error()
+		result.ErrorCode, result.Hint = classifyRobotContextInjectError(err)
 	}
 	return result
 }
@@ -359,7 +429,8 @@ func runContextInjection(ctx context.Context, opts contextInjectOptions, deps co
 	requests := uniformContextRequests(panes, content)
 	// Retain unattempted targets when preparation fails. No partially built
 	// batch can accidentally reach dispatch.
-	for _, pane := range panes {
+	for i, pane := range panes {
+		requests[i].MaxBytes = opts.MaxBytes
 		result.Deliveries = append(result.Deliveries, ContextPaneDelivery{
 			Pane: pane.Index, Target: pane.ID, AgentType: string(pane.Type), Status: "not_attempted",
 		})
@@ -474,16 +545,10 @@ func runContextInjection(ctx context.Context, opts contextInjectOptions, deps co
 			return result, recheckErr
 		}
 	}
-	for _, req := range requests {
-		// TotalBytes retains the uniform-message meaning for file injection;
-		// mixed packs report the largest payload, with exact per-pane Bytes.
-		if len(req.Content) > result.TotalBytes {
-			result.TotalBytes = len(req.Content)
-		}
-	}
 	receipts, err := dispatchContextRequests(ctx, session, requests, opts.DryRun, deps.send)
 	delivery := contextInjectionResult(session, result.InjectedFiles, result.TotalBytes, result.Truncated, opts.DryRun, receipts, err)
-	delivery.Mode, delivery.SelectedFiles, delivery.Warnings = result.Mode, result.SelectedFiles, result.Warnings
+	delivery.Mode, delivery.SelectedFiles = result.Mode, result.SelectedFiles
+	delivery.Warnings = append(result.Warnings, delivery.Warnings...)
 	return delivery, err
 }
 

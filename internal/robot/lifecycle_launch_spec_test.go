@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,7 +20,7 @@ import (
 
 func TestLifecycleRelaunchPreservesSavedLaunch(t *testing.T) {
 	for _, verb := range []string{"exit", "kill"} {
-		for _, mode := range []string{"saved", "legacy", "corrupt", "batch-corrupt", "omitted-env", "changed-prompt", "metadata-failure", "metadata-race", "delivery-race", "enter-race", "shell-replaced", "shell-busy", "lookup-failure", "provider-changed", "service", "dead", "post-provider-changed", "post-service", "post-dead", "delivery-failure"} {
+		for _, mode := range []string{"saved", "shell-wrapper", "legacy", "corrupt", "batch-corrupt", "omitted-env", "changed-prompt", "metadata-failure", "metadata-race", "delivery-race", "enter-race", "shell-replaced", "shell-busy", "lookup-failure", "provider-changed", "service", "dead", "post-provider-changed", "post-service", "post-dead", "delivery-failure"} {
 			t.Run(verb+"/"+mode, func(t *testing.T) {
 				root := t.TempDir()
 				path := filepath.Join(root, "tmux")
@@ -70,6 +71,7 @@ case "$1" in
     fi
     if [ -f "$root/launched" ]; then
       command=claude
+      if [ "$mode" = shell-wrapper ]; then command=sh; fi
       if [ "$mode" = post-provider-changed ]; then agent=cod; fi
       if [ "$mode" = post-service ]; then agent=''; service=cass; fi
       if [ "$mode" = post-dead ]; then dead=1; fi
@@ -103,6 +105,13 @@ case "$1" in
     case "${4:-}" in
       C-c)
         [ -f "$root/preflighted" ] || exit 58
+        kill -INT "$NTM_LIFECYCLE_SPEC_TEST_AGENT_PID"
+        tries=0
+        while kill -0 "$NTM_LIFECYCLE_SPEC_TEST_AGENT_PID" 2>/dev/null; do
+          tries=$((tries + 1))
+          [ "$tries" -lt 200 ] || exit 67
+          sleep 0.01
+        done
         : > "$root/exited"
         ;;
       -l)
@@ -113,6 +122,12 @@ case "$1" in
       Enter)
         [ -f "$root/delivered" ] || exit 61
         : > "$root/launched"
+        tries=0
+        while [ ! -s "$root/next-agent-ready" ]; do
+          tries=$((tries + 1))
+          [ "$tries" -lt 200 ] || exit 68
+          sleep 0.01
+        done
         ;;
       *) exit 62 ;;
     esac
@@ -144,7 +159,13 @@ func TestLifecycleLaunchSpecTransportHelper(t *testing.T) {
 		return
 	}
 	mode, verb := os.Getenv("NTM_LIFECYCLE_SPEC_TEST_MODE"), os.Getenv("NTM_LIFECYCLE_SPEC_TEST_VERB")
-	t.Setenv("NTM_LIFECYCLE_SPEC_TEST_SHELL_PID", strconv.Itoa(startLifecycleRootProcess(t, "/bin/sh", "-i")))
+	fixture := startLifecycleShellProcess(t, root, "single", true)
+	t.Setenv("NTM_LIFECYCLE_SPEC_TEST_SHELL_PID", strconv.Itoa(fixture.PID))
+	t.Setenv("NTM_LIFECYCLE_SPEC_TEST_AGENT_PID", strconv.Itoa(fixture.AgentPID))
+	modelLifecycleForeground(t, root, "spec-"+mode, fixture.PID)
+	afterLifecycleFile(t, filepath.Join(root, "launched"), func() {
+		_, _ = fmt.Fprintln(fixture.input, lifecycleAgentCommand(filepath.Join(root, "next-agent-ready"), "still-running"))
+	})
 	if err := os.WriteFile(filepath.Join(root, "config.toml"), []byte("[agents]\nclaude = \"claude --model CURRENT_WRONG\"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -158,6 +179,9 @@ func TestLifecycleLaunchSpecTransportHelper(t *testing.T) {
 		Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentClaude,
 		Command: "claude --model 'ORIGINAL_PIN' --effort high --custom 'private fixture argument' --append-system-prompt-file " + tmux.ShellQuote(promptPath),
 		Model:   "ORIGINAL_PIN", Persona: "architect", ReasoningEffort: "high", SystemPromptFile: promptPath, SystemPromptSHA256: hex.EncodeToString(digest[:]),
+	}
+	if mode == "shell-wrapper" {
+		saved.Command = "sh -c " + tmux.ShellQuote(saved.Command)
 	}
 	if mode == "omitted-env" {
 		saved.OmittedEnv = []string{"PRIVATE_TOKEN"}

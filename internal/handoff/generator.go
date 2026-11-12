@@ -57,13 +57,21 @@ func requireGeneratorContext(ctx context.Context, operation string) error {
 	return nil
 }
 
-func generatorCancellationError(ctx context.Context, _ error, operation string) error {
-	if ctx != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return fmt.Errorf("%s: %w", operation, ctxErr)
-		}
-	}
-	return nil
+// An enrichment can time out or cancel its own request while the caller still
+// has time to save a useful handoff. Only requireGeneratorContext, applied to
+// the caller's context, decides whether generation itself must stop.
+func (g *Generator) warnEnrichment(h *Handoff, source string, err error) {
+	h.Warnings = append(h.Warnings, EnrichmentWarning{
+		Source:  source,
+		Message: truncateGen(err.Error(), 512),
+	})
+	g.logger.Warn("handoff enrichment incomplete",
+		"session", h.Session,
+		"pane", h.PaneID,
+		"agent_type", h.AgentType,
+		"source", source,
+		"error", err,
+	)
 }
 
 func runGeneratorCommand(ctx context.Context, dir string, timeout time.Duration, name string, args ...string) ([]byte, error) {
@@ -82,7 +90,7 @@ func runGeneratorCommand(ctx context.Context, dir string, timeout time.Duration,
 		return nil, ctxErr
 	}
 	if commandCtx.Err() != nil {
-		return nil, fmt.Errorf("%s command exceeded %s timeout", name, timeout)
+		return nil, fmt.Errorf("%s command exceeded %s timeout: %w", name, timeout, commandCtx.Err())
 	}
 	return out, err
 }
@@ -122,19 +130,23 @@ func (g *Generator) EnrichWithGitState(ctx context.Context, h *Handoff) error {
 
 	// Get current branch for context
 	branch, err := g.getGitBranch(ctx)
-	if cancelErr := generatorCancellationError(ctx, err, "get git branch"); cancelErr != nil {
+	if cancelErr := requireGeneratorContext(ctx, "get git branch"); cancelErr != nil {
 		return cancelErr
 	}
-	if branch != "" {
+	if err != nil {
+		g.warnEnrichment(h, "git_branch", err)
+	} else if branch != "" {
 		h.AddFinding("git_branch", branch)
 	}
 
 	// Get recent commits (session could have made commits)
 	commits, err := g.getRecentCommits(ctx, 5)
-	if cancelErr := generatorCancellationError(ctx, err, "get recent git commits"); cancelErr != nil {
+	if cancelErr := requireGeneratorContext(ctx, "get recent git commits"); cancelErr != nil {
 		return cancelErr
 	}
-	if len(commits) > 0 {
+	if err != nil {
+		g.warnEnrichment(h, "git_commits", err)
+	} else if len(commits) > 0 {
 		h.AddFinding("recent_commits", strings.Join(commits, "; "))
 	}
 
@@ -499,10 +511,10 @@ func (g *Generator) GenerateHandoff(ctx context.Context, opts GenerateHandoffOpt
 
 	// Enrich with git state
 	if err := g.EnrichWithGitState(ctx, h); err != nil {
-		if cancelErr := generatorCancellationError(ctx, err, "generate complete handoff"); cancelErr != nil {
+		if cancelErr := requireGeneratorContext(ctx, "generate complete handoff"); cancelErr != nil {
 			return nil, cancelErr
 		}
-		g.logger.Warn("git enrichment failed", "error", err)
+		g.warnEnrichment(h, "git", err)
 		// Non-fatal - continue without git info
 	}
 
@@ -510,12 +522,10 @@ func (g *Generator) GenerateHandoff(ctx context.Context, opts GenerateHandoffOpt
 	includeBeads := opts.IncludeBeads == nil || *opts.IncludeBeads
 	if includeBeads {
 		if err := g.enrichWithBeads(ctx, h, opts); err != nil {
-			if cancelErr := generatorCancellationError(ctx, err, "generate complete handoff"); cancelErr != nil {
+			if cancelErr := requireGeneratorContext(ctx, "generate complete handoff"); cancelErr != nil {
 				return nil, cancelErr
 			}
-			g.logger.Warn("handoff enrichment degraded", "integration", "bv", "error", err)
-			h.AddWarning(fmt.Sprintf("bv enrichment degraded: %v", err))
-			// Non-fatal - continue without bead info
+			g.warnEnrichment(h, "beads", err) // Non-fatal - continue without bead info
 		}
 	}
 
@@ -523,12 +533,10 @@ func (g *Generator) GenerateHandoff(ctx context.Context, opts GenerateHandoffOpt
 	includeAgentMail := opts.IncludeAgentMail == nil || *opts.IncludeAgentMail
 	if includeAgentMail && opts.AgentName != "" {
 		if err := g.enrichWithAgentMail(ctx, h, opts); err != nil {
-			if cancelErr := generatorCancellationError(ctx, err, "generate complete handoff"); cancelErr != nil {
+			if cancelErr := requireGeneratorContext(ctx, "generate complete handoff"); cancelErr != nil {
 				return nil, cancelErr
 			}
-			g.logger.Warn("handoff enrichment degraded", "integration", "agentmail", "error", err)
-			h.AddWarning(fmt.Sprintf("agentmail enrichment degraded: %v", err))
-			// Non-fatal - continue without Agent Mail info
+			g.warnEnrichment(h, "agent_mail", err) // Non-fatal - continue without Agent Mail info
 		}
 	}
 
@@ -536,16 +544,10 @@ func (g *Generator) GenerateHandoff(ctx context.Context, opts GenerateHandoffOpt
 	includeCASS := opts.IncludeCASS == nil || *opts.IncludeCASS
 	if includeCASS {
 		if err := g.enrichWithCASS(ctx, h, opts); err != nil {
-			if cancelErr := generatorCancellationError(ctx, err, "generate complete handoff"); cancelErr != nil {
+			if cancelErr := requireGeneratorContext(ctx, "generate complete handoff"); cancelErr != nil {
 				return nil, cancelErr
 			}
-			g.logger.Warn("handoff enrichment degraded",
-				"integration", "cass",
-				"timeout_ms", resolveCASSTimeout(opts.CASSTimeout).Milliseconds(),
-				"error", err,
-			)
-			h.AddWarning(fmt.Sprintf("cass enrichment degraded: %v", err))
-			// Non-fatal - continue without CASS context
+			g.warnEnrichment(h, "cass", err) // Non-fatal - continue without CASS context
 		}
 	}
 
@@ -640,8 +642,11 @@ func (g *Generator) getInProgressBeads(ctx context.Context, agentName string) ([
 
 	out, err := g.runCommand(ctx, 10*time.Second, "br", bv.BeadsReadArgs(g.projectDir, args)...)
 	if err != nil {
-		if cancelErr := generatorCancellationError(ctx, err, "get in-progress beads"); cancelErr != nil {
+		if cancelErr := requireGeneratorContext(ctx, "get in-progress beads"); cancelErr != nil {
 			return nil, cancelErr
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return nil, err
 		}
 		// br not installed or no beads - not an error
 		return nil, nil
@@ -712,10 +717,10 @@ func (g *Generator) enrichWithAgentMail(ctx context.Context, h *Handoff, opts Ge
 	// Fetch inbox messages (recent threads)
 	threads, err := g.fetchAgentMailThreads(ctx, client, projectKey, opts.AgentName)
 	if err != nil {
-		if cancelErr := generatorCancellationError(ctx, err, "fetch agent mail threads"); cancelErr != nil {
+		if cancelErr := requireGeneratorContext(ctx, "fetch agent mail threads"); cancelErr != nil {
 			return cancelErr
 		}
-		g.logger.Warn("failed to fetch Agent Mail threads", "error", err)
+		g.warnEnrichment(h, "agent_mail_threads", err)
 		// Non-fatal
 	} else {
 		if err := requireGeneratorContext(ctx, "store agent mail threads"); err != nil {
@@ -727,10 +732,10 @@ func (g *Generator) enrichWithAgentMail(ctx context.Context, h *Handoff, opts Ge
 	// Fetch file reservations
 	reservations, err := g.fetchFileReservations(ctx, client, projectKey, opts.AgentName)
 	if err != nil {
-		if cancelErr := generatorCancellationError(ctx, err, "fetch file reservations"); cancelErr != nil {
+		if cancelErr := requireGeneratorContext(ctx, "fetch file reservations"); cancelErr != nil {
 			return cancelErr
 		}
-		g.logger.Warn("failed to fetch file reservations", "error", err)
+		g.warnEnrichment(h, "agent_mail_reservations", err)
 		// Non-fatal
 	} else if len(reservations) > 0 {
 		if err := requireGeneratorContext(ctx, "store file reservations"); err != nil {
@@ -930,7 +935,7 @@ func (g *Generator) enrichWithCASS(ctx context.Context, h *Handoff, opts Generat
 		Fields:    "summary",
 	})
 	if err != nil {
-		if cancelErr := generatorCancellationError(ctx, err, "search CASS"); cancelErr != nil {
+		if cancelErr := requireGeneratorContext(ctx, "search CASS"); cancelErr != nil {
 			return cancelErr
 		}
 		if errors.Is(err, cass.ErrNotInstalled) || errors.Is(err, cass.ErrNotInitialized) {

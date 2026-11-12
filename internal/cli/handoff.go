@@ -385,6 +385,9 @@ func runHandoffCreate(cmd *cobra.Command, sessionName, goal, now, fromFile strin
 	fmt.Fprintf(cmd.OutOrStdout(), "  Session: %s\n", h.Session)
 	fmt.Fprintf(cmd.OutOrStdout(), "  Goal: %s\n", truncateForDisplay(h.Goal, 70))
 	fmt.Fprintf(cmd.OutOrStdout(), "  Now: %s\n", truncateForDisplay(h.Now, 70))
+	for _, warning := range h.Warnings {
+		fmt.Fprintf(cmd.OutOrStdout(), "  Incomplete %s enrichment: %s\n", warning.Source, warning.Message)
+	}
 	return nil
 }
 
@@ -526,6 +529,14 @@ func formatHandoffMarkdown(h *handoff.Handoff) string {
 		sb.WriteString("## Key Decisions\n")
 		for key, val := range h.Decisions {
 			sb.WriteString(fmt.Sprintf("- **%s:** %s\n", key, val))
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(h.Warnings) > 0 {
+		sb.WriteString("## Incomplete Enrichment\n")
+		for _, warning := range h.Warnings {
+			sb.WriteString(fmt.Sprintf("- **%s:** %s\n", warning.Source, warning.Message))
 		}
 		sb.WriteString("\n")
 	}
@@ -830,6 +841,13 @@ func runHandoffShow(cmd *cobra.Command, path string, jsonFormat bool) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "\nFindings:\n")
 		for k, v := range h.Findings {
 			fmt.Fprintf(cmd.OutOrStdout(), "  %s: %s\n", k, v)
+		}
+	}
+
+	if len(h.Warnings) > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "\nIncomplete Enrichment:\n")
+		for _, warning := range h.Warnings {
+			fmt.Fprintf(cmd.OutOrStdout(), "  %s: %s\n", warning.Source, warning.Message)
 		}
 	}
 

@@ -1088,7 +1088,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Name:        "exit-cli",
 			Flag:        "--robot-exit-cli",
 			Category:    "control",
-			Description: "Gracefully exit agent CLIs (encapsulated double Ctrl+C choreography) without destroying panes; verifies via the pane's foreground command.",
+			Description: "Gracefully exit agent CLIs beneath a verified persistent interactive shell. Refuses direct-exec panes before input; reports original process state separately from pane presence and observation failures.",
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-exit-cli", Type: "string", Required: true, Description: "Session name"},
 				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Comma-separated N, W.P, or %N pane selectors (default: all agent panes)"},
@@ -1105,7 +1105,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Name:        "kill-agent",
 			Flag:        "--robot-kill-agent",
 			Category:    "control",
-			Description: "SIGTERM-then-SIGKILL the agent process tree under a pane's shell while preserving the pane and shell; structured per-pane evidence.",
+			Description: "SIGTERM-then-SIGKILL observed agent process lifetimes beneath a verified persistent shell, preserving pane and shell. Cancellation or failed observations stop escalation; structured results distinguish process exit from pane preservation.",
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-kill-agent", Type: "string", Required: true, Description: "Session name"},
 				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Comma-separated N, W.P, or %N pane selectors (default: all agent panes)"},

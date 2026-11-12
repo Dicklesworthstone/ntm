@@ -560,25 +560,52 @@ func (c *Client) RunSilentContext(ctx context.Context, args ...string) error {
 type paneMutationGuardContextKey struct{}
 
 type paneMutationGuard struct {
-	target string
-	pid    int
+	target      string
+	pid         int
+	beforeInput func(context.Context) error
 }
 
 // WithPaneMutationGuard fences shared agent delivery helpers without changing
 // their protocols. Composer cleanup, ordinary sends, and verification/rescue
 // keys all retain the same pane process and live-agent requirement. The scope
 // covers pane input only; buffer loading and read-only observation are unchanged.
-func WithPaneMutationGuard(ctx context.Context, target string, expectedPID int) (context.Context, error) {
+// An optional beforeInput check runs immediately before each queued input. A
+// nested guard retains earlier checks and cannot weaken the existing binding.
+func WithPaneMutationGuard(ctx context.Context, target string, expectedPID int, beforeInput ...func(context.Context) error) (context.Context, error) {
 	if err := validatePhysicalPaneTarget(ctx, target); err != nil {
 		return nil, err
 	}
 	if expectedPID <= 0 {
 		return nil, errors.New("guarded pane input requires a positive expected PID")
 	}
-	if existing := paneMutationGuardFromContext(ctx); existing != nil && (existing.target != target || existing.pid != expectedPID) {
-		return nil, errors.New("guarded pane input cannot replace an existing pane binding")
+	if len(beforeInput) > 1 {
+		return nil, errors.New("guarded pane input accepts at most one observation check")
 	}
-	return context.WithValue(ctx, paneMutationGuardContextKey{}, &paneMutationGuard{target: target, pid: expectedPID}), nil
+	var check func(context.Context) error
+	if existing := paneMutationGuardFromContext(ctx); existing != nil {
+		if existing.target != target || existing.pid != expectedPID {
+			return nil, errors.New("guarded pane input cannot replace an existing pane binding")
+		}
+		check = existing.beforeInput
+	}
+	if len(beforeInput) == 1 && beforeInput[0] != nil {
+		next := beforeInput[0]
+		if check == nil {
+			check = next
+		} else {
+			previous := check
+			check = func(ctx context.Context) error {
+				if err := previous(ctx); err != nil {
+					return err
+				}
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				return next(ctx)
+			}
+		}
+	}
+	return context.WithValue(ctx, paneMutationGuardContextKey{}, &paneMutationGuard{target: target, pid: expectedPID, beforeInput: check}), nil
 }
 
 func paneMutationGuardFromContext(ctx context.Context) *paneMutationGuard {
@@ -701,7 +728,8 @@ func (c *Client) runPaneMutationIfCurrentContext(ctx context.Context, target str
 	if len(args) == 0 {
 		return errors.New("guarded pane mutation requires a command")
 	}
-	if guard := paneMutationGuardFromContext(ctx); guard != nil && isPaneInputCommand(args) {
+	guard := paneMutationGuardFromContext(ctx)
+	if guard != nil && isPaneInputCommand(args) {
 		if target != guard.target || expectedPID != guard.pid || mode == paneMutationShell {
 			return fmt.Errorf("guarded pane input cannot override its agent binding: %w", ErrPaneIdentityChanged)
 		}
@@ -758,6 +786,17 @@ func (c *Client) runPaneMutationIfCurrentContext(ctx context.Context, target str
 	quoted := make([]string, len(args))
 	for i, arg := range args {
 		quoted[i] = ShellQuote(arg)
+	}
+	if guard != nil && isPaneInputCommand(args) && guard.beforeInput != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := guard.beforeInput(ctx); err != nil {
+			return err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	out, err := c.RunContext(ctx, "if-shell", "-F", "-t", target, condition,
 		strings.Join(quoted, " "), "display-message -p ntm_pane_identity_changed")

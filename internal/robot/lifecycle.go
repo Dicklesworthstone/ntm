@@ -33,23 +33,30 @@ type LifecycleOptions struct {
 	// ExpectedPane binds a compound caller's next action to the original
 	// pane ID, root PID and agent type. Nil starts a new lifecycle operation.
 	ExpectedPane *tmux.Pane
+	// ExpectedProcesses carries the preceding in-process operation's observed
+	// lifetimes into an escalation. It cannot authorize a replacement agent.
+	ExpectedProcesses *LifecycleProcessIdentity
 }
 
 // LifecyclePaneResult is per-pane structured evidence for a lifecycle verb.
 type LifecyclePaneResult struct {
-	Pane           string `json:"pane"`
-	Target         string `json:"target"`
-	AgentType      string `json:"agent_type"`
-	Status         string `json:"status,omitempty"`
-	LineageMode    string `json:"lineage_mode,omitempty"`
-	ShellPID       int    `json:"shell_pid,omitempty"`
-	AgentPIDs      []int  `json:"agent_pids,omitempty"`
-	Exited         bool   `json:"exited"`
-	PaneClosed     bool   `json:"pane_closed,omitempty"`
-	Killed         []int  `json:"killed,omitempty"`
-	ShellPreserved bool   `json:"shell_preserved"`
-	Relaunched     bool   `json:"relaunched,omitempty"`
-	Detail         string `json:"detail,omitempty"`
+	Pane            string                    `json:"pane"`
+	Target          string                    `json:"target"`
+	AgentType       string                    `json:"agent_type"`
+	Status          string                    `json:"status,omitempty"`
+	LineageMode     string                    `json:"lineage_mode,omitempty"`
+	ShellPID        int                       `json:"shell_pid,omitempty"`
+	AgentPIDs       []int                     `json:"agent_pids,omitempty"`
+	PaneState       string                    `json:"pane_state"`
+	ProcessState    string                    `json:"process_state"`
+	Exited          bool                      `json:"exited"`
+	PaneClosed      bool                      `json:"pane_closed,omitempty"`
+	Killed          []int                     `json:"killed,omitempty"`
+	ShellPreserved  bool                      `json:"shell_preserved"`
+	Relaunched      bool                      `json:"relaunched,omitempty"`
+	Detail          string                    `json:"detail,omitempty"`
+	Refused         bool                      `json:"refused,omitempty"`
+	ProcessIdentity *LifecycleProcessIdentity `json:"-"`
 
 	// VerificationFailed distinguishes "the pane is gone" from "tmux could not
 	// be queried, so nothing was verified". Without it, shell_preserved:false
@@ -77,14 +84,288 @@ type KillAgentOutput struct {
 // within roughly 0.1-0.3s of the first to treat the pair as "exit" instead
 // of "clear input"; other CLIs tolerate the same cadence.
 const (
-	lifecycleDoubleTapGap  = 200 * time.Millisecond
-	lifecycleExitTimeout   = 6 * time.Second
-	lifecyclePollInterval  = 250 * time.Millisecond
-	lifecycleTermGrace     = 2 * time.Second
-	lifecycleKillGrace     = 1 * time.Second
-	lifecycleRelaunchBoot  = 10 * time.Second
-	lifecycleChildPIDLimit = 16
+	lifecycleDoubleTapGap     = 200 * time.Millisecond
+	lifecycleExitTimeout      = 6 * time.Second
+	lifecyclePollInterval     = 250 * time.Millisecond
+	lifecycleTermGrace        = 2 * time.Second
+	lifecycleKillGrace        = 1 * time.Second
+	lifecycleRelaunchBoot     = 10 * time.Second
+	lifecycleReconcileTimeout = 2 * time.Second
+	lifecycleChildPIDLimit    = 16
 )
+
+// Pane presence and the original process's lifetime are independent evidence.
+// A retained dead pane is present, but has no preserved interactive shell.
+const (
+	lifecyclePanePresent    = "present"
+	lifecyclePaneMissing    = "missing"
+	lifecyclePaneUnknown    = "unknown"
+	lifecycleProcessRunning = "running"
+	lifecycleProcessExited  = "exited"
+	lifecycleProcessUnknown = "unknown"
+)
+
+// LifecycleProcessIdentity is an opaque continuation for compound callers.
+// Its observations are not supplied by robot JSON or reconstructed from PIDs.
+type LifecycleProcessIdentity struct {
+	root   process.SnapshotProcess
+	agents map[int]process.SnapshotProcess
+}
+
+func lifecycleProcessLive(p process.SnapshotProcess) bool {
+	return p.PID > 0 && p.State != "" && !strings.ContainsAny(p.State[:1], "ZXx")
+}
+
+func sameLifecycleProcess(original, current process.SnapshotProcess) bool {
+	return original.PID > 0 && original.PID == current.PID && original.Started != "" && original.Started == current.Started
+}
+
+// Use one complete, error-aware process table rather than treating failed
+// child queries as an empty tree. Include helpers and stopped/background jobs.
+func lifecycleDescendants(snapshot map[int]process.SnapshotProcess, root int) map[int]process.SnapshotProcess {
+	children := make(map[int][]int)
+	for pid, p := range snapshot {
+		children[p.PPID] = append(children[p.PPID], pid)
+	}
+	result := make(map[int]process.SnapshotProcess)
+	seen := map[int]bool{root: true}
+	queue := []int{root}
+	for len(queue) > 0 {
+		parent := queue[0]
+		queue = queue[1:]
+		for _, pid := range children[parent] {
+			if seen[pid] {
+				continue
+			}
+			seen[pid] = true
+			queue = append(queue, pid)
+			if p := snapshot[pid]; lifecycleProcessLive(p) {
+				result[pid] = p
+			}
+		}
+	}
+	return result
+}
+
+func captureLifecycleProcesses(ctx context.Context, pane tmux.Pane, expected *LifecycleProcessIdentity) (*LifecycleProcessIdentity, error) {
+	snapshot, err := process.SnapshotContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	root := snapshot[pane.PID]
+	if !lifecycleProcessLive(root) || !tmux.PaneCommandIsShell(root.Command) {
+		return nil, errors.New("original persistent shell could not be observed")
+	}
+	agents := lifecycleDescendants(snapshot, pane.PID)
+	if expected != nil {
+		if !sameLifecycleProcess(expected.root, root) {
+			return nil, errors.New("shell lifetime changed since the preceding lifecycle action")
+		}
+		for pid := range agents {
+			if !lifecycleProcessOwned(snapshot, pid, root.PID, expected.agents) {
+				return nil, errors.New("agent lifetime changed since the preceding lifecycle action; replacement will not be signaled")
+			}
+		}
+		// A captured helper may outlive and be reparented from its agent.
+		// Its original lifetime is still part of a bound escalation.
+		for pid, previous := range expected.agents {
+			if p := snapshot[pid]; sameLifecycleProcess(previous, p) && lifecycleProcessLive(p) {
+				agents[pid] = p
+			}
+		}
+	}
+	if len(agents) == 0 && !tmux.PaneCommandIsShell(pane.Command) {
+		return nil, errors.New("foreground agent has no observable process beneath the shell")
+	}
+	return &LifecycleProcessIdentity{root: root, agents: agents}, nil
+}
+
+func lifecycleProcessIDs(processes map[int]process.SnapshotProcess) []int {
+	pids := make([]int, 0, len(processes))
+	for pid := range processes {
+		pids = append(pids, pid)
+	}
+	sort.Ints(pids)
+	return pids
+}
+
+func observeLifecycleProcesses(snapshot map[int]process.SnapshotProcess, original map[int]process.SnapshotProcess) string {
+	for pid, previous := range original {
+		if current := snapshot[pid]; sameLifecycleProcess(previous, current) && lifecycleProcessLive(current) {
+			return lifecycleProcessRunning
+		}
+	}
+	return lifecycleProcessExited
+}
+
+type lifecycleObservation struct {
+	pane               tmux.Pane
+	snapshot           map[int]process.SnapshotProcess
+	paneState          string
+	processState       string
+	shellPreserved     bool
+	idle               bool
+	verificationFailed bool
+	detail             string
+}
+
+// Read process and pane evidence independently. A missing pane cannot prove
+// its former process exited, and a failed ps/tmux read cannot prove absence.
+func observeLifecycle(ctx context.Context, session string, pane tmux.Pane, original *LifecycleProcessIdentity) lifecycleObservation {
+	observation := lifecycleObservation{paneState: lifecyclePaneUnknown, processState: lifecycleProcessUnknown}
+	snapshot, processErr := process.SnapshotContext(ctx)
+	observation.snapshot = snapshot
+	if processErr == nil {
+		observation.processState = observeLifecycleProcesses(snapshot, original.agents)
+	} else {
+		observation.verificationFailed = true
+		observation.detail = "original process state could not be observed"
+	}
+	refreshed, lookup := refreshLifecyclePane(ctx, session, pane.ID)
+	observation.pane = refreshed
+	switch lookup {
+	case paneLookupFailed:
+		observation.verificationFailed = true
+		observation.detail = joinLifecycleDetail(observation.detail, "pane observation failed; preservation is unverified")
+		return observation
+	case paneAbsent:
+		observation.paneState = lifecyclePaneMissing
+		observation.detail = joinLifecycleDetail(observation.detail, "pane is gone; no further input or signals are permitted")
+		return observation
+	}
+	observation.paneState = lifecyclePanePresent
+	if !lifecyclePaneIdentityMatches(pane, refreshed) {
+		observation.detail = joinLifecycleDetail(observation.detail, "original pane is dead or its identity changed")
+		return observation
+	}
+	if processErr != nil {
+		return observation
+	}
+	root := snapshot[pane.PID]
+	if !sameLifecycleProcess(original.root, root) || !lifecycleProcessLive(root) || !tmux.PaneCommandIsShell(root.Command) {
+		observation.detail = "original persistent shell no longer exists"
+		return observation
+	}
+	if err := tmux.DefaultClient.ValidatePanePersistentShellContext(ctx, refreshed); err != nil {
+		observation.verificationFailed = true
+		observation.detail = joinLifecycleDetail(observation.detail, "persistent shell could not be verified: "+err.Error())
+		return observation
+	}
+	observation.shellPreserved = true
+	observation.idle = tmux.PaneCommandIsShell(refreshed.Command) && len(lifecycleDescendants(snapshot, pane.PID)) == 0 &&
+		root.PGID > 0 && root.PGID == root.TPGID
+	return observation
+}
+
+func applyLifecycleObservation(result *LifecyclePaneResult, observation lifecycleObservation) {
+	result.PaneState = observation.paneState
+	// Once the original lifetime is confirmed ended it cannot return. A later
+	// relaunch/readback failure must not turn that evidence into "still active".
+	if result.ProcessState != lifecycleProcessExited {
+		result.ProcessState = observation.processState
+	}
+	result.Exited = result.ProcessState == lifecycleProcessExited
+	result.ShellPreserved = observation.shellPreserved
+	result.VerificationFailed = observation.verificationFailed
+	result.Detail = joinLifecycleDetail(result.Detail, observation.detail)
+}
+
+// Wait only for observations. Cancellation stops all mutations; a separate,
+// bounded read-only context may subsequently reconcile a partially sent exit.
+func waitForLifecycleExit(ctx context.Context, session string, pane tmux.Pane, original *LifecycleProcessIdentity, timeout time.Duration) lifecycleObservation {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var observation lifecycleObservation
+	confirmedExit := false
+	for {
+		// A composite observation needs several bounded reads. Do not start
+		// one in the final polling interval only to invalidate a completed
+		// observation with our own settling deadline. Genuine read failures
+		// still replace the evidence with unknown state below.
+		if deadline, ok := ctx.Deadline(); ok && observation.paneState != "" && time.Until(deadline) <= lifecyclePollInterval {
+			return observation
+		}
+		observation = observeLifecycle(ctx, session, pane, original)
+		confirmedExit = confirmedExit || observation.processState == lifecycleProcessExited
+		if confirmedExit {
+			observation.processState = lifecycleProcessExited
+		}
+		if observation.paneState == lifecyclePaneMissing ||
+			(observation.paneState == lifecyclePanePresent && !observation.shellPreserved && !observation.verificationFailed) ||
+			(observation.processState == lifecycleProcessExited && observation.idle) {
+			return observation
+		}
+		select {
+		case <-ctx.Done():
+			return observation
+		case <-time.After(lifecyclePollInterval):
+		}
+	}
+}
+
+// A replacement foreground job must never receive a delayed second key or a
+// retry. New helper processes are eligible only beneath an original live
+// process, and every member of the foreground group must have that lineage.
+func lifecycleOriginalForeground(observation lifecycleObservation, original *LifecycleProcessIdentity) bool {
+	root := observation.snapshot[original.root.PID]
+	if root.PGID <= 0 || root.TPGID <= 0 || root.PGID == root.TPGID {
+		return false
+	}
+	descendants := lifecycleDescendants(observation.snapshot, root.PID)
+	for pid, p := range observation.snapshot {
+		if p.PGID == root.TPGID && lifecycleProcessLive(p) {
+			if _, owned := descendants[pid]; !owned {
+				return false
+			}
+		}
+	}
+	found := false
+	for pid, p := range descendants {
+		if p.PGID != root.TPGID {
+			continue
+		}
+		if !lifecycleProcessOwned(observation.snapshot, pid, root.PID, original.agents) {
+			return false
+		}
+		found = true
+	}
+	return found
+}
+
+func lifecycleHasForegroundDescendant(observation lifecycleObservation) bool {
+	root := observation.snapshot[observation.pane.PID]
+	if root.PGID <= 0 || root.TPGID <= 0 || root.PGID == root.TPGID {
+		return false
+	}
+	for _, p := range lifecycleDescendants(observation.snapshot, root.PID) {
+		if p.PGID == root.TPGID {
+			return true
+		}
+	}
+	return false
+}
+
+func lifecycleProcessOwned(snapshot map[int]process.SnapshotProcess, pid, root int, original map[int]process.SnapshotProcess) bool {
+	seen := make(map[int]bool)
+	for pid > 0 && pid != root && !seen[pid] {
+		seen[pid] = true
+		current := snapshot[pid]
+		if previous, ok := original[pid]; ok && sameLifecycleProcess(previous, current) && lifecycleProcessLive(current) {
+			return true
+		}
+		pid = current.PPID
+	}
+	return false
+}
+
+func checkLifecycleInput(ctx context.Context, session string, pane tmux.Pane, original *LifecycleProcessIdentity) error {
+	observation := observeLifecycle(ctx, session, pane, original)
+	if observation.verificationFailed || !observation.shellPreserved || observation.processState != lifecycleProcessRunning ||
+		!lifecycleOriginalForeground(observation, original) {
+		return errors.New("exit input withheld: the original live agent no longer has verified foreground ownership")
+	}
+	return ctx.Err()
+}
 
 var errRemoteAgentProcessOperations = errors.New("agent process inspection and control require local tmux; run this command directly on the tmux host without --ssh")
 
@@ -210,7 +491,11 @@ func refreshLifecyclePane(ctx context.Context, session, paneID string) (tmux.Pan
 			if ctx.Err() != nil {
 				break
 			}
-			time.Sleep(lifecyclePollInterval)
+			select {
+			case <-ctx.Done():
+				return tmux.Pane{}, paneLookupFailed
+			case <-time.After(lifecyclePollInterval):
+			}
 		}
 		panes, err := tmux.GetPanesContext(ctx, session)
 		if err != nil {
@@ -237,49 +522,15 @@ func refreshLifecyclePane(ctx context.Context, session, paneID string) (tmux.Pan
 	return tmux.Pane{}, paneLookupFailed
 }
 
-// waitForBareShell polls until the pane's foreground process is a bare shell.
-func waitForBareShell(ctx context.Context, session, paneID string, timeout time.Duration) (tmux.Pane, bool) {
-	deadline := time.Now().Add(timeout)
-	var last tmux.Pane
-	for {
-		pane, lookup := refreshLifecyclePane(ctx, session, paneID)
-		switch lookup {
-		case paneAbsent:
-			// A successful listing without the pane: it really is gone.
-			return last, false
-		case paneLookupFailed:
-			// Could not query tmux. Keep polling until the deadline rather
-			// than aborting and reporting the agent as still running, which
-			// escalated to a needless --robot-kill-agent.
-			if time.Now().After(deadline) || ctx.Err() != nil {
-				return last, false
-			}
-			time.Sleep(lifecyclePollInterval)
-			continue
-		}
-		last = pane
-		if pane.Dead {
-			return pane, false
-		}
-		if pane.AgentCLIDead() {
-			return pane, true
-		}
-		if time.Now().After(deadline) || ctx.Err() != nil {
-			return pane, false
-		}
-		time.Sleep(lifecyclePollInterval)
-	}
-}
-
 // sendExitChoreography sends the graceful double Ctrl+C with the per-CLI
 // timing window encapsulated. omp gets its own sequence: its Ctrl+C clears
 // the draft rather than interrupting, so a double tap with text in the
 // composer would never quit.
-func sendExitChoreography(ctx context.Context, pane tmux.Pane) error {
+func sendExitChoreography(ctx context.Context, pane tmux.Pane, beforeInput func(context.Context) error) error {
 	// Every key is fenced in the tmux server. If an earlier key already
 	// returned to the shell, a later Ctrl+D (omp) must not close that shell,
 	// and a delayed second interrupt must not reach a replacement process.
-	guardedCtx, err := tmux.WithPaneMutationGuard(ctx, pane.ID, pane.PID)
+	guardedCtx, err := tmux.WithPaneMutationGuard(ctx, pane.ID, pane.PID, beforeInput)
 	if err != nil {
 		return err
 	}
@@ -289,12 +540,17 @@ func sendExitChoreography(ctx context.Context, pane tmux.Pane) error {
 	if err := tmux.DefaultClient.RunSilentContext(guardedCtx, "send-keys", "-t", tmux.ExactTarget(pane.ID), "C-c"); err != nil {
 		return err
 	}
+	secondDeadline := time.Now().Add(300 * time.Millisecond)
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-time.After(lifecycleDoubleTapGap):
 	}
-	return tmux.DefaultClient.RunSilentContext(guardedCtx, "send-keys", "-t", tmux.ExactTarget(pane.ID), "C-c")
+	// The ownership check counts toward the double-interrupt window. A slow
+	// observation must stop the sequence, not send a late key to another job.
+	secondCtx, cancel := context.WithDeadline(guardedCtx, secondDeadline)
+	defer cancel()
+	return tmux.DefaultClient.RunSilentContext(secondCtx, "send-keys", "-t", tmux.ExactTarget(pane.ID), "C-c")
 }
 
 // prepareLifecycleRelaunch validates the entire batch before any quit or kill.
@@ -349,12 +605,19 @@ func validateLifecycleShells(ctx context.Context, panes []tmux.Pane) error {
 func verifyLifecycleShell(ctx context.Context, session string, original tmux.Pane, result *LifecyclePaneResult) (tmux.Pane, bool) {
 	refreshed, lookup := refreshLifecyclePane(ctx, session, original.ID)
 	result.ShellPreserved = false
+	result.PaneState = lifecyclePaneUnknown
+	if lookup == paneFound {
+		result.PaneState = lifecyclePanePresent
+	} else if lookup == paneAbsent {
+		result.PaneState = lifecyclePaneMissing
+	}
 	result.VerificationFailed = lookup == paneLookupFailed
 	if lookup != paneFound || !lifecyclePaneIdentityMatches(original, refreshed) {
 		result.Detail = joinLifecycleDetail(result.Detail, "lifecycle action withheld: original live agent pane identity could not be verified")
 		return refreshed, false
 	}
 	if err := tmux.DefaultClient.ValidatePanePersistentShellContext(ctx, refreshed); err != nil {
+		result.VerificationFailed = true
 		result.Detail = joinLifecycleDetail(result.Detail, "lifecycle action withheld: "+err.Error())
 		return refreshed, false
 	}
@@ -364,14 +627,13 @@ func verifyLifecycleShell(ctx context.Context, session string, original tmux.Pan
 
 // verifyLifecycleRelaunchShell requires fresh evidence that the original pane
 // shell is idle. A stale exit result must not allow typing into another agent.
-func verifyLifecycleRelaunchShell(ctx context.Context, session string, pane tmux.Pane, result *LifecyclePaneResult) bool {
-	refreshed, verified := verifyLifecycleShell(ctx, session, pane, result)
-	if !verified {
-		result.Detail = joinLifecycleDetail(result.Detail, "relaunch withheld: original persistent shell could not be verified")
-		return false
-	}
-	if !refreshed.AgentCLIDead() {
-		result.Detail = joinLifecycleDetail(result.Detail, "relaunch withheld: pane is no longer at an idle shell")
+func verifyLifecycleRelaunchShell(ctx context.Context, session string, pane tmux.Pane, original *LifecycleProcessIdentity, result *LifecyclePaneResult) bool {
+	observation := observeLifecycle(ctx, session, pane, original)
+	applyLifecycleObservation(result, observation)
+	if ctx.Err() != nil || observation.verificationFailed || !observation.shellPreserved || !observation.idle ||
+		observation.processState != lifecycleProcessExited {
+		result.Refused = true
+		result.Detail = joinLifecycleDetail(result.Detail, "relaunch withheld: original persistent shell is not verified idle")
 		return false
 	}
 	return true
@@ -379,14 +641,14 @@ func verifyLifecycleRelaunchShell(ctx context.Context, session string, pane tmux
 
 // relaunchAgentCLI replays the preflighted command only after observing the
 // original pane back at a shell, recording that command before delivery.
-func relaunchAgentCLI(ctx context.Context, session string, pane tmux.Pane, plan restartLaunchPlan, result *LifecyclePaneResult) {
+func relaunchAgentCLI(ctx context.Context, session string, pane tmux.Pane, original *LifecycleProcessIdentity, plan restartLaunchPlan, result *LifecyclePaneResult) {
 	launchCmd, ok := plan.Commands[result.Pane]
 	spec, hasSpec := plan.Specs[result.Pane]
 	if !ok || !hasSpec || strings.TrimSpace(launchCmd) == "" {
 		result.Detail = joinLifecycleDetail(result.Detail, "relaunch withheld: preflighted launch specification is unavailable")
 		return
 	}
-	if !verifyLifecycleRelaunchShell(ctx, session, pane, result) {
+	if !verifyLifecycleRelaunchShell(ctx, session, pane, original, result) {
 		return
 	}
 	if replay := plan.Replay[result.Pane]; replay != nil {
@@ -399,10 +661,21 @@ func relaunchAgentCLI(ctx context.Context, session string, pane tmux.Pane, plan 
 			result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf("prepare saved relaunch failed: %v", err))
 			return
 		}
-		if !verifyLifecycleRelaunchShell(ctx, session, pane, result) {
+		if !verifyLifecycleRelaunchShell(ctx, session, pane, original, result) {
 			return
 		}
 	}
+	// Both a lost send response and a pane disappearing during boot require
+	// fresh readback; never retain a pre-send shell_preserved:true by default.
+	defer func() {
+		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lifecycleReconcileTimeout)
+		defer cancel()
+		observation := observeLifecycle(readCtx, session, pane, original)
+		applyLifecycleObservation(result, observation)
+		if !observation.shellPreserved || observation.verificationFailed || !lifecycleHasForegroundDescendant(observation) {
+			result.Relaunched = false
+		}
+	}()
 	if err := tmux.DefaultClient.SetPaneLaunchSpecIfCurrentContext(ctx, pane.ID, pane.PID, spec); err != nil {
 		result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf("record relaunch specification failed: %v", err))
 		return
@@ -412,24 +685,28 @@ func relaunchAgentCLI(ctx context.Context, session string, pane tmux.Pane, plan 
 		result.Detail = joinLifecycleDetail(result.Detail, "relaunch command delivery failed")
 		return
 	}
-	deadline := time.Now().Add(lifecycleRelaunchBoot)
+	bootCtx, cancel := context.WithTimeout(ctx, lifecycleRelaunchBoot)
+	defer cancel()
 	for {
-		refreshed, lookup := refreshLifecyclePane(ctx, session, pane.ID)
-		if lookup == paneFound && !lifecyclePaneIdentityMatches(pane, refreshed) {
-			result.ShellPreserved = pane.PID > 0 && refreshed.PID == pane.PID && !refreshed.Dead
-			result.Detail = joinLifecycleDetail(result.Detail, "relaunch could not be confirmed: agent pane identity changed")
+		observation := observeLifecycle(bootCtx, session, pane, original)
+		applyLifecycleObservation(result, observation)
+		if observation.paneState == lifecyclePaneMissing ||
+			(observation.paneState == lifecyclePanePresent && !observation.shellPreserved && !observation.verificationFailed) {
+			result.Detail = joinLifecycleDetail(result.Detail, "relaunch could not be confirmed in the original live pane")
 			return
 		}
-		if lookup == paneFound && strings.TrimSpace(refreshed.Command) != "" && !refreshed.AgentCLIDead() {
+		if observation.shellPreserved && !observation.verificationFailed &&
+			strings.TrimSpace(observation.pane.Command) != "" && lifecycleHasForegroundDescendant(observation) {
 			result.Relaunched = true
 			return
 		}
-		if time.Now().After(deadline) || ctx.Err() != nil {
+		select {
+		case <-bootCtx.Done():
 			result.Detail = joinLifecycleDetail(result.Detail,
 				fmt.Sprintf("relaunch sent but the agent CLI did not appear within %s", lifecycleRelaunchBoot))
 			return
+		case <-time.After(lifecyclePollInterval):
 		}
-		time.Sleep(lifecyclePollInterval)
 	}
 }
 
@@ -438,6 +715,70 @@ func joinLifecycleDetail(existing, extra string) string {
 		return extra
 	}
 	return existing + "; " + extra
+}
+
+// collectProcessTree gathers the shell's descendant PIDs breadth-first
+// (excluding the shell itself) so a kill covers helper subprocesses the
+// agent spawned, not just the CLI root. Depth- and count-limited.
+func collectProcessTree(rootPID, perNodeLimit, maxDepth int) []int {
+	if rootPID <= 0 {
+		return nil
+	}
+	var tree []int
+	seen := map[int]bool{rootPID: true}
+	frontier := []int{rootPID}
+	for depth := 0; depth < maxDepth && len(frontier) > 0; depth++ {
+		var next []int
+		for _, pid := range frontier {
+			for _, child := range process.GetChildPIDs(pid, perNodeLimit) {
+				if child <= 0 || seen[child] {
+					continue
+				}
+				seen[child] = true
+				tree = append(tree, child)
+				next = append(next, child)
+			}
+		}
+		frontier = next
+	}
+	return tree
+}
+
+func waitForBareShell(ctx context.Context, session, paneID string, timeout time.Duration) (tmux.Pane, bool) {
+	deadline := time.Now().Add(timeout)
+	var last tmux.Pane
+	for {
+		pane, lookup := refreshLifecyclePane(ctx, session, paneID)
+		switch lookup {
+		case paneAbsent:
+			return last, false
+		case paneLookupFailed:
+			if time.Now().After(deadline) || ctx.Err() != nil {
+				return last, false
+			}
+			time.Sleep(lifecyclePollInterval)
+			continue
+		}
+		last = pane
+		if pane.Dead {
+			return pane, false
+		}
+		if pane.AgentCLIDead() {
+			return pane, true
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return pane, false
+		}
+		time.Sleep(lifecyclePollInterval)
+	}
+}
+
+func directExecExitInput(ctx context.Context, session string, original, current tmux.Pane) error {
+	latest, lookup := refreshLifecyclePane(ctx, session, original.ID)
+	if lookup != paneFound || !lifecyclePaneIdentityMatches(original, latest) || latest.PID != current.PID {
+		return fmt.Errorf("pane %s identity changed before exit input", original.ID)
+	}
+	return nil
 }
 
 // classifyExitCLILineage inspects a pane's root PID and process arguments.
@@ -564,7 +905,9 @@ func exitDirectExecPane(ctx context.Context, opts LifecycleOptions, original tmu
 					break
 				}
 			}
-			exitErr = sendExitChoreography(ctx, refreshed)
+			exitErr = sendExitChoreography(ctx, refreshed, func(checkCtx context.Context) error {
+				return directExecExitInput(checkCtx, opts.Session, original, refreshed)
+			})
 			obs, obsLookup, exited = waitForDirectExecExit(ctx, opts.Session, original.ID, original.PID, lifecycleExitTimeout)
 			if errors.Is(exitErr, tmux.ErrPaneIdentityChanged) && (obsLookup == paneAbsent || (obsLookup == paneFound && obs.Dead)) {
 				exitErr = nil
@@ -624,7 +967,9 @@ func exitDirectExecPane(ctx context.Context, opts LifecycleOptions, original tmu
 				break
 			}
 		}
-		exitErr = sendExitChoreography(ctx, refreshed)
+		exitErr = sendExitChoreography(ctx, refreshed, func(checkCtx context.Context) error {
+			return directExecExitInput(checkCtx, opts.Session, original, refreshed)
+		})
 		obs, obsLookup, exited = waitForDirectExecExit(ctx, opts.Session, original.ID, original.PID, lifecycleExitTimeout)
 		if errors.Is(exitErr, tmux.ErrPaneIdentityChanged) && obsLookup == paneFound && obs.Dead {
 			exitErr = nil
@@ -664,8 +1009,9 @@ func exitDirectExecPane(ctx context.Context, opts LifecycleOptions, original tmu
 	return shellPane, true
 }
 
-// GetExitCLI performs the graceful agent-CLI exit choreography on each target
-// pane, verifying via the pane's foreground command instead of assuming.
+// GetExitCLI exits a shell-backed agent only after the original process
+// lifetime is observed, and handles a direct-exec root separately so a
+// missing persistent shell is not destroyed unless the caller opted in.
 func GetExitCLI(ctx context.Context, opts LifecycleOptions) (*ExitCLIOutput, error) {
 	output := &ExitCLIOutput{
 		RobotResponse: NewRobotResponse(true),
@@ -727,105 +1073,109 @@ func GetExitCLI(ctx context.Context, opts LifecycleOptions) (*ExitCLIOutput, err
 		started := time.Now()
 		lineage := lineages[pane.ID]
 		rootCmd := rootCmds[pane.ID]
-		childPIDs := collectProcessTree(pane.PID, lifecycleChildPIDLimit, 2)
+		var childPIDs []int
+		if snap, snapErr := process.SnapshotContext(ctx); snapErr == nil {
+			childPIDs = lifecycleProcessIDs(lifecycleDescendants(snap, pane.PID))
+		}
 		result := LifecyclePaneResult{
-			Pane:        paneTargetKey(pane, multiWindow),
-			Target:      pane.ID,
-			AgentType:   restartPaneAgentType(pane),
-			LineageMode: lineage,
-			ShellPID:    pane.PID,
+			Pane:         paneTargetKey(pane, multiWindow),
+			Target:       pane.ID,
+			AgentType:    restartPaneAgentType(pane),
+			Status:       "",
+			LineageMode:  lineage,
+			ShellPID:     pane.PID,
+			PaneState:    lifecyclePaneUnknown,
+			ProcessState: lifecycleProcessUnknown,
 		}
 		relaunchTarget := pane
 		if lineage == "direct_exec" {
 			var canRelaunch bool
 			relaunchTarget, canRelaunch = exitDirectExecPane(ctx, opts, pane, &result)
-			if opts.Relaunch && canRelaunch && result.Exited && result.ShellPreserved {
-				relaunchAgentCLI(ctx, opts.Session, relaunchTarget, launchPlan, &result)
-			}
-			slog.Info("[robot.exit-cli] completed pane lifecycle",
-				"session", opts.Session,
-				"pane_id", pane.ID,
-				"pane_pid", pane.PID,
-				"root_command", rootCmd,
-				"child_pids", childPIDs,
-				"lineage_mode", lineage,
-				"exit_policy", exitPolicy,
-				"status", result.Status,
-				"elapsed_ms", time.Since(started).Milliseconds(),
-			)
-			output.Results = append(output.Results, result)
-			continue
-		}
-		current, verified := verifyLifecycleShell(ctx, opts.Session, pane, &result)
-		if !verified {
-			result.Status = "withheld"
-			output.Results = append(output.Results, result)
-			continue
-		}
-		if current.AgentCLIDead() {
-			result.Exited = true
-			result.Status = "exited"
-			result.Detail = "agent CLI already exited; pane is at a bare shell"
-		} else {
-			exited := false
-			var exitErr error
-			for attempt := 0; attempt < 2 && !exited; attempt++ {
-				if attempt > 0 {
-					current, verified = verifyLifecycleShell(ctx, opts.Session, pane, &result)
-					if !verified {
-						break
-					}
-					if current.AgentCLIDead() {
-						break
-					}
+			if result.PaneClosed {
+				result.PaneState = lifecyclePaneMissing
+				result.ProcessState = lifecycleProcessExited
+			} else if result.ShellPreserved {
+				result.PaneState = lifecyclePanePresent
+				if result.Exited {
+					result.ProcessState = lifecycleProcessExited
 				}
-				if exitErr = sendExitChoreography(ctx, current); exitErr != nil {
+			}
+			if opts.Relaunch && canRelaunch && result.Exited && result.ShellPreserved && !result.Refused && ctx.Err() == nil {
+				shellIdentity, err := captureLifecycleProcesses(ctx, relaunchTarget, nil)
+				if err != nil {
+					result.Refused = true
+					result.Detail = joinLifecycleDetail(result.Detail, "relaunch withheld: "+err.Error())
+				} else {
+					result.ProcessIdentity = shellIdentity
+					relaunchAgentCLI(ctx, opts.Session, relaunchTarget, shellIdentity, launchPlan, &result)
+				}
+			}
+		} else {
+			current, verified := verifyLifecycleShell(ctx, opts.Session, pane, &result)
+			if !verified {
+				result.Status = "withheld"
+				result.Refused = true
+				output.Results = append(output.Results, result)
+				continue
+			}
+			original, err := captureLifecycleProcesses(ctx, current, opts.ExpectedProcesses)
+			if err != nil {
+				result.Refused = true
+				result.Status = "withheld"
+				result.VerificationFailed = true
+				result.Detail = joinLifecycleDetail(result.Detail, "exit withheld before input: "+err.Error())
+				output.Results = append(output.Results, result)
+				continue
+			}
+			result.AgentPIDs = lifecycleProcessIDs(original.agents)
+			result.ProcessIdentity = original
+			observation := observeLifecycle(ctx, opts.Session, pane, original)
+			var exitErr error
+			for attempt := 0; attempt < 2 && observation.processState == lifecycleProcessRunning &&
+				observation.shellPreserved && !observation.verificationFailed && ctx.Err() == nil; attempt++ {
+				exitErr = sendExitChoreography(ctx, pane, func(checkCtx context.Context) error {
+					return checkLifecycleInput(checkCtx, opts.Session, pane, original)
+				})
+				if exitErr != nil {
 					break
 				}
-				_, exited = waitForBareShell(ctx, opts.Session, pane.ID, lifecycleExitTimeout)
+				observation = waitForLifecycleExit(ctx, opts.Session, pane, original, lifecycleExitTimeout)
 			}
-			refreshed, lookup := refreshLifecyclePane(ctx, opts.Session, pane.ID)
-			result.ShellPreserved = false
-			result.VerificationFailed = lookup == paneLookupFailed
-			switch lookup {
-			case paneLookupFailed:
-				result.Detail = joinLifecycleDetail(result.Detail,
-					"could not re-read the pane after exit; shell_preserved is unverified, not false")
-			case paneAbsent:
-				result.Detail = joinLifecycleDetail(result.Detail,
-					"pane is gone; no further exit or kill attempt was made")
-			case paneFound:
-				if refreshed.Dead {
-					result.Detail = joinLifecycleDetail(result.Detail,
-						"pane process exited and tmux retained a dead pane; no live shell remains")
-				} else if !lifecyclePaneIdentityMatches(pane, refreshed) {
-					result.Detail = joinLifecycleDetail(result.Detail,
-						"pane identity changed during exit; no action was taken against the replacement")
-				} else if err := tmux.DefaultClient.ValidatePanePersistentShellContext(ctx, refreshed); err != nil {
-					result.Detail = joinLifecycleDetail(result.Detail, err.Error())
-				} else {
-					result.ShellPreserved = true
-					result.Exited = refreshed.AgentCLIDead()
-					if !result.Exited && exitErr == nil {
-						result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf(
-							"agent CLI still in foreground (%s) after graceful exit attempts; inspect the pane before using --robot-kill-agent", refreshed.Command))
-					}
+			if observation.processState == lifecycleProcessExited {
+				result.ProcessState = lifecycleProcessExited
+			}
+			if exitErr != nil || ctx.Err() != nil || observation.verificationFailed {
+				// A failed/canceled send may have delivered its first key. This
+				// context is strictly read-only and must never reach a relaunch.
+				readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lifecycleReconcileTimeout)
+				observation = waitForLifecycleExit(readCtx, opts.Session, pane, original, lifecycleReconcileTimeout)
+				cancel()
+			}
+			applyLifecycleObservation(&result, observation)
+			result.Refused = !observation.shellPreserved || observation.verificationFailed ||
+				(result.Exited && !observation.idle) || (exitErr != nil && !result.Exited) || ctx.Err() != nil
+			if result.Exited && observation.idle {
+				// Cancellation prevents further mutation, but does not invalidate
+				// a confirmed completed exit or imply that the caller should kill.
+				result.Refused = false
+				result.Status = "exited"
+				if len(original.agents) == 0 {
+					result.Detail = joinLifecycleDetail(result.Detail, "agent CLI already exited; pane is at a bare shell")
 				}
+			} else if result.Exited && result.ShellPreserved {
+				result.Status = "exited"
+				result.Detail = joinLifecycleDetail(result.Detail, "original process exited, but the shell is not idle; further input withheld")
+			} else if result.ProcessState == lifecycleProcessRunning {
+				result.Status = "failed"
+				result.Detail = joinLifecycleDetail(result.Detail, "original agent process remains active")
 			}
-			// A guarded follow-up key can be refused because the previous key
-			// already exited the agent. Fresh shell evidence is success, not an
-			// error that tells the caller to escalate an already-ended process.
 			if exitErr != nil && !result.Exited {
+				result.Status = "failed"
 				result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf("exit keystrokes stopped: %v", exitErr))
 			}
-			if result.Exited && result.ShellPreserved {
-				result.Status = "exited"
-			} else {
-				result.Status = "failed"
+			if opts.Relaunch && result.Exited && result.ShellPreserved && !result.Refused && ctx.Err() == nil {
+				relaunchAgentCLI(ctx, opts.Session, pane, original, launchPlan, &result)
 			}
-		}
-		if opts.Relaunch && result.Exited && result.ShellPreserved {
-			relaunchAgentCLI(ctx, opts.Session, relaunchTarget, launchPlan, &result)
 		}
 		slog.Info("[robot.exit-cli] completed pane lifecycle",
 			"session", opts.Session,
@@ -841,8 +1191,8 @@ func GetExitCLI(ctx context.Context, opts LifecycleOptions) (*ExitCLIOutput, err
 		output.Results = append(output.Results, result)
 	}
 	for _, result := range output.Results {
-		paneOK := result.Exited && (result.ShellPreserved || (opts.AllowPaneClose && result.PaneClosed))
-		if !paneOK || (opts.Relaunch && !result.Relaunched) {
+		if !result.Exited || result.Refused || (opts.Relaunch && !result.Relaunched) ||
+			(!result.ShellPreserved && !(opts.AllowPaneClose && result.PaneClosed)) {
 			output.Success = false
 			break
 		}
@@ -888,55 +1238,66 @@ func GetKillAgent(ctx context.Context, opts LifecycleOptions) (*KillAgentOutput,
 	}
 	for _, pane := range targets {
 		result := LifecyclePaneResult{
-			Pane:      paneTargetKey(pane, multiWindow),
-			Target:    pane.ID,
-			AgentType: restartPaneAgentType(pane),
-			ShellPID:  pane.PID,
+			Pane:         paneTargetKey(pane, multiWindow),
+			Target:       pane.ID,
+			AgentType:    restartPaneAgentType(pane),
+			ShellPID:     pane.PID,
+			PaneState:    lifecyclePaneUnknown,
+			ProcessState: lifecycleProcessUnknown,
 		}
-		if _, verified := verifyLifecycleShell(ctx, opts.Session, pane, &result); !verified {
+		current, verified := verifyLifecycleShell(ctx, opts.Session, pane, &result)
+		if !verified {
+			result.Refused = true
 			output.Results = append(output.Results, result)
 			continue
 		}
-		agentPIDs := collectProcessTree(pane.PID, lifecycleChildPIDLimit, 5)
-		sort.Ints(agentPIDs)
-		result.AgentPIDs = agentPIDs
-		if len(agentPIDs) == 0 {
-			result.Exited = true
-			result.ShellPreserved = true
-			result.Detail = "no agent process found under the pane shell; nothing to kill"
-		} else {
-			result.Killed = killProcessesGracefully(ctx, agentPIDs)
-			var survivors []int
-			for _, pid := range agentPIDs {
-				if process.IsAlive(pid) {
-					survivors = append(survivors, pid)
-				}
-			}
-			result.Exited = len(survivors) == 0
-			if len(survivors) > 0 {
-				result.Detail = joinLifecycleDetail(result.Detail,
-					fmt.Sprintf("processes survived SIGKILL: %v", survivors))
-			}
-			refreshed, lookup := refreshLifecyclePane(ctx, opts.Session, pane.ID)
-			result.ShellPreserved = lookup == paneFound && lifecyclePaneIdentityMatches(pane, refreshed) &&
-				tmux.DefaultClient.ValidatePanePersistentShellContext(ctx, refreshed) == nil
-			switch {
-			case lookup == paneLookupFailed:
-				result.VerificationFailed = true
-				result.Detail = joinLifecycleDetail(result.Detail,
-					"could not re-read the pane after kill; shell_preserved is unverified, not false")
-			case lookup == paneFound && refreshed.PID != pane.PID:
-				result.Detail = joinLifecycleDetail(result.Detail,
-					fmt.Sprintf("pane shell PID changed from %d to %d", pane.PID, refreshed.PID))
-			}
+		original, err := captureLifecycleProcesses(ctx, current, opts.ExpectedProcesses)
+		if err != nil {
+			result.Refused = true
+			result.VerificationFailed = true
+			result.Detail = joinLifecycleDetail(result.Detail, "kill withheld before signals: "+err.Error())
+			output.Results = append(output.Results, result)
+			continue
 		}
-		if opts.Relaunch && result.Exited && result.ShellPreserved {
-			relaunchAgentCLI(ctx, opts.Session, pane, launchPlan, &result)
+		result.AgentPIDs = lifecycleProcessIDs(original.agents)
+		result.ProcessIdentity = original
+		result.Killed, err = killProcessesGracefully(ctx, original.agents, func(checkCtx context.Context) error {
+			observation := observeLifecycle(checkCtx, opts.Session, pane, original)
+			if observation.verificationFailed || !observation.shellPreserved {
+				return errors.New("kill withheld: original persistent shell is unverified")
+			}
+			// Originally captured helpers may be reparented when TERM stops
+			// their parent. Lifetime checks still bind each later PID signal;
+			// stopped/background jobs do not require foreground ownership.
+			return checkCtx.Err()
+		})
+		if len(original.agents) > 0 && len(result.Killed) == len(original.agents) {
+			result.ProcessState = lifecycleProcessExited
+		}
+		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lifecycleReconcileTimeout)
+		observation := waitForLifecycleExit(readCtx, opts.Session, pane, original, lifecycleReconcileTimeout)
+		cancel()
+		applyLifecycleObservation(&result, observation)
+		result.Refused = err != nil || observation.verificationFailed || !observation.shellPreserved ||
+			(result.Exited && !observation.idle) || ctx.Err() != nil
+		if err != nil {
+			result.Detail = joinLifecycleDetail(result.Detail, "process signals stopped: "+err.Error())
+		}
+		if result.Exited && observation.idle {
+			result.Refused = false
+			if len(original.agents) == 0 {
+				result.Detail = joinLifecycleDetail(result.Detail, "no agent process under the verified idle shell; nothing to kill")
+			}
+		} else if result.ProcessState == lifecycleProcessRunning {
+			result.Detail = joinLifecycleDetail(result.Detail, "original agent process remains active")
+		}
+		if opts.Relaunch && result.Exited && result.ShellPreserved && !result.Refused && ctx.Err() == nil {
+			relaunchAgentCLI(ctx, opts.Session, pane, original, launchPlan, &result)
 		}
 		output.Results = append(output.Results, result)
 	}
 	for _, result := range output.Results {
-		if !result.Exited || !result.ShellPreserved || (opts.Relaunch && !result.Relaunched) {
+		if !result.Exited || !result.ShellPreserved || result.Refused || (opts.Relaunch && !result.Relaunched) {
 			output.Success = false
 			break
 		}
@@ -944,73 +1305,90 @@ func GetKillAgent(ctx context.Context, opts LifecycleOptions) (*KillAgentOutput,
 	return output, nil
 }
 
-// collectProcessTree gathers the shell's descendant PIDs breadth-first
-// (excluding the shell itself) so a kill covers helper subprocesses the
-// agent spawned, not just the CLI root. Depth- and count-limited.
-func collectProcessTree(rootPID, perNodeLimit, maxDepth int) []int {
-	if rootPID <= 0 {
-		return nil
-	}
-	var tree []int
-	seen := map[int]bool{rootPID: true}
-	frontier := []int{rootPID}
-	for depth := 0; depth < maxDepth && len(frontier) > 0; depth++ {
-		var next []int
-		for _, pid := range frontier {
-			for _, child := range process.GetChildPIDs(pid, perNodeLimit) {
-				if child <= 0 || seen[child] {
-					continue
-				}
-				seen[child] = true
-				tree = append(tree, child)
-				next = append(next, child)
-			}
-		}
-		frontier = next
-	}
-	return tree
-}
-
 // killProcessesGracefully SIGTERMs each PID, waits for exit, and escalates to
-// SIGKILL for survivors. Returns the PIDs that actually died.
-func killProcessesGracefully(ctx context.Context, pids []int) []int {
-	for _, pid := range pids {
-		signalTerm(pid)
-	}
-	waitForProcessExit(ctx, pids, lifecycleTermGrace)
-	escalated := false
-	for _, pid := range pids {
-		if process.IsAlive(pid) {
-			signalKill(pid)
-			escalated = true
-		}
-	}
-	if escalated {
-		waitForProcessExit(ctx, pids, lifecycleKillGrace)
-	}
-	killed := make([]int, 0, len(pids))
-	for _, pid := range pids {
-		if !process.IsAlive(pid) {
-			killed = append(killed, pid)
-		}
-	}
-	return killed
-}
-
-func waitForProcessExit(ctx context.Context, pids []int, timeout time.Duration) {
-	deadline := time.Now().Add(timeout)
-	for {
-		anyAlive := false
-		for _, pid := range pids {
-			if process.IsAlive(pid) {
-				anyAlive = true
-				break
+// SIGKILL only after a complete grace period and positive survivor evidence.
+// Failed observations or cancellation stop signals, including escalation.
+func killProcessesGracefully(ctx context.Context, original map[int]process.SnapshotProcess, beforeSignal func(context.Context) error) (killed []int, signalErr error) {
+	confirmedExited := make(map[int]bool)
+	rememberExits := func(snapshot map[int]process.SnapshotProcess) {
+		for pid, previous := range original {
+			if p := snapshot[pid]; !sameLifecycleProcess(previous, p) || !lifecycleProcessLive(p) {
+				confirmedExited[pid] = true
 			}
 		}
-		if !anyAlive || time.Now().After(deadline) || ctx.Err() != nil {
+	}
+	defer func() {
+		if len(original) == 0 {
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lifecycleReconcileTimeout)
+		defer cancel()
+		snapshot, err := process.SnapshotContext(readCtx)
+		if err != nil {
+			signalErr = errors.Join(signalErr, err)
+		} else {
+			rememberExits(snapshot)
+		}
+		for _, pid := range lifecycleProcessIDs(original) {
+			if confirmedExited[pid] {
+				killed = append(killed, pid)
+			}
+		}
+	}()
+	for phase, grace := range []time.Duration{lifecycleTermGrace, lifecycleKillGrace} {
+		for _, pid := range lifecycleProcessIDs(original) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if beforeSignal != nil {
+				if err := beforeSignal(ctx); err != nil {
+					return nil, err
+				}
+			}
+			snapshot, err := process.SnapshotContext(ctx)
+			if err != nil {
+				return nil, err
+			}
+			rememberExits(snapshot)
+			if p := snapshot[pid]; !sameLifecycleProcess(original[pid], p) || !lifecycleProcessLive(p) {
+				continue
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if phase == 0 {
+				signalTerm(pid)
+			} else {
+				signalKill(pid)
+			}
+		}
+		snapshot, err := waitForProcessExit(ctx, original, grace)
+		if err != nil {
+			return nil, err
+		}
+		rememberExits(snapshot)
+		if observeLifecycleProcesses(snapshot, original) == lifecycleProcessExited {
+			return nil, nil
+		}
+	}
+	return nil, nil
+}
+
+func waitForProcessExit(ctx context.Context, original map[int]process.SnapshotProcess, timeout time.Duration) (map[int]process.SnapshotProcess, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		snapshot, err := process.SnapshotContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if observeLifecycleProcesses(snapshot, original) == lifecycleProcessExited || !time.Now().Before(deadline) {
+			return snapshot, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(min(100*time.Millisecond, time.Until(deadline))):
+		}
 	}
 }
 
@@ -1151,7 +1529,7 @@ func PrintExitCLI(ctx context.Context, opts LifecycleOptions) error {
 	if !output.Success && output.Error == "" {
 		output.Error = "one or more panes did not complete the requested lifecycle transition"
 		output.ErrorCode = ErrCodeInternalError
-		output.Hint = "Inspect per-pane results; escalate stuck panes with --robot-kill-agent"
+		output.Hint = "Inspect pane_state and process_state; unknown or refused outcomes require fresh observation before any retry or escalation"
 	}
 	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot exit-cli failed")
 }
@@ -1165,7 +1543,7 @@ func PrintKillAgent(ctx context.Context, opts LifecycleOptions) error {
 	if !output.Success && output.Error == "" {
 		output.Error = "one or more panes did not complete the requested lifecycle transition"
 		output.ErrorCode = ErrCodeInternalError
-		output.Hint = "Inspect per-pane results; --robot-restart-pane replaces the pane if the shell is wedged"
+		output.Hint = "Inspect pane_state and process_state; verify the original pane and process before choosing further recovery"
 	}
 	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot kill-agent failed")
 }
