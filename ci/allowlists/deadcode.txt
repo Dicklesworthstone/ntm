@@ -337,11 +337,9 @@ internal/swarm/agent_launcher.go:LaunchCommandBuilder.WithAgentPath	bd-ld4j2	rea
 internal/swarm/agent_launcher.go:LaunchCommandBuilder.WithEnvVars	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/swarm/agent_launcher.go:LaunchCommandBuilder.WithFullPaths	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/swarm/agent_launcher.go:LaunchCommandBuilder.WithLogger	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/swarm/agent_launcher.go:formatPaneTarget	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/swarm/agent_launcher.go:formatPaneTargetWithWindow	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/swarm/agent_launcher.go:swarmPaneTargetFromPlanIndex	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/swarm/agent_launcher.go:swarmTmuxPaneIndex	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/swarm/orchestrator.go:SessionOrchestrator.CreateSessions	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/swarm/orchestrator.go:SessionOrchestrator.DestroySessions	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/swarm/orchestrator.go:SessionOrchestrator.EnsureUniformGeometry	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/swarm/orchestrator.go:SessionOrchestrator.GetAverageGeometry	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
@@ -359,7 +357,6 @@ internal/swarm/pane_launcher.go:PaneLauncher.WithCDDelay	bd-ld4j2	reachable only
 internal/swarm/pane_launcher.go:PaneLauncher.WithValidatePaths	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/swarm/prompt_injector.go:PromptInjector.GetTemplate	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/swarm/prompt_injector.go:PromptInjector.InjectBatch	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/swarm/prompt_injector.go:PromptInjector.InjectPrompt	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/swarm/prompt_injector.go:PromptInjector.InjectPromptWithResult	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/swarm/prompt_injector.go:PromptInjector.InjectSwarm	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/swarm/prompt_injector.go:PromptInjector.InjectSwarmWithContext	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
@@ -667,37 +664,6 @@ internal/swarm/synthetic.go:WriteSyntheticExperimentArtifacts	permanent	verifica
 pkg:internal/robot/contract	permanent	contract-clean assertion library reached by tests/matrix_conformance_test.go (WS7-H10 CI gate over the D3 token corpus); API-for-tests-of-live-code
 internal/cass/client.go:WithExecutor	permanent	test-only executor injection hook; reached by internal/cass/client_test.go and internal/tui/components/cass_search_test.go
 internal/caut/client.go:WithExecutor	permanent	test-only executor injection hook; reached by internal/caut/client_test.go
-# permanent: build-tag ensemble_experimental (bd-g1 final triage 2026-08-19)
-# The G1 gate runs deadcode UNTAGGED, but release builds ship with
-# -tags ensemble_experimental. These symbols are unreachable untagged yet
-# REACHABLE in the tagged release call graph (verified per symbol by an
-# intersected 3-GOOS deadcode run with -tags ensemble_experimental).
-internal/cli/ensemble.go:normalizeEnsembleAgentType	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/cli/ensemble_spawn.go + internal/robot/ensemble_spawn.go (ensemble_experimental)
-internal/ensemble/assignment.go:AssignByCategory	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/ensemble/manager.go (ensemble_experimental)
-internal/ensemble/assignment.go:AssignExplicit	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/ensemble/manager.go (ensemble_experimental)
-internal/ensemble/assignment.go:AssignRoundRobin	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/ensemble/manager.go (ensemble_experimental)
-internal/ensemble/assignment.go:expandSpecs	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/ensemble/manager.go (via Assign* chain) (ensemble_experimental)
-internal/ensemble/assignment.go:groupPanesByType	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/ensemble/manager.go (via Assign* chain) (ensemble_experimental)
-internal/ensemble/assignment.go:isAssignableAgentType	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/ensemble/manager.go (via Assign* chain) (ensemble_experimental)
-internal/ensemble/assignment.go:isAssignablePane	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/ensemble/manager.go (via Assign* chain) (ensemble_experimental)
-internal/ensemble/assignment.go:normalizeModeKey	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/ensemble/manager.go (via Assign* chain) (ensemble_experimental)
-internal/ensemble/assignment.go:normalizeModeKeys	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/ensemble/manager.go (via Assign* chain) (ensemble_experimental)
-internal/ensemble/assignment.go:paneIndex	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/ensemble/manager.go (via Assign* chain) (ensemble_experimental)
-internal/ensemble/assignment.go:paneLess	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/ensemble/manager.go (via Assign* chain) (ensemble_experimental)
-internal/ensemble/assignment.go:parseModeCode	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/ensemble/manager.go (via Assign* chain) (ensemble_experimental)
-internal/ensemble/assignment.go:pickAvailablePaneWithReason	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/ensemble/manager.go (via Assign* chain) (ensemble_experimental)
-internal/ensemble/assignment.go:resolveMode	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/ensemble/manager.go (via Assign* chain) (ensemble_experimental)
-internal/ensemble/assignment.go:resolveModeByCode	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/ensemble/manager.go (via Assign* chain) (ensemble_experimental)
-internal/ensemble/assignment.go:resolveModeItems	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/ensemble/manager.go (via Assign* chain) (ensemble_experimental)
-internal/ensemble/assignment.go:sortAssignablePanes	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/ensemble/manager.go (via Assign* chain) (ensemble_experimental)
-internal/ensemble/assignment.go:ValidateAssignments	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/ensemble/manager.go (ensemble_experimental)
-internal/ensemble/types.go:ModeRefFromCode	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/ensemble/manager.go + internal/robot/ensemble_spawn.go (ensemble_experimental)
-internal/ensemble/validation.go:validateModeIDs	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/ensemble/manager.go (ensemble_experimental)
-internal/swarm/pane_launcher.go:GetPaneTarget	permanent	build-tag blind spot: gate runs untagged; reachable in release builds via tag-gated internal/swarm/ensemble_integration.go / internal/ensemble/manager.go pane dispatch (ensemble_experimental)
-internal/ensemble/pipeline_types.go:NewPipelineError	permanent	build-tag blind spot: compile-required by tag-gated internal/ensemble/pipeline.go (ensemble_experimental release builds); exercised by internal/ensemble/pipeline_experimental_test.go — deletion breaks go build -tags ensemble_experimental
-internal/ensemble/pipeline_types.go:PipelineError.Error	permanent	build-tag blind spot: compile-required by tag-gated internal/ensemble/pipeline.go (ensemble_experimental release builds); exercised by internal/ensemble/pipeline_experimental_test.go — deletion breaks go build -tags ensemble_experimental
-internal/ensemble/pipeline_types.go:PipelineError.Unwrap	permanent	build-tag blind spot: compile-required by tag-gated internal/ensemble/pipeline.go (ensemble_experimental release builds); exercised by internal/ensemble/pipeline_experimental_test.go — deletion breaks go build -tags ensemble_experimental
-internal/ensemble/pipeline_types.go:EnsembleResult.Duration	permanent	build-tag blind spot: compile-required by tag-gated internal/ensemble/pipeline.go (ensemble_experimental release builds); exercised by internal/ensemble/pipeline_experimental_test.go — deletion breaks go build -tags ensemble_experimental
 # permanent: test-helper (bd-g1 final triage 2026-08-19)
 internal/cli/root.go:RootCommand	permanent	exported bridge to unexported rootCmd reached ONLY by tests/docs_conformance_test.go (G3 docs-example conformance CI gate); deleting it deletes the gate
 internal/startup/config.go:ResetConfig	permanent	test-only config-cache reset hook reached by internal/cli/cli_test.go (18 sites), internal/cli/init_test.go, internal/cli/mail_test.go — tests of live cli surfaces need cross-package cache reset

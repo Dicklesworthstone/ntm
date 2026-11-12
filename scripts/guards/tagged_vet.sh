@@ -40,12 +40,10 @@ if ! go vet -C "$CANARY_DIR" ./... >/dev/null 2>&1; then
 fi
 
 # --- the gate: vet every test-gating tag set ---------------------------------
-# "load" gates internal/serve/ws_load_test.go; "e2e,ensemble_experimental"
-# also covers files tagged plain "e2e" and (via the untagged-package compile
-# of internal/ensemble deps) pairs with "ensemble_experimental" alone.
+# "load" gates internal/serve/ws_load_test.go; "e2e" gates e2e/*_test.go.
 TAG_SETS=(
   "integration"
-  "e2e,ensemble_experimental"
+  "e2e"
   "load"
 )
 failed=()

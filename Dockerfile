@@ -33,11 +33,9 @@ ARG VERSION=dev
 ARG COMMIT=unknown
 ARG DATE=unknown
 
-# Same tags as the release binaries (.goreleaser.yaml): the image is a release
-# artifact, so it ships the real `ensemble spawn`, not the untagged stub.
+# Build release binary (ensemble surface graduated into default builds).
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
-    -tags=ensemble_experimental \
     -ldflags="-s -w \
         -X github.com/Dicklesworthstone/ntm/internal/cli.Version=${VERSION} \
         -X github.com/Dicklesworthstone/ntm/internal/cli.Commit=${COMMIT} \

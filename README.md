@@ -1920,11 +1920,8 @@ docker run --rm -it ntm
 ```bash
 git clone https://github.com/Dicklesworthstone/ntm.git
 cd ntm
-go install -tags ensemble_experimental ./cmd/ntm   # or: make build
+go install ./cmd/ntm   # or: make build
 ```
-
-The `ensemble_experimental` tag matches the release binaries; without it
-`ntm ensemble <name> "<question>"` only reports that it needs a tagged build.
 
 ## Troubleshooting
 

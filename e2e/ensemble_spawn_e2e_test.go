@@ -1,5 +1,5 @@
-//go:build e2e && ensemble_experimental
-// +build e2e,ensemble_experimental
+//go:build e2e
+// +build e2e
 
 package e2e
 
@@ -57,7 +57,7 @@ func newEnsembleSpawnFixture(t *testing.T) *ensembleSpawnFixture {
 		t.Skip("tmux not available")
 	}
 
-	ntmPath := ntmBinary(t, "ensemble_experimental")
+	ntmPath := ntmBinary(t, "")
 	fakeagentPath, err := ensureFakeagentBin()
 	if err != nil {
 		t.Fatalf("build fakeagent fixture: %v", err)
