@@ -50,6 +50,9 @@ type Handoff struct {
 	ActiveBeads      []string `yaml:"active_beads,omitempty"`       // From BV
 	AgentMailThreads []string `yaml:"agent_mail_threads,omitempty"` // From Agent Mail
 	CMMemories       []string `yaml:"cm_memories,omitempty"`        // From CM
+	// Warnings preserve failures in optional enrichment alongside the saved
+	// work. They do not change the status of that work.
+	Warnings []EnrichmentWarning `yaml:"warnings,omitempty" json:",omitempty"`
 
 	// Agent info for multi-agent sessions
 	AgentID   string `yaml:"agent_id,omitempty"`
@@ -66,6 +69,12 @@ type Handoff struct {
 
 	// File reservation transfer instructions (optional)
 	ReservationTransfer *ReservationTransfer `yaml:"reservation_transfer,omitempty"`
+}
+
+// EnrichmentWarning records an optional source failure in the saved handoff.
+type EnrichmentWarning struct {
+	Source  string `yaml:"source" json:"source"`
+	Message string `yaml:"message" json:"message"`
 }
 
 // TaskRecord represents a completed task with associated file changes.

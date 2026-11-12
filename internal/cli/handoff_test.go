@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -604,6 +606,99 @@ func TestRunHandoffCreateAutoPreservesCommandCancellation(t *testing.T) {
 	err := runHandoffCreate(cmd, "", "", "", "", true, "", false, "", "yaml", false)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("runHandoffCreate() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestHandoffAutoSavesAfterOptionalCASSDeadline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("CASS subprocess fixture requires a POSIX shell")
+	}
+	sleepPath, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("CASS subprocess fixture requires sleep")
+	}
+	projectDir, binDir := t.TempDir(), t.TempDir()
+	t.Chdir(projectDir)
+	t.Setenv("PATH", binDir)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("NTM_HANDOFF_CASS_SLEEP", sleepPath)
+	marker := filepath.Join(projectDir, "cass-called")
+	t.Setenv("NTM_HANDOFF_CASS_MARKER", marker)
+	const slowCASS = `#!/bin/sh
+set -eu
+[ "$1" = search ] || exit 92
+printf '%s\n' "$@" > "$NTM_HANDOFF_CASS_MARKER"
+exec "$NTM_HANDOFF_CASS_SLEEP" 30
+`
+	if err := os.WriteFile(filepath.Join(binDir, "cass"), []byte(slowCASS), 0700); err != nil {
+		t.Fatal(err)
+	}
+	// A non-repository workspace is valid. Keep project discovery and git
+	// enrichment deterministic instead of consulting any host configuration.
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	oldJSONOutput, oldConfig := jsonOutput, cfg
+	jsonOutput, cfg = false, nil
+	t.Cleanup(func() { jsonOutput, cfg = oldJSONOutput, oldConfig })
+	ctx, cancel := context.WithTimeout(t.Context(), 12*time.Second)
+	defer cancel()
+	path := filepath.Join(projectDir, "handoff.yaml")
+	var stdout bytes.Buffer
+	cmd := newHandoffCmd()
+	cmd.SetContext(ctx)
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"create", "--auto", "--goal", "Implemented recovery", "--now", "Validate the saved work", "--output", path, "--format", "json"})
+	started := time.Now()
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("auto handoff failed after optional source timeout: %v; stdout=%s", err, stdout.String())
+	}
+	if elapsed := time.Since(started); elapsed >= 10*time.Second || ctx.Err() != nil {
+		t.Fatalf("optional search consumed the caller's lifetime: elapsed=%s parent=%v", elapsed, ctx.Err())
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("CASS fixture was not searched: %v", err)
+	}
+	var result struct {
+		Success  bool                        `json:"success"`
+		Path     string                      `json:"path"`
+		Warnings []handoff.EnrichmentWarning `json:"warnings"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || !result.Success || result.Path != path {
+		t.Fatalf("create result=%+v decode=%v stdout=%s", result, err, stdout.String())
+	}
+	hasCASSWarning := func(warnings []handoff.EnrichmentWarning) bool {
+		for _, warning := range warnings {
+			if warning.Source == "cass" && strings.Contains(warning.Message, "deadline exceeded") {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasCASSWarning(result.Warnings) {
+		t.Fatalf("successful create omitted its source degradation: %+v", result)
+	}
+	h, err := handoff.NewReader(projectDir).Read(path)
+	if err != nil || h.Goal != "Implemented recovery" || h.Now != "Validate the saved work" || !hasCASSWarning(h.Warnings) {
+		t.Fatalf("persisted handoff lost work or source evidence: handoff=%+v error=%v", h, err)
+	}
+
+	// Both supported human-readable views must explain the partial enrichment
+	// from the saved artifact, without rerunning external sources.
+	for _, args := range [][]string{
+		{"show", path},
+		{"create", "--from-file", path, "--output", "-", "--format", "markdown"},
+	} {
+		var view bytes.Buffer
+		cmd := newHandoffCmd()
+		cmd.SetContext(ctx)
+		cmd.SetOut(&view)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil || !strings.Contains(view.String(), "Incomplete Enrichment") || !strings.Contains(view.String(), "deadline exceeded") {
+			t.Fatalf("saved handoff view %v omitted degradation: error=%v output=%s", args, err, view.String())
+		}
 	}
 }
 
