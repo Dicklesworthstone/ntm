@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -252,8 +253,15 @@ record_input() {
   esac
 }
 case "$1" in
+  -V) printf 'tmux 3.4\n' ;;
+  has-session) ;;
+  list-sessions) printf 'demo_NTM_SEP_1_NTM_SEP_0_NTM_SEP_1700000000\n' ;;
+  list-panes)
+    read -r current_pid < "$NTM_CONTEXT_GUARD_DIR/pid"
+    printf '%%41_NTM_SEP_1_NTM_SEP_demo__%s_1_NTM_SEP_agent_NTM_SEP_120_NTM_SEP_40_NTM_SEP_1_NTM_SEP_%s_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$NTM_CONTEXT_GUARD_TYPE" "$current_pid" "$NTM_CONTEXT_GUARD_TYPE"
+    ;;
   load-buffer)
-    cat > /dev/null
+    cat > "$NTM_CONTEXT_GUARD_DIR/payload"
     ;;
   display-message)
     case "$*" in
@@ -261,6 +269,7 @@ case "$1" in
         read -r rotation < "$NTM_CONTEXT_GUARD_DIR/rotation"
         printf '[%s]\n' "$rotation"
         ;;
+      *'pane_current_path'*) printf '%s\n' "$NTM_CONTEXT_GUARD_DIR" ;;
       *) printf '[%s]\n' "$NTM_CONTEXT_GUARD_TYPE" ;;
     esac
     ;;
@@ -311,6 +320,7 @@ case "$1" in
     ;;
   delete-buffer)
     ;;
+  show-options|show-environment) ;;
   *)
     exit 2
     ;;
@@ -445,10 +455,12 @@ func TestContextInjectionRetainsPaneIdentityThroughPreparationAndSubmission(t *t
 								failureText = result.Error
 							} else {
 								prepare()
-								injected, deliveryErr = injectContextIntoPanes(
+								var result ContextInjectResult
+								result, deliveryErr = injectContextIntoPanes(
 									t.Context(), "demo", []tmux.Pane{pane},
-									protocol.content, false, sendContextToPane,
+									protocol.content, 0, false, sendContextToPane,
 								)
+								injected = result.PanesInjected
 								if deliveryErr != nil {
 									failureText = deliveryErr.Error()
 								}
@@ -771,8 +783,8 @@ func TestContextInjectCobraRejectsFullOrChangedQualifiedNativeSession(t *testing
 			if scenario == "provider_changed_during_build" {
 				wantError = "context session or model changed"
 			}
-			if !strings.Contains(err.Error(), wantError) {
-				t.Fatalf("refused for the wrong reason: %v; want %q", err, wantError)
+			if !strings.Contains(result.Error, wantError) {
+				t.Fatalf("refused for the wrong reason: %q; want %q", result.Error, wantError)
 			}
 			for _, receipt := range result.Deliveries {
 				if receipt.Status != "not_attempted" {
@@ -1083,9 +1095,9 @@ func TestContextRobotInjectionPreservesExplicitShellProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	pane := tmux.Pane{ID: "%41", Index: 0, PID: 321, Type: tmux.AgentUser, Command: "bash"}
-	injected, err := injectContextIntoPanes(t.Context(), "demo", []tmux.Pane{pane}, "explicit shell input", false, sendContextToPane)
-	if err != nil || !reflect.DeepEqual(injected, []int{0}) {
-		t.Fatalf("explicit shell target was blocked: injected=%v error=%v", injected, err)
+	result, err := injectContextIntoPanes(t.Context(), "demo", []tmux.Pane{pane}, "explicit shell input", 0, false, sendContextToPane)
+	if err != nil || !reflect.DeepEqual(result.PanesInjected, []int{0}) {
+		t.Fatalf("explicit shell target was blocked: result=%+v error=%v", result, err)
 	}
 	mutations, err := os.ReadFile(mutationsPath)
 	if err != nil {
@@ -1093,5 +1105,322 @@ func TestContextRobotInjectionPreservesExplicitShellProtocol(t *testing.T) {
 	}
 	if strings.Contains(string(mutations), "unguarded:") || strings.Count(string(mutations), "'Enter'") != 1 {
 		t.Fatalf("explicit shell lost its single-Enter identity guard: %s", mutations)
+	}
+}
+
+func TestContextInjectCobraAppliesFinalMessageRedaction(t *testing.T) {
+	oldJSON, oldCfg := jsonOutput, cfg
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput, cfg = oldJSON, oldCfg })
+	secret := "ghp_" + strings.Repeat("A", 36)
+	for _, mode := range []string{"files", "build", "pack"} {
+		for _, policy := range []string{"off", "warn", "redact", "block"} {
+			for _, dryRun := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/dry=%t", mode, policy, dryRun), func(t *testing.T) {
+					cfg = config.Default()
+					cfg.Redaction.Mode = policy
+					deps := packInjectionTestDeps(t)
+					projectDir, err := deps.project(t.Context(), "demo")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(projectDir, "README.md"), []byte("Project context\n"+secret), 0600); err != nil {
+						t.Fatal(err)
+					}
+					artifacts := make(map[*state.ContextPack]string)
+					build := deps.build
+					deps.build = func(ctx context.Context, opts ntmctx.BuildOptions) (*ntmctx.ContextPackFull, error) {
+						pack, err := build(ctx, opts)
+						if err != nil {
+							return nil, err
+						}
+						// Only the last target has sensitive enrichment. Block must
+						// prevent the earlier clean targets from being written too.
+						if opts.AgentType == "cod" {
+							pack.RenderedPrompt += "\n" + secret
+						}
+						artifacts[&pack.ContextPack] = pack.RenderedPrompt
+						return pack, nil
+					}
+					stored := &state.ContextPack{ID: "stored-context", AgentType: "cc", RenderedPrompt: "Saved context\n" + secret}
+					artifacts[stored] = stored.RenderedPrompt
+					deps.load = func(string) (*state.ContextPack, error) { return stored, nil }
+					sent := make(map[string]string)
+					deps.send = func(_ context.Context, pane tmux.Pane, message string) error {
+						sent[pane.ID] = message
+						return nil
+					}
+					args := []string{"demo", "--files", "README.md"}
+					if mode == "build" {
+						args = append(args, "--build")
+					} else if mode == "pack" {
+						args = []string{"demo", "--pack", stored.ID, "--pane", "0"}
+					}
+					if dryRun {
+						args = append(args, "--dry-run")
+					}
+					cmd := newContextInjectCmdWithDeps(&deps)
+					var out bytes.Buffer
+					cmd.SetOut(&out)
+					cmd.SetErr(io.Discard)
+					cmd.SilenceErrors, cmd.SilenceUsage = true, true
+					cmd.SetArgs(args)
+					err = cmd.ExecuteContext(t.Context())
+					var result ContextInjectResult
+					if decodeErr := json.Unmarshal(out.Bytes(), &result); decodeErr != nil {
+						t.Fatalf("invalid context response: %v: %s", decodeErr, out.String())
+					}
+					if strings.Contains(out.String(), secret) || (err != nil && strings.Contains(err.Error(), secret)) {
+						t.Fatal("redaction receipts exposed a matched credential")
+					}
+					for pack, original := range artifacts {
+						if pack.RenderedPrompt != original {
+							t.Fatal("delivery redaction modified a reusable context artifact")
+						}
+					}
+					if policy == "block" {
+						if err == nil || result.Success || result.ErrorCode != "SENSITIVE_DATA_BLOCKED" || len(sent) != 0 {
+							t.Fatalf("blocked batch reached a target: result=%+v sent=%v error=%v", result, sent, err)
+						}
+						blocked := false
+						for _, receipt := range result.Deliveries {
+							if receipt.Status != "not_attempted" {
+								t.Fatalf("whole-batch block reported an attempted delivery: %+v", receipt)
+							}
+							blocked = blocked || (receipt.Redaction != nil && receipt.Redaction.Blocked)
+						}
+						if !blocked || !strings.Contains(result.Hint, "--allow-secret") {
+							t.Fatalf("blocked batch lost its actionable policy receipt: %+v", result)
+						}
+						return
+					}
+					if err != nil || !result.Success || len(result.Deliveries) == 0 {
+						t.Fatalf("permitted context was rejected: %+v, %v", result, err)
+					}
+					if dryRun {
+						if len(sent) != 0 || len(result.PanesInjected) != 0 || len(result.PanesPlanned) != len(result.Deliveries) {
+							t.Fatalf("dry-run actuated or claimed a delivery: %+v sent=%v", result, sent)
+						}
+					} else if len(sent) != len(result.Deliveries) {
+						t.Fatalf("permitted batch was incomplete: %+v sent=%v", result, sent)
+					}
+					findings, largest := 0, 0
+					for _, receipt := range result.Deliveries {
+						if receipt.Redaction == nil || receipt.Redaction.Mode != policy {
+							t.Fatalf("final policy was not reported: %+v", receipt)
+						}
+						findings += receipt.Redaction.Findings
+						if !dryRun {
+							message := sent[receipt.Target]
+							if receipt.Bytes != len(message) {
+								t.Fatalf("receipt describes pre-redaction bytes: %+v; sent %d bytes", receipt, len(message))
+							}
+							if policy == "redact" && (strings.Contains(message, secret) || (receipt.Redaction.Findings > 0 && !strings.Contains(message, "[REDACTED:GITHUB_TOKEN:"))) {
+								t.Fatal("redact policy did not transform the actual outbound message")
+							}
+							if policy != "redact" && (mode != "build" || receipt.AgentType == "cod") && !strings.Contains(message, secret) {
+								t.Fatal("warn/off unexpectedly changed the outbound message")
+							}
+						}
+						largest = max(largest, receipt.Bytes)
+					}
+					if result.TotalBytes != largest || (policy == "off" && findings != 0) || (policy != "off" && findings == 0) {
+						t.Fatalf("final redaction/accounting evidence is wrong: %+v", result)
+					}
+					if policy != "off" && !strings.Contains(strings.Join(result.Warnings, "\n"), "secrets") {
+						t.Fatalf("redaction policy silently affected the context: %+v", result)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestContextInjectCobraChecksRedactedPayloadLimits(t *testing.T) {
+	oldJSON, oldCfg := jsonOutput, cfg
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput, cfg = oldJSON, oldCfg })
+	for _, mode := range []string{"files", "build", "pack"} {
+		for _, limit := range []string{"bytes", "capacity"} {
+			if mode == "files" && limit == "capacity" {
+				continue
+			}
+			t.Run(mode+"/"+limit, func(t *testing.T) {
+				cfg = config.Default()
+				cfg.Redaction.Mode = "redact"
+				cfg.Redaction.ExtraPatterns = map[string][]string{"CONTEXT_TEST": {"needle"}}
+				deps := packInjectionTestDeps(t)
+				pane := tmux.Pane{ID: "%1", Index: 1, Type: tmux.AgentClaude, PID: 321}
+				deps.panes = func(string) ([]tmux.Pane, error) { return []tmux.Pane{pane}, nil }
+				payload := strings.Repeat("x", 130) + "needle"
+				projectDir, err := deps.project(t.Context(), "demo")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(projectDir, "README.md"), []byte(payload), 0600); err != nil {
+					t.Fatal(err)
+				}
+				build := deps.build
+				deps.build = func(ctx context.Context, opts ntmctx.BuildOptions) (*ntmctx.ContextPackFull, error) {
+					pack, err := build(ctx, opts)
+					if pack != nil {
+						pack.RenderedPrompt = payload
+					}
+					return pack, err
+				}
+				deps.load = func(id string) (*state.ContextPack, error) {
+					return &state.ContextPack{ID: id, AgentType: "cc", RenderedPrompt: payload}, nil
+				}
+				calls := 0
+				deps.send = func(context.Context, tmux.Pane, string) error { calls++; return nil }
+				args := []string{"demo", "--files", "README.md"}
+				if mode == "build" {
+					args = append(args, "--build")
+				} else if mode == "pack" {
+					args = []string{"demo", "--pack", "saved"}
+				}
+				if limit == "bytes" {
+					bound := len(payload)
+					if mode == "files" {
+						raw, _, _, err := formatContextInjectContent(projectDir, []string{"README.md"}, 0)
+						if err != nil {
+							t.Fatal(err)
+						}
+						bound = len(raw)
+					}
+					args = append(args, "--max-bytes", fmt.Sprint(bound))
+				} else {
+					deps.usage = func(context.Context, tmux.Pane) (*ntmctx.TranscriptUsage, bool) {
+						return &ntmctx.TranscriptUsage{Path: "/native/context", ContextWindow: 40, UpdatedAt: time.Now()}, true
+					}
+				}
+				cmd := newContextInjectCmdWithDeps(&deps)
+				var out bytes.Buffer
+				cmd.SetOut(&out)
+				cmd.SetErr(io.Discard)
+				cmd.SilenceErrors, cmd.SilenceUsage = true, true
+				cmd.SetArgs(args)
+				err = cmd.ExecuteContext(t.Context())
+				var result ContextInjectResult
+				if decodeErr := json.Unmarshal(out.Bytes(), &result); decodeErr != nil {
+					t.Fatalf("invalid context response: %v: %s", decodeErr, out.String())
+				}
+				if err == nil || result.Success || calls != 0 || !strings.Contains(result.Error, "after redaction") || len(result.Deliveries) != 1 {
+					t.Fatalf("redaction expansion exceeded the final limit: result=%+v calls=%d error=%v", result, calls, err)
+				}
+				receipt := result.Deliveries[0]
+				if receipt.Status != "not_attempted" || receipt.Redaction == nil || receipt.Redaction.Categories["CONTEXT_TEST"] != 1 {
+					t.Fatalf("limit failure lost final-payload policy evidence: %+v", receipt)
+				}
+			})
+		}
+	}
+}
+
+// Drive both public entry points through real root startup and inherited flags.
+// Only tmux is substituted; file reads, config merging, redaction, receipts,
+// error exits and the guarded delivery protocol execute as shipped.
+func TestContextInjectionProcessHonorsRedactionConfigAndFlags(t *testing.T) {
+	secret := "ghp_" + strings.Repeat("B", 36)
+	for _, surface := range []string{"cli", "robot"} {
+		for _, tc := range []struct {
+			name     string
+			config   string
+			flags    []string
+			mode     string
+			blocked  bool
+			dryRun   bool
+			findings bool
+			text     string
+		}{
+			{name: "configured_block", mode: "block", blocked: true, findings: true},
+			{name: "flag_redact", flags: []string{"--redact=redact"}, mode: "redact", findings: true},
+			{name: "allow_secret", flags: []string{"--redact=block", "--allow-secret"}, mode: "warn", findings: true},
+			{name: "flag_off", flags: []string{"--redact=off"}, mode: "off"},
+			{name: "blocked_dry_run", mode: "block", blocked: true, dryRun: true, findings: true},
+			{name: "redacted_dry_run", flags: []string{"--redact=redact"}, mode: "redact", dryRun: true, findings: true},
+			{name: "allowlist", config: "allowlist = [\"" + secret + "\"]\n", mode: "block"},
+			{name: "disabled_category", config: "disabled_categories = [\"GITHUB_TOKEN\"]\n", mode: "block"},
+			{name: "custom_pattern", config: "[redaction.extra_patterns]\nCONTEXT_TOKEN = [\"acme-private-credential\"]\n", flags: []string{"--redact=redact"}, mode: "redact", findings: true, text: "acme-private-credential"},
+		} {
+			t.Run(surface+"/"+tc.name, func(t *testing.T) {
+				dir, mutationsPath := installContextMutationTMUX(t, tmux.AgentClaude, "")
+				text := tc.text
+				if text == "" {
+					text = secret
+				}
+				if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("Project context\n"+text), 0600); err != nil {
+					t.Fatal(err)
+				}
+				configPath := filepath.Join(dir, "config.toml")
+				if err := os.WriteFile(configPath, []byte("[redaction]\nmode = \"block\"\n"+tc.config), 0600); err != nil {
+					t.Fatal(err)
+				}
+				args := append([]string{"--config=" + configPath}, tc.flags...)
+				if surface == "robot" {
+					args = append(args, "--robot-format=json", "--robot-context-inject=demo", "--inject-files=README.md")
+					if tc.dryRun {
+						args = append(args, "--inject-dry-run")
+					}
+				} else {
+					args = append(args, "--json", "context", "inject", "demo", "--files=README.md")
+					if tc.dryRun {
+						args = append(args, "--dry-run")
+					}
+				}
+				raw, code := newRobotProcessRunner(t)(args...)
+				encoded, err := json.Marshal(raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var result ContextInjectResult
+				if err := json.Unmarshal(encoded, &result); err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(encoded), text) {
+					t.Fatal("public response leaked the credential")
+				}
+				if result.Success == tc.blocked || result.DryRun != tc.dryRun || len(result.Deliveries) != 1 || (code != 0) != tc.blocked {
+					t.Fatalf("root surface policy/exit mismatch: code=%d response=%s", code, encoded)
+				}
+				receipt := result.Deliveries[0]
+				if receipt.Redaction == nil || receipt.Redaction.Mode != tc.mode || (receipt.Redaction.Findings > 0) != tc.findings {
+					t.Fatalf("configured policy was not applied: %+v", receipt)
+				}
+				mutations, err := os.ReadFile(mutationsPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.blocked || tc.dryRun {
+					if len(mutations) != 0 || len(result.PanesInjected) != 0 {
+						t.Fatalf("block/dry-run performed delivery: result=%+v mutations=%s", result, mutations)
+					}
+					if tc.blocked && (result.ErrorCode != "SENSITIVE_DATA_BLOCKED" || receipt.Status != "not_attempted") {
+						t.Fatalf("block lost structured refusal: %+v", result)
+					}
+					if !tc.blocked && (!reflect.DeepEqual(result.PanesPlanned, []int{1}) || receipt.Status != "planned") {
+						t.Fatalf("robot dry-run claimed delivery: %+v", result)
+					}
+					return
+				}
+				payload, err := os.ReadFile(filepath.Join(dir, "payload"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if receipt.Status != "delivered" || !reflect.DeepEqual(result.PanesInjected, []int{1}) || receipt.Bytes != len(payload) || result.TotalBytes != len(payload) {
+					t.Fatalf("delivery receipt describes different bytes: result=%+v payload size=%d", result, len(payload))
+				}
+				if tc.mode == "redact" {
+					if strings.Contains(string(payload), text) || !strings.Contains(string(payload), "[REDACTED:") {
+						t.Fatal("final-message redaction was bypassed by actual tmux delivery")
+					}
+				} else if !strings.Contains(string(payload), text) {
+					t.Fatal("explicit passthrough policy changed the actual payload")
+				}
+				if tc.findings && len(result.Warnings) == 0 {
+					t.Fatal("warn/redact policy did not report its findings")
+				}
+			})
+		}
 	}
 }

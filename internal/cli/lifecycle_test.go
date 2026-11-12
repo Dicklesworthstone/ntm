@@ -104,7 +104,8 @@ esac
 				t.Fatalf("remote process control lacked actionable typed refusal: %+v", response)
 			}
 			if _, err := os.Stat(filepath.Join(root, "forbidden")); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("remote process control crossed a forbidden observation/mutation boundary: %v", err)
+				calls, _ := os.ReadFile(filepath.Join(root, "calls"))
+				t.Fatalf("remote process control crossed a forbidden observation/mutation boundary: %v; calls=%s", err, calls)
 			}
 			calls, err := os.ReadFile(filepath.Join(root, "calls"))
 			if err != nil && !errors.Is(err, os.ErrNotExist) {

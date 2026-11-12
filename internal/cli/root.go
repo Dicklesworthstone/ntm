@@ -30,6 +30,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
+	"github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/encryption"
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/history"
@@ -93,6 +94,13 @@ func failRobotCommand(err error, code, hint, command string) {
 }
 
 func classifyRobotContextInjectError(err error) (code, hint string) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return robot.ErrCodeTimeout, "Retry the command after cancellation or increase its timeout"
+	}
+	var dispatchErr *dispatch.Error
+	if errors.As(err, &dispatchErr) && dispatchErr.Code == dispatch.ErrRedactionBlocked {
+		return "SENSITIVE_DATA_BLOCKED", "Re-run with --allow-secret to bypass, or use --redact=warn/--redact=redact"
+	}
 	if errors.Is(err, agent.ErrAutomatedPromptDeliveryNotImplemented) {
 		return robot.ErrCodeNotImplemented, agent.GrokPromptDeliveryCapabilityHint
 	}
@@ -2944,7 +2952,7 @@ Shell Integration:
 				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use readable project-relative context files", "robot-context-inject")
 				return
 			}
-			injectedPanes := []int{}
+			result := contextInjectionResult(session, injected, len(content), truncated, robotContextInjectDry, nil, nil)
 			if len(injected) > 0 {
 				panes, pErr := tmux.GetPanes(session)
 				if pErr != nil {
@@ -2956,29 +2964,20 @@ Shell Integration:
 					failRobotCommand(targetErr, robot.ErrCodePaneNotFound, "Inspect canonical pane addresses with --robot-is-working", "robot-context-inject")
 					return
 				}
-				injectedPanes, err = injectContextIntoPanes(cmd.Context(), session, targets, content, robotContextInjectDry, sendContextToPane)
-				if err != nil {
-					code, hint := classifyRobotContextInjectError(err)
-					failRobotCommand(err, code, hint, "robot-context-inject")
-					return
-				}
+				result, err = injectContextIntoPanes(cmd.Context(), session, targets, content, robotContextInjectMax, robotContextInjectDry, sendContextToPane)
+				result.InjectedFiles, result.Truncated = injected, truncated
 			}
-			result := ContextInjectResult{
-				Success:       true,
-				Session:       session,
-				InjectedFiles: injected,
-				TotalBytes:    len(content),
-				Truncated:     truncated,
-				PanesInjected: injectedPanes,
-			}
+			result.Mode = "files"
 			if result.InjectedFiles == nil {
 				result.InjectedFiles = []string{}
 			}
 			if result.PanesInjected == nil {
 				result.PanesInjected = []int{}
 			}
-			if err := output.PrintJSON(result); err != nil {
-				recordRobotProcessExit(err)
+			if printErr := output.PrintJSON(result); printErr != nil {
+				recordRobotProcessExit(printErr)
+			} else if err != nil {
+				recordRobotProcessExit(robot.ExitResultForResponse(robot.NewErrorResponse(err, result.ErrorCode, result.Hint), err, true))
 			}
 			return
 		}
@@ -3564,11 +3563,13 @@ func robotPersistenceRefreshesProjection(cmd *cobra.Command) bool {
 // ru, dcg, rano, giil, Agent Mail) never reach currentProjectionStore; send,
 // interrupt, ack, tail, is-working and send-receipt reach the store only for
 // send-operation records and attention-event appends (the send guard hook
-// included). An invocation that also names any other robot surface still
-// refreshes.
+// included). Lifecycle verbs inspect their targets after host admission and
+// must not observe remote panes through a startup refresh before that check.
+// An invocation that also names any other robot surface still refreshes.
 var robotSurfacesWithoutProjection = map[string]bool{
 	"robot-send": true, "robot-interrupt": true, "robot-ack": true, "robot-tail": true,
 	"robot-is-working": true, "robot-send-receipt": true,
+	"robot-exit-cli": true, "robot-kill-agent": true, "robot-smart-restart": true,
 	"robot-capabilities": true, "robot-help": true, "robot-docs": true, "robot-schema": true,
 	"robot-palette": true, "robot-recipes": true, "robot-ensemble-modes": true, "robot-ensemble-presets": true,
 	"robot-default-prompts": true, "robot-profile-list": true, "robot-profile-show": true,

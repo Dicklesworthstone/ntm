@@ -167,7 +167,7 @@ func TestContextUniformRobotInjectionReturnsPartialFailure(t *testing.T) {
 	t.Parallel()
 	failure := errors.New("pane unavailable")
 	panes := []tmux.Pane{{ID: "%1", Index: 1, Type: tmux.AgentClaude}, {ID: "%2", Index: 2, Type: tmux.AgentCodex}}
-	injected, err := injectContextIntoPanes(t.Context(), "demo", panes, "context", false, func(_ context.Context, pane tmux.Pane, text string) error {
+	result, err := injectContextIntoPanes(t.Context(), "demo", panes, "context", 0, false, func(_ context.Context, pane tmux.Pane, text string) error {
 		if text != "context" {
 			t.Fatalf("context payload changed: %q", text)
 		}
@@ -176,8 +176,8 @@ func TestContextUniformRobotInjectionReturnsPartialFailure(t *testing.T) {
 		}
 		return nil
 	})
-	if !errors.Is(err, failure) || !reflect.DeepEqual(injected, []int{1}) {
-		t.Fatalf("robot injection swallowed partial failure: %v, %v", injected, err)
+	if !errors.Is(err, failure) || !reflect.DeepEqual(result.PanesInjected, []int{1}) || result.Deliveries[1].Status != "uncertain" {
+		t.Fatalf("robot injection swallowed partial failure: %+v, %v", result, err)
 	}
 }
 
