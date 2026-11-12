@@ -45,32 +45,6 @@ updates:
       - dependency-name: "github.com/spf13/cobra"
         update-types: ["version-update:semver-major"]
 
-  # GitHub Actions
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "09:00"
-      timezone: "America/New_York"
-    open-pull-requests-limit: 5
-    reviewers:
-      - "Dicklesworthstone"
-    labels:
-      - "dependencies"
-      - "github-actions"
-    commit-message:
-      prefix: "ci"
-      include: "scope"
-    groups:
-      # Group all action updates together
-      actions-minor-and-patch:
-        patterns:
-          - "*"
-        update-types:
-          - "minor"
-          - "patch"
-
   # Docker (if Dockerfile uses pinned versions)
   - package-ecosystem: "docker"
     directory: "/"

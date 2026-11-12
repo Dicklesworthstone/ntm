@@ -17,19 +17,9 @@
 # to source-only in the next minor.
 name: Web Audit
 
+# Permanent DSR-only policy (AGENTS.md): automatic GitHub Actions triggers are
+# disabled; workflow definition remains as input for local DSR/`act` execution.
 on:
-  schedule:
-    - cron: "17 6 * * 1" # weekly, Monday 06:17 UTC
-  push:
-    branches: ["main"]
-    paths:
-      - "web/**"
-      - ".github/workflows/web-audit.yml"
-  pull_request:
-    branches: ["main"]
-    paths:
-      - "web/**"
-      - ".github/workflows/web-audit.yml"
   workflow_dispatch:
 
 permissions:

@@ -15,23 +15,9 @@
 
 name: E2E Tests
 
+# Permanent DSR-only policy (AGENTS.md): automatic GitHub Actions triggers are
+# disabled; workflow definition remains as input for local DSR/`act` execution.
 on:
-  # Main is the only long-lived branch, so every landed change must run the
-  # same hardening matrix that pull requests and the nightly schedule run.
-  push:
-    branches: ["main"]
-    paths:
-      - 'e2e/**'
-      - 'cmd/ntm/**'
-      - 'internal/**'
-      - 'tests/**'
-      - 'Makefile'
-      - 'go.mod'
-      - 'go.sum'
-      - '.github/workflows/ci.yml'
-      - '.github/workflows/e2e-tests.yml'
-
-  # Manual trigger for full E2E testing
   workflow_dispatch:
     inputs:
       mock_mode:
@@ -44,24 +30,6 @@ on:
         required: false
         default: ''
         type: string
-
-  # Run on PRs that touch e2e or robot code
-  pull_request:
-    branches: ["main"]
-    paths:
-      - 'e2e/**'
-      - 'cmd/ntm/**'
-      - 'internal/**'
-      - 'tests/**'
-      - 'Makefile'
-      - 'go.mod'
-      - 'go.sum'
-      - '.github/workflows/ci.yml'
-      - '.github/workflows/e2e-tests.yml'
-
-  # Nightly scheduled run
-  schedule:
-    - cron: '0 4 * * *'  # 4 AM UTC daily
 
 concurrency:
   group: e2e-${{ github.workflow }}-${{ github.ref }}

@@ -1,9 +1,9 @@
 name: Release
 
+# Permanent DSR-only policy (AGENTS.md): automatic GitHub Actions triggers are
+# disabled; workflow definition remains as input for local DSR/`act` execution.
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: read

@@ -1,10 +1,8 @@
 name: CI
 
+# Permanent DSR-only policy (AGENTS.md): automatic GitHub Actions triggers are
+# disabled; workflow definition remains as input for local DSR/`act` execution.
 on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
   workflow_dispatch:
 
 concurrency:

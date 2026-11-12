@@ -9,19 +9,10 @@
 
 name: Notify ACFS of Installer Change
 
+# Permanent DSR-only policy (AGENTS.md): automatic GitHub Actions triggers are
+# disabled; workflow definition remains as input for local DSR/`act` execution.
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'install.sh'
-      - 'scripts/install.sh'
-      - '**/install.sh'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'install.sh'
-      - 'scripts/install.sh'
-      - '**/install.sh'
+  workflow_dispatch:
 
 concurrency:
   group: installer-notify-${{ github.ref }}
