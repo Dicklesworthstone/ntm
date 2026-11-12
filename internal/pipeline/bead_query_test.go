@@ -798,3 +798,121 @@ func TestBeadQueryRecordsFlowThroughFreshAndResumedWorkflows(t *testing.T) {
 		})
 	}
 }
+
+// Both native bead consumers must refuse the entire response rather than
+// treating missing data as an empty query or exposing a valid prefix.
+func TestBeadQueryResponseRequiresCompleteWorkSet(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+	}{
+		{"empty stdout", ""},
+		{"whitespace stdout", " \n\t"},
+		{"null envelope", `null`},
+		{"array envelope", `[]`},
+		{"missing issues", `{}`},
+		{"unknown envelope", `{"records":[]}`},
+		{"case ambiguous array", `{"Issues":[]}`},
+		{"duplicate issues", `{"issues":[{"id":"bd-lost"}],"issues":[]}`},
+		{"duplicate total", `{"issues":[{"id":"bd-one"}],"total":2,"total":1}`},
+		{"duplicate offset", `{"issues":[],"offset":1,"offset":0}`},
+		{"duplicate limit", `{"issues":[],"limit":1,"limit":0}`},
+		{"duplicate has_more", `{"issues":[],"has_more":true,"has_more":false}`},
+		{"duplicate success", `{"issues":[],"success":false,"success":true}`},
+		{"duplicate error", `{"issues":[],"error":"database unavailable","error":null}`},
+		{"issues case collision", `{"issues":[],"Issues":[{"id":"bd-lost"}]}`},
+		{"total case collision", `{"issues":[],"total":0,"Total":1}`},
+		{"offset case alias", `{"issues":[],"Offset":1}`},
+		{"limit case alias", `{"issues":[],"Limit":1}`},
+		{"has_more case alias", `{"issues":[],"HAS_MORE":true}`},
+		{"success case collision", `{"issues":[],"success":true,"Success":false}`},
+		{"error case collision", `{"issues":[],"error":null,"Error":"database unavailable"}`},
+		{"null issues", `{"issues":null}`},
+		{"object issues", `{"issues":{}}`},
+		{"null row", `{"issues":[null]}`},
+		{"array row", `{"issues":[[]]}`},
+		{"string row", `{"issues":["bd-one"]}`},
+		{"missing identity", `{"issues":[{}]}`},
+		{"null identity", `{"issues":[{"id":null}]}`},
+		{"numeric identity", `{"issues":[{"id":1}]}`},
+		{"empty identity", `{"issues":[{"id":""}]}`},
+		{"padded identity", `{"issues":[{"id":" bd-one"}]}`},
+		{"embedded whitespace", `{"issues":[{"id":"bd one"}]}`},
+		{"control identity", `{"issues":[{"id":"bd-\u0000one"}]}`},
+		{"repeated identity key", `{"issues":[{"id":"bd-one","id":"bd-two"}]}`},
+		{"case ambiguous identity", `{"issues":[{"ID":"bd-one"}]}`},
+		{"typed identity replacement", `{"issues":[{"id":"bd-one","ID":"bd-same"},{"id":"bd-two","ID":"bd-same"}]}`},
+		{"duplicate identities", `{"issues":[{"id":"bd-one"},{"id":"bd-one"}]}`},
+		{"invalid row after valid prefix", `{"issues":[{"id":"bd-one"},{}]}`},
+		{"missing total rows", `{"issues":[{"id":"bd-one"}],"total":2}`},
+		{"excess total rows", `{"issues":[{"id":"bd-one"}],"total":0}`},
+		{"negative total", `{"issues":[],"total":-1}`},
+		{"null total", `{"issues":[],"total":null}`},
+		{"string total", `{"issues":[],"total":"0"}`},
+		{"fractional total", `{"issues":[],"total":0.5}`},
+		{"offset page", `{"issues":[{"id":"bd-one"}],"offset":1}`},
+		{"negative offset", `{"issues":[],"offset":-1}`},
+		{"null offset", `{"issues":[],"offset":null}`},
+		{"limited page", `{"issues":[{"id":"bd-one"}],"limit":1}`},
+		{"negative limit", `{"issues":[],"limit":-1}`},
+		{"null limit", `{"issues":[],"limit":null}`},
+		{"additional page", `{"issues":[{"id":"bd-one"}],"has_more":true}`},
+		{"null has_more", `{"issues":[],"has_more":null}`},
+		{"string has_more", `{"issues":[],"has_more":"false"}`},
+		{"reported failure", `{"issues":[],"success":false}`},
+		{"null success", `{"issues":[],"success":null}`},
+		{"reported error", `{"issues":[],"error":"database unavailable"}`},
+		{"structured error", `{"issues":[{"id":"bd-one"}],"error":{"code":"DATABASE_ERROR"}}`},
+		{"invalid trailing whitespace", "{\"issues\":[]}\v"},
+		{"trailing JSON", `{"issues":[]} {"issues":[]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if records, err := parseBeadQueryRecords([]byte(tc.payload)); err == nil || records != nil {
+				t.Fatalf("native query accepted unusable response: records=%+v err=%v", records, err)
+			}
+			if items, err := parseBrListJSON([]byte(tc.payload)); err == nil || items != nil {
+				t.Fatalf("structured foreach accepted unusable response: items=%+v err=%v", items, err)
+			}
+		})
+	}
+}
+
+func TestBeadQueryResponsePreservesExplicitEmptyAndCompleteLists(t *testing.T) {
+	for _, payload := range []string{
+		`{"issues":[]}`,
+		`{"issues":[],"total":0,"limit":0,"offset":0,"has_more":false}`,
+		`{"issues":[],"success":true,"error":null}`,
+		`{"issues":[],"success":true,"error":""}`,
+	} {
+		records, err := parseBeadQueryRecords([]byte(payload))
+		if err != nil || records == nil || len(records) != 0 {
+			t.Fatalf("explicit empty query must return []: %+v %v", records, err)
+		}
+		items, err := parseBrListJSON([]byte(payload))
+		if err != nil || items == nil || len(items) != 0 {
+			t.Fatalf("explicit empty foreach source must return []: %+v %v", items, err)
+		}
+	}
+
+	const payload = `{"issues":[
+		{"id":"bd-one","title":"First","priority":0,"custom":{"owner":"Ada"},"dependency_count":2},
+		{"id":"bd-two","labels":["api"],"priority":1,"custom":{"owner":"Grace"}}
+	],"total":2,"limit":0,"offset":0,"has_more":false,"extension":"retained"}`
+	records, err := parseBeadQueryRecords([]byte(payload))
+	if err != nil || len(records) != 2 || records[0].ID != "bd-one" || records[1].ID != "bd-two" {
+		t.Fatalf("complete native query failed: %+v %v", records, err)
+	}
+	if records[0].Labels == nil || len(records[0].Labels) != 0 {
+		t.Fatalf("native record lost its explicit empty label list: %+v", records[0])
+	}
+	items, err := parseBrListJSON([]byte(payload))
+	if err != nil || len(items) != 2 {
+		t.Fatalf("complete foreach source failed: %+v %v", items, err)
+	}
+	first, ok := items[0].(map[string]interface{})
+	if !ok || first["id"] != "bd-one" || first["dependency_count"] != float64(2) ||
+		!reflect.DeepEqual(first["custom"], map[string]interface{}{"owner": "Ada"}) {
+		t.Fatalf("foreach lost extension fields: %#v", items[0])
+	}
+}

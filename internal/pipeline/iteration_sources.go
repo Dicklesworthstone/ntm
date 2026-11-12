@@ -130,7 +130,8 @@ func (r *IterationSourceResolver) ResolveModels(ctx context.Context, models Stri
 //     minimum {id, title, description, labels, status}, suitable for
 //     ${item.id}, ${item.title}, etc.
 //
-// Empty stdout yields zero iterations (not an error).
+// Empty shell stdout yields zero iterations. A structured query must return
+// an explicit issues array; malformed or incomplete work sets are errors.
 func (r *IterationSourceResolver) ResolveBeads(ctx context.Context, expr string) ([]interface{}, error) {
 	expr = strings.TrimSpace(expr)
 	if expr == "" {
@@ -443,21 +444,19 @@ func splitKV(s string) (key, value string, hasColon bool) {
 	return s[:idx], s[idx+1:], true
 }
 
-// parseBrListJSON parses `br list --json` output (an object with "issues":
-// [...]) into []interface{} of map records. Empty output yields zero items.
+// parseBrListJSON parses a complete `br list --json` issues array into map
+// records, preserving fields outside the native query's BeadRecord subset.
 func parseBrListJSON(out []byte) ([]interface{}, error) {
-	trimmed := strings.TrimSpace(string(out))
-	if trimmed == "" {
-		return []interface{}{}, nil
-	}
-	var doc struct {
-		Issues []map[string]interface{} `json:"issues"`
-	}
-	if err := json.Unmarshal([]byte(trimmed), &doc); err != nil {
+	payload, err := completeBeadListPayload(out)
+	if err != nil {
 		return nil, fmt.Errorf("parse br --json output: %w", err)
 	}
-	items := make([]interface{}, 0, len(doc.Issues))
-	for _, issue := range doc.Issues {
+	var issues []map[string]interface{}
+	if err := json.Unmarshal(payload, &issues); err != nil {
+		return nil, fmt.Errorf("parse br --json output: %w", err)
+	}
+	items := make([]interface{}, 0, len(issues))
+	for _, issue := range issues {
 		items = append(items, issue)
 	}
 	return items, nil

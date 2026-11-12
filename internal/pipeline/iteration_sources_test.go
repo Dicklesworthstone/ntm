@@ -384,14 +384,10 @@ func TestResolveBeads_EmptyResultIsNotError(t *testing.T) {
 		"structured": {
 			RunBr: func(context.Context, []string) ([]byte, error) { return []byte(`{"issues":[]}`), nil },
 		},
-		"structured-empty-stdout": {
-			RunBr: func(context.Context, []string) ([]byte, error) { return []byte(""), nil },
-		},
 	}
 	exprs := map[string]string{
-		"shell":                   "$(true)",
-		"structured":              "hypothesis,state:active",
-		"structured-empty-stdout": "label:hypothesis",
+		"shell":      "$(true)",
+		"structured": "hypothesis,state:active",
 	}
 
 	for name, r := range cases {
@@ -938,6 +934,178 @@ func TestStripShellInvocation(t *testing.T) {
 			if ok != tc.wantOk || got != tc.want {
 				t.Fatalf("got (%q,%v), want (%q,%v)", got, ok, tc.want, tc.wantOk)
 			}
+		})
+	}
+}
+
+// These fixtures use the real br process/capture path through the controlled
+// foreground entry point. An injected result callback would miss the boundary
+// at which incomplete tracker output becomes actionable pipeline work.
+func TestControlledBeadSourcesRejectIncompleteResultsBeforeDispatch(t *testing.T) {
+	for _, kind := range []string{"bead_query", "br"} {
+		for _, tc := range []struct {
+			name    string
+			payload string
+		}{
+			{"blank", ""},
+			{"null", `null`},
+			{"unknown envelope", `{"records":[]}`},
+			{"duplicate issues", `{"issues":[{"id":"bd-lost"}],"issues":[]}`},
+			{"duplicate total", `{"issues":[{"id":"bd-one","status":"open"}],"total":2,"total":1}`},
+			{"duplicate has_more", `{"issues":[{"id":"bd-one","status":"open"}],"has_more":true,"has_more":false}`},
+			{"duplicate failure", `{"issues":[],"success":false,"success":true}`},
+			{"duplicate error", `{"issues":[],"error":"database unavailable","error":null}`},
+			{"issues case collision", `{"issues":[],"Issues":[{"id":"bd-lost"}]}`},
+			{"total case collision", `{"issues":[{"id":"bd-one","status":"open"}],"total":1,"Total":2}`},
+			{"has_more case alias", `{"issues":[{"id":"bd-one","status":"open"}],"HAS_MORE":true}`},
+			{"null issues", `{"issues":null}`},
+			{"null row", `{"issues":[null]}`},
+			{"invalid filtered row", `{"issues":[{"id":"bd-one","status":"open"},{"id":"","status":"closed"}]}`},
+			{"duplicate filtered identity", `{"issues":[{"id":"bd-one","status":"open"},{"id":"bd-one","status":"closed"}]}`},
+			{"case ambiguous identity", `{"issues":[{"id":"bd-one","ID":"bd-other","status":"open"}]}`},
+			{"repeated identity key", `{"issues":[{"id":"bd-one","id":"bd-other","status":"open"}]}`},
+			{"incomplete total", `{"issues":[{"id":"bd-one","status":"open"}],"total":2}`},
+			{"later page", `{"issues":[{"id":"bd-one","status":"open"}],"offset":1}`},
+			{"limited response", `{"issues":[{"id":"bd-one","status":"open"}],"limit":1}`},
+			{"more results", `{"issues":[{"id":"bd-one","status":"open"}],"has_more":true}`},
+			{"reported failure", `{"issues":[{"id":"bd-one","status":"open"}],"success":false}`},
+			{"reported error", `{"issues":[{"id":"bd-one","status":"open"}],"error":{"code":"DATABASE_ERROR"}}`},
+		} {
+			t.Run(kind+"/"+tc.name, func(t *testing.T) {
+				script := "printf '%s\\n' \"$@\" > query-args\nprintf '%s' \"$NTM_SELECTOR_POLICY_RESULT\""
+				workflow, cfg, _ := selectorPolicyWorkflow(t, kind, script)
+				t.Setenv("NTM_SELECTOR_POLICY_RESULT", tc.payload)
+				wantErrorType := "foreach_source"
+				if kind == "bead_query" {
+					workflow.Steps[0].BeadQuery.Filter = "status==open"
+					wantErrorType = "bead_query"
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				state, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+				if err == nil || state == nil || state.Status != StatusFailed {
+					t.Fatalf("controlled pipeline accepted an unusable bead result: state=%+v err=%v", state, err)
+				}
+				result := state.Steps["select"]
+				if result.Status != StatusFailed || result.Error == nil || result.Error.Type != wantErrorType ||
+					!strings.Contains(result.Error.Message, "br list") {
+					t.Fatalf("failure did not come from source validation: %+v", result)
+				}
+				args, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "query-args"))
+				if err != nil || !strings.Contains(string(args), "--limit\n0\n") {
+					t.Fatalf("fixture did not exercise an unlimited br query: %q %v", args, err)
+				}
+				assertSelectorPolicyNoDispatch(t, cfg)
+			})
+		}
+	}
+}
+
+func TestControlledBeadSourcesAcceptExplicitEmptyResults(t *testing.T) {
+	for _, kind := range []string{"bead_query", "br"} {
+		t.Run(kind, func(t *testing.T) {
+			workflow, cfg, _ := selectorPolicyWorkflow(t, kind, `printf '%s' "$NTM_SELECTOR_POLICY_RESULT"`)
+			t.Setenv("NTM_SELECTOR_POLICY_RESULT", `{"issues":[],"total":0,"limit":0,"offset":0,"has_more":false}`)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			state, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+			if err != nil || state == nil || state.Status != StatusCompleted {
+				t.Fatalf("explicit empty source failed: state=%+v err=%v", state, err)
+			}
+			if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "dispatched")); err != nil || string(data) != "downstream" {
+				t.Fatalf("complete empty source did not admit its dependent step: %q %v", data, err)
+			}
+			if _, err := os.Stat(filepath.Join(cfg.ProjectDir, "child-dispatched")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("empty source invented an iteration: %v", err)
+			}
+			if kind == "bead_query" && state.Steps["select"].Output != "[]" {
+				t.Fatalf("empty query was not an explicit JSON array: %q", state.Steps["select"].Output)
+			}
+		})
+	}
+}
+
+func TestControlledBeadQueryGroupedFilterDispatchesExactSelection(t *testing.T) {
+	workflow, cfg, _ := selectorPolicyWorkflow(t, "bead_query", `printf '%s' "$NTM_SELECTOR_POLICY_RESULT"`)
+	t.Setenv("NTM_SELECTOR_POLICY_RESULT", `{"issues":[
+		{"id":"bd-source","labels":["api || (parser)"],"status":"open","priority":1,"issue_type":"feature"},
+		{"id":"bd-bug","labels":[],"status":"open","priority":1,"issue_type":"bug"},
+		{"id":"bd-closed","labels":["api || (parser)"],"status":"closed","priority":1,"issue_type":"bug"},
+		{"id":"bd-later","labels":[],"status":"open","priority":2,"issue_type":"bug"},
+		{"id":"bd-other","labels":[],"status":"open","priority":1,"issue_type":"feature"}
+	],"total":5,"limit":0,"offset":0,"has_more":false}`)
+	workflow.Steps[0].BeadQuery.Filter = `status==open && (label=="api || (parser)" || issue_type==bug) && priority==1`
+	workflow.Steps[0].OutputVar = "selected"
+	workflow.Steps[1] = Step{
+		ID:        "consume",
+		DependsOn: []string{"select"},
+		Foreach: &ForeachConfig{
+			Items: "${vars.selected_parsed}",
+			Steps: []Step{{ID: "record", Command: "printf '%s\\n' '${item.id}' >> selected-ids"}},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	state, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+	if err != nil || state == nil || state.Status != StatusCompleted {
+		t.Fatalf("grouped query failed through the controlled surface: state=%+v err=%v", state, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "selected-ids")); err != nil || string(data) != "bd-source\nbd-bug\n" {
+		t.Fatalf("grouped query dispatched the wrong identities: %q %v", data, err)
+	}
+}
+
+func TestControlledStructuredBeadSourcePreservesCustomFields(t *testing.T) {
+	workflow, cfg, _ := selectorPolicyWorkflow(t, "br", `printf '%s' "$NTM_SELECTOR_POLICY_RESULT"`)
+	t.Setenv("NTM_SELECTOR_POLICY_RESULT", `{"issues":[
+		{"id":"bd-one","custom":{"owner":"Ada"}},
+		{"id":"bd-two","custom":{"owner":"Grace"}}
+	],"total":2,"limit":0,"offset":0,"has_more":false}`)
+	workflow.Steps[0].Foreach.Steps = []Step{{
+		ID:      "record",
+		Command: "printf '%s:%s\\n' '${item.id}' '${item.custom.owner}' >> selected-ids",
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	state, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+	if err != nil || state == nil || state.Status != StatusCompleted {
+		t.Fatalf("complete structured source failed: state=%+v err=%v", state, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "selected-ids")); err != nil || string(data) != "bd-one:Ada\nbd-two:Grace\n" {
+		t.Fatalf("foreach lost source identities or custom fields: %q %v", data, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "dispatched")); err != nil || string(data) != "downstream" {
+		t.Fatalf("complete source did not finish its dependent step: %q %v", data, err)
+	}
+}
+
+func TestControlledBeadQueryInvalidFilterRefusesBeforeSubprocess(t *testing.T) {
+	for _, filter := range []string{
+		`status==open || unknown==value`,
+		`status==closed && priority==high`,
+		`status==open && (label==api`,
+	} {
+		t.Run(filter, func(t *testing.T) {
+			script := `printf queried > query-started; printf '%s' "$NTM_SELECTOR_POLICY_RESULT"`
+			workflow, cfg, _ := selectorPolicyWorkflow(t, "bead_query", script)
+			workflow.Vars = map[string]VarDef{"selection": {Type: VarTypeString, Default: filter}}
+			workflow.Steps[0].BeadQuery.Filter = "${vars.selection}"
+			t.Setenv("NTM_SELECTOR_POLICY_RESULT", `{"issues":[]}`)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			state, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)
+			if err == nil || state == nil || state.Status != StatusFailed {
+				t.Fatalf("invalid filter was accepted: state=%+v err=%v", state, err)
+			}
+			result := state.Steps["select"]
+			if result.Status != StatusFailed || result.Error == nil || result.Error.Type != "bead_query" ||
+				!strings.Contains(result.Error.Message, "filter failed") {
+				t.Fatalf("failure did not come from filter compilation: %+v", result)
+			}
+			if _, err := os.Stat(filepath.Join(cfg.ProjectDir, "query-started")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("invalid filter launched the query subprocess: %v", err)
+			}
+			assertSelectorPolicyNoDispatch(t, cfg)
 		})
 	}
 }
