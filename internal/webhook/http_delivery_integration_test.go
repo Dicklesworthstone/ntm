@@ -412,10 +412,24 @@ func TestManagerRetriesShareTheConfiguredConcurrencyLimit(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	m := NewManager(ManagerConfig{WorkerCount: workers, QueueSize: count})
-	wh := &WebhookConfig{URL: srv.URL, Method: http.MethodPost, Timeout: 5 * time.Second}
+	if err := m.Register(WebhookConfig{
+		ID:      "wh-retry",
+		URL:     srv.URL,
+		Method:  http.MethodPost,
+		Timeout: 5 * time.Second,
+		Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wh := m.webhooks["wh-retry"]
 	for i := 0; i < count; i++ {
 		m.pending.Add(1)
-		if !m.scheduleRetry(Delivery{ID: fmt.Sprint(i), Webhook: wh, Attempt: 1}) {
+		if !m.scheduleRetry(Delivery{
+			ID:      fmt.Sprint(i),
+			Webhook: wh,
+			Event:   Event{ID: fmt.Sprintf("evt-%d", i), Type: "agent.error"},
+			Attempt: 1,
+		}) {
 			t.Fatal("retry was rejected before the queue filled")
 		}
 	}

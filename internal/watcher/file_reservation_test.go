@@ -649,9 +649,18 @@ func TestCheckPaneOutputsRespectsSessionFilter(t *testing.T) {
 
 	server := newWatcherMCPServer(t, map[string]watcherToolHandler{
 		"file_reservation_paths": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			reason, _ := args["reason"].(string)
 			return agentmail.ReservationResult{
 				Granted: []agentmail.FileReservation{
-					{ID: 12, PathPattern: "/watched.go", AgentName: "TestAgent", Exclusive: true},
+					{
+						ID:          12,
+						ProjectID:   1,
+						PathPattern: "/watched.go",
+						AgentName:   "TestAgent",
+						Exclusive:   true,
+						Reason:      reason,
+						ExpiresTS:   agentmail.FlexTime{Time: time.Now().Add(time.Hour)},
+					},
 				},
 			}, nil
 		},
@@ -751,9 +760,18 @@ func TestOnFileEditConflictInvokesCallbackAndTracksGrantedReservations(t *testin
 
 	server := newWatcherMCPServer(t, map[string]watcherToolHandler{
 		"file_reservation_paths": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			reason, _ := args["reason"].(string)
 			return agentmail.ReservationResult{
 				Granted: []agentmail.FileReservation{
-					{ID: 7, PathPattern: "/granted.go", AgentName: "TestAgent", Exclusive: true},
+					{
+						ID:          7,
+						ProjectID:   1,
+						PathPattern: "/granted.go",
+						AgentName:   "TestAgent",
+						Exclusive:   true,
+						Reason:      reason,
+						ExpiresTS:   agentmail.FlexTime{Time: time.Now().Add(time.Hour)},
+					},
 				},
 				Conflicts: []agentmail.ReservationConflict{
 					{Path: "/blocked.go", Holders: []string{"BlueLake"}},
@@ -777,6 +795,7 @@ func TestOnFileEditConflictInvokesCallbackAndTracksGrantedReservations(t *testin
 		WithProjectDir("/test/project"),
 		WithAgentName("TestAgent"),
 		WithConflictCallback(func(conflict FileConflict) {
+			defer close(callbackDone)
 			if conflict.Path != "/blocked.go" {
 				t.Errorf("unexpected conflict path: %s", conflict.Path)
 			}
@@ -791,12 +810,12 @@ func TestOnFileEditConflictInvokesCallbackAndTracksGrantedReservations(t *testin
 			reservations := w.GetActiveReservations()
 			got := reservations["%1"]
 			if got == nil {
-				t.Fatal("expected pane reservation to exist during callback")
+				t.Errorf("expected pane reservation to exist during callback")
+				return
 			}
 			if len(got.Files) != 1 || got.Files[0] != "/granted.go" {
-				t.Fatalf("expected granted file to be tracked, got %v", got.Files)
+				t.Errorf("expected granted file to be tracked, got %v", got.Files)
 			}
-			close(callbackDone)
 		}),
 	)
 
@@ -826,6 +845,44 @@ func TestOnFileEditConflictInvokesCallbackAndTracksGrantedReservations(t *testin
 	}
 	if len(got.ReservationID) != 1 || got.ReservationID[0] != 7 {
 		t.Fatalf("expected granted reservation ID to be tracked, got %v", got.ReservationID)
+	}
+
+	// Negative check: an unverified grant (expired/mismatched project) still raises
+	// the conflict callback, without recording unverified ownership in Files.
+	unverifiedServer := newWatcherMCPServer(t, map[string]watcherToolHandler{
+		"file_reservation_paths": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			return agentmail.ReservationResult{
+				Granted: []agentmail.FileReservation{
+					{ID: 8, ProjectID: 999, PathPattern: "/unverified.go", AgentName: "TestAgent", Exclusive: true},
+				},
+				Conflicts: []agentmail.ReservationConflict{
+					{Path: "/blocked2.go", Holders: []string{"RedFox"}},
+				},
+			}, nil
+		},
+	})
+	defer unverifiedServer.Close()
+
+	unverifiedConflictDone := make(chan struct{})
+	wUnverified := NewFileReservationWatcher(
+		WithWatcherClient(agentmail.NewClient(agentmail.WithBaseURL(unverifiedServer.URL+"/"))),
+		WithProjectDir("/test/project"),
+		WithAgentName("TestAgent"),
+		WithConflictCallback(func(conflict FileConflict) {
+			defer close(unverifiedConflictDone)
+			if conflict.Path != "/blocked2.go" {
+				t.Errorf("unexpected unverified conflict path: %s", conflict.Path)
+			}
+		}),
+	)
+	wUnverified.OnFileEdit(context.Background(), "test-session", pane, []string{"/unverified.go", "/blocked2.go"})
+	select {
+	case <-unverifiedConflictDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected conflict callback even when partial grant readback fails")
+	}
+	if unv := wUnverified.GetActiveReservations()["%1"]; unv != nil && len(unv.Files) > 0 {
+		t.Fatalf("unverified grant must not enter owned Files, got %+v", unv)
 	}
 }
 

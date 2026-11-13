@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -192,7 +193,14 @@ exit 2
 	if err := os.WriteFile(filepath.Join(binDir, "ntm"), []byte(fakeNTM), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("sh", hookPath)
+	newHookCmd := func() *exec.Cmd {
+		if runtime.GOOS == "windows" {
+			return exec.Command("sh", hookPath)
+		}
+		return exec.Command(hookPath)
+	}
+
+	cmd := newHookCmd()
 	cmd.Env = []string{"HOME=" + dir, "PATH=" + binDir + string(os.PathListSeparator) + "/usr/bin:/bin"}
 	cmd.Stdin = strings.NewReader(payload)
 	out, err := cmd.CombinedOutput()
@@ -206,7 +214,7 @@ exit 2
 		t.Fatalf("ntm received stdin %q, want the hook payload", stdin)
 	}
 
-	cmd = exec.Command("sh", hookPath)
+	cmd = newHookCmd()
 	cmd.Env = []string{"HOME=" + dir, "PATH=/nonexistent"}
 	cmd.Stdin = strings.NewReader(payload)
 	out, err = cmd.CombinedOutput()

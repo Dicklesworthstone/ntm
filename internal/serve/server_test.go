@@ -490,7 +490,7 @@ func TestServerProjectDirScopesMailAtStartup(t *testing.T) {
 // response code and the project_dir the response reports.
 func patchProjectDir(t *testing.T, srv *Server, rawProjectDir string) (int, string) {
 	t.Helper()
-	body := `{"allowed_origins":["http://localhost:7337"]}`
+	body := `{}`
 	if rawProjectDir != "" {
 		body = `{"project_dir":` + rawProjectDir + `}`
 	}
@@ -561,9 +561,19 @@ func TestPatchConfigResetsProjectDirToStartupValue(t *testing.T) {
 			if code, got := patchProjectDir(t, srv, string(otherJSON)); code != http.StatusOK || got != other {
 				t.Fatalf("select other project: %d %q", code, got)
 			}
-			// A PATCH that omits project_dir leaves the selection alone.
+			// A PATCH that omits project_dir leaves the selection alone (both empty
+			// body in local auth mode and unrelated field patch in authenticated mode).
 			if code, got := patchProjectDir(t, srv, ""); code != http.StatusOK || got != other {
 				t.Fatalf("PATCH without project_dir changed the project: %d %q, want %q", code, got, other)
+			}
+			srv.auth = AuthConfig{Mode: AuthModeAPIKey, APIKey: "reset-test-key"}
+			authReq := httptest.NewRequest(http.MethodPatch, "/api/v1/config", strings.NewReader(`{"allowed_origins":["http://localhost:7337"]}`))
+			authReq.Header.Set("Authorization", "Bearer reset-test-key")
+			authRec := httptest.NewRecorder()
+			srv.Router().ServeHTTP(authRec, authReq)
+			srv.auth = AuthConfig{}
+			if authRec.Code != http.StatusOK || srv.projectDirSnapshot() != other {
+				t.Fatalf("authenticated PATCH omitting project_dir = %d (project=%q), want 200 %q", authRec.Code, srv.projectDirSnapshot(), other)
 			}
 			if client, err := srv.getMailClient(); err != nil || client == nil || client.ProjectKey() != other {
 				t.Fatalf("mail client not scoped to the selected project: client=%v err=%v", client, err)
