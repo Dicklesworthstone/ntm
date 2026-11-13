@@ -540,15 +540,15 @@ func sendExitChoreography(ctx context.Context, pane tmux.Pane, beforeInput func(
 	if err := tmux.DefaultClient.RunSilentContext(guardedCtx, "send-keys", "-t", tmux.ExactTarget(pane.ID), "C-c"); err != nil {
 		return err
 	}
-	secondDeadline := time.Now().Add(300 * time.Millisecond)
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-time.After(lifecycleDoubleTapGap):
 	}
-	// The ownership check counts toward the double-interrupt window. A slow
-	// observation must stop the sequence, not send a late key to another job.
-	secondCtx, cancel := context.WithDeadline(guardedCtx, secondDeadline)
+	// Bound the pre-second-key ownership observation + tmux send so a hung ps
+	// or tmux stops the sequence without starving normal SnapshotContext reads
+	// on loaded multi-core hosts.
+	secondCtx, cancel := context.WithTimeout(guardedCtx, 1500*time.Millisecond)
 	defer cancel()
 	return tmux.DefaultClient.RunSilentContext(secondCtx, "send-keys", "-t", tmux.ExactTarget(pane.ID), "C-c")
 }
@@ -717,33 +717,6 @@ func joinLifecycleDetail(existing, extra string) string {
 	return existing + "; " + extra
 }
 
-// collectProcessTree gathers the shell's descendant PIDs breadth-first
-// (excluding the shell itself) so a kill covers helper subprocesses the
-// agent spawned, not just the CLI root. Depth- and count-limited.
-func collectProcessTree(rootPID, perNodeLimit, maxDepth int) []int {
-	if rootPID <= 0 {
-		return nil
-	}
-	var tree []int
-	seen := map[int]bool{rootPID: true}
-	frontier := []int{rootPID}
-	for depth := 0; depth < maxDepth && len(frontier) > 0; depth++ {
-		var next []int
-		for _, pid := range frontier {
-			for _, child := range process.GetChildPIDs(pid, perNodeLimit) {
-				if child <= 0 || seen[child] {
-					continue
-				}
-				seen[child] = true
-				tree = append(tree, child)
-				next = append(next, child)
-			}
-		}
-		frontier = next
-	}
-	return tree
-}
-
 func waitForBareShell(ctx context.Context, session, paneID string, timeout time.Duration) (tmux.Pane, bool) {
 	deadline := time.Now().Add(timeout)
 	var last tmux.Pane
@@ -798,6 +771,9 @@ func classifyExitCLILineage(ctx context.Context, pane tmux.Pane) (string, string
 			rootCmd = filepath.Base(strings.TrimSpace(argv[0]))
 		}
 		return "shell_backed", rootCmd, nil
+	}
+	if !strings.Contains(shellErr.Error(), "has no persistent interactive shell") {
+		return "", "", shellErr
 	}
 	if pane.PID <= 0 || pane.Dead || pane.IsServicePane() {
 		return "", "", shellErr
