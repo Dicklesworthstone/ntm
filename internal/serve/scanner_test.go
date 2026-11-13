@@ -915,3 +915,122 @@ func seedScan(s *ScannerStore, scan *ScanRecord) {
 	s.scans[scan.ID] = cloneScan(scan)
 	s.scanList = append(s.scanList, scan.ID)
 }
+
+func installStubUBSForServeTest(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("stub ubs uses POSIX sh")
+	}
+	binDir := t.TempDir()
+	argsFile := filepath.Join(binDir, "ubs_args.log")
+	reportFile := filepath.Join(binDir, "ubs_report.json")
+	report := `{"project":".","status":"ok","totals":{"files":1,"critical":0,"warning":1,"info":0},"findings":[{"rule_id":"go.warn.1","severity":"warning","file":"pkg/sample.go","line":9,"col":2,"message":"unchecked error","category_id":"bug"}]}`
+	if err := os.WriteFile(reportFile, []byte(report), 0o600); err != nil {
+		t.Fatalf("write stub report: %v", err)
+	}
+	script := "#!/bin/sh\nset -eu\nif [ \"${1:-}\" = \"--version\" ]; then echo 'ubs 1.9.0'; exit 0; fi\nprintf '%s\\n' \"$*\" >> \"" + argsFile + "\"\ncat \"" + reportFile + "\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "ubs"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub ubs: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+"/usr/bin"+string(os.PathListSeparator)+"/bin")
+	return argsFile
+}
+
+func waitForCompletedScanForTest(t *testing.T, scanID string) *ScanRecord {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		scans := scannerStore.GetScans(10, 0)
+		for _, sc := range scans {
+			if sc.ID == scanID && (sc.State == ScanStateCompleted || sc.State == ScanStateFailed) {
+				return sc
+			}
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for scan %s to complete", scanID)
+	return nil
+}
+
+func TestHandleScannerScanEndpointAndIncrementalModes(t *testing.T) {
+	argsFile := installStubUBSForServeTest(t)
+	projectDir := t.TempDir()
+	subDir := filepath.Join(projectDir, "pkg")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatalf("mkdir pkg: %v", err)
+	}
+	sampleFile := filepath.Join(subDir, "sample.go")
+	if err := os.WriteFile(sampleFile, []byte("package pkg\n"), 0o644); err != nil {
+		t.Fatalf("write sample.go: %v", err)
+	}
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = projectDir
+
+	runCase := func(name, body, wantArg string) {
+		t.Run(name, func(t *testing.T) {
+			resetScannerStoreForTest()
+			_ = os.WriteFile(argsFile, nil, 0o600)
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/scanner/scan", strings.NewReader(body))
+			req.RemoteAddr = "127.0.0.1:12345"
+			req = req.WithContext(withRoleContext(req.Context(), &RoleContext{
+				Role:   RoleAdmin,
+				UserID: "tester",
+			}))
+			rec := httptest.NewRecorder()
+			srv.Router().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status=%d body=%s, want %d", rec.Code, rec.Body.String(), http.StatusAccepted)
+			}
+			var resp map[string]interface{}
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			scanID, _ := resp["scan_id"].(string)
+			if scanID == "" {
+				t.Fatalf("missing scan_id in %v", resp)
+			}
+
+			completed := waitForCompletedScanForTest(t, scanID)
+			if completed.State != ScanStateCompleted {
+				t.Fatalf("scan %s failed: %s", scanID, completed.Error)
+			}
+			if len(completed.FindingIDs) != 1 {
+				t.Fatalf("finding_ids = %v, want 1 finding", completed.FindingIDs)
+			}
+
+			rawArgs, err := os.ReadFile(argsFile)
+			if err != nil {
+				t.Fatalf("read ubs args log: %v", err)
+			}
+			if !strings.Contains(string(rawArgs), wantArg) {
+				t.Fatalf("ubs args %q missing %q", string(rawArgs), wantArg)
+			}
+		})
+	}
+
+	runCase("staged", `{"staged":true}`, "--staged")
+	runCase("diff", `{"diff":true}`, "--diff")
+	runCase("file", `{"file":"pkg/sample.go"}`, sampleFile)
+
+	t.Run("validation errors", func(t *testing.T) {
+		for _, badBody := range []string{
+			`{"staged":true,"diff":true}`,
+			`{"file":"pkg/sample.go","staged":true}`,
+			`{"file":"pkg/sample.go","path":"pkg"}`,
+			`{"file":"../outside.go"}`,
+			`{"file":"pkg/missing.go"}`,
+			`{"file":"pkg"}`,
+		} {
+			resetScannerStoreForTest()
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/scanner/scan", strings.NewReader(badBody))
+			rec := httptest.NewRecorder()
+			srv.handleRunScan(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("body %s -> status %d (%s), want 400", badBody, rec.Code, rec.Body.String())
+			}
+		}
+	})
+}

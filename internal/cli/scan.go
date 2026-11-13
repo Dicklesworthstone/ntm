@@ -21,6 +21,12 @@ type scanRunner interface {
 	Scan(context.Context, string, scanner.ScanOptions) (*scanner.ScanResult, error)
 }
 
+type incrementalScanRunner interface {
+	ScanFile(context.Context, string) (*scanner.ScanResult, error)
+	ScanStaged(context.Context, string) (*scanner.ScanResult, error)
+	ScanDiff(context.Context, string) (*scanner.ScanResult, error)
+}
+
 var (
 	scanIsAvailable = scanner.IsAvailable
 	newScanRunner   = func() (scanRunner, error) {
@@ -44,6 +50,7 @@ func newScanCmd() *cobra.Command {
 		timeoutSeconds int
 		stagedOnly     bool
 		diffOnly       bool
+		fileTarget     string
 		createBeads    bool
 		updateBeads    bool
 		minSeverity    string
@@ -72,6 +79,7 @@ Examples:
   ntm scan --watch           # Watch mode (auto-scan on change)
   ntm scan src/              # Scan specific directory
   ntm scan main.go           # Scan single file
+  ntm scan --file main.go    # Scan explicit single file
   ntm scan --staged          # Scan only staged files
   ntm scan --diff            # Scan only modified files
   ntm scan --only=golang     # Restrict to Go files
@@ -85,8 +93,45 @@ Examples:
   ntm scan --priority-report # Show smart priority report`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			timeoutChanged := cmd.Flags().Changed("timeout")
+			defer func() {
+				languages = nil
+				exclude = nil
+				ci = false
+				failOnWarning = false
+				verbose = false
+				timeoutSeconds = 120
+				stagedOnly = false
+				diffOnly = false
+				fileTarget = ""
+				createBeads = false
+				updateBeads = false
+				minSeverity = "warning"
+				dryRun = false
+				watch = false
+				notifyAgents = false
+				analyzeImpact = false
+				showHotspots = false
+				priorityReport = false
+			}()
+
+			if stagedOnly && diffOnly {
+				return fmt.Errorf("--staged and --diff are mutually exclusive")
+			}
+			trimmedFile := strings.TrimSpace(fileTarget)
+			if trimmedFile != "" {
+				if stagedOnly || diffOnly {
+					return fmt.Errorf("--file cannot be combined with --staged or --diff")
+				}
+				if len(args) > 0 {
+					return fmt.Errorf("--file cannot be combined with a positional [path] argument")
+				}
+			}
+
 			path := "."
-			if len(args) > 0 {
+			if trimmedFile != "" {
+				path = trimmedFile
+			} else if len(args) > 0 {
 				path = args[0]
 			}
 
@@ -95,6 +140,20 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("resolving path: %w", err)
 			}
+			if trimmedFile != "" {
+				info, statErr := os.Stat(absPath)
+				if statErr != nil {
+					return fmt.Errorf("invalid --file %q: %w", trimmedFile, statErr)
+				}
+				if info.IsDir() {
+					return fmt.Errorf("invalid --file %q: target is a directory", trimmedFile)
+				}
+			}
+
+			var timeout time.Duration
+			if timeoutChanged || trimmedFile == "" && !stagedOnly && !diffOnly {
+				timeout = time.Duration(timeoutSeconds) * time.Second
+			}
 
 			opts := scanner.ScanOptions{
 				Languages:        languages,
@@ -102,7 +161,7 @@ Examples:
 				CI:               ci,
 				FailOnWarning:    failOnWarning,
 				Verbose:          verbose,
-				Timeout:          time.Duration(timeoutSeconds) * time.Second,
+				Timeout:          timeout,
 				StagedOnly:       stagedOnly,
 				DiffOnly:         diffOnly,
 			}
@@ -129,6 +188,7 @@ Examples:
 	cmd.Flags().IntVar(&timeoutSeconds, "timeout", 120, "Timeout in seconds")
 	cmd.Flags().BoolVar(&stagedOnly, "staged", false, "Scan only staged files")
 	cmd.Flags().BoolVar(&diffOnly, "diff", false, "Scan only modified files")
+	cmd.Flags().StringVar(&fileTarget, "file", "", "Scan a single file")
 	cmd.Flags().BoolVarP(&watch, "watch", "w", false, "Watch for file changes and re-scan")
 	cmd.Flags().BoolVar(&notifyAgents, "notify", false, "Notify agents via Agent Mail about findings")
 
@@ -158,6 +218,31 @@ func parseSeverity(s string) scanner.Severity {
 	default:
 		return scanner.SeverityWarning
 	}
+}
+
+func hasCustomScanModifiers(opts scanner.ScanOptions) bool {
+	return len(opts.Languages) > 0 ||
+		len(opts.ExcludeLanguages) > 0 ||
+		opts.CI ||
+		opts.FailOnWarning ||
+		opts.Verbose ||
+		opts.Timeout > 0
+}
+
+func executeScanWithRunner(ctx context.Context, s scanRunner, path string, opts scanner.ScanOptions) (*scanner.ScanResult, error) {
+	if inc, ok := s.(incrementalScanRunner); ok && !hasCustomScanModifiers(opts) {
+		switch {
+		case opts.StagedOnly:
+			return inc.ScanStaged(ctx, path)
+		case opts.DiffOnly:
+			return inc.ScanDiff(ctx, path)
+		default:
+			if info, err := os.Stat(path); err == nil && !info.IsDir() {
+				return inc.ScanFile(ctx, path)
+			}
+		}
+	}
+	return s.Scan(ctx, path, opts)
 }
 
 func runScan(path string, opts scanner.ScanOptions, createBeads, updateBeads, notifyAgents bool, bridgeCfg scanner.BridgeConfig, analyzeImpact, showHotspots, priorityReport bool) error {
@@ -200,7 +285,7 @@ func runScan(path string, opts scanner.ScanOptions, createBeads, updateBeads, no
 
 	// Run scan
 	ctx := context.Background()
-	result, err := s.Scan(ctx, path, opts)
+	result, err := executeScanWithRunner(ctx, s, path, opts)
 	if err != nil {
 		cause := fmt.Errorf("scan failed: %w", err)
 		if jsonOutput {

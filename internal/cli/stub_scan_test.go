@@ -144,6 +144,46 @@ var placeholderAllowlist = map[string]map[string]string{
 	"internal/cli/mail.go": {
 		"placeholder (case-insensitive, standalone word)": "comment about default subject field being unchanged",
 	},
+
+	// Gemini turn detection strips TUI input placeholder hint text from idle prompts.
+	"internal/agent/gemini_turn.go": {
+		"placeholder (case-insensitive, standalone word)": "TUI input prompt placeholder hint stripping in Gemini turn detector",
+	},
+
+	// CLI scrub.go documents and configures redaction placeholder tokens.
+	"internal/cli/scrub.go": {
+		"placeholder (case-insensitive, standalone word)": "redaction placeholder token documentation and configuration",
+	},
+
+	// Pipeline dependency graph documents {item} loop variable placeholder references.
+	"internal/pipeline/deps.go": {
+		"placeholder (case-insensitive, standalone word)": "comment documenting {item} loop variable placeholder reference",
+	},
+
+	// Pipeline step admission validates unresolved variable placeholders before dispatch.
+	"internal/pipeline/step_admission.go": {
+		"placeholder (case-insensitive, standalone word)": "unresolved template/variable placeholder admission check",
+	},
+
+	// Redaction pattern heuristics skip example/placeholder credential literals.
+	"internal/redaction/patterns.go": {
+		"placeholder (case-insensitive, standalone word)": "redaction pattern comment for example/placeholder values",
+	},
+
+	// HTTP checkpoint export endpoint documents ${WORKING_DIR} placeholder substitution.
+	"internal/serve/checkpoints.go": {
+		"placeholder (case-insensitive, standalone word)": "HTTP checkpoint export ${WORKING_DIR} placeholder documentation",
+	},
+
+	// HTTP redaction endpoint documents redaction placeholder formatting.
+	"internal/serve/redact.go": {
+		"placeholder (case-insensitive, standalone word)": "HTTP redaction placeholder output documentation",
+	},
+
+	// Unified status strips TUI composer placeholder hint text when classifying idle prompts.
+	"internal/status/unified.go": {
+		"placeholder (case-insensitive, standalone word)": "composer input placeholder hint detection in unified status",
+	},
 }
 
 // placeholderHit records a single match found during scanning.
@@ -308,5 +348,36 @@ func TestNoNewPlaceholders_AllowlistDocumented(t *testing.T) {
 			}
 		}
 		_ = fmt.Sprintf("checked %s", file) // prevent lint unused
+	}
+}
+
+// TestNoNewPlaceholders_CatchesRealStubs is a negative canary proving the scanner
+// catches every configured stub/placeholder pattern on unallowlisted files.
+func TestNoNewPlaceholders_CatchesRealStubs(t *testing.T) {
+	dir := t.TempDir()
+	canaryPath := filepath.Join(dir, "canary.go")
+	canarySrc := strings.Join([]string{
+		"package canary",
+		"",
+		"func a() string { return \"feature NOT YET IMPLEMENTED\" }",
+		"func b() string { return \"not implemented yet\" }",
+		"// TODO: Update patterns before shipping",
+		"func c() string { return \"temporary placeholder return\" }",
+		"",
+	}, "\n")
+	if err := os.WriteFile(canaryPath, []byte(canarySrc), 0o600); err != nil {
+		t.Fatalf("write canary source: %v", err)
+	}
+
+	hits := scanFileForPlaceholders(t, canaryPath, "internal/canary/canary.go")
+	foundLabels := make(map[string]bool, len(hits))
+	for _, hit := range hits {
+		foundLabels[hit.label] = true
+	}
+
+	for _, pp := range placeholderPatterns {
+		if !foundLabels[pp.label] {
+			t.Errorf("scanFileForPlaceholders missed pattern %q; hits=%+v", pp.label, hits)
+		}
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -328,12 +329,15 @@ var scannerStore = NewScannerStore()
 
 // Request/Response types
 
-// ScanOptionsRequest is the request body for POST /api/v1/scanner/run
+// ScanOptionsRequest is the request body for POST /api/v1/scanner/run and POST /api/v1/scanner/scan
 type ScanOptionsRequest struct {
 	Path           string   `json:"path,omitempty"`        // Path to scan (defaults to project dir)
+	File           string   `json:"file,omitempty"`        // Single file to scan inside the project dir
 	Languages      []string `json:"languages,omitempty"`   // Languages to include
 	Exclude        []string `json:"exclude,omitempty"`     // Languages to exclude
+	Staged         bool     `json:"staged,omitempty"`      // Only scan staged files (alias for staged_only)
 	StagedOnly     bool     `json:"staged_only,omitempty"` // Only scan staged files
+	Diff           bool     `json:"diff,omitempty"`        // Only scan modified files (alias for diff_only)
 	DiffOnly       bool     `json:"diff_only,omitempty"`   // Only scan modified files
 	CI             bool     `json:"ci,omitempty"`          // CI mode
 	FailOnWarning  bool     `json:"fail_on_warning,omitempty"`
@@ -393,6 +397,7 @@ func (s *Server) registerScannerRoutes(r chi.Router) {
 
 		// Write operations
 		r.With(s.RequirePermission(PermWriteSessions)).Post("/run", s.handleRunScan)
+		r.With(s.RequirePermission(PermWriteSessions)).Post("/scan", s.handleRunScan)
 		r.With(s.RequirePermission(PermWriteSessions)).Post("/findings/{id}/dismiss", s.handleDismissFinding)
 		r.With(s.RequirePermission(PermWriteBeads)).Post("/findings/{id}/create-bead", s.handleCreateBeadFromFinding)
 	})
@@ -467,9 +472,44 @@ func (s *Server) handleRunScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	opts.StagedOnly = opts.StagedOnly || opts.Staged
+	opts.DiffOnly = opts.DiffOnly || opts.Diff
+	opts.File = strings.TrimSpace(opts.File)
+	opts.Path = strings.TrimSpace(opts.Path)
+
+	if opts.StagedOnly && opts.DiffOnly {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			"staged and diff cannot both be true", nil, reqID)
+		return
+	}
+	if opts.File != "" && (opts.StagedOnly || opts.DiffOnly) {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			"file cannot be combined with staged or diff", nil, reqID)
+		return
+	}
+	if opts.File != "" && opts.Path != "" {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			"file and path cannot both be set", nil, reqID)
+		return
+	}
+
 	// Default path to project directory
 	path := opts.Path
-	if path == "" {
+	if opts.File != "" {
+		var err error
+		path, err = s.resolveWorkflowPath(opts.File)
+		if err != nil {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+				"file must be inside the project directory", nil, reqID)
+			return
+		}
+		info, statErr := os.Stat(path)
+		if statErr != nil || info.IsDir() {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+				"file must exist and not be a directory", nil, reqID)
+			return
+		}
+	} else if path == "" {
 		path = s.projectDirSnapshot()
 	} else {
 		var err error
@@ -573,7 +613,22 @@ func (s *Server) runScanAsync(scan *ScanRecord, opts ScanOptionsRequest) {
 
 	// Run scan
 	ctx := context.Background()
-	result, err := sc.Scan(ctx, scan.Path, scanOpts)
+	var result *scanner.ScanResult
+	useIncrementalDefaults := len(opts.Languages) == 0 &&
+		len(opts.Exclude) == 0 &&
+		!opts.CI &&
+		!opts.FailOnWarning &&
+		opts.TimeoutSeconds <= 0
+	switch {
+	case useIncrementalDefaults && opts.File != "":
+		result, err = sc.ScanFile(ctx, scan.Path)
+	case useIncrementalDefaults && opts.StagedOnly:
+		result, err = sc.ScanStaged(ctx, scan.Path)
+	case useIncrementalDefaults && opts.DiffOnly:
+		result, err = sc.ScanDiff(ctx, scan.Path)
+	default:
+		result, err = sc.Scan(ctx, scan.Path, scanOpts)
+	}
 	now := time.Now()
 
 	if err != nil {
