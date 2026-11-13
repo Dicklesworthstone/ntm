@@ -3,11 +3,25 @@ package bv
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 )
+
+var (
+	hermeticBVRootOnce sync.Once
+	hermeticBVRootDir  string
+)
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if hermeticBVRootDir != "" {
+		_ = os.RemoveAll(hermeticBVRootDir)
+	}
+	os.Exit(code)
+}
 
 // testCache caches expensive bv command results to avoid repeated calls.
 // Each bv command (insights, priority, plan, recipes) takes ~9-10 seconds,
@@ -92,16 +106,46 @@ func getCachedRecipes(t *testing.T) (*RecipesResponse, string) {
 	return testCache.recipes, testCache.root
 }
 
-// getProjectRoot finds the project root by looking for .beads directory
+// getProjectRoot returns a hermetic git + .beads fixture directory so bv tests
+// never race against live edits in the parent repository checkout.
 func getProjectRoot() string {
-	dir, _ := os.Getwd()
-	for dir != "/" {
-		if _, err := os.Stat(filepath.Join(dir, ".beads")); err == nil {
-			return dir
+	hermeticBVRootOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "ntm-bv-hermetic-*")
+		if err != nil {
+			return
 		}
-		dir = filepath.Dir(dir)
-	}
-	return ""
+		beadsDir := filepath.Join(dir, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+			_ = os.RemoveAll(dir)
+			return
+		}
+		issues := strings.Join([]string{
+			`{"id":"bd-epic-1","title":"Hermetic Epic","description":"Root epic","status":"open","priority":1,"issue_type":"epic","labels":["core"],"created_at":"2026-05-01T00:00:00Z","updated_at":"2026-05-01T00:00:00Z"}`,
+			`{"id":"bd-task-1","title":"Foundation Task","description":"Unblocks downstream","status":"open","priority":1,"issue_type":"task","labels":["core","backend"],"created_at":"2026-05-01T00:01:00Z","updated_at":"2026-05-01T00:01:00Z"}`,
+			`{"id":"bd-task-2","title":"Dependent Task","description":"Blocked on foundation","status":"open","priority":2,"issue_type":"task","labels":["frontend"],"dependencies":[{"issue_id":"bd-task-2","depends_on_id":"bd-task-1","type":"blocks","created_at":"2026-05-01T00:02:00Z"}],"created_at":"2026-05-01T00:02:00Z","updated_at":"2026-05-01T00:02:00Z"}`,
+			`{"id":"bd-done-1","title":"Completed Task","description":"Already closed","status":"closed","priority":2,"issue_type":"bug","closed_at":"2026-05-01T01:00:00Z","created_at":"2026-05-01T00:00:00Z","updated_at":"2026-05-01T01:00:00Z"}`,
+		}, "\n") + "\n"
+		if err := os.WriteFile(filepath.Join(beadsDir, "issues.jsonl"), []byte(issues), 0o644); err != nil {
+			_ = os.RemoveAll(dir)
+			return
+		}
+		runGit := func(args ...string) bool {
+			cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+			return cmd.Run() == nil
+		}
+		if runGit("init", "-q", "-b", "main") {
+			_ = runGit("config", "user.email", "test@example.com")
+			_ = runGit("config", "user.name", "Test")
+			_ = runGit("add", ".beads/issues.jsonl")
+			_ = runGit("commit", "-q", "-m", "seed hermetic beads")
+			_ = runGit("update-ref", "refs/remotes/origin/main", "HEAD")
+		}
+		if _, err := exec.LookPath("br"); err == nil {
+			_ = exec.Command("br", "--cwd", dir, "sync", "--import-only").Run()
+		}
+		hermeticBVRootDir = dir
+	})
+	return hermeticBVRootDir
 }
 
 func TestIsInstalled(t *testing.T) {

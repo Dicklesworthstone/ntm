@@ -118,6 +118,13 @@ func getCachedTriage(t *testing.T) (*TriageResponse, string) {
 		}
 		t.Fatalf("getCachedTriage: %v", testTriageCache.err)
 	}
+	if !IsCacheValid() || triageCacheDir != testTriageCache.root {
+		refreshed, err := GetTriage(testTriageCache.root)
+		if err != nil {
+			t.Fatalf("refresh GetTriage cache: %v", err)
+		}
+		testTriageCache.triage = refreshed
+	}
 	return testTriageCache.triage, testTriageCache.root
 }
 
