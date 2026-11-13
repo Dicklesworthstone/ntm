@@ -156,9 +156,12 @@ func (h *Handoff) AddBlocker(blocker string) *Handoff {
 }
 
 // AddWarning records a non-fatal enrichment degradation on the handoff.
-func (h *Handoff) AddWarning(warning string) *Handoff {
-	if warning != "" {
-		h.Warnings = append(h.Warnings, EnrichmentWarning{Source: "caller", Message: warning})
+func (h *Handoff) AddWarning(source, message string) *Handoff {
+	if message != "" {
+		if source == "" {
+			source = "caller"
+		}
+		h.Warnings = append(h.Warnings, EnrichmentWarning{Source: source, Message: message})
 	}
 	return h
 }

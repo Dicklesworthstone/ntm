@@ -61,10 +61,7 @@ func requireGeneratorContext(ctx context.Context, operation string) error {
 // has time to save a useful handoff. Only requireGeneratorContext, applied to
 // the caller's context, decides whether generation itself must stop.
 func (g *Generator) warnEnrichment(h *Handoff, source string, err error) {
-	h.Warnings = append(h.Warnings, EnrichmentWarning{
-		Source:  source,
-		Message: truncateGen(err.Error(), 512),
-	})
+	h.AddWarning(source, truncateGen(err.Error(), 512))
 	g.logger.Warn("handoff enrichment incomplete",
 		"session", h.Session,
 		"pane", h.PaneID,
