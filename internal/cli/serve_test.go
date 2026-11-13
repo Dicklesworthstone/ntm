@@ -380,6 +380,7 @@ func TestServeBindsUnder200msWithSlowBVAndShutsDownUnder500msOnSIGTERM(t *testin
 		"NTM_SERVE_SUBPROCESS_HELPER=1",
 		"NTM_SERVE_TEST_PORT="+strconv.Itoa(port),
 		"NTM_SERVE_TEST_PROJECT="+projectDir,
+		"NTM_CONFIG=",
 		"HOME="+homeDir,
 		"XDG_CONFIG_HOME="+xdgConfigHome,
 		"XDG_DATA_HOME="+filepath.Join(homeDir, "data"),

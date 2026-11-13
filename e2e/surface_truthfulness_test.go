@@ -279,13 +279,18 @@ func TestSurfaceTruthfulness_DiffNoSideBySide(t *testing.T) {
 func TestSurfaceTruthfulness_EnsembleSpawnDefaultBuild(t *testing.T) {
 	bin := ntmBinary(t, "")
 
-	out, err := runNTM(t, bin, "ensemble", "spawn")
-	if err == nil {
-		t.Fatal("expected 'ensemble spawn' to fail in default build, but it succeeded")
-	}
+	out, _ := runNTM(t, bin, "ensemble", "spawn", "--help")
 	lower := strings.ToLower(out)
-	if !strings.Contains(lower, "experimental") {
-		t.Errorf("expected 'ensemble spawn' error to mention 'experimental', got: %s", out)
+	if strings.Contains(lower, "ensemble_experimental") || strings.Contains(lower, "rebuild with -tags") {
+		t.Errorf("expected graduated default 'ensemble spawn --help' to have no experimental gate, got: %s", out)
+	}
+	if !strings.Contains(out, "--dry-run") {
+		t.Errorf("expected graduated default 'ensemble spawn --help' to expose --dry-run, got: %s", out)
+	}
+
+	runOut, _ := runNTM(t, bin, "ensemble", "spawn")
+	if strings.Contains(strings.ToLower(runOut), "ensemble_experimental") {
+		t.Errorf("expected graduated default 'ensemble spawn' execution to have no experimental gate, got: %s", runOut)
 	}
 }
 

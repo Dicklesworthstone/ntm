@@ -9,8 +9,20 @@ import (
 	"os/exec"
 	"testing"
 
+	internaltestutil "github.com/Dicklesworthstone/ntm/internal/testutil"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+// SetupHermeticE2EEnv scrubs ambient Agent Mail / NTM / tmux / beads variables
+// and isolates HOME and XDG_* directories for standalone E2E tests (GH #341).
+func SetupHermeticE2EEnv(t testing.TB) string {
+	t.Helper()
+	return internaltestutil.HermeticEnv(
+		t,
+		internaltestutil.WithPreservePrefixes("NTM_E2E_"),
+		internaltestutil.WithPreserveKeys("NTM_TMUX_BINARY", "NTM_TMUX_TEST_TMPDIR", "NTM_TEST_TMUX_ENV_OWNED"),
+	)
+}
 
 // SkipIfShort skips the test in short mode.
 func SkipIfShort(t *testing.T) {

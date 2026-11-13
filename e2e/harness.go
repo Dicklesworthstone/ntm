@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	internaltestutil "github.com/Dicklesworthstone/ntm/internal/testutil"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
@@ -234,6 +235,11 @@ func NewScenarioHarness(tb testing.TB, opts HarnessOptions) (*ScenarioHarness, e
 
 	retain := resolveRetentionPolicy(opts.Retain)
 	debug := opts.Debug || os.Getenv(debugArtifactsEnv) == "1"
+	hermeticRoot := internaltestutil.HermeticEnv(
+		tb,
+		internaltestutil.WithPreservePrefixes("NTM_E2E_"),
+		internaltestutil.WithPreserveKeys("NTM_TMUX_BINARY", "NTM_TMUX_TEST_TMPDIR", "NTM_TEST_TMUX_ENV_OWNED"),
+	)
 	failureState := opts.FailureState
 	if failureState == nil {
 		failureState = tb.Failed
@@ -267,6 +273,7 @@ func NewScenarioHarness(tb testing.TB, opts HarnessOptions) (*ScenarioHarness, e
 	if err := h.RecordStep("harness_started", map[string]any{
 		"scenario":      scenario,
 		"artifact_root": runRoot,
+		"hermetic_root": hermeticRoot,
 		"session":       h.sessionName,
 		"retain":        h.retain,
 		"debug":         h.debug,
