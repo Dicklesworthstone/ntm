@@ -164,10 +164,23 @@ func TestRemediatedFilesUseStructuredLogging(t *testing.T) {
 	// for user-facing output, which is fine and expected.
 	remediatedFiles := []string{
 		filepath.Join("internal", "serve", "dummy_handlers.go"),
-		filepath.Join("internal", "serve", "server.go"),
 		filepath.Join("internal", "scanner", "bridge.go"),
 		filepath.Join("internal", "scanner", "dedup.go"),
 		filepath.Join("internal", "cli", "beads.go"),
+	}
+	serveMatches, err := filepath.Glob(filepath.Join(repoRoot, "internal", "serve", "server*.go"))
+	if err != nil {
+		t.Fatalf("glob serve/server*.go: %v", err)
+	}
+	for _, absPath := range serveMatches {
+		if strings.HasSuffix(absPath, "_test.go") {
+			continue
+		}
+		relPath, relErr := filepath.Rel(repoRoot, absPath)
+		if relErr != nil {
+			t.Fatalf("rel %s: %v", absPath, relErr)
+		}
+		remediatedFiles = append(remediatedFiles, relPath)
 	}
 
 	for _, relPath := range remediatedFiles {
