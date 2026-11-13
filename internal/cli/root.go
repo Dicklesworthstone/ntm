@@ -1735,6 +1735,7 @@ Shell Integration:
 				Prompt:       routedMsg,
 				LastAgent:    strings.TrimSpace(robotRouteLastAgent),
 				Config:       loadSelectedConfigOrDefault(),
+				Relax:        robotRelax,
 			}
 			exitCode := robot.PrintRoute(opts)
 			recordLegacyRobotExit(exitCode)
@@ -2435,6 +2436,7 @@ Shell Integration:
 				ProjectDir: projectDir,
 				Beads:      beads,
 				Strategy:   robotAssignStrategy,
+				Relax:      robotRelax,
 			}
 			if err := robot.PrintAssign(cmd.Context(), opts); err != nil {
 				recordRobotProcessExit(err)
@@ -3267,6 +3269,43 @@ Shell Integration:
 			}
 			return
 		}
+		if robotUBSScan != "" {
+			scanPath := strings.TrimSpace(robotScanPath)
+			if robotUBSScan != "__present__" {
+				inlinePath := strings.TrimSpace(robotUBSScan)
+				if scanPath != "" && inlinePath != "" && scanPath != inlinePath {
+					failRobotCommand(
+						errors.New("cannot specify different paths via --robot-ubs-scan=PATH and --scan-path"),
+						robot.ErrCodeInvalidFlag,
+						"Specify the target directory once via --robot-ubs-scan=PATH or --scan-path=PATH.",
+						"robot-ubs-scan",
+					)
+					return
+				}
+				if scanPath == "" {
+					scanPath = inlinePath
+				}
+			}
+			limit := 0
+			if cmd.Flags().Changed("limit") {
+				limit = cassLimit
+			}
+			opts := robot.UBSScanOptions{
+				Path:             scanPath,
+				File:             robotScanFile,
+				Staged:           robotScanStaged,
+				Diff:             robotScanDiff,
+				Languages:        robotScanOnly,
+				ExcludeLanguages: robotScanExclude,
+				Timeout:          robotScanTimeout,
+				FailOnWarning:    robotScanFailOnWarning,
+				Limit:            limit,
+			}
+			if err := robot.PrintUBSScan(cmd.Context(), opts); err != nil {
+				recordRobotProcessExit(err)
+			}
+			return
+		}
 
 		// Robot-quota-status handler for caut quota status
 		if robotQuotaStatus {
@@ -3604,7 +3643,7 @@ var robotSurfacesWithoutProjection = map[string]bool{
 	"robot-proxy-status": true, "robot-quota-status": true, "robot-quota-check": true,
 	"robot-account-status": true, "robot-accounts-list": true, "robot-switch-account": true,
 	"robot-ru-sync": true, "robot-dcg-status": true, "robot-dcg-check": true, "robot-guard": true,
-	"robot-safety-simulate": true, "robot-policy-decisions": true,
+	"robot-safety-simulate": true, "robot-policy-decisions": true, "robot-ubs-scan": true,
 	"robot-mail": true, "robot-mail-check": true, "robot-rano-stats": true, "robot-giil-fetch": true,
 	"robot-kill-pane": true, "robot-restart-pane": true,
 }
@@ -4506,9 +4545,19 @@ var (
 	robotDCGCwd           string   // --cwd flag (working directory context)
 	robotSafetySimulate   bool     // --robot-safety-simulate flag
 	robotSafetySteps      []string // repeated --step values for --robot-safety-simulate
-	robotPolicyDecisions  bool     // --robot-policy-decisions flag
-	robotPolicyEntityType string   // --policy-entity-type filter for --robot-policy-decisions
-	robotPolicyEntityID   string   // --policy-entity-id filter for --robot-policy-decisions
+	robotPolicyDecisions   bool          // --robot-policy-decisions flag
+	robotPolicyEntityType  string        // --policy-entity-type filter for --robot-policy-decisions
+	robotPolicyEntityID    string        // --policy-entity-id filter for --robot-policy-decisions
+	robotRelax             bool          // --relax modifier for --robot-route and --robot-assign
+	robotUBSScan           string        // --robot-ubs-scan optional path
+	robotScanPath          string        // --scan-path target directory for --robot-ubs-scan
+	robotScanFile          string        // --scan-file single file target for --robot-ubs-scan
+	robotScanStaged        bool          // --scan-staged incremental staged scan for --robot-ubs-scan
+	robotScanDiff          bool          // --scan-diff incremental working-tree diff scan for --robot-ubs-scan
+	robotScanOnly          []string      // --scan-only languages filter for --robot-ubs-scan
+	robotScanExclude       []string      // --scan-exclude languages filter for --robot-ubs-scan
+	robotScanFailOnWarning bool          // --scan-fail-on-warning health gate for --robot-ubs-scan
+	robotScanTimeout       time.Duration // --scan-timeout duration for --robot-ubs-scan
 
 	// Robot-slb flags for SLB approvals
 	robotSLBPending bool   // --robot-slb-pending flag
@@ -5025,6 +5074,7 @@ func init() {
 	rootCmd.Flags().StringVar(&robotRouteLastAgent, "last-agent", "", "Pane ID (%N) of the previously routed agent; anchors sticky and round-robin rotation across stateless CLI invocations. Optional with --robot-route")
 	rootCmd.Flags().StringVar(&robotRouteType, "route-type", "", "Deprecated alias for --type. Filter by agent type with --robot-route. Example: --type=claude")
 	rootCmd.Flags().StringVar(&robotRouteExclude, "route-exclude", "", "Exclude pane indices (comma-separated). Optional with --robot-route. Example: --route-exclude=0,3")
+	rootCmd.Flags().BoolVar(&robotRelax, "relax", false, "Relax routing constraints to include THINKING agents when idle agents are insufficient. Optional with --robot-route and --robot-assign")
 
 	// Robot-sequence flags for durable per-pane prompt progress.
 	rootCmd.Flags().StringVar(&robotSequence, "robot-sequence", "", "Manage a durable per-pane prompt sequence. Required: NAME. Example: ntm --robot-sequence=review --sequence-action=create --sequence-steps='[\"inspect\",\"challenge\"]'")
@@ -5156,6 +5206,16 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotPolicyDecisions, "robot-policy-decisions", false, "List durable policy and operator audit decisions. JSON output. Optional: --policy-entity-type, --policy-entity-id, --limit.")
 	rootCmd.Flags().StringVar(&robotPolicyEntityType, "policy-entity-type", "", "Filter --robot-policy-decisions by entity type (e.g. attention_item)")
 	rootCmd.Flags().StringVar(&robotPolicyEntityID, "policy-entity-id", "", "Filter --robot-policy-decisions by entity ID")
+	rootCmd.Flags().StringVar(&robotUBSScan, "robot-ubs-scan", "", "Run UBS static bug analysis (full directory or incremental --scan-staged, --scan-diff, --scan-file) and emit JSON. Optional: =PATH or --scan-path")
+	rootCmd.Flags().Lookup("robot-ubs-scan").NoOptDefVal = "__present__"
+	rootCmd.Flags().StringVar(&robotScanPath, "scan-path", "", "Directory path to scan with --robot-ubs-scan (defaults to current directory)")
+	rootCmd.Flags().StringVar(&robotScanFile, "scan-file", "", "Single file path to scan incrementally with --robot-ubs-scan")
+	rootCmd.Flags().BoolVar(&robotScanStaged, "scan-staged", false, "Scan only git-staged files with --robot-ubs-scan")
+	rootCmd.Flags().BoolVar(&robotScanDiff, "scan-diff", false, "Scan only modified working-tree files with --robot-ubs-scan")
+	rootCmd.Flags().StringSliceVar(&robotScanOnly, "scan-only", nil, "Restrict --robot-ubs-scan to specific languages (e.g. go,ts)")
+	rootCmd.Flags().StringSliceVar(&robotScanExclude, "scan-exclude", nil, "Exclude languages from --robot-ubs-scan")
+	rootCmd.Flags().BoolVar(&robotScanFailOnWarning, "scan-fail-on-warning", false, "Mark summary.healthy=false on warnings in --robot-ubs-scan")
+	rootCmd.Flags().DurationVar(&robotScanTimeout, "scan-timeout", 60*time.Second, "Timeout for --robot-ubs-scan execution")
 
 	// Robot-slb flags for SLB approvals
 	rootCmd.Flags().BoolVar(&robotSLBPending, "robot-slb-pending", false, "List pending SLB approval requests. JSON output. Example: ntm --robot-slb-pending")
@@ -5744,7 +5804,7 @@ func resolveRobotRouteStrategy(cmd *cobra.Command) string {
 // robotRouteOnlyModifiers are the --robot-route modifiers that --robot-send
 // never reads. Accepting them silently made `--robot-send --strategy=X` look
 // like a routed send while it actually delivered to every matching pane.
-var robotRouteOnlyModifiers = []string{"strategy", "route-strategy", "last-agent", "route-type", "route-exclude"}
+var robotRouteOnlyModifiers = []string{"strategy", "route-strategy", "last-agent", "route-type", "route-exclude", "relax"}
 
 // changedRobotRouteModifier returns the first --robot-route-only modifier the
 // caller set (as "--name"), or "" when none was set.

@@ -405,6 +405,18 @@ func resetFlags() {
 	robotVerbosity = ""
 	robotMonitorOutput = ""
 	robotSaveOutput = ""
+	robotRelax = false
+	assignRelax = false
+	robotUBSScan = ""
+	robotScanPath = ""
+	robotScanFile = ""
+	robotScanStaged = false
+	robotScanDiff = false
+	robotScanOnly = nil
+	robotScanExclude = nil
+	robotScanFailOnWarning = false
+	robotScanTimeout = 60 * time.Second
+	robotProcessExit = nil
 }
 
 func TestRobotSpawnOptionsFromFlagsPreservesDurationAndCopiesInputs(t *testing.T) {
@@ -5502,6 +5514,13 @@ func TestGlobalJSONFlag(t *testing.T) {
 // TestGlobalConfigFlag tests the global --config flag parses
 func TestGlobalConfigFlag(t *testing.T) {
 	resetFlags()
+	oldCfg, oldCfgFile := cfg, cfgFile
+	t.Setenv("NTM_CONFIG", os.Getenv("NTM_CONFIG"))
+	t.Cleanup(func() {
+		cfg = oldCfg
+		cfgFile = oldCfgFile
+		startup.ResetConfig()
+	})
 	rootCmd.SetArgs([]string{"--config", "/nonexistent/config.toml", "version"})
 
 	// Should still work even with nonexistent config (falls back to defaults)
