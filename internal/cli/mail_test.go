@@ -56,6 +56,9 @@ type mailStub struct {
 	keepOnRelease      bool
 	renewResult        agentmail.RenewReservationsResult
 	forceReleaseResult agentmail.ForceReleaseResult
+	startSessionCalls  []map[string]interface{}
+	prepareThreadCalls []map[string]interface{}
+	handshakeCalls     []map[string]interface{}
 	failIDs            map[int]string // messageID -> error message
 	afterMark          func(int)
 }
@@ -556,6 +559,59 @@ func newMailStub(t *testing.T, inbox []agentmail.InboxMessage) *mailStub {
 				NotifyPrevious: toBool(args["notify_previous"]),
 			})
 			writeResponse(stub.forceReleaseResult)
+		case "macro_start_session":
+			stub.startSessionCalls = append(stub.startSessionCalls, args)
+			writeResponse(map[string]interface{}{
+				"project": map[string]interface{}{
+					"id":        1,
+					"slug":      "stub-proj",
+					"human_key": toString(args["human_key"]),
+				},
+				"agent": map[string]interface{}{
+					"id":               10,
+					"name":             "BlueLake",
+					"program":          toString(args["program"]),
+					"model":            toString(args["model"]),
+					"task_description": toString(args["task_description"]),
+				},
+			})
+		case "macro_prepare_thread":
+			stub.prepareThreadCalls = append(stub.prepareThreadCalls, args)
+			agentName := toString(args["agent_name"])
+			if agentName == "" {
+				agentName = "BlueLake"
+			}
+			writeResponse(map[string]interface{}{
+				"agent": map[string]interface{}{
+					"id":      10,
+					"name":    agentName,
+					"program": toString(args["program"]),
+					"model":   toString(args["model"]),
+				},
+				"thread_summary": map[string]interface{}{
+					"thread_id": toString(args["thread_id"]),
+				},
+			})
+		case "macro_contact_handshake":
+			stub.handshakeCalls = append(stub.handshakeCalls, args)
+			agentName := toString(args["agent_name"])
+			if agentName == "" {
+				agentName = "BlueLake"
+			}
+			resp := map[string]interface{}{
+				"agent": map[string]interface{}{
+					"id":   10,
+					"name": agentName,
+				},
+				"contact_status": "approved",
+			}
+			if subj := toString(args["welcome_subject"]); subj != "" {
+				resp["welcome_message"] = map[string]interface{}{
+					"id":      77,
+					"subject": subj,
+				}
+			}
+			writeResponse(resp)
 		default:
 			http.Error(w, "unknown tool "+name, http.StatusNotFound)
 		}
@@ -2615,4 +2671,133 @@ func TestAgentMailUnavailableCLIErrorWrapsProbeReason(t *testing.T) {
 	if err := agentMailUnavailableCLIError(legacyMailAvailabilityStub{}); err == nil || err.Error() != "agent mail server unavailable" {
 		t.Fatalf("agentMailUnavailableCLIError() without diagnostics = %v", err)
 	}
+}
+
+func TestMailSessionMacrosCLI(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	projDir := canonicalTempDir(t)
+
+	stub := newMailStub(t, nil)
+	defer stub.Close()
+
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+
+	t.Run("session-start invokes macro_start_session and normalizes JSON arrays", func(t *testing.T) {
+		out, err := execCommand(t,
+			"mail", "session-start",
+			"--project-key", projDir,
+			"--program", "codex-cli",
+			"--model", "gpt-5",
+			"--task", "Wire ORI macros",
+			"--json",
+		)
+		if err != nil {
+			t.Fatalf("mail session-start failed: %v\nout:\n%s", err, out)
+		}
+		if len(stub.startSessionCalls) != 1 {
+			t.Fatalf("startSessionCalls = %d, want 1", len(stub.startSessionCalls))
+		}
+		call := stub.startSessionCalls[0]
+		if call["human_key"] != projDir || call["program"] != "codex-cli" || call["model"] != "gpt-5" || call["task_description"] != "Wire ORI macros" {
+			t.Fatalf("unexpected macro_start_session args: %#v", call)
+		}
+		for _, forbidden := range []string{`"inbox": null`, `"granted": null`, `"conflicts": null`} {
+			if strings.Contains(out, forbidden) {
+				t.Fatalf("session-start JSON contained null array (%s):\n%s", forbidden, out)
+			}
+		}
+		var doc map[string]interface{}
+		if err := json.Unmarshal([]byte(out), &doc); err != nil {
+			t.Fatalf("unmarshal session-start JSON: %v\nout:\n%s", err, out)
+		}
+		if doc["success"] != true || doc["project_key"] != projDir {
+			t.Fatalf("unexpected session-start envelope: %v", doc)
+		}
+	})
+
+	t.Run("prepare-thread invokes macro_prepare_thread and normalizes summary/inbox slices", func(t *testing.T) {
+		out, err := execCommand(t,
+			"mail", "prepare-thread",
+			"--project-key", projDir,
+			"--thread", "FEAT-123",
+			"--program", "codex-cli",
+			"--model", "gpt-5",
+			"--agent", "BlueLake",
+			"--include-examples=false",
+			"--llm-mode=false",
+			"--json",
+		)
+		if err != nil {
+			t.Fatalf("mail prepare-thread failed: %v\nout:\n%s", err, out)
+		}
+		if len(stub.prepareThreadCalls) != 1 {
+			t.Fatalf("prepareThreadCalls = %d, want 1", len(stub.prepareThreadCalls))
+		}
+		call := stub.prepareThreadCalls[0]
+		if call["project_key"] != projDir || call["thread_id"] != "FEAT-123" || call["agent_name"] != "BlueLake" {
+			t.Fatalf("unexpected macro_prepare_thread args: %#v", call)
+		}
+		if call["include_examples"] != false || call["llm_mode"] != false {
+			t.Fatalf("expected explicit boolean overrides false, got: %#v", call)
+		}
+		for _, forbidden := range []string{
+			`"examples": null`,
+			`"inbox": null`,
+			`"participants": null`,
+			`"key_points": null`,
+			`"action_items": null`,
+		} {
+			if strings.Contains(out, forbidden) {
+				t.Fatalf("prepare-thread JSON contained null slice (%s):\n%s", forbidden, out)
+			}
+		}
+		var doc map[string]interface{}
+		if err := json.Unmarshal([]byte(out), &doc); err != nil {
+			t.Fatalf("unmarshal prepare-thread JSON: %v\nout:\n%s", err, out)
+		}
+		if doc["success"] != true || doc["thread_id"] != "FEAT-123" {
+			t.Fatalf("unexpected prepare-thread envelope: %v", doc)
+		}
+	})
+
+	t.Run("handshake invokes macro_contact_handshake", func(t *testing.T) {
+		out, err := execCommand(t,
+			"mail", "handshake",
+			"--project-key", projDir,
+			"--to", "GreenCastle",
+			"--agent", "BlueLake",
+			"--reason", "Coordinate API changes",
+			"--auto-accept",
+			"--welcome-subject", "Hello GreenCastle",
+			"--welcome-body", "Ready to sync",
+			"--ttl", "3600",
+			"--json",
+		)
+		if err != nil {
+			t.Fatalf("mail handshake failed: %v\nout:\n%s", err, out)
+		}
+		if len(stub.handshakeCalls) != 1 {
+			t.Fatalf("handshakeCalls = %d, want 1", len(stub.handshakeCalls))
+		}
+		call := stub.handshakeCalls[0]
+		if call["project_key"] != projDir || call["to_agent"] != "GreenCastle" || call["agent_name"] != "BlueLake" || call["auto_accept"] != true {
+			t.Fatalf("unexpected macro_contact_handshake args: %#v", call)
+		}
+		var doc map[string]interface{}
+		if err := json.Unmarshal([]byte(out), &doc); err != nil {
+			t.Fatalf("unmarshal handshake JSON: %v\nout:\n%s", err, out)
+		}
+		if doc["success"] != true || doc["contact_status"] != "approved" || doc["to_agent"] != "GreenCastle" {
+			t.Fatalf("unexpected handshake envelope: %v", doc)
+		}
+	})
+
+	t.Run("validation errors on missing required flags", func(t *testing.T) {
+		if _, err := execCommand(t, "mail", "prepare-thread", "--project-key", projDir); err == nil {
+			t.Fatal("expected error when --thread is missing")
+		}
+		if _, err := execCommand(t, "mail", "handshake", "--project-key", projDir); err == nil {
+			t.Fatal("expected error when --to is missing")
+		}
+	})
 }
