@@ -852,11 +852,29 @@ func TestBuildCommandRegistry_MatchesRootRobotCommandFlags(t *testing.T) {
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
-	rootPath := filepath.Join(filepath.Dir(currentFile), "..", "cli", "root.go")
-	data, err := os.ReadFile(rootPath)
+	rootGlob := filepath.Join(filepath.Dir(currentFile), "..", "cli", "root*.go")
+	rootPaths, err := filepath.Glob(rootGlob)
 	if err != nil {
-		t.Fatalf("read %s: %v", rootPath, err)
+		t.Fatalf("glob %s: %v", rootGlob, err)
 	}
+	var combined strings.Builder
+	sourceCount := 0
+	for _, rootPath := range rootPaths {
+		if strings.HasSuffix(rootPath, "_test.go") {
+			continue
+		}
+		data, readErr := os.ReadFile(rootPath)
+		if readErr != nil {
+			t.Fatalf("read %s: %v", rootPath, readErr)
+		}
+		combined.Write(data)
+		combined.WriteByte('\n')
+		sourceCount++
+	}
+	if sourceCount == 0 {
+		t.Fatalf("no cli root*.go files matched %s", rootGlob)
+	}
+	data := []byte(combined.String())
 
 	re := regexp.MustCompile(`rootCmd\.Flags\(\)\.\w+Var(?:P)?\(&[^,]+,\s*"([^"]+)"`)
 	excluded := map[string]struct{}{

@@ -5898,30 +5898,43 @@ func TestRootDispatcherDoesNotExitProcess(t *testing.T) {
 	if !ok {
 		t.Fatal("locate cli test source")
 	}
-	rootFile := filepath.Join(filepath.Dir(testFile), "root.go")
-	file, err := parser.ParseFile(token.NewFileSet(), rootFile, nil, 0)
+	rootPaths, err := filepath.Glob(filepath.Join(filepath.Dir(testFile), "root*.go"))
 	if err != nil {
-		t.Fatalf("parse root dispatcher: %v", err)
+		t.Fatalf("glob root files: %v", err)
 	}
-
-	var exitCalls []token.Pos
-	ast.Inspect(file, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if !ok {
+	fset := token.NewFileSet()
+	var exitCalls []string
+	parsedCount := 0
+	for _, rootFile := range rootPaths {
+		if strings.HasSuffix(rootFile, "_test.go") {
+			continue
+		}
+		file, parseErr := parser.ParseFile(fset, rootFile, nil, 0)
+		if parseErr != nil {
+			t.Fatalf("parse %s: %v", rootFile, parseErr)
+		}
+		parsedCount++
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || selector.Sel.Name != "Exit" {
+				return true
+			}
+			pkg, ok := selector.X.(*ast.Ident)
+			if ok && pkg.Name == "os" {
+				exitCalls = append(exitCalls, fset.Position(call.Pos()).String())
+			}
 			return true
-		}
-		selector, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || selector.Sel.Name != "Exit" {
-			return true
-		}
-		pkg, ok := selector.X.(*ast.Ident)
-		if ok && pkg.Name == "os" {
-			exitCalls = append(exitCalls, call.Pos())
-		}
-		return true
-	})
+		})
+	}
+	if parsedCount == 0 {
+		t.Fatal("no root*.go files parsed")
+	}
 	if len(exitCalls) != 0 {
-		t.Fatalf("root dispatcher must return typed errors instead of calling os.Exit; found %d call(s)", len(exitCalls))
+		t.Fatalf("root dispatcher must return typed errors instead of calling os.Exit; found %d call(s): %v", len(exitCalls), exitCalls)
 	}
 }
 
