@@ -23,6 +23,7 @@ type AssignOptions struct {
 	ProjectDir string   // Explicit project directory for Beads reads
 	Beads      []string // Specific bead IDs to assign (empty = all ready)
 	Strategy   string   // simple, balanced, speed, quality, dependency
+	Relax      bool     // Retry an empty plan with a lower score floor, preserving safety gates.
 }
 
 // assignStrategyDefault is the strategy used when none is requested.
@@ -74,15 +75,16 @@ type AssignOutput struct {
 
 // AssignRecommend is a single assignment recommendation
 type AssignRecommend struct {
-	PaneID     string  `json:"pane_id"`     // Stable tmux pane identity (e.g., "%12")
-	PaneTarget string  `json:"pane_target"` // Explicit window.pane topology address
-	AgentType  string  `json:"agent_type"`  // claude, codex, gemini
-	Model      string  `json:"model,omitempty"`
-	AssignBead string  `json:"assign_bead"` // Bead ID to assign
-	BeadTitle  string  `json:"bead_title"`
-	Priority   string  `json:"priority"`   // P0-P4
-	Confidence float64 `json:"confidence"` // 0.0-1.0
-	Reasoning  string  `json:"reasoning"`
+	Relaxation *assign.ScoreRelaxation `json:"relaxation,omitempty"`
+	PaneID     string                  `json:"pane_id"`     // Stable tmux pane identity (e.g., "%12")
+	PaneTarget string                  `json:"pane_target"` // Explicit window.pane topology address
+	AgentType  string                  `json:"agent_type"`  // claude, codex, gemini
+	Model      string                  `json:"model,omitempty"`
+	AssignBead string                  `json:"assign_bead"` // Bead ID to assign
+	BeadTitle  string                  `json:"bead_title"`
+	Priority   string                  `json:"priority"`   // P0-P4
+	Confidence float64                 `json:"confidence"` // 0.0-1.0
+	Reasoning  string                  `json:"reasoning"`
 }
 
 // BlockedBead represents a bead that can't be assigned due to dependencies
@@ -126,13 +128,14 @@ func AgentStrength(agentType, taskType string) float64 {
 
 // DistributeRecommendation is a simplified recommendation for distribute mode
 type DistributeRecommendation struct {
-	BeadID     string  `json:"bead_id"`
-	Title      string  `json:"title"`
-	PaneID     string  `json:"pane_id"`
-	PaneTarget string  `json:"pane_target"`
-	AgentType  string  `json:"agent_type"`
-	Reason     string  `json:"reason"`
-	Confidence float64 `json:"confidence"` // planner confidence in this pairing (0.0-1.0)
+	Relaxation *assign.ScoreRelaxation `json:"relaxation,omitempty"`
+	BeadID     string                  `json:"bead_id"`
+	Title      string                  `json:"title"`
+	PaneID     string                  `json:"pane_id"`
+	PaneTarget string                  `json:"pane_target"`
+	AgentType  string                  `json:"agent_type"`
+	Reason     string                  `json:"reason"`
+	Confidence float64                 `json:"confidence"` // planner confidence in this pairing (0.0-1.0)
 }
 
 // GetAssignRecommendations returns assignment recommendations for the distribute mode.
@@ -206,7 +209,7 @@ func GetAssignRecommendations(ctx context.Context, opts AssignOptions) ([]Distri
 
 	// Generate recommendations through the strategy planner, preserving the
 	// dependency graph (unblocks) signal for the graph-aware strategies.
-	recs := planAssignments(agents, readyBeads, unblocksIndex(assignableRecommendations), strategy, idleAgentPanes)
+	recs := planAssignments(agents, readyBeads, unblocksIndex(assignableRecommendations), strategy, idleAgentPanes, opts.Relax)
 
 	// Convert to DistributeRecommendation format
 	var result []DistributeRecommendation
@@ -219,6 +222,7 @@ func GetAssignRecommendations(ctx context.Context, opts AssignOptions) ([]Distri
 			AgentType:  rec.AgentType,
 			Reason:     rec.Reasoning,
 			Confidence: rec.Confidence,
+			Relaxation: rec.Relaxation,
 		})
 	}
 
@@ -347,7 +351,7 @@ func GetAssign(ctx context.Context, opts AssignOptions) (*AssignOutput, error) {
 
 	// Generate recommendations through the strategy planner, preserving the
 	// dependency graph (unblocks) signal for the graph-aware strategies.
-	recommendations := planAssignments(agents, readyBeads, unblocksIndex(assignable), strategy, idleAgentPanes)
+	recommendations := planAssignments(agents, readyBeads, unblocksIndex(assignable), strategy, idleAgentPanes, opts.Relax)
 	output.Recommendations = recommendations
 	unassignable = append(unassignable, unassignedBeadsBeyondRecommendations(readyBeads, recommendations, len(idleAgentPanes))...)
 	output.UnassignableBeads = unassignable
@@ -465,11 +469,12 @@ func PrintAssign(ctx context.Context, opts AssignOptions) error {
 
 // assignAgentInfo holds agent data for assignment processing
 type assignAgentInfo struct {
-	paneID     string
-	paneTarget string
-	agentType  string
-	model      string
-	state      string
+	paneID       string
+	paneTarget   string
+	agentType    string
+	model        string
+	state        string
+	contextUsage float64 // Fraction of context used, from the same fresh observation.
 }
 
 func observeAssignAgents(ctx context.Context, session string) ([]assignAgentInfo, []string, error) {
@@ -499,11 +504,12 @@ func assignAgentsFromObservation(observation statuspkg.SessionObservation, now t
 			return nil, nil, fmt.Errorf("assignment observation for session %s has an agent without a stable pane ID", observation.Session)
 		}
 		agents = append(agents, assignAgentInfo{
-			paneID:     paneID,
-			paneTarget: pane.Pane.Physical(),
-			agentType:  agentType,
-			model:      detectModel(agentType, pane.PaneName),
-			state:      string(pane.Current.Status.State),
+			paneID:       paneID,
+			paneTarget:   pane.Pane.Physical(),
+			agentType:    agentType,
+			model:        detectModel(agentType, pane.PaneName),
+			state:        string(pane.Current.Status.State),
+			contextUsage: pane.Current.Status.ContextUsage / 100,
 		})
 		if statuspkg.DispatchObservationIsCurrent(pane.Current.ObservedAt, now) && pane.SafeToDispatch() {
 			idleAgentPanes = append(idleAgentPanes, paneID)
@@ -707,7 +713,7 @@ func filterDurablyOccupiedAssignAgents(idleAgentPanes []string, activeAssignment
 // bead -> next idle agent, no scoring). Every other strategy runs the real
 // planner in internal/assign, which scores agent/bead pairs against the
 // capability matrix and, for "dependency", the bead graph's unblocks fan-out.
-func planAssignments(agents []assignAgentInfo, beads []bv.BeadPreview, unblocks map[string][]string, strategy string, idleAgents []string) []AssignRecommend {
+func planAssignments(agents []assignAgentInfo, beads []bv.BeadPreview, unblocks map[string][]string, strategy string, idleAgents []string, relax bool) []AssignRecommend {
 	// Create a map of idle agents for quick lookup
 	idleSet := make(map[string]bool)
 	for _, a := range idleAgents {
@@ -725,7 +731,7 @@ func planAssignments(agents []assignAgentInfo, beads []bv.BeadPreview, unblocks 
 	if normalizeAssignStrategy(strategy) == "simple" {
 		return sequentialAssignments(idleAgentDetails, beads)
 	}
-	return plannerAssignments(idleAgentDetails, beads, unblocks, strategy)
+	return plannerAssignments(idleAgentDetails, beads, unblocks, strategy, relax)
 }
 
 // sequentialAssignments implements the "simple" strategy: pair beads with
@@ -764,7 +770,7 @@ func sequentialAssignments(idleAgentDetails []assignAgentInfo, beads []bv.BeadPr
 // plannerAssignments routes the graph-aware strategies through the real
 // planner in internal/assign and adapts its output back to the robot
 // envelope, keeping at most one bead per pane (the bulk-assign contract).
-func plannerAssignments(idleAgentDetails []assignAgentInfo, beads []bv.BeadPreview, unblocks map[string][]string, strategy string) []AssignRecommend {
+func plannerAssignments(idleAgentDetails []assignAgentInfo, beads []bv.BeadPreview, unblocks map[string][]string, strategy string, relax bool) []AssignRecommend {
 	if len(idleAgentDetails) == 0 || len(beads) == 0 {
 		return nil
 	}
@@ -774,10 +780,11 @@ func plannerAssignments(idleAgentDetails []assignAgentInfo, beads []bv.BeadPrevi
 	for _, a := range idleAgentDetails {
 		agentByID[a.paneID] = a
 		planAgents = append(planAgents, assign.Agent{
-			ID:        a.paneID,
-			AgentType: assign.ParseAgentType(a.agentType),
-			Model:     a.model,
-			Idle:      true,
+			ID:           a.paneID,
+			AgentType:    assign.ParseAgentType(a.agentType),
+			Model:        a.model,
+			Idle:         true,
+			ContextUsage: a.contextUsage,
 		})
 	}
 
@@ -794,7 +801,12 @@ func plannerAssignments(idleAgentDetails []assignAgentInfo, beads []bv.BeadPrevi
 		})
 	}
 
-	planned := assign.AssignTasksFunc(planBeads, planAgents, strategy)
+	var planned []assign.Assignment
+	if relax {
+		planned = assign.NewMatcher().AssignTasksWithRelaxation(planBeads, planAgents, assign.ParseStrategy(strategy))
+	} else {
+		planned = assign.AssignTasksFunc(planBeads, planAgents, strategy)
+	}
 
 	recommendations := make([]AssignRecommend, 0, len(planned))
 	usedAgents := make(map[string]struct{}, len(planAgents))
@@ -829,6 +841,7 @@ func plannerAssignments(idleAgentDetails []assignAgentInfo, beads []bv.BeadPrevi
 			Priority:   priority,
 			Confidence: p.Confidence,
 			Reasoning:  p.Reason,
+			Relaxation: p.Relaxation,
 		})
 	}
 

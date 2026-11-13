@@ -2435,6 +2435,7 @@ Shell Integration:
 				ProjectDir: projectDir,
 				Beads:      beads,
 				Strategy:   robotAssignStrategy,
+				Relax:      robotAssignRelax,
 			}
 			if err := robot.PrintAssign(cmd.Context(), opts); err != nil {
 				recordRobotProcessExit(err)
@@ -4088,6 +4089,7 @@ var (
 	robotAssign         string // session name for work assignment
 	robotAssignBeads    string // comma-separated bead IDs to assign
 	robotAssignStrategy string // assignment strategy: simple, balanced, speed, quality, dependency
+	robotAssignRelax    bool   // Lower only the score floor when strict planning places no work.
 
 	// Robot-bulk-assign flags for batch work distribution
 	robotBulkAssign         string        // session name for bulk assignment
@@ -4779,6 +4781,7 @@ func init() {
 	rootCmd.Flags().StringVar(&robotAssign, "robot-assign", "", "Get work distribution recommendations. Required: SESSION. Example: ntm --robot-assign=proj --strategy=speed")
 	rootCmd.Flags().StringVar(&robotAssignBeads, "beads", "", "Specific bead IDs to assign (comma-separated). Optional with --robot-assign. Example: --beads=ntm-abc,ntm-xyz")
 	rootCmd.Flags().StringVar(&robotAssignStrategy, "strategy", "simple", "Strategy override for commands that support it. --robot-assign: simple (sequential pairing), balanced, speed, quality, dependency (graph-aware planner). --robot-route: least-loaded, first-available, round-robin, round-robin-available, random, sticky, explicit, affinity (needs --msg). --robot-spawn with --spawn-assign-work: top-n, diverse, dependency-aware, skill-matched.")
+	rootCmd.Flags().BoolVar(&robotAssignRelax, "relax", false, "Retry an empty --robot-assign plan with half its score floor; preserve availability, context, capacity, and safety gates")
 
 	// Robot-bulk-assign flags for batch work distribution
 	rootCmd.Flags().StringVar(&robotBulkAssign, "robot-bulk-assign", "", "Bulk assign beads to all idle agents. Required: SESSION. Example: ntm --robot-bulk-assign=proj --from-bv")

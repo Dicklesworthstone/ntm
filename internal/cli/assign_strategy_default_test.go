@@ -31,3 +31,29 @@ func TestRobotAssignStrategyFlagDefaultPinnedToSimple(t *testing.T) {
 		t.Fatalf("--strategy default = %q, want %q (sequential pairing; see CHANGELOG before changing)", flag.DefValue, "simple")
 	}
 }
+
+func TestAssignmentRelaxationFlagsRequireOptIn(t *testing.T) {
+	resetFlags()
+	previousRelax := assignRelax
+	t.Cleanup(func() {
+		resetFlags()
+		assignRelax = previousRelax
+	})
+	flag := newAssignCmd().Flags().Lookup("relax")
+	if flag == nil || flag.DefValue != "false" {
+		t.Fatalf("assign --relax must be registered with default false: %+v", flag)
+	}
+	flag = rootCmd.Flags().Lookup("relax")
+	if flag == nil || flag.DefValue != "false" {
+		t.Fatalf("robot --relax must be registered with default false: %+v", flag)
+	}
+	if assignRelax || robotAssignRelax {
+		t.Fatal("assignment relaxation must require explicit opt-in")
+	}
+	if err := rootCmd.Flags().Set("relax", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if !robotAssignRelax {
+		t.Fatal("--robot-assign --relax was not wired to robot options")
+	}
+}

@@ -1,10 +1,99 @@
 package assign
 
 import (
+	"math"
+	"reflect"
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+func TestAllocationRelaxationRetainsHardGatesAndProvenance(t *testing.T) {
+	base := AllocationInput{
+		BVAvailable: true, MinScore: 0.8,
+		Pressure:   AllocationPressure{Available: true, Level: "normal", AgentHeadroom: 1},
+		ReadyBeads: []AllocationReadyBead{{ID: "work", Priority: 2, TaskType: TaskFeature}},
+		Agents:     []AllocationAgent{{ID: "agent", Session: "proj", Idle: true, AgentType: tmux.AgentCodex}},
+	}
+	strict := PlanAllocations(base)
+	if len(strict.Recommendations) != 0 {
+		t.Fatalf("fixture unexpectedly passed strict score threshold: %+v", strict)
+	}
+	base.Relax = true
+	got := PlanAllocations(base)
+	if len(got.Recommendations) != 1 {
+		t.Fatalf("opt-in score fallback did not place work: %+v", got)
+	}
+	recommendation := got.Recommendations[0]
+	receipt := recommendation.Relaxation
+	if receipt == nil || receipt.OriginalThreshold != 0.8 || receipt.RelaxedThreshold != 0.4 ||
+		receipt.OriginalScore != recommendation.Score || receipt.RelaxedScore != recommendation.Score ||
+		!reflect.DeepEqual(receipt.RelaxedConstraints, []string{"minimum_assignment_score"}) {
+		t.Fatalf("missing exact score relaxation provenance: %+v", recommendation)
+	}
+	for _, tc := range []struct {
+		name  string
+		alter func(*AllocationInput)
+	}{
+		{"busy", func(in *AllocationInput) { in.Agents[0].Idle = false }},
+		{"context", func(in *AllocationInput) { in.Agents[0].ContextUsage = 0.95 }},
+		{"negative context", func(in *AllocationInput) { in.Agents[0].ContextUsage = -0.1 }},
+		{"NaN context", func(in *AllocationInput) { in.Agents[0].ContextUsage = math.NaN() }},
+		{"infinite context", func(in *AllocationInput) { in.Agents[0].ContextUsage = math.Inf(1) }},
+		{"negative infinite context", func(in *AllocationInput) { in.Agents[0].ContextUsage = math.Inf(-1) }},
+		{"agent capacity", func(in *AllocationInput) { in.Agents[0].AssignmentLimit, in.Agents[0].ActiveAssignments = 1, 1 }},
+		{"session capacity", func(in *AllocationInput) {
+			in.Sessions = []AllocationSession{{Name: "proj", AssignmentLimit: 1, ActiveAssignments: 1}}
+		}},
+		{"critical pressure", func(in *AllocationInput) { in.Pressure.Level, in.Pressure.AgentHeadroom = "critical", 0 }},
+		{"no candidates", func(in *AllocationInput) { in.Agents = nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := base
+			in.Agents = append([]AllocationAgent(nil), base.Agents...)
+			tc.alter(&in)
+			if got := PlanAllocations(in); len(got.Recommendations) != 0 {
+				t.Fatalf("relaxation bypassed %s: %+v", tc.name, got)
+			}
+		})
+	}
+	base.MinScore = 0.25
+	base.Relax = false
+	strict = PlanAllocations(base)
+	base.Relax = true
+	if got := PlanAllocations(base); len(strict.Recommendations) == 0 || !reflect.DeepEqual(got, strict) {
+		t.Fatalf("relaxation changed a nonempty strict plan: got %+v, want %+v", got, strict)
+	}
+}
+
+func TestAllocationRelaxationPreservesPartiallyFulfilledStrictPlan(t *testing.T) {
+	in := AllocationInput{
+		BVAvailable: true, MinScore: 0.6,
+		Pressure: AllocationPressure{Available: true, Level: "normal", AgentHeadroom: 2},
+		ReadyBeads: []AllocationReadyBead{
+			{ID: "high-score", Priority: 0, TaskType: TaskFeature, GraphScore: 1},
+			{ID: "low-score", Priority: 4, TaskType: TaskFeature},
+		},
+		Agents: []AllocationAgent{
+			{ID: "one", Session: "proj", Idle: true, AgentType: tmux.AgentCodex},
+			{ID: "two", Session: "proj", Idle: true, AgentType: tmux.AgentCodex},
+		},
+	}
+	strict := PlanAllocations(in)
+	if len(strict.Recommendations) != 1 || strict.Recommendations[0].BeadID != "high-score" || len(strict.UnassignedBeads) != 1 {
+		t.Fatalf("fixture needs a partially fulfilled strict plan: %+v", strict)
+	}
+	// Show that the second bead really could be added at the relaxed floor.
+	in.MinScore /= 2
+	if lowered := PlanAllocations(in); len(lowered.Recommendations) != 2 {
+		t.Fatalf("fixture needs additional work below the strict floor: %+v", lowered)
+	}
+	in.MinScore *= 2
+	in.Relax = true
+	if got := PlanAllocations(in); !reflect.DeepEqual(got, strict) {
+		t.Fatalf("relaxation filled or changed a nonempty strict plan: got %+v, want %+v", got, strict)
+	}
+}
 
 func TestPlanAllocationsEmptyReadyState(t *testing.T) {
 	plan := PlanAllocations(AllocationInput{

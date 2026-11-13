@@ -2,6 +2,7 @@ package assign
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -65,11 +66,31 @@ type Agent struct {
 
 // Assignment represents a recommended bead-to-agent assignment.
 type Assignment struct {
-	Bead       Bead    `json:"bead"`
-	Agent      Agent   `json:"agent"`
-	Score      float64 `json:"score"`      // Combined score (0.0-1.0)
-	Reason     string  `json:"reason"`     // Human-readable explanation
-	Confidence float64 `json:"confidence"` // Confidence in this assignment (0.0-1.0)
+	Bead       Bead             `json:"bead"`
+	Agent      Agent            `json:"agent"`
+	Score      float64          `json:"score"`      // Combined score (0.0-1.0)
+	Reason     string           `json:"reason"`     // Human-readable explanation
+	Confidence float64          `json:"confidence"` // Confidence in this assignment (0.0-1.0)
+	Relaxation *ScoreRelaxation `json:"relaxation,omitempty"`
+}
+
+// ScoreRelaxation records an explicit opt-in lowering of a preference floor.
+// Scores themselves do not change, and availability and safety constraints
+// remain in force. Keeping both values makes that distinction machine-readable.
+type ScoreRelaxation struct {
+	RelaxedConstraints []string `json:"relaxed_constraints"`
+	OriginalScore      float64  `json:"original_score"`
+	RelaxedScore       float64  `json:"relaxed_score"`
+	OriginalThreshold  float64  `json:"original_threshold"`
+	RelaxedThreshold   float64  `json:"relaxed_threshold"`
+}
+
+func scoreRelaxation(score, threshold float64) *ScoreRelaxation {
+	return &ScoreRelaxation{
+		RelaxedConstraints: []string{"minimum_assignment_score"},
+		OriginalScore:      score, RelaxedScore: score,
+		OriginalThreshold: threshold, RelaxedThreshold: threshold / 2,
+	}
 }
 
 // MatcherConfig configures the assignment algorithm.
@@ -135,11 +156,34 @@ func (m *Matcher) AssignTasks(beads []Bead, agents []Agent, strategy Strategy) [
 	}
 }
 
+// AssignTasksWithRelaxation preserves the strict plan whenever it can place
+// any work. Only a wholly empty plan retries with half the confidence floor;
+// idle state, context limits, caller filters, and the chosen strategy remain
+// unchanged. The receiver and caller-owned inputs are never modified.
+func (m *Matcher) AssignTasksWithRelaxation(beads []Bead, agents []Agent, strategy Strategy) []Assignment {
+	strict := m.AssignTasks(beads, agents, strategy)
+	if len(strict) != 0 || !(m.config.MinConfidence > 0) || math.IsInf(m.config.MinConfidence, 0) {
+		return strict
+	}
+	relaxed := *m
+	relaxed.config.MinConfidence /= 2
+	assignments := relaxed.AssignTasks(beads, agents, strategy)
+	threshold := m.config.MinConfidence
+	if strategy == StrategySpeed {
+		threshold *= 0.5
+	}
+	for i := range assignments {
+		assignments[i].Relaxation = scoreRelaxation(assignments[i].Score, threshold)
+		assignments[i].Reason += fmt.Sprintf("; explicitly relaxed minimum assignment score from %.3f to %.3f", threshold, threshold/2)
+	}
+	return assignments
+}
+
 // filterAvailableAgents returns agents that are idle and have sufficient context.
 func (m *Matcher) filterAvailableAgents(agents []Agent) []Agent {
 	var available []Agent
 	for _, agent := range agents {
-		if agent.Idle && agent.ContextUsage <= m.config.MaxContextUsage {
+		if agent.Idle && agent.ContextUsage >= 0 && agent.ContextUsage <= m.config.MaxContextUsage {
 			available = append(available, agent)
 		}
 	}

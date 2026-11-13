@@ -1247,8 +1247,12 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "session", Flag: "--robot-assign", Type: "string", Required: true, Description: "Session name"},
 				{Name: "beads", Flag: "--beads", Type: "string", Required: false, Description: "Specific bead IDs to assign (comma-separated)"},
 				{Name: "strategy", Flag: "--strategy", Type: "string", Required: false, Default: "simple", Description: "Strategy: simple (sequential pairing), balanced, speed, quality, dependency"},
+				{Name: "relax", Flag: "--relax", Type: "bool", Required: false, Default: "false", Description: "Retry an empty scored assignment plan with half its minimum score; preserve availability, context, occupancy, and bead safety gates. Each fallback recommendation includes relaxation provenance. Has no effect on simple sequential pairing"},
 			},
-			Examples: []string{"ntm --robot-assign=proj --strategy=speed --beads=bd-abc,bd-xyz"},
+			Examples: []string{
+				"ntm --robot-assign=proj --strategy=speed --beads=bd-abc,bd-xyz",
+				"ntm --robot-assign=proj --strategy=quality --relax",
+			},
 		},
 		{
 			Name:        "bulk-assign",

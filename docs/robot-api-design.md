@@ -173,6 +173,42 @@ rootCmd.Flags().IntVar(&limit, "limit", 20, "Max results to return")
 rootCmd.Flags().IntVar(&limit, "cass-limit", 20, "DEPRECATED: use --limit")
 ```
 
+### 2.4 Assignment Score Relaxation
+
+`ntm --robot-assign=SESSION --strategy=quality --relax` explicitly retries an
+empty strict recommendation plan with half the strategy's minimum score.
+`balanced`, `quality`, and `dependency` lower the default floor from `0.3` to
+`0.15`; `speed` lowers its existing `0.15` floor to `0.075`. `simple` has no score
+floor and is unchanged. The flag defaults to false, and a strict plan containing
+any recommendation is returned unchanged even when relaxation is requested.
+
+Scored strategies use context consumption from the same fresh observation that
+establishes pane availability. Relaxation does not change that evidence, the
+context limit, durable pane occupancy, requested bead filters, operator gates,
+or dependency eligibility. Recommendations remain advisory; executing them uses
+the ordinary claim, reservation, and fresh dispatch checks.
+
+Each fallback recommendation carries `relaxation`; ordinary recommendations omit
+it. The score is unchanged because only the acceptance threshold is lower:
+
+```json
+{
+  "relaxation": {
+    "relaxed_constraints": ["minimum_assignment_score"],
+    "original_score": 0.225,
+    "relaxed_score": 0.225,
+    "original_threshold": 0.3,
+    "relaxed_threshold": 0.15
+  }
+}
+```
+
+The human command `ntm assign SESSION --strategy=balanced --relax` exposes the
+same opt-in policy through its allocation planner, using that planner's default
+floor of `0.25` and fallback floor of `0.125`. Its assignment items carry the same
+receipt and retain resource-pressure and assignment-capacity gates. Other human
+assignment strategies have no score-floor fallback.
+
 ---
 
 ## 3. Output Envelope

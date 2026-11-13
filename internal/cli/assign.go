@@ -47,6 +47,7 @@ import (
 var (
 	assignAuto         bool
 	assignStrategy     string
+	assignRelax        bool
 	assignBeads        string
 	assignLimit        int
 	assignAgentType    string // Filter by agent type
@@ -387,6 +388,7 @@ Examples:
 	// Core flags
 	cmd.Flags().BoolVar(&assignAuto, "auto", false, "Execute assignments without confirmation")
 	cmd.Flags().StringVar(&assignStrategy, "strategy", "balanced", "Assignment strategy: balanced, speed, quality, dependency, round-robin")
+	cmd.Flags().BoolVar(&assignRelax, "relax", false, "Retry an empty assignment plan with half its score floor; preserve availability, context, capacity, and safety gates")
 	cmd.Flags().StringVar(&assignBeads, "beads", "", "Comma-separated list of specific bead IDs to assign")
 	cmd.Flags().IntVar(&assignLimit, "limit", 0, "Maximum number of assignments (0 = unlimited)")
 
@@ -699,6 +701,7 @@ func runAssign(cmd *cobra.Command, args []string) error {
 		ProjectDir:      projectDir,
 		BeadIDs:         beadIDs,
 		Strategy:        assignStrategy,
+		Relax:           assignRelax,
 		Limit:           assignLimit,
 		AgentTypeFilter: agentTypeFilter,
 		Template:        assignTemplate,
@@ -788,6 +791,7 @@ func runWatchMode(cmd *cobra.Command, session, projectDir, policyProject string)
 		Session:         session,
 		ProjectDir:      projectDir,
 		Strategy:        assignStrategy,
+		Relax:           assignRelax,
 		Template:        assignTemplate,
 		TemplateFile:    assignTemplateFile,
 		ReserveFiles:    assignReserveFiles,
@@ -851,6 +855,7 @@ func runWatchMode(cmd *cobra.Command, session, projectDir, policyProject string)
 		Session:         session,
 		ProjectDir:      projectDir,
 		Strategy:        assignStrategy,
+		Relax:           assignRelax,
 		Limit:           assignLimit,
 		AgentTypeFilter: agentTypeFilter,
 		Template:        assignTemplate,
@@ -1286,6 +1291,7 @@ type AssignCommandOptions struct {
 	ProjectDir      string
 	BeadIDs         []string
 	Strategy        string
+	Relax           bool // Lower only the score floor when strict planning places no work.
 	Limit           int
 	AgentTypeFilter string
 	Template        string
@@ -1337,8 +1343,9 @@ type AssignOutputEnhanced struct {
 
 // AssignmentItem represents a single assignment in JSON output.
 type AssignmentItem struct {
-	BeadID          string `json:"bead_id"`
-	BeadTitle       string `json:"bead_title"`
+	Relaxation      *assign.ScoreRelaxation `json:"relaxation,omitempty"`
+	BeadID          string                  `json:"bead_id"`
+	BeadTitle       string                  `json:"bead_title"`
 	rawBeadTitle    string
 	Pane            int                               `json:"pane"` // Window-local display index; never use for identity.
 	PaneTarget      string                            `json:"pane_target"`
@@ -2343,7 +2350,7 @@ func buildAssignAllocationInput(ctx context.Context, agents []assignAgentInfo, b
 			PaneID:            agentInfo.pane.ID,
 			AgentType:         tmux.AgentType(agentInfo.agentType).Canonical(),
 			Idle:              agentInfo.state == "" || agentInfo.state == "idle",
-			ContextUsage:      clampAssignScore(agentInfo.contextUsage),
+			ContextUsage:      agentInfo.contextUsage, // Preserve invalid observations for the planner's hard gate.
 			ActiveAssignments: active,
 			AssignmentLimit:   1,
 			ResourceHeadroom:  headroom,
@@ -2356,6 +2363,7 @@ func buildAssignAllocationInput(ctx context.Context, agents []assignAgentInfo, b
 	}
 
 	return assign.AllocationInput{
+		Relax:      opts != nil && opts.Relax,
 		ReadyBeads: buildAssignAllocationBeads(beads),
 		Agents:     allocationAgents,
 		Sessions: []assign.AllocationSession{{
@@ -2516,6 +2524,7 @@ func assignmentItemsFromAllocationPlan(plan assign.AllocationPlan, assignedAt st
 	for _, recommendation := range plan.Recommendations {
 		components := recommendation.ScoreComponents
 		items = append(items, AssignmentItem{
+			Relaxation:      recommendation.Relaxation,
 			BeadID:          recommendation.BeadID,
 			BeadTitle:       recommendation.BeadTitle,
 			Pane:            recommendation.PaneIndex,
@@ -6212,6 +6221,7 @@ type AutoReassignOptions struct {
 	Session         string
 	ProjectDir      string
 	Strategy        string
+	Relax           bool
 	Template        string
 	TemplateFile    string
 	ReserveFiles    bool
@@ -6415,6 +6425,7 @@ func PerformAutoReassignment(ctx context.Context, completedBeadID string, opts *
 		Session:         opts.Session,
 		ProjectDir:      projectDir,
 		Strategy:        opts.Strategy,
+		Relax:           opts.Relax,
 		Template:        opts.Template,
 		TemplateFile:    opts.TemplateFile,
 		AgentTypeFilter: opts.AgentTypeFilter,
@@ -6800,6 +6811,7 @@ func NewWatchLoop(session string, store *assignment.AssignmentStore, opts *AutoR
 			Session:         session,
 			ProjectDir:      opts.ProjectDir,
 			Strategy:        opts.Strategy,
+			Relax:           opts.Relax,
 			Limit:           assignLimit,
 			AgentTypeFilter: opts.AgentTypeFilter,
 			Template:        opts.Template,
