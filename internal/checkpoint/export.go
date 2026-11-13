@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/encryption"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 )
 
@@ -240,6 +241,10 @@ func (s *Storage) exportTarGz(w io.Writer, cpDir string, cp *Checkpoint, files [
 	if err != nil {
 		return fmt.Errorf("failed to marshal checkpoint: %w", err)
 	}
+	cpJSON, err = encryptCheckpointBytes(cpJSON)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt checkpoint metadata: %w", err)
+	}
 
 	checksum := sha256sum(cpJSON)
 	manifest.Checksums[MetadataFile] = checksum
@@ -256,6 +261,10 @@ func (s *Storage) exportTarGz(w io.Writer, cpDir string, cp *Checkpoint, files [
 	sessionJSON, err := json.MarshalIndent(cp.Session, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal session state: %w", err)
+	}
+	sessionJSON, err = encryptCheckpointBytes(sessionJSON)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt session state: %w", err)
 	}
 
 	checksum = sha256sum(sessionJSON)
@@ -330,6 +339,10 @@ func (s *Storage) exportZip(w io.Writer, cpDir string, cp *Checkpoint, files []s
 	if err != nil {
 		return fmt.Errorf("failed to marshal checkpoint: %w", err)
 	}
+	cpJSON, err = encryptCheckpointBytes(cpJSON)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt checkpoint metadata: %w", err)
+	}
 
 	checksum := sha256sum(cpJSON)
 	manifest.Checksums[MetadataFile] = checksum
@@ -346,6 +359,10 @@ func (s *Storage) exportZip(w io.Writer, cpDir string, cp *Checkpoint, files []s
 	sessionJSON, err := json.MarshalIndent(cp.Session, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal session state: %w", err)
+	}
+	sessionJSON, err = encryptCheckpointBytes(sessionJSON)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt session state: %w", err)
 	}
 
 	checksum = sha256sum(sessionJSON)
@@ -411,11 +428,12 @@ func (s *Storage) exportZip(w io.Writer, cpDir string, cp *Checkpoint, files []s
 // together with an ImportPublicationError means the complete checkpoint was
 // published but finalization failed; callers must inspect rather than replay.
 func (s *Storage) Import(archivePath string, opts ImportOptions) (*Checkpoint, error) {
+	trimmedPath := strings.TrimSuffix(archivePath, ".enc")
 	var format ExportFormat
 	switch {
-	case strings.HasSuffix(archivePath, ".tar.gz") || strings.HasSuffix(archivePath, ".tgz"):
+	case strings.HasSuffix(trimmedPath, ".tar.gz") || strings.HasSuffix(trimmedPath, ".tgz"):
 		format = FormatTarGz
-	case strings.HasSuffix(archivePath, ".zip"):
+	case strings.HasSuffix(trimmedPath, ".zip"):
 		format = FormatZip
 	default:
 		return nil, fmt.Errorf("unknown archive format: %s", filepath.Ext(archivePath))
@@ -431,14 +449,57 @@ func (s *Storage) Import(archivePath string, opts ImportOptions) (*Checkpoint, e
 	}
 }
 
-func (s *Storage) importTarGz(archivePath string, opts ImportOptions) (*Checkpoint, error) {
+func openPossiblyEncryptedArchive(archivePath string) ([]byte, bool, error) {
 	f, err := os.Open(archivePath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open archive: %w", err)
+		return nil, false, fmt.Errorf("failed to open archive: %w", err)
 	}
 	defer f.Close()
 
-	gr, err := gzip.NewReader(f)
+	var magic [len(encryption.ArtifactEnvelopeMagic)]byte
+	n, readErr := io.ReadFull(f, magic[:])
+	if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
+		return nil, false, fmt.Errorf("failed to inspect archive header: %w", readErr)
+	}
+	if !encryption.IsEncryptedArtifact(magic[:n]) {
+		return nil, false, nil
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, true, fmt.Errorf("seeking encrypted archive: %w", err)
+	}
+	encBytes, err := readImportEntryLimited(f, filepath.Base(archivePath), maxImportArchiveBytes+128)
+	if err != nil {
+		return nil, true, err
+	}
+	plainBytes, err := decryptCheckpointBytes(encBytes)
+	if err != nil {
+		return nil, true, fmt.Errorf("decrypting checkpoint archive: %w", err)
+	}
+	return plainBytes, true, nil
+}
+
+func (s *Storage) importTarGz(archivePath string, opts ImportOptions) (*Checkpoint, error) {
+	plainArchive, wasEncrypted, err := openPossiblyEncryptedArchive(archivePath)
+	if err != nil {
+		return nil, err
+	}
+
+	var (
+		f        *os.File
+		gzSource io.Reader
+	)
+	if wasEncrypted {
+		gzSource = bytes.NewReader(plainArchive)
+	} else {
+		f, err = os.Open(archivePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open archive: %w", err)
+		}
+		defer f.Close()
+		gzSource = f
+	}
+
+	gr, err := gzip.NewReader(gzSource)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gzip reader: %w", err)
 	}
@@ -485,8 +546,12 @@ func (s *Storage) importTarGz(archivePath string, opts ImportOptions) (*Checkpoi
 				return nil, fmt.Errorf("failed to parse manifest: %w", err)
 			}
 		case MetadataFile:
+			plainMeta, err := decryptCheckpointBytes(data)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decrypt checkpoint metadata: %w", err)
+			}
 			cp = &Checkpoint{}
-			if err := json.Unmarshal(data, cp); err != nil {
+			if err := json.Unmarshal(plainMeta, cp); err != nil {
 				return nil, fmt.Errorf("failed to parse checkpoint: %w", err)
 			}
 		}
@@ -502,18 +567,37 @@ func (s *Storage) importTarGz(archivePath string, opts ImportOptions) (*Checkpoi
 	if err := gr.Close(); err != nil {
 		return nil, fmt.Errorf("closing gzip archive reader: %w", err)
 	}
-	if err := f.Close(); err != nil {
-		return nil, fmt.Errorf("closing archive file: %w", err)
+	if f != nil {
+		if err := f.Close(); err != nil {
+			return nil, fmt.Errorf("closing archive file: %w", err)
+		}
 	}
 	return s.finishCheckpointImport(cp, manifest, fileContents, opts)
 }
 
 func (s *Storage) importZip(archivePath string, opts ImportOptions) (*Checkpoint, error) {
-	zr, err := zip.OpenReader(archivePath)
+	plainArchive, wasEncrypted, err := openPossiblyEncryptedArchive(archivePath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open zip archive: %w", err)
+		return nil, err
 	}
-	defer zr.Close()
+
+	var (
+		zrc *zip.ReadCloser
+		zr  *zip.Reader
+	)
+	if wasEncrypted {
+		zr, err = zip.NewReader(bytes.NewReader(plainArchive), int64(len(plainArchive)))
+		if err != nil {
+			return nil, fmt.Errorf("failed to open decrypted zip archive: %w", err)
+		}
+	} else {
+		zrc, err = zip.OpenReader(archivePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open zip archive: %w", err)
+		}
+		defer zrc.Close()
+		zr = &zrc.Reader
+	}
 
 	var manifest *ExportManifest
 	var cp *Checkpoint
@@ -556,14 +640,20 @@ func (s *Storage) importZip(archivePath string, opts ImportOptions) (*Checkpoint
 				return nil, fmt.Errorf("failed to parse manifest: %w", err)
 			}
 		case MetadataFile:
+			plainMeta, err := decryptCheckpointBytes(data)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decrypt checkpoint metadata: %w", err)
+			}
 			cp = &Checkpoint{}
-			if err := json.Unmarshal(data, cp); err != nil {
+			if err := json.Unmarshal(plainMeta, cp); err != nil {
 				return nil, fmt.Errorf("failed to parse checkpoint: %w", err)
 			}
 		}
 	}
-	if err := zr.Close(); err != nil {
-		return nil, fmt.Errorf("closing zip archive: %w", err)
+	if zrc != nil {
+		if err := zrc.Close(); err != nil {
+			return nil, fmt.Errorf("closing zip archive: %w", err)
+		}
 	}
 	return s.finishCheckpointImport(cp, manifest, fileContents, opts)
 }
@@ -595,6 +685,34 @@ func (s *Storage) finishCheckpointImport(cp *Checkpoint, manifest *ExportManifes
 		return nil, err
 	}
 
+	// Validate any encrypted payload artifacts (and re-encrypt under the active
+	// key when checkpoint encryption is enabled) before publishing to disk.
+	encryptOnDisk := isCheckpointEncryptionEnabled()
+	for _, rel := range checkpointPayloadFiles(cp) {
+		raw, ok := fileContents[rel]
+		if !ok {
+			continue
+		}
+		if !encryptOnDisk && !encryption.IsEncryptedArtifact(raw) {
+			continue
+		}
+		plain, err := decryptCheckpointBytes(raw)
+		if err != nil {
+			return nil, fmt.Errorf("decrypting imported checkpoint artifact %s: %w", rel, err)
+		}
+		stored := plain
+		if encryptOnDisk {
+			stored, err = encryptCheckpointBytes(plain)
+			if err != nil {
+				return nil, fmt.Errorf("encrypting imported checkpoint artifact %s: %w", rel, err)
+			}
+		}
+		fileContents[rel] = stored
+		if cp.ArtifactIntegrity != nil {
+			cp.ArtifactIntegrity.Files[rel] = checksumArtifactBytes(stored)
+		}
+	}
+
 	sessionName := cp.SessionName
 
 	// Apply overrides
@@ -620,11 +738,19 @@ func (s *Storage) finishCheckpointImport(cp *Checkpoint, manifest *ExportManifes
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal imported checkpoint: %w", err)
 	}
+	cpJSON, err = encryptCheckpointBytes(cpJSON)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt imported checkpoint metadata: %w", err)
+	}
 	fileContents[MetadataFile] = cpJSON
 
 	sessionJSON, err := json.MarshalIndent(cp.Session, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal imported session state: %w", err)
+	}
+	sessionJSON, err = encryptCheckpointBytes(sessionJSON)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt imported session state: %w", err)
 	}
 	fileContents[SessionFile] = sessionJSON
 
@@ -840,15 +966,23 @@ func redactSecrets(data []byte) []byte {
 }
 
 func redactScrollbackArtifact(path string, data []byte) (redactedScrollbackArtifact, error) {
+	plain, err := decryptCheckpointBytes(data)
+	if err != nil {
+		return redactedScrollbackArtifact{}, fmt.Errorf("decrypting scrollback before redaction: %w", err)
+	}
 	if filepath.Ext(path) != ".gz" {
-		redacted := redactSecrets(data)
+		redacted := redactSecrets(plain)
+		stored, err := encryptCheckpointBytes(redacted)
+		if err != nil {
+			return redactedScrollbackArtifact{}, fmt.Errorf("encrypting redacted scrollback: %w", err)
+		}
 		return redactedScrollbackArtifact{
-			data: redacted,
+			data: stored,
 			raw:  redacted,
 		}, nil
 	}
 
-	decompressed, err := gzipDecompress(data)
+	decompressed, err := gzipDecompress(plain)
 	if err != nil {
 		return redactedScrollbackArtifact{}, fmt.Errorf("decompressing compressed scrollback: %w", err)
 	}
@@ -857,8 +991,12 @@ func redactScrollbackArtifact(path string, data []byte) (redactedScrollbackArtif
 	if err != nil {
 		return redactedScrollbackArtifact{}, fmt.Errorf("recompressing redacted scrollback: %w", err)
 	}
+	stored, err := encryptCheckpointBytes(recompressed)
+	if err != nil {
+		return redactedScrollbackArtifact{}, fmt.Errorf("encrypting redacted compressed scrollback: %w", err)
+	}
 	return redactedScrollbackArtifact{
-		data:        recompressed,
+		data:        stored,
 		raw:         redacted,
 		compacted:   true,
 		compression: scrollbackCompressionGzip,
@@ -1039,8 +1177,13 @@ func validateImportedSessionState(fileContents map[string][]byte, cp *Checkpoint
 		return fmt.Errorf("archive missing %s", SessionFile)
 	}
 
+	plainSession, err := decryptCheckpointBytes(sessionData)
+	if err != nil {
+		return fmt.Errorf("failed to decrypt session state: %w", err)
+	}
+
 	var session SessionState
-	if err := json.Unmarshal(sessionData, &session); err != nil {
+	if err := json.Unmarshal(plainSession, &session); err != nil {
 		return fmt.Errorf("failed to parse session state: %w", err)
 	}
 

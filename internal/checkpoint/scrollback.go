@@ -221,7 +221,11 @@ func (s *Storage) SaveCompressedScrollback(sessionName, checkpointID, paneID str
 	filename := fmt.Sprintf("pane_%s.txt.gz", sanitizeName(paneID))
 	fullPath := filepath.Join(panesDir, filename)
 
-	if err := util.AtomicWriteFile(fullPath, data, 0600); err != nil {
+	payload, err := encryptCheckpointBytes(data)
+	if err != nil {
+		return "", fmt.Errorf("saving compressed scrollback: %w", err)
+	}
+	if err := util.AtomicWriteFile(fullPath, payload, 0600); err != nil {
 		return "", fmt.Errorf("saving compressed scrollback: %w", err)
 	}
 
@@ -249,6 +253,10 @@ func (s *Storage) LoadCompressedScrollback(sessionName, checkpointID, paneID str
 	if err != nil {
 		return "", fmt.Errorf("reading compressed scrollback: %w", err)
 	}
+	data, err = decryptCheckpointBytes(data)
+	if err != nil {
+		return "", fmt.Errorf("reading compressed scrollback: %w", err)
+	}
 
 	decompressed, err := gzipDecompress(data)
 	if err != nil {
@@ -271,6 +279,10 @@ func (s *Storage) LoadPaneScrollback(sessionName, checkpointID string, pane Pane
 			return "", fmt.Errorf("resolving scrollback path: %w", err)
 		}
 		data, err := os.ReadFile(scrollbackPath)
+		if err != nil {
+			return "", fmt.Errorf("reading scrollback: %w", err)
+		}
+		data, err = decryptCheckpointBytes(data)
 		if err != nil {
 			return "", fmt.Errorf("reading scrollback: %w", err)
 		}

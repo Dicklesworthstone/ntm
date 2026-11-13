@@ -93,7 +93,8 @@ func PrepareGitRollback(ctx context.Context, storage *Storage, cp *Checkpoint, w
 	if err != nil {
 		return nil, fmt.Errorf("opening rollback patch: %w", err)
 	}
-	data, readErr := io.ReadAll(io.LimitReader(artifactContextReader{ctx: ctx, reader: f}, int64(MaxGitOutputBytes)+1))
+	const maxEncryptedEnvelopeOverhead = 128
+	data, readErr := io.ReadAll(io.LimitReader(artifactContextReader{ctx: ctx, reader: f}, int64(MaxGitOutputBytes)+maxEncryptedEnvelopeOverhead+1))
 	closeErr := f.Close()
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -101,7 +102,7 @@ func PrepareGitRollback(ctx context.Context, storage *Storage, cp *Checkpoint, w
 	if err := errors.Join(readErr, closeErr); err != nil {
 		return nil, fmt.Errorf("reading rollback patch: %w", err)
 	}
-	if len(data) == 0 || len(data) > MaxGitOutputBytes {
+	if len(data) == 0 {
 		return nil, errors.New("rollback patch is empty or exceeds the git capture size limit")
 	}
 	// Preflight hashed the stored artifact. Check these exact bytes again:
@@ -115,7 +116,14 @@ func PrepareGitRollback(ctx context.Context, storage *Storage, cp *Checkpoint, w
 			return nil, fmt.Errorf("%w: rollback patch: %v", ErrArtifactIntegrity, err)
 		}
 	}
-	plan.Patch = string(data)
+	plain, err := decryptCheckpointBytes(data)
+	if err != nil {
+		return nil, fmt.Errorf("reading rollback patch: %w", err)
+	}
+	if len(plain) == 0 || len(plain) > MaxGitOutputBytes {
+		return nil, errors.New("rollback patch is empty or exceeds the git capture size limit")
+	}
+	plan.Patch = string(plain)
 	if err := checkGitRollbackPatch(ctx, plan); err != nil {
 		return nil, err
 	}

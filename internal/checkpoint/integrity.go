@@ -100,6 +100,13 @@ func VerifyStoredCheckpoint(storage *Storage, sessionName, checkpointID string) 
 		result.Valid = false
 		return result
 	}
+	data, err = decryptCheckpointBytes(data)
+	if err != nil {
+		result.SchemaValid = false
+		result.Errors = append(result.Errors, fmt.Sprintf("reading %s: %v", MetadataFile, err))
+		result.Valid = false
+		return result
+	}
 
 	var cp Checkpoint
 	if err := json.Unmarshal(data, &cp); err != nil {
@@ -194,6 +201,9 @@ func (c *Checkpoint) checkFiles(storage *Storage, dir string, result *IntegrityR
 	} else {
 		data, err := os.ReadFile(sessionPath)
 		if err != nil {
+			result.FilesPresent = false
+			result.Errors = append(result.Errors, fmt.Sprintf("reading session.json: %v", err))
+		} else if data, err = decryptCheckpointBytes(data); err != nil {
 			result.FilesPresent = false
 			result.Errors = append(result.Errors, fmt.Sprintf("reading session.json: %v", err))
 		} else {

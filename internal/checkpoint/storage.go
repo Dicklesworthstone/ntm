@@ -441,6 +441,10 @@ func (s *Storage) Load(sessionName, checkpointID string) (*Checkpoint, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading checkpoint metadata: %w", err)
 	}
+	data, err = decryptCheckpointBytes(data)
+	if err != nil {
+		return nil, fmt.Errorf("reading checkpoint metadata: %w", err)
+	}
 
 	var cp Checkpoint
 	if err := json.Unmarshal(data, &cp); err != nil {
@@ -466,6 +470,10 @@ func loadCheckpointSessionState(dir string, cp *Checkpoint) error {
 	}
 
 	data, err := os.ReadFile(sessionPath)
+	if err != nil {
+		return fmt.Errorf("reading session state: %w", err)
+	}
+	data, err = decryptCheckpointBytes(data)
 	if err != nil {
 		return fmt.Errorf("reading session state: %w", err)
 	}
@@ -651,6 +659,10 @@ func (s *Storage) selectionSortTime(sessionName, checkpointID string, fallback t
 	if err != nil {
 		return fallback
 	}
+	data, err = decryptCheckpointBytes(data)
+	if err != nil {
+		return fallback
+	}
 
 	var meta struct {
 		ID          string    `json:"id"`
@@ -776,7 +788,11 @@ func (s *Storage) SaveScrollback(sessionName, checkpointID string, paneID string
 	filename := fmt.Sprintf("pane_%s.txt", sanitizeName(paneID))
 	fullPath := filepath.Join(panesDir, filename)
 
-	if err := util.AtomicWriteFile(fullPath, []byte(content), 0600); err != nil {
+	payload, err := encryptCheckpointBytes([]byte(content))
+	if err != nil {
+		return "", fmt.Errorf("saving scrollback: %w", err)
+	}
+	if err := util.AtomicWriteFile(fullPath, payload, 0600); err != nil {
 		return "", fmt.Errorf("saving scrollback: %w", err)
 	}
 
@@ -799,6 +815,10 @@ func (s *Storage) LoadScrollback(sessionName, checkpointID string, paneID string
 	if err != nil {
 		return "", fmt.Errorf("reading scrollback: %w", err)
 	}
+	data, err = decryptCheckpointBytes(data)
+	if err != nil {
+		return "", fmt.Errorf("reading scrollback: %w", err)
+	}
 
 	return string(data), nil
 }
@@ -815,8 +835,12 @@ func (s *Storage) SaveGitPatch(sessionName, checkpointID, patch string) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("creating checkpoint directory: %w", err)
 	}
+	payload, err := encryptCheckpointBytes([]byte(patch))
+	if err != nil {
+		return err
+	}
 	path := filepath.Join(dir, GitPatchFile)
-	return util.AtomicWriteFile(path, []byte(patch), 0600)
+	return util.AtomicWriteFile(path, payload, 0600)
 }
 
 // SaveGitStatus writes the git status output to the checkpoint.
@@ -828,13 +852,21 @@ func (s *Storage) SaveGitStatus(sessionName, checkpointID, status string) error 
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("creating checkpoint directory: %w", err)
 	}
+	payload, err := encryptCheckpointBytes([]byte(status))
+	if err != nil {
+		return err
+	}
 	path := filepath.Join(dir, GitStatusFile)
-	return util.AtomicWriteFile(path, []byte(status), 0600)
+	return util.AtomicWriteFile(path, payload, 0600)
 }
 
 // writeJSON writes data as formatted JSON to a file atomically.
 func writeJSON(path string, data interface{}) error {
 	bytes, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return err
+	}
+	bytes, err = encryptCheckpointBytes(bytes)
 	if err != nil {
 		return err
 	}

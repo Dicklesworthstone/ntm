@@ -1,6 +1,7 @@
 package checkpoint
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -41,8 +42,22 @@ func writeCheckpointExport(destPath, cpDir string, writeArchive func(io.Writer) 
 		}
 	}()
 
-	if err := writeArchive(f); err != nil {
-		return fmt.Errorf("writing checkpoint export: %w", err)
+	if isCheckpointEncryptionEnabled() {
+		var archiveBuf bytes.Buffer
+		if err := writeArchive(&archiveBuf); err != nil {
+			return fmt.Errorf("writing checkpoint export: %w", err)
+		}
+		encBytes, err := encryptCheckpointBytes(archiveBuf.Bytes())
+		if err != nil {
+			return fmt.Errorf("encrypting checkpoint export: %w", err)
+		}
+		if _, err := f.Write(encBytes); err != nil {
+			return fmt.Errorf("writing encrypted checkpoint export: %w", err)
+		}
+	} else {
+		if err := writeArchive(f); err != nil {
+			return fmt.Errorf("writing checkpoint export: %w", err)
+		}
 	}
 	if err := f.Sync(); err != nil {
 		return fmt.Errorf("syncing checkpoint export: %w", err)
