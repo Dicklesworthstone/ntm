@@ -19,12 +19,12 @@ type EncryptionConfig struct {
 }
 
 var (
-	checkpointEncMu    sync.RWMutex
-	checkpointEncOn    bool
-	checkpointEncKey   []byte
-	checkpointDecKeys  [][]byte
-	errMissingDecKey   = errors.New("encrypted checkpoint artifact requires [encryption] key configuration")
-	errMissingEncKey   = errors.New("checkpoint encryption enabled without active encryption key")
+	checkpointEncMu   sync.RWMutex
+	checkpointEncOn   bool
+	checkpointEncKey  []byte
+	checkpointDecKeys [][]byte
+	errMissingDecKey  = errors.New("encrypted checkpoint artifact requires [encryption] key configuration")
+	errMissingEncKey  = errors.New("checkpoint encryption enabled without active encryption key")
 )
 
 // SetEncryptionConfig configures (or clears when cfg == nil or !cfg.Enabled)
