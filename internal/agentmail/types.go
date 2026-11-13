@@ -160,14 +160,20 @@ func (m *InboxMessage) UnmarshalJSON(data []byte) error {
 
 // ContactLink represents a contact relationship between agents.
 type ContactLink struct {
-	FromAgent string    `json:"from_agent,omitempty"`
-	ToAgent   string    `json:"to_agent,omitempty"`
-	To        string    `json:"to,omitempty"`
-	Status    string    `json:"status,omitempty"`
-	Reason    string    `json:"reason,omitempty"`
-	Approved  bool      `json:"approved,omitempty"`
-	UpdatedTS *FlexTime `json:"updated_ts,omitempty"`
-	ExpiresTS *FlexTime `json:"expires_ts,omitempty"`
+	ID          int       `json:"id,omitempty"`
+	From        string    `json:"from,omitempty"`
+	FromAgent   string    `json:"from_agent,omitempty"`
+	FromProject string    `json:"from_project,omitempty"`
+	ToAgent     string    `json:"to_agent,omitempty"`
+	To          string    `json:"to,omitempty"`
+	ToProject   string    `json:"to_project,omitempty"`
+	Status      string    `json:"status,omitempty"`
+	Reason      string    `json:"reason,omitempty"`
+	Approved    bool      `json:"approved,omitempty"`
+	Updated     int       `json:"updated,omitempty"`
+	CreatedTS   *FlexTime `json:"created_ts,omitempty"`
+	UpdatedTS   *FlexTime `json:"updated_ts,omitempty"`
+	ExpiresTS   *FlexTime `json:"expires_ts,omitempty"`
 }
 
 // ThreadSummary contains summary information for a message thread.
@@ -418,34 +424,35 @@ type PrepareThreadOptions struct {
 
 // PrepareThreadResult contains the result of macro_prepare_thread.
 type PrepareThreadResult struct {
-	Agent         *Agent         `json:"agent"`
-	ThreadSummary *ThreadSummary `json:"thread_summary"`
-	Examples      []InboxMessage `json:"examples,omitempty"`
-	Inbox         []InboxMessage `json:"inbox"`
+	Project *Project               `json:"project"`
+	Agent   *Agent                 `json:"agent"`
+	Thread  *ThreadSummaryResponse `json:"thread"`
+	Inbox   []InboxMessage         `json:"inbox"`
 }
 
 // ContactHandshakeOptions contains options for the macro_contact_handshake call.
 type ContactHandshakeOptions struct {
-	ProjectKey      string // Absolute path to project
-	AgentName       string // Your agent name (optional, auto-generated if empty)
-	ToAgent         string // Target agent to contact
-	ToProject       string // Target project (optional, same project if empty)
-	Reason          string // Reason for contact request
-	Program         string // Your program (optional, for auto-registration)
-	Model           string // Your model (optional, for auto-registration)
-	TaskDescription string // Your task description (optional)
-	AutoAccept      bool   // Auto-accept the contact (requires mutual)
-	WelcomeSubject  string // Subject for welcome message (optional)
-	WelcomeBody     string // Body for welcome message (optional)
-	TTLSeconds      int    // TTL for contact approval
+	ProjectKey        string // Absolute path to project
+	AgentName         string // Your existing agent name (required)
+	ToAgent           string // Target agent to contact
+	ToProject         string // Target project (optional, same project if empty)
+	Reason            string // Reason for contact request
+	Program           string // Your program (optional, for auto-registration)
+	Model             string // Your model (optional, for auto-registration)
+	TaskDescription   string // Your task description (optional)
+	RegisterIfMissing bool   // Explicitly allow registration during the contact request
+	AutoAccept        bool   // Auto-accept the contact (requires mutual)
+	WelcomeSubject    string // Subject for welcome message (optional)
+	WelcomeBody       string // Body for welcome message (optional)
+	TTLSeconds        int    // TTL for contact approval
 }
 
 // ContactHandshakeResult contains the result of macro_contact_handshake.
 type ContactHandshakeResult struct {
-	Agent         *Agent       `json:"agent,omitempty"`
-	ContactStatus string       `json:"contact_status"` // "approved", "pending", "denied"
-	Link          *ContactLink `json:"link,omitempty"`
-	WelcomeMsg    *Message     `json:"welcome_message,omitempty"`
+	Request              *ContactLink `json:"request"`
+	Response             *ContactLink `json:"response,omitempty"`
+	WelcomeMsg           *SendResult  `json:"welcome_message,omitempty"`
+	WelcomeSkippedReason string       `json:"welcome_skipped_reason,omitempty"`
 }
 
 // RequestContactOptions contains options for requesting contact with an agent.
@@ -487,9 +494,11 @@ type SummarizeThreadOptions struct {
 
 // ThreadSummaryResponse contains the summarize_thread response for a single thread.
 type ThreadSummaryResponse struct {
-	ThreadID string         `json:"thread_id"`
-	Summary  ThreadSummary  `json:"summary"`
-	Examples []InboxMessage `json:"examples,omitempty"`
+	ThreadID      string         `json:"thread_id"`
+	Summary       ThreadSummary  `json:"summary"`
+	Examples      []InboxMessage `json:"examples,omitempty"`
+	TotalMessages int            `json:"total_messages,omitempty"`
+	LLMStub       bool           `json:"llm_stub,omitempty"`
 }
 
 // RenewReservationsOptions contains options for renewing file reservations.

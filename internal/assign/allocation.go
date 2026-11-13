@@ -2,6 +2,7 @@ package assign
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -40,6 +41,7 @@ const (
 	AllocationReasonNoAgents          AllocationReasonCode = "no_agents"
 	AllocationReasonAgentBusy         AllocationReasonCode = "agent_busy"
 	AllocationReasonContextHigh       AllocationReasonCode = "context_high"
+	AllocationReasonContextInvalid    AllocationReasonCode = "context_invalid"
 	AllocationReasonCapacityExhausted AllocationReasonCode = "capacity_exhausted"
 	AllocationReasonGraphValue        AllocationReasonCode = "graph_value"
 	AllocationReasonPriorityConflict  AllocationReasonCode = "priority_conflict"
@@ -68,6 +70,7 @@ type AllocationInput struct {
 	MaxRecommendations  int                   `json:"max_recommendations,omitempty"`
 	AlternativesPerBead int                   `json:"alternatives_per_bead,omitempty"`
 	MinScore            float64               `json:"min_score,omitempty"`
+	Relax               bool                  `json:"relax,omitempty"`
 	Matrix              *CapabilityMatrix     `json:"-"`
 }
 
@@ -153,6 +156,7 @@ type AllocationSummary struct {
 
 // AllocationRecommendation is a selected bead-to-agent recommendation.
 type AllocationRecommendation struct {
+	Relaxation      *ScoreRelaxation          `json:"relaxation,omitempty"`
 	BeadID          string                    `json:"bead_id"`
 	BeadTitle       string                    `json:"bead_title,omitempty"`
 	Priority        int                       `json:"priority"`
@@ -233,8 +237,35 @@ func PlanAllocations(in AllocationInput) AllocationPlan {
 	return NewAllocationPlannerWithMatrix(matrix).Plan(in)
 }
 
-// Plan builds a reviewable allocation plan from normalized inputs.
+// Plan builds a reviewable allocation plan from normalized inputs. Explicit
+// relaxation retries only an empty strict plan, changing the score floor alone.
 func (p *AllocationPlanner) Plan(in AllocationInput) AllocationPlan {
+	plan := p.plan(in)
+	if !in.Relax || len(plan.Recommendations) != 0 {
+		return plan
+	}
+	threshold := in.MinScore
+	if threshold <= 0 {
+		threshold = defaultAllocationMinScore
+	}
+	if !(threshold > 0) || math.IsInf(threshold, 0) {
+		return plan
+	}
+	in.MinScore = threshold / 2
+	relaxed := p.plan(in)
+	if len(relaxed.Recommendations) == 0 {
+		return plan
+	}
+	for i := range relaxed.Recommendations {
+		recommendation := &relaxed.Recommendations[i]
+		recommendation.Relaxation = scoreRelaxation(recommendation.Score, threshold)
+		recommendation.Reason += fmt.Sprintf("; explicitly relaxed minimum assignment score from %.3f to %.3f", threshold, threshold/2)
+	}
+	relaxed.Warnings = append(relaxed.Warnings, fmt.Sprintf("Explicit --relax fallback lowered only the minimum assignment score from %.3f to %.3f; availability and capacity gates remain enforced", threshold, threshold/2))
+	return relaxed
+}
+
+func (p *AllocationPlanner) plan(in AllocationInput) AllocationPlan {
 	plan := AllocationPlan{
 		SchemaVersion:   AllocationPlanSchemaVersion,
 		Decision:        AllocationDecisionRecommend,
@@ -420,6 +451,14 @@ func (p *AllocationPlanner) scoreCandidate(
 	if !worker.Idle {
 		candidate.Decision = AllocationDecisionReject
 		candidate.ReasonCodes = []AllocationReasonCode{AllocationReasonAgentBusy}
+		candidate.Reason = buildAllocationReason(candidate.ReasonCodes)
+		return candidate
+	}
+	// Invalid observations cannot establish available context. A positive
+	// comparison rejects NaN as well as negative and infinite values.
+	if !(worker.ContextUsage >= 0 && worker.ContextUsage <= 1) {
+		candidate.Decision = AllocationDecisionReject
+		candidate.ReasonCodes = []AllocationReasonCode{AllocationReasonContextInvalid}
 		candidate.Reason = buildAllocationReason(candidate.ReasonCodes)
 		return candidate
 	}
@@ -772,6 +811,8 @@ func allocationReasonText(reason AllocationReasonCode) string {
 		return "agent is already busy"
 	case AllocationReasonContextHigh:
 		return "agent context usage is too high"
+	case AllocationReasonContextInvalid:
+		return "agent context usage is not a valid fraction"
 	case AllocationReasonCapacityExhausted:
 		return "assignment capacity is exhausted"
 	case AllocationReasonGraphValue:

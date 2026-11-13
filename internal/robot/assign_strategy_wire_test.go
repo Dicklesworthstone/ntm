@@ -7,11 +7,115 @@ package robot
 // flag.
 
 import (
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	assignmentstore "github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
+	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+// Exercise the observation, durable occupancy, bead-gating, real matcher, and
+// JSON adapter path used by --robot-assign. Relaxation must never turn excluded
+// panes or beads back into candidates, even when their scores would be higher.
+func TestRobotAssignRelaxationPreservesEligibilityAndProvenance(t *testing.T) {
+	for _, strategy := range []string{"balanced", "speed", "quality", "dependency"} {
+		t.Run(strategy, func(t *testing.T) {
+			now := time.Now().UTC()
+			pane := func(id string, index int, usage float64) statuspkg.PaneObservation {
+				return statuspkg.PaneObservation{
+					Pane: tmux.PaneRef{ID: id, WindowIndex: 1, PaneIndex: index}, AgentType: "codex",
+					Current: statuspkg.StateObservation{
+						Status:     statuspkg.AgentStatus{State: statuspkg.StateIdle, ContextUsage: usage},
+						ObservedAt: now, Freshness: statuspkg.FreshnessFresh, Confidence: 0.95,
+					},
+				}
+			}
+			usage := 75.0 // Feature score .9 * .25 = .225, below the strict .3 floor.
+			threshold := 0.3
+			if strategy == "speed" {
+				usage, threshold = 86, 0.15 // Speed starts with half the ordinary floor.
+			}
+			observation := statuspkg.SessionObservation{Session: "proj", ObservedAt: now, Panes: []statuspkg.PaneObservation{
+				pane("%41", 1, usage), pane("%42", 2, 0), pane("%43", 3, 0),
+				pane("%44", 4, 0), pane("%45", 5, 0), pane("%46", 6, 0),
+				pane("%47", 7, 99), pane("%48", 8, 0),
+			}}
+			observation.Panes[1].Current.Status.State = statuspkg.StateWorking
+			observation.Panes[2].Current.ObservedAt = now.Add(-statuspkg.DispatchObservationMaxAge - time.Second)
+			observation.Panes[3].Current.Confidence = 0.74
+			observation.Panes[4].Metadata.RotationToken = "pending-handoff"
+			observation.Panes[5].Current.Error = "capture failed"
+			agents, idle, err := assignAgentsFromObservation(observation, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			idle, err = filterDurablyOccupiedAssignAgents(idle, []*assignmentstore.Assignment{{
+				BeadID: "owned-work", Pane: 8, OccupancyKey: "%48", DispatchTarget: "%48",
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			beads := filterAssignableBeadPreviewsWithGate([]bv.TriageRecommendation{
+				{ID: "blocked", Title: "Implement feature", Type: "feature", Priority: 2, Status: "open", BlockedBy: []string{"dependency"}},
+				{ID: "gated", Title: "Implement feature", Type: "feature", Priority: 2, Status: "open", Labels: []string{"operator-gated"}},
+				{ID: "closed", Title: "Implement feature", Type: "feature", Priority: 2, Status: "closed"},
+				{ID: "ready-1", Title: "Implement feature one", Type: "feature", Priority: 2, Status: "open"},
+				{ID: "ready-2", Title: "Implement feature two", Type: "feature", Priority: 2, Status: "open"},
+			}, 0, func(label string) bool { return label == "operator-gated" })
+			if strict := planAssignments(agents, beads, nil, strategy, idle, false); len(strict) != 0 {
+				t.Fatalf("strict planning should reject low-score and unsafe candidates: %+v", strict)
+			}
+			recs := planAssignments(agents, beads, nil, strategy, idle, true)
+			if len(recs) != 1 || recs[0].PaneID != "%41" || recs[0].PaneTarget != "1.1" || !strings.HasPrefix(recs[0].AssignBead, "ready-") {
+				t.Fatalf("relaxed planning bypassed eligibility or one-bead-per-pane: %+v", recs)
+			}
+			receipt := recs[0].Relaxation
+			if receipt == nil || receipt.OriginalThreshold != threshold || receipt.RelaxedThreshold != threshold/2 ||
+				receipt.OriginalScore != receipt.RelaxedScore || receipt.OriginalScore >= threshold || receipt.RelaxedScore < threshold/2 ||
+				!reflect.DeepEqual(receipt.RelaxedConstraints, []string{"minimum_assignment_score"}) {
+				t.Fatalf("missing exact score-floor provenance: %+v", receipt)
+			}
+			encoded, err := json.Marshal(AssignOutput{Recommendations: recs})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded AssignOutput
+			if err := json.Unmarshal(encoded, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(decoded.Recommendations[0].Relaxation, receipt) {
+				t.Fatalf("robot JSON lost relaxation provenance: %s", encoded)
+			}
+			if got := planAssignments(agents, beads, nil, strategy, nil, true); len(got) != 0 {
+				t.Fatalf("relaxation reintroduced panes excluded by the caller: %+v", got)
+			}
+			if got := planAssignments(agents, nil, nil, strategy, idle, true); len(got) != 0 {
+				t.Fatalf("relaxation reintroduced beads excluded by the caller: %+v", got)
+			}
+		})
+	}
+}
+
+func TestRobotAssignRelaxationPreservesExistingStrictPlans(t *testing.T) {
+	agents, beads, idle := strategyFixture()
+	for _, strategy := range []string{"simple", "balanced", "speed", "quality", "dependency"} {
+		strict := planAssignments(agents, beads, nil, strategy, idle, false)
+		relaxed := planAssignments(agents, beads, nil, strategy, idle, true)
+		if len(strict) == 0 || !reflect.DeepEqual(strict, relaxed) {
+			t.Fatalf("%s changed an existing strict plan: strict=%+v relaxed=%+v", strategy, strict, relaxed)
+		}
+		for _, rec := range relaxed {
+			if rec.Relaxation != nil {
+				t.Fatalf("%s claimed relaxation without fallback: %+v", strategy, rec)
+			}
+		}
+	}
+}
 
 // TestAssignStrategyDefaultPinnedToSimple pins the default strategy name.
 // The historical default ("balanced") silently behaved as sequential pairing;
@@ -76,7 +180,7 @@ func pairingOf(recs []AssignRecommend) map[string]string {
 // regardless of capability fit.
 func TestPlanAssignments_SimpleIsSequential(t *testing.T) {
 	agents, beads, idle := strategyFixture()
-	recs := planAssignments(agents, beads, nil, "simple", idle)
+	recs := planAssignments(agents, beads, nil, "simple", idle, false)
 	if len(recs) != 3 {
 		t.Fatalf("expected 3 recommendations, got %d", len(recs))
 	}
@@ -100,8 +204,8 @@ func TestPlanAssignments_SimpleIsSequential(t *testing.T) {
 func TestPlanAssignments_QualityDiffersFromSimple(t *testing.T) {
 	agents, beads, idle := strategyFixture()
 
-	simple := pairingOf(planAssignments(agents, beads, nil, "simple", idle))
-	quality := pairingOf(planAssignments(agents, beads, nil, "quality", idle))
+	simple := pairingOf(planAssignments(agents, beads, nil, "simple", idle, false))
+	quality := pairingOf(planAssignments(agents, beads, nil, "quality", idle, false))
 
 	// Best capability matches: bug -> codex, docs -> gemini, refactor -> claude.
 	want := map[string]string{"bd-bug": "%2", "bd-doc": "%3", "bd-ref": "%1"}
@@ -121,8 +225,8 @@ func TestPlanAssignments_QualityDiffersFromSimple(t *testing.T) {
 func TestPlanAssignments_BalancedDiffersFromSimple(t *testing.T) {
 	agents, beads, idle := strategyFixture()
 
-	simple := pairingOf(planAssignments(agents, beads, nil, "simple", idle))
-	balanced := pairingOf(planAssignments(agents, beads, nil, "balanced", idle))
+	simple := pairingOf(planAssignments(agents, beads, nil, "simple", idle, false))
+	balanced := pairingOf(planAssignments(agents, beads, nil, "balanced", idle, false))
 
 	// Balanced spreads work by assignment count then score; with equal counts
 	// the P0 bug goes to codex (0.90 beats claude's 0.80) — not to claude as
@@ -144,8 +248,8 @@ func TestPlanAssignments_BalancedDiffersFromSimple(t *testing.T) {
 func TestPlanAssignments_SpeedDiffersFromQuality(t *testing.T) {
 	agents, beads, idle := strategyFixture()
 
-	speed := pairingOf(planAssignments(agents, beads, nil, "speed", idle))
-	quality := pairingOf(planAssignments(agents, beads, nil, "quality", idle))
+	speed := pairingOf(planAssignments(agents, beads, nil, "speed", idle, false))
+	quality := pairingOf(planAssignments(agents, beads, nil, "quality", idle, false))
 
 	// Speed: the P0 bug goes to the first available agent (claude), even
 	// though codex scores higher.
@@ -176,8 +280,8 @@ func TestPlanAssignments_DependencyIsGraphAware(t *testing.T) {
 		"bd-blocker": {"bd-a", "bd-b", "bd-c"},
 	}
 
-	simple := pairingOf(planAssignments(agents, beads, unblocks, "simple", idle))
-	dependency := pairingOf(planAssignments(agents, beads, unblocks, "dependency", idle))
+	simple := pairingOf(planAssignments(agents, beads, unblocks, "simple", idle, false))
+	dependency := pairingOf(planAssignments(agents, beads, unblocks, "dependency", idle, false))
 
 	if _, ok := simple["bd-leaf"]; !ok {
 		t.Fatalf("simple should assign the first listed bead bd-leaf, got %v", simple)
@@ -195,7 +299,7 @@ func TestPlanAssignments_DependencyIsGraphAware(t *testing.T) {
 func TestPlanAssignments_ConfidenceComesFromPlanner(t *testing.T) {
 	agents, beads, idle := strategyFixture()
 
-	quality := planAssignments(agents, beads, nil, "quality", idle)
+	quality := planAssignments(agents, beads, nil, "quality", idle, false)
 	for _, rec := range quality {
 		if rec.AssignBead == "bd-bug" {
 			// Quality confidence equals the raw pair score: codex bug = 0.90.
@@ -205,7 +309,7 @@ func TestPlanAssignments_ConfidenceComesFromPlanner(t *testing.T) {
 		}
 	}
 
-	speed := planAssignments(agents, beads, nil, "speed", idle)
+	speed := planAssignments(agents, beads, nil, "speed", idle, false)
 	for _, rec := range speed {
 		if rec.AssignBead == "bd-bug" {
 			// Speed confidence uses the planner's (score+0.9)/2 formula:
@@ -238,7 +342,7 @@ func TestPlanAssignments_OneBeadPerPane(t *testing.T) {
 		{ID: "bd-4", Title: "Refactor auth flow", Priority: "P3"},
 	}
 	for _, strategy := range []string{"simple", "balanced", "speed", "quality", "dependency"} {
-		recs := planAssignments(agents, beads, nil, strategy, idle)
+		recs := planAssignments(agents, beads, nil, strategy, idle, false)
 		seenPane := make(map[string]string)
 		seenBead := make(map[string]bool)
 		for _, rec := range recs {

@@ -20,9 +20,8 @@ import (
 
 // attachTokenFromField adds a cached token to an MCP tool arg map.
 // Different Agent Mail tools use different token parameter names:
-// send_message/reply_message use sender_token, most agent-scoped read
-// and reservation tools use registration_token, and handshake macros
-// use requester_registration_token / target_registration_token.
+// send_message/reply_message and handshake welcome messages use sender_token;
+// most agent-scoped reads and reservation tools use registration_token.
 func (c *Client) attachTokenFromField(args map[string]interface{}, tokenField, agentField string) {
 	if c == nil || args == nil {
 		return
@@ -725,6 +724,7 @@ func (c *Client) StartSession(ctx context.Context, projectKey, program, model, t
 	if err := json.Unmarshal(result, &sessionResult); err != nil {
 		return nil, NewAPIError("macro_start_session", 0, err)
 	}
+	c.rememberRegistrationToken(projectKey, sessionResult.Agent)
 
 	return &sessionResult, nil
 }
@@ -767,7 +767,7 @@ func (c *Client) PrepareThread(ctx context.Context, opts PrepareThreadOptions) (
 		args["register_if_missing"] = *opts.RegisterIfMissing
 	}
 
-	c.attachRegistrationToken(args)
+	c.attachTokenFromField(args, "registration_proof", "agent_name")
 	result, err := c.callTool(ctx, "macro_prepare_thread", args)
 	if err != nil {
 		return nil, err
@@ -777,6 +777,7 @@ func (c *Client) PrepareThread(ctx context.Context, opts PrepareThreadOptions) (
 	if err := json.Unmarshal(result, &threadResult); err != nil {
 		return nil, NewAPIError("macro_prepare_thread", 0, err)
 	}
+	c.rememberRegistrationToken(opts.ProjectKey, threadResult.Agent)
 
 	return &threadResult, nil
 }
@@ -819,10 +820,12 @@ func (c *Client) ContactHandshake(ctx context.Context, opts ContactHandshakeOpti
 	}
 
 	args["auto_accept"] = opts.AutoAccept
-	args["register_if_missing"] = true // Always try to register
+	args["register_if_missing"] = opts.RegisterIfMissing
 
-	c.attachTokenFromField(args, "requester_registration_token", "agent_name")
-	c.attachTokenFromField(args, "target_registration_token", "to_agent")
+	// The macro forwards sender_token to the welcome send. The server's MCP
+	// actor authorization controls both request and acceptance; a same-named
+	// target token from the requester's project is never contact authority.
+	c.attachTokenFromField(args, "sender_token", "agent_name")
 	result, err := c.callTool(ctx, "macro_contact_handshake", args)
 	if err != nil {
 		return nil, err

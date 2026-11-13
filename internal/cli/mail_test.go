@@ -61,6 +61,13 @@ type mailStub struct {
 	handshakeCalls     []map[string]interface{}
 	failIDs            map[int]string // messageID -> error message
 	afterMark          func(int)
+	macroCalls         []mailMacroCall
+	macroHandler       func(string, map[string]interface{}) (interface{}, *agentmail.JSONRPCError)
+}
+
+type mailMacroCall struct {
+	Name string
+	Args map[string]interface{}
 }
 
 type fetchCall struct {
@@ -397,6 +404,83 @@ func newMailStub(t *testing.T, inbox []agentmail.InboxMessage) *mailStub {
 		args, _ := params["arguments"].(map[string]interface{})
 
 		switch name {
+		case "macro_start_session", "macro_prepare_thread", "macro_contact_handshake":
+			stub.macroCalls = append(stub.macroCalls, mailMacroCall{Name: name, Args: args})
+			switch name {
+			case "macro_start_session":
+				stub.startSessionCalls = append(stub.startSessionCalls, args)
+			case "macro_prepare_thread":
+				stub.prepareThreadCalls = append(stub.prepareThreadCalls, args)
+			case "macro_contact_handshake":
+				stub.handshakeCalls = append(stub.handshakeCalls, args)
+			}
+			if stub.macroHandler != nil {
+				result, rpcErr := stub.macroHandler(name, args)
+				if rpcErr != nil {
+					writeError(w, rpc.ID, rpcErr.Code, rpcErr.Message)
+					return
+				}
+				writeResponse(result)
+				return
+			}
+			switch name {
+			case "macro_start_session":
+				writeResponse(map[string]interface{}{
+					"project": map[string]interface{}{
+						"id":        1,
+						"slug":      "stub-proj",
+						"human_key": toString(args["human_key"]),
+					},
+					"agent": map[string]interface{}{
+						"id":               10,
+						"name":             "BlueLake",
+						"program":          toString(args["program"]),
+						"model":            toString(args["model"]),
+						"task_description": toString(args["task_description"]),
+					},
+					"inbox":             []interface{}{},
+					"file_reservations": map[string]interface{}{"granted": []interface{}{}, "conflicts": []interface{}{}},
+				})
+			case "macro_prepare_thread":
+				agentName := toString(args["agent_name"])
+				if agentName == "" {
+					agentName = "BlueLake"
+				}
+				writeResponse(map[string]interface{}{
+					"agent": map[string]interface{}{
+						"id":      10,
+						"name":    agentName,
+						"program": toString(args["program"]),
+						"model":   toString(args["model"]),
+					},
+					"thread": map[string]interface{}{
+						"thread_id": toString(args["thread_id"]),
+						"summary": map[string]interface{}{
+							"thread_id":    toString(args["thread_id"]),
+							"participants": []string{},
+							"key_points":   []string{},
+							"action_items": []string{},
+						},
+						"examples": []interface{}{},
+					},
+					"inbox": []interface{}{},
+				})
+			case "macro_contact_handshake":
+				resp := map[string]interface{}{
+					"request": map[string]interface{}{
+						"id":         1,
+						"status":     "approved",
+						"from_agent": toString(args["agent_name"]),
+						"to_agent":   toString(args["to_agent"]),
+					},
+				}
+				if subj := toString(args["welcome_subject"]); subj != "" {
+					resp["welcome_message"] = map[string]interface{}{
+						"count": 1,
+					}
+				}
+				writeResponse(resp)
+			}
 		case "health_check":
 			writeResponse(map[string]interface{}{"status": "ok"})
 		case "register_agent", "send_message":
@@ -559,59 +643,6 @@ func newMailStub(t *testing.T, inbox []agentmail.InboxMessage) *mailStub {
 				NotifyPrevious: toBool(args["notify_previous"]),
 			})
 			writeResponse(stub.forceReleaseResult)
-		case "macro_start_session":
-			stub.startSessionCalls = append(stub.startSessionCalls, args)
-			writeResponse(map[string]interface{}{
-				"project": map[string]interface{}{
-					"id":        1,
-					"slug":      "stub-proj",
-					"human_key": toString(args["human_key"]),
-				},
-				"agent": map[string]interface{}{
-					"id":               10,
-					"name":             "BlueLake",
-					"program":          toString(args["program"]),
-					"model":            toString(args["model"]),
-					"task_description": toString(args["task_description"]),
-				},
-			})
-		case "macro_prepare_thread":
-			stub.prepareThreadCalls = append(stub.prepareThreadCalls, args)
-			agentName := toString(args["agent_name"])
-			if agentName == "" {
-				agentName = "BlueLake"
-			}
-			writeResponse(map[string]interface{}{
-				"agent": map[string]interface{}{
-					"id":      10,
-					"name":    agentName,
-					"program": toString(args["program"]),
-					"model":   toString(args["model"]),
-				},
-				"thread_summary": map[string]interface{}{
-					"thread_id": toString(args["thread_id"]),
-				},
-			})
-		case "macro_contact_handshake":
-			stub.handshakeCalls = append(stub.handshakeCalls, args)
-			agentName := toString(args["agent_name"])
-			if agentName == "" {
-				agentName = "BlueLake"
-			}
-			resp := map[string]interface{}{
-				"agent": map[string]interface{}{
-					"id":   10,
-					"name": agentName,
-				},
-				"contact_status": "approved",
-			}
-			if subj := toString(args["welcome_subject"]); subj != "" {
-				resp["welcome_message"] = map[string]interface{}{
-					"id":      77,
-					"subject": subj,
-				}
-			}
-			writeResponse(resp)
 		default:
 			http.Error(w, "unknown tool "+name, http.StatusNotFound)
 		}
@@ -752,6 +783,386 @@ func execCommand(t *testing.T, args ...string) (string, error) {
 	rootCmd.SetErr(&buf)
 	err := rootCmd.Execute()
 	return buf.String(), err
+}
+
+func setupMailMacroTest(t *testing.T) (*mailStub, string) {
+	t.Helper()
+	isolateSessionAgentStorage(t)
+	isolateOverseerSessionProbe(t)
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("AGENT_NAME", "")
+	t.Setenv("AGENT_MAIL_TOKEN", "")
+	project := canonicalTempDir(t)
+	if err := os.Mkdir(filepath.Join(project, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(project)
+	stub := newMailStub(t, nil)
+	t.Cleanup(stub.Close)
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/mcp/")
+	t.Cleanup(func() { resetFlags(); startup.ResetConfig() })
+	return stub, project
+}
+
+func TestMailSessionStartPersistsIdentityWithoutExposingCredential(t *testing.T) {
+	stub, project := setupMailMacroTest(t)
+	stub.macroHandler = func(name string, args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+		if name != "macro_start_session" || args["human_key"] != project || args["program"] != "codex" || args["model"] != "test-model" || args["task_description"] != "implement fixtures" {
+			t.Errorf("unexpected bootstrap request: %s %+v", name, args)
+		}
+		return map[string]interface{}{
+			"project":           map[string]interface{}{"id": 1, "human_key": project, "slug": "test"},
+			"agent":             map[string]interface{}{"name": "BlueLake", "registration_token": "PRIVATE-MACRO-CREDENTIAL"},
+			"inbox":             nil,
+			"file_reservations": map[string]interface{}{"granted": nil, "conflicts": nil},
+		}, nil
+	}
+	out, err := execCommand(t, "mail", "session-start", "macrotest", "--program", "codex", "--model", "test-model", "--task", "implement fixtures", "--json")
+	if err != nil {
+		t.Fatalf("bootstrap: %v\n%s", err, out)
+	}
+	t.Logf("bootstrap envelope: %s", out)
+	var envelope struct {
+		Success       bool                   `json:"success"`
+		Timestamp     string                 `json:"timestamp"`
+		IdentitySaved bool                   `json:"identity_saved"`
+		Result        map[string]interface{} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.Success || !envelope.IdentitySaved || strings.Contains(out, "PRIVATE-MACRO-CREDENTIAL") || strings.Contains(out, "registration_token") {
+		t.Fatalf("bootstrap did not protect its saved identity: %s", out)
+	}
+	if _, err := time.Parse(time.RFC3339, envelope.Timestamp); err != nil {
+		t.Fatalf("missing timestamp: %s", out)
+	}
+	if inbox, ok := envelope.Result["inbox"].([]interface{}); !ok || len(inbox) != 0 {
+		t.Fatalf("inbox should be [], got %#v", envelope.Result["inbox"])
+	}
+	reservations := envelope.Result["file_reservations"].(map[string]interface{})
+	for _, key := range []string{"granted", "conflicts"} {
+		if rows, ok := reservations[key].([]interface{}); !ok || len(rows) != 0 {
+			t.Fatalf("reservation %s should be [], got %#v", key, reservations[key])
+		}
+	}
+	info, err := agentmail.LoadSessionAgent("macrotest", project)
+	if err != nil || info == nil || info.AgentName != "BlueLake" || info.RegistrationToken != "PRIVATE-MACRO-CREDENTIAL" {
+		t.Fatalf("saved identity missing: %+v %v", info, err)
+	}
+	if got := newAgentMailClient(project).RegistrationToken(project, "BlueLake"); got != "PRIVATE-MACRO-CREDENTIAL" {
+		t.Fatal("a later command could not recover the saved credential")
+	}
+	if len(stub.macroCalls) != 1 || stub.ensureCalled != 0 || len(stub.ordinarySendCalls) != 0 {
+		t.Fatalf("bootstrap was not a single macro: macros=%d ensure=%d other=%v", len(stub.macroCalls), stub.ensureCalled, stub.ordinarySendCalls)
+	}
+}
+
+func TestMailSessionStartPreservesPaneAndCoordinatorIdentity(t *testing.T) {
+	stub, project := setupMailMacroTest(t)
+	saveSessionAgentForTest(t, "macrotest", project, "GreenCastle")
+	registry := agentmail.NewSessionAgentRegistry("macrotest", project)
+	registry.AddAgent("macrotest__cc_1", "%9", "GreenCastle")
+	registry.SetPanePID("%9", 1234)
+	registry.SetRegistrationToken("GreenCastle", "EXISTING-TOKEN")
+	if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+		t.Fatal(err)
+	}
+	stub.macroHandler = func(string, map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+		return map[string]interface{}{
+			"project": map[string]interface{}{"human_key": project},
+			"agent":   map[string]interface{}{"name": "BlueLake", "registration_token": "NEW-TOKEN"},
+			"inbox":   []interface{}{},
+		}, nil
+	}
+	if out, err := execCommand(t, "mail", "session-start", "macrotest", "--json"); err != nil {
+		t.Fatalf("bootstrap: %v\n%s", err, out)
+	}
+	info, err := agentmail.LoadSessionAgent("macrotest", project)
+	if err != nil || info == nil || info.AgentName != "GreenCastle" {
+		t.Fatalf("macro stole coordinator identity: %+v %v", info, err)
+	}
+	saved, err := agentmail.LoadSessionAgentRegistry("macrotest", project)
+	if err != nil || saved == nil {
+		t.Fatalf("registry: %+v %v", saved, err)
+	}
+	name, _ := saved.GetAgentByID("%9")
+	if name != "GreenCastle" || saved.PanePID("%9") != 1234 || saved.RegistrationToken("GreenCastle") != "EXISTING-TOKEN" || saved.RegistrationToken("BlueLake") != "NEW-TOKEN" {
+		t.Fatal("bootstrap overwrote an existing pane binding or credential")
+	}
+}
+
+func TestMailPrepareThreadUsesExistingIdentityAndServerEnvelope(t *testing.T) {
+	stub, project := setupMailMacroTest(t)
+	saveSessionAgentForTest(t, "macrotest", project, "BlueLake")
+	registry := agentmail.NewSessionAgentRegistry("macrotest", project)
+	registry.SetRegistrationToken("BlueLake", "EXISTING-TOKEN")
+	if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+		t.Fatal(err)
+	}
+	stub.macroHandler = func(name string, args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+		if name != "macro_prepare_thread" || args["project_key"] != project || args["agent_name"] != "BlueLake" || args["thread_id"] != "FEAT-123" || args["registration_proof"] != "EXISTING-TOKEN" {
+			t.Errorf("incorrect thread request identity or scope: %s %+v", name, args)
+		}
+		if args["register_if_missing"] != false || args["llm_mode"] != false || args["include_inbox_bodies"] != false || args["include_examples"] != true {
+			t.Errorf("thread preparation changed default mutation/privacy choices: %+v", args)
+		}
+		return map[string]interface{}{
+			"project": map[string]interface{}{"human_key": project},
+			"agent":   map[string]interface{}{"name": "BlueLake"},
+			"thread": map[string]interface{}{
+				"thread_id": "FEAT-123", "total_messages": 5,
+				"summary":  map[string]interface{}{"key_points": []string{"Keep dispatch idempotent"}},
+				"examples": []map[string]interface{}{{"id": 12, "subject": "Implementation plan"}},
+			},
+			"inbox": nil,
+		}, nil
+	}
+	out, err := execCommand(t, "mail", "prepare-thread", "macrotest", "--thread", "FEAT-123", "--json")
+	if err != nil {
+		t.Fatalf("prepare thread: %v\n%s", err, out)
+	}
+	t.Logf("thread envelope: %s", out)
+	var envelope struct {
+		Success bool                          `json:"success"`
+		Result  agentmail.PrepareThreadResult `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.Success || envelope.Result.Thread == nil || envelope.Result.Thread.TotalMessages != 5 || len(envelope.Result.Thread.Summary.KeyPoints) != 1 || len(envelope.Result.Thread.Examples) != 1 || envelope.Result.Inbox == nil {
+		t.Fatalf("thread evidence was lost: %s", out)
+	}
+	if got := newAgentMailClient(project).RegistrationToken(project, "BlueLake"); got != "EXISTING-TOKEN" {
+		t.Fatal("a read-only macro discarded the existing registration credential")
+	}
+}
+
+func TestMailHandshakeUsesExplicitChoicesAndClearsReusedFlags(t *testing.T) {
+	stub, project := setupMailMacroTest(t)
+	registry := agentmail.NewSessionAgentRegistry("macrotest", project)
+	registry.SetRegistrationToken("BlueLake", "SENDER-TOKEN")
+	if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+		t.Fatal(err)
+	}
+	stub.macroHandler = func(name string, args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+		if name != "macro_contact_handshake" || args["agent_name"] != "BlueLake" || args["to_agent"] != "GreenCastle" || args["sender_token"] != "SENDER-TOKEN" || args["register_if_missing"] != false {
+			t.Errorf("incorrect handshake: %s %+v", name, args)
+		}
+		result := map[string]interface{}{
+			"request":  map[string]interface{}{"from_agent": "BlueLake", "to_agent": "GreenCastle", "status": "pending"},
+			"response": nil, "welcome_message": nil,
+		}
+		if len(stub.macroCalls) == 1 {
+			if args["auto_accept"] != true || args["to_project"] != "/other/project" || args["welcome_subject"] != "Hello" || args["welcome_body"] != "Please coordinate" {
+				t.Errorf("explicit handshake choices were not forwarded: %+v", args)
+			}
+			result["response"] = map[string]interface{}{"from": "BlueLake", "to": "GreenCastle", "approved": true}
+			result["welcome_message"] = map[string]interface{}{"count": 1, "deliveries": []map[string]interface{}{{"project": "other", "payload": map[string]interface{}{"id": 42}}}}
+		} else {
+			if args["auto_accept"] != false || args["to_project"] != nil || args["welcome_body"] != nil || args["welcome_subject"] != nil {
+				t.Errorf("previous invocation leaked mutation flags: %+v", args)
+			}
+		}
+		return result, nil
+	}
+	for _, flags := range [][]string{
+		{"--auto-accept", "--to-project", "/other/project", "--welcome-subject", "Hello", "--welcome-body", "Please coordinate"},
+		{},
+	} {
+		args := []string{"mail", "handshake", "macrotest", "--agent", "BlueLake", "--to", "GreenCastle", "--json"}
+		out, err := execCommand(t, append(args, flags...)...)
+		if err != nil {
+			t.Fatalf("handshake: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, `"success": true`) || strings.Contains(out, "SENDER-TOKEN") {
+			t.Fatalf("invalid handshake envelope: %s", out)
+		}
+	}
+	if len(stub.macroCalls) != 2 || len(stub.ordinarySendCalls) != 0 {
+		t.Fatalf("handshake retried or sent outside the macro: %+v", stub.macroCalls)
+	}
+}
+
+func TestMailHandshakeRedactionBlocksBeforeContactMutation(t *testing.T) {
+	for _, flag := range []string{"--reason", "--welcome-subject", "--welcome-body", "--task"} {
+		t.Run(flag, func(t *testing.T) {
+			stub, _ := setupMailMacroTest(t)
+			args := []string{"--redact=block", "mail", "handshake", "macrotest", "--agent", "BlueLake", "--to", "GreenCastle", "--json"}
+			if flag == "--welcome-subject" {
+				args = append(args, "--welcome-body", "Please coordinate")
+			}
+			if flag == "--welcome-body" {
+				args = append(args, "--welcome-subject", "Hello")
+			}
+			out, err := execCommand(t, append(args, flag, "password=hunter2hunter2")...)
+			if err == nil || !strings.Contains(out, `"error_code":"SENSITIVE_DATA_BLOCKED"`) || strings.Contains(out, "hunter2hunter2") {
+				t.Fatalf("secret was not safely blocked: err=%v output=%s", err, out)
+			}
+			if len(stub.macroCalls) != 0 || len(stub.ordinarySendCalls) != 0 {
+				t.Fatalf("blocked content reached a mutating macro: %+v", stub.macroCalls)
+			}
+		})
+	}
+}
+
+func TestMailHandshakeRedactsAllContentAndReportsSafeSummary(t *testing.T) {
+	stub, _ := setupMailMacroTest(t)
+	stub.macroHandler = func(name string, args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+		for _, field := range []string{"task_description", "reason", "welcome_subject", "welcome_body"} {
+			value, _ := args[field].(string)
+			if strings.Contains(value, "hunter2hunter2") || !strings.Contains(value, "[REDACTED:") {
+				t.Errorf("unredacted %s reached %s: %q", field, name, value)
+			}
+		}
+		return map[string]interface{}{
+			"request":         map[string]interface{}{"from_agent": "BlueLake", "to_agent": "GreenCastle", "status": "approved"},
+			"welcome_message": map[string]interface{}{"count": 1, "deliveries": []map[string]interface{}{{"project": "test", "payload": map[string]interface{}{"id": 42}}}},
+		}, nil
+	}
+	out, err := execCommand(t, "--redact=redact", "mail", "handshake", "macrotest", "--agent", "BlueLake", "--to", "GreenCastle", "--task", "password=hunter2hunter2", "--reason", "password=hunter2hunter2", "--welcome-subject", "password=hunter2hunter2", "--welcome-body", "password=hunter2hunter2", "--json")
+	if err != nil {
+		t.Fatalf("redacted handshake: %v\n%s", err, out)
+	}
+	var envelope mailMacroOutput
+	if err := json.Unmarshal([]byte(out), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.Success || envelope.Redaction == nil || envelope.Redaction.Findings != 4 || envelope.Redaction.Action != "redact" || strings.Contains(out, "hunter2hunter2") || len(stub.macroCalls) != 1 {
+		t.Fatalf("redaction summary or macro outcome was lost: %s", out)
+	}
+}
+
+func TestMailHandshakeRequiresRequestedApprovalReceipt(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		response map[string]interface{}
+	}{
+		{name: "missing"},
+		{name: "denied", response: map[string]interface{}{"from": "BlueLake", "to": "GreenCastle", "approved": false}},
+		{name: "wrong requester", response: map[string]interface{}{"from": "RedHill", "to": "GreenCastle", "approved": true}},
+		{name: "wrong target", response: map[string]interface{}{"from": "BlueLake", "to": "RedHill", "approved": true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub, _ := setupMailMacroTest(t)
+			stub.macroHandler = func(string, map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+				return map[string]interface{}{
+					"request":  map[string]interface{}{"id": 27, "from_agent": "BlueLake", "to_agent": "GreenCastle", "status": "pending"},
+					"response": tc.response,
+				}, nil
+			}
+			out, err := execCommand(t, "mail", "handshake", "macrotest", "--agent", "BlueLake", "--to", "GreenCastle", "--auto-accept", "--json")
+			var envelope struct {
+				Success bool                             `json:"success"`
+				Result  agentmail.ContactHandshakeResult `json:"result"`
+			}
+			if decodeErr := json.Unmarshal([]byte(out), &envelope); decodeErr != nil {
+				t.Fatalf("failure receipt is not JSON: %v\n%s", decodeErr, out)
+			}
+			if err == nil || envelope.Success || envelope.Result.Request == nil || envelope.Result.Request.ID != 27 || len(stub.macroCalls) != 1 {
+				t.Fatalf("unconfirmed approval was accepted or partial receipt lost: err=%v output=%s", err, out)
+			}
+		})
+	}
+}
+
+func TestMailMacroRejectsReservedIdentityAndUnprovenScope(t *testing.T) {
+	for _, action := range []string{"session-start", "prepare-thread"} {
+		for _, badResult := range []string{"reserved identity", "blank project key", "wrong project key"} {
+			t.Run(action+"/"+badResult, func(t *testing.T) {
+				stub, project := setupMailMacroTest(t)
+				stub.macroHandler = func(string, map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+					name, key := "BlueLake", project
+					switch badResult {
+					case "reserved identity":
+						name = "hUmAnOvErSeEr"
+					case "blank project key":
+						key = ""
+					case "wrong project key":
+						key = "/another/project"
+					}
+					return map[string]interface{}{
+						"project": map[string]interface{}{"human_key": key},
+						"agent":   map[string]interface{}{"name": name, "registration_token": "INVALID-SCOPE-CREDENTIAL"},
+						"thread":  map[string]interface{}{"thread_id": "FEAT-123"},
+					}, nil
+				}
+				args := []string{"mail", action, "macrotest", "--json"}
+				if action == "prepare-thread" {
+					args = append(args, "--thread", "FEAT-123", "--register-if-missing")
+				}
+				out, err := execCommand(t, args...)
+				if err == nil || strings.Contains(out, "INVALID-SCOPE-CREDENTIAL") || !strings.Contains(out, `"success":false`) {
+					t.Fatalf("invalid macro scope/identity accepted: err=%v output=%s", err, out)
+				}
+				info, loadErr := agentmail.LoadSessionAgent("macrotest", project)
+				if loadErr != nil || info != nil {
+					t.Fatalf("invalid response persisted an identity: %+v %v", info, loadErr)
+				}
+				registry, loadErr := agentmail.LoadSessionAgentRegistry("macrotest", project)
+				if loadErr != nil || registry != nil {
+					t.Fatalf("invalid response persisted a credential: %+v %v", registry, loadErr)
+				}
+			})
+		}
+	}
+}
+
+func TestMailMacroInvalidFlagsNeverCallServer(t *testing.T) {
+	stub, _ := setupMailMacroTest(t)
+	for _, args := range [][]string{
+		{"session-start", "macrotest", "--program", " "},
+		{"session-start", "../escape"},
+		{"prepare-thread", "macrotest", "--agent", "BlueLake"},
+		{"prepare-thread", "macrotest", "--thread", "FEAT-123", "--limit", "0"},
+		{"prepare-thread", "macrotest", "--thread", "FEAT-123", "--llm-model", "unexpected"},
+		{"handshake", "macrotest", "--agent", "BlueLake"},
+		{"handshake", "macrotest", "--agent", "HumanOverseer", "--to", "BlueLake"},
+		{"handshake", "macrotest", "--to", "BlueLake", "--to-project", "relative"},
+		{"handshake", "macrotest", "--to", "BlueLake", "--welcome-body", "missing subject"},
+		{"handshake", "macrotest", "--to", "BlueLake", "--ttl", "0"},
+	} {
+		out, err := execCommand(t, append(append([]string{"mail"}, args...), "--json")...)
+		if err == nil || !strings.Contains(out, `"success":false`) || !strings.Contains(out, `"error_code":"INVALID_FLAG"`) {
+			t.Fatalf("invalid command was not a structured refusal: args=%v err=%v out=%s", args, err, out)
+		}
+	}
+	if len(stub.macroCalls) != 0 {
+		t.Fatalf("invalid flags reached a mutating macro: %d calls", len(stub.macroCalls))
+	}
+}
+
+func TestMailMacroFailuresPreservePartialOutcomeAndNeverRetry(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		result   map[string]interface{}
+		rpcError *agentmail.JSONRPCError
+		wantCode string
+	}{
+		{name: "unsupported", args: []string{"session-start", "macrotest"}, rpcError: &agentmail.JSONRPCError{Code: -32601, Message: "Method not found"}, wantCode: "NOT_IMPLEMENTED"},
+		{name: "blocked", args: []string{"handshake", "macrotest", "--agent", "BlueLake", "--to", "GreenCastle"}, result: map[string]interface{}{"request": map[string]interface{}{"from_agent": "BlueLake", "to_agent": "GreenCastle", "status": "blocked"}}, wantCode: "CONTACT_BLOCKED"},
+		{name: "wrong thread", args: []string{"prepare-thread", "macrotest", "--agent", "BlueLake", "--thread", "FEAT-123"}, result: map[string]interface{}{"agent": map[string]interface{}{"name": "BlueLake", "registration_token": "DO-NOT-PRINT"}, "thread": map[string]interface{}{"thread_id": "WRONG"}}, wantCode: "MAIL_MACRO_FAILED"},
+		{name: "welcome skipped", args: []string{"handshake", "macrotest", "--agent", "BlueLake", "--to", "GreenCastle", "--welcome-subject", "Hello", "--welcome-body", "Please coordinate"}, result: map[string]interface{}{"request": map[string]interface{}{"from_agent": "BlueLake", "to_agent": "GreenCastle", "status": "pending"}, "welcome_skipped_reason": "contact_not_approved"}, wantCode: "MAIL_MACRO_FAILED"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub, _ := setupMailMacroTest(t)
+			stub.macroHandler = func(string, map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+				return tc.result, tc.rpcError
+			}
+			out, err := execCommand(t, append(append([]string{"mail"}, tc.args...), "--json")...)
+			if err == nil || !strings.Contains(out, `"success":false`) || !strings.Contains(out, `"error_code":"`+tc.wantCode+`"`) || strings.Contains(out, "DO-NOT-PRINT") {
+				t.Fatalf("macro failure: err=%v output=%s", err, out)
+			}
+			if len(stub.macroCalls) != 1 {
+				t.Fatalf("macro failure was retried, potentially duplicating side effects: %d calls", len(stub.macroCalls))
+			}
+			if tc.name == "welcome skipped" && !strings.Contains(out, "contact_not_approved") {
+				t.Fatalf("partial contact receipt was lost: %s", out)
+			}
+		})
+	}
 }
 
 func TestMailMarkRequiresSelector(t *testing.T) {
@@ -2673,6 +3084,20 @@ func TestAgentMailUnavailableCLIErrorWrapsProbeReason(t *testing.T) {
 	}
 }
 
+func execDedicatedMail(t *testing.T, cmd *cobra.Command, args ...string) (string, error) {
+	t.Helper()
+	previous := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = previous })
+	cmd.SetContext(context.Background())
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	return buf.String(), err
+}
+
 func TestMailSessionMacrosCLI(t *testing.T) {
 	isolateSessionAgentStorage(t)
 	projDir := canonicalTempDir(t)
@@ -2683,13 +3108,11 @@ func TestMailSessionMacrosCLI(t *testing.T) {
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 
 	t.Run("session-start invokes macro_start_session and normalizes JSON arrays", func(t *testing.T) {
-		out, err := execCommand(t,
-			"mail", "session-start",
+		out, err := execDedicatedMail(t, newMailSessionStartCmd(),
 			"--project-key", projDir,
 			"--program", "codex-cli",
 			"--model", "gpt-5",
 			"--task", "Wire ORI macros",
-			"--json",
 		)
 		if err != nil {
 			t.Fatalf("mail session-start failed: %v\nout:\n%s", err, out)
@@ -2716,8 +3139,7 @@ func TestMailSessionMacrosCLI(t *testing.T) {
 	})
 
 	t.Run("prepare-thread invokes macro_prepare_thread and normalizes summary/inbox slices", func(t *testing.T) {
-		out, err := execCommand(t,
-			"mail", "prepare-thread",
+		out, err := execDedicatedMail(t, newMailPrepareThreadCmd(),
 			"--project-key", projDir,
 			"--thread", "FEAT-123",
 			"--program", "codex-cli",
@@ -2725,7 +3147,6 @@ func TestMailSessionMacrosCLI(t *testing.T) {
 			"--agent", "BlueLake",
 			"--include-examples=false",
 			"--llm-mode=false",
-			"--json",
 		)
 		if err != nil {
 			t.Fatalf("mail prepare-thread failed: %v\nout:\n%s", err, out)
@@ -2761,8 +3182,7 @@ func TestMailSessionMacrosCLI(t *testing.T) {
 	})
 
 	t.Run("handshake invokes macro_contact_handshake", func(t *testing.T) {
-		out, err := execCommand(t,
-			"mail", "handshake",
+		out, err := execDedicatedMail(t, newMailHandshakeCmd(),
 			"--project-key", projDir,
 			"--to", "GreenCastle",
 			"--agent", "BlueLake",
@@ -2771,7 +3191,6 @@ func TestMailSessionMacrosCLI(t *testing.T) {
 			"--welcome-subject", "Hello GreenCastle",
 			"--welcome-body", "Ready to sync",
 			"--ttl", "3600",
-			"--json",
 		)
 		if err != nil {
 			t.Fatalf("mail handshake failed: %v\nout:\n%s", err, out)
@@ -2793,10 +3212,10 @@ func TestMailSessionMacrosCLI(t *testing.T) {
 	})
 
 	t.Run("validation errors on missing required flags", func(t *testing.T) {
-		if _, err := execCommand(t, "mail", "prepare-thread", "--project-key", projDir); err == nil {
+		if _, err := execDedicatedMail(t, newMailPrepareThreadCmd(), "--project-key", projDir); err == nil {
 			t.Fatal("expected error when --thread is missing")
 		}
-		if _, err := execCommand(t, "mail", "handshake", "--project-key", projDir); err == nil {
+		if _, err := execDedicatedMail(t, newMailHandshakeCmd(), "--project-key", projDir); err == nil {
 			t.Fatal("expected error when --to is missing")
 		}
 	})

@@ -133,6 +133,9 @@ ntm assign myproject --beads=br-123,br-124 --agent=codex
 ```bash
 ntm mail send myproject --all "Report blockers and current file focus."
 ntm mail inbox myproject
+ntm mail session-start myproject --program codex --model my-model --json
+ntm mail prepare-thread myproject --agent BlueLake --thread FEAT-123 --json
+ntm mail handshake myproject --agent BlueLake --to GreenCastle --reason "Coordinate API work" --json
 ntm locks list myproject --all-agents
 ntm locks renew myproject
 ntm locks force-release myproject 42 --note "agent inactive"  # approval-gated by default: files an approval, needs `ntm approve <id>` by a second operator
@@ -150,6 +153,27 @@ ntm audit show myproject
 ntm conflicts myproject
 ntm resume myproject
 ```
+
+`mail session-start` runs the Agent Mail bootstrap macro and saves the returned
+identity credential locally without printing it. Existing session coordinators
+and pane bindings stay intact; use the returned agent name with `--agent`.
+`mail prepare-thread` returns the thread summary, examples, and inbox in one
+macro call. Its default summary is deterministic; `--llm` enables the server's
+LLM summarizer, and `--include-bodies` includes full inbox messages. Thread
+preparation reuses an existing identity unless `--register-if-missing` is
+explicitly supplied. Handshakes require an existing identity because the server
+does not return a registration credential from that macro.
+
+`mail handshake` requests contact under the server's authorization rules. Use
+`--to-project /absolute/path` for a different project, `--auto-accept` to request
+mutual approval, and the `--welcome-subject`/`--welcome-body` pair for an optional
+welcome message. Tasks, contact reasons, and welcome messages respect the
+configured redaction mode before any macro is invoked; JSON results include a
+safe redaction summary when content matches. A blocked contact, unsupported
+macro, unconfirmed requested approval, or skipped requested welcome returns a
+nonzero exit with a `success:false` JSON envelope. Macro
+errors can follow partial server-side work; inspect the returned receipt before
+retrying instead of assuming nothing happened.
 
 Worktree-specific commands when repo policy allows them:
 

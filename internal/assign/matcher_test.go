@@ -1,10 +1,106 @@
 package assign
 
 import (
+	"math"
+	"reflect"
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+func TestMatcherRelaxationLowersOnlyScoreFloor(t *testing.T) {
+	for _, strategy := range []Strategy{StrategyBalanced, StrategyQuality, StrategyDependency, StrategySpeed} {
+		t.Run(string(strategy), func(t *testing.T) {
+			matcher := &Matcher{matrix: NewCapabilityMatrix(), config: DefaultMatcherConfig()}
+			threshold, score := 0.3, 0.2
+			if strategy == StrategySpeed {
+				threshold, score = 0.15, 0.1
+			}
+			matcher.matrix.base[tmux.AgentClaude][TaskFeature] = score
+			beads := []Bead{{ID: "work", Priority: 2, TaskType: TaskFeature}}
+			agents := []Agent{
+				{ID: "busy", AgentType: tmux.AgentCodex},
+				{ID: "full", AgentType: tmux.AgentCodex, Idle: true, ContextUsage: 0.95},
+				{ID: "available", AgentType: tmux.AgentClaude, Idle: true},
+			}
+			before := append([]Agent(nil), agents...)
+			if strict := matcher.AssignTasks(beads, agents, strategy); len(strict) != 0 {
+				t.Fatalf("fixture unexpectedly passed strict scoring: %+v", strict)
+			}
+			got := matcher.AssignTasksWithRelaxation(beads, agents, strategy)
+			if len(got) != 1 || got[0].Agent.ID != "available" {
+				t.Fatalf("relaxation did not preserve availability gates: %+v", got)
+			}
+			receipt := got[0].Relaxation
+			if receipt == nil || receipt.OriginalThreshold != threshold || receipt.RelaxedThreshold != threshold/2 ||
+				receipt.OriginalScore != score || receipt.RelaxedScore != score || got[0].Score != score ||
+				!reflect.DeepEqual(receipt.RelaxedConstraints, []string{"minimum_assignment_score"}) {
+				t.Fatalf("relaxation lost exact provenance or inflated scores: %+v (%+v)", got[0], receipt)
+			}
+			if matcher.config != DefaultMatcherConfig() || !reflect.DeepEqual(before, agents) {
+				t.Fatal("relaxation mutated the matcher or caller-owned candidates")
+			}
+			if strict := matcher.AssignTasks(beads, agents, strategy); len(strict) != 0 {
+				t.Fatalf("opt-in relaxation leaked into later strict planning: %+v", strict)
+			}
+		})
+	}
+}
+
+func TestMatcherRelaxationPreservesStrictPlanAndRejectsInvalidContext(t *testing.T) {
+	matcher := NewMatcher()
+	beads := []Bead{{ID: "work", TaskType: TaskFeature}}
+	agents := []Agent{{ID: "available", AgentType: tmux.AgentCodex, Idle: true}}
+	strict := matcher.AssignTasks(beads, agents, StrategyQuality)
+	if got := matcher.AssignTasksWithRelaxation(beads, agents, StrategyQuality); !reflect.DeepEqual(got, strict) || got[0].Relaxation != nil {
+		t.Fatalf("relaxation changed an available strict plan: %+v, want %+v", got, strict)
+	}
+	for _, usage := range []float64{0.91, 1, -1, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		agents[0].ContextUsage = usage
+		if got := matcher.AssignTasksWithRelaxation(beads, agents, StrategyQuality); len(got) != 0 {
+			t.Fatalf("relaxation bypassed context gate for %v: %+v", usage, got)
+		}
+	}
+	matcher.matrix = NewCapabilityMatrix()
+	matcher.matrix.base[tmux.AgentCodex][TaskFeature] = 0.01
+	agents[0].ContextUsage = 0
+	if got := matcher.AssignTasksWithRelaxation(beads, agents, StrategyQuality); len(got) != 0 {
+		t.Fatalf("relaxation removed the confidence floor: %+v", got)
+	}
+}
+
+func TestMatcherRelaxationPreservesPartiallyFulfilledStrictPlan(t *testing.T) {
+	for _, strategy := range []Strategy{StrategyBalanced, StrategyQuality, StrategyDependency, StrategySpeed} {
+		t.Run(string(strategy), func(t *testing.T) {
+			matcher := &Matcher{matrix: NewCapabilityMatrix(), config: DefaultMatcherConfig()}
+			matcher.matrix.base[tmux.AgentCodex][TaskFeature] = 0.9
+			matcher.matrix.base[tmux.AgentCodex][TaskDocs] = 0.2
+			if strategy == StrategySpeed {
+				matcher.matrix.base[tmux.AgentCodex][TaskDocs] = 0.1
+			}
+			beads := []Bead{
+				{ID: "high-score", Priority: 2, TaskType: TaskFeature},
+				{ID: "low-score", Priority: 3, TaskType: TaskDocs},
+			}
+			agents := []Agent{
+				{ID: "one", AgentType: tmux.AgentCodex, Idle: true},
+				{ID: "two", AgentType: tmux.AgentCodex, Idle: true},
+			}
+			strict := matcher.AssignTasks(beads, agents, strategy)
+			if len(strict) != 1 || strict[0].Bead.ID != "high-score" {
+				t.Fatalf("fixture needs a partially fulfilled strict plan: %+v", strict)
+			}
+			lowered := *matcher
+			lowered.config.MinConfidence /= 2
+			if got := lowered.AssignTasks(beads, agents, strategy); len(got) != 2 {
+				t.Fatalf("fixture needs additional work below the strict floor: %+v", got)
+			}
+			if got := matcher.AssignTasksWithRelaxation(beads, agents, strategy); !reflect.DeepEqual(got, strict) {
+				t.Fatalf("relaxation filled or changed a nonempty strict plan: got %+v, want %+v", got, strict)
+			}
+		})
+	}
+}
 
 func TestParseStrategy(t *testing.T) {
 	tests := []struct {

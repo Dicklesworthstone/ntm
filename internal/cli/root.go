@@ -1735,7 +1735,7 @@ Shell Integration:
 				Prompt:       routedMsg,
 				LastAgent:    strings.TrimSpace(robotRouteLastAgent),
 				Config:       loadSelectedConfigOrDefault(),
-				Relax:        robotRelax,
+				Relax:        robotAssignRelax,
 			}
 			exitCode := robot.PrintRoute(opts)
 			recordLegacyRobotExit(exitCode)
@@ -2436,7 +2436,7 @@ Shell Integration:
 				ProjectDir: projectDir,
 				Beads:      beads,
 				Strategy:   robotAssignStrategy,
-				Relax:      robotRelax,
+				Relax:      robotAssignRelax,
 			}
 			if err := robot.PrintAssign(cmd.Context(), opts); err != nil {
 				recordRobotProcessExit(err)
@@ -4127,6 +4127,7 @@ var (
 	robotAssign         string // session name for work assignment
 	robotAssignBeads    string // comma-separated bead IDs to assign
 	robotAssignStrategy string // assignment strategy: simple, balanced, speed, quality, dependency
+	robotAssignRelax    bool   // Lower only the score floor when strict planning places no work.
 
 	// Robot-bulk-assign flags for batch work distribution
 	robotBulkAssign         string        // session name for bulk assignment
@@ -4828,6 +4829,7 @@ func init() {
 	rootCmd.Flags().StringVar(&robotAssign, "robot-assign", "", "Get work distribution recommendations. Required: SESSION. Example: ntm --robot-assign=proj --strategy=speed")
 	rootCmd.Flags().StringVar(&robotAssignBeads, "beads", "", "Specific bead IDs to assign (comma-separated). Optional with --robot-assign. Example: --beads=ntm-abc,ntm-xyz")
 	rootCmd.Flags().StringVar(&robotAssignStrategy, "strategy", "simple", "Strategy override for commands that support it. --robot-assign: simple (sequential pairing), balanced, speed, quality, dependency (graph-aware planner). --robot-route: least-loaded, first-available, round-robin, round-robin-available, random, sticky, explicit, affinity (needs --msg). --robot-spawn with --spawn-assign-work: top-n, diverse, dependency-aware, skill-matched.")
+	rootCmd.Flags().BoolVar(&robotAssignRelax, "relax", false, "With --robot-assign, retry an empty scored plan at half its score floor without weakening availability, context, capacity, or safety gates. With --robot-route, include THINKING agents when idle agents are insufficient")
 
 	// Robot-bulk-assign flags for batch work distribution
 	rootCmd.Flags().StringVar(&robotBulkAssign, "robot-bulk-assign", "", "Bulk assign beads to all idle agents. Required: SESSION. Example: ntm --robot-bulk-assign=proj --from-bv")
@@ -5074,7 +5076,6 @@ func init() {
 	rootCmd.Flags().StringVar(&robotRouteLastAgent, "last-agent", "", "Pane ID (%N) of the previously routed agent; anchors sticky and round-robin rotation across stateless CLI invocations. Optional with --robot-route")
 	rootCmd.Flags().StringVar(&robotRouteType, "route-type", "", "Deprecated alias for --type. Filter by agent type with --robot-route. Example: --type=claude")
 	rootCmd.Flags().StringVar(&robotRouteExclude, "route-exclude", "", "Exclude pane indices (comma-separated). Optional with --robot-route. Example: --route-exclude=0,3")
-	rootCmd.Flags().BoolVar(&robotRelax, "relax", false, "Relax routing constraints to include THINKING agents when idle agents are insufficient. Optional with --robot-route and --robot-assign")
 
 	// Robot-sequence flags for durable per-pane prompt progress.
 	rootCmd.Flags().StringVar(&robotSequence, "robot-sequence", "", "Manage a durable per-pane prompt sequence. Required: NAME. Example: ntm --robot-sequence=review --sequence-action=create --sequence-steps='[\"inspect\",\"challenge\"]'")
