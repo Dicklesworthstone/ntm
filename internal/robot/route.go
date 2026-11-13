@@ -5,6 +5,7 @@ package robot
 import (
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -169,7 +170,11 @@ func routeWithSessionState(agents []ScoredAgent, opts RouteOptions, store Routin
 			}
 		}
 
-		result = router.Route(agents, opts.Strategy, ctx)
+		if opts.Relax {
+			result = router.RouteWithRelaxation(agents, opts.Strategy, ctx)
+		} else {
+			result = router.Route(agents, opts.Strategy, ctx)
+		}
 
 		if !persist || store == nil || result.Selected == nil || !routingStrategyIsStateful(opts.Strategy) {
 			return result
@@ -231,18 +236,23 @@ type RouteOptions struct {
 	LastAgent      string         // Optional: last used agent pane ID for sticky routing
 	Config         *config.Config // Optional: loaded routing configuration
 	NoPersist      bool           // Optional: preview only — never advance persisted routing state (e.g. send --dry-run)
+	Relax          bool           // Optional: relax constraints (include THINKING agents) when primary routing finds none
 }
 
 // RouteOutput is the structured output for --robot-route.
 type RouteOutput struct {
-	RobotResponse                       // Embed standard response fields (success, timestamp, error)
-	Session        string               `json:"session"`
-	Strategy       StrategyName         `json:"strategy"`
-	Recommendation *RouteRecommendation `json:"recommendation,omitempty"`
-	Candidates     []RouteCandidate     `json:"candidates"`
-	Excluded       []RouteExcluded      `json:"excluded,omitempty"`
-	FallbackUsed   bool                 `json:"fallback_used,omitempty"`
-	AgentHints     *RouteAgentHints     `json:"_agent_hints,omitempty"`
+	RobotResponse                           // Embed standard response fields (success, timestamp, error)
+	Session            string               `json:"session"`
+	Strategy           StrategyName         `json:"strategy"`
+	Recommendation     *RouteRecommendation `json:"recommendation,omitempty"`
+	Candidates         []RouteCandidate     `json:"candidates"`
+	Excluded           []RouteExcluded      `json:"excluded,omitempty"`
+	FallbackUsed       bool                 `json:"fallback_used,omitempty"`
+	Relaxed            bool                 `json:"relaxed"`
+	RelaxedConstraints []string             `json:"relaxed_constraints"`
+	OriginalScore      float64              `json:"original_score"`
+	RelaxedScore       float64              `json:"relaxed_score"`
+	AgentHints         *RouteAgentHints     `json:"_agent_hints,omitempty"`
 }
 
 // RouteRecommendation contains the recommended agent for routing.
@@ -296,10 +306,11 @@ type RouteAgentHints struct {
 // Returns the output and exit code (0=success, 1=error).
 func GetRoute(opts RouteOptions) (*RouteOutput, int) {
 	output := &RouteOutput{
-		Session:    opts.Session,
-		Strategy:   opts.Strategy,
-		Candidates: []RouteCandidate{},
-		Excluded:   []RouteExcluded{},
+		Session:            opts.Session,
+		Strategy:           opts.Strategy,
+		Candidates:         []RouteCandidate{},
+		Excluded:           []RouteExcluded{},
+		RelaxedConstraints: make([]string, 0),
 	}
 
 	// Validate session
@@ -454,6 +465,12 @@ func GetRoute(opts RouteOptions) (*RouteOutput, int) {
 	}
 	result := routeWithSessionState(agents, opts, stateStore, false)
 	output.FallbackUsed = result.FallbackUsed
+	output.Relaxed = result.Relaxed
+	if len(result.RelaxedConstraints) > 0 {
+		output.RelaxedConstraints = append([]string(nil), result.RelaxedConstraints...)
+	}
+	output.OriginalScore = result.OriginalScore
+	output.RelaxedScore = result.RelaxedScore
 
 	if result.Selected != nil {
 		output.Recommendation = &RouteRecommendation{
@@ -466,6 +483,26 @@ func GetRoute(opts RouteOptions) (*RouteOutput, int) {
 			State:              string(result.Selected.State),
 			ReservationWarning: routeReservationWarning(scorer, opts.Prompt, result.Selected.PaneID),
 		}
+	}
+	if opts.Relax && !opts.NoPersist {
+		selectedPaneID := ""
+		origScore := result.OriginalScore
+		if result.Selected != nil {
+			selectedPaneID = result.Selected.PaneID
+			if !result.Relaxed && origScore == 0 {
+				origScore = result.Selected.Score
+			}
+		}
+		persistRelaxedRoutingDecision(
+			opts.Session,
+			"robot.route",
+			opts.Strategy,
+			result.Relaxed,
+			result.RelaxedConstraints,
+			origScore,
+			result.RelaxedScore,
+			selectedPaneID,
+		)
 	}
 
 	// Add agent hints
@@ -682,6 +719,26 @@ func GetRouteRecommendation(opts RouteOptions) (*RouteRecommendation, error) {
 		slog.Warn("[robot.route] routing state store unavailable", "session", opts.Session, "error", err)
 	}
 	result := routeWithSessionState(agents, opts, stateStore, !opts.NoPersist)
+	if opts.Relax && !opts.NoPersist {
+		selectedPaneID := ""
+		origScore := result.OriginalScore
+		if result.Selected != nil {
+			selectedPaneID = result.Selected.PaneID
+			if !result.Relaxed && origScore == 0 {
+				origScore = result.Selected.Score
+			}
+		}
+		persistRelaxedRoutingDecision(
+			opts.Session,
+			"robot.send_route",
+			opts.Strategy,
+			result.Relaxed,
+			result.RelaxedConstraints,
+			origScore,
+			result.RelaxedScore,
+			selectedPaneID,
+		)
+	}
 	if result.Selected == nil {
 		return nil, nil // No agent available
 	}
@@ -710,4 +767,142 @@ func routeReservationWarning(scorer *AgentScorer, prompt, paneID string) *Reserv
 	}
 	sort.Strings(w.Holders) // collected from a map
 	return w
+}
+
+func roundLedgerMetric(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
+	return math.Round(v*10000) / 10000
+}
+
+func clampUnitLoss(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 1
+	}
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return roundLedgerMetric(v)
+}
+
+// persistRelaxedRoutingDecision writes an assign_relax AuditDecision with a
+// Graveyard §0.19 EvidenceLedger into audit_decision_log so relaxed routing and
+// assignment decisions are explainable via --robot-policy-decisions and
+// GET /api/v1/policy/decisions.
+func persistRelaxedRoutingDecision(
+	session string,
+	component string,
+	strategy StrategyName,
+	relaxed bool,
+	relaxedConstraints []string,
+	origScore float64,
+	relaxedScore float64,
+	selectedPaneID string,
+) {
+	store := currentProjectionStore()
+	if store == nil {
+		opened, err := openRoutingStateStore()
+		if err != nil {
+			slog.Debug("[robot.route] cannot open state store for assign_relax ledger", "session", session, "error", err)
+			return
+		}
+		defer opened.Close()
+		store = opened
+	}
+
+	var (
+		action         string
+		expectedLoss   map[string]float64
+		chosenLoss     float64
+		fallbackActive bool
+		fallbackReason string
+	)
+
+	switch {
+	case relaxed:
+		action = "relax"
+		relaxLoss := clampUnitLoss(1.0 - (relaxedScore / 100.0))
+		expectedLoss = map[string]float64{
+			"strict":   1.0,
+			"relax":    relaxLoss,
+			"withhold": 0.65,
+		}
+		chosenLoss = relaxLoss
+		fallbackActive = true
+		fallbackReason = strings.Join(relaxedConstraints, ",")
+	case selectedPaneID != "":
+		action = "strict"
+		strictLoss := clampUnitLoss(1.0 - (origScore / 100.0))
+		expectedLoss = map[string]float64{
+			"strict":   strictLoss,
+			"relax":    clampUnitLoss(strictLoss + 0.15),
+			"withhold": 0.65,
+		}
+		chosenLoss = strictLoss
+		fallbackActive = false
+	default:
+		action = "withhold"
+		expectedLoss = map[string]float64{
+			"strict":   1.0,
+			"relax":    1.0,
+			"withhold": 0.25,
+		}
+		chosenLoss = 0.25
+		fallbackActive = true
+		fallbackReason = "no_relax_eligible_candidates"
+	}
+
+	minLoss := chosenLoss
+	for _, loss := range expectedLoss {
+		if loss < minLoss {
+			minLoss = loss
+		}
+	}
+	regret := make(map[string]float64, len(expectedLoss))
+	for act, loss := range expectedLoss {
+		regret[act] = roundLedgerMetric(math.Max(0, loss-minLoss))
+	}
+	calibration := clampUnitLoss(1.0 - minLoss)
+
+	decisionID := fmt.Sprintf("relax-%s-%d", strings.TrimSpace(session), time.Now().UTC().UnixNano())
+	ledger := &state.EvidenceLedger{
+		SchemaVersion:        "evidence_ledger.v1",
+		TraceID:              session,
+		DecisionID:           decisionID,
+		Component:            component,
+		Action:               action,
+		ExpectedLossByAction: expectedLoss,
+		ChosenExpectedLoss:   roundLedgerMetric(chosenLoss),
+		RegretByAction:       regret,
+		CalibrationScore:     calibration,
+		FallbackActive:       fallbackActive,
+		FallbackReason:       fallbackReason,
+		TopFeatures: map[string]float64{
+			"original_score":            roundLedgerMetric(origScore),
+			"relaxed_score":             roundLedgerMetric(relaxedScore),
+			"relaxed_constraints_count": float64(len(relaxedConstraints)),
+		},
+	}
+
+	reason := fmt.Sprintf("action=%s strategy=%s pane=%s orig_score=%.2f relaxed_score=%.2f",
+		action, strategy, selectedPaneID, origScore, relaxedScore)
+	if fallbackReason != "" {
+		reason += " (" + fallbackReason + ")"
+	}
+	if _, err := store.RecordAuditDecision(&state.AuditDecision{
+		DecisionType: "assign_relax",
+		DecisionAt:   time.Now().UTC(),
+		ActorType:    "policy",
+		ActorID:      component,
+		EntityType:   "session",
+		EntityID:     session,
+		Reason:       reason,
+		Evidence:     ledger,
+	}); err != nil {
+		slog.Warn("[robot.route] failed to record assign_relax decision", "session", session, "error", err)
+	}
 }

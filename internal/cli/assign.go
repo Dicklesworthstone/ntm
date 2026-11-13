@@ -60,6 +60,7 @@ var (
 	assignTimeout      time.Duration
 	assignDryRun       bool // Preview recommendations or watch mode
 	assignReserveFiles bool // Enable Agent Mail file reservations
+	assignRelax        bool // Relax routing constraints to include THINKING agents
 
 	// Direct pane assignment flags
 	assignPane       string // Direct pane assignment using canonical N, W.P, or %N grammar
@@ -213,6 +214,7 @@ type assignAgentInfo struct {
 	contextUsage      float64
 	activeAssignments int
 	resourceHeadroom  float64
+	relaxed           bool
 }
 
 // assignPaneRoleSet captures the persona roles a pane is explicitly bound to.
@@ -289,6 +291,154 @@ func assignRoleEligibleAgents(agents []assignAgentInfo, projectDir, template str
 		return nil, fmt.Errorf("load persona registry for role-aware assignment: %w", err)
 	}
 	return filterAssignAgentsForTemplate(agents, registry, template), nil
+}
+
+func isRelaxableThinkingPane(observation statuspkg.SessionObservation, pane tmux.Pane, agentType string, now time.Time) bool {
+	paneObs, err := currentAssignPaneObservation(observation, pane.ID, now)
+	if err != nil {
+		return false
+	}
+	if paneObs.Current.Freshness != statuspkg.FreshnessFresh || paneObs.Current.Error != "" {
+		return false
+	}
+	if paneObs.Current.Confidence < statuspkg.MinimumDispatchConfidence {
+		return false
+	}
+	stateStr := strings.ToLower(strings.TrimSpace(string(paneObs.Current.Status.State)))
+	if stateStr == strings.ToLower(string(robot.StateThinking)) {
+		return true
+	}
+	if paneObs.Current.Status.State != statuspkg.StateWorking {
+		return false
+	}
+	if strings.TrimSpace(paneObs.RawOutput) == "" {
+		return false
+	}
+	activity, err := robot.ClassifyPaneOutputActivity(pane.ID, agentType, paneObs.RawOutput)
+	if err != nil || activity == nil {
+		return false
+	}
+	return activity.State == robot.StateThinking && !activity.RateLimited && !activity.UnsubmittedInput && !activity.QueuedMessages
+}
+
+func applyAssignRelaxation(
+	panes []tmux.Pane,
+	observation statuspkg.SessionObservation,
+	idleAgents []assignAgentInfo,
+	paneVerdicts []AssignPanePlaceability,
+	projectDir string,
+	template string,
+	needed int,
+	relax bool,
+	now time.Time,
+) ([]assignAgentInfo, bool, []string, float64, float64, error) {
+	paneByID := make(map[string]tmux.Pane, len(panes))
+	for _, p := range panes {
+		paneByID[p.ID] = p
+	}
+
+	idleByID := make(map[string]assignAgentInfo, len(idleAgents))
+	for _, a := range idleAgents {
+		idleByID[a.pane.ID] = a
+	}
+
+	relaxCandidates := make(map[string]assignAgentInfo)
+	scored := make([]robot.ScoredAgent, 0, len(paneVerdicts))
+	for _, verdict := range paneVerdicts {
+		if idle, ok := idleByID[verdict.PaneID]; ok {
+			scored = append(scored, robot.BuildRelaxableScoredAgent(
+				idle.pane.ID,
+				idle.pane.Index,
+				idle.agentType,
+				robot.StateWaiting,
+				false,
+				"",
+			))
+			continue
+		}
+		if verdict.Verdict != PlaceabilityNotIdle {
+			continue
+		}
+		pane, ok := paneByID[verdict.PaneID]
+		if !ok {
+			continue
+		}
+		if !isRelaxableThinkingPane(observation, pane, verdict.AgentType, now) {
+			scored = append(scored, robot.BuildRelaxableScoredAgent(
+				pane.ID,
+				pane.Index,
+				verdict.AgentType,
+				robot.StateGenerating,
+				true,
+				PlaceabilityNotIdle,
+			))
+			continue
+		}
+		paneObs, _ := observation.PaneByID(pane.ID)
+		candidate := assignAgentInfo{
+			pane:       pane,
+			agentType:  verdict.AgentType,
+			model:      detectModelFromTitle(verdict.AgentType, pane.Title),
+			state:      verdict.State,
+			scrollback: paneObs.RawOutput,
+			relaxed:    true,
+		}
+		eligible, err := assignRoleEligibleAgents([]assignAgentInfo{candidate}, projectDir, template)
+		if err != nil {
+			return nil, false, make([]string, 0), 0, 0, err
+		}
+		if len(eligible) == 0 {
+			continue
+		}
+		relaxCandidates[pane.ID] = candidate
+		scored = append(scored, robot.BuildRelaxableScoredAgent(
+			pane.ID,
+			pane.Index,
+			verdict.AgentType,
+			robot.StateThinking,
+			true,
+			PlaceabilityNotIdle,
+		))
+	}
+
+	router := robot.NewRouter()
+	strictRes := router.Route(scored, robot.StrategyLeastLoaded, robot.RoutingContext{})
+	origScore := strictRes.OriginalScore
+	relaxedScore := origScore
+	constraints := make([]string, 0)
+
+	candidates := append([]assignAgentInfo(nil), idleAgents...)
+	if !relax || needed <= len(candidates) {
+		return candidates, false, constraints, origScore, relaxedScore, nil
+	}
+
+	admittedIDs := make([]string, 0, len(candidates)+len(relaxCandidates))
+	for _, a := range candidates {
+		admittedIDs = append(admittedIDs, a.pane.ID)
+	}
+
+	relaxed := false
+	for len(candidates) < needed {
+		relRes := router.RouteWithRelaxation(scored, robot.StrategyLeastLoaded, robot.RoutingContext{
+			ExcludePaneIDs: admittedIDs,
+		})
+		if relRes.Selected == nil {
+			break
+		}
+		admittedIDs = append(admittedIDs, relRes.Selected.PaneID)
+		candidate, ok := relaxCandidates[relRes.Selected.PaneID]
+		if !ok {
+			continue
+		}
+		candidates = append(candidates, candidate)
+		if relRes.Relaxed && !relaxed {
+			relaxed = true
+			constraints = append([]string(nil), relRes.RelaxedConstraints...)
+			relaxedScore = relRes.RelaxedScore
+		}
+	}
+
+	return candidates, relaxed, constraints, origScore, relaxedScore, nil
 }
 
 func newAssignCmd() *cobra.Command {
@@ -389,6 +539,7 @@ Examples:
 	cmd.Flags().StringVar(&assignStrategy, "strategy", "balanced", "Assignment strategy: balanced, speed, quality, dependency, round-robin")
 	cmd.Flags().StringVar(&assignBeads, "beads", "", "Comma-separated list of specific bead IDs to assign")
 	cmd.Flags().IntVar(&assignLimit, "limit", 0, "Maximum number of assignments (0 = unlimited)")
+	cmd.Flags().BoolVar(&assignRelax, "relax", false, "Relax routing constraints to include THINKING agents when idle agents are insufficient")
 
 	// Agent type filters
 	cmd.Flags().StringVar(&assignAgentType, "agent", "", "Filter by agent type: any (no filter), claude, codex, gemini, antigravity, grok, omp, oc")
@@ -708,6 +859,7 @@ func runAssign(cmd *cobra.Command, args []string) error {
 		Auto:            assignAuto,
 		Timeout:         assignTimeout,
 		ReserveFiles:    assignReserveFiles,
+		Relax:           assignRelax,
 		PaneSelector:    assignPane,
 		Force:           assignForce,
 		IgnoreDeps:      assignIgnoreDeps,
@@ -860,6 +1012,7 @@ func runWatchMode(cmd *cobra.Command, session, projectDir, policyProject string)
 		Auto:            !assignDryRun,
 		Timeout:         assignTimeout,
 		ReserveFiles:    assignReserveFiles,
+		Relax:           assignRelax,
 		WithCASS:        assignWithCASS,
 		NoCASS:          assignNoCASS,
 		WithMemory:      assignWithMemory,
@@ -1295,6 +1448,7 @@ type AssignCommandOptions struct {
 	Auto            bool // Execute planned assignments without confirmation.
 	Timeout         time.Duration
 	ReserveFiles    bool // Reserve file paths via Agent Mail before assignment
+	Relax           bool // Relax routing constraints to include THINKING agents
 
 	// Direct pane assignment options
 	PaneSelector string // Direct pane assignment using N, W.P, or %N
@@ -1323,9 +1477,13 @@ type AssignCommandOptions struct {
 
 // AssignOutputEnhanced is the enhanced output structure matching the spec.
 type AssignOutputEnhanced struct {
-	Strategy    string           `json:"strategy"`
-	Assignments []AssignmentItem `json:"assignments"`
-	Skipped     []SkippedItem    `json:"skipped"`
+	Strategy           string           `json:"strategy"`
+	Relaxed            bool             `json:"relaxed"`
+	RelaxedConstraints []string         `json:"relaxed_constraints"`
+	OriginalScore      float64          `json:"original_score"`
+	RelaxedScore       float64          `json:"relaxed_score"`
+	Assignments        []AssignmentItem `json:"assignments"`
+	Skipped            []SkippedItem    `json:"skipped"`
 	// Panes carries one placeability verdict per pane in the session, in
 	// tmux order, so a zero idle-agent count can be traced to the gate that
 	// produced it. Present whenever the session was evaluated.
@@ -1836,7 +1994,8 @@ func getAssignOutputEnhanced(ctx context.Context, opts *AssignCommandOptions) (*
 	// Run every pane through the dispatch gates, keeping one verdict per pane
 	// so the output can say which gate excluded it rather than only how many
 	// agents survived.
-	idleAgents, paneVerdicts, err := evaluateAssignPanePlaceability(panes, activePanes, observation, opts.AgentTypeFilter, time.Now())
+	observedNow := time.Now()
+	idleAgents, paneVerdicts, err := evaluateAssignPanePlaceability(panes, activePanes, observation, opts.AgentTypeFilter, observedNow)
 	if err != nil {
 		return nil, err
 	}
@@ -1950,11 +2109,34 @@ func getAssignOutputEnhanced(ctx context.Context, opts *AssignCommandOptions) (*
 	}
 	markRoleIneligiblePanes(paneVerdicts, idleAgents, opts.Template)
 
+	neededCandidates := len(readyBeads)
+	if opts.Limit > 0 && opts.Limit < neededCandidates {
+		neededCandidates = opts.Limit
+	}
+	candidateAgents, relaxed, relaxedConstraints, origScore, relaxedScore, err := applyAssignRelaxation(
+		panes,
+		observation,
+		idleAgents,
+		paneVerdicts,
+		projectDir,
+		opts.Template,
+		neededCandidates,
+		opts.Relax,
+		observedNow,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	result := &AssignOutputEnhanced{
-		Strategy:    opts.Strategy,
-		Assignments: make([]AssignmentItem, 0),
-		Skipped:     allSkipped, // Blocked + cyclic beads
-		Panes:       paneVerdicts,
+		Strategy:           opts.Strategy,
+		Relaxed:            relaxed,
+		RelaxedConstraints: relaxedConstraints,
+		OriginalScore:      origScore,
+		RelaxedScore:       relaxedScore,
+		Assignments:        make([]AssignmentItem, 0),
+		Skipped:            allSkipped, // Blocked + cyclic beads
+		Panes:              paneVerdicts,
 		Summary: AssignSummaryEnhanced{
 			TotalBeadCount:  len(readyBeads) + len(blockedBeads) + cycleWarnings,
 			ActionableCount: len(readyBeads),
@@ -1969,9 +2151,9 @@ func getAssignOutputEnhanced(ctx context.Context, opts *AssignCommandOptions) (*
 		},
 	}
 
-	// No pane cleared the placeability gates. The per-pane verdicts in
+	// No pane cleared the placeability (or relaxation) gates. The per-pane verdicts in
 	// result.Panes say which gate rejected each one.
-	if len(idleAgents) == 0 {
+	if len(candidateAgents) == 0 {
 		for _, bead := range readyBeads {
 			result.Skipped = append(result.Skipped, SkippedItem{
 				BeadID: bead.ID,
@@ -1988,7 +2170,7 @@ func getAssignOutputEnhanced(ctx context.Context, opts *AssignCommandOptions) (*
 	}
 
 	// Generate assignments using strategy
-	assignments, allocationPlan := generateAssignmentsEnhancedWithPlan(ctx, idleAgents, readyBeads, opts, true)
+	assignments, allocationPlan := generateAssignmentsEnhancedWithPlan(ctx, candidateAgents, readyBeads, opts, true)
 	result.Allocation = assignAllocationView(allocationPlan)
 	if allocationPlan != nil && allocationPlan.Decision == assign.AllocationDecisionDefer && len(assignments) == 0 {
 		for _, bead := range readyBeads {
@@ -2342,7 +2524,7 @@ func buildAssignAllocationInput(ctx context.Context, agents []assignAgentInfo, b
 			PaneTarget:        assignmentPaneTarget(agentInfo.pane),
 			PaneID:            agentInfo.pane.ID,
 			AgentType:         tmux.AgentType(agentInfo.agentType).Canonical(),
-			Idle:              agentInfo.state == "" || agentInfo.state == "idle",
+			Idle:              agentInfo.state == "" || agentInfo.state == "idle" || agentInfo.relaxed,
 			ContextUsage:      clampAssignScore(agentInfo.contextUsage),
 			ActiveAssignments: active,
 			AssignmentLimit:   1,
@@ -2609,6 +2791,10 @@ func displayAssignOutputEnhanced(out *AssignOutputEnhanced, verbose bool) {
 		fmt.Printf(" | Blocked: %d", out.Summary.BlockedCount)
 	}
 	fmt.Println()
+	if out.Relaxed && len(out.RelaxedConstraints) > 0 {
+		fmt.Printf("Relaxed Constraints: %s (original=%.1f, relaxed=%.1f)\n",
+			strings.Join(out.RelaxedConstraints, ", "), out.OriginalScore, out.RelaxedScore)
+	}
 
 	// Assignments
 	if len(out.Assignments) > 0 {
@@ -2800,7 +2986,7 @@ func executeAssignmentsEnhanced(ctx context.Context, session string, out *Assign
 			fmt.Println("  File reservation enabled via Agent Mail")
 		}
 	}
-	atomicCoordinator := newCLIAtomicAssignmentCoordinator(store, projectDir, reservationMgr, opts.Force)
+	atomicCoordinator := newCLIAtomicAssignmentCoordinator(store, projectDir, reservationMgr, opts.Force || opts.Relax)
 	promptContext := resolvePromptContextOptions(opts.WithCASS, opts.NoCASS, opts.WithMemory, cfg)
 	activeBeads := make(map[string]struct{})
 	for _, active := range store.ListActive() {
@@ -2889,9 +3075,10 @@ func executeAssignmentsEnhanced(ctx context.Context, session string, out *Assign
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("assignment execution canceled while observing %s: %w", item.BeadID, err)
 		}
+		observeNow := time.Now()
 		if observeErr != nil || pn.ID == "" ||
-			!statuspkg.DispatchObservationIsCurrent(observation.ObservedAt, time.Now()) ||
-			!observation.SafeToDispatch(pn.ID) {
+			!statuspkg.DispatchObservationIsCurrent(observation.ObservedAt, observeNow) ||
+			(!observation.SafeToDispatch(pn.ID) && !(opts.Relax && isRelaxableThinkingPane(observation, pn, agentTypeForPane(pn), observeNow))) {
 			if observeErr == nil {
 				observeErr = fmt.Errorf("pane %s is not freshly and confidently idle", item.PaneTarget)
 			}
@@ -6053,7 +6240,7 @@ func runDirectPaneAssignment(ctx context.Context, opts *AssignCommandOptions) er
 		}
 		return err
 	}
-	atomicCoordinator := newCLIAtomicAssignmentCoordinator(store, projectDir, reservationMgr, opts.Force)
+	atomicCoordinator := newCLIAtomicAssignmentCoordinator(store, projectDir, reservationMgr, opts.Force || opts.Relax)
 	assignmentCtx, cancel := context.WithTimeout(ctx, resolveAssignTimeout(opts.Timeout))
 	atomicResult, assignErr := atomicCoordinator.Execute(assignmentCtx, request)
 	cancel()

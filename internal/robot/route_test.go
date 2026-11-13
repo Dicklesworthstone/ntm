@@ -13,6 +13,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
@@ -916,5 +917,208 @@ esac
 				}
 			}
 		})
+	}
+}
+
+func TestGetRoute_RelaxProvenanceAndThinkingSelection(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("tmux fixture requires /bin/sh")
+	}
+	hermeticGlobalConfig(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	dir := t.TempDir()
+	const script = `#!/bin/sh
+case "$1" in
+  has-session)
+    if [ "$3" != "=route-relax" ]; then
+      printf "can't find session: %s\n" "$3" >&2
+      exit 1
+    fi
+    ;;
+  list-panes)
+    printf '%s\n' '%41_NTM_SEP_1_NTM_SEP_route-relax__cc_1_NTM_SEP_claude_NTM_SEP_120_NTM_SEP_40_NTM_SEP_1_NTM_SEP_1041_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0'
+    ;;
+  capture-pane)
+    printf '· thinking… (3s)\n'
+    ;;
+  *)
+    printf 'unexpected tmux command: %s\n' "$*" >&2
+    exit 97
+    ;;
+esac
+`
+	path := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", path)
+	previous := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("")
+	t.Cleanup(func() { tmux.DefaultClient = previous })
+
+	prevProcess, prevCwd, prevPath := transcriptUsageForProcess, transcriptUsageForCwd, paneCurrentPath
+	t.Cleanup(func() {
+		transcriptUsageForProcess, transcriptUsageForCwd, paneCurrentPath = prevProcess, prevCwd, prevPath
+	})
+	paneCurrentPath = func(string) (string, bool) { return "", false }
+	transcriptUsageForCwd = func(string, string) (*ntmctx.TranscriptUsage, bool) { return nil, false }
+	transcriptUsageForProcess = func(_ string, _ int) (*ntmctx.TranscriptUsage, bool) {
+		return &ntmctx.TranscriptUsage{Tokens: 180000, ContextWindow: 200000, UpdatedAt: time.Now()}, true
+	}
+
+	cfg := config.Default()
+	cfg.Routing.ExcludeContextAbove = 85
+
+	strictOut, strictCode := GetRoute(RouteOptions{
+		Session:   "route-relax",
+		Strategy:  StrategyLeastLoaded,
+		Config:    cfg,
+		NoPersist: true,
+		Relax:     false,
+	})
+	if strictCode != 0 || !strictOut.Success {
+		t.Fatalf("strict GetRoute = %+v, code %d", strictOut, strictCode)
+	}
+	if strictOut.Recommendation != nil {
+		t.Fatalf("strict GetRoute recommended excluded pane: %+v", strictOut.Recommendation)
+	}
+	if strictOut.Relaxed || strictOut.RelaxedConstraints == nil || len(strictOut.RelaxedConstraints) != 0 {
+		t.Fatalf("strict provenance = relaxed=%v constraints=%#v, want false and []", strictOut.Relaxed, strictOut.RelaxedConstraints)
+	}
+
+	relaxedOut, relaxedCode := GetRoute(RouteOptions{
+		Session:   "route-relax",
+		Strategy:  StrategyLeastLoaded,
+		Config:    cfg,
+		NoPersist: true,
+		Relax:     true,
+	})
+	if relaxedCode != 0 || !relaxedOut.Success {
+		t.Fatalf("relaxed GetRoute = %+v, code %d", relaxedOut, relaxedCode)
+	}
+	if relaxedOut.Recommendation == nil || relaxedOut.Recommendation.PaneID != "%41" {
+		t.Fatalf("relaxed GetRoute recommendation = %+v, want %%41", relaxedOut.Recommendation)
+	}
+	if !relaxedOut.Relaxed {
+		t.Fatal("relaxed GetRoute Relaxed = false, want true")
+	}
+	if !reflect.DeepEqual(relaxedOut.RelaxedConstraints, []string{"context_threshold", "thinking_state"}) {
+		t.Fatalf("RelaxedConstraints = %#v, want [\"context_threshold\", \"thinking_state\"]", relaxedOut.RelaxedConstraints)
+	}
+	if relaxedOut.OriginalScore != 0 || relaxedOut.RelaxedScore <= 0 {
+		t.Fatalf("scores = (orig=%v, relaxed=%v), want (0, >0)", relaxedOut.OriginalScore, relaxedOut.RelaxedScore)
+	}
+}
+
+func TestGetRoute_RelaxPersistsEvidenceLedger(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("tmux fixture requires /bin/sh")
+	}
+	hermeticGlobalConfig(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	dir := t.TempDir()
+	const script = `#!/bin/sh
+case "$1" in
+  has-session)
+    if [ "$3" != "=route-relax-ledger" ]; then
+      printf "can't find session: %s\n" "$3" >&2
+      exit 1
+    fi
+    ;;
+  list-panes)
+    printf '%s\n' '%41_NTM_SEP_1_NTM_SEP_route-relax-ledger__cc_1_NTM_SEP_claude_NTM_SEP_120_NTM_SEP_40_NTM_SEP_1_NTM_SEP_1041_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0'
+    ;;
+  capture-pane)
+    printf '· thinking… (3s)\n'
+    ;;
+  *)
+    printf 'unexpected tmux command: %s\n' "$*" >&2
+    exit 97
+    ;;
+esac
+`
+	path := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", path)
+	previous := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("")
+	t.Cleanup(func() { tmux.DefaultClient = previous })
+
+	prevProcess, prevCwd, prevPath := transcriptUsageForProcess, transcriptUsageForCwd, paneCurrentPath
+	t.Cleanup(func() {
+		transcriptUsageForProcess, transcriptUsageForCwd, paneCurrentPath = prevProcess, prevCwd, prevPath
+	})
+	paneCurrentPath = func(string) (string, bool) { return "", false }
+	transcriptUsageForCwd = func(string, string) (*ntmctx.TranscriptUsage, bool) { return nil, false }
+	transcriptUsageForProcess = func(_ string, _ int) (*ntmctx.TranscriptUsage, bool) {
+		return &ntmctx.TranscriptUsage{Tokens: 180000, ContextWindow: 200000, UpdatedAt: time.Now()}, true
+	}
+
+	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Migrate(); err != nil {
+		t.Fatalf("store.Migrate: %v", err)
+	}
+	oldStore := currentProjectionStore()
+	SetProjectionStore(store)
+	t.Cleanup(func() { SetProjectionStore(oldStore) })
+
+	cfg := config.Default()
+	cfg.Routing.ExcludeContextAbove = 85
+
+	// NoPersist=true must NOT emit audit_decision_log rows.
+	_, code := GetRoute(RouteOptions{
+		Session:   "route-relax-ledger",
+		Strategy:  StrategyLeastLoaded,
+		Config:    cfg,
+		NoPersist: true,
+		Relax:     true,
+	})
+	if code != 0 {
+		t.Fatalf("NoPersist GetRoute code = %d, want 0", code)
+	}
+	before, err := GetPolicyDecisions(PolicyDecisionsOptions{EntityType: "session", EntityID: "route-relax-ledger"})
+	if err != nil || !before.Success || before.Count != 0 {
+		t.Fatalf("after NoPersist GetRoute, decisions = %+v, err=%v, want 0 rows", before, err)
+	}
+
+	// Default persisted GetRoute with Relax=true must record an assign_relax
+	// AuditDecision with a complete §0.19 EvidenceLedger.
+	out, code := GetRoute(RouteOptions{
+		Session:  "route-relax-ledger",
+		Strategy: StrategyLeastLoaded,
+		Config:   cfg,
+		Relax:    true,
+	})
+	if code != 0 || !out.Success || !out.Relaxed {
+		t.Fatalf("persisted GetRoute = %+v, code=%d, want relaxed success", out, code)
+	}
+
+	after, err := GetPolicyDecisions(PolicyDecisionsOptions{EntityType: "session", EntityID: "route-relax-ledger"})
+	if err != nil || !after.Success || after.Count != 1 {
+		t.Fatalf("after persisted GetRoute, decisions = %+v, err=%v, want 1 row", after, err)
+	}
+	dec := after.Decisions[0]
+	if dec.DecisionType != "assign_relax" || dec.ActorID != "robot.route" {
+		t.Fatalf("decision metadata = %+v, want assign_relax / robot.route", dec)
+	}
+	if dec.Evidence == nil {
+		t.Fatalf("expected non-nil EvidenceLedger on decision %+v", dec)
+	}
+	if dec.Evidence.SchemaVersion != "evidence_ledger.v1" || dec.Evidence.Action != "relax" || !dec.Evidence.FallbackActive {
+		t.Fatalf("unexpected EvidenceLedger header: %+v", dec.Evidence)
+	}
+	if dec.Evidence.FallbackReason != "context_threshold,thinking_state" {
+		t.Fatalf("FallbackReason = %q, want context_threshold,thinking_state", dec.Evidence.FallbackReason)
+	}
+	if dec.Evidence.TopFeatures["relaxed_score"] <= 0 || dec.Evidence.TopFeatures["relaxed_constraints_count"] != 2 {
+		t.Fatalf("TopFeatures = %#v, want positive relaxed_score and count=2", dec.Evidence.TopFeatures)
 	}
 }

@@ -1054,3 +1054,96 @@ func TestDistributeRecommendation_JSONFields(t *testing.T) {
 		t.Error("legacy pane_index field must not be serialized")
 	}
 }
+
+func TestResolveAssignCandidatePool_RelaxThinkingAndProvenance(t *testing.T) {
+	now := time.Now().UTC()
+	observation := statuspkg.SessionObservation{
+		Session:    "relax-proj",
+		ObservedAt: now,
+		Complete:   true,
+		Panes: []statuspkg.PaneObservation{
+			{
+				Pane:      tmux.PaneRef{ID: "%11", WindowIndex: 0, PaneIndex: 1},
+				PaneName:  "Claude One",
+				AgentType: "claude",
+				Current: statuspkg.StateObservation{
+					Status:     statuspkg.AgentStatus{State: statuspkg.StateWorking},
+					ObservedAt: now,
+					Freshness:  statuspkg.FreshnessFresh,
+					Confidence: 0.95,
+				},
+				RawOutput: "· thinking… (3s)\n",
+			},
+			{
+				Pane:      tmux.PaneRef{ID: "%12", WindowIndex: 0, PaneIndex: 2},
+				PaneName:  "Codex Occupied",
+				AgentType: "codex",
+				Current: statuspkg.StateObservation{
+					Status:     statuspkg.AgentStatus{State: statuspkg.StateWorking},
+					ObservedAt: now,
+					Freshness:  statuspkg.FreshnessFresh,
+					Confidence: 0.95,
+				},
+				RawOutput: "• Thinking...\n",
+			},
+		},
+	}
+
+	agents, idlePanes, err := assignAgentsFromObservation(observation, now)
+	if err != nil {
+		t.Fatalf("assignAgentsFromObservation: %v", err)
+	}
+	if len(idlePanes) != 0 {
+		t.Fatalf("idlePanes = %v, want empty", idlePanes)
+	}
+	if len(agents) != 2 || !agents[0].relaxEligible || !agents[1].relaxEligible {
+		t.Fatalf("agents = %+v, want both thinking panes relaxEligible", agents)
+	}
+
+	occupied := map[string]struct{}{"%12": {}}
+
+	strictPool, strictRelaxed, strictConstraints, strictOrig, strictRelScore := resolveAssignCandidatePoolWithOccupied(
+		agents, idlePanes, occupied, 2, false,
+	)
+	if len(strictPool) != 0 || strictRelaxed {
+		t.Fatalf("strict pool = %v (relaxed=%v), want empty and false", strictPool, strictRelaxed)
+	}
+	if strictConstraints == nil || len(strictConstraints) != 0 {
+		t.Fatalf("strict constraints = %#v, want non-nil empty slice", strictConstraints)
+	}
+	if strictOrig != 0 || strictRelScore != 0 {
+		t.Fatalf("strict scores = (%v, %v), want (0, 0)", strictOrig, strictRelScore)
+	}
+
+	relaxedPool, relaxedFlag, relaxedConstraints, origScore, relaxedScore := resolveAssignCandidatePoolWithOccupied(
+		agents, idlePanes, occupied, 2, true,
+	)
+	if !reflect.DeepEqual(relaxedPool, []string{"%11"}) {
+		t.Fatalf("relaxed pool = %v, want [%%11] (occupied %%12 must stay fenced)", relaxedPool)
+	}
+	if !relaxedFlag {
+		t.Fatal("relaxed = false, want true")
+	}
+	if !reflect.DeepEqual(relaxedConstraints, []string{"thinking_state"}) {
+		t.Fatalf("relaxedConstraints = %#v, want [\"thinking_state\"]", relaxedConstraints)
+	}
+	if origScore != 0 || relaxedScore <= 0 {
+		t.Fatalf("scores = (orig=%v, relaxed=%v), want (0, >0)", origScore, relaxedScore)
+	}
+
+	out := AssignOutput{
+		RobotResponse:      NewRobotResponse(true),
+		Session:            "relax-proj",
+		Strategy:           "balanced",
+		Recommendations:    make([]AssignRecommend, 0),
+		IdleAgents:         make([]string, 0),
+		RelaxedConstraints: make([]string, 0),
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal AssignOutput: %v", err)
+	}
+	if strings.Contains(string(raw), `"relaxed_constraints":null`) || !strings.Contains(string(raw), `"relaxed_constraints":[]`) {
+		t.Fatalf("AssignOutput JSON = %s, want non-null relaxed_constraints array", raw)
+	}
+}

@@ -4524,8 +4524,8 @@ func TestBulkAssignWithCASSAndMemoryEnrichesPromptAndReplaysWithoutRequery(t *te
 	}
 
 	cassCalls := bulkContextStubCalls(t, cassLog)
-	if strings.Count(cassCalls, "search") != 1 || !strings.Contains(cassCalls, "gateway") || !strings.Contains(cassCalls, "bucket") {
-		t.Fatalf("cass calls = %q, want one search over the bead's title, labels, and description", cassCalls)
+	if strings.Count(cassCalls, "search") != 2 || strings.Count(cassCalls, "--workspace") != 1 || !strings.Contains(cassCalls, "gateway") || !strings.Contains(cassCalls, "bucket") {
+		t.Fatalf("cass calls = %q, want two-scope (global + --workspace) search over the bead's title, labels, and description", cassCalls)
 	}
 	if strings.Contains(cassCalls, "register") || strings.Contains(cassCalls, "ultrathink") {
 		t.Fatalf("cass query carried template boilerplate: %q", cassCalls)
@@ -4626,7 +4626,7 @@ func TestBulkAssignCASSUnavailableDegradesAndReports(t *testing.T) {
 	if !output.Success || got.Status != "assigned" || !got.PromptSent {
 		t.Fatalf("degraded bulk assignment = %+v (response %+v), want it delivered", got, output.RobotResponse)
 	}
-	if got.CASSInjection == nil || got.CASSInjection.ItemsInjected != 0 || !strings.Contains(got.CASSInjection.SkippedReason, "not found") {
+	if got.CASSInjection == nil || got.CASSInjection.ItemsInjected != 0 || !strings.Contains(got.CASSInjection.SkippedReason, "cass is not installed") {
 		t.Fatalf("cass_injection = %+v, want a recorded missing-cass skip", got.CASSInjection)
 	}
 	if got.MemoryInjection == nil || !strings.Contains(got.MemoryInjection.SkippedReason, "cm is not available") {

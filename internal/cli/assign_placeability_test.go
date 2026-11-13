@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/bv"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -336,5 +337,89 @@ func TestAssignOutputEnhancedJSONCarriesPanePlaceability(t *testing.T) {
 	legacy, _ := json.Marshal(&AssignOutputEnhanced{Strategy: "balanced", Assignments: []AssignmentItem{}, Skipped: []SkippedItem{}})
 	if strings.Contains(string(legacy), "pane_placeability") || strings.Contains(string(legacy), "placeability_counts") {
 		t.Errorf("unevaluated output must omit placeability fields: %s", legacy)
+	}
+}
+
+func TestApplyAssignRelaxationAndAllocation(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	projectDir := t.TempDir()
+	now := time.Now().UTC()
+
+	panes := []tmux.Pane{
+		placeabilityPane("%1", 1, tmux.AgentClaude),
+		placeabilityPane("%2", 2, tmux.AgentCodex),
+		placeabilityPane("%3", 3, tmux.AgentClaude, "reviewer"),
+	}
+
+	obsHeld := observedPane("%1", statuspkg.StateWorking, 0.95)
+	obsHeld.Current.ObservedAt = now
+	obsHeld.RawOutput = "· thinking… (3s)\n"
+
+	obsEligible := observedPane("%2", statuspkg.StateWorking, 0.95)
+	obsEligible.Current.ObservedAt = now
+	obsEligible.RawOutput = "• Thinking...\n"
+
+	obsReviewer := observedPane("%3", statuspkg.StateWorking, 0.95)
+	obsReviewer.Current.ObservedAt = now
+	obsReviewer.RawOutput = "· thinking… (3s)\n"
+
+	observation := placeabilityObservation(now, obsHeld, obsEligible, obsReviewer)
+	active := map[string]string{"%1": "bd-existing"}
+
+	idleAgents, verdicts, err := evaluateAssignPanePlaceability(panes, active, observation, "", now)
+	if err != nil {
+		t.Fatalf("evaluateAssignPanePlaceability: %v", err)
+	}
+	if len(idleAgents) != 0 {
+		t.Fatalf("idleAgents = %+v, want 0", idleAgents)
+	}
+
+	strictCandidates, strictRelaxed, strictConstraints, strictOrig, strictRel, err := applyAssignRelaxation(
+		panes, observation, idleAgents, verdicts, projectDir, "impl", 2, false, now,
+	)
+	if err != nil {
+		t.Fatalf("strict applyAssignRelaxation: %v", err)
+	}
+	if len(strictCandidates) != 0 || strictRelaxed {
+		t.Fatalf("strict candidates = %+v, relaxed = %v; want empty and false", strictCandidates, strictRelaxed)
+	}
+	if strictConstraints == nil || len(strictConstraints) != 0 {
+		t.Fatalf("strictConstraints = %#v, want non-nil empty slice", strictConstraints)
+	}
+	if strictOrig != 0 || strictRel != 0 {
+		t.Fatalf("strict scores = (%v, %v), want (0, 0)", strictOrig, strictRel)
+	}
+
+	relaxedCandidates, relaxedFlag, relaxedConstraints, origScore, relaxedScore, err := applyAssignRelaxation(
+		panes, observation, idleAgents, verdicts, projectDir, "impl", 2, true, now,
+	)
+	if err != nil {
+		t.Fatalf("relaxed applyAssignRelaxation: %v", err)
+	}
+	// %1 is fenced by active_assignment; %3 is fenced by reviewer role on impl template; only %2 is relaxed.
+	if len(relaxedCandidates) != 1 || relaxedCandidates[0].pane.ID != "%2" || !relaxedCandidates[0].relaxed {
+		t.Fatalf("relaxedCandidates = %+v, want only relaxed pane %%2", relaxedCandidates)
+	}
+	if !relaxedFlag {
+		t.Fatal("relaxedFlag = false, want true")
+	}
+	if len(relaxedConstraints) != 1 || relaxedConstraints[0] != "thinking_state" {
+		t.Fatalf("relaxedConstraints = %#v, want [\"thinking_state\"]", relaxedConstraints)
+	}
+	if origScore != 0 || relaxedScore <= 0 {
+		t.Fatalf("scores = (orig=%v, relaxed=%v), want (0, >0)", origScore, relaxedScore)
+	}
+
+	beads := []bv.BeadPreview{
+		{ID: "bd-101", Title: "Wire relaxed routing", Priority: "P1"},
+	}
+	items, _ := generateAssignmentsEnhancedWithPlan(t.Context(), relaxedCandidates, beads, &AssignCommandOptions{
+		Session:  "demo",
+		Strategy: "balanced",
+		Template: "impl",
+		Relax:    true,
+	}, true)
+	if len(items) != 1 || items[0].PaneID != "%2" || items[0].BeadID != "bd-101" {
+		t.Fatalf("assignments = %+v, want bd-101 assigned to %%2", items)
 	}
 }

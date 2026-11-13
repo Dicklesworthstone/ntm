@@ -1099,6 +1099,10 @@ type RoutingResult struct {
 	FallbackUsed       bool                `json:"fallback_used"`
 	Reason             string              `json:"reason,omitempty"`
 	ReservationWarning *ReservationWarning `json:"reservation_warning,omitempty"` // Warning if files are reserved by other agents
+	Relaxed            bool                `json:"relaxed"`
+	RelaxedConstraints []string            `json:"relaxed_constraints"`
+	OriginalScore      float64             `json:"original_score"`
+	RelaxedScore       float64             `json:"relaxed_score"`
 }
 
 // =============================================================================
@@ -1471,9 +1475,10 @@ func (r *Router) GetStrategy(name StrategyName) RoutingStrategy {
 // Route selects an agent using the specified strategy.
 func (r *Router) Route(agents []ScoredAgent, strategy StrategyName, ctx RoutingContext) RoutingResult {
 	result := RoutingResult{
-		Strategy:   strategy,
-		Candidates: filterExcluded(agents, false),
-		Excluded:   filterExcluded(agents, true),
+		Strategy:           strategy,
+		Candidates:         filterExcluded(agents, false),
+		Excluded:           filterExcluded(agents, true),
+		RelaxedConstraints: make([]string, 0),
 	}
 
 	// Apply exclusion from context
@@ -1496,6 +1501,8 @@ func (r *Router) Route(agents []ScoredAgent, strategy StrategyName, ctx RoutingC
 	}
 	if selected != nil {
 		result.Selected = selected
+		result.OriginalScore = selected.Score
+		result.RelaxedScore = selected.Score
 		result.Reason = "primary strategy succeeded"
 		return result
 	}
@@ -1512,6 +1519,8 @@ func (r *Router) Route(agents []ScoredAgent, strategy StrategyName, ctx RoutingC
 		if selected != nil {
 			result.Selected = selected
 			result.FallbackUsed = true
+			result.OriginalScore = selected.Score
+			result.RelaxedScore = selected.Score
 			result.Reason = "fallback to " + string(fb.Name())
 			return result
 		}
@@ -1521,29 +1530,152 @@ func (r *Router) Route(agents []ScoredAgent, strategy StrategyName, ctx RoutingC
 	return result
 }
 
+const maxRelaxedContextUsage = 95.0
+
+func hasHardRoutingBlock(a ScoredAgent) bool {
+	if a.RateLimited || a.HealthState == HealthUnhealthy || a.HealthState == HealthBlocked || a.UnsubmittedInput || a.QueuedMessages {
+		return true
+	}
+	if a.State == StateError || a.State == StateGenerating || a.State == StateStalled {
+		return true
+	}
+	if a.ExcludeReason == "agent CLI exited to a bare shell" {
+		return true
+	}
+	if a.ContextUsage >= maxRelaxedContextUsage {
+		return true
+	}
+	return false
+}
+
+func canRelaxThinkingAgent(a ScoredAgent) bool {
+	if a.State != StateThinking || !a.Excluded {
+		return false
+	}
+	if a.ExcludeReason == "context usage above threshold" {
+		return false
+	}
+	return !hasHardRoutingBlock(a)
+}
+
+func canRelaxSoftContextAgent(a ScoredAgent) bool {
+	if !a.Excluded || a.ExcludeReason != "context usage above threshold" {
+		return false
+	}
+	if a.State != StateWaiting && a.State != StateThinking {
+		return false
+	}
+	return !hasHardRoutingBlock(a)
+}
+
+// ClassifyPaneOutputActivity classifies captured pane text using the activity pattern library
+// without issuing extra tmux subprocess calls.
+func ClassifyPaneOutputActivity(paneID, agentType, rawOutput string) (*AgentActivity, error) {
+	resolved := ResolveAgentType(agentType)
+	if resolved == "" {
+		resolved = strings.ToLower(strings.TrimSpace(agentType))
+	}
+	classifier := NewStateClassifier(paneID, &ClassifierConfig{AgentType: resolved})
+	return classifier.ClassifyWithOutput(rawOutput)
+}
+
+// BuildRelaxableScoredAgent constructs a ScoredAgent with deterministic score breakdown
+// so assignment surfaces can evaluate strict vs relaxed routing via Router.RouteWithRelaxation.
+func BuildRelaxableScoredAgent(paneID string, paneIndex int, agentType string, state AgentState, excluded bool, excludeReason string) ScoredAgent {
+	scorer := NewAgentScorer(DefaultRoutingConfig())
+	agent := ScoredAgent{
+		PaneID:        paneID,
+		PaneIndex:     paneIndex,
+		AgentType:     agentType,
+		State:         state,
+		Confidence:    0.9,
+		HealthState:   deriveHealthState(state),
+		Excluded:      excluded,
+		ExcludeReason: excludeReason,
+	}
+	agent.ScoreDetail = scorer.calculateScoreComponents(&agent, "")
+	if !excluded {
+		agent.Score = scorer.calculateFinalScore(&agent)
+	}
+	return agent
+}
+
 // RouteWithRelaxation tries routing with progressively relaxed constraints.
 func (r *Router) RouteWithRelaxation(agents []ScoredAgent, strategy StrategyName, ctx RoutingContext) RoutingResult {
+	origScores := make(map[string]float64, len(agents))
+	for _, a := range agents {
+		origScores[a.PaneID] = a.Score
+	}
+
 	// First try with normal constraints
 	result := r.Route(agents, strategy, ctx)
 	if result.Selected != nil {
 		return result
 	}
 
-	// Relax constraint: include THINKING agents (which are close to WAITING)
-	// These agents might have been excluded but are nearly ready for work.
+	// Stage 1: Relax constraint to include THINKING agents (which are close to WAITING).
+	scorer := NewAgentScorer(DefaultRoutingConfig())
 	relaxedAgents := make([]ScoredAgent, len(agents))
 	copy(relaxedAgents, agents)
+	relaxedThinking := false
 	for i := range relaxedAgents {
-		if relaxedAgents[i].State == StateThinking && relaxedAgents[i].Excluded {
+		if canRelaxThinkingAgent(relaxedAgents[i]) {
 			relaxedAgents[i].Excluded = false
 			relaxedAgents[i].ExcludeReason = ""
+			if relaxedAgents[i].Score == 0 {
+				d := relaxedAgents[i].ScoreDetail
+				if d.ContextContrib == 0 && d.StateContrib == 0 && d.RecencyContrib == 0 {
+					relaxedAgents[i].ScoreDetail = scorer.calculateScoreComponents(&relaxedAgents[i], ctx.Prompt)
+				}
+				relaxedAgents[i].Score = scorer.calculateFinalScore(&relaxedAgents[i])
+			}
+			relaxedThinking = true
+		}
+	}
+	if relaxedThinking {
+		thinkingResult := r.Route(relaxedAgents, strategy, ctx)
+		if thinkingResult.Selected != nil {
+			thinkingResult.Relaxed = true
+			thinkingResult.RelaxedConstraints = []string{"thinking_state"}
+			thinkingResult.OriginalScore = origScores[thinkingResult.Selected.PaneID]
+			thinkingResult.RelaxedScore = thinkingResult.Selected.Score
+			thinkingResult.Reason = "relaxed constraints (included THINKING)"
+			return thinkingResult
 		}
 	}
 
-	result = r.Route(relaxedAgents, strategy, ctx)
-	if result.Selected != nil {
-		result.Reason = "relaxed constraints (included THINKING)"
+	// Stage 2: Relax soft context usage threshold (up to maxRelaxedContextUsage) for healthy WAITING/THINKING agents.
+	relaxedContext := false
+	for i := range relaxedAgents {
+		if canRelaxSoftContextAgent(relaxedAgents[i]) {
+			relaxedAgents[i].Excluded = false
+			relaxedAgents[i].ExcludeReason = ""
+			if relaxedAgents[i].Score == 0 {
+				d := relaxedAgents[i].ScoreDetail
+				if d.ContextContrib == 0 && d.StateContrib == 0 && d.RecencyContrib == 0 {
+					relaxedAgents[i].ScoreDetail = scorer.calculateScoreComponents(&relaxedAgents[i], ctx.Prompt)
+				}
+				relaxedAgents[i].Score = scorer.calculateFinalScore(&relaxedAgents[i])
+			}
+			relaxedContext = true
+		}
+	}
+	if !relaxedContext {
 		return result
+	}
+
+	contextResult := r.Route(relaxedAgents, strategy, ctx)
+	if contextResult.Selected != nil {
+		constraints := []string{"context_threshold"}
+		if contextResult.Selected.State == StateThinking {
+			constraints = append(constraints, "thinking_state")
+		}
+		contextResult.Relaxed = true
+		contextResult.RelaxedConstraints = constraints
+		contextResult.OriginalScore = origScores[contextResult.Selected.PaneID]
+		contextResult.RelaxedScore = contextResult.Selected.Score
+		contextResult.Reason = "relaxed constraints (" + strings.Join(constraints, ", ") + ")"
+		return contextResult
 	}
 
 	return result

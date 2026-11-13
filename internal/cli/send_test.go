@@ -2114,15 +2114,19 @@ esac
 
 func TestSendSmartRoutingFiltersPhysicalPanesAcrossWindows(t *testing.T) {
 	dir := installSmartRoutingIdentityTmux(t)
-	run := func(flags ...string) (string, error) {
+	runPrompt := func(promptText string, flags ...string) (string, error) {
 		t.Helper()
 		cmd := newSendCmd()
 		cmd.SilenceErrors, cmd.SilenceUsage = true, true
 		cmd.SetOut(io.Discard)
 		cmd.SetErr(io.Discard)
-		args := []string{"smart-identity", "route this prompt", "--no-cass-check", "--no-hooks"}
+		args := []string{"smart-identity", promptText, "--no-cass-check", "--no-hooks"}
 		cmd.SetArgs(append(args, flags...))
 		return captureStdout(t, func() error { return cmd.ExecuteContext(t.Context()) })
+	}
+	run := func(flags ...string) (string, error) {
+		t.Helper()
+		return runPrompt("route this prompt", flags...)
 	}
 	for _, test := range []struct {
 		name  string
@@ -2201,6 +2205,50 @@ func TestSendSmartRoutingFiltersPhysicalPanesAcrossWindows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	literalSent := false
+	for _, line := range strings.Split(string(calls), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || (fields[0] != "paste-buffer" && fields[0] != "send-keys") {
+			continue
+		}
+		if fields[0] == "send-keys" && strings.Contains(line, "route this prompt") {
+			literalSent = true
+		}
+		target := ""
+		for i := 1; i+1 < len(fields); i++ {
+			if fields[i] == "-t" {
+				target = fields[i+1]
+				break
+			}
+		}
+		if target != "%51" {
+			t.Errorf("automatic filter dispatched to the wrong physical pane: %s", line)
+		}
+	}
+	if !literalSent {
+		t.Fatalf("plain single-line prompt missing literal send-keys delivery to %%51: calls=%s", calls)
+	}
+
+	// File-mention prompt (@path) exercises the buffered load-buffer + paste-buffer path
+	// and must likewise dispatch exclusively to physical pane %51.
+	if err := os.WriteFile(filepath.Join(dir, "tmux-calls"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err = runPrompt("route @backend/task.md", "--smart", "--tag=backend")
+	if err != nil {
+		t.Fatalf("filtered buffered send failed: %v; output=%s", err, output)
+	}
+	var bufferedSent SendResult
+	if err := json.Unmarshal([]byte(output), &bufferedSent); err != nil {
+		t.Fatal(err)
+	}
+	if !bufferedSent.Success || bufferedSent.Delivered != 1 || bufferedSent.Failed != 0 || bufferedSent.RoutedTo == nil || bufferedSent.RoutedTo.PaneID != "%51" {
+		t.Fatalf("filtered buffered delivery = %+v, want the eligible physical pane %%51", bufferedSent)
+	}
+	calls, err = os.ReadFile(filepath.Join(dir, "tmux-calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	pasted := false
 	for _, line := range strings.Split(string(calls), "\n") {
 		fields := strings.Fields(line)
@@ -2218,12 +2266,12 @@ func TestSendSmartRoutingFiltersPhysicalPanesAcrossWindows(t *testing.T) {
 			}
 		}
 		if target != "%51" {
-			t.Errorf("automatic filter dispatched to the wrong physical pane: %s", line)
+			t.Errorf("automatic filter dispatched buffered prompt to the wrong physical pane: %s", line)
 		}
 	}
 	prompt, err := os.ReadFile(filepath.Join(dir, "delivered-prompt"))
-	if err != nil || !pasted || !strings.Contains(string(prompt), "route this prompt") {
-		t.Fatalf("canonical prompt delivery missing: pasted=%t prompt=%q error=%v; calls=%s", pasted, prompt, err, calls)
+	if err != nil || !pasted || !strings.Contains(string(prompt), "route @backend/task.md") {
+		t.Fatalf("canonical buffered prompt delivery missing: pasted=%t prompt=%q error=%v; calls=%s", pasted, prompt, err, calls)
 	}
 }
 

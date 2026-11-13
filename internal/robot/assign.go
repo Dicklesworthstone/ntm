@@ -23,6 +23,7 @@ type AssignOptions struct {
 	ProjectDir string   // Explicit project directory for Beads reads
 	Beads      []string // Specific bead IDs to assign (empty = all ready)
 	Strategy   string   // simple, balanced, speed, quality, dependency
+	Relax      bool     // Relax routing constraints to include THINKING agents when idle agents are insufficient
 }
 
 // assignStrategyDefault is the strategy used when none is requested.
@@ -59,15 +60,19 @@ func isValidAssignStrategy(s string) bool {
 // AssignOutput is the structured output for --robot-assign
 type AssignOutput struct {
 	RobotResponse
-	Session           string             `json:"session"`
-	Strategy          string             `json:"strategy"`
-	GeneratedAt       time.Time          `json:"generated_at"`
-	Recommendations   []AssignRecommend  `json:"recommendations"`
-	BlockedBeads      []BlockedBead      `json:"blocked_beads"`
-	IdleAgents        []string           `json:"idle_agents"`
-	UnassignableBeads []UnassignableBead `json:"unassignable_beads,omitempty"`
-	Summary           AssignSummary      `json:"summary"`
-	AgentHints        *AssignAgentHints  `json:"_agent_hints,omitempty"`
+	Session            string             `json:"session"`
+	Strategy           string             `json:"strategy"`
+	GeneratedAt        time.Time          `json:"generated_at"`
+	Relaxed            bool               `json:"relaxed"`
+	RelaxedConstraints []string           `json:"relaxed_constraints"`
+	OriginalScore      float64            `json:"original_score"`
+	RelaxedScore       float64            `json:"relaxed_score"`
+	Recommendations    []AssignRecommend  `json:"recommendations"`
+	BlockedBeads       []BlockedBead      `json:"blocked_beads"`
+	IdleAgents         []string           `json:"idle_agents"`
+	UnassignableBeads  []UnassignableBead `json:"unassignable_beads,omitempty"`
+	Summary            AssignSummary      `json:"summary"`
+	AgentHints         *AssignAgentHints  `json:"_agent_hints,omitempty"`
 	// WorkSourceMismatch is the STALE_WORK_COORDINATION remediation receipt.
 	WorkSourceMismatch *worksource.StaleError `json:"work_source_mismatch,omitempty"`
 }
@@ -171,7 +176,7 @@ func GetAssignRecommendations(ctx context.Context, opts AssignOptions) ([]Distri
 		return nil, fmt.Errorf("exclude active assignment occupancy: %w", err)
 	}
 
-	if len(idleAgentPanes) == 0 {
+	if len(idleAgentPanes) == 0 && !opts.Relax {
 		return nil, nil // No idle agents
 	}
 
@@ -204,9 +209,17 @@ func GetAssignRecommendations(ctx context.Context, opts AssignOptions) ([]Distri
 		readyBeads = filtered
 	}
 
+	candidatePanes, _, _, _, _, err := resolveAssignCandidatePool(opts.Session, agents, idleAgentPanes, len(readyBeads), opts.Relax)
+	if err != nil {
+		return nil, fmt.Errorf("resolve relaxed assignment pool: %w", err)
+	}
+	if len(candidatePanes) == 0 {
+		return nil, nil
+	}
+
 	// Generate recommendations through the strategy planner, preserving the
 	// dependency graph (unblocks) signal for the graph-aware strategies.
-	recs := planAssignments(agents, readyBeads, unblocksIndex(assignableRecommendations), strategy, idleAgentPanes)
+	recs := planAssignments(agents, readyBeads, unblocksIndex(assignableRecommendations), strategy, candidatePanes)
 
 	// Convert to DistributeRecommendation format
 	var result []DistributeRecommendation
@@ -241,11 +254,12 @@ func unblocksIndex(recommendations []bv.TriageRecommendation) map[string][]strin
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetAssign(ctx context.Context, opts AssignOptions) (*AssignOutput, error) {
 	output := &AssignOutput{
-		RobotResponse:   NewRobotResponse(true),
-		Session:         opts.Session,
-		Recommendations: make([]AssignRecommend, 0),
-		BlockedBeads:    make([]BlockedBead, 0),
-		IdleAgents:      []string{},
+		RobotResponse:      NewRobotResponse(true),
+		Session:            opts.Session,
+		RelaxedConstraints: make([]string, 0),
+		Recommendations:    make([]AssignRecommend, 0),
+		BlockedBeads:       make([]BlockedBead, 0),
+		IdleAgents:         []string{},
 	}
 	if ctx == nil {
 		return nil, fmt.Errorf("robot assignment context is required")
@@ -342,14 +356,34 @@ func GetAssign(ctx context.Context, opts AssignOptions) (*AssignOutput, error) {
 	assignable, unassignable := classifyAssignableRecommendationsForProject(projectDir, actionable, 50)
 	readyBeads := filterAssignableBeadPreviewsForProject(projectDir, assignable, 0)
 
+	candidatePanes, relaxed, relaxedConstraints, origScore, relaxedScore, err := resolveAssignCandidatePool(
+		opts.Session,
+		agents,
+		idleAgentPanes,
+		len(readyBeads),
+		opts.Relax,
+	)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("failed to evaluate relaxed assignment routing: %w", err),
+			ErrCodeInternalError,
+			"Repair or migrate the durable assignment ledger before distributing more work",
+		)
+		return output, nil
+	}
+	output.Relaxed = relaxed
+	output.RelaxedConstraints = relaxedConstraints
+	output.OriginalScore = origScore
+	output.RelaxedScore = relaxedScore
+
 	// Build working agents set from in-progress beads
 	workingAgents := len(agents) - len(idleAgentPanes)
 
 	// Generate recommendations through the strategy planner, preserving the
 	// dependency graph (unblocks) signal for the graph-aware strategies.
-	recommendations := planAssignments(agents, readyBeads, unblocksIndex(assignable), strategy, idleAgentPanes)
+	recommendations := planAssignments(agents, readyBeads, unblocksIndex(assignable), strategy, candidatePanes)
 	output.Recommendations = recommendations
-	unassignable = append(unassignable, unassignedBeadsBeyondRecommendations(readyBeads, recommendations, len(idleAgentPanes))...)
+	unassignable = append(unassignable, unassignedBeadsBeyondRecommendations(readyBeads, recommendations, len(candidatePanes))...)
 	output.UnassignableBeads = unassignable
 
 	// Add blocked beads (beads with unmet dependencies)
@@ -465,11 +499,14 @@ func PrintAssign(ctx context.Context, opts AssignOptions) error {
 
 // assignAgentInfo holds agent data for assignment processing
 type assignAgentInfo struct {
-	paneID     string
-	paneTarget string
-	agentType  string
-	model      string
-	state      string
+	paneID        string
+	paneIndex     int
+	paneTarget    string
+	agentType     string
+	model         string
+	state         string
+	rawOutput     string
+	relaxEligible bool
 }
 
 func observeAssignAgents(ctx context.Context, session string) ([]assignAgentInfo, []string, error) {
@@ -481,6 +518,33 @@ func observeAssignAgents(ctx context.Context, session string) ([]assignAgentInfo
 		return nil, nil, fmt.Errorf("observe assignment session %s: %w", session, err)
 	}
 	return assignAgentsFromObservation(observation, time.Now())
+}
+
+func isRelaxEligibleAssignObservation(pane statuspkg.PaneObservation, agentType string, now time.Time) bool {
+	if !statuspkg.DispatchObservationIsCurrent(pane.Current.ObservedAt, now) {
+		return false
+	}
+	if pane.Current.Freshness != statuspkg.FreshnessFresh || pane.Current.Error != "" {
+		return false
+	}
+	if pane.Current.Confidence < statuspkg.MinimumDispatchConfidence {
+		return false
+	}
+	stateStr := strings.ToLower(strings.TrimSpace(string(pane.Current.Status.State)))
+	if stateStr == strings.ToLower(string(StateThinking)) {
+		return true
+	}
+	if pane.Current.Status.State != statuspkg.StateWorking {
+		return false
+	}
+	if strings.TrimSpace(pane.RawOutput) == "" {
+		return false
+	}
+	activity, err := ClassifyPaneOutputActivity(pane.Pane.ID, agentType, pane.RawOutput)
+	if err != nil || activity == nil {
+		return false
+	}
+	return activity.State == StateThinking && !activity.RateLimited && !activity.UnsubmittedInput && !activity.QueuedMessages
 }
 
 func assignAgentsFromObservation(observation statuspkg.SessionObservation, now time.Time) ([]assignAgentInfo, []string, error) {
@@ -498,18 +562,132 @@ func assignAgentsFromObservation(observation statuspkg.SessionObservation, now t
 		if paneID == "" {
 			return nil, nil, fmt.Errorf("assignment observation for session %s has an agent without a stable pane ID", observation.Session)
 		}
+		isIdle := statuspkg.DispatchObservationIsCurrent(pane.Current.ObservedAt, now) && pane.SafeToDispatch()
+		relaxEligible := !isIdle && isRelaxEligibleAssignObservation(pane, agentType, now)
 		agents = append(agents, assignAgentInfo{
-			paneID:     paneID,
-			paneTarget: pane.Pane.Physical(),
-			agentType:  agentType,
-			model:      detectModel(agentType, pane.PaneName),
-			state:      string(pane.Current.Status.State),
+			paneID:        paneID,
+			paneIndex:     pane.Pane.PaneIndex,
+			paneTarget:    pane.Pane.Physical(),
+			agentType:     agentType,
+			model:         detectModel(agentType, pane.PaneName),
+			state:         string(pane.Current.Status.State),
+			rawOutput:     pane.RawOutput,
+			relaxEligible: relaxEligible,
 		})
-		if statuspkg.DispatchObservationIsCurrent(pane.Current.ObservedAt, now) && pane.SafeToDispatch() {
+		if isIdle {
 			idleAgentPanes = append(idleAgentPanes, paneID)
 		}
 	}
 	return agents, idleAgentPanes, nil
+}
+
+func resolveAssignCandidatePool(
+	session string,
+	agents []assignAgentInfo,
+	idleAgentPanes []string,
+	needed int,
+	relax bool,
+) ([]string, bool, []string, float64, float64, error) {
+	occupied := make(map[string]struct{})
+	if relax {
+		store, err := assignmentstore.LoadStoreStrict(session)
+		if err != nil {
+			return nil, false, make([]string, 0), 0, 0, err
+		}
+		for _, current := range store.ListActive() {
+			if current == nil {
+				continue
+			}
+			paneID, err := assignmentstore.CanonicalPaneIdentity(current)
+			if err != nil {
+				return nil, false, make([]string, 0), 0, 0, fmt.Errorf("active assignment %s: %w", current.BeadID, err)
+			}
+			occupied[paneID] = struct{}{}
+		}
+	}
+	candidates, relaxed, constraints, origScore, relaxedScore := resolveAssignCandidatePoolWithOccupied(
+		agents,
+		idleAgentPanes,
+		occupied,
+		needed,
+		relax,
+	)
+	if relax {
+		selectedPaneID := ""
+		if len(candidates) > 0 {
+			selectedPaneID = candidates[0]
+		}
+		persistRelaxedRoutingDecision(
+			session,
+			"robot.assign",
+			StrategyLeastLoaded,
+			relaxed,
+			constraints,
+			origScore,
+			relaxedScore,
+			selectedPaneID,
+		)
+	}
+	return candidates, relaxed, constraints, origScore, relaxedScore, nil
+}
+
+func resolveAssignCandidatePoolWithOccupied(
+	agents []assignAgentInfo,
+	idleAgentPanes []string,
+	occupied map[string]struct{},
+	needed int,
+	relax bool,
+) ([]string, bool, []string, float64, float64) {
+	idleSet := make(map[string]bool, len(idleAgentPanes))
+	for _, paneID := range idleAgentPanes {
+		idleSet[paneID] = true
+	}
+
+	scored := make([]ScoredAgent, 0, len(agents))
+	for _, agent := range agents {
+		if idleSet[agent.paneID] {
+			scored = append(scored, BuildRelaxableScoredAgent(agent.paneID, agent.paneIndex, agent.agentType, StateWaiting, false, ""))
+			continue
+		}
+		if _, isOccupied := occupied[agent.paneID]; isOccupied {
+			scored = append(scored, BuildRelaxableScoredAgent(agent.paneID, agent.paneIndex, agent.agentType, StateGenerating, true, "active_assignment"))
+			continue
+		}
+		if agent.relaxEligible {
+			scored = append(scored, BuildRelaxableScoredAgent(agent.paneID, agent.paneIndex, agent.agentType, StateThinking, true, "not_idle"))
+			continue
+		}
+		scored = append(scored, BuildRelaxableScoredAgent(agent.paneID, agent.paneIndex, agent.agentType, StateGenerating, true, "not_idle"))
+	}
+
+	router := NewRouter()
+	strictRes := router.Route(scored, StrategyLeastLoaded, RoutingContext{})
+	origScore := strictRes.OriginalScore
+	relaxedScore := origScore
+	constraints := make([]string, 0)
+	candidates := append([]string(nil), idleAgentPanes...)
+
+	if !relax || needed <= len(candidates) {
+		return candidates, false, constraints, origScore, relaxedScore
+	}
+
+	relaxed := false
+	for len(candidates) < needed {
+		relRes := router.RouteWithRelaxation(scored, StrategyLeastLoaded, RoutingContext{
+			ExcludePaneIDs: candidates,
+		})
+		if relRes.Selected == nil {
+			break
+		}
+		candidates = append(candidates, relRes.Selected.PaneID)
+		if relRes.Relaxed && !relaxed {
+			relaxed = true
+			constraints = append([]string(nil), relRes.RelaxedConstraints...)
+			relaxedScore = relRes.RelaxedScore
+		}
+	}
+
+	return candidates, relaxed, constraints, origScore, relaxedScore
 }
 
 func assignOptionsProjectDir(opts AssignOptions) (string, error) {
