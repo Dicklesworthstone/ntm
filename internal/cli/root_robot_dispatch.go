@@ -1213,6 +1213,29 @@ func dispatchRobotInspectionAndOps(cmd *cobra.Command, args []string) bool {
 		}
 		return true
 	}
+	if robotBackpressure {
+		session, err := resolveOptionalRobotSessionFilter(cmd.Context(), robotSharedSession)
+		if err != nil {
+			failRobotCommand(err, robot.ErrCodeInvalidFlag, "Provide a valid tmux session name with --session or omit --session", "robot-backpressure")
+			return true
+		}
+		if err := robot.PrintBackpressure(robot.BackpressureOptions{
+			Session: session,
+		}); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
+	if robotSwarmLab {
+		if err := robot.PrintSwarmLab(cmd.Context(), robot.SwarmLabOptions{
+			Action:   robotLabAction,
+			Scenario: robotLabScenario,
+			Gate:     robotLabGate,
+		}); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
 	return false
 }
 

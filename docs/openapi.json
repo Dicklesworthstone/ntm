@@ -4030,6 +4030,513 @@
         }
       }
     },
+    "/api/v1/ensemble/modes": {
+      "get": {
+        "tags": [
+          "ensemble"
+        ],
+        "summary": "Ensemble modes",
+        "description": "Served route `GET /api/v1/ensemble/modes`. Handler: `handleEnsembleModesV1`. Response shape reflected from Go type `EnsembleModesEnvelopeResponse`.",
+        "operationId": "get_api_v1_ensemble_modes",
+        "parameters": [
+          {
+            "name": "category",
+            "in": "query",
+            "description": "Filter reasoning modes by category code or name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tier",
+            "in": "query",
+            "description": "Filter reasoning modes by tier (core, advanced, experimental, all).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Case-insensitive search term across mode ID, name, description, and best_for.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum modes to return per page.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Zero-based pagination offset.",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnsembleModesEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ensemble/presets": {
+      "get": {
+        "tags": [
+          "ensemble"
+        ],
+        "summary": "Ensemble presets",
+        "description": "Served route `GET /api/v1/ensemble/presets`. Handler: `handleEnsemblePresetsV1`. Response shape reflected from Go type `EnsemblePresetsEnvelopeResponse`.",
+        "operationId": "get_api_v1_ensemble_presets",
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnsemblePresetsEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ensemble/sessions/{session}": {
+      "get": {
+        "tags": [
+          "ensemble"
+        ],
+        "summary": "Ensemble session",
+        "description": "Served route `GET /api/v1/ensemble/sessions/{session}`. Handler: `handleEnsembleSessionV1`. Response shape reflected from Go type `EnsembleSessionEnvelopeResponse`.",
+        "operationId": "get_api_v1_ensemble_sessions_session",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "path",
+            "description": "The session identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnsembleSessionEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ensemble/sessions/{session}/stop": {
+      "post": {
+        "tags": [
+          "ensemble"
+        ],
+        "summary": "Ensemble stop",
+        "description": "Served route `POST /api/v1/ensemble/sessions/{session}/stop`. Handler: `handleEnsembleStopV1`. Response shape reflected from Go type `EnsembleStopEnvelopeResponse`.",
+        "operationId": "post_api_v1_ensemble_sessions_session_stop",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "path",
+            "description": "The session identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnsembleStopRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnsembleStopEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ensemble/sessions/{session}/synthesize": {
+      "post": {
+        "tags": [
+          "ensemble"
+        ],
+        "summary": "Ensemble synthesize",
+        "description": "Served route `POST /api/v1/ensemble/sessions/{session}/synthesize`. Handler: `handleEnsembleSynthesizeV1`. Response shape reflected from Go type `EnsembleSynthesizeEnvelopeResponse`.",
+        "operationId": "post_api_v1_ensemble_sessions_session_synthesize",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "path",
+            "description": "The session identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnsembleSynthesizeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnsembleSynthesizeEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ensemble/spawn": {
+      "post": {
+        "tags": [
+          "ensemble"
+        ],
+        "summary": "Ensemble spawn",
+        "description": "Served route `POST /api/v1/ensemble/spawn`. Handler: `handleEnsembleSpawnV1`. Response shape reflected from Go type `EnsembleSpawnEnvelopeResponse`.",
+        "operationId": "post_api_v1_ensemble_spawn",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnsembleSpawnRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnsembleSpawnEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ensemble/suggest": {
+      "post": {
+        "tags": [
+          "ensemble"
+        ],
+        "summary": "Ensemble suggest",
+        "description": "Served route `POST /api/v1/ensemble/suggest`. Handler: `handleEnsembleSuggestV1`. Response shape reflected from Go type `EnsembleSuggestEnvelopeResponse`.",
+        "operationId": "post_api_v1_ensemble_suggest",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnsembleSuggestRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnsembleSuggestEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/health": {
       "get": {
         "tags": [
@@ -4045,6 +4552,68 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SuccessEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/health/backpressure": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Health backpressure",
+        "description": "Served route `GET /api/v1/health/backpressure`. Handler: `handleHealthBackpressureV1`. Response shape reflected from Go type `HealthBackpressureEnvelopeResponse`.",
+        "operationId": "get_api_v1_health_backpressure",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "Optional tmux session filter for live subsystem backpressure inspection.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthBackpressureEnvelopeResponse"
                 }
               }
             }
@@ -12930,6 +13499,137 @@
         }
       }
     },
+    "/api/v1/swarm/lab/run": {
+      "post": {
+        "tags": [
+          "swarm"
+        ],
+        "summary": "Swarm lab run",
+        "description": "Served route `POST /api/v1/swarm/lab/run`. Handler: `handleSwarmLabRunV1`. Response shape reflected from Go type `SwarmLabEnvelopeResponse`.",
+        "operationId": "post_api_v1_swarm_lab_run",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SwarmLabRunRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SwarmLabEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/swarm/lab/scenarios": {
+      "get": {
+        "tags": [
+          "swarm"
+        ],
+        "summary": "Swarm lab scenarios",
+        "description": "Served route `GET /api/v1/swarm/lab/scenarios`. Handler: `handleSwarmLabScenariosV1`. Response shape reflected from Go type `SwarmLabEnvelopeResponse`.",
+        "operationId": "get_api_v1_swarm_lab_scenarios",
+        "parameters": [
+          {
+            "name": "scenario",
+            "in": "query",
+            "description": "Optional synthetic experiment scenario ID filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gate",
+            "in": "query",
+            "description": "Optional scale gate filter (short, benchmark, load).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SwarmLabEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/version": {
       "get": {
         "tags": [
@@ -12961,6 +13661,315 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/worktrees": {
+      "get": {
+        "tags": [
+          "worktrees"
+        ],
+        "summary": "List worktrees",
+        "description": "Served route `GET /api/v1/worktrees`. Handler: `handleListWorktreesV1`. Response shape reflected from Go type `WorktreesListEnvelopeResponse`.",
+        "operationId": "get_api_v1_worktrees",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "Optional session filter; omitted lists worktrees across all sessions.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project_dir",
+            "in": "query",
+            "description": "Optional existing absolute project directory override (alias: ?project=).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorktreesListEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "worktrees"
+        ],
+        "summary": "Create worktree",
+        "description": "Served route `POST /api/v1/worktrees`. Handler: `handleCreateWorktreeV1`. Response shape reflected from Go type `WorktreeCreateEnvelopeResponse`.",
+        "operationId": "post_api_v1_worktrees",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWorktreeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorktreeCreateEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/worktrees/{agent}": {
+      "delete": {
+        "tags": [
+          "worktrees"
+        ],
+        "summary": "Delete worktree",
+        "description": "Served route `DELETE /api/v1/worktrees/{agent}`. Handler: `handleDeleteWorktreeV1`. Response shape reflected from Go type `WorktreeDeleteEnvelopeResponse`.",
+        "operationId": "delete_api_v1_worktrees_agent",
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "path",
+            "description": "The agent identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "Optional session owning the agent worktree; auto-resolved when unique.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "description": "Force removal even when uncommitted or unmerged changes exist.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "project_dir",
+            "in": "query",
+            "description": "Optional existing absolute project directory override (alias: ?project=).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorktreeDeleteEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/worktrees/{agent}/merge": {
+      "post": {
+        "tags": [
+          "worktrees"
+        ],
+        "summary": "Merge worktree",
+        "description": "Served route `POST /api/v1/worktrees/{agent}/merge`. Handler: `handleMergeWorktreeV1`. Response shape reflected from Go type `WorktreeMergeEnvelopeResponse`.",
+        "operationId": "post_api_v1_worktrees_agent_merge",
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "path",
+            "description": "The agent identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeWorktreeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorktreeMergeEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -15899,6 +16908,41 @@
           "entity_id"
         ]
       },
+      "AuditReport": {
+        "type": "object",
+        "properties": {
+          "conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DetailedConflict"
+            }
+          },
+          "evidence_needed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EvidenceRequest"
+            }
+          },
+          "mode_disagreements": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "resolution_suggestions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "conflicts"
+        ]
+      },
       "AutoRotateConfigEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -16047,6 +17091,78 @@
           "modified",
           "success",
           "timestamp"
+        ]
+      },
+      "BackpressureSnapshot": {
+        "type": "object",
+        "properties": {
+          "coalescing_recommendations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CoalescingRecommendation"
+            }
+          },
+          "decision": {
+            "type": "string"
+          },
+          "error_code": {
+            "type": "string"
+          },
+          "generated_at": {
+            "type": "string"
+          },
+          "heatmap": {
+            "$ref": "#/components/schemas/OperatorHeatmap"
+          },
+          "hint": {
+            "type": "string"
+          },
+          "load_shedding": {
+            "$ref": "#/components/schemas/LoadSheddingContract"
+          },
+          "log_rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LogRow"
+            }
+          },
+          "reason_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "retry_after_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "surfaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SurfaceSnapshot"
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MissingSourceWarning"
+            }
+          }
+        },
+        "required": [
+          "coalescing_recommendations",
+          "decision",
+          "generated_at",
+          "heatmap",
+          "load_shedding",
+          "log_rows",
+          "reason_codes",
+          "success",
+          "surfaces",
+          "warnings"
         ]
       },
       "BeadAction": {
@@ -16786,6 +17902,17 @@
           }
         }
       },
+      "BudgetInfo": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total"
+        ]
+      },
       "BugNotifyEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -17503,6 +18630,77 @@
           "tokens_added"
         ]
       },
+      "CalibrationLogRow": {
+        "type": "object",
+        "properties": {
+          "confidence": {
+            "type": "number"
+          },
+          "host_profile_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "recommendation": {
+            "$ref": "#/components/schemas/Thresholds"
+          },
+          "source": {
+            "type": "string"
+          },
+          "test_run_id": {
+            "type": "string"
+          },
+          "threshold": {
+            "$ref": "#/components/schemas/Thresholds"
+          }
+        },
+        "required": [
+          "confidence",
+          "host_profile_id",
+          "reason",
+          "recommendation",
+          "source",
+          "threshold"
+        ]
+      },
+      "CalibrationNote": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ]
+      },
+      "CalibrationSourceRow": {
+        "type": "object",
+        "properties": {
+          "confidence": {
+            "type": "number"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "samples": {
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "confidence",
+          "samples",
+          "source"
+        ]
+      },
       "CancelRequestOutput": {
         "type": "object",
         "description": "Cancel a pre-dispatch durable operation claim or an active --robot-wait handle by request ID. Safely refuses with REQUEST_ALREADY_DISPATCHED once pane actuation has begun, or REQUEST_NOT_CANCELLABLE when already terminal.",
@@ -17757,6 +18955,40 @@
           "name"
         ]
       },
+      "CategoryInfo": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "mode_count": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "mode_count",
+          "name"
+        ]
+      },
+      "CategoryRef": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "name"
+        ]
+      },
       "CheckpointEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -17935,6 +19167,40 @@
           "assignee"
         ]
       },
+      "CoalescingRecommendation": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "max_lines": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "suggested_interval_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "surface": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "hint",
+          "id",
+          "reason",
+          "surface"
+        ]
+      },
       "Command": {
         "type": "object",
         "properties": {
@@ -18101,6 +19367,60 @@
           "step_id"
         ]
       },
+      "ConclusionExplanation": {
+        "type": "object",
+        "properties": {
+          "conclusion_id": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "number"
+          },
+          "confidence_basis": {
+            "type": "string"
+          },
+          "counter_evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reasoning": {
+            "type": "string"
+          },
+          "source_findings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "source_modes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "supporting_evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "text": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "conclusion_id",
+          "confidence",
+          "source_modes",
+          "text",
+          "type"
+        ]
+      },
       "Conflict": {
         "type": "object",
         "properties": {
@@ -18134,6 +19454,63 @@
         },
         "required": [
           "path"
+        ]
+      },
+      "ConflictPosition": {
+        "type": "object",
+        "properties": {
+          "confidence": {
+            "type": "number"
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "mode_id": {
+            "type": "string"
+          },
+          "mode_name": {
+            "type": "string"
+          },
+          "position": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode_id",
+          "position"
+        ]
+      },
+      "ConflictResolution": {
+        "type": "object",
+        "properties": {
+          "confidence_impact": {
+            "type": "number"
+          },
+          "conflict_id": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "positions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PositionSummary"
+            }
+          },
+          "resolution": {
+            "type": "string"
+          },
+          "topic": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "conflict_id",
+          "method",
+          "positions",
+          "resolution",
+          "topic"
         ]
       },
       "ConsumerGuidance": {
@@ -18251,6 +19628,93 @@
           "accept",
           "from_agent",
           "to_agent"
+        ]
+      },
+      "ContributionReport": {
+        "type": "object",
+        "properties": {
+          "deduped_findings": {
+            "type": "integer"
+          },
+          "diversity_score": {
+            "type": "number"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "overlap_rate": {
+            "type": "number"
+          },
+          "scores": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContributionScore"
+            }
+          },
+          "total_findings": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deduped_findings",
+          "diversity_score",
+          "generated_at",
+          "overlap_rate",
+          "scores",
+          "total_findings"
+        ]
+      },
+      "ContributionScore": {
+        "type": "object",
+        "properties": {
+          "citation_count": {
+            "type": "integer"
+          },
+          "findings_count": {
+            "type": "integer"
+          },
+          "highlight_findings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "mode_id": {
+            "type": "string"
+          },
+          "mode_name": {
+            "type": "string"
+          },
+          "original_findings": {
+            "type": "integer"
+          },
+          "rank": {
+            "type": "integer"
+          },
+          "recommendations_count": {
+            "type": "integer"
+          },
+          "risks_count": {
+            "type": "integer"
+          },
+          "score": {
+            "type": "number"
+          },
+          "unique_insights": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "citation_count",
+          "findings_count",
+          "mode_id",
+          "original_findings",
+          "rank",
+          "recommendations_count",
+          "risks_count",
+          "score",
+          "unique_insights"
         ]
       },
       "CreateAgentRequest": {
@@ -18432,6 +19896,24 @@
           "session"
         ]
       },
+      "CreateWorktreeRequest": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "session"
+        ]
+      },
       "DashboardOutput": {
         "type": "object",
         "description": "Dashboard summary as markdown or JSON.",
@@ -18551,6 +20033,43 @@
           "agents",
           "system",
           "summary"
+        ]
+      },
+      "DashboardSummary": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string"
+          },
+          "heatmap_buckets": {
+            "type": "integer"
+          },
+          "reason_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "recommended_actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "surface_count": {
+            "type": "integer"
+          },
+          "warning_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "decision",
+          "heatmap_buckets",
+          "reason_codes",
+          "recommended_actions",
+          "surface_count",
+          "warning_count"
         ]
       },
       "DegradedFeature": {
@@ -18709,6 +20228,34 @@
           "generated_at",
           "success",
           "timestamp"
+        ]
+      },
+      "DetailedConflict": {
+        "type": "object",
+        "properties": {
+          "evidence_needed": {
+            "type": "string"
+          },
+          "positions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConflictPosition"
+            }
+          },
+          "resolution_path": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "topic": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "positions",
+          "severity",
+          "topic"
         ]
       },
       "DigestOutput": {
@@ -18951,6 +20498,813 @@
       "Duration": {
         "type": "object"
       },
+      "EnsembleBudget": {
+        "type": "object",
+        "properties": {
+          "remaining_tokens": {
+            "type": "integer"
+          },
+          "spent_tokens": {
+            "type": "integer"
+          },
+          "total_tokens": {
+            "type": "integer"
+          }
+        }
+      },
+      "EnsembleFinding": {
+        "type": "object",
+        "properties": {
+          "confidence": {
+            "type": "number"
+          },
+          "evidence_pointer": {
+            "type": "string"
+          },
+          "finding": {
+            "type": "string"
+          },
+          "impact": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "confidence",
+          "finding",
+          "impact"
+        ]
+      },
+      "EnsembleMetrics": {
+        "type": "object",
+        "properties": {
+          "conflict_density": {
+            "type": "number"
+          },
+          "coverage_map": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "findings_velocity": {
+            "type": "number"
+          },
+          "redundancy_score": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "coverage_map"
+        ]
+      },
+      "EnsembleMode": {
+        "type": "object",
+        "properties": {
+          "agent_type": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "icon": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "tier": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "EnsembleModesEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "_meta": {
+            "$ref": "#/components/schemas/RobotResponseMeta"
+          },
+          "action": {
+            "type": "string"
+          },
+          "advanced_modes": {
+            "type": "integer"
+          },
+          "catalog_version": {
+            "type": "string"
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CategoryInfo"
+            }
+          },
+          "core_modes": {
+            "type": "integer"
+          },
+          "default_tier": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "error_code": {
+            "type": "string"
+          },
+          "experimental_modes": {
+            "type": "integer"
+          },
+          "hint": {
+            "type": "string"
+          },
+          "modes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModeInfo"
+            }
+          },
+          "output_format": {
+            "type": "string"
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/RobotPaginationInfo"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "structured_error": {
+            "$ref": "#/components/schemas/RobotStructuredError"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "total_modes": {
+            "type": "integer"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "advanced_modes",
+          "categories",
+          "core_modes",
+          "default_tier",
+          "experimental_modes",
+          "modes",
+          "success",
+          "timestamp",
+          "total_modes"
+        ]
+      },
+      "EnsemblePresetsEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "_meta": {
+            "$ref": "#/components/schemas/RobotResponseMeta"
+          },
+          "action": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          },
+          "error_code": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string"
+          },
+          "output_format": {
+            "type": "string"
+          },
+          "presets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PresetInfo"
+            }
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "structured_error": {
+            "$ref": "#/components/schemas/RobotStructuredError"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "count",
+          "presets",
+          "success",
+          "timestamp"
+        ]
+      },
+      "EnsembleSessionEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "_meta": {
+            "$ref": "#/components/schemas/RobotResponseMeta"
+          },
+          "ensemble": {
+            "$ref": "#/components/schemas/EnsembleState"
+          },
+          "error": {
+            "type": "string"
+          },
+          "error_code": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string"
+          },
+          "output_format": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "structured_error": {
+            "$ref": "#/components/schemas/RobotStructuredError"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/EnsembleSummary"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ensemble",
+          "success",
+          "summary",
+          "timestamp"
+        ]
+      },
+      "EnsembleSpawnBudget": {
+        "type": "object",
+        "properties": {
+          "per_mode_tokens": {
+            "type": "integer"
+          },
+          "total_tokens": {
+            "type": "integer"
+          }
+        }
+      },
+      "EnsembleSpawnEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_meta": {
+            "$ref": "#/components/schemas/RobotResponseMeta"
+          },
+          "action": {
+            "type": "string"
+          },
+          "agents": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "assignment": {
+            "type": "string"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/EnsembleSpawnBudget"
+          },
+          "error": {
+            "type": "string"
+          },
+          "error_code": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string"
+          },
+          "modes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnsembleSpawnMode"
+            }
+          },
+          "output_format": {
+            "type": "string"
+          },
+          "preset": {
+            "type": "string"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "structured_error": {
+            "$ref": "#/components/schemas/RobotStructuredError"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "action",
+          "budget",
+          "modes",
+          "session",
+          "success",
+          "timestamp"
+        ]
+      },
+      "EnsembleSpawnMode": {
+        "type": "object",
+        "properties": {
+          "agent_type": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          },
+          "tier": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "EnsembleSpawnRequest": {
+        "type": "object",
+        "properties": {
+          "agents": {
+            "type": "string"
+          },
+          "allow_advanced": {
+            "type": "boolean"
+          },
+          "assignment": {
+            "type": "string"
+          },
+          "budget_per_agent": {
+            "type": "integer"
+          },
+          "budget_total": {
+            "type": "integer"
+          },
+          "modes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "no_cache": {
+            "type": "boolean"
+          },
+          "preset": {
+            "type": "string"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "synthesis_strategy": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "question",
+          "session"
+        ]
+      },
+      "EnsembleState": {
+        "type": "object",
+        "properties": {
+          "budget": {
+            "$ref": "#/components/schemas/EnsembleBudget"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/EnsembleMetrics"
+          },
+          "modes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnsembleMode"
+            }
+          },
+          "preset": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "synthesis": {
+            "$ref": "#/components/schemas/EnsembleSynthesis"
+          }
+        },
+        "required": [
+          "budget",
+          "metrics",
+          "modes",
+          "session",
+          "synthesis"
+        ]
+      },
+      "EnsembleStopEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "_meta": {
+            "$ref": "#/components/schemas/RobotResponseMeta"
+          },
+          "error": {
+            "type": "string"
+          },
+          "error_code": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string"
+          },
+          "output_format": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "result": {
+            "$ref": "#/components/schemas/EnsembleStopResult"
+          },
+          "structured_error": {
+            "$ref": "#/components/schemas/RobotStructuredError"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result",
+          "success",
+          "timestamp"
+        ]
+      },
+      "EnsembleStopRequest": {
+        "type": "object",
+        "properties": {
+          "force": {
+            "type": "boolean"
+          },
+          "no_collect": {
+            "type": "boolean"
+          }
+        }
+      },
+      "EnsembleStopResult": {
+        "type": "object",
+        "properties": {
+          "captured": {
+            "type": "integer"
+          },
+          "final_status": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "prev_status": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "stopped": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "final_status",
+          "prev_status",
+          "session",
+          "stopped"
+        ]
+      },
+      "EnsembleSuggestAgentHints": {
+        "type": "object",
+        "properties": {
+          "spawn_command": {
+            "type": "string"
+          },
+          "suggested_actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RobotActionModel"
+            }
+          },
+          "summary": {
+            "type": "string"
+          }
+        }
+      },
+      "EnsembleSuggestEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/EnsembleSuggestAgentHints"
+          },
+          "preset_name": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "spawn_cmd": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "suggestions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnsembleSuggestion"
+            }
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "top_pick": {
+            "$ref": "#/components/schemas/EnsembleSuggestion"
+          }
+        },
+        "required": [
+          "question",
+          "success",
+          "timestamp"
+        ]
+      },
+      "EnsembleSuggestRequest": {
+        "type": "object",
+        "properties": {
+          "id_only": {
+            "type": "boolean"
+          },
+          "question": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ]
+      },
+      "EnsembleSuggestion": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "mode_count": {
+            "type": "integer"
+          },
+          "preset_name": {
+            "type": "string"
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "score": {
+            "type": "number"
+          },
+          "spawn_cmd": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "description",
+          "display_name",
+          "mode_count",
+          "preset_name",
+          "reasons",
+          "score",
+          "tags"
+        ]
+      },
+      "EnsembleSummary": {
+        "type": "object",
+        "properties": {
+          "advanced_modes": {
+            "type": "integer"
+          },
+          "completed": {
+            "type": "integer"
+          },
+          "core_modes": {
+            "type": "integer"
+          },
+          "errors": {
+            "type": "integer"
+          },
+          "pending": {
+            "type": "integer"
+          },
+          "total_modes": {
+            "type": "integer"
+          },
+          "working": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "advanced_modes",
+          "completed",
+          "core_modes",
+          "pending",
+          "total_modes",
+          "working"
+        ]
+      },
+      "EnsembleSynthesis": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "strategy": {
+            "type": "string"
+          }
+        }
+      },
+      "EnsembleSynthesizeEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "action": {
+            "type": "string"
+          },
+          "audit": {
+            "$ref": "#/components/schemas/SynthesisAudit"
+          },
+          "audit_report": {
+            "$ref": "#/components/schemas/AuditReport"
+          },
+          "formatted_output": {
+            "type": "string"
+          },
+          "redundancy": {
+            "$ref": "#/components/schemas/RedundancyAnalysis"
+          },
+          "report": {
+            "$ref": "#/components/schemas/SynthesisReport"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "result": {
+            "$ref": "#/components/schemas/SynthesisResult"
+          },
+          "session": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "session",
+          "status",
+          "success",
+          "timestamp"
+        ]
+      },
+      "EnsembleSynthesizeRequest": {
+        "type": "object",
+        "properties": {
+          "force": {
+            "type": "boolean"
+          },
+          "output_format": {
+            "type": "string"
+          },
+          "strategy": {
+            "type": "string"
+          }
+        }
+      },
       "ErrorDetails": {
         "type": "object",
         "properties": {
@@ -19107,6 +21461,26 @@
           "fallback_active"
         ]
       },
+      "EvidenceRequest": {
+        "type": "object",
+        "properties": {
+          "rationale": {
+            "type": "string"
+          },
+          "requested_by": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "topic": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic"
+        ]
+      },
       "Example": {
         "type": "object",
         "properties": {
@@ -19190,6 +21564,39 @@
             "description": "Has evidence summary"
           }
         }
+      },
+      "ExplanationLayer": {
+        "type": "object",
+        "properties": {
+          "conclusions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConclusionExplanation"
+            }
+          },
+          "conflicts_resolved": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConflictResolution"
+            }
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "mode_weights": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            }
+          },
+          "strategy_rationale": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "generated_at"
+        ]
       },
       "ExportCheckpointRequest": {
         "type": "object",
@@ -20180,6 +22587,64 @@
           "session"
         ]
       },
+      "HealthBackpressureEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_meta": {
+            "$ref": "#/components/schemas/RobotResponseMeta"
+          },
+          "backpressure": {
+            "$ref": "#/components/schemas/BackpressureSnapshot"
+          },
+          "dashboard": {
+            "$ref": "#/components/schemas/DashboardSummary"
+          },
+          "error": {
+            "type": "string"
+          },
+          "error_code": {
+            "type": "string"
+          },
+          "heatmap": {
+            "$ref": "#/components/schemas/OperatorHeatmap"
+          },
+          "hint": {
+            "type": "string"
+          },
+          "load_shedding": {
+            "$ref": "#/components/schemas/LoadSheddingContract"
+          },
+          "output_format": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "structured_error": {
+            "$ref": "#/components/schemas/RobotStructuredError"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "backpressure",
+          "dashboard",
+          "heatmap",
+          "load_shedding",
+          "success",
+          "timestamp"
+        ]
+      },
       "HealthOutput": {
         "type": "object",
         "description": "Get session or project health status.",
@@ -20378,6 +22843,84 @@
         },
         "required": [
           "mode"
+        ]
+      },
+      "HostCapacityCalibrationReport": {
+        "type": "object",
+        "properties": {
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "log_rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CalibrationLogRow"
+            }
+          },
+          "profile": {
+            "$ref": "#/components/schemas/HostCapacityProfile"
+          },
+          "profile_id": {
+            "type": "string"
+          },
+          "recommendations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ThresholdRecommendation"
+            }
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CalibrationNote"
+            }
+          }
+        },
+        "required": [
+          "generated_at",
+          "profile",
+          "profile_id",
+          "recommendations",
+          "success"
+        ]
+      },
+      "HostCapacityProfile": {
+        "type": "object",
+        "properties": {
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CalibrationNote"
+            }
+          },
+          "profile_id": {
+            "type": "string"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CalibrationSourceRow"
+            }
+          },
+          "thresholds": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Thresholds"
+            }
+          }
+        },
+        "required": [
+          "generated_at",
+          "profile_id",
+          "thresholds"
         ]
       },
       "Identity": {
@@ -21099,6 +23642,84 @@
             "type": "integer"
           }
         }
+      },
+      "LoadSheddingContract": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string"
+          },
+          "degraded_surface": {
+            "type": "string"
+          },
+          "error_code": {
+            "type": "string"
+          },
+          "reason_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "recommended_action": {
+            "type": "string"
+          },
+          "retry_after_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "schema_version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision",
+          "reason_codes",
+          "recommended_action",
+          "schema_version"
+        ]
+      },
+      "LogRow": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string"
+          },
+          "dropped_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "latency_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pane": {
+            "type": "string"
+          },
+          "queue_depth": {
+            "type": "integer"
+          },
+          "reason_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "session": {
+            "type": "string"
+          },
+          "surface": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision",
+          "dropped_count",
+          "latency_ms",
+          "queue_depth",
+          "reason_codes",
+          "surface"
+        ]
       },
       "LoopConfig": {
         "type": "object",
@@ -22210,6 +24831,106 @@
           "timestamp"
         ]
       },
+      "MergePreview": {
+        "type": "object",
+        "properties": {
+          "agent_name": {
+            "type": "string"
+          },
+          "already_merged": {
+            "type": "boolean"
+          },
+          "blockers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "can_merge": {
+            "type": "boolean"
+          },
+          "conflicts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "has_conflicts": {
+            "type": "boolean"
+          },
+          "merge_tree": {
+            "type": "string"
+          },
+          "overwrite_risks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "source_branch": {
+            "type": "string"
+          },
+          "source_commit": {
+            "type": "string"
+          },
+          "source_commits": {
+            "type": "integer"
+          },
+          "source_path": {
+            "type": "string"
+          },
+          "target_branch": {
+            "type": "string"
+          },
+          "target_commit": {
+            "type": "string"
+          },
+          "target_path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_name",
+          "already_merged",
+          "blockers",
+          "can_merge",
+          "conflicts",
+          "has_conflicts",
+          "merge_tree",
+          "overwrite_risks",
+          "session_id",
+          "source_branch",
+          "source_commit",
+          "source_commits",
+          "source_path",
+          "target_branch",
+          "target_commit",
+          "target_path"
+        ]
+      },
+      "MergeWorktreeRequest": {
+        "type": "object",
+        "properties": {
+          "expected_source": {
+            "type": "string"
+          },
+          "expected_target": {
+            "type": "string"
+          },
+          "preview": {
+            "type": "boolean"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          }
+        }
+      },
       "Message": {
         "type": "object",
         "properties": {
@@ -22387,6 +25108,85 @@
           "success",
           "target_comparison",
           "timestamp"
+        ]
+      },
+      "MissingSourceWarning": {
+        "type": "object",
+        "properties": {
+          "hint": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "surface": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "hint",
+          "surface"
+        ]
+      },
+      "ModeInfo": {
+        "type": "object",
+        "properties": {
+          "best_for": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "category": {
+            "$ref": "#/components/schemas/CategoryRef"
+          },
+          "code": {
+            "type": "string"
+          },
+          "color": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "differentiator": {
+            "type": "string"
+          },
+          "failure_modes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "icon": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "outputs": {
+            "type": "string"
+          },
+          "short_desc": {
+            "type": "string"
+          },
+          "tier": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "code",
+          "id",
+          "name",
+          "short_desc",
+          "tier"
         ]
       },
       "NextAction": {
@@ -22677,6 +25477,119 @@
           "created_at"
         ]
       },
+      "OperatorHeatmap": {
+        "type": "object",
+        "properties": {
+          "buckets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OperatorHeatmapBucket"
+            }
+          },
+          "decision": {
+            "type": "string"
+          },
+          "empty": {
+            "type": "boolean"
+          },
+          "log_rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OperatorHeatmapLogRow"
+            }
+          },
+          "schema_version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "buckets",
+          "decision",
+          "empty",
+          "log_rows",
+          "schema_version"
+        ]
+      },
+      "OperatorHeatmapBucket": {
+        "type": "object",
+        "properties": {
+          "heatmap_bucket": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          },
+          "reason_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "recommended_action": {
+            "type": "string"
+          },
+          "retry_after_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "score": {
+            "type": "integer"
+          },
+          "session": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "surface": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "heatmap_bucket",
+          "reason_codes",
+          "recommended_action",
+          "score",
+          "severity",
+          "surface"
+        ]
+      },
+      "OperatorHeatmapLogRow": {
+        "type": "object",
+        "properties": {
+          "heatmap_bucket": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          },
+          "reason_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "retry_after_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "session": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "surface": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "heatmap_bucket",
+          "reason_codes",
+          "severity",
+          "surface"
+        ]
+      },
       "OperatorLoopGuardrail": {
         "type": "object",
         "properties": {
@@ -22744,6 +25657,199 @@
           "sequence"
         ]
       },
+      "OverloadExpectedArtifact": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "schema_version"
+        ]
+      },
+      "OverloadExpectedRobotError": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string"
+          },
+          "error_code": {
+            "type": "string"
+          },
+          "retry_after_ms": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "required": [
+          "error_code"
+        ]
+      },
+      "OverloadMeasuredMetrics": {
+        "type": "object",
+        "properties": {
+          "command_count": {
+            "type": "integer"
+          },
+          "dropped_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "event_throughput_per_second": {
+            "type": "number"
+          },
+          "goroutines_leaked": {
+            "type": "integer"
+          },
+          "latency_p95_ms": {
+            "type": "number"
+          },
+          "max_queue_depth": {
+            "type": "integer"
+          },
+          "memory_growth_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pane_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command_count",
+          "dropped_count",
+          "event_throughput_per_second",
+          "goroutines_leaked",
+          "latency_p95_ms",
+          "max_queue_depth",
+          "memory_growth_bytes",
+          "pane_count"
+        ]
+      },
+      "OverloadRegressionResult": {
+        "type": "object",
+        "properties": {
+          "artifact_paths": {
+            "$ref": "#/components/schemas/SyntheticExperimentPaths"
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyntheticExperimentCheck"
+            }
+          },
+          "comparison_result": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string"
+          },
+          "expected_artifacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OverloadExpectedArtifact"
+            }
+          },
+          "expected_reason_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "expected_robot_errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OverloadExpectedRobotError"
+            }
+          },
+          "failure_reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "measured_metrics": {
+            "$ref": "#/components/schemas/OverloadMeasuredMetrics"
+          },
+          "reason_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "robot_error_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "scenario_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "source_bug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_paths",
+          "checks",
+          "comparison_result",
+          "decision",
+          "expected_artifacts",
+          "expected_reason_codes",
+          "failure_reasons",
+          "measured_metrics",
+          "reason_codes",
+          "robot_error_codes",
+          "scenario_id",
+          "schema_version",
+          "source_bug"
+        ]
+      },
+      "OverloadRegressionSummary": {
+        "type": "object",
+        "properties": {
+          "generated_at": {
+            "type": "string"
+          },
+          "guide": {
+            "type": "string"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OverloadRegressionResult"
+            }
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "generated_at",
+          "results",
+          "schema_version",
+          "success",
+          "warnings"
+        ]
+      },
       "PaginationInfo": {
         "type": "object",
         "properties": {
@@ -22778,6 +25884,37 @@
           "count",
           "total",
           "has_more"
+        ]
+      },
+      "PairSimilarity": {
+        "type": "object",
+        "properties": {
+          "mode_a": {
+            "type": "string"
+          },
+          "mode_b": {
+            "type": "string"
+          },
+          "shared_findings": {
+            "type": "integer"
+          },
+          "similarity": {
+            "type": "number"
+          },
+          "unique_to_a": {
+            "type": "integer"
+          },
+          "unique_to_b": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mode_a",
+          "mode_b",
+          "shared_findings",
+          "similarity",
+          "unique_to_a",
+          "unique_to_b"
         ]
       },
       "PaneDetailEnvelopeResponse": {
@@ -24194,6 +27331,75 @@
           "valid"
         ]
       },
+      "PositionSummary": {
+        "type": "object",
+        "properties": {
+          "mode_id": {
+            "type": "string"
+          },
+          "position": {
+            "type": "string"
+          },
+          "strength": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "mode_id",
+          "position",
+          "strength"
+        ]
+      },
+      "PresetInfo": {
+        "type": "object",
+        "properties": {
+          "allow_advanced": {
+            "type": "boolean"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/BudgetInfo"
+          },
+          "description": {
+            "type": "string"
+          },
+          "display": {
+            "type": "string"
+          },
+          "mode_count": {
+            "type": "integer"
+          },
+          "modes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "synthesis": {
+            "$ref": "#/components/schemas/SynthesisInfo"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "allow_advanced",
+          "budget",
+          "description",
+          "mode_count",
+          "modes",
+          "name",
+          "synthesis"
+        ]
+      },
       "PriorityRecommendation": {
         "type": "object",
         "properties": {
@@ -24617,6 +27823,29 @@
           "current"
         ]
       },
+      "Question": {
+        "type": "object",
+        "properties": {
+          "blocking": {
+            "type": "boolean"
+          },
+          "context": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "suggested_answers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "question"
+        ]
+      },
       "QuotaSection": {
         "type": "object",
         "properties": {
@@ -24722,6 +27951,33 @@
         },
         "required": [
           "recipes"
+        ]
+      },
+      "Recommendation": {
+        "type": "object",
+        "properties": {
+          "effort": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "recommendation": {
+            "type": "string"
+          },
+          "related_findings": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "priority",
+          "recommendation"
         ]
       },
       "RecommendedAction": {
@@ -24869,6 +28125,30 @@
         "required": [
           "mode",
           "findings"
+        ]
+      },
+      "RedundancyAnalysis": {
+        "type": "object",
+        "properties": {
+          "overall_score": {
+            "type": "number"
+          },
+          "pairwise_scores": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PairSimilarity"
+            }
+          },
+          "recommendations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "overall_score",
+          "pairwise_scores"
         ]
       },
       "ReleaseReservationsEnvelopeResponse": {
@@ -25354,6 +28634,34 @@
           "timestamp"
         ]
       },
+      "Risk": {
+        "type": "object",
+        "properties": {
+          "affected_areas": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "impact": {
+            "type": "string"
+          },
+          "likelihood": {
+            "type": "number"
+          },
+          "mitigation": {
+            "type": "string"
+          },
+          "risk": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "impact",
+          "likelihood",
+          "risk"
+        ]
+      },
       "RobotAction": {
         "type": "object",
         "properties": {
@@ -25381,6 +28689,61 @@
         "required": [
           "action"
         ]
+      },
+      "RobotActionModel": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "details": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "RobotAgentHints": {
+        "type": "object",
+        "properties": {
+          "next_offset": {
+            "type": "integer"
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "pages_remaining": {
+            "type": "integer"
+          },
+          "suggested_actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RobotActionModel"
+            }
+          },
+          "summary": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
       },
       "RobotCommandInfo": {
         "type": "object",
@@ -25482,6 +28845,75 @@
           "schema_source"
         ]
       },
+      "RobotErrorDetails": {
+        "type": "object",
+        "properties": {
+          "actual_output": {
+            "type": "string"
+          },
+          "agent_type": {
+            "type": "string"
+          },
+          "attempted_actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "child_pid": {
+            "type": "integer"
+          },
+          "duration_ms": {
+            "type": "integer"
+          },
+          "exit_method": {
+            "type": "string"
+          },
+          "expected_output": {
+            "type": "string"
+          },
+          "extra": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "last_output": {
+            "type": "string"
+          },
+          "process_state": {
+            "type": "string"
+          }
+        }
+      },
+      "RobotPaginationInfo": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "next_cursor": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count",
+          "has_more",
+          "limit",
+          "offset",
+          "total"
+        ]
+      },
       "RobotParameter": {
         "type": "object",
         "properties": {
@@ -25579,6 +29011,21 @@
           "sources"
         ]
       },
+      "RobotResponseMeta": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "exit_code": {
+            "type": "integer"
+          }
+        }
+      },
       "RobotSource": {
         "type": "object",
         "properties": {
@@ -25603,6 +29050,33 @@
           "source",
           "value",
           "level"
+        ]
+      },
+      "RobotStructuredError": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "details": {
+            "$ref": "#/components/schemas/RobotErrorDetails"
+          },
+          "message": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "integer"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "recovery_hint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
         ]
       },
       "RobotTransportInfo": {
@@ -29433,6 +32907,65 @@
         ],
         "additionalProperties": true
       },
+      "SurfaceSnapshot": {
+        "type": "object",
+        "properties": {
+          "client_lag_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "command": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string"
+          },
+          "dropped_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "hint": {
+            "type": "string"
+          },
+          "latency_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pane": {
+            "type": "string"
+          },
+          "queue_capacity": {
+            "type": "integer"
+          },
+          "queue_depth": {
+            "type": "integer"
+          },
+          "reason_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "retry_after_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "session": {
+            "type": "string"
+          },
+          "surface": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision",
+          "dropped_count",
+          "latency_ms",
+          "queue_depth",
+          "reason_codes",
+          "surface"
+        ]
+      },
       "SwarmHealthSummary": {
         "type": "object",
         "properties": {
@@ -29458,6 +32991,154 @@
           "healthy",
           "limit_hit",
           "respawning"
+        ]
+      },
+      "SwarmLabEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_meta": {
+            "$ref": "#/components/schemas/RobotResponseMeta"
+          },
+          "action": {
+            "type": "string"
+          },
+          "calibration": {
+            "$ref": "#/components/schemas/HostCapacityCalibrationReport"
+          },
+          "corpus_summary": {
+            "$ref": "#/components/schemas/OverloadRegressionSummary"
+          },
+          "error": {
+            "type": "string"
+          },
+          "error_code": {
+            "type": "string"
+          },
+          "experiment_summary": {
+            "$ref": "#/components/schemas/SyntheticExperimentSummary"
+          },
+          "experiments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyntheticExperimentArtifact"
+            }
+          },
+          "guide": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string"
+          },
+          "output_format": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "run_result": {
+            "$ref": "#/components/schemas/SyntheticRunResult"
+          },
+          "scenario_rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SwarmLabScenarioRow"
+            }
+          },
+          "scenarios": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyntheticExperimentScenario"
+            }
+          },
+          "structured_error": {
+            "$ref": "#/components/schemas/RobotStructuredError"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "written_run_path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "experiments",
+          "scenario_rows",
+          "scenarios",
+          "success",
+          "timestamp"
+        ]
+      },
+      "SwarmLabRunRequest": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "calibrate": {
+            "type": "boolean"
+          },
+          "command_count": {
+            "type": "integer"
+          },
+          "gate": {
+            "type": "string"
+          },
+          "include_live": {
+            "type": "boolean"
+          },
+          "include_opt_in": {
+            "type": "boolean"
+          },
+          "min_confidence": {
+            "type": "number"
+          },
+          "pane_count": {
+            "type": "integer"
+          },
+          "profile_id": {
+            "type": "string"
+          },
+          "scenario": {
+            "type": "string"
+          }
+        }
+      },
+      "SwarmLabScenarioRow": {
+        "type": "object",
+        "properties": {
+          "command_count": {
+            "type": "integer"
+          },
+          "event_count": {
+            "type": "integer"
+          },
+          "gate": {
+            "type": "string"
+          },
+          "pane_count": {
+            "type": "integer"
+          },
+          "result": {
+            "type": "string"
+          },
+          "scenario_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "command_count",
+          "event_count",
+          "gate",
+          "pane_count",
+          "result",
+          "scenario_id"
         ]
       },
       "SwarmPlanAllocation": {
@@ -29655,6 +33336,831 @@
         "required": [
           "provider",
           "success"
+        ]
+      },
+      "SynthesisAudit": {
+        "type": "object",
+        "properties": {
+          "conflict_count": {
+            "type": "integer"
+          },
+          "high_conflict_pairs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "unresolved_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "conflict_count",
+          "high_conflict_pairs",
+          "unresolved_count"
+        ]
+      },
+      "SynthesisInfo": {
+        "type": "object",
+        "properties": {
+          "strategy": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "strategy"
+        ]
+      },
+      "SynthesisReport": {
+        "type": "object",
+        "properties": {
+          "confidence": {
+            "type": "number"
+          },
+          "fallback_reason": {
+            "type": "string"
+          },
+          "findings_count": {
+            "type": "integer"
+          },
+          "format": {
+            "type": "string"
+          },
+          "generated_at": {
+            "type": "string"
+          },
+          "output_path": {
+            "type": "string"
+          },
+          "questions_count": {
+            "type": "integer"
+          },
+          "recommendations_count": {
+            "type": "integer"
+          },
+          "redundancy": {
+            "$ref": "#/components/schemas/RedundancyAnalysis"
+          },
+          "risks_count": {
+            "type": "integer"
+          },
+          "strategy": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "synthesized_by": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "confidence",
+          "findings_count",
+          "format",
+          "generated_at",
+          "questions_count",
+          "recommendations_count",
+          "risks_count",
+          "strategy",
+          "summary"
+        ]
+      },
+      "SynthesisResult": {
+        "type": "object",
+        "properties": {
+          "confidence": {
+            "type": "number"
+          },
+          "contributions": {
+            "$ref": "#/components/schemas/ContributionReport"
+          },
+          "explanation": {
+            "$ref": "#/components/schemas/ExplanationLayer"
+          },
+          "fallback_reason": {
+            "type": "string"
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnsembleFinding"
+            }
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "questions_for_user": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Question"
+            }
+          },
+          "raw_output": {
+            "type": "string"
+          },
+          "raw_outputs": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "recommendations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Recommendation"
+            }
+          },
+          "redundancy": {
+            "$ref": "#/components/schemas/RedundancyAnalysis"
+          },
+          "risks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Risk"
+            }
+          },
+          "summary": {
+            "type": "string"
+          },
+          "synthesized_by": {
+            "type": "string"
+          },
+          "tokens_used": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "summary"
+        ]
+      },
+      "SyntheticBackpressureArtifact": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string"
+          },
+          "dropped_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "error_code": {
+            "type": "string"
+          },
+          "max_queue_depth": {
+            "type": "integer"
+          },
+          "reason_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "retry_after_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "surfaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SurfaceSnapshot"
+            }
+          }
+        },
+        "required": [
+          "decision",
+          "dropped_count",
+          "max_queue_depth",
+          "reason_codes",
+          "schema_version",
+          "surfaces"
+        ]
+      },
+      "SyntheticEvent": {
+        "type": "object",
+        "properties": {
+          "agent_type": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "latency_micros": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "message": {
+            "type": "string"
+          },
+          "output_lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "pane_index": {
+            "type": "integer"
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "session_name": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "agent_type",
+          "kind",
+          "latency_micros",
+          "message",
+          "output_lines",
+          "pane_id",
+          "pane_index",
+          "pattern",
+          "seq",
+          "session_name",
+          "state",
+          "timestamp"
+        ]
+      },
+      "SyntheticExperimentArtifact": {
+        "type": "object",
+        "properties": {
+          "artifact_paths": {
+            "$ref": "#/components/schemas/SyntheticExperimentPaths"
+          },
+          "backpressure": {
+            "$ref": "#/components/schemas/SyntheticBackpressureArtifact"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/SyntheticExperimentBudget"
+          },
+          "comparison": {
+            "$ref": "#/components/schemas/SyntheticExperimentComparison"
+          },
+          "gate": {
+            "type": "string"
+          },
+          "generated_at": {
+            "type": "string"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/SyntheticExperimentMetrics"
+          },
+          "opt_in": {
+            "type": "boolean"
+          },
+          "scenario": {
+            "type": "string"
+          },
+          "scenario_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "test_run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_paths",
+          "backpressure",
+          "budget",
+          "comparison",
+          "gate",
+          "generated_at",
+          "metrics",
+          "opt_in",
+          "scenario",
+          "scenario_id",
+          "schema_version",
+          "test_run_id"
+        ]
+      },
+      "SyntheticExperimentBudget": {
+        "type": "object",
+        "properties": {
+          "fail_regression_ratio": {
+            "type": "number"
+          },
+          "max_goroutines_leaked": {
+            "type": "integer"
+          },
+          "max_latency_p95_micros": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_memory_growth_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "min_event_throughput_per_second": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "warn_regression_ratio": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "fail_regression_ratio",
+          "max_goroutines_leaked",
+          "max_latency_p95_micros",
+          "max_memory_growth_bytes",
+          "min_event_throughput_per_second",
+          "name",
+          "warn_regression_ratio"
+        ]
+      },
+      "SyntheticExperimentCheck": {
+        "type": "object",
+        "properties": {
+          "baseline": {
+            "type": "number"
+          },
+          "budget": {
+            "type": "number"
+          },
+          "current": {
+            "type": "number"
+          },
+          "limit": {
+            "type": "string"
+          },
+          "metric": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "current",
+          "limit",
+          "metric",
+          "result"
+        ]
+      },
+      "SyntheticExperimentComparison": {
+        "type": "object",
+        "properties": {
+          "baseline_test_run_id": {
+            "type": "string"
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyntheticExperimentCheck"
+            }
+          },
+          "hint": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "checks",
+          "result"
+        ]
+      },
+      "SyntheticExperimentMetrics": {
+        "type": "object",
+        "properties": {
+          "command_count": {
+            "type": "integer"
+          },
+          "event_count": {
+            "type": "integer"
+          },
+          "event_throughput_per_second": {
+            "type": "number"
+          },
+          "goroutines_baseline": {
+            "type": "integer"
+          },
+          "goroutines_leaked": {
+            "type": "integer"
+          },
+          "goroutines_peak": {
+            "type": "integer"
+          },
+          "latency_max_ms": {
+            "type": "number"
+          },
+          "latency_p50_ms": {
+            "type": "number"
+          },
+          "latency_p95_ms": {
+            "type": "number"
+          },
+          "latency_p99_ms": {
+            "type": "number"
+          },
+          "latency_samples": {
+            "type": "integer"
+          },
+          "memory_baseline_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "memory_growth_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "memory_peak_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pane_count": {
+            "type": "integer"
+          },
+          "synthetic_duration_micros": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "required": [
+          "command_count",
+          "event_count",
+          "event_throughput_per_second",
+          "goroutines_baseline",
+          "goroutines_leaked",
+          "goroutines_peak",
+          "latency_max_ms",
+          "latency_p50_ms",
+          "latency_p95_ms",
+          "latency_p99_ms",
+          "latency_samples",
+          "memory_baseline_bytes",
+          "memory_growth_bytes",
+          "memory_peak_bytes",
+          "pane_count",
+          "synthetic_duration_micros"
+        ]
+      },
+      "SyntheticExperimentPaths": {
+        "type": "object",
+        "properties": {
+          "backpressure": {
+            "type": "string"
+          },
+          "goroutines": {
+            "type": "string"
+          },
+          "latency": {
+            "type": "string"
+          },
+          "memory": {
+            "type": "string"
+          },
+          "overload_regression": {
+            "type": "string"
+          },
+          "root": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          }
+        }
+      },
+      "SyntheticExperimentRow": {
+        "type": "object",
+        "properties": {
+          "command_count": {
+            "type": "integer"
+          },
+          "event_count": {
+            "type": "integer"
+          },
+          "gate": {
+            "type": "string"
+          },
+          "p95_ms": {
+            "type": "number"
+          },
+          "pane_count": {
+            "type": "integer"
+          },
+          "result": {
+            "type": "string"
+          },
+          "scenario_id": {
+            "type": "string"
+          },
+          "test_run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "command_count",
+          "event_count",
+          "gate",
+          "p95_ms",
+          "pane_count",
+          "result",
+          "scenario_id",
+          "test_run_id"
+        ]
+      },
+      "SyntheticExperimentScenario": {
+        "type": "object",
+        "properties": {
+          "budget": {
+            "$ref": "#/components/schemas/SyntheticExperimentBudget"
+          },
+          "description": {
+            "type": "string"
+          },
+          "gate": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "opt_in": {
+            "type": "boolean"
+          },
+          "synthetic": {
+            "$ref": "#/components/schemas/SyntheticScenario"
+          }
+        },
+        "required": [
+          "budget",
+          "gate",
+          "id",
+          "opt_in",
+          "synthetic"
+        ]
+      },
+      "SyntheticExperimentSummary": {
+        "type": "object",
+        "properties": {
+          "artifact_paths": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyntheticExperimentPaths"
+            }
+          },
+          "generated_at": {
+            "type": "string"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyntheticExperimentRow"
+            }
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "artifact_paths",
+          "generated_at",
+          "results",
+          "schema_version",
+          "success",
+          "warnings"
+        ]
+      },
+      "SyntheticMetrics": {
+        "type": "object",
+        "properties": {
+          "command_count": {
+            "type": "integer"
+          },
+          "event_count": {
+            "type": "integer"
+          },
+          "goroutines": {
+            "type": "integer"
+          },
+          "goroutines_baseline": {
+            "type": "integer"
+          },
+          "goroutines_leaked": {
+            "type": "integer"
+          },
+          "goroutines_peak": {
+            "type": "integer"
+          },
+          "latency_max_micros": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "latency_p50_micros": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "latency_p95_micros": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "memory_baseline_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "memory_growth_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "memory_peak_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pane_count": {
+            "type": "integer"
+          },
+          "scenario_name": {
+            "type": "string"
+          },
+          "session_name": {
+            "type": "string"
+          },
+          "synthetic_duration_micros": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "test_run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "command_count",
+          "event_count",
+          "goroutines",
+          "goroutines_baseline",
+          "goroutines_leaked",
+          "goroutines_peak",
+          "latency_max_micros",
+          "latency_p50_micros",
+          "latency_p95_micros",
+          "memory_baseline_bytes",
+          "memory_growth_bytes",
+          "memory_peak_bytes",
+          "pane_count",
+          "scenario_name",
+          "session_name",
+          "synthetic_duration_micros",
+          "test_run_id"
+        ]
+      },
+      "SyntheticPane": {
+        "type": "object",
+        "properties": {
+          "agent_type": {
+            "type": "string"
+          },
+          "command_count": {
+            "type": "integer"
+          },
+          "event_count": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "index": {
+            "type": "integer"
+          },
+          "output_tail": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "session_name": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_type",
+          "command_count",
+          "event_count",
+          "id",
+          "index",
+          "output_tail",
+          "pattern",
+          "session_name",
+          "state"
+        ]
+      },
+      "SyntheticRunResult": {
+        "type": "object",
+        "properties": {
+          "completed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyntheticEvent"
+            }
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/SyntheticMetrics"
+          },
+          "panes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyntheticPane"
+            }
+          },
+          "scenario": {
+            "$ref": "#/components/schemas/SyntheticScenario"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "completed_at",
+          "events",
+          "metrics",
+          "panes",
+          "scenario",
+          "started_at"
+        ]
+      },
+      "SyntheticScenario": {
+        "type": "object",
+        "properties": {
+          "command_count": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "output_lines_per_command": {
+            "type": "integer"
+          },
+          "pane_count": {
+            "type": "integer"
+          },
+          "patterns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "session_name": {
+            "type": "string"
+          },
+          "start_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "test_run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "command_count",
+          "name",
+          "output_lines_per_command",
+          "pane_count",
+          "session_name",
+          "test_run_id"
         ]
       },
       "SystemHealthInfo": {
@@ -29926,6 +34432,72 @@
           "key_points",
           "participants",
           "thread_id"
+        ]
+      },
+      "ThresholdRecommendation": {
+        "type": "object",
+        "properties": {
+          "apply": {
+            "type": "boolean"
+          },
+          "confidence": {
+            "type": "number"
+          },
+          "current": {
+            "$ref": "#/components/schemas/Thresholds"
+          },
+          "observed_capacity": {
+            "type": "number"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "recommended": {
+            "$ref": "#/components/schemas/Thresholds"
+          },
+          "samples": {
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          },
+          "test_run_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "unit": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "apply",
+          "confidence",
+          "current",
+          "reason",
+          "recommended",
+          "samples",
+          "source"
+        ]
+      },
+      "Thresholds": {
+        "type": "object",
+        "properties": {
+          "critical": {
+            "type": "number"
+          },
+          "elevated": {
+            "type": "number"
+          },
+          "high": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "critical",
+          "elevated",
+          "high"
         ]
       },
       "TimelineSession": {
@@ -31364,6 +35936,182 @@
             "type": "string"
           }
         }
+      },
+      "WorktreeCreateEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "project_dir": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "worktree": {
+            "$ref": "#/components/schemas/WorktreeInfo"
+          }
+        },
+        "required": [
+          "project_dir",
+          "session",
+          "success",
+          "timestamp",
+          "worktree"
+        ]
+      },
+      "WorktreeDeleteEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "agent_name": {
+            "type": "string"
+          },
+          "branch_name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "removed": {
+            "type": "boolean"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_name",
+          "project_dir",
+          "removed",
+          "session",
+          "success",
+          "timestamp"
+        ]
+      },
+      "WorktreeInfo": {
+        "type": "object",
+        "properties": {
+          "agent_name": {
+            "type": "string"
+          },
+          "branch_name": {
+            "type": "string"
+          },
+          "created": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_name",
+          "branch_name",
+          "created",
+          "path",
+          "session_id"
+        ]
+      },
+      "WorktreeMergeEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "agent_name": {
+            "type": "string"
+          },
+          "merged": {
+            "type": "boolean"
+          },
+          "preview": {
+            "$ref": "#/components/schemas/MergePreview"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "source_branch": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_name",
+          "merged",
+          "project_dir",
+          "session",
+          "success",
+          "timestamp"
+        ]
+      },
+      "WorktreesListEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "worktrees": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorktreeInfo"
+            }
+          }
+        },
+        "required": [
+          "count",
+          "project_dir",
+          "success",
+          "timestamp",
+          "worktrees"
+        ]
       }
     },
     "securitySchemes": {
@@ -31429,6 +36177,10 @@
     {
       "name": "doctor",
       "description": "Operations related to doctor"
+    },
+    {
+      "name": "ensemble",
+      "description": "Operations related to ensemble"
     },
     {
       "name": "events",
@@ -31511,8 +36263,16 @@
       "description": "Operations related to streaming"
     },
     {
+      "name": "swarm",
+      "description": "Operations related to swarm"
+    },
+    {
       "name": "version",
       "description": "Operations related to version"
+    },
+    {
+      "name": "worktrees",
+      "description": "Operations related to worktrees"
     },
     {
       "name": "ws",

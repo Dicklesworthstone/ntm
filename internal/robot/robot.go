@@ -155,6 +155,8 @@ Use --all to include the user pane (index depends on tmux pane-base-index).
 			"logs",
 			"monitor",
 			"support-bundle",
+			"backpressure",
+			"swarm-lab",
 		},
 	},
 	{

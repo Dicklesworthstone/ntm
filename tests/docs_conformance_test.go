@@ -37,6 +37,8 @@
 package tests
 
 import (
+	"archive/zip"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -1039,6 +1041,144 @@ func TestReadmeGhcrImageMatchesCI(t *testing.T) {
 				}
 			}
 			break
+		}
+	}
+}
+
+// TestVSCodeExtensionManifestAndVSIXContract verifies that vscode/package.json
+// stays version-locked to VERSION, every declared VS Code command is registered
+// in vscode/src/*.ts, every CLI command/flag invoked by the VS Code extension
+// parses cleanly against the real Cobra tree, and (when present) the built
+// .vsix archive contains the compiled extension entrypoints.
+func TestVSCodeExtensionManifestAndVSIXContract(t *testing.T) {
+	root := docsRepoRoot(t)
+
+	versionBytes, err := os.ReadFile(filepath.Join(root, "VERSION"))
+	if err != nil {
+		t.Fatalf("reading VERSION: %v", err)
+	}
+	repoVersion := strings.TrimPrefix(strings.TrimSpace(string(versionBytes)), "v")
+
+	pkgBytes, err := os.ReadFile(filepath.Join(root, "vscode", "package.json"))
+	if err != nil {
+		t.Fatalf("reading vscode/package.json: %v", err)
+	}
+	var manifest struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+		Main    string `json:"main"`
+		Engines struct {
+			VSCode string `json:"vscode"`
+		} `json:"engines"`
+		Contributes struct {
+			Commands []struct {
+				Command string `json:"command"`
+				Title   string `json:"title"`
+			} `json:"commands"`
+			Configuration struct {
+				Properties map[string]struct {
+					Type    string `json:"type"`
+					Default any    `json:"default"`
+				} `json:"properties"`
+			} `json:"configuration"`
+		} `json:"contributes"`
+	}
+	if err := json.Unmarshal(pkgBytes, &manifest); err != nil {
+		t.Fatalf("unmarshaling vscode/package.json: %v", err)
+	}
+
+	if manifest.Version != repoVersion {
+		t.Errorf("vscode/package.json version %q != VERSION %q", manifest.Version, repoVersion)
+	}
+	if manifest.Engines.VSCode != "^1.90.0" {
+		t.Errorf("vscode/package.json engines.vscode = %q, want ^1.90.0", manifest.Engines.VSCode)
+	}
+	if manifest.Main != "./out/extension.js" {
+		t.Errorf("vscode/package.json main = %q, want ./out/extension.js", manifest.Main)
+	}
+	if prop, ok := manifest.Contributes.Configuration.Properties["ntm.webPort"]; !ok || prop.Type != "number" {
+		t.Errorf("vscode/package.json missing numeric ntm.webPort configuration property: %+v", prop)
+	}
+
+	tsFiles, err := filepath.Glob(filepath.Join(root, "vscode", "src", "*.ts"))
+	if err != nil || len(tsFiles) == 0 {
+		t.Fatalf("locating vscode/src/*.ts: files=%v err=%v", tsFiles, err)
+	}
+	var allTS strings.Builder
+	for _, path := range tsFiles {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatalf("reading %s: %v", path, readErr)
+		}
+		allTS.Write(data)
+		allTS.WriteByte('\n')
+	}
+	tsCorpus := allTS.String()
+
+	declaredCommands := make(map[string]bool, len(manifest.Contributes.Commands))
+	for _, cmd := range manifest.Contributes.Commands {
+		declaredCommands[cmd.Command] = true
+		regRE := regexp.MustCompile(`registerCommand\(\s*['"]` + regexp.QuoteMeta(cmd.Command) + `['"]`)
+		if !regRE.MatchString(tsCorpus) {
+			t.Errorf("vscode/package.json command %q is never registered via registerCommand in vscode/src/*.ts", cmd.Command)
+		}
+	}
+	for _, required := range []string{"ntm.spawnEnsemble", "ntm.triageAttention", "ntm.openWebCockpit"} {
+		if !declaredCommands[required] {
+			t.Errorf("vscode/package.json missing required Wave 5 command %q", required)
+		}
+	}
+
+	// Verify every CLI command/flag invoked by vscode/src/{ntmClient,extension}.ts
+	// resolves cleanly against the real Cobra command tree.
+	cobraRoot := cli.RootCommand()
+	extensionInvocations := [][]string{
+		{"--robot-snapshot", "--robot-format=json"},
+		{"--robot-status", "--robot-format=json"},
+		{"--robot-mail", "--robot-format=json"},
+		{"--robot-ensemble-presets", "--robot-format=json"},
+		{"--robot-ensemble-suggest=architecture review", "--robot-format=json"},
+		{"--robot-ensemble-spawn=proj-ensemble", "--preset=project-diagnosis", "--question=check risks", "--agents=cc=2", "--assignment=affinity", "--allow-advanced", "--project=/tmp/proj", "--robot-format=json"},
+		{"attention", "list", "--session=proj", "--limit=30", "--all", "--json"},
+		{"attention", "ack", "1", "--json"},
+		{"attention", "pin", "1", "--json"},
+		{"attention", "unpin", "1", "--json"},
+		{"attention", "snooze", "1", "--until=30m", "--json"},
+		{"attention", "dismiss", "1", "--json"},
+		{"web", "--port", "7337"},
+		{"spawn", "proj", "--cc=2", "--json"},
+		{"send", "proj", "--all", "--", "hello"},
+		{"palette", "proj"},
+		{"attach", "proj"},
+		{"view", "proj"},
+		{"zoom", "proj", "1"},
+		{"dashboard", "proj"},
+	}
+	for _, argv := range extensionInvocations {
+		if err := checkExample(cobraRoot, argv); err != nil {
+			t.Errorf("VS Code CLI invocation `ntm %s` failed Cobra parse contract: %v", strings.Join(argv, " "), err)
+		}
+	}
+
+	vsixPath := filepath.Join(root, "vscode", "dist", fmt.Sprintf("ntm-vscode-%s.vsix", repoVersion))
+	if info, statErr := os.Stat(vsixPath); statErr == nil && !info.IsDir() {
+		zr, zipErr := zip.OpenReader(vsixPath)
+		if zipErr != nil {
+			t.Fatalf("opening %s: %v", vsixPath, zipErr)
+		}
+		defer zr.Close()
+		entries := make(map[string]bool, len(zr.File))
+		for _, f := range zr.File {
+			entries[f.Name] = true
+		}
+		for _, wantEntry := range []string{
+			"extension/package.json",
+			"extension/out/extension.js",
+			"extension/out/ntmClient.js",
+		} {
+			if !entries[wantEntry] {
+				t.Errorf("built VSIX %s missing required entry %q", vsixPath, wantEntry)
+			}
 		}
 	}
 }

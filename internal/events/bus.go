@@ -260,6 +260,15 @@ func (b *EventBus) SubscriberCount(eventType string) int {
 	return len(b.subscribers[eventType])
 }
 
+// QueueMetrics returns live publish in-flight count and asynchronous handler
+// semaphore occupancy for backpressure inspection.
+func (b *EventBus) QueueMetrics() (inflight int, semUsed int, semCap int) {
+	if b == nil {
+		return 0, 0, 0
+	}
+	return int(b.inflight.Load()), len(b.handlerSem), cap(b.handlerSem)
+}
+
 // ----------------------------------------------------------------
 // Base Event Implementation
 // ----------------------------------------------------------------

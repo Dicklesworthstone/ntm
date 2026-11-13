@@ -30,6 +30,9 @@ var (
 	healthAutoRestartStuck bool
 	healthThreshold        string
 	healthDryRun           bool
+	healthBackpressure     bool
+	healthHeatmap          bool
+	healthSessionFlag      string
 	healthKernelRun        = kernel.Run
 )
 
@@ -131,6 +134,9 @@ Examples:
 	cmd.Flags().BoolVar(&healthAutoRestartStuck, "auto-restart-stuck", false, "Detect and restart agents stuck with no output")
 	cmd.Flags().StringVar(&healthThreshold, "threshold", "", "Duration before considering stuck (default 5m, e.g. 10m, 300s)")
 	cmd.Flags().BoolVar(&healthDryRun, "dry-run", false, "Preview stuck agents without restarting them")
+	cmd.Flags().BoolVar(&healthBackpressure, "backpressure", false, "Evaluate live subsystem backpressure, coalescing recommendations, and load-shedding contract")
+	cmd.Flags().BoolVar(&healthHeatmap, "heatmap", false, "Include operator backpressure heatmap buckets")
+	cmd.Flags().StringVar(&healthSessionFlag, "session", "", "Target session name (optional with --backpressure/--heatmap)")
 	cmd.ValidArgsFunction = completeSessionArgs
 	_ = cmd.RegisterFlagCompletionFunc("pane", completePaneIndexes)
 
@@ -142,6 +148,16 @@ func runHealth(cmd *cobra.Command, args []string) error {
 
 	if len(args) > 0 {
 		session = args[0]
+	}
+	if flagSession := strings.TrimSpace(healthSessionFlag); flagSession != "" {
+		if session != "" && session != flagSession {
+			return fmt.Errorf("conflicting session arguments %q and --session=%q", session, flagSession)
+		}
+		session = flagSession
+	}
+
+	if healthBackpressure || healthHeatmap {
+		return runHealthBackpressure(cmd, session, healthHeatmap)
 	}
 
 	if err := tmux.EnsureInstalled(); err != nil {
@@ -781,4 +797,106 @@ func truncateString(s string, maxLen int) string {
 		return string(runes[:maxLen])
 	}
 	return string(runes[:maxLen-1]) + "…"
+}
+
+func runHealthBackpressure(cmd *cobra.Command, session string, showHeatmap bool) error {
+	out, err := robot.GetBackpressure(robot.BackpressureOptions{
+		Session: strings.TrimSpace(session),
+	})
+	if err != nil {
+		return err
+	}
+	w := cmd.OutOrStdout()
+	if IsJSONOutput() {
+		data, marshalErr := json.MarshalIndent(out, "", "  ")
+		if marshalErr != nil {
+			return marshalErr
+		}
+		_, err = fmt.Fprintln(w, string(data))
+		return err
+	}
+	if !out.Success {
+		return fmt.Errorf("%s", out.Error)
+	}
+
+	fmt.Fprintf(w, "Backpressure Decision: %s (surfaces=%d warnings=%d heatmap_buckets=%d)\n",
+		out.Dashboard.Decision,
+		out.Dashboard.SurfaceCount,
+		out.Dashboard.WarningCount,
+		out.Dashboard.HeatmapBuckets,
+	)
+	fmt.Fprintf(w, "Load-Shedding Contract [%s]: decision=%s action=%s",
+		out.LoadShedding.SchemaVersion,
+		out.LoadShedding.Decision,
+		out.LoadShedding.RecommendedAction,
+	)
+	if out.LoadShedding.ErrorCode != "" {
+		fmt.Fprintf(w, " error_code=%s", out.LoadShedding.ErrorCode)
+	}
+	if out.LoadShedding.RetryAfterMS > 0 {
+		fmt.Fprintf(w, " retry_after_ms=%d", out.LoadShedding.RetryAfterMS)
+	}
+	if out.LoadShedding.DegradedSurface != "" {
+		fmt.Fprintf(w, " degraded_surface=%s", out.LoadShedding.DegradedSurface)
+	}
+	fmt.Fprintln(w)
+
+	if len(out.Snapshot.ReasonCodes) > 0 {
+		reasons := make([]string, 0, len(out.Snapshot.ReasonCodes))
+		for _, r := range out.Snapshot.ReasonCodes {
+			reasons = append(reasons, string(r))
+		}
+		fmt.Fprintf(w, "Reason Codes: %s\n", strings.Join(reasons, ", "))
+	}
+
+	for _, surf := range out.Snapshot.Surfaces {
+		target := string(surf.Surface)
+		if surf.Session != "" {
+			target += ":" + surf.Session
+		}
+		if surf.Command != "" {
+			target += "(" + surf.Command + ")"
+		}
+		fmt.Fprintf(w, "  - %-28s decision=%-8s queue=%d/%d dropped=%d latency=%dms\n",
+			target,
+			surf.Decision,
+			surf.QueueDepth,
+			surf.QueueCapacity,
+			surf.DroppedCount,
+			surf.LatencyMS,
+		)
+	}
+
+	if showHeatmap || !out.Heatmap.Empty {
+		if out.Heatmap.Empty {
+			fmt.Fprintln(w, "Operator Heatmap: empty (no overloaded surfaces)")
+		} else {
+			fmt.Fprintf(w, "Operator Heatmap (%d bucket(s)):\n", len(out.Heatmap.Buckets))
+			for _, b := range out.Heatmap.Buckets {
+				fmt.Fprintf(w, "  * [%s] severity=%s score=%d surface=%s session=%s action=%s\n",
+					b.HeatmapBucket,
+					b.Severity,
+					b.Score,
+					b.Surface,
+					b.Session,
+					b.RecommendedAction,
+				)
+			}
+		}
+	}
+
+	if len(out.Snapshot.CoalescingRecommendations) > 0 {
+		fmt.Fprintln(w, "Coalescing Recommendations:")
+		for _, rec := range out.Snapshot.CoalescingRecommendations {
+			fmt.Fprintf(w, "  - [%s] %s (%s): %s\n", rec.Surface, rec.Action, rec.Reason, rec.Hint)
+		}
+	}
+
+	if len(out.Snapshot.Warnings) > 0 {
+		fmt.Fprintln(w, "Source Warnings:")
+		for _, warn := range out.Snapshot.Warnings {
+			fmt.Fprintf(w, "  ! [%s] %s\n", warn.Surface, warn.Hint)
+		}
+	}
+	return nil
 }

@@ -1144,6 +1144,146 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ensemble/modes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ensemble modes
+         * @description Served route `GET /api/v1/ensemble/modes`. Handler: `handleEnsembleModesV1`. Response shape reflected from Go type `EnsembleModesEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_ensemble_modes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ensemble/presets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ensemble presets
+         * @description Served route `GET /api/v1/ensemble/presets`. Handler: `handleEnsemblePresetsV1`. Response shape reflected from Go type `EnsemblePresetsEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_ensemble_presets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ensemble/sessions/{session}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ensemble session
+         * @description Served route `GET /api/v1/ensemble/sessions/{session}`. Handler: `handleEnsembleSessionV1`. Response shape reflected from Go type `EnsembleSessionEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_ensemble_sessions_session"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ensemble/sessions/{session}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ensemble stop
+         * @description Served route `POST /api/v1/ensemble/sessions/{session}/stop`. Handler: `handleEnsembleStopV1`. Response shape reflected from Go type `EnsembleStopEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_ensemble_sessions_session_stop"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ensemble/sessions/{session}/synthesize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ensemble synthesize
+         * @description Served route `POST /api/v1/ensemble/sessions/{session}/synthesize`. Handler: `handleEnsembleSynthesizeV1`. Response shape reflected from Go type `EnsembleSynthesizeEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_ensemble_sessions_session_synthesize"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ensemble/spawn": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ensemble spawn
+         * @description Served route `POST /api/v1/ensemble/spawn`. Handler: `handleEnsembleSpawnV1`. Response shape reflected from Go type `EnsembleSpawnEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_ensemble_spawn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ensemble/suggest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ensemble suggest
+         * @description Served route `POST /api/v1/ensemble/suggest`. Handler: `handleEnsembleSuggestV1`. Response shape reflected from Go type `EnsembleSuggestEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_ensemble_suggest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/health": {
         parameters: {
             query?: never;
@@ -1156,6 +1296,26 @@ export interface paths {
          * @description Served route `GET /api/v1/health`. Handler: `handleHealthV1`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.
          */
         get: operations["get_api_v1_health"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/health/backpressure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Health backpressure
+         * @description Served route `GET /api/v1/health/backpressure`. Handler: `handleHealthBackpressureV1`. Response shape reflected from Go type `HealthBackpressureEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_health_backpressure"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3308,6 +3468,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/swarm/lab/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Swarm lab run
+         * @description Served route `POST /api/v1/swarm/lab/run`. Handler: `handleSwarmLabRunV1`. Response shape reflected from Go type `SwarmLabEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_swarm_lab_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/swarm/lab/scenarios": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Swarm lab scenarios
+         * @description Served route `GET /api/v1/swarm/lab/scenarios`. Handler: `handleSwarmLabScenariosV1`. Response shape reflected from Go type `SwarmLabEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_swarm_lab_scenarios"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/version": {
         parameters: {
             query?: never;
@@ -3322,6 +3522,70 @@ export interface paths {
         get: operations["get_api_v1_version"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/worktrees": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List worktrees
+         * @description Served route `GET /api/v1/worktrees`. Handler: `handleListWorktreesV1`. Response shape reflected from Go type `WorktreesListEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_worktrees"];
+        put?: never;
+        /**
+         * Create worktree
+         * @description Served route `POST /api/v1/worktrees`. Handler: `handleCreateWorktreeV1`. Response shape reflected from Go type `WorktreeCreateEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_worktrees"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/worktrees/{agent}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete worktree
+         * @description Served route `DELETE /api/v1/worktrees/{agent}`. Handler: `handleDeleteWorktreeV1`. Response shape reflected from Go type `WorktreeDeleteEnvelopeResponse`.
+         */
+        delete: operations["delete_api_v1_worktrees_agent"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/worktrees/{agent}/merge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Merge worktree
+         * @description Served route `POST /api/v1/worktrees/{agent}/merge`. Handler: `handleMergeWorktreeV1`. Response shape reflected from Go type `WorktreeMergeEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_worktrees_agent_merge"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4363,6 +4627,14 @@ export interface components {
             /** @description Reason */
             reason?: string;
         };
+        AuditReport: {
+            conflicts: components["schemas"]["DetailedConflict"][];
+            evidence_needed?: components["schemas"]["EvidenceRequest"][];
+            mode_disagreements?: {
+                [key: string]: string[];
+            };
+            resolution_suggestions?: string[];
+        };
         AutoRotateConfigEnvelopeResponse: {
             config: components["schemas"]["AccountsConfig"];
             request_id?: string;
@@ -4415,6 +4687,22 @@ export interface components {
              * @description RFC3339 response timestamp.
              */
             timestamp: string;
+        };
+        BackpressureSnapshot: {
+            coalescing_recommendations: components["schemas"]["CoalescingRecommendation"][];
+            decision: string;
+            error_code?: string;
+            generated_at: string;
+            heatmap: components["schemas"]["OperatorHeatmap"];
+            hint?: string;
+            load_shedding: components["schemas"]["LoadSheddingContract"];
+            log_rows: components["schemas"]["LogRow"][];
+            reason_codes: string[];
+            /** Format: int64 */
+            retry_after_ms?: number;
+            success: boolean;
+            surfaces: components["schemas"]["SurfaceSnapshot"][];
+            warnings: components["schemas"]["MissingSourceWarning"][];
         };
         BeadAction: {
             /** @description Bead i d */
@@ -4661,6 +4949,9 @@ export interface components {
             /** @description Truncation behavior */
             truncation_behavior?: string;
         };
+        BudgetInfo: {
+            total: number;
+        };
         BugNotifyEnvelopeResponse: {
             channel: string;
             findings_count: number;
@@ -4889,6 +5180,25 @@ export interface components {
             /** @description Workspace */
             workspace?: string;
         };
+        CalibrationLogRow: {
+            confidence: number;
+            host_profile_id: string;
+            reason: string;
+            recommendation: components["schemas"]["Thresholds"];
+            source: string;
+            test_run_id?: string;
+            threshold: components["schemas"]["Thresholds"];
+        };
+        CalibrationNote: {
+            code: string;
+            message: string;
+        };
+        CalibrationSourceRow: {
+            confidence: number;
+            reason?: string;
+            samples: number;
+            source: string;
+        };
         /** @description Cancel a pre-dispatch durable operation claim or an active --robot-wait handle by request ID. Safely refuses with REQUEST_ALREADY_DISPATCHED once pane actuation has begun, or REQUEST_NOT_CANCELLABLE when already terminal. */
         CancelRequestOutput: {
             /** @description Meta */
@@ -4999,6 +5309,15 @@ export interface components {
             /** @description Request semantics */
             request_semantics?: components["schemas"]["RequestSemantics"];
         };
+        CategoryInfo: {
+            code: string;
+            mode_count: number;
+            name: string;
+        };
+        CategoryRef: {
+            code: string;
+            name: string;
+        };
         CheckpointEnvelopeResponse: {
             checkpoint: components["schemas"]["CheckpointResponse"];
             imported?: boolean;
@@ -5046,6 +5365,16 @@ export interface components {
         };
         ClaimBeadRequest: {
             assignee: string;
+        };
+        CoalescingRecommendation: {
+            action: string;
+            hint: string;
+            id: string;
+            max_lines?: number;
+            reason: string;
+            /** Format: int64 */
+            suggested_interval_ms?: number;
+            surface: string;
         };
         Command: {
             category?: string;
@@ -5099,6 +5428,18 @@ export interface components {
             status: string;
             step_id: string;
         };
+        ConclusionExplanation: {
+            conclusion_id: string;
+            confidence: number;
+            confidence_basis?: string;
+            counter_evidence?: string[];
+            reasoning?: string;
+            source_findings?: string[];
+            source_modes: string[];
+            supporting_evidence?: string[];
+            text: string;
+            type: string;
+        };
         Conflict: {
             /** @description Agents */
             agents?: string[];
@@ -5113,6 +5454,21 @@ export interface components {
             path: string;
             /** @description Severity */
             severity?: string;
+        };
+        ConflictPosition: {
+            confidence?: number;
+            evidence?: string;
+            mode_id: string;
+            mode_name?: string;
+            position: string;
+        };
+        ConflictResolution: {
+            confidence_impact?: number;
+            conflict_id: string;
+            method: string;
+            positions: components["schemas"]["PositionSummary"][];
+            resolution: string;
+            topic: string;
         };
         ConsumerGuidance: {
             /** @description Compression semantics */
@@ -5155,6 +5511,28 @@ export interface components {
             from_agent: string;
             to_agent: string;
             ttl_seconds?: number;
+        };
+        ContributionReport: {
+            deduped_findings: number;
+            diversity_score: number;
+            /** Format: date-time */
+            generated_at: string;
+            overlap_rate: number;
+            scores: components["schemas"]["ContributionScore"][];
+            total_findings: number;
+        };
+        ContributionScore: {
+            citation_count: number;
+            findings_count: number;
+            highlight_findings?: string[];
+            mode_id: string;
+            mode_name?: string;
+            original_findings: number;
+            rank: number;
+            recommendations_count: number;
+            risks_count: number;
+            score: number;
+            unique_insights: number;
         };
         CreateAgentRequest: {
             model: string;
@@ -5213,6 +5591,11 @@ export interface components {
             panes?: number;
             session: string;
         };
+        CreateWorktreeRequest: {
+            agent: string;
+            project_dir?: string;
+            session: string;
+        };
         /** @description Dashboard summary as markdown or JSON. */
         DashboardOutput: {
             /** @description Meta */
@@ -5267,6 +5650,14 @@ export interface components {
             /** @description Version */
             version?: string;
         };
+        DashboardSummary: {
+            decision: string;
+            heatmap_buckets: number;
+            reason_codes: string[];
+            recommended_actions: string[];
+            surface_count: number;
+            warning_count: number;
+        };
         DegradedFeature: {
             /** @description Feature */
             feature: string;
@@ -5319,6 +5710,13 @@ export interface components {
              * @description RFC3339 response timestamp.
              */
             timestamp: string;
+        };
+        DetailedConflict: {
+            evidence_needed?: string;
+            positions: components["schemas"]["ConflictPosition"][];
+            resolution_path?: string;
+            severity: string;
+            topic: string;
         };
         /** @description Aggregated summary of recent attention events. Returns counts, top items, and category breakdown without waiting. Use for quick status checks; prefer --robot-attention for blocking operator loops. */
         DigestOutput: {
@@ -5408,6 +5806,240 @@ export interface components {
             status: string;
         };
         Duration: Record<string, never>;
+        EnsembleBudget: {
+            remaining_tokens?: number;
+            spent_tokens?: number;
+            total_tokens?: number;
+        };
+        EnsembleFinding: {
+            confidence: number;
+            evidence_pointer?: string;
+            finding: string;
+            impact: string;
+            reasoning?: string;
+        };
+        EnsembleMetrics: {
+            conflict_density?: number;
+            coverage_map: {
+                [key: string]: number;
+            };
+            findings_velocity?: number;
+            redundancy_score?: number;
+        };
+        EnsembleMode: {
+            agent_type?: string;
+            code?: string;
+            icon?: string;
+            id: string;
+            name?: string;
+            pane?: string;
+            status?: string;
+            tier?: string;
+        };
+        EnsembleModesEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            _meta?: components["schemas"]["RobotResponseMeta"];
+            action: string;
+            advanced_modes: number;
+            catalog_version?: string;
+            categories: components["schemas"]["CategoryInfo"][];
+            core_modes: number;
+            default_tier: string;
+            error?: string;
+            error_code?: string;
+            experimental_modes: number;
+            hint?: string;
+            modes: components["schemas"]["ModeInfo"][];
+            output_format?: string;
+            pagination?: components["schemas"]["RobotPaginationInfo"];
+            request_id?: string;
+            structured_error?: components["schemas"]["RobotStructuredError"];
+            success: boolean;
+            timestamp: string;
+            total_modes: number;
+            version?: string;
+        };
+        EnsemblePresetsEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            _meta?: components["schemas"]["RobotResponseMeta"];
+            action: string;
+            count: number;
+            error?: string;
+            error_code?: string;
+            hint?: string;
+            output_format?: string;
+            presets: components["schemas"]["PresetInfo"][];
+            request_id?: string;
+            structured_error?: components["schemas"]["RobotStructuredError"];
+            success: boolean;
+            timestamp: string;
+            version?: string;
+        };
+        EnsembleSessionEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            _meta?: components["schemas"]["RobotResponseMeta"];
+            ensemble: components["schemas"]["EnsembleState"];
+            error?: string;
+            error_code?: string;
+            hint?: string;
+            output_format?: string;
+            request_id?: string;
+            structured_error?: components["schemas"]["RobotStructuredError"];
+            success: boolean;
+            summary: components["schemas"]["EnsembleSummary"];
+            timestamp: string;
+            version?: string;
+        };
+        EnsembleSpawnBudget: {
+            per_mode_tokens?: number;
+            total_tokens?: number;
+        };
+        EnsembleSpawnEnvelopeResponse: {
+            _meta?: components["schemas"]["RobotResponseMeta"];
+            action: string;
+            agents?: {
+                [key: string]: number;
+            };
+            assignment?: string;
+            budget: components["schemas"]["EnsembleSpawnBudget"];
+            error?: string;
+            error_code?: string;
+            hint?: string;
+            modes: components["schemas"]["EnsembleSpawnMode"][];
+            output_format?: string;
+            preset?: string;
+            project_dir?: string;
+            question?: string;
+            request_id?: string;
+            session: string;
+            status?: string;
+            structured_error?: components["schemas"]["RobotStructuredError"];
+            success: boolean;
+            timestamp: string;
+            version?: string;
+            warnings?: string[];
+        };
+        EnsembleSpawnMode: {
+            agent_type?: string;
+            code?: string;
+            id: string;
+            pane?: string;
+            tier?: string;
+        };
+        EnsembleSpawnRequest: {
+            agents?: string;
+            allow_advanced?: boolean;
+            assignment?: string;
+            budget_per_agent?: number;
+            budget_total?: number;
+            modes?: string[];
+            no_cache?: boolean;
+            preset?: string;
+            project_dir?: string;
+            question: string;
+            session: string;
+            synthesis_strategy?: string;
+        };
+        EnsembleState: {
+            budget: components["schemas"]["EnsembleBudget"];
+            metrics: components["schemas"]["EnsembleMetrics"];
+            modes: components["schemas"]["EnsembleMode"][];
+            preset?: string;
+            question?: string;
+            session: string;
+            started_at?: string;
+            status?: string;
+            synthesis: components["schemas"]["EnsembleSynthesis"];
+        };
+        EnsembleStopEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            _meta?: components["schemas"]["RobotResponseMeta"];
+            error?: string;
+            error_code?: string;
+            hint?: string;
+            output_format?: string;
+            request_id?: string;
+            result: components["schemas"]["EnsembleStopResult"];
+            structured_error?: components["schemas"]["RobotStructuredError"];
+            success: boolean;
+            timestamp: string;
+            version?: string;
+        };
+        EnsembleStopRequest: {
+            force?: boolean;
+            no_collect?: boolean;
+        };
+        EnsembleStopResult: {
+            captured?: number;
+            final_status: string;
+            message?: string;
+            prev_status: string;
+            session: string;
+            stopped: number;
+        };
+        EnsembleSuggestAgentHints: {
+            spawn_command?: string;
+            suggested_actions?: components["schemas"]["RobotActionModel"][];
+            summary?: string;
+        };
+        EnsembleSuggestEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["EnsembleSuggestAgentHints"];
+            preset_name?: string;
+            question: string;
+            request_id?: string;
+            spawn_cmd?: string;
+            success: boolean;
+            suggestions?: components["schemas"]["EnsembleSuggestion"][];
+            timestamp: string;
+            top_pick?: components["schemas"]["EnsembleSuggestion"];
+        };
+        EnsembleSuggestRequest: {
+            id_only?: boolean;
+            question: string;
+        };
+        EnsembleSuggestion: {
+            description: string;
+            display_name: string;
+            mode_count: number;
+            preset_name: string;
+            reasons: string[];
+            score: number;
+            spawn_cmd?: string;
+            tags: string[];
+        };
+        EnsembleSummary: {
+            advanced_modes: number;
+            completed: number;
+            core_modes: number;
+            errors?: number;
+            pending: number;
+            total_modes: number;
+            working: number;
+        };
+        EnsembleSynthesis: {
+            status?: string;
+            strategy?: string;
+        };
+        EnsembleSynthesizeEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            action: string;
+            audit?: components["schemas"]["SynthesisAudit"];
+            audit_report?: components["schemas"]["AuditReport"];
+            formatted_output?: string;
+            redundancy?: components["schemas"]["RedundancyAnalysis"];
+            report?: components["schemas"]["SynthesisReport"];
+            request_id?: string;
+            result?: components["schemas"]["SynthesisResult"];
+            session: string;
+            status: string;
+            success: boolean;
+            timestamp: string;
+        };
+        EnsembleSynthesizeRequest: {
+            force?: boolean;
+            output_format?: string;
+            strategy?: string;
+        };
         ErrorDetails: {
             /** @description Actual output */
             actual_output?: string;
@@ -5476,6 +6108,11 @@ export interface components {
             /** @description Trace i d */
             trace_id?: string;
         };
+        EvidenceRequest: {
+            rationale?: string;
+            requested_by?: string[];
+            topic: string;
+        };
         Example: {
             command?: string;
             description?: string;
@@ -5508,6 +6145,16 @@ export interface components {
             has_diagnostic_entry_points?: boolean;
             /** @description Has evidence summary */
             has_evidence_summary?: boolean;
+        };
+        ExplanationLayer: {
+            conclusions?: components["schemas"]["ConclusionExplanation"][];
+            conflicts_resolved?: components["schemas"]["ConflictResolution"][];
+            /** Format: date-time */
+            generated_at: string;
+            mode_weights?: {
+                [key: string]: number;
+            };
+            strategy_rationale?: string;
         };
         ExportCheckpointRequest: {
             format?: string;
@@ -5883,6 +6530,23 @@ export interface components {
             /** @description Updated at */
             updated_at?: string;
         };
+        HealthBackpressureEnvelopeResponse: {
+            _meta?: components["schemas"]["RobotResponseMeta"];
+            backpressure: components["schemas"]["BackpressureSnapshot"];
+            dashboard: components["schemas"]["DashboardSummary"];
+            error?: string;
+            error_code?: string;
+            heatmap: components["schemas"]["OperatorHeatmap"];
+            hint?: string;
+            load_shedding: components["schemas"]["LoadSheddingContract"];
+            output_format?: string;
+            request_id?: string;
+            session?: string;
+            structured_error?: components["schemas"]["RobotStructuredError"];
+            success: boolean;
+            timestamp: string;
+            version?: string;
+        };
         /** @description Get session or project health status. */
         HealthOutput: {
             /** @description Meta */
@@ -5962,6 +6626,26 @@ export interface components {
             mode: string;
             ref?: string;
             requested_at?: string;
+        };
+        HostCapacityCalibrationReport: {
+            /** Format: date-time */
+            generated_at: string;
+            log_rows?: components["schemas"]["CalibrationLogRow"][];
+            profile: components["schemas"]["HostCapacityProfile"];
+            profile_id: string;
+            recommendations: components["schemas"]["ThresholdRecommendation"][];
+            success: boolean;
+            warnings?: components["schemas"]["CalibrationNote"][];
+        };
+        HostCapacityProfile: {
+            /** Format: date-time */
+            generated_at: string;
+            notes?: components["schemas"]["CalibrationNote"][];
+            profile_id: string;
+            sources?: components["schemas"]["CalibrationSourceRow"][];
+            thresholds: {
+                [key: string]: components["schemas"]["Thresholds"];
+            };
         };
         Identity: {
             /** @description Head s h a */
@@ -6210,6 +6894,28 @@ export interface components {
             /** Format: int64 */
             max_template_bytes?: number;
             substep_parallel_max?: number;
+        };
+        LoadSheddingContract: {
+            decision: string;
+            degraded_surface?: string;
+            error_code?: string;
+            reason_codes: string[];
+            recommended_action: string;
+            /** Format: int64 */
+            retry_after_ms?: number;
+            schema_version: string;
+        };
+        LogRow: {
+            decision: string;
+            /** Format: int64 */
+            dropped_count: number;
+            /** Format: int64 */
+            latency_ms: number;
+            pane?: string;
+            queue_depth: number;
+            reason_codes: string[];
+            session?: string;
+            surface: string;
         };
         LoopConfig: {
             as?: string;
@@ -6550,6 +7256,31 @@ export interface components {
             success: boolean;
             timestamp: string;
         };
+        MergePreview: {
+            agent_name: string;
+            already_merged: boolean;
+            blockers: string[];
+            can_merge: boolean;
+            conflicts: string[];
+            has_conflicts: boolean;
+            merge_tree: string;
+            overwrite_risks: string[];
+            session_id: string;
+            source_branch: string;
+            source_commit: string;
+            source_commits: number;
+            source_path: string;
+            target_branch: string;
+            target_commit: string;
+            target_path: string;
+        };
+        MergeWorktreeRequest: {
+            expected_source?: string;
+            expected_target?: string;
+            preview?: boolean;
+            project_dir?: string;
+            session?: string;
+        };
         Message: {
             ack_required: boolean;
             bcc?: string[];
@@ -6601,6 +7332,27 @@ export interface components {
             success: boolean;
             target_comparison: components["schemas"]["TargetComparison"][];
             timestamp: string;
+        };
+        MissingSourceWarning: {
+            hint: string;
+            pane?: string;
+            session?: string;
+            surface: string;
+        };
+        ModeInfo: {
+            best_for?: string[];
+            category: components["schemas"]["CategoryRef"];
+            code: string;
+            color?: string;
+            description?: string;
+            differentiator?: string;
+            failure_modes?: string[];
+            icon?: string;
+            id: string;
+            name: string;
+            outputs?: string;
+            short_desc: string;
+            tier: string;
         };
         NextAction: {
             action: string;
@@ -6705,6 +7457,35 @@ export interface components {
             /** @description Status */
             status: string;
         };
+        OperatorHeatmap: {
+            buckets: components["schemas"]["OperatorHeatmapBucket"][];
+            decision: string;
+            empty: boolean;
+            log_rows: components["schemas"]["OperatorHeatmapLogRow"][];
+            schema_version: string;
+        };
+        OperatorHeatmapBucket: {
+            heatmap_bucket: string;
+            pane?: string;
+            reason_codes: string[];
+            recommended_action: string;
+            /** Format: int64 */
+            retry_after_ms?: number;
+            score: number;
+            session?: string;
+            severity: string;
+            surface: string;
+        };
+        OperatorHeatmapLogRow: {
+            heatmap_bucket: string;
+            pane?: string;
+            reason_codes: string[];
+            /** Format: int64 */
+            retry_after_ms?: number;
+            session?: string;
+            severity: string;
+            surface: string;
+        };
         OperatorLoopGuardrail: {
             /** @description Name */
             name: string;
@@ -6730,6 +7511,52 @@ export interface components {
             /** @description Sequence */
             sequence: number;
         };
+        OverloadExpectedArtifact: {
+            name: string;
+            schema_version: string;
+        };
+        OverloadExpectedRobotError: {
+            decision?: string;
+            error_code: string;
+            /** Format: int64 */
+            retry_after_ms?: number;
+        };
+        OverloadMeasuredMetrics: {
+            command_count: number;
+            /** Format: int64 */
+            dropped_count: number;
+            event_throughput_per_second: number;
+            goroutines_leaked: number;
+            latency_p95_ms: number;
+            max_queue_depth: number;
+            /** Format: int64 */
+            memory_growth_bytes: number;
+            pane_count: number;
+        };
+        OverloadRegressionResult: {
+            artifact_paths: components["schemas"]["SyntheticExperimentPaths"];
+            checks: components["schemas"]["SyntheticExperimentCheck"][];
+            comparison_result: string;
+            decision: string;
+            expected_artifacts: components["schemas"]["OverloadExpectedArtifact"][];
+            expected_reason_codes: string[];
+            expected_robot_errors?: components["schemas"]["OverloadExpectedRobotError"][];
+            failure_reasons: string[];
+            measured_metrics: components["schemas"]["OverloadMeasuredMetrics"];
+            reason_codes: string[];
+            robot_error_codes: string[];
+            scenario_id: string;
+            schema_version: string;
+            source_bug: string;
+        };
+        OverloadRegressionSummary: {
+            generated_at: string;
+            guide?: string;
+            results: components["schemas"]["OverloadRegressionResult"][];
+            schema_version: string;
+            success: boolean;
+            warnings: string[];
+        };
         PaginationInfo: {
             /** @description Count */
             count: number;
@@ -6743,6 +7570,14 @@ export interface components {
             offset: number;
             /** @description Total */
             total: number;
+        };
+        PairSimilarity: {
+            mode_a: string;
+            mode_b: string;
+            shared_findings: number;
+            similarity: number;
+            unique_to_a: number;
+            unique_to_b: number;
         };
         PaneDetailEnvelopeResponse: {
             pane: components["schemas"]["PaneSummaryRecord"];
@@ -7189,6 +8024,23 @@ export interface components {
             valid: boolean;
             warnings?: string[];
         };
+        PositionSummary: {
+            mode_id: string;
+            position: string;
+            strength: number;
+        };
+        PresetInfo: {
+            allow_advanced: boolean;
+            budget: components["schemas"]["BudgetInfo"];
+            description: string;
+            display?: string;
+            mode_count: number;
+            modes: string[];
+            name: string;
+            source?: string;
+            synthesis: components["schemas"]["SynthesisInfo"];
+            tags?: string[];
+        };
         PriorityRecommendation: {
             confidence: number;
             current_priority: number;
@@ -7334,6 +8186,12 @@ export interface components {
             tier?: string;
             usage_percent?: number;
         };
+        Question: {
+            blocking?: boolean;
+            context?: string;
+            question: string;
+            suggested_answers?: string[];
+        };
         QuotaSection: {
             /** @description Accounts */
             accounts: components["schemas"]["AccountQuota"][];
@@ -7369,6 +8227,13 @@ export interface components {
         };
         RecipesResponse: {
             recipes: components["schemas"]["Recipe"][];
+        };
+        Recommendation: {
+            effort?: string;
+            priority: string;
+            rationale?: string;
+            recommendation: string;
+            related_findings?: number[];
         };
         RecommendedAction: {
             /** @description Issue i d */
@@ -7421,6 +8286,11 @@ export interface components {
             findings: number;
             /** @description Mode */
             mode: string;
+        };
+        RedundancyAnalysis: {
+            overall_score: number;
+            pairwise_scores: components["schemas"]["PairSimilarity"][];
+            recommendations?: string[];
         };
         ReleaseReservationsEnvelopeResponse: {
             released: number;
@@ -7578,6 +8448,13 @@ export interface components {
             timestamp: string;
             warnings?: string[];
         };
+        Risk: {
+            affected_areas?: string[];
+            impact: string;
+            likelihood: number;
+            mitigation?: string;
+            risk: string;
+        };
         RobotAction: {
             /** @description Action */
             action: string;
@@ -7589,6 +8466,21 @@ export interface components {
             reason?: string;
             /** @description Target */
             target?: string;
+        };
+        RobotActionModel: {
+            action: string;
+            details?: string;
+            priority?: number;
+            reason?: string;
+            target?: string;
+        };
+        RobotAgentHints: {
+            next_offset?: number;
+            notes?: string[];
+            pages_remaining?: number;
+            suggested_actions?: components["schemas"]["RobotActionModel"][];
+            summary?: string;
+            warnings?: string[];
         };
         RobotCommandInfo: {
             /** @description Category */
@@ -7628,6 +8520,28 @@ export interface components {
             /** @description Unavailable reason */
             unavailable_reason?: string;
         };
+        RobotErrorDetails: {
+            actual_output?: string;
+            agent_type?: string;
+            attempted_actions?: string[];
+            child_pid?: number;
+            duration_ms?: number;
+            exit_method?: string;
+            expected_output?: string;
+            extra?: {
+                [key: string]: unknown;
+            };
+            last_output?: string;
+            process_state?: string;
+        };
+        RobotPaginationInfo: {
+            count: number;
+            has_more: boolean;
+            limit: number;
+            next_cursor?: number;
+            offset: number;
+            total: number;
+        };
         RobotParameter: {
             /** @description Default */
             default?: string;
@@ -7664,6 +8578,12 @@ export interface components {
             /** @description Timestamp */
             timestamp: string;
         };
+        RobotResponseMeta: {
+            command?: string;
+            /** Format: int64 */
+            duration_ms?: number;
+            exit_code?: number;
+        };
         RobotSource: {
             /** @description Level */
             level: string;
@@ -7673,6 +8593,14 @@ export interface components {
             unit?: string;
             /** @description Value */
             value: number;
+        };
+        RobotStructuredError: {
+            code: string;
+            details?: components["schemas"]["RobotErrorDetails"];
+            message: string;
+            pane?: number;
+            phase?: string;
+            recovery_hint?: string;
         };
         RobotTransportInfo: {
             /** @description Endpoint */
@@ -9072,6 +10000,25 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        SurfaceSnapshot: {
+            /** Format: int64 */
+            client_lag_ms?: number;
+            command?: string;
+            decision: string;
+            /** Format: int64 */
+            dropped_count: number;
+            hint?: string;
+            /** Format: int64 */
+            latency_ms: number;
+            pane?: string;
+            queue_capacity?: number;
+            queue_depth: number;
+            reason_codes: string[];
+            /** Format: int64 */
+            retry_after_ms?: number;
+            session?: string;
+            surface: string;
+        };
         SwarmHealthSummary: {
             /** @description Healthy */
             healthy: number;
@@ -9081,6 +10028,48 @@ export interface components {
             respawning: number;
             /** @description Total agents */
             total_agents: number;
+        };
+        SwarmLabEnvelopeResponse: {
+            _meta?: components["schemas"]["RobotResponseMeta"];
+            action: string;
+            calibration?: components["schemas"]["HostCapacityCalibrationReport"];
+            corpus_summary?: components["schemas"]["OverloadRegressionSummary"];
+            error?: string;
+            error_code?: string;
+            experiment_summary?: components["schemas"]["SyntheticExperimentSummary"];
+            experiments: components["schemas"]["SyntheticExperimentArtifact"][];
+            guide?: string;
+            hint?: string;
+            output_format?: string;
+            request_id?: string;
+            run_result?: components["schemas"]["SyntheticRunResult"];
+            scenario_rows: components["schemas"]["SwarmLabScenarioRow"][];
+            scenarios: components["schemas"]["SyntheticExperimentScenario"][];
+            structured_error?: components["schemas"]["RobotStructuredError"];
+            success: boolean;
+            timestamp: string;
+            version?: string;
+            written_run_path?: string;
+        };
+        SwarmLabRunRequest: {
+            action?: string;
+            calibrate?: boolean;
+            command_count?: number;
+            gate?: string;
+            include_live?: boolean;
+            include_opt_in?: boolean;
+            min_confidence?: number;
+            pane_count?: number;
+            profile_id?: string;
+            scenario?: string;
+        };
+        SwarmLabScenarioRow: {
+            command_count: number;
+            event_count: number;
+            gate: string;
+            pane_count: number;
+            result: string;
+            scenario_id: string;
         };
         SwarmPlanAllocation: {
             /** @description Agy agents */
@@ -9148,6 +10137,231 @@ export interface components {
             previous_account?: string;
             provider: string;
             success: boolean;
+        };
+        SynthesisAudit: {
+            conflict_count: number;
+            high_conflict_pairs: string[];
+            unresolved_count: number;
+        };
+        SynthesisInfo: {
+            strategy: string;
+        };
+        SynthesisReport: {
+            confidence: number;
+            fallback_reason?: string;
+            findings_count: number;
+            format: string;
+            generated_at: string;
+            output_path?: string;
+            questions_count: number;
+            recommendations_count: number;
+            redundancy?: components["schemas"]["RedundancyAnalysis"];
+            risks_count: number;
+            strategy: string;
+            summary: string;
+            synthesized_by?: string;
+        };
+        SynthesisResult: {
+            confidence?: number;
+            contributions?: components["schemas"]["ContributionReport"];
+            explanation?: components["schemas"]["ExplanationLayer"];
+            fallback_reason?: string;
+            findings?: components["schemas"]["EnsembleFinding"][];
+            /** Format: date-time */
+            generated_at?: string;
+            questions_for_user?: components["schemas"]["Question"][];
+            raw_output?: string;
+            raw_outputs?: {
+                [key: string]: string;
+            };
+            recommendations?: components["schemas"]["Recommendation"][];
+            redundancy?: components["schemas"]["RedundancyAnalysis"];
+            risks?: components["schemas"]["Risk"][];
+            summary: string;
+            synthesized_by?: string;
+            tokens_used?: number;
+        };
+        SyntheticBackpressureArtifact: {
+            decision: string;
+            /** Format: int64 */
+            dropped_count: number;
+            error_code?: string;
+            max_queue_depth: number;
+            reason_codes: string[];
+            /** Format: int64 */
+            retry_after_ms?: number;
+            schema_version: string;
+            surfaces: components["schemas"]["SurfaceSnapshot"][];
+        };
+        SyntheticEvent: {
+            agent_type: string;
+            kind: string;
+            /** Format: int64 */
+            latency_micros: number;
+            message: string;
+            output_lines: string[];
+            pane_id: string;
+            pane_index: number;
+            pattern: string;
+            seq: number;
+            session_name: string;
+            state: string;
+            /** Format: date-time */
+            timestamp: string;
+        };
+        SyntheticExperimentArtifact: {
+            artifact_paths: components["schemas"]["SyntheticExperimentPaths"];
+            backpressure: components["schemas"]["SyntheticBackpressureArtifact"];
+            budget: components["schemas"]["SyntheticExperimentBudget"];
+            comparison: components["schemas"]["SyntheticExperimentComparison"];
+            gate: string;
+            generated_at: string;
+            metrics: components["schemas"]["SyntheticExperimentMetrics"];
+            opt_in: boolean;
+            scenario: string;
+            scenario_id: string;
+            schema_version: string;
+            test_run_id: string;
+        };
+        SyntheticExperimentBudget: {
+            fail_regression_ratio: number;
+            max_goroutines_leaked: number;
+            /** Format: int64 */
+            max_latency_p95_micros: number;
+            /** Format: int64 */
+            max_memory_growth_bytes: number;
+            min_event_throughput_per_second: number;
+            name: string;
+            warn_regression_ratio: number;
+        };
+        SyntheticExperimentCheck: {
+            baseline?: number;
+            budget?: number;
+            current: number;
+            limit: string;
+            metric: string;
+            result: string;
+        };
+        SyntheticExperimentComparison: {
+            baseline_test_run_id?: string;
+            checks: components["schemas"]["SyntheticExperimentCheck"][];
+            hint?: string;
+            result: string;
+        };
+        SyntheticExperimentMetrics: {
+            command_count: number;
+            event_count: number;
+            event_throughput_per_second: number;
+            goroutines_baseline: number;
+            goroutines_leaked: number;
+            goroutines_peak: number;
+            latency_max_ms: number;
+            latency_p50_ms: number;
+            latency_p95_ms: number;
+            latency_p99_ms: number;
+            latency_samples: number;
+            /** Format: int64 */
+            memory_baseline_bytes: number;
+            /** Format: int64 */
+            memory_growth_bytes: number;
+            /** Format: int64 */
+            memory_peak_bytes: number;
+            pane_count: number;
+            /** Format: int64 */
+            synthetic_duration_micros: number;
+        };
+        SyntheticExperimentPaths: {
+            backpressure?: string;
+            goroutines?: string;
+            latency?: string;
+            memory?: string;
+            overload_regression?: string;
+            root?: string;
+            summary?: string;
+        };
+        SyntheticExperimentRow: {
+            command_count: number;
+            event_count: number;
+            gate: string;
+            p95_ms: number;
+            pane_count: number;
+            result: string;
+            scenario_id: string;
+            test_run_id: string;
+        };
+        SyntheticExperimentScenario: {
+            budget: components["schemas"]["SyntheticExperimentBudget"];
+            description?: string;
+            gate: string;
+            id: string;
+            opt_in: boolean;
+            synthetic: components["schemas"]["SyntheticScenario"];
+        };
+        SyntheticExperimentSummary: {
+            artifact_paths: components["schemas"]["SyntheticExperimentPaths"][];
+            generated_at: string;
+            results: components["schemas"]["SyntheticExperimentRow"][];
+            schema_version: string;
+            success: boolean;
+            warnings: string[];
+        };
+        SyntheticMetrics: {
+            command_count: number;
+            event_count: number;
+            goroutines: number;
+            goroutines_baseline: number;
+            goroutines_leaked: number;
+            goroutines_peak: number;
+            /** Format: int64 */
+            latency_max_micros: number;
+            /** Format: int64 */
+            latency_p50_micros: number;
+            /** Format: int64 */
+            latency_p95_micros: number;
+            /** Format: int64 */
+            memory_baseline_bytes: number;
+            /** Format: int64 */
+            memory_growth_bytes: number;
+            /** Format: int64 */
+            memory_peak_bytes: number;
+            pane_count: number;
+            scenario_name: string;
+            session_name: string;
+            /** Format: int64 */
+            synthetic_duration_micros: number;
+            test_run_id: string;
+        };
+        SyntheticPane: {
+            agent_type: string;
+            command_count: number;
+            event_count: number;
+            id: string;
+            index: number;
+            output_tail: string[];
+            pattern: string;
+            session_name: string;
+            state: string;
+        };
+        SyntheticRunResult: {
+            /** Format: date-time */
+            completed_at: string;
+            events: components["schemas"]["SyntheticEvent"][];
+            metrics: components["schemas"]["SyntheticMetrics"];
+            panes: components["schemas"]["SyntheticPane"][];
+            scenario: components["schemas"]["SyntheticScenario"];
+            /** Format: date-time */
+            started_at: string;
+        };
+        SyntheticScenario: {
+            command_count: number;
+            name: string;
+            output_lines_per_command: number;
+            pane_count: number;
+            patterns?: string[];
+            session_name: string;
+            /** Format: date-time */
+            start_time?: string;
+            test_run_id: string;
         };
         SystemHealthInfo: {
             /** @description Disk free g b */
@@ -9244,6 +10458,23 @@ export interface components {
             key_points: string[];
             participants: string[];
             thread_id: string;
+        };
+        ThresholdRecommendation: {
+            apply: boolean;
+            confidence: number;
+            current: components["schemas"]["Thresholds"];
+            observed_capacity?: number;
+            reason: string;
+            recommended: components["schemas"]["Thresholds"];
+            samples: number;
+            source: string;
+            test_run_ids?: string[];
+            unit?: string;
+        };
+        Thresholds: {
+            critical: number;
+            elevated: number;
+            high: number;
         };
         TimelineSession: {
             agent: string;
@@ -9762,6 +10993,53 @@ export interface components {
             on_error?: string;
             timeout?: components["schemas"]["Duration"];
             webhook_url?: string;
+        };
+        WorktreeCreateEnvelopeResponse: {
+            project_dir: string;
+            request_id?: string;
+            session: string;
+            success: boolean;
+            timestamp: string;
+            worktree: components["schemas"]["WorktreeInfo"];
+        };
+        WorktreeDeleteEnvelopeResponse: {
+            agent_name: string;
+            branch_name?: string;
+            path?: string;
+            project_dir: string;
+            removed: boolean;
+            request_id?: string;
+            session: string;
+            success: boolean;
+            timestamp: string;
+        };
+        WorktreeInfo: {
+            agent_name: string;
+            branch_name: string;
+            created: boolean;
+            error?: string;
+            path: string;
+            session_id: string;
+        };
+        WorktreeMergeEnvelopeResponse: {
+            agent_name: string;
+            merged: boolean;
+            preview?: components["schemas"]["MergePreview"];
+            project_dir: string;
+            request_id?: string;
+            session: string;
+            source_branch?: string;
+            success: boolean;
+            timestamp: string;
+        };
+        WorktreesListEnvelopeResponse: {
+            count: number;
+            project_dir: string;
+            request_id?: string;
+            session?: string;
+            success: boolean;
+            timestamp: string;
+            worktrees: components["schemas"]["WorktreeInfo"][];
         };
     };
     responses: never;
@@ -13008,6 +14286,398 @@ export interface operations {
             };
         };
     };
+    get_api_v1_ensemble_modes: {
+        parameters: {
+            query?: {
+                /** @description Filter reasoning modes by category code or name. */
+                category?: string;
+                /** @description Filter reasoning modes by tier (core, advanced, experimental, all). */
+                tier?: string;
+                /** @description Case-insensitive search term across mode ID, name, description, and best_for. */
+                search?: string;
+                /** @description Maximum modes to return per page. */
+                limit?: number;
+                /** @description Zero-based pagination offset. */
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnsembleModesEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_ensemble_presets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnsemblePresetsEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_ensemble_sessions_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The session identifier */
+                session: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnsembleSessionEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_ensemble_sessions_session_stop: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The session identifier */
+                session: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["EnsembleStopRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnsembleStopEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_ensemble_sessions_session_synthesize: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The session identifier */
+                session: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["EnsembleSynthesizeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnsembleSynthesizeEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_ensemble_spawn: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnsembleSpawnRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnsembleSpawnEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_ensemble_suggest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnsembleSuggestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnsembleSuggestEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     get_api_v1_health: {
         parameters: {
             query?: never;
@@ -13024,6 +14694,56 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SuccessEnvelope"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_health_backpressure: {
+        parameters: {
+            query?: {
+                /** @description Optional tmux session filter for live subsystem backpressure inspection. */
+                session?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HealthBackpressureEnvelopeResponse"];
                 };
             };
             /** @description Bad request */
@@ -20021,6 +21741,109 @@ export interface operations {
             };
         };
     };
+    post_api_v1_swarm_lab_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SwarmLabRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SwarmLabEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_swarm_lab_scenarios: {
+        parameters: {
+            query?: {
+                /** @description Optional synthetic experiment scenario ID filter. */
+                scenario?: string;
+                /** @description Optional scale gate filter (short, benchmark, load). */
+                gate?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SwarmLabEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     get_api_v1_version: {
         parameters: {
             query?: never;
@@ -20050,6 +21873,238 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_worktrees: {
+        parameters: {
+            query?: {
+                /** @description Optional session filter; omitted lists worktrees across all sessions. */
+                session?: string;
+                /** @description Optional existing absolute project directory override (alias: ?project=). */
+                project_dir?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorktreesListEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_worktrees: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateWorktreeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorktreeCreateEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_api_v1_worktrees_agent: {
+        parameters: {
+            query?: {
+                /** @description Optional session owning the agent worktree; auto-resolved when unique. */
+                session?: string;
+                /** @description Force removal even when uncommitted or unmerged changes exist. */
+                force?: boolean;
+                /** @description Optional existing absolute project directory override (alias: ?project=). */
+                project_dir?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The agent identifier */
+                agent: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorktreeDeleteEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_worktrees_agent_merge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The agent identifier */
+                agent: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["MergeWorktreeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorktreeMergeEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

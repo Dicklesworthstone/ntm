@@ -199,6 +199,135 @@ export interface MailConflict {
     holders: string[];
 }
 
+export const DEFAULT_WEB_PORT = 7337;
+
+export const SUPPORTED_ATTENTION_ACTIONS = [
+    'ack',
+    'pin',
+    'unpin',
+    'snooze',
+    'dismiss',
+] as const;
+
+export type AttentionMutationAction = typeof SUPPORTED_ATTENTION_ACTIONS[number];
+
+export interface EnsemblePreset {
+    name: string;
+    display?: string;
+    display_name: string;
+    description: string;
+    modes: string[];
+    mode_count: number;
+    agent_count: number;
+    category?: string;
+    tags: string[];
+    source?: string;
+    allow_advanced?: boolean;
+    synthesis?: { strategy: string };
+    budget?: { total: number };
+}
+
+export interface EnsembleSuggestion {
+    preset_name: string;
+    display_name: string;
+    description: string;
+    score: number;
+    reasons: string[];
+    mode_count: number;
+    modes?: string[];
+    tags: string[];
+    spawn_cmd?: string;
+}
+
+export interface EnsembleSuggestResult {
+    question: string;
+    top_pick?: EnsembleSuggestion;
+    suggestions: EnsembleSuggestion[];
+    recommended_preset?: string;
+    recommended_modes?: string[];
+    summary?: string;
+}
+
+export interface EnsembleSpawnOptions {
+    session: string;
+    preset?: string;
+    modes?: string;
+    question: string;
+    agents?: string;
+    projectDir?: string;
+    assignment?: string;
+    allowAdvanced?: boolean;
+}
+
+export interface EnsembleSpawnMode {
+    id: string;
+    code?: string;
+    tier?: string;
+    pane?: string;
+    agent_type?: string;
+}
+
+export interface EnsembleSpawnBudget {
+    total_tokens?: number;
+    per_mode_tokens?: number;
+}
+
+export interface EnsembleSpawnResult {
+    action: string;
+    session: string;
+    preset?: string;
+    question?: string;
+    project_dir?: string;
+    assignment?: string;
+    agents?: Record<string, number>;
+    modes: EnsembleSpawnMode[];
+    budget: EnsembleSpawnBudget;
+    status?: string;
+    warnings?: string[];
+}
+
+export interface AttentionListOptions {
+    actionRequired?: boolean;
+    limit?: number;
+    session?: string;
+    includeAll?: boolean;
+}
+
+export interface AttentionItem {
+    cursor: number;
+    item_key: string;
+    dedup_key?: string;
+    session?: string;
+    pane?: string;
+    category: string;
+    type: string;
+    severity: string;
+    actionability: string;
+    action_required: boolean;
+    summary: string;
+    event_timestamp?: string;
+    state: string;
+    operator_state: string;
+    pinned: boolean;
+    muted: boolean;
+    snoozed_until?: string;
+    override_priority?: string;
+    resurfacing_policy?: string;
+}
+
+export interface AttentionMutationResult {
+    success: boolean;
+    timestamp: string;
+    action: string;
+    ref: string;
+    cursor?: number;
+    item_key: string;
+    previous_state: string;
+    current_state: string;
+    pinned?: boolean;
+    snoozed_until?: string;
+}
+
 export type ExecFileRunner = (
     file: string,
     args: string[],
@@ -211,8 +340,9 @@ export interface NtmClientOptions {
     execFile?: ExecFileRunner;
 }
 
-const SAFE_BARE_SHELL_ARG = /^[A-Za-z0-9_./:@][A-Za-z0-9_./:@=-]*$/;
+const SAFE_BARE_SHELL_ARG = /^[A-Za-z0-9_./:@-][A-Za-z0-9_./:@=-]*$/;
 const ACTIVE_AGENT_STATES = new Set(['active', 'working', 'busy', 'running']);
+const ACTION_REQUIRED_LEVELS = new Set(['action_required', 'urgent']);
 const MAX_EXEC_BUFFER_BYTES = 16 * 1024 * 1024;
 
 /**
@@ -233,10 +363,41 @@ export function shellQuote(arg: string): string {
 
 /**
  * Build a shell-safe integrated terminal command using the configured `ntm.binaryPath`.
+ * Accepts either `(binaryPath, argsArray)` or `(binaryPath, subcommand, ...args)`.
  */
-export function buildNtmTerminalCommand(binaryPath: string, subcommand: string, ...args: string[]): string {
+export function buildNtmTerminalCommand(binaryPath: string, args: readonly string[]): string;
+export function buildNtmTerminalCommand(binaryPath: string, subcommand: string, ...args: string[]): string;
+export function buildNtmTerminalCommand(
+    binaryPath: string,
+    subcommandOrArgs: string | readonly string[],
+    ...restArgs: string[]
+): string {
     const bin = (binaryPath ?? '').trim() || 'ntm';
-    return [bin, subcommand, ...args].map(shellQuote).join(' ');
+    const argv = Array.isArray(subcommandOrArgs)
+        ? [...subcommandOrArgs, ...restArgs]
+        : [subcommandOrArgs as string, ...restArgs];
+    return [bin, ...argv].map(shellQuote).join(' ');
+}
+
+/**
+ * Normalize a configured web server port to a valid TCP port (1..65535), falling back to 7337.
+ */
+export function normalizeWebPort(value: unknown): number {
+    const num = typeof value === 'number'
+        ? value
+        : (typeof value === 'string' && value.trim().length > 0 ? Number(value.trim()) : NaN);
+    if (Number.isInteger(num) && num >= 1 && num <= 65535) {
+        return num;
+    }
+    return DEFAULT_WEB_PORT;
+}
+
+/**
+ * Build a shell-safe terminal command for launching `ntm web --port <port>`.
+ */
+export function buildWebCockpitCommand(binaryPath: string, port?: number): string {
+    const resolvedPort = normalizeWebPort(port);
+    return buildNtmTerminalCommand(binaryPath, ['web', '--port', String(resolvedPort)]);
 }
 
 /**
@@ -521,6 +682,310 @@ export function normalizeStatusHeader(raw: unknown): RobotStatus {
     return normalizeCommonPayload(raw, true);
 }
 
+function assertSuccessPayload(raw: unknown, label: string): Record<string, unknown> {
+    const obj = asRecord(raw);
+    if (!obj) {
+        throw new Error(`Invalid NTM ${label} JSON payload`);
+    }
+    if (obj.success === false) {
+        const errMsg = typeof obj.error === 'string' && obj.error.length > 0
+            ? obj.error
+            : `${label} reported success=false`;
+        const hint = typeof obj.hint === 'string' && obj.hint.length > 0 ? ` (${obj.hint})` : '';
+        throw new Error(`${errMsg}${hint}`);
+    }
+    return obj;
+}
+
+function toStringArray(raw: unknown): string[] {
+    if (!Array.isArray(raw)) {
+        return [];
+    }
+    return raw
+        .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        .map(item => item.trim());
+}
+
+/**
+ * Normalize a `--robot-ensemble-presets` JSON payload into `EnsemblePreset[]`.
+ */
+export function normalizeEnsemblePresets(raw: unknown): EnsemblePreset[] {
+    const obj = assertSuccessPayload(raw, 'ensemble presets');
+    if (!Array.isArray(obj.presets)) {
+        return [];
+    }
+
+    return obj.presets
+        .map(entry => {
+            const p = asRecord(entry);
+            if (!p) {
+                return undefined;
+            }
+            const name = typeof p.name === 'string' ? p.name.trim() : '';
+            if (!name) {
+                return undefined;
+            }
+            const modes = toStringArray(p.modes);
+            const tags = toStringArray(p.tags);
+            const display = typeof p.display === 'string' && p.display.trim().length > 0
+                ? p.display.trim()
+                : undefined;
+            const displayName = typeof p.display_name === 'string' && p.display_name.trim().length > 0
+                ? p.display_name.trim()
+                : (display ?? name);
+            const modeCount = typeof p.mode_count === 'number'
+                ? p.mode_count
+                : (typeof p.agent_count === 'number' ? p.agent_count : modes.length);
+            const agentCount = typeof p.agent_count === 'number' ? p.agent_count : modeCount;
+            const category = typeof p.category === 'string' && p.category.trim().length > 0
+                ? p.category.trim()
+                : tags[0];
+
+            const rawSynthesis = asRecord(p.synthesis);
+            const rawBudget = asRecord(p.budget);
+
+            const preset: EnsemblePreset = {
+                name,
+                display,
+                display_name: displayName,
+                description: typeof p.description === 'string' ? p.description : '',
+                modes,
+                mode_count: modeCount,
+                agent_count: agentCount,
+                category,
+                tags,
+                source: typeof p.source === 'string' ? p.source : undefined,
+                allow_advanced: typeof p.allow_advanced === 'boolean' ? p.allow_advanced : undefined,
+                synthesis: rawSynthesis && typeof rawSynthesis.strategy === 'string'
+                    ? { strategy: rawSynthesis.strategy }
+                    : undefined,
+                budget: rawBudget && typeof rawBudget.total === 'number'
+                    ? { total: rawBudget.total }
+                    : undefined,
+            };
+            return preset;
+        })
+        .filter((item): item is EnsemblePreset => item !== undefined);
+}
+
+function normalizeSuggestionItem(raw: unknown): EnsembleSuggestion | undefined {
+    const obj = asRecord(raw);
+    if (!obj) {
+        return undefined;
+    }
+    const presetName = typeof obj.preset_name === 'string'
+        ? obj.preset_name.trim()
+        : (typeof obj.name === 'string' ? obj.name.trim() : '');
+    if (!presetName) {
+        return undefined;
+    }
+    const modes = Array.isArray(obj.modes) ? toStringArray(obj.modes) : undefined;
+    const modeCount = typeof obj.mode_count === 'number'
+        ? obj.mode_count
+        : (modes ? modes.length : 0);
+
+    return {
+        preset_name: presetName,
+        display_name: typeof obj.display_name === 'string' && obj.display_name.trim().length > 0
+            ? obj.display_name.trim()
+            : presetName,
+        description: typeof obj.description === 'string' ? obj.description : '',
+        score: typeof obj.score === 'number' ? obj.score : 0,
+        reasons: toStringArray(obj.reasons),
+        mode_count: modeCount,
+        modes,
+        tags: toStringArray(obj.tags),
+        spawn_cmd: typeof obj.spawn_cmd === 'string' ? obj.spawn_cmd : undefined,
+    };
+}
+
+/**
+ * Normalize a `--robot-ensemble-suggest` JSON payload into `EnsembleSuggestResult`.
+ */
+export function normalizeEnsembleSuggest(raw: unknown): EnsembleSuggestResult {
+    const obj = assertSuccessPayload(raw, 'ensemble suggest');
+    const suggestions = Array.isArray(obj.suggestions)
+        ? obj.suggestions
+            .map(normalizeSuggestionItem)
+            .filter((s): s is EnsembleSuggestion => s !== undefined)
+        : [];
+
+    const topPick = normalizeSuggestionItem(obj.top_pick) ?? suggestions[0];
+    const rawHints = asRecord(obj._agent_hints);
+    const fallbackPreset = typeof obj.recommended_preset === 'string' && obj.recommended_preset.trim().length > 0
+        ? obj.recommended_preset.trim()
+        : (typeof obj.preset_name === 'string' && obj.preset_name.trim().length > 0 ? obj.preset_name.trim() : undefined);
+    const recommendedModes = topPick?.modes
+        ?? (Array.isArray(obj.recommended_modes) ? toStringArray(obj.recommended_modes) : undefined)
+        ?? (Array.isArray(obj.modes) ? toStringArray(obj.modes) : undefined);
+
+    return {
+        question: typeof obj.question === 'string' ? obj.question : '',
+        top_pick: topPick,
+        suggestions,
+        recommended_preset: topPick?.preset_name ?? fallbackPreset,
+        recommended_modes: recommendedModes,
+        summary: rawHints && typeof rawHints.summary === 'string' ? rawHints.summary : undefined,
+    };
+}
+
+/**
+ * Normalize a `--robot-ensemble-spawn` JSON payload into `EnsembleSpawnResult`.
+ */
+export function normalizeEnsembleSpawn(raw: unknown): EnsembleSpawnResult {
+    const obj = assertSuccessPayload(raw, 'ensemble spawn');
+    const modes: EnsembleSpawnMode[] = Array.isArray(obj.modes)
+        ? obj.modes
+            .map(entry => {
+                const m = asRecord(entry);
+                if (!m || typeof m.id !== 'string') {
+                    return undefined;
+                }
+                const mode: EnsembleSpawnMode = {
+                    id: m.id,
+                    code: typeof m.code === 'string' ? m.code : undefined,
+                    tier: typeof m.tier === 'string' ? m.tier : undefined,
+                    pane: typeof m.pane === 'string' ? m.pane : undefined,
+                    agent_type: typeof m.agent_type === 'string' ? m.agent_type : undefined,
+                };
+                return mode;
+            })
+            .filter((m): m is EnsembleSpawnMode => m !== undefined)
+        : [];
+
+    const rawBudget = asRecord(obj.budget);
+    const budget: EnsembleSpawnBudget = {
+        total_tokens: typeof rawBudget?.total_tokens === 'number' ? rawBudget.total_tokens : undefined,
+        per_mode_tokens: typeof rawBudget?.per_mode_tokens === 'number' ? rawBudget.per_mode_tokens : undefined,
+    };
+
+    let agentsMap: Record<string, number> | undefined;
+    const rawAgents = asRecord(obj.agents);
+    if (rawAgents) {
+        agentsMap = {};
+        for (const [k, v] of Object.entries(rawAgents)) {
+            if (typeof v === 'number') {
+                agentsMap[k] = v;
+            }
+        }
+    }
+
+    return {
+        action: typeof obj.action === 'string' ? obj.action : 'ensemble_spawn',
+        session: typeof obj.session === 'string' ? obj.session : '',
+        preset: typeof obj.preset === 'string' ? obj.preset : undefined,
+        question: typeof obj.question === 'string' ? obj.question : undefined,
+        project_dir: typeof obj.project_dir === 'string' ? obj.project_dir : undefined,
+        assignment: typeof obj.assignment === 'string' ? obj.assignment : undefined,
+        agents: agentsMap,
+        modes,
+        budget,
+        status: typeof obj.status === 'string' ? obj.status : undefined,
+        warnings: Array.isArray(obj.warnings) ? toStringArray(obj.warnings) : undefined,
+    };
+}
+
+/**
+ * Normalize an `ntm attention list --json` payload into `AttentionItem[]`.
+ */
+export function normalizeAttentionList(raw: unknown): AttentionItem[] {
+    const obj = assertSuccessPayload(raw, 'attention list');
+    if (!Array.isArray(obj.items)) {
+        return [];
+    }
+
+    return obj.items
+        .map(entry => {
+            const it = asRecord(entry);
+            if (!it) {
+                return undefined;
+            }
+            const cursor = Number(it.cursor ?? 0);
+            if (!Number.isFinite(cursor)) {
+                return undefined;
+            }
+            const state = typeof it.state === 'string' && it.state.length > 0
+                ? it.state
+                : (typeof it.operator_state === 'string' && it.operator_state.length > 0 ? it.operator_state : 'new');
+            const operatorState = typeof it.operator_state === 'string' && it.operator_state.length > 0
+                ? it.operator_state
+                : state;
+            const actionability = typeof it.actionability === 'string' && it.actionability.length > 0
+                ? it.actionability
+                : (it.action_required === true ? 'action_required' : 'interesting');
+            const actionRequired = typeof it.action_required === 'boolean'
+                ? it.action_required
+                : ACTION_REQUIRED_LEVELS.has(actionability.toLowerCase());
+
+            const item: AttentionItem = {
+                cursor,
+                item_key: typeof it.item_key === 'string' && it.item_key.length > 0 ? it.item_key : `cursor:${cursor}`,
+                dedup_key: typeof it.dedup_key === 'string' ? it.dedup_key : undefined,
+                session: typeof it.session === 'string' && it.session.length > 0 ? it.session : undefined,
+                pane: typeof it.pane === 'string' && it.pane.length > 0 ? it.pane : undefined,
+                category: typeof it.category === 'string' ? it.category : 'general',
+                type: typeof it.type === 'string' ? it.type : 'event',
+                severity: typeof it.severity === 'string' && it.severity.length > 0 ? it.severity : 'info',
+                actionability,
+                action_required: actionRequired,
+                summary: typeof it.summary === 'string' ? it.summary : '',
+                event_timestamp: typeof it.event_timestamp === 'string' ? it.event_timestamp : undefined,
+                state,
+                operator_state: operatorState,
+                pinned: Boolean(it.pinned),
+                muted: Boolean(it.muted),
+                snoozed_until: typeof it.snoozed_until === 'string' ? it.snoozed_until : undefined,
+                override_priority: typeof it.override_priority === 'string' ? it.override_priority : undefined,
+                resurfacing_policy: typeof it.resurfacing_policy === 'string' ? it.resurfacing_policy : undefined,
+            };
+            return item;
+        })
+        .filter((item): item is AttentionItem => item !== undefined);
+}
+
+/**
+ * Normalize an `ntm attention <action> <cursor> --json` payload into `AttentionMutationResult`.
+ */
+export function normalizeAttentionMutation(raw: unknown): AttentionMutationResult {
+    const obj = assertSuccessPayload(raw, 'attention mutation');
+    const attState = asRecord(obj.attention_state);
+
+    return {
+        success: true,
+        timestamp: typeof obj.timestamp === 'string' ? obj.timestamp : new Date().toISOString(),
+        action: typeof obj.action === 'string' ? obj.action : '',
+        ref: typeof obj.ref === 'string' ? obj.ref : String(obj.cursor ?? ''),
+        cursor: typeof obj.cursor === 'number' ? obj.cursor : undefined,
+        item_key: typeof obj.item_key === 'string' ? obj.item_key : '',
+        previous_state: typeof obj.previous_state === 'string' ? obj.previous_state : 'new',
+        current_state: typeof obj.current_state === 'string'
+            ? obj.current_state
+            : (typeof attState?.state === 'string' ? attState.state : 'new'),
+        pinned: typeof attState?.pinned === 'boolean' ? attState.pinned : undefined,
+        snoozed_until: typeof attState?.snoozed_until === 'string' ? attState.snoozed_until : undefined,
+    };
+}
+
+function extractJsonErrorDetail(stdout?: string): string | undefined {
+    if (typeof stdout !== 'string') {
+        return undefined;
+    }
+    const trimmed = stdout.trim();
+    if (!trimmed.startsWith('{')) {
+        return undefined;
+    }
+    try {
+        const parsed = asRecord(JSON.parse(trimmed));
+        if (parsed && typeof parsed.error === 'string' && parsed.error.length > 0) {
+            const hint = typeof parsed.hint === 'string' && parsed.hint.length > 0 ? ` (${parsed.hint})` : '';
+            return `${parsed.error}${hint}`;
+        }
+    } catch {
+        // Ignore non-JSON stdout
+    }
+    return undefined;
+}
+
 function defaultExecFile(
     file: string,
     args: string[],
@@ -605,7 +1070,12 @@ export class NtmClient {
                     // Fall through to standard error reporting
                 }
             }
-            const detail = e.stderr ? `: ${e.stderr}` : (e.message ? `: ${e.message}` : '');
+            const jsonError = !e.stderr || e.stderr.trim().length === 0
+                ? extractJsonErrorDetail(e.stdout)
+                : undefined;
+            const detail = e.stderr && e.stderr.trim().length > 0
+                ? `: ${e.stderr}`
+                : (jsonError ? `: ${jsonError}` : (e.message ? `: ${e.message}` : ''));
             throw new Error(`ntm ${finalArgs.join(' ')} failed${detail}`);
         }
     }
@@ -737,5 +1207,144 @@ export class NtmClient {
                 this.mailInFlight = null;
             }
         }
+    }
+
+    /**
+     * List available reasoning ensemble presets via `ntm --robot-ensemble-presets`.
+     */
+    async getEnsemblePresets(): Promise<EnsemblePreset[]> {
+        const stdout = await this.run(['--robot-ensemble-presets', '--robot-format=json']);
+        return normalizeEnsemblePresets(JSON.parse(stdout));
+    }
+
+    /**
+     * Suggest the best reasoning ensemble preset for a problem/question via
+     * `ntm --robot-ensemble-suggest=<question>`.
+     */
+    async suggestEnsemble(question: string): Promise<EnsembleSuggestResult> {
+        const trimmed = (question ?? '').trim();
+        if (!trimmed) {
+            throw new Error('Question is required for ensemble suggestion');
+        }
+        const stdout = await this.run([`--robot-ensemble-suggest=${trimmed}`, '--robot-format=json']);
+        return normalizeEnsembleSuggest(JSON.parse(stdout));
+    }
+
+    /**
+     * Spawn a multi-agent reasoning ensemble via `ntm --robot-ensemble-spawn=<session>`.
+     */
+    async spawnEnsemble(options: EnsembleSpawnOptions): Promise<EnsembleSpawnResult> {
+        const session = (options?.session ?? '').trim();
+        if (!session) {
+            throw new Error('Session name is required to spawn an ensemble');
+        }
+        const question = (options?.question ?? '').trim();
+        if (!question) {
+            throw new Error('Question is required to spawn an ensemble');
+        }
+        const preset = (options?.preset ?? '').trim();
+        const modes = (options?.modes ?? '').trim();
+        if (!preset && !modes) {
+            throw new Error('Either preset or modes is required to spawn an ensemble');
+        }
+        if (preset && modes) {
+            throw new Error('preset and modes are mutually exclusive for ensemble spawn');
+        }
+
+        const args: string[] = [`--robot-ensemble-spawn=${session}`];
+        if (preset) {
+            args.push(`--preset=${preset}`);
+        }
+        if (modes) {
+            args.push(`--modes=${modes}`);
+        }
+        args.push(`--question=${question}`);
+
+        const agents = (options?.agents ?? '').trim();
+        if (agents) {
+            args.push(`--agents=${agents}`);
+        }
+        const assignment = (options?.assignment ?? '').trim();
+        if (assignment) {
+            args.push(`--assignment=${assignment}`);
+        }
+        if (options?.allowAdvanced) {
+            args.push('--allow-advanced');
+        }
+        const projectDir = (options?.projectDir ?? '').trim();
+        if (projectDir) {
+            args.push(`--project=${projectDir}`);
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeEnsembleSpawn(JSON.parse(stdout));
+    }
+
+    /**
+     * List surfaced operator attention items via `ntm attention list --json`.
+     */
+    async listAttentionItems(options?: AttentionListOptions): Promise<AttentionItem[]> {
+        const args: string[] = ['attention', 'list'];
+        if (options?.session && options.session.trim().length > 0) {
+            args.push(`--session=${options.session.trim()}`);
+        }
+        if (options?.limit !== undefined) {
+            if (!Number.isInteger(options.limit) || options.limit < 1) {
+                throw new Error('Attention list limit must be a positive integer');
+            }
+            args.push(`--limit=${options.limit}`);
+        }
+        if (options?.includeAll) {
+            args.push('--all');
+        }
+        args.push('--json');
+
+        const stdout = await this.run(args);
+        const items = normalizeAttentionList(JSON.parse(stdout));
+        if (options?.actionRequired) {
+            return items.filter(item => item.action_required);
+        }
+        return items;
+    }
+
+    /**
+     * Transition operator attention state via `ntm attention <action> <cursor> --json`
+     * (using `--until=<duration>` when `action === 'snooze'`).
+     */
+    async mutateAttentionItem(
+        action: AttentionMutationAction,
+        cursor: number | string,
+        duration?: string
+    ): Promise<AttentionMutationResult> {
+        if (!SUPPORTED_ATTENTION_ACTIONS.includes(action)) {
+            throw new Error(`Unsupported attention action: ${String(action)}`);
+        }
+
+        let ref: string;
+        if (typeof cursor === 'number') {
+            if (!Number.isInteger(cursor) || cursor < 1) {
+                throw new Error('Attention cursor must be a positive integer');
+            }
+            ref = String(cursor);
+        } else {
+            ref = String(cursor ?? '').trim();
+            if (!ref) {
+                throw new Error('Attention cursor or item key is required');
+            }
+        }
+
+        const args: string[] = ['attention', action, ref];
+        if (action === 'snooze') {
+            const trimmedDuration = (duration ?? '').trim();
+            if (!trimmedDuration) {
+                throw new Error('Duration is required when snoozing an attention item');
+            }
+            args.push(`--until=${trimmedDuration}`);
+        }
+        args.push('--json');
+
+        const stdout = await this.run(args);
+        return normalizeAttentionMutation(JSON.parse(stdout));
     }
 }

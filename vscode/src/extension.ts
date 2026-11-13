@@ -1,7 +1,15 @@
+import * as path from 'path';
 import * as vscode from 'vscode';
 import {
     AgentInfo,
+    AttentionItem,
+    AttentionMutationAction,
     buildNtmTerminalCommand,
+    buildWebCockpitCommand,
+    DEFAULT_WEB_PORT,
+    EnsemblePreset,
+    EnsembleSuggestResult,
+    normalizeWebPort,
     NtmClient,
     RobotStatus,
     SendHarness,
@@ -13,7 +21,9 @@ import { NtmDashboard } from './dashboard';
 import { normalizeWorkspaceRelativePath, registerFileDecorations } from './fileDecorations';
 import { NtmTreeItem, registerSessionTreeView } from './sessionTreeView';
 
-export { shellQuote, buildNtmTerminalCommand };
+export { shellQuote, buildNtmTerminalCommand, buildWebCockpitCommand, normalizeWebPort };
+
+export const WEB_COCKPIT_TERMINAL_NAME = 'NTM Web Cockpit';
 
 export interface SpawnHarnessQuickPickItem extends vscode.QuickPickItem {
     harness: SpawnHarness | 'custom';
@@ -49,6 +59,261 @@ export const SEND_TARGET_OPTIONS: readonly SendTargetQuickPickItem[] = [
     { label: 'Pi (--pi)', target: 'pi', description: 'Target Pi panes' },
     { label: 'Gemini (--gmi)', target: 'gmi', description: 'Target Gemini panes' },
 ];
+
+export interface EnsemblePresetQuickPickItem extends vscode.QuickPickItem {
+    presetName: string;
+    recommended: boolean;
+}
+
+export interface AttentionQuickPickItem extends vscode.QuickPickItem {
+    item: AttentionItem;
+}
+
+export interface AttentionActionQuickPickItem extends vscode.QuickPickItem {
+    action: AttentionMutationAction;
+    duration?: string;
+}
+
+export interface PaletteActionQuickPickItem extends vscode.QuickPickItem {
+    actionId:
+        | 'terminalPalette'
+        | 'spawnEnsemble'
+        | 'triageAttention'
+        | 'openWebCockpit'
+        | 'dashboard'
+        | 'spawn'
+        | 'sendPrompt'
+        | 'showStatus';
+    command?: string;
+}
+
+export const PALETTE_ACTION_OPTIONS: readonly PaletteActionQuickPickItem[] = [
+    {
+        label: '$(terminal) Open Session Palette (ntm palette)',
+        description: 'Interactive TUI command palette in terminal',
+        actionId: 'terminalPalette',
+    },
+    {
+        label: '$(sparkle) Spawn Reasoning Ensemble',
+        description: 'NTM: Spawn Reasoning Ensemble',
+        detail: 'Suggest preset for a question and launch a multi-agent reasoning ensemble',
+        actionId: 'spawnEnsemble',
+        command: 'ntm.spawnEnsemble',
+    },
+    {
+        label: '$(bell) Triage Attention Feed',
+        description: 'NTM: Triage Attention Feed',
+        detail: 'Inspect pending attention items and acknowledge, pin, snooze, or dismiss',
+        actionId: 'triageAttention',
+        command: 'ntm.triageAttention',
+    },
+    {
+        label: '$(globe) Open Web Cockpit (ntm web)',
+        description: 'NTM: Open Web Cockpit',
+        detail: 'Start or reuse the local NTM web dashboard server and open it in browser',
+        actionId: 'openWebCockpit',
+        command: 'ntm.openWebCockpit',
+    },
+    {
+        label: '$(dashboard) Open Dashboard',
+        description: 'NTM: Open Dashboard',
+        actionId: 'dashboard',
+        command: 'ntm.dashboard',
+    },
+    {
+        label: '$(add) Spawn Agents for Project',
+        description: 'NTM: Spawn Agents for Project',
+        actionId: 'spawn',
+        command: 'ntm.spawn',
+    },
+    {
+        label: '$(comment-discussion) Send Prompt to Agent',
+        description: 'NTM: Send Prompt to Agent',
+        actionId: 'sendPrompt',
+        command: 'ntm.sendPrompt',
+    },
+    {
+        label: '$(list-unordered) Show Session Status',
+        description: 'NTM: Show Session Status',
+        actionId: 'showStatus',
+        command: 'ntm.showStatus',
+    },
+];
+
+/**
+ * Build QuickPick items for ensemble presets, promoting any suggested preset to index 0
+ * with a `$(sparkle) Recommended: ...` badge followed by all remaining presets.
+ */
+export function buildEnsemblePresetQuickPickItems(
+    presets: readonly EnsemblePreset[],
+    suggestion?: EnsembleSuggestResult
+): EnsemblePresetQuickPickItem[] {
+    const items: EnsemblePresetQuickPickItem[] = [];
+    const topPick = suggestion?.top_pick
+        ?? (suggestion?.recommended_preset
+            ? {
+                preset_name: suggestion.recommended_preset,
+                display_name: suggestion.recommended_preset,
+                description: '',
+                score: 0,
+                reasons: [],
+                mode_count: suggestion.recommended_modes?.length ?? 0,
+                modes: suggestion.recommended_modes,
+                tags: [],
+            }
+            : undefined);
+
+    let recommendedName: string | undefined;
+    if (topPick && topPick.preset_name) {
+        recommendedName = topPick.preset_name;
+        const matched = presets.find(p => p.name === topPick.preset_name);
+        const displayName = topPick.display_name || matched?.display_name || topPick.preset_name;
+        const modeCount = matched?.mode_count ?? topPick.mode_count;
+        const descParts = [
+            topPick.preset_name,
+            modeCount > 0 ? `${modeCount} modes` : undefined,
+            matched?.category,
+        ].filter(Boolean);
+        const detailParts = [
+            topPick.description || matched?.description,
+            topPick.reasons.length > 0 ? `Why: ${topPick.reasons.join(', ')}` : undefined,
+        ].filter(Boolean);
+
+        items.push({
+            label: `$(sparkle) Recommended: ${displayName}`,
+            description: descParts.join(' · '),
+            detail: detailParts.length > 0 ? detailParts.join(' — ') : undefined,
+            presetName: topPick.preset_name,
+            recommended: true,
+            picked: true,
+        });
+    }
+
+    for (const preset of presets) {
+        if (recommendedName && preset.name === recommendedName) {
+            continue;
+        }
+        const descParts = [
+            preset.name,
+            preset.mode_count > 0 ? `${preset.mode_count} modes` : undefined,
+            preset.category,
+        ].filter(Boolean);
+        items.push({
+            label: preset.display_name || preset.name,
+            description: descParts.join(' · '),
+            detail: preset.description || undefined,
+            presetName: preset.name,
+            recommended: false,
+        });
+    }
+
+    return items;
+}
+
+/**
+ * Derive a clean tmux-safe default session name (`<workspace>-ensemble`).
+ */
+export function defaultEnsembleSessionName(workspaceName?: string, workspaceFolderPath?: string): string {
+    const rawBase = (workspaceName ?? '').trim()
+        || (workspaceFolderPath ? path.basename(workspaceFolderPath).trim() : '');
+    const sanitized = rawBase
+        .replace(/[:.\s/\\]+/g, '-')
+        .replace(/[^A-Za-z0-9_-]/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '');
+    const base = sanitized || 'ntm';
+    return base.endsWith('-ensemble') ? base : `${base}-ensemble`;
+}
+
+/**
+ * Map attention item severity to a VS Code codicon.
+ */
+export function attentionSeverityIcon(severity?: string): string {
+    switch ((severity ?? '').toLowerCase()) {
+        case 'critical':
+        case 'error':
+            return '$(error)';
+        case 'warning':
+        case 'warn':
+        case 'high':
+            return '$(warning)';
+        default:
+            return '$(info)';
+    }
+}
+
+/**
+ * Format surfaced attention items for QuickPick triage.
+ */
+export function buildAttentionQuickPickItems(items: readonly AttentionItem[]): AttentionQuickPickItem[] {
+    return items.map(item => {
+        const icon = attentionSeverityIcon(item.severity);
+        const stateBadge = item.pinned ? `pinned · ${item.operator_state}` : item.operator_state;
+        const descParts = [
+            item.session ?? 'global',
+            item.pane ? `pane ${item.pane}` : undefined,
+        ].filter(Boolean);
+        const detailParts = [
+            item.category,
+            item.type,
+            item.action_required ? 'action-required' : item.actionability,
+        ].filter(Boolean);
+
+        return {
+            label: `${icon} #${item.cursor} [${stateBadge}] ${item.summary}`,
+            description: descParts.join(' · '),
+            detail: detailParts.join(' • '),
+            item,
+        };
+    });
+}
+
+/**
+ * Build operator mutation actions for a selected attention item.
+ */
+export function buildAttentionActionQuickPickItems(item?: AttentionItem): AttentionActionQuickPickItem[] {
+    const actions: AttentionActionQuickPickItem[] = [
+        {
+            label: '$(check) Acknowledge',
+            description: 'ack',
+            detail: 'Mark this attention item as acknowledged',
+            action: 'ack',
+        },
+        {
+            label: '$(pin) Pin',
+            description: 'pin',
+            detail: 'Keep this attention item elevated in the feed',
+            action: 'pin',
+        },
+    ];
+
+    if (item?.pinned) {
+        actions.push({
+            label: '$(pinned) Unpin',
+            description: 'unpin',
+            detail: 'Remove pin from this attention item',
+            action: 'unpin',
+        });
+    }
+
+    actions.push(
+        {
+            label: '$(clock) Snooze 30m',
+            description: 'snooze (30m)',
+            detail: 'Hide this attention item for 30 minutes',
+            action: 'snooze',
+            duration: '30m',
+        },
+        {
+            label: '$(trash) Dismiss',
+            description: 'dismiss',
+            detail: 'Dismiss this attention item from the active feed',
+            action: 'dismiss',
+        }
+    );
+
+    return actions;
+}
 
 /**
  * Parse custom whitespace-separated CLI flags while honoring single/double quotes.
@@ -128,8 +393,8 @@ function extractSessionName(arg?: string | NtmTreeItem): string | undefined {
     return undefined;
 }
 
-export function activate(context: vscode.ExtensionContext) {
-    const client = new NtmClient();
+export function activate(context: vscode.ExtensionContext, clientOverride?: NtmClient) {
+    const client = clientOverride ?? new NtmClient();
     const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     statusBarItem.command = 'ntm.openPalette';
     context.subscriptions.push(statusBarItem);
@@ -204,8 +469,24 @@ export function activate(context: vscode.ExtensionContext) {
         }
     });
 
-    const dispOpenPalette = vscode.commands.registerCommand('ntm.openPalette', async (sessionArg?: string) => {
+    const dispOpenPalette = vscode.commands.registerCommand('ntm.openPalette', async (sessionArg?: string | NtmTreeItem) => {
         try {
+            const picked = await vscode.window.showQuickPick(PALETTE_ACTION_OPTIONS, {
+                placeHolder: 'Select an NTM action',
+            });
+            if (!picked) {
+                return;
+            }
+
+            if (picked.actionId !== 'terminalPalette' && picked.command) {
+                if (picked.actionId === 'sendPrompt' && sessionArg) {
+                    await vscode.commands.executeCommand(picked.command, sessionArg);
+                } else {
+                    await vscode.commands.executeCommand(picked.command);
+                }
+                return;
+            }
+
             const chosen = await resolveSessionInteractive(
                 extractSessionName(sessionArg),
                 'NTM session name for palette'
@@ -493,9 +774,156 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
+    const dispSpawnEnsemble = vscode.commands.registerCommand('ntm.spawnEnsemble', async () => {
+        try {
+            const rawQuestion = await vscode.window.showInputBox({
+                prompt: 'Problem or question for the reasoning ensemble',
+                placeHolder: 'e.g. What security or concurrency issues exist in the auth pipeline?',
+            });
+            const question = (rawQuestion ?? '').trim();
+            if (!question) {
+                return;
+            }
+
+            const [suggestion, presets] = await Promise.all([
+                client.suggestEnsemble(question).catch(() => undefined),
+                client.getEnsemblePresets(),
+            ]);
+
+            const quickPickItems = buildEnsemblePresetQuickPickItems(presets, suggestion);
+            if (quickPickItems.length === 0) {
+                vscode.window.showWarningMessage('No ensemble presets available from NTM');
+                return;
+            }
+
+            const pickedPreset = await vscode.window.showQuickPick(quickPickItems, {
+                placeHolder: 'Select reasoning ensemble preset',
+            });
+            if (!pickedPreset) {
+                return;
+            }
+
+            const defaultSession = defaultEnsembleSessionName(
+                vscode.workspace.name,
+                vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath
+            );
+            const rawSession = await vscode.window.showInputBox({
+                prompt: 'Ensemble session name',
+                value: defaultSession,
+            });
+            const sessionName = (rawSession ?? '').trim();
+            if (!sessionName) {
+                return;
+            }
+
+            const spawnResult = await vscode.window.withProgress(
+                {
+                    location: vscode.ProgressLocation.Notification,
+                    title: `Spawning NTM reasoning ensemble "${sessionName}" (${pickedPreset.presetName})...`,
+                    cancellable: false,
+                },
+                async () => client.spawnEnsemble({
+                    session: sessionName,
+                    preset: pickedPreset.presetName,
+                    question,
+                    projectDir: client.getWorkspaceCwd(),
+                })
+            );
+
+            const resolvedSession = spawnResult.session || sessionName;
+            currentSession = resolvedSession;
+            updateStatus(client, statusBarItem).catch(() => undefined);
+            treeProvider.refresh();
+            fileDecorationProvider.refresh();
+
+            const modeSuffix = spawnResult.modes.length > 0 ? ` (${spawnResult.modes.length} modes)` : '';
+            const nextAction = await vscode.window.showInformationMessage(
+                `Spawned ensemble "${resolvedSession}" using preset "${pickedPreset.presetName}"${modeSuffix}`,
+                'View Session',
+                'Attach Terminal'
+            );
+            if (nextAction === 'View Session') {
+                await vscode.commands.executeCommand('ntm.viewSession', resolvedSession);
+            } else if (nextAction === 'Attach Terminal') {
+                await vscode.commands.executeCommand('ntm.openTerminal', resolvedSession);
+            }
+        } catch (e) {
+            vscode.window.showErrorMessage(`Ensemble spawn failed: ${e}`);
+        }
+    });
+
+    const dispTriageAttention = vscode.commands.registerCommand('ntm.triageAttention', async () => {
+        try {
+            const items = await client.listAttentionItems({ limit: 30 });
+            if (items.length === 0) {
+                vscode.window.showInformationMessage('No attention items pending');
+                return;
+            }
+
+            const itemPicks = buildAttentionQuickPickItems(items);
+            const pickedItem = await vscode.window.showQuickPick(itemPicks, {
+                placeHolder: 'Select an attention item to triage',
+            });
+            if (!pickedItem) {
+                return;
+            }
+
+            const actionPicks = buildAttentionActionQuickPickItems(pickedItem.item);
+            const pickedAction = await vscode.window.showQuickPick(actionPicks, {
+                placeHolder: `Choose action for attention item #${pickedItem.item.cursor}`,
+            });
+            if (!pickedAction) {
+                return;
+            }
+
+            const result = await client.mutateAttentionItem(
+                pickedAction.action,
+                pickedItem.item.cursor,
+                pickedAction.duration
+            );
+            updateStatus(client, statusBarItem).catch(() => undefined);
+            vscode.window.showInformationMessage(
+                `Attention item #${pickedItem.item.cursor} updated (${pickedAction.action} -> ${result.current_state})`
+            );
+        } catch (e) {
+            vscode.window.showErrorMessage(`Attention triage failed: ${e}`);
+        }
+    });
+
+    const webCockpitCommands = new WeakMap<vscode.Terminal, string>();
+    const dispOpenWebCockpit = vscode.commands.registerCommand('ntm.openWebCockpit', async () => {
+        try {
+            const config = vscode.workspace.getConfiguration('ntm');
+            const port = normalizeWebPort(config.get<number>('webPort', DEFAULT_WEB_PORT));
+            const cmd = buildWebCockpitCommand(client.getBinaryPath(), port);
+
+            const openTerminals = vscode.window.terminals ?? [];
+            let terminal = openTerminals.find(
+                t => t.name === WEB_COCKPIT_TERMINAL_NAME && t.exitStatus === undefined
+            );
+            const isNewTerminal = !terminal;
+            if (!terminal) {
+                terminal = vscode.window.createTerminal({ name: WEB_COCKPIT_TERMINAL_NAME });
+            }
+
+            terminal.show(true);
+            if (isNewTerminal || webCockpitCommands.get(terminal) !== cmd) {
+                terminal.sendText(cmd, true);
+                webCockpitCommands.set(terminal, cmd);
+            }
+
+            await vscode.env.openExternal(vscode.Uri.parse('http://127.0.0.1:' + port));
+        } catch (e) {
+            vscode.window.showErrorMessage(`Failed to open NTM Web Cockpit: ${e}`);
+        }
+    });
+
     context.subscriptions.push(
         dispStatus,
         dispSpawn,
+        dispSpawnEnsemble,
+        dispTriageAttention,
+        dispOpenWebCockpit,
         dispOpenPalette,
         dispDashboard,
         dispSendPrompt,

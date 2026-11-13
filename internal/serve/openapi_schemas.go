@@ -1041,6 +1041,101 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 	"handleAgentInterruptV1": {Request: AgentInterruptRequest{}},
 	"handleAgentWaitV1":      {Request: AgentWaitRequest{}},
 	"handleWaitRequestV1":    {Request: waitRequestBodyV1{}, QueryParams: []routeQueryParam{{Name: "timeout", Type: "string", Description: "Maximum wait duration (e.g. 30s)."}, {Name: "poll", Type: "string", Description: "Polling interval duration (e.g. 100ms)."}}},
+
+	// Ensemble REST API
+	"handleEnsembleModesV1": {
+		Response: EnsembleModesEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "category", Type: "string", Description: "Filter reasoning modes by category code or name."},
+			{Name: "tier", Type: "string", Description: "Filter reasoning modes by tier (core, advanced, experimental, all)."},
+			{Name: "search", Type: "string", Description: "Case-insensitive search term across mode ID, name, description, and best_for."},
+			{Name: "limit", Type: "integer", Description: "Maximum modes to return per page."},
+			{Name: "offset", Type: "integer", Description: "Zero-based pagination offset."},
+		},
+	},
+	"handleEnsemblePresetsV1": {
+		Response: EnsemblePresetsEnvelopeResponse{},
+		Envelope: true,
+	},
+	"handleEnsembleSuggestV1": {
+		Response:   EnsembleSuggestEnvelopeResponse{},
+		Envelope:   true,
+		Request:    EnsembleSuggestRequest{},
+		RequestReq: true,
+	},
+	"handleEnsembleSessionV1": {
+		Response: EnsembleSessionEnvelopeResponse{},
+		Envelope: true,
+	},
+	"handleEnsembleSpawnV1": {
+		Response:   EnsembleSpawnEnvelopeResponse{},
+		Envelope:   true,
+		Request:    EnsembleSpawnRequest{},
+		RequestReq: true,
+	},
+	"handleEnsembleSynthesizeV1": {
+		Response: EnsembleSynthesizeEnvelopeResponse{},
+		Envelope: true,
+		Request:  EnsembleSynthesizeRequest{},
+	},
+	"handleEnsembleStopV1": {
+		Response: EnsembleStopEnvelopeResponse{},
+		Envelope: true,
+		Request:  EnsembleStopRequest{},
+	},
+
+	// Worktrees REST API
+	"handleListWorktreesV1": {
+		Response: WorktreesListEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "session", Type: "string", Description: "Optional session filter; omitted lists worktrees across all sessions."},
+			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
+		},
+	},
+	"handleCreateWorktreeV1": {
+		Response:   WorktreeCreateEnvelopeResponse{},
+		Envelope:   true,
+		Request:    CreateWorktreeRequest{},
+		RequestReq: true,
+	},
+	"handleMergeWorktreeV1": {
+		Response: WorktreeMergeEnvelopeResponse{},
+		Envelope: true,
+		Request:  MergeWorktreeRequest{},
+	},
+	"handleDeleteWorktreeV1": {
+		Response: WorktreeDeleteEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "session", Type: "string", Description: "Optional session owning the agent worktree; auto-resolved when unique."},
+			{Name: "force", Type: "boolean", Description: "Force removal even when uncommitted or unmerged changes exist."},
+			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
+		},
+	},
+
+	// Backpressure & Synthetic Swarm Lab REST API
+	"handleHealthBackpressureV1": {
+		Response: HealthBackpressureEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "session", Type: "string", Description: "Optional tmux session filter for live subsystem backpressure inspection."},
+		},
+	},
+	"handleSwarmLabScenariosV1": {
+		Response: SwarmLabEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "scenario", Type: "string", Description: "Optional synthetic experiment scenario ID filter."},
+			{Name: "gate", Type: "string", Description: "Optional scale gate filter (short, benchmark, load)."},
+		},
+	},
+	"handleSwarmLabRunV1": {
+		Response: SwarmLabEnvelopeResponse{},
+		Envelope: true,
+		Request:  SwarmLabRunRequest{},
+	},
 }
 
 func lookupServedRouteSchema(rt RouterRoute) (routeSchemaSpec, bool) {

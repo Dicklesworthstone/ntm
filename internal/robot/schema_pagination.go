@@ -59,6 +59,7 @@ var SchemaPagination = map[string]SchemaPaginationFlag{
 	"assign":             {Reason: "bounded: per-request assignment results"},
 	"attention":          {Reason: "cursor-based continuation (attention cursor), not offset pagination"},
 	"auto_restart_stuck": {Reason: "bounded: per-request restart results for stuck panes"},
+	"backpressure":       {Reason: "bounded: one snapshot row per active backpressure surface plus compact heatmap buckets"},
 	"bead_create":        {Reason: "bounded: per-request creation echo"},
 	"bead_show":          {Reason: "bounded: single bead detail with dependency arrays"},
 	"beads_list":         {Reason: "bounded via --limit truncation; total reported, no offset paging"},
@@ -121,6 +122,7 @@ var SchemaPagination = map[string]SchemaPaginationFlag{
 	"send_receipt":     {Reason: "bounded: receipt for one idempotent send or interrupt"},
 	"spawn":            {Reason: "bounded: per-request spawned pane rows"},
 	"support_bundle":   {Reason: "bounded: bundle manifest for one collection run"},
+	"swarm_lab":        {Reason: "bounded: synthetic lab scenarios, per-run experiment artifacts, and host calibration recommendations"},
 	"ubs_scan":         {Reason: "bounded: per-scan findings and top-K triage preview for one target"},
 
 	// --- Unpaginated by design: nested list shapes ------------------------

@@ -12,7 +12,7 @@
     "utility"
   ],
   "category_count": 10,
-  "schema_type_count": 139,
+  "schema_type_count": 141,
   "schema_types": [
     "account_status",
     "accounts_list",
@@ -27,6 +27,7 @@
     "assign",
     "attention",
     "auto_restart_stuck",
+    "backpressure",
     "bead_claim",
     "bead_close",
     "bead_create",
@@ -139,6 +140,7 @@
     "suggest",
     "summary",
     "support_bundle",
+    "swarm_lab",
     "switch_account",
     "tail",
     "terse",
@@ -155,7 +157,7 @@
     "xf_status"
   ],
   "section_count": 13,
-  "surface_count": 151,
+  "surface_count": 153,
   "surfaces": [
     {
       "category": "state",
@@ -201,6 +203,21 @@
       "name": "agent-names",
       "schema_id": "ntm:robot:agent-names:v1",
       "schema_type": "agent_names"
+    },
+    {
+      "category": "state",
+      "flag": "--robot-backpressure",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": false,
+      "has_consumer_guidance": false,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "backpressure",
+      "schema_id": "ntm:robot:backpressure:v1",
+      "schema_type": "backpressure"
     },
     {
       "category": "state",
@@ -2329,6 +2346,21 @@
       "name": "support-bundle",
       "schema_id": "ntm:robot:support-bundle:v1",
       "schema_type": "support_bundle"
+    },
+    {
+      "category": "utility",
+      "flag": "--robot-swarm-lab",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": false,
+      "has_consumer_guidance": false,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "swarm-lab",
+      "schema_id": "ntm:robot:swarm-lab:v1",
+      "schema_type": "swarm_lab"
     },
     {
       "category": "utility",

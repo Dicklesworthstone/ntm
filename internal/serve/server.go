@@ -646,6 +646,15 @@ func (s *Server) buildRouter() chi.Router {
 		// Accounts API - CAAM account management
 		s.registerAccountsRoutes(r)
 
+		// Ensemble API - multi-agent reasoning ensembles
+		s.registerEnsembleRoutes(r)
+
+		// Worktrees API - isolated git worktrees for agents
+		s.registerWorktreeRoutes(r)
+
+		// Backpressure, Synthetic Swarm Lab & Host-Capacity Calibration API
+		s.registerBackpressureRoutes(r)
+
 		// Attention Feed API - normalized event streaming for operator agents
 		r.Route("/attention", func(r chi.Router) {
 			// SSE stream with cursor-based replay
@@ -1114,8 +1123,12 @@ func robotErrorHTTPStatus(code string) int {
 	switch code {
 	case robot.ErrCodeInvalidFlag:
 		return http.StatusBadRequest
-	case robot.ErrCodeSessionNotFound, robot.ErrCodePaneNotFound, robot.ErrCodeNotFound:
+	case robot.ErrCodeSessionNotFound, robot.ErrCodePaneNotFound, robot.ErrCodeNotFound, robot.ErrCodeEnsembleNotFound:
 		return http.StatusNotFound
+	case robot.ErrCodeSynthesisNotReady:
+		return http.StatusConflict
+	case robot.ErrCodeOutputSchemaInvalid:
+		return http.StatusUnprocessableEntity
 	case robot.ErrCodePermissionDenied:
 		return http.StatusForbidden
 	case robot.ErrCodeDestructiveCommandBlocked, "SENSITIVE_DATA_BLOCKED":

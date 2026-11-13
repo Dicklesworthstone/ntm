@@ -2410,6 +2410,8 @@ func buildCommandRegistry() []RobotCommandInfo {
 				"ntm --robot-ubs-scan=./internal/robot --scan-only=go",
 			},
 		},
+		backpressureCapabilityCommand(),
+		swarmLabCapabilityCommand(),
 	})
 }
 

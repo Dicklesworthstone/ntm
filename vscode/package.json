@@ -18,6 +18,9 @@
     "onStartupFinished",
     "onView:ntmSessions",
     "onCommand:ntm.spawn",
+    "onCommand:ntm.spawnEnsemble",
+    "onCommand:ntm.triageAttention",
+    "onCommand:ntm.openWebCockpit",
     "onCommand:ntm.showStatus",
     "onCommand:ntm.openPalette"
   ],
@@ -84,6 +87,21 @@
         "title": "NTM: Open TUI Dashboard in Terminal"
       },
       {
+        "command": "ntm.spawnEnsemble",
+        "title": "NTM: Spawn Reasoning Ensemble",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "ntm.triageAttention",
+        "title": "NTM: Triage Attention Feed",
+        "icon": "$(bell)"
+      },
+      {
+        "command": "ntm.openWebCockpit",
+        "title": "NTM: Open Web Cockpit (ntm web)",
+        "icon": "$(globe)"
+      },
+      {
         "command": "ntm.openPalette",
         "title": "NTM: Open Command Palette"
       },
@@ -135,6 +153,13 @@
           "type": "string",
           "default": "ntm",
           "description": "Path to ntm executable"
+        },
+        "ntm.webPort": {
+          "type": "number",
+          "default": 7337,
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Port for the NTM Web Cockpit HTTP server (ntm web --port)"
         }
       }
     }

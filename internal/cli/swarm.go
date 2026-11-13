@@ -258,6 +258,7 @@ Examples:
 	cmd.AddCommand(newSwarmStatusCmd())
 	cmd.AddCommand(newSwarmSendCmd())
 	cmd.AddCommand(newSwarmStopCmd())
+	cmd.AddCommand(newSwarmLabCmd())
 
 	return cmd
 }

@@ -158,6 +158,8 @@ var SchemaCommand = map[string]interface{}{
 
 	// Health and diagnostics
 	"health":             HealthOutput{},
+	"backpressure":       BackpressureOutput{},
+	"swarm_lab":          SwarmLabOutput{},
 	"diagnose":           DiagnoseOutput{},
 	"probe":              ProbeSessionOutput{},
 	"auto_restart_stuck": AutoRestartStuckOutput{},

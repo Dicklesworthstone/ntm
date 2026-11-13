@@ -103,6 +103,8 @@ Object.defineProperty(global, "WebSocket", { value: UiMockWebSocket });
 import { NavBar } from "../components/layout/nav-bar";
 import DashboardLayout from "../app/(dashboard)/layout";
 import AgentsPage from "../app/(dashboard)/agents/page";
+import AttentionPage from "../app/(dashboard)/attention/page";
+import EnsemblePage from "../app/(dashboard)/ensemble/page";
 import MemoryPage from "../app/(dashboard)/memory/page";
 import SessionsPage from "../app/(dashboard)/sessions/page";
 import { resetClient } from "../lib/api/client";
@@ -154,6 +156,8 @@ describe("NavBar route coverage and active state", () => {
     { href: "/", label: "Overview" },
     { href: "/sessions", label: "Sessions" },
     { href: "/agents", label: "Agents" },
+    { href: "/ensemble", label: "Ensemble" },
+    { href: "/attention", label: "Attention" },
     { href: "/pipelines", label: "Pipelines" },
     { href: "/beads", label: "Beads" },
     { href: "/mail", label: "Mail" },
@@ -161,9 +165,10 @@ describe("NavBar route coverage and active state", () => {
     { href: "/analytics", label: "Analytics" },
     { href: "/accounts", label: "Accounts" },
     { href: "/safety", label: "Safety" },
+    { href: "/memory", label: "Memory" },
   ];
 
-  it("renders links to all 10 dashboard routes in desktop and mobile navigation", () => {
+  it("renders links to all 13 dashboard routes in desktop and mobile navigation", () => {
     navigationState.pathname = "/pipelines/";
     render(<NavBar wsState="connected" />);
 
@@ -596,4 +601,341 @@ describe("SessionsPage live WebSocket PaneStreamer & URL segment encoding", () =
     ).toBeInTheDocument();
     expect(outputFetchCount).toBeGreaterThanOrEqual(2);
   }, 10000);
+});
+
+describe("AttentionPage triage inbox & durable state mutations", () => {
+  it("loads digest + events and dispatches ack/snooze mutations to /api/v1/attention/items/{cursor}/state", async () => {
+    const mutations: Array<{ cursor: string; body: Record<string, unknown> }> = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, options?: RequestInit) => {
+        const url = new URL(String(input));
+        const reply = (body: object) =>
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+
+        if (url.pathname === "/api/v1/attention/digest") {
+          return reply({
+            cursor_start: 1,
+            cursor_end: 42,
+            event_count: 3,
+            by_category: { agent: 2, bead: 1 },
+            by_actionability: { action_required: 1, interesting: 2 },
+            buckets: {
+              action_required: [
+                {
+                  cursor_start: 42,
+                  cursor_end: 42,
+                  source_event_count: 1,
+                  event: {
+                    cursor: 42,
+                    ts: "2026-11-13T20:00:00Z",
+                    category: "agent",
+                    type: "agent.stalled",
+                    actionability: "action_required",
+                    severity: "warning",
+                    summary: "Agent cc_1 stalled awaiting approval",
+                  },
+                },
+              ],
+              interesting: [],
+              background: [],
+            },
+            suppressed: { total: 4 },
+            summary: "1 action_required from 3 events",
+          });
+        }
+
+        if (url.pathname === "/api/v1/attention/events") {
+          return reply({
+            success: true,
+            timestamp: "2026-11-13T20:00:01Z",
+            version: "1.2.0",
+            output_format: "json",
+            since_cursor: 0,
+            next_cursor: 42,
+            newest_cursor: 42,
+            oldest_cursor: 1,
+            event_count: 1,
+            truncated: false,
+            events: [
+              {
+                cursor: 42,
+                ts: "2026-11-13T20:00:00Z",
+                session: "alpha",
+                pane: 1,
+                category: "agent",
+                type: "agent.stalled",
+                actionability: "action_required",
+                severity: "warning",
+                summary: "Agent cc_1 stalled awaiting approval",
+                next_actions: [
+                  {
+                    action: "robot-tail",
+                    args: "--robot-tail=alpha --panes=1",
+                  },
+                ],
+              },
+            ],
+          });
+        }
+
+        if (
+          url.pathname === "/api/v1/attention/items/42/state" &&
+          options?.method === "POST"
+        ) {
+          const parsedBody = JSON.parse(String(options.body ?? "{}")) as Record<
+            string,
+            unknown
+          >;
+          mutations.push({ cursor: "42", body: parsedBody });
+          const nextState =
+            parsedBody.action === "ack" ? "acknowledged" : String(parsedBody.action);
+          return reply({
+            success: true,
+            timestamp: "2026-11-13T20:00:02Z",
+            target: {
+              cursor: 42,
+              item_key: "cursor:42",
+              dedup_key: "dk-42",
+              session: "alpha",
+              pane: "1",
+            },
+            result: {
+              action: String(parsedBody.action),
+              previous_state: "new",
+              new_state: nextState,
+              attention_state: {
+                item_key: "cursor:42",
+                state: nextState,
+                pinned: false,
+                snoozed_until:
+                  typeof parsedBody.until === "string"
+                    ? parsedBody.until
+                    : undefined,
+              },
+            },
+            audit: {
+              event_id: 1,
+              decision_id: 1,
+              actor_type: "api",
+              actor_id: "anonymous",
+            },
+          });
+        }
+
+        throw new Error(`Unexpected request: ${options?.method ?? "GET"} ${url.pathname}`);
+      })
+    );
+
+    const client = createTestQueryClient();
+    render(
+      <QueryClientProvider client={client}>
+        <AttentionPage />
+      </QueryClientProvider>
+    );
+
+    expect(
+      await screen.findByText("Agent cc_1 stalled awaiting approval")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("ntm --robot-tail=alpha --panes=1")
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Acknowledge item 42" }));
+    await waitFor(() => {
+      expect(mutations).toContainEqual({
+        cursor: "42",
+        body: { action: "ack" },
+      });
+    });
+    expect(await screen.findByText("acknowledged")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Snooze item 42" }));
+    await waitFor(() => {
+      expect(
+        mutations.some(
+          (m) =>
+            m.cursor === "42" &&
+            m.body.action === "snooze" &&
+            typeof m.body.until === "string"
+        )
+      ).toBe(true);
+    });
+  });
+});
+
+describe("EnsemblePage reasoning studio, recommender & synthesis", () => {
+  it("loads modes/presets, recommends a preset, inspects a session, and runs synthesis", async () => {
+    const calledEndpoints: string[] = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, options?: RequestInit) => {
+        const url = new URL(String(input));
+        calledEndpoints.push(`${options?.method ?? "GET"} ${url.pathname}`);
+        const reply = (body: object) =>
+          new Response(JSON.stringify({ success: true, ...body }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+
+        if (url.pathname === "/api/v1/ensemble/modes") {
+          return reply({
+            action: "ensemble_modes",
+            catalog_version: "1.0.0",
+            default_tier: "core",
+            total_modes: 82,
+            core_modes: 28,
+            advanced_modes: 42,
+            experimental_modes: 12,
+            categories: [{ code: "A", name: "Analytical", mode_count: 10 }],
+            modes: [
+              {
+                id: "deductive",
+                code: "A1",
+                tier: "core",
+                name: "Deductive Proof",
+                category: { code: "A", name: "Analytical" },
+                short_desc: "Derive necessary conclusions from invariants",
+              },
+            ],
+          });
+        }
+
+        if (url.pathname === "/api/v1/ensemble/presets") {
+          return reply({
+            action: "ensemble_presets",
+            count: 1,
+            presets: [
+              {
+                name: "bug-hunt",
+                display: "Bug Hunt",
+                description: "Adversarial fault isolation",
+                modes: ["A1", "B2"],
+                mode_count: 2,
+                synthesis: { strategy: "adversarial" },
+                budget: { total: 40000 },
+                allow_advanced: false,
+              },
+            ],
+          });
+        }
+
+        if (url.pathname === "/api/v1/sessions") {
+          return reply({ sessions: [{ name: "ens-demo", status: "active" }] });
+        }
+
+        if (
+          url.pathname === "/api/v1/ensemble/suggest" &&
+          options?.method === "POST"
+        ) {
+          return reply({
+            question: "Find race conditions in server shutdown",
+            top_pick: {
+              preset_name: "bug-hunt",
+              display_name: "Bug Hunt",
+              description: "Adversarial fault isolation",
+              score: 0.94,
+              reasons: ["Matches concurrency bug keywords"],
+              mode_count: 2,
+              tags: ["bugs"],
+            },
+            suggestions: [
+              {
+                preset_name: "bug-hunt",
+                display_name: "Bug Hunt",
+                description: "Adversarial fault isolation",
+                score: 0.94,
+                reasons: ["Matches concurrency bug keywords"],
+                mode_count: 2,
+                tags: ["bugs"],
+              },
+            ],
+          });
+        }
+
+        if (url.pathname === "/api/v1/ensemble/sessions/ens-demo") {
+          return reply({
+            ensemble: {
+              session: "ens-demo",
+              question: "Find race conditions in server shutdown",
+              preset: "bug-hunt",
+              status: "ready",
+              modes: [
+                {
+                  id: "deductive",
+                  code: "A1",
+                  name: "Deductive Proof",
+                  agent_type: "cc",
+                  status: "done",
+                },
+              ],
+              synthesis: { strategy: "adversarial", status: "ready" },
+              budget: { total_tokens: 40000 },
+              metrics: { coverage_map: { A: 1 } },
+            },
+            summary: {
+              total_modes: 1,
+              completed: 1,
+              working: 0,
+              pending: 0,
+              core_modes: 1,
+              advanced_modes: 0,
+            },
+          });
+        }
+
+        if (
+          url.pathname === "/api/v1/ensemble/sessions/ens-demo/synthesize" &&
+          options?.method === "POST"
+        ) {
+          return reply({
+            action: "ensemble_synthesize",
+            session: "ens-demo",
+            status: "completed",
+            formatted_output: "## Consensus Findings\nNo lock inversion detected.",
+          });
+        }
+
+        throw new Error(`Unexpected request: ${options?.method ?? "GET"} ${url.pathname}`);
+      })
+    );
+
+    const client = createTestQueryClient();
+    render(
+      <QueryClientProvider client={client}>
+        <EnsemblePage />
+      </QueryClientProvider>
+    );
+
+    expect(await screen.findByText("Deductive Proof")).toBeInTheDocument();
+    expect(screen.getByText("Bug Hunt")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Analysis Question"), {
+      target: { value: "Find race conditions in server shutdown" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Recommend Preset" }));
+
+    expect(await screen.findByText("Top Pick")).toBeInTheDocument();
+    expect(calledEndpoints).toContain("POST /api/v1/ensemble/suggest");
+
+    fireEvent.change(screen.getByLabelText("Inspect ensemble session"), {
+      target: { value: "ens-demo" },
+    });
+    expect(
+      await screen.findByText("[A1] Deductive Proof")
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Synthesize" }));
+    expect(
+      await screen.findByText(/No lock inversion detected\./)
+    ).toBeInTheDocument();
+    expect(calledEndpoints).toContain(
+      "POST /api/v1/ensemble/sessions/ens-demo/synthesize"
+    );
+  });
 });

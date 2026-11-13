@@ -47,8 +47,10 @@ var webUIRouteMarkers = map[string]string{
 	"/accounts":  "Accounts",
 	"/agents":    "Agents",
 	"/analytics": "Analytics",
+	"/attention": "Attention",
 	"/beads":     "Beads",
 	"/connect":   "Server URL",
+	"/ensemble":  "Ensemble",
 	"/mail":      "Mail",
 	"/memory":    "Memory",
 	"/pipelines": "Pipelines",
@@ -135,8 +137,8 @@ func TestWebUIAllRoutesNonStub(t *testing.T) {
 			t.Errorf("webUIRouteMarkers lists %s but no page.tsx exists for it", route)
 		}
 	}
-	if len(routes) != 12 {
-		t.Errorf("expected the 12 shipped routes (R2 DoD), glob found %d: %v", len(routes), routes)
+	if len(routes) != 14 {
+		t.Errorf("expected the 14 shipped routes (R2 DoD + /ensemble + /attention), glob found %d: %v", len(routes), routes)
 	}
 
 	ts := newWebUITestServer(t)
@@ -598,6 +600,8 @@ func TestWebUIHeadlessChromeBrowserQualification(t *testing.T) {
 		extraText   string
 	}{
 		{route: "/agents", wantHeading: "Agents", extraText: seededAgent},
+		{route: "/ensemble", wantHeading: "Ensemble", extraText: "project-diagnosis"},
+		{route: "/attention", wantHeading: "Attention", extraText: seededSummary},
 		{route: "/beads", wantHeading: "Beads"},
 		{route: "/scanner", wantHeading: "Scanner"},
 		{route: "/analytics", wantHeading: "Analytics", extraText: seededSession},

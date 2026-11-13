@@ -1,6 +1,6 @@
 {
   "source": "chi-router-walk",
-  "count": 188,
+  "count": 202,
   "endpoints": [
     {
       "method": "GET",
@@ -310,8 +310,48 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/ensemble/modes",
+      "handler": "handleEnsembleModesV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/ensemble/presets",
+      "handler": "handleEnsemblePresetsV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/ensemble/sessions/{session}",
+      "handler": "handleEnsembleSessionV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/ensemble/sessions/{session}/stop",
+      "handler": "handleEnsembleStopV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/ensemble/sessions/{session}/synthesize",
+      "handler": "handleEnsembleSynthesizeV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/ensemble/spawn",
+      "handler": "handleEnsembleSpawnV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/ensemble/suggest",
+      "handler": "handleEnsembleSuggestV1"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/health",
       "handler": "handleHealthV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/health/backpressure",
+      "handler": "handleHealthBackpressureV1"
     },
     {
       "method": "GET",
@@ -934,9 +974,39 @@
       "handler": "handleStreamingStatsV1"
     },
     {
+      "method": "POST",
+      "path": "/api/v1/swarm/lab/run",
+      "handler": "handleSwarmLabRunV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/swarm/lab/scenarios",
+      "handler": "handleSwarmLabScenariosV1"
+    },
+    {
       "method": "GET",
       "path": "/api/v1/version",
       "handler": "handleVersionV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/worktrees",
+      "handler": "handleListWorktreesV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/worktrees",
+      "handler": "handleCreateWorktreeV1"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/worktrees/{agent}",
+      "handler": "handleDeleteWorktreeV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/worktrees/{agent}/merge",
+      "handler": "handleMergeWorktreeV1"
     },
     {
       "method": "GET",

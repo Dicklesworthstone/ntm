@@ -2,7 +2,7 @@
 
 generated: 2026-11-13T17:57:02Z by scripts/reality_audit.sh
 seed: 2553148806
-allowlist-lines: 212
+allowlist-lines: 86
 gates: yes
 total-minutes: 3 (budget 90)
 
@@ -50,11 +50,11 @@ total-minutes: 3 (budget 90)
    14 ci/allowlists/binary_bloat.txt
     7 ci/allowlists/config.txt
    16 ci/allowlists/contracts.txt
-  231 ci/allowlists/deadcode.txt
+  105 ci/allowlists/deadcode.txt
     9 ci/allowlists/docs.txt
     6 ci/allowlists/openapi_drift.txt
    10 ci/allowlists/placebo.txt
-  293 total
+  167 total
 ```
 
 ## Spot-probes (seeded from tag; exercise against the BUILT artifact, not the tree)

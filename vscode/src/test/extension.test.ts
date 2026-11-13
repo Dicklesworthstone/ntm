@@ -2,17 +2,23 @@ import { mockState, resetVscodeMock } from './vscodeMock';
 import { beforeEach, describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as cp from 'child_process';
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
 import {
+    AttentionMutationAction,
     buildNtmTerminalCommand,
+    buildWebCockpitCommand,
+    DEFAULT_WEB_PORT,
     normalizeSnapshot,
     normalizeStatusHeader,
+    normalizeWebPort,
     NtmClient,
     RobotMail,
     shellQuote,
+    SUPPORTED_ATTENTION_ACTIONS,
     SUPPORTED_SEND_HARNESSES,
     SUPPORTED_SPAWN_HARNESSES,
 } from '../ntmClient';
@@ -31,11 +37,19 @@ import {
 import { NtmSessionTreeProvider, NtmTreeItem } from '../sessionTreeView';
 import {
     activate,
+    attentionSeverityIcon,
+    buildAttentionActionQuickPickItems,
+    buildAttentionQuickPickItems,
+    buildEnsemblePresetQuickPickItems,
+    buildWebCockpitCommand as extensionBuildWebCockpitCommand,
+    defaultEnsembleSessionName,
+    PALETTE_ACTION_OPTIONS,
     parseCustomSpawnFlags,
     resolveSendTargetsFromSelection,
     SEND_TARGET_OPTIONS,
     shellQuote as extensionShellQuote,
     SPAWN_HARNESS_OPTIONS,
+    WEB_COCKPIT_TERMINAL_NAME,
 } from '../extension';
 
 const REAL_SNAPSHOT_PAYLOAD = {
@@ -748,5 +762,708 @@ describe('File Reservation POSIX Path Normalization & Glob Matching', () => {
         assert.equal(provider.provideFileDecoration(unlockedUri), undefined);
 
         provider.dispose();
+    });
+});
+
+const REAL_ENSEMBLE_PRESETS_PAYLOAD = {
+    success: true,
+    timestamp: '2026-11-13T20:30:25Z',
+    version: '1.0.0',
+    output_format: 'json',
+    action: 'ensemble_presets',
+    count: 3,
+    presets: [
+        {
+            name: 'project-diagnosis',
+            display: 'Project Diagnosis',
+            description: 'Comprehensive project health analysis',
+            modes: ['F7', 'G6', 'F2', 'F4', 'H2'],
+            mode_count: 5,
+            synthesis: { strategy: 'adversarial' },
+            budget: { total: 30000 },
+            allow_advanced: false,
+            tags: ['analysis', 'health'],
+            source: 'embedded',
+        },
+        {
+            name: 'safety-risk',
+            display: 'Safety / Risk Analysis',
+            description: 'Threat modeling and security review',
+            modes: ['D1', 'D3', 'F2', 'G4', 'H1'],
+            mode_count: 5,
+            synthesis: { strategy: 'consensus' },
+            budget: { total: 35000 },
+            allow_advanced: false,
+            tags: ['security', 'risk'],
+            source: 'embedded',
+        },
+        {
+            name: 'bug-hunt',
+            display_name: 'Bug Hunt',
+            description: 'Root-cause isolation and regression proofing',
+            modes: ['C1', 'C4', 'E2'],
+            agent_count: 3,
+            category: 'debugging',
+            tags: ['bugs'],
+            source: 'user',
+        },
+    ],
+};
+
+const REAL_ENSEMBLE_SUGGEST_PAYLOAD = {
+    success: true,
+    timestamp: '2026-11-13T20:30:28Z',
+    version: '1.0.0',
+    output_format: 'json',
+    question: 'What security vulnerabilities exist in auth?',
+    top_pick: {
+        preset_name: 'safety-risk',
+        display_name: 'Safety / Risk Analysis',
+        description: 'Threat modeling and security review',
+        score: 0.57,
+        reasons: ['matches "security"', 'matches "auth"', 'tag match: security'],
+        mode_count: 5,
+        tags: ['security', 'risk'],
+        spawn_cmd: 'ntm ensemble safety-risk "What security vulnerabilities exist in auth?"',
+    },
+    suggestions: [
+        {
+            preset_name: 'safety-risk',
+            display_name: 'Safety / Risk Analysis',
+            description: 'Threat modeling and security review',
+            score: 0.57,
+            reasons: ['matches "security"', 'matches "auth"', 'tag match: security'],
+            mode_count: 5,
+            tags: ['security', 'risk'],
+            spawn_cmd: 'ntm ensemble safety-risk "What security vulnerabilities exist in auth?"',
+        },
+    ],
+    _agent_hints: {
+        summary: 'Best match: Safety / Risk Analysis',
+    },
+};
+
+const REAL_ENSEMBLE_SPAWN_PAYLOAD = {
+    success: true,
+    timestamp: '2026-11-13T20:31:00Z',
+    action: 'ensemble_spawn',
+    session: 'ntm-ensemble',
+    preset: 'safety-risk',
+    question: 'What security vulnerabilities exist in auth?',
+    project_dir: '/data/projects/ntm',
+    assignment: 'affinity',
+    agents: { cc: 2, cod: 1 },
+    modes: [
+        { id: 'threat-modeling', code: 'D1', tier: 'core', pane: '1.1', agent_type: 'cc' },
+        { id: 'boundary-audit', code: 'D3', tier: 'core', pane: '1.2', agent_type: 'cod' },
+    ],
+    budget: {
+        total_tokens: 35000,
+        per_mode_tokens: 7000,
+    },
+    status: 'running',
+};
+
+const REAL_ATTENTION_LIST_PAYLOAD = {
+    success: true,
+    timestamp: '2026-11-13T20:32:00Z',
+    count: 3,
+    items: [
+        {
+            cursor: 42,
+            item_key: 'alert:agent_stuck:pane-def456',
+            dedup_key: 'alert:agent_stuck:pane-def456',
+            session: 'proj-alpha',
+            pane: '2',
+            category: 'alert',
+            type: 'agent_stuck',
+            severity: 'warning',
+            actionability: 'action_required',
+            summary: 'Agent cc_2 stuck for 120s',
+            event_timestamp: '2026-11-13T20:31:40Z',
+            state: 'new',
+            pinned: false,
+            muted: false,
+            resurfacing_policy: 'on_change',
+        },
+        {
+            cursor: 41,
+            item_key: 'mail:urgent:thread-9',
+            session: 'proj-alpha',
+            pane: '1',
+            category: 'mail',
+            type: 'urgent_unread',
+            severity: 'critical',
+            actionability: 'urgent',
+            summary: 'Urgent message from BlueLake',
+            event_timestamp: '2026-11-13T20:30:10Z',
+            state: 'acknowledged',
+            pinned: true,
+            muted: false,
+        },
+        {
+            cursor: 40,
+            item_key: 'session:build_complete',
+            session: 'proj-beta',
+            category: 'lifecycle',
+            type: 'task_done',
+            severity: 'info',
+            actionability: 'interesting',
+            summary: 'Build finished cleanly',
+            event_timestamp: '2026-11-13T20:29:00Z',
+            state: 'seen',
+            pinned: false,
+            muted: false,
+        },
+    ],
+};
+
+describe('NtmClient Ensemble & Attention Methods (argv, JSON parsing, error handling)', () => {
+    beforeEach(() => {
+        resetVscodeMock();
+    });
+
+    it('getEnsemblePresets, suggestEnsemble, and spawnEnsemble construct exact CLI argv and parse real NTM JSON', async () => {
+        const calls: string[][] = [];
+        const client = new NtmClient({
+            execFile: async (_file, args) => {
+                calls.push(args);
+                if (args.includes('--robot-ensemble-presets')) {
+                    return { stdout: JSON.stringify(REAL_ENSEMBLE_PRESETS_PAYLOAD), stderr: '' };
+                }
+                if (args.some(a => a.startsWith('--robot-ensemble-suggest='))) {
+                    return { stdout: JSON.stringify(REAL_ENSEMBLE_SUGGEST_PAYLOAD), stderr: '' };
+                }
+                if (args.some(a => a.startsWith('--robot-ensemble-spawn='))) {
+                    return { stdout: JSON.stringify(REAL_ENSEMBLE_SPAWN_PAYLOAD), stderr: '' };
+                }
+                throw new Error(`unexpected args: ${args.join(' ')}`);
+            },
+        });
+
+        const presets = await client.getEnsemblePresets();
+        assert.deepEqual(calls[0], ['--robot-ensemble-presets', '--robot-format=json']);
+        assert.equal(presets.length, 3);
+        assert.equal(presets[0].name, 'project-diagnosis');
+        assert.equal(presets[0].display_name, 'Project Diagnosis');
+        assert.equal(presets[0].mode_count, 5);
+        assert.equal(presets[0].agent_count, 5);
+        assert.equal(presets[0].category, 'analysis');
+        assert.deepEqual(presets[0].modes, ['F7', 'G6', 'F2', 'F4', 'H2']);
+        assert.equal(presets[2].name, 'bug-hunt');
+        assert.equal(presets[2].display_name, 'Bug Hunt');
+        assert.equal(presets[2].agent_count, 3);
+        assert.equal(presets[2].category, 'debugging');
+
+        // Verify flag-injection safety when question begins with '-'
+        const suggested = await client.suggestEnsemble('  -race condition & security risk in auth?  ');
+        assert.deepEqual(calls[1], [
+            '--robot-ensemble-suggest=-race condition & security risk in auth?',
+            '--robot-format=json',
+        ]);
+        assert.equal(suggested.recommended_preset, 'safety-risk');
+        assert.equal(suggested.top_pick?.preset_name, 'safety-risk');
+        assert.equal(suggested.top_pick?.display_name, 'Safety / Risk Analysis');
+        assert.equal(suggested.top_pick?.mode_count, 5);
+        assert.equal(suggested.summary, 'Best match: Safety / Risk Analysis');
+
+        const spawned = await client.spawnEnsemble({
+            session: 'ntm-ensemble',
+            preset: 'safety-risk',
+            question: 'What security vulnerabilities exist in auth?',
+            agents: 'cc=2,cod=1',
+            projectDir: '/data/projects/ntm',
+        });
+        assert.deepEqual(calls[2], [
+            '--robot-ensemble-spawn=ntm-ensemble',
+            '--preset=safety-risk',
+            '--question=What security vulnerabilities exist in auth?',
+            '--agents=cc=2,cod=1',
+            '--project=/data/projects/ntm',
+            '--robot-format=json',
+        ]);
+        assert.equal(spawned.session, 'ntm-ensemble');
+        assert.equal(spawned.preset, 'safety-risk');
+        assert.equal(spawned.modes.length, 2);
+        assert.equal(spawned.modes[0].code, 'D1');
+        assert.equal(spawned.budget.total_tokens, 35000);
+        assert.deepEqual(spawned.agents, { cc: 2, cod: 1 });
+
+        // Verify explicit --modes spawn argv construction
+        await client.spawnEnsemble({
+            session: 'modes-ensemble',
+            modes: 'D1,D3,F2',
+            question: 'Analyze race conditions',
+            assignment: 'round-robin',
+            allowAdvanced: true,
+        });
+        assert.deepEqual(calls[3], [
+            '--robot-ensemble-spawn=modes-ensemble',
+            '--modes=D1,D3,F2',
+            '--question=Analyze race conditions',
+            '--assignment=round-robin',
+            '--allow-advanced',
+            '--robot-format=json',
+        ]);
+    });
+
+    it('listAttentionItems and mutateAttentionItem construct exact CLI argv and handle filters', async () => {
+        const calls: string[][] = [];
+        const client = new NtmClient({
+            execFile: async (_file, args) => {
+                calls.push(args);
+                if (args[0] === 'attention' && args[1] === 'list') {
+                    return { stdout: JSON.stringify(REAL_ATTENTION_LIST_PAYLOAD), stderr: '' };
+                }
+                if (args[0] === 'attention') {
+                    const action = args[1];
+                    const ref = args[2];
+                    return {
+                        stdout: JSON.stringify({
+                            success: true,
+                            timestamp: '2026-11-13T20:33:00Z',
+                            action,
+                            ref,
+                            cursor: Number(ref) || 42,
+                            item_key: `cursor:${ref}`,
+                            previous_state: 'new',
+                            current_state: action === 'snooze'
+                                ? 'snoozed'
+                                : (action === 'dismiss' ? 'dismissed' : (action === 'ack' ? 'acknowledged' : 'new')),
+                            attention_state: {
+                                item_key: `cursor:${ref}`,
+                                state: action === 'ack' ? 'acknowledged' : 'new',
+                                pinned: action === 'pin',
+                                snoozed_until: action === 'snooze' ? '2026-11-13T21:03:00Z' : undefined,
+                            },
+                        }),
+                        stderr: '',
+                    };
+                }
+                throw new Error(`unexpected args: ${args.join(' ')}`);
+            },
+        });
+
+        const allItems = await client.listAttentionItems({ limit: 30 });
+        assert.deepEqual(calls[0], ['attention', 'list', '--limit=30', '--json']);
+        assert.equal(allItems.length, 3);
+        assert.equal(allItems[0].cursor, 42);
+        assert.equal(allItems[0].action_required, true);
+        assert.equal(allItems[0].operator_state, 'new');
+        assert.equal(allItems[1].pinned, true);
+        assert.equal(allItems[1].action_required, true);
+        assert.equal(allItems[2].action_required, false);
+
+        // actionRequired filters client-side without passing unsupported --action-required flag
+        const urgentOnly = await client.listAttentionItems({
+            actionRequired: true,
+            limit: 15,
+            session: 'proj-alpha',
+            includeAll: true,
+        });
+        assert.deepEqual(calls[1], [
+            'attention',
+            'list',
+            '--session=proj-alpha',
+            '--limit=15',
+            '--all',
+            '--json',
+        ]);
+        assert.equal(urgentOnly.length, 2);
+        assert.deepEqual(urgentOnly.map(i => i.cursor), [42, 41]);
+
+        // Verify all 5 attention mutation actions (ack, pin, unpin, snooze, dismiss)
+        assert.deepEqual(SUPPORTED_ATTENTION_ACTIONS, ['ack', 'pin', 'unpin', 'snooze', 'dismiss']);
+
+        const expectedArgvByAction: Record<AttentionMutationAction, string[]> = {
+            ack: ['attention', 'ack', '42', '--json'],
+            pin: ['attention', 'pin', '42', '--json'],
+            unpin: ['attention', 'unpin', '42', '--json'],
+            snooze: ['attention', 'snooze', '42', '--until=30m', '--json'],
+            dismiss: ['attention', 'dismiss', '42', '--json'],
+        };
+
+        for (const action of SUPPORTED_ATTENTION_ACTIONS) {
+            calls.length = 0;
+            const res = await client.mutateAttentionItem(
+                action,
+                42,
+                action === 'snooze' ? '30m' : undefined
+            );
+            assert.deepEqual(calls[0], expectedArgvByAction[action]);
+            assert.equal(res.success, true);
+            assert.equal(res.action, action);
+        }
+    });
+
+    it('validates arguments and surfaces structured JSON error envelopes cleanly', async () => {
+        const client = new NtmClient({
+            execFile: async (_file, args) => {
+                if (args.includes('--robot-ensemble-presets')) {
+                    return {
+                        stdout: JSON.stringify({
+                            success: false,
+                            error: 'Failed to load ensemble registry',
+                            error_code: 'INTERNAL_ERROR',
+                            hint: 'Check config',
+                        }),
+                        stderr: '',
+                    };
+                }
+                const err = new Error('Command failed') as Error & { stdout?: string; stderr?: string };
+                err.stdout = JSON.stringify({
+                    success: false,
+                    error: 'attention cursor 999 not found',
+                    error_code: 'NOT_FOUND',
+                });
+                err.stderr = '';
+                throw err;
+            },
+        });
+
+        await assert.rejects(
+            () => client.suggestEnsemble('   '),
+            /Question is required/
+        );
+        await assert.rejects(
+            () => client.spawnEnsemble({ session: '', preset: 'bug-hunt', question: 'Why?' }),
+            /Session name is required/
+        );
+        await assert.rejects(
+            () => client.spawnEnsemble({ session: 's1', preset: 'bug-hunt', modes: 'A1,B2', question: 'Why?' }),
+            /mutually exclusive/
+        );
+        await assert.rejects(
+            () => client.spawnEnsemble({ session: 's1', question: 'Why?' }),
+            /Either preset or modes is required/
+        );
+        await assert.rejects(
+            () => client.listAttentionItems({ limit: 0 }),
+            /positive integer/
+        );
+        await assert.rejects(
+            () => client.mutateAttentionItem('snooze', 42),
+            /Duration is required/
+        );
+        await assert.rejects(
+            () => client.mutateAttentionItem('ack', 0),
+            /positive integer/
+        );
+        await assert.rejects(
+            () => client.getEnsemblePresets(),
+            /Failed to load ensemble registry \(Check config\)/
+        );
+        await assert.rejects(
+            () => client.mutateAttentionItem('ack', 999),
+            /attention cursor 999 not found/
+        );
+    });
+});
+
+describe('Ensemble Spawn, Attention Triage, Web Cockpit & Palette Commands', () => {
+    beforeEach(() => {
+        resetVscodeMock();
+    });
+
+    it('formats QuickPick items for ensemble presets, attention feed, and buildWebCockpitCommand', () => {
+        assert.equal(buildWebCockpitCommand, extensionBuildWebCockpitCommand);
+        assert.equal(normalizeWebPort(undefined), DEFAULT_WEB_PORT);
+        assert.equal(normalizeWebPort(0), DEFAULT_WEB_PORT);
+        assert.equal(normalizeWebPort(70000), DEFAULT_WEB_PORT);
+        assert.equal(normalizeWebPort(8080), 8080);
+        assert.equal(normalizeWebPort('9100'), 9100);
+
+        assert.equal(buildWebCockpitCommand('ntm'), 'ntm web --port 7337');
+        assert.equal(
+            buildWebCockpitCommand('/opt/my tools/ntm', 8080),
+            `'/opt/my tools/ntm' web --port 8080`
+        );
+        assert.equal(
+            buildNtmTerminalCommand('/opt/my tools/ntm', ['web', '--port', '7337']),
+            `'/opt/my tools/ntm' web --port 7337`
+        );
+
+        assert.equal(defaultEnsembleSessionName('ntm-repo'), 'ntm-repo-ensemble');
+        assert.equal(defaultEnsembleSessionName('my.project:v2'), 'my-project-v2-ensemble');
+        assert.equal(defaultEnsembleSessionName(undefined, '/work/alpha'), 'alpha-ensemble');
+        assert.equal(defaultEnsembleSessionName(undefined, undefined), 'ntm-ensemble');
+
+        assert.equal(attentionSeverityIcon('critical'), '$(error)');
+        assert.equal(attentionSeverityIcon('warning'), '$(warning)');
+        assert.equal(attentionSeverityIcon('info'), '$(info)');
+
+        // Manifest verification: package.json declares all 3 commands + ntm.webPort
+        const pkgPath = path.resolve(__dirname, '../../package.json');
+        const pkgJson = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        const commandIds = (pkgJson.contributes?.commands ?? []).map((c: { command: string }) => c.command);
+        assert.ok(commandIds.includes('ntm.spawnEnsemble'));
+        assert.ok(commandIds.includes('ntm.triageAttention'));
+        assert.ok(commandIds.includes('ntm.openWebCockpit'));
+        assert.equal(pkgJson.contributes?.configuration?.properties?.['ntm.webPort']?.default, 7337);
+
+        // Palette menu surfaces all 3 new commands
+        const paletteCommands = PALETTE_ACTION_OPTIONS.map(p => p.command).filter(Boolean);
+        assert.ok(paletteCommands.includes('ntm.spawnEnsemble'));
+        assert.ok(paletteCommands.includes('ntm.triageAttention'));
+        assert.ok(paletteCommands.includes('ntm.openWebCockpit'));
+    });
+
+    it('runs ntm.spawnEnsemble end-to-end with recommended preset at top, graceful suggest fallback, and View Session follow-up', async () => {
+        const tmpWorkspace = os.tmpdir();
+        mockState.workspaceName = 'ntm';
+        mockState.workspaceFolders = [{ uri: { fsPath: tmpWorkspace } }];
+
+        let suggestShouldFail = false;
+        const spawnCalls: string[][] = [];
+        const client = new NtmClient({
+            execFile: async (_file, args) => {
+                if (args.includes('--version')) {
+                    return { stdout: 'ntm 1.38.0', stderr: '' };
+                }
+                if (args.includes('--robot-snapshot') || args.includes('--robot-status')) {
+                    return { stdout: JSON.stringify(REAL_SNAPSHOT_PAYLOAD), stderr: '' };
+                }
+                if (args.includes('--robot-mail')) {
+                    return { stdout: JSON.stringify({ generated_at: 'now', available: false }), stderr: '' };
+                }
+                if (args.includes('--robot-ensemble-presets')) {
+                    return { stdout: JSON.stringify(REAL_ENSEMBLE_PRESETS_PAYLOAD), stderr: '' };
+                }
+                if (args.some(a => a.startsWith('--robot-ensemble-suggest='))) {
+                    if (suggestShouldFail) {
+                        throw new Error('suggest engine unavailable');
+                    }
+                    return { stdout: JSON.stringify(REAL_ENSEMBLE_SUGGEST_PAYLOAD), stderr: '' };
+                }
+                if (args.some(a => a.startsWith('--robot-ensemble-spawn='))) {
+                    spawnCalls.push(args);
+                    const spawnArg = args.find(a => a.startsWith('--robot-ensemble-spawn=')) ?? '';
+                    const requestedSession = spawnArg.slice('--robot-ensemble-spawn='.length);
+                    return {
+                        stdout: JSON.stringify({
+                            ...REAL_ENSEMBLE_SPAWN_PAYLOAD,
+                            session: requestedSession || REAL_ENSEMBLE_SPAWN_PAYLOAD.session,
+                        }),
+                        stderr: '',
+                    };
+                }
+                return { stdout: '{}', stderr: '' };
+            },
+        });
+
+        const subscriptions: Array<{ dispose(): void }> = [];
+        const context = {
+            subscriptions,
+            extensionUri: vscode.Uri.file('/ext'),
+        } as unknown as vscode.ExtensionContext;
+
+        activate(context, client);
+        try {
+            // 1. Happy path: suggestEnsemble recommends safety-risk at top of QuickPick
+            mockState.inputBoxQueue.push(
+                'What security vulnerabilities exist in auth?',
+                'ntm-ensemble'
+            );
+            mockState.infoMessageActionQueue.push('View Session');
+
+            await vscode.commands.executeCommand('ntm.spawnEnsemble');
+
+            assert.equal(mockState.inputBoxOptionsHistory[1]?.value, 'ntm-ensemble');
+            const presetChoices = mockState.quickPickItemsHistory[0] as Array<{
+                label: string;
+                presetName: string;
+                recommended: boolean;
+            }>;
+            assert.equal(presetChoices.length, 3, 'all 3 presets must appear without duplicating safety-risk');
+            assert.equal(presetChoices[0].presetName, 'safety-risk');
+            assert.equal(presetChoices[0].recommended, true);
+            assert.ok(presetChoices[0].label.startsWith('$(sparkle) Recommended: Safety / Risk Analysis'));
+
+            assert.equal(mockState.progressTitles.length, 1);
+            assert.equal(spawnCalls.length, 1);
+            assert.deepEqual(spawnCalls[0], [
+                '--robot-ensemble-spawn=ntm-ensemble',
+                '--preset=safety-risk',
+                '--question=What security vulnerabilities exist in auth?',
+                `--project=${path.resolve(tmpWorkspace)}`,
+                '--robot-format=json',
+            ]);
+            assert.equal(mockState.createdTerminals.length, 1);
+            assert.equal(mockState.createdTerminals[0].name, 'NTM View: ntm-ensemble');
+
+            // 2. Fallback path: suggestEnsemble throws, presets QuickPick still renders cleanly
+            suggestShouldFail = true;
+            mockState.quickPickItemsHistory.length = 0;
+            mockState.inputBoxQueue.push('Investigate flaky tests', 'ntm-fallback-ensemble');
+            mockState.quickPickQueue.push((items: Array<{ presetName: string }>) =>
+                items.find(i => i.presetName === 'bug-hunt')
+            );
+            mockState.infoMessageActionQueue.push('Attach Terminal');
+
+            await vscode.commands.executeCommand('ntm.spawnEnsemble');
+
+            const fallbackChoices = mockState.quickPickItemsHistory[0] as Array<{
+                presetName: string;
+                recommended: boolean;
+            }>;
+            assert.equal(fallbackChoices.length, 3);
+            assert.equal(fallbackChoices.every(c => !c.recommended), true);
+            assert.equal(spawnCalls.length, 2);
+            assert.ok(spawnCalls[1].includes('--preset=bug-hunt'));
+            assert.equal(mockState.createdTerminals[1].name, 'NTM: ntm-fallback-ensemble');
+        } finally {
+            for (const sub of subscriptions) {
+                sub.dispose();
+            }
+        }
+    });
+
+    it('runs ntm.triageAttention for empty feed and snooze/ack/pin/dismiss flows', async () => {
+        let returnEmpty = true;
+        const mutatedCalls: string[][] = [];
+
+        const client = new NtmClient({
+            execFile: async (_file, args) => {
+                if (args[0] === 'attention' && args[1] === 'list') {
+                    return {
+                        stdout: JSON.stringify(
+                            returnEmpty
+                                ? { success: true, timestamp: 'now', count: 0, items: [] }
+                                : REAL_ATTENTION_LIST_PAYLOAD
+                        ),
+                        stderr: '',
+                    };
+                }
+                if (args[0] === 'attention') {
+                    mutatedCalls.push(args);
+                    return {
+                        stdout: JSON.stringify({
+                            success: true,
+                            timestamp: 'now',
+                            action: args[1],
+                            ref: args[2],
+                            cursor: Number(args[2]),
+                            item_key: `cursor:${args[2]}`,
+                            previous_state: 'new',
+                            current_state: args[1] === 'snooze' ? 'snoozed' : 'acknowledged',
+                        }),
+                        stderr: '',
+                    };
+                }
+                return { stdout: JSON.stringify(REAL_SNAPSHOT_PAYLOAD), stderr: '' };
+            },
+        });
+
+        const items = await client.listAttentionItems({ limit: 30 }).then(() => []);
+        assert.equal(items.length, 0);
+
+        const subscriptions: Array<{ dispose(): void }> = [];
+        const context = {
+            subscriptions,
+            extensionUri: vscode.Uri.file('/ext'),
+        } as unknown as vscode.ExtensionContext;
+
+        activate(context, client);
+        try {
+            // Empty attention feed shows exact toast
+            await vscode.commands.executeCommand('ntm.triageAttention');
+            assert.ok(mockState.infoMessages.includes('No attention items pending'));
+
+            // Non-empty feed -> pick item #42 -> pick Snooze 30m
+            returnEmpty = false;
+            mockState.infoMessages.length = 0;
+            mockState.quickPickItemsHistory.length = 0;
+            mockState.quickPickQueue.push(
+                (candidates: Array<{ item: { cursor: number } }>) =>
+                    candidates.find(c => c.item.cursor === 42),
+                (actions: Array<{ action: string }>) =>
+                    actions.find(a => a.action === 'snooze')
+            );
+
+            await vscode.commands.executeCommand('ntm.triageAttention');
+
+            const renderedItems = buildAttentionQuickPickItems(
+                await client.listAttentionItems({ limit: 30 })
+            );
+            assert.ok(renderedItems[0].label.includes('$(warning) #42 [new] Agent cc_2 stuck for 120s'));
+            assert.ok(renderedItems[0].description?.includes('proj-alpha'));
+            assert.ok(renderedItems[1].label.includes('$(error) #41 [pinned · acknowledged]'));
+
+            // Pinned item offers Unpin in addition to Acknowledge, Pin, Snooze 30m, Dismiss
+            const pinnedActions = buildAttentionActionQuickPickItems(renderedItems[1].item);
+            assert.deepEqual(
+                pinnedActions.map(a => a.action),
+                ['ack', 'pin', 'unpin', 'snooze', 'dismiss']
+            );
+
+            assert.deepEqual(mutatedCalls[0], ['attention', 'snooze', '42', '--until=30m', '--json']);
+            assert.ok(mockState.infoMessages.some(m => m.includes('#42') && m.includes('snoozed')));
+        } finally {
+            for (const sub of subscriptions) {
+                sub.dispose();
+            }
+        }
+    });
+
+    it('runs ntm.openWebCockpit with terminal reuse, custom ntm.webPort, and ntm.openPalette QuickPick routing', async () => {
+        mockState.binaryPath = '/opt/my tools/ntm';
+        mockState.webPort = 7337;
+
+        const client = new NtmClient({
+            execFile: async () => ({ stdout: JSON.stringify(REAL_SNAPSHOT_PAYLOAD), stderr: '' }),
+        });
+
+        const subscriptions: Array<{ dispose(): void }> = [];
+        const context = {
+            subscriptions,
+            extensionUri: vscode.Uri.file('/ext'),
+        } as unknown as vscode.ExtensionContext;
+
+        activate(context, client);
+        try {
+            // First launch via ntm.openPalette selecting openWebCockpit
+            mockState.quickPickQueue.push((options: Array<{ actionId: string }>) =>
+                options.find(o => o.actionId === 'openWebCockpit')
+            );
+            await vscode.commands.executeCommand('ntm.openPalette');
+
+            assert.equal(mockState.createdTerminals.length, 1);
+            assert.equal(mockState.createdTerminals[0].name, WEB_COCKPIT_TERMINAL_NAME);
+            assert.equal(mockState.createdTerminals[0].shown, true);
+            assert.deepEqual(mockState.createdTerminals[0].sentCommands, [
+                { text: `'/opt/my tools/ntm' web --port 7337`, shouldExecute: true },
+            ]);
+            assert.deepEqual(mockState.openedExternalUris, ['http://127.0.0.1:7337']);
+
+            // Second launch reuses existing "NTM Web Cockpit" terminal instead of spawning a second one
+            await vscode.commands.executeCommand('ntm.openWebCockpit');
+            assert.equal(mockState.createdTerminals.length, 1, 'must reuse active NTM Web Cockpit terminal');
+            assert.equal(mockState.createdTerminals[0].sentCommands.length, 1);
+            assert.deepEqual(mockState.openedExternalUris, [
+                'http://127.0.0.1:7337',
+                'http://127.0.0.1:7337',
+            ]);
+
+            // Changing ntm.webPort reuses terminal with updated command and opens new port URL
+            mockState.webPort = 8484;
+            await vscode.commands.executeCommand('ntm.openWebCockpit');
+            assert.equal(mockState.createdTerminals.length, 1);
+            assert.equal(mockState.createdTerminals[0].sentCommands.length, 2);
+            assert.equal(
+                mockState.createdTerminals[0].sentCommands[1].text,
+                `'/opt/my tools/ntm' web --port 8484`
+            );
+            assert.equal(mockState.openedExternalUris[2], 'http://127.0.0.1:8484');
+
+            // Disposing terminal causes next invocation to create a fresh terminal
+            mockState.createdTerminals[0].dispose?.();
+            await vscode.commands.executeCommand('ntm.openWebCockpit');
+            assert.equal(mockState.createdTerminals.length, 2);
+            assert.equal(mockState.createdTerminals[1].name, WEB_COCKPIT_TERMINAL_NAME);
+        } finally {
+            for (const sub of subscriptions) {
+                sub.dispose();
+            }
+        }
     });
 });

@@ -507,6 +507,13 @@ var (
 	robotSupportBundleMax    int    // max size in MB
 	robotSupportBundleRedact string // redaction mode: warn, redact, block
 
+	// Robot backpressure and synthetic swarm lab flags (bd-5ufnd.1)
+	robotBackpressure bool   // --robot-backpressure flag
+	robotSwarmLab     bool   // --robot-swarm-lab flag
+	robotLabAction    string // --lab-action (list|run|corpus|calibrate)
+	robotLabScenario  string // --lab-scenario ID
+	robotLabGate      string // --lab-gate (short|benchmark|load)
+
 	// Help verbosity flags
 	helpMinimal bool // show minimal help with essential commands only
 	helpFull    bool // show full help (default behavior)
@@ -1300,6 +1307,13 @@ func registerRobotFlags() {
 
 	// --no-wait for interrupt
 	rootCmd.Flags().BoolVar(&robotInterruptNoWait, "no-wait", false, "Return immediately without waiting")
+
+	// Backpressure and synthetic swarm scale lab robot flags
+	rootCmd.Flags().BoolVar(&robotBackpressure, "robot-backpressure", false, "Evaluate live backpressure, dashboard summary, operator heatmap, and load-shedding contract as JSON")
+	rootCmd.Flags().BoolVar(&robotSwarmLab, "robot-swarm-lab", false, "Run synthetic swarm scale scenarios, overload regression corpus, or host-capacity calibration as JSON")
+	rootCmd.Flags().StringVar(&robotLabAction, "lab-action", "list", "Action for --robot-swarm-lab: list, run, corpus, calibrate")
+	rootCmd.Flags().StringVar(&robotLabScenario, "lab-scenario", "", "Named synthetic experiment scenario ID for --robot-swarm-lab")
+	rootCmd.Flags().StringVar(&robotLabGate, "lab-gate", "", "Cost gate filter for --robot-swarm-lab: short, benchmark, load")
 
 	// ==========================================================================
 	// DEPRECATION WARNINGS - Mark old prefixed flags as deprecated
