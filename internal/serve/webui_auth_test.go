@@ -2,6 +2,7 @@ package serve
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -9,11 +10,15 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -25,6 +30,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/state"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestParallelServersProjectionStoreIsolation(t *testing.T) {
@@ -416,4 +422,321 @@ func TestWebUIMountedAuthAndSingleUseWSTickets(t *testing.T) {
 		t.Fatalf("mTLS WSS upgrade failed: %v", err)
 	}
 	_ = wssConn.Close()
+}
+
+func TestServerMTLSAndHTTP2Qualification(t *testing.T) {
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+	socketRoot, err := os.MkdirTemp("", "ntmmtls")
+	if err != nil {
+		t.Fatalf("create tmux socket root: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketRoot) })
+	t.Setenv("TMUX_TMPDIR", socketRoot)
+
+	now := time.Now().UTC()
+
+	newRootCA := func(commonName string, serial int64) (*ecdsa.PrivateKey, *x509.Certificate, []byte) {
+		t.Helper()
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatalf("generate CA key %s: %v", commonName, err)
+		}
+		tmpl := &x509.Certificate{
+			SerialNumber:          big.NewInt(serial),
+			Subject:               pkix.Name{CommonName: commonName},
+			NotBefore:             now.Add(-time.Hour),
+			NotAfter:              now.Add(time.Hour),
+			KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+			BasicConstraintsValid: true,
+			IsCA:                  true,
+		}
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+		if err != nil {
+			t.Fatalf("create CA cert %s: %v", commonName, err)
+		}
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			t.Fatalf("parse CA cert %s: %v", commonName, err)
+		}
+		pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+		return key, cert, pemBytes
+	}
+
+	newLeafCert := func(
+		caKey *ecdsa.PrivateKey,
+		caCert *x509.Certificate,
+		commonName string,
+		serial int64,
+		notBefore, notAfter time.Time,
+		extKeyUsage x509.ExtKeyUsage,
+		ips []net.IP,
+		dnsNames []string,
+	) (tls.Certificate, []byte, []byte) {
+		t.Helper()
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatalf("generate leaf key %s: %v", commonName, err)
+		}
+		tmpl := &x509.Certificate{
+			SerialNumber: big.NewInt(serial),
+			Subject:      pkix.Name{CommonName: commonName},
+			NotBefore:    notBefore,
+			NotAfter:     notAfter,
+			KeyUsage:     x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:  []x509.ExtKeyUsage{extKeyUsage},
+			IPAddresses:  ips,
+			DNSNames:     dnsNames,
+		}
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, &key.PublicKey, caKey)
+		if err != nil {
+			t.Fatalf("create leaf cert %s: %v", commonName, err)
+		}
+		keyDER, err := x509.MarshalECPrivateKey(key)
+		if err != nil {
+			t.Fatalf("marshal leaf key %s: %v", commonName, err)
+		}
+		certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+		keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+		return tls.Certificate{
+			Certificate: [][]byte{der},
+			PrivateKey:  key,
+		}, certPEM, keyPEM
+	}
+
+	// Ephemeral ECDSA P-256 test PKI:
+	// - Trusted Root CA #1
+	// - Server leaf cert (127.0.0.1 + localhost, ExtKeyUsageServerAuth)
+	// - Valid Client leaf cert (CN=operator-alice, ExtKeyUsageClientAuth)
+	// - Expired Client leaf cert (signed by Trusted CA #1, NotBefore=-2h, NotAfter=-1h)
+	// - Untrusted Client leaf cert (signed by separate Untrusted Root CA #2)
+	trustedCAKey, trustedCACert, trustedCAPEM := newRootCA("ntm-qual-trusted-root-ca-1", 1001)
+	untrustedCAKey, untrustedCACert, _ := newRootCA("ntm-qual-untrusted-root-ca-2", 2001)
+
+	_, serverCertPEM, serverKeyPEM := newLeafCert(
+		trustedCAKey,
+		trustedCACert,
+		"127.0.0.1",
+		1002,
+		now.Add(-time.Hour),
+		now.Add(time.Hour),
+		x509.ExtKeyUsageServerAuth,
+		[]net.IP{net.ParseIP("127.0.0.1")},
+		[]string{"localhost"},
+	)
+	validClientCert, _, _ := newLeafCert(
+		trustedCAKey,
+		trustedCACert,
+		"operator-alice",
+		1003,
+		now.Add(-time.Hour),
+		now.Add(time.Hour),
+		x509.ExtKeyUsageClientAuth,
+		nil,
+		nil,
+	)
+	expiredClientCert, _, _ := newLeafCert(
+		trustedCAKey,
+		trustedCACert,
+		"operator-expired",
+		1004,
+		now.Add(-2*time.Hour),
+		now.Add(-time.Hour),
+		x509.ExtKeyUsageClientAuth,
+		nil,
+		nil,
+	)
+	untrustedClientCert, _, _ := newLeafCert(
+		untrustedCAKey,
+		untrustedCACert,
+		"operator-untrusted",
+		2002,
+		now.Add(-time.Hour),
+		now.Add(time.Hour),
+		x509.ExtKeyUsageClientAuth,
+		nil,
+		nil,
+	)
+
+	pkiDir := t.TempDir()
+	certFile := filepath.Join(pkiDir, "server.crt")
+	keyFile := filepath.Join(pkiDir, "server.key")
+	caFile := filepath.Join(pkiDir, "trusted-ca.crt")
+	if err := os.WriteFile(certFile, serverCertPEM, 0o600); err != nil {
+		t.Fatalf("write server cert: %v", err)
+	}
+	if err := os.WriteFile(keyFile, serverKeyPEM, 0o600); err != nil {
+		t.Fatalf("write server key: %v", err)
+	}
+	if err := os.WriteFile(caFile, trustedCAPEM, 0o600); err != nil {
+		t.Fatalf("write trusted CA: %v", err)
+	}
+
+	store, err := state.Open(":memory:")
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	if err := store.Migrate(); err != nil {
+		_ = store.Close()
+		t.Fatalf("store.Migrate: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	const seededSession = "mtls-qual-session"
+	if err := store.CreateSession(&state.Session{
+		ID:          seededSession,
+		Name:        seededSession,
+		ProjectPath: t.TempDir(),
+		CreatedAt:   now,
+		Status:      state.SessionActive,
+	}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	port := reserveQualificationPort(t)
+	srv := New(Config{
+		Host:       "127.0.0.1",
+		Port:       port,
+		ProjectDir: t.TempDir(),
+		Version:    "mtls-qual-test",
+		EventBus:   events.NewEventBus(16),
+		StateStore: store,
+		Auth: AuthConfig{
+			Mode: AuthModeMTLS,
+			MTLS: MTLSConfig{
+				CertFile:     certFile,
+				KeyFile:      keyFile,
+				ClientCAFile: caFile,
+			},
+		},
+	})
+	srv.mailClient = deadAgentMailClient(t)
+	srv.listLiveSessions = func(context.Context) ([]tmux.Session, error) {
+		return []tmux.Session{{Name: seededSession, Windows: 1, Attached: true}}, nil
+	}
+
+	srvCtx, srvCancel := context.WithCancel(context.Background())
+	srvErrCh := make(chan error, 1)
+	go func() {
+		srvErrCh <- srv.Start(srvCtx)
+	}()
+	t.Cleanup(func() {
+		srvCancel()
+		select {
+		case err := <-srvErrCh:
+			if err != nil {
+				t.Errorf("mTLS server shutdown: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("timed out waiting for mTLS server shutdown")
+		}
+	})
+
+	trustedCAPool := x509.NewCertPool()
+	trustedCAPool.AddCert(trustedCACert)
+
+	newMTLSClient := func(certs []tls.Certificate, forceSendCert *tls.Certificate) *http.Client {
+		tlsCfg := &tls.Config{
+			RootCAs:      trustedCAPool,
+			Certificates: certs,
+		}
+		if forceSendCert != nil {
+			certCopy := *forceSendCert
+			tlsCfg.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+				return &certCopy, nil
+			}
+		}
+		tr := &http.Transport{
+			ForceAttemptHTTP2: true,
+			TLSClientConfig:   tlsCfg,
+		}
+		t.Cleanup(tr.CloseIdleConnections)
+		return &http.Client{
+			Transport: tr,
+			Timeout:   5 * time.Second,
+		}
+	}
+
+	baseURL := fmt.Sprintf("https://127.0.0.1:%d", port)
+	validClient := newMTLSClient([]tls.Certificate{validClientCert}, nil)
+
+	// Wait for the real ServeTLS listener to accept connections.
+	readyDeadline := time.Now().Add(5 * time.Second)
+	for {
+		resp, reqErr := validClient.Get(baseURL + "/api/v1/health")
+		if reqErr == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		if time.Now().After(readyDeadline) {
+			t.Fatalf("mTLS server at %s did not become ready (last err: %v)", baseURL, reqErr)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// 1. Valid Client Cert over HTTP/2 + TLS 1.3 on /api/v1/health and /api/v1/sessions.
+	for _, endpoint := range []string{"/api/v1/health", "/api/v1/sessions"} {
+		resp, err := validClient.Get(baseURL + endpoint)
+		if err != nil {
+			t.Fatalf("valid client cert GET %s failed: %v", endpoint, err)
+		}
+		bodyBytes, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			t.Fatalf("read body GET %s: %v", endpoint, readErr)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want 200 (body=%s)", endpoint, resp.StatusCode, string(bodyBytes))
+		}
+		if resp.Proto != "HTTP/2.0" || resp.ProtoMajor != 2 {
+			t.Fatalf("GET %s negotiated HTTP proto = %q (major=%d), want HTTP/2.0 (major=2)", endpoint, resp.Proto, resp.ProtoMajor)
+		}
+		if resp.TLS == nil {
+			t.Fatalf("GET %s missing TLS connection state", endpoint)
+		}
+		if resp.TLS.Version != tls.VersionTLS13 {
+			t.Fatalf("GET %s negotiated TLS version = %s (0x%04x), want TLS 1.3 (0x%04x)",
+				endpoint, tls.VersionName(resp.TLS.Version), resp.TLS.Version, tls.VersionTLS13)
+		}
+		if resp.TLS.NegotiatedProtocol != "h2" {
+			t.Fatalf("GET %s ALPN NegotiatedProtocol = %q, want %q", endpoint, resp.TLS.NegotiatedProtocol, "h2")
+		}
+		if endpoint == "/api/v1/sessions" && !strings.Contains(string(bodyBytes), seededSession) {
+			t.Fatalf("GET %s body missing seeded session %q: %s", endpoint, seededSession, string(bodyBytes))
+		}
+		t.Logf("verified mTLS GET %s -> status=%d proto=%s alpn=%s tls=%s cipher=%s",
+			endpoint,
+			resp.StatusCode,
+			resp.Proto,
+			resp.TLS.NegotiatedProtocol,
+			tls.VersionName(resp.TLS.Version),
+			tls.CipherSuiteName(resp.TLS.CipherSuite),
+		)
+	}
+
+	// 2, 3, 4. Negative mTLS handshake enforcement: missing cert, untrusted CA cert, expired cert.
+	negativeCases := []struct {
+		name          string
+		certs         []tls.Certificate
+		forceSendCert *tls.Certificate
+	}{
+		{name: "missing_client_cert", certs: nil, forceSendCert: nil},
+		{name: "untrusted_ca_client_cert", certs: []tls.Certificate{untrustedClientCert}, forceSendCert: &untrustedClientCert},
+		{name: "expired_client_cert", certs: []tls.Certificate{expiredClientCert}, forceSendCert: &expiredClientCert},
+	}
+	for _, tc := range negativeCases {
+		t.Run(tc.name, func(t *testing.T) {
+			badClient := newMTLSClient(tc.certs, tc.forceSendCert)
+			resp, err := badClient.Get(baseURL + "/api/v1/health")
+			if err == nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				t.Fatalf("%s unexpectedly succeeded with status=%d proto=%s", tc.name, resp.StatusCode, resp.Proto)
+			}
+			t.Logf("verified mTLS rejection for %s: %v", tc.name, err)
+		})
+	}
 }

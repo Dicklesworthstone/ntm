@@ -9,16 +9,32 @@ package serve
 // drift from the source tree (R2 DoD: 12/12 non-stub).
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/chromedp/cdproto/input"
+	"github.com/chromedp/cdproto/page"
+	cdpruntime "github.com/chromedp/cdproto/runtime"
+	"github.com/chromedp/chromedp"
 
 	"github.com/Dicklesworthstone/ntm/internal/events"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/state"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/webui"
 )
 
@@ -234,5 +250,432 @@ func TestWebUINotMountedByDefault(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("plain serve (no --web) should 404 UI routes, got %d", resp.StatusCode)
+	}
+}
+
+func lookupChromeBinary() string {
+	for _, candidate := range []string{"google-chrome", "chromium", "chromium-browser"} {
+		if bin, err := exec.LookPath(candidate); err == nil && bin != "" {
+			return bin
+		}
+	}
+	return ""
+}
+
+func reserveQualificationPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve local port: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatalf("release reserved local port: %v", err)
+	}
+	return port
+}
+
+func installQualificationTmuxFixture(t *testing.T, paneLines []string) {
+	t.Helper()
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+	socketRoot, err := os.MkdirTemp("", "ntmbq")
+	if err != nil {
+		t.Fatalf("create tmux socket root: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketRoot) })
+	t.Setenv("TMUX_TMPDIR", socketRoot)
+
+	panesPath := filepath.Join(t.TempDir(), "panes.txt")
+	if err := os.WriteFile(panesPath, []byte(strings.Join(paneLines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("write pane fixture: %v", err)
+	}
+	bin := filepath.Join(t.TempDir(), "tmux")
+	// list-panes returns our deterministic pane roster; list-sessions exits 1
+	// with a non-"no server" error so startup ReconcileSessions treats tmux as
+	// skipped and preserves our seeded active session in state.Store.
+	script := fmt.Sprintf("#!/bin/sh\ncase \"$1\" in\n  list-panes) cat %q ;;\n  list-sessions) echo \"hermetic fixture\" >&2; exit 1 ;;\n  *) : ;;\nesac\n", panesPath)
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", bin)
+	prevClient := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("")
+	t.Cleanup(func() { tmux.DefaultClient = prevClient })
+}
+
+func formatConsoleArgs(args []*cdpruntime.RemoteObject) string {
+	parts := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == nil {
+			continue
+		}
+		if len(arg.Value) > 0 {
+			parts = append(parts, string(arg.Value))
+		} else if arg.Description != "" {
+			parts = append(parts, arg.Description)
+		} else {
+			parts = append(parts, string(arg.Type))
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func waitForDOMCondition(ctx context.Context, desc, expr string) error {
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		var ok bool
+		err := chromedp.Run(ctx, chromedp.Evaluate(expr, &ok))
+		if err == nil && ok {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("context done waiting for %s: %w (last err: %v)", desc, ctx.Err(), err)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for %s (last err: %v)", desc, err)
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+}
+
+func TestWebUIHeadlessChromeBrowserQualification(t *testing.T) {
+	chromeBin := lookupChromeBinary()
+	if chromeBin == "" {
+		t.Skip("no google-chrome/chromium/chromium-browser binary found in PATH")
+	}
+	t.Logf("qualifying embedded Web UI with headless browser: %s", chromeBin)
+
+	const (
+		seededSession = "qual-browser-session"
+		seededAgent   = seededSession + "__cc_1"
+		seededSummary = "Browser qualification attention item"
+	)
+
+	installQualificationTmuxFixture(t, []string{
+		paneLine("%0", 0, "shell", "user", 100, false),
+		paneLine("%1", 1, seededAgent, "cc", 4242, false),
+	})
+
+	projectDir := t.TempDir()
+	dbPath := filepath.Join(t.TempDir(), "webui-browser-qual.db")
+	store, err := state.Open(dbPath)
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	if err := store.Migrate(); err != nil {
+		_ = store.Close()
+		t.Fatalf("store.Migrate: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{
+		JournalSize:       64,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	}, robot.WithAttentionStore(store))
+	oldFeed := robot.GetAttentionFeed()
+	robot.SetAttentionFeed(feed)
+	t.Cleanup(func() {
+		robot.SetAttentionFeed(oldFeed)
+		feed.Stop()
+	})
+
+	now := time.Now().UTC()
+	staleAfter := now.Add(15 * time.Minute)
+	if err := store.CreateSession(&state.Session{
+		ID:          seededSession,
+		Name:        seededSession,
+		ProjectPath: projectDir,
+		CreatedAt:   now,
+		Status:      state.SessionActive,
+	}); err != nil {
+		t.Fatalf("seed Session: %v", err)
+	}
+	if err := store.UpsertRuntimeSession(&state.RuntimeSession{
+		Name:         seededSession,
+		ProjectPath:  projectDir,
+		Attached:     true,
+		WindowCount:  1,
+		PaneCount:    2,
+		AgentCount:   1,
+		ActiveAgents: 1,
+		HealthStatus: state.HealthStatusHealthy,
+		CreatedAt:    &now,
+		CollectedAt:  now,
+		StaleAfter:   staleAfter,
+	}); err != nil {
+		t.Fatalf("seed RuntimeSession: %v", err)
+	}
+	if err := store.UpsertRuntimeAgent(&state.RuntimeAgent{
+		ID:             seededSession + ":%1",
+		SessionName:    seededSession,
+		Pane:           "%1",
+		AgentType:      "cc",
+		TypeConfidence: 1.0,
+		TypeMethod:     "title",
+		State:          state.AgentStateActive,
+		HealthStatus:   state.HealthStatusHealthy,
+		LastOutputAt:   &now,
+		CollectedAt:    now,
+		StaleAfter:     staleAfter,
+	}); err != nil {
+		t.Fatalf("seed RuntimeAgent: %v", err)
+	}
+	seededAttn := feed.Append(robot.AttentionEvent{
+		Ts:            now.Format(time.RFC3339Nano),
+		Session:       seededSession,
+		Pane:          1,
+		Category:      robot.EventCategoryAgent,
+		Type:          robot.EventTypeAgentStateChange,
+		Source:        "browser_qualification",
+		Actionability: robot.ActionabilityActionRequired,
+		Severity:      robot.SeverityWarning,
+		Summary:       seededSummary,
+	})
+	if err := store.UpsertAttentionItemState(&state.AttentionItemState{
+		ItemKey:  fmt.Sprintf("cursor:%d", seededAttn.Cursor),
+		State:    state.AttentionStateNew,
+		Pinned:   true,
+		PinnedAt: &now,
+		PinnedBy: "browser-qual",
+	}); err != nil {
+		t.Fatalf("seed AttentionItemState: %v", err)
+	}
+
+	ui, err := webui.FS()
+	if err != nil {
+		t.Fatalf("webui.FS(): %v", err)
+	}
+
+	port := reserveQualificationPort(t)
+	srv := New(Config{
+		Host:       "127.0.0.1",
+		Port:       port,
+		ProjectDir: projectDir,
+		Version:    "qual-test",
+		EventBus:   events.NewEventBus(32),
+		StateStore: store,
+		WebUI:      ui,
+	})
+	srv.mailClient = deadAgentMailClient(t)
+	srv.spawnAgents = func(context.Context, robot.SpawnOptions) (*robot.SpawnOutput, error) {
+		return nil, errServeTestAgentSpawnDisabled
+	}
+	srv.listLiveSessions = func(context.Context) ([]tmux.Session, error) {
+		return []tmux.Session{{Name: seededSession, Windows: 1, Attached: true}}, nil
+	}
+
+	srvCtx, srvCancel := context.WithCancel(context.Background())
+	srvErrCh := make(chan error, 1)
+	go func() {
+		srvErrCh <- srv.Start(srvCtx)
+	}()
+	// Registered BEFORE browser cleanup so LIFO teardown closes Chrome first,
+	// avoiding spurious WebSocket disconnect console errors during shutdown.
+	t.Cleanup(func() {
+		srvCancel()
+		select {
+		case err := <-srvErrCh:
+			if err != nil {
+				t.Errorf("server shutdown: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("timed out waiting for server shutdown")
+		}
+	})
+
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	readyDeadline := time.Now().Add(5 * time.Second)
+	for {
+		resp, reqErr := http.Get(baseURL + "/api/v1/health")
+		if reqErr == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		if time.Now().After(readyDeadline) {
+			t.Fatalf("server at %s did not become healthy in time (last err: %v)", baseURL, reqErr)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.ExecPath(chromeBin),
+		chromedp.UserDataDir(t.TempDir()),
+		chromedp.Flag("headless", "new"),
+		chromedp.NoSandbox,
+		chromedp.DisableGPU,
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.WindowSize(1440, 900),
+	)
+	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), allocOpts...)
+	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+	timeoutCtx, timeoutCancel := context.WithTimeout(browserCtx, 20*time.Second)
+	t.Cleanup(func() {
+		timeoutCancel()
+		browserCancel()
+		allocCancel()
+	})
+
+	var (
+		diagMu             sync.Mutex
+		uncaughtExceptions []string
+		consoleErrors      []string
+	)
+	chromedp.ListenTarget(timeoutCtx, func(ev interface{}) {
+		switch e := ev.(type) {
+		case *cdpruntime.EventExceptionThrown:
+			msg := "uncaught exception"
+			if e.ExceptionDetails != nil {
+				msg = e.ExceptionDetails.Error()
+			}
+			diagMu.Lock()
+			uncaughtExceptions = append(uncaughtExceptions, msg)
+			diagMu.Unlock()
+		case *cdpruntime.EventConsoleAPICalled:
+			if e.Type == cdpruntime.APITypeError {
+				diagMu.Lock()
+				consoleErrors = append(consoleErrors, formatConsoleArgs(e.Args))
+				diagMu.Unlock()
+			}
+		}
+	})
+
+	connJSON, err := json.Marshal(map[string]string{"baseUrl": baseURL})
+	if err != nil {
+		t.Fatalf("marshal connection config: %v", err)
+	}
+	preloadScript := fmt.Sprintf(`try { window.localStorage.setItem("ntm-connection", %q); } catch (_) {}`, string(connJSON))
+
+	// 1. Navigate to "/" and verify hydrated Next.js Sessions dashboard + seeded session + live API fetch.
+	var homeHeading string
+	if err := chromedp.Run(timeoutCtx,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			_, addErr := page.AddScriptToEvaluateOnNewDocument(preloadScript).Do(ctx)
+			return addErr
+		}),
+		chromedp.Navigate(baseURL+"/"),
+		chromedp.WaitVisible("h1", chromedp.ByQuery),
+		chromedp.Text("h1", &homeHeading, chromedp.ByQuery),
+	); err != nil {
+		t.Fatalf("navigate and hydrate /: %v", err)
+	}
+	if strings.TrimSpace(homeHeading) != "Sessions" {
+		t.Fatalf("GET / hydrated h1 = %q, want %q", homeHeading, "Sessions")
+	}
+	if err := waitForDOMCondition(timeoutCtx, "seeded session card on /",
+		fmt.Sprintf(`document.body && document.body.innerText.includes(%q)`, seededSession),
+	); err != nil {
+		t.Fatalf("seeded session %q did not render on /: %v", seededSession, err)
+	}
+
+	// Verify in-browser live fetch against 127.0.0.1:<port> succeeds with zero CORS/CSP errors
+	// and returns our seeded attention item.
+	var attentionSummaryOK bool
+	if err := chromedp.Run(timeoutCtx, chromedp.Evaluate(
+		fmt.Sprintf(`fetch(%q).then(r => r.ok ? r.text() : Promise.reject("status "+r.status)).then(t => t.includes(%q))`,
+			baseURL+"/api/v1/attention/events", seededSummary),
+		&attentionSummaryOK,
+		func(p *cdpruntime.EvaluateParams) *cdpruntime.EvaluateParams {
+			return p.WithAwaitPromise(true)
+		},
+	)); err != nil {
+		t.Fatalf("in-browser fetch /api/v1/attention/events failed: %v", err)
+	}
+	if !attentionSummaryOK {
+		t.Fatalf("in-browser fetch /api/v1/attention/events did not contain seeded summary %q", seededSummary)
+	}
+	t.Logf("verified / hydrated heading=%q seeded_session=%q attention_fetch=ok", strings.TrimSpace(homeHeading), seededSession)
+
+	// 2. Navigate across key routes (/agents, /beads, /scanner, /analytics) via hydrated SPA nav
+	// and assert real DOM headings without "coming soon".
+	routeChecks := []struct {
+		route       string
+		wantHeading string
+		extraText   string
+	}{
+		{route: "/agents", wantHeading: "Agents", extraText: seededAgent},
+		{route: "/beads", wantHeading: "Beads"},
+		{route: "/scanner", wantHeading: "Scanner"},
+		{route: "/analytics", wantHeading: "Analytics", extraText: seededSession},
+	}
+
+	for _, rc := range routeChecks {
+		navSelector := fmt.Sprintf(`nav[aria-label="Main navigation"] a[href=%q], nav[aria-label="Main navigation"] a[href=%q]`, rc.route+"/", rc.route)
+		if err := chromedp.Run(timeoutCtx,
+			chromedp.WaitVisible(navSelector, chromedp.ByQuery),
+			chromedp.Click(navSelector, chromedp.ByQuery),
+		); err != nil {
+			t.Fatalf("click nav link %s: %v", rc.route, err)
+		}
+		if err := waitForDOMCondition(timeoutCtx, "heading "+rc.wantHeading+" on "+rc.route, fmt.Sprintf(`(() => {
+			const h1 = document.querySelector("h1");
+			return Boolean(h1 && h1.textContent && h1.textContent.trim() === %q && window.location.pathname.replace(/\/+$/, "") === %q);
+		})()`, rc.wantHeading, rc.route)); err != nil {
+			t.Fatalf("route %s did not hydrate heading %q: %v", rc.route, rc.wantHeading, err)
+		}
+		if rc.extraText != "" {
+			if err := waitForDOMCondition(timeoutCtx, "seeded content "+rc.extraText+" on "+rc.route,
+				fmt.Sprintf(`document.body && document.body.innerText.includes(%q)`, rc.extraText),
+			); err != nil {
+				t.Fatalf("route %s missing expected live data %q: %v", rc.route, rc.extraText, err)
+			}
+		}
+		var bodyText string
+		if err := chromedp.Run(timeoutCtx, chromedp.Evaluate(`document.body ? document.body.innerText : ""`, &bodyText)); err != nil {
+			t.Fatalf("read body text on %s: %v", rc.route, err)
+		}
+		if strings.Contains(strings.ToLower(bodyText), comingSoonMarker) {
+			t.Fatalf("route %s rendered stub marker %q", rc.route, comingSoonMarker)
+		}
+		t.Logf("verified route %s hydrated heading=%q (coming-soon absent)", rc.route, rc.wantHeading)
+	}
+
+	// 3. Trigger Ctrl+K and verify the Command Palette dialog opens in the real browser DOM
+	// and loads kernel commands from /api/v1/kernel/commands.
+	const paletteSelector = `[role="dialog"][aria-label="Command Palette"]`
+	if err := chromedp.Run(timeoutCtx,
+		input.DispatchKeyEvent(input.KeyRawDown).
+			WithModifiers(input.ModifierCtrl).
+			WithKey("k").
+			WithCode("KeyK").
+			WithWindowsVirtualKeyCode(75),
+		input.DispatchKeyEvent(input.KeyUp).
+			WithModifiers(input.ModifierCtrl).
+			WithKey("k").
+			WithCode("KeyK").
+			WithWindowsVirtualKeyCode(75),
+		chromedp.WaitVisible(paletteSelector, chromedp.ByQuery),
+	); err != nil {
+		t.Fatalf("Ctrl+K failed to open Command Palette dialog: %v", err)
+	}
+	if err := waitForDOMCondition(timeoutCtx, "Command Palette kernel commands loaded",
+		`document.querySelectorAll('[role="dialog"][aria-label="Command Palette"] button').length >= 2`,
+	); err != nil {
+		t.Fatalf("Command Palette did not populate kernel commands: %v", err)
+	}
+	var paletteButtonCount int
+	if err := chromedp.Run(timeoutCtx, chromedp.Evaluate(
+		`document.querySelectorAll('[role="dialog"][aria-label="Command Palette"] button').length`,
+		&paletteButtonCount,
+	)); err != nil {
+		t.Fatalf("count Command Palette buttons: %v", err)
+	}
+	t.Logf("verified Ctrl+K opened Command Palette dialog (rendered %d interactive buttons)", paletteButtonCount)
+
+	// 4. Verify zero uncaught JS exceptions and zero console errors.
+	diagMu.Lock()
+	gotExceptions := append([]string(nil), uncaughtExceptions...)
+	gotConsoleErrors := append([]string(nil), consoleErrors...)
+	diagMu.Unlock()
+
+	if len(gotExceptions) > 0 {
+		t.Fatalf("unexpected uncaught browser JS exceptions (%d): %v", len(gotExceptions), gotExceptions)
+	}
+	if len(gotConsoleErrors) > 0 {
+		t.Fatalf("unexpected browser console.error calls (%d): %v", len(gotConsoleErrors), gotConsoleErrors)
 	}
 }
