@@ -7352,6 +7352,245 @@
         }
       }
     },
+    "/api/v1/requests/{id}": {
+      "get": {
+        "tags": [
+          "requests"
+        ],
+        "summary": "Get request status",
+        "description": "Served route `GET /api/v1/requests/{id}`. Handler: `handleGetRequestStatusV1`. Response shape joined from robot schema registry type `action_status`; the envelope fields success/timestamp/request_id are merged at the top level.",
+        "operationId": "get_api_v1_requests_id",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionStatusOutput"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/requests/{id}/cancel": {
+      "post": {
+        "tags": [
+          "requests"
+        ],
+        "summary": "Cancel request",
+        "description": "Served route `POST /api/v1/requests/{id}/cancel`. Handler: `handleCancelRequestV1`. Response shape joined from robot schema registry type `cancel_request`; the envelope fields success/timestamp/request_id are merged at the top level.",
+        "operationId": "post_api_v1_requests_id_cancel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelRequestOutput"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/requests/{id}/wait": {
+      "post": {
+        "tags": [
+          "requests"
+        ],
+        "summary": "Wait request",
+        "description": "Served route `POST /api/v1/requests/{id}/wait`. Handler: `handleWaitRequestV1`. Response shape joined from robot schema registry type `wait_request`; the envelope fields success/timestamp/request_id are merged at the top level.",
+        "operationId": "post_api_v1_requests_id_wait",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionStatusOutput"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/reservations/": {
       "get": {
         "tags": [
@@ -12428,6 +12667,118 @@
           }
         }
       },
+      "ActionStatusOutput": {
+        "type": "object",
+        "description": "Inspect the current lifecycle state of any durable robot operation (--op-id / Idempotency-Key) or active --robot-wait handle by request ID: source, kind, status, terminal/cancellable flags, timestamps, and recorded outcome.",
+        "properties": {
+          "_meta": {
+            "description": "Meta",
+            "$ref": "#/components/schemas/ResponseMeta"
+          },
+          "cancellable": {
+            "type": "boolean",
+            "description": "Cancellable"
+          },
+          "completed_at": {
+            "type": "string",
+            "description": "Completed at"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "Created at"
+          },
+          "dispatch_started_at": {
+            "type": "string",
+            "description": "Dispatch started at"
+          },
+          "error": {
+            "type": "string",
+            "description": "Error"
+          },
+          "error_code": {
+            "type": "string",
+            "description": "Error code"
+          },
+          "hint": {
+            "type": "string",
+            "description": "Hint"
+          },
+          "interrupt_outcome": {
+            "description": "Interrupt outcome",
+            "$ref": "#/components/schemas/InterruptReceiptOutcome"
+          },
+          "kind": {
+            "type": "string",
+            "description": "Kind"
+          },
+          "operation": {
+            "description": "Operation",
+            "$ref": "#/components/schemas/OperationInfo"
+          },
+          "outcome": {
+            "description": "Outcome",
+            "$ref": "#/components/schemas/SendReceiptOutcome"
+          },
+          "output_format": {
+            "type": "string",
+            "description": "Output format"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Request i d"
+          },
+          "session": {
+            "type": "string",
+            "description": "Session"
+          },
+          "source": {
+            "type": "string",
+            "description": "Source"
+          },
+          "status": {
+            "type": "string",
+            "description": "Status"
+          },
+          "structured_error": {
+            "description": "Structured error",
+            "$ref": "#/components/schemas/StructuredError"
+          },
+          "success": {
+            "type": "boolean",
+            "description": "Success"
+          },
+          "terminal": {
+            "type": "boolean",
+            "description": "Terminal"
+          },
+          "timestamp": {
+            "type": "string",
+            "description": "Timestamp"
+          },
+          "version": {
+            "type": "string",
+            "description": "Version"
+          },
+          "waited_ms": {
+            "type": "integer",
+            "description": "Waited ms"
+          },
+          "warnings": {
+            "type": "array",
+            "description": "Warnings",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "success",
+          "timestamp",
+          "request_id",
+          "terminal",
+          "cancellable"
+        ]
+      },
       "ActivityAgentHints": {
         "type": "object",
         "properties": {
@@ -13745,6 +14096,86 @@
         "required": [
           "enabled",
           "tokens_added"
+        ]
+      },
+      "CancelRequestOutput": {
+        "type": "object",
+        "description": "Cancel a pre-dispatch durable operation claim or an active --robot-wait handle by request ID. Safely refuses with REQUEST_ALREADY_DISPATCHED once pane actuation has begun, or REQUEST_NOT_CANCELLABLE when already terminal.",
+        "properties": {
+          "_meta": {
+            "description": "Meta",
+            "$ref": "#/components/schemas/ResponseMeta"
+          },
+          "canceled": {
+            "type": "boolean",
+            "description": "Canceled"
+          },
+          "completed_at": {
+            "type": "string",
+            "description": "Completed at"
+          },
+          "error": {
+            "type": "string",
+            "description": "Error"
+          },
+          "error_code": {
+            "type": "string",
+            "description": "Error code"
+          },
+          "hint": {
+            "type": "string",
+            "description": "Hint"
+          },
+          "kind": {
+            "type": "string",
+            "description": "Kind"
+          },
+          "operation": {
+            "description": "Operation",
+            "$ref": "#/components/schemas/OperationInfo"
+          },
+          "output_format": {
+            "type": "string",
+            "description": "Output format"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Request i d"
+          },
+          "session": {
+            "type": "string",
+            "description": "Session"
+          },
+          "source": {
+            "type": "string",
+            "description": "Source"
+          },
+          "status": {
+            "type": "string",
+            "description": "Status"
+          },
+          "structured_error": {
+            "description": "Structured error",
+            "$ref": "#/components/schemas/StructuredError"
+          },
+          "success": {
+            "type": "boolean",
+            "description": "Success"
+          },
+          "timestamp": {
+            "type": "string",
+            "description": "Timestamp"
+          },
+          "version": {
+            "type": "string",
+            "description": "Version"
+          }
+        },
+        "required": [
+          "success",
+          "timestamp",
+          "request_id",
+          "canceled"
         ]
       },
       "CapabilitiesFilter": {
@@ -15439,6 +15870,85 @@
           "timed_out"
         ]
       },
+      "InterruptReceiptOutcome": {
+        "type": "object",
+        "properties": {
+          "completed_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "RFC3339 timestamp"
+          },
+          "error": {
+            "type": "string",
+            "description": "Error"
+          },
+          "error_code": {
+            "type": "string",
+            "description": "Error code"
+          },
+          "failed": {
+            "type": "array",
+            "description": "Failed",
+            "items": {
+              "$ref": "#/components/schemas/InterruptError"
+            }
+          },
+          "interrupted": {
+            "type": "array",
+            "description": "Interrupted",
+            "items": {
+              "type": "string"
+            }
+          },
+          "interrupted_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "RFC3339 timestamp"
+          },
+          "message_sent": {
+            "type": "boolean",
+            "description": "Message sent"
+          },
+          "method": {
+            "type": "string",
+            "description": "Method"
+          },
+          "ready_for_input": {
+            "type": "array",
+            "description": "Ready for input",
+            "items": {
+              "type": "string"
+            }
+          },
+          "success": {
+            "type": "boolean",
+            "description": "Success"
+          },
+          "targets": {
+            "type": "array",
+            "description": "Targets",
+            "items": {
+              "type": "string"
+            }
+          },
+          "timed_out": {
+            "type": "boolean",
+            "description": "Timed out"
+          }
+        },
+        "required": [
+          "success",
+          "interrupted_at",
+          "completed_at",
+          "method",
+          "targets",
+          "interrupted",
+          "ready_for_input",
+          "failed",
+          "message_sent",
+          "timed_out"
+        ]
+      },
       "LifecycleInfo": {
         "type": "object",
         "properties": {
@@ -16975,6 +17485,56 @@
           "successful",
           "failed",
           "message_preview"
+        ]
+      },
+      "SendReceiptOutcome": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Error"
+          },
+          "error_code": {
+            "type": "string",
+            "description": "Error code"
+          },
+          "failed": {
+            "type": "array",
+            "description": "Failed",
+            "items": {
+              "$ref": "#/components/schemas/SendError"
+            }
+          },
+          "sent_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "RFC3339 timestamp"
+          },
+          "success": {
+            "type": "boolean",
+            "description": "Success"
+          },
+          "successful": {
+            "type": "array",
+            "description": "Successful",
+            "items": {
+              "type": "string"
+            }
+          },
+          "targets": {
+            "type": "array",
+            "description": "Targets",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "success",
+          "sent_at",
+          "targets",
+          "successful",
+          "failed"
         ]
       },
       "SendRenderEvidence": {
@@ -20307,6 +20867,10 @@
     {
       "name": "policy",
       "description": "Operations related to policy"
+    },
+    {
+      "name": "requests",
+      "description": "Operations related to requests"
     },
     {
       "name": "reservations",

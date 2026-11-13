@@ -566,9 +566,11 @@ type ActionStatusOutput struct {
 
 // WaitRequestOptions configures --robot-wait-request polling.
 type WaitRequestOptions struct {
-	RequestID    string
-	Timeout      time.Duration
-	PollInterval time.Duration
+	RequestID     string
+	Timeout       time.Duration
+	PollInterval  time.Duration
+	Store         *state.Store
+	ExplicitStore bool
 }
 
 // CancelRequestOutput is the structured output for --robot-cancel-request.
@@ -586,6 +588,13 @@ type CancelRequestOutput struct {
 
 // GetActionStatus inspects any durable robot operation or wait handle by ID.
 func GetActionStatus(requestID string) (*ActionStatusOutput, error) {
+	return GetActionStatusWithStore(requestID, nil, false)
+}
+
+// GetActionStatusWithStore inspects a durable robot operation or wait handle
+// using an explicit store (for example from ntm serve) or the process
+// projection store when explicitStore is false.
+func GetActionStatusWithStore(requestID string, store *state.Store, explicitStore bool) (*ActionStatusOutput, error) {
 	requestID = strings.TrimSpace(requestID)
 	output := &ActionStatusOutput{
 		RobotResponse: NewRobotResponse(true),
@@ -600,7 +609,9 @@ func GetActionStatus(requestID string) (*ActionStatusOutput, error) {
 		return output, nil
 	}
 
-	store := currentProjectionStore()
+	if !explicitStore {
+		store = currentProjectionStore()
+	}
 	if store == nil {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("request status inspection requires the runtime projection store"),
@@ -724,7 +735,7 @@ func GetWaitRequest(ctx context.Context, opts WaitRequestOptions) (*ActionStatus
 	defer cancel()
 
 	for {
-		status, err := GetActionStatus(opts.RequestID)
+		status, err := GetActionStatusWithStore(opts.RequestID, opts.Store, opts.ExplicitStore)
 		if err != nil {
 			return nil, err
 		}
@@ -770,6 +781,13 @@ func PrintWaitRequest(ctx context.Context, opts WaitRequestOptions) error {
 // --robot-wait handle, refusing safely if dispatch already crossed the pane
 // mutation boundary or the request is already terminal.
 func GetCancelRequest(requestID string) (*CancelRequestOutput, error) {
+	return GetCancelRequestWithStore(requestID, nil, false)
+}
+
+// GetCancelRequestWithStore cancels a pre-dispatch durable operation claim or
+// an active wait handle using an explicit store (for example from ntm serve)
+// or the process projection store when explicitStore is false.
+func GetCancelRequestWithStore(requestID string, store *state.Store, explicitStore bool) (*CancelRequestOutput, error) {
 	requestID = strings.TrimSpace(requestID)
 	output := &CancelRequestOutput{
 		RobotResponse: NewRobotResponse(true),
@@ -784,7 +802,9 @@ func GetCancelRequest(requestID string) (*CancelRequestOutput, error) {
 		return output, nil
 	}
 
-	store := currentProjectionStore()
+	if !explicitStore {
+		store = currentProjectionStore()
+	}
 	if store == nil {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("request cancellation requires the runtime projection store"),

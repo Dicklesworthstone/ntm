@@ -1576,6 +1576,13 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(s.RequirePermission(PermWriteJobs)).Delete("/{id}", s.handleCancelJob)
 		})
 
+		// Durable Request Identity Lifecycle API (--op-id / Idempotency-Key / wait_id)
+		r.Route("/requests", func(r chi.Router) {
+			r.With(s.RequirePermission(PermReadSessions)).Get("/{id}", s.handleGetRequestStatusV1)
+			r.With(s.RequirePermission(PermReadSessions)).Post("/{id}/wait", s.handleWaitRequestV1)
+			r.With(s.RequirePermission(PermWriteAgents)).Post("/{id}/cancel", s.handleCancelRequestV1)
+		})
+
 		// Pipeline API
 		s.registerPipelineRoutes(r)
 
@@ -2698,9 +2705,11 @@ func robotErrorHTTPStatus(code string) int {
 		return http.StatusForbidden
 	case robot.ErrCodeResourceBusy, robot.ErrCodeStaleWorkCoordination:
 		return http.StatusConflict
-	case robot.ErrCodeIdempotencyConflict, robot.ErrCodeOperationInProgress, robot.ErrCodeOperationOutcomeUnknown:
+	case robot.ErrCodeIdempotencyConflict, robot.ErrCodeOperationInProgress, robot.ErrCodeOperationOutcomeUnknown,
+		"REQUEST_ALREADY_DISPATCHED", "REQUEST_NOT_CANCELLABLE":
 		// The operation ID (Idempotency-Key) is bound to a different command,
-		// or another request holding it is still running: a client-side
+		// another request holding it is still running, or a cancel request arrived
+		// after dispatch started / after terminal completion: a client-side
 		// conflict to reconcile via the receipt, never a server fault.
 		return http.StatusConflict
 	case robot.ErrCodeTimeout:
@@ -3512,6 +3521,131 @@ func (s *Server) handleKernelCommands(w http.ResponseWriter, r *http.Request) {
 		"commands": commands,
 		"count":    len(commands),
 	}, reqID)
+}
+
+type waitRequestBodyV1 struct {
+	TimeoutMs int `json:"timeout_ms,omitempty"`
+	PollMs    int `json:"poll_ms,omitempty"`
+	Timeout   string `json:"timeout,omitempty"`
+	Poll      string `json:"poll,omitempty"`
+}
+
+func (s *Server) writeRobotRequestLifecycleOutput(w http.ResponseWriter, reqID string, resp robot.RobotResponse, output interface{}) {
+	if !resp.Success {
+		var details map[string]interface{}
+		if m, err := toJSONMap(output); err == nil {
+			delete(m, "success")
+			delete(m, "timestamp")
+			delete(m, "error")
+			delete(m, "error_code")
+			if len(m) > 0 {
+				details = m
+			}
+		}
+		writeErrorResponse(w, robotErrorHTTPStatus(resp.ErrorCode), resp.ErrorCode, resp.Error, details, reqID)
+		return
+	}
+	payload, err := toJSONMap(output)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to serialize request lifecycle payload: "+err.Error(), nil, reqID)
+		return
+	}
+	// Pass "" so writeSuccessResponse does not overwrite payload["request_id"]
+	// (which identifies the durable operation/wait handle being inspected; the
+	// HTTP correlation ID is already emitted on the X-Request-Id header).
+	writeSuccessResponse(w, http.StatusOK, payload, "")
+}
+
+// handleGetRequestStatusV1 handles GET /api/v1/requests/{id}.
+func (s *Server) handleGetRequestStatusV1(w http.ResponseWriter, r *http.Request) {
+	httpReqID := requestIDFromContext(r.Context())
+	targetID := strings.TrimSpace(chi.URLParam(r, "id"))
+	slog.Info("request lifecycle status", "http_request_id", httpReqID, "target_request_id", targetID)
+
+	out, err := robot.GetActionStatusWithStore(targetID, s.stateStore, true)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, httpReqID)
+		return
+	}
+	s.writeRobotRequestLifecycleOutput(w, httpReqID, out.RobotResponse, out)
+}
+
+// handleWaitRequestV1 handles POST /api/v1/requests/{id}/wait.
+func (s *Server) handleWaitRequestV1(w http.ResponseWriter, r *http.Request) {
+	httpReqID := requestIDFromContext(r.Context())
+	targetID := strings.TrimSpace(chi.URLParam(r, "id"))
+
+	var body waitRequestBodyV1
+	if err := decodeOptionalJSONBody(r, &body); err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body: "+err.Error(), nil, httpReqID)
+		return
+	}
+
+	timeout := 30 * time.Second
+	if q := strings.TrimSpace(r.URL.Query().Get("timeout")); q != "" {
+		d, err := time.ParseDuration(q)
+		if err != nil || d <= 0 {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid timeout query parameter", nil, httpReqID)
+			return
+		}
+		timeout = d
+	} else if strings.TrimSpace(body.Timeout) != "" {
+		d, err := time.ParseDuration(strings.TrimSpace(body.Timeout))
+		if err != nil || d <= 0 {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid timeout duration", nil, httpReqID)
+			return
+		}
+		timeout = d
+	} else if body.TimeoutMs > 0 {
+		timeout = time.Duration(body.TimeoutMs) * time.Millisecond
+	}
+
+	poll := 100 * time.Millisecond
+	if q := strings.TrimSpace(r.URL.Query().Get("poll")); q != "" {
+		d, err := time.ParseDuration(q)
+		if err != nil || d <= 0 {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid poll query parameter", nil, httpReqID)
+			return
+		}
+		poll = d
+	} else if strings.TrimSpace(body.Poll) != "" {
+		d, err := time.ParseDuration(strings.TrimSpace(body.Poll))
+		if err != nil || d <= 0 {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid poll duration", nil, httpReqID)
+			return
+		}
+		poll = d
+	} else if body.PollMs > 0 {
+		poll = time.Duration(body.PollMs) * time.Millisecond
+	}
+
+	slog.Info("request lifecycle wait", "http_request_id", httpReqID, "target_request_id", targetID, "timeout", timeout, "poll", poll)
+	out, err := robot.GetWaitRequest(r.Context(), robot.WaitRequestOptions{
+		RequestID:     targetID,
+		Timeout:       timeout,
+		PollInterval:  poll,
+		Store:         s.stateStore,
+		ExplicitStore: true,
+	})
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, httpReqID)
+		return
+	}
+	s.writeRobotRequestLifecycleOutput(w, httpReqID, out.RobotResponse, out)
+}
+
+// handleCancelRequestV1 handles POST /api/v1/requests/{id}/cancel.
+func (s *Server) handleCancelRequestV1(w http.ResponseWriter, r *http.Request) {
+	httpReqID := requestIDFromContext(r.Context())
+	targetID := strings.TrimSpace(chi.URLParam(r, "id"))
+	slog.Info("request lifecycle cancel", "http_request_id", httpReqID, "target_request_id", targetID)
+
+	out, err := robot.GetCancelRequestWithStore(targetID, s.stateStore, true)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, httpReqID)
+		return
+	}
+	s.writeRobotRequestLifecycleOutput(w, httpReqID, out.RobotResponse, out)
 }
 
 // handleDoctorV1 handles GET /api/v1/doctor.

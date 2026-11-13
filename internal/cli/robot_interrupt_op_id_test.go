@@ -84,6 +84,21 @@ func TestRobotInterruptOpIDRetryAcrossProcessesReplays(t *testing.T) {
 		t.Fatalf("receipt interrupt_outcome = %v, want the recorded successful interrupt with the task delivered", receipt["interrupt_outcome"])
 	}
 
+	statusDoc, code := run("--robot-action-status=" + opID)
+	if code != 0 || statusDoc["success"] != true || statusDoc["request_id"] != opID || statusDoc["terminal"] != true || statusDoc["status"] != "completed" {
+		t.Fatalf("action-status exit=%d payload=%v, want terminal completed status for %s", code, statusDoc, opID)
+	}
+
+	waitDoc, code := run("--robot-wait-request", "--request-id="+opID, "--timeout=2s", "--poll=25ms")
+	if code != 0 || waitDoc["success"] != true || waitDoc["request_id"] != opID || waitDoc["terminal"] != true {
+		t.Fatalf("wait-request exit=%d payload=%v, want immediate terminal completion for %s", code, waitDoc, opID)
+	}
+
+	cancelDoc, code := run("--robot-cancel-request=" + opID)
+	if code != 1 || cancelDoc["error_code"] != "REQUEST_NOT_CANCELLABLE" {
+		t.Fatalf("cancel-request on completed op exit=%d payload=%v, want REQUEST_NOT_CANCELLABLE", code, cancelDoc)
+	}
+
 	conflict, code := run(interrupt("different task " + marker)...)
 	if code != 1 || conflict["error_code"] != robot.ErrCodeIdempotencyConflict {
 		t.Fatalf("conflicting reuse exit=%d payload=%v, want IDEMPOTENCY_CONFLICT", code, conflict)

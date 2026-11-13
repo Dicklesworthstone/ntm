@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
@@ -230,5 +231,106 @@ func TestHandleAgentInterruptV1IdempotencyKeyIsDurable(t *testing.T) {
 	fx.AssertQuiet(t, marker, 1, 1)
 	if conflictRec.Code != http.StatusConflict || conflict["error_code"] != robot.ErrCodeIdempotencyConflict {
 		t.Fatalf("post-restart conflicting reuse status=%d payload=%v, want 409 IDEMPOTENCY_CONFLICT", conflictRec.Code, conflict)
+	}
+}
+
+func TestRequestIdentityLifecycleEndpointsV1(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	router := srv.Router()
+
+	doReq := func(method, path, body string) (*httptest.ResponseRecorder, map[string]any) {
+		t.Helper()
+		var reader *strings.Reader
+		if body != "" {
+			reader = strings.NewReader(body)
+		} else {
+			reader = strings.NewReader("")
+		}
+		req := httptest.NewRequest(method, path, reader)
+		req.Header.Set("X-Request-Id", "http-corr-id-999")
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("%s %s invalid JSON (%d): %v\n%s", method, path, rec.Code, err, rec.Body.String())
+		}
+		return rec, payload
+	}
+
+	// 1. Unknown request ID -> 404 NOT_FOUND.
+	rec404, body404 := doReq(http.MethodGet, "/api/v1/requests/missing-op", "")
+	if rec404.Code != http.StatusNotFound || body404["error_code"] != robot.ErrCodeNotFound {
+		t.Fatalf("GET missing status=%d body=%v, want 404 NOT_FOUND", rec404.Code, body404)
+	}
+
+	// 2. Claim pre-dispatch send operation -> GET preserves target request_id (not HTTP X-Request-Id) -> POST /cancel succeeds -> repeat /cancel returns 409 REQUEST_NOT_CANCELLABLE.
+	op1 := &state.SendOperation{
+		OperationID:   "op-rest-cancel-1",
+		SessionName:   "proj",
+		Kind:          state.OperationKindSend,
+		ClaimToken:    "tok-1",
+		BindingHash:   strings.Repeat("1", 64),
+		PayloadSHA256: strings.Repeat("2", 64),
+		PayloadBytes:  5,
+		Targets:       []string{"1"},
+	}
+	_, claimed1, err := srv.stateStore.ClaimSendOperation(op1)
+	if err != nil || !claimed1 {
+		t.Fatalf("ClaimSendOperation op-rest-cancel-1: claimed=%v err=%v", claimed1, err)
+	}
+
+	stRec, stBody := doReq(http.MethodGet, "/api/v1/requests/op-rest-cancel-1", "")
+	if stRec.Code != http.StatusOK || stBody["success"] != true || stBody["request_id"] != "op-rest-cancel-1" || stBody["cancellable"] != true {
+		t.Fatalf("GET /api/v1/requests/op-rest-cancel-1 status=%d body=%v", stRec.Code, stBody)
+	}
+
+	cancelRec, cancelBody := doReq(http.MethodPost, "/api/v1/requests/op-rest-cancel-1/cancel", "")
+	if cancelRec.Code != http.StatusOK || cancelBody["canceled"] != true || cancelBody["request_id"] != "op-rest-cancel-1" || cancelBody["status"] != state.SendOperationCanceled {
+		t.Fatalf("POST /cancel status=%d body=%v", cancelRec.Code, cancelBody)
+	}
+
+	cancelAgainRec, cancelAgainBody := doReq(http.MethodPost, "/api/v1/requests/op-rest-cancel-1/cancel", "")
+	if cancelAgainRec.Code != http.StatusConflict || cancelAgainBody["error_code"] != "REQUEST_NOT_CANCELLABLE" {
+		t.Fatalf("second POST /cancel status=%d body=%v, want 409 REQUEST_NOT_CANCELLABLE", cancelAgainRec.Code, cancelAgainBody)
+	}
+
+	// 3. Dispatched operation -> POST /cancel returns 409 REQUEST_ALREADY_DISPATCHED; POST /wait times out (504) then returns 200 once completed.
+	op2 := &state.SendOperation{
+		OperationID:   "op-rest-wait-2",
+		SessionName:   "proj",
+		Kind:          state.OperationKindSend,
+		BindingHash:   strings.Repeat("3", 64),
+		PayloadSHA256: strings.Repeat("4", 64),
+		PayloadBytes:  5,
+		Targets:       []string{"1"},
+	}
+	claimedOp2, claimed2, err := srv.stateStore.ClaimSendOperation(op2)
+	if err != nil || !claimed2 || claimedOp2 == nil {
+		t.Fatalf("ClaimSendOperation op-rest-wait-2: claimed=%v op=%v err=%v", claimed2, claimedOp2, err)
+	}
+	if _, err := srv.stateStore.StartSendOperation(claimedOp2); err != nil {
+		t.Fatalf("StartSendOperation: %v", err)
+	}
+
+	dispatchedCancelRec, dispatchedCancelBody := doReq(http.MethodPost, "/api/v1/requests/op-rest-wait-2/cancel", "")
+	if dispatchedCancelRec.Code != http.StatusConflict || dispatchedCancelBody["error_code"] != "REQUEST_ALREADY_DISPATCHED" {
+		t.Fatalf("POST /cancel dispatched status=%d body=%v, want 409 REQUEST_ALREADY_DISPATCHED", dispatchedCancelRec.Code, dispatchedCancelBody)
+	}
+
+	waitTimeoutRec, waitTimeoutBody := doReq(http.MethodPost, "/api/v1/requests/op-rest-wait-2/wait", `{"timeout_ms":30,"poll_ms":10}`)
+	if waitTimeoutRec.Code != http.StatusGatewayTimeout || waitTimeoutBody["error_code"] != robot.ErrCodeTimeout {
+		t.Fatalf("POST /wait timeout status=%d body=%v, want 504 TIMEOUT", waitTimeoutRec.Code, waitTimeoutBody)
+	}
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_ = srv.stateStore.CompleteSendOperation("op-rest-wait-2", "proj", claimedOp2.ClaimToken, `{"success":true,"targets":["1"],"successful":["1"]}`, time.Now().UTC())
+	}()
+	waitDoneRec, waitDoneBody := doReq(http.MethodPost, "/api/v1/requests/op-rest-wait-2/wait", `{"timeout":"2s","poll":"10ms"}`)
+	if waitDoneRec.Code != http.StatusOK || waitDoneBody["terminal"] != true || waitDoneBody["status"] != state.SendOperationCompleted || waitDoneBody["request_id"] != "op-rest-wait-2" {
+		t.Fatalf("POST /wait settled status=%d body=%v", waitDoneRec.Code, waitDoneBody)
 	}
 }

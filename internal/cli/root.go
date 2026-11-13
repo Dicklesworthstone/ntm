@@ -865,6 +865,15 @@ Shell Integration:
 					EncryptKey:  encKey,
 					DecryptKeys: allKeys,
 				})
+				checkpoint.SetEncryptionConfig(&checkpoint.EncryptionConfig{
+					Enabled:     true,
+					EncryptKey:  encKey,
+					DecryptKeys: allKeys,
+				})
+			} else {
+				history.SetEncryptionConfig(nil)
+				events.SetEncryptionConfig(nil)
+				checkpoint.SetEncryptionConfig(nil)
 			}
 
 			// Run automatic temp file cleanup if enabled
@@ -2066,6 +2075,79 @@ Shell Integration:
 				return
 			}
 			if err := robot.PrintSendReceipt(robotSendReceipt); err != nil {
+				recordRobotProcessExit(err)
+			}
+			return
+		}
+		if robotActionStatus != "" {
+			if robotSend != "" || robotInterrupt != "" {
+				failRobotCommand(errors.New("--robot-action-status cannot be combined with --robot-send or --robot-interrupt"), robot.ErrCodeInvalidFlag, "Inspect request status in a separate invocation", "robot-action-status")
+				return
+			}
+			reqID := strings.TrimSpace(robotActionStatus)
+			if reqID == "__present__" {
+				reqID = strings.TrimSpace(robotRequestID)
+			} else if trimmed := strings.TrimSpace(robotRequestID); trimmed != "" && trimmed != reqID {
+				failRobotCommand(errors.New("conflicting request IDs supplied to --robot-action-status and --request-id"), robot.ErrCodeInvalidFlag, "Pass either --robot-action-status=ID or --robot-action-status --request-id=ID", "robot-action-status")
+				return
+			}
+			if err := robot.PrintActionStatus(reqID); err != nil {
+				recordRobotProcessExit(err)
+			}
+			return
+		}
+		if robotWaitRequest != "" {
+			if robotSend != "" || robotInterrupt != "" {
+				failRobotCommand(errors.New("--robot-wait-request cannot be combined with --robot-send or --robot-interrupt"), robot.ErrCodeInvalidFlag, "Wait on the request in a separate invocation", "robot-wait-request")
+				return
+			}
+			reqID := strings.TrimSpace(robotWaitRequest)
+			if reqID == "__present__" {
+				reqID = strings.TrimSpace(robotRequestID)
+			} else if trimmed := strings.TrimSpace(robotRequestID); trimmed != "" && trimmed != reqID {
+				failRobotCommand(errors.New("conflicting request IDs supplied to --robot-wait-request and --request-id"), robot.ErrCodeInvalidFlag, "Pass either --robot-wait-request=ID or --robot-wait-request --request-id=ID", "robot-wait-request")
+				return
+			}
+			waitTimeout := 30 * time.Second
+			if cmd.Flags().Changed("timeout") || cmd.Flags().Changed("wait-timeout") {
+				parsed, err := util.ParseDurationWithDefault(robotWaitTimeout, time.Second, "timeout")
+				if err != nil || parsed <= 0 {
+					failRobotCommand(fmt.Errorf("invalid --timeout %q", robotWaitTimeout), robot.ErrCodeInvalidFlag, "Provide a positive duration like 30s or 500ms", "robot-wait-request")
+					return
+				}
+				waitTimeout = parsed
+			}
+			waitPoll := 100 * time.Millisecond
+			if cmd.Flags().Changed("poll") || cmd.Flags().Changed("wait-poll") {
+				parsed, err := util.ParseDurationWithDefault(robotWaitPoll, time.Millisecond, "poll")
+				if err != nil || parsed <= 0 {
+					failRobotCommand(fmt.Errorf("invalid --poll %q", robotWaitPoll), robot.ErrCodeInvalidFlag, "Provide a positive duration like 100ms or 1s", "robot-wait-request")
+					return
+				}
+				waitPoll = parsed
+			}
+			if err := robot.PrintWaitRequest(cmd.Context(), robot.WaitRequestOptions{
+				RequestID:    reqID,
+				Timeout:      waitTimeout,
+				PollInterval: waitPoll,
+			}); err != nil {
+				recordRobotProcessExit(err)
+			}
+			return
+		}
+		if robotCancelRequest != "" {
+			if robotSend != "" || robotInterrupt != "" {
+				failRobotCommand(errors.New("--robot-cancel-request cannot be combined with --robot-send or --robot-interrupt"), robot.ErrCodeInvalidFlag, "Cancel the request in a separate invocation", "robot-cancel-request")
+				return
+			}
+			reqID := strings.TrimSpace(robotCancelRequest)
+			if reqID == "__present__" {
+				reqID = strings.TrimSpace(robotRequestID)
+			} else if trimmed := strings.TrimSpace(robotRequestID); trimmed != "" && trimmed != reqID {
+				failRobotCommand(errors.New("conflicting request IDs supplied to --robot-cancel-request and --request-id"), robot.ErrCodeInvalidFlag, "Pass either --robot-cancel-request=ID or --robot-cancel-request --request-id=ID", "robot-cancel-request")
+				return
+			}
+			if err := robot.PrintCancelRequest(reqID); err != nil {
 				recordRobotProcessExit(err)
 			}
 			return
@@ -3629,6 +3711,7 @@ func robotPersistenceRefreshesProjection(cmd *cobra.Command) bool {
 var robotSurfacesWithoutProjection = map[string]bool{
 	"robot-send": true, "robot-interrupt": true, "robot-ack": true, "robot-tail": true,
 	"robot-is-working": true, "robot-send-receipt": true,
+	"robot-action-status": true, "robot-wait-request": true, "robot-cancel-request": true,
 	"robot-exit-cli": true, "robot-kill-agent": true, "robot-smart-restart": true,
 	"robot-capabilities": true, "robot-help": true, "robot-docs": true, "robot-schema": true,
 	"robot-palette": true, "robot-recipes": true, "robot-ensemble-modes": true, "robot-ensemble-presets": true,
@@ -4119,6 +4202,10 @@ var (
 	robotSendDelay        int    // delay between sends in ms
 	robotOpID             string // durable idempotent operation ID for --robot-send (#245) and --robot-interrupt
 	robotSendReceipt      string // operation ID for --robot-send-receipt (#245): send or interrupt receipt
+	robotActionStatus     string // request/operation ID for --robot-action-status
+	robotWaitRequest      string // request/operation ID for --robot-wait-request
+	robotCancelRequest    string // request/operation ID for --robot-cancel-request
+	robotRequestID        string // explicit --request-id selector for action-status/wait-request/cancel-request
 	robotSendWithMemory   bool   // inject CM memory rules into the outgoing message (bd-3j6hm)
 	robotSendWithCASS     bool   // inject CASS session context into the outgoing message (bd-ws2-wire-or-delete-ykmcz.11)
 	robotSendNoCASS       bool   // force-disable CASS injection, overriding [cass.context] enabled=true
@@ -4824,6 +4911,13 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotSendNoCASS, "no-cass", false, "Disable CASS context injection for this send or bulk assignment, overriding [cass.context] enabled=true")
 	rootCmd.Flags().StringVar(&robotOpID, "op-id", "", "Durable idempotent operation ID for --robot-send and --robot-interrupt: identical retries replay the recorded outcome without touching panes again, conflicting reuse is rejected. Example: ntm --robot-interrupt=proj --msg='...' --op-id=retask-42")
 	rootCmd.Flags().StringVar(&robotSendReceipt, "robot-send-receipt", "", "Query the durable receipt of an idempotent --robot-send or --robot-interrupt by operation ID. Example: ntm --robot-send-receipt=deploy-42")
+	rootCmd.Flags().StringVar(&robotActionStatus, "robot-action-status", "", "Inspect lifecycle status of a durable robot operation or wait handle by request ID. Example: ntm --robot-action-status=deploy-42")
+	rootCmd.Flags().Lookup("robot-action-status").NoOptDefVal = "__present__"
+	rootCmd.Flags().StringVar(&robotWaitRequest, "robot-wait-request", "", "Wait for a durable robot operation or wait handle to reach a terminal state. Example: ntm --robot-wait-request=deploy-42 --timeout=30s")
+	rootCmd.Flags().Lookup("robot-wait-request").NoOptDefVal = "__present__"
+	rootCmd.Flags().StringVar(&robotCancelRequest, "robot-cancel-request", "", "Cancel a pre-dispatch durable operation claim or active wait handle by request ID. Example: ntm --robot-cancel-request=deploy-42")
+	rootCmd.Flags().Lookup("robot-cancel-request").NoOptDefVal = "__present__"
+	rootCmd.Flags().StringVar(&robotRequestID, "request-id", "", "Explicit request or operation ID selector for --robot-action-status, --robot-wait-request, and --robot-cancel-request")
 
 	// Robot-assign flags for work distribution
 	rootCmd.Flags().StringVar(&robotAssign, "robot-assign", "", "Get work distribution recommendations. Required: SESSION. Example: ntm --robot-assign=proj --strategy=speed")
@@ -7130,7 +7224,8 @@ func needsConfigLoading(cmdName string) bool {
 			robotHealthOAuth != "" || robotHealthRestartStuck != "" || robotLogs != "" || robotDiagnose != "" || robotTerse || robotMarkdown || robotSave != "" || robotRestore != "" ||
 			robotContext != "" || robotEnsemble != "" || robotEnsembleSpawn != "" || robotEnsembleSuggest != "" || robotEnsembleStop != "" || robotAlerts || robotIsWorking != "" || robotAgentHealth != "" ||
 			robotSmartRestart != "" || robotMonitor != "" || robotEnv != "" || robotSupportBundle != "" ||
-			robotActivity != "" || robotProductivity != "" || robotSendReceipt != "" {
+			robotActivity != "" || robotProductivity != "" || robotSendReceipt != "" ||
+			robotActionStatus != "" || robotWaitRequest != "" || robotCancelRequest != "" {
 			return true
 		}
 	}

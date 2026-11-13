@@ -51,6 +51,7 @@ var SchemaPagination = map[string]SchemaPaginationFlag{
 	"account_status":     {Reason: "bounded: one seat entry per configured CAAM profile per provider (handful)"},
 	"accounts_list":      {Reason: "bounded: configured provider accounts (handful)"},
 	"ack":                {Reason: "bounded: per-request acknowledgement results for addressed panes"},
+	"action_status":      {Reason: "bounded: status and warning list for a single request or operation ID"},
 	"activity":           {Reason: "bounded: one entry per live agent pane"},
 	"agent_names":        {Reason: "bounded: one entry per live agent pane"},
 	"alerts":             {Reason: "bounded: active alerts capped by alert engine retention"},
@@ -157,6 +158,8 @@ var SchemaPagination = map[string]SchemaPaginationFlag{
 	"tools":           {Reason: "bounded: fixed tool catalog"},
 	"triage":          {Reason: "bounded: top-K triage recommendations"},
 	"wait":            {Reason: "bounded: wake reasons for one wait"},
+	"wait_request":    {Reason: "bounded: terminal status and warning list for a single request or operation ID"},
+	"cancel_request":  {Reason: "bounded: cancellation echo and target admission rows for a single request ID"},
 	"watch_bead":      {Reason: "bounded: events for one watched bead window"},
 	"xf_search":       {Reason: "bounded: top-K transcript search hits"},
 }

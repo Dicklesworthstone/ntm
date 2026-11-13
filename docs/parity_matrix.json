@@ -1,6 +1,6 @@
 {
   "source": "chi-router-walk",
-  "count": 185,
+  "count": 188,
   "endpoints": [
     {
       "method": "GET",
@@ -568,6 +568,24 @@
       "method": "POST",
       "path": "/api/v1/policy/validate",
       "handler": "handlePolicyValidateV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/requests/{id}",
+      "handler": "handleGetRequestStatusV1",
+      "robot_schema": "action_status"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/requests/{id}/cancel",
+      "handler": "handleCancelRequestV1",
+      "robot_schema": "cancel_request"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/requests/{id}/wait",
+      "handler": "handleWaitRequestV1",
+      "robot_schema": "wait_request"
     },
     {
       "method": "DELETE",

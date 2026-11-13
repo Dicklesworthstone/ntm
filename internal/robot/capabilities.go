@@ -1008,6 +1008,50 @@ func buildCommandRegistry() []RobotCommandInfo {
 			},
 		},
 		{
+			Name:        "action-status",
+			Flag:        "--robot-action-status",
+			Category:    "control",
+			Description: "Inspect the current lifecycle state of any durable robot operation (--op-id / Idempotency-Key) or active --robot-wait handle by request ID: source, kind, status, terminal/cancellable flags, timestamps, and recorded outcome.",
+			Parameters: []RobotParameter{
+				{Name: "request-id", Flag: "--robot-action-status", Type: "string", Required: false, Description: "Request/operation ID (or pass via --request-id)"},
+				{Name: "request-id-flag", Flag: "--request-id", Type: "string", Required: false, Description: "Explicit request/operation ID selector"},
+			},
+			Examples: []string{
+				"ntm --robot-action-status=deploy-42",
+				"ntm --robot-action-status --request-id=wait-7",
+			},
+		},
+		{
+			Name:        "wait-request",
+			Flag:        "--robot-wait-request",
+			Category:    "control",
+			Description: "Block until a durable robot operation or wait handle reaches a terminal state (completed or canceled), or return TIMEOUT when --timeout elapses.",
+			Parameters: []RobotParameter{
+				{Name: "request-id", Flag: "--robot-wait-request", Type: "string", Required: false, Description: "Request/operation ID (or pass via --request-id)"},
+				{Name: "request-id-flag", Flag: "--request-id", Type: "string", Required: false, Description: "Explicit request/operation ID selector"},
+				{Name: "timeout", Flag: "--timeout", Type: "string", Required: false, Default: "30s", Description: "Maximum wait time before returning TIMEOUT"},
+				{Name: "poll", Flag: "--poll", Type: "string", Required: false, Default: "100ms", Description: "Poll interval while waiting"},
+			},
+			Examples: []string{
+				"ntm --robot-wait-request=deploy-42 --timeout=30s",
+				"ntm --robot-wait-request --request-id=wait-7 --timeout=10s --poll=100ms",
+			},
+		},
+		{
+			Name:        "cancel-request",
+			Flag:        "--robot-cancel-request",
+			Category:    "control",
+			Description: "Cancel a pre-dispatch durable operation claim or an active --robot-wait handle by request ID. Safely refuses with REQUEST_ALREADY_DISPATCHED once pane actuation has begun, or REQUEST_NOT_CANCELLABLE when already terminal.",
+			Parameters: []RobotParameter{
+				{Name: "request-id", Flag: "--robot-cancel-request", Type: "string", Required: false, Description: "Request/operation ID (or pass via --request-id)"},
+				{Name: "request-id-flag", Flag: "--request-id", Type: "string", Required: false, Description: "Explicit request/operation ID selector"},
+			},
+			Examples: []string{
+				"ntm --robot-cancel-request=deploy-42",
+				"ntm --robot-cancel-request --request-id=wait-7",
+			},
+		},
+		{
 			Name:        "ack",
 			Flag:        "--robot-ack",
 			Category:    "control",

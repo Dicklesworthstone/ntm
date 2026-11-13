@@ -733,26 +733,63 @@ func TestRobotCASSInsightsMatchesInstalledCass(t *testing.T) {
 	}
 	// Both runs read the developer's real index, not TestMain's empty data home.
 	t.Setenv("XDG_DATA_HOME", developerDataHome)
-	raw, err := exec.Command("cass", "search", "*", "--json", "--limit", "0", "--since", "30d", "--aggregate", "agent,workspace").Output()
-	var direct struct {
-		Aggregations struct {
-			Agent struct {
-				Buckets []cass.AggregationBucket `json:"buckets"`
-			} `json:"agent"`
-		} `json:"aggregations"`
-	}
-	if err != nil || json.Unmarshal(raw, &direct) != nil {
-		t.Fatalf("cass search --aggregate: %v", err)
+
+	readDirectBuckets := func() []cass.AggregationBucket {
+		t.Helper()
+		raw, err := exec.Command("cass", "search", "*", "--json", "--limit", "0", "--since", "30d", "--aggregate", "agent,workspace").Output()
+		var direct struct {
+			Aggregations struct {
+				Agent struct {
+					Buckets []cass.AggregationBucket `json:"buckets"`
+				} `json:"agent"`
+			} `json:"aggregations"`
+		}
+		if err != nil || json.Unmarshal(raw, &direct) != nil {
+			t.Fatalf("cass search --aggregate: %v", err)
+		}
+		return direct.Aggregations.Agent.Buckets
 	}
 
-	out, err := GetCASSInsights("30d")
-	if err != nil || !out.Success || out.Period != "30d" {
-		t.Fatalf("GetCASSInsights = %+v, %v", out, err)
+	bucketsEqual := func(a, b []cass.AggregationBucket) bool {
+		if len(a) != len(b) {
+			return false
+		}
+		for i := range a {
+			if a[i] != b[i] {
+				return false
+			}
+		}
+		return true
 	}
-	if len(out.Agents) != len(direct.Aggregations.Agent.Buckets) {
-		t.Fatalf("agents = %+v, cass says %+v", out.Agents, direct.Aggregations.Agent.Buckets)
+
+	// Bracket GetCASSInsights with before/after cass reads so a live agent turn
+	// indexed mid-test triggers a bounded retry rather than a non-hermetic flake.
+	var (
+		expected []cass.AggregationBucket
+		out      *CASSInsightsOutput
+		settled  bool
+	)
+	for attempt := 0; attempt < 4; attempt++ {
+		before := readDirectBuckets()
+		var err error
+		out, err = GetCASSInsights("30d")
+		if err != nil || !out.Success || out.Period != "30d" {
+			t.Fatalf("GetCASSInsights = %+v, %v", out, err)
+		}
+		after := readDirectBuckets()
+		if bucketsEqual(before, after) {
+			expected = before
+			settled = true
+			break
+		}
 	}
-	for i, b := range direct.Aggregations.Agent.Buckets {
+	if !settled {
+		t.Skip("live cass index mutated continuously across 4 consecutive snapshots")
+	}
+	if len(out.Agents) != len(expected) {
+		t.Fatalf("agents = %+v, cass says %+v", out.Agents, expected)
+	}
+	for i, b := range expected {
 		if out.Agents[i] != b {
 			t.Fatalf("agents[%d] = %+v, cass says %+v", i, out.Agents[i], b)
 		}

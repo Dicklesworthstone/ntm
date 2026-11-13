@@ -12,12 +12,13 @@
     "utility"
   ],
   "category_count": 10,
-  "schema_type_count": 136,
+  "schema_type_count": 139,
   "schema_types": [
     "account_status",
     "accounts_list",
     "acfs_status",
     "ack",
+    "action_status",
     "activity",
     "agent_health",
     "agent_names",
@@ -32,6 +33,7 @@
     "bead_show",
     "beads_list",
     "bulk_assign",
+    "cancel_request",
     "capabilities",
     "cass_context",
     "cass_insights",
@@ -147,12 +149,13 @@
     "version",
     "wait",
     "wait_cancel",
+    "wait_request",
     "watch_bead",
     "xf_search",
     "xf_status"
   ],
   "section_count": 13,
-  "surface_count": 148,
+  "surface_count": 151,
   "surfaces": [
     {
       "category": "state",
@@ -841,6 +844,21 @@
     },
     {
       "category": "control",
+      "flag": "--robot-action-status",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": false,
+      "has_consumer_guidance": false,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "action-status",
+      "schema_id": "ntm:robot:action-status:v1",
+      "schema_type": "action_status"
+    },
+    {
+      "category": "control",
       "flag": "--robot-answer-dialog",
       "has_action_handoff": false,
       "has_attention_ops": false,
@@ -885,6 +903,21 @@
       "schema_id": "ntm:robot:bulk-assign:v1",
       "schema_type": "bulk_assign",
       "supports_idempotency": true
+    },
+    {
+      "category": "control",
+      "flag": "--robot-cancel-request",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": false,
+      "has_consumer_guidance": false,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "cancel-request",
+      "schema_id": "ntm:robot:cancel-request:v1",
+      "schema_type": "cancel_request"
     },
     {
       "category": "control",
@@ -1080,6 +1113,21 @@
       "name": "wait-cancel",
       "schema_id": "ntm:robot:wait-cancel:v1",
       "schema_type": "wait_cancel"
+    },
+    {
+      "category": "control",
+      "flag": "--robot-wait-request",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": false,
+      "has_consumer_guidance": false,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "wait-request",
+      "schema_id": "ntm:robot:wait-request:v1",
+      "schema_type": "wait_request"
     },
     {
       "category": "spawn",
