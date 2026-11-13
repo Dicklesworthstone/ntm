@@ -2526,7 +2526,7 @@ func buildAssignAllocationInput(ctx context.Context, agents []assignAgentInfo, b
 			PaneTarget:        assignmentPaneTarget(agentInfo.pane),
 			PaneID:            agentInfo.pane.ID,
 			AgentType:         tmux.AgentType(agentInfo.agentType).Canonical(),
-			Idle:              agentInfo.state == "" || agentInfo.state == "idle",
+			Idle:              agentInfo.state == "" || agentInfo.state == "idle" || (opts != nil && opts.Relax && agentInfo.relaxed),
 			ContextUsage:      agentInfo.contextUsage, // Preserve invalid observations for the planner's hard gate.
 			ActiveAssignments: active,
 			AssignmentLimit:   1,
