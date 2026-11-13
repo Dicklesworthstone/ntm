@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -435,6 +437,133 @@ func TestRouterSpecOperationBasics(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+}
+
+// TestRouterSpecCompletenessAndArtifactFreshness enforces >=98% typed /api/v1/*
+// schema coverage, default port 7337, SSE text/event-stream & WebSocket 101
+// protocol schemas, byte-for-byte freshness of docs/openapi.json and
+// docs/parity_matrix.json, and complete path coverage in web/src/lib/api/schema.d.ts
+// (bd-rc-track-e-uplift-xkt68.1).
+func TestRouterSpecCompletenessAndArtifactFreshness(t *testing.T) {
+	spec, err := GenerateOpenAPISpecFromRouter("dev", DefaultOpenAPIServerURL)
+	if err != nil {
+		t.Fatalf("GenerateOpenAPISpecFromRouter: %v", err)
+	}
+	if len(spec.Servers) == 0 || spec.Servers[0].URL != "http://127.0.0.1:7337" {
+		t.Fatalf("default OpenAPI server URL = %+v, want http://127.0.0.1:7337", spec.Servers)
+	}
+
+	v1Total := 0
+	v1Typed := 0
+	for path, item := range spec.Paths {
+		if !strings.HasPrefix(path, "/api/v1/") {
+			continue
+		}
+		for _, op := range []*Operation{item.Get, item.Post, item.Put, item.Patch, item.Delete} {
+			if op == nil {
+				continue
+			}
+			v1Total++
+			typed := false
+			if _, ok := op.Responses["101"]; ok {
+				typed = true
+			}
+			for _, code := range []string{"200", "201", "202"} {
+				resp, ok := op.Responses[code]
+				if !ok {
+					continue
+				}
+				if _, sse := resp.Content["text/event-stream"]; sse {
+					typed = true
+				}
+				if _, gz := resp.Content["application/gzip"]; gz {
+					typed = true
+				}
+				if media, ok := resp.Content["application/json"]; ok && media.Schema != nil {
+					if media.Schema.Ref != "" && media.Schema.Ref != "#/components/schemas/SuccessEnvelope" {
+						typed = true
+					}
+				}
+			}
+			if typed {
+				v1Typed++
+			}
+		}
+	}
+	if v1Total == 0 {
+		t.Fatal("expected /api/v1/* operations in spec, found 0")
+	}
+	ratio := float64(v1Typed) * 100.0 / float64(v1Total)
+	t.Logf("OpenAPI /api/v1/* typed coverage: %d/%d (%.2f%%), components=%d",
+		v1Typed, v1Total, ratio, len(spec.Components.Schemas))
+	if ratio < 98.0 {
+		t.Fatalf("/api/v1/* typed schema coverage = %.2f%% (%d/%d), want >= 98.0%%", ratio, v1Typed, v1Total)
+	}
+
+	// Verify SSE text/event-stream and WebSocket 101 + WSMessage contracts.
+	for _, ssePath := range []string{"/events", "/api/v1/attention/stream"} {
+		eventsOp, ok := spec.Paths[ssePath]
+		if !ok || eventsOp.Get == nil {
+			t.Fatalf("GET %s missing", ssePath)
+		}
+		if _, ok := eventsOp.Get.Responses["200"].Content["text/event-stream"]; !ok {
+			t.Fatalf("GET %s missing text/event-stream response content", ssePath)
+		}
+	}
+	wsOp, ok := spec.Paths["/api/v1/ws"]
+	if !ok || wsOp.Get == nil {
+		t.Fatal("GET /api/v1/ws missing")
+	}
+	if _, ok := wsOp.Get.Responses["101"]; !ok {
+		t.Fatal("GET /api/v1/ws missing 101 Switching Protocols response")
+	}
+	if _, ok := spec.Components.Schemas["WSMessage"]; !ok {
+		t.Fatal("WSMessage schema missing from components")
+	}
+
+	// Verify byte-for-byte freshness of docs/openapi.json & docs/parity_matrix.json.
+	specJSON, err := json.MarshalIndent(spec, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal spec: %v", err)
+	}
+	wantOpenAPI := append(specJSON, '\n')
+	gotOpenAPI, err := os.ReadFile(filepath.Join("..", "..", "docs", "openapi.json"))
+	if err != nil {
+		t.Fatalf("read docs/openapi.json: %v", err)
+	}
+	if !bytes.Equal(gotOpenAPI, wantOpenAPI) {
+		t.Fatal("docs/openapi.json is stale vs served router; run `bash scripts/gen_web_types.sh`")
+	}
+
+	matrix, err := GenerateParityMatrixFromRouter("dev")
+	if err != nil {
+		t.Fatalf("GenerateParityMatrixFromRouter: %v", err)
+	}
+	matrixJSON, err := json.MarshalIndent(matrix, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal parity matrix: %v", err)
+	}
+	wantMatrix := append(matrixJSON, '\n')
+	gotMatrix, err := os.ReadFile(filepath.Join("..", "..", "docs", "parity_matrix.json"))
+	if err != nil {
+		t.Fatalf("read docs/parity_matrix.json: %v", err)
+	}
+	if !bytes.Equal(gotMatrix, wantMatrix) {
+		t.Fatal("docs/parity_matrix.json is stale vs served router; run `bash scripts/gen_web_types.sh`")
+	}
+
+	// Verify web/src/lib/api/schema.d.ts contains every OpenAPI path.
+	gotDTS, err := os.ReadFile(filepath.Join("..", "..", "web", "src", "lib", "api", "schema.d.ts"))
+	if err != nil {
+		t.Fatalf("read web/src/lib/api/schema.d.ts: %v", err)
+	}
+	dtsText := string(gotDTS)
+	for path := range spec.Paths {
+		needle := `"` + path + `":`
+		if !strings.Contains(dtsText, needle) {
+			t.Errorf("web/src/lib/api/schema.d.ts missing path %s; run `bash scripts/gen_web_types.sh`", path)
 		}
 	}
 }

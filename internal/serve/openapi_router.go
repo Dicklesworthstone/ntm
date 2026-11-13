@@ -214,6 +214,9 @@ func GenerateOpenAPISpecFromRouter(version, serverURL string) (*OpenAPISpec, err
 }
 
 func buildRouterOpenAPISpec(router chi.Router, version, serverURL string) (*OpenAPISpec, error) {
+	if strings.TrimSpace(serverURL) == "" {
+		serverURL = DefaultOpenAPIServerURL
+	}
 	routes, err := WalkServedRoutes(router)
 	if err != nil {
 		return nil, err
@@ -274,9 +277,10 @@ func buildRouterOpenAPISpec(router chi.Router, version, serverURL string) (*Open
 		},
 	}
 
+	reflector := newOpenAPIReflector(spec.Components)
 	tagSet := make(map[string]bool)
 	for _, rt := range routes {
-		op := buildRouterOperation(rt, spec.Components)
+		op := buildRouterOperation(rt, spec.Components, reflector)
 		if op.Tags != nil {
 			for _, t := range op.Tags {
 				tagSet[t] = true
@@ -318,7 +322,7 @@ func buildRouterOpenAPISpec(router chi.Router, version, serverURL string) (*Open
 }
 
 // buildRouterOperation builds the OpenAPI operation for one walked route.
-func buildRouterOperation(rt RouterRoute, components *OpenAPIComponents) *Operation {
+func buildRouterOperation(rt RouterRoute, components *OpenAPIComponents, reflector *openapiReflector) *Operation {
 	responseRef := "#/components/schemas/SuccessEnvelope"
 	joined := false
 	if rt.RobotSchema != "" {
@@ -469,6 +473,7 @@ func buildRouterOperation(rt RouterRoute, components *OpenAPIComponents) *Operat
 			AdditionalProperties: false,
 		}}
 	}
+	applyReflectedRouteSchemas(rt, op, reflector, joined)
 	return op
 }
 

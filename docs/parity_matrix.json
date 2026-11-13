@@ -786,7 +786,8 @@
     },
     {
       "method": "GET",
-      "path": "/api/v1/sessions/{id}/events"
+      "path": "/api/v1/sessions/{id}/events",
+      "handler": "handleSessionEventsRouteV1"
     },
     {
       "method": "GET",

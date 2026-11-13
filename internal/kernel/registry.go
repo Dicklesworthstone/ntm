@@ -71,6 +71,70 @@ func (r *Registry) Register(cmd Command) error {
 	return nil
 }
 
+// RegisterIfAbsent adds cmd to the registry when neither its Name nor an
+// equivalent REST method+path (treating relative "/foo" and "/api/v1/foo" and
+// "{param}" segments as equivalent) is already registered. Explicit
+// MustRegister commands with in-process handlers always take precedence.
+func (r *Registry) RegisterIfAbsent(cmd Command) bool {
+	if err := validateCommand(cmd); err != nil {
+		return false
+	}
+	name := strings.TrimSpace(cmd.Name)
+	if name == "" {
+		return false
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, exists := r.commands[name]; exists {
+		return false
+	}
+
+	if cmd.REST != nil {
+		key := restKey(cmd.REST.Method, cmd.REST.Path)
+		if key == "" {
+			return false
+		}
+		if _, exists := r.restIndex[key]; exists {
+			return false
+		}
+		canon := canonicalRESTKey(cmd.REST.Method, cmd.REST.Path)
+		for _, existing := range r.commands {
+			if existing.REST != nil && canonicalRESTKey(existing.REST.Method, existing.REST.Path) == canon {
+				return false
+			}
+		}
+		r.restIndex[key] = name
+	}
+
+	r.commands[name] = cmd
+	return true
+}
+
+func canonicalRESTKey(method, path string) string {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	path = strings.TrimSpace(path)
+	if method == "" || path == "" {
+		return ""
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	if path == "/api/v1" {
+		path = "/"
+	} else if strings.HasPrefix(path, "/api/v1/") {
+		path = strings.TrimPrefix(path, "/api/v1")
+	}
+	parts := strings.Split(path, "/")
+	for i, part := range parts {
+		if strings.HasPrefix(part, "{") && strings.HasSuffix(part, "}") {
+			parts[i] = "{}"
+		}
+	}
+	return method + " " + strings.Join(parts, "/")
+}
+
 // RegisterHandler associates a handler with a registered command.
 func (r *Registry) RegisterHandler(name string, handler HandlerFunc) error {
 	name = strings.TrimSpace(name)
@@ -192,6 +256,11 @@ var defaultRegistry = NewRegistry()
 // Register adds a command to the default registry.
 func Register(cmd Command) error {
 	return defaultRegistry.Register(cmd)
+}
+
+// RegisterIfAbsent adds a command to the default registry if not already present.
+func RegisterIfAbsent(cmd Command) bool {
+	return defaultRegistry.RegisterIfAbsent(cmd)
 }
 
 // MustRegister registers a command or panics on failure.

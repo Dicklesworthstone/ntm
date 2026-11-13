@@ -6,7 +6,9 @@
  */
 
 import createClient from "openapi-fetch";
-import type { paths } from "./schema";
+import type { components, paths } from "./schema";
+
+export type { components, paths };
 
 // Connection configuration stored in localStorage
 export interface ConnectionConfig {
@@ -174,6 +176,10 @@ export function createNtmClient() {
   const client = createClient<paths>({
     baseUrl: getBaseUrl(),
     headers: Object.keys(authHeaders).length > 0 ? authHeaders : undefined,
+    fetch: (input: Request) =>
+      fetch(input, {
+        signal: input.signal ?? apiRequestSignal(),
+      }),
   });
 
   client.use({

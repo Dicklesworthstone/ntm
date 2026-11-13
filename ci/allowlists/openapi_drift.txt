@@ -1,0 +1,6 @@
+# openapi_drift.txt — OpenAPI 3.1 + Web schema drift allowlist (bd-rc-track-e-uplift-xkt68.1).
+#
+# Format: <entry>\t<bead-id>\t<reason>
+# Zero waivers: docs/openapi.json, docs/parity_matrix.json, and web/src/lib/api/schema.d.ts
+# must stay in lockstep with the served Go router on default server URL http://127.0.0.1:7337
+# and >=98% typed /api/v1/* schemas.

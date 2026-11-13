@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
+	"github.com/Dicklesworthstone/ntm/internal/serve"
 )
 
 func init() {
@@ -23,7 +24,7 @@ func init() {
 		},
 		REST: &kernel.RESTBinding{
 			Method: "GET",
-			Path:   "/api/kernel/commands",
+			Path:   "/api/v1/kernel/commands",
 		},
 		Examples: []kernel.Example{
 			{
@@ -36,6 +37,7 @@ func init() {
 		Idempotent:  true,
 	})
 	kernel.MustRegisterHandler("kernel.list", func(ctx context.Context, _ any) (any, error) {
+		serve.EnsureKernelCatalogRegistered()
 		commands := kernel.List()
 		return kernel.ListResponse{
 			Commands: commands,

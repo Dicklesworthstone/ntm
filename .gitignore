@@ -18,6 +18,7 @@ coverage.html
 web/node_modules/
 web/.next/
 web/coverage/
+*.tsbuildinfo
 # next build (output: 'export') scratch output; the committed copy lives in internal/webui/dist
 web/out/
 vscode/node_modules/

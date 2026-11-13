@@ -1370,6 +1370,7 @@ func New(cfg Config) *Server {
 	}, streamCfg)
 
 	s.router = s.buildRouter()
+	syncKernelCatalogFromRouter(s.router)
 	return s
 }
 
@@ -1513,9 +1514,7 @@ func (s *Server) buildRouter() chi.Router {
 		// Do not register it here as well: chi gives "{id}" and "{sessionId}"
 		// the same tree node, and mounting that group replaces every method
 		// on it, so a route registered here never runs.
-		r.With(s.RequirePermission(PermReadEvents)).Get("/sessions/{id}/events", func(w http.ResponseWriter, req *http.Request) {
-			s.handleSessionEventsV1(w, req, chi.URLParam(req, "id"))
-		})
+		r.With(s.RequirePermission(PermReadEvents)).Get("/sessions/{id}/events", s.handleSessionEventsRouteV1)
 
 		// Sessions - write endpoints (call kernel commands)
 		r.With(s.RequirePermission(PermWriteSessions)).Post("/sessions", s.handleCreateSessionV1)
@@ -4092,6 +4091,11 @@ func (s *Server) handleSessionV1(w http.ResponseWriter, r *http.Request) {
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"session": session,
 	}, reqID)
+}
+
+// handleSessionEventsRouteV1 mounts GET /api/v1/sessions/{id}/events with a named handler.
+func (s *Server) handleSessionEventsRouteV1(w http.ResponseWriter, r *http.Request) {
+	s.handleSessionEventsV1(w, r, chi.URLParam(r, "id"))
 }
 
 // handleSessionEventsV1 handles GET /api/v1/sessions/{id}/events.

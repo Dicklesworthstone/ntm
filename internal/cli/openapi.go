@@ -99,7 +99,7 @@ func handleOpenAPIGenerate(ctx context.Context, input any) (any, error) {
 		params.Version = "dev"
 	}
 	if params.ServerURL == "" {
-		params.ServerURL = "http://localhost:8080"
+		params.ServerURL = serve.DefaultOpenAPIServerURL
 	}
 
 	spec, err := serve.GenerateOpenAPISpecFromRouter(params.Version, params.ServerURL)
@@ -232,7 +232,7 @@ Examples:
 
 	cmd.Flags().StringVarP(&output, "output", "o", "docs/openapi.json", "Output file path")
 	cmd.Flags().StringVar(&version, "version", "dev", "API version for the spec")
-	cmd.Flags().StringVar(&serverURL, "server-url", "http://localhost:8080", "Server URL for the spec")
+	cmd.Flags().StringVar(&serverURL, "server-url", serve.DefaultOpenAPIServerURL, "Server URL for the spec")
 	cmd.Flags().BoolVar(&stdout, "stdout", false, "Print to stdout instead of file")
 	cmd.Flags().StringVar(&parityMatrix, "parity-matrix", "", "Also write the generated parity matrix to this path (e.g. docs/parity_matrix.json)")
 
