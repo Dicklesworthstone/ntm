@@ -447,6 +447,11 @@ func newMailStub(t *testing.T, inbox []agentmail.InboxMessage) *mailStub {
 					agentName = "BlueLake"
 				}
 				writeResponse(map[string]interface{}{
+					"project": map[string]interface{}{
+						"id":        1,
+						"slug":      "stub-proj",
+						"human_key": toString(args["project_key"]),
+					},
 					"agent": map[string]interface{}{
 						"id":      10,
 						"name":    agentName,
@@ -473,6 +478,13 @@ func newMailStub(t *testing.T, inbox []agentmail.InboxMessage) *mailStub {
 						"from_agent": toString(args["agent_name"]),
 						"to_agent":   toString(args["to_agent"]),
 					},
+				}
+				if autoAccept, ok := args["auto_accept"].(bool); ok && autoAccept {
+					resp["response"] = map[string]interface{}{
+						"approved": true,
+						"from":     toString(args["agent_name"]),
+						"to":       toString(args["to_agent"]),
+					}
 				}
 				if subj := toString(args["welcome_subject"]); subj != "" {
 					resp["welcome_message"] = map[string]interface{}{
@@ -3084,23 +3096,21 @@ func TestAgentMailUnavailableCLIErrorWrapsProbeReason(t *testing.T) {
 	}
 }
 
-func execDedicatedMail(t *testing.T, cmd *cobra.Command, args ...string) (string, error) {
-	t.Helper()
-	previous := jsonOutput
-	jsonOutput = true
-	t.Cleanup(func() { jsonOutput = previous })
-	cmd.SetContext(context.Background())
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-	cmd.SetArgs(args)
-	err := cmd.Execute()
-	return buf.String(), err
-}
-
 func TestMailSessionMacrosCLI(t *testing.T) {
+	resetFlags()
+	t.Cleanup(func() { resetFlags(); startup.ResetConfig() })
 	isolateSessionAgentStorage(t)
-	projDir := canonicalTempDir(t)
+
+	projectsBase := canonicalTempDir(t)
+	projDir := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(filepath.Join(projDir, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	t.Chdir(projDir)
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
 
 	stub := newMailStub(t, nil)
 	defer stub.Close()
@@ -3108,11 +3118,11 @@ func TestMailSessionMacrosCLI(t *testing.T) {
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 
 	t.Run("session-start invokes macro_start_session and normalizes JSON arrays", func(t *testing.T) {
-		out, err := execDedicatedMail(t, newMailSessionStartCmd(),
-			"--project-key", projDir,
+		out, err := execCommand(t, "mail", "session-start", "mysession",
 			"--program", "codex-cli",
 			"--model", "gpt-5",
 			"--task", "Wire ORI macros",
+			"--json",
 		)
 		if err != nil {
 			t.Fatalf("mail session-start failed: %v\nout:\n%s", err, out)
@@ -3139,14 +3149,14 @@ func TestMailSessionMacrosCLI(t *testing.T) {
 	})
 
 	t.Run("prepare-thread invokes macro_prepare_thread and normalizes summary/inbox slices", func(t *testing.T) {
-		out, err := execDedicatedMail(t, newMailPrepareThreadCmd(),
-			"--project-key", projDir,
+		out, err := execCommand(t, "mail", "prepare-thread", "mysession",
 			"--thread", "FEAT-123",
 			"--program", "codex-cli",
 			"--model", "gpt-5",
 			"--agent", "BlueLake",
-			"--include-examples=false",
-			"--llm-mode=false",
+			"--examples=false",
+			"--llm=false",
+			"--json",
 		)
 		if err != nil {
 			t.Fatalf("mail prepare-thread failed: %v\nout:\n%s", err, out)
@@ -3176,14 +3186,15 @@ func TestMailSessionMacrosCLI(t *testing.T) {
 		if err := json.Unmarshal([]byte(out), &doc); err != nil {
 			t.Fatalf("unmarshal prepare-thread JSON: %v\nout:\n%s", err, out)
 		}
-		if doc["success"] != true || doc["thread_id"] != "FEAT-123" {
+		resMap, _ := doc["result"].(map[string]interface{})
+		threadMap, _ := resMap["thread"].(map[string]interface{})
+		if doc["success"] != true || threadMap["thread_id"] != "FEAT-123" {
 			t.Fatalf("unexpected prepare-thread envelope: %v", doc)
 		}
 	})
 
 	t.Run("handshake invokes macro_contact_handshake", func(t *testing.T) {
-		out, err := execDedicatedMail(t, newMailHandshakeCmd(),
-			"--project-key", projDir,
+		out, err := execCommand(t, "mail", "handshake", "mysession",
 			"--to", "GreenCastle",
 			"--agent", "BlueLake",
 			"--reason", "Coordinate API changes",
@@ -3191,6 +3202,7 @@ func TestMailSessionMacrosCLI(t *testing.T) {
 			"--welcome-subject", "Hello GreenCastle",
 			"--welcome-body", "Ready to sync",
 			"--ttl", "3600",
+			"--json",
 		)
 		if err != nil {
 			t.Fatalf("mail handshake failed: %v\nout:\n%s", err, out)
@@ -3206,16 +3218,18 @@ func TestMailSessionMacrosCLI(t *testing.T) {
 		if err := json.Unmarshal([]byte(out), &doc); err != nil {
 			t.Fatalf("unmarshal handshake JSON: %v\nout:\n%s", err, out)
 		}
-		if doc["success"] != true || doc["contact_status"] != "approved" || doc["to_agent"] != "GreenCastle" {
+		resMap, _ := doc["result"].(map[string]interface{})
+		reqMap, _ := resMap["request"].(map[string]interface{})
+		if doc["success"] != true || reqMap["status"] != "approved" || reqMap["to_agent"] != "GreenCastle" {
 			t.Fatalf("unexpected handshake envelope: %v", doc)
 		}
 	})
 
 	t.Run("validation errors on missing required flags", func(t *testing.T) {
-		if _, err := execDedicatedMail(t, newMailPrepareThreadCmd(), "--project-key", projDir); err == nil {
+		if _, err := execCommand(t, "mail", "prepare-thread", "mysession", "--json"); err == nil {
 			t.Fatal("expected error when --thread is missing")
 		}
-		if _, err := execDedicatedMail(t, newMailHandshakeCmd(), "--project-key", projDir); err == nil {
+		if _, err := execCommand(t, "mail", "handshake", "mysession", "--json"); err == nil {
 			t.Fatal("expected error when --to is missing")
 		}
 	})
