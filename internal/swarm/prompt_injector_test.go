@@ -308,7 +308,7 @@ func TestBatchInjectionResult(t *testing.T) {
 
 func TestInjectSwarmNilPlan(t *testing.T) {
 	injector := NewPromptInjector()
-	result, err := injector.InjectSwarm(nil, "test prompt")
+	result, err := injector.InjectSwarmWithContext(context.Background(), nil, "test prompt")
 
 	if err == nil {
 		t.Error("expected error for nil plan")
@@ -320,7 +320,7 @@ func TestInjectSwarmNilPlan(t *testing.T) {
 
 func TestInjectBatchEmpty(t *testing.T) {
 	injector := NewPromptInjector()
-	result, err := injector.InjectBatch([]InjectionTarget{}, "test prompt")
+	result, err := injector.InjectBatchWithContext(context.Background(), []InjectionTarget{}, "test prompt")
 
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)

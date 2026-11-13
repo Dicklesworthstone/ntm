@@ -847,12 +847,12 @@ func TestBDAdapterFallsBackToBdWhenBrVersionFails(t *testing.T) {
 		t.Fatalf("Version() = %+v, want 1.2.3", version)
 	}
 
-	output, err := adapter.GetStats(ctx, "")
+	health, err := adapter.Health(ctx)
 	if err != nil {
-		t.Fatalf("GetStats() error: %v", err)
+		t.Fatalf("Health() error: %v", err)
 	}
-	if string(output) != "{\"from\":\"bd\"}\n" {
-		t.Fatalf("GetStats() should use bd fallback, got %q", string(output))
+	if !health.Healthy {
+		t.Fatalf("Health() should succeed using bd fallback, got %+v", health)
 	}
 }
 

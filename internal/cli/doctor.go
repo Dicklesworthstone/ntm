@@ -1,17 +1,20 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -303,6 +306,7 @@ type ToolCheck struct {
 	Required     bool     `json:"required"`
 	Status       string   `json:"status"` // "ok", "warning", "error"
 	Message      string   `json:"message,omitempty"`
+	Details      []string `json:"details,omitempty"`
 }
 
 // DepCheck represents a dependency check result
@@ -512,6 +516,10 @@ func checkTools(ctx context.Context) []ToolCheck {
 				check.Status = "warning"
 				check.Message = "health check failed"
 			}
+
+			if doctorVerbose {
+				check.Details = collectVerboseToolDetails(ctx, adapter)
+			}
 		} else {
 			if check.Required {
 				check.Status = "error"
@@ -545,6 +553,116 @@ func checkTools(ctx context.Context) []ToolCheck {
 	}
 
 	return checks
+}
+
+func summarizeDiagnosticText(raw string) string {
+	for _, line := range strings.Split(strings.TrimSpace(raw), "\n") {
+		cleaned := strings.Map(func(r rune) rune {
+			if r < 0x20 || r == 0x7f {
+				return -1
+			}
+			return r
+		}, strings.TrimSpace(line))
+		if cleaned == "" {
+			continue
+		}
+		runes := []rune(cleaned)
+		if len(runes) > 120 {
+			return string(runes[:117]) + "..."
+		}
+		return cleaned
+	}
+	return ""
+}
+
+func collectVerboseToolDetails(ctx context.Context, adapter tools.Adapter) []string {
+	detailCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	var details []string
+	switch a := adapter.(type) {
+	case *tools.ACFSAdapter:
+		if info, err := a.GetInfo(detailCtx); err == nil && len(bytes.TrimSpace(info)) > 0 {
+			if s := summarizeDiagnosticText(string(info)); s != "" {
+				details = append(details, "info: "+s)
+			}
+		}
+		if st, err := a.GetStatus(detailCtx); err == nil && len(bytes.TrimSpace(st)) > 0 {
+			if s := summarizeDiagnosticText(string(st)); s != "" {
+				details = append(details, "status: "+s)
+			}
+		}
+		if doc, err := a.Doctor(detailCtx); err == nil && len(bytes.TrimSpace(doc)) > 0 {
+			if s := summarizeDiagnosticText(string(doc)); s != "" {
+				details = append(details, "doctor: "+s)
+			}
+		}
+	case *tools.AMAdapter:
+		if srvURL := strings.TrimSpace(a.ServerURL()); srvURL != "" {
+			details = append(details, "endpoint: "+srvURL)
+		}
+		if hc, err := a.HealthCheck(detailCtx); err == nil && len(bytes.TrimSpace(hc)) > 0 {
+			if s := summarizeDiagnosticText(string(hc)); s != "" {
+				details = append(details, "health_check: "+s)
+			}
+		}
+	case *tools.CAAMAdapter:
+		avail := a.IsAvailable(detailCtx)
+		multi := a.HasMultipleAccounts(detailCtx)
+		details = append(details, fmt.Sprintf("accounts_configured=%t multiple_accounts=%t", avail, multi))
+		if active, err := a.GetActiveAccount(detailCtx); err == nil && active != nil {
+			acct := active.ID
+			if active.Name != "" {
+				acct = active.Name
+			}
+			details = append(details, fmt.Sprintf("active_account: %s (%s)", acct, active.Provider))
+		}
+	case *tools.CASSAdapter:
+		if rawCaps, err := a.GetCapabilities(detailCtx); err == nil && len(bytes.TrimSpace(rawCaps)) > 0 {
+			if s := summarizeDiagnosticText(string(rawCaps)); s != "" {
+				details = append(details, "capabilities_json: "+s)
+			}
+		}
+	case *tools.CMAdapter:
+		if onboard, err := a.OnboardStatus(detailCtx); err == nil && len(bytes.TrimSpace(onboard)) > 0 {
+			if s := summarizeDiagnosticText(string(onboard)); s != "" {
+				details = append(details, "onboard: "+s)
+			}
+		}
+	case *tools.DCGAdapter:
+		if st, err := a.GetStatus(detailCtx); err == nil && st != nil {
+			details = append(details, fmt.Sprintf("guard_enabled=%t blocked_patterns=%d", st.Enabled, len(st.BlockedPatterns)))
+		}
+	case *tools.RCHAdapter:
+		avail := a.IsAvailable(detailCtx)
+		healthy := a.HasHealthyWorkers(detailCtx)
+		details = append(details, fmt.Sprintf("compatible=%t healthy_workers=%t", avail, healthy))
+		if healthy {
+			if best, err := a.SelectWorker(detailCtx, ""); err == nil && best != nil {
+				details = append(details, fmt.Sprintf("selected_worker: %s (load=%d%%)", best.Name, best.Load))
+			}
+		}
+	case *tools.RUAdapter:
+		if doc, err := a.Doctor(detailCtx); err == nil && strings.TrimSpace(doc) != "" {
+			if s := summarizeDiagnosticText(doc); s != "" {
+				details = append(details, "doctor: "+s)
+			}
+		}
+	case *tools.UBSAdapter:
+		if doc, err := a.Doctor(detailCtx); err == nil && strings.TrimSpace(doc) != "" {
+			if s := summarizeDiagnosticText(doc); s != "" {
+				details = append(details, "doctor: "+s)
+			}
+		}
+	case *tools.XFAdapter:
+		if doc, err := a.Doctor(detailCtx); err == nil && strings.TrimSpace(doc) != "" {
+			if s := summarizeDiagnosticText(doc); s != "" {
+				details = append(details, "doctor: "+s)
+			}
+		}
+	}
+
+	return details
 }
 
 func checkDependencies(ctx context.Context) []DepCheck {
@@ -654,20 +772,54 @@ func daemonVerdict(running, expected bool, port int) (status, message string) {
 	}
 }
 
+func agentMailDaemonAddr() (string, int) {
+	const defaultHost = "127.0.0.1"
+	const defaultPort = 8765
+
+	raw := strings.TrimSpace(tools.NewAMAdapter().ServerURL())
+	if raw == "" {
+		return defaultHost, defaultPort
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return defaultHost, defaultPort
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		host = defaultHost
+	}
+	if portStr := parsed.Port(); portStr != "" {
+		if port, err := strconv.Atoi(portStr); err == nil && port > 0 && port <= 65535 {
+			return host, port
+		}
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "https":
+		return host, 443
+	case "http":
+		return host, 80
+	default:
+		return host, defaultPort
+	}
+}
+
 func checkDaemons(ctx context.Context) []DaemonCheck {
 	var checks []DaemonCheck
+
+	amHost, amPort := agentMailDaemonAddr()
 
 	// Check common daemon ports in deterministic order
 	type daemonPort struct {
 		name     string
+		host     string
 		port     int
 		expected bool
 	}
 	// expected records whether this daemon is supposed to be up, so a daemon
 	// that is down can be reported as a problem rather than as a tick.
 	daemons := []daemonPort{
-		{"agent-mail", 8765, cfg != nil && cfg.AgentMail.Enabled},
-		{"cm-server", 8766, false},
+		{"agent-mail", amHost, amPort, cfg != nil && cfg.AgentMail.Enabled},
+		{"cm-server", "127.0.0.1", 8766, false},
 	}
 
 	dialer := &net.Dialer{Timeout: time.Second}
@@ -679,7 +831,7 @@ func checkDaemons(ctx context.Context) []DaemonCheck {
 		}
 
 		// Check if port is in use (use context for cancellation)
-		conn, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", dp.port))
+		conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(dp.host, strconv.Itoa(dp.port)))
 		if err == nil {
 			conn.Close()
 			check.Running = true
@@ -1073,6 +1225,11 @@ func renderDoctorTUITo(w io.Writer, report *DoctorReport) error {
 				caps = fmt.Sprintf(" (%v)", t.Capabilities)
 			}
 			fmt.Fprintf(w, "  %s %s %s%s\n", icon, t.Name, mutedStyle.Render(t.Message), caps)
+			if doctorVerbose {
+				for _, detail := range t.Details {
+					fmt.Fprintf(w, "      %s\n", mutedStyle.Render(detail))
+				}
+			}
 		} else {
 			msg := t.Message
 			if t.Required {

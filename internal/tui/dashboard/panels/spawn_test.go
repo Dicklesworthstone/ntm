@@ -1,6 +1,7 @@
 package panels
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -230,5 +231,31 @@ func TestSpawnPanel_Keybindings(t *testing.T) {
 
 	if bindings != nil {
 		t.Errorf("Keybindings() = %v, want nil", bindings)
+	}
+}
+
+func TestSpawnPanel_ViewShowsPendingCount(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	p := NewSpawnPanel()
+	p.now = func() time.Time { return now }
+	p.SetSize(50, 10)
+	p.SetData(SpawnData{
+		Active:         true,
+		BatchID:        "batch-1",
+		StartedAt:      now.Add(-5 * time.Second),
+		StaggerSeconds: 10,
+		TotalAgents:    3,
+		Prompts: []SpawnPromptStatus{
+			{Pane: "cc_1", Sent: true, SentAt: now},
+			{Pane: "cod_1", Sent: false, ScheduledAt: now.Add(10 * time.Second)},
+			{Pane: "agy_1", Sent: false, ScheduledAt: now.Add(20 * time.Second)},
+		},
+	})
+
+	view := p.View()
+	if !strings.Contains(view, "Sent: 1/3") || !strings.Contains(view, "Pending: 2") {
+		t.Fatalf("expected SpawnPanel.View() to display Sent: 1/3 and Pending: 2, got %q", view)
 	}
 }

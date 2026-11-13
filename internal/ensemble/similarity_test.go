@@ -1,6 +1,8 @@
 package ensemble
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -300,4 +302,99 @@ func simFindSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestAnalyzeRedundancyAndSynthesisFormatting(t *testing.T) {
+	catalog, err := LoadModeCatalog()
+	if err != nil {
+		t.Fatalf("LoadModeCatalog: %v", err)
+	}
+
+	formalModes := catalog.ListByCategory(CategoryFormal)
+	if len(formalModes) < 2 {
+		t.Fatalf("expected at least 2 Formal modes in catalog, got %d", len(formalModes))
+	}
+	modeA, modeB := formalModes[0].ID, formalModes[1].ID
+
+	outputs := []ModeOutput{
+		{
+			ModeID:     modeA,
+			Thesis:     "Authentication token validation is missing signature verification",
+			Confidence: 0.9,
+			TopFindings: []Finding{
+				{Finding: "JWT signature verification bypassed in auth middleware", Impact: ImpactCritical, Confidence: 0.9},
+				{Finding: "Session cookie lacks Secure flag on production domain", Impact: ImpactHigh, Confidence: 0.8},
+			},
+		},
+		{
+			ModeID:     modeB,
+			Thesis:     "Authentication token validation bypasses signature verification",
+			Confidence: 0.85,
+			TopFindings: []Finding{
+				{Finding: "JWT signature verification bypassed in auth middleware", Impact: ImpactCritical, Confidence: 0.85},
+				{Finding: "Session cookie lacks Secure flag on production domain", Impact: ImpactHigh, Confidence: 0.8},
+			},
+		},
+	}
+
+	synthCfg := DefaultSynthesisConfig()
+	synthCfg.Strategy = StrategyManual
+	synthCfg.IncludeExplanation = true
+	synth, err := NewSynthesizer(synthCfg)
+	if err != nil {
+		t.Fatalf("NewSynthesizer: %v", err)
+	}
+
+	result, err := synth.Synthesize(&SynthesisInput{
+		Outputs:          outputs,
+		OriginalQuestion: "Audit authentication flow",
+		Config:           synthCfg,
+		Provenance:       NewProvenanceTracker("Audit authentication flow", []string{modeA, modeB}),
+	})
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+	if result.Redundancy == nil {
+		t.Fatal("expected SynthesisResult.Redundancy to be populated")
+	}
+	if result.Redundancy.OverallScore < 0.9 {
+		t.Fatalf("expected high redundancy score >= 0.9, got %.2f", result.Redundancy.OverallScore)
+	}
+	if len(result.Redundancy.Recommendations) == 0 {
+		t.Fatal("expected SuggestReplacements recommendations to be populated")
+	}
+
+	var mdBuf bytes.Buffer
+	mdFmt := NewSynthesisFormatter(FormatMarkdown)
+	mdFmt.IncludeExplanation = true
+	mdFmt.IncludeContributions = true
+	if err := mdFmt.FormatResult(&mdBuf, result, nil); err != nil {
+		t.Fatalf("FormatResult(markdown): %v", err)
+	}
+	if !simContains(mdBuf.String(), "## Mode Diversity & Redundancy") || !simContains(mdBuf.String(), "Redundancy Analysis:") {
+		t.Fatalf("markdown output missing redundancy section:\n%s", mdBuf.String())
+	}
+
+	var jsonBuf bytes.Buffer
+	jsonFmt := NewSynthesisFormatter(FormatJSON)
+	jsonFmt.IncludeExplanation = true
+	jsonFmt.IncludeContributions = true
+	if err := jsonFmt.FormatResult(&jsonBuf, result, nil); err != nil {
+		t.Fatalf("FormatResult(json): %v", err)
+	}
+	var decoded struct {
+		Synthesis SynthesisResult `json:"synthesis"`
+	}
+	if err := json.Unmarshal(jsonBuf.Bytes(), &decoded); err != nil {
+		t.Fatalf("unmarshal synthesis json: %v", err)
+	}
+	if decoded.Synthesis.Explanation == nil {
+		t.Fatal("expected explanation in JSON synthesis output")
+	}
+	if decoded.Synthesis.Contributions == nil {
+		t.Fatal("expected contributions in JSON synthesis output")
+	}
+	if decoded.Synthesis.Redundancy == nil {
+		t.Fatal("expected redundancy in JSON synthesis output")
+	}
 }

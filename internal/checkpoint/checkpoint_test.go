@@ -2320,3 +2320,11 @@ func TestCheckpoint_WithBothAssignmentsAndBVSnapshot(t *testing.T) {
 		t.Errorf("BVSummary.ActionableCount = %d, want 5", loaded.BVSummary.ActionableCount)
 	}
 }
+
+func (s *Storage) GitPatchPath(sessionName, checkpointID string) string {
+	return filepath.Join(s.CheckpointDir(sessionName, checkpointID), GitPatchFile)
+}
+
+func (s *Storage) PanesDirPath(sessionName, checkpointID string) string {
+	return filepath.Join(s.CheckpointDir(sessionName, checkpointID), PanesDir)
+}

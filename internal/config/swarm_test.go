@@ -6,6 +6,16 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+func (c *SwarmConfig) GetTierName(beadCount int) string {
+	if beadCount >= c.Tier1Threshold {
+		return "tier1"
+	}
+	if beadCount >= c.Tier2Threshold {
+		return "tier2"
+	}
+	return "tier3"
+}
+
 func TestDefaultSwarmConfig(t *testing.T) {
 	cfg := DefaultSwarmConfig()
 

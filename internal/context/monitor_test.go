@@ -435,6 +435,13 @@ func TestParseRobotModeContext(t *testing.T) {
 	}
 }
 
+// Clear removes all agents from monitoring (test-only helper).
+func (m *ContextMonitor) Clear() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.states = make(map[string]*ContextState)
+}
+
 func TestContextMonitor_Clear(t *testing.T) {
 	t.Parallel()
 
@@ -969,5 +976,67 @@ func TestMultipleAgentTracking(t *testing.T) {
 		}
 		t.Logf("CONTEXT_TEST: Agent=%s | Model=%s | Limit=%d | Usage=%.1f%%",
 			a.id, a.model, estimate.ContextLimit, estimate.UsagePercent)
+	}
+}
+
+func TestContextMonitor_PredictorForecastAndReset(t *testing.T) {
+	t.Parallel()
+
+	monitor := NewContextMonitor(MonitorConfig{
+		WarningThreshold: 80.0,
+		RotateThreshold:  90.0,
+		TokensPerMessage: 1500,
+	})
+	state := monitor.RegisterAgent("agent-forecast", "%1", "claude-opus-4")
+	if state == nil || state.predictor == nil {
+		t.Fatal("expected registered agent to initialize predictor")
+	}
+
+	now := time.Now()
+	// Record accelerating samples across a 90s window reaching 76% of 200k (152k tokens).
+	state.predictor.AddSampleAt(100000, now.Add(-90*time.Second))
+	state.predictor.AddSampleAt(110000, now.Add(-60*time.Second))
+	state.predictor.AddSampleAt(125000, now.Add(-30*time.Second))
+	state.predictor.AddSampleAt(152000, now)
+	state.Estimate = &ContextEstimate{
+		TokensUsed:   152000,
+		ContextLimit: 200000,
+		UsagePercent: 76.0,
+		Confidence:   0.95,
+		Method:       MethodRobotMode,
+		UpdatedAt:    now,
+	}
+
+	est := monitor.GetEstimate("agent-forecast")
+	if est == nil {
+		t.Fatal("GetEstimate returned nil")
+	}
+	if est.SampleCount != 4 {
+		t.Fatalf("SampleCount = %d, want 4", est.SampleCount)
+	}
+	if est.TokenVelocity <= 0 {
+		t.Fatalf("TokenVelocity = %f, want > 0", est.TokenVelocity)
+	}
+	if est.VelocityTrend != "accelerating" {
+		t.Fatalf("VelocityTrend = %q, want accelerating", est.VelocityTrend)
+	}
+	if est.MinutesToExhaustion <= 0 || est.MinutesToExhaustion >= 8 {
+		t.Fatalf("MinutesToExhaustion = %f, want in (0, 8)", est.MinutesToExhaustion)
+	}
+	if !est.ShouldWarn || !est.ShouldCompact {
+		t.Fatalf("ShouldWarn=%v ShouldCompact=%v, want both true", est.ShouldWarn, est.ShouldCompact)
+	}
+
+	// Built-in per-agent predictor should trigger handoff even below 90% rotate threshold
+	// because exhaustion is < 8 minutes away.
+	rec := monitor.ShouldTriggerHandoff("agent-forecast", nil)
+	if !rec.ShouldTrigger || !rec.ShouldWarn || rec.TokenVelocity <= 0 {
+		t.Fatalf("ShouldTriggerHandoff = %+v, want velocity-triggered handoff", rec)
+	}
+
+	// ResetAgent must reset predictor sample ring buffer too.
+	monitor.ResetAgent("agent-forecast")
+	if got := state.predictor.SampleCount(); got != 0 {
+		t.Fatalf("predictor SampleCount after ResetAgent = %d, want 0", got)
 	}
 }

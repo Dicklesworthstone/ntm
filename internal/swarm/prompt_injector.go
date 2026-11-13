@@ -248,12 +248,6 @@ func (p *PromptInjector) InjectPromptContext(ctx context.Context, sessionPane, a
 	return nil
 }
 
-// InjectPromptWithResult sends a prompt to a single pane and returns detailed result.
-// agentType is used to handle agent-specific quirks (e.g., Codex needs double-Enter).
-func (p *PromptInjector) InjectPromptWithResult(sessionPane, agentType, prompt string) (*InjectionResult, error) {
-	return p.InjectPromptWithResultContext(context.Background(), sessionPane, agentType, prompt)
-}
-
 // InjectPromptWithResultContext retains a failed receipt when interrupted.
 func (p *PromptInjector) InjectPromptWithResultContext(ctx context.Context, sessionPane, agentType, prompt string) (*InjectionResult, error) {
 	start := time.Now()
@@ -408,12 +402,6 @@ func (p *PromptInjector) WaitForReady(ctx context.Context, target, agentType str
 
 // needsDoubleEnter is removed, now uses tmux.AgentType.NeedsDoubleEnter()
 
-// InjectBatch sends prompts to multiple panes with staggering.
-// All targets receive the same prompt.
-func (p *PromptInjector) InjectBatch(targets []InjectionTarget, prompt string) (*BatchInjectionResult, error) {
-	return p.InjectBatchWithContext(context.Background(), targets, prompt)
-}
-
 // InjectBatchWithContext sends prompts to multiple panes with staggering and context support.
 // All targets receive the same prompt. The operation can be cancelled via context.
 // When UseAdaptiveDelay is true, delays are obtained from the RateLimitTracker.
@@ -518,12 +506,6 @@ func validatePromptInjectionTarget(target InjectionTarget) error {
 	return nil
 }
 
-// InjectSwarm sends marching orders to all panes in a SwarmPlan.
-// Each pane receives the same prompt.
-func (p *PromptInjector) InjectSwarm(plan *SwarmPlan, prompt string) (*BatchInjectionResult, error) {
-	return p.InjectSwarmWithContext(context.Background(), plan, prompt)
-}
-
 func (p *PromptInjector) sessionOrchestrator() *SessionOrchestrator {
 	if p.SessionOrchestrator != nil {
 		return p.SessionOrchestrator
@@ -591,13 +573,7 @@ func (p *PromptInjector) InjectSwarmWithContext(ctx context.Context, plan *Swarm
 // InjectSwarmWithTemplate sends marching orders using a named template.
 func (p *PromptInjector) InjectSwarmWithTemplate(plan *SwarmPlan, templateName string) (*BatchInjectionResult, error) {
 	prompt := p.GetTemplate(templateName)
-	return p.InjectSwarm(plan, prompt)
-}
-
-// InjectToSession sends a prompt to all agent panes in a session.
-// It fetches pane information from tmux and sends to all non-user panes.
-func (p *PromptInjector) InjectToSession(session, prompt string) (*BatchInjectionResult, error) {
-	return p.InjectToSessionWithContext(context.Background(), session, prompt)
+	return p.InjectSwarmWithContext(context.Background(), plan, prompt)
 }
 
 // InjectToSessionWithContext sends a prompt to all agent panes in a session with context support.

@@ -305,20 +305,90 @@ func buildCheckpointSessionsOutput(rows []CheckpointSessionInfo, limit, offset i
 	return out
 }
 
+// CheckpointFlatListOutput is the paginated JSON envelope for
+// `ntm checkpoint list --flat` across all sessions in chronological order.
+type CheckpointFlatListOutput struct {
+	Success      bool                        `json:"success"`
+	Checkpoints  []*checkpoint.Checkpoint    `json:"checkpoints"`
+	Count        int                         `json:"count"`
+	TotalMatches int                         `json:"total_matches"`
+	HasMore      bool                        `json:"has_more"`
+	Pagination   *robot.PaginationInfo       `json:"pagination,omitempty"`
+	AgentHints   *robot.PaginationAgentHints `json:"_agent_hints,omitempty"`
+}
+
+func buildCheckpointFlatListOutput(cps []*checkpoint.Checkpoint, limit, offset int) *CheckpointFlatListOutput {
+	out := &CheckpointFlatListOutput{
+		Success:      true,
+		TotalMatches: len(cps),
+	}
+	page, info := robot.ApplyPagination(cps, robot.PaginationOptions{Limit: limit, Offset: offset})
+	out.Checkpoints = page
+	if out.Checkpoints == nil {
+		out.Checkpoints = []*checkpoint.Checkpoint{}
+	}
+	out.Count = len(page)
+	if info != nil {
+		out.Pagination = info
+		out.HasMore = info.HasMore
+		out.AgentHints = robot.PaginationHints(info)
+	}
+	return out
+}
+
 func newCheckpointListCmd() *cobra.Command {
 	var limit, offset int
+	var flat bool
 	cmd := &cobra.Command{
 		Use:   "list [session]",
 		Short: "List checkpoints",
 		Long: `List all checkpoints, optionally filtered by session.
 
 Examples:
-  ntm checkpoint list              # List all checkpoints
+  ntm checkpoint list              # List all checkpoints grouped by session
+  ntm checkpoint list --flat       # List all checkpoints chronologically across sessions
   ntm checkpoint list myproject    # List checkpoints for session
   ntm checkpoint list myproject --limit=20 --offset=20`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			storage := checkpoint.NewStorage()
+
+			if flat && len(args) > 0 {
+				return fmt.Errorf("--flat cannot be combined with a session argument")
+			}
+
+			if flat {
+				all, err := storage.ListAll()
+				if err != nil {
+					return fmt.Errorf("listing all checkpoints: %w", err)
+				}
+				if jsonOutput {
+					return json.NewEncoder(os.Stdout).Encode(buildCheckpointFlatListOutput(all, limit, offset))
+				}
+				if len(all) == 0 {
+					fmt.Println("No checkpoints found.")
+					return nil
+				}
+				page, _ := robot.ApplyPagination(all, robot.PaginationOptions{Limit: limit, Offset: offset})
+				t := theme.Current()
+				fmt.Printf("%sCheckpoints (chronological)%s\n", "\033[1m", "\033[0m")
+				fmt.Printf("%s%s%s\n\n", "\033[2m", strings.Repeat("\u2500", 50), "\033[0m")
+				for _, cp := range page {
+					age := formatAge(cp.CreatedAt)
+					gitMark := ""
+					if cp.Git.Commit != "" {
+						gitMark = " [git]"
+					}
+					desc := ""
+					if cp.Description != "" {
+						desc = fmt.Sprintf(" - %s", truncateStr(cp.Description, 30))
+					}
+					fmt.Printf("  %s%s%s  %s (%s)  %d pane(s)%s%s\n",
+						colorize(t.Primary), cp.SessionName, "\033[0m",
+						cp.Summary(), age, cp.PaneCount, gitMark, desc)
+				}
+				return nil
+			}
 
 			if len(args) == 1 {
 				// List checkpoints for specific session
@@ -421,6 +491,7 @@ Examples:
 
 	cmd.Flags().IntVar(&limit, "limit", 0, "maximum entries per page (0 = all)")
 	cmd.Flags().IntVar(&offset, "offset", 0, "pagination offset (use _agent_hints.next_offset for the next page)")
+	cmd.Flags().BoolVar(&flat, "flat", false, "list all checkpoints across sessions in chronological order")
 
 	return cmd
 }
@@ -524,6 +595,15 @@ Examples:
 			id := args[1]
 
 			storage := checkpoint.NewStorage()
+			if !storage.Exists(session, id) {
+				exists, existsErr := storage.HasCheckpointPath(session, id)
+				if existsErr != nil {
+					return fmt.Errorf("checking checkpoint: %w", existsErr)
+				}
+				if !exists {
+					return fmt.Errorf("checkpoint not found: %s/%s", session, id)
+				}
+			}
 			cp, err := storage.Load(session, id)
 			if err != nil {
 				return fmt.Errorf("loading checkpoint: %w", err)
@@ -537,7 +617,9 @@ Examples:
 			fmt.Printf("%sCheckpoint: %s%s\n", "\033[1m", cp.ID, "\033[0m")
 			fmt.Printf("%s%s%s\n\n", "\033[2m", strings.Repeat("\u2500", 50), "\033[0m")
 
+			fmt.Printf("  Summary: %s\n", cp.Summary())
 			fmt.Printf("  Session: %s\n", cp.SessionName)
+			fmt.Printf("  Directory: %s\n", storage.CheckpointDir(cp.SessionName, cp.ID))
 			fmt.Printf("  Created: %s (%s)\n", cp.CreatedAt.Format(time.RFC3339), formatAge(cp.CreatedAt))
 			fmt.Printf("  Working Dir: %s\n", cp.WorkingDir)
 			if cp.Description != "" {

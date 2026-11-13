@@ -1103,3 +1103,98 @@ func TestCompareOutput_Struct(t *testing.T) {
 
 	t.Log("TEST: TestCompareOutput_Struct - assertion: compareOutput marshals correctly")
 }
+
+func TestWriteCompareResult_ChangedSectionsAndUnchanged(t *testing.T) {
+	empty := &ensemble.ComparisonResult{
+		RunA:    "same-a",
+		RunB:    "same-b",
+		Summary: "No differences",
+	}
+	var emptyJSON bytes.Buffer
+	if err := writeCompareResult(&emptyJSON, empty, compareOptions{}, "json"); err != nil {
+		t.Fatalf("writeCompareResult(empty json): %v", err)
+	}
+	var parsedEmpty compareOutput
+	if err := json.Unmarshal(emptyJSON.Bytes(), &parsedEmpty); err != nil {
+		t.Fatalf("unmarshal empty compare json: %v", err)
+	}
+	if !parsedEmpty.Unchanged || len(parsedEmpty.ChangedSections) != 0 {
+		t.Fatalf("expected unchanged=true and no changed_sections, got %+v", parsedEmpty)
+	}
+
+	var emptyText bytes.Buffer
+	if err := writeCompareResult(&emptyText, empty, compareOptions{}, "text"); err != nil {
+		t.Fatalf("writeCompareResult(empty text): %v", err)
+	}
+	if !strings.Contains(emptyText.String(), "Runs are identical") {
+		t.Fatalf("expected identical status in text output, got:\n%s", emptyText.String())
+	}
+
+	changed := &ensemble.ComparisonResult{
+		RunA:         "run-1",
+		RunB:         "run-2",
+		ModeDiff:     ensemble.ModeDiff{AddedCount: 1, Added: []string{"bayesian"}},
+		FindingsDiff: ensemble.FindingsDiff{NewCount: 1},
+		ConclusionDiff: ensemble.ConclusionDiff{
+			SynthesisChanged: true,
+		},
+		ContributionDiff: ensemble.ContributionDiff{
+			ScoreDeltas: []ensemble.ScoreDelta{{ModeID: "deductive", Delta: 2.5}},
+		},
+		Summary: "all sections changed",
+	}
+	var changedJSON bytes.Buffer
+	if err := writeCompareResult(&changedJSON, changed, compareOptions{}, "json"); err != nil {
+		t.Fatalf("writeCompareResult(changed json): %v", err)
+	}
+	var parsedChanged compareOutput
+	if err := json.Unmarshal(changedJSON.Bytes(), &parsedChanged); err != nil {
+		t.Fatalf("unmarshal changed compare json: %v", err)
+	}
+	if parsedChanged.Unchanged {
+		t.Fatal("expected unchanged=false for changed comparison")
+	}
+	wantSections := "modes,findings,conclusions,contributions"
+	if got := strings.Join(parsedChanged.ChangedSections, ","); got != wantSections {
+		t.Fatalf("ChangedSections = %q, want %q", got, wantSections)
+	}
+}
+
+func TestRenderProvenanceValidation(t *testing.T) {
+	validChain := &ensemble.ProvenanceChain{
+		FindingID:    "f-valid-001",
+		SourceMode:   "deductive",
+		OriginalText: "Valid finding",
+		CurrentText:  "Valid finding",
+		Impact:       ensemble.ImpactHigh,
+		Confidence:   0.85,
+		Steps: []ensemble.ProvenanceStep{
+			{Stage: "discovery", Action: "discovered", Timestamp: time.Now().UTC()},
+		},
+	}
+	invalidChain := &ensemble.ProvenanceChain{
+		FindingID:  "f-invalid-002",
+		SourceMode: "",
+	}
+
+	invalidCount, valErrs := validateProvenanceChains([]*ensemble.ProvenanceChain{validChain, invalidChain})
+	if invalidCount != 1 || len(valErrs) != 1 {
+		t.Fatalf("validateProvenanceChains = (%d, %v), want 1 invalid chain", invalidCount, valErrs)
+	}
+
+	validFlag := false
+	var textBuf bytes.Buffer
+	err := renderProvenanceOutput(&textBuf, provenanceOutput{
+		GeneratedAt:      time.Now().UTC(),
+		FindingID:        invalidChain.FindingID,
+		Valid:            &validFlag,
+		ValidationErrors: valErrs,
+		Chain:            invalidChain,
+	}, "text")
+	if err != nil {
+		t.Fatalf("renderProvenanceOutput(text): %v", err)
+	}
+	if !strings.Contains(textBuf.String(), "Validation: INVALID") {
+		t.Fatalf("expected INVALID provenance banner in text output, got:\n%s", textBuf.String())
+	}
+}

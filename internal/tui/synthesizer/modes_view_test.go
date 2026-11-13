@@ -803,3 +803,28 @@ func TestModeVisualization_View_EmptyStrategy(t *testing.T) {
 		t.Errorf("expected dash for empty strategy, got %q", view)
 	}
 }
+
+func TestModeAssignmentAgentColorUsesSemanticPalette(t *testing.T) {
+	t.Parallel()
+
+	th := theme.CatppuccinMocha
+	sem := th.Semantic()
+	canonicalAgents := []string{
+		"cc", "cod", "gmi", "agy", "grok", "omp",
+		"cursor", "windsurf", "aider", "oc", "ollama", "user",
+	}
+	for _, ag := range canonicalAgents {
+		if got, want := modeAssignmentAgentColor(ag, th), sem.AgentColor(ag); got != want {
+			t.Errorf("modeAssignmentAgentColor(%q) = %q, want semantic %q", ag, got, want)
+		}
+	}
+	if got := modeAssignmentAgentColor("unknown-agent", th); got != th.Subtext {
+		t.Errorf("modeAssignmentAgentColor(unknown) = %q, want %q", got, th.Subtext)
+	}
+	if got := modeAssignmentAgentLabel("grok"); got != "grok" {
+		t.Errorf("modeAssignmentAgentLabel(grok) = %q, want grok", got)
+	}
+	if got := modeAssignmentAgentLabel("opencode"); got != "oc" {
+		t.Errorf("modeAssignmentAgentLabel(opencode) = %q, want oc", got)
+	}
+}

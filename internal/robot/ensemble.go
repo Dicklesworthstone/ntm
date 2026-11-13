@@ -197,6 +197,12 @@ func GetEnsemble(session string) (*EnsembleOutput, error) {
 	output.Summary.CoreModes = coreCount
 	output.Summary.AdvancedModes = advancedCount
 
+	if collected, err := ensemble.CollectModeOutputs(state, nil); err == nil && len(collected.Outputs) >= 2 {
+		if redundancy := ensemble.AnalyzeRedundancy(collected.Outputs, catalog); redundancy != nil {
+			output.Ensemble.Metrics.RedundancyScore = redundancy.OverallScore
+		}
+	}
+
 	output.AgentHints = buildEnsembleHints(*output)
 
 	return output, nil
@@ -273,7 +279,7 @@ func synthesisStatus(status ensemble.EnsembleStatus, assignments []ensemble.Mode
 		if assignment.Status == ensemble.AssignmentError {
 			return "error"
 		}
-		if assignment.Status == ensemble.AssignmentPending || assignment.Status == ensemble.AssignmentInjecting || assignment.Status == ensemble.AssignmentActive {
+		if !assignment.Status.IsTerminal() {
 			return "not_started"
 		}
 	}

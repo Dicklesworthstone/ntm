@@ -87,6 +87,49 @@ func (sp *ScrollablePanel) Update(msg tea.Msg) (*ScrollablePanel, tea.Cmd) {
 		case tea.KeyEnd:
 			sp.GotoBottom()
 			return sp, nil
+		case tea.KeyCtrlD:
+			if !sp.AtBottom() {
+				sp.HalfPageDown()
+			}
+			return sp, nil
+		case tea.KeyCtrlU:
+			if !sp.AtTop() {
+				sp.HalfPageUp()
+			}
+			return sp, nil
+		case tea.KeyDown:
+			if !sp.AtBottom() {
+				sp.LineDown(1)
+			}
+			return sp, nil
+		case tea.KeyUp:
+			if !sp.AtTop() {
+				sp.LineUp(1)
+			}
+			return sp, nil
+		case tea.KeyRunes:
+			switch keyMsg.String() {
+			case "j":
+				if !sp.AtBottom() {
+					sp.LineDown(1)
+				}
+				return sp, nil
+			case "k":
+				if !sp.AtTop() {
+					sp.LineUp(1)
+				}
+				return sp, nil
+			case "g":
+				if !sp.AtTop() {
+					sp.GotoTop()
+				}
+				return sp, nil
+			case "G":
+				if !sp.AtBottom() {
+					sp.GotoBottom()
+				}
+				return sp, nil
+			}
 		}
 	}
 
@@ -223,10 +266,9 @@ func (sp *ScrollablePanel) ScrollPercentLabel(includeIndicator bool) string {
 	}
 
 	pct := int(math.Round(sp.ScrollPercent() * 100))
-	if pct < 0 {
+	if sp.AtTop() || pct < 0 {
 		pct = 0
-	}
-	if pct > 100 {
+	} else if sp.AtBottom() || pct > 100 {
 		pct = 100
 	}
 

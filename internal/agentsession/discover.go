@@ -178,17 +178,7 @@ func runDiscoveryCommand(ctx context.Context, name string, args ...string) ([]by
 	return exec.CommandContext(ctx, name, args...).Output()
 }
 
-// Discover finds the agent CLI session associated with a pane. It first uses
-// the pane's process tree, which can distinguish multiple same-provider panes
-// in one workspace. Codex and Gemini then delegate structured workspace
-// discovery to CASR when available, with native structured-store fallbacks.
-// It returns nil when no session can be located because topology capture must
-// remain best-effort.
-func (d *Discoverer) Discover(agentType, workDir string, panePID int) *Info {
-	return d.DiscoverContext(context.Background(), agentType, workDir, panePID)
-}
-
-// DiscoverContext is the cancellation-aware form of Discover. External
+// DiscoverContext is the cancellation-aware form of session discovery. External
 // commands inherit ctx, and native fallbacks check cancellation between each
 // bounded discovery stage.
 func (d *Discoverer) DiscoverContext(ctx context.Context, agentType, workDir string, panePID int) *Info {

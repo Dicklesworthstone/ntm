@@ -93,7 +93,9 @@ func (m Model) View() string {
 
 	// [tui-upgrade: bd-uz09d] Render spawn wizard overlay
 	if m.showSpawnWizard && m.spawnWizard != nil {
-		m.spawnWizard.SetSize(m.width, m.height)
+		if w, h := m.spawnWizard.Size(); w != m.width || h != m.height {
+			m.spawnWizard.SetSize(m.width, m.height)
+		}
 		modal := m.spawnWizard.View()
 		backdrop := m.renderHeaderSection() + m.renderMainContentSection() + m.renderFooterSection()
 		return renderModalOverlay(backdrop, modal, m.width, m.height, m.theme)
@@ -348,16 +350,24 @@ func (m Model) renderPanelTabBar(width int) string {
 		switch pid {
 		case PanelAlerts:
 			badge = len(m.activeAlerts)
-			hasErr = m.alertsPanel.HasError()
+			hasErr = m.alertsPanel != nil && m.alertsPanel.HasError()
 		case PanelAttention:
 			if m.attentionPanel != nil {
 				badge = m.attentionPanel.ActionRequiredCount()
 			}
 		case PanelBeads:
 			badge = m.beadsSummary.InProgress
-			hasErr = m.beadsPanel.HasError()
+			hasErr = m.beadsPanel != nil && m.beadsPanel.HasError()
 		case PanelConflicts:
-			badge = m.conflictsPanel.ConflictCount()
+			if m.conflictsPanel != nil {
+				badge = m.conflictsPanel.ConflictCount()
+			}
+		case PanelMetrics:
+			hasErr = m.metricsPanel != nil && m.metricsPanel.HasError()
+		case PanelHistory:
+			hasErr = m.historyPanel != nil && m.historyPanel.HasError()
+		case PanelSidebar:
+			hasErr = m.sidebarHasError()
 		}
 
 		tabs = append(tabs, components.PanelIDToTab(idStr, badge, hasErr))
@@ -385,7 +395,7 @@ func (m Model) renderFooterSection() string {
 	// TICKER BAR (scrolling status summary)
 	// ═══════════════════════════════════════════════════════════════
 	b.WriteString("\n")
-	m.tickerPanel.SetSize(m.width-4, 1)
+	m.tickerPanel.SetSize(m.width-4, maxInt(m.tickerPanel.GetHeight(), 1))
 	b.WriteString("  " + m.tickerPanel.View() + "\n")
 
 	// ═══════════════════════════════════════════════════════════════
@@ -1102,7 +1112,7 @@ func (m Model) renderToastHistoryContent() string {
 	}
 
 	var lines []string
-	lines = append(lines, subtle.Render("Most recent first. Press n or Esc to close."))
+	lines = append(lines, subtle.Render("Most recent first. Press c to clear, n or Esc to close."))
 	lines = append(lines, "")
 
 	for _, toast := range m.toasts.RecentHistory(8) {
@@ -1161,30 +1171,34 @@ func (m Model) renderHelpOverlayBox(title, content string, maxWidth int) string 
 func (m Model) getFocusedPanelHints() []components.KeyHint {
 	var keybindings []panels.Keybinding
 
-	switch m.focusedPanel {
-	case PanelBeads:
-		if m.beadsPanel != nil {
-			keybindings = m.beadsPanel.Keybindings()
-		}
-	case PanelAlerts:
-		if m.alertsPanel != nil {
-			keybindings = m.alertsPanel.Keybindings()
-		}
-	case PanelAttention:
-		if m.attentionPanel != nil {
-			keybindings = m.attentionPanel.Keybindings()
-		}
-	case PanelMetrics:
-		if m.metricsPanel != nil {
-			keybindings = m.metricsPanel.Keybindings()
-		}
-	case PanelHistory:
-		if m.historyPanel != nil {
-			keybindings = m.historyPanel.Keybindings()
-		}
-	case PanelSidebar:
-		if ref, ok := m.sidebarActivePanelRef(); ok {
-			keybindings = ref.panel.Keybindings()
+	if m.showSpawnWizard && m.spawnWizard != nil {
+		keybindings = m.spawnWizard.Keybindings()
+	} else {
+		switch m.focusedPanel {
+		case PanelBeads:
+			if m.beadsPanel != nil {
+				keybindings = m.beadsPanel.Keybindings()
+			}
+		case PanelAlerts:
+			if m.alertsPanel != nil {
+				keybindings = m.alertsPanel.Keybindings()
+			}
+		case PanelAttention:
+			if m.attentionPanel != nil {
+				keybindings = m.attentionPanel.Keybindings()
+			}
+		case PanelMetrics:
+			if m.metricsPanel != nil {
+				keybindings = m.metricsPanel.Keybindings()
+			}
+		case PanelHistory:
+			if m.historyPanel != nil {
+				keybindings = m.historyPanel.Keybindings()
+			}
+		case PanelSidebar:
+			if ref, ok := m.sidebarActivePanelRef(); ok {
+				keybindings = ref.panel.Keybindings()
+			}
 		}
 	}
 

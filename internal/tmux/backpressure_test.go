@@ -2,12 +2,80 @@ package tmux
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/backpressure"
 )
+
+func (t *captureBackpressureTracker) inputs() []backpressure.SurfaceInput {
+	if t == nil {
+		return []backpressure.SurfaceInput{}
+	}
+	t.mu.RLock()
+	entries := make([]captureBackpressureEntry, 0, len(t.entries))
+	for _, entry := range t.entries {
+		entries = append(entries, entry)
+	}
+	t.mu.RUnlock()
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].order < entries[j].order
+	})
+	inputs := make([]backpressure.SurfaceInput, 0, len(entries))
+	for _, entry := range entries {
+		inputs = append(inputs, CaptureBackpressureInput(entry.stats))
+	}
+	return inputs
+}
+
+func CaptureBackpressureInput(stats CaptureBackpressureStats) backpressure.SurfaceInput {
+	loaded := stats.SourceLoaded
+	if !loaded && (stats.Latency > 0 || stats.Err != nil || stats.Target != "" || stats.Session != "" || stats.Pane != "") {
+		loaded = true
+	}
+	input := backpressure.SurfaceInput{
+		Surface:      backpressure.SurfaceTmuxCapture,
+		Session:      stats.Session,
+		Pane:         firstNonEmpty(stats.Pane, stats.Target),
+		LatencyMS:    stats.Latency.Milliseconds(),
+		SourceLoaded: loaded,
+	}
+	if !loaded {
+		input.MissingWarning = "tmux capture counters are not available."
+	}
+	if isCaptureTimeout(stats.Err) && input.LatencyMS == 0 {
+		input.LatencyMS = DefaultCommandTimeout.Milliseconds()
+	}
+	return input
+}
+
+func (c *Client) CaptureBackpressureInputs() []backpressure.SurfaceInput {
+	if c == nil {
+		return []backpressure.SurfaceInput{}
+	}
+	return c.captureBackpressure.inputs()
+}
+
+func isCaptureTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return ClassifyCommandError(err).Kind == CommandErrorTimeout
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
 
 func TestCaptureBackpressureInputMapsSlowCapture(t *testing.T) {
 	input := CaptureBackpressureInput(CaptureBackpressureStats{

@@ -86,7 +86,10 @@ Use with ntm send:
 }
 
 func newTemplateListCmd() *cobra.Command {
-	var showAll bool
+	var (
+		showAll bool
+		hasVar  string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -97,11 +100,12 @@ Shows templates from all sources (project, user, builtin) with their
 descriptions and source locations.`,
 		Aliases: []string{"ls"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTemplateList(showAll)
+			return runTemplateListFiltered(showAll, hasVar)
 		},
 	}
 
 	cmd.Flags().BoolVarP(&showAll, "all", "a", false, "show all details including variables")
+	cmd.Flags().StringVar(&hasVar, "has-var", "", "only list templates declaring or referencing variable")
 
 	return cmd
 }
@@ -116,11 +120,22 @@ type TemplateListItem struct {
 	Variables   []string `json:"variables,omitempty"`
 }
 
-func runTemplateList(showAll bool) error {
+func runTemplateListFiltered(showAll bool, hasVar string) error {
 	loader := templates.NewLoader()
 	tmpls, err := loader.List()
 	if err != nil {
 		return err
+	}
+
+	hasVar = strings.TrimSpace(hasVar)
+	if hasVar != "" {
+		filtered := make([]*templates.Template, 0, len(tmpls))
+		for _, t := range tmpls {
+			if t.HasVariable(hasVar) {
+				filtered = append(filtered, t)
+			}
+		}
+		tmpls = filtered
 	}
 
 	if len(tmpls) == 0 {

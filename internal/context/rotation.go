@@ -2139,7 +2139,9 @@ func (r *Rotator) rotateAgentContext(ctx stdcontext.Context, session, agentID, w
 		recordRotationToHistory(result, session, deriveAgentTypeFromID(agentID), 0)
 		return result
 	}
-	if state.Estimate != nil {
+	if est := r.monitor.GetEstimate(agentID); est != nil {
+		contextUsage = est.UsagePercent
+	} else if state.Estimate != nil {
 		contextUsage = state.Estimate.UsagePercent
 	}
 
@@ -2451,11 +2453,8 @@ func (r *Rotator) rotateAgentContext(ctx stdcontext.Context, session, agentID, w
 		result.Error += fmt.Sprintf("warning: failed to kill old pane: %v", err)
 	}
 
-	// Record the rotation event
-	contextBefore := float64(0)
-	if state.Estimate != nil {
-		contextBefore = state.Estimate.UsagePercent
-	}
+	// Record the rotation event using pre-reset usage captured before ResetAgent.
+	contextBefore := contextUsage
 	event := RotationEvent{
 		SessionName:   session,
 		OldAgentID:    agentID,
@@ -2803,13 +2802,6 @@ func (r *Rotator) GetHistory() []RotationEvent {
 	return out
 }
 
-// ClearHistory clears the rotation history.
-func (r *Rotator) ClearHistory() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.history = make([]RotationEvent, 0)
-}
-
 // ManualRotate triggers a rotation for a specific agent regardless of threshold.
 func (r *Rotator) ManualRotate(session, agentID, workDir string) RotationResult {
 	// Check prerequisites that rotateAgent assumes
@@ -2910,12 +2902,6 @@ func (r *Rotator) EnqueuePendingRotation(session, agentID, paneID string, contex
 	// (createPendingRotation overwrites both the in-memory entry and the
 	// persisted store entry).
 	return r.createPendingRotation(session, agentID, paneID, contextPercent, workDir)
-}
-
-// ConfirmRotation handles user confirmation of a pending rotation.
-// Returns the result of the action taken.
-func (r *Rotator) ConfirmRotation(agentID string, action ConfirmAction, postponeMinutes int) RotationResult {
-	return r.ConfirmRotationContext(stdcontext.Background(), agentID, action, postponeMinutes)
 }
 
 // ConfirmPendingRotationContext executes a persisted choice through the same
@@ -3272,6 +3258,26 @@ func (r *Rotator) ConfirmRotationContext(ctx stdcontext.Context, agentID string,
 	}
 }
 
+// LoadPendingFromStore hydrates the rotator's in-memory pending map from the
+// persistent pending rotation store without mutating stored timestamps or claims.
+func (r *Rotator) LoadPendingFromStore() error {
+	entries, err := GetAllPendingRotations()
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pending == nil {
+		r.pending = make(map[string]*PendingRotation, len(entries))
+	}
+	for _, entry := range entries {
+		if entry != nil && entry.AgentID != "" {
+			r.pending[entry.AgentID] = entry
+		}
+	}
+	return nil
+}
+
 // CancelPendingRotation removes a pending rotation without taking any action.
 func (r *Rotator) CancelPendingRotation(agentID string) bool {
 	r.mu.Lock()
@@ -3284,14 +3290,4 @@ func (r *Rotator) CancelPendingRotation(agentID string) bool {
 		return true
 	}
 	return false
-}
-
-// ClearPending removes all pending rotations.
-func (r *Rotator) ClearPending() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.pending = make(map[string]*PendingRotation)
-	if err := DefaultPendingRotationStore.Clear(); err != nil {
-		slog.Warn("failed to clear pending rotation store", "error", err)
-	}
 }

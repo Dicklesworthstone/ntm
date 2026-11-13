@@ -2,6 +2,7 @@ package swarm
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -950,4 +951,23 @@ func TestSwarmOrchestrator_ShutdownFromPlan_ExtractsSessionNames(t *testing.T) {
 	}
 
 	t.Log("[TEST] PASS: session names extracted correctly from plan")
+}
+
+func (o *SessionOrchestrator) DestroySessions(plan *SwarmPlan) error {
+	if plan == nil {
+		return nil
+	}
+
+	var errs []error
+	for _, spec := range plan.Sessions {
+		if err := o.DestroySession(spec.Name); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to destroy %d session(s): %v", len(errs), errs[0])
+	}
+
+	return nil
 }

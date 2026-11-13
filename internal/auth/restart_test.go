@@ -16,6 +16,10 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
+func (o *Orchestrator) RegisterAuthFlow(provider string, flow AuthFlow) {
+	o.authFlows[provider] = flow
+}
+
 // =============================================================================
 // NewOrchestrator
 // =============================================================================

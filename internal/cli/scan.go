@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/scanner"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 	"github.com/Dicklesworthstone/ntm/internal/watcher"
@@ -51,6 +52,8 @@ func newScanCmd() *cobra.Command {
 		stagedOnly     bool
 		diffOnly       bool
 		fileTarget     string
+		filterSeverity string
+		filterFile     string
 		createBeads    bool
 		updateBeads    bool
 		minSeverity    string
@@ -104,6 +107,8 @@ Examples:
 				stagedOnly = false
 				diffOnly = false
 				fileTarget = ""
+				filterSeverity = ""
+				filterFile = ""
 				createBeads = false
 				updateBeads = false
 				minSeverity = "warning"
@@ -150,9 +155,24 @@ Examples:
 				}
 			}
 
+			if trimmedSev := strings.TrimSpace(filterSeverity); trimmedSev != "" && !isValidScanSeverity(trimmedSev) {
+				return fmt.Errorf("invalid --severity %q: must be critical, warning, or info", filterSeverity)
+			}
+
+			var baseScannerCfg *config.ScannerConfig
+			if cfg != nil {
+				baseScannerCfg = &cfg.Scanner
+			}
+			scanCfg, err := config.LoadProjectScannerConfig(absPath, baseScannerCfg)
+			if err != nil {
+				return fmt.Errorf("loading scanner config: %w", err)
+			}
+
 			var timeout time.Duration
-			if timeoutChanged || trimmedFile == "" && !stagedOnly && !diffOnly {
+			if timeoutChanged {
 				timeout = time.Duration(timeoutSeconds) * time.Second
+			} else if trimmedFile == "" && !stagedOnly && !diffOnly {
+				timeout = scanCfg.Defaults.GetTimeout()
 			}
 
 			opts := scanner.ScanOptions{
@@ -165,6 +185,7 @@ Examples:
 				StagedOnly:       stagedOnly,
 				DiffOnly:         diffOnly,
 			}
+			applyScannerToolsConfig(&opts, scanCfg)
 
 			bridgeCfg := scanner.BridgeConfig{
 				MinSeverity: parseSeverity(minSeverity),
@@ -172,11 +193,16 @@ Examples:
 				Verbose:     verbose,
 			}
 
-			if watch {
-				return runScanWatch(absPath, opts, createBeads, updateBeads, notifyAgents, bridgeCfg)
+			filters := scanOutputFilters{
+				severity:   strings.TrimSpace(filterSeverity),
+				filterFile: strings.TrimSpace(filterFile),
 			}
 
-			return runScan(absPath, opts, createBeads, updateBeads, notifyAgents, bridgeCfg, analyzeImpact, showHotspots, priorityReport)
+			if watch {
+				return runScanWatch(absPath, opts, scanCfg, filters, createBeads, updateBeads, notifyAgents, bridgeCfg)
+			}
+
+			return runScanWithConfig(absPath, opts, scanCfg, filters, createBeads, updateBeads, notifyAgents, bridgeCfg, analyzeImpact, showHotspots, priorityReport)
 		},
 	}
 
@@ -189,6 +215,8 @@ Examples:
 	cmd.Flags().BoolVar(&stagedOnly, "staged", false, "Scan only staged files")
 	cmd.Flags().BoolVar(&diffOnly, "diff", false, "Scan only modified files")
 	cmd.Flags().StringVar(&fileTarget, "file", "", "Scan a single file")
+	cmd.Flags().StringVar(&filterSeverity, "severity", "", "Filter findings by severity (critical, warning, info)")
+	cmd.Flags().StringVar(&filterFile, "filter-file", "", "Filter findings by file path or substring")
 	cmd.Flags().BoolVarP(&watch, "watch", "w", false, "Watch for file changes and re-scan")
 	cmd.Flags().BoolVar(&notifyAgents, "notify", false, "Notify agents via Agent Mail about findings")
 
@@ -204,6 +232,122 @@ Examples:
 	cmd.Flags().BoolVar(&priorityReport, "priority-report", false, "Show smart priority report combining severity and graph position")
 
 	return cmd
+}
+
+type scanOutputFilters struct {
+	severity   string
+	filterFile string
+}
+
+func isValidScanSeverity(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "critical", "warning", "info":
+		return true
+	default:
+		return false
+	}
+}
+
+func applyScannerToolsConfig(opts *scanner.ScanOptions, scanCfg *config.ScannerConfig) {
+	if opts == nil || scanCfg == nil {
+		return
+	}
+	hasToolRules := len(scanCfg.Tools.Enabled) > 0 || len(scanCfg.Tools.Disabled) > 0
+	if len(opts.Languages) == 0 && len(scanCfg.Defaults.Languages) > 0 {
+		for _, lang := range scanCfg.Defaults.Languages {
+			if scanCfg.Tools.IsToolEnabled(lang) {
+				opts.Languages = append(opts.Languages, lang)
+			}
+		}
+		return
+	}
+	if !hasToolRules {
+		return
+	}
+	if len(opts.Languages) > 0 {
+		filtered := make([]string, 0, len(opts.Languages))
+		for _, lang := range opts.Languages {
+			if scanCfg.Tools.IsToolEnabled(lang) {
+				filtered = append(filtered, lang)
+			}
+		}
+		opts.Languages = filtered
+		return
+	}
+	if len(scanCfg.Tools.Enabled) > 0 {
+		for _, tool := range scanCfg.Tools.Enabled {
+			if scanCfg.Tools.IsToolEnabled(tool) {
+				opts.Languages = append(opts.Languages, tool)
+			}
+		}
+		return
+	}
+	existing := make(map[string]struct{}, len(opts.ExcludeLanguages))
+	for _, ex := range opts.ExcludeLanguages {
+		existing[strings.ToLower(ex)] = struct{}{}
+	}
+	for _, disabled := range scanCfg.Tools.Disabled {
+		if !scanCfg.Tools.IsToolEnabled(disabled) {
+			key := strings.ToLower(disabled)
+			if _, ok := existing[key]; !ok {
+				existing[key] = struct{}{}
+				opts.ExcludeLanguages = append(opts.ExcludeLanguages, disabled)
+			}
+		}
+	}
+}
+
+func applyScanFindingFilters(result *scanner.ScanResult, scanCfg *config.ScannerConfig, filters scanOutputFilters) *scanner.ScanResult {
+	if result == nil {
+		return nil
+	}
+	hasToolRules := scanCfg != nil && (len(scanCfg.Tools.Enabled) > 0 || len(scanCfg.Tools.Disabled) > 0)
+	if !hasToolRules && filters.severity == "" && filters.filterFile == "" {
+		return result
+	}
+	cloned := *result
+	if hasToolRules && len(cloned.Scanners) > 0 {
+		scanners := make([]scanner.ScannerResult, 0, len(cloned.Scanners))
+		for _, sr := range cloned.Scanners {
+			if scanCfg.Tools.IsToolEnabled(sr.Language) {
+				scanners = append(scanners, sr)
+			}
+		}
+		cloned.Scanners = scanners
+	}
+	if filters.filterFile != "" {
+		cloned.Findings = cloned.FilterByFile(filters.filterFile)
+	}
+	if filters.severity != "" {
+		cloned.Findings = cloned.FilterBySeverity(parseSeverity(filters.severity))
+	}
+	if filters.filterFile != "" || filters.severity != "" {
+		if cloned.Findings == nil {
+			cloned.Findings = make([]scanner.Finding, 0)
+		}
+		var crit, warn, info int
+		files := make(map[string]struct{})
+		for _, f := range cloned.Findings {
+			switch f.Severity {
+			case scanner.SeverityCritical:
+				crit++
+			case scanner.SeverityWarning:
+				warn++
+			case scanner.SeverityInfo:
+				info++
+			}
+			if f.File != "" {
+				files[f.File] = struct{}{}
+			}
+		}
+		cloned.Totals.Critical = crit
+		cloned.Totals.Warning = warn
+		cloned.Totals.Info = info
+		if filters.filterFile != "" {
+			cloned.Totals.Files = len(files)
+		}
+	}
+	return &cloned
 }
 
 // parseSeverity converts a string severity to scanner.Severity.
@@ -245,7 +389,7 @@ func executeScanWithRunner(ctx context.Context, s scanRunner, path string, opts 
 	return s.Scan(ctx, path, opts)
 }
 
-func runScan(path string, opts scanner.ScanOptions, createBeads, updateBeads, notifyAgents bool, bridgeCfg scanner.BridgeConfig, analyzeImpact, showHotspots, priorityReport bool) error {
+func runScanWithConfig(path string, opts scanner.ScanOptions, scanCfg *config.ScannerConfig, filters scanOutputFilters, createBeads, updateBeads, notifyAgents bool, bridgeCfg scanner.BridgeConfig, analyzeImpact, showHotspots, priorityReport bool) error {
 	t := theme.Current()
 
 	// Check if UBS is available
@@ -298,6 +442,8 @@ func runScan(path string, opts scanner.ScanOptions, createBeads, updateBeads, no
 		return cause
 	}
 
+	result = applyScanFindingFilters(result, scanCfg, filters)
+
 	// Run beads bridge if requested
 	var bridgeResult *scanner.BridgeResult
 	var updateResult *scanner.BridgeResult
@@ -337,9 +483,22 @@ func runScan(path string, opts scanner.ScanOptions, createBeads, updateBeads, no
 		}
 	}
 
-	if result.HasCritical() {
+	thresholdTriggered := false
+	if scanCfg != nil && opts.StagedOnly {
+		if scanCfg.Thresholds.PreCommit.ShouldBlock(result.Totals.Critical, result.Totals.Warning) {
+			terminalFailures = append(terminalFailures, errors.New("scan exceeded pre-commit threshold"))
+			thresholdTriggered = true
+		}
+	} else if scanCfg != nil && opts.CI {
+		if scanCfg.Thresholds.CI.ShouldFail(result.Totals.Critical, result.Totals.Warning) {
+			terminalFailures = append(terminalFailures, errors.New("scan exceeded CI threshold"))
+			thresholdTriggered = true
+		}
+	} else if result.HasCritical() {
 		terminalFailures = append(terminalFailures, errors.New("scan found critical issues"))
-	} else if opts.FailOnWarning && result.HasWarning() {
+		thresholdTriggered = true
+	}
+	if !thresholdTriggered && opts.FailOnWarning && result.HasWarning() {
 		terminalFailures = append(terminalFailures, errors.New("scan found warnings and --fail-on-warning is set"))
 	}
 
@@ -588,7 +747,7 @@ func printBeadsUpdateResults(t theme.Theme, br *scanner.BridgeResult, dryRun boo
 	fmt.Println()
 }
 
-func runScanWatch(path string, opts scanner.ScanOptions, createBeads, updateBeads, notifyAgents bool, bridgeCfg scanner.BridgeConfig) error {
+func runScanWatch(path string, opts scanner.ScanOptions, scanCfg *config.ScannerConfig, filters scanOutputFilters, createBeads, updateBeads, notifyAgents bool, bridgeCfg scanner.BridgeConfig) error {
 	// Create watcher with debouncing (500ms)
 	w, err := watcher.New(func(events []watcher.Event) {
 		// Clear screen
@@ -597,7 +756,7 @@ func runScanWatch(path string, opts scanner.ScanOptions, createBeads, updateBead
 
 		// Run scan
 		// Note: We ignore error here to keep watching. Analysis flags disabled in watch mode.
-		if err := runScan(path, opts, createBeads, updateBeads, notifyAgents, bridgeCfg, false, false, false); err != nil {
+		if err := runScanWithConfig(path, opts, scanCfg, filters, createBeads, updateBeads, notifyAgents, bridgeCfg, false, false, false); err != nil {
 			fmt.Printf("\nError running scan: %v\n", err)
 		}
 		fmt.Println("\nWaiting for changes... (Ctrl+C to stop)")
@@ -629,7 +788,7 @@ func runScanWatch(path string, opts scanner.ScanOptions, createBeads, updateBead
 	// Run initial scan
 	fmt.Print("\033[H\033[2J")
 	fmt.Printf("Initial scan of %s...\n", path)
-	if err := runScan(path, opts, createBeads, updateBeads, notifyAgents, bridgeCfg, false, false, false); err != nil {
+	if err := runScanWithConfig(path, opts, scanCfg, filters, createBeads, updateBeads, notifyAgents, bridgeCfg, false, false, false); err != nil {
 		fmt.Printf("\nError running scan: %v\n", err)
 	}
 	fmt.Println("\nWaiting for changes... (Ctrl+C to stop)")

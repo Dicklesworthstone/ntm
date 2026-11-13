@@ -89,6 +89,9 @@ type pipelineLintOutput struct {
 	Workflow           string                  `json:"workflow,omitempty"`
 	Valid              bool                    `json:"valid"`
 	StepCount          int                     `json:"step_count,omitempty"`
+	ParallelSubsteps   int                     `json:"parallel_substeps,omitempty"`
+	ExecutionOrder     []string                `json:"execution_order,omitempty"`
+	ExecutionLevels    [][]string              `json:"execution_levels,omitempty"`
 	Error              string                  `json:"error,omitempty"`
 	ErrorCode          string                  `json:"error_code,omitempty"`
 	Errors             []pipeline.ParseError   `json:"errors,omitempty"`
@@ -163,12 +166,18 @@ func runPipelineLint(workflowFile string, out io.Writer, errOut io.Writer) error
 		return fmt.Errorf("pipeline lint failed")
 	}
 
+	parallelSubsteps := 0
+	for i := range workflow.Steps {
+		parallelSubsteps += workflow.Steps[i].Parallel.Len()
+	}
+
 	lintResult := pipelineLintOutput{
 		Success:            result.Valid,
 		WorkflowFile:       workflowPath,
 		Workflow:           workflow.Name,
 		Valid:              result.Valid,
 		StepCount:          len(workflow.Steps),
+		ParallelSubsteps:   parallelSubsteps,
 		Errors:             result.Errors,
 		Warnings:           result.Warnings,
 		NormalizedWorkflow: workflow,
@@ -177,7 +186,13 @@ func runPipelineLint(workflowFile string, out io.Writer, errOut io.Writer) error
 			Warnings: len(result.Warnings),
 		},
 	}
-	if !result.Valid {
+	if result.Valid {
+		execPlan := pipeline.NewDependencyGraph(workflow).Resolve()
+		if execPlan.Valid {
+			lintResult.ExecutionOrder = execPlan.Order
+			lintResult.ExecutionLevels = execPlan.Levels
+		}
+	} else {
 		lintResult.Error = "workflow validation failed"
 		lintResult.ErrorCode = "VALIDATION_FAILED"
 	}
@@ -193,6 +208,9 @@ func runPipelineLint(workflowFile string, out io.Writer, errOut io.Writer) error
 	fmt.Fprintf(out, "Pipeline lint: %s\n", workflowPath)
 	fmt.Fprintf(out, "Workflow: %s\n", workflow.Name)
 	fmt.Fprintf(out, "Steps: %d\n", len(workflow.Steps))
+	if len(lintResult.ExecutionLevels) > 0 {
+		fmt.Fprintf(out, "Execution levels: %d\n", len(lintResult.ExecutionLevels))
+	}
 	fmt.Fprintf(out, "Warnings: %d\n", len(result.Warnings))
 
 	if len(result.Warnings) > 0 {
@@ -852,7 +870,6 @@ Examples:
 			execCfg.RunID = state.RunID
 			execCfg.ProjectDir = projectDir
 			execCfg.WorkflowFile = workflowFile
-			execCfg.ResumeOptions = resumeOpts
 			executor := pipeline.NewExecutor(execCfg)
 
 			state.WorkflowFile = workflowFile
@@ -860,7 +877,7 @@ Examples:
 			ctx := control.Context()
 
 			if jsonOutput {
-				finalState, err := executor.Resume(ctx, workflow, state, nil)
+				finalState, err := executor.ResumeWithOptions(ctx, workflow, state, resumeOpts, nil)
 				if err != nil {
 					status := "unknown"
 					if finalState != nil {
@@ -909,7 +926,7 @@ Examples:
 					}
 				}()
 				defer close(progress)
-				state, _ := executor.Resume(ctx, workflow, state, progress)
+				state, _ := executor.ResumeWithOptions(ctx, workflow, state, resumeOpts, progress)
 				done <- state
 			}()
 

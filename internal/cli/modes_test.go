@@ -220,9 +220,49 @@ func TestNewModesCmd(t *testing.T) {
 func TestNewModesListCmd_Flags(t *testing.T) {
 
 	cmd := newModesListCmd()
-	for _, flag := range []string{"format", "category", "tier", "all"} {
+	for _, flag := range []string{"format", "category", "tier", "search", "all", "default"} {
 		if cmd.Flags().Lookup(flag) == nil {
 			t.Errorf("missing flag: %s", flag)
 		}
+	}
+}
+
+func TestRunModesList_SearchAndDefault(t *testing.T) {
+	var defaultBuf bytes.Buffer
+	if err := runModesList(&defaultBuf, "json", "", "", "", false, true); err != nil {
+		t.Fatalf("runModesList(--default): %v", err)
+	}
+	var defaultOut modesListOutput
+	if err := json.Unmarshal(defaultBuf.Bytes(), &defaultOut); err != nil {
+		t.Fatalf("unmarshal default modes json: %v", err)
+	}
+	if defaultOut.Count == 0 {
+		t.Fatal("expected core modes from --default")
+	}
+	if defaultOut.CatalogCount < defaultOut.Count {
+		t.Fatalf("CatalogCount (%d) < Count (%d)", defaultOut.CatalogCount, defaultOut.Count)
+	}
+	if defaultOut.CatalogVersion == "" {
+		t.Fatal("expected non-empty CatalogVersion")
+	}
+	for _, m := range defaultOut.Modes {
+		if m.Tier != "core" {
+			t.Fatalf("--default returned non-core mode %s (%s)", m.ID, m.Tier)
+		}
+	}
+
+	var searchBuf bytes.Buffer
+	if err := runModesList(&searchBuf, "json", "", "", "deductive", false, false); err != nil {
+		t.Fatalf("runModesList(--search): %v", err)
+	}
+	var searchOut modesListOutput
+	if err := json.Unmarshal(searchBuf.Bytes(), &searchOut); err != nil {
+		t.Fatalf("unmarshal search modes json: %v", err)
+	}
+	if searchOut.Count == 0 {
+		t.Fatal("expected at least one match for --search deductive")
+	}
+	if !strings.Contains(searchOut.Filter, "search=deductive") {
+		t.Fatalf("expected search filter metadata, got %q", searchOut.Filter)
 	}
 }

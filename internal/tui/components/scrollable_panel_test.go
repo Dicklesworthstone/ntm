@@ -230,3 +230,62 @@ func TestScrollablePanelClampsInvalidDimensions(t *testing.T) {
 		t.Fatal("expected RenderWithIndicators to render with clamped width")
 	}
 }
+
+func TestScrollablePanelVimAndHalfPageKeybindings(t *testing.T) {
+	sp := NewScrollablePanel(30, 6)
+	lines := make([]string, 30)
+	for i := range lines {
+		lines[i] = "line"
+	}
+	sp.SetContent(strings.Join(lines, "\n"))
+
+	if !sp.AtTop() {
+		t.Fatal("expected initial AtTop()")
+	}
+	if got := sp.RenderWithIndicators(30); !strings.Contains(got, "0%") {
+		t.Fatalf("expected 0%% at top, got %q", got)
+	}
+
+	// j and down scroll down 1 line each
+	sp, _ = sp.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	if sp.YOffset() != 1 {
+		t.Fatalf("YOffset after 'j' = %d, want 1", sp.YOffset())
+	}
+	sp, _ = sp.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if sp.YOffset() != 2 {
+		t.Fatalf("YOffset after Down = %d, want 2", sp.YOffset())
+	}
+
+	// k and up scroll up 1 line each
+	sp, _ = sp.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	if sp.YOffset() != 1 {
+		t.Fatalf("YOffset after 'k' = %d, want 1", sp.YOffset())
+	}
+	sp, _ = sp.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if !sp.AtTop() {
+		t.Fatalf("expected AtTop() after Up, YOffset=%d", sp.YOffset())
+	}
+
+	// ctrl+d scrolls half page down, ctrl+u scrolls half page up
+	sp, _ = sp.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	if sp.YOffset() != 3 {
+		t.Fatalf("YOffset after Ctrl+D = %d, want 3", sp.YOffset())
+	}
+	sp, _ = sp.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+	if !sp.AtTop() {
+		t.Fatalf("expected AtTop() after Ctrl+U, YOffset=%d", sp.YOffset())
+	}
+
+	// G jumps to bottom, g jumps to top
+	sp, _ = sp.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
+	if !sp.AtBottom() {
+		t.Fatal("expected AtBottom() after 'G'")
+	}
+	if got := sp.RenderWithIndicators(30); !strings.Contains(got, "100%") {
+		t.Fatalf("expected 100%% at bottom, got %q", got)
+	}
+	sp, _ = sp.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	if !sp.AtTop() {
+		t.Fatal("expected AtTop() after 'g'")
+	}
+}

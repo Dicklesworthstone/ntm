@@ -575,11 +575,6 @@ func (s *AgentScorer) wireReservationAffinity(cfg *config.Config, session string
 	}
 }
 
-// SetAgentMapping sets the mapping from pane IDs to Agent Mail agent names.
-func (s *AgentScorer) SetAgentMapping(mapping map[string]string) {
-	s.agentMapping = mapping
-}
-
 // MapPaneToAgent adds a mapping from pane ID to Agent Mail agent name.
 func (s *AgentScorer) MapPaneToAgent(paneID, agentName string) {
 	if s.agentMapping == nil {
@@ -731,7 +726,7 @@ func (s *AgentScorer) ScoreAgents(session string, prompt string) ([]ScoredAgent,
 		agent.ScoreDetail = s.calculateScoreComponents(&agent, prompt)
 
 		// Check exclusion rules first
-		excluded, reason := s.checkExclusion(&agent)
+		excluded, reason := excludeRouteAgent(s, &agent, pane)
 		if excluded {
 			agent.Excluded = true
 			agent.ExcludeReason = reason
@@ -952,44 +947,6 @@ func deriveHealthState(state AgentState) HealthState {
 	default:
 		return HealthHealthy
 	}
-}
-
-// GetBestAgent returns the agent with the highest score.
-func (s *AgentScorer) GetBestAgent(scored []ScoredAgent) *ScoredAgent {
-	var best *ScoredAgent
-
-	for i := range scored {
-		if scored[i].Excluded {
-			continue
-		}
-		if best == nil || scored[i].Score > best.Score {
-			best = &scored[i]
-		}
-	}
-
-	return best
-}
-
-// GetAvailableAgents returns all non-excluded agents sorted by score.
-func (s *AgentScorer) GetAvailableAgents(scored []ScoredAgent) []ScoredAgent {
-	var available []ScoredAgent
-
-	for _, agent := range scored {
-		if !agent.Excluded {
-			available = append(available, agent)
-		}
-	}
-
-	// Sort by score descending
-	for i := 0; i < len(available); i++ {
-		for j := i + 1; j < len(available); j++ {
-			if available[j].Score > available[i].Score {
-				available[i], available[j] = available[j], available[i]
-			}
-		}
-	}
-
-	return available
 }
 
 // ExcludePanes applies explicit index exclusions and physical-pane exclusions.

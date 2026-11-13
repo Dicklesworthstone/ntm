@@ -318,26 +318,11 @@ func (e *Executor) SetTmuxClient(client TmuxClient) {
 	e.resetPaneMetadataLoader()
 }
 
-// SetDetector swaps the agent-state detector backing completion waits.
-// Tests use this to drive waitForIdle without a live tmux server; a nil
-// detector restores the default.
-func (e *Executor) SetDetector(detector status.Detector) {
-	if detector == nil {
-		detector = status.NewDetector()
-	}
-	e.detector = detector
-}
-
 func (e *Executor) tmuxClient() TmuxClient {
 	if e.tmux == nil {
 		return realTmuxClient{}
 	}
 	return e.tmux
-}
-
-// SetNotifier sets the notifier for sending notifications on workflow events.
-func (e *Executor) SetNotifier(n *Notifier) {
-	e.notifier = n
 }
 
 // Run executes a workflow with the given initial variables.

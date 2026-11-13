@@ -294,11 +294,6 @@ type RuntimeHandoff struct {
 	StaleAfter         time.Time  `json:"stale_after"`
 }
 
-// IsFresh returns true if the handoff projection is within its staleness threshold.
-func (r *RuntimeHandoff) IsFresh() bool {
-	return time.Now().Before(r.StaleAfter)
-}
-
 // =============================================================================
 // Runtime Quota
 // =============================================================================
@@ -483,15 +478,6 @@ type AttentionReplayWindow struct {
 	NewestCursor int64      `json:"newest_cursor"`
 	EventCount   int        `json:"event_count"`
 	LastEventAt  *time.Time `json:"last_event_at,omitempty"`
-}
-
-// EarliestReplayCursor returns the earliest cursor a caller can safely replay
-// from without losing events in the current retention window.
-func (w AttentionReplayWindow) EarliestReplayCursor() int64 {
-	if w.EventCount == 0 {
-		return w.NewestCursor
-	}
-	return w.OldestCursor
 }
 
 // CursorExpired reports whether a replay request from sinceCursor has fallen

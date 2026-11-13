@@ -223,13 +223,6 @@ func (a *RanoAdapter) GetAvailability(ctx context.Context) (*RanoAvailability, e
 	return availability, nil
 }
 
-// InvalidateAvailabilityCache forces the next GetAvailability call to re-check.
-func (a *RanoAdapter) InvalidateAvailabilityCache() {
-	ranoAvailabilityMutex.Lock()
-	ranoAvailabilityExpiry = time.Time{}
-	ranoAvailabilityMutex.Unlock()
-}
-
 // IsAvailable returns true if rano is installed, compatible, and operational.
 func (a *RanoAdapter) IsAvailable(ctx context.Context) bool {
 	availability, err := a.GetAvailability(ctx)
@@ -330,30 +323,6 @@ func (a *RanoAdapter) checkProcAccess() bool {
 	// This is a filesystem probe, not an unbounded subprocess from PATH.
 	info, err := os.Stat("/proc/self")
 	return err == nil && info.IsDir()
-}
-
-// GetProcessStats returns network stats for a specific PID.
-// Window is optional; empty means default window.
-func (a *RanoAdapter) GetProcessStats(ctx context.Context, pid int) (*RanoProcessStats, error) {
-	return a.GetProcessStatsWithWindow(ctx, pid, "")
-}
-
-// GetProcessStatsWithWindow returns network stats for a specific PID with a time window override.
-// Window should be a string like "5m", "1h". Empty means default window.
-func (a *RanoAdapter) GetProcessStatsWithWindow(ctx context.Context, pid int, window string) (*RanoProcessStats, error) {
-	if pid <= 0 {
-		return nil, errors.New("rano process PID must be positive")
-	}
-	stats, err := a.GetAllProcessStatsWithWindow(ctx, window)
-	if err != nil {
-		return nil, err
-	}
-	for _, stat := range stats {
-		if stat.PID == pid {
-			return &stat, nil
-		}
-	}
-	return &RanoProcessStats{PID: pid}, nil
 }
 
 // GetAllProcessStats returns network stats for all tracked processes.

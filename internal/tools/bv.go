@@ -161,21 +161,6 @@ func (a *BVAdapter) GetTriage(ctx context.Context, dir string) (json.RawMessage,
 	return a.runRobotCommand(ctx, dir, "--robot-triage")
 }
 
-// GetPlan returns the robot-plan output
-func (a *BVAdapter) GetPlan(ctx context.Context, dir string) (json.RawMessage, error) {
-	return a.runRobotCommand(ctx, dir, "--robot-plan")
-}
-
-// GetInsights returns the robot-insights output
-func (a *BVAdapter) GetInsights(ctx context.Context, dir string) (json.RawMessage, error) {
-	return a.runRobotCommand(ctx, dir, "--robot-insights")
-}
-
-// GetNext returns the robot-next output (single top pick)
-func (a *BVAdapter) GetNext(ctx context.Context, dir string) (json.RawMessage, error) {
-	return a.runRobotCommand(ctx, dir, "--robot-next")
-}
-
 // Analysis mode methods for advanced BV analysis
 func (a *BVAdapter) GetAlerts(ctx context.Context, dir string, opts BVAlertOptions) (json.RawMessage, error) {
 	args := []string{"--robot-alerts"}

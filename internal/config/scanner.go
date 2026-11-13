@@ -4,9 +4,12 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // ScannerConfig holds UBS scanner configuration.
@@ -253,6 +256,81 @@ func (d *ScannerDefaults) GetTimeout() time.Duration {
 // typically stored in .ntm.yaml at the project root
 type ProjectScannerConfig struct {
 	Scanner ScannerConfig `yaml:"scanner"`
+}
+
+func cloneScannerConfig(src ScannerConfig) ScannerConfig {
+	dst := src
+	if src.Defaults.Exclude != nil {
+		dst.Defaults.Exclude = append([]string(nil), src.Defaults.Exclude...)
+	}
+	if src.Defaults.Languages != nil {
+		dst.Defaults.Languages = append([]string(nil), src.Defaults.Languages...)
+	}
+	if src.Tools.Enabled != nil {
+		dst.Tools.Enabled = append([]string(nil), src.Tools.Enabled...)
+	}
+	if src.Tools.Disabled != nil {
+		dst.Tools.Disabled = append([]string(nil), src.Tools.Disabled...)
+	}
+	if src.Beads.Labels != nil {
+		dst.Beads.Labels = append([]string(nil), src.Beads.Labels...)
+	}
+	return dst
+}
+
+// LoadProjectScannerConfig resolves effective scanner configuration for projectDir
+// by merging optional base settings, project-level .ntm.yaml/.ntm.yml `scanner:`
+// overrides, and NTM_SCANNER_* / UBS_PATH environment variables.
+func LoadProjectScannerConfig(projectDir string, base *ScannerConfig) (*ScannerConfig, error) {
+	resolved := DefaultScannerConfig()
+	if base != nil {
+		if base.UBSPath != "" {
+			resolved.UBSPath = base.UBSPath
+		}
+		if base.Defaults.Timeout != "" {
+			resolved = cloneScannerConfig(*base)
+		}
+	}
+
+	if trimmed := strings.TrimSpace(projectDir); trimmed != "" {
+		dir := trimmed
+		if info, err := os.Stat(dir); err == nil && !info.IsDir() {
+			dir = filepath.Dir(dir)
+		}
+		for _, candidate := range []string{
+			filepath.Join(dir, ".ntm.yaml"),
+			filepath.Join(dir, ".ntm.yml"),
+		} {
+			data, err := os.ReadFile(candidate)
+			if err != nil {
+				continue
+			}
+			expanded, err := expandEnvPlaceholders(data)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", candidate, err)
+			}
+			var root yaml.Node
+			if err := yaml.Unmarshal(expanded, &root); err != nil {
+				return nil, fmt.Errorf("%s: %w", candidate, err)
+			}
+			if scannerNode := findTopLevelYAMLKey(&root, "scanner"); scannerNode != nil {
+				raw, err := yaml.Marshal(scannerNode)
+				if err != nil {
+					return nil, fmt.Errorf("%s: scanner: %w", candidate, err)
+				}
+				if err := yaml.Unmarshal(raw, &resolved); err != nil {
+					return nil, fmt.Errorf("%s: scanner: %w", candidate, err)
+				}
+			}
+			break
+		}
+	}
+
+	applyEnvOverrides(&resolved)
+	if err := ValidateScannerConfig(&resolved); err != nil {
+		return nil, err
+	}
+	return &resolved, nil
 }
 
 // applyEnvOverrides applies environment variable overrides to scanner config

@@ -9,6 +9,10 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
+func (a *Alert) IsResolved() bool {
+	return a.ResolvedAt != nil
+}
+
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 

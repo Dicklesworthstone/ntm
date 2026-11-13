@@ -93,7 +93,7 @@ func NewDependencyGraph(workflow *Workflow) *DependencyGraph {
 			}
 
 			// Handle parallel sub-steps
-			if len(step.Parallel.Steps) > 0 {
+			if step.Parallel.Len() > 0 {
 				addSteps(step.Parallel.Steps, step.ID)
 			}
 
@@ -435,13 +435,6 @@ func (g *DependencyGraph) MarkFailed(id string) error {
 	defer g.mu.Unlock()
 	g.failed[id] = true
 	return nil
-}
-
-// IsFailed returns whether a step has failed
-func (g *DependencyGraph) IsFailed(id string) bool {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.failed[id]
 }
 
 // HasFailedDependency returns true if any of the step's dependencies failed

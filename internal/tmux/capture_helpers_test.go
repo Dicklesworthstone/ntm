@@ -8,6 +8,18 @@ import (
 	"time"
 )
 
+func (c *Client) CaptureForHealthCheck(target string) (string, error) {
+	return c.CapturePaneOutput(target, LinesHealthCheck)
+}
+
+func (c *Client) CaptureForFullContext(target string) (string, error) {
+	return c.CapturePaneOutput(target, LinesFullContext)
+}
+
+func (c *Client) CaptureForCheckpoint(target string) (string, error) {
+	return c.CapturePaneOutput(target, LinesCheckpoint)
+}
+
 // ============== Optimized Capture Helper Tests ==============
 
 func TestCaptureLineBudgetConstants(t *testing.T) {

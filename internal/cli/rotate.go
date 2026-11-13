@@ -273,6 +273,24 @@ func newRotateStatusCmd() *cobra.Command {
 				capErr = "caam not available"
 			}
 
+			type rotateProviderStatus struct {
+				Name                string   `json:"name"`
+				SupportsReauth      bool     `json:"supports_reauth"`
+				LoginCommand        string   `json:"login_command"`
+				AuthSuccessPatterns []string `json:"auth_success_patterns,omitempty"`
+			}
+			var providers []rotateProviderStatus
+			for _, id := range []string{"claude", "codex", "gemini"} {
+				if prov := rotation.GetProvider(id); prov != nil {
+					providers = append(providers, rotateProviderStatus{
+						Name:                prov.Name(),
+						SupportsReauth:      prov.SupportsReauth(),
+						LoginCommand:        prov.LoginCommand(),
+						AuthSuccessPatterns: prov.AuthSuccessPatterns(),
+					})
+				}
+			}
+
 			if IsJSONOutput() {
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
@@ -281,6 +299,7 @@ func newRotateStatusCmd() *cobra.Command {
 					"caam_safe_restore":     safeRestore,
 					"global_rotation_safe":  safeRestore,
 					"safe_restore_required": true,
+					"providers":             providers,
 				}
 				if capErr != "" {
 					out["caam_capability_error"] = capErr
@@ -620,6 +639,9 @@ func executeReauthRotation(session string, paneIdx int, paneID, provider string,
 	// Step 2: Wait for auth completion
 	fmt.Println("\nStep 2/3: Waiting for authentication...")
 	fmt.Println("  Complete the browser authentication...")
+	if patterns := prov.AuthSuccessPatterns(); len(patterns) > 0 {
+		fmt.Printf("  Watching for auth confirmation (%s)...\n", strings.Join(patterns, " / "))
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -636,7 +658,15 @@ func executeReauthRotation(session string, paneIdx int, paneID, provider string,
 	}); err != nil {
 		return fmt.Errorf("monitoring auth: %w", err)
 	}
-	fmt.Println("  ✓ Authentication successful!")
+	if captured, captureErr := tmux.CapturePaneOutputContext(ctx, paneID, 40); captureErr == nil {
+		if matched, ok := rotation.MatchesAuthSuccess(prov, captured); ok {
+			fmt.Printf("  ✓ Authentication successful! (matched %q)\n", matched)
+		} else {
+			fmt.Println("  ✓ Authentication successful!")
+		}
+	} else {
+		fmt.Println("  ✓ Authentication successful!")
+	}
 
 	// Step 3: Send continuation prompt
 	fmt.Println("\nStep 3/3: Sending continuation prompt...")

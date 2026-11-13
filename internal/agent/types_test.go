@@ -6,6 +6,24 @@ import (
 	"time"
 )
 
+func (r Recommendation) IsActionable() bool {
+	switch r {
+	case RecommendSafeToRestart, RecommendErrorState:
+		return true
+	default:
+		return false
+	}
+}
+
+func (r Recommendation) RequiresWaiting() bool {
+	switch r {
+	case RecommendRateLimitedWait, RecommendContextLowContinue, RecommendDoNotInterrupt:
+		return true
+	default:
+		return false
+	}
+}
+
 func TestAgentType_String(t *testing.T) {
 	t.Parallel()
 

@@ -725,6 +725,12 @@ func TestDependencyGraph_MarkFailed(t *testing.T) {
 	}
 }
 
+func (g *DependencyGraph) IsFailed(id string) bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.failed[id]
+}
+
 func TestDependencyGraph_HasFailedDependency(t *testing.T) {
 
 	w := &Workflow{

@@ -4,8 +4,6 @@ import (
 	"archive/zip"
 	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -30,6 +28,7 @@ import (
 // supportBundleOptions holds the command options.
 type supportBundleOptions struct {
 	Output          string
+	Verify          string
 	Session         string
 	Panes           string
 	Lines           int
@@ -51,9 +50,9 @@ func newSupportBundleCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "support-bundle",
-		Short: "Generate a diagnostic support bundle archive",
+		Short: "Generate or verify a diagnostic support bundle archive",
 		Long: `Generate a support bundle archive containing diagnostic information
-for troubleshooting NTM issues. The bundle includes:
+for troubleshooting NTM issues, or verify an existing bundle archive. The bundle includes:
 
   - manifest.json      Versioned schema with checksums
   - doctor.json        System health check results
@@ -69,7 +68,8 @@ Examples:
   ntm support-bundle --output bundle.zip
   ntm support-bundle --session myproj --lines 500 -o bundle.zip
   ntm support-bundle --since 2h -o bundle.zip
-  ntm support-bundle --include-sessions -o bundle.zip`,
+  ntm support-bundle --include-sessions -o bundle.zip
+  ntm support-bundle --verify bundle.zip`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			effectiveOpts := opts
 			effectiveOpts.RobotMode = effectiveOpts.RobotMode || IsJSONOutput()
@@ -77,7 +77,8 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVarP(&opts.Output, "output", "o", "", "Output file path (required)")
+	cmd.Flags().StringVarP(&opts.Output, "output", "o", "", "Output file path (required unless --verify is set)")
+	cmd.Flags().StringVar(&opts.Verify, "verify", "", "Verify an existing support bundle archive")
 	cmd.Flags().StringVar(&opts.Session, "session", "", "Include specific session only")
 	cmd.Flags().StringVar(&opts.Panes, "panes", "", "Pane indices to include (comma-separated)")
 	cmd.Flags().IntVar(&opts.Lines, "lines", opts.Lines, "Lines of pane output to capture")
@@ -87,36 +88,7 @@ Examples:
 	cmd.Flags().BoolVar(&opts.IncludeSessions, "include-sessions", opts.IncludeSessions, "Include session snapshots and pane output")
 	cmd.Flags().BoolVar(&opts.IncludeEvents, "include-events", opts.IncludeEvents, "Include events log")
 
-	_ = cmd.MarkFlagRequired("output")
-
 	return cmd
-}
-
-// BundleManifest describes the support bundle contents.
-type BundleManifest struct {
-	Version       string         `json:"version"`
-	SchemaVersion int            `json:"schema_version"`
-	CreatedAt     time.Time      `json:"created_at"`
-	CreatedBy     string         `json:"created_by"`
-	Files         []ManifestFile `json:"files"`
-	Checksum      string         `json:"checksum"`
-	Redacted      bool           `json:"redacted"`
-	Platform      PlatformInfo   `json:"platform"`
-}
-
-// ManifestFile describes a file in the bundle.
-type ManifestFile struct {
-	Path     string `json:"path"`
-	Size     int64  `json:"size"`
-	Checksum string `json:"checksum"`
-	Redacted bool   `json:"redacted,omitempty"`
-}
-
-// PlatformInfo captures runtime environment details.
-type PlatformInfo struct {
-	OS     string `json:"os"`
-	Arch   string `json:"arch"`
-	NumCPU int    `json:"num_cpu"`
 }
 
 // VersionsInfo captures tool versions.
@@ -131,17 +103,35 @@ type VersionsInfo struct {
 
 // BundleResult is the robot mode response.
 type BundleResult struct {
-	Success  bool   `json:"success"`
-	Path     string `json:"path"`
-	Size     int64  `json:"size"`
-	Files    int    `json:"files"`
-	Redacted bool   `json:"redacted"`
-	Error    string `json:"error,omitempty"`
+	Success          bool                     `json:"success"`
+	Path             string                   `json:"path"`
+	Format           string                   `json:"format,omitempty"`
+	Size             int64                    `json:"size"`
+	TotalSize        int64                    `json:"total_size"`
+	ContentBytes     int64                    `json:"content_bytes"`
+	Files            int                      `json:"files"`
+	FileCount        int                      `json:"file_count"`
+	Redacted         bool                     `json:"redacted"`
+	RedactionSummary *bundle.RedactionSummary `json:"redaction_summary,omitempty"`
+	Errors           []string                 `json:"errors,omitempty"`
+	Error            string                   `json:"error,omitempty"`
+}
+
+// BundleVerifyResponse is the JSON output for --verify.
+type BundleVerifyResponse struct {
+	Success bool                 `json:"success"`
+	Path    string               `json:"path"`
+	Result  *bundle.VerifyResult `json:"result,omitempty"`
+	Error   string               `json:"error,omitempty"`
 }
 
 func runSupportBundle(ctx context.Context, opts supportBundleOptions) error {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+
+	if strings.TrimSpace(opts.Verify) != "" {
+		return runSupportBundleVerify(opts.Verify, opts.RobotMode)
 	}
 
 	// Validate output path
@@ -178,9 +168,65 @@ func runSupportBundle(ctx context.Context, opts supportBundleOptions) error {
 	}
 
 	fmt.Printf("Support bundle created: %s\n", result.Path)
-	fmt.Printf("  Size: %d bytes\n", result.Size)
-	fmt.Printf("  Files: %d\n", result.Files)
+	fmt.Printf("  Size: %d bytes (%d content bytes)\n", result.Size, result.ContentBytes)
+	fmt.Printf("  Files: %d\n", result.FileCount)
 	fmt.Printf("  Redacted: %v\n", result.Redacted)
+	return nil
+}
+
+func runSupportBundleVerify(verifyPath string, robotMode bool) error {
+	resolved := util.ExpandPath(verifyPath)
+	res, err := bundle.Verify(resolved)
+	if err != nil {
+		if robotMode {
+			if outErr := robot.Output(BundleVerifyResponse{
+				Success: false,
+				Path:    resolved,
+				Error:   err.Error(),
+			}, robot.FormatJSON); outErr != nil {
+				return outErr
+			}
+			return jsonFailureExit()
+		}
+		return err
+	}
+
+	if robotMode {
+		if outErr := robot.Output(BundleVerifyResponse{
+			Success: res.Valid,
+			Path:    resolved,
+			Result:  res,
+		}, robot.FormatJSON); outErr != nil {
+			return outErr
+		}
+		if !res.Valid {
+			return jsonFailureExit()
+		}
+		return nil
+	}
+
+	status := "VALID"
+	if !res.Valid {
+		status = "INVALID"
+	}
+	fmt.Printf("Support bundle verification: %s (%s)\n", status, resolved)
+	if res.Manifest != nil {
+		fmt.Printf("  Schema version: %d\n", res.Manifest.SchemaVersion)
+		fmt.Printf("  NTM version: %s\n", res.Manifest.NTMVersion)
+		fmt.Printf("  Files: %d (%d content bytes)\n", res.Manifest.FileCount(), res.Manifest.TotalSize())
+	}
+	fmt.Printf("  Manifest valid: %v\n", res.ManifestValid)
+	fmt.Printf("  Files present: %v\n", res.FilesPresent)
+	fmt.Printf("  Checksums valid: %v\n", res.ChecksumsValid)
+	for _, warn := range res.Warnings {
+		fmt.Printf("  Warning: %s\n", warn)
+	}
+	for _, errMsg := range res.Errors {
+		fmt.Printf("  Error: %s\n", errMsg)
+	}
+	if !res.Valid {
+		return fmt.Errorf("bundle verification failed with %d error(s)", len(res.Errors))
+	}
 	return nil
 }
 
@@ -215,48 +261,80 @@ func createSupportBundle(ctx context.Context, outputPath string, opts supportBun
 		}
 	}()
 
-	manifest := &BundleManifest{
-		Version:       "1.0.0",
-		SchemaVersion: 1,
-		CreatedAt:     time.Now().UTC(),
-		CreatedBy:     "ntm support-bundle",
-		Redacted:      !opts.NoRedact,
-		Platform: PlatformInfo{
-			OS:     runtime.GOOS,
-			Arch:   runtime.GOARCH,
-			NumCPU: runtime.NumCPU(),
-		},
+	ntmVersion := strings.TrimSpace(Version)
+	if ntmVersion == "" {
+		ntmVersion = "dev"
 	}
-
-	var files []ManifestFile
+	manifest := bundle.NewManifest(ntmVersion)
+	manifest.Filters = &bundle.BundleFilters{
+		Lines:        opts.Lines,
+		MaxSizeBytes: opts.MaxSize,
+	}
+	if opts.Since != "" {
+		if dur, err := time.ParseDuration(opts.Since); err == nil {
+			manifest.Filters.Since = time.Now().UTC().Add(-dur).Format(time.RFC3339)
+		}
+	}
+	if opts.Session != "" {
+		manifest.Session = &bundle.SessionInfo{
+			Name: opts.Session,
+		}
+	}
 
 	// Get redaction config if enabled
 	var redactCfg *redaction.Config
-	if !opts.NoRedact && cfg != nil {
-		redactCfg = buildBundleRedactionConfig(cfg)
+	redactMode := string(redaction.ModeOff)
+	if !opts.NoRedact {
+		redactMode = string(redaction.ModeRedact)
+		if cfg != nil {
+			redactCfg = buildBundleRedactionConfig(cfg)
+			if redactCfg != nil {
+				redactMode = string(redactCfg.Mode)
+			}
+		}
 	}
+	redactionSummary := &bundle.RedactionSummary{
+		Mode:           redactMode,
+		CategoryCounts: make(map[string]int),
+	}
+
+	nowStr := time.Now().UTC().Format(time.RFC3339)
 
 	// 1. Add versions.json
 	versionsData, err := collectBundleVersions(ctx)
-	if err == nil {
-		if file, err := addJSONToBundle(zipWriter, "versions.json", versionsData); err == nil {
-			files = append(files, file)
+	if err != nil {
+		manifest.AddError(fmt.Sprintf("collect versions: %v", err))
+	} else {
+		if entry, addErr := addJSONToBundle(zipWriter, "versions.json", versionsData, bundle.ContentTypeMetadata, nowStr); addErr != nil {
+			manifest.AddError(fmt.Sprintf("write versions.json: %v", addErr))
+		} else {
+			manifest.AddFile(entry)
 		}
 	}
 
 	// 2. Add doctor.json
 	doctorReport := performDoctorCheck(ctx)
-	if file, err := addJSONToBundle(zipWriter, "doctor.json", doctorReport); err == nil {
-		files = append(files, file)
+	if entry, addErr := addJSONToBundle(zipWriter, "doctor.json", doctorReport, bundle.ContentTypeMetadata, nowStr); addErr != nil {
+		manifest.AddError(fmt.Sprintf("write doctor.json: %v", addErr))
+	} else {
+		manifest.AddFile(entry)
 	}
 
 	// 3. Add config_effective.toml (redacted)
 	if cfg != nil {
 		configData, err := exportBundleConfigTOML(cfg, redactCfg)
-		if err == nil {
-			if file, err := addDataToBundle(zipWriter, "config_effective.toml", configData); err == nil {
-				file.Redacted = redactCfg != nil
-				files = append(files, file)
+		if err != nil {
+			manifest.AddError(fmt.Sprintf("export config: %v", err))
+		} else {
+			if entry, addErr := addTypedDataToBundle(zipWriter, "config_effective.toml", configData, bundle.ContentTypeConfig, nowStr); addErr != nil {
+				manifest.AddError(fmt.Sprintf("write config_effective.toml: %v", addErr))
+			} else {
+				redactionSummary.FilesScanned++
+				if redactCfg != nil {
+					entry.Redaction = &bundle.FileRedaction{WasRedacted: true}
+					redactionSummary.FilesRedacted++
+				}
+				manifest.AddFile(entry)
 			}
 		}
 	}
@@ -264,10 +342,18 @@ func createSupportBundle(ctx context.Context, outputPath string, opts supportBun
 	// 4. Add events.jsonl (bounded)
 	if opts.IncludeEvents {
 		eventsData, err := collectBundleEvents(opts.Since, redactCfg)
-		if err == nil && len(eventsData) > 0 {
-			if file, err := addDataToBundle(zipWriter, "events.jsonl", eventsData); err == nil {
-				file.Redacted = redactCfg != nil
-				files = append(files, file)
+		if err != nil {
+			manifest.AddError(fmt.Sprintf("collect events: %v", err))
+		} else if len(eventsData) > 0 {
+			if entry, addErr := addTypedDataToBundle(zipWriter, "events.jsonl", eventsData, bundle.ContentTypeLogs, nowStr); addErr != nil {
+				manifest.AddError(fmt.Sprintf("write events.jsonl: %v", addErr))
+			} else {
+				redactionSummary.FilesScanned++
+				if redactCfg != nil {
+					entry.Redaction = &bundle.FileRedaction{WasRedacted: true}
+					redactionSummary.FilesRedacted++
+				}
+				manifest.AddFile(entry)
 			}
 		}
 	}
@@ -275,30 +361,38 @@ func createSupportBundle(ctx context.Context, outputPath string, opts supportBun
 	// 5. Add session snapshots (optional)
 	if opts.IncludeSessions {
 		sessionFiles, err := collectBundleSessionSnapshots(ctx, opts, redactCfg)
-		if err == nil {
+		if err != nil {
+			manifest.AddError(fmt.Sprintf("collect session snapshots: %v", err))
+		} else {
 			for _, sf := range sessionFiles {
-				if file, err := addDataToBundle(zipWriter, sf.path, sf.data); err == nil {
-					file.Redacted = redactCfg != nil
-					files = append(files, file)
+				contentType := bundle.ContentTypeState
+				if strings.Contains(sf.path, "/panes/") {
+					contentType = bundle.ContentTypeScrollback
+				}
+				if entry, addErr := addTypedDataToBundle(zipWriter, sf.path, sf.data, contentType, nowStr); addErr != nil {
+					manifest.AddError(fmt.Sprintf("write %s: %v", sf.path, addErr))
+				} else {
+					redactionSummary.FilesScanned++
+					if redactCfg != nil {
+						entry.Redaction = &bundle.FileRedaction{WasRedacted: true}
+						redactionSummary.FilesRedacted++
+					}
+					manifest.AddFile(entry)
 				}
 			}
 		}
 	}
 
-	// Finalize manifest
-	manifest.Files = files
+	manifest.RedactionSummary = redactionSummary
 
-	// Calculate overall checksum
-	var checksumData strings.Builder
-	for _, f := range files {
-		checksumData.WriteString(f.Path)
-		checksumData.WriteString(f.Checksum)
+	if err := manifest.Validate(); err != nil {
+		_ = os.Remove(outputPath)
+		return nil, fmt.Errorf("validate bundle manifest: %w", err)
 	}
-	manifest.Checksum = bundleSHA256([]byte(checksumData.String()))
 
-	// Add manifest as last file
-	if file, err := addJSONToBundle(zipWriter, "manifest.json", manifest); err == nil {
-		files = append(files, file)
+	// Write manifest.json with canonical bundle.Manifest schema
+	if _, err := addJSONToBundle(zipWriter, bundle.ManifestFileName, manifest, bundle.ContentTypeMetadata, nowStr); err != nil {
+		return nil, fmt.Errorf("write %s: %w", bundle.ManifestFileName, err)
 	}
 
 	// Close zip writer to flush
@@ -320,17 +414,26 @@ func createSupportBundle(ctx context.Context, outputPath string, opts supportBun
 	}
 
 	// Check size limit
-	if info.Size() > opts.MaxSize {
+	if opts.MaxSize > 0 && info.Size() > opts.MaxSize {
 		os.Remove(outputPath)
 		return nil, fmt.Errorf("bundle size %d exceeds limit %d", info.Size(), opts.MaxSize)
 	}
 
+	contentBytes := manifest.TotalSize()
+	fileCount := manifest.FileCount()
+
 	return &BundleResult{
-		Success:  true,
-		Path:     outputPath,
-		Size:     info.Size(),
-		Files:    len(files),
-		Redacted: !opts.NoRedact,
+		Success:          true,
+		Path:             outputPath,
+		Format:           string(bundle.FormatZip),
+		Size:             info.Size(),
+		TotalSize:        info.Size(),
+		ContentBytes:     contentBytes,
+		Files:            fileCount,
+		FileCount:        fileCount,
+		Redacted:         !opts.NoRedact,
+		RedactionSummary: redactionSummary,
+		Errors:           manifest.Errors,
 	}, nil
 }
 
@@ -550,40 +653,45 @@ func supportBundleSessionPath(session string, elems ...string) (string, error) {
 	return bundle.SanitizeArchivePath(strings.Join(parts, "/"))
 }
 
-func addJSONToBundle(zw *zip.Writer, path string, v interface{}) (ManifestFile, error) {
+func addJSONToBundle(zw *zip.Writer, path string, v interface{}, contentType, modTime string) (bundle.FileEntry, error) {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		return ManifestFile{}, err
+		return bundle.FileEntry{}, err
 	}
-	return addDataToBundle(zw, path, data)
+	return addTypedDataToBundle(zw, path, data, contentType, modTime)
 }
 
-func addDataToBundle(zw *zip.Writer, path string, data []byte) (ManifestFile, error) {
+func addTypedDataToBundle(zw *zip.Writer, path string, data []byte, contentType, modTime string) (bundle.FileEntry, error) {
+	entry, err := addDataToBundle(zw, path, data)
+	if err != nil {
+		return bundle.FileEntry{}, err
+	}
+	entry.ContentType = contentType
+	entry.ModTime = modTime
+	return entry, nil
+}
+
+func addDataToBundle(zw *zip.Writer, path string, data []byte) (bundle.FileEntry, error) {
 	archivePath, err := bundle.SanitizeArchivePath(path)
 	if err != nil {
-		return ManifestFile{}, err
+		return bundle.FileEntry{}, err
 	}
 
 	w, err := zw.Create(archivePath)
 	if err != nil {
-		return ManifestFile{}, err
+		return bundle.FileEntry{}, err
 	}
 
 	n, err := w.Write(data)
 	if err != nil {
-		return ManifestFile{}, err
+		return bundle.FileEntry{}, err
 	}
 
-	return ManifestFile{
-		Path:     archivePath,
-		Size:     int64(n),
-		Checksum: bundleSHA256(data),
+	return bundle.FileEntry{
+		Path:      archivePath,
+		SizeBytes: int64(n),
+		SHA256:    bundle.HashBytes(data),
 	}, nil
-}
-
-func bundleSHA256(data []byte) string {
-	h := sha256.Sum256(data)
-	return hex.EncodeToString(h[:])
 }
 
 func buildBundleRedactionConfig(cfg *config.Config) *redaction.Config {

@@ -103,6 +103,27 @@ func TestRecoveryManager_SetCooldown(t *testing.T) {
 	}
 }
 
+// HandleCompactionEvent dispatches an explicit compaction event in unit tests.
+func (rm *RecoveryManager) HandleCompactionEvent(event *CompactionEvent, session string, paneIndex int) (bool, error) {
+	if event == nil {
+		return false, nil
+	}
+	paneID := event.PaneID
+	if !strings.HasPrefix(paneID, "%") {
+		paneID = makePaneID(session, paneIndex)
+	}
+	return rm.sendRecoveryPromptByIDForAgent(session, paneIndex, paneID, event.MatchedText, agent.AgentType(event.AgentType))
+}
+
+// ResetAll resets all tracked recovery state (test-only helper).
+func (rm *RecoveryManager) ResetAll() {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	rm.lastRecovery = make(map[string]time.Time)
+	rm.recoveryCount = make(map[string]int)
+	rm.recoveryEvents = make([]RecoveryEvent, 0)
+}
+
 func TestRecoveryManager_HandleCompactionEvent(t *testing.T) {
 	rm := NewRecoveryManager(RecoveryConfig{Cooldown: time.Second, MaxRecoveries: 5})
 	event := &CompactionEvent{AgentType: "claude", MatchedText: "Conversation compacted", DetectedAt: time.Now()}

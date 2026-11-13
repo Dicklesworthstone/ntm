@@ -15,6 +15,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/components"
+	"github.com/Dicklesworthstone/ntm/internal/tui/icons"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
@@ -881,12 +882,15 @@ func (m *HistoryPanel) renderPreviewOverlay(width, height int) string {
 	metaStyle := lipgloss.NewStyle().Foreground(t.Subtext)
 	hintStyle := lipgloss.NewStyle().Foreground(t.Overlay).Italic(true)
 
-	status := "✓ success"
-	statusColor := t.Green
+	sem := t.Semantic()
+	statusIcon := icons.Current().StatusIcon(entry.Success)
+	statusLabel := "success"
+	statusColor := sem.StatusColor("success")
 	if !entry.Success {
-		status = "✗ failed"
-		statusColor = t.Red
+		statusLabel = "failed"
+		statusColor = sem.StatusColor("error")
 	}
+	status := strings.TrimSpace(statusIcon + " " + statusLabel)
 	statusStyled := lipgloss.NewStyle().Foreground(statusColor).Bold(true).Render(status)
 
 	var b strings.Builder

@@ -2,8 +2,6 @@ package events
 
 import (
 	"container/ring"
-	"encoding/json"
-	"io"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -253,20 +251,6 @@ func (b *EventBus) History(limit int) []BusEvent {
 		r = r.Prev()
 	}
 	return events
-}
-
-// EnableRobotMode enables JSON streaming of all events to a writer.
-// Note: The handler uses a mutex to serialize Encode calls since
-// json.Encoder is not safe for concurrent use by multiple goroutines.
-// Encode errors are silently ignored (best-effort delivery to closed writers).
-func (b *EventBus) EnableRobotMode(w io.Writer) UnsubscribeFunc {
-	enc := json.NewEncoder(w)
-	var mu sync.Mutex
-	return b.SubscribeAll(func(e BusEvent) {
-		mu.Lock()
-		defer mu.Unlock()
-		_ = enc.Encode(e) // Best-effort: ignore errors on closed/broken writers
-	})
 }
 
 // SubscriberCount returns the number of subscribers for an event type

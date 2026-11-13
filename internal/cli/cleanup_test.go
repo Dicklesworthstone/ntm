@@ -1,8 +1,12 @@
 package cli
 
 import (
+	"encoding/json"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
 func TestMatchesNTMPattern(t *testing.T) {
@@ -126,5 +130,127 @@ func TestGetFileType(t *testing.T) {
 				t.Errorf("getFileType(%v) = %q; want %q", tc.isDir, result, tc.expected)
 			}
 		})
+	}
+}
+
+func TestCleanupCmd_ProjectionsFlagClearsStaleRuntimeProjections(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	seedStore, err := state.Open(dbPath)
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	if err := seedStore.Migrate(); err != nil {
+		_ = seedStore.Close()
+		t.Fatalf("seedStore.Migrate: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if err := seedStore.UpsertRuntimeSession(&state.RuntimeSession{
+		Name:         "stale-proj-sess",
+		HealthStatus: state.HealthStatusHealthy,
+		CollectedAt:  now.Add(-6 * time.Hour),
+		StaleAfter:   now.Add(-5 * time.Hour),
+	}); err != nil {
+		_ = seedStore.Close()
+		t.Fatalf("UpsertRuntimeSession(stale): %v", err)
+	}
+	if err := seedStore.UpsertRuntimeSession(&state.RuntimeSession{
+		Name:         "fresh-proj-sess",
+		HealthStatus: state.HealthStatusHealthy,
+		CollectedAt:  now,
+		StaleAfter:   now.Add(1 * time.Hour),
+	}); err != nil {
+		_ = seedStore.Close()
+		t.Fatalf("UpsertRuntimeSession(fresh): %v", err)
+	}
+	_ = seedStore.Close()
+
+	origOpen := openCleanupStateStoreFunc
+	openCleanupStateStoreFunc = func() (*state.Store, error) {
+		st, openErr := state.Open(dbPath)
+		if openErr != nil {
+			return nil, openErr
+		}
+		if migErr := st.Migrate(); migErr != nil {
+			_ = st.Close()
+			return nil, migErr
+		}
+		return st, nil
+	}
+	t.Cleanup(func() { openCleanupStateStoreFunc = origOpen })
+
+	origJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = origJSON })
+
+	// Dry-run must NOT delete stale projections.
+	dryOut, err := captureStdout(t, func() error {
+		cmd := newCleanupCmd()
+		cmd.SetArgs([]string{"--projections", "--max-age=1", "--dry-run"})
+		return cmd.Execute()
+	})
+	if err != nil {
+		t.Fatalf("cleanup --projections --dry-run failed: %v", err)
+	}
+	var dryResp cleanupResponse
+	if err := json.Unmarshal([]byte(dryOut), &dryResp); err != nil {
+		t.Fatalf("unmarshal dry-run cleanup response: %v (raw=%q)", err, dryOut)
+	}
+	if dryResp.ProjectionsCleared {
+		t.Fatalf("expected ProjectionsCleared=false during dry-run, got %+v", dryResp)
+	}
+
+	checkStore, err := state.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen state.db after dry-run: %v", err)
+	}
+	stillThere, err := checkStore.GetRuntimeSession("stale-proj-sess")
+	_ = checkStore.Close()
+	if err != nil {
+		t.Fatalf("GetRuntimeSession after dry-run: %v", err)
+	}
+	if stillThere == nil {
+		t.Fatal("dry-run unexpectedly deleted stale runtime session")
+	}
+
+	// Live cleanup with --projections --max-age=1 must prune the 5h-stale row and keep the fresh row.
+	liveOut, err := captureStdout(t, func() error {
+		cmd := newCleanupCmd()
+		cmd.SetArgs([]string{"--projections", "--max-age=1"})
+		return cmd.Execute()
+	})
+	if err != nil {
+		t.Fatalf("cleanup --projections --max-age=1 failed: %v", err)
+	}
+	var liveResp cleanupResponse
+	if err := json.Unmarshal([]byte(liveOut), &liveResp); err != nil {
+		t.Fatalf("unmarshal live cleanup response: %v (raw=%q)", err, liveOut)
+	}
+	if !liveResp.ProjectionsCleared || liveResp.ProjectionError != "" {
+		t.Fatalf("expected ProjectionsCleared=true without error, got %+v", liveResp)
+	}
+
+	verifyStore, err := state.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen state.db after live cleanup: %v", err)
+	}
+	defer verifyStore.Close()
+
+	pruned, err := verifyStore.GetRuntimeSession("stale-proj-sess")
+	if err != nil {
+		t.Fatalf("GetRuntimeSession(stale): %v", err)
+	}
+	if pruned != nil {
+		t.Fatalf("expected stale-proj-sess to be pruned, still got %+v", pruned)
+	}
+
+	kept, err := verifyStore.GetRuntimeSession("fresh-proj-sess")
+	if err != nil {
+		t.Fatalf("GetRuntimeSession(fresh): %v", err)
+	}
+	if kept == nil {
+		t.Fatal("expected fresh-proj-sess to remain after ClearStaleProjections")
 	}
 }

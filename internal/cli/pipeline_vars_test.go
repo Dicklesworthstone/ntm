@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -138,5 +140,60 @@ func TestPipelineRunVariablesValidateDeclaredTypes(t *testing.T) {
 	}
 	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0].Message, "undeclared variable \"extra\"") {
 		t.Fatalf("warnings = %#v, want undeclared extra warning", result.Warnings)
+	}
+}
+
+func TestPipelineLintOutputsExecutionOrderAndParallelSubsteps(t *testing.T) {
+	origJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = origJSON })
+
+	wfPath := filepath.Join(t.TempDir(), "workflow.yaml")
+	wfContent := `schema_version: "2.0"
+name: parallel-lint-check
+steps:
+  - id: design
+    prompt: "Draft design"
+    agent: claude
+  - id: fanout
+    depends_on: [design]
+    parallel:
+      - id: impl_a
+        prompt: "Implement module A"
+        agent: codex
+      - id: impl_b
+        prompt: "Implement module B"
+        agent: codex
+  - id: verify
+    depends_on: [fanout]
+    prompt: "Verify combined changes"
+    agent: claude
+`
+	if err := os.WriteFile(wfPath, []byte(wfContent), 0o644); err != nil {
+		t.Fatalf("write workflow yaml: %v", err)
+	}
+
+	var outBuf, errBuf bytes.Buffer
+	if err := runPipelineLint(wfPath, &outBuf, &errBuf); err != nil {
+		t.Fatalf("runPipelineLint error: %v (stderr=%s)", err, errBuf.String())
+	}
+
+	var got pipelineLintOutput
+	if err := json.Unmarshal(outBuf.Bytes(), &got); err != nil {
+		t.Fatalf("decode pipelineLintOutput: %v\nraw=%s", err, outBuf.String())
+	}
+	if !got.Success || !got.Valid {
+		t.Fatalf("expected valid lint result, got %+v", got)
+	}
+	if got.ParallelSubsteps != 2 {
+		t.Fatalf("ParallelSubsteps = %d, want 2", got.ParallelSubsteps)
+	}
+	wantOrder := []string{"design", "impl_a", "impl_b", "fanout", "verify"}
+	if !reflect.DeepEqual(got.ExecutionOrder, wantOrder) {
+		t.Fatalf("ExecutionOrder = %v, want %v", got.ExecutionOrder, wantOrder)
+	}
+	wantLevels := [][]string{{"design", "impl_a", "impl_b"}, {"fanout"}, {"verify"}}
+	if !reflect.DeepEqual(got.ExecutionLevels, wantLevels) {
+		t.Fatalf("ExecutionLevels = %v, want %v", got.ExecutionLevels, wantLevels)
 	}
 }

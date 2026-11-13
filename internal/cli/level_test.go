@@ -427,3 +427,61 @@ func TestLevelCorruptedConfig(t *testing.T) {
 		t.Errorf("expected Apprentice tier after recovery, got %s", cfg.GetTier())
 	}
 }
+
+func TestLevelShowDisplaysUniqueCommandsAndHistory(t *testing.T) {
+	setupTestProficiency(t)
+
+	for _, command := range []string{"spawn", "send", "status"} {
+		recordProficiencyUsage(command)
+	}
+	prof, err := config.LoadProficiency()
+	if err != nil {
+		t.Fatalf("LoadProficiency: %v", err)
+	}
+	if err := prof.SetTier(tiers.TierJourneyman, "cli test upgrade"); err != nil {
+		t.Fatalf("SetTier: %v", err)
+	}
+
+	cmd := newLevelCmd()
+	out, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatalf("level command failed: %v", err)
+	}
+	for _, want := range []string{"Unique commands:", "3", "Promotion history:", "Apprentice -> Journeyman (cli test upgrade)"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("level output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestLevelCheckUsesSessionRateLimitedPromotion(t *testing.T) {
+	setupTestProficiency(t)
+
+	prof, err := config.LoadProficiency()
+	if err != nil {
+		t.Fatalf("LoadProficiency: %v", err)
+	}
+	if err := prof.RecordUsage(120, 0, 0); err != nil {
+		t.Fatalf("RecordUsage: %v", err)
+	}
+
+	cmd1 := newLevelCmd()
+	cmd1.SetArgs([]string{"check", "--session", "pane-42"})
+	out1, err := captureStdout(t, cmd1.Execute)
+	if err != nil {
+		t.Fatalf("first level check failed: %v", err)
+	}
+	if !strings.Contains(out1, "Journeyman") {
+		t.Fatalf("expected promotion suggestion on first check, got %q", out1)
+	}
+
+	cmd2 := newLevelCmd()
+	cmd2.SetArgs([]string{"check", "--session", "pane-42"})
+	out2, err := captureStdout(t, cmd2.Execute)
+	if err != nil {
+		t.Fatalf("second level check failed: %v", err)
+	}
+	if strings.TrimSpace(out2) != "" {
+		t.Fatalf("expected duplicate session check to suppress suggestion, got %q", out2)
+	}
+}

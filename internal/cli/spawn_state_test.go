@@ -14,6 +14,54 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
+func (s *SpawnState) IsComplete() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return !s.CompletedAt.IsZero()
+}
+
+func (s *SpawnState) PendingCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	count := 0
+	for _, p := range s.Prompts {
+		if !p.Sent {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *SpawnState) TimeUntilNextPrompt() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	var minDuration time.Duration
+
+	for _, p := range s.Prompts {
+		if !p.Sent && p.ScheduledAt.After(now) {
+			remaining := p.ScheduledAt.Sub(now)
+			if minDuration == 0 || remaining < minDuration {
+				minDuration = remaining
+			}
+		}
+	}
+
+	return minDuration
+}
+
+func (s *SpawnState) GetPromptStatuses() []PromptStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result := make([]PromptStatus, len(s.Prompts))
+	copy(result, s.Prompts)
+	return result
+}
+
 type scriptedSpawnObserver struct {
 	mu           sync.Mutex
 	observations []statuspkg.SessionObservation

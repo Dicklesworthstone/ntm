@@ -26,6 +26,7 @@ func newMemoryCmd() *cobra.Command {
 
 	cmd.AddCommand(
 		newMemoryServeCmd(),
+		newMemoryStatusCmd(),
 		newMemoryContextCmd(),
 		newMemoryOutcomeCmd(),
 		newMemoryPrivacyCmd(),
@@ -150,8 +151,74 @@ func runMemoryServe(ctx context.Context, out io.Writer, port int) error {
 	}
 }
 
-func newMemoryContextCmd() *cobra.Command {
+func newMemoryStatusCmd() *cobra.Command {
 	return &cobra.Command{
+		Use:   "status",
+		Short: "Check CASS Memory (cm) CLI and daemon health",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dir, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+
+			cliClient := cm.NewCLIClient()
+			cliAvailable := cliClient.IsInstalled()
+
+			type memoryStatusReport struct {
+				CLIAvailable  bool   `json:"cli_available"`
+				DaemonRunning bool   `json:"daemon_running"`
+				DaemonHealthy bool   `json:"daemon_healthy"`
+				SessionID     string `json:"session_id,omitempty"`
+				Port          int    `json:"port,omitempty"`
+				DaemonError   string `json:"daemon_error,omitempty"`
+			}
+
+			report := memoryStatusReport{
+				CLIAvailable: cliAvailable,
+			}
+
+			if sessionID, findErr := findSessionID(dir); findErr == nil {
+				report.SessionID = sessionID
+				if daemonClient, clientErr := cm.NewClient(dir, sessionID); clientErr == nil {
+					report.DaemonRunning = true
+					report.Port = daemonClient.Port()
+					ctx, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
+					defer cancel()
+					if healthErr := daemonClient.Health(ctx); healthErr == nil {
+						report.DaemonHealthy = true
+					} else {
+						report.DaemonError = healthErr.Error()
+					}
+				} else {
+					report.DaemonError = clientErr.Error()
+				}
+			}
+
+			if IsJSONOutput() {
+				return output.PrintJSON(report)
+			}
+
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "CM CLI available: %v\n", report.CLIAvailable)
+			if report.DaemonRunning {
+				fmt.Fprintf(out, "CM daemon: session=%s port=%d healthy=%v\n", report.SessionID, report.Port, report.DaemonHealthy)
+				if report.DaemonError != "" {
+					fmt.Fprintf(out, "CM daemon error: %s\n", report.DaemonError)
+				}
+			} else {
+				fmt.Fprintln(out, "CM daemon: not running in current directory")
+			}
+			return nil
+		},
+	}
+}
+
+func newMemoryContextCmd() *cobra.Command {
+	var (
+		recovery bool
+		maxRules int
+	)
+	cmd := &cobra.Command{
 		Use:   "context <task>",
 		Short: "Get relevant context for a task",
 		Args:  cobra.ExactArgs(1),
@@ -163,27 +230,60 @@ func newMemoryContextCmd() *cobra.Command {
 				return err
 			}
 
-			sessionID, err := findSessionID(dir)
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+
+			if !recovery {
+				if sessionID, findErr := findSessionID(dir); findErr == nil {
+					if client, clientErr := cm.NewClient(dir, sessionID); clientErr == nil {
+						// `dir` is the project directory the user invoked us from; pass it
+						// as the workspace scope so same-basename projects don't bleed
+						// memory results into each other (#132).
+						ctxResult, rpcErr := client.GetContext(ctx, task, dir)
+						if rpcErr == nil {
+							return output.PrintJSON(ctxResult)
+						}
+					}
+				}
+			}
+
+			cliClient := cm.NewCLIClient()
+			if !cliClient.IsInstalled() {
+				return cm.ErrNotInstalled
+			}
+			cliResp, err := cliClient.GetContext(ctx, task, dir)
 			if err != nil {
 				return err
 			}
+			if cliResp != nil && maxRules > 0 {
+				if len(cliResp.RelevantBullets) > maxRules {
+					cliResp.RelevantBullets = cliResp.RelevantBullets[:maxRules]
+				}
+				if len(cliResp.AntiPatterns) > maxRules {
+					cliResp.AntiPatterns = cliResp.AntiPatterns[:maxRules]
+				}
+			}
 
-			client, err := cm.NewClient(dir, sessionID)
-			if err != nil {
+			if recovery {
+				formatted := cliClient.FormatForRecovery(cliResp)
+				if IsJSONOutput() {
+					return output.PrintJSON(map[string]any{
+						"context":           cliResp,
+						"recovery_markdown": formatted,
+					})
+				}
+				_, err = fmt.Fprint(cmd.OutOrStdout(), formatted)
 				return err
 			}
 
-			// `dir` is the project directory the user invoked us from; pass it
-			// as the workspace scope so same-basename projects don't bleed
-			// memory results into each other (#132).
-			ctxResult, err := client.GetContext(context.Background(), task, dir)
-			if err != nil {
-				return err
-			}
-
-			return output.PrintJSON(ctxResult)
+			return output.PrintJSON(cliResp)
 		},
 	}
+	cmd.Flags().BoolVar(&recovery, "recovery", false, "Format context as markdown recovery summary")
+	cmd.Flags().IntVar(&maxRules, "max-rules", 10, "Maximum rules per section when formatting context")
+	return cmd
 }
 
 func newMemoryOutcomeCmd() *cobra.Command {

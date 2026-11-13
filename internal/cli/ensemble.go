@@ -2062,7 +2062,14 @@ func buildExportFindings(ctx *exportFindingsContext) ([]exportFinding, error) {
 		var chain *ensemble.ProvenanceChain
 		if mf.ProvenanceID != "" {
 			if c, ok := tracker.GetChain(mf.ProvenanceID); ok {
-				chain = c
+				if err := c.Validate(); err != nil {
+					slog.Default().Warn("skipping invalid provenance chain during export",
+						"finding_id", mf.ProvenanceID,
+						"error", err,
+					)
+				} else {
+					chain = c
+				}
 			}
 		}
 		results = append(results, exportFinding{
@@ -2432,12 +2439,15 @@ type provenanceOptions struct {
 }
 
 type provenanceOutput struct {
-	GeneratedAt time.Time                   `json:"generated_at" yaml:"generated_at"`
-	FindingID   string                      `json:"finding_id,omitempty" yaml:"finding_id,omitempty"`
-	Chain       *ensemble.ProvenanceChain   `json:"chain,omitempty" yaml:"chain,omitempty"`
-	Stats       *ensemble.ProvenanceStats   `json:"stats,omitempty" yaml:"stats,omitempty"`
-	Chains      []*ensemble.ProvenanceChain `json:"chains,omitempty" yaml:"chains,omitempty"`
-	Error       string                      `json:"error,omitempty" yaml:"error,omitempty"`
+	GeneratedAt      time.Time                   `json:"generated_at" yaml:"generated_at"`
+	FindingID        string                      `json:"finding_id,omitempty" yaml:"finding_id,omitempty"`
+	Valid            *bool                       `json:"valid,omitempty" yaml:"valid,omitempty"`
+	InvalidCount     int                         `json:"invalid_count,omitempty" yaml:"invalid_count,omitempty"`
+	ValidationErrors []string                    `json:"validation_errors,omitempty" yaml:"validation_errors,omitempty"`
+	Chain            *ensemble.ProvenanceChain   `json:"chain,omitempty" yaml:"chain,omitempty"`
+	Stats            *ensemble.ProvenanceStats   `json:"stats,omitempty" yaml:"stats,omitempty"`
+	Chains           []*ensemble.ProvenanceChain `json:"chains,omitempty" yaml:"chains,omitempty"`
+	Error            string                      `json:"error,omitempty" yaml:"error,omitempty"`
 }
 
 func newEnsembleProvenanceCmd() *cobra.Command {
@@ -2706,18 +2716,24 @@ func runEnsembleProvenance(w io.Writer, session, findingID string, opts provenan
 	// Handle stats mode
 	if opts.Stats {
 		stats := tracker.Stats()
+		invalidCount, valErrs := validateProvenanceChains(tracker.ListChains())
 		return renderProvenanceOutput(w, provenanceOutput{
-			GeneratedAt: output.Timestamp(),
-			Stats:       &stats,
+			GeneratedAt:      output.Timestamp(),
+			InvalidCount:     invalidCount,
+			ValidationErrors: valErrs,
+			Stats:            &stats,
 		}, format)
 	}
 
 	// Handle all mode
 	if opts.All {
 		chains := tracker.ListChains()
+		invalidCount, valErrs := validateProvenanceChains(chains)
 		return renderProvenanceOutput(w, provenanceOutput{
-			GeneratedAt: output.Timestamp(),
-			Chains:      chains,
+			GeneratedAt:      output.Timestamp(),
+			InvalidCount:     invalidCount,
+			ValidationErrors: valErrs,
+			Chains:           chains,
 		}, format)
 	}
 
@@ -2747,11 +2763,41 @@ func runEnsembleProvenance(w io.Writer, session, findingID string, opts provenan
 		}, format)
 	}
 
+	valid := true
+	var valErrs []string
+	if valErr := chain.Validate(); valErr != nil {
+		valid = false
+		valErrs = []string{valErr.Error()}
+	}
+
 	return renderProvenanceOutput(w, provenanceOutput{
-		GeneratedAt: output.Timestamp(),
-		FindingID:   findingID,
-		Chain:       chain,
+		GeneratedAt:      output.Timestamp(),
+		FindingID:        findingID,
+		Valid:            &valid,
+		ValidationErrors: valErrs,
+		Chain:            chain,
 	}, format)
+}
+
+func validateProvenanceChains(chains []*ensemble.ProvenanceChain) (int, []string) {
+	invalid := 0
+	var errs []string
+	for _, c := range chains {
+		if c == nil {
+			invalid++
+			errs = append(errs, "nil provenance chain")
+			continue
+		}
+		if err := c.Validate(); err != nil {
+			invalid++
+			id := c.FindingID
+			if id == "" {
+				id = "<missing-id>"
+			}
+			errs = append(errs, fmt.Sprintf("%s: %v", id, err))
+		}
+	}
+	return invalid, errs
 }
 
 func renderProvenanceOutput(w io.Writer, payload provenanceOutput, format string) error {
@@ -2792,6 +2838,12 @@ func renderProvenanceOutput(w io.Writer, payload provenanceOutput, format string
 					fmt.Fprintf(w, "  %-20s %d\n", mode, count)
 				}
 			}
+			if payload.InvalidCount > 0 {
+				fmt.Fprintf(w, "\nInvalid Chains:   %d\n", payload.InvalidCount)
+				for _, verr := range payload.ValidationErrors {
+					fmt.Fprintf(w, "  - %s\n", verr)
+				}
+			}
 			return nil
 		}
 
@@ -2814,11 +2866,20 @@ func renderProvenanceOutput(w io.Writer, payload provenanceOutput, format string
 				)
 			}
 			table.Render()
+			if payload.InvalidCount > 0 {
+				fmt.Fprintf(w, "\nValidation Warnings (%d):\n", payload.InvalidCount)
+				for _, verr := range payload.ValidationErrors {
+					fmt.Fprintf(w, "  - %s\n", verr)
+				}
+			}
 			return nil
 		}
 
 		if payload.Chain != nil {
 			fmt.Fprint(w, ensemble.FormatProvenance(payload.Chain))
+			if payload.Valid != nil && !*payload.Valid {
+				fmt.Fprintf(w, "\nValidation: INVALID (%s)\n", strings.Join(payload.ValidationErrors, "; "))
+			}
 			return nil
 		}
 

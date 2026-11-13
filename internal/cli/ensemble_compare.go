@@ -30,13 +30,15 @@ type compareOptions struct {
 
 // compareOutput is the JSON/YAML output structure.
 type compareOutput struct {
-	Success     bool                       `json:"success" yaml:"success"`
-	GeneratedAt string                     `json:"generated_at" yaml:"generated_at"`
-	RunA        string                     `json:"run_a" yaml:"run_a"`
-	RunB        string                     `json:"run_b" yaml:"run_b"`
-	Summary     string                     `json:"summary" yaml:"summary"`
-	Result      *ensemble.ComparisonResult `json:"result,omitempty" yaml:"result,omitempty"`
-	Error       string                     `json:"error,omitempty" yaml:"error,omitempty"`
+	Success         bool                       `json:"success" yaml:"success"`
+	GeneratedAt     string                     `json:"generated_at" yaml:"generated_at"`
+	RunA            string                     `json:"run_a" yaml:"run_a"`
+	RunB            string                     `json:"run_b" yaml:"run_b"`
+	Summary         string                     `json:"summary" yaml:"summary"`
+	Unchanged       bool                       `json:"unchanged" yaml:"unchanged"`
+	ChangedSections []string                   `json:"changed_sections,omitempty" yaml:"changed_sections,omitempty"`
+	Result          *ensemble.ComparisonResult `json:"result,omitempty" yaml:"result,omitempty"`
+	Error           string                     `json:"error,omitempty" yaml:"error,omitempty"`
 }
 
 func newEnsembleCompareCmd() *cobra.Command {
@@ -275,16 +277,54 @@ func loadCheckpointCompareInputFromStore(store *ensemble.CheckpointStore, runID 
 	return buildCompareInput(runID, meta.Question, modeIDs, outputs, ""), nil
 }
 
+func changedComparisonSections(result *ensemble.ComparisonResult) []string {
+	if result == nil || result.IsEmpty() {
+		return nil
+	}
+	sections := make([]string, 0, 4)
+	if result.HasModeChanges() {
+		sections = append(sections, "modes")
+	}
+	if result.HasFindingChanges() {
+		sections = append(sections, "findings")
+	}
+	if result.HasConclusionChanges() {
+		sections = append(sections, "conclusions")
+	}
+	if result.HasContributionChanges() {
+		sections = append(sections, "contributions")
+	}
+	return sections
+}
+
 func writeCompareResult(w io.Writer, result *ensemble.ComparisonResult, opts compareOptions, format string) error {
+	unchanged := result.IsEmpty()
+	sections := changedComparisonSections(result)
+
 	switch format {
 	case "json":
-		out := compareOutput{
-			Success:     true,
-			GeneratedAt: output.Timestamp().Format(time.RFC3339),
-			RunA:        result.RunA,
-			RunB:        result.RunB,
-			Summary:     result.Summary,
-			Result:      result,
+		rawResult, err := result.JSON()
+		if err != nil {
+			return fmt.Errorf("marshal comparison result: %w", err)
+		}
+		out := struct {
+			Success         bool            `json:"success"`
+			GeneratedAt     string          `json:"generated_at"`
+			RunA            string          `json:"run_a"`
+			RunB            string          `json:"run_b"`
+			Summary         string          `json:"summary"`
+			Unchanged       bool            `json:"unchanged"`
+			ChangedSections []string        `json:"changed_sections,omitempty"`
+			Result          json.RawMessage `json:"result,omitempty"`
+		}{
+			Success:         true,
+			GeneratedAt:     output.Timestamp().Format(time.RFC3339),
+			RunA:            result.RunA,
+			RunB:            result.RunB,
+			Summary:         result.Summary,
+			Unchanged:       unchanged,
+			ChangedSections: sections,
+			Result:          json.RawMessage(rawResult),
 		}
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
@@ -292,17 +332,24 @@ func writeCompareResult(w io.Writer, result *ensemble.ComparisonResult, opts com
 
 	case "yaml":
 		out := compareOutput{
-			Success:     true,
-			GeneratedAt: output.Timestamp().Format(time.RFC3339),
-			RunA:        result.RunA,
-			RunB:        result.RunB,
-			Summary:     result.Summary,
-			Result:      result,
+			Success:         true,
+			GeneratedAt:     output.Timestamp().Format(time.RFC3339),
+			RunA:            result.RunA,
+			RunB:            result.RunB,
+			Summary:         result.Summary,
+			Unchanged:       unchanged,
+			ChangedSections: sections,
+			Result:          result,
 		}
 		return yaml.NewEncoder(w).Encode(out)
 
 	default: // text
 		formatted := ensemble.FormatComparison(result)
+		if unchanged {
+			formatted += "\nStatus: Runs are identical (no changes detected)\n"
+		} else if len(sections) > 0 {
+			formatted += fmt.Sprintf("\nChanged Sections: %s\n", strings.Join(sections, ", "))
+		}
 		if opts.Verbose {
 			formatted += formatVerboseDetails(result)
 		}

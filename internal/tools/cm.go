@@ -28,24 +28,6 @@ func NewCMAdapter() *CMAdapter {
 	}
 }
 
-// Connect initializes the HTTP client by discovering the daemon port
-func (a *CMAdapter) Connect(projectDir, sessionID string) error {
-	client, err := cm.NewClient(projectDir, sessionID)
-	if err != nil {
-		return err
-	}
-	a.client = client
-	if port := client.Port(); port > 0 {
-		a.serverPort = port
-	}
-	return nil
-}
-
-// SetServerPort updates the CM server port
-func (a *CMAdapter) SetServerPort(port int) {
-	a.serverPort = port
-}
-
 // Detect checks if cm is installed
 func (a *CMAdapter) Detect() (string, bool) {
 	path, err := exec.LookPath(a.BinaryName())

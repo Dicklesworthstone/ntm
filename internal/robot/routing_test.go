@@ -2283,3 +2283,44 @@ func TestLeastRecentlyActiveIndex(t *testing.T) {
 		t.Fatalf("leastRecentlyActiveIndex = %d, want the agent with no recorded activity (1)", got)
 	}
 }
+
+// Same-package test helpers on AgentScorer.
+
+func (s *AgentScorer) SetAgentMapping(mapping map[string]string) {
+	s.agentMapping = mapping
+}
+
+func (s *AgentScorer) GetBestAgent(scored []ScoredAgent) *ScoredAgent {
+	var best *ScoredAgent
+
+	for i := range scored {
+		if scored[i].Excluded {
+			continue
+		}
+		if best == nil || scored[i].Score > best.Score {
+			best = &scored[i]
+		}
+	}
+
+	return best
+}
+
+func (s *AgentScorer) GetAvailableAgents(scored []ScoredAgent) []ScoredAgent {
+	var available []ScoredAgent
+
+	for _, agent := range scored {
+		if !agent.Excluded {
+			available = append(available, agent)
+		}
+	}
+
+	for i := 0; i < len(available); i++ {
+		for j := i + 1; j < len(available); j++ {
+			if available[j].Score > available[i].Score {
+				available[i], available[j] = available[j], available[i]
+			}
+		}
+	}
+
+	return available
+}

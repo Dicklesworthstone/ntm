@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -12,6 +13,35 @@ import (
 	"testing"
 	"time"
 )
+
+// InvalidateAvailabilityCache forces the next GetAvailability call to re-check.
+func (a *RanoAdapter) InvalidateAvailabilityCache() {
+	ranoAvailabilityMutex.Lock()
+	ranoAvailabilityExpiry = time.Time{}
+	ranoAvailabilityMutex.Unlock()
+}
+
+// GetProcessStats returns network stats for a specific PID.
+func (a *RanoAdapter) GetProcessStats(ctx context.Context, pid int) (*RanoProcessStats, error) {
+	return a.GetProcessStatsWithWindow(ctx, pid, "")
+}
+
+// GetProcessStatsWithWindow returns network stats for a specific PID with a time window override.
+func (a *RanoAdapter) GetProcessStatsWithWindow(ctx context.Context, pid int, window string) (*RanoProcessStats, error) {
+	if pid <= 0 {
+		return nil, errors.New("rano process PID must be positive")
+	}
+	stats, err := a.GetAllProcessStatsWithWindow(ctx, window)
+	if err != nil {
+		return nil, err
+	}
+	for _, stat := range stats {
+		if stat.PID == pid {
+			return &stat, nil
+		}
+	}
+	return &RanoProcessStats{PID: pid}, nil
+}
 
 func TestNewRanoAdapter(t *testing.T) {
 	adapter := NewRanoAdapter()

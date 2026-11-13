@@ -71,3 +71,19 @@ func (p *GeminiProvider) AuthSuccessPatterns() []string {
 }
 func (p *GeminiProvider) ContinuationPrompt() string { return "continue" }
 func (p *GeminiProvider) SupportsReauth() bool       { return false } // Assuming restart for safety initially
+
+// MatchesAuthSuccess checks whether captured terminal output contains any of
+// the provider's authentication success markers (case-insensitive).
+func MatchesAuthSuccess(p Provider, output string) (string, bool) {
+	if p == nil || strings.TrimSpace(output) == "" {
+		return "", false
+	}
+	lower := strings.ToLower(output)
+	for _, pattern := range p.AuthSuccessPatterns() {
+		trimmed := strings.TrimSpace(pattern)
+		if trimmed != "" && strings.Contains(lower, strings.ToLower(trimmed)) {
+			return trimmed, true
+		}
+	}
+	return "", false
+}

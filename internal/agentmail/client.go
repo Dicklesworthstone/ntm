@@ -510,12 +510,6 @@ func responseBodyReadError(ctx context.Context, operation string, err error) err
 	return NewAPIError(operation, 0, fmt.Errorf("%w: reading response body: %w", ErrServerUnavailable, err))
 }
 
-// InvalidateCache clears the availability cache, forcing the next IsAvailable() call
-// to perform a fresh health check.
-func (c *Client) InvalidateCache() {
-	c.availableCacheTime.Store(0)
-}
-
 // LastAvailabilityError returns the terminal error of the most recent
 // completed availability probe, or nil when the last probe succeeded (or no
 // probe has completed yet). Health and diagnostics surfaces use it to report

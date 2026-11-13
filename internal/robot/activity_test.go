@@ -2952,3 +2952,173 @@ func TestRegisteredPluginActivityAndLiveBusy(t *testing.T) {
 		}
 	}
 }
+
+// Same-package test inspection and reset helpers for VelocityTracker, StateClassifier, and ActivityMonitor.
+
+func (vt *VelocityTracker) CurrentVelocity() float64 {
+	vt.mu.Lock()
+	defer vt.mu.Unlock()
+
+	if len(vt.Samples) == 0 {
+		return 0
+	}
+	return vt.Samples[len(vt.Samples)-1].Velocity
+}
+
+func (vt *VelocityTracker) AverageVelocity() float64 {
+	vt.mu.Lock()
+	defer vt.mu.Unlock()
+
+	if len(vt.Samples) == 0 {
+		return 0
+	}
+
+	var sum float64
+	for _, s := range vt.Samples {
+		sum += s.Velocity
+	}
+	return sum / float64(len(vt.Samples))
+}
+
+func (vt *VelocityTracker) RecentVelocity(n int) float64 {
+	vt.mu.Lock()
+	defer vt.mu.Unlock()
+
+	if len(vt.Samples) == 0 {
+		return 0
+	}
+
+	if n <= 0 || n > len(vt.Samples) {
+		n = len(vt.Samples)
+	}
+
+	var sum float64
+	start := len(vt.Samples) - n
+	for i := start; i < len(vt.Samples); i++ {
+		sum += vt.Samples[i].Velocity
+	}
+	return sum / float64(n)
+}
+
+func (vt *VelocityTracker) SampleCount() int {
+	vt.mu.Lock()
+	defer vt.mu.Unlock()
+	return len(vt.Samples)
+}
+
+func (vt *VelocityTracker) GetSamples() []VelocitySample {
+	vt.mu.Lock()
+	defer vt.mu.Unlock()
+
+	result := make([]VelocitySample, len(vt.Samples))
+	copy(result, vt.Samples)
+	return result
+}
+
+func (vt *VelocityTracker) Reset() {
+	vt.mu.Lock()
+	defer vt.mu.Unlock()
+
+	vt.Samples = vt.Samples[:0]
+	vt.LastCapture = ""
+	vt.LastCaptureAt = time.Time{}
+	vt.lastOutputAt = time.Time{}
+	vt.baselineHash = ""
+	vt.baselineRuneCount = 0
+	vt.persistToStore()
+}
+
+func (sc *StateClassifier) CurrentState() AgentState {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return sc.currentState
+}
+
+func (sc *StateClassifier) Reset() {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+
+	sc.velocityTracker.Reset()
+	sc.currentState = StateUnknown
+	sc.stateSince = time.Now()
+	sc.stateHistory = sc.stateHistory[:0]
+	sc.pendingState = ""
+	sc.pendingSince = time.Time{}
+	sc.lastPatterns = nil
+	sc.lastOutputContent = ""
+}
+
+func (sc *StateClassifier) GetStateHistory() []StateTransition {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return sc.getHistoryCopy()
+}
+
+func (sc *StateClassifier) StateDuration() time.Duration {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return time.Since(sc.stateSince)
+}
+
+func (am *ActivityMonitor) Get(paneID string) *StateClassifier {
+	am.mu.RLock()
+	defer am.mu.RUnlock()
+	return am.classifiers[paneID]
+}
+
+func (am *ActivityMonitor) Remove(paneID string) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	delete(am.classifiers, paneID)
+}
+
+func (am *ActivityMonitor) ClassifyAll() (map[string]*AgentActivity, map[string]error) {
+	am.mu.RLock()
+	paneIDs := make([]string, 0, len(am.classifiers))
+	for id := range am.classifiers {
+		paneIDs = append(paneIDs, id)
+	}
+	am.mu.RUnlock()
+
+	activities := make(map[string]*AgentActivity)
+	errors := make(map[string]error)
+
+	for _, paneID := range paneIDs {
+		classifier := am.Get(paneID)
+		if classifier == nil {
+			continue
+		}
+
+		activity, err := classifier.Classify()
+		if err != nil {
+			errors[paneID] = err
+		} else {
+			activities[paneID] = activity
+		}
+	}
+
+	return activities, errors
+}
+
+func (am *ActivityMonitor) GetAllStates() map[string]AgentState {
+	am.mu.RLock()
+	defer am.mu.RUnlock()
+
+	result := make(map[string]AgentState, len(am.classifiers))
+	for paneID, classifier := range am.classifiers {
+		result[paneID] = classifier.CurrentState()
+	}
+	return result
+}
+
+func (am *ActivityMonitor) Clear() {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.classifiers = make(map[string]*StateClassifier)
+}
+
+func (am *ActivityMonitor) Count() int {
+	am.mu.RLock()
+	defer am.mu.RUnlock()
+	return len(am.classifiers)
+}

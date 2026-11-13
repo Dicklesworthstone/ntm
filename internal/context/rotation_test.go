@@ -878,6 +878,13 @@ func TestGetHistory(t *testing.T) {
 	}
 }
 
+// ClearHistory clears the rotation history (test-only helper).
+func (r *Rotator) ClearHistory() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.history = make([]RotationEvent, 0)
+}
+
 func TestClearHistory(t *testing.T) {
 	t.Parallel()
 
@@ -1472,7 +1479,7 @@ func TestConfirmRotation_PostponeUpdatesTimeout(t *testing.T) {
 		TimeoutAt:   originalTimeout,
 	}
 
-	result := r.ConfirmRotation("agent-1", ConfirmPostpone, 10)
+	result := r.ConfirmRotationContext(stdcontext.Background(), "agent-1", ConfirmPostpone, 10)
 	if !result.Success {
 		t.Fatalf("ConfirmRotation(postpone) success = false, error = %q", result.Error)
 	}
@@ -1498,7 +1505,7 @@ func TestConfirmRotation_CompactWithoutPaneKeepsPending(t *testing.T) {
 		SessionName: "test-session",
 	}
 
-	result := r.ConfirmRotation("agent-1", ConfirmCompact, 0)
+	result := r.ConfirmRotationContext(stdcontext.Background(), "agent-1", ConfirmCompact, 0)
 	if result.State != RotationStateFailed {
 		t.Fatalf("ConfirmRotation(compact) state = %s, want %s", result.State, RotationStateFailed)
 	}
@@ -1537,7 +1544,7 @@ func TestConfirmRotation_CustomTitleGrokAdmitted(t *testing.T) {
 			AgentID: "operator-selected-title", SessionName: "test-session", PaneID: "%7",
 		}
 
-		result := r.ConfirmRotation("operator-selected-title", ConfirmRotate, 0)
+		result := r.ConfirmRotationContext(stdcontext.Background(), "operator-selected-title", ConfirmRotate, 0)
 		if strings.Contains(result.Error, agent.GrokPhaseOneCapabilityHint) {
 			t.Fatalf("ConfirmRotation(rotate) error = %q, grok must not be refused by the capability gate", result.Error)
 		}
@@ -1574,7 +1581,7 @@ func TestConfirmRotation_CustomTitleGrokAdmitted(t *testing.T) {
 			AgentID: "operator-selected-title", SessionName: "test-session", PaneID: "%7",
 		}
 
-		result := r.ConfirmRotation("operator-selected-title", ConfirmCompact, 0)
+		result := r.ConfirmRotationContext(stdcontext.Background(), "operator-selected-title", ConfirmCompact, 0)
 		if strings.Contains(result.Error, agent.GrokPromptDeliveryCapabilityHint) {
 			t.Fatalf("ConfirmRotation(compact) error = %q, grok must not be refused by the capability gate", result.Error)
 		}

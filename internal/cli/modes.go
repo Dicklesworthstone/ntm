@@ -16,10 +16,12 @@ import (
 )
 
 type modesListOutput struct {
-	GeneratedAt time.Time      `json:"generated_at" yaml:"generated_at"`
-	Modes       []modesListRow `json:"modes" yaml:"modes"`
-	Count       int            `json:"count" yaml:"count"`
-	Filter      string         `json:"filter,omitempty" yaml:"filter,omitempty"`
+	GeneratedAt    time.Time      `json:"generated_at" yaml:"generated_at"`
+	Modes          []modesListRow `json:"modes" yaml:"modes"`
+	Count          int            `json:"count" yaml:"count"`
+	CatalogCount   int            `json:"catalog_count,omitempty" yaml:"catalog_count,omitempty"`
+	CatalogVersion string         `json:"catalog_version,omitempty" yaml:"catalog_version,omitempty"`
+	Filter         string         `json:"filter,omitempty" yaml:"filter,omitempty"`
 }
 
 type modesListRow struct {
@@ -65,10 +67,12 @@ Use 'ntm modes explain <mode>' to get detailed information about a mode.`,
 
 func newModesListCmd() *cobra.Command {
 	var (
-		format   string
-		category string
-		tier     string
-		all      bool
+		format      string
+		category    string
+		tier        string
+		search      string
+		all         bool
+		defaultOnly bool
 	)
 
 	cmd := &cobra.Command{
@@ -76,27 +80,33 @@ func newModesListCmd() *cobra.Command {
 		Short: "List available reasoning modes",
 		Long: `List all available reasoning modes with their codes and descriptions.
 
-By default, shows only core-tier modes. Use --all to show all tiers.
+By default, shows only core-tier modes. Use --all to show all tiers,
+--default to explicitly select the default core subset, or --search to match
+modes by name, description, or best_for problem types.
 Filter by category or tier to narrow results.`,
 		Example: `  ntm modes list
   ntm modes list --all
+  ntm modes list --default
+  ntm modes list --search bayesian
   ntm modes list --category Formal
   ntm modes list --tier advanced
   ntm modes list --format json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runModesList(cmd.OutOrStdout(), format, category, tier, all)
+			return runModesList(cmd.OutOrStdout(), format, category, tier, search, all, defaultOnly)
 		},
 	}
 
 	cmd.Flags().StringVarP(&format, "format", "f", "text", "Output format: text, json, yaml")
 	cmd.Flags().StringVarP(&category, "category", "c", "", "Filter by category (e.g., Formal, Causal)")
 	cmd.Flags().StringVarP(&tier, "tier", "t", "", "Filter by tier (core, advanced, experimental)")
+	cmd.Flags().StringVarP(&search, "search", "s", "", "Search modes by name, description, or best_for")
 	cmd.Flags().BoolVarP(&all, "all", "a", false, "Show all tiers (default: core only)")
+	cmd.Flags().BoolVar(&defaultOnly, "default", false, "Show default (core) modes only")
 
 	return cmd
 }
 
-func runModesList(w io.Writer, format, category, tier string, all bool) error {
+func runModesList(w io.Writer, format, category, tier, search string, all, defaultOnly bool) error {
 	format = strings.ToLower(strings.TrimSpace(format))
 	if format == "" {
 		format = "text"
@@ -110,20 +120,33 @@ func runModesList(w io.Writer, format, category, tier string, all bool) error {
 		return fmt.Errorf("load mode catalog: %w", err)
 	}
 
-	modes := catalog.ListModes()
+	searchTerm := strings.TrimSpace(search)
+	tierNorm := strings.ToLower(strings.TrimSpace(tier))
 
-	// Filter by tier
-	if !all && tier == "" {
-		tier = "core"
-	}
-	if tier != "" {
-		var filtered []ensemble.ReasoningMode
-		for _, m := range modes {
-			if strings.EqualFold(string(m.Tier), tier) {
-				filtered = append(filtered, m)
-			}
+	var modes []ensemble.ReasoningMode
+	switch {
+	case searchTerm != "":
+		modes = catalog.SearchModes(searchTerm)
+		effectiveTier := tierNorm
+		if defaultOnly && effectiveTier == "" {
+			effectiveTier = "core"
 		}
-		modes = filtered
+		if effectiveTier != "" && effectiveTier != "all" {
+			var filtered []ensemble.ReasoningMode
+			for _, m := range modes {
+				if strings.EqualFold(string(m.Tier), effectiveTier) {
+					filtered = append(filtered, m)
+				}
+			}
+			modes = filtered
+		}
+	case defaultOnly || (!all && tierNorm == ""):
+		modes = catalog.ListDefault()
+		tier = "core"
+	case tierNorm == "all" || (all && tierNorm == ""):
+		modes = catalog.ListModes()
+	default:
+		modes = catalog.ListByTier(ensemble.ModeTier(tierNorm))
 	}
 
 	// Filter by category
@@ -149,29 +172,36 @@ func runModesList(w io.Writer, format, category, tier string, all bool) error {
 		})
 	}
 
-	filterDesc := ""
+	var filters []string
 	if category != "" {
-		filterDesc = "category=" + category
+		filters = append(filters, "category="+category)
 	}
-	if tier != "" && tier != "core" {
-		if filterDesc != "" {
-			filterDesc += ", "
-		}
-		filterDesc += "tier=" + tier
+	if tier != "" && !strings.EqualFold(tier, "core") {
+		filters = append(filters, "tier="+tier)
 	}
+	if searchTerm != "" {
+		filters = append(filters, "search="+searchTerm)
+	}
+	filterDesc := strings.Join(filters, ", ")
 
 	result := modesListOutput{
-		GeneratedAt: output.Timestamp(),
-		Modes:       rows,
-		Count:       len(rows),
-		Filter:      filterDesc,
+		GeneratedAt:    output.Timestamp(),
+		Modes:          rows,
+		Count:          len(rows),
+		CatalogCount:   catalog.Count(),
+		CatalogVersion: catalog.Version(),
+		Filter:         filterDesc,
 	}
 
 	slog.Default().Info("modes list",
 		"count", len(rows),
+		"catalog_count", result.CatalogCount,
+		"catalog_version", result.CatalogVersion,
 		"category", category,
 		"tier", tier,
+		"search", searchTerm,
 		"all", all,
+		"default", defaultOnly,
 	)
 
 	return renderModesList(w, result, format)
@@ -199,7 +229,15 @@ func renderModesList(w io.Writer, payload modesListOutput, format string) error 
 			table.AddRow(row.Code, row.ID, row.Name, row.Category, row.Tier)
 		}
 		table.Render()
-		fmt.Fprintf(w, "\n%d modes total\n", payload.Count)
+		if payload.CatalogCount > 0 {
+			ver := ""
+			if payload.CatalogVersion != "" {
+				ver = " v" + payload.CatalogVersion
+			}
+			fmt.Fprintf(w, "\n%d modes total (catalog%s: %d)\n", payload.Count, ver, payload.CatalogCount)
+		} else {
+			fmt.Fprintf(w, "\n%d modes total\n", payload.Count)
+		}
 		return nil
 	}
 }

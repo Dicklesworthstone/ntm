@@ -36,6 +36,7 @@ type SynthesisResult struct {
 	FallbackReason string              `json:"fallback_reason,omitempty" yaml:"fallback_reason,omitempty"`
 	Explanation    *ExplanationLayer   `json:"explanation,omitempty" yaml:"explanation,omitempty"`
 	Contributions  *ContributionReport `json:"contributions,omitempty" yaml:"contributions,omitempty"`
+	Redundancy     *RedundancyAnalysis `json:"redundancy,omitempty" yaml:"redundancy,omitempty"`
 }
 
 // AuditReport captures disagreement analysis across modes.

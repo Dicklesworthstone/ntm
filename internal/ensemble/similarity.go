@@ -2,8 +2,122 @@ package ensemble
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
+
+// AnalyzeRedundancy computes pairwise finding similarity across mode outputs
+// and populates replacement suggestions when a mode catalog is provided.
+func AnalyzeRedundancy(outputs []ModeOutput, catalog *ModeCatalog) *RedundancyAnalysis {
+	analysis := &RedundancyAnalysis{
+		PairwiseScores: []PairSimilarity{},
+	}
+	if len(outputs) < 2 {
+		return analysis
+	}
+
+	var sum float64
+	for i := 0; i < len(outputs); i++ {
+		for j := i + 1; j < len(outputs); j++ {
+			pair := computePairSimilarity(outputs[i], outputs[j])
+			analysis.PairwiseScores = append(analysis.PairwiseScores, pair)
+			sum += pair.Similarity
+		}
+	}
+
+	sort.Slice(analysis.PairwiseScores, func(i, j int) bool {
+		if analysis.PairwiseScores[i].Similarity != analysis.PairwiseScores[j].Similarity {
+			return analysis.PairwiseScores[i].Similarity > analysis.PairwiseScores[j].Similarity
+		}
+		if analysis.PairwiseScores[i].ModeA != analysis.PairwiseScores[j].ModeA {
+			return analysis.PairwiseScores[i].ModeA < analysis.PairwiseScores[j].ModeA
+		}
+		return analysis.PairwiseScores[i].ModeB < analysis.PairwiseScores[j].ModeB
+	})
+
+	if len(analysis.PairwiseScores) > 0 {
+		analysis.OverallScore = sum / float64(len(analysis.PairwiseScores))
+	}
+	if catalog != nil {
+		analysis.Recommendations = analysis.SuggestReplacements(catalog)
+	}
+
+	return analysis
+}
+
+func computePairSimilarity(a, b ModeOutput) PairSimilarity {
+	modeA, modeB := a.ModeID, b.ModeID
+	findingsA := a.TopFindings
+	findingsB := b.TopFindings
+
+	if len(findingsA) == 0 && len(findingsB) == 0 {
+		sim := 0.0
+		if strings.TrimSpace(a.Thesis) != "" || strings.TrimSpace(b.Thesis) != "" {
+			sim = jaccardSimilarity(tokenize(normalizeText(a.Thesis)), tokenize(normalizeText(b.Thesis)))
+		}
+		return PairSimilarity{
+			ModeA:      modeA,
+			ModeB:      modeB,
+			Similarity: sim,
+		}
+	}
+
+	tokensA := make([]map[string]struct{}, len(findingsA))
+	for i, f := range findingsA {
+		tokensA[i] = tokenize(normalizeText(f.Finding))
+	}
+	tokensB := make([]map[string]struct{}, len(findingsB))
+	for j, f := range findingsB {
+		tokensB[j] = tokenize(normalizeText(f.Finding))
+	}
+
+	type candidateMatch struct {
+		idxA int
+		idxB int
+		sim  float64
+	}
+	var candidates []candidateMatch
+	for i := range tokensA {
+		for j := range tokensB {
+			sim := jaccardSimilarity(tokensA[i], tokensB[j])
+			if sim >= 0.5 {
+				candidates = append(candidates, candidateMatch{idxA: i, idxB: j, sim: sim})
+			}
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].sim > candidates[j].sim
+	})
+
+	usedA := make([]bool, len(findingsA))
+	usedB := make([]bool, len(findingsB))
+	shared := 0
+	for _, c := range candidates {
+		if usedA[c.idxA] || usedB[c.idxB] {
+			continue
+		}
+		usedA[c.idxA] = true
+		usedB[c.idxB] = true
+		shared++
+	}
+
+	uniqueA := len(findingsA) - shared
+	uniqueB := len(findingsB) - shared
+	union := len(findingsA) + len(findingsB) - shared
+	similarity := 0.0
+	if union > 0 {
+		similarity = float64(shared) / float64(union)
+	}
+
+	return PairSimilarity{
+		ModeA:          modeA,
+		ModeB:          modeB,
+		Similarity:     similarity,
+		SharedFindings: shared,
+		UniqueToA:      uniqueA,
+		UniqueToB:      uniqueB,
+	}
+}
 
 // RedundancyAnalysis measures output similarity across modes.
 // Higher overall score indicates more redundant (wasteful) mode selection.

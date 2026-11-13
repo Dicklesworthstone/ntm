@@ -5,6 +5,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -286,5 +288,44 @@ func TestUpgradeVersionMatches(t *testing.T) {
 				t.Errorf("upgradeVersionMatches(%q, %q) = %v, want %v", tt.actual, tt.expected, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRunUpgradeCheckJSONEmitsStructuredAssetMismatchJSON(t *testing.T) {
+	originalFetch := fetchReleaseForUpgrade
+	originalVersion := Version
+	t.Cleanup(func() {
+		fetchReleaseForUpgrade = originalFetch
+		Version = originalVersion
+	})
+	Version = "1.0.0"
+
+	fetchReleaseForUpgrade = func(string) (*GitHubRelease, error) {
+		return &GitHubRelease{
+			TagName: "v1.2.3",
+			HTMLURL: "https://example.invalid/releases/v1.2.3",
+			Assets: []GitHubAsset{
+				{Name: "ntm_1.2.3_plan9_mips.tar.gz", Size: 1024},
+			},
+		}, nil
+	}
+
+	var stdout bytes.Buffer
+	err := runUpgradeCheckJSON(&stdout, true, false, "v1.2.3")
+	var assetErr *upgradeError
+	if !errors.As(err, &assetErr) {
+		t.Fatalf("runUpgradeCheckJSON error = %v, want *upgradeError", err)
+	}
+
+	payload := bytes.TrimSpace(stdout.Bytes())
+	if !json.Valid(payload) {
+		t.Fatalf("runUpgradeCheckJSON stdout is not valid JSON: %q", payload)
+	}
+	var parsed upgradeError
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		t.Fatalf("unmarshal upgradeError JSON: %v", err)
+	}
+	if parsed.ReleaseURL != "https://example.invalid/releases/v1.2.3" || len(parsed.TriedNames) == 0 {
+		t.Fatalf("unexpected upgradeError JSON payload: %+v", parsed)
 	}
 }

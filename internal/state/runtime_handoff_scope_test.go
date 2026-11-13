@@ -14,6 +14,8 @@ package state
 //     second row (uniqueness via the new unique index).
 
 import (
+	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -144,4 +146,34 @@ func TestRuntimeHandoff_LegacyGetReturnsLatest(t *testing.T) {
 	if row.Status != "newest" {
 		t.Errorf("status=%q; want newest (ORDER BY updated_at DESC)", row.Status)
 	}
+}
+
+// GetRuntimeHandoffByScope retrieves the fresh runtime handoff
+// projection for a specific (session_name, working_dir) pair.
+func (s *Store) GetRuntimeHandoffByScope(sessionName, workingDir string) (*RuntimeHandoff, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	handoff := &RuntimeHandoff{}
+	err := s.db.QueryRow(`
+		SELECT session_name, working_dir, COALESCE(status, ''), COALESCE(goal, ''), COALESCE(goal_disclosure, ''),
+			COALESCE(now_text, ''), COALESCE(now_disclosure, ''), updated_at,
+			COALESCE(active_beads, ''), COALESCE(agent_mail_threads, ''), COALESCE(blockers, ''),
+			COALESCE(blocker_disclosures, ''), COALESCE(files, ''), collected_at, stale_after
+		FROM runtime_handoff
+		WHERE session_name = ? AND working_dir = ? AND stale_after > datetime('now')`,
+		sessionName, workingDir,
+	).Scan(
+		&handoff.SessionName, &handoff.WorkingDir, &handoff.Status, &handoff.Goal, &handoff.GoalDisclosure,
+		&handoff.NowText, &handoff.NowDisclosure, &handoff.UpdatedAt,
+		&handoff.ActiveBeads, &handoff.AgentMailThreads, &handoff.Blockers,
+		&handoff.BlockerDisclosures, &handoff.Files, &handoff.CollectedAt, &handoff.StaleAfter,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get runtime handoff by scope: %w", err)
+	}
+	return handoff, nil
 }

@@ -537,6 +537,11 @@ func (s *Synthesizer) finalizeSynthesisResult(result *SynthesisResult, input *Sy
 		result.RawOutputs = nil
 	}
 
+	if result.Redundancy == nil && input != nil && len(input.Outputs) >= 2 {
+		catalog, _ := GlobalCatalog()
+		result.Redundancy = AnalyzeRedundancy(input.Outputs, catalog)
+	}
+
 	result.TokensUsed = estimateSynthesisResultTokens(result)
 	if s.Config.MaxSynthesisTokens > 0 && result.TokensUsed > s.Config.MaxSynthesisTokens {
 		capSynthesisResultTokens(result, s.Config.MaxSynthesisTokens)
@@ -699,6 +704,9 @@ func capSynthesisResultTokens(result *SynthesisResult, maxTokens int) {
 	}
 	if result.RawOutput != "" && !recompute() {
 		result.RawOutput = util.SafeSlice(result.RawOutput, 64)
+	}
+	if result.Redundancy != nil && !recompute() {
+		result.Redundancy = nil
 	}
 	for len(result.QuestionsForUser) > 0 && !recompute() {
 		result.QuestionsForUser = result.QuestionsForUser[:len(result.QuestionsForUser)-1]

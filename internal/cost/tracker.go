@@ -83,10 +83,6 @@ const (
 	PricingExact
 )
 
-// Known reports whether the price came from an entry for this model or its
-// family, as opposed to the default row.
-func (m PricingMatch) Known() bool { return m != PricingUnknown }
-
 // PricingTableVintage is when the price table below was last revised. Surface
 // it anywhere prices are shown: it is over a year old, and models released
 // since are priced by family prefix or by the default row rather than by any

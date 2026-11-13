@@ -20,6 +20,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
+	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
@@ -56,19 +57,27 @@ type RebalanceWorkload struct {
 	Status     string   `json:"status,omitempty"`
 }
 
+// RebalanceGeometryReport captures pane layout uniformity and optional tiling rebalance.
+type RebalanceGeometryReport struct {
+	Result     *swarm.GeometryResult `json:"result,omitempty"`
+	Average    *swarm.PaneGeometry   `json:"average,omitempty"`
+	Rebalanced bool                  `json:"rebalanced,omitempty"`
+}
+
 // RebalanceResponse is the JSON response for rebalance command
 type RebalanceResponse struct {
 	output.TimestampedResponse
-	Success        bool                `json:"success"`
-	Session        string              `json:"session"`
-	ImbalanceScore float64             `json:"imbalance_score"`
-	Recommendation string              `json:"recommendation"`
-	Transfers      []RebalanceTransfer `json:"transfers"`
-	Workloads      []RebalanceWorkload `json:"workloads"`
-	Before         map[string]int      `json:"before"` // physical pane ID -> task count
-	After          map[string]int      `json:"after"`  // physical pane ID -> task count after transfers
-	Applied        bool                `json:"applied,omitempty"`
-	DryRun         bool                `json:"dry_run,omitempty"`
+	Success        bool                     `json:"success"`
+	Session        string                   `json:"session"`
+	ImbalanceScore float64                  `json:"imbalance_score"`
+	Recommendation string                   `json:"recommendation"`
+	Transfers      []RebalanceTransfer      `json:"transfers"`
+	Workloads      []RebalanceWorkload      `json:"workloads"`
+	Before         map[string]int           `json:"before"` // physical pane ID -> task count
+	After          map[string]int           `json:"after"`  // physical pane ID -> task count after transfers
+	Geometry       *RebalanceGeometryReport `json:"geometry,omitempty"`
+	Applied        bool                     `json:"applied,omitempty"`
+	DryRun         bool                     `json:"dry_run,omitempty"`
 }
 
 const (
@@ -97,11 +106,13 @@ func newRebalanceCommandError(code string, err error) error {
 
 func newRebalanceCmd() *cobra.Command {
 	var (
-		dryRun    bool
-		apply     bool
-		filter    string
-		threshold float64
-		formatOut string
+		dryRun            bool
+		apply             bool
+		filter            string
+		threshold         float64
+		formatOut         string
+		checkGeometry     bool
+		geometryTolerance int
 	)
 
 	cmd := &cobra.Command{
@@ -124,6 +135,7 @@ Examples:
   ntm rebalance myproject              # Show rebalance suggestions
   ntm rebalance myproject --dry-run    # Preview without prompting
   ntm rebalance myproject --apply      # Apply after confirmation
+  ntm rebalance myproject --geometry   # Inspect pane layout uniformity alongside workload
   ntm rebalance myproject --filter cc  # Only consider Claude agents
   ntm rebalance myproject --threshold 0.5  # Only suggest if score > 0.5
   ntm rebalance myproject --format json    # Robot mode JSON output`,
@@ -146,7 +158,7 @@ Examples:
 			res.ExplainIfInferredForOutput(cmd.ErrOrStderr(), machineJSON)
 			session = res.Session
 
-			return runRebalance(cmd.Context(), session, dryRun, apply, filter, threshold, formatOut)
+			return runRebalanceWithGeometry(cmd.Context(), session, dryRun, apply, filter, threshold, formatOut, checkGeometry, geometryTolerance)
 		},
 	}
 
@@ -155,11 +167,13 @@ Examples:
 	cmd.Flags().StringVar(&filter, "filter", "", "Filter by agent type alias (claude|cc, codex|cod, gemini|gmi, antigravity|agy, cursor, windsurf|ws, aider, ollama)")
 	cmd.Flags().Float64Var(&threshold, "threshold", 0.0, "Only suggest if imbalance score exceeds threshold")
 	cmd.Flags().StringVar(&formatOut, "format", "", "Output format: json for robot mode")
+	cmd.Flags().BoolVar(&checkGeometry, "geometry", false, "Verify pane geometry uniformity (and reapply tiled layout when --apply is set)")
+	cmd.Flags().IntVar(&geometryTolerance, "geometry-tolerance", 2, "Maximum allowed width/height delta in cells for --geometry")
 
 	return cmd
 }
 
-func runRebalance(ctx context.Context, session string, dryRun, apply bool, filter string, threshold float64, formatOut string) error {
+func runRebalanceWithGeometry(ctx context.Context, session string, dryRun, apply bool, filter string, threshold float64, formatOut string, checkGeometry bool, geometryTolerance int) error {
 	isJSON := IsJSONOutput() || strings.EqualFold(strings.TrimSpace(formatOut), "json")
 	if ctx == nil {
 		err := errors.New("rebalance requires a command context")
@@ -227,6 +241,49 @@ func runRebalance(ctx context.Context, session string, dryRun, apply bool, filte
 		return err
 	}
 
+	var geometryReport *RebalanceGeometryReport
+	if checkGeometry {
+		if geometryTolerance < 0 {
+			err = newRebalanceCommandError(robot.ErrCodeInvalidFlag, fmt.Errorf("--geometry-tolerance cannot be negative: %d", geometryTolerance))
+			if isJSON {
+				return outputRebalanceError(session, err)
+			}
+			return err
+		}
+		sessOrch := swarm.NewSessionOrchestrator()
+		geomRes, geomErr := sessOrch.VerifyGeometry(session, geometryTolerance)
+		if geomErr != nil {
+			err = fmt.Errorf("failed to verify pane geometry: %w", geomErr)
+			if isJSON {
+				return outputRebalanceError(session, err)
+			}
+			return err
+		}
+		rebalanced := false
+		if apply && !dryRun && !geomRes.IsUniform {
+			if rebErr := sessOrch.RebalanceGeometry(session); rebErr != nil {
+				err = fmt.Errorf("failed to rebalance pane geometry: %w", rebErr)
+				if isJSON {
+					return outputRebalanceError(session, err)
+				}
+				return err
+			}
+			if updatedGeom, updErr := sessOrch.EnsureUniformGeometry(session, geometryTolerance); updErr == nil {
+				geomRes = updatedGeom
+			}
+			rebalanced = true
+		}
+		var avgGeom *swarm.PaneGeometry
+		if avg, avgErr := sessOrch.GetAverageGeometry(session); avgErr == nil {
+			avgGeom = avg
+		}
+		geometryReport = &RebalanceGeometryReport{
+			Result:     geomRes,
+			Average:    avgGeom,
+			Rebalanced: rebalanced,
+		}
+	}
+
 	// Build workload map
 	workloads, err := buildRebalanceWorkloads(store, panes, normalizedFilter)
 	if err != nil {
@@ -258,6 +315,7 @@ func runRebalance(ctx context.Context, session string, dryRun, apply bool, filte
 				Workloads:           workloads,
 				Before:              rebalanceWorkloadCounts(workloads),
 				After:               rebalanceWorkloadCounts(workloads),
+				Geometry:            geometryReport,
 			}
 			return outputRebalanceJSON(resp)
 		}
@@ -284,6 +342,7 @@ func runRebalance(ctx context.Context, session string, dryRun, apply bool, filte
 		Workloads:           workloads,
 		Before:              rebalanceWorkloadCounts(workloads),
 		After:               after,
+		Geometry:            geometryReport,
 		DryRun:              dryRun,
 	}
 
@@ -1061,6 +1120,20 @@ func printRebalanceReport(resp RebalanceResponse) {
 		}
 	} else {
 		fmt.Println("\nNo transfers suggested.")
+	}
+	if resp.Geometry != nil && resp.Geometry.Result != nil {
+		fmt.Printf("\nPane Geometry: uniform=%t (panes=%d, max delta=%dx%d",
+			resp.Geometry.Result.IsUniform,
+			resp.Geometry.Result.PaneCount,
+			resp.Geometry.Result.MaxWidthDelta,
+			resp.Geometry.Result.MaxHeightDelta)
+		if resp.Geometry.Average != nil {
+			fmt.Printf(", avg=%dx%d", resp.Geometry.Average.Width, resp.Geometry.Average.Height)
+		}
+		if resp.Geometry.Rebalanced {
+			fmt.Print(", rebalanced")
+		}
+		fmt.Println(")")
 	}
 }
 

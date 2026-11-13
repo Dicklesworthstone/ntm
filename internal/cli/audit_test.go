@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/audit"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
 // --- Pure function tests (safe to run in parallel) ---
@@ -113,7 +114,7 @@ func TestNewAuditCmd_SubcommandRegistration(t *testing.T) {
 		subcommands[sub.Name()] = true
 	}
 
-	expected := []string{"show", "search", "verify", "export", "list"}
+	expected := []string{"show", "search", "verify", "export", "list", "history", "actor", "trace", "sources"}
 	for _, name := range expected {
 		if !subcommands[name] {
 			t.Errorf("missing subcommand %q", name)
@@ -516,5 +517,183 @@ func writeTestAuditLog(t *testing.T, dir, session string, count int) {
 
 		line, _ := json.Marshal(entry)
 		fmt.Fprintln(f, string(line))
+	}
+}
+
+func TestAuditStateSubcommands_HistoryActorTraceAndSources(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	seed, err := state.Open(dbPath)
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	if err := seed.Migrate(); err != nil {
+		_ = seed.Close()
+		t.Fatalf("seed.Migrate: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := seed.UpsertAuditActor(&state.AuditActor{
+		ActorType:    "user",
+		ActorID:      "bob",
+		DisplayName:  "Bob Operator",
+		FirstSeenAt:  now.Add(-10 * time.Minute),
+		LastSeenAt:   now,
+		EventCount:   2,
+		KnownOrigins: `["cli"]`,
+	}); err != nil {
+		_ = seed.Close()
+		t.Fatalf("UpsertAuditActor: %v", err)
+	}
+
+	for i, step := range []struct {
+		eventType string
+		summary   string
+	}{
+		{"session.spawned", "spawned session alpha"},
+		{"session.scaled", "scaled session alpha to 3 agents"},
+	} {
+		if _, err := seed.RecordAuditEvent(&state.AuditEvent{
+			Ts:            now.Add(time.Duration(i) * time.Second),
+			ActorType:     "user",
+			ActorID:       "bob",
+			ActorOrigin:   "cli",
+			RequestID:     "req-trace-77",
+			CorrelationID: "corr-77",
+			Category:      "actuation",
+			EventType:     step.eventType,
+			Severity:      state.SeverityInfo,
+			EntityType:    "session",
+			EntityID:      "alpha",
+			ChangeSummary: step.summary,
+			Reason:        "operator workflow",
+		}); err != nil {
+			_ = seed.Close()
+			t.Fatalf("RecordAuditEvent(%d): %v", i, err)
+		}
+	}
+
+	if err := seed.UpsertSourceHealth(&state.SourceHealth{
+		SourceName:  "tmux",
+		Available:   true,
+		Healthy:     true,
+		LastCheckAt: now,
+	}); err != nil {
+		_ = seed.Close()
+		t.Fatalf("UpsertSourceHealth(tmux): %v", err)
+	}
+	if err := seed.UpsertSourceHealth(&state.SourceHealth{
+		SourceName:          "mail",
+		Available:           false,
+		Healthy:             false,
+		Reason:              "connection refused",
+		ConsecutiveFailures: 3,
+		LastError:           "dial tcp 127.0.0.1:8765: connect: connection refused",
+		LastCheckAt:         now,
+	}); err != nil {
+		_ = seed.Close()
+		t.Fatalf("UpsertSourceHealth(mail): %v", err)
+	}
+	_ = seed.Close()
+
+	origOpen := openAuditStateStoreFunc
+	openAuditStateStoreFunc = func() (*state.Store, error) {
+		st, openErr := state.Open(dbPath)
+		if openErr != nil {
+			return nil, openErr
+		}
+		if migErr := st.Migrate(); migErr != nil {
+			_ = st.Close()
+			return nil, migErr
+		}
+		return st, nil
+	}
+	t.Cleanup(func() { openAuditStateStoreFunc = origOpen })
+
+	origJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = origJSON })
+
+	// 1. `ntm audit history session alpha`
+	histRaw, err := captureStdout(t, func() error {
+		cmd := newAuditCmd()
+		cmd.SetArgs([]string{"history", "session", "alpha", "--limit=10"})
+		return cmd.Execute()
+	})
+	if err != nil {
+		t.Fatalf("audit history failed: %v", err)
+	}
+	var histOut AuditStateEventsOutput
+	if err := json.Unmarshal([]byte(histRaw), &histOut); err != nil {
+		t.Fatalf("decode audit history: %v (raw=%q)", err, histRaw)
+	}
+	if !histOut.Success || histOut.Count != 2 || histOut.EntityType != "session" || histOut.EntityID != "alpha" {
+		t.Fatalf("unexpected audit history output: %+v", histOut)
+	}
+
+	// 2. `ntm audit actor user bob`
+	actorRaw, err := captureStdout(t, func() error {
+		cmd := newAuditCmd()
+		cmd.SetArgs([]string{"actor", "user", "bob", "--since=1h"})
+		return cmd.Execute()
+	})
+	if err != nil {
+		t.Fatalf("audit actor failed: %v", err)
+	}
+	var actorOut AuditActorOutput
+	if err := json.Unmarshal([]byte(actorRaw), &actorOut); err != nil {
+		t.Fatalf("decode audit actor: %v (raw=%q)", err, actorRaw)
+	}
+	if !actorOut.Success || actorOut.Actor == nil || actorOut.Actor.DisplayName != "Bob Operator" || actorOut.Count != 2 {
+		t.Fatalf("unexpected audit actor output: %+v", actorOut)
+	}
+
+	// 3. `ntm audit trace req-trace-77`
+	traceRaw, err := captureStdout(t, func() error {
+		cmd := newAuditCmd()
+		cmd.SetArgs([]string{"trace", "req-trace-77"})
+		return cmd.Execute()
+	})
+	if err != nil {
+		t.Fatalf("audit trace failed: %v", err)
+	}
+	var traceOut AuditStateEventsOutput
+	if err := json.Unmarshal([]byte(traceRaw), &traceOut); err != nil {
+		t.Fatalf("decode audit trace: %v (raw=%q)", err, traceRaw)
+	}
+	if !traceOut.Success || traceOut.Count != 2 || traceOut.Events[0].EventType != "session.spawned" || traceOut.Events[1].EventType != "session.scaled" {
+		t.Fatalf("unexpected audit trace chronological output: %+v", traceOut)
+	}
+
+	// 4. `ntm audit sources --degraded` and `ntm audit sources tmux`
+	degRaw, err := captureStdout(t, func() error {
+		cmd := newAuditCmd()
+		cmd.SetArgs([]string{"sources", "--degraded"})
+		return cmd.Execute()
+	})
+	if err != nil {
+		t.Fatalf("audit sources --degraded failed: %v", err)
+	}
+	var degOut AuditSourcesOutput
+	if err := json.Unmarshal([]byte(degRaw), &degOut); err != nil {
+		t.Fatalf("decode audit sources --degraded: %v (raw=%q)", err, degRaw)
+	}
+	if !degOut.Success || !degOut.DegradedOnly || degOut.Count != 1 || degOut.Sources[0].SourceName != "mail" {
+		t.Fatalf("unexpected degraded sources output: %+v", degOut)
+	}
+
+	singleRaw, err := captureStdout(t, func() error {
+		cmd := newAuditCmd()
+		cmd.SetArgs([]string{"sources", "tmux"})
+		return cmd.Execute()
+	})
+	if err != nil {
+		t.Fatalf("audit sources tmux failed: %v", err)
+	}
+	var singleOut AuditSourcesOutput
+	if err := json.Unmarshal([]byte(singleRaw), &singleOut); err != nil {
+		t.Fatalf("decode audit sources tmux: %v (raw=%q)", err, singleRaw)
+	}
+	if !singleOut.Success || singleOut.Count != 1 || singleOut.Sources[0].SourceName != "tmux" || !singleOut.Sources[0].Healthy {
+		t.Fatalf("unexpected single source output: %+v", singleOut)
 	}
 }

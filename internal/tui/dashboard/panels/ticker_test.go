@@ -493,3 +493,11 @@ func TestTickerPanelViewShowsOverflowBadge(t *testing.T) {
 		t.Fatalf("expected overflowing ticker to include progress badge, got %q", view)
 	}
 }
+
+func (m *TickerPanel) Focus() {
+	m.focused = true
+}
+
+func (m *TickerPanel) Blur() {
+	m.focused = false
+}

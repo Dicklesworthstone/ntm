@@ -2202,12 +2202,6 @@ func (s *AssignmentStore) MarkCompletedIfCurrent(ctx context.Context, observed *
 	return s.transitionIfCurrent(ctx, observed, StatusCompleted, "")
 }
 
-// MarkFailedIfCurrent fails only the exact assignment generation observed by
-// the caller.
-func (s *AssignmentStore) MarkFailedIfCurrent(ctx context.Context, observed *Assignment, reason string) (bool, error) {
-	return s.transitionIfCurrent(ctx, observed, StatusFailed, reason)
-}
-
 func (s *AssignmentStore) transitionIfCurrent(ctx context.Context, observed *Assignment, newStatus AssignmentStatus, reason string) (bool, error) {
 	if observed == nil || strings.TrimSpace(observed.BeadID) == "" {
 		return false, errors.New("observed assignment generation is required")
@@ -2631,79 +2625,12 @@ func terminalCompletionEventID(current *Assignment, terminalStatus AssignmentSta
 	return fmt.Sprintf("%s/%s/%s", strings.TrimSpace(current.BeadID), generation, terminalStatus)
 }
 
-// Reassign moves an assignment to a different agent
-func (s *AssignmentStore) Reassign(beadID string, target ReassignmentTarget) (*Assignment, error) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	oldAssignment, ok := s.Assignments[beadID]
-	if !ok {
-		return nil, fmt.Errorf("[ASSIGN] Assignment not found: %s", beadID)
-	}
-	if oldAssignment.HasPendingPaneContinuation() {
-		return nil, fmt.Errorf("%w: cannot reassign %s", ErrPaneContinuationPending, beadID)
-	}
-
-	if !isValidTransition(oldAssignment.Status, StatusReassigned) {
-		return nil, &InvalidTransitionError{
-			BeadID: beadID,
-			From:   oldAssignment.Status,
-			To:     StatusReassigned,
-		}
-	}
-
-	// Mark old assignment as reassigned
-	oldAssignment.Status = StatusReassigned
-
-	// Create new assignment
-	now := time.Now().UTC()
-	newAssignment := &Assignment{
-		BeadID:         beadID,
-		BeadTitle:      oldAssignment.BeadTitle,
-		Pane:           target.Pane,
-		AgentType:      target.AgentType,
-		AgentName:      target.AgentName,
-		Status:         StatusAssigned,
-		AssignedAt:     now,
-		RetryCount:     oldAssignment.RetryCount,
-		DispatchTarget: target.DispatchTarget,
-		OccupancyKey:   target.OccupancyKey,
-	}
-
-	s.Assignments[beadID] = newAssignment
-	if s.replace == nil {
-		s.replace = make(map[string]struct{})
-	}
-	s.replace[beadID] = struct{}{}
-
-	if err := s.saveLocked(); err != nil {
-		return nil, err
-	}
-
-	persisted, err := s.confirmPersistedStatusLocked(beadID, StatusAssigned)
-	if err != nil {
-		return nil, err
-	}
-
-	return cloneAssignment(persisted), nil
-}
-
 // Remove removes an assignment from the store.
 func (s *AssignmentStore) Remove(beadID string) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
 	delete(s.Assignments, beadID)
-
-	return s.saveLocked()
-}
-
-// Clear removes all assignments from the store.
-func (s *AssignmentStore) Clear() error {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	s.Assignments = make(map[string]*Assignment)
 
 	return s.saveLocked()
 }

@@ -137,54 +137,6 @@ type GIILMetadata struct {
 	DownloadedAt string `json:"downloaded_at,omitempty"`
 }
 
-// GetDirectURL extracts the direct download URL without actually downloading
-func (a *GIILAdapter) GetDirectURL(ctx context.Context, shareURL string) (*GIILMetadata, error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute) // URL extraction can take time
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, a.BinaryName(), shareURL, "--print-url", "--json", "--quiet")
-	cmd.WaitDelay = time.Second
-	stdout := NewLimitedBuffer(10 * 1024 * 1024)
-	var stderr bytes.Buffer
-	cmd.Stdout = stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return nil, ErrTimeout
-		}
-		return nil, fmt.Errorf("giil url extraction failed: %w: %s", err, stderr.String())
-	}
-
-	output := stdout.Bytes()
-	if !json.Valid(output) {
-		raw := strings.TrimSpace(string(output))
-		if raw != "" {
-			return &GIILMetadata{
-				URL:       shareURL,
-				DirectURL: raw,
-			}, nil
-		}
-		return &GIILMetadata{URL: shareURL}, nil
-	}
-
-	var meta GIILMetadata
-	if err := json.Unmarshal(output, &meta); err != nil {
-		return nil, fmt.Errorf("failed to parse giil output: %w", err)
-	}
-	if meta.OutputPath == "" && meta.Path != "" {
-		meta.OutputPath = meta.Path
-	}
-	if meta.Filename == "" && meta.OutputPath != "" {
-		meta.Filename = filepath.Base(meta.OutputPath)
-	}
-	if meta.URL == "" {
-		meta.URL = shareURL
-	}
-
-	return &meta, nil
-}
-
 // Download downloads an image from a share URL
 func (a *GIILAdapter) Download(ctx context.Context, shareURL, outputDir string) (*GIILMetadata, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute) // Download can take time

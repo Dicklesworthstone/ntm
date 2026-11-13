@@ -225,17 +225,6 @@ func (rm *RecoveryManager) sendRecoveryPrompt(ctx context.Context, target, promp
 	return tmux.SendKeysForAgentContext(ctx, target, prompt, enter, tmux.AgentType(kind))
 }
 
-func (rm *RecoveryManager) HandleCompactionEvent(event *CompactionEvent, session string, paneIndex int) (bool, error) {
-	if event == nil {
-		return false, nil
-	}
-	paneID := event.PaneID
-	if !strings.HasPrefix(paneID, "%") {
-		paneID = makePaneID(session, paneIndex)
-	}
-	return rm.sendRecoveryPromptByIDForAgent(session, paneIndex, paneID, event.MatchedText, agent.AgentType(event.AgentType))
-}
-
 func (rm *RecoveryManager) GetRecoveryEvents() []RecoveryEvent {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
@@ -260,13 +249,6 @@ func (rm *RecoveryManager) ResetPane(paneID string) {
 	defer rm.mu.Unlock()
 	delete(rm.lastRecovery, paneID)
 	delete(rm.recoveryCount, paneID)
-}
-func (rm *RecoveryManager) ResetAll() {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
-	rm.lastRecovery = make(map[string]time.Time)
-	rm.recoveryCount = make(map[string]int)
-	rm.recoveryEvents = make([]RecoveryEvent, 0)
 }
 func (rm *RecoveryManager) SetPrompt(prompt string) {
 	rm.mu.Lock()
@@ -495,11 +477,14 @@ func (cri *CompactionRecoveryIntegration) RecoverObserved(ctx context.Context, o
 		if !pending {
 			continue
 		}
-		if time.Since(event.DetectedAt) > 5*time.Minute {
+		if time.Since(event.DetectedAt) > 5*time.Minute || !cri.detector.HasRecentCompaction(id, 5*time.Minute) {
 			delete(cri.pending, id)
 			continue
 		}
 		if !pane.SafeToDispatch() {
+			continue
+		}
+		if allowed, _ := cri.recovery.CanSendRecovery(id); !allowed {
 			continue
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx, 10*time.Second)

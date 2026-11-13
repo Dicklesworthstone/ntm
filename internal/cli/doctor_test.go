@@ -2,7 +2,10 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +14,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
+	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
 
 func TestBuildSafetyDefaults(t *testing.T) {
@@ -239,5 +243,149 @@ func TestTerminateContentionHolderGuards(t *testing.T) {
 	}
 	if err := terminateContentionHolder(t.Context(), holders, contentionCommandOptions{terminatePID: 999, confirm: true}); err == nil || !strings.Contains(err.Error(), "not a detected") {
 		t.Fatalf("unknown PID error = %v", err)
+	}
+}
+
+func TestAgentMailDaemonAddrUsesAMAdapterServerURL(t *testing.T) {
+	t.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:9765/mcp/")
+	host, port := agentMailDaemonAddr()
+	if host != "127.0.0.1" || port != 9765 {
+		t.Fatalf("agentMailDaemonAddr() = (%q, %d), want (\"127.0.0.1\", 9765)", host, port)
+	}
+}
+
+func TestCollectVerboseToolDetailsAndRenderDoctorVerbose(t *testing.T) {
+	binDir := t.TempDir()
+	writeExecutable := func(name, body string) {
+		t.Helper()
+		p := filepath.Join(binDir, name)
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+			t.Fatalf("write fake %s: %v", name, err)
+		}
+	}
+
+	writeExecutable("acfs", `
+case "$1" in
+  info) printf '{"os":"linux"}' ;;
+  status) printf '{"phase":"ready"}' ;;
+  doctor) printf '{"healthy":true}' ;;
+esac
+`)
+	writeExecutable("caam", `
+if [ "$1" = "robot" ] && [ "$2" = "status" ]; then
+  printf '{"success":true,"data":{"providers":[{"id":"claude","logged_in":true,"profiles":[{"name":"work","active":true},{"name":"backup","active":false}]}]}}'
+  exit 0
+fi
+printf 'caam 0.2.0\n'
+`)
+	writeExecutable("cass", `
+if [ "$1" = "capabilities" ]; then
+  printf '{"lexical":true,"semantic":true}'
+  exit 0
+fi
+printf 'cass 0.1.0\n'
+`)
+	writeExecutable("cm", `
+if [ "$1" = "onboard" ] && [ "$2" = "status" ]; then
+  printf '{"onboarded":true}'
+  exit 0
+fi
+printf 'cm 0.1.0\n'
+`)
+	writeExecutable("dcg", `
+if [ "$1" = "doctor" ]; then
+  printf '{"enabled":true,"blocked_patterns":["git reset --hard"]}'
+  exit 0
+fi
+printf 'dcg 0.3.0\n'
+`)
+	writeExecutable("rch", `
+if [ "$1" = "--version" ]; then
+  printf 'rch 0.2.0\n'
+  exit 0
+fi
+if [ "$1" = "status" ]; then
+  printf '{"success":true,"data":{"daemon":{"workers_total":1,"workers_healthy":1,"workers":[{"id":"w1","name":"builder-1","host":"10.0.0.2","status":"healthy","used_slots":1,"total_slots":4}]}}}'
+  exit 0
+fi
+`)
+	writeExecutable("ru", `printf 'ru doctor ok\n'`)
+	writeExecutable("ubs", `printf 'ubs doctor ok\n'`)
+	writeExecutable("xf", `printf 'xf doctor ok\n'`)
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	amSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"status\":\"ok\"}"}]}}`))
+	}))
+	defer amSrv.Close()
+	t.Setenv("AGENT_MAIL_URL", amSrv.URL+"/mcp/")
+
+	ctx := context.Background()
+	tools.NewCAAMAdapter().InvalidateCache()
+	tools.NewRCHAdapter().InvalidateAvailabilityCache()
+	tools.NewDCGAdapter().InvalidateAvailabilityCache()
+
+	acfsDetails := collectVerboseToolDetails(ctx, tools.NewACFSAdapter())
+	if len(acfsDetails) != 3 {
+		t.Fatalf("ACFS verbose details = %v, want 3 entries", acfsDetails)
+	}
+	amDetails := collectVerboseToolDetails(ctx, tools.NewAMAdapter())
+	if len(amDetails) < 2 || !strings.Contains(amDetails[0], amSrv.URL) {
+		t.Fatalf("AM verbose details = %v, want endpoint + health_check", amDetails)
+	}
+	caamDetails := collectVerboseToolDetails(ctx, tools.NewCAAMAdapter())
+	if len(caamDetails) < 2 || !strings.Contains(strings.Join(caamDetails, " "), "multiple_accounts=true") {
+		t.Fatalf("CAAM verbose details = %v, want accounts_configured & active_account", caamDetails)
+	}
+	cassDetails := collectVerboseToolDetails(ctx, tools.NewCASSAdapter())
+	if len(cassDetails) != 1 || !strings.Contains(cassDetails[0], "capabilities_json:") {
+		t.Fatalf("CASS verbose details = %v", cassDetails)
+	}
+	cmDetails := collectVerboseToolDetails(ctx, tools.NewCMAdapter())
+	if len(cmDetails) != 1 || !strings.Contains(cmDetails[0], "onboard:") {
+		t.Fatalf("CM verbose details = %v", cmDetails)
+	}
+	dcgDetails := collectVerboseToolDetails(ctx, tools.NewDCGAdapter())
+	if len(dcgDetails) != 1 || !strings.Contains(dcgDetails[0], "guard_enabled=true") {
+		t.Fatalf("DCG verbose details = %v", dcgDetails)
+	}
+	rchDetails := collectVerboseToolDetails(ctx, tools.NewRCHAdapter())
+	if len(rchDetails) < 2 || !strings.Contains(strings.Join(rchDetails, " "), "selected_worker: w1 (load=25%)") {
+		t.Fatalf("RCH verbose details = %v, want worker selection", rchDetails)
+	}
+	for name, adapter := range map[string]tools.Adapter{
+		"ru":  tools.NewRUAdapter(),
+		"ubs": tools.NewUBSAdapter(),
+		"xf":  tools.NewXFAdapter(),
+	} {
+		got := collectVerboseToolDetails(ctx, adapter)
+		if len(got) != 1 || !strings.Contains(got[0], name+" doctor ok") {
+			t.Fatalf("%s verbose details = %v", name, got)
+		}
+	}
+
+	prevVerbose := doctorVerbose
+	doctorVerbose = true
+	defer func() { doctorVerbose = prevVerbose }()
+
+	var out bytes.Buffer
+	report := &DoctorReport{
+		Timestamp: time.Now(),
+		Overall:   "healthy",
+		Tools: []ToolCheck{{
+			Name:      "rch",
+			Installed: true,
+			Status:    "ok",
+			Message:   "0.2.0",
+			Details:   rchDetails,
+		}},
+	}
+	if err := renderDoctorTUITo(&out, report); err != nil {
+		t.Fatalf("renderDoctorTUITo: %v", err)
+	}
+	if !strings.Contains(out.String(), "selected_worker: w1 (load=25%)") {
+		t.Fatalf("verbose doctor output missing detail line:\n%s", out.String())
 	}
 }

@@ -104,6 +104,23 @@ func TestRenderAgentBadgeStyle(t *testing.T) {
 	}
 }
 
+func TestRenderAgentBadgeStyle_AllCanonicalAgentsUseSemanticPalette(t *testing.T) {
+	currentTheme := theme.Current()
+	sem := currentTheme.Semantic()
+	currentIcons := icons.Current()
+
+	canonical := []string{"cc", "cod", "gmi", "grok", "omp", "agy", "cursor", "windsurf", "aider", "opencode", "ollama", "user"}
+	for _, agentType := range canonical {
+		t.Run(agentType, func(t *testing.T) {
+			gotColor, _ := renderAgentBadgeStyle(agentType, currentTheme, currentIcons)
+			wantColor := string(sem.AgentColor(agentType))
+			if gotColor != wantColor {
+				t.Fatalf("renderAgentBadgeStyle(%q) color = %q, want semantic color %q", agentType, gotColor, wantColor)
+			}
+		})
+	}
+}
+
 func TestRenderAgentBadgeCanonicalizesLabel(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -185,8 +202,14 @@ func TestProgressBarView(t *testing.T) {
 func TestGradientFunctions(t *testing.T) {
 	t.Run("gradientPrimary", func(t *testing.T) {
 		colors := gradientPrimary()
-		if len(colors) == 0 {
-			t.Error("gradientPrimary should return colors")
+		want := theme.Current().Gradient(5)
+		if len(colors) != len(want) {
+			t.Fatalf("gradientPrimary len = %d, want %d", len(colors), len(want))
+		}
+		for i, c := range want {
+			if colors[i] != string(c) {
+				t.Fatalf("gradientPrimary[%d] = %q, want %q", i, colors[i], string(c))
+			}
 		}
 	})
 }

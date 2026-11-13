@@ -90,16 +90,6 @@ func (m *TickerPanel) SetSize(width, height int) {
 	m.height = height
 }
 
-// Focus marks the panel as focused
-func (m *TickerPanel) Focus() {
-	m.focused = true
-}
-
-// Blur marks the panel as unfocused
-func (m *TickerPanel) Blur() {
-	m.focused = false
-}
-
 // SetData updates the panel data
 func (m *TickerPanel) SetData(data TickerData) {
 	m.data = data

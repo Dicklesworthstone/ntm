@@ -23,24 +23,37 @@ type WorkflowsListResult struct {
 
 // WorkflowInfo is a workflow summary for JSON output.
 type WorkflowInfo struct {
-	Name         string `json:"name"`
-	Description  string `json:"description"`
-	Source       string `json:"source"`
-	Coordination string `json:"coordination"`
-	AgentCount   int    `json:"agent_count"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	Source       string   `json:"source"`
+	Coordination string   `json:"coordination"`
+	AgentCount   int      `json:"agent_count"`
+	Roles        []string `json:"roles,omitempty"`
+}
+
+// WorkflowTransitionDiagnostic reports runtime trigger validation for a flow transition.
+type WorkflowTransitionDiagnostic struct {
+	From        string `json:"from"`
+	To          string `json:"to"`
+	RuntimeType string `json:"runtime_type"`
+	Valid       bool   `json:"valid"`
+	Error       string `json:"error,omitempty"`
 }
 
 // WorkflowShowResult is the JSON output for workflows show command.
 type WorkflowShowResult struct {
-	Name          string                   `json:"name"`
-	Description   string                   `json:"description"`
-	Source        string                   `json:"source"`
-	Coordination  string                   `json:"coordination"`
-	AgentCount    int                      `json:"agent_count"`
-	Agents        []workflow.WorkflowAgent `json:"agents"`
-	Flow          *workflow.FlowConfig     `json:"flow,omitempty"`
-	Prompts       []workflow.SetupPrompt   `json:"prompts,omitempty"`
-	ErrorHandling *workflow.ErrorConfig    `json:"error_handling,omitempty"`
+	Name              string                              `json:"name"`
+	Description       string                              `json:"description"`
+	Source            string                              `json:"source"`
+	Coordination      string                              `json:"coordination"`
+	AgentCount        int                                 `json:"agent_count"`
+	Roles             []string                            `json:"roles,omitempty"`
+	RoleAgents        map[string][]workflow.WorkflowAgent `json:"role_agents,omitempty"`
+	Agents            []workflow.WorkflowAgent            `json:"agents"`
+	Flow              *workflow.FlowConfig                `json:"flow,omitempty"`
+	ValidatedTriggers []WorkflowTransitionDiagnostic      `json:"validated_triggers,omitempty"`
+	Prompts           []workflow.SetupPrompt              `json:"prompts,omitempty"`
+	ErrorHandling     *workflow.ErrorConfig               `json:"error_handling,omitempty"`
 }
 
 // RobotSequenceOutput is the durable per-pane prompt-sequence response. A
@@ -167,25 +180,30 @@ Examples:
 }
 
 func newWorkflowsListCmd() *cobra.Command {
+	var roleFilter string
+
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List available workflow templates",
 		Long: `List all available workflow templates from all sources.
 
-Templates are shown with name, description, coordination type, and agent count.
+Templates are shown with name, description, coordination type, roles, and agent count.
 
 Examples:
-  ntm workflows list           # Human-readable table
-  ntm workflows list --json    # JSON output for scripts`,
+  ntm workflows list                  # Human-readable table
+  ntm workflows list --role=reviewer  # Filter workflows declaring a role
+  ntm workflows list --json           # JSON output for scripts`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runWorkflowsList()
+			return runWorkflowsListFiltered(roleFilter)
 		},
 	}
+
+	cmd.Flags().StringVar(&roleFilter, "role", "", "Filter workflow templates by agent role")
 
 	return cmd
 }
 
-func runWorkflowsList() error {
+func runWorkflowsListFiltered(roleFilter string) error {
 	loader := workflow.NewLoader()
 	workflows, err := loader.LoadAll()
 	if err != nil {
@@ -196,6 +214,17 @@ func runWorkflowsList() error {
 			}, err)
 		}
 		return err
+	}
+
+	roleFilter = strings.TrimSpace(roleFilter)
+	if roleFilter != "" {
+		filtered := make([]workflow.WorkflowTemplate, 0, len(workflows))
+		for _, w := range workflows {
+			if len(w.GetAgentsByRole(roleFilter)) > 0 {
+				filtered = append(filtered, w)
+			}
+		}
+		workflows = filtered
 	}
 
 	if jsonOutput {
@@ -210,6 +239,7 @@ func runWorkflowsList() error {
 				Source:       w.Source,
 				Coordination: string(w.Coordination),
 				AgentCount:   w.GetAgentCount(),
+				Roles:        w.GetRoles(),
 			}
 		}
 		return json.NewEncoder(os.Stdout).Encode(result)
@@ -247,11 +277,17 @@ func runWorkflowsList() error {
 		fmt.Printf("  %s%s:%s\n", colorize(t.Info), sourceLabels[source], "\033[0m")
 		for _, w := range group {
 			coordIcon := coordinationIcon(w.Coordination)
+			roles := w.GetRoles()
 			fmt.Printf("    %s%-20s%s %s  %s\n",
 				colorize(t.Primary), w.Name, "\033[0m",
 				coordIcon, w.Description)
-			fmt.Printf("    %s                     [%d agents, %s]%s\n",
-				"\033[2m", w.GetAgentCount(), w.Coordination, "\033[0m")
+			if len(roles) > 0 {
+				fmt.Printf("    %s                     [%d agents, %s, roles: %s]%s\n",
+					"\033[2m", w.GetAgentCount(), w.Coordination, strings.Join(roles, ", "), "\033[0m")
+			} else {
+				fmt.Printf("    %s                     [%d agents, %s]%s\n",
+					"\033[2m", w.GetAgentCount(), w.Coordination, "\033[0m")
+			}
 		}
 		fmt.Println()
 	}
@@ -277,24 +313,58 @@ func coordinationIcon(coord workflow.CoordinationType) string {
 }
 
 func newWorkflowsShowCmd() *cobra.Command {
+	var roleFilter string
+
 	cmd := &cobra.Command{
 		Use:   "show <template-name>",
 		Short: "Show details of a workflow template",
 		Long: `Show detailed information about a specific workflow template.
 
 Examples:
-  ntm workflows show red-green        # Show red-green TDD template
+  ntm workflows show red-green              # Show red-green TDD template
+  ntm workflows show red-green --role=red   # Filter agents to a single role
   ntm workflows show review-pipeline --json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runWorkflowsShow(args[0])
+			return runWorkflowsShowFiltered(args[0], roleFilter)
 		},
 	}
+
+	cmd.Flags().StringVar(&roleFilter, "role", "", "Filter displayed agents by role")
 
 	return cmd
 }
 
-func runWorkflowsShow(name string) error {
+func inspectWorkflowTransitions(flow *workflow.FlowConfig) []WorkflowTransitionDiagnostic {
+	if flow == nil || len(flow.Transitions) == 0 {
+		return nil
+	}
+	reg := workflow.NewTriggerRegistry()
+	diagnostics := make([]WorkflowTransitionDiagnostic, 0, len(flow.Transitions))
+	for _, tr := range flow.Transitions {
+		diag := WorkflowTransitionDiagnostic{
+			From:        tr.From,
+			To:          tr.To,
+			RuntimeType: string(tr.Trigger.Type),
+		}
+		rt, err := reg.Create(tr.Trigger)
+		if err != nil {
+			diag.Valid = false
+			diag.Error = err.Error()
+		} else {
+			diag.Valid = true
+			diag.RuntimeType = string(rt.Type())
+			if manual, ok := rt.(*workflow.ManualTrigger); ok {
+				diag.RuntimeType = string(manual.Type())
+			}
+			_ = rt.Stop()
+		}
+		diagnostics = append(diagnostics, diag)
+	}
+	return diagnostics
+}
+
+func runWorkflowsShowFiltered(name, roleFilter string) error {
 	loader := workflow.NewLoader()
 	w, err := loader.Get(name)
 	if err != nil {
@@ -307,17 +377,32 @@ func runWorkflowsShow(name string) error {
 		return err
 	}
 
+	roles := w.GetRoles()
+	roleAgents := make(map[string][]workflow.WorkflowAgent, len(roles))
+	for _, r := range roles {
+		roleAgents[r] = w.GetAgentsByRole(r)
+	}
+	displayAgents := w.Agents
+	roleFilter = strings.TrimSpace(roleFilter)
+	if roleFilter != "" {
+		displayAgents = w.GetAgentsByRole(roleFilter)
+	}
+	triggerDiagnostics := inspectWorkflowTransitions(w.Flow)
+
 	if jsonOutput {
 		result := WorkflowShowResult{
-			Name:          w.Name,
-			Description:   w.Description,
-			Source:        w.Source,
-			Coordination:  string(w.Coordination),
-			AgentCount:    w.GetAgentCount(),
-			Agents:        w.Agents,
-			Flow:          w.Flow,
-			Prompts:       w.Prompts,
-			ErrorHandling: w.ErrorHandling,
+			Name:              w.Name,
+			Description:       w.Description,
+			Source:            w.Source,
+			Coordination:      string(w.Coordination),
+			AgentCount:        w.GetAgentCount(),
+			Roles:             roles,
+			RoleAgents:        roleAgents,
+			Agents:            displayAgents,
+			Flow:              w.Flow,
+			ValidatedTriggers: triggerDiagnostics,
+			Prompts:           w.Prompts,
+			ErrorHandling:     w.ErrorHandling,
 		}
 		return json.NewEncoder(os.Stdout).Encode(result)
 	}
@@ -329,11 +414,14 @@ func runWorkflowsShow(name string) error {
 	fmt.Printf("  Description:  %s\n", w.Description)
 	fmt.Printf("  Source:       %s\n", workflow.SourceDescription(w.Source))
 	fmt.Printf("  Coordination: %s\n", w.Coordination)
+	if len(roles) > 0 {
+		fmt.Printf("  Roles:        %s\n", strings.Join(roles, ", "))
+	}
 	fmt.Printf("  Total Agents: %d\n\n", w.GetAgentCount())
 
 	// Agents section
 	fmt.Printf("  %sAgents:%s\n", "\033[1m", "\033[0m")
-	for _, a := range w.Agents {
+	for _, a := range displayAgents {
 		count := a.Count
 		if count == 0 {
 			count = 1
@@ -365,8 +453,11 @@ func runWorkflowsShow(name string) error {
 
 		if len(w.Flow.Transitions) > 0 {
 			fmt.Printf("    Transitions:\n")
-			for _, tr := range w.Flow.Transitions {
+			for i, tr := range w.Flow.Transitions {
 				triggerDesc := formatTrigger(tr.Trigger)
+				if i < len(triggerDiagnostics) && !triggerDiagnostics[i].Valid {
+					triggerDesc += fmt.Sprintf(" [invalid: %s]", triggerDiagnostics[i].Error)
+				}
 				fmt.Printf("      %s → %s [%s]\n", tr.From, tr.To, triggerDesc)
 			}
 		}

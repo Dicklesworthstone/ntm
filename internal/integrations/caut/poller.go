@@ -64,6 +64,7 @@ func (p *UsagePoller) RefreshIfStale(ctx context.Context, maxAge time.Duration) 
 		LastUpdated: time.Now().UTC().Format(time.RFC3339),
 	}
 	var firstErr error
+	var details []ProviderDetail
 	for i, payload := range payloads {
 		if payload == nil {
 			// A provider caut has no account for answers with no data; that
@@ -82,16 +83,33 @@ func (p *UsagePoller) RefreshIfStale(ctx context.Context, maxAge time.Duration) 
 			}
 		}
 		status.Providers = append(status.Providers, entry)
+
+		detail := ProviderDetail{
+			Provider:         payload.Provider,
+			AccountEmail:     payload.GetAccountEmail(),
+			HasUsageData:     payload.HasUsageData(),
+			RateLimited:      payload.IsRateLimited(95.0),
+			ResetDescription: payload.GetResetDescription(),
+		}
+		if wm := payload.GetWindowMinutes(); wm != nil {
+			detail.WindowMinutes = *wm
+		}
+		if rt := payload.GetResetTime(); rt != nil {
+			detail.ResetAt = rt.UTC().Format(time.RFC3339)
+		}
+		details = append(details, detail)
 	}
 	status.ProviderCount = len(status.Providers)
 	if status.ProviderCount == 0 && firstErr != nil {
 		// Record the failed read as this check's result so readers do not
 		// re-run every caut call until maxAge passes.
+		p.cache.UpdateProviderDetails(nil)
 		p.cache.UpdateStatus(nil)
 		p.cache.SetError(firstErr)
 		return
 	}
 	p.cache.ClearError()
+	p.cache.UpdateProviderDetails(details)
 	p.cache.UpdateStatus(status)
 }
 

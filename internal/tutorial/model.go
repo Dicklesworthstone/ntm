@@ -132,6 +132,10 @@ func New(opts ...Option) Model {
 		opt(&m)
 	}
 
+	if m.currentSlide == SlideComplete {
+		m.seedCelebrationParticles()
+	}
+
 	return m
 }
 
@@ -339,6 +343,9 @@ func (m *Model) goToSlide(slide SlideID, _ TransitionType) {
 		state.diagramStep = 0
 		state.diagramDone = false
 	}
+	if slide == SlideComplete {
+		m.seedCelebrationParticles()
+	}
 }
 
 func (m *Model) updateTyping() {
@@ -409,6 +416,36 @@ func (m *Model) restartSlideAnimation() {
 	state.revealDone = false
 	state.diagramStep = 0
 	state.diagramDone = false
+	if m.currentSlide == SlideComplete {
+		m.seedCelebrationParticles()
+	}
+}
+
+func (m *Model) seedCelebrationParticles() {
+	colors := []string{"#f9e2af", "#f5c2e7", "#a6e3a1", "#89dceb", "#cba6f7", "#fab387"}
+	chars := []string{"✦", "★", "✧", "•", "✶", "✦"}
+	const count = 12
+	m.particles = make([]Particle, 0, count)
+	width := float64(m.effectiveWidth())
+	if width < 20 {
+		width = 80
+	}
+	for i := 0; i < count; i++ {
+		m.particles = append(m.particles, Particle{
+			X:        width * float64(i+1) / float64(count+1),
+			Y:        float64(i % 3),
+			VX:       float64((i%3)-1) * 0.4,
+			VY:       -0.25,
+			Life:     180,
+			MaxLife:  180,
+			Type:     ParticleConfetti,
+			Char:     chars[i%len(chars)],
+			Color:    colors[i%len(colors)],
+			Size:     1,
+			Gravity:  0.02,
+			Friction: 0.02,
+		})
+	}
 }
 
 func transitionDuration(t TransitionType) int {
@@ -433,14 +470,4 @@ func (m Model) View() string {
 	}
 
 	return m.renderSlide()
-}
-
-// GetCurrentSlide returns the current slide ID
-func (m Model) GetCurrentSlide() SlideID {
-	return m.currentSlide
-}
-
-// IsTransitioning returns whether a transition is in progress
-func (m Model) IsTransitioning() bool {
-	return m.transitioning
 }

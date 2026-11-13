@@ -116,7 +116,7 @@ func GetEnsemblePresets() (*EnsemblePresetsOutput, error) {
 		output.Presets = append(output.Presets, preset)
 	}
 
-	output.Count = len(output.Presets)
+	output.Count = registry.Count()
 
 	// Build agent hints
 	output.AgentHints = buildPresetsHints(output)

@@ -285,6 +285,8 @@ func modeAssignmentAgentLabel(agentType string) string {
 		return "gmi"
 	case agent.AgentTypeAntigravity:
 		return "agy"
+	case agent.AgentTypeGrok:
+		return "grok"
 	case agent.AgentTypeOmp:
 		return "omp"
 	case agent.AgentTypeCursor:
@@ -293,6 +295,8 @@ func modeAssignmentAgentLabel(agentType string) string {
 		return "ws"
 	case agent.AgentTypeAider:
 		return "aid"
+	case agent.AgentTypeOpencode:
+		return "oc"
 	case agent.AgentTypeOllama:
 		return "oll"
 	case agent.AgentTypeUser:
@@ -307,30 +311,10 @@ func modeAssignmentAgentLabel(agentType string) string {
 }
 
 func modeAssignmentAgentColor(agentType string, t theme.Theme) lipgloss.Color {
-	switch agent.AgentType(agentType).Canonical() {
-	case agent.AgentTypeClaudeCode:
-		return t.Claude
-	case agent.AgentTypeCodex:
-		return t.Codex
-	case agent.AgentTypeGemini:
-		return t.Gemini
-	case agent.AgentTypeAntigravity:
-		return t.Lavender
-	case agent.AgentTypeOmp:
-		return t.Sky
-	case agent.AgentTypeCursor:
-		return t.Cursor
-	case agent.AgentTypeWindsurf:
-		return t.Windsurf
-	case agent.AgentTypeAider:
-		return t.Aider
-	case agent.AgentTypeOllama:
-		return t.Ollama
-	case agent.AgentTypeUser:
-		return t.User
-	default:
+	if !agent.AgentType(agentType).IsValid() {
 		return t.Subtext
 	}
+	return t.Semantic().AgentColor(agentType)
 }
 
 func (m ModeVisualization) selectedPaneIndex() (int, bool) {

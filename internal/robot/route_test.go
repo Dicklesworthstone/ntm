@@ -711,6 +711,65 @@ func TestGetRoute_AffinityRoutesToReservationHolder(t *testing.T) {
 		t.Fatalf("unreserved affinity route = %s (fallback_used %v), want the least-loaded fallback %s",
 			unreserved.Recommendation.PaneID, unreserved.FallbackUsed, baseline.Recommendation.PaneID)
 	}
+	if routed.ReservationSummary == nil || routed.ReservationSummary.Active != 1 ||
+		!reflect.DeepEqual(routed.ReservationSummary.Holders, []string{"GreenCastle"}) ||
+		!reflect.DeepEqual(routed.ReservationSummary.Patterns, []string{"internal/robot/*.go"}) {
+		t.Fatalf("routed.ReservationSummary = %+v, want 1 active reservation for GreenCastle on internal/robot/*.go", routed.ReservationSummary)
+	}
+
+	sendRec, err := GetRouteRecommendation(RouteOptions{
+		Session:   session,
+		Strategy:  StrategyAffinity,
+		Prompt:    "Fix the scoring bug in internal/robot/routing.go",
+		Config:    cfg,
+		NoPersist: true,
+	})
+	if err != nil || sendRec == nil || sendRec.PaneID != holderID {
+		t.Fatalf("GetRouteRecommendation(affinity) = %+v, err=%v, want holder %s", sendRec, err, holderID)
+	}
+}
+
+func TestSummarizeRouteReservations(t *testing.T) {
+	if got := summarizeRouteReservations(nil); got != nil {
+		t.Fatalf("summarizeRouteReservations(nil) = %+v, want nil", got)
+	}
+	now := time.Now()
+	releasedAt := agentmail.FlexTime{Time: now.Add(-5 * time.Minute)}
+	cache := NewReservationCache(nil, "/proj", 30*time.Second)
+	cache.reservations = []agentmail.FileReservation{
+		{
+			ID:          1,
+			AgentName:   "BlueLake",
+			PathPattern: "internal/robot/*.go",
+			ExpiresTS:   agentmail.FlexTime{Time: now.Add(30 * time.Minute)},
+		},
+		{
+			ID:          2,
+			AgentName:   "AmberFox",
+			PathPattern: "internal/cli/*.go",
+			ExpiresTS:   agentmail.FlexTime{Time: now.Add(-1 * time.Minute)}, // expired
+		},
+		{
+			ID:          3,
+			AgentName:   "CrimsonOwl",
+			PathPattern: "docs/*.md",
+			ExpiresTS:   agentmail.FlexTime{Time: now.Add(30 * time.Minute)},
+			ReleasedTS:  &releasedAt, // released
+		},
+	}
+	summary := summarizeRouteReservations(cache)
+	if summary == nil {
+		t.Fatal("expected non-nil summary")
+	}
+	if summary.TotalCached != 3 || summary.Active != 1 {
+		t.Fatalf("summary counts = total:%d active:%d, want total:3 active:1", summary.TotalCached, summary.Active)
+	}
+	if !reflect.DeepEqual(summary.Holders, []string{"BlueLake"}) {
+		t.Fatalf("summary.Holders = %v, want [BlueLake]", summary.Holders)
+	}
+	if !reflect.DeepEqual(summary.Patterns, []string{"internal/robot/*.go"}) {
+		t.Fatalf("summary.Patterns = %v, want [internal/robot/*.go]", summary.Patterns)
+	}
 }
 
 // TestRouteReservationWarning pins when a routing pick reports reservations:

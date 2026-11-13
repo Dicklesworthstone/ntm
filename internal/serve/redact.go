@@ -786,15 +786,6 @@ func (rw *redactingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error)
 	return hijacker.Hijack()
 }
 
-// Push preserves optional HTTP/2 server push support when available.
-func (rw *redactingResponseWriter) Push(target string, opts *http.PushOptions) error {
-	pusher, ok := rw.ResponseWriter.(http.Pusher)
-	if !ok {
-		return http.ErrNotSupported
-	}
-	return pusher.Push(target, opts)
-}
-
 // Unwrap exposes the underlying response writer for ResponseController callers.
 func (rw *redactingResponseWriter) Unwrap() http.ResponseWriter {
 	return rw.ResponseWriter

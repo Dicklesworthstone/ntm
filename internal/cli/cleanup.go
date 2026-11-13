@@ -10,16 +10,30 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
+var openCleanupStateStoreFunc = func() (*state.Store, error) {
+	store, err := state.Open("")
+	if err != nil {
+		return nil, err
+	}
+	if err := store.Migrate(); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
 func newCleanupCmd() *cobra.Command {
 	var (
-		dryRun     bool
-		maxAgeHrs  int
-		verbose    bool
-		forceClean bool
+		dryRun           bool
+		maxAgeHrs        int
+		verbose          bool
+		forceClean       bool
+		cleanProjections bool
 	)
 
 	cmd := &cobra.Command{
@@ -36,16 +50,19 @@ This command identifies and removes:
   - ntm-prompt-* files (orphaned prompt edits)
   - ntm-mail-* files (orphaned mail compositions)
 
+Pass --projections to also garbage-collect stale runtime projections in state.db.
+
 Files older than --max-age (default: 24 hours) are considered stale.
 
 Examples:
-  ntm cleanup              # Clean files older than 24h
-  ntm cleanup --dry-run    # Preview what would be deleted
-  ntm cleanup --max-age=1  # Clean files older than 1 hour
-  ntm cleanup --force      # Clean all NTM temp files regardless of age
-  ntm cleanup --json       # JSON output for automation`,
+  ntm cleanup                # Clean files older than 24h
+  ntm cleanup --projections  # Also prune stale runtime projections in state.db
+  ntm cleanup --dry-run      # Preview what would be deleted
+  ntm cleanup --max-age=1    # Clean files older than 1 hour
+  ntm cleanup --force        # Clean all NTM temp files regardless of age
+  ntm cleanup --json         # JSON output for automation`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCleanup(dryRun, maxAgeHrs, verbose, forceClean)
+			return runCleanup(dryRun, maxAgeHrs, verbose, forceClean, cleanProjections)
 		},
 	}
 
@@ -53,6 +70,7 @@ Examples:
 	cmd.Flags().IntVar(&maxAgeHrs, "max-age", 24, "Maximum age in hours before a file is considered stale")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show detailed information about each file")
 	cmd.Flags().BoolVar(&forceClean, "force", false, "Clean all NTM temp files regardless of age")
+	cmd.Flags().BoolVar(&cleanProjections, "projections", false, "Also clear stale runtime projections from state.db")
 
 	return cmd
 }
@@ -73,15 +91,17 @@ type cleanupResult struct {
 // cleanupResponse is the JSON response for cleanup command
 type cleanupResponse struct {
 	output.TimestampedResponse
-	DryRun       bool            `json:"dry_run"`
-	MaxAgeHours  int             `json:"max_age_hours"`
-	Results      []cleanupResult `json:"results"`
-	TotalFiles   int             `json:"total_files"`
-	TotalSize    int64           `json:"total_size_bytes"`
-	DeletedFiles int             `json:"deleted_files"`
-	DeletedSize  int64           `json:"deleted_size_bytes"`
-	SkippedFiles int             `json:"skipped_files"`
-	ErrorCount   int             `json:"error_count"`
+	DryRun             bool            `json:"dry_run"`
+	MaxAgeHours        int             `json:"max_age_hours"`
+	Results            []cleanupResult `json:"results"`
+	TotalFiles         int             `json:"total_files"`
+	TotalSize          int64           `json:"total_size_bytes"`
+	DeletedFiles       int             `json:"deleted_files"`
+	DeletedSize        int64           `json:"deleted_size_bytes"`
+	SkippedFiles       int             `json:"skipped_files"`
+	ErrorCount         int             `json:"error_count"`
+	ProjectionsCleared bool            `json:"projections_cleared,omitempty"`
+	ProjectionError    string          `json:"projection_error,omitempty"`
 }
 
 // ntmTempPatterns defines patterns to match NTM temp files
@@ -99,7 +119,7 @@ var ntmTempPatterns = []string{
 	"pending-*.tmp",
 }
 
-func runCleanup(dryRun bool, maxAgeHrs int, verbose bool, forceClean bool) error {
+func runCleanup(dryRun bool, maxAgeHrs int, verbose bool, forceClean bool, cleanProjections bool) error {
 	tmpDir := os.TempDir()
 	cutoff := time.Now().Add(-time.Duration(maxAgeHrs) * time.Hour)
 
@@ -190,6 +210,28 @@ func runCleanup(dryRun bool, maxAgeHrs int, verbose bool, forceClean bool) error
 		results = append(results, result)
 	}
 
+	var projectionsCleared bool
+	var projectionError string
+	if cleanProjections && !dryRun {
+		olderThan := time.Duration(maxAgeHrs) * time.Hour
+		if forceClean || maxAgeHrs < 0 {
+			olderThan = 0
+		}
+		store, err := openCleanupStateStoreFunc()
+		if err != nil {
+			projectionError = err.Error()
+			errorCount++
+		} else {
+			if err := store.ClearStaleProjections(olderThan); err != nil {
+				projectionError = err.Error()
+				errorCount++
+			} else {
+				projectionsCleared = true
+			}
+			_ = store.Close()
+		}
+	}
+
 	// JSON output
 	if IsJSONOutput() {
 		resp := cleanupResponse{
@@ -203,6 +245,8 @@ func runCleanup(dryRun bool, maxAgeHrs int, verbose bool, forceClean bool) error
 			DeletedSize:         deletedSize,
 			SkippedFiles:        skippedCount,
 			ErrorCount:          errorCount,
+			ProjectionsCleared:  projectionsCleared,
+			ProjectionError:     projectionError,
 		}
 		return output.PrintJSON(resp)
 	}
@@ -217,6 +261,17 @@ func runCleanup(dryRun bool, maxAgeHrs int, verbose bool, forceClean bool) error
 		fmt.Printf("%s NTM Cleanup%s\n", "\033[1m", "\033[0m")
 	}
 	fmt.Printf("%s═══════════════════════════════════════════════════%s\n\n", "\033[2m", "\033[0m")
+
+	if cleanProjections {
+		switch {
+		case dryRun:
+			fmt.Printf("%s✓%s Would clear stale runtime projections from state.db\n\n", colorize(t.Success), "\033[0m")
+		case projectionError != "":
+			fmt.Printf("%s✗%s Failed to clear stale runtime projections: %s\n\n", colorize(t.Error), "\033[0m", projectionError)
+		case projectionsCleared:
+			fmt.Printf("%s✓%s Cleared stale runtime projections from state.db\n\n", colorize(t.Success), "\033[0m")
+		}
+	}
 
 	if len(results) == 0 {
 		fmt.Printf("%s✓%s No stale NTM temp files found in %s\n\n", colorize(t.Success), "\033[0m", tmpDir)

@@ -386,4 +386,21 @@ focus_patterns = ["internal/cli/**"]
 		}
 		t.Fatal("profiles command did not register switch")
 	})
+
+	t.Run("resolve expands persona counts and display names", func(t *testing.T) {
+		cmd := newProfilesCmd()
+		cmd.SilenceErrors = true
+		cmd.SilenceUsage = true
+		cmd.SetArgs([]string{"resolve", "profile-contract:2"})
+
+		output, err := captureStdout(t, cmd.Execute)
+		if err != nil {
+			t.Fatalf("profiles resolve failed: %v", err)
+		}
+		for _, want := range []string{"profile-contract", "Codex", "2 total agent(s) from profile-contract:2"} {
+			if !strings.Contains(output, want) {
+				t.Errorf("profiles resolve output = %q, want %q", output, want)
+			}
+		}
+	})
 }

@@ -2238,11 +2238,6 @@ func (c *Client) PasteKeysContext(ctx context.Context, target, content string, e
 	return c.SendKeysContext(ctx, target, content, enter)
 }
 
-// PasteKeysWithDelay pastes content to a pane with a configurable delay before Enter.
-func (c *Client) PasteKeysWithDelay(target, content string, enter bool, enterDelay time.Duration) error {
-	return c.PasteKeysWithDelayContext(context.Background(), target, content, enter, enterDelay)
-}
-
 // PasteKeysWithDelayContext pastes content with a cancellable Enter delay.
 func (c *Client) PasteKeysWithDelayContext(ctx context.Context, target, content string, enter bool, enterDelay time.Duration) error {
 	return c.SendKeysWithDelayContext(ctx, target, content, enter, enterDelay)
@@ -2255,7 +2250,7 @@ func PasteKeys(target, content string, enter bool) error {
 
 // PasteKeysWithDelay pastes content to a pane with a configurable delay (default client)
 func PasteKeysWithDelay(target, content string, enter bool, enterDelay time.Duration) error {
-	return DefaultClient.PasteKeysWithDelay(target, content, enter, enterDelay)
+	return DefaultClient.PasteKeysWithDelayContext(context.Background(), target, content, enter, enterDelay)
 }
 
 // PasteKeysWithDelayContext pastes content with a cancellable delay (default client).
@@ -4031,11 +4026,6 @@ func (c *Client) SendOmpExitContext(ctx context.Context, target string) error {
 // SendOmpExitContext quits an omp process gracefully (default client).
 func SendOmpExitContext(ctx context.Context, target string) error {
 	return DefaultClient.SendOmpExitContext(ctx, target)
-}
-
-// SendEOF sends Ctrl+D (EOF) to a pane
-func (c *Client) SendEOF(target string) error {
-	return c.RunSilent("send-keys", "-t", ExactTarget(target), "C-d")
 }
 
 // DisplayMessage shows a message in the tmux status line.

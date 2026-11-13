@@ -21,24 +21,26 @@ import (
 
 func newCopyCmd() *cobra.Command {
 	var (
-		last     int
-		pattern  string
-		allFlag  bool
-		ccFlag   bool
-		codFlag  bool
-		gmiFlag  bool
-		agyFlag  bool
-		codeFlag bool
-		headers  bool
-		outFile  string
-		quiet    bool
+		last      int
+		pattern   string
+		allFlag   bool
+		ccFlag    bool
+		codFlag   bool
+		gmiFlag   bool
+		agyFlag   bool
+		codeFlag  bool
+		pasteFlag bool
+		headers   bool
+		outFile   string
+		quiet     bool
 	)
 
 	cmd := &cobra.Command{
 		Use:     "copy [session[:pane]]",
 		Aliases: []string{"cp", "yank"},
-		Short:   "Copy pane output to clipboard",
-		Long: `Copy the output from one or more panes to the system clipboard.
+		Short:   "Copy pane output to clipboard (or read clipboard with --paste)",
+		Long: `Copy the output from one or more panes to the system clipboard, or read
+from the system clipboard with --paste.
 
 By default, captures the last 1000 lines from the selected pane.
 Use filters to target specific agent types.
@@ -51,7 +53,9 @@ Examples:
   ntm copy myproject --code     # Copy only code blocks
   ntm copy myproject --pattern "ERROR" # Copy lines matching regex
   ntm copy myproject:1 --last 50       # Copy specific pane by index
-  ntm copy myproject --output out.txt  # Save to file instead of clipboard`,
+  ntm copy myproject --output out.txt  # Save to file instead of clipboard
+  ntm copy --paste                     # Print current clipboard contents
+  ntm copy --paste --code              # Extract code blocks from clipboard`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var session string
@@ -77,10 +81,18 @@ Examples:
 				Last:     last,
 				Pattern:  pattern,
 				Code:     codeFlag,
+				Paste:    pasteFlag,
 				Headers:  headers,
 				Output:   outFile,
 				Quiet:    quiet,
 				PaneSpec: paneSelector,
+			}
+
+			if options.Paste {
+				if len(args) > 0 {
+					return fmt.Errorf("--paste reads from the clipboard and does not accept a session argument")
+				}
+				return runPaste(cmd.OutOrStdout(), options)
 			}
 
 			return runCopy(cmd.OutOrStdout(), session, filter, options)
@@ -90,6 +102,7 @@ Examples:
 	cmd.Flags().IntVarP(&last, "last", "l", 1000, "Number of most recent lines to capture")
 	cmd.Flags().StringVarP(&pattern, "pattern", "p", "", "Regex pattern to filter lines")
 	cmd.Flags().BoolVar(&codeFlag, "code", false, "Copy only code blocks")
+	cmd.Flags().BoolVar(&pasteFlag, "paste", false, "Read from system clipboard instead of tmux panes")
 	cmd.Flags().BoolVar(&headers, "headers", false, "Include pane headers (defaults off when --code is set)")
 	cmd.Flags().BoolVar(&allFlag, "all", false, "Copy from all panes")
 	cmd.Flags().BoolVar(&ccFlag, "cc", false, "Copy from Claude panes")
@@ -139,6 +152,7 @@ type CopyOptions struct {
 	Last     int
 	Pattern  string
 	Code     bool
+	Paste    bool
 	Headers  bool
 	Output   string
 	Quiet    bool
@@ -154,7 +168,98 @@ type copyResult struct {
 	Pattern     string            `json:"pattern,omitempty"`
 	Code        bool              `json:"code,omitempty"`
 	OutputPath  string            `json:"output_path,omitempty"`
+	Content     string            `json:"content,omitempty"`
 	Redaction   *RedactionSummary `json:"redaction,omitempty"`
+}
+
+func runPaste(w io.Writer, opts CopyOptions) error {
+	var regex *regexp.Regexp
+	if opts.Pattern != "" {
+		var err error
+		regex, err = regexp.Compile(opts.Pattern)
+		if err != nil {
+			return fmt.Errorf("invalid pattern regex: %w", err)
+		}
+	}
+
+	clip, err := clipboard.New()
+	if err != nil {
+		return fmt.Errorf("failed to init clipboard: %w", err)
+	}
+	if !clip.Available() {
+		return fmt.Errorf("clipboard backend unavailable")
+	}
+
+	pasted, err := clip.Paste()
+	if err != nil {
+		return fmt.Errorf("failed to paste from clipboard via %s: %w", clip.Backend(), err)
+	}
+
+	filtered := filterOutput(pasted, regex, opts.Code)
+
+	redactCfg := redaction.DefaultConfig()
+	if cfg != nil {
+		redactCfg = cfg.Redaction.ToRedactionLibConfig()
+	}
+	redacted, redactionSummary, err := applyOutputRedaction(filtered, redactCfg)
+	if err != nil {
+		return err
+	}
+	if redactionSummary != nil {
+		cats := formatRedactionCategoryCounts(redactionSummary.Categories)
+		switch redactionSummary.Action {
+		case "warn":
+			fmt.Fprintf(os.Stderr, "Warning: detected %d potential secret(s) (%s); output is NOT modified (mode=warn)\n", redactionSummary.Findings, cats)
+		case "redact":
+			fmt.Fprintf(os.Stderr, "Redacted %d potential secret(s) (%s)\n", redactionSummary.Findings, cats)
+		}
+	}
+
+	trimmed := strings.TrimRight(redacted, "\n")
+	lineCount := 0
+	if trimmed != "" {
+		lineCount = strings.Count(trimmed, "\n") + 1
+	}
+
+	destination := "stdout"
+	if opts.Output != "" {
+		if err := os.MkdirAll(filepath.Dir(opts.Output), 0o755); err != nil && !os.IsExist(err) {
+			return fmt.Errorf("failed to create output directory: %w", err)
+		}
+		if err := os.WriteFile(opts.Output, []byte(redacted), 0o644); err != nil {
+			return fmt.Errorf("failed to write output file: %w", err)
+		}
+		destination = "file"
+	}
+
+	result := copyResult{
+		Source:      "clipboard",
+		Panes:       []string{},
+		Lines:       lineCount,
+		Bytes:       len(redacted),
+		Destination: destination,
+		Pattern:     opts.Pattern,
+		Code:        opts.Code,
+		OutputPath:  opts.Output,
+		Redaction:   redactionSummary,
+	}
+	if destination == "stdout" {
+		result.Content = redacted
+	}
+
+	if IsJSONOutput() {
+		return output.DefaultFormatter(true).OutputData(result, nil)
+	}
+	if destination == "file" {
+		if !opts.Quiet {
+			t := theme.Current()
+			fmt.Fprintf(w, "%s✓%s Saved %d clipboard line(s) to file (%s)\n",
+				colorize(t.Success), colorize(t.Text), lineCount, opts.Output)
+		}
+		return nil
+	}
+	_, err = io.WriteString(w, redacted)
+	return err
 }
 
 func runCopy(w io.Writer, session string, filter AgentFilter, opts CopyOptions) error {

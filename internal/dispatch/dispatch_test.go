@@ -13,6 +13,17 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
+func (p *Prepared) Targets() []Target {
+	if p == nil {
+		return []Target{}
+	}
+	targets := make([]Target, 0, len(p.entries))
+	for _, entry := range p.entries {
+		targets = append(targets, cloneTarget(entry.receipt.Target))
+	}
+	return targets
+}
+
 func testPane(id string, window, index int, agentType tmux.AgentType, variant string, tags ...string) tmux.Pane {
 	return tmux.Pane{
 		ID:          id,

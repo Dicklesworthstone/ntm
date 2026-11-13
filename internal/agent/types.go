@@ -312,28 +312,6 @@ func (r Recommendation) String() string {
 	return string(r)
 }
 
-// IsActionable returns true if this recommendation suggests taking action
-// (as opposed to waiting or being uncertain).
-func (r Recommendation) IsActionable() bool {
-	switch r {
-	case RecommendSafeToRestart, RecommendErrorState:
-		return true
-	default:
-		return false
-	}
-}
-
-// RequiresWaiting returns true if this recommendation suggests waiting
-// before taking action.
-func (r Recommendation) RequiresWaiting() bool {
-	switch r {
-	case RecommendRateLimitedWait, RecommendContextLowContinue, RecommendDoNotInterrupt:
-		return true
-	default:
-		return false
-	}
-}
-
 // Parser defines the interface for extracting AgentState from terminal output.
 // Implementations parse raw text captured from tmux panes and extract
 // structured state information.

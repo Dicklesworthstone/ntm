@@ -15,6 +15,10 @@ import (
 // responseRecorder.Bytes() — 0% → 100%
 // =============================================================================
 
+func (r *responseRecorder) Bytes() []byte {
+	return r.body
+}
+
 func TestResponseRecorder_Bytes(t *testing.T) {
 	rr := httptest.NewRecorder()
 	rec := &responseRecorder{ResponseWriter: rr}

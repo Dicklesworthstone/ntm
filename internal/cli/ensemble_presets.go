@@ -93,10 +93,11 @@ type agentDistributionDetail struct {
 
 // ensemblePresetsOutput is the top-level output structure.
 type ensemblePresetsOutput struct {
-	GeneratedAt time.Time              `json:"generated_at" yaml:"generated_at"`
-	Count       int                    `json:"count" yaml:"count"`
-	Presets     []ensemblePresetRow    `json:"presets,omitempty" yaml:"presets,omitempty"`
-	Details     []ensemblePresetDetail `json:"details,omitempty" yaml:"details,omitempty"`
+	GeneratedAt     time.Time              `json:"generated_at" yaml:"generated_at"`
+	Count           int                    `json:"count" yaml:"count"`
+	TotalRegistered int                    `json:"total_registered,omitempty" yaml:"total_registered,omitempty"`
+	Presets         []ensemblePresetRow    `json:"presets,omitempty" yaml:"presets,omitempty"`
+	Details         []ensemblePresetDetail `json:"details,omitempty" yaml:"details,omitempty"`
 }
 
 // newEnsemblePresetsCmd creates the ensemble presets command.
@@ -199,8 +200,10 @@ func runEnsemblePresets(w io.Writer, opts ensemblePresetsOptions) error {
 		presets = filtered
 	}
 
+	totalRegistered := registry.Count()
 	slog.Default().Info("ensemble presets: loaded presets",
 		"count", len(presets),
+		"total_registered", totalRegistered,
 		"tag_filter", opts.Tag,
 		"imported_only", opts.ImportedOnly,
 	)
@@ -213,9 +216,9 @@ func runEnsemblePresets(w io.Writer, opts ensemblePresetsOptions) error {
 	}
 
 	if opts.Verbose {
-		return renderPresetsVerbose(w, presets, catalog, format)
+		return renderPresetsVerbose(w, presets, totalRegistered, catalog, format)
 	}
-	return renderPresetsSummary(w, presets, catalog, format)
+	return renderPresetsSummary(w, presets, totalRegistered, catalog, format)
 }
 
 type ensembleExportOptions struct {
@@ -554,7 +557,7 @@ func presetFingerprint(p ensemble.EnsemblePreset) (string, error) {
 }
 
 // renderPresetsSummary renders presets in summary format.
-func renderPresetsSummary(w io.Writer, presets []ensemble.EnsemblePreset, catalog *ensemble.ModeCatalog, format string) error {
+func renderPresetsSummary(w io.Writer, presets []ensemble.EnsemblePreset, totalRegistered int, catalog *ensemble.ModeCatalog, format string) error {
 	rows := make([]ensemblePresetRow, 0, len(presets))
 	for _, p := range presets {
 		modeCodes := make([]string, 0, len(p.Modes))
@@ -583,9 +586,10 @@ func renderPresetsSummary(w io.Writer, presets []ensemble.EnsemblePreset, catalo
 	}
 
 	result := ensemblePresetsOutput{
-		GeneratedAt: output.Timestamp(),
-		Count:       len(rows),
-		Presets:     rows,
+		GeneratedAt:     output.Timestamp(),
+		Count:           len(rows),
+		TotalRegistered: totalRegistered,
+		Presets:         rows,
 	}
 
 	switch format {
@@ -599,7 +603,7 @@ func renderPresetsSummary(w io.Writer, presets []ensemble.EnsemblePreset, catalo
 }
 
 // renderPresetsVerbose renders presets with full configuration details.
-func renderPresetsVerbose(w io.Writer, presets []ensemble.EnsemblePreset, catalog *ensemble.ModeCatalog, format string) error {
+func renderPresetsVerbose(w io.Writer, presets []ensemble.EnsemblePreset, totalRegistered int, catalog *ensemble.ModeCatalog, format string) error {
 	details := make([]ensemblePresetDetail, 0, len(presets))
 	for _, p := range presets {
 		modes := make([]ensemblePresetModeDetail, 0, len(p.Modes))
@@ -653,9 +657,10 @@ func renderPresetsVerbose(w io.Writer, presets []ensemble.EnsemblePreset, catalo
 	}
 
 	result := ensemblePresetsOutput{
-		GeneratedAt: output.Timestamp(),
-		Count:       len(details),
-		Details:     details,
+		GeneratedAt:     output.Timestamp(),
+		Count:           len(details),
+		TotalRegistered: totalRegistered,
+		Details:         details,
 	}
 
 	switch format {

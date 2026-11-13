@@ -530,3 +530,182 @@ func TestFormatTriggerContains(t *testing.T) {
 		})
 	}
 }
+
+func runWorkflowsList() error {
+	return runWorkflowsListFiltered("")
+}
+
+func runWorkflowsShow(name string) error {
+	return runWorkflowsShowFiltered(name, "")
+}
+
+func TestWorkflowsListRoleFilterAndShowValidatedTriggers(t *testing.T) {
+	originalJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = originalJSON })
+
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	projDir := t.TempDir()
+	chdirForTerminalJSONTest(t, projDir)
+
+	wfDir := filepath.Join(projDir, ".ntm", "workflows")
+	if err := os.MkdirAll(wfDir, 0o755); err != nil {
+		t.Fatalf("mkdir workflows: %v", err)
+	}
+	customWorkflow := `[[workflows]]
+name = "role-trigger-audit"
+description = "Verify role filtering and runtime trigger diagnostics"
+coordination = "pipeline"
+
+[[workflows.agents]]
+profile = "architect"
+role = "planner"
+count = 1
+
+[[workflows.agents]]
+profile = "implementer"
+role = "builder"
+count = 2
+
+[workflows.flow]
+initial = "planner"
+stages = ["planner", "builder", "complete"]
+
+[[workflows.flow.transitions]]
+from = "planner"
+to = "builder"
+[workflows.flow.transitions.trigger]
+type = "agent_says"
+role = "planner"
+pattern = "PLAN_READY"
+
+[[workflows.flow.transitions]]
+from = "builder"
+to = "complete"
+[workflows.flow.transitions.trigger]
+type = "manual"
+label = "Approve build"
+`
+	if err := os.WriteFile(filepath.Join(wfDir, "role-trigger-audit.toml"), []byte(customWorkflow), 0o644); err != nil {
+		t.Fatalf("write custom workflow: %v", err)
+	}
+
+	listRaw, err := captureStdout(t, func() error {
+		return runWorkflowsListFiltered("builder")
+	})
+	if err != nil {
+		t.Fatalf("runWorkflowsListFiltered(builder) error: %v", err)
+	}
+	var listRes WorkflowsListResult
+	if err := json.Unmarshal([]byte(listRaw), &listRes); err != nil {
+		t.Fatalf("decode WorkflowsListResult: %v\nraw=%s", err, listRaw)
+	}
+	foundCustom := false
+	for _, wf := range listRes.Workflows {
+		if wf.Name == "role-trigger-audit" {
+			foundCustom = true
+			if len(wf.Roles) != 2 {
+				t.Fatalf("Roles = %v, want [planner builder]", wf.Roles)
+			}
+		}
+	}
+	if !foundCustom {
+		t.Fatalf("expected role-trigger-audit in filtered workflows, got %+v", listRes.Workflows)
+	}
+
+	noneRaw, err := captureStdout(t, func() error {
+		return runWorkflowsListFiltered("nonexistent_role_xyz")
+	})
+	if err != nil {
+		t.Fatalf("runWorkflowsListFiltered(nonexistent) error: %v", err)
+	}
+	var noneRes WorkflowsListResult
+	if err := json.Unmarshal([]byte(noneRaw), &noneRes); err != nil {
+		t.Fatalf("decode empty WorkflowsListResult: %v", err)
+	}
+	if noneRes.Total != 0 || len(noneRes.Workflows) != 0 {
+		t.Fatalf("expected 0 workflows for nonexistent role, got %+v", noneRes)
+	}
+
+	showRaw, err := captureStdout(t, func() error {
+		return runWorkflowsShowFiltered("role-trigger-audit", "builder")
+	})
+	if err != nil {
+		t.Fatalf("runWorkflowsShowFiltered error: %v", err)
+	}
+	var showRes WorkflowShowResult
+	if err := json.Unmarshal([]byte(showRaw), &showRes); err != nil {
+		t.Fatalf("decode WorkflowShowResult: %v\nraw=%s", err, showRaw)
+	}
+	if len(showRes.Agents) != 1 || showRes.Agents[0].Role != "builder" {
+		t.Fatalf("filtered show Agents = %+v, want single builder entry", showRes.Agents)
+	}
+	if len(showRes.RoleAgents["builder"]) != 1 || len(showRes.RoleAgents["planner"]) != 1 {
+		t.Fatalf("RoleAgents = %+v, want builder and planner entries", showRes.RoleAgents)
+	}
+	if len(showRes.ValidatedTriggers) != 2 {
+		t.Fatalf("ValidatedTriggers = %+v, want 2 transitions", showRes.ValidatedTriggers)
+	}
+	for _, diag := range showRes.ValidatedTriggers {
+		if !diag.Valid || diag.RuntimeType == "" {
+			t.Fatalf("expected valid runtime trigger diagnostic, got %+v", diag)
+		}
+	}
+}
+
+func TestTemplateListHasVarFilter(t *testing.T) {
+	originalJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = originalJSON })
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	projDir := t.TempDir()
+	chdirForTerminalJSONTest(t, projDir)
+
+	tmplDir := filepath.Join(projDir, ".ntm", "templates")
+	if err := os.MkdirAll(tmplDir, 0o755); err != nil {
+		t.Fatalf("mkdir templates: %v", err)
+	}
+	tmplBody := `---
+name: targeted_audit
+description: Audit a specific module
+variables:
+  - name: target_module_xyz
+    description: Module path to audit
+    required: true
+---
+Audit {{target_module_xyz}} thoroughly.
+`
+	if err := os.WriteFile(filepath.Join(tmplDir, "targeted_audit.md"), []byte(tmplBody), 0o644); err != nil {
+		t.Fatalf("write template: %v", err)
+	}
+
+	matchRaw, err := captureStdout(t, func() error {
+		return runTemplateListFiltered(true, "target_module_xyz")
+	})
+	if err != nil {
+		t.Fatalf("runTemplateListFiltered(match) error: %v", err)
+	}
+	var matched []TemplateListItem
+	if err := json.Unmarshal([]byte(matchRaw), &matched); err != nil {
+		t.Fatalf("decode matched templates: %v\nraw=%s", err, matchRaw)
+	}
+	if len(matched) != 1 || matched[0].Name != "targeted_audit" {
+		t.Fatalf("matched templates = %+v, want [targeted_audit]", matched)
+	}
+
+	emptyRaw, err := captureStdout(t, func() error {
+		return runTemplateListFiltered(false, "missing_var_99999")
+	})
+	if err != nil {
+		t.Fatalf("runTemplateListFiltered(empty) error: %v", err)
+	}
+	var empty []TemplateListItem
+	if err := json.Unmarshal([]byte(emptyRaw), &empty); err != nil {
+		t.Fatalf("decode empty templates: %v\nraw=%s", err, emptyRaw)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("expected 0 templates for missing variable, got %+v", empty)
+	}
+}

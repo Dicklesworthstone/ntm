@@ -704,6 +704,37 @@ type monitorCompactionRecoverer interface {
 		func(context.Context, string) (statuspkg.SessionObservation, error)) []statuspkg.RecoveryAttempt
 }
 
+type monitorRecoveryTelemetry interface {
+	Detector() *statuspkg.CompactionDetector
+	Recovery() *statuspkg.RecoveryManager
+}
+
+type monitorRecoverySummary struct {
+	RecoveryCount      int
+	PaneCompactions    int
+	SessionCompactions int
+	LastRecoveryAt     string
+}
+
+func summarizeMonitorRecovery(recovery monitorCompactionRecoverer, paneID string) monitorRecoverySummary {
+	var summary monitorRecoverySummary
+	telemetry, ok := recovery.(monitorRecoveryTelemetry)
+	if !ok || telemetry == nil {
+		return summary
+	}
+	if detector := telemetry.Detector(); detector != nil {
+		summary.PaneCompactions = len(detector.EventsForPane(paneID))
+		summary.SessionCompactions = len(detector.Events())
+	}
+	if manager := telemetry.Recovery(); manager != nil {
+		summary.RecoveryCount = manager.GetRecoveryCount(paneID)
+		if last, exists := manager.GetLastRecoveryTime(paneID); exists {
+			summary.LastRecoveryAt = last.UTC().Format(time.RFC3339)
+		}
+	}
+	return summary
+}
+
 // monitorRecoveryObserver shares the timeline capture; only a pending recovery
 // needs an extra fresh observation immediately before delivery. The original
 // reader is supplied for that check, not this wrapper (which would recurse).
@@ -739,12 +770,25 @@ func observeMonitorRecovery(recovery monitorCompactionRecoverer, project string,
 			candidate = statuspkg.SessionObservation{Session: session}
 		}
 		for _, attempt := range recovery.RecoverObserved(ctx, candidate, project, observe) {
+			summary := summarizeMonitorRecovery(recovery, attempt.PaneID)
 			if attempt.Error != "" {
 				// Never log a raw delivery error: external errors may echo the
 				// prompt or captured output. No automatic replay after uncertainty.
-				slog.Warn("compaction recovery did not complete; inspect pane before retrying", "session", session, "pane", attempt.PaneID)
+				slog.Warn("compaction recovery did not complete; inspect pane before retrying",
+					"session", session,
+					"pane", attempt.PaneID,
+					"recovery_count", summary.RecoveryCount,
+					"pane_compactions", summary.PaneCompactions,
+				)
 			} else if attempt.Sent {
-				slog.Info("compaction recovery prompt delivered", "session", session, "pane", attempt.PaneID)
+				slog.Info("compaction recovery prompt delivered",
+					"session", session,
+					"pane", attempt.PaneID,
+					"recovery_count", summary.RecoveryCount,
+					"pane_compactions", summary.PaneCompactions,
+					"session_compactions", summary.SessionCompactions,
+					"last_recovery_at", summary.LastRecoveryAt,
+				)
 			}
 		}
 		return observation, err

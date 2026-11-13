@@ -23,6 +23,8 @@ type UBSScanOptions struct {
 	Timeout          time.Duration
 	FailOnWarning    bool
 	Limit            int
+	Severity         string
+	FilterFile       string
 }
 
 // UBSScanSummary summarizes totals and health for --robot-ubs-scan.
@@ -60,6 +62,8 @@ func GetUBSScan(ctx context.Context, opts UBSScanOptions) (*UBSScanOutput, error
 
 	fileTarget := strings.TrimSpace(opts.File)
 	pathTarget := strings.TrimSpace(opts.Path)
+	severityFilter := strings.ToLower(strings.TrimSpace(opts.Severity))
+	filterFile := strings.TrimSpace(opts.FilterFile)
 
 	emptyEnvelope := func(mode, target string) *UBSScanOutput {
 		return &UBSScanOutput{
@@ -68,6 +72,20 @@ func GetUBSScan(ctx context.Context, opts UBSScanOptions) (*UBSScanOutput, error
 			Findings:      make([]scanner.Finding, 0),
 			TriagePreview: make([]scanner.PrioritizedFinding, 0),
 		}
+	}
+
+	if severityFilter != "" &&
+		severityFilter != string(scanner.SeverityCritical) &&
+		severityFilter != string(scanner.SeverityWarning) &&
+		severityFilter != string(scanner.SeverityInfo) {
+		out := emptyEnvelope("invalid", pathTarget)
+		out.RobotResponse = NewErrorResponse(
+			fmt.Errorf("invalid scan severity filter %q", opts.Severity),
+			ErrCodeInvalidFlag,
+			"Use critical, warning, or info when filtering UBS scan findings by severity.",
+		)
+		out.Meta = meta.WithExitCode(1)
+		return out, nil
 	}
 
 	if opts.Staged && opts.Diff {
@@ -220,6 +238,38 @@ func GetUBSScan(ctx context.Context, opts UBSScanOptions) (*UBSScanOutput, error
 		)
 		out.Meta = meta.WithExitCode(1)
 		return out, nil
+	}
+
+	if filterFile != "" || severityFilter != "" {
+		filtered := *result
+		if filterFile != "" {
+			filtered.Findings = filtered.FilterByFile(filterFile)
+		}
+		if severityFilter != "" {
+			filtered.Findings = filtered.FilterBySeverity(scanner.Severity(severityFilter))
+		}
+		var crit, warn, info int
+		files := make(map[string]struct{})
+		for _, f := range filtered.Findings {
+			switch f.Severity {
+			case scanner.SeverityCritical:
+				crit++
+			case scanner.SeverityWarning:
+				warn++
+			case scanner.SeverityInfo:
+				info++
+			}
+			if f.File != "" {
+				files[f.File] = struct{}{}
+			}
+		}
+		filtered.Totals.Critical = crit
+		filtered.Totals.Warning = warn
+		filtered.Totals.Info = info
+		if filterFile != "" {
+			filtered.Totals.Files = len(files)
+		}
+		result = &filtered
 	}
 
 	findings := result.Findings

@@ -177,3 +177,131 @@ func TestRobotUBSScanRootFlagEndToEnd(t *testing.T) {
 		t.Fatalf("expected exit code 2 when ubs is missing, got %T %v (stdout=%s)", missingErr, missingErr, missingOut)
 	}
 }
+
+func TestScanCLI_FiltersAndProjectThresholds(t *testing.T) {
+	dir := t.TempDir()
+	yamlCfg := "scanner:\n" +
+		"  defaults:\n" +
+		"    timeout: 45s\n" +
+		"  tools:\n" +
+		"    disabled:\n" +
+		"      - rust\n" +
+		"  thresholds:\n" +
+		"    pre_commit:\n" +
+		"      block_critical: true\n" +
+		"      block_errors: 2\n" +
+		"    ci:\n" +
+		"      fail_critical: true\n" +
+		"      fail_errors: 1\n"
+	if err := os.WriteFile(filepath.Join(dir, ".ntm.yaml"), []byte(yamlCfg), 0o644); err != nil {
+		t.Fatalf("write .ntm.yaml: %v", err)
+	}
+
+	origAvail := scanIsAvailable
+	origNewRunner := newScanRunner
+	t.Cleanup(func() {
+		scanIsAvailable = origAvail
+		newScanRunner = origNewRunner
+	})
+
+	rec := &recordingIncrementalScanner{
+		result: &scanner.ScanResult{
+			Project: dir,
+			Totals:  scanner.ScanTotals{Files: 2, Critical: 0, Warning: 2, Info: 1},
+			Scanners: []scanner.ScannerResult{
+				{Language: "golang", Files: 1, Warning: 2},
+				{Language: "rust", Files: 1, Info: 1},
+			},
+			Findings: []scanner.Finding{
+				{File: "internal/auth/login.go", Line: 10, Severity: scanner.SeverityWarning, Message: "warn 1"},
+				{File: "internal/auth/token.go", Line: 22, Severity: scanner.SeverityWarning, Message: "warn 2"},
+				{File: "crates/core/lib.rs", Line: 5, Severity: scanner.SeverityInfo, Message: "info 1"},
+			},
+		},
+	}
+	scanIsAvailable = func() bool { return true }
+	newScanRunner = func() (scanRunner, error) { return rec, nil }
+
+	stdout, err := captureStdout(t, func() error {
+		_, runErr := execCommand(t, "scan", dir, "--severity", "warning", "--filter-file", "auth/token.go", "--json")
+		return runErr
+	})
+	if err != nil {
+		t.Fatalf("scan with --severity and --filter-file failed: %v (stdout=%s)", err, stdout)
+	}
+	if rec.calledOpts.Timeout.Seconds() != 45 {
+		t.Fatalf("timeout = %v, want 45s from .ntm.yaml scanner.defaults.timeout", rec.calledOpts.Timeout)
+	}
+	if len(rec.calledOpts.ExcludeLanguages) != 1 || rec.calledOpts.ExcludeLanguages[0] != "rust" {
+		t.Fatalf("exclude languages = %v, want [rust] from .ntm.yaml scanner.tools.disabled", rec.calledOpts.ExcludeLanguages)
+	}
+
+	var payload struct {
+		Success bool               `json:"success"`
+		Scan    scanner.ScanResult `json:"scan"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("unmarshal scan output: %v\nstdout=%s", err, stdout)
+	}
+	if !payload.Success || len(payload.Scan.Findings) != 1 || payload.Scan.Findings[0].File != "internal/auth/token.go" {
+		t.Fatalf("filtered scan findings = %+v, want only internal/auth/token.go", payload.Scan.Findings)
+	}
+	if len(payload.Scan.Scanners) != 1 || payload.Scan.Scanners[0].Language != "golang" {
+		t.Fatalf("filtered scanners = %+v, want only golang", payload.Scan.Scanners)
+	}
+
+	// Pre-commit threshold blocks when warnings >= block_errors (2 >= 2).
+	_, stagedErr := captureStdout(t, func() error {
+		_, runErr := execCommand(t, "scan", dir, "--staged")
+		return runErr
+	})
+	if stagedErr == nil {
+		t.Fatal("expected --staged scan to fail when warnings meet pre_commit.block_errors=2")
+	}
+
+	// CI threshold fails when warnings > fail_errors (2 > 1).
+	_, ciErr := captureStdout(t, func() error {
+		_, runErr := execCommand(t, "scan", dir, "--ci")
+		return runErr
+	})
+	if ciErr == nil {
+		t.Fatal("expected --ci scan to fail when warnings exceed ci.fail_errors=1")
+	}
+}
+
+func TestBugsListCLI_SeverityAndFileFilters(t *testing.T) {
+	dir := t.TempDir()
+	cached := &scanner.ScanResult{
+		Project: dir,
+		Totals:  scanner.ScanTotals{Files: 2, Critical: 1, Warning: 1, Info: 1},
+		Findings: []scanner.Finding{
+			{File: "pkg/alpha/a.go", Line: 4, Severity: scanner.SeverityCritical, Message: "crit"},
+			{File: "pkg/beta/b.go", Line: 8, Severity: scanner.SeverityWarning, Message: "warn"},
+			{File: "pkg/beta/b.go", Line: 12, Severity: scanner.SeverityInfo, Message: "info"},
+		},
+	}
+	if err := saveCachedScanResult(dir, cached); err != nil {
+		t.Fatalf("saveCachedScanResult: %v", err)
+	}
+
+	stdout, err := captureStdout(t, func() error {
+		_, runErr := execCommand(t, "bugs", "list", dir, "--severity", "warning", "--file", "beta/b.go", "--json")
+		return runErr
+	})
+	if err != nil {
+		t.Fatalf("bugs list --severity --file: %v", err)
+	}
+	var out struct {
+		Findings []scanner.Finding `json:"findings"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("unmarshal bugs list JSON: %v\nstdout=%s", err, stdout)
+	}
+	if len(out.Findings) != 1 || out.Findings[0].File != "pkg/beta/b.go" || out.Findings[0].Severity != scanner.SeverityWarning {
+		t.Fatalf("bugs list filtered findings = %+v, want single warning in pkg/beta/b.go", out.Findings)
+	}
+}
+
+func runScan(path string, opts scanner.ScanOptions, createBeads, updateBeads, notifyAgents bool, bridgeCfg scanner.BridgeConfig, analyzeImpact, showHotspots, priorityReport bool) error {
+	return runScanWithConfig(path, opts, nil, scanOutputFilters{}, createBeads, updateBeads, notifyAgents, bridgeCfg, analyzeImpact, showHotspots, priorityReport)
+}

@@ -1727,3 +1727,77 @@ func TestRunHandoffCreateAutoDegradesOnSlowCASS(t *testing.T) {
 		t.Fatalf("expected structured cass degradation warning in JSON output, got %+v", result)
 	}
 }
+
+func TestHandoffCreateBlockerDecisionFlagsAndShowState(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	createCmd := newHandoffCreateCmd()
+	var createOut bytes.Buffer
+	createCmd.SetOut(&createOut)
+	createCmd.SetErr(&createOut)
+	outPath := filepath.Join(tmpDir, "blocked-handoff.yaml")
+	createCmd.SetArgs([]string{
+		"general",
+		"--goal", "Investigated projection sync",
+		"--now", "Unblock upstream credentials",
+		"--blocker", "Missing API token",
+		"--decision", "store=sqlite",
+		"--output", outPath,
+		"--format", "json",
+		"--include-git=false",
+	})
+	if err := createCmd.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("handoff create with --blocker/--decision failed: %v; output=%s", err, createOut.String())
+	}
+
+	var created map[string]interface{}
+	if err := json.Unmarshal(createOut.Bytes(), &created); err != nil {
+		t.Fatalf("decode create JSON: %v; raw=%s", err, createOut.String())
+	}
+	if created["is_blocked"] != true || created["is_complete"] != false {
+		t.Fatalf("expected is_blocked=true and is_complete=false, got %+v", created)
+	}
+
+	showCmd := newHandoffShowCmd()
+	var showOut bytes.Buffer
+	showCmd.SetOut(&showOut)
+	showCmd.SetErr(&showOut)
+	showCmd.SetArgs([]string{outPath})
+	if err := showCmd.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("handoff show failed: %v", err)
+	}
+	text := showOut.String()
+	for _, want := range []string{"State: blocked (1 blocker(s))", "Missing API token", "store: sqlite"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected handoff show output to contain %q, got:\n%s", want, text)
+		}
+	}
+}
+
+func TestHandoffCreateFromInvalidFileFormatsAllFieldValidationErrors(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	invalidPath := filepath.Join(tmpDir, "invalid.yaml")
+	invalidYAML := "session: bad session!\nstatus: invalid_status\noutcome: BAD_OUTCOME\n"
+	if err := os.WriteFile(invalidPath, []byte(invalidYAML), 0o600); err != nil {
+		t.Fatalf("write invalid yaml: %v", err)
+	}
+
+	cmd := newHandoffCreateCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--from-file", invalidPath})
+
+	err := cmd.ExecuteContext(t.Context())
+	if err == nil {
+		t.Fatal("expected validation error for invalid handoff YAML")
+	}
+	for _, want := range []string{"validation failed:", "field=goal", "field=now", "field=status", "field=outcome"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error %q to contain %q", err.Error(), want)
+		}
+	}
+}

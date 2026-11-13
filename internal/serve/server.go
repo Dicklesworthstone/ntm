@@ -978,10 +978,6 @@ func (r *responseRecorder) Write(b []byte) (int, error) {
 	return r.ResponseWriter.Write(b)
 }
 
-func (r *responseRecorder) Bytes() []byte {
-	return r.body
-}
-
 // Flush forwards http.Flusher so streaming mutating handlers keep working
 // when an Idempotency-Key is present (bd-vq37v).
 func (r *responseRecorder) Flush() {

@@ -9,6 +9,20 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/cli/tiers"
 )
 
+func (c *ProficiencyConfig) IncrementCommand() error {
+	return c.RecordUsage(1, 0, 0)
+}
+
+func (c *ProficiencyConfig) RecordAdvancedAttempt(commandName string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.UsageStats.AdvancedAttempts++
+	c.UsageStats.LastUse = time.Now()
+
+	return c.saveUnlocked()
+}
+
 func TestDefaultProficiencyConfig(t *testing.T) {
 	cfg := DefaultProficiencyConfig()
 

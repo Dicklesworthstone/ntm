@@ -185,7 +185,7 @@ func (m *SpawnPanel) View() string {
 
 	// Stats row
 	staggerStr := fmt.Sprintf("%ds", m.data.StaggerSeconds)
-	stats := fmt.Sprintf("Stagger: %s  Sent: %d/%d", staggerStr, m.data.SentCount(), len(m.data.Prompts))
+	stats := fmt.Sprintf("Stagger: %s  Sent: %d/%d  Pending: %d", staggerStr, m.data.SentCount(), len(m.data.Prompts), m.data.PendingCount())
 	if m.data.IsComplete() {
 		duration := m.data.CompletedAt.Sub(m.data.StartedAt)
 		stats = fmt.Sprintf("Completed in %v", duration.Round(time.Second))

@@ -64,11 +64,45 @@ func (f *SynthesisFormatter) FormatResult(w io.Writer, result *SynthesisResult, 
 // formatJSON outputs the result as JSON.
 func (f *SynthesisFormatter) formatJSON(w io.Writer, result *SynthesisResult, audit *AuditReport) error {
 	synth := f.prepareResultForOutput(result)
+
+	type jsonSynthesisResult struct {
+		*SynthesisResult
+		Explanation   json.RawMessage `json:"explanation,omitempty"`
+		Contributions json.RawMessage `json:"contributions,omitempty"`
+	}
+
+	var encodedSynth *jsonSynthesisResult
+	if synth != nil {
+		base := *synth
+		var explRaw, contribRaw json.RawMessage
+		if synth.Explanation != nil {
+			data, err := synth.Explanation.JSON()
+			if err != nil {
+				return fmt.Errorf("marshal explanation: %w", err)
+			}
+			explRaw = json.RawMessage(data)
+			base.Explanation = nil
+		}
+		if synth.Contributions != nil {
+			data, err := synth.Contributions.JSON()
+			if err != nil {
+				return fmt.Errorf("marshal contributions: %w", err)
+			}
+			contribRaw = json.RawMessage(data)
+			base.Contributions = nil
+		}
+		encodedSynth = &jsonSynthesisResult{
+			SynthesisResult: &base,
+			Explanation:     explRaw,
+			Contributions:   contribRaw,
+		}
+	}
+
 	output := struct {
-		Synthesis *SynthesisResult `json:"synthesis"`
-		Audit     *AuditReport     `json:"audit,omitempty"`
+		Synthesis *jsonSynthesisResult `json:"synthesis"`
+		Audit     *AuditReport         `json:"audit,omitempty"`
 	}{
-		Synthesis: synth,
+		Synthesis: encodedSynth,
 	}
 
 	if f.IncludeAudit && audit != nil {
@@ -350,6 +384,13 @@ func (f *SynthesisFormatter) formatMarkdown(w io.Writer, result *SynthesisResult
 		if result.RawOutput != "" {
 			b.WriteString(fmt.Sprintf("### Lead Synthesizer\n\n```yaml\n%s\n```\n\n", strings.TrimSpace(result.RawOutput)))
 		}
+	}
+
+	// Redundancy & Diversity Analysis
+	if result.Redundancy != nil {
+		b.WriteString("## Mode Diversity & Redundancy\n\n")
+		b.WriteString(result.Redundancy.Render())
+		b.WriteString("\n")
 	}
 
 	// Footer

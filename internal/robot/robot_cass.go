@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -13,12 +14,23 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
 
+func init() {
+	MustRegisterSchemaPagination("cass_status", SchemaPaginationFlag{
+		Reason: "bounded: fixed capability feature and connector sets from CASS",
+	})
+}
+
 // CASSStatusOutput represents the output for --robot-cass-status
 type CASSStatusOutput struct {
 	RobotResponse
-	CASSAvailable bool           `json:"cass_available"`
-	Healthy       bool           `json:"healthy"`
-	Index         CASSIndexStats `json:"index"`
+	CASSAvailable         bool           `json:"cass_available"`
+	Healthy               bool           `json:"healthy"`
+	Index                 CASSIndexStats `json:"index"`
+	Features              []string       `json:"features,omitempty"`
+	Connectors            []string       `json:"connectors,omitempty"`
+	ActiveAgentConnectors []string       `json:"active_agent_connectors,omitempty"`
+	SupportsAggregation   bool           `json:"supports_aggregation,omitempty"`
+	SupportsTimeline      bool           `json:"supports_timeline,omitempty"`
 }
 
 // CASSIndexStats holds index statistics
@@ -34,8 +46,9 @@ type CASSIndexStats struct {
 // GetCASSStatus collects CASS health and stats.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetCASSStatus() (*CASSStatusOutput, error) {
+	ctx := context.Background()
 	client := cass.NewClient()
-	status, err := client.Status(context.Background())
+	status, err := client.Status(ctx)
 
 	cassAvailable := client.IsInstalled()
 	output := &CASSStatusOutput{
@@ -55,7 +68,10 @@ func GetCASSStatus() (*CASSStatusOutput, error) {
 	}
 
 	if err == nil {
-		output.Healthy = status.Healthy
+		output.Healthy = status.IsHealthy()
+		if !output.Healthy {
+			output.Healthy = client.IsHealthy(ctx)
+		}
 		output.Index.Exists = status.Index.Exists
 		output.Index.Fresh = status.Index.Healthy
 		output.Index.LastIndexedAt = status.LastIndexedAt.UnixMilli()
@@ -63,6 +79,17 @@ func GetCASSStatus() (*CASSStatusOutput, error) {
 		if !status.Database.CountsSkipped {
 			output.Index.Conversations = &status.Conversations
 			output.Index.Messages = &status.Messages
+		}
+		if caps, capErr := client.Capabilities(ctx); capErr == nil && caps != nil {
+			output.Features = caps.Features
+			output.Connectors = caps.Connectors
+			output.SupportsAggregation = caps.HasFeature("aggregations") || caps.HasFeature("aggregate")
+			output.SupportsTimeline = caps.HasFeature("timeline")
+			for _, candidate := range []string{"claude_code", "codex", "gemini", "cursor", "aider"} {
+				if caps.HasConnector(candidate) {
+					output.ActiveAgentConnectors = append(output.ActiveAgentConnectors, candidate)
+				}
+			}
 		}
 	} else {
 		output.RobotResponse = cassErrorResponse(err, "Check cass index health and configuration")
@@ -277,11 +304,15 @@ func GetCASSContext(query string) (*CASSContextOutput, error) {
 			RelevantSessions: []CASSContextSession{},
 		}, nil
 	}
-	// Search for relevant sessions
-	resp, err := client.Search(context.Background(), cass.SearchOptions{
-		Query: query,
-		Limit: 3,
-	})
+	ctx := context.Background()
+	workspace, _ := os.Getwd()
+	// Search workspace-scoped past context first, falling back to global context if empty.
+	resp, err := client.SearchForContext(ctx, query, workspace)
+	if err == nil && workspace != "" && !resp.HasResults() {
+		if globalResp, globalErr := client.SearchForContext(ctx, query, ""); globalErr == nil {
+			resp = globalResp
+		}
+	}
 
 	if err != nil {
 		return &CASSContextOutput{
@@ -299,24 +330,26 @@ func GetCASSContext(query string) (*CASSContextOutput, error) {
 
 	var suggestions []string
 
-	for _, hit := range resp.Hits {
-		when := "unknown"
-		if hit.CreatedAt != nil {
-			ts := hit.CreatedAt.Time
-			when = ts.Format("2006-01-02")
-		}
+	if resp.HasResults() {
+		for _, hit := range resp.Hits {
+			when := "unknown"
+			if hit.CreatedAt != nil {
+				ts := hit.CreatedAt.Time
+				when = ts.Format("2006-01-02")
+			}
 
-		session := CASSContextSession{
-			Summary: hit.Title,
-			Source:  hit.SourcePath,
-			Agent:   hit.Agent,
-			When:    when,
-		}
-		// KeyPoints left nil (omitted from JSON via omitempty) because
-		// CASS SearchHit does not provide structured key-point data.
+			session := CASSContextSession{
+				Summary: hit.Title,
+				Source:  hit.SourcePath,
+				Agent:   hit.Agent,
+				When:    when,
+			}
+			// KeyPoints left nil (omitted from JSON via omitempty) because
+			// CASS SearchHit does not provide structured key-point data.
 
-		output.RelevantSessions = append(output.RelevantSessions, session)
-		suggestions = append(suggestions, fmt.Sprintf("session '%s' (%s)", hit.Title, hit.Agent))
+			output.RelevantSessions = append(output.RelevantSessions, session)
+			suggestions = append(suggestions, fmt.Sprintf("session '%s' (%s)", hit.Title, hit.Agent))
+		}
 	}
 
 	if len(suggestions) > 0 {

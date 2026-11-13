@@ -261,11 +261,6 @@ func (tm *ToastManager) updateStackTargets() {
 	}
 }
 
-// History returns the dismissed toast history (most recent last).
-func (tm *ToastManager) History() []Toast {
-	return tm.history
-}
-
 // RecentHistory returns the most recent dismissed toasts first.
 func (tm *ToastManager) RecentHistory(limit int) []Toast {
 	if len(tm.history) == 0 {

@@ -1078,3 +1078,115 @@ func TestApplyTransfersDispatchFailureIsRetryableWithoutDuplicateMutation(t *tes
 		t.Fatalf("fresh recovery dispatch requests = %+v", dispatch.requests)
 	}
 }
+
+func runRebalance(ctx context.Context, session string, dryRun, apply bool, filter string, threshold float64, formatOut string) error {
+	return runRebalanceWithGeometry(ctx, session, dryRun, apply, filter, threshold, formatOut, false, 2)
+}
+
+func TestRebalanceWithGeometryJSON(t *testing.T) {
+	previousConfigFile := cfgFile
+	previousResolveProject := resolveRebalanceProjectDir
+	previousLoadStore := loadRebalanceAssignmentStore
+	previousGetPanes := getRebalancePanes
+	oldClient := tmux.DefaultClient
+	t.Cleanup(func() {
+		cfgFile = previousConfigFile
+		resolveRebalanceProjectDir = previousResolveProject
+		loadRebalanceAssignmentStore = previousLoadStore
+		getRebalancePanes = previousGetPanes
+		tmux.DefaultClient = oldClient
+	})
+	t.Setenv("NTM_CONFIG", "")
+	cfgFile = ""
+	tmux.DefaultClient = tmux.NewClient("")
+
+	fixtureDir := t.TempDir()
+	projectDir := t.TempDir()
+	callsPath := filepath.Join(fixtureDir, "tmux-calls")
+	rebalancedMarker := filepath.Join(fixtureDir, "rebalanced")
+	t.Setenv("NTM_GEOM_CALLS", callsPath)
+	t.Setenv("NTM_GEOM_MARKER", rebalancedMarker)
+
+	const fakeTmux = `#!/bin/sh
+printf '%s\n' "$*" >> "$NTM_GEOM_CALLS"
+case "$1" in
+  -V) echo 'tmux 3.4' ;;
+  has-session) exit 0 ;;
+  list-windows) echo 0 ;;
+  display-message) echo 0 ;;
+  select-layout)
+    : > "$NTM_GEOM_MARKER"
+    ;;
+  list-panes)
+    w2=60
+    if [ -f "$NTM_GEOM_MARKER" ]; then w2=100; fi
+    printf '%%11_NTM_SEP_1_NTM_SEP_geom-sess__cc_1_NTM_SEP_claude_NTM_SEP_100_NTM_SEP_30_NTM_SEP_1_NTM_SEP_101_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0\n'
+    printf '%%12_NTM_SEP_2_NTM_SEP_geom-sess__cc_2_NTM_SEP_claude_NTM_SEP_%s_NTM_SEP_30_NTM_SEP_0_NTM_SEP_102_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$w2"
+    ;;
+esac
+`
+	tmuxBin := filepath.Join(fixtureDir, "tmux")
+	if err := os.WriteFile(tmuxBin, []byte(fakeTmux), 0o700); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", tmuxBin)
+
+	resolveRebalanceProjectDir = func(context.Context, string) (string, error) {
+		return projectDir, nil
+	}
+	loadRebalanceAssignmentStore = func(session string) (*assignment.AssignmentStore, error) {
+		return &assignment.AssignmentStore{
+			SessionName: session,
+			Assignments: map[string]*assignment.Assignment{},
+		}, nil
+	}
+	getRebalancePanes = func(context.Context, string) ([]tmux.Pane, error) {
+		return []tmux.Pane{
+			{ID: "%11", Index: 1, Title: "geom-sess__cc_1", Type: tmux.AgentClaude, Width: 100, Height: 30},
+			{ID: "%12", Index: 2, Title: "geom-sess__cc_2", Type: tmux.AgentClaude, Width: 60, Height: 30},
+		}, nil
+	}
+
+	// 1. Inspect-only (--geometry without --apply) reports non-uniform geometry without tiling.
+	rawInspect, err := captureStdout(t, func() error {
+		return runRebalanceWithGeometry(t.Context(), "geom-sess", true, false, "", 0, "json", true, 2)
+	})
+	if err != nil {
+		t.Fatalf("runRebalanceWithGeometry(dryRun) error: %v", err)
+	}
+	var inspectResp RebalanceResponse
+	if err := json.Unmarshal([]byte(rawInspect), &inspectResp); err != nil {
+		t.Fatalf("decode inspect JSON: %v\nraw=%s", err, rawInspect)
+	}
+	if inspectResp.Geometry == nil || inspectResp.Geometry.Result == nil {
+		t.Fatalf("expected geometry report in JSON, got %+v", inspectResp.Geometry)
+	}
+	if inspectResp.Geometry.Result.IsUniform || inspectResp.Geometry.Rebalanced {
+		t.Fatalf("expected non-uniform unrebalanced geometry, got %+v", inspectResp.Geometry)
+	}
+	if inspectResp.Geometry.Average == nil || inspectResp.Geometry.Average.Width != 80 || inspectResp.Geometry.Average.Height != 30 {
+		t.Fatalf("unexpected average geometry: %+v", inspectResp.Geometry.Average)
+	}
+
+	// 2. Apply mode (--apply --geometry) rebalances tiled layout and verifies uniform geometry.
+	rawApply, err := captureStdout(t, func() error {
+		return runRebalanceWithGeometry(t.Context(), "geom-sess", false, true, "", 0, "json", true, 2)
+	})
+	if err != nil {
+		t.Fatalf("runRebalanceWithGeometry(apply) error: %v", err)
+	}
+	var applyResp RebalanceResponse
+	if err := json.Unmarshal([]byte(rawApply), &applyResp); err != nil {
+		t.Fatalf("decode apply JSON: %v\nraw=%s", err, rawApply)
+	}
+	if applyResp.Geometry == nil || applyResp.Geometry.Result == nil || !applyResp.Geometry.Rebalanced || !applyResp.Geometry.Result.IsUniform {
+		t.Fatalf("expected rebalanced uniform geometry, got %+v", applyResp.Geometry)
+	}
+	calls, err := os.ReadFile(callsPath)
+	if err != nil {
+		t.Fatalf("read tmux calls: %v", err)
+	}
+	if !strings.Contains(string(calls), "select-layout") {
+		t.Fatalf("expected select-layout tiled call, got:\n%s", calls)
+	}
+}

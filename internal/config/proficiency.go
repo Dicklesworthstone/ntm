@@ -177,11 +177,6 @@ func (c *ProficiencyConfig) RecordUsage(commandsRun, sessionsCreated, promptsSen
 	return c.saveUnlocked()
 }
 
-// IncrementCommand increments the command counter and updates last use.
-func (c *ProficiencyConfig) IncrementCommand() error {
-	return c.RecordUsage(1, 0, 0)
-}
-
 // IncrementSession increments the session counter.
 func (c *ProficiencyConfig) IncrementSession() error {
 	return c.RecordUsage(0, 1, 0)
@@ -340,17 +335,6 @@ func (c *ProficiencyConfig) RecordCommand(commandName string) error {
 		c.UsageStats.DaysActive++
 		c.UsageStats.LastActiveDate = today
 	}
-
-	return c.saveUnlocked()
-}
-
-// RecordAdvancedAttempt tracks when user tries a command above their tier.
-func (c *ProficiencyConfig) RecordAdvancedAttempt(commandName string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.UsageStats.AdvancedAttempts++
-	c.UsageStats.LastUse = time.Now()
 
 	return c.saveUnlocked()
 }

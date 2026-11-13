@@ -3,10 +3,8 @@ package tools
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os/exec"
-	"strings"
 	"time"
 )
 
@@ -176,117 +174,4 @@ func (a *BDAdapter) Health(ctx context.Context) (*HealthStatus, error) {
 // Info returns complete bd tool information
 func (a *BDAdapter) Info(ctx context.Context) (*ToolInfo, error) {
 	return a.BaseAdapter.Info(ctx, a)
-}
-
-// BD-specific methods
-
-// GetStats returns bd stats output
-func (a *BDAdapter) GetStats(ctx context.Context, dir string) (json.RawMessage, error) {
-	return a.runCommand(ctx, dir, "stats", "--json")
-}
-
-// GetReady returns ready issues
-func (a *BDAdapter) GetReady(ctx context.Context, dir string) (json.RawMessage, error) {
-	return a.runCommand(ctx, dir, "ready", "--json")
-}
-
-// GetBlocked returns blocked issues
-func (a *BDAdapter) GetBlocked(ctx context.Context, dir string) (json.RawMessage, error) {
-	return a.runCommand(ctx, dir, "blocked", "--json")
-}
-
-// GetList returns issues matching filter
-func (a *BDAdapter) GetList(ctx context.Context, dir string, status string) (json.RawMessage, error) {
-	args := []string{"list", "--json"}
-	if status != "" {
-		args = append(args, "--status="+status)
-	}
-	return a.runCommand(ctx, dir, args...)
-}
-
-// Show returns details for a specific issue
-func (a *BDAdapter) Show(ctx context.Context, dir, issueID string) (json.RawMessage, error) {
-	return a.runCommand(ctx, dir, "show", issueID, "--json")
-}
-
-// runCommand executes a bd command and returns raw JSON
-func (a *BDAdapter) runCommand(ctx context.Context, dir string, args ...string) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
-	defer cancel()
-
-	binary, _, err := a.workingBinary(ctx, a.binaryCandidates())
-	if err != nil {
-		return nil, fmt.Errorf("failed to find usable beads_rust binary: %w", err)
-	}
-
-	cmd := exec.CommandContext(ctx, binary, args...)
-	cmd.WaitDelay = time.Second
-	if dir != "" {
-		cmd.Dir = dir
-	}
-
-	const maxAttempts = 6
-	var runErr error
-	var stderr bytes.Buffer
-	var stdout *LimitedBuffer
-
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		stdout = NewLimitedBuffer(10 * 1024 * 1024)
-		stderr.Reset()
-
-		// Need to create a new command for each retry
-		cmd = exec.CommandContext(ctx, binary, args...)
-		cmd.WaitDelay = time.Second
-		if dir != "" {
-			cmd.Dir = dir
-		}
-		cmd.Stdout = stdout
-		cmd.Stderr = &stderr
-
-		runErr = cmd.Run()
-		if runErr == nil {
-			break
-		}
-
-		if ctx.Err() == context.DeadlineExceeded {
-			return nil, ErrTimeout
-		}
-		if strings.Contains(runErr.Error(), ErrOutputLimitExceeded.Error()) {
-			return nil, fmt.Errorf("beads_rust output exceeded 10MB limit")
-		}
-
-		// Check for SQLite locked errors
-		outStr := stdout.String()
-		errStr := stderr.String()
-		s := strings.ToLower(errStr + "\n" + outStr)
-		if attempt < maxAttempts && (strings.Contains(s, "database is busy") || strings.Contains(s, "database is locked")) {
-			backoff := 50 * time.Millisecond
-			for i := 1; i < attempt; i++ {
-				backoff *= 2
-			}
-			if backoff > 800*time.Millisecond {
-				backoff = 800 * time.Millisecond
-			}
-			select {
-			case <-ctx.Done():
-				return nil, ErrTimeout
-			case <-time.After(backoff):
-			}
-			continue
-		}
-
-		break
-	}
-
-	if runErr != nil {
-		return nil, fmt.Errorf("beads_rust %s failed: %w: %s", strings.Join(args, " "), runErr, stderr.String())
-	}
-
-	// Validate JSON
-	output := stdout.Bytes()
-	if len(output) > 0 && !json.Valid(output) {
-		return nil, fmt.Errorf("%w: invalid JSON from beads_rust", ErrSchemaValidation)
-	}
-
-	return output, nil
 }

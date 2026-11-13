@@ -200,11 +200,6 @@ func (a *JFPAdapter) Bundles(ctx context.Context) (json.RawMessage, error) {
 	return a.runCommand(ctx, "bundles", "--json")
 }
 
-// Bundle returns details for a specific bundle
-func (a *JFPAdapter) Bundle(ctx context.Context, id string) (json.RawMessage, error) {
-	return a.runCommand(ctx, "bundle", id, "--json")
-}
-
 // Export exports one or more prompts by ID.
 func (a *JFPAdapter) Export(ctx context.Context, ids []string, format string) (json.RawMessage, error) {
 	args := []string{"export"}

@@ -276,26 +276,6 @@ func (o *SessionOrchestrator) DestroySession(sessionName string) error {
 	return client.KillSession(sessionName)
 }
 
-// DestroySessions destroys all sessions created from a SwarmPlan.
-func (o *SessionOrchestrator) DestroySessions(plan *SwarmPlan) error {
-	if plan == nil {
-		return nil
-	}
-
-	var errs []error
-	for _, spec := range plan.Sessions {
-		if err := o.DestroySession(spec.Name); err != nil {
-			errs = append(errs, err)
-		}
-	}
-
-	if len(errs) > 0 {
-		return fmt.Errorf("failed to destroy %d session(s): %v", len(errs), errs[0])
-	}
-
-	return nil
-}
-
 // SessionExists checks if a session with the given name exists.
 func (o *SessionOrchestrator) SessionExists(sessionName string) bool {
 	return o.tmuxClient().SessionExists(sessionName)
@@ -481,7 +461,7 @@ func (o *SessionOrchestrator) VerifyTmuxBinary() (string, error) {
 	if err := tmux.EnsureInstalled(); err != nil {
 		return "", err
 	}
-	return tmux.BinaryPath(), nil
+	return o.TmuxBinaryPath(), nil
 }
 
 // TmuxBinaryInfo contains information about the tmux binary being used.
@@ -497,7 +477,7 @@ func (o *SessionOrchestrator) GetTmuxBinaryInfo() *TmuxBinaryInfo {
 	isRemote := client.Remote != ""
 
 	info := &TmuxBinaryInfo{
-		Path:      tmux.BinaryPath(),
+		Path:      o.TmuxBinaryPath(),
 		Available: tmux.IsInstalled(),
 		IsRemote:  isRemote,
 	}

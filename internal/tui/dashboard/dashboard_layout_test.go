@@ -4077,3 +4077,125 @@ func BenchmarkPaneListView(b *testing.B) {
 		_ = l.View()
 	}
 }
+
+func TestAgentBorderAndRowColors_AllCanonicalSemanticAgents(t *testing.T) {
+	m := newTestModel(140)
+	sem := m.theme.Semantic()
+
+	canonical := []tmux.AgentType{
+		tmux.AgentClaude,
+		tmux.AgentCodex,
+		tmux.AgentGemini,
+		tmux.AgentAntigravity,
+		tmux.AgentGrok,
+		tmux.AgentOmp,
+		tmux.AgentCursor,
+		tmux.AgentWindsurf,
+		tmux.AgentAider,
+		tmux.AgentOpencode,
+		tmux.AgentOllama,
+		tmux.AgentUser,
+	}
+
+	for _, ag := range canonical {
+		want := sem.AgentColor(string(ag))
+		if got := AgentBorderColor(string(ag), m.theme); got != want {
+			t.Errorf("AgentBorderColor(%q) = %q, want semantic %q", ag, got, want)
+		}
+		gotRowColor, gotIcon := agentRowTypePresentation(string(ag), m.theme)
+		if gotRowColor != want {
+			t.Errorf("agentRowTypePresentation(%q) color = %q, want semantic %q", ag, gotRowColor, want)
+		}
+		if gotIcon == "" {
+			t.Errorf("agentRowTypePresentation(%q) returned empty icon", ag)
+		}
+	}
+}
+
+func TestDashboardSpawnProgressToastAndToastHistoryClear(t *testing.T) {
+	m := newTestModel(120)
+	gen := m.nextGen(refreshSpawn)
+
+	updated, _ := m.Update(SpawnUpdateMsg{
+		Gen: gen,
+		Data: panels.SpawnData{
+			Active:         true,
+			BatchID:        "batch-42",
+			TotalAgents:    2,
+			StaggerSeconds: 10,
+			Prompts: []panels.SpawnPromptStatus{
+				{Pane: "cc_1", Order: 1, Sent: true},
+				{Pane: "cod_1", Order: 2, Sent: false},
+			},
+		},
+	})
+	m = updated.(Model)
+	if m.toasts.Count() != 1 {
+		t.Fatalf("expected active spawn progress toast, got %d", m.toasts.Count())
+	}
+
+	gen2 := m.nextGen(refreshSpawn)
+	updated, _ = m.Update(SpawnUpdateMsg{
+		Gen: gen2,
+		Data: panels.SpawnData{
+			Active:      true,
+			BatchID:     "batch-42",
+			TotalAgents: 2,
+			CompletedAt: time.Now(),
+			Prompts: []panels.SpawnPromptStatus{
+				{Pane: "cc_1", Order: 1, Sent: true},
+				{Pane: "cod_1", Order: 2, Sent: true},
+			},
+		},
+	})
+	m = updated.(Model)
+
+	m.toasts.DismissNewest()
+	if m.toasts.HistoryCount() == 0 {
+		t.Fatal("expected dismissed spawn toast in history")
+	}
+	m.showToastHistory = true
+	if view := m.renderToastHistoryContent(); !strings.Contains(view, "Press c to clear") {
+		t.Fatalf("expected clear hint in toast history content, got %q", view)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	m = updated.(Model)
+	if m.toasts.HistoryCount() != 0 {
+		t.Fatalf("expected toast history cleared after pressing c, got %d", m.toasts.HistoryCount())
+	}
+}
+
+func TestDashboardSpawnWizardHintsAndSizeSync(t *testing.T) {
+	m := newTestModel(120)
+	m.showSpawnWizard = true
+	m.spawnWizard = panels.NewSpawnWizard("test", 80, 20)
+
+	hints := m.getFocusedPanelHints()
+	if len(hints) == 0 {
+		t.Fatal("expected spawn wizard keybinding hints when wizard overlay is active")
+	}
+
+	_ = m.View()
+	w, h := m.spawnWizard.Size()
+	if w != m.width || h != m.height {
+		t.Fatalf("expected spawnWizard size (%d, %d) to sync to (%d, %d)", w, h, m.width, m.height)
+	}
+}
+
+func TestDashboardSidebarHasErrorAndBoundedPanelView(t *testing.T) {
+	m := newTestModel(220)
+	if m.sidebarHasError() {
+		t.Fatal("expected clean sidebar to report no error initially")
+	}
+
+	m.cassPanel.SetData(nil, errors.New("cass unavailable"))
+	if !m.sidebarHasError() {
+		t.Fatal("expected sidebarHasError() to reflect cassPanel error")
+	}
+
+	m.timelinePanel.SetSize(60, 8)
+	out := renderBoundedPanelView(m.timelinePanel, 3)
+	if lines := strings.Split(out, "\n"); len(lines) > 3 {
+		t.Fatalf("expected non-viewport panel output bounded to 3 lines, got %d", len(lines))
+	}
+}

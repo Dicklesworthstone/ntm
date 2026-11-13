@@ -94,13 +94,6 @@ type Renderer interface {
 	// Render encodes the payload to the renderer's format.
 	// Returns the encoded string and any encoding error.
 	Render(payload any) (string, error)
-
-	// ContentType returns the MIME type hint for this format.
-	// Useful for HTTP responses or format detection.
-	ContentType() string
-
-	// Format returns the RobotFormat this renderer produces.
-	Format() RobotFormat
 }
 
 // =============================================================================
@@ -132,16 +125,6 @@ func (r *JSONRenderer) Render(payload any) (string, error) {
 	return buf.String(), nil
 }
 
-// ContentType returns the JSON MIME type.
-func (r *JSONRenderer) ContentType() string {
-	return "application/json"
-}
-
-// Format returns FormatJSON.
-func (r *JSONRenderer) Format() RobotFormat {
-	return FormatJSON
-}
-
 // =============================================================================
 // TOON Renderer
 // =============================================================================
@@ -168,16 +151,6 @@ func NewTOONRenderer() *TOONRenderer {
 // Returns an error for unsupported payload shapes.
 func (r *TOONRenderer) Render(payload any) (string, error) {
 	return toonEncode(payload, r.Delimiter)
-}
-
-// ContentType returns the TOON MIME type.
-func (r *TOONRenderer) ContentType() string {
-	return "text/x-toon"
-}
-
-// Format returns FormatTOON.
-func (r *TOONRenderer) Format() RobotFormat {
-	return FormatTOON
 }
 
 // =============================================================================

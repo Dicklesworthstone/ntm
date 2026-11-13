@@ -13,6 +13,7 @@ import (
 type EnsembleModesOutput struct {
 	RobotResponse
 	Action            string          `json:"action"`
+	CatalogVersion    string          `json:"catalog_version,omitempty"`
 	Modes             []ModeInfo      `json:"modes"`
 	Categories        []CategoryInfo  `json:"categories"`
 	DefaultTier       string          `json:"default_tier"`
@@ -58,6 +59,7 @@ type CategoryInfo struct {
 type EnsembleModesOptions struct {
 	Category string
 	Tier     string
+	Search   string
 	Limit    int
 	Offset   int
 }
@@ -90,25 +92,36 @@ func GetEnsembleModes(opts EnsembleModesOptions) (*EnsembleModesOutput, error) {
 		return output, nil
 	}
 
-	// Get all modes
-	allModes := catalog.ListModes()
+	// Query modes from catalog using tier/search helpers
+	tier := strings.ToLower(strings.TrimSpace(opts.Tier))
+	var allModes []ensemble.ReasoningMode
+	if searchTerm := strings.TrimSpace(opts.Search); searchTerm != "" {
+		allModes = catalog.SearchModes(searchTerm)
+		switch tier {
+		case "", "core":
+			allModes = filterModesByTier(allModes, ensemble.TierCore)
+		case "advanced":
+			allModes = filterModesByTier(allModes, ensemble.TierAdvanced)
+		case "experimental":
+			allModes = filterModesByTier(allModes, ensemble.TierExperimental)
+		}
+	} else {
+		switch tier {
+		case "", "core":
+			allModes = catalog.ListDefault()
+		case "advanced":
+			allModes = catalog.ListByTier(ensemble.TierAdvanced)
+		case "experimental":
+			allModes = catalog.ListByTier(ensemble.TierExperimental)
+		default:
+			allModes = catalog.ListModes()
+		}
+	}
 
 	// Apply category filter
 	if opts.Category != "" {
 		allModes = filterModesByCategory(allModes, opts.Category)
 	}
-
-	// Apply tier filter (default to core if not specified)
-	tier := strings.ToLower(strings.TrimSpace(opts.Tier))
-	switch tier {
-	case "", "core":
-		allModes = filterModesByTier(allModes, ensemble.TierCore)
-	case "advanced":
-		allModes = filterModesByTier(allModes, ensemble.TierAdvanced)
-	case "experimental":
-		allModes = filterModesByTier(allModes, ensemble.TierExperimental)
-	}
-	// "all" tier means no tier filter
 
 	// Count totals before pagination
 	totalCount := len(allModes)
@@ -153,19 +166,12 @@ func GetEnsembleModes(opts EnsembleModesOptions) (*EnsembleModesOutput, error) {
 	// Build category summary from full catalog (unfiltered)
 	output.Categories = buildCategorySummary(catalog)
 
-	// Count tier totals from full catalog
-	fullModes := catalog.ListModes()
-	for _, m := range fullModes {
-		switch m.Tier {
-		case ensemble.TierCore:
-			output.CoreModes++
-		case ensemble.TierAdvanced:
-			output.AdvancedModes++
-		case ensemble.TierExperimental:
-			output.ExperimentalModes++
-		}
-	}
-	output.TotalModes = len(fullModes)
+	// Count tier totals and metadata from full catalog
+	output.CatalogVersion = catalog.Version()
+	output.CoreModes = len(catalog.ListDefault())
+	output.AdvancedModes = len(catalog.ListByTier(ensemble.TierAdvanced))
+	output.ExperimentalModes = len(catalog.ListByTier(ensemble.TierExperimental))
+	output.TotalModes = catalog.Count()
 
 	// Add pagination info
 	if totalCount > opts.Limit || opts.Offset > 0 {

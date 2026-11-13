@@ -57,13 +57,8 @@ func CaptureForStatusDetectionContext(ctx context.Context, target string) (strin
 	return DefaultClient.CaptureForStatusDetectionContext(ctx, target)
 }
 
-// CaptureForHealthCheck captures output for health analysis and error detection.
-// Uses LinesHealthCheck (50 lines) to balance between detail and performance.
-func (c *Client) CaptureForHealthCheck(target string) (string, error) {
-	return c.CapturePaneOutput(target, LinesHealthCheck)
-}
-
 // CaptureForHealthCheckContext captures with context support for health checks.
+// Uses LinesHealthCheck (50 lines) to balance between detail and performance.
 func (c *Client) CaptureForHealthCheckContext(ctx context.Context, target string) (string, error) {
 	return c.CapturePaneOutputContext(ctx, target, LinesHealthCheck)
 }
@@ -73,13 +68,8 @@ func CaptureForHealthCheckContext(ctx context.Context, target string) (string, e
 	return DefaultClient.CaptureForHealthCheckContext(ctx, target)
 }
 
-// CaptureForFullContext captures comprehensive output for analysis.
-// Uses LinesFullContext (500 lines) for grep, diff, save, and context estimation.
-func (c *Client) CaptureForFullContext(target string) (string, error) {
-	return c.CapturePaneOutput(target, LinesFullContext)
-}
-
 // CaptureForFullContextContext captures with context support for full analysis.
+// Uses LinesFullContext (500 lines) for grep, diff, save, and context estimation.
 func (c *Client) CaptureForFullContextContext(ctx context.Context, target string) (string, error) {
 	return c.CapturePaneOutputContext(ctx, target, LinesFullContext)
 }
@@ -87,15 +77,4 @@ func (c *Client) CaptureForFullContextContext(ctx context.Context, target string
 // CaptureForFullContextContext captures with context support (default client).
 func CaptureForFullContextContext(ctx context.Context, target string) (string, error) {
 	return DefaultClient.CaptureForFullContextContext(ctx, target)
-}
-
-// CaptureForCheckpoint captures maximum output for checkpoint/pipeline operations.
-// Uses LinesCheckpoint (2000 lines) for complete session state.
-func (c *Client) CaptureForCheckpoint(target string) (string, error) {
-	return c.CapturePaneOutput(target, LinesCheckpoint)
-}
-
-// CaptureForCheckpointContext captures with context support for checkpoints.
-func (c *Client) CaptureForCheckpointContext(ctx context.Context, target string) (string, error) {
-	return c.CapturePaneOutputContext(ctx, target, LinesCheckpoint)
 }

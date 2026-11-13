@@ -401,27 +401,9 @@ func appendPluginPatternMatches(matches []PatternMatch, content, agentType strin
 	return matches
 }
 
-// HasError checks if content contains any error pattern.
-func (lib *PatternLibrary) HasError(content string, agentType string) bool {
-	matches := lib.MatchByCategory(content, agentType, CategoryError)
-	return len(matches) > 0
-}
-
 // HasIdlePrompt checks if content contains an idle prompt pattern.
 func (lib *PatternLibrary) HasIdlePrompt(content string, agentType string) bool {
 	matches := lib.MatchByCategory(content, agentType, CategoryIdle)
-	return len(matches) > 0
-}
-
-// HasThinkingIndicator checks if content contains a thinking indicator.
-func (lib *PatternLibrary) HasThinkingIndicator(content string, agentType string) bool {
-	matches := lib.MatchByCategory(content, agentType, CategoryThinking)
-	return len(matches) > 0
-}
-
-// HasCompletionSignal checks if content contains a completion signal.
-func (lib *PatternLibrary) HasCompletionSignal(content string, agentType string) bool {
-	matches := lib.MatchByCategory(content, agentType, CategoryCompletion)
 	return len(matches) > 0
 }
 
@@ -431,78 +413,6 @@ type PatternMatch struct {
 	State    AgentState      `json:"state"`
 	Category PatternCategory `json:"category"`
 	Priority int             `json:"priority"`
-}
-
-// AddPattern adds a new pattern to the library.
-// The pattern is compiled immediately if the library is already compiled.
-func (lib *PatternLibrary) AddPattern(p Pattern) error {
-	lib.mu.Lock()
-	defer lib.mu.Unlock()
-
-	// Compile regex if needed
-	if p.Regex == nil && p.RegexStr != "" {
-		compiled, err := regexp.Compile(p.RegexStr)
-		if err != nil {
-			return err
-		}
-		p.Regex = compiled
-	}
-
-	lib.Patterns = append(lib.Patterns, p)
-
-	// Re-sort by priority
-	sort.Slice(lib.Patterns, func(i, j int) bool {
-		return lib.Patterns[i].Priority > lib.Patterns[j].Priority
-	})
-
-	return nil
-}
-
-// GetPatterns returns a copy of all patterns.
-func (lib *PatternLibrary) GetPatterns() []Pattern {
-	lib.mu.RLock()
-	defer lib.mu.RUnlock()
-
-	result := make([]Pattern, len(lib.Patterns))
-	copy(result, lib.Patterns)
-	return result
-}
-
-// GetPatternsByCategory returns patterns filtered by category.
-func (lib *PatternLibrary) GetPatternsByCategory(category PatternCategory) []Pattern {
-	lib.mu.RLock()
-	defer lib.mu.RUnlock()
-
-	var result []Pattern
-	for _, p := range lib.Patterns {
-		if p.Category == category {
-			result = append(result, p)
-		}
-	}
-	return result
-}
-
-// GetPatternsByAgent returns patterns applicable to a specific agent.
-func (lib *PatternLibrary) GetPatternsByAgent(agentType string) []Pattern {
-	lib.mu.RLock()
-	defer lib.mu.RUnlock()
-
-	agentType = normalizeAgentType(agentType)
-
-	var result []Pattern
-	for _, p := range lib.Patterns {
-		if p.Agent == "*" || p.Agent == "" || p.Agent == agentType {
-			result = append(result, p)
-		}
-	}
-	return result
-}
-
-// PatternCount returns the total number of patterns.
-func (lib *PatternLibrary) PatternCount() int {
-	lib.mu.RLock()
-	defer lib.mu.RUnlock()
-	return len(lib.Patterns)
 }
 
 // DefaultLibrary is the shared default pattern library.

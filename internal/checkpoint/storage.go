@@ -228,16 +228,6 @@ func ensureCheckpointSubdir(baseDir, relPath, kind string) (string, error) {
 	return dirPath, nil
 }
 
-// GitPatchPath returns the file path for the git patch.
-func (s *Storage) GitPatchPath(sessionName, checkpointID string) string {
-	return filepath.Join(s.CheckpointDir(sessionName, checkpointID), GitPatchFile)
-}
-
-// PanesDir returns the panes subdirectory for a checkpoint.
-func (s *Storage) PanesDirPath(sessionName, checkpointID string) string {
-	return filepath.Join(s.CheckpointDir(sessionName, checkpointID), PanesDir)
-}
-
 // GenerateID creates a unique checkpoint ID from a sortable UTC timestamp,
 // 64-bit cryptographic random hex suffix, and optional sanitized name.
 func GenerateID(name string) string {

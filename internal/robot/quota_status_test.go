@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/integrations/caut"
+	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
 
@@ -387,5 +388,58 @@ func TestGetQuotaCheck_OmpReportsNoQuotaAPI(t *testing.T) {
 			!strings.Contains(out.Hint, "no quota API") || !strings.Contains(out.Hint, "provider-error classification") {
 			t.Fatalf("GetQuotaCheck(%q) = provider:%q status:%q hint:%q", provider, out.Provider, out.Quota.Status, out.Hint)
 		}
+	}
+}
+
+func TestGetQuotaStatus_PayloadMetadataAndRateLimitOverlay(t *testing.T) {
+	cache := caut.GetGlobalPoller().GetCache()
+	cache.Clear()
+	t.Cleanup(cache.Clear)
+
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "caut 0.6.0"; exit 0; fi
+provider=
+while [ $# -gt 0 ]; do
+  case "$1" in --provider) provider=$2; shift 2 ;; *) shift ;; esac
+done
+case "$provider" in
+  claude)
+    echo '{"schemaVersion":"caut.v1","generatedAt":"2026-10-06T00:00:00Z","command":"usage","data":[{"provider":"claude","source":"cli","usage":{"primary":{"usedPercent":96.0,"windowMinutes":300,"resetDescription":"in 2h"},"identity":{"accountEmail":"dev@example.com"}}}],"errors":[]}'
+    ;;
+  *)
+    printf '{"schemaVersion":"caut.v1","generatedAt":"2026-10-06T00:00:00Z","command":"usage","data":[],"errors":["%s: not configured"]}\n' "$provider"
+    ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(binDir, "caut"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub caut: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	adapter := tools.NewCautAdapter()
+	adapter.InvalidateAvailabilityCache()
+	t.Cleanup(adapter.InvalidateAvailabilityCache)
+
+	projectDir := t.TempDir()
+	tracker := ratelimit.NewRateLimitTracker(projectDir)
+	tracker.RecordRateLimitWithCooldown("anthropic", "send", 120)
+	if err := tracker.SaveToDir(projectDir); err != nil {
+		t.Fatalf("SaveToDir: %v", err)
+	}
+	t.Chdir(projectDir)
+
+	out, err := GetQuotaStatus()
+	if err != nil || !out.Success {
+		t.Fatalf("GetQuotaStatus: %+v, %v", out, err)
+	}
+	if out.Quota.CacheUpdates < 1 {
+		t.Fatalf("expected CacheUpdates >= 1, got %d", out.Quota.CacheUpdates)
+	}
+	claude := out.Quota.Providers["claude"]
+	if claude.AccountEmail != "dev@example.com" || claude.WindowMinutes != 300 || !claude.HasUsageData || !claude.RateLimited {
+		t.Fatalf("claude provider metadata = %+v, want email=dev@example.com window=300 has_usage=true rate_limited=true", claude)
+	}
+	if claude.RateLimit == nil || !claude.RateLimit.InCooldown || claude.RateLimit.TotalRateLimits != 1 || len(claude.RateLimit.RecentEvents) != 1 {
+		t.Fatalf("claude rate_limit overlay = %+v, want active cooldown with 1 event", claude.RateLimit)
 	}
 }

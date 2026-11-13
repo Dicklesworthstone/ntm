@@ -3,14 +3,26 @@ package robot
 import (
 	"context"
 	"errors"
+	"os"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/integrations/caut"
 	"github.com/Dicklesworthstone/ntm/internal/quota"
+	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
+
+func init() {
+	MustRegisterSchemaPagination("quota_status", SchemaPaginationFlag{
+		Reason: "bounded: one entry per configured provider with capped recent rate-limit window",
+	})
+	MustRegisterSchemaPagination("quota_check", SchemaPaginationFlag{
+		Reason: "bounded: single-provider quota detail with capped recent rate-limit window",
+	})
+}
 
 // QuotaStatusOutput represents the response from --robot-quota-status
 type QuotaStatusOutput struct {
@@ -18,27 +30,46 @@ type QuotaStatusOutput struct {
 	Quota QuotaInfo `json:"quota"`
 }
 
+// ProviderRateLimitStatus summarizes adaptive rate-limit and cooldown state for a provider.
+type ProviderRateLimitStatus struct {
+	InCooldown         bool                       `json:"in_cooldown"`
+	CooldownRemainingS int                        `json:"cooldown_remaining_sec,omitempty"`
+	CurrentDelayMs     int64                      `json:"current_delay_ms"`
+	TotalRateLimits    int                        `json:"total_rate_limits"`
+	TotalSuccesses     int                        `json:"total_successes"`
+	LastRateLimit      string                     `json:"last_rate_limit,omitempty"`
+	RecentEvents       []ratelimit.RateLimitEvent `json:"recent_events,omitempty"`
+}
+
 // QuotaInfo contains quota and usage information from caut
 type QuotaInfo struct {
-	LastUpdated    string                   `json:"last_updated"`
-	CautAvailable  bool                     `json:"caut_available"`
-	Providers      map[string]ProviderQuota `json:"providers"`
-	TotalCostToday float64                  `json:"total_cost_today_usd"`
-	TotalCostMonth float64                  `json:"total_cost_month_usd,omitempty"`
-	HasWarning     bool                     `json:"has_warning"`
-	HasCritical    bool                     `json:"has_critical"`
+	LastUpdated    string                             `json:"last_updated"`
+	CacheUpdates   int64                              `json:"cache_updates,omitempty"`
+	CautAvailable  bool                               `json:"caut_available"`
+	Providers      map[string]ProviderQuota           `json:"providers"`
+	RateLimits     map[string]ProviderRateLimitStatus `json:"rate_limits,omitempty"`
+	TotalCostToday float64                            `json:"total_cost_today_usd"`
+	TotalCostMonth float64                            `json:"total_cost_month_usd,omitempty"`
+	HasWarning     bool                               `json:"has_warning"`
+	HasCritical    bool                               `json:"has_critical"`
 }
 
 // ProviderQuota contains quota information for a single provider
 type ProviderQuota struct {
-	UsagePercent  float64 `json:"usage_percent"`
-	RequestsUsed  int     `json:"requests_used,omitempty"`
-	RequestsLimit int     `json:"requests_limit,omitempty"`
-	TokensUsed    int64   `json:"tokens_used,omitempty"`
-	TokensLimit   int64   `json:"tokens_limit,omitempty"`
-	CostUSD       float64 `json:"cost_usd"`
-	ResetAt       string  `json:"reset_at,omitempty"`
-	Status        string  `json:"status"` // "ok", "warning", "critical"
+	UsagePercent     float64                  `json:"usage_percent"`
+	RequestsUsed     int                      `json:"requests_used,omitempty"`
+	RequestsLimit    int                      `json:"requests_limit,omitempty"`
+	TokensUsed       int64                    `json:"tokens_used,omitempty"`
+	TokensLimit      int64                    `json:"tokens_limit,omitempty"`
+	CostUSD          float64                  `json:"cost_usd"`
+	ResetAt          string                   `json:"reset_at,omitempty"`
+	ResetDescription string                   `json:"reset_description,omitempty"`
+	AccountEmail     string                   `json:"account_email,omitempty"`
+	WindowMinutes    int                      `json:"window_minutes,omitempty"`
+	HasUsageData     bool                     `json:"has_usage_data,omitempty"`
+	RateLimited      bool                     `json:"rate_limited,omitempty"`
+	RateLimit        *ProviderRateLimitStatus `json:"rate_limit,omitempty"`
+	Status           string                   `json:"status"` // "ok", "warning", "critical"
 }
 
 // QuotaCheckOutput represents the response from --robot-quota-check
@@ -98,6 +129,8 @@ func GetQuotaStatus() (*QuotaStatusOutput, error) {
 	refreshCautQuotaCache(poller)
 	cache := poller.GetCache()
 
+	snap := cache.Snapshot()
+
 	// Check if caut is available
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -106,13 +139,14 @@ func GetQuotaStatus() (*QuotaStatusOutput, error) {
 	available := adapter.IsAvailable(ctx)
 
 	quotaInfo := QuotaInfo{
-		LastUpdated:   FormatTimestamp(cache.GetLastUpdated()),
+		LastUpdated:   FormatTimestamp(snap.LastUpdated),
+		CacheUpdates:  cache.GetUpdateCount(),
 		CautAvailable: available,
 		Providers:     make(map[string]ProviderQuota),
 	}
 
 	// Get cached status
-	status := cache.GetStatus()
+	status := snap.Status
 	if status != nil {
 		quotaInfo.TotalCostToday = status.TotalSpend
 
@@ -146,9 +180,22 @@ func GetQuotaStatus() (*QuotaStatusOutput, error) {
 		}
 	}
 
+	// Merge rate-window and identity details captured from caut payloads
+	for _, detail := range snap.ProviderDetails {
+		providerName := canonicalRobotProvider(detail.Provider)
+		providerQuota, exists := quotaInfo.Providers[providerName]
+		if !exists {
+			providerQuota = ProviderQuota{Status: "ok"}
+		}
+		applyCautProviderDetail(&providerQuota, detail)
+		if detail.RateLimited {
+			quotaInfo.HasCritical = true
+		}
+		quotaInfo.Providers[providerName] = providerQuota
+	}
+
 	// Add usage data from cache
-	usages := cache.GetAllUsage()
-	for _, usage := range usages {
+	for _, usage := range snap.Usage {
 		providerName := canonicalRobotProvider(usage.Provider)
 		providerQuota, exists := quotaInfo.Providers[providerName]
 		if !exists {
@@ -182,6 +229,10 @@ func GetQuotaStatus() (*QuotaStatusOutput, error) {
 	limitsCtx, limitsCancel := context.WithTimeout(context.Background(), caamLimitsOverlayTimeout)
 	defer limitsCancel()
 	applyLiveProviderQuota(limitsCtx, &quotaInfo)
+
+	if wd, wdErr := os.Getwd(); wdErr == nil {
+		applyRateLimitTrackerOverlay(wd, &quotaInfo)
+	}
 
 	// Check for cache errors
 	if errTime, err := cache.GetLastError(); err != nil && !errTime.IsZero() {
@@ -366,6 +417,17 @@ func GetQuotaCheck(provider string) (*QuotaCheckOutput, error) {
 			}
 		}
 	}
+	for _, detail := range cache.GetProviderDetails() {
+		if canonicalRobotProvider(detail.Provider) == canonicalProvider {
+			pq, exists := info.Providers[canonicalProvider]
+			if !exists {
+				pq = ProviderQuota{Status: "ok"}
+			}
+			applyCautProviderDetail(&pq, detail)
+			info.Providers[canonicalProvider] = pq
+			break
+		}
+	}
 
 	// Then the same CAAM subscription-window overlay --robot-quota-status
 	// applies (ntm#319), for this provider only: a seat that status lists
@@ -379,7 +441,21 @@ func GetQuotaCheck(provider string) (*QuotaCheckOutput, error) {
 		limitsCancel()
 	}
 
+	if wd, wdErr := os.Getwd(); wdErr == nil {
+		applyRateLimitTrackerOverlay(wd, &info)
+	}
+
 	providerQuota, found := info.Providers[canonicalProvider]
+	if !found {
+		if rl, ok := info.RateLimits[canonicalProvider]; ok && rl.InCooldown {
+			rlCopy := rl
+			providerQuota = ProviderQuota{
+				Status:    "warning",
+				RateLimit: &rlCopy,
+			}
+			found = true
+		}
+	}
 	if !found {
 		return &QuotaCheckOutput{
 			RobotResponse: NewErrorResponse(
@@ -416,5 +492,81 @@ func getQuotaStatus(usagePercent float64) string {
 		return "warning"
 	default:
 		return "ok"
+	}
+}
+
+func applyCautProviderDetail(pq *ProviderQuota, detail caut.ProviderDetail) {
+	if pq == nil {
+		return
+	}
+	if detail.AccountEmail != "" {
+		pq.AccountEmail = detail.AccountEmail
+	}
+	if detail.WindowMinutes > 0 {
+		pq.WindowMinutes = detail.WindowMinutes
+	}
+	if detail.HasUsageData {
+		pq.HasUsageData = true
+	}
+	if detail.RateLimited {
+		pq.RateLimited = true
+		pq.Status = "critical"
+	}
+	if pq.ResetAt == "" && detail.ResetAt != "" {
+		pq.ResetAt = detail.ResetAt
+	}
+	if pq.ResetDescription == "" && detail.ResetDescription != "" {
+		pq.ResetDescription = detail.ResetDescription
+	}
+}
+
+func applyRateLimitTrackerOverlay(dir string, quotaInfo *QuotaInfo) {
+	if quotaInfo == nil || strings.TrimSpace(dir) == "" {
+		return
+	}
+	tracker := ratelimit.NewRateLimitTracker(dir)
+	if err := tracker.LoadFromDir(dir); err != nil {
+		return
+	}
+	providers := tracker.GetAllProviders()
+	if len(providers) == 0 {
+		return
+	}
+	sort.Strings(providers)
+	if quotaInfo.RateLimits == nil {
+		quotaInfo.RateLimits = make(map[string]ProviderRateLimitStatus, len(providers))
+	}
+	for _, provider := range providers {
+		state := tracker.GetProviderState(provider)
+		if state == nil {
+			continue
+		}
+		inCooldown := tracker.IsInCooldown(provider)
+		remaining := tracker.CooldownRemaining(provider)
+		events := tracker.GetRecentEvents(provider, 5)
+		rlStatus := ProviderRateLimitStatus{
+			InCooldown:         inCooldown,
+			CooldownRemainingS: int(remaining.Round(time.Second).Seconds()),
+			CurrentDelayMs:     state.CurrentDelay.Milliseconds(),
+			TotalRateLimits:    state.TotalRateLimits,
+			TotalSuccesses:     state.TotalSuccesses,
+			RecentEvents:       events,
+		}
+		if !state.LastRateLimit.IsZero() {
+			rlStatus.LastRateLimit = FormatTimestamp(state.LastRateLimit)
+		}
+		key := canonicalRobotProvider(provider)
+		quotaInfo.RateLimits[key] = rlStatus
+		if inCooldown {
+			quotaInfo.HasWarning = true
+		}
+		if pq, exists := quotaInfo.Providers[key]; exists {
+			rlCopy := rlStatus
+			pq.RateLimit = &rlCopy
+			if inCooldown && pq.Status == "ok" {
+				pq.Status = "warning"
+			}
+			quotaInfo.Providers[key] = pq
+		}
 	}
 }

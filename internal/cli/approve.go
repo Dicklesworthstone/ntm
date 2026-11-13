@@ -28,7 +28,8 @@ When called with a token argument, approves that request.
 Use subcommands for other operations.
 
 Subcommands:
-  approve list             List all pending approvals
+  approve list             List all pending approvals (--expired for elapsed pending requests)
+  approve expire           Mark expired pending approvals as expired
   approve deny <token>     Deny a pending request
   approve history          Show approval history
   approve show <token>     Show details of an approval
@@ -36,6 +37,8 @@ Subcommands:
 Examples:
   ntm approve abc123                  # Approve request abc123
   ntm approve list                    # List pending approvals
+  ntm approve list --expired          # List expired pending approvals
+  ntm approve expire                  # Transition expired pending approvals to expired
   ntm approve deny abc123 --reason "Too risky"
   ntm approve show abc123             # Show approval details
 
@@ -55,15 +58,29 @@ operators on a trusted host, not as an authentication boundary.`,
 
 	// list - list pending approvals
 	var listLimit, listOffset int
+	var listExpired bool
 	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all pending approvals",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runApproveList(IsJSONOutput(), listLimit, listOffset)
+			return runApproveList(IsJSONOutput(), listLimit, listOffset, listExpired)
 		},
 	}
 	listCmd.Flags().IntVar(&listLimit, "limit", 0, "maximum approvals per page (0 = all)")
 	listCmd.Flags().IntVar(&listOffset, "offset", 0, "pagination offset (use _agent_hints.next_offset for the next page)")
+	listCmd.Flags().BoolVar(&listExpired, "expired", false, "list pending approvals whose expiration window has elapsed")
+
+	// expire - mark expired pending approvals as expired
+	var expireDryRun bool
+	expireCmd := &cobra.Command{
+		Use:   "expire",
+		Short: "Mark expired pending approvals as expired",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runApproveExpire(expireDryRun, IsJSONOutput())
+		},
+	}
+	expireCmd.Flags().BoolVar(&expireDryRun, "dry-run", false, "preview expired pending approvals without modifying state")
 
 	// deny <token> - deny a request
 	denyCmd := &cobra.Command{
@@ -95,7 +112,7 @@ operators on a trusted host, not as an authentication boundary.`,
 		},
 	}
 
-	cmd.AddCommand(listCmd, denyCmd, showCmd, historyCmd)
+	cmd.AddCommand(listCmd, expireCmd, denyCmd, showCmd, historyCmd)
 	return cmd
 }
 
@@ -109,20 +126,73 @@ type ApprovalResult struct {
 	Error    string `json:"error,omitempty"`
 }
 
-func getApprovalEngine() (*approval.Engine, *state.Store, error) {
+// ApprovalExpireOutput is the JSON envelope for `ntm approve expire`.
+type ApprovalExpireOutput struct {
+	Success      bool             `json:"success"`
+	DryRun       bool             `json:"dry_run,omitempty"`
+	Expired      []state.Approval `json:"expired"`
+	ExpiredCount int              `json:"expired_count"`
+}
+
+var openApprovalStateStoreFunc = func() (*state.Store, error) {
 	store, err := state.Open("")
 	if err != nil {
-		return nil, nil, fmt.Errorf("open state store: %w", err)
+		return nil, fmt.Errorf("open state store: %w", err)
 	}
 
 	// Ensure migrations are applied
 	if err := store.Migrate(); err != nil {
 		store.Close()
-		return nil, nil, fmt.Errorf("apply migrations: %w", err)
+		return nil, fmt.Errorf("apply migrations: %w", err)
+	}
+	return store, nil
+}
+
+func getApprovalEngine() (*approval.Engine, *state.Store, error) {
+	store, err := openApprovalStateStoreFunc()
+	if err != nil {
+		return nil, nil, err
 	}
 
 	engine := approval.New(store, nil, nil, approval.DefaultConfig())
 	return engine, store, nil
+}
+
+func recordApprovalStateAudit(store *state.Store, actorID, eventType, prevState, newState, summary, reason string, appr *state.Approval) {
+	if store == nil || appr == nil {
+		return
+	}
+	actorType := "user"
+	if actorID == "" {
+		actorID = "unknown"
+	}
+	_ = store.UpsertAuditActor(&state.AuditActor{
+		ActorType:    actorType,
+		ActorID:      actorID,
+		DisplayName:  actorID,
+		KnownOrigins: `["cli"]`,
+	})
+	_, _ = store.RecordAuditEvent(&state.AuditEvent{
+		ActorType:     actorType,
+		ActorID:       actorID,
+		ActorOrigin:   "cli",
+		CorrelationID: appr.CorrelationID,
+		Category:      "actuation",
+		EventType:     eventType,
+		Severity:      state.SeverityInfo,
+		EntityType:    "approval",
+		EntityID:      appr.ID,
+		PreviousState: prevState,
+		NewState:      newState,
+		ChangeSummary: summary,
+		Reason:        reason,
+		Evidence: state.EncodeJSON(map[string]interface{}{
+			"action":       appr.Action,
+			"resource":     appr.Resource,
+			"requested_by": appr.RequestedBy,
+			"requires_slb": appr.RequiresSLB,
+		}),
+	})
 }
 
 func runApprove(token string, jsonOutput bool) error {
@@ -145,8 +215,18 @@ func runApprove(token string, jsonOutput bool) error {
 	}
 
 	// Durable state.db record is the primary trail; mirror the decision into
-	// the audit log so approvals appear alongside other audited operations
-	// (bd-2y2on).
+	// both the state audit tables and the file-backed audit log so approvals
+	// appear alongside other audited operations (bd-2y2on).
+	recordApprovalStateAudit(
+		store,
+		currentUser,
+		"approval.approved",
+		string(state.ApprovalPending),
+		string(appr.Status),
+		fmt.Sprintf("approved %s on %s", appr.Action, appr.Resource),
+		appr.Reason,
+		appr,
+	)
 	_ = audit.LogEvent("", audit.EventTypeStateChange, audit.ActorUser, "approval.approve", map[string]interface{}{
 		"approval_id":  token,
 		"action":       appr.Action,
@@ -179,6 +259,8 @@ func runApprove(token string, jsonOutput bool) error {
 // (D1, bd-ws3-contract-breadth-psvyu.1).
 type ApprovalsListOutput struct {
 	Success      bool                        `json:"success"`
+	ExpiredOnly  bool                        `json:"expired_only,omitempty"`
+	ExpiredCount int                         `json:"expired_count,omitempty"`
 	Pending      []state.Approval            `json:"pending"`
 	Count        int                         `json:"count"`
 	TotalMatches int                         `json:"total_matches"`
@@ -207,33 +289,57 @@ func buildApprovalsListOutput(pending []state.Approval, limit, offset int) *Appr
 	return out
 }
 
-func runApproveList(jsonOutput bool, limit, offset int) error {
+func runApproveList(jsonOutput bool, limit, offset int, expiredOnly bool) error {
 	engine, store, err := getApprovalEngine()
 	if err != nil {
 		return outputError(err, jsonOutput)
 	}
 	defer store.Close()
 
-	ctx := context.Background()
-	pending, err := engine.ListPending(ctx)
+	expired, err := store.ListExpiredPendingApprovals()
 	if err != nil {
 		return outputError(err, jsonOutput)
 	}
-	if pending == nil {
-		pending = []state.Approval{}
+
+	var items []state.Approval
+	if expiredOnly {
+		items = expired
+	} else {
+		ctx := context.Background()
+		items, err = engine.ListPending(ctx)
+		if err != nil {
+			return outputError(err, jsonOutput)
+		}
+	}
+	if items == nil {
+		items = []state.Approval{}
 	}
 
 	if jsonOutput {
-		return json.NewEncoder(os.Stdout).Encode(buildApprovalsListOutput(pending, limit, offset))
+		out := buildApprovalsListOutput(items, limit, offset)
+		out.ExpiredOnly = expiredOnly
+		out.ExpiredCount = len(expired)
+		return json.NewEncoder(os.Stdout).Encode(out)
 	}
 
-	if len(pending) == 0 {
+	if len(items) == 0 {
+		if expiredOnly {
+			fmt.Println("No expired pending approvals")
+			return nil
+		}
 		fmt.Println("No pending approvals")
+		if len(expired) > 0 {
+			fmt.Printf("Note: %d pending approval(s) have expired; run 'ntm approve expire' to mark them expired.\n", len(expired))
+		}
 		return nil
 	}
 
-	fmt.Printf("Pending Approvals (%d):\n\n", len(pending))
-	for _, a := range pending {
+	if expiredOnly {
+		fmt.Printf("Expired Pending Approvals (%d):\n\n", len(items))
+	} else {
+		fmt.Printf("Pending Approvals (%d):\n\n", len(items))
+	}
+	for _, a := range items {
 		slb := ""
 		if a.RequiresSLB {
 			slb = " [SLB]"
@@ -245,6 +351,74 @@ func runApproveList(jsonOutput bool, limit, offset int) error {
 		fmt.Printf("  By:       %s\n", a.RequestedBy)
 		fmt.Printf("  Expires:  %s\n", a.ExpiresAt.Format(time.RFC3339))
 		fmt.Println()
+	}
+	if !expiredOnly && len(expired) > 0 {
+		fmt.Printf("Note: %d pending approval(s) have expired; run 'ntm approve expire' to mark them expired.\n", len(expired))
+	}
+	return nil
+}
+
+func runApproveExpire(dryRun, jsonOutput bool) error {
+	_, store, err := getApprovalEngine()
+	if err != nil {
+		return outputError(err, jsonOutput)
+	}
+	defer store.Close()
+
+	expiredPending, err := store.ListExpiredPendingApprovals()
+	if err != nil {
+		return outputError(err, jsonOutput)
+	}
+
+	transitioned := make([]state.Approval, 0, len(expiredPending))
+	currentUser := getCurrentApprover()
+
+	if dryRun {
+		transitioned = append(transitioned, expiredPending...)
+	} else {
+		for _, appr := range expiredPending {
+			updated := appr
+			updated.Status = state.ApprovalExpired
+			ok, err := store.UpdateApprovalFrom(&updated, state.ApprovalPending)
+			if err != nil {
+				return outputError(err, jsonOutput)
+			}
+			if ok {
+				transitioned = append(transitioned, updated)
+				recordApprovalStateAudit(
+					store,
+					currentUser,
+					"approval.expired",
+					string(state.ApprovalPending),
+					string(state.ApprovalExpired),
+					fmt.Sprintf("expired stale approval %s on %s", updated.Action, updated.Resource),
+					"approval TTL elapsed before decision",
+					&updated,
+				)
+			}
+		}
+	}
+
+	if jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(ApprovalExpireOutput{
+			Success:      true,
+			DryRun:       dryRun,
+			Expired:      transitioned,
+			ExpiredCount: len(transitioned),
+		})
+	}
+
+	if len(transitioned) == 0 {
+		fmt.Println("No expired pending approvals")
+		return nil
+	}
+	if dryRun {
+		fmt.Printf("Would mark %d pending approval(s) as expired:\n", len(transitioned))
+	} else {
+		fmt.Printf("✓ Marked %d pending approval(s) as expired:\n", len(transitioned))
+	}
+	for _, appr := range transitioned {
+		fmt.Printf("  - %s (%s on %s)\n", appr.ID, appr.Action, appr.Resource)
 	}
 	return nil
 }
@@ -268,6 +442,16 @@ func runApproveDeny(token, reason string, jsonOutput bool) error {
 		return outputError(err, jsonOutput)
 	}
 
+	recordApprovalStateAudit(
+		store,
+		currentUser,
+		"approval.denied",
+		string(state.ApprovalPending),
+		string(appr.Status),
+		fmt.Sprintf("denied %s on %s", appr.Action, appr.Resource),
+		reason,
+		appr,
+	)
 	_ = audit.LogEvent("", audit.EventTypeStateChange, audit.ActorUser, "approval.deny", map[string]interface{}{
 		"approval_id":  token,
 		"action":       appr.Action,

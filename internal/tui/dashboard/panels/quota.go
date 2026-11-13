@@ -9,7 +9,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Dicklesworthstone/ntm/internal/integrations/caut"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 	"github.com/Dicklesworthstone/ntm/internal/tui/components"
 	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
@@ -29,7 +28,6 @@ type QuotaPanel struct {
 	PanelBase
 	data  QuotaData
 	theme theme.Theme
-	cache *caut.UsageCache
 }
 
 // quotaConfig returns the configuration for the quota panel
@@ -47,11 +45,9 @@ func quotaConfig() PanelConfig {
 
 // NewQuotaPanel creates a new quota panel
 func NewQuotaPanel() *QuotaPanel {
-	poller := caut.GetGlobalPoller()
 	return &QuotaPanel{
 		PanelBase: NewPanelBase(quotaConfig()),
 		theme:     theme.Current(),
-		cache:     poller.GetCache(),
 	}
 }
 
@@ -63,29 +59,6 @@ func (q *QuotaPanel) Init() tea.Cmd {
 // Update implements tea.Model
 func (q *QuotaPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return q, nil
-}
-
-// Refresh fetches the latest data from the cache
-func (q *QuotaPanel) Refresh() {
-	if q.cache == nil {
-		q.data = QuotaData{Available: false}
-		return
-	}
-
-	status := q.cache.GetStatus()
-	usages := q.cache.GetAllUsage()
-	_, err := q.cache.GetLastError()
-
-	q.data = QuotaData{
-		Status:    status,
-		Usages:    usages,
-		Available: status != nil || len(usages) > 0,
-		Error:     err,
-	}
-
-	if err == nil {
-		q.SetLastUpdate(time.Now())
-	}
 }
 
 // SetData updates the panel data directly
@@ -181,6 +154,7 @@ func (q *QuotaPanel) View() string {
 	content.WriteString("\n")
 
 	// Show total usage if status is available
+	sem := t.Semantic()
 	if q.data.Status != nil {
 		// Overall quota bar
 		quotaPct := q.data.Status.QuotaPercent / 100.0
@@ -188,26 +162,19 @@ func (q *QuotaPanel) View() string {
 			quotaPct = 1.0
 		}
 
-		barColor := string(t.Green)
-		if q.data.Status.QuotaPercent >= 80 {
-			barColor = string(t.Yellow)
-		}
+		statusKind := "success"
+		statusIcon := "●"
 		if q.data.Status.QuotaPercent >= 95 {
-			barColor = string(t.Red)
+			statusKind = "error"
+			statusIcon = "!"
+		} else if q.data.Status.QuotaPercent >= 80 {
+			statusKind = "warning"
+			statusIcon = "⚠"
 		}
+		statusColor := sem.StatusColor(statusKind)
+		barColor := string(statusColor)
 
 		bar := styles.ProgressBar(quotaPct, w-6, "█", "░", barColor)
-
-		// Status indicator
-		statusIcon := "●"
-		statusColor := t.Green
-		if q.data.Status.QuotaPercent >= 95 {
-			statusIcon = "!"
-			statusColor = t.Red
-		} else if q.data.Status.QuotaPercent >= 80 {
-			statusIcon = "⚠"
-			statusColor = t.Yellow
-		}
 
 		statusBadge := lipgloss.NewStyle().Foreground(statusColor).Render(statusIcon)
 		quotaLabel := fmt.Sprintf("%.1f%% used", q.data.Status.QuotaPercent)
@@ -238,16 +205,9 @@ func (q *QuotaPanel) View() string {
 			break
 		}
 
-		// Provider name with color
-		var providerColor lipgloss.Color
-		switch strings.ToLower(usage.Provider) {
-		case "claude", "anthropic":
-			providerColor = t.Claude
-		case "openai", "gpt":
-			providerColor = t.Codex
-		case "gemini", "google":
-			providerColor = t.Gemini
-		default:
+		// Provider name with semantic color
+		providerColor := sem.AgentColor(semanticProviderAgentKey(usage.Provider))
+		if providerColor == sem.AgentUnknown {
 			providerColor = t.Green
 		}
 

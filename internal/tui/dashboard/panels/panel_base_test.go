@@ -126,3 +126,36 @@ func TestPanelBaseKeybindingsDefault(t *testing.T) {
 		t.Error("Keybindings() should return nil by default")
 	}
 }
+
+func (b *PanelBase) IsRetrying() bool {
+	return b.retrying
+}
+
+func (b *PanelBase) RetryCount() int {
+	return b.retryCount
+}
+
+func (b *PanelBase) MaxRetries() int {
+	return b.maxRetries
+}
+
+func (b *PanelBase) SetMaxRetries(max int) {
+	b.maxRetries = max
+}
+
+func (b *PanelBase) StartRetry() {
+	b.retrying = true
+	b.retryCount++
+}
+
+func (b *PanelBase) EndRetry(success bool) {
+	b.retrying = false
+	if success {
+		b.retryCount = 0
+	}
+}
+
+func (b *PanelBase) ResetRetry() {
+	b.retrying = false
+	b.retryCount = 0
+}

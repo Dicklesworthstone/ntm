@@ -267,7 +267,7 @@ func newWorkflowRunner(template *workflow.WorkflowTemplate, agents []workflow.Co
 		if err != nil {
 			return nil, err
 		}
-		if manual, ok := trig.(*workflow.ManualTrigger); ok {
+		if manual, ok := trig.(*workflow.ManualTrigger); ok && manual.Type() == workflow.TriggerManual {
 			r.mu.Lock()
 			r.manuals = append(r.manuals, manual)
 			r.mu.Unlock()
@@ -282,7 +282,7 @@ func newWorkflowRunner(template *workflow.WorkflowTemplate, agents []workflow.Co
 				if err != nil {
 					return nil, err
 				}
-				if limiter, ok := trig.(interface{ SetTimeout(time.Duration) }); ok {
+				if limiter, ok := trig.(interface{ SetTimeout(time.Duration) }); ok && trig.Type() == kind {
 					limiter.SetTimeout(opts.TriggerTimeout)
 				}
 				return trig, nil
@@ -307,10 +307,8 @@ func newWorkflowRunner(template *workflow.WorkflowTemplate, agents []workflow.Co
 // the stage name, the role named by an outgoing transition trigger, then the
 // first declared agent role.
 func (r *workflowRunner) stageRole(stage string) string {
-	for _, agent := range r.template.Agents {
-		if agent.Role == stage {
-			return stage
-		}
+	if len(r.template.GetAgentsByRole(stage)) > 0 {
+		return stage
 	}
 	if role, ok := r.template.Routing[stage]; ok {
 		return role

@@ -386,57 +386,6 @@ func (vt *VelocityTracker) addSampleLocked(sample VelocitySample) {
 	vt.Samples = append(vt.Samples, sample)
 }
 
-// CurrentVelocity returns the most recent velocity measurement.
-// Returns 0 if no samples are available.
-func (vt *VelocityTracker) CurrentVelocity() float64 {
-	vt.mu.Lock()
-	defer vt.mu.Unlock()
-
-	if len(vt.Samples) == 0 {
-		return 0
-	}
-	return vt.Samples[len(vt.Samples)-1].Velocity
-}
-
-// AverageVelocity returns the average velocity over all samples in the window.
-// This provides a smoothed velocity that's less sensitive to momentary fluctuations.
-func (vt *VelocityTracker) AverageVelocity() float64 {
-	vt.mu.Lock()
-	defer vt.mu.Unlock()
-
-	if len(vt.Samples) == 0 {
-		return 0
-	}
-
-	var sum float64
-	for _, s := range vt.Samples {
-		sum += s.Velocity
-	}
-	return sum / float64(len(vt.Samples))
-}
-
-// RecentVelocity returns the average velocity over the last n samples.
-// If n is larger than available samples, uses all samples.
-func (vt *VelocityTracker) RecentVelocity(n int) float64 {
-	vt.mu.Lock()
-	defer vt.mu.Unlock()
-
-	if len(vt.Samples) == 0 {
-		return 0
-	}
-
-	if n <= 0 || n > len(vt.Samples) {
-		n = len(vt.Samples)
-	}
-
-	var sum float64
-	start := len(vt.Samples) - n
-	for i := start; i < len(vt.Samples); i++ {
-		sum += vt.Samples[i].Velocity
-	}
-	return sum / float64(n)
-}
-
 // LastOutputAge returns the duration since the last output was added.
 // Returns 0 if no captures have been made.
 func (vt *VelocityTracker) LastOutputAge() time.Duration {
@@ -489,37 +438,6 @@ func (vt *VelocityTracker) LastOutputTime() time.Time {
 	}
 
 	return time.Time{}
-}
-
-// SampleCount returns the number of samples currently in the buffer.
-func (vt *VelocityTracker) SampleCount() int {
-	vt.mu.Lock()
-	defer vt.mu.Unlock()
-	return len(vt.Samples)
-}
-
-// GetSamples returns a copy of all samples in the buffer.
-func (vt *VelocityTracker) GetSamples() []VelocitySample {
-	vt.mu.Lock()
-	defer vt.mu.Unlock()
-
-	result := make([]VelocitySample, len(vt.Samples))
-	copy(result, vt.Samples)
-	return result
-}
-
-// Reset clears all samples and capture state.
-func (vt *VelocityTracker) Reset() {
-	vt.mu.Lock()
-	defer vt.mu.Unlock()
-
-	vt.Samples = vt.Samples[:0]
-	vt.LastCapture = ""
-	vt.LastCaptureAt = time.Time{}
-	vt.lastOutputAt = time.Time{}
-	vt.baselineHash = ""
-	vt.baselineRuneCount = 0
-	vt.persistToStore()
 }
 
 // VelocityManager manages velocity trackers for multiple panes.
@@ -1431,28 +1349,6 @@ func (sc *StateClassifier) getHistoryCopy() []StateTransition {
 	return result
 }
 
-// CurrentState returns the current classified state.
-func (sc *StateClassifier) CurrentState() AgentState {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	return sc.currentState
-}
-
-// Reset clears all state and history.
-func (sc *StateClassifier) Reset() {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-
-	sc.velocityTracker.Reset()
-	sc.currentState = StateUnknown
-	sc.stateSince = time.Now()
-	sc.stateHistory = sc.stateHistory[:0]
-	sc.pendingState = ""
-	sc.pendingSince = time.Time{}
-	sc.lastPatterns = nil
-	sc.lastOutputContent = ""
-}
-
 // SetAgentType sets the agent type for pattern matching.
 func (sc *StateClassifier) SetAgentType(agentType string) {
 	sc.mu.Lock()
@@ -1465,20 +1361,6 @@ func (sc *StateClassifier) setPaneDimensions(width, height int) {
 	defer sc.mu.Unlock()
 	sc.paneWidth = width
 	sc.paneHeight = height
-}
-
-// GetStateHistory returns the state transition history.
-func (sc *StateClassifier) GetStateHistory() []StateTransition {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	return sc.getHistoryCopy()
-}
-
-// StateDuration returns how long the current state has been active.
-func (sc *StateClassifier) StateDuration() time.Duration {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	return time.Since(sc.stateSince)
 }
 
 // ActivityMonitor manages state classifiers for multiple panes.
@@ -1513,73 +1395,4 @@ func (am *ActivityMonitor) GetOrCreate(paneID string) *StateClassifier {
 	classifier := NewStateClassifier(paneID, cfg)
 	am.classifiers[paneID] = classifier
 	return classifier
-}
-
-// Get returns the classifier for a pane, or nil if not found.
-func (am *ActivityMonitor) Get(paneID string) *StateClassifier {
-	am.mu.RLock()
-	defer am.mu.RUnlock()
-	return am.classifiers[paneID]
-}
-
-// Remove removes the classifier for a pane.
-func (am *ActivityMonitor) Remove(paneID string) {
-	am.mu.Lock()
-	defer am.mu.Unlock()
-	delete(am.classifiers, paneID)
-}
-
-// ClassifyAll updates all classifiers and returns current activities.
-func (am *ActivityMonitor) ClassifyAll() (map[string]*AgentActivity, map[string]error) {
-	am.mu.RLock()
-	paneIDs := make([]string, 0, len(am.classifiers))
-	for id := range am.classifiers {
-		paneIDs = append(paneIDs, id)
-	}
-	am.mu.RUnlock()
-
-	activities := make(map[string]*AgentActivity)
-	errors := make(map[string]error)
-
-	for _, paneID := range paneIDs {
-		classifier := am.Get(paneID)
-		if classifier == nil {
-			continue
-		}
-
-		activity, err := classifier.Classify()
-		if err != nil {
-			errors[paneID] = err
-		} else {
-			activities[paneID] = activity
-		}
-	}
-
-	return activities, errors
-}
-
-// GetAllStates returns the current state for all monitored panes.
-func (am *ActivityMonitor) GetAllStates() map[string]AgentState {
-	am.mu.RLock()
-	defer am.mu.RUnlock()
-
-	result := make(map[string]AgentState, len(am.classifiers))
-	for paneID, classifier := range am.classifiers {
-		result[paneID] = classifier.CurrentState()
-	}
-	return result
-}
-
-// Clear removes all classifiers.
-func (am *ActivityMonitor) Clear() {
-	am.mu.Lock()
-	defer am.mu.Unlock()
-	am.classifiers = make(map[string]*StateClassifier)
-}
-
-// Count returns the number of active classifiers.
-func (am *ActivityMonitor) Count() int {
-	am.mu.RLock()
-	defer am.mu.RUnlock()
-	return len(am.classifiers)
 }

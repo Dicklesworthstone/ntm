@@ -99,11 +99,6 @@ type Alert struct {
 	Count int `json:"count"`
 }
 
-// IsResolved returns true if the alert has been resolved
-func (a *Alert) IsResolved() bool {
-	return a.ResolvedAt != nil
-}
-
 // Duration returns how long the alert has been active
 func (a *Alert) Duration() time.Duration {
 	if a.ResolvedAt != nil {

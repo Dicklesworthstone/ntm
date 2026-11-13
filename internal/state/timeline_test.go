@@ -666,3 +666,8 @@ func trackerEventsForTest(tr *TimelineTracker, since time.Time) []AgentEvent {
 	}
 	return result
 }
+
+// IsTerminal returns true if the state is a terminal state (stopped/error).
+func (s TimelineState) IsTerminal() bool {
+	return s == TimelineStopped || s == TimelineError
+}

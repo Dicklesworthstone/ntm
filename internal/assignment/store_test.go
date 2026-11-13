@@ -3430,3 +3430,70 @@ func TestMarkFailedFailsWhenMergeDiscardsTheTransition(t *testing.T) {
 		t.Fatalf("on-disk status = %+v, want completed to be preserved", stored)
 	}
 }
+
+func (s *AssignmentStore) MarkFailedIfCurrent(ctx context.Context, observed *Assignment, reason string) (bool, error) {
+	return s.transitionIfCurrent(ctx, observed, StatusFailed, reason)
+}
+
+func (s *AssignmentStore) Reassign(beadID string, target ReassignmentTarget) (*Assignment, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	oldAssignment, ok := s.Assignments[beadID]
+	if !ok {
+		return nil, fmt.Errorf("[ASSIGN] Assignment not found: %s", beadID)
+	}
+	if oldAssignment.HasPendingPaneContinuation() {
+		return nil, fmt.Errorf("%w: cannot reassign %s", ErrPaneContinuationPending, beadID)
+	}
+
+	if !isValidTransition(oldAssignment.Status, StatusReassigned) {
+		return nil, &InvalidTransitionError{
+			BeadID: beadID,
+			From:   oldAssignment.Status,
+			To:     StatusReassigned,
+		}
+	}
+
+	oldAssignment.Status = StatusReassigned
+
+	now := time.Now().UTC()
+	newAssignment := &Assignment{
+		BeadID:         beadID,
+		BeadTitle:      oldAssignment.BeadTitle,
+		Pane:           target.Pane,
+		AgentType:      target.AgentType,
+		AgentName:      target.AgentName,
+		Status:         StatusAssigned,
+		AssignedAt:     now,
+		RetryCount:     oldAssignment.RetryCount,
+		DispatchTarget: target.DispatchTarget,
+		OccupancyKey:   target.OccupancyKey,
+	}
+
+	s.Assignments[beadID] = newAssignment
+	if s.replace == nil {
+		s.replace = make(map[string]struct{})
+	}
+	s.replace[beadID] = struct{}{}
+
+	if err := s.saveLocked(); err != nil {
+		return nil, err
+	}
+
+	persisted, err := s.confirmPersistedStatusLocked(beadID, StatusAssigned)
+	if err != nil {
+		return nil, err
+	}
+
+	return cloneAssignment(persisted), nil
+}
+
+func (s *AssignmentStore) Clear() error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	s.Assignments = make(map[string]*Assignment)
+
+	return s.saveLocked()
+}

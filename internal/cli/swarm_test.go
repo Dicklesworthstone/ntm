@@ -138,6 +138,10 @@ case "$action" in
       esac
     fi
     ;;
+  load-buffer)
+    cat >> "$NTM_SWARM_FIXTURE/buffers"
+    printf '\n' >> "$NTM_SWARM_FIXTURE/buffers"
+    ;;
 esac
 `
 	bin := filepath.Join(dir, "tmux")
@@ -675,5 +679,122 @@ func TestBuildSwarmPlanOutput_EmptyPlan(t *testing.T) {
 	}
 	if out.Allocations == nil || out.Sessions == nil {
 		t.Fatalf("empty swarm arrays must encode as []: allocations=%#v sessions=%#v", out.Allocations, out.Sessions)
+	}
+}
+
+func executeSwarmSendJSON(t *testing.T, ctx context.Context, args ...string) (SwarmSendOutput, error) {
+	t.Helper()
+	cmd := &cobra.Command{Use: "ntm", SilenceErrors: true, SilenceUsage: true}
+	cmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "JSON output")
+	cmd.AddCommand(newSwarmCmd())
+	cmd.SetArgs(append([]string{"swarm", "send", "--json"}, args...))
+	cmd.SetContext(ctx)
+	cmd.SetErr(io.Discard)
+	raw, runErr := captureStdout(t, cmd.Execute)
+	var out SwarmSendOutput
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		t.Fatalf("expected SwarmSendOutput JSON, got %q (execute error %v): %v", raw, runErr, err)
+	}
+	return out, runErr
+}
+
+func TestSwarmCommandVerifyGeometryAndTemplate(t *testing.T) {
+	project, dir := swarmCommandFixture(t)
+	planPath := filepath.Join(t.TempDir(), "saved_plan.json")
+
+	out, err := executeSwarmCommandJSON(
+		t,
+		context.Background(),
+		"--projects", project,
+		"--template", "review",
+		"--verify-geometry",
+		"--geometry-tolerance", "2",
+		"--adaptive-delay",
+		"--output", planPath,
+	)
+	if err != nil {
+		t.Fatalf("swarm command failed: %v; out=%+v", err, out)
+	}
+	if !out.Success || out.Execution == nil {
+		t.Fatalf("expected successful execution output, got %+v", out)
+	}
+	if out.Execution.TmuxBinary == nil || !out.Execution.TmuxBinary.Available || out.Execution.TmuxBinary.Path == "" {
+		t.Fatalf("expected populated TmuxBinary info, got %+v", out.Execution.TmuxBinary)
+	}
+	if len(out.Execution.Geometry) != 2 {
+		t.Fatalf("Geometry entries = %d, want 2 (%+v)", len(out.Execution.Geometry), out.Execution.Geometry)
+	}
+	for _, g := range out.Execution.Geometry {
+		if g.Error != "" || g.Result == nil || !g.Result.IsUniform {
+			t.Fatalf("unexpected geometry result for %s: %+v", g.Session, g)
+		}
+		if g.Average == nil || g.Average.Width != 80 || g.Average.Height != 24 {
+			t.Fatalf("unexpected average geometry for %s: %+v", g.Session, g.Average)
+		}
+	}
+	if out.Execution.Injection == nil || out.Execution.Injection.Successful != 2 {
+		t.Fatalf("expected template injection to succeed on 2 panes, got %+v", out.Execution.Injection)
+	}
+	buffers, err := os.ReadFile(filepath.Join(dir, "buffers"))
+	if err != nil {
+		t.Fatalf("read tmux buffers: %v", err)
+	}
+	if !strings.Contains(string(buffers), "git log --oneline -10") {
+		t.Fatalf("expected ReviewTemplate text in tmux load-buffer payload, got:\n%s", buffers)
+	}
+}
+
+func TestSwarmSendCommandWithPlanAndSessions(t *testing.T) {
+	project, dir := swarmCommandFixture(t)
+	planPath := filepath.Join(t.TempDir(), "plan.json")
+
+	launchOut, err := executeSwarmCommandJSON(t, context.Background(), "--projects", project, "--output", planPath)
+	if err != nil || !launchOut.Success {
+		t.Fatalf("initial swarm launch failed: %v; out=%+v", err, launchOut)
+	}
+
+	// 1. Broadcast built-in "test" template using saved SwarmPlan JSON.
+	sendPlanOut, err := executeSwarmSendJSON(t, context.Background(), "--plan", planPath, "--template", "test", "--stagger-delay", "1ms")
+	if err != nil || !sendPlanOut.Success {
+		t.Fatalf("swarm send --plan failed: %v; out=%+v", err, sendPlanOut)
+	}
+	if sendPlanOut.Source != "template:test" || sendPlanOut.Injection == nil || sendPlanOut.Injection.Successful != 2 {
+		t.Fatalf("unexpected swarm send --plan output: %+v", sendPlanOut)
+	}
+
+	// 2. Broadcast explicit prompt to discovered live sessions matching glob.
+	t.Setenv("NTM_SWARM_EXISTING", "1")
+	sendSessOut, err := executeSwarmSendJSON(
+		t,
+		context.Background(),
+		"--sessions", "cc_agents_*",
+		"--prompt", "check status now",
+		"--adaptive-delay",
+		"--scan-dir", project,
+		"--stagger-delay", "1ms",
+	)
+	if err != nil || !sendSessOut.Success {
+		t.Fatalf("swarm send --sessions failed: %v; out=%+v", err, sendSessOut)
+	}
+	if len(sendSessOut.Sessions) != 1 || sendSessOut.Sessions[0] != "cc_agents_1" {
+		t.Fatalf("Sessions = %v, want [cc_agents_1]", sendSessOut.Sessions)
+	}
+	if sendSessOut.Injection == nil || sendSessOut.Injection.Successful != 1 {
+		t.Fatalf("expected 1 successful session injection, got %+v", sendSessOut.Injection)
+	}
+
+	buffers, err := os.ReadFile(filepath.Join(dir, "buffers"))
+	if err != nil {
+		t.Fatalf("read tmux buffers: %v", err)
+	}
+	if !strings.Contains(string(buffers), "Identify the test command") {
+		t.Fatalf("expected TestTemplate text in tmux load-buffer payload:\n%s", buffers)
+	}
+	calls, err := os.ReadFile(filepath.Join(dir, "calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(calls), "send-keys -t %41 -l -- check status now") {
+		t.Fatalf("expected session broadcast to %%41 in tmux calls:\n%s", calls)
 	}
 }

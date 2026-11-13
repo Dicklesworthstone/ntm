@@ -1219,3 +1219,20 @@ func TestRobotSourcesReserveLiteralExitTwoForNotImplemented(t *testing.T) {
 		}
 	}
 }
+
+// Same-package test builder helpers on ErrorDetails.
+
+func (d *ErrorDetails) WithProcessState(state string) *ErrorDetails {
+	d.ProcessState = state
+	return d
+}
+
+func (d *ErrorDetails) WithExitMethod(method string) *ErrorDetails {
+	d.ExitMethod = method
+	return d
+}
+
+func (d *ErrorDetails) WithDuration(ms int) *ErrorDetails {
+	d.DurationMs = ms
+	return d
+}

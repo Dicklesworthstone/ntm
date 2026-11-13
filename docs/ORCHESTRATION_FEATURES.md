@@ -1265,9 +1265,9 @@ Project `.ntm/config.toml` values add to global values and cannot remove a gate.
 
 ### Historical Proposal: Soft-Claim Files
 
-Earlier designs proposed a `.ntm/claims/` delay-and-check protocol. NTM does not
-implement that protocol; the atomic Beads claim plus durable assignment ledger
-is the supported coordination boundary.
+Automated `ntm assign` does not use a `.ntm/claims/` delay-and-check protocol;
+the atomic Beads claim plus durable assignment ledger is the authoritative
+boundary (`ntm claim`, `check`, and `list` remain optional advisory helpers).
 
 ### Coordinator Toggle Persistence
 

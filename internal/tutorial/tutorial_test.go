@@ -1159,3 +1159,31 @@ func TestRenderNavigationBar_WideHints(t *testing.T) {
 		t.Errorf("ultra nav bar should contain '1-9 jump', got %q", stripped)
 	}
 }
+
+// GetCurrentSlide returns the current slide ID for same-package tests.
+func (m Model) GetCurrentSlide() SlideID {
+	return m.currentSlide
+}
+
+// IsTransitioning returns whether a transition is in progress for same-package tests.
+func (m Model) IsTransitioning() bool {
+	return m.transitioning
+}
+
+func TestCompleteSlideRendersCelebrationParticles(t *testing.T) {
+	t.Parallel()
+
+	m := New(WithSkipAnimations())
+	m = updateModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'9'}})
+	if m.GetCurrentSlide() != SlideComplete {
+		t.Fatalf("expected SlideComplete, got %v", m.GetCurrentSlide())
+	}
+	if len(m.particles) == 0 {
+		t.Fatal("expected celebration particles to be seeded when entering SlideComplete")
+	}
+
+	rendered := stripANSI(m.renderCompleteSlide(10))
+	if !strings.Contains(rendered, "✦") || !strings.Contains(rendered, "★") {
+		t.Fatalf("expected rendered complete slide to include celebration particle glyphs, got %q", rendered)
+	}
+}

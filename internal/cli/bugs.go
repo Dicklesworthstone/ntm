@@ -47,9 +47,10 @@ Examples:
 
 func newBugsListCmd() *cobra.Command {
 	var (
-		severity string
-		limit    int
-		showAll  bool
+		severity   string
+		fileFilter string
+		limit      int
+		showAll    bool
 	)
 
 	cmd := &cobra.Command{
@@ -123,24 +124,28 @@ Examples:
 				}
 			}
 
+			filteredResult := *result
+			if strings.TrimSpace(fileFilter) != "" {
+				filteredResult.Findings = filteredResult.FilterByFile(fileFilter)
+			}
+
 			// Filter by severity if requested
 			var findings []scanner.Finding
 			if severity != "" {
-				targetSeverity := scanner.Severity(strings.ToLower(severity))
-				for _, f := range result.Findings {
-					if f.Severity == targetSeverity {
-						findings = append(findings, f)
-					}
-				}
+				targetSeverity := scanner.Severity(strings.ToLower(strings.TrimSpace(severity)))
+				findings = filteredResult.FilterBySeverity(targetSeverity)
 			} else if !showAll {
 				// By default, show only critical and warning
-				for _, f := range result.Findings {
+				for _, f := range filteredResult.Findings {
 					if f.Severity == scanner.SeverityCritical || f.Severity == scanner.SeverityWarning {
 						findings = append(findings, f)
 					}
 				}
 			} else {
-				findings = result.Findings
+				findings = filteredResult.Findings
+			}
+			if findings == nil {
+				findings = make([]scanner.Finding, 0)
 			}
 
 			// Apply limit
@@ -200,6 +205,7 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&severity, "severity", "", "Filter by severity (critical, warning, info)")
+	cmd.Flags().StringVar(&fileFilter, "file", "", "Filter findings by file path or substring")
 	cmd.Flags().IntVar(&limit, "limit", 20, "Maximum findings to show")
 	cmd.Flags().BoolVar(&showAll, "all", false, "Show all findings including info")
 

@@ -10,6 +10,17 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
 
+// ProviderDetail captures rate-window and account metadata parsed from caut payloads.
+type ProviderDetail struct {
+	Provider         string `json:"provider"`
+	AccountEmail     string `json:"account_email,omitempty"`
+	WindowMinutes    int    `json:"window_minutes,omitempty"`
+	HasUsageData     bool   `json:"has_usage_data"`
+	RateLimited      bool   `json:"rate_limited,omitempty"`
+	ResetAt          string `json:"reset_at,omitempty"`
+	ResetDescription string `json:"reset_description,omitempty"`
+}
+
 // UsageCache stores cached usage data for quick dashboard access.
 // It is thread-safe for concurrent read/write access.
 type UsageCache struct {
@@ -20,6 +31,9 @@ type UsageCache struct {
 
 	// Usage is per-provider usage data
 	usage map[string]*tools.CautUsage
+
+	// details stores per-provider rate-window and identity details
+	details map[string]*ProviderDetail
 
 	// LastUpdated is when the cache was last refreshed
 	lastUpdated time.Time
@@ -35,7 +49,8 @@ type UsageCache struct {
 // NewUsageCache creates a new usage cache.
 func NewUsageCache() *UsageCache {
 	return &UsageCache{
-		usage: make(map[string]*tools.CautUsage),
+		usage:   make(map[string]*tools.CautUsage),
+		details: make(map[string]*ProviderDetail),
 	}
 }
 
@@ -148,13 +163,6 @@ func (c *UsageCache) GetAllUsage() []tools.CautUsage {
 	return usages
 }
 
-// GetLastUpdated returns when the cache was last updated.
-func (c *UsageCache) GetLastUpdated() time.Time {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.lastUpdated
-}
-
 // GetUpdateCount returns how many times the cache has been updated.
 func (c *UsageCache) GetUpdateCount() int64 {
 	c.mu.RLock()
@@ -180,15 +188,48 @@ func (c *UsageCache) IsStale(maxAge time.Duration) bool {
 	return time.Since(c.lastUpdated) > maxAge
 }
 
+// UpdateProviderDetails stores per-provider rate-window and account metadata.
+func (c *UsageCache) UpdateProviderDetails(details []ProviderDetail) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.details = make(map[string]*ProviderDetail, len(details))
+	for i := range details {
+		detailCopy := details[i]
+		c.details[detailCopy.Provider] = &detailCopy
+	}
+}
+
+// GetProviderDetails returns all cached per-provider details sorted by provider name.
+func (c *UsageCache) GetProviderDetails() []ProviderDetail {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if len(c.details) == 0 {
+		return nil
+	}
+	providers := make([]string, 0, len(c.details))
+	for provider := range c.details {
+		providers = append(providers, provider)
+	}
+	sort.Strings(providers)
+	out := make([]ProviderDetail, 0, len(providers))
+	for _, provider := range providers {
+		out = append(out, *c.details[provider])
+	}
+	return out
+}
+
 // CacheSnapshot represents a point-in-time snapshot of the cache.
 type CacheSnapshot struct {
-	Status       *tools.CautStatus `json:"status,omitempty"`
-	Usage        []tools.CautUsage `json:"usage,omitempty"`
-	LastUpdated  time.Time         `json:"last_updated"`
-	UpdateCount  int64             `json:"update_count"`
-	HasError     bool              `json:"has_error"`
-	ErrorMessage string            `json:"error_message,omitempty"`
-	ErrorTime    *time.Time        `json:"error_time,omitempty"`
+	Status          *tools.CautStatus `json:"status,omitempty"`
+	Usage           []tools.CautUsage `json:"usage,omitempty"`
+	ProviderDetails []ProviderDetail  `json:"provider_details,omitempty"`
+	LastUpdated     time.Time         `json:"last_updated"`
+	UpdateCount     int64             `json:"update_count"`
+	HasError        bool              `json:"has_error"`
+	ErrorMessage    string            `json:"error_message,omitempty"`
+	ErrorTime       *time.Time        `json:"error_time,omitempty"`
 }
 
 // Snapshot returns a complete snapshot of the cache state.
@@ -216,6 +257,18 @@ func (c *UsageCache) Snapshot() CacheSnapshot {
 		snapshot.Usage = append(snapshot.Usage, *c.usage[provider])
 	}
 
+	if len(c.details) > 0 {
+		detailKeys := make([]string, 0, len(c.details))
+		for provider := range c.details {
+			detailKeys = append(detailKeys, provider)
+		}
+		sort.Strings(detailKeys)
+		snapshot.ProviderDetails = make([]ProviderDetail, 0, len(detailKeys))
+		for _, provider := range detailKeys {
+			snapshot.ProviderDetails = append(snapshot.ProviderDetails, *c.details[provider])
+		}
+	}
+
 	if c.lastError != nil {
 		snapshot.HasError = true
 		snapshot.ErrorMessage = c.lastError.Error()
@@ -233,6 +286,7 @@ func (c *UsageCache) Clear() {
 
 	c.status = nil
 	c.usage = make(map[string]*tools.CautUsage)
+	c.details = make(map[string]*ProviderDetail)
 	c.lastUpdated = time.Time{}
 	c.updateCount = 0
 	c.lastError = nil

@@ -748,3 +748,25 @@ func TestTruncate(t *testing.T) {
 		})
 	}
 }
+
+func (h *Handoff) ValidateMinimal() error {
+	if h.Goal == "" {
+		return ValidationError{
+			Field:   "goal",
+			Message: "required field missing",
+		}
+	}
+	if h.Now == "" {
+		return ValidationError{
+			Field:   "now",
+			Message: "required field missing",
+		}
+	}
+	return nil
+}
+
+func (h *Handoff) MustValidate() {
+	if errs := h.Validate(); len(errs) > 0 {
+		panic("handoff validation failed: " + errs.Error())
+	}
+}

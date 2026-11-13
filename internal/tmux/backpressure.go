@@ -1,14 +1,9 @@
 package tmux
 
 import (
-	"context"
-	"errors"
-	"sort"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/Dicklesworthstone/ntm/internal/backpressure"
 )
 
 const maxCaptureBackpressureRows = 256
@@ -53,27 +48,6 @@ func (t *captureBackpressureTracker) record(stats CaptureBackpressureStats) {
 	t.entries[stats.Target] = captureBackpressureEntry{stats: stats, order: t.nextOrder}
 }
 
-func (t *captureBackpressureTracker) inputs() []backpressure.SurfaceInput {
-	if t == nil {
-		return []backpressure.SurfaceInput{}
-	}
-	t.mu.RLock()
-	entries := make([]captureBackpressureEntry, 0, len(t.entries))
-	for _, entry := range t.entries {
-		entries = append(entries, entry)
-	}
-	t.mu.RUnlock()
-
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].order < entries[j].order
-	})
-	inputs := make([]backpressure.SurfaceInput, 0, len(entries))
-	for _, entry := range entries {
-		inputs = append(inputs, CaptureBackpressureInput(entry.stats))
-	}
-	return inputs
-}
-
 // CaptureBackpressureStats is the low-level capture evidence exported to the
 // shared overload broker.
 type CaptureBackpressureStats struct {
@@ -84,38 +58,6 @@ type CaptureBackpressureStats struct {
 	Latency      time.Duration
 	Err          error
 	SourceLoaded bool
-}
-
-// CaptureBackpressureInput converts a tmux capture attempt into a shared
-// backpressure surface row.
-func CaptureBackpressureInput(stats CaptureBackpressureStats) backpressure.SurfaceInput {
-	loaded := stats.SourceLoaded
-	if !loaded && (stats.Latency > 0 || stats.Err != nil || stats.Target != "" || stats.Session != "" || stats.Pane != "") {
-		loaded = true
-	}
-	input := backpressure.SurfaceInput{
-		Surface:      backpressure.SurfaceTmuxCapture,
-		Session:      stats.Session,
-		Pane:         firstNonEmpty(stats.Pane, stats.Target),
-		LatencyMS:    stats.Latency.Milliseconds(),
-		SourceLoaded: loaded,
-	}
-	if !loaded {
-		input.MissingWarning = "tmux capture counters are not available."
-	}
-	if isCaptureTimeout(stats.Err) && input.LatencyMS == 0 {
-		input.LatencyMS = DefaultCommandTimeout.Milliseconds()
-	}
-	return input
-}
-
-// CaptureBackpressureInputs returns the current live capture measurements for
-// this client. Each pane contributes its most recent real capture attempt.
-func (c *Client) CaptureBackpressureInputs() []backpressure.SurfaceInput {
-	if c == nil {
-		return []backpressure.SurfaceInput{}
-	}
-	return c.captureBackpressure.inputs()
 }
 
 func (c *Client) recordCaptureBackpressure(target string, lines int, latency time.Duration, err error) {
@@ -140,21 +82,4 @@ func captureBackpressureIdentity(target string) (session, pane string) {
 		return before, target
 	}
 	return "", pane
-}
-
-func isCaptureTimeout(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-	return ClassifyCommandError(err).Kind == CommandErrorTimeout
-}
-
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
 }

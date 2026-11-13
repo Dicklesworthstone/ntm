@@ -499,3 +499,8 @@ func TestPaneLauncherCodexCooldownIsPerProject(t *testing.T) {
 		t.Fatalf("checking a cooldown wrote history into the other project: %v", err)
 	}
 }
+
+func (pl *PaneLauncher) WithCDDelay(delay time.Duration) *PaneLauncher {
+	pl.CDDelay = delay
+	return pl
+}

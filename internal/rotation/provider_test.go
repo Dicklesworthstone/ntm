@@ -249,3 +249,28 @@ func TestProviderAuthPatternsConsistency(t *testing.T) {
 	gemini := &GeminiProvider{}
 	_ = gemini.AuthSuccessPatterns() // Just verify it doesn't panic
 }
+
+func TestMatchesAuthSuccess(t *testing.T) {
+	t.Parallel()
+
+	claude := GetProvider("claude")
+	if matched, ok := MatchesAuthSuccess(claude, "Welcome back! Authenticated as alice@example.com"); !ok || matched != "authenticated as" {
+		t.Fatalf("MatchesAuthSuccess(claude) = (%q, %v), want (authenticated as, true)", matched, ok)
+	}
+	if _, ok := MatchesAuthSuccess(claude, "Waiting for browser login..."); ok {
+		t.Fatal("MatchesAuthSuccess(claude) matched unrelated output")
+	}
+
+	gemini := GetProvider("gemini")
+	if matched, ok := MatchesAuthSuccess(gemini, "User successfully LOGGED IN via OAuth"); !ok || matched != "logged in" {
+		t.Fatalf("MatchesAuthSuccess(gemini) = (%q, %v), want (logged in, true)", matched, ok)
+	}
+
+	codex := GetProvider("codex")
+	if _, ok := MatchesAuthSuccess(codex, "Authenticated as user"); ok {
+		t.Fatal("MatchesAuthSuccess(codex) should return false when provider has no in-pane auth patterns")
+	}
+	if _, ok := MatchesAuthSuccess(nil, "Successfully logged in"); ok {
+		t.Fatal("MatchesAuthSuccess(nil) should return false")
+	}
+}

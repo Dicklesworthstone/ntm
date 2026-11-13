@@ -2254,6 +2254,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spawnPanel.SetData(msg.Data)
 		m.markUpdated(refreshSpawn, time.Now())
 
+		if m.toasts != nil && msg.Data.BatchID != "" {
+			toastID := "spawn-batch-" + msg.Data.BatchID
+			total := len(msg.Data.Prompts)
+			if total <= 0 {
+				total = msg.Data.TotalAgents
+			}
+			progress := 0.0
+			if msg.Data.IsComplete() {
+				progress = 1.0
+			} else if total > 0 {
+				progress = float64(msg.Data.SentCount()) / float64(total)
+			}
+			if !m.toasts.UpdateProgress(toastID, progress) && msg.Data.Active && !msg.Data.IsComplete() {
+				m.toasts.PushProgress(
+					toastID,
+					fmt.Sprintf("Spawning %s (%d/%d sent)", m.session, msg.Data.SentCount(), maxInt(total, 1)),
+					progress,
+				)
+			}
+		}
+
 		// Adaptive polling: faster when spawn is active for smooth countdown display,
 		// slower when idle to reduce CPU/render churn
 		wasActive := m.spawnActive
@@ -3388,6 +3409,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showToastHistory = false
 				return m, nil
 			}
+			if msg.String() == "c" && m.toasts != nil {
+				m.toasts.ClearHistory()
+				return m, nil
+			}
 			if key.Matches(msg, dashKeys.ToastDismiss) && m.toasts != nil {
 				m.toasts.DismissNewest()
 				return m, nil
@@ -3510,7 +3535,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if m.showWorkflowPanel && m.workflowPanel != nil && m.workflowState != nil && msg.String() == "enter" {
+		if m.showWorkflowPanel && m.workflowPanel != nil && m.workflowPanel.HasData() && msg.String() == "enter" {
 			_, cmd := m.workflowPanel.Update(msg)
 			return m, cmd
 		}
@@ -3580,7 +3605,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.ensembleModes.SetSize(modesW, modesH)
 
-			cmds = append(cmds, m.fetchEnsembleModesData())
+			cmds = append(cmds, m.ensembleModes.Init(), m.fetchEnsembleModesData())
 			return m, tea.Batch(cmds...)
 
 		case key.Matches(msg, dashKeys.Help):
@@ -4181,38 +4206,15 @@ func (m Model) renderPaneGrid() string {
 		isSelected := i == m.cursor
 		ps, hasPaneStatus := m.paneStatus[paneStatusKey(p)]
 
-		// Determine card colors based on agent type
-		var borderColor, iconColor lipgloss.Color
-		var agentIcon string
-
-		switch p.Type.Canonical() {
-		case tmux.AgentClaude:
-			borderColor = t.Claude
-			iconColor = t.Claude
-			agentIcon = ic.Claude
-		case tmux.AgentCodex:
-			borderColor = t.Codex
-			iconColor = t.Codex
-			agentIcon = ic.Codex
-		case tmux.AgentGemini:
-			borderColor = t.Gemini
-			iconColor = t.Gemini
-			agentIcon = ic.Gemini
-		case tmux.AgentGrok:
-			borderColor = t.Pink
-			iconColor = t.Pink
-			agentIcon = ic.Robot
-		case tmux.AgentOmp:
-			borderColor = t.Sky
-			iconColor = t.Sky
-			agentIcon = ic.Robot
-		case tmux.AgentAntigravity:
-			borderColor = t.Lavender
-			iconColor = t.Lavender
-			agentIcon = ic.Gemini
-		default:
-			borderColor = t.Green
-			iconColor = t.Green
+		// Determine card colors based on semantic agent palette
+		sem := t.Semantic()
+		borderColor := t.Green
+		if p.Type.IsValid() {
+			borderColor = sem.AgentColor(string(p.Type))
+		}
+		iconColor := borderColor
+		agentIcon := ic.AgentIcon(string(p.Type))
+		if p.Type.Canonical() == tmux.AgentUser || !p.Type.IsValid() {
 			agentIcon = ic.User
 		}
 
@@ -4231,17 +4233,17 @@ func (m Model) renderPaneGrid() string {
 
 		// Header line with icon and title
 		statusIcon := "•"
-		statusColor := t.Overlay
+		statusColor := sem.StatusColor(row.Status)
 		switch row.Status {
 		case "working":
 			statusIcon = WorkingSpinnerFrame(m.animTick)
-			statusColor = t.Green
+			statusColor = sem.StatusSuccess
 		case "idle":
 			statusIcon = "○"
-			statusColor = t.Yellow
+			statusColor = sem.StatusPending
 		case "error":
 			statusIcon = "✗"
-			statusColor = t.Red
+			statusColor = sem.StatusError
 		case "compacted":
 			statusIcon = "⚠"
 			statusColor = t.Peach
@@ -4505,6 +4507,23 @@ func truncateToHeight(content string, maxLines int) string {
 	return strings.Join(lines[:maxLines], "\n")
 }
 
+func renderBoundedPanelView(p panels.Panel, maxLines int) string {
+	view := p.View()
+	if p.HandlesOwnHeight() || maxLines <= 0 {
+		return view
+	}
+	return truncateToHeight(view, maxLines)
+}
+
+func (m Model) sidebarHasError() bool {
+	return (m.costPanel != nil && m.costPanel.HasError()) ||
+		(m.metricsPanel != nil && m.metricsPanel.HasError()) ||
+		(m.historyPanel != nil && m.historyPanel.HasError()) ||
+		(m.filesPanel != nil && m.filesPanel.HasError()) ||
+		(m.cassPanel != nil && m.cassPanel.HasError()) ||
+		(m.timelinePanel != nil && m.timelinePanel.HasError())
+}
+
 func dashboardDebugEnabled(m *Model) bool {
 	if m != nil && m.showDiagnostics {
 		return true
@@ -4683,7 +4702,7 @@ func (m *Model) resizePanelsForLayout() {
 	}
 
 	if m.tickerPanel != nil {
-		m.tickerPanel.SetSize(maxInt(m.width-4, 0), 1)
+		m.tickerPanel.SetSize(maxInt(m.width-4, 0), maxInt(m.tickerPanel.GetHeight(), 1))
 	}
 }
 
@@ -5304,7 +5323,7 @@ func (m Model) renderSidebar(width, height int) string {
 				m.rotationConfirmPanel.Focus()
 			}
 			m.rotationConfirmPanel.SetSize(width, panelHeight)
-			lines = append(lines, m.rotationConfirmPanel.View(), "")
+			lines = append(lines, renderBoundedPanelView(m.rotationConfirmPanel, panelHeight), "")
 		}
 	}
 
@@ -5316,7 +5335,7 @@ func (m Model) renderSidebar(width, height int) string {
 				panelHeight = 14
 			}
 			m.workflowPanel.SetSize(width, panelHeight)
-			lines = append(lines, m.workflowPanel.View(), "")
+			lines = append(lines, renderBoundedPanelView(m.workflowPanel, panelHeight), "")
 		}
 	}
 
@@ -5333,7 +5352,7 @@ func (m Model) renderSidebar(width, height int) string {
 				m.quotaPanel.Focus()
 			}
 			m.quotaPanel.SetSize(width, panelHeight)
-			lines = append(lines, m.quotaPanel.View(), "")
+			lines = append(lines, renderBoundedPanelView(m.quotaPanel, panelHeight), "")
 		}
 	}
 	if m.showRateLimitPanel && m.rateLimitPanel != nil && height > 0 {
@@ -5347,7 +5366,7 @@ func (m Model) renderSidebar(width, height int) string {
 				m.rateLimitPanel.Focus()
 			}
 			m.rateLimitPanel.SetSize(width, panelHeight)
-			lines = append(lines, m.rateLimitPanel.View(), "")
+			lines = append(lines, renderBoundedPanelView(m.rateLimitPanel, panelHeight), "")
 		}
 	}
 	if m.showAccountsPanel && m.accountsPanel != nil && height > 0 {
@@ -5361,7 +5380,7 @@ func (m Model) renderSidebar(width, height int) string {
 				m.accountsPanel.Focus()
 			}
 			m.accountsPanel.SetSize(width, panelHeight)
-			lines = append(lines, m.accountsPanel.View(), "")
+			lines = append(lines, renderBoundedPanelView(m.accountsPanel, panelHeight), "")
 		}
 	}
 
@@ -5383,7 +5402,7 @@ func (m Model) renderSidebar(width, height int) string {
 		panelHeight := 8 // Fixed height for spawn panel
 		if height-used > panelHeight {
 			m.spawnPanel.SetSize(width, panelHeight)
-			lines = append(lines, m.spawnPanel.View())
+			lines = append(lines, renderBoundedPanelView(m.spawnPanel, panelHeight))
 			lines = append(lines, "")
 		}
 	}
@@ -5416,7 +5435,7 @@ func (m Model) renderSidebar(width, height int) string {
 				panelHeight = 16
 			}
 			m.ranoNetworkPanel.SetSize(width, panelHeight)
-			lines = append(lines, "", m.ranoNetworkPanel.View())
+			lines = append(lines, "", renderBoundedPanelView(m.ranoNetworkPanel, panelHeight))
 		}
 	}
 
@@ -5430,12 +5449,12 @@ func (m Model) renderSidebar(width, height int) string {
 				panelHeight = 18
 			}
 			m.rchPanel.SetSize(width, panelHeight)
-			lines = append(lines, "", m.rchPanel.View())
+			lines = append(lines, "", renderBoundedPanelView(m.rchPanel, panelHeight))
 		}
 	}
 
 	// Cost tracking (best-effort, height-gated)
-	if m.costPanel != nil && height > 0 && (m.costPanel.HasData() || m.costDailyBudgetUSD > 0) {
+	if m.costPanel != nil && height > 0 && (m.costPanel.HasData() || m.costPanel.HasError() || m.costDailyBudgetUSD > 0) {
 		used := lipgloss.Height(strings.Join(lines, "\n"))
 		spacer := 1
 		panelHeight := height - used - spacer
@@ -5444,12 +5463,12 @@ func (m Model) renderSidebar(width, height int) string {
 				panelHeight = 14
 			}
 			m.costPanel.SetSize(width, panelHeight)
-			lines = append(lines, "", m.costPanel.View())
+			lines = append(lines, "", renderBoundedPanelView(m.costPanel, panelHeight))
 		}
 	}
 
 	// Metrics (best-effort, height-gated)
-	if m.metricsPanel != nil && height > 0 && (m.metricsError != nil || hasMetricsData(m.metricsData)) {
+	if m.metricsPanel != nil && height > 0 && (m.metricsError != nil || m.metricsPanel.HasError() || hasMetricsData(m.metricsData)) {
 		used := lipgloss.Height(strings.Join(lines, "\n"))
 		spacer := 1
 		panelHeight := height - used - spacer
@@ -5461,12 +5480,12 @@ func (m Model) renderSidebar(width, height int) string {
 				m.metricsPanel.Focus()
 			}
 			m.metricsPanel.SetSize(width, panelHeight)
-			lines = append(lines, "", m.metricsPanel.View())
+			lines = append(lines, "", renderBoundedPanelView(m.metricsPanel, panelHeight))
 		}
 	}
 
 	// Command history (best-effort, height-gated)
-	if m.historyPanel != nil && height > 0 && (len(m.cmdHistory) > 0 || m.historyError != nil) {
+	if m.historyPanel != nil && height > 0 && (len(m.cmdHistory) > 0 || m.historyError != nil || m.historyPanel.HasError()) {
 		used := lipgloss.Height(strings.Join(lines, "\n"))
 		spacer := 1
 		panelHeight := height - used - spacer
@@ -5478,12 +5497,12 @@ func (m Model) renderSidebar(width, height int) string {
 				m.historyPanel.Focus()
 			}
 			m.historyPanel.SetSize(width, panelHeight)
-			lines = append(lines, "", m.historyPanel.View())
+			lines = append(lines, "", renderBoundedPanelView(m.historyPanel, panelHeight))
 		}
 	}
 
 	// File activity (best-effort, height-gated)
-	if m.filesPanel != nil && height > 0 && (len(m.fileChanges) > 0 || m.fileChangesError != nil) {
+	if m.filesPanel != nil && height > 0 && (len(m.fileChanges) > 0 || m.fileChangesError != nil || m.filesPanel.HasError()) {
 		used := lipgloss.Height(strings.Join(lines, "\n"))
 		spacer := 1
 		panelHeight := height - used - spacer
@@ -5495,7 +5514,7 @@ func (m Model) renderSidebar(width, height int) string {
 				m.filesPanel.Focus()
 			}
 			m.filesPanel.SetSize(width, panelHeight)
-			lines = append(lines, "", m.filesPanel.View())
+			lines = append(lines, "", renderBoundedPanelView(m.filesPanel, panelHeight))
 		}
 	}
 
@@ -5512,7 +5531,7 @@ func (m Model) renderSidebar(width, height int) string {
 				m.cassPanel.Focus()
 			}
 			m.cassPanel.SetSize(width, panelHeight)
-			lines = append(lines, "", m.cassPanel.View())
+			lines = append(lines, "", renderBoundedPanelView(m.cassPanel, panelHeight))
 		}
 	}
 
@@ -5529,7 +5548,7 @@ func (m Model) renderSidebar(width, height int) string {
 				m.timelinePanel.Focus()
 			}
 			m.timelinePanel.SetSize(width, panelHeight)
-			lines = append(lines, "", m.timelinePanel.View())
+			lines = append(lines, "", renderBoundedPanelView(m.timelinePanel, panelHeight))
 		}
 	}
 
@@ -5853,37 +5872,25 @@ func (m Model) renderPaneDetail(width int) string {
 	valueStyle := lipgloss.NewStyle().Foreground(t.Text)
 
 	// Type badge
-	var typeColor lipgloss.Color
-	var typeIcon string
-	switch p.Type.Canonical() {
-	case tmux.AgentClaude:
-		typeColor = t.Claude
-		typeIcon = ic.Claude
-	case tmux.AgentCodex:
-		typeColor = t.Codex
-		typeIcon = ic.Codex
-	case tmux.AgentGemini:
-		typeColor = t.Gemini
-		typeIcon = ic.Gemini
-	case tmux.AgentGrok:
-		typeColor = t.Pink
-		typeIcon = ic.Robot
-	case tmux.AgentOmp:
-		typeColor = t.Sky
-		typeIcon = ic.Robot
-	case tmux.AgentAntigravity:
-		typeColor = t.Lavender
-		typeIcon = ic.Gemini
-	default:
-		typeColor = t.Green
+	sem := t.Semantic()
+	typeColor := t.Green
+	if p.Type.IsValid() {
+		typeColor = sem.AgentColor(string(p.Type))
+	}
+	typeIcon := ic.AgentIcon(string(p.Type))
+	if p.Type.Canonical() == tmux.AgentUser || !p.Type.IsValid() {
 		typeIcon = ic.User
+	}
+	typeLabel := p.Type.DisplayName()
+	if !p.Type.IsValid() {
+		typeLabel = p.Type.ProfileName()
 	}
 	typeBadge := lipgloss.NewStyle().
 		Background(typeColor).
 		Foreground(t.Base).
 		Bold(true).
 		Padding(0, 1).
-		Render(typeIcon + " " + p.Type.ProfileName())
+		Render(typeIcon + " " + typeLabel)
 	lines = append(lines, labelStyle.Render("Agent Type:")+typeBadge)
 	if panePersona != nil {
 		personaBadge := lipgloss.NewStyle().

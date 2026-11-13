@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -515,8 +519,8 @@ func TestCassMissingBinaryJSONCommandsReturnUnavailable(t *testing.T) {
 		run              func() error
 		wantNotInstalled bool
 	}{
-		{name: "status", run: runCassStatus, wantNotInstalled: true},
-		{name: "search", run: func() error { return runCassSearch("terminal contracts", "", "", "", 5, 0) }, wantNotInstalled: true},
+		{name: "status", run: func() error { return runCassStatusWithOptions(false) }, wantNotInstalled: true},
+		{name: "search", run: func() error { return runCassSearchWithMode("terminal contracts", "", "", "", 5, 0, false) }, wantNotInstalled: true},
 		{name: "timeline", run: func() error { return runCassTimeline("24h", "hour") }, wantNotInstalled: true},
 		{name: "preview", run: func() error { return runCassPreview("terminal contract history", 5, 30, "markdown", 500) }},
 	}
@@ -549,5 +553,69 @@ func TestCassMissingBinaryJSONCommandsReturnUnavailable(t *testing.T) {
 				t.Fatalf("error = %v, want non-empty cause", response["error"])
 			}
 		})
+	}
+}
+
+func TestCassStatusHealthAndQuickSearchCLI(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub cass uses POSIX sh")
+	}
+
+	binDir := t.TempDir()
+	argsLog := filepath.Join(binDir, "args.log")
+	script := "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"" + argsLog + "\"\n" +
+		"if [ \"${1:-}\" = \"health\" ]; then\n" +
+		"  echo '{\"healthy\":true,\"index\":{\"exists\":true,\"healthy\":true},\"database\":{\"exists\":true,\"opened\":true,\"healthy\":true}}'\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"echo '{\"query\":\"oauth\",\"count\":1,\"total_matches\":1,\"hits\":[{\"source_path\":\"/s/1.jsonl\",\"agent\":\"codex\",\"title\":\"OAuth flow\",\"score\":0.9}]}'\n"
+	cassBin := filepath.Join(binDir, "cass")
+	if err := os.WriteFile(cassBin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub cass: %v", err)
+	}
+
+	oldCfg := cfg
+	oldJSONOutput := jsonOutput
+	cfg = &config.Config{}
+	cfg.CASS.BinaryPath = cassBin
+	jsonOutput = true
+	t.Cleanup(func() {
+		cfg = oldCfg
+		jsonOutput = oldJSONOutput
+	})
+
+	statusOut, err := captureStdout(t, func() error {
+		cmd := newCassCmd()
+		cmd.SetArgs([]string{"status", "--health"})
+		return cmd.Execute()
+	})
+	if err != nil {
+		t.Fatalf("cass status --health --json: %v", err)
+	}
+	var statusResp casspkg.StatusResponse
+	if err := json.Unmarshal([]byte(statusOut), &statusResp); err != nil || !statusResp.Healthy {
+		t.Fatalf("unexpected cass health status: err=%v out=%s", err, statusOut)
+	}
+
+	searchOut, err := captureStdout(t, func() error {
+		cmd := newCassCmd()
+		cmd.SetArgs([]string{"search", "oauth", "--quick"})
+		return cmd.Execute()
+	})
+	if err != nil {
+		t.Fatalf("cass search --quick --json: %v", err)
+	}
+	var searchResp casspkg.SearchResponse
+	if err := json.Unmarshal([]byte(searchOut), &searchResp); err != nil || !searchResp.HasResults() {
+		t.Fatalf("unexpected cass quick search response: err=%v out=%s", err, searchOut)
+	}
+
+	logged, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatalf("read args log: %v", err)
+	}
+	logStr := string(logged)
+	if !strings.Contains(logStr, "health --json") || !strings.Contains(logStr, "--fields=summary") {
+		t.Fatalf("expected health --json and SearchQuick --fields=summary in args log, got:\n%s", logStr)
 	}
 }

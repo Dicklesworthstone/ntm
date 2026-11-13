@@ -50,22 +50,6 @@ func (m *ConflictsPanel) SetActionHandler(handler watcher.ConflictActionHandler)
 	m.actionHandler = handler
 }
 
-// SetConflicts updates the list of active conflicts.
-func (m *ConflictsPanel) SetConflicts(conflicts []watcher.FileConflict) {
-	selectedKey, hadSelection := m.selectedConflictKey()
-	m.conflicts = append([]watcher.FileConflict(nil), conflicts...)
-	if len(m.conflicts) == 0 {
-		m.selectedIndex = 0
-		m.selectedAction = 0
-		return
-	}
-	if hadSelection && m.selectConflictByKey(selectedKey) {
-		return
-	}
-	m.clampSelectedIndex()
-	m.selectedAction = 0
-}
-
 // AddConflict adds a new conflict to the list if not already present.
 func (m *ConflictsPanel) AddConflict(conflict watcher.FileConflict) {
 	// Check if conflict already exists (same path and requestor)

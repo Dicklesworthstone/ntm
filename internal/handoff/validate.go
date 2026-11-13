@@ -205,29 +205,3 @@ func truncate(s string, maxLen int) string {
 	}
 	return string(runes[:maxLen-3]) + "..."
 }
-
-// ValidateMinimal performs a minimal validation check for just the required fields.
-// Use this for quick checks where full validation is not needed.
-func (h *Handoff) ValidateMinimal() error {
-	if h.Goal == "" {
-		return ValidationError{
-			Field:   "goal",
-			Message: "required field missing",
-		}
-	}
-	if h.Now == "" {
-		return ValidationError{
-			Field:   "now",
-			Message: "required field missing",
-		}
-	}
-	return nil
-}
-
-// MustValidate panics if validation fails. Use for testing or when validation
-// failure should be impossible (e.g., programmatically constructed handoffs).
-func (h *Handoff) MustValidate() {
-	if errs := h.Validate(); len(errs) > 0 {
-		panic("handoff validation failed: " + errs.Error())
-	}
-}

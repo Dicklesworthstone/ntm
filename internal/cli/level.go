@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -26,6 +27,7 @@ NTM uses a tiered command system to avoid overwhelming new users:
 
 Examples:
   ntm level              # Show current tier and stats
+  ntm level check        # Check session-aware promotion readiness
   ntm level up           # Promote to next tier
   ntm level down         # Demote to previous tier
   ntm level master       # Jump to Master tier
@@ -36,6 +38,7 @@ Examples:
 	}
 
 	cmd.AddCommand(
+		newLevelCheckCmd(),
 		newLevelUpCmd(),
 		newLevelDownCmd(),
 		newLevelSetCmd("apprentice", tiers.TierApprentice),
@@ -47,6 +50,56 @@ Examples:
 	return cmd
 }
 
+func newLevelCheckCmd() *cobra.Command {
+	var sessionID string
+	cmd := &cobra.Command{
+		Use:   "check",
+		Short: "Check whether promotion should be suggested in this session",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runLevelCheck(sessionID)
+		},
+	}
+	cmd.Flags().StringVar(&sessionID, "session", "", "Session identifier used to deduplicate suggestions")
+	return cmd
+}
+
+func runLevelCheck(sessionID string) error {
+	cfg, err := config.LoadProficiency()
+	if err != nil {
+		return fmt.Errorf("failed to load proficiency config: %w", err)
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		sessionID = strings.TrimSpace(os.Getenv("TMUX_PANE"))
+	}
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("ppid-%d", os.Getppid())
+	}
+
+	suggest, msg := cfg.CheckPromotion(sessionID)
+	if IsJSONOutput() {
+		return json.NewEncoder(os.Stdout).Encode(struct {
+			Tier             int                      `json:"tier"`
+			TierName         string                   `json:"tier_name"`
+			Suggest          bool                     `json:"suggest"`
+			Message          string                   `json:"message,omitempty"`
+			UniqueCommands   int                      `json:"unique_commands"`
+			PromotionHistory []config.PromotionRecord `json:"promotion_history"`
+		}{
+			Tier:             int(cfg.GetTier()),
+			TierName:         cfg.GetTier().String(),
+			Suggest:          suggest,
+			Message:          msg,
+			UniqueCommands:   cfg.GetUniqueCommandCount(),
+			PromotionHistory: cfg.GetPromotionHistory(),
+		})
+	}
+	if suggest && msg != "" {
+		fmt.Println(msg)
+	}
+	return nil
+}
+
 func runLevelShow() error {
 	cfg, err := config.LoadProficiency()
 	if err != nil {
@@ -56,7 +109,27 @@ func runLevelShow() error {
 	t := theme.Current()
 	currentTier := cfg.GetTier()
 	stats := cfg.GetUsageStats()
+	uniqueCommands := cfg.GetUniqueCommandCount()
+	history := cfg.GetPromotionHistory()
 	days := cfg.DaysSinceFirstUse()
+
+	if IsJSONOutput() {
+		return json.NewEncoder(os.Stdout).Encode(struct {
+			Tier             int                      `json:"tier"`
+			TierName         string                   `json:"tier_name"`
+			Stats            config.UsageStats        `json:"stats"`
+			UniqueCommands   int                      `json:"unique_commands"`
+			DaysSinceFirst   int                      `json:"days_since_first_use"`
+			PromotionHistory []config.PromotionRecord `json:"promotion_history"`
+		}{
+			Tier:             int(currentTier),
+			TierName:         currentTier.String(),
+			Stats:            stats,
+			UniqueCommands:   uniqueCommands,
+			DaysSinceFirst:   days,
+			PromotionHistory: history,
+		})
+	}
 
 	// Header
 	headerStyle := lipgloss.NewStyle().
@@ -92,9 +165,26 @@ func runLevelShow() error {
 
 	fmt.Printf("  %s\n", statsHeaderStyle.Render("Usage stats:"))
 	fmt.Printf("    %s %s\n", labelStyle.Render("Commands run:"), valueStyle.Render(fmt.Sprintf("%d", stats.CommandsRun)))
+	fmt.Printf("    %s %s\n", labelStyle.Render("Unique commands:"), valueStyle.Render(fmt.Sprintf("%d", uniqueCommands)))
 	fmt.Printf("    %s %s\n", labelStyle.Render("Sessions created:"), valueStyle.Render(fmt.Sprintf("%d", stats.SessionsCreated)))
 	fmt.Printf("    %s %s\n", labelStyle.Render("Prompts sent:"), valueStyle.Render(fmt.Sprintf("%d", stats.PromptsSent)))
 	fmt.Printf("    %s %s\n\n", labelStyle.Render("Using NTM for:"), valueStyle.Render(fmt.Sprintf("%d days", days)))
+
+	if len(history) > 0 {
+		fmt.Printf("  %s\n", statsHeaderStyle.Render("Promotion history:"))
+		start := 0
+		if len(history) > 3 {
+			start = len(history) - 3
+		}
+		for _, rec := range history[start:] {
+			change := fmt.Sprintf("%s -> %s", tiers.Tier(rec.From).String(), tiers.Tier(rec.To).String())
+			if rec.Reason != "" {
+				change += fmt.Sprintf(" (%s)", rec.Reason)
+			}
+			fmt.Printf("    %s\n", valueStyle.Render(change))
+		}
+		fmt.Println()
+	}
 
 	// Next tier info
 	if currentTier < tiers.TierMaster {

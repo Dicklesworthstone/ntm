@@ -564,7 +564,7 @@ func runUpgradeCheckJSON(writer io.Writer, strict, verbose bool, releaseTag stri
 	latestVersion := strings.TrimPrefix(release.TagName, "v")
 	match, triedNames := findUpgradeAsset(release.Assets, runtime.GOOS, runtime.GOARCH, latestVersion, strict)
 	if match == nil {
-		return newUpgradeError(
+		assetErr := newUpgradeError(
 			runtime.GOOS,
 			runtime.GOARCH,
 			latestVersion,
@@ -572,6 +572,8 @@ func runUpgradeCheckJSON(writer io.Writer, strict, verbose bool, releaseTag stri
 			release.Assets,
 			release.HTMLURL,
 		)
+		_, _ = fmt.Fprintln(writer, assetErr.JSON())
+		return assetErr
 	}
 
 	output := upgradeCheckJSONOutput{

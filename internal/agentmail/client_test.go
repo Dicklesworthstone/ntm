@@ -16,6 +16,10 @@ import (
 	"time"
 )
 
+func (c *Client) InvalidateCache() {
+	c.availableCacheTime.Store(0)
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+func (e *CLIError) WithCause(cause string) *CLIError {
+	e.Cause = cause
+	return e
+}
+
 // Helper to capture stdout/stderr
 func captureOutput(f func()) (string, string) {
 	oldStdout := os.Stdout

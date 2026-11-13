@@ -163,14 +163,3 @@ func (c *SwarmConfig) GetAllocationForBeadCount(beadCount int) AllocationSpec {
 	}
 	return c.Tier3Allocation
 }
-
-// GetTierName returns the tier name for a given bead count.
-func (c *SwarmConfig) GetTierName(beadCount int) string {
-	if beadCount >= c.Tier1Threshold {
-		return "tier1"
-	}
-	if beadCount >= c.Tier2Threshold {
-		return "tier2"
-	}
-	return "tier3"
-}

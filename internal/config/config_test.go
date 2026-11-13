@@ -15,6 +15,16 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+func (c *RotationConfig) GetAccountsForProvider(provider string) []RotationAccount {
+	var accounts []RotationAccount
+	for _, acc := range c.Accounts {
+		if acc.Provider == provider {
+			accounts = append(accounts, acc)
+		}
+	}
+	return accounts
+}
+
 func TestDefault(t *testing.T) {
 	cfg := Default()
 

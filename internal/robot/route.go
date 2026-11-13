@@ -3,6 +3,7 @@
 package robot
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"math"
@@ -241,18 +242,27 @@ type RouteOptions struct {
 
 // RouteOutput is the structured output for --robot-route.
 type RouteOutput struct {
-	RobotResponse                           // Embed standard response fields (success, timestamp, error)
-	Session            string               `json:"session"`
-	Strategy           StrategyName         `json:"strategy"`
-	Recommendation     *RouteRecommendation `json:"recommendation,omitempty"`
-	Candidates         []RouteCandidate     `json:"candidates"`
-	Excluded           []RouteExcluded      `json:"excluded,omitempty"`
-	FallbackUsed       bool                 `json:"fallback_used,omitempty"`
-	Relaxed            bool                 `json:"relaxed"`
-	RelaxedConstraints []string             `json:"relaxed_constraints"`
-	OriginalScore      float64              `json:"original_score"`
-	RelaxedScore       float64              `json:"relaxed_score"`
-	AgentHints         *RouteAgentHints     `json:"_agent_hints,omitempty"`
+	RobotResponse                               // Embed standard response fields (success, timestamp, error)
+	Session            string                   `json:"session"`
+	Strategy           StrategyName             `json:"strategy"`
+	Recommendation     *RouteRecommendation     `json:"recommendation,omitempty"`
+	Candidates         []RouteCandidate         `json:"candidates"`
+	Excluded           []RouteExcluded          `json:"excluded,omitempty"`
+	FallbackUsed       bool                     `json:"fallback_used,omitempty"`
+	Relaxed            bool                     `json:"relaxed"`
+	RelaxedConstraints []string                 `json:"relaxed_constraints"`
+	OriginalScore      float64                  `json:"original_score"`
+	RelaxedScore       float64                  `json:"relaxed_score"`
+	ReservationSummary *RouteReservationSummary `json:"reservation_summary,omitempty"`
+	AgentHints         *RouteAgentHints         `json:"_agent_hints,omitempty"`
+}
+
+// RouteReservationSummary summarizes cached Agent Mail reservations when reservation affinity is active.
+type RouteReservationSummary struct {
+	TotalCached int      `json:"total_cached"`
+	Active      int      `json:"active"`
+	Holders     []string `json:"holders"`
+	Patterns    []string `json:"patterns"`
 }
 
 // RouteRecommendation contains the recommended agent for routing.
@@ -374,6 +384,7 @@ func GetRoute(opts RouteOptions) (*RouteOutput, int) {
 	// asks for it (bd-ws2-wire-or-delete-ykmcz.3).
 	scorer := NewAgentScorerFromConfig(opts.Config)
 	scorer.wireReservationAffinity(opts.Config, opts.Session, opts.Strategy)
+	output.ReservationSummary = summarizeRouteReservations(scorer.reservationCache)
 	var agents []ScoredAgent
 
 	for _, pane := range panes {
@@ -648,59 +659,25 @@ func GetRouteRecommendation(opts RouteOptions) (*RouteRecommendation, error) {
 		return nil, fmt.Errorf("session '%s' not found", opts.Session)
 	}
 
-	// Get all panes
-	panes, err := tmux.GetPanes(opts.Session)
+	// Create scorer and score agents with context-bounded reservation refresh.
+	// Reservation affinity is wired best-effort from Agent Mail when enabled or
+	// when the affinity strategy asks for it (bd-ws2-wire-or-delete-ykmcz.3) —
+	// this is the send path, so the signal influences real dispatch.
+	scorer := NewAgentScorerFromConfig(opts.Config)
+	scorer.wireReservationAffinity(opts.Config, opts.Session, opts.Strategy)
+
+	ctx, cancel := context.WithTimeout(context.Background(), reservationAffinityRefreshTimeout)
+	defer cancel()
+	scoredAll, err := scorer.ScoreAgentsWithContext(ctx, opts.Session, opts.Prompt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get panes: %w", err)
 	}
 
-	contextUsage := getContextUsageByPane(opts.Session)
-
-	// Create scorer and score agents. Reservation affinity is wired
-	// best-effort from Agent Mail when enabled or when the affinity strategy
-	// asks for it (bd-ws2-wire-or-delete-ykmcz.3) — this is the send path, so
-	// the signal influences real dispatch.
-	scorer := NewAgentScorerFromConfig(opts.Config)
-	scorer.wireReservationAffinity(opts.Config, opts.Session, opts.Strategy)
-	var agents []ScoredAgent
-
-	for _, pane := range panes {
-		agentType := routePaneAgentType(pane)
-		if agentType == "" || agentType == "unknown" || agentType == "user" {
-			continue
+	agents := make([]ScoredAgent, 0, len(scoredAll))
+	for _, agent := range scoredAll {
+		if matchesAgentTypeFilter(agent.AgentType, opts.AgentType) {
+			agents = append(agents, agent)
 		}
-
-		// Filter by agent type if specified
-		if !matchesAgentTypeFilter(agentType, opts.AgentType) {
-			continue
-		}
-
-		// Get activity state
-		classifier := scorer.monitor.GetOrCreate(pane.ID)
-		classifier.SetAgentType(agentType)
-		classifier.setPaneDimensions(pane.Width, pane.Height)
-		activity, err := classifier.Classify()
-		if err != nil {
-			continue // Skip agents that can't be classified
-		}
-
-		// Build scored agent from the activity classifier's authoritative state.
-		agent := scoredAgentForRouting(pane, agentType, activity, contextUsage)
-
-		// Calculate score components
-		agent.ScoreDetail = scorer.calculateScoreComponents(&agent, opts.Prompt)
-
-		// Check exclusion rules
-		excluded, reason := excludeRouteAgent(scorer, &agent, pane)
-		if excluded {
-			agent.Excluded = true
-			agent.ExcludeReason = reason
-			agent.Score = 0
-		} else {
-			agent.Score = scorer.calculateFinalScore(&agent)
-		}
-
-		agents = append(agents, agent)
 	}
 
 	// Apply pane exclusions from options
@@ -767,6 +744,45 @@ func routeReservationWarning(scorer *AgentScorer, prompt, paneID string) *Reserv
 	}
 	sort.Strings(w.Holders) // collected from a map
 	return w
+}
+
+func summarizeRouteReservations(cache *ReservationCache) *RouteReservationSummary {
+	if cache == nil {
+		return nil
+	}
+	all := cache.GetAllReservations()
+	now := time.Now()
+	holdersSet := make(map[string]struct{})
+	patternsSet := make(map[string]struct{})
+	active := 0
+	for _, r := range all {
+		if r.ReleasedTS != nil || now.After(r.ExpiresTS.Time) {
+			continue
+		}
+		active++
+		if r.AgentName != "" {
+			holdersSet[r.AgentName] = struct{}{}
+		}
+		if r.PathPattern != "" {
+			patternsSet[r.PathPattern] = struct{}{}
+		}
+	}
+	holders := make([]string, 0, len(holdersSet))
+	for h := range holdersSet {
+		holders = append(holders, h)
+	}
+	sort.Strings(holders)
+	patterns := make([]string, 0, len(patternsSet))
+	for p := range patternsSet {
+		patterns = append(patterns, p)
+	}
+	sort.Strings(patterns)
+	return &RouteReservationSummary{
+		TotalCached: len(all),
+		Active:      active,
+		Holders:     holders,
+		Patterns:    patterns,
+	}
 }
 
 func roundLedgerMetric(v float64) float64 {

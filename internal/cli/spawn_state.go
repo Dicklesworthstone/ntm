@@ -119,28 +119,6 @@ func (s *SpawnState) MarkComplete() {
 	s.CompletedAt = time.Now()
 }
 
-// IsComplete returns whether all prompts have been delivered.
-func (s *SpawnState) IsComplete() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return !s.CompletedAt.IsZero()
-}
-
-// PendingCount returns the number of prompts not yet sent.
-func (s *SpawnState) PendingCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	count := 0
-	for _, p := range s.Prompts {
-		if !p.Sent {
-			count++
-		}
-	}
-	return count
-}
-
 // Save writes the spawn state to disk.
 func (s *SpawnState) Save(projectDir string) error {
 	s.mu.Lock()
@@ -163,35 +141,4 @@ func (s *SpawnState) Save(projectDir string) error {
 	}
 
 	return nil
-}
-
-// TimeUntilNextPrompt returns the duration until the next pending prompt.
-// Returns zero if all prompts are sent or if there's no pending prompt.
-func (s *SpawnState) TimeUntilNextPrompt() time.Duration {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := time.Now()
-	var minDuration time.Duration
-
-	for _, p := range s.Prompts {
-		if !p.Sent && p.ScheduledAt.After(now) {
-			remaining := p.ScheduledAt.Sub(now)
-			if minDuration == 0 || remaining < minDuration {
-				minDuration = remaining
-			}
-		}
-	}
-
-	return minDuration
-}
-
-// GetPromptStatuses returns a copy of all prompt statuses.
-func (s *SpawnState) GetPromptStatuses() []PromptStatus {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	result := make([]PromptStatus, len(s.Prompts))
-	copy(result, s.Prompts)
-	return result
 }

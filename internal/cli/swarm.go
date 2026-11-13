@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/huh"
@@ -19,6 +20,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
+	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/status"
@@ -146,19 +148,23 @@ func restoreClaudeModelAfterSwarmStop(logger *slog.Logger) {
 
 func newSwarmCmd() *cobra.Command {
 	var (
-		scanDir         string
-		projects        []string
-		dryRun          bool
-		remote          string
-		sessionsPerType int
-		panesPerSession int
-		outputPath      string
-		autoRotate      bool
-		forceGlobalAuth bool
-		initialPrompt   string
-		promptFile      string
-		waitReady       bool
-		readyTimeout    int
+		scanDir           string
+		projects          []string
+		dryRun            bool
+		remote            string
+		sessionsPerType   int
+		panesPerSession   int
+		outputPath        string
+		autoRotate        bool
+		forceGlobalAuth   bool
+		initialPrompt     string
+		promptFile        string
+		promptTemplate    string
+		adaptiveDelay     bool
+		verifyGeometry    bool
+		geometryTolerance int
+		waitReady         bool
+		readyTimeout      int
 	)
 
 	cmd := &cobra.Command{
@@ -178,23 +184,29 @@ Examples:
   ntm swarm --json                    # Launch and return a JSON execution receipt
   ntm swarm plan --json               # Return a plan without launching
   ntm swarm --projects=foo,bar        # Only include specific projects
+  ntm swarm --template=review         # Inject review marching orders after launch
+  ntm swarm --verify-geometry         # Ensure uniform tiled pane geometry
   ntm swarm --remote=user@host        # Execute on remote host via SSH`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSwarm(cmd.Context(), swarmOptions{
-				ScanDir:         scanDir,
-				Projects:        projects,
-				DryRun:          dryRun,
-				Remote:          remote,
-				JSONOutput:      IsJSONOutput(),
-				SessionsPerType: sessionsPerType,
-				PanesPerSession: panesPerSession,
-				OutputPath:      outputPath,
-				AutoRotate:      autoRotate,
-				ForceGlobalAuth: forceGlobalAuth,
-				InitialPrompt:   initialPrompt,
-				PromptFile:      promptFile,
-				WaitReady:       waitReady,
-				ReadyTimeout:    readyTimeout,
+				ScanDir:           scanDir,
+				Projects:          projects,
+				DryRun:            dryRun,
+				Remote:            remote,
+				JSONOutput:        IsJSONOutput(),
+				SessionsPerType:   sessionsPerType,
+				PanesPerSession:   panesPerSession,
+				OutputPath:        outputPath,
+				AutoRotate:        autoRotate,
+				ForceGlobalAuth:   forceGlobalAuth,
+				InitialPrompt:     initialPrompt,
+				PromptFile:        promptFile,
+				PromptTemplate:    promptTemplate,
+				AdaptiveDelay:     adaptiveDelay,
+				VerifyGeometry:    verifyGeometry,
+				GeometryTolerance: geometryTolerance,
+				WaitReady:         waitReady,
+				ReadyTimeout:      readyTimeout,
 			})
 		},
 	}
@@ -232,6 +244,10 @@ Examples:
 	cmd.Flags().StringVar(&outputPath, "output", "", "Write swarm plan to JSON file (optional)")
 	cmd.Flags().StringVar(&initialPrompt, "prompt", "", "Initial prompt to inject into all agents after launch")
 	cmd.Flags().StringVar(&promptFile, "prompt-file", "", "File containing initial prompt (mutually exclusive with --prompt)")
+	cmd.Flags().StringVar(&promptTemplate, "template", "", "Marching-orders prompt template (default, review, test, or custom name with --prompt)")
+	cmd.Flags().BoolVar(&adaptiveDelay, "adaptive-delay", false, "Learn prompt stagger delays from rate-limit history")
+	cmd.Flags().BoolVar(&verifyGeometry, "verify-geometry", false, "Verify and rebalance uniform pane geometry after session creation")
+	cmd.Flags().IntVar(&geometryTolerance, "geometry-tolerance", 2, "Maximum allowed pane width/height delta in cells for --verify-geometry")
 	cmd.Flags().BoolVar(&waitReady, "wait-ready", false, "Wait for all agents to reach idle/ready state before returning")
 	cmd.Flags().IntVar(&readyTimeout, "ready-timeout", 30, "Timeout in seconds for --wait-ready (default: 30)")
 	cmd.PersistentFlags().BoolVar(&autoRotate, "auto-rotate-accounts", defaultAutoRotate, "Automatically rotate accounts on usage limit hit (requires caam)")
@@ -240,26 +256,31 @@ Examples:
 	// Add subcommands
 	cmd.AddCommand(newSwarmPlanCmd())
 	cmd.AddCommand(newSwarmStatusCmd())
+	cmd.AddCommand(newSwarmSendCmd())
 	cmd.AddCommand(newSwarmStopCmd())
 
 	return cmd
 }
 
 type swarmOptions struct {
-	ScanDir         string
-	Projects        []string
-	DryRun          bool
-	Remote          string
-	JSONOutput      bool
-	SessionsPerType int
-	PanesPerSession int
-	OutputPath      string
-	AutoRotate      bool
-	ForceGlobalAuth bool
-	InitialPrompt   string
-	PromptFile      string
-	WaitReady       bool
-	ReadyTimeout    int
+	ScanDir           string
+	Projects          []string
+	DryRun            bool
+	Remote            string
+	JSONOutput        bool
+	SessionsPerType   int
+	PanesPerSession   int
+	OutputPath        string
+	AutoRotate        bool
+	ForceGlobalAuth   bool
+	InitialPrompt     string
+	PromptFile        string
+	PromptTemplate    string
+	AdaptiveDelay     bool
+	VerifyGeometry    bool
+	GeometryTolerance int
+	WaitReady         bool
+	ReadyTimeout      int
 }
 
 // SwarmPlanOutput is the JSON output format for swarm plan
@@ -314,15 +335,25 @@ var swarmStopSessionMonitor = resilience.StopSessionMonitor
 // SwarmExecutionOutput records attempted operations separately from the desired
 // allocation. It remains present on cancellation and partial launch failure.
 type SwarmExecutionOutput struct {
-	StartedAt       time.Time                    `json:"started_at"`
-	Sessions        []SwarmSessionCreationOutput `json:"sessions"`
-	SuccessfulPanes int                          `json:"successful_panes"`
-	FailedPanes     int                          `json:"failed_panes"`
-	Launch          *swarm.BatchLaunchResult     `json:"launch,omitempty"`
-	Injection       *swarm.BatchInjectionResult  `json:"injection,omitempty"`
-	Readiness       *SwarmReadinessOutput        `json:"readiness,omitempty"`
-	Interrupted     bool                         `json:"interrupted"`
-	Errors          []string                     `json:"errors"`
+	StartedAt        time.Time                    `json:"started_at"`
+	TmuxBinary       *swarm.TmuxBinaryInfo        `json:"tmux_binary,omitempty"`
+	RemoteConnection *swarm.RemoteConnectionInfo  `json:"remote_connection,omitempty"`
+	Sessions         []SwarmSessionCreationOutput `json:"sessions"`
+	SuccessfulPanes  int                          `json:"successful_panes"`
+	FailedPanes      int                          `json:"failed_panes"`
+	Launch           *swarm.BatchLaunchResult     `json:"launch,omitempty"`
+	Injection        *swarm.BatchInjectionResult  `json:"injection,omitempty"`
+	Geometry         []SwarmGeometryOutput        `json:"geometry,omitempty"`
+	Readiness        *SwarmReadinessOutput        `json:"readiness,omitempty"`
+	Interrupted      bool                         `json:"interrupted"`
+	Errors           []string                     `json:"errors"`
+}
+
+type SwarmGeometryOutput struct {
+	Session string                `json:"session"`
+	Result  *swarm.GeometryResult `json:"result,omitempty"`
+	Average *swarm.PaneGeometry   `json:"average,omitempty"`
+	Error   string                `json:"error,omitempty"`
 }
 
 type SwarmSessionCreationOutput struct {
@@ -400,9 +431,13 @@ func runSwarm(ctx context.Context, opts swarmOptions) (runErr error) {
 		return err
 	}
 
-	initialPrompt, promptSource, promptPath, err := resolveSwarmInitialPrompt(opts.InitialPrompt, opts.PromptFile)
+	templateResolver := swarm.NewPromptInjector()
+	initialPrompt, promptSource, promptPath, err := resolveSwarmPromptWithInjector(templateResolver, opts.InitialPrompt, opts.PromptFile, opts.PromptTemplate)
 	if err != nil {
 		return err
+	}
+	if opts.GeometryTolerance < 0 {
+		return fmt.Errorf("%w: --geometry-tolerance cannot be negative, got %d", errCLIInvalidInput, opts.GeometryTolerance)
 	}
 	if promptSource == "file" {
 		logger.Info("loaded initial prompt from file", "path", promptPath, "length", len(initialPrompt))
@@ -529,11 +564,30 @@ func runSwarm(ctx context.Context, opts swarmOptions) (runErr error) {
 		sessOrch = swarm.NewRemoteSessionOrchestrator(opts.Remote)
 		sessOrch.StaggerDelay = staggerDelay
 		if !opts.JSONOutput {
-			output.PrintInfof("Creating swarm on remote host: %s", opts.Remote)
+			output.PrintInfof("Creating swarm on remote host: %s", sessOrch.RemoteHost())
 		}
 	} else {
 		sessOrch = swarm.NewSessionOrchestrator()
 		sessOrch.StaggerDelay = staggerDelay
+	}
+
+	var tmuxBinInfo *swarm.TmuxBinaryInfo
+	var remoteConnInfo *swarm.RemoteConnectionInfo
+	if sessOrch.IsRemote() {
+		if err := sessOrch.TestConnection(); err != nil {
+			return fmt.Errorf("remote connection preflight (%s): %w", sessOrch.RemoteHost(), err)
+		}
+		remoteConnInfo = sessOrch.GetRemoteConnectionInfo()
+		if !remoteConnInfo.Connected {
+			return fmt.Errorf("remote tmux verification failed on %s: %s", sessOrch.RemoteHost(), remoteConnInfo.Error)
+		}
+	} else {
+		tmuxPath, err := sessOrch.VerifyTmuxBinary()
+		if err != nil {
+			return err
+		}
+		tmuxBinInfo = sessOrch.GetTmuxBinaryInfo()
+		logger.Debug("verified local tmux binary", "path", tmuxPath, "available", tmuxBinInfo.Available)
 	}
 
 	// Derive a concrete tmux client for follow-up actions.
@@ -542,24 +596,42 @@ func runSwarm(ctx context.Context, opts swarmOptions) (runErr error) {
 		tmuxClient = tmux.DefaultClient
 	}
 
-	paneLauncher := swarm.NewPaneLauncherWithClient(tmuxClient).WithLogger(logger)
+	cmdBuilder := swarm.NewLaunchCommandBuilder().WithLogger(logger)
 	// Claude panes carry ntm's PreToolUse hooks (safety policy, dcg, rch) as
 	// --settings, as spawn and add do; the `cc` alias forwards arguments. The
 	// hook commands name local binaries, so a remote swarm does not get them.
-	if claudeSettings := policy.ClaudeAgentLaunchSettings(cfg).Settings; claudeSettings != "" && opts.Remote == "" {
-		paneLauncher.WithCmdBuilder(swarm.NewLaunchCommandBuilder().
-			WithAgentArgs("cc", []string{"--settings", tmux.ShellQuote(claudeSettings)}))
+	if claudeSettings := policy.ClaudeAgentLaunchSettings(cfg).Settings; claudeSettings != "" && !sessOrch.IsRemote() {
+		cmdBuilder.WithAgentArgs("cc", []string{"--settings", tmux.ShellQuote(claudeSettings)})
 	}
+
+	paneLauncher := swarm.NewPaneLauncherWithClient(tmuxClient).
+		WithLogger(logger).
+		WithValidatePaths(!sessOrch.IsRemote()).
+		WithCmdBuilder(cmdBuilder)
 	// Honor each project's recorded OpenAI cooldown before launching Codex, as
 	// spawn and add do. Remote project paths do not name local history files.
-	paneLauncher.RateLimitHistory = opts.Remote == ""
+	paneLauncher.RateLimitHistory = !sessOrch.IsRemote()
 	if rotation != nil {
 		paneLauncher.BuildLaunchSpec = rotation.launchSpec
 	}
+
+	promptInjector := swarm.NewPromptInjectorWithClient(tmuxClient).
+		WithLogger(logger).
+		WithStaggerDelay(staggerDelay)
+	promptInjector.SessionOrchestrator = sessOrch
+	if opts.PromptTemplate != "" && (opts.InitialPrompt != "" || opts.PromptFile != "") {
+		promptInjector.SetTemplate(strings.TrimSpace(opts.PromptTemplate), initialPrompt)
+	}
+	if opts.AdaptiveDelay && !sessOrch.IsRemote() {
+		tracker := ratelimit.NewRateLimitTracker(opts.ScanDir)
+		_ = tracker.LoadFromDir(opts.ScanDir)
+		promptInjector.WithRateLimitTracker(tracker).WithAdaptiveDelay(true)
+	}
+
 	executor := &swarm.SwarmOrchestrator{
 		SessionOrchestrator: sessOrch,
 		PaneLauncher:        paneLauncher,
-		PromptInjector:      swarm.NewPromptInjectorWithClient(tmuxClient).WithLogger(logger),
+		PromptInjector:      promptInjector,
 		Logger:              logger,
 		StaggerDelay:        staggerDelay,
 	}
@@ -575,6 +647,33 @@ func runSwarm(ctx context.Context, opts swarmOptions) (runErr error) {
 
 	execResult, err := executor.Execute(ctx, plan, initialPrompt)
 	out.Execution = buildSwarmExecutionOutput(execResult, err)
+	if out.Execution != nil {
+		out.Execution.TmuxBinary = tmuxBinInfo
+		out.Execution.RemoteConnection = remoteConnInfo
+	}
+	if opts.VerifyGeometry && execResult != nil && execResult.Sessions != nil && out.Execution != nil {
+		tolerance := opts.GeometryTolerance
+		for _, createdSess := range execResult.Sessions.Sessions {
+			if createdSess.Error != nil || !createdSess.Created {
+				continue
+			}
+			geomEntry := SwarmGeometryOutput{Session: createdSess.SessionName}
+			geomRes, geomErr := sessOrch.EnsureUniformGeometry(createdSess.SessionName, tolerance)
+			if geomErr != nil {
+				geomEntry.Error = geomErr.Error()
+			} else {
+				geomEntry.Result = geomRes
+			}
+			if avg, avgErr := sessOrch.GetAverageGeometry(createdSess.SessionName); avgErr == nil {
+				geomEntry.Average = avg
+			}
+			out.Execution.Geometry = append(out.Execution.Geometry, geomEntry)
+			if !opts.JSONOutput && geomRes != nil {
+				output.PrintInfof("Session %s geometry: uniform=%t (max delta %dx%d)",
+					createdSess.SessionName, geomRes.IsUniform, geomRes.MaxWidthDelta, geomRes.MaxHeightDelta)
+			}
+		}
+	}
 	if rotation != nil && execResult != nil && execResult.Launch != nil {
 		if monitorErr := rotation.startMonitors(ctx, execResult.Launch); monitorErr != nil {
 			out.Execution.Errors = append(out.Execution.Errors, monitorErr.Error())
@@ -729,6 +828,28 @@ func resolveSwarmInitialPrompt(prompt, promptFile string) (resolved string, sour
 		return prompt, "flag", "", nil
 	}
 	return "", "", "", nil
+}
+
+func resolveSwarmPromptWithInjector(injector *swarm.PromptInjector, prompt, promptFile, templateName string) (resolved string, source string, path string, err error) {
+	resolved, source, path, err = resolveSwarmInitialPrompt(prompt, promptFile)
+	if err != nil {
+		return "", "", "", err
+	}
+	templateName = strings.TrimSpace(templateName)
+	if templateName == "" {
+		return resolved, source, path, nil
+	}
+	if injector == nil {
+		injector = swarm.NewPromptInjector()
+	}
+	if resolved != "" {
+		injector.SetTemplate(templateName, resolved)
+		return injector.GetTemplate(templateName), "template:" + templateName, path, nil
+	}
+	if _, ok := injector.Templates[templateName]; !ok {
+		return "", "", "", fmt.Errorf("%w: unknown swarm prompt template %q (expected default, review, or test, or supply --prompt/--prompt-file to define it)", errCLIInvalidInput, templateName)
+	}
+	return injector.GetTemplate(templateName), "template:" + templateName, "", nil
 }
 
 // discoverProjectsContext finds projects with bead counts using BeadScanner.
@@ -913,16 +1034,47 @@ var swarmSessionRE = regexp.MustCompile(`^(cc|cod|gmi|agy)_agents_[0-9]+$`)
 
 // Subcommand: swarm status
 func newSwarmStatusCmd() *cobra.Command {
+	var (
+		remote            string
+		verifyGeometry    bool
+		rebalanceGeometry bool
+		geometryTolerance int
+	)
+
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show current swarm status",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			machineJSON := IsJSONOutput()
-			if err := tmux.EnsureInstalled(); err != nil {
-				return err
+			var sessOrch *swarm.SessionOrchestrator
+			if strings.TrimSpace(remote) != "" {
+				sessOrch = swarm.NewRemoteSessionOrchestrator(strings.TrimSpace(remote))
+			} else {
+				sessOrch = swarm.NewSessionOrchestrator()
 			}
 
-			sessions, err := tmux.ListSessions()
+			var tmuxBinInfo *swarm.TmuxBinaryInfo
+			var remoteConnInfo *swarm.RemoteConnectionInfo
+			if sessOrch.IsRemote() {
+				if err := sessOrch.TestConnection(); err != nil {
+					return err
+				}
+				if _, err := sessOrch.VerifyRemoteTmux(); err != nil {
+					return err
+				}
+				remoteConnInfo = sessOrch.GetRemoteConnectionInfo()
+			} else {
+				if _, err := sessOrch.VerifyTmuxBinary(); err != nil {
+					return err
+				}
+				tmuxBinInfo = sessOrch.GetTmuxBinaryInfo()
+			}
+
+			client := sessOrch.TmuxClient
+			if client == nil {
+				client = tmux.DefaultClient
+			}
+			sessions, err := client.ListSessions()
 			if err != nil {
 				return err
 			}
@@ -938,23 +1090,30 @@ func newSwarmStatusCmd() *cobra.Command {
 			type swarmSessionStatus struct {
 				Session         string                           `json:"session"`
 				Health          *health.SessionHealth            `json:"health,omitempty"`
+				Geometry        *swarm.GeometryResult            `json:"geometry,omitempty"`
+				AverageGeometry *swarm.PaneGeometry              `json:"average_geometry,omitempty"`
+				GeometryError   string                           `json:"geometry_error,omitempty"`
 				Error           string                           `json:"error,omitempty"`
 				AccountRotation *resilience.SessionMonitorStatus `json:"account_rotation,omitempty"`
 				MonitorError    string                           `json:"monitor_error,omitempty"`
 			}
 
 			type swarmStatusOutput struct {
-				CheckedAt     time.Time            `json:"checked_at"`
-				Sessions      []swarmSessionStatus `json:"sessions"`
-				Summary       health.HealthSummary `json:"summary"`
-				OverallStatus health.Status        `json:"overall_status"`
+				CheckedAt        time.Time                   `json:"checked_at"`
+				TmuxBinary       *swarm.TmuxBinaryInfo       `json:"tmux_binary,omitempty"`
+				RemoteConnection *swarm.RemoteConnectionInfo `json:"remote_connection,omitempty"`
+				Sessions         []swarmSessionStatus        `json:"sessions"`
+				Summary          health.HealthSummary        `json:"summary"`
+				OverallStatus    health.Status               `json:"overall_status"`
 			}
 
 			out := swarmStatusOutput{
-				CheckedAt:     time.Now().UTC(),
-				Sessions:      make([]swarmSessionStatus, 0, len(swarmSessions)),
-				Summary:       health.HealthSummary{},
-				OverallStatus: health.StatusOK,
+				CheckedAt:        time.Now().UTC(),
+				TmuxBinary:       tmuxBinInfo,
+				RemoteConnection: remoteConnInfo,
+				Sessions:         make([]swarmSessionStatus, 0, len(swarmSessions)),
+				Summary:          health.HealthSummary{},
+				OverallStatus:    health.StatusOK,
 			}
 			if len(swarmSessions) == 0 {
 				if machineJSON {
@@ -978,36 +1137,56 @@ func newSwarmStatusCmd() *cobra.Command {
 			}
 
 			for _, name := range swarmSessions {
-				ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
-				sessionHealth, err := health.CheckSession(ctx, name)
-				cancel()
 				entry := swarmSessionStatus{Session: name}
-				if tmux.DefaultClient.Remote == "" {
+				if rebalanceGeometry {
+					if geomErr := sessOrch.RebalanceGeometry(name); geomErr != nil {
+						entry.GeometryError = geomErr.Error()
+					} else if geom, geomErr := sessOrch.EnsureUniformGeometry(name, geometryTolerance); geomErr != nil {
+						entry.GeometryError = geomErr.Error()
+					} else {
+						entry.Geometry = geom
+					}
+					if avg, avgErr := sessOrch.GetAverageGeometry(name); avgErr == nil {
+						entry.AverageGeometry = avg
+					}
+				} else if verifyGeometry {
+					if geom, geomErr := sessOrch.VerifyGeometry(name, geometryTolerance); geomErr != nil {
+						entry.GeometryError = geomErr.Error()
+					} else {
+						entry.Geometry = geom
+					}
+					if avg, avgErr := sessOrch.GetAverageGeometry(name); avgErr == nil {
+						entry.AverageGeometry = avg
+					}
+				}
+
+				if !sessOrch.IsRemote() {
+					ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
+					sessionHealth, err := health.CheckSession(ctx, name)
+					cancel()
 					monitorStatus, monitorErr := resilience.ReadSessionMonitorStatus(name)
 					if monitorErr != nil && !os.IsNotExist(monitorErr) {
 						entry.MonitorError = monitorErr.Error()
 					} else if monitorStatus != nil && monitorStatus.AccountRotation {
 						entry.AccountRotation = monitorStatus
 					}
-				}
-				if err != nil {
-					entry.Error = err.Error()
-					out.Sessions = append(out.Sessions, entry)
-					continue
-				}
+					if err != nil {
+						entry.Error = err.Error()
+						out.Sessions = append(out.Sessions, entry)
+						continue
+					}
+					entry.Health = sessionHealth
+					out.Summary.Total += sessionHealth.Summary.Total
+					out.Summary.Healthy += sessionHealth.Summary.Healthy
+					out.Summary.Warning += sessionHealth.Summary.Warning
+					out.Summary.Error += sessionHealth.Summary.Error
+					out.Summary.Unknown += sessionHealth.Summary.Unknown
 
-				entry.Health = sessionHealth
+					if statusSeverity(sessionHealth.OverallStatus) > statusSeverity(out.OverallStatus) {
+						out.OverallStatus = sessionHealth.OverallStatus
+					}
+				}
 				out.Sessions = append(out.Sessions, entry)
-
-				out.Summary.Total += sessionHealth.Summary.Total
-				out.Summary.Healthy += sessionHealth.Summary.Healthy
-				out.Summary.Warning += sessionHealth.Summary.Warning
-				out.Summary.Error += sessionHealth.Summary.Error
-				out.Summary.Unknown += sessionHealth.Summary.Unknown
-
-				if statusSeverity(sessionHealth.OverallStatus) > statusSeverity(out.OverallStatus) {
-					out.OverallStatus = sessionHealth.OverallStatus
-				}
 			}
 
 			if machineJSON {
@@ -1016,6 +1195,11 @@ func newSwarmStatusCmd() *cobra.Command {
 				return enc.Encode(out)
 			}
 
+			if sessOrch.IsRemote() {
+				output.PrintInfof("Remote swarm host: %s", sessOrch.RemoteHost())
+			} else {
+				output.PrintInfof("Tmux binary: %s", sessOrch.TmuxBinaryPath())
+			}
 			output.PrintInfof("Swarm sessions: %d", len(out.Sessions))
 			for _, sess := range out.Sessions {
 				if sess.AccountRotation != nil {
@@ -1024,8 +1208,18 @@ func newSwarmStatusCmd() *cobra.Command {
 				if sess.MonitorError != "" {
 					output.PrintWarningf("  %s account monitor status: %s", sess.Session, sess.MonitorError)
 				}
+				if sess.Geometry != nil {
+					output.PrintInfof("  %s geometry: uniform=%t panes=%d max_delta=%dx%d",
+						sess.Session, sess.Geometry.IsUniform, sess.Geometry.PaneCount,
+						sess.Geometry.MaxWidthDelta, sess.Geometry.MaxHeightDelta)
+				}
+				if sess.GeometryError != "" {
+					output.PrintWarningf("  %s geometry error: %s", sess.Session, sess.GeometryError)
+				}
 				if sess.Health == nil {
-					output.PrintWarningf("  %s: error (%s)", sess.Session, sess.Error)
+					if sess.Error != "" {
+						output.PrintWarningf("  %s: error (%s)", sess.Session, sess.Error)
+					}
 					continue
 				}
 				output.PrintInfof("  %s: %s (ok:%d warn:%d err:%d unk:%d)",
@@ -1048,6 +1242,200 @@ func newSwarmStatusCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	cmd.Flags().StringVar(&remote, "remote", "", "Remote host for SSH inspection (user@host)")
+	cmd.Flags().BoolVar(&verifyGeometry, "verify-geometry", false, "Verify pane geometry uniformity for each swarm session")
+	cmd.Flags().BoolVar(&rebalanceGeometry, "rebalance-geometry", false, "Reapply tiled layout and verify uniform geometry for each swarm session")
+	cmd.Flags().IntVar(&geometryTolerance, "geometry-tolerance", 2, "Maximum allowed width/height delta in cells")
+
+	return cmd
+}
+
+type SwarmSendOutput struct {
+	robot.RobotResponse
+	Source    string                      `json:"source"`
+	PlanPath  string                      `json:"plan_path,omitempty"`
+	Sessions  []string                    `json:"sessions,omitempty"`
+	Injection *swarm.BatchInjectionResult `json:"injection"`
+}
+
+// Subcommand: swarm send
+func newSwarmSendCmd() *cobra.Command {
+	var (
+		prompt          string
+		promptFile      string
+		promptTemplate  string
+		planPath        string
+		sessionPatterns []string
+		remote          string
+		staggerDelay    time.Duration
+		adaptiveDelay   bool
+		scanDir         string
+	)
+
+	defaultScanDir := "/dp"
+	if cfg != nil && cfg.Swarm.DefaultScanDir != "" {
+		defaultScanDir = cfg.Swarm.DefaultScanDir
+	}
+	defaultStagger := 300 * time.Millisecond
+	if cfg != nil && cfg.Swarm.StaggerDelayMs > 0 {
+		defaultStagger = time.Duration(cfg.Swarm.StaggerDelayMs) * time.Millisecond
+	}
+
+	cmd := &cobra.Command{
+		Use:   "send",
+		Short: "Broadcast marching orders or prompt templates to swarm panes",
+		Long: `Broadcast a prompt, prompt file, or built-in marching-orders template (default, review, test)
+across swarm agent panes.
+
+When --plan is provided, targets are resolved from the saved SwarmPlan JSON (written by ntm swarm --output).
+Otherwise, matching live swarm sessions are discovered and all non-user agent panes receive the prompt.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			machineJSON := IsJSONOutput()
+			logger := slog.Default()
+
+			var sessOrch *swarm.SessionOrchestrator
+			if strings.TrimSpace(remote) != "" {
+				sessOrch = swarm.NewRemoteSessionOrchestrator(strings.TrimSpace(remote))
+			} else {
+				sessOrch = swarm.NewSessionOrchestrator()
+			}
+			tmuxClient := sessOrch.TmuxClient
+			if tmuxClient == nil {
+				tmuxClient = tmux.DefaultClient
+			}
+
+			injector := swarm.NewPromptInjectorWithClient(tmuxClient).
+				WithLogger(logger).
+				WithStaggerDelay(staggerDelay)
+			injector.SessionOrchestrator = sessOrch
+			if adaptiveDelay && !sessOrch.IsRemote() {
+				tracker := ratelimit.NewRateLimitTracker(scanDir)
+				_ = tracker.LoadFromDir(scanDir)
+				injector.WithRateLimitTracker(tracker).WithAdaptiveDelay(true)
+			}
+
+			resolvedPrompt, source, _, err := resolveSwarmPromptWithInjector(injector, prompt, promptFile, promptTemplate)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(resolvedPrompt) == "" {
+				return fmt.Errorf("%w: specify --prompt, --prompt-file, or --template", errCLIInvalidInput)
+			}
+
+			out := SwarmSendOutput{
+				RobotResponse: robot.NewRobotResponse(true),
+				Source:        source,
+				Sessions:      []string{},
+			}
+
+			if strings.TrimSpace(planPath) != "" {
+				data, err := os.ReadFile(planPath)
+				if err != nil {
+					return fmt.Errorf("read swarm plan %q: %w", planPath, err)
+				}
+				var plan swarm.SwarmPlan
+				if err := json.Unmarshal(data, &plan); err != nil {
+					return fmt.Errorf("decode swarm plan %q: %w", planPath, err)
+				}
+				out.PlanPath = planPath
+				for _, sess := range plan.Sessions {
+					out.Sessions = append(out.Sessions, sess.Name)
+				}
+
+				var batchRes *swarm.BatchInjectionResult
+				if strings.TrimSpace(promptTemplate) != "" && prompt == "" && promptFile == "" && ctx.Err() == nil {
+					batchRes, err = injector.InjectSwarmWithTemplate(&plan, strings.TrimSpace(promptTemplate))
+				} else {
+					batchRes, err = injector.InjectSwarmWithContext(ctx, &plan, resolvedPrompt)
+				}
+				out.Injection = batchRes
+				if err != nil {
+					if machineJSON {
+						code, hint := classifyRobotExecuteError(err)
+						out.RobotResponse = robot.NewErrorResponse(err, code, hint)
+						return emitJSONFailureEnvelopeWithCause(out, err)
+					}
+					return err
+				}
+			} else {
+				patterns := sessionPatterns
+				if len(patterns) == 0 {
+					patterns = []string{"cc_agents_*", "cod_agents_*", "gmi_agents_*", "agy_agents_*"}
+				}
+				matched, err := discoverSwarmSessionsWithClient(tmuxClient, patterns)
+				if err != nil {
+					return fmt.Errorf("discovering swarm sessions: %w", err)
+				}
+				sort.Strings(matched)
+				out.Sessions = matched
+
+				agg := &swarm.BatchInjectionResult{
+					Results: []swarm.InjectionResult{},
+				}
+				sendStart := time.Now()
+				var sendErrs []error
+				for _, sessName := range matched {
+					res, sessErr := injector.InjectToSessionWithContext(ctx, sessName, resolvedPrompt)
+					if res != nil {
+						agg.TotalPanes += res.TotalPanes
+						agg.Successful += res.Successful
+						agg.Failed += res.Failed
+						agg.Results = append(agg.Results, res.Results...)
+					}
+					if sessErr != nil {
+						sendErrs = append(sendErrs, sessErr)
+					}
+				}
+				agg.Duration = time.Since(sendStart)
+				out.Injection = agg
+				if len(sendErrs) > 0 {
+					joined := errors.Join(sendErrs...)
+					if machineJSON {
+						code, hint := classifyRobotExecuteError(joined)
+						out.RobotResponse = robot.NewErrorResponse(joined, code, hint)
+						return emitJSONFailureEnvelopeWithCause(out, joined)
+					}
+					return joined
+				}
+			}
+
+			if out.Injection != nil && out.Injection.Failed > 0 {
+				failErr := fmt.Errorf("prompt injection failed for %d/%d panes", out.Injection.Failed, out.Injection.TotalPanes)
+				if machineJSON {
+					out.RobotResponse = robot.NewErrorResponse(failErr, robot.ErrCodeInternalError, "Inspect per-pane errors in injection.results")
+					return emitJSONFailureEnvelopeWithCause(out, failErr)
+				}
+				return failErr
+			}
+
+			if machineJSON {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(out)
+			}
+
+			if out.Injection != nil {
+				output.PrintSuccessf("Swarm prompt delivered: %d/%d panes succeeded", out.Injection.Successful, out.Injection.TotalPanes)
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&prompt, "prompt", "", "Prompt text to send to swarm panes")
+	cmd.Flags().StringVar(&promptFile, "prompt-file", "", "File containing prompt text")
+	cmd.Flags().StringVar(&promptTemplate, "template", "", "Marching-orders template name (default, review, test)")
+	cmd.Flags().StringVar(&planPath, "plan", "", "Optional SwarmPlan JSON file (from ntm swarm --output)")
+	cmd.Flags().StringSliceVar(&sessionPatterns, "sessions", nil, "Session glob patterns when --plan is omitted")
+	cmd.Flags().StringVar(&remote, "remote", "", "Remote host for SSH execution (user@host)")
+	cmd.Flags().DurationVar(&staggerDelay, "stagger-delay", defaultStagger, "Delay between pane deliveries")
+	cmd.Flags().BoolVar(&adaptiveDelay, "adaptive-delay", false, "Use adaptive rate-limit delays")
+	cmd.Flags().StringVar(&scanDir, "scan-dir", defaultScanDir, "Directory containing rate-limit history for --adaptive-delay")
+
 	return cmd
 }
 
@@ -1211,7 +1599,13 @@ Examples:
 
 // discoverSwarmSessions finds tmux sessions matching the given patterns.
 func discoverSwarmSessions(patterns []string) ([]string, error) {
-	client := tmux.DefaultClient
+	return discoverSwarmSessionsWithClient(tmux.DefaultClient, patterns)
+}
+
+func discoverSwarmSessionsWithClient(client *tmux.Client, patterns []string) ([]string, error) {
+	if client == nil {
+		client = tmux.DefaultClient
+	}
 
 	// List all sessions
 	allSessions, err := client.ListSessions()

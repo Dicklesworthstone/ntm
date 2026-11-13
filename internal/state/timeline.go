@@ -100,11 +100,6 @@ type TimelineMarker struct {
 	Details map[string]string `json:"details,omitempty"`
 }
 
-// IsTerminal returns true if the state is a terminal state (stopped/error).
-func (s TimelineState) IsTerminal() bool {
-	return s == TimelineStopped || s == TimelineError
-}
-
 // AgentEvent represents a state transition event for an agent.
 type AgentEvent struct {
 	// AgentID uniquely identifies the agent (e.g., "cc_1", "cod_2").

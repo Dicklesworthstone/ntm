@@ -264,15 +264,6 @@ func ptCompatible(version Version) bool {
 	return version.AtLeast(ptMinVersion)
 }
 
-// ClassifyProcess uses the same passive snapshot as the fleet monitor.
-func (a *PTAdapter) ClassifyProcess(ctx context.Context, pid int) (*PTProcessResult, error) {
-	results, err := a.ClassifyProcesses(ctx, []int{pid})
-	if err != nil {
-		return nil, err
-	}
-	return &results[0], nil
-}
-
 // ClassifyProcesses samples one non-persistent, recommendation-only PT watch
 // iteration for the entire host, then selects the requested PIDs. Unlike agent
 // plan, watch does not create a new session directory on every monitor poll.

@@ -176,11 +176,6 @@ func (m *AttentionPanel) InterestingCount() int {
 	return count
 }
 
-// IsFeedAvailable returns whether the attention feed is available.
-func (m *AttentionPanel) IsFeedAvailable() bool {
-	return m.feedAvailable
-}
-
 func (m *AttentionPanel) Init() tea.Cmd {
 	return nil
 }

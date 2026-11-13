@@ -18,11 +18,15 @@ import (
 	"io"
 	"io/fs"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -431,4 +435,82 @@ func freeLocalPort() (int, error) {
 	}
 	defer ln.Close()
 	return ln.Addr().(*net.TCPAddr).Port, nil
+}
+
+func TestMemoryStatusAndRecoveryContextCLI(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub cm uses POSIX sh")
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"cm_context"}]}}`))
+	}))
+	defer srv.Close()
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse server url: %v", err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("parse server port: %v", err)
+	}
+
+	projectDir := t.TempDir()
+	pidDir := filepath.Join(projectDir, ".ntm", "pids")
+	if err := os.MkdirAll(pidDir, 0o755); err != nil {
+		t.Fatalf("mkdir pids: %v", err)
+	}
+	pidPayload, _ := json.Marshal(supervisor.PIDFileInfo{
+		PID:     os.Getpid(),
+		Port:    port,
+		OwnerID: "test",
+		Command: "cm serve",
+	})
+	if err := os.WriteFile(filepath.Join(pidDir, "cm-testsession.pid"), pidPayload, 0o644); err != nil {
+		t.Fatalf("write pid file: %v", err)
+	}
+
+	binDir := t.TempDir()
+	longSnippet := strings.Repeat("verify-recovery-context-", 12)
+	cmScript := "#!/bin/sh\nset -eu\n" +
+		"echo '{\"success\":true,\"data\":{\"relevantBullets\":[{\"id\":\"r-1\",\"content\":\"Always validate inputs\"}],\"antiPatterns\":[{\"id\":\"ap-1\",\"content\":\"Never ignore errors\"}],\"historySnippets\":[{\"source_path\":\"/s/1.jsonl\",\"agent\":\"claude\",\"title\":\"Auth session\",\"snippet\":\"" + longSnippet + "\"}]}}'\n"
+	if err := os.WriteFile(filepath.Join(binDir, "cm"), []byte(cmScript), 0o755); err != nil {
+		t.Fatalf("write stub cm: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Chdir(projectDir)
+
+	statusOut, err := captureStdout(t, func() error {
+		_, runErr := execCommand(t, "memory", "status", "--json")
+		return runErr
+	})
+	if err != nil {
+		t.Fatalf("memory status --json: %v", err)
+	}
+	var statusPayload struct {
+		CLIAvailable  bool   `json:"cli_available"`
+		DaemonRunning bool   `json:"daemon_running"`
+		DaemonHealthy bool   `json:"daemon_healthy"`
+		SessionID     string `json:"session_id"`
+		Port          int    `json:"port"`
+	}
+	if err := json.Unmarshal([]byte(statusOut), &statusPayload); err != nil {
+		t.Fatalf("unmarshal memory status: %v\nout=%s", err, statusOut)
+	}
+	if !statusPayload.CLIAvailable || !statusPayload.DaemonRunning || !statusPayload.DaemonHealthy || statusPayload.Port != port {
+		t.Fatalf("unexpected memory status: %+v (want port=%d)", statusPayload, port)
+	}
+
+	recOut, err := execCommand(t, "memory", "context", "harden auth", "--recovery")
+	if err != nil {
+		t.Fatalf("memory context --recovery: %v", err)
+	}
+	if !strings.Contains(recOut, "## Procedural Memory (Key Rules)") ||
+		!strings.Contains(recOut, "[r-1]") ||
+		!strings.Contains(recOut, "[ap-1]") ||
+		!strings.Contains(recOut, "...") {
+		t.Fatalf("unexpected recovery markdown output:\n%s", recOut)
+	}
 }

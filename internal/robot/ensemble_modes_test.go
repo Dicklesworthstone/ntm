@@ -245,3 +245,33 @@ func TestGetEnsembleModes_ModeInfo(t *testing.T) {
 		mode.ID, mode.Code, mode.Category.Name)
 	t.Log("TEST: TestGetEnsembleModes_ModeInfo - assertion: mode info is complete")
 }
+
+func TestGetEnsembleModes_SearchAndCatalogMetadata(t *testing.T) {
+	out, err := GetEnsembleModes(EnsembleModesOptions{
+		Search: "deductive",
+		Tier:   "all",
+	})
+	if err != nil {
+		t.Fatalf("GetEnsembleModes(search): %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("expected success=true, got error: %s", out.Error)
+	}
+	if len(out.Modes) == 0 {
+		t.Fatal("expected modes matching search 'deductive'")
+	}
+	if out.CatalogVersion == "" {
+		t.Fatal("expected non-empty catalog_version")
+	}
+	if out.TotalModes == 0 {
+		t.Fatal("expected non-zero total_modes")
+	}
+
+	presetsOut, err := GetEnsemblePresets()
+	if err != nil {
+		t.Fatalf("GetEnsemblePresets: %v", err)
+	}
+	if presetsOut.Count != len(presetsOut.Presets) || presetsOut.Count == 0 {
+		t.Fatalf("expected non-zero presets count matching slice len, got count=%d len=%d", presetsOut.Count, len(presetsOut.Presets))
+	}
+}

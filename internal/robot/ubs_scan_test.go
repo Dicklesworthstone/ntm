@@ -245,3 +245,44 @@ func TestPrintUBSScan_MissingBinaryExitsCode2(t *testing.T) {
 		t.Fatalf("expected non-null findings array in stdout: %s", stdout)
 	}
 }
+
+func TestGetUBSScan_SeverityAndFileFilters(t *testing.T) {
+	projectDir := t.TempDir()
+	report := `{
+  "project": "` + projectDir + `",
+  "status": "ok",
+  "totals": {"files": 2, "critical": 1, "warning": 1, "info": 1},
+  "findings": [
+    {"rule_id": "go.sec.sql", "severity": "critical", "file": "internal/auth/sql.go", "line": 12, "col": 4, "message": "SQL injection risk", "category_id": "security"},
+    {"rule_id": "go.perf.alloc", "severity": "warning", "file": "internal/auth/sql.go", "line": 30, "col": 2, "message": "Slice growth", "category_id": "performance"},
+    {"rule_id": "go.style.doc", "severity": "info", "file": "internal/ui/view.go", "line": 5, "col": 1, "message": "Missing comment", "category_id": "style"}
+  ]
+}`
+	installStubUBSForRobotTest(t, report)
+
+	out, err := GetUBSScan(context.Background(), UBSScanOptions{
+		Path:       projectDir,
+		Severity:   "warning",
+		FilterFile: "auth/sql.go",
+	})
+	if err != nil {
+		t.Fatalf("GetUBSScan filtered: %v", err)
+	}
+	if !out.Success || len(out.Findings) != 1 || out.Findings[0].RuleID != "go.perf.alloc" {
+		t.Fatalf("filtered findings = %+v, want [go.perf.alloc]", out.Findings)
+	}
+	if out.Summary.Critical != 0 || out.Summary.Warning != 1 || out.Summary.Info != 0 || out.Summary.Files != 1 {
+		t.Fatalf("filtered summary = %+v, want warning=1 files=1", out.Summary)
+	}
+
+	bad, err := GetUBSScan(context.Background(), UBSScanOptions{
+		Path:     projectDir,
+		Severity: "fatal",
+	})
+	if err != nil {
+		t.Fatalf("GetUBSScan invalid severity: %v", err)
+	}
+	if bad.Success || bad.ErrorCode != ErrCodeInvalidFlag {
+		t.Fatalf("expected INVALID_FLAG for bad severity, got %+v", bad.RobotResponse)
+	}
+}

@@ -2,7 +2,11 @@
 // It executes UBS scans and parses the output into structured Go types.
 package scanner
 
-import "time"
+import (
+	"path/filepath"
+	"strings"
+	"time"
+)
 
 // Severity represents the severity level of a finding.
 type Severity string
@@ -120,11 +124,18 @@ func (r *ScanResult) FilterBySeverity(severity Severity) []Finding {
 	return filtered
 }
 
-// FilterByFile returns findings for a specific file.
+// FilterByFile returns findings matching a specific file path or substring.
 func (r *ScanResult) FilterByFile(file string) []Finding {
+	trimmed := strings.TrimSpace(file)
+	if trimmed == "" {
+		out := make([]Finding, len(r.Findings))
+		copy(out, r.Findings)
+		return out
+	}
+	needle := filepath.ToSlash(trimmed)
 	var filtered []Finding
 	for _, f := range r.Findings {
-		if f.File == file {
+		if f.File == trimmed || strings.Contains(filepath.ToSlash(f.File), needle) {
 			filtered = append(filtered, f)
 		}
 	}

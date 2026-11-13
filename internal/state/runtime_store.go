@@ -239,15 +239,6 @@ func updateIncidentOccurrence(exec sqlExecer, incidentID string, incident *Incid
 	return nil
 }
 
-func queryIncidentByFingerprint(queryer incidentQueryer, fingerprint string) (*Incident, error) {
-	return scanIncident(queryer.QueryRow(`
-		SELECT `+incidentSelectColumns+`
-		FROM incidents
-		WHERE fingerprint = ? AND fingerprint <> ''
-		ORDER BY CASE WHEN status IN ('resolved', 'muted') THEN 1 ELSE 0 END, last_event_at DESC, started_at DESC
-		LIMIT 1`, fingerprint))
-}
-
 func queryOpenIncidentByFingerprint(queryer incidentQueryer, fingerprint string) (*Incident, error) {
 	return scanIncident(queryer.QueryRow(`
 		SELECT `+incidentSelectColumns+`
@@ -380,18 +371,6 @@ func (s *Store) GetFreshRuntimeSessions() ([]RuntimeSession, error) {
 		sessions = append(sessions, sess)
 	}
 	return sessions, rows.Err()
-}
-
-// DeleteRuntimeSession removes a runtime session projection.
-func (s *Store) DeleteRuntimeSession(name string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	_, err := s.db.Exec("DELETE FROM runtime_sessions WHERE name = ?", name)
-	if err != nil {
-		return fmt.Errorf("delete runtime session: %w", err)
-	}
-	return nil
 }
 
 // UpsertRuntimeSession inserts or updates a runtime session projection in an existing transaction.
@@ -561,18 +540,6 @@ func (s *Store) GetRuntimeAgent(id string) (*RuntimeAgent, error) {
 		return nil, fmt.Errorf("get runtime agent: %w", err)
 	}
 	return agent, nil
-}
-
-// DeleteRuntimeAgent removes a runtime agent projection.
-func (s *Store) DeleteRuntimeAgent(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	_, err := s.db.Exec("DELETE FROM runtime_agents WHERE id = ?", id)
-	if err != nil {
-		return fmt.Errorf("delete runtime agent: %w", err)
-	}
-	return nil
 }
 
 // CreateRobotWaitHandle records an active robot wait so another CLI process
@@ -826,18 +793,6 @@ func (s *Store) ListFreshRuntimeWork(status string, limit int) ([]RuntimeWork, e
 	return items, rows.Err()
 }
 
-// DeleteRuntimeWork removes a runtime work projection.
-func (s *Store) DeleteRuntimeWork(beadID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	_, err := s.db.Exec("DELETE FROM runtime_work WHERE bead_id = ?", beadID)
-	if err != nil {
-		return fmt.Errorf("delete runtime work: %w", err)
-	}
-	return nil
-}
-
 // UpsertRuntimeWork inserts or updates a runtime work projection in an existing transaction.
 func (tx *Tx) UpsertRuntimeWork(work *RuntimeWork) error {
 	_, err := tx.tx.Exec(`
@@ -1000,18 +955,6 @@ func (s *Store) ListFreshRuntimeCoordination(sessionName string) ([]RuntimeCoord
 	return items, rows.Err()
 }
 
-// DeleteRuntimeCoordination removes a runtime coordination projection.
-func (s *Store) DeleteRuntimeCoordination(agentName string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	_, err := s.db.Exec("DELETE FROM runtime_coordination WHERE agent_name = ?", agentName)
-	if err != nil {
-		return fmt.Errorf("delete runtime coordination: %w", err)
-	}
-	return nil
-}
-
 // UpsertRuntimeCoordination inserts or updates a runtime coordination projection in an existing transaction.
 func (tx *Tx) UpsertRuntimeCoordination(coord *RuntimeCoordination) error {
 	_, err := tx.tx.Exec(`
@@ -1135,65 +1078,6 @@ func (s *Store) GetRuntimeHandoff() (*RuntimeHandoff, error) {
 	return handoff, nil
 }
 
-// GetRuntimeHandoffByScope retrieves the fresh runtime handoff
-// projection for a specific (session_name, working_dir) pair. Returns
-// nil without error when no fresh row exists for that scope. See
-// ntm#135.
-func (s *Store) GetRuntimeHandoffByScope(sessionName, workingDir string) (*RuntimeHandoff, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	handoff := &RuntimeHandoff{}
-	err := s.db.QueryRow(`
-		SELECT session_name, working_dir, COALESCE(status, ''), COALESCE(goal, ''), COALESCE(goal_disclosure, ''),
-			COALESCE(now_text, ''), COALESCE(now_disclosure, ''), updated_at,
-			COALESCE(active_beads, ''), COALESCE(agent_mail_threads, ''), COALESCE(blockers, ''),
-			COALESCE(blocker_disclosures, ''), COALESCE(files, ''), collected_at, stale_after
-		FROM runtime_handoff
-		WHERE session_name = ? AND working_dir = ? AND stale_after > datetime('now')`,
-		sessionName, workingDir,
-	).Scan(
-		&handoff.SessionName, &handoff.WorkingDir, &handoff.Status, &handoff.Goal, &handoff.GoalDisclosure,
-		&handoff.NowText, &handoff.NowDisclosure, &handoff.UpdatedAt,
-		&handoff.ActiveBeads, &handoff.AgentMailThreads, &handoff.Blockers,
-		&handoff.BlockerDisclosures, &handoff.Files, &handoff.CollectedAt, &handoff.StaleAfter,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("get runtime handoff by scope: %w", err)
-	}
-	return handoff, nil
-}
-
-// DeleteRuntimeHandoff removes ALL runtime handoff projections. Pre-ntm#135
-// callers used a singleton-scoped delete; this preserves their semantics.
-// For scoped deletion use DeleteRuntimeHandoffByScope. See ntm#135.
-func (s *Store) DeleteRuntimeHandoff() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	_, err := s.db.Exec(`DELETE FROM runtime_handoff`)
-	if err != nil {
-		return fmt.Errorf("delete runtime handoff: %w", err)
-	}
-	return nil
-}
-
-// DeleteRuntimeHandoffByScope removes the runtime handoff projection for
-// the given (session_name, working_dir) pair. See ntm#135.
-func (s *Store) DeleteRuntimeHandoffByScope(sessionName, workingDir string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	_, err := s.db.Exec(`DELETE FROM runtime_handoff WHERE session_name = ? AND working_dir = ?`, sessionName, workingDir)
-	if err != nil {
-		return fmt.Errorf("delete runtime handoff by scope: %w", err)
-	}
-	return nil
-}
-
 // UpsertRuntimeHandoff inserts or updates the runtime handoff projection
 // (keyed by session_name + working_dir; see ntm#135) inside an existing
 // transaction.
@@ -1240,22 +1124,10 @@ func (tx *Tx) UpsertRuntimeHandoff(handoff *RuntimeHandoff) error {
 // that no handoff exists for any scope — a full projection refresh whose source
 // reported successfully. A caller that merely failed to observe a handoff must
 // not call this; it would delete every other scope's row on a transient outage.
-// For a single scope use DeleteRuntimeHandoffByScope.
 func (tx *Tx) DeleteRuntimeHandoff() error {
 	_, err := tx.tx.Exec(`DELETE FROM runtime_handoff`)
 	if err != nil {
 		return fmt.Errorf("delete runtime handoff: %w", err)
-	}
-	return nil
-}
-
-// DeleteRuntimeHandoffByScope removes the runtime handoff projection for
-// the given (session_name, working_dir) pair inside an existing
-// transaction. See ntm#135.
-func (tx *Tx) DeleteRuntimeHandoffByScope(sessionName, workingDir string) error {
-	_, err := tx.tx.Exec(`DELETE FROM runtime_handoff WHERE session_name = ? AND working_dir = ?`, sessionName, workingDir)
-	if err != nil {
-		return fmt.Errorf("delete runtime handoff by scope: %w", err)
 	}
 	return nil
 }
@@ -1364,18 +1236,6 @@ func (s *Store) ListFreshRuntimeQuota(provider string) ([]RuntimeQuota, error) {
 		items = append(items, quota)
 	}
 	return items, rows.Err()
-}
-
-// DeleteRuntimeQuota removes a runtime quota projection.
-func (s *Store) DeleteRuntimeQuota(provider, account string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	_, err := s.db.Exec(`DELETE FROM runtime_quota WHERE provider = ? AND account = ?`, provider, account)
-	if err != nil {
-		return fmt.Errorf("delete runtime quota: %w", err)
-	}
-	return nil
 }
 
 // UpsertRuntimeQuota inserts or updates a runtime quota projection in an existing transaction.
@@ -1575,18 +1435,6 @@ func (tx *Tx) UpsertSourceHealth(health *SourceHealth) error {
 	return nil
 }
 
-// DeleteSourceHealth removes a source health record.
-func (s *Store) DeleteSourceHealth(sourceName string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	_, err := s.db.Exec("DELETE FROM source_health WHERE source_name = ?", sourceName)
-	if err != nil {
-		return fmt.Errorf("delete source health: %w", err)
-	}
-	return nil
-}
-
 // DeleteSourceHealth removes a source health record in an existing transaction.
 func (tx *Tx) DeleteSourceHealth(sourceName string) error {
 	_, err := tx.tx.Exec("DELETE FROM source_health WHERE source_name = ?", sourceName)
@@ -1710,30 +1558,6 @@ func (s *Store) AppendAttentionEvent(event *StoredAttentionEvent) (int64, error)
 	defer s.mu.Unlock()
 
 	result, err := s.db.Exec(`
-		INSERT INTO attention_events (
-			ts, session_name, pane, category, event_type, source,
-			actionability, severity, reason_code, summary, details, next_actions,
-			dedup_key, dedup_count, expires_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		event.Ts, event.SessionName, event.Pane, event.Category,
-		event.EventType, event.Source, event.Actionability, event.Severity, event.ReasonCode,
-		event.Summary, event.Details, event.NextActions,
-		event.DedupKey, event.DedupCount, event.ExpiresAt,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("append attention event: %w", err)
-	}
-
-	cursor, err := result.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("get event cursor: %w", err)
-	}
-	return cursor, nil
-}
-
-// AppendAttentionEvent inserts an attention event and returns its cursor in an existing transaction.
-func (tx *Tx) AppendAttentionEvent(event *StoredAttentionEvent) (int64, error) {
-	result, err := tx.tx.Exec(`
 		INSERT INTO attention_events (
 			ts, session_name, pane, category, event_type, source,
 			actionability, severity, reason_code, summary, details, next_actions,
@@ -2317,18 +2141,6 @@ func (s *Store) GetIncident(id string) (*Incident, error) {
 	return incident, nil
 }
 
-// GetIncidentByFingerprint returns the newest incident for a fingerprint, preferring active ones.
-func (s *Store) GetIncidentByFingerprint(fingerprint string) (*Incident, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	incident, err := queryIncidentByFingerprint(s.db, fingerprint)
-	if err != nil {
-		return nil, fmt.Errorf("get incident by fingerprint: %w", err)
-	}
-	return incident, nil
-}
-
 // ListOpenIncidents returns all non-resolved incidents.
 func (s *Store) ListOpenIncidents() ([]Incident, error) {
 	s.mu.RLock()
@@ -2444,47 +2256,6 @@ func (s *Store) UpdateIncidentStatus(id string, status IncidentStatus, by string
 	return nil
 }
 
-// ReopenIncident reactivates a resolved or muted incident while preserving history.
-func (s *Store) ReopenIncident(id string, by string, reason string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := time.Now().UTC()
-	result, err := s.db.Exec(`
-		UPDATE incidents SET
-			status = ?,
-			last_event_at = ?,
-			acknowledged_at = NULL,
-			acknowledged_by = '',
-			resolved_at = NULL,
-			resolved_by = '',
-			muted_at = NULL,
-			muted_by = '',
-			muted_reason = '',
-			resolution = '',
-			notes = CASE
-				WHEN ? = '' THEN notes
-				WHEN COALESCE(notes, '') = '' THEN ?
-				ELSE notes || char(10) || ?
-			END
-		WHERE id = ? AND status IN ('resolved', 'muted')`,
-		IncidentStatusOpen, now,
-		reason, reason, reason,
-		id,
-	)
-	if err != nil {
-		return fmt.Errorf("reopen incident: %w", err)
-	}
-	rows, rowsErr := result.RowsAffected()
-	if rowsErr != nil {
-		return fmt.Errorf("reopen incident rows affected: %w", rowsErr)
-	}
-	if rows == 0 {
-		return fmt.Errorf("reopen incident: incident %s is not resolved or muted", id)
-	}
-	return nil
-}
-
 // GCResolvedIncidents prunes resolved or muted incidents beyond the bounded retention window.
 func (s *Store) GCResolvedIncidents(retention time.Duration) (int64, error) {
 	s.mu.Lock()
@@ -2519,31 +2290,6 @@ func (s *Store) LinkEventToIncident(incidentID string, eventCursor int64) error 
 
 	// Update incident counters
 	_, err = s.db.Exec(`
-		UPDATE incidents SET
-			event_count = (SELECT COUNT(*) FROM incident_events WHERE incident_id = ?),
-			first_event_cursor = COALESCE(first_event_cursor, ?),
-			last_event_cursor = CASE
-				WHEN COALESCE(?, -1) > COALESCE(last_event_cursor, -1) THEN ?
-				ELSE last_event_cursor
-			END,
-			last_event_at = datetime('now')
-		WHERE id = ?`, incidentID, eventCursor, eventCursor, eventCursor, incidentID)
-	if err != nil {
-		return fmt.Errorf("update incident counters: %w", err)
-	}
-	return nil
-}
-
-// LinkEventToIncident associates an attention event with an incident in an existing transaction.
-func (tx *Tx) LinkEventToIncident(incidentID string, eventCursor int64) error {
-	_, err := tx.tx.Exec(`
-		INSERT OR IGNORE INTO incident_events (incident_id, event_cursor)
-		VALUES (?, ?)`, incidentID, eventCursor)
-	if err != nil {
-		return fmt.Errorf("link event to incident: %w", err)
-	}
-
-	_, err = tx.tx.Exec(`
 		UPDATE incidents SET
 			event_count = (SELECT COUNT(*) FROM incident_events WHERE incident_id = ?),
 			first_event_cursor = COALESCE(first_event_cursor, ?),
@@ -2686,31 +2432,6 @@ func (s *Store) ClaimWatermark(wm *OutputWatermark, expected *time.Time) (bool, 
 		return false, fmt.Errorf("claim watermark: %w", err)
 	}
 	return affected > 0, nil
-}
-
-// SetWatermark inserts or updates a watermark in an existing transaction.
-func (tx *Tx) SetWatermark(wm *OutputWatermark) error {
-	_, err := tx.tx.Exec(`
-		INSERT INTO output_watermarks (
-			watermark_type, scope, last_cursor, last_ts,
-			baseline_cursor, baseline_ts, baseline_hash, consumer, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(watermark_type, scope) DO UPDATE SET
-			last_cursor = excluded.last_cursor,
-			last_ts = excluded.last_ts,
-			baseline_cursor = excluded.baseline_cursor,
-			baseline_ts = excluded.baseline_ts,
-			baseline_hash = excluded.baseline_hash,
-			consumer = excluded.consumer,
-			updated_at = excluded.updated_at`,
-		wm.WatermarkType, wm.Scope, wm.LastCursor, wm.LastTs,
-		wm.BaselineCursor, wm.BaselineTs, wm.BaselineHash,
-		wm.Consumer, wm.CreatedAt, wm.UpdatedAt,
-	)
-	if err != nil {
-		return fmt.Errorf("set watermark: %w", err)
-	}
-	return nil
 }
 
 // =============================================================================
@@ -3232,13 +2953,14 @@ func (s *Store) ClearStaleProjections(olderThan time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cutoff := time.Now().Add(-olderThan)
+	cutoff := time.Now().UTC().Add(-olderThan)
 
 	tables := []string{
 		"runtime_sessions",
 		"runtime_agents",
 		"runtime_work",
 		"runtime_coordination",
+		"runtime_handoff",
 		"runtime_quota",
 	}
 

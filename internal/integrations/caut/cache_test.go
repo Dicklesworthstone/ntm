@@ -382,3 +382,9 @@ func TestUsageCache_ReturnsCopies(t *testing.T) {
 		t.Error("Modifying returned value should not affect cache")
 	}
 }
+
+func (c *UsageCache) GetLastUpdated() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastUpdated
+}

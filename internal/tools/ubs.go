@@ -3,7 +3,6 @@ package tools
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -111,73 +110,6 @@ func (a *UBSAdapter) Health(ctx context.Context) (*HealthStatus, error) {
 // Info returns complete ubs tool information
 func (a *UBSAdapter) Info(ctx context.Context) (*ToolInfo, error) {
 	return a.BaseAdapter.Info(ctx, a)
-}
-
-// UBS-specific methods
-
-// UBSFinding represents a bug or issue found by UBS
-type UBSFinding struct {
-	ID         string `json:"id,omitempty"`
-	Severity   string `json:"severity,omitempty"` // critical, high, medium, low, info
-	Category   string `json:"category,omitempty"` // security, performance, maintainability, etc.
-	File       string `json:"file,omitempty"`
-	Line       int    `json:"line,omitempty"`
-	Message    string `json:"message,omitempty"`
-	Suggestion string `json:"suggestion,omitempty"`
-	RuleID     string `json:"rule_id,omitempty"`
-}
-
-// UBSScanResult represents the result of a UBS scan
-type UBSScanResult struct {
-	Findings   []UBSFinding `json:"findings,omitempty"`
-	TotalCount int          `json:"total_count"`
-	Critical   int          `json:"critical"`
-	High       int          `json:"high"`
-	Medium     int          `json:"medium"`
-	Low        int          `json:"low"`
-	Info       int          `json:"info"`
-	ScanTime   string       `json:"scan_time,omitempty"`
-}
-
-// Scan runs UBS on a path and returns findings
-func (a *UBSAdapter) Scan(ctx context.Context, path string) (*UBSScanResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute) // Scans can take time
-	defer cancel()
-
-	args := []string{"scan", "--json"}
-	if path != "" {
-		args = append(args, path)
-	}
-
-	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
-	cmd.WaitDelay = time.Second
-	stdout := NewLimitedBuffer(10 * 1024 * 1024)
-	var stderr bytes.Buffer
-	cmd.Stdout = stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return nil, ErrTimeout
-		}
-		// Non-zero exit is normal if findings exist
-		// Only error if no output
-		if stdout.Len() == 0 {
-			return nil, fmt.Errorf("ubs scan failed: %w: %s", err, stderr.String())
-		}
-	}
-
-	output := stdout.Bytes()
-	if !json.Valid(output) {
-		return nil, fmt.Errorf("ubs returned invalid JSON: %s", string(output))
-	}
-
-	var result UBSScanResult
-	if err := json.Unmarshal(output, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse ubs scan result: %w", err)
-	}
-
-	return &result, nil
 }
 
 // Doctor runs UBS diagnostics

@@ -590,3 +590,27 @@ func TestPersistEmittedBusEventsStoresShortLivedCommandEvents(t *testing.T) {
 		t.Fatalf("robot command rows = %+v, want both emitted events through its persistence feed", rows)
 	}
 }
+
+func TestSummarizeMonitorRecoveryReportsDetectorCounts(t *testing.T) {
+	cfg := config.Default()
+	cfg.ContextRotation.Recovery.Enabled = true
+	cfg.ContextRotation.Recovery.CooldownSeconds = 30
+	cri := monitorCompactionRecovery(cfg)
+	if cri == nil {
+		t.Fatal("expected CompactionRecoveryIntegration")
+	}
+
+	paneID := "%17"
+	cri.Detector().Check("initial transcript baseline\n", "claude", paneID)
+	if ev := cri.Detector().Check("initial transcript baseline\nConversation compacted\n", "claude", paneID); ev == nil {
+		t.Fatal("expected compaction event detection")
+	}
+
+	summary := summarizeMonitorRecovery(cri, paneID)
+	if summary.PaneCompactions != 1 || summary.SessionCompactions != 1 {
+		t.Fatalf("summarizeMonitorRecovery() = %+v, want 1 pane and 1 session compaction", summary)
+	}
+	if summary.RecoveryCount != 0 || summary.LastRecoveryAt != "" {
+		t.Fatalf("summarizeMonitorRecovery() before send = %+v, want 0 recoveries", summary)
+	}
+}

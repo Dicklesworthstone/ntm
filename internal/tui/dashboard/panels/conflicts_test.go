@@ -429,3 +429,18 @@ func TestFormatConflictDuration(t *testing.T) {
 		})
 	}
 }
+
+func (m *ConflictsPanel) SetConflicts(conflicts []watcher.FileConflict) {
+	selectedKey, hadSelection := m.selectedConflictKey()
+	m.conflicts = append([]watcher.FileConflict(nil), conflicts...)
+	if len(m.conflicts) == 0 {
+		m.selectedIndex = 0
+		m.selectedAction = 0
+		return
+	}
+	if hadSelection && m.selectConflictByKey(selectedKey) {
+		return
+	}
+	m.clampSelectedIndex()
+	m.selectedAction = 0
+}

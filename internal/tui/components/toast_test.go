@@ -680,3 +680,7 @@ func TestToastStackHeight(t *testing.T) {
 		t.Errorf("expected 10 height for 2 normal + 1 progress, got %d", h)
 	}
 }
+
+func (tm *ToastManager) History() []Toast {
+	return tm.history
+}

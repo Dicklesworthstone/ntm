@@ -677,6 +677,10 @@ func TestHistoryPanel_PreviewOverlayToggleAndCopyMsg(t *testing.T) {
 	if !panel.showPreview {
 		t.Fatal("expected preview overlay to be shown after 'v'")
 	}
+	preview := panel.View()
+	if !strings.Contains(preview, "Prompt Preview") || !strings.Contains(preview, "success") {
+		t.Fatalf("expected preview to render Prompt Preview and status icon/label, got %q", preview)
+	}
 
 	// y should produce a CopyMsg command while preview is open.
 	_, cmd := panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})

@@ -299,3 +299,62 @@ func TestSpringManagerNilSafety(t *testing.T) {
 		t.Errorf("nil GetSmoothed = %f, want 0", val)
 	}
 }
+
+func (sm *SpringManager) Set(id string, target float64) {
+	sm.SetWithDeadZone(id, target, defaultSpringStiffness, defaultSpringDamping, 0)
+}
+
+func (sm *SpringManager) IsSettled(id string) bool {
+	if sm == nil || id == "" {
+		return true
+	}
+	spring, ok := sm.springs[id]
+	if !ok || spring == nil {
+		return true
+	}
+	return !spring.animating && isSpringSettled(spring)
+}
+
+func (sm *SpringManager) SetDimension(id string, width, height int) {
+	sm.Set(id+":w", float64(width))
+	sm.Set(id+":h", float64(height))
+}
+
+func (sm *SpringManager) SetDimensionImmediate(id string, width, height int) {
+	sm.SetImmediate(id+":w", float64(width))
+	sm.SetImmediate(id+":h", float64(height))
+}
+
+func (sm *SpringManager) GetDimension(id string) (width, height int) {
+	if sm == nil || id == "" {
+		return 0, 0
+	}
+	w := sm.Get(id + ":w")
+	h := sm.Get(id + ":h")
+	return int(math.Round(w)), int(math.Round(h))
+}
+
+func (sm *SpringManager) GetSmoothed(id string, smoothingFactor float64) float64 {
+	if sm == nil || id == "" {
+		return 0
+	}
+	value := sm.Get(id)
+	if smoothingFactor <= 0 || smoothingFactor >= 1 {
+		return value
+	}
+	if spring, ok := sm.springs[id]; ok && spring != nil {
+		return value*(1-smoothingFactor) + spring.Target*smoothingFactor
+	}
+	return value
+}
+
+func (sm *SpringManager) SetScrollOffset(id string, offset int) {
+	sm.SetWithParams(id+":scroll", float64(offset), 8.0, 0.5)
+}
+
+func (sm *SpringManager) GetScrollOffset(id string) int {
+	if sm == nil || id == "" {
+		return 0
+	}
+	return int(math.Round(sm.Get(id + ":scroll")))
+}

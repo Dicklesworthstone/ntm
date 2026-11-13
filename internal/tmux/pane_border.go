@@ -4,7 +4,6 @@ package tmux
 
 import (
 	"context"
-	"fmt"
 	"strings"
 )
 
@@ -51,29 +50,4 @@ func EnsurePaneBorderStatus(session string) error {
 // (default client).
 func EnsurePaneBorderStatusContext(ctx context.Context, session string) error {
 	return DefaultClient.EnsurePaneBorderStatusContext(ctx, session)
-}
-
-// SetPaneBorderStyle sets the border style for a specific pane using
-// select-pane -t <target> -P 'pane-border-style=fg=<color>'.
-// The color should be a tmux color name or hex value (e.g., "#00ff00").
-func (c *Client) SetPaneBorderStyle(target, color string) error {
-	return c.SetPaneBorderStyleContext(context.Background(), target, color)
-}
-
-// SetPaneBorderStyleContext sets the pane border style with context/cancellation support.
-func (c *Client) SetPaneBorderStyleContext(ctx context.Context, target, color string) error {
-	style := fmt.Sprintf("fg=%s", color)
-	return c.RunSilentContext(ctx, "select-pane", "-t", ExactTarget(target), "-P",
-		fmt.Sprintf("pane-border-style=%s", style))
-}
-
-// ResetPaneBorderStyle resets a pane's border style to the default.
-func (c *Client) ResetPaneBorderStyle(target string) error {
-	return c.ResetPaneBorderStyleContext(context.Background(), target)
-}
-
-// ResetPaneBorderStyleContext resets border style with context support.
-func (c *Client) ResetPaneBorderStyleContext(ctx context.Context, target string) error {
-	return c.RunSilentContext(ctx, "select-pane", "-t", ExactTarget(target), "-P",
-		"pane-border-style=default")
 }

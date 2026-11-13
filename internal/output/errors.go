@@ -29,12 +29,6 @@ func NewCLIError(msg string) *CLIError {
 	return &CLIError{Message: msg}
 }
 
-// WithCause adds a cause to the error.
-func (e *CLIError) WithCause(cause string) *CLIError {
-	e.Cause = cause
-	return e
-}
-
 // WithHint adds a remediation hint to the error.
 func (e *CLIError) WithHint(hint string) *CLIError {
 	e.Hint = hint

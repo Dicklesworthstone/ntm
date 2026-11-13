@@ -10,6 +10,15 @@ import (
 	"time"
 )
 
+// ClassifyProcess uses the same passive snapshot as the fleet monitor.
+func (a *PTAdapter) ClassifyProcess(ctx context.Context, pid int) (*PTProcessResult, error) {
+	results, err := a.ClassifyProcesses(ctx, []int{pid})
+	if err != nil {
+		return nil, err
+	}
+	return &results[0], nil
+}
+
 func TestNewPTAdapter(t *testing.T) {
 	adapter := NewPTAdapter()
 	if adapter == nil {

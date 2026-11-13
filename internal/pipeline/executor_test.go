@@ -82,6 +82,17 @@ func TestNewExecutor(t *testing.T) {
 	}
 }
 
+func (e *Executor) SetDetector(detector status.Detector) {
+	if detector == nil {
+		detector = status.NewDetector()
+	}
+	e.detector = detector
+}
+
+func (e *Executor) SetNotifier(n *Notifier) {
+	e.notifier = n
+}
+
 func TestExecutor_SetNotifier(t *testing.T) {
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)

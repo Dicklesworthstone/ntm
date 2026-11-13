@@ -12,6 +12,23 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 )
 
+// SetServerURL pins the Agent Mail endpoint this adapter probes, overriding
+// the configured one.
+func (a *AMAdapter) SetServerURL(url string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.serverURL = strings.TrimSuffix(url, "/")
+	a.cached = nil
+}
+
+// SetToken pins the bearer token this adapter probes with.
+func (a *AMAdapter) SetToken(token string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.token = token
+	a.cached = nil
+}
+
 func TestAMAdapter_SetServerURL_TrimsTrailingSlash(t *testing.T) {
 	t.Parallel()
 

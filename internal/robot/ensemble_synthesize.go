@@ -2,6 +2,8 @@
 // ensemble_synthesize.go implements --robot-ensemble-synthesize for triggering synthesis.
 package robot
 
+import "github.com/Dicklesworthstone/ntm/internal/ensemble"
+
 // Error codes for synthesis operations.
 const (
 	// ErrCodeSynthesisNotReady indicates outputs are incomplete.
@@ -38,7 +40,8 @@ type SynthesisReport struct {
 	SynthesizedBy string `json:"synthesized_by,omitempty"`
 	// FallbackReason explains why an agent-based strategy degraded to
 	// mechanical merging; empty when the requested path ran.
-	FallbackReason string `json:"fallback_reason,omitempty"`
+	FallbackReason string                       `json:"fallback_reason,omitempty"`
+	Redundancy     *ensemble.RedundancyAnalysis `json:"redundancy,omitempty"`
 }
 
 // SynthesisAudit summarizes the disagreement analysis.

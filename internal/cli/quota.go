@@ -3,29 +3,67 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
+	"sort"
+	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/integrations/caut"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/quota"
+	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
+const quotaStalenessThreshold = 5 * time.Minute
+
 func newQuotaCmd() *cobra.Command {
-	return &cobra.Command{
+	var (
+		showRateLimits bool
+		clearCooldown  string
+		resetProvider  string
+		resetAll       bool
+		clearCache     bool
+	)
+
+	cmd := &cobra.Command{
 		Use:   "quota [session]",
-		Short: "Check agent quota usage",
-		Long: `Query agents for their current quota usage.
+		Short: "Check agent quota usage and manage provider cooldowns",
+		Long: `Query agents for their current quota usage and inspect or reset adaptive provider rate-limit cooldowns.
 Sends /usage command to supported agents (Claude) and parses the output.
 
 Examples:
   ntm quota myproject
-  ntm quota --json`,
+  ntm quota --json
+  ntm quota --rate-limits
+  ntm quota --clear-cooldown anthropic
+  ntm quota --reset-rate-limit openai
+  ntm quota --reset-all-rate-limits
+  ntm quota --clear-cache`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if clearCache {
+				caut.GetGlobalPoller().GetCache().Clear()
+				if len(args) == 0 && !showRateLimits && clearCooldown == "" && resetProvider == "" && !resetAll {
+					if IsJSONOutput() {
+						return output.PrintJSON(map[string]any{
+							"success":       true,
+							"cache_cleared": true,
+						})
+					}
+					fmt.Fprintln(cmd.OutOrStdout(), "Cleared cached caut usage data.")
+					return nil
+				}
+			}
+
+			if showRateLimits || clearCooldown != "" || resetProvider != "" || resetAll {
+				return runQuotaRateLimitOps(cmd.OutOrStdout(), showRateLimits, clearCooldown, resetProvider, resetAll)
+			}
+
 			var session string
 			if len(args) > 0 {
 				session = args[0]
@@ -44,6 +82,117 @@ Examples:
 			return runQuota(session)
 		},
 	}
+
+	cmd.Flags().BoolVar(&showRateLimits, "rate-limits", false, "Display adaptive provider rate-limit and cooldown state")
+	cmd.Flags().StringVar(&clearCooldown, "clear-cooldown", "", "Clear active cooldown for a provider (or 'all')")
+	cmd.Flags().StringVar(&resetProvider, "reset-rate-limit", "", "Reset learned rate-limit state and history for a provider")
+	cmd.Flags().BoolVar(&resetAll, "reset-all-rate-limits", false, "Reset learned rate-limit state and history for all providers")
+	cmd.Flags().BoolVar(&clearCache, "clear-cache", false, "Clear cached caut quota usage data")
+
+	return cmd
+}
+
+type quotaRateLimitProviderView struct {
+	Provider           string                     `json:"provider"`
+	InCooldown         bool                       `json:"in_cooldown"`
+	CooldownRemainingS int                        `json:"cooldown_remaining_sec,omitempty"`
+	CurrentDelay       string                     `json:"current_delay"`
+	TotalRateLimits    int                        `json:"total_rate_limits"`
+	TotalSuccesses     int                        `json:"total_successes"`
+	RecentEvents       []ratelimit.RateLimitEvent `json:"recent_events,omitempty"`
+}
+
+func runQuotaRateLimitOps(out io.Writer, showOnly bool, clearCooldown, resetProvider string, resetAll bool) error {
+	dir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	tracker := ratelimit.NewRateLimitTracker(dir)
+	if err := tracker.LoadFromDir(dir); err != nil {
+		return err
+	}
+
+	mutated := false
+	action := "inspect"
+	if resetAll {
+		tracker.ResetAll()
+		mutated = true
+		action = "reset_all"
+	}
+	if trimmed := strings.TrimSpace(resetProvider); trimmed != "" {
+		tracker.Reset(trimmed)
+		mutated = true
+		action = "reset_provider"
+	}
+	if trimmed := strings.TrimSpace(clearCooldown); trimmed != "" {
+		if strings.EqualFold(trimmed, "all") {
+			for _, p := range tracker.GetAllProviders() {
+				tracker.ClearCooldown(p)
+			}
+		} else {
+			tracker.ClearCooldown(trimmed)
+		}
+		mutated = true
+		action = "clear_cooldown"
+	}
+	if mutated {
+		if err := tracker.SaveToDir(dir); err != nil {
+			return err
+		}
+	}
+
+	providers := tracker.GetAllProviders()
+	sort.Strings(providers)
+	views := make([]quotaRateLimitProviderView, 0, len(providers))
+	for _, p := range providers {
+		st := tracker.GetProviderState(p)
+		if st == nil {
+			continue
+		}
+		inCooldown := tracker.IsInCooldown(p)
+		rem := tracker.CooldownRemaining(p)
+		views = append(views, quotaRateLimitProviderView{
+			Provider:           p,
+			InCooldown:         inCooldown,
+			CooldownRemainingS: int(rem.Round(time.Second).Seconds()),
+			CurrentDelay:       ratelimit.FormatDelay(st.CurrentDelay),
+			TotalRateLimits:    st.TotalRateLimits,
+			TotalSuccesses:     st.TotalSuccesses,
+			RecentEvents:       tracker.GetRecentEvents(p, 5),
+		})
+	}
+
+	if IsJSONOutput() {
+		return output.PrintJSON(map[string]any{
+			"success":   true,
+			"action":    action,
+			"providers": views,
+		})
+	}
+
+	if mutated && !showOnly {
+		fmt.Fprintf(out, "Updated rate-limit state (%s).\n", action)
+		if len(views) == 0 {
+			return nil
+		}
+	}
+	if len(views) == 0 {
+		fmt.Fprintln(out, "No recorded provider rate-limit state.")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "Provider\tCooldown\tDelay\tRateLimits\tSuccesses\tRecentEvents")
+	fmt.Fprintln(w, "────────\t────────\t─────\t──────────\t─────────\t────────────")
+	for _, v := range views {
+		cd := "none"
+		if v.InCooldown {
+			cd = fmt.Sprintf("active (%ds)", v.CooldownRemainingS)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%d\n",
+			v.Provider, cd, v.CurrentDelay, v.TotalRateLimits, v.TotalSuccesses, len(v.RecentEvents))
+	}
+	return w.Flush()
 }
 
 func runQuota(session string) error {
@@ -132,10 +281,16 @@ func normalizedProviderName(agentType tmux.AgentType) string {
 }
 
 func printQuotaTable(results []*quota.QuotaInfo) {
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "Pane\tProvider\tSession\tWeekly\tReset\tAccount")
-	fmt.Fprintln(w, "────\t────────\t───────\t──────\t─────\t───────")
+	formatQuotaTable(os.Stdout, results)
+}
 
+func formatQuotaTable(out io.Writer, results []*quota.QuotaInfo) {
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "Pane\tProvider\tHealth\tSession\tWeekly\tReset\tAccount")
+	fmt.Fprintln(w, "────\t────────\t──────\t───────\t──────\t─────\t───────")
+
+	healthyCount := 0
+	staleCount := 0
 	for _, r := range results {
 		sess := "-"
 		if r.SessionUsage > 0 {
@@ -144,6 +299,15 @@ func printQuotaTable(results []*quota.QuotaInfo) {
 		weekly := "-"
 		if r.WeeklyUsage > 0 {
 			weekly = fmt.Sprintf("%.1f%%", r.WeeklyUsage)
+		}
+
+		health := string(r.Health())
+		if r.IsHealthy() {
+			healthyCount++
+		}
+		if !r.FetchedAt.IsZero() && r.IsStale(quotaStalenessThreshold) {
+			staleCount++
+			health += " (stale)"
 		}
 
 		account := r.AccountID
@@ -159,8 +323,15 @@ func printQuotaTable(results []*quota.QuotaInfo) {
 			reset = "-"
 		}
 
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\n",
-			r.PaneIndex, r.Provider, sess, weekly, reset, account)
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			r.PaneIndex, r.Provider, health, sess, weekly, reset, account)
 	}
-	w.Flush()
+	_ = w.Flush()
+	if len(results) > 0 {
+		fmt.Fprintf(out, "\nHealthy panes: %d/%d", healthyCount, len(results))
+		if staleCount > 0 {
+			fmt.Fprintf(out, " (%d stale)", staleCount)
+		}
+		fmt.Fprintln(out)
+	}
 }

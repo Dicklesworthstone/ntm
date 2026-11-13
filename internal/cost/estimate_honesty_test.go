@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+func (m PricingMatch) Known() bool { return m != PricingUnknown }
+
 // The dashboard multiplied a ~3.5-chars-per-token estimate of scraped pane
 // output by this table and rendered the result as "$0.0137" under a panel
 // titled "Cost Tracking". Two separate claims the numbers cannot support:

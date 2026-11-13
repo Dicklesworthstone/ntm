@@ -6,6 +6,13 @@ import (
 	"time"
 )
 
+// InvalidateAvailabilityCache forces the next GetAvailability call to re-check.
+func (a *ProxyAdapter) InvalidateAvailabilityCache() {
+	proxyAvailabilityMutex.Lock()
+	proxyAvailabilityExpiry = time.Time{}
+	proxyAvailabilityMutex.Unlock()
+}
+
 func TestNewProxyAdapter(t *testing.T) {
 	adapter := NewProxyAdapter()
 	if adapter == nil {

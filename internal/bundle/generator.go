@@ -206,7 +206,11 @@ func (g *Generator) Generate() (*GeneratorResult, error) {
 	}
 
 	// Create manifest
-	manifest := NewManifest(g.config.NTMVersion)
+	ntmVersion := strings.TrimSpace(g.config.NTMVersion)
+	if ntmVersion == "" {
+		ntmVersion = "dev"
+	}
+	manifest := NewManifest(ntmVersion)
 	manifest.Filters = &BundleFilters{
 		Lines:        g.config.Lines,
 		MaxSizeBytes: g.config.MaxSizeBytes,
@@ -218,16 +222,6 @@ func (g *Generator) Generate() (*GeneratorResult, error) {
 		manifest.Session = &SessionInfo{
 			Name: g.config.Session,
 		}
-	}
-
-	// Calculate total size and check limit
-	var totalSize int64
-	for _, f := range g.files {
-		totalSize += int64(len(f.data))
-	}
-
-	if g.config.MaxSizeBytes > 0 && totalSize > g.config.MaxSizeBytes {
-		return nil, fmt.Errorf("bundle size %d exceeds limit %d", totalSize, g.config.MaxSizeBytes)
 	}
 
 	// Add file entries to manifest
@@ -260,8 +254,19 @@ func (g *Generator) Generate() (*GeneratorResult, error) {
 		}
 	}
 
+	contentSize := manifest.TotalSize()
+	if g.config.MaxSizeBytes > 0 && contentSize > g.config.MaxSizeBytes {
+		return nil, fmt.Errorf("bundle size %d exceeds limit %d", contentSize, g.config.MaxSizeBytes)
+	}
+
 	manifest.RedactionSummary = redactionStats
-	manifest.Errors = g.errors
+	for _, msg := range g.errors {
+		manifest.AddError(msg)
+	}
+
+	if err := manifest.Validate(); err != nil {
+		return nil, fmt.Errorf("validate manifest: %w", err)
+	}
 
 	// Generate the archive
 	switch g.config.Format {
@@ -283,7 +288,7 @@ func (g *Generator) Generate() (*GeneratorResult, error) {
 		result.TotalSize = info.Size()
 	}
 
-	result.FileCount = len(g.files)
+	result.FileCount = manifest.FileCount()
 	result.Manifest = manifest
 	result.RedactionSummary = redactionStats
 

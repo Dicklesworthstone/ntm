@@ -695,18 +695,6 @@ type Prepared struct {
 	dispatched atomic.Bool
 }
 
-// Targets returns a defensive copy of the prepared target plan.
-func (p *Prepared) Targets() []Target {
-	if p == nil {
-		return []Target{}
-	}
-	targets := make([]Target, 0, len(p.entries))
-	for _, entry := range p.entries {
-		targets = append(targets, cloneTarget(entry.receipt.Target))
-	}
-	return targets
-}
-
 // FinalMessageForSingleTarget returns the already-redacted message for an
 // exact one-target preflight. Atomic adapters use it before claiming work so
 // blocked content cannot enter their durable ledger or cross a side-effect

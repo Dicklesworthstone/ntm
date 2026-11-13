@@ -15,12 +15,77 @@ import (
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// verifyTarGz (0% → ~100%) — via Verify() tar.gz path
+// Verify — zip, tar.gz, corruption, and unknown format branches
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Verify — unknown format branch
-// ---------------------------------------------------------------------------
+func TestVerify_ZipAndTarGzRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	for _, format := range []Format{FormatZip, FormatTarGz} {
+		t.Run(string(format), func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			outputPath := filepath.Join(dir, "bundle"+format.Extension())
+
+			gen := NewGenerator(GeneratorConfig{
+				Session:         "verify-session",
+				OutputPath:      outputPath,
+				Format:          format,
+				NTMVersion:      "v1.2.3",
+				RedactionConfig: redaction.Config{Mode: redaction.ModeOff},
+			})
+			if err := gen.AddFile("config/app.toml", []byte("key = 'val'\n"), ContentTypeConfig, time.Now()); err != nil {
+				t.Fatalf("AddFile: %v", err)
+			}
+			if err := gen.AddScrollback("pane_1", "hello\nworld", 10); err != nil {
+				t.Fatalf("AddScrollback: %v", err)
+			}
+			// Trigger a non-fatal error recorded on manifest via AddError
+			_ = gen.AddFile("../escape.txt", []byte("nope"), ContentTypeUnknown, time.Now())
+
+			genRes, err := gen.Generate()
+			if err != nil {
+				t.Fatalf("Generate(%s): %v", format, err)
+			}
+			if genRes.FileCount != 2 {
+				t.Fatalf("FileCount = %d, want 2", genRes.FileCount)
+			}
+			if len(genRes.Manifest.Errors) != 1 {
+				t.Fatalf("Manifest.Errors = %v, want 1 recorded error", genRes.Manifest.Errors)
+			}
+
+			verRes, err := Verify(outputPath)
+			if err != nil {
+				t.Fatalf("Verify(%s): %v", format, err)
+			}
+			if !verRes.Valid || !verRes.ManifestValid || !verRes.SchemaValid || !verRes.FilesPresent || !verRes.ChecksumsValid {
+				t.Fatalf("Verify(%s) = %+v, want all valid", format, verRes)
+			}
+			if verRes.Details["file_count"] != "2" {
+				t.Errorf("Details[file_count] = %q, want 2", verRes.Details["file_count"])
+			}
+			if verRes.Details["total_size"] != "23" {
+				t.Errorf("Details[total_size] = %q, want 23", verRes.Details["total_size"])
+			}
+		})
+	}
+}
+
+func TestVerify_UnknownFormatAndMissingFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	unknownPath := filepath.Join(dir, "bundle.unknown")
+	if err := os.WriteFile(unknownPath, []byte("not an archive"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if _, err := Verify(unknownPath); err == nil || !strings.Contains(err.Error(), "unsupported bundle format") {
+		t.Fatalf("Verify(unknown) error = %v, want unsupported bundle format", err)
+	}
+	if _, err := Verify(filepath.Join(dir, "missing.zip")); err == nil {
+		t.Fatal("Verify(missing) expected error")
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Generate — unsupported format branch

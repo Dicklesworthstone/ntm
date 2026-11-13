@@ -19,6 +19,10 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/shellword"
 )
 
+func (d *Discoverer) Discover(agentType, workDir string, panePID int) *Info {
+	return d.DiscoverContext(context.Background(), agentType, workDir, panePID)
+}
+
 // waitForCmdline waits until pid shows a command line. Start returns when the
 // exec pipe closes, which is before the kernel fills in the new image's argv, and
 // discovery reading that empty argv would find no agent.

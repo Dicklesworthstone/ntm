@@ -420,8 +420,11 @@ func TestGetRenderer(t *testing.T) {
 			if r == nil {
 				t.Fatal("GetRenderer() returned nil")
 			}
-			// Check it's a valid renderer by calling a method
-			_ = r.ContentType()
+			meta, ok := r.(rendererWithMeta)
+			if !ok {
+				t.Fatalf("GetRenderer(%q) = %T does not implement rendererWithMeta", tc.format, r)
+			}
+			_ = meta.ContentType()
 		})
 	}
 }
@@ -522,11 +525,22 @@ func TestJSONRendererMatchesEncodeJSON(t *testing.T) {
 	}
 }
 
+type rendererWithMeta interface {
+	Renderer
+	ContentType() string
+	Format() RobotFormat
+}
+
+func (r *JSONRenderer) ContentType() string { return "application/json" }
+func (r *JSONRenderer) Format() RobotFormat { return FormatJSON }
+func (r *TOONRenderer) ContentType() string { return "text/x-toon" }
+func (r *TOONRenderer) Format() RobotFormat { return FormatTOON }
+
 // TestRendererInterfaceCompliance verifies both renderers implement the interface correctly.
 func TestRendererInterfaceCompliance(t *testing.T) {
 	renderers := []struct {
 		name     string
-		renderer Renderer
+		renderer rendererWithMeta
 	}{
 		{"JSONRenderer", NewJSONRenderer()},
 		{"TOONRenderer", NewTOONRenderer()},

@@ -635,6 +635,22 @@ func (m Model) renderCompleteSlide(tick int) string {
 	}
 	b.WriteString(strings.Repeat("\n", topPad))
 
+	// Celebration particles
+	if len(m.particles) > 0 {
+		var particleRow strings.Builder
+		for _, p := range m.particles {
+			if rendered := p.Render(); rendered != "" {
+				if particleRow.Len() > 0 {
+					particleRow.WriteString("  ")
+				}
+				particleRow.WriteString(rendered)
+			}
+		}
+		if particleRow.Len() > 0 {
+			b.WriteString(centerTextWidth(particleRow.String(), m.effectiveWidth()) + "\n")
+		}
+	}
+
 	// Celebration banner
 	if tick > 0 {
 		celebration := RenderCelebration(tick, m.effectiveWidth())

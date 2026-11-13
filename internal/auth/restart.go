@@ -59,11 +59,6 @@ func NewOrchestrator(cfg *config.Config) *Orchestrator {
 	}
 }
 
-// RegisterAuthFlow registers a flow for a provider
-func (o *Orchestrator) RegisterAuthFlow(provider string, flow AuthFlow) {
-	o.authFlows[provider] = flow
-}
-
 // RestartContext holds context for restarting an agent
 type RestartContext struct {
 	PaneID   string

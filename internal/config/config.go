@@ -597,17 +597,6 @@ type RotationConfig struct {
 	AutoConfirm bool `toml:"auto_confirm"`
 }
 
-// GetAccountsForProvider returns all accounts for a given provider in priority order
-func (c *RotationConfig) GetAccountsForProvider(provider string) []RotationAccount {
-	var accounts []RotationAccount
-	for _, acc := range c.Accounts {
-		if acc.Provider == provider {
-			accounts = append(accounts, acc)
-		}
-	}
-	return accounts
-}
-
 // SuggestNextAccount returns the next account to use (first non-current account)
 func (c *RotationConfig) SuggestNextAccount(provider, currentEmail string) *RotationAccount {
 	for i, acc := range c.Accounts {

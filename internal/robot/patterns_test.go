@@ -1,6 +1,7 @@
 package robot
 
 import (
+	"regexp"
 	"sort"
 	"testing"
 
@@ -1181,4 +1182,85 @@ func TestPatternLibrary_RegisteredPluginReadiness(t *testing.T) {
 	if got := pluginPatternNames(lib.Match("BOOM was the old build tag", name)); len(got) != 0 {
 		t.Fatalf("anchored error pattern matched a longer line: %v", got)
 	}
+}
+
+// Same-package test inspection and mutation helpers for PatternLibrary.
+
+func (lib *PatternLibrary) HasError(content string, agentType string) bool {
+	matches := lib.MatchByCategory(content, agentType, CategoryError)
+	return len(matches) > 0
+}
+
+func (lib *PatternLibrary) HasThinkingIndicator(content string, agentType string) bool {
+	matches := lib.MatchByCategory(content, agentType, CategoryThinking)
+	return len(matches) > 0
+}
+
+func (lib *PatternLibrary) HasCompletionSignal(content string, agentType string) bool {
+	matches := lib.MatchByCategory(content, agentType, CategoryCompletion)
+	return len(matches) > 0
+}
+
+func (lib *PatternLibrary) AddPattern(p Pattern) error {
+	lib.mu.Lock()
+	defer lib.mu.Unlock()
+
+	if p.Regex == nil && p.RegexStr != "" {
+		compiled, err := regexp.Compile(p.RegexStr)
+		if err != nil {
+			return err
+		}
+		p.Regex = compiled
+	}
+
+	lib.Patterns = append(lib.Patterns, p)
+
+	sort.Slice(lib.Patterns, func(i, j int) bool {
+		return lib.Patterns[i].Priority > lib.Patterns[j].Priority
+	})
+
+	return nil
+}
+
+func (lib *PatternLibrary) GetPatterns() []Pattern {
+	lib.mu.RLock()
+	defer lib.mu.RUnlock()
+
+	result := make([]Pattern, len(lib.Patterns))
+	copy(result, lib.Patterns)
+	return result
+}
+
+func (lib *PatternLibrary) GetPatternsByCategory(category PatternCategory) []Pattern {
+	lib.mu.RLock()
+	defer lib.mu.RUnlock()
+
+	var result []Pattern
+	for _, p := range lib.Patterns {
+		if p.Category == category {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+func (lib *PatternLibrary) GetPatternsByAgent(agentType string) []Pattern {
+	lib.mu.RLock()
+	defer lib.mu.RUnlock()
+
+	agentType = normalizeAgentType(agentType)
+
+	var result []Pattern
+	for _, p := range lib.Patterns {
+		if p.Agent == "*" || p.Agent == "" || p.Agent == agentType {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+func (lib *PatternLibrary) PatternCount() int {
+	lib.mu.RLock()
+	defer lib.mu.RUnlock()
+	return len(lib.Patterns)
 }

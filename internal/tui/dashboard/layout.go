@@ -764,19 +764,26 @@ func RenderPaneRow(row PaneTableRow, dims LayoutDimensions, t theme.Theme) strin
 }
 
 func agentRowTypePresentation(agentType string, t theme.Theme) (lipgloss.Color, string) {
-	switch tmux.AgentType(agentType).Canonical() {
+	canonical := tmux.AgentType(agentType).Canonical()
+	color := t.Green
+	if canonical.IsValid() {
+		color = t.Semantic().AgentColor(agentType)
+	}
+	switch canonical {
 	case tmux.AgentClaude:
-		return t.Claude, "󰗣"
+		return color, "󰗣"
 	case tmux.AgentCodex:
-		return t.Codex, "󰘦"
-	case tmux.AgentGemini:
-		return t.Gemini, "󰇮"
-	case tmux.AgentGrok:
-		return t.Pink, "󰚩"
-	case tmux.AgentOmp:
-		return t.Sky, "󰚩"
-	case tmux.AgentAntigravity:
-		return t.Lavender, "󰇮"
+		return color, "󰘦"
+	case tmux.AgentGemini, tmux.AgentAntigravity:
+		return color, "󰇮"
+	case tmux.AgentGrok, tmux.AgentOmp, tmux.AgentAider, tmux.AgentOpencode, tmux.AgentOllama:
+		return color, "󰚩"
+	case tmux.AgentCursor:
+		return color, "󰢹"
+	case tmux.AgentWindsurf:
+		return color, "󰖟"
+	case tmux.AgentUser:
+		return color, "󰄛"
 	default:
 		return t.Green, "󰄛"
 	}
@@ -852,35 +859,10 @@ func WorkingSpinnerFrame(tick int) string {
 	return workingSpinnerFrames[tick%len(workingSpinnerFrames)]
 }
 
-// AgentBorderColor returns the theme color for a given agent type.
-// Each agent type has a unique color: Claude=purple/Mauve, Codex=blue, Gemini=yellow, Grok=pink, User=green.
+// AgentBorderColor returns the semantic theme color for a given agent type.
 func AgentBorderColor(agentType string, t theme.Theme) lipgloss.Color {
-	switch tmux.AgentType(agentType).Canonical() {
-	case tmux.AgentClaude:
-		return t.Claude
-	case tmux.AgentCodex:
-		return t.Codex
-	case tmux.AgentGemini:
-		return t.Gemini
-	case tmux.AgentGrok:
-		return t.Pink
-	case tmux.AgentOmp:
-		return t.Sky
-	case tmux.AgentAntigravity:
-		return t.Lavender
-	case tmux.AgentCursor:
-		return t.Claude
-	case tmux.AgentWindsurf:
-		return t.Codex
-	case tmux.AgentAider:
-		return t.Gemini
-	case tmux.AgentOllama:
-		// Fallback to a distinct color if missing from theme,
-		// but typically we'd use t.Text if we don't have a specific color
-		return t.Text
-	case tmux.AgentUser:
-		return t.User
-	default:
+	if !tmux.AgentType(agentType).IsValid() {
 		return t.Text
 	}
+	return t.Semantic().AgentColor(agentType)
 }

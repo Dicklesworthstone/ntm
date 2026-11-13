@@ -42,6 +42,7 @@ func newSearchCmd() *cobra.Command {
 		since   string
 		limit   int
 		offset  int
+		quick   bool
 	)
 
 	cmd := &cobra.Command{
@@ -60,7 +61,7 @@ tuned for quick lookups.`,
   ntm search 'error handling' --limit=5 --json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCassSearch(args[0], agent, sessionWorkspace(session), since, limit, offset)
+			return runCassSearchWithMode(args[0], agent, sessionWorkspace(session), since, limit, offset, quick)
 		},
 	}
 
@@ -69,6 +70,7 @@ tuned for quick lookups.`,
 	cmd.Flags().StringVar(&since, "since", "", "Filter by time (e.g. 1h, 7d, 30d)")
 	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "Max results to return")
 	cmd.Flags().IntVar(&offset, "offset", 0, "Result offset for pagination")
+	cmd.Flags().BoolVar(&quick, "quick", false, "Fast summary-only search with CASS defaults")
 
 	return cmd
 }
@@ -133,13 +135,16 @@ func emitCassFailure(cause error, unavailable bool, fields map[string]interface{
 }
 
 func newCassStatusCmd() *cobra.Command {
-	return &cobra.Command{
+	var healthCheck bool
+	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show CASS index health and statistics",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCassStatus()
+			return runCassStatusWithOptions(healthCheck)
 		},
 	}
+	cmd.Flags().BoolVar(&healthCheck, "health", false, "Run CASS dedicated health probe")
+	return cmd
 }
 
 func newCassClient() *cass.Client {
@@ -150,13 +155,24 @@ func newCassClient() *cass.Client {
 	return cass.NewClient(opts...)
 }
 
-func runCassStatus() error {
+func runCassStatusWithOptions(healthOnly bool) error {
+	ctx := context.Background()
 	client := newCassClient()
-	status, err := client.Status(context.Background())
+	var (
+		status *cass.StatusResponse
+		err    error
+	)
+	if healthOnly {
+		status, err = client.Health(ctx)
+	} else {
+		status, err = client.Status(ctx)
+	}
 	if err != nil {
 		return handleCassError(err)
 	}
-	// ... rest of function unchanged
+	if healthOnly && status != nil && !status.Healthy {
+		status.Healthy = client.IsHealthy(ctx)
+	}
 
 	if IsJSONOutput() {
 		return output.PrintJSON(status)
@@ -202,6 +218,7 @@ func newCassSearchCmd() *cobra.Command {
 		since     string
 		limit     int
 		offset    int
+		quick     bool
 	)
 
 	cmd := &cobra.Command{
@@ -209,7 +226,7 @@ func newCassSearchCmd() *cobra.Command {
 		Short: "Search past agent sessions",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCassSearch(args[0], agent, workspace, since, limit, offset)
+			return runCassSearchWithMode(args[0], agent, workspace, since, limit, offset, quick)
 		},
 	}
 
@@ -218,20 +235,30 @@ func newCassSearchCmd() *cobra.Command {
 	cmd.Flags().StringVar(&since, "since", "", "Filter by time (e.g. 7d)")
 	cmd.Flags().IntVar(&limit, "limit", 10, "Max results")
 	cmd.Flags().IntVar(&offset, "offset", 0, "Result offset")
+	cmd.Flags().BoolVar(&quick, "quick", false, "Fast summary-only search with CASS defaults")
 
 	return cmd
 }
 
-func runCassSearch(query, agent, workspace, since string, limit, offset int) error {
+func runCassSearchWithMode(query, agent, workspace, since string, limit, offset int, quick bool) error {
+	ctx := context.Background()
 	client := newCassClient()
-	resp, err := client.Search(context.Background(), cass.SearchOptions{
-		Query:     query,
-		Agent:     agent,
-		Workspace: workspace,
-		Since:     since,
-		Limit:     limit,
-		Offset:    offset,
-	})
+	var (
+		resp *cass.SearchResponse
+		err  error
+	)
+	if quick && agent == "" && workspace == "" && since == "" && offset == 0 {
+		resp, err = client.SearchQuick(ctx, query)
+	} else {
+		resp, err = client.Search(ctx, cass.SearchOptions{
+			Query:     query,
+			Agent:     agent,
+			Workspace: workspace,
+			Since:     since,
+			Limit:     limit,
+			Offset:    offset,
+		})
+	}
 	if err != nil {
 		return handleCassError(err)
 	}
@@ -243,6 +270,11 @@ func runCassSearch(query, agent, workspace, since string, limit, offset int) err
 	t := theme.Current()
 	fmt.Printf("%sSearch Results (%d of %d)%s\n", "\033[1m", resp.Count, resp.TotalMatches, "\033[0m")
 	fmt.Printf("%s%s%s\n\n", "\033[2m", strings.Repeat("─", 60), "\033[0m")
+
+	if !resp.HasResults() {
+		fmt.Println("  No matching sessions found.")
+		return nil
+	}
 
 	for _, hit := range resp.Hits {
 		score := fmt.Sprintf("%.2f", hit.Score)

@@ -33,13 +33,19 @@ const (
 
 // ContextEstimate represents an estimate of context window usage.
 type ContextEstimate struct {
-	TokensUsed   int64            `json:"tokens_used"`
-	ContextLimit int64            `json:"context_limit"`
-	UsagePercent float64          `json:"usage_percent"` // 0.0-100.0
-	Confidence   float64          `json:"confidence"`    // 0.0-1.0
-	Method       EstimationMethod `json:"method"`
-	Model        string           `json:"model,omitempty"`
-	UpdatedAt    time.Time        `json:"updated_at"`
+	TokensUsed          int64            `json:"tokens_used"`
+	ContextLimit        int64            `json:"context_limit"`
+	UsagePercent        float64          `json:"usage_percent"` // 0.0-100.0
+	Confidence          float64          `json:"confidence"`    // 0.0-1.0
+	Method              EstimationMethod `json:"method"`
+	Model               string           `json:"model,omitempty"`
+	UpdatedAt           time.Time        `json:"updated_at"`
+	SampleCount         int              `json:"sample_count,omitempty"`
+	TokenVelocity       float64          `json:"token_velocity,omitempty"`
+	VelocityTrend       string           `json:"velocity_trend,omitempty"`
+	MinutesToExhaustion float64          `json:"minutes_to_exhaustion,omitempty"`
+	ShouldWarn          bool             `json:"should_warn,omitempty"`
+	ShouldCompact       bool             `json:"should_compact,omitempty"`
 }
 
 // ContextState holds the full context tracking state for an agent.
@@ -58,6 +64,7 @@ type ContextState struct {
 	// Internal tracking
 	cumulativeInputTokens  int64
 	cumulativeOutputTokens int64
+	predictor              *ContextPredictor
 }
 
 // ContextEstimator defines the interface for estimation strategies.
@@ -81,11 +88,22 @@ func (e *RobotModeEstimator) Name() string { return "robot_mode" }
 // Confidence returns the base confidence for this strategy.
 func (e *RobotModeEstimator) Confidence() float64 { return 0.95 }
 
-// Estimate extracts context usage from robot mode output.
+// Estimate extracts a fresh direct context report when one was recorded recently.
 func (e *RobotModeEstimator) Estimate(state *ContextState) (*ContextEstimate, error) {
-	// This would parse robot mode output for context_used, context_limit
-	// Currently returns nil as Claude Code doesn't expose this directly
-	return nil, nil
+	if state == nil || state.Estimate == nil || time.Since(state.Estimate.UpdatedAt) >= 30*time.Second {
+		return nil, nil
+	}
+	est := *state.Estimate
+	if est.Confidence <= 0 {
+		est.Confidence = e.Confidence()
+	}
+	if est.Method == "" {
+		est.Method = EstimationMethod(e.Name())
+	}
+	if est.Model == "" {
+		est.Model = state.Model
+	}
+	return &est, nil
 }
 
 // ParseRobotModeContext attempts to parse context info from robot mode JSON output.
@@ -131,12 +149,13 @@ func ParseRobotModeContext(output string) *ContextEstimate {
 		return nil
 	}
 
+	estimator := &RobotModeEstimator{}
 	return &ContextEstimate{
 		TokensUsed:   int64(contextUsed),
 		ContextLimit: int64(contextLimit),
 		UsagePercent: (contextUsed / contextLimit) * 100,
-		Confidence:   0.95,
-		Method:       MethodRobotMode,
+		Confidence:   estimator.Confidence(),
+		Method:       EstimationMethod(estimator.Name()),
 		UpdatedAt:    time.Now(),
 	}
 }
@@ -171,7 +190,7 @@ func (e *MessageCountEstimator) Estimate(state *ContextState) (*ContextEstimate,
 		ContextLimit: contextLimit,
 		UsagePercent: float64(estimatedTokens) / float64(contextLimit) * 100,
 		Confidence:   e.Confidence(),
-		Method:       MethodMessageCount,
+		Method:       EstimationMethod(e.Name()),
 		Model:        state.Model,
 		UpdatedAt:    time.Now(),
 	}, nil
@@ -208,7 +227,7 @@ func (e *CumulativeTokenEstimator) Estimate(state *ContextState) (*ContextEstima
 		ContextLimit: contextLimit,
 		UsagePercent: float64(estimatedTokens) / float64(contextLimit) * 100,
 		Confidence:   e.Confidence(),
-		Method:       MethodCumulativeTokens,
+		Method:       EstimationMethod(e.Name()),
 		Model:        state.Model,
 		UpdatedAt:    time.Now(),
 	}, nil
@@ -270,7 +289,7 @@ func (e *DurationActivityEstimator) Estimate(state *ContextState) (*ContextEstim
 		ContextLimit: contextLimit,
 		UsagePercent: float64(estimatedTokens) / float64(contextLimit) * 100,
 		Confidence:   e.Confidence(),
-		Method:       MethodDurationActivity,
+		Method:       EstimationMethod(e.Name()),
 		Model:        state.Model,
 		UpdatedAt:    time.Now(),
 	}, nil
@@ -343,15 +362,62 @@ func (m *ContextMonitor) RegisterAgent(agentID, paneID, model string) *ContextSt
 			PaneID:       paneID,
 			Model:        model,
 			SessionStart: time.Now(),
+			predictor:    NewContextPredictor(DefaultPredictorConfig()),
 		}
 		m.states[agentID] = state
 	} else {
 		// Update fields
 		state.PaneID = paneID
 		state.Model = model
+		if state.predictor == nil {
+			state.predictor = NewContextPredictor(DefaultPredictorConfig())
+		}
 	}
 
 	return state
+}
+
+func recordPredictorSampleLocked(state *ContextState, tokens int64) {
+	if state == nil || state.predictor == nil || tokens < 0 {
+		return
+	}
+	if latest := state.predictor.LatestSample(); latest != nil && latest.Tokens == tokens && time.Since(latest.Timestamp) < time.Second {
+		return
+	}
+	state.predictor.AddSample(tokens)
+}
+
+func enrichEstimateWithPredictor(estimate *ContextEstimate, predictor *ContextPredictor) {
+	if estimate == nil || predictor == nil {
+		return
+	}
+	estimate.SampleCount = predictor.SampleCount()
+	if estimate.SampleCount == 0 {
+		return
+	}
+	if latest := predictor.LatestSample(); latest != nil && estimate.UpdatedAt.IsZero() {
+		estimate.UpdatedAt = latest.Timestamp
+	}
+	const minForecastWindowMinutes = 1.0 / 60.0
+	if pred := predictor.PredictExhaustion(estimate.ContextLimit); pred != nil && pred.WindowDuration >= minForecastWindowMinutes {
+		estimate.TokenVelocity = pred.TokenVelocity
+		estimate.MinutesToExhaustion = pred.MinutesToExhaustion
+		estimate.ShouldWarn = pred.ShouldWarn
+		estimate.ShouldCompact = pred.ShouldCompact
+		if estimate.SampleCount >= 4 {
+			velocity, accelerating := predictor.VelocityTrend()
+			switch {
+			case accelerating && velocity > 0:
+				estimate.VelocityTrend = "accelerating"
+			case velocity < 0:
+				estimate.VelocityTrend = "decreasing"
+			case velocity > 0:
+				estimate.VelocityTrend = "steady"
+			default:
+				estimate.VelocityTrend = "flat"
+			}
+		}
+	}
 }
 
 // SetAgentType updates the agent type for a monitored agent.
@@ -392,6 +458,8 @@ func (m *ContextMonitor) RecordMessage(agentID string, inputTokens, outputTokens
 	state.cumulativeInputTokens += inputTokens
 	state.cumulativeOutputTokens += outputTokens
 	state.LastActivity = time.Now()
+	estimated := int64(float64(state.cumulativeInputTokens+state.cumulativeOutputTokens) * 0.7)
+	recordPredictorSampleLocked(state, estimated)
 }
 
 // UpdateFromRobotMode updates context estimate from robot mode output.
@@ -407,6 +475,7 @@ func (m *ContextMonitor) UpdateFromRobotMode(agentID, output string) {
 	if estimate := ParseRobotModeContext(output); estimate != nil {
 		estimate.Model = state.Model
 		state.Estimate = estimate
+		recordPredictorSampleLocked(state, estimate.TokensUsed)
 	}
 }
 
@@ -415,27 +484,7 @@ func (m *ContextMonitor) UpdateFromRobotMode(agentID, output string) {
 func (m *ContextMonitor) GetEstimate(agentID string) *ContextEstimate {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	state := m.states[agentID]
-
-	if state == nil {
-		return nil
-	}
-
-	// If we have a recent robot mode estimate, use it
-	if state.Estimate != nil && time.Since(state.Estimate.UpdatedAt) < 30*time.Second {
-		return state.Estimate
-	}
-
-	// Try estimators in order (already sorted by confidence)
-	for _, estimator := range m.estimators {
-		estimate, err := estimator.Estimate(state)
-		if err == nil && estimate != nil {
-			return estimate
-		}
-	}
-
-	// No estimate available
-	return nil
+	return m.getEstimateLocked(m.states[agentID])
 }
 
 // AgentsAboveThreshold returns agents above the given usage percentage.
@@ -478,16 +527,23 @@ func (m *ContextMonitor) AgentsAboveThreshold(threshold float64) []AgentContextI
 
 // getEstimateLocked computes estimate without taking locks (caller must hold lock).
 func (m *ContextMonitor) getEstimateLocked(state *ContextState) *ContextEstimate {
-	// If we have a recent robot mode estimate, use it
-	if state.Estimate != nil && time.Since(state.Estimate.UpdatedAt) < 30*time.Second {
-		return state.Estimate
+	if state == nil {
+		return nil
 	}
 
-	// Try estimators in order
+	// Try estimators in order (already sorted by confidence)
 	for _, estimator := range m.estimators {
 		estimate, err := estimator.Estimate(state)
 		if err == nil && estimate != nil {
-			return estimate
+			copied := *estimate
+			if copied.Method == "" {
+				copied.Method = EstimationMethod(estimator.Name())
+			}
+			if copied.Confidence <= 0 {
+				copied.Confidence = estimator.Confidence()
+			}
+			enrichEstimateWithPredictor(&copied, state.predictor)
+			return &copied
 		}
 	}
 
@@ -520,13 +576,6 @@ func (m *ContextMonitor) GetAllEstimates() map[string]*ContextEstimate {
 	return result
 }
 
-// Clear removes all agents from monitoring.
-func (m *ContextMonitor) Clear() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.states = make(map[string]*ContextState)
-}
-
 // Count returns the number of monitored agents.
 func (m *ContextMonitor) Count() int {
 	m.mu.RLock()
@@ -545,6 +594,9 @@ func (m *ContextMonitor) ResetAgent(agentID string) {
 		state.cumulativeOutputTokens = 0
 		state.SessionStart = time.Now()
 		state.Estimate = nil
+		if state.predictor != nil {
+			state.predictor.Reset()
+		}
 	}
 }
 
@@ -564,6 +616,7 @@ func (m *ContextMonitor) RegisterAgentWithTranscript(agentID, paneID, model, age
 			SessionName:    sessionName,
 			TranscriptPath: transcriptPath,
 			SessionStart:   time.Now(),
+			predictor:      NewContextPredictor(DefaultPredictorConfig()),
 		}
 		m.states[agentID] = state
 	} else {
@@ -573,6 +626,9 @@ func (m *ContextMonitor) RegisterAgentWithTranscript(agentID, paneID, model, age
 		state.AgentType = agentType
 		state.SessionName = sessionName
 		state.TranscriptPath = transcriptPath
+		if state.predictor == nil {
+			state.predictor = NewContextPredictor(DefaultPredictorConfig())
+		}
 	}
 
 	return state
@@ -611,6 +667,8 @@ func (m *ContextMonitor) UpdateFromTranscript(agentID string) (int64, error) {
 		state.cumulativeInputTokens = estimatedTokens / 2
 		state.cumulativeOutputTokens = estimatedTokens / 2
 		state.LastActivity = time.Now()
+		discounted := int64(float64(state.cumulativeInputTokens+state.cumulativeOutputTokens) * 0.7)
+		recordPredictorSampleLocked(state, discounted)
 	}
 	m.mu.Unlock()
 
@@ -657,12 +715,20 @@ func (m *ContextMonitor) ShouldTriggerHandoff(agentID string, predictor *Context
 		rec.Reason = "usage " + strconv.FormatFloat(estimate.UsagePercent, 'f', 1, 64) + "% exceeds " + strconv.FormatFloat(m.warningThreshold, 'f', 1, 64) + "% warning threshold"
 	}
 
+	implicitPredictor := false
+	if predictor == nil {
+		if state := m.GetState(agentID); state != nil {
+			predictor = state.predictor
+			implicitPredictor = true
+		}
+	}
+
 	// Velocity-based prediction (if predictor available)
 	if predictor != nil {
 		state := m.GetState(agentID)
 		if state != nil {
 			prediction := predictor.PredictExhaustion(GetContextLimit(state.Model))
-			if prediction != nil {
+			if prediction != nil && (!implicitPredictor || prediction.WindowDuration >= 1.0/60.0) {
 				rec.TokenVelocity = prediction.TokenVelocity
 
 				// If velocity predicts exhaustion in next 8 minutes, trigger
