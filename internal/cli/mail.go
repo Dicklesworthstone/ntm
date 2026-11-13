@@ -26,11 +26,11 @@ import (
 func newMailCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mail",
-		Short: "Human Overseer messaging to agents",
-		Long: `Send Human Overseer messages to AI agents via Agent Mail.
+		Short: "Agent Mail messaging, session bootstrap, and thread coordination",
+		Long: `Send Human Overseer messages and coordinate agents via Agent Mail.
 
-This command provides the CLI interface for the Human Overseer functionality
-in Agent Mail. Messages sent this way:
+The send subcommand provides the Human Overseer interface. Messages sent with
+mail send:
   - Come from the special "HumanOverseer" identity
   - Bypass contact policies (humans can always reach agents)
   - Auto-inject a preamble telling agents to prioritize your instructions
@@ -40,15 +40,442 @@ This is the CLI equivalent of the Agent Mail web UI at /mail/{project}/overseer/
 
 Examples:
   ntm mail send myproject --to GreenCastle "Please review the API changes"
-  ntm mail send myproject --all "Checkpoint: sync and report status"`,
+  ntm mail send myproject --all "Checkpoint: sync and report status"
+  ntm mail session-start myproject --program codex --model gpt-5 --json
+  ntm mail prepare-thread myproject --agent GreenCastle --thread FEAT-123
+  ntm mail handshake myproject --agent GreenCastle --to BlueLake`,
 	}
 
 	cmd.AddCommand(newMailSendCmd())
 	cmd.AddCommand(newMailInboxCmdReal())
 	cmd.AddCommand(newMailReadCmd())
 	cmd.AddCommand(newMailAckCmd())
+	cmd.AddCommand(newMailMacroCmd("session-start"))
+	cmd.AddCommand(newMailMacroCmd("prepare-thread"))
+	cmd.AddCommand(newMailMacroCmd("handshake"))
 
 	return cmd
+}
+
+type mailMacroOptions struct {
+	Program           string
+	Model             string
+	Task              string
+	Agent             string
+	Thread            string
+	Limit             int
+	IncludeExamples   bool
+	IncludeBodies     bool
+	LLM               bool
+	LLMModel          string
+	RegisterIfMissing bool
+	To                string
+	ToProject         string
+	Reason            string
+	AutoAccept        bool
+	WelcomeSubject    string
+	WelcomeBody       string
+	TTLSeconds        int
+}
+
+type mailMacroOutput struct {
+	Success       bool              `json:"success"`
+	Timestamp     string            `json:"timestamp"`
+	Action        string            `json:"action"`
+	Session       string            `json:"session,omitempty"`
+	ProjectKey    string            `json:"project_key,omitempty"`
+	Agent         string            `json:"agent,omitempty"`
+	IdentitySaved bool              `json:"identity_saved,omitempty"`
+	Redaction     *RedactionSummary `json:"redaction,omitempty"`
+	Result        interface{}       `json:"result,omitempty"`
+	Error         string            `json:"error,omitempty"`
+	ErrorCode     string            `json:"error_code,omitempty"`
+}
+
+// These explicit macros have their own identity lifecycle. They must not be
+// substituted into spawn's per-pane bootstrap, which already owns pane bindings.
+func newMailMacroCmd(action string) *cobra.Command {
+	opts := mailMacroOptions{}
+	cmd := &cobra.Command{
+		Use: action + " <session>",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			defer resetMailMacroFlags(cmd)
+			result := mailMacroOutput{Timestamp: time.Now().UTC().Format(time.RFC3339), Action: action}
+			if len(args) != 1 {
+				return renderMailMacroFailure(cmd, result, "INVALID_ARGUMENT", fmt.Errorf("%s requires exactly one session", cmd.CommandPath()))
+			}
+			result.Session = strings.TrimSpace(args[0])
+			if err := validateMailMacroOptions(action, result.Session, opts); err != nil {
+				return renderMailMacroFailure(cmd, result, "INVALID_FLAG", err)
+			}
+			return runMailMacro(cmd, result, opts)
+		},
+	}
+	cmd.Flags().StringVar(&opts.Program, "program", "ntm", "Program registering or continuing the agent identity")
+	cmd.Flags().StringVar(&opts.Model, "model", "coordinator", "Model name recorded for the agent identity")
+	cmd.Flags().StringVar(&opts.Task, "task", "", "Current task description")
+
+	switch action {
+	case "session-start":
+		cmd.Short = "Bootstrap an Agent Mail project and new agent in one call"
+		cmd.Long = `Ensure the session's project, register a new Agent Mail identity, and fetch
+its inbox through macro_start_session. The returned identity and registration
+credential are saved locally for later mail commands; credentials are never
+printed. Existing tmux pane bindings and the session's existing default identity
+are preserved. Use the returned agent name with --agent to select this identity.`
+	case "prepare-thread":
+		cmd.Short = "Load an Agent Mail thread summary and inbox for an agent"
+		cmd.Long = `Prepare an existing thread through macro_prepare_thread. Reuses --agent,
+the session identity, or AGENT_NAME. Creating an identity requires the explicit
+--register-if-missing flag. LLM summarization is opt-in with --llm; the default
+uses a deterministic summary. Returned credentials are saved locally.`
+		cmd.Flags().StringVar(&opts.Agent, "agent", "", "Agent identity (defaults to the session identity or AGENT_NAME)")
+		cmd.Flags().StringVar(&opts.Thread, "thread", "", "Thread ID to continue (required)")
+		cmd.Flags().IntVar(&opts.Limit, "limit", 10, "Maximum inbox messages (1-1000)")
+		cmd.Flags().BoolVar(&opts.IncludeExamples, "examples", true, "Include example messages from the thread")
+		cmd.Flags().BoolVar(&opts.IncludeBodies, "include-bodies", false, "Include full inbox message bodies")
+		cmd.Flags().BoolVar(&opts.LLM, "llm", false, "Use the server's LLM summarizer")
+		cmd.Flags().StringVar(&opts.LLMModel, "llm-model", "", "Summarizer model override (requires --llm)")
+		cmd.Flags().BoolVar(&opts.RegisterIfMissing, "register-if-missing", false, "Allow the macro to register an identity if missing")
+	case "handshake":
+		cmd.Short = "Request contact with another Agent Mail agent"
+		cmd.Long = `Request contact through macro_contact_handshake using an existing agent
+identity. --to names the target agent; --to-project selects another project.
+Automatic approval and a welcome message happen only when explicitly requested
+with --auto-accept and the --welcome-subject/--welcome-body pair. The server
+enforces contact authorization; a rejected or unavailable macro is an error.
+Create and save an identity with session-start or prepare-thread before using
+handshake, whose server response does not include registration credentials.`
+		cmd.Flags().StringVar(&opts.Agent, "agent", "", "Requesting identity (defaults to the session identity or AGENT_NAME)")
+		cmd.Flags().StringVar(&opts.To, "to", "", "Target agent name (required)")
+		cmd.Flags().StringVar(&opts.ToProject, "to-project", "", "Target project's absolute path (defaults to the current project)")
+		cmd.Flags().StringVar(&opts.Reason, "reason", "", "Reason for requesting contact")
+		cmd.Flags().BoolVar(&opts.AutoAccept, "auto-accept", false, "Request approval on the target's behalf (requires server authorization)")
+		cmd.Flags().StringVar(&opts.WelcomeSubject, "welcome-subject", "", "Optional welcome message subject (requires --welcome-body)")
+		cmd.Flags().StringVar(&opts.WelcomeBody, "welcome-body", "", "Optional welcome message body (requires --welcome-subject)")
+		cmd.Flags().IntVar(&opts.TTLSeconds, "ttl", 3600, "Contact approval lifetime in seconds (must be positive)")
+	}
+	return cmd
+}
+
+func resetMailMacroFlags(cmd *cobra.Command) {
+	// Cobra commands can be reused. In particular, a prior auto-accept or welcome
+	// message must never leak into a later invocation that omitted those flags.
+	for _, name := range []string{"program", "model", "task", "agent", "thread", "limit", "examples", "include-bodies", "llm", "llm-model", "register-if-missing", "to", "to-project", "reason", "auto-accept", "welcome-subject", "welcome-body", "ttl"} {
+		if flag := cmd.Flags().Lookup(name); flag != nil {
+			_ = flag.Value.Set(flag.DefValue)
+			flag.Changed = false
+		}
+	}
+}
+
+func validateMailMacroOptions(action, session string, opts mailMacroOptions) error {
+	if err := tmux.ValidateSessionName(session); err != nil {
+		return err
+	}
+	for _, field := range []struct{ name, value string }{
+		{"program", opts.Program}, {"model", opts.Model},
+	} {
+		if strings.TrimSpace(field.value) == "" || !utf8.ValidString(field.value) || strings.IndexFunc(field.value, unicode.IsControl) >= 0 {
+			return fmt.Errorf("--%s must be non-empty UTF-8 text without control characters", field.name)
+		}
+	}
+	for _, field := range []struct{ name, value string }{
+		{"agent", opts.Agent}, {"thread", opts.Thread}, {"to", opts.To}, {"to-project", opts.ToProject},
+		{"llm-model", opts.LLMModel}, {"reason", opts.Reason}, {"welcome-subject", opts.WelcomeSubject},
+	} {
+		if !utf8.ValidString(field.value) || strings.IndexFunc(field.value, unicode.IsControl) >= 0 {
+			return fmt.Errorf("--%s must be UTF-8 text without control characters", field.name)
+		}
+	}
+	if !utf8.ValidString(opts.Task) || !utf8.ValidString(opts.WelcomeBody) {
+		return errors.New("--task and --welcome-body must be valid UTF-8")
+	}
+	if strings.EqualFold(strings.TrimSpace(opts.Agent), agentmail.HumanOverseerAgentName) {
+		return errors.New("HumanOverseer is server-managed; use ntm mail send for human interventions")
+	}
+	if opts.Agent != "" && strings.TrimSpace(opts.Agent) == "" {
+		return errors.New("--agent cannot be blank")
+	}
+	switch action {
+	case "prepare-thread":
+		if strings.TrimSpace(opts.Thread) == "" {
+			return errors.New("--thread is required")
+		}
+		if opts.Limit < 1 || opts.Limit > 1000 {
+			return errors.New("--limit must be between 1 and 1000")
+		}
+		if opts.LLMModel != "" && !opts.LLM {
+			return errors.New("--llm-model requires --llm")
+		}
+	case "handshake":
+		if strings.TrimSpace(opts.To) == "" {
+			return errors.New("--to is required")
+		}
+		if opts.ToProject != "" && !filepath.IsAbs(opts.ToProject) {
+			return errors.New("--to-project must be an absolute project path")
+		}
+		if opts.TTLSeconds <= 0 {
+			return errors.New("--ttl must be positive")
+		}
+		if (strings.TrimSpace(opts.WelcomeSubject) == "") != (strings.TrimSpace(opts.WelcomeBody) == "") {
+			return errors.New("--welcome-subject and --welcome-body must be provided together")
+		}
+	}
+	return nil
+}
+
+func runMailMacro(cmd *cobra.Command, out mailMacroOutput, opts mailMacroOptions) error {
+	parent, err := requireMailCommandContext(cmd, "mail "+out.Action)
+	if err != nil {
+		return renderMailMacroFailure(cmd, out, "INVALID_REQUEST", err)
+	}
+	// Scan all free-form content before invoking a macro: contact creation and
+	// welcome delivery are one request, so a blocked message cannot be checked
+	// after the contact mutation has already happened.
+	redactCfg := redaction.DefaultConfig()
+	if cfg != nil {
+		redactCfg = cfg.Redaction.ToRedactionLibConfig()
+	}
+	for _, field := range []struct {
+		name  string
+		value *string
+	}{
+		{"task", &opts.Task}, {"reason", &opts.Reason},
+		{"welcome-subject", &opts.WelcomeSubject}, {"welcome-body", &opts.WelcomeBody},
+	} {
+		value, summary, redactErr := applyOutputRedaction(*field.value, redactCfg)
+		if summary != nil {
+			if out.Redaction == nil {
+				out.Redaction = &RedactionSummary{Mode: summary.Mode, Action: summary.Action, Categories: make(map[string]int)}
+			}
+			out.Redaction.Findings += summary.Findings
+			for category, count := range summary.Categories {
+				out.Redaction.Categories[category] += count
+			}
+		}
+		if redactErr != nil {
+			return renderMailMacroFailure(cmd, out, "SENSITIVE_DATA_BLOCKED", fmt.Errorf("--%s: %w", field.name, redactErr))
+		}
+		*field.value = value
+	}
+	if out.Redaction != nil && !IsJSONOutput() {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Agent Mail redaction: %d potential secret(s), action=%s (mode=%s)\n", out.Redaction.Findings, out.Redaction.Action, out.Redaction.Mode)
+	}
+	session, projectKey, err := resolveAgentMailCommandScope(parent, out.Session)
+	if err != nil {
+		return renderMailMacroFailure(cmd, out, "SCOPE_FAILED", err)
+	}
+	out.Session, out.ProjectKey = session, projectKey
+	client := newAgentMailClient(projectKey)
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+
+	if out.Action != "session-start" {
+		opts.Agent = strings.TrimSpace(opts.Agent)
+		if opts.Agent == "" {
+			opts.Agent, err = resolveMailAgentIdentity(ctx, session, "")
+			if err != nil && !(out.Action == "prepare-thread" && opts.RegisterIfMissing && ctx.Err() == nil) {
+				return renderMailMacroFailure(cmd, out, "IDENTITY_REQUIRED", err)
+			}
+		}
+		if strings.EqualFold(opts.Agent, agentmail.HumanOverseerAgentName) {
+			return renderMailMacroFailure(cmd, out, "INVALID_FLAG", errors.New("HumanOverseer is server-managed; use ntm mail send for human interventions"))
+		}
+		if !utf8.ValidString(opts.Agent) || strings.IndexFunc(opts.Agent, unicode.IsControl) >= 0 {
+			return renderMailMacroFailure(cmd, out, "INVALID_FLAG", errors.New("agent identity must be UTF-8 text without control characters"))
+		}
+	}
+
+	var agent *agentmail.Agent
+	switch out.Action {
+	case "session-start":
+		var result *agentmail.SessionStartResult
+		result, err = client.StartSession(ctx, projectKey, strings.TrimSpace(opts.Program), strings.TrimSpace(opts.Model), opts.Task)
+		if result != nil {
+			agent = result.Agent
+			if result.Inbox == nil {
+				result.Inbox = make([]agentmail.InboxMessage, 0)
+			}
+			if result.FileReservations != nil {
+				if result.FileReservations.Granted == nil {
+					result.FileReservations.Granted = make([]agentmail.FileReservation, 0)
+				}
+				if result.FileReservations.Conflicts == nil {
+					result.FileReservations.Conflicts = make([]agentmail.ReservationConflict, 0)
+				}
+			}
+			out.Result = result
+			if err == nil && (result.Project == nil || strings.TrimSpace(result.Project.HumanKey) == "" || !agentmail.ProjectKeysEquivalent(result.Project.HumanKey, projectKey)) {
+				err = errors.New("Agent Mail returned a missing or mismatched project for session bootstrap")
+			}
+		}
+	case "prepare-thread":
+		var result *agentmail.PrepareThreadResult
+		result, err = client.PrepareThread(ctx, agentmail.PrepareThreadOptions{
+			ProjectKey: projectKey, ThreadID: strings.TrimSpace(opts.Thread),
+			Program: strings.TrimSpace(opts.Program), Model: strings.TrimSpace(opts.Model),
+			AgentName: opts.Agent, TaskDescription: opts.Task, InboxLimit: opts.Limit,
+			IncludeExamples: &opts.IncludeExamples, IncludeInboxBodies: &opts.IncludeBodies,
+			LLMMode: &opts.LLM, LLMModel: opts.LLMModel, RegisterIfMissing: &opts.RegisterIfMissing,
+		})
+		if result != nil {
+			agent = result.Agent
+			if result.Inbox == nil {
+				result.Inbox = make([]agentmail.InboxMessage, 0)
+			}
+			out.Result = result
+			if err == nil && (result.Thread == nil || result.Thread.ThreadID != strings.TrimSpace(opts.Thread)) {
+				err = errors.New("Agent Mail returned a missing or mismatched thread summary")
+			}
+			if err == nil && (result.Project == nil || strings.TrimSpace(result.Project.HumanKey) == "" || !agentmail.ProjectKeysEquivalent(result.Project.HumanKey, projectKey)) {
+				err = errors.New("Agent Mail returned a missing or mismatched project for thread preparation")
+			}
+			if result.Thread != nil {
+				if result.Thread.Summary.Participants == nil {
+					result.Thread.Summary.Participants = make([]string, 0)
+				}
+				if result.Thread.Summary.KeyPoints == nil {
+					result.Thread.Summary.KeyPoints = make([]string, 0)
+				}
+				if result.Thread.Summary.ActionItems == nil {
+					result.Thread.Summary.ActionItems = make([]string, 0)
+				}
+			}
+		}
+	case "handshake":
+		var result *agentmail.ContactHandshakeResult
+		result, err = client.ContactHandshake(ctx, agentmail.ContactHandshakeOptions{
+			ProjectKey: projectKey, AgentName: opts.Agent, ToAgent: strings.TrimSpace(opts.To),
+			ToProject: opts.ToProject, Reason: opts.Reason,
+			Program: strings.TrimSpace(opts.Program), Model: strings.TrimSpace(opts.Model),
+			TaskDescription: opts.Task, RegisterIfMissing: false, AutoAccept: opts.AutoAccept,
+			WelcomeSubject: opts.WelcomeSubject, WelcomeBody: opts.WelcomeBody, TTLSeconds: opts.TTLSeconds,
+		})
+		if result != nil {
+			out.Agent = opts.Agent
+			out.Result = result
+			if err == nil {
+				if result.Request == nil || result.Request.FromAgent != opts.Agent || result.Request.ToAgent != strings.TrimSpace(opts.To) {
+					err = errors.New("Agent Mail returned a missing or mismatched contact request")
+				} else {
+					switch result.Request.Status {
+					case "approved", "pending":
+					case "denied", "blocked":
+						err = fmt.Errorf("%w: contact status %s", agentmail.ErrContactBlocked, result.Request.Status)
+					default:
+						err = errors.New("Agent Mail returned no recognized contact status")
+					}
+				}
+				if err == nil && opts.AutoAccept && (result.Response == nil || !result.Response.Approved || result.Response.From != opts.Agent || result.Response.To != strings.TrimSpace(opts.To)) {
+					err = errors.New("contact request recorded but requested approval was not confirmed for these agents")
+				}
+				if err == nil && opts.WelcomeBody != "" && (result.WelcomeMsg == nil || result.WelcomeMsg.Count == 0) {
+					err = fmt.Errorf("contact request recorded but welcome message was not sent: %s", result.WelcomeSkippedReason)
+				}
+			}
+		}
+	}
+
+	// Credentials are retained only for the private registry, never the output
+	// envelope (including a partial result when validation or persistence fails).
+	var token string
+	if agent != nil {
+		token, agent.RegistrationToken = agent.RegistrationToken, ""
+		out.Agent = agent.Name
+	}
+	if err != nil {
+		return renderMailMacroFailure(cmd, out, mailMacroErrorCode(err), err)
+	}
+	if out.Action != "handshake" {
+		if agent == nil || strings.TrimSpace(agent.Name) == "" || !utf8.ValidString(agent.Name) || strings.IndexFunc(agent.Name, unicode.IsControl) >= 0 {
+			return renderMailMacroFailure(cmd, out, "INVALID_RESPONSE", errors.New("Agent Mail returned no valid agent identity"))
+		}
+		if strings.EqualFold(strings.TrimSpace(agent.Name), agentmail.HumanOverseerAgentName) {
+			return renderMailMacroFailure(cmd, out, "INVALID_RESPONSE", errors.New("Agent Mail returned the reserved HumanOverseer identity"))
+		}
+		if opts.Agent != "" && agent.Name != opts.Agent {
+			return renderMailMacroFailure(cmd, out, "INVALID_RESPONSE", errors.New("Agent Mail returned a different agent identity than requested"))
+		}
+		if err := persistMailMacroIdentity(session, projectKey, client, agent.Name, token); err != nil {
+			return renderMailMacroFailure(cmd, out, "IDENTITY_SAVE_FAILED", fmt.Errorf("macro completed for %s but saving its identity failed: %w", agent.Name, err))
+		}
+		out.IdentitySaved = true
+	} else if out.Result == nil {
+		return renderMailMacroFailure(cmd, out, "INVALID_RESPONSE", errors.New("Agent Mail returned no contact request result"))
+	}
+	out.Success = true
+	if IsJSONOutput() {
+		return encodeJSONResult(mailJSONWriter(cmd), out)
+	}
+	w := cmd.OutOrStdout()
+	if _, err := fmt.Fprintf(w, "Agent Mail %s completed for %s\nProject: %s\n", out.Action, sanitizeMailDisplayField(out.Agent), sanitizeMailDisplayField(projectKey)); err != nil {
+		return err
+	}
+	// The structured result includes the thread summary and inbox, so text mode
+	// does not discard the very context these macros retrieve.
+	return encodeJSONResult(w, out.Result)
+}
+
+func persistMailMacroIdentity(session, projectKey string, client *agentmail.Client, name, token string) error {
+	if token == "" {
+		token = client.RegistrationToken(projectKey, name)
+	}
+	registry, err := agentmail.LoadSessionAgentRegistry(session, projectKey)
+	if err != nil {
+		return err
+	}
+	if registry == nil {
+		registry = agentmail.NewSessionAgentRegistry(session, projectKey)
+	}
+	if token != "" {
+		registry.SetRegistrationToken(name, token)
+		if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+			return err
+		}
+	}
+
+	info, err := agentmail.LoadSessionAgent(session, projectKey)
+	if err != nil {
+		return err
+	}
+	if info != nil && info.AgentName != "" && info.AgentName != name {
+		return nil // A macro must not steal an existing session coordinator's identity.
+	}
+	now := time.Now().UTC()
+	if info == nil {
+		info = &agentmail.SessionAgentInfo{AgentName: name, ProjectKey: projectKey, RegisteredAt: now}
+	}
+	info.AgentName, info.ProjectKey, info.LastActiveAt = name, projectKey, now
+	if token != "" {
+		info.RegistrationToken = token
+	}
+	return agentmail.SaveSessionAgent(session, projectKey, info)
+}
+
+func mailMacroErrorCode(err error) string {
+	switch {
+	case errors.Is(err, agentmail.ErrNotImplemented):
+		return "NOT_IMPLEMENTED"
+	case errors.Is(err, agentmail.ErrUnauthorized):
+		return "UNAUTHORIZED"
+	case errors.Is(err, agentmail.ErrContactBlocked):
+		return "CONTACT_BLOCKED"
+	case errors.Is(err, context.Canceled):
+		return "CANCELED"
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, agentmail.ErrTimeout):
+		return "TIMEOUT"
+	default:
+		return "MAIL_MACRO_FAILED"
+	}
+}
+
+func renderMailMacroFailure(cmd *cobra.Command, out mailMacroOutput, code string, cause error) error {
+	out.Success, out.ErrorCode, out.Error = false, code, cause.Error()
+	if IsJSONOutput() {
+		return emitJSONFailureEnvelopeToWithCause(mailJSONWriter(cmd), out, cause)
+	}
+	return cause
 }
 
 func newMailSendCmd() *cobra.Command {

@@ -220,44 +220,82 @@ func TestContactToolsAttachCorrectRegistrationToken(t *testing.T) {
 	}
 }
 
-func TestContactHandshakeAttachesRequesterAndTargetTokens(t *testing.T) {
+func TestContactHandshakeAttachesSenderTokenForWelcome(t *testing.T) {
 	t.Parallel()
 
-	var requesterToken atomic.Value // string
-	var targetToken atomic.Value    // string
+	var senderToken atomic.Value // string
 	server := httptest.NewServer(mockMCPHandler(t, map[string]func(args map[string]interface{}) (interface{}, *JSONRPCError){
 		"macro_contact_handshake": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
-			req, _ := args["requester_registration_token"].(string)
-			tgt, _ := args["target_registration_token"].(string)
-			requesterToken.Store(req)
-			targetToken.Store(tgt)
-			return ContactHandshakeResult{ContactStatus: "approved"}, nil
+			token, _ := args["sender_token"].(string)
+			senderToken.Store(token)
+			for _, obsolete := range []string{"requester_registration_token", "target_registration_token"} {
+				if _, exists := args[obsolete]; exists {
+					t.Errorf("handshake sent unsupported credential argument %s", obsolete)
+				}
+			}
+			if args["register_if_missing"] != false {
+				t.Error("contact request implicitly enabled identity creation")
+			}
+			return map[string]interface{}{
+				"request": map[string]interface{}{"from_agent": "GreenCastle", "to_agent": "BlueLake", "status": "approved"},
+			}, nil
 		},
 	}))
 	defer server.Close()
 
 	c := NewClient(WithBaseURL(server.URL + "/"))
 	c.SetRegistrationToken("/abs/project", "GreenCastle", "TOK-REQUESTER")
-	c.SetRegistrationToken("/abs/project", "BlueLake", "TOK-TARGET")
+	c.SetRegistrationToken("/abs/project", "BlueLake", "UNRELATED-SAME-NAME-TOKEN")
+	c.SetRegistrationToken("/other/project", "BlueLake", "TOK-TARGET")
 
 	if _, err := c.ContactHandshake(context.Background(), ContactHandshakeOptions{
-		ProjectKey: "/abs/project",
-		AgentName:  "GreenCastle",
-		ToAgent:    "BlueLake",
-		AutoAccept: true,
-		TTLSeconds: 3600,
-		Reason:     "test",
-		Program:    "codex",
-		Model:      "gpt-5",
+		ProjectKey:     "/abs/project",
+		AgentName:      "GreenCastle",
+		ToAgent:        "BlueLake",
+		ToProject:      "/other/project",
+		AutoAccept:     true,
+		TTLSeconds:     3600,
+		Reason:         "test",
+		Program:        "codex",
+		Model:          "gpt-5",
+		WelcomeSubject: "Hello",
+		WelcomeBody:    "Let us coordinate",
 	}); err != nil {
 		t.Fatalf("macro_contact_handshake failed: %v", err)
 	}
 
-	if got, _ := requesterToken.Load().(string); got != "TOK-REQUESTER" {
-		t.Errorf("requester_registration_token = %q, want TOK-REQUESTER", got)
+	if got, _ := senderToken.Load().(string); got != "TOK-REQUESTER" {
+		t.Errorf("sender_token = %q, want TOK-REQUESTER", got)
 	}
-	if got, _ := targetToken.Load().(string); got != "TOK-TARGET" {
-		t.Errorf("target_registration_token = %q, want TOK-TARGET", got)
+}
+
+func TestPrepareThreadAuthenticatesAndRetainsRegistrationProof(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(mockMCPHandler(t, map[string]func(args map[string]interface{}) (interface{}, *JSONRPCError){
+		"macro_prepare_thread": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+			if args["registration_proof"] != "CURRENT-TOKEN" {
+				t.Errorf("registration_proof = %v, want current credential", args["registration_proof"])
+			}
+			if _, present := args["registration_token"]; present {
+				t.Error("macro sent registration_token instead of registration_proof")
+			}
+			return map[string]interface{}{
+				"agent":  map[string]interface{}{"name": "GreenCastle", "registration_token": "RETURNED-TOKEN"},
+				"thread": map[string]interface{}{"thread_id": "FEAT-123", "summary": map[string]interface{}{}},
+				"inbox":  []interface{}{},
+			}, nil
+		},
+	}))
+	defer server.Close()
+	c := NewClient(WithBaseURL(server.URL + "/"))
+	c.SetRegistrationToken("/abs/project", "GreenCastle", "CURRENT-TOKEN")
+	if _, err := c.PrepareThread(context.Background(), PrepareThreadOptions{
+		ProjectKey: "/abs/project", AgentName: "GreenCastle", ThreadID: "FEAT-123", Program: "codex", Model: "gpt-5",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.RegistrationToken("/abs/project", "GreenCastle"); got != "RETURNED-TOKEN" {
+		t.Errorf("returned identity credential was discarded: %q", got)
 	}
 }
 
