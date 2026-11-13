@@ -2,18 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import {
-  apiRequestSignal,
-  getAuthHeaders,
-  getBaseUrl,
-  handleUnauthorizedRedirect,
-} from "@/lib/api/client";
-
-interface ApiEnvelope {
-  success?: boolean;
-  error?: string;
-  message?: string;
-}
+import { apiFetch } from "@/lib/api/client";
 
 // Types based on REST API
 interface SessionMetrics {
@@ -44,44 +33,6 @@ interface Reservation {
   reason?: string;
   expires_ts: string;
   created_ts?: string;
-}
-
-async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${getBaseUrl()}${url}`, {
-    ...options,
-    signal: options?.signal ?? apiRequestSignal(),
-    headers: {
-      "Content-Type": "application/json",
-      ...getAuthHeaders(),
-      ...options?.headers,
-    },
-  });
-
-  if (res.status === 401) {
-    handleUnauthorizedRedirect();
-  }
-
-  const raw = await res.text();
-  let data: unknown = null;
-  if (raw) {
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      throw new Error("Invalid response from server.");
-    }
-  }
-
-  const envelope = data as ApiEnvelope | null;
-  if (!res.ok || envelope?.success === false) {
-    throw new Error(
-      envelope?.error ||
-        envelope?.message ||
-        res.statusText ||
-        `Request failed (${res.status})`
-    );
-  }
-
-  return ((data as { data?: T } | null)?.data ?? data) as T;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -250,7 +201,7 @@ export default function AnalyticsPage() {
     error: sessionsError,
   } = useQuery({
     queryKey: ["sessions"],
-    queryFn: () => fetchJSON<SessionsResponse>("/api/v1/sessions"),
+    queryFn: () => apiFetch<SessionsResponse>("/api/v1/sessions"),
     refetchInterval: 30000,
   });
 
@@ -261,7 +212,7 @@ export default function AnalyticsPage() {
     error: reservationsError,
   } = useQuery({
     queryKey: ["reservations"],
-    queryFn: () => fetchJSON<{ reservations: Reservation[] }>("/api/v1/reservations"),
+    queryFn: () => apiFetch<{ reservations: Reservation[] }>("/api/v1/reservations"),
     refetchInterval: 15000,
   });
 

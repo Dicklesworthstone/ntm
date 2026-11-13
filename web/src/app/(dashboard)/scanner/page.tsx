@@ -2,12 +2,7 @@
 
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import {
-  apiRequestSignal,
-  getAuthHeaders,
-  getBaseUrl,
-  handleUnauthorizedRedirect,
-} from '@/lib/api/client';
+import { apiFetch } from '@/lib/api/client';
 
 // Types based on scanner.go REST API
 interface ScanOptions {
@@ -84,50 +79,6 @@ interface BugSummary {
   by_file: Record<string, number>;
   dismissed_count: number;
   linked_beads: number;
-}
-
-interface ApiEnvelope {
-  success?: boolean;
-  error?: string;
-  message?: string;
-}
-
-async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${getBaseUrl()}${url}`, {
-    ...options,
-    signal: options?.signal ?? apiRequestSignal(),
-    headers: {
-      'Content-Type': 'application/json',
-      ...getAuthHeaders(),
-      ...options?.headers,
-    },
-  });
-
-  if (res.status === 401) {
-    handleUnauthorizedRedirect();
-  }
-
-  const raw = await res.text();
-  let data: unknown = null;
-  if (raw) {
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      throw new Error('Invalid response from server.');
-    }
-  }
-
-  const envelope = data as ApiEnvelope | null;
-  if (!res.ok || envelope?.success === false) {
-    throw new Error(
-      envelope?.error ||
-        envelope?.message ||
-        res.statusText ||
-        `Request failed (${res.status})`
-    );
-  }
-
-  return ((data as { data?: T } | null)?.data ?? data) as T;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -308,14 +259,14 @@ export default function ScannerPage() {
   // Scanner status
   const { data: status, error: statusError } = useQuery({
     queryKey: ['scanner', 'status'],
-    queryFn: () => fetchJSON<ScannerStatus>('/api/v1/scanner/status'),
+    queryFn: () => apiFetch<ScannerStatus>('/api/v1/scanner/status'),
     refetchInterval: 5000, // Poll while scan might be running
   });
 
   // Bug summary
   const { data: summary, error: summaryError } = useQuery({
     queryKey: ['bugs', 'summary'],
-    queryFn: () => fetchJSON<BugSummary>('/api/v1/bugs/summary'),
+    queryFn: () => apiFetch<BugSummary>('/api/v1/bugs/summary'),
     refetchInterval: 10000,
   });
 
@@ -327,7 +278,7 @@ export default function ScannerPage() {
   } = useQuery({
     queryKey: ['scanner', 'findings', severityFilter, showDismissed],
     queryFn: () =>
-      fetchJSON<{ findings: FindingRecord[]; count: number }>(
+      apiFetch<{ findings: FindingRecord[]; count: number }>(
         `/api/v1/scanner/findings?severity=${encodeURIComponent(severityFilter)}&include_dismissed=${encodeURIComponent(String(showDismissed))}&limit=100`
       ),
     refetchInterval: 10000,
@@ -336,13 +287,13 @@ export default function ScannerPage() {
   // Scan history
   const { data: historyData, error: historyError } = useQuery({
     queryKey: ['scanner', 'history'],
-    queryFn: () => fetchJSON<{ scans: ScanRecord[] }>('/api/v1/scanner/history?limit=10'),
+    queryFn: () => apiFetch<{ scans: ScanRecord[] }>('/api/v1/scanner/history?limit=10'),
     refetchInterval: 10000,
   });
 
   // Run scan mutation
   const runScanMutation = useMutation({
-    mutationFn: (options: ScanOptions) => fetchJSON<{ scan_id: string }>('/api/v1/scanner/run', {
+    mutationFn: (options: ScanOptions) => apiFetch<{ scan_id: string }>('/api/v1/scanner/run', {
       method: 'POST',
       body: JSON.stringify(options),
     }),
@@ -357,7 +308,7 @@ export default function ScannerPage() {
   // Dismiss finding mutation
   const dismissMutation = useMutation({
     mutationFn: (findingId: string) =>
-      fetchJSON(`/api/v1/scanner/findings/${encodeURIComponent(findingId)}/dismiss`, {
+      apiFetch(`/api/v1/scanner/findings/${encodeURIComponent(findingId)}/dismiss`, {
         method: 'POST',
       }),
     onSuccess: () => {
@@ -372,7 +323,7 @@ export default function ScannerPage() {
   // Create bead mutation
   const createBeadMutation = useMutation({
     mutationFn: (findingId: string) =>
-      fetchJSON<{ bead_id: string }>(
+      apiFetch<{ bead_id: string }>(
         `/api/v1/scanner/findings/${encodeURIComponent(findingId)}/create-bead`,
         {
           method: 'POST',
