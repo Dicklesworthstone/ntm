@@ -3,24 +3,20 @@
 > **Authoritative reference** for request identification and safe retry across robot surfaces.
 > All actuation commands MUST follow this contract.
 
-**Status:** DESIGN — PARTIALLY SHIPPED
+**Status:** SHIPPED
 **Bead:** bd-j9jo3.1.10
 **Created:** 2026-03-22
 
-> **Shipping status:** the shipped mechanism for request identity is the
-> durable idempotent operation, available on the two non-idempotent
-> actuations: `--robot-send ... --op-id=<ID>` and
+> **Shipping status:** shipped across CLI and REST. Durable idempotent
+> actuation is active on `--robot-send ... --op-id=<ID>` and
 > `--robot-interrupt ... --op-id=<ID>` (and their REST endpoints,
 > `POST /api/v1/sessions/{id}/agents/send|interrupt`, via the
-> `Idempotency-Key` header), plus `--robot-send-receipt=<ID>` for outcome
-> retrieval of either kind, and
-> `ntm --robot-causality --causality-chain=<ID>` for correlation queries.
-> Both actuations share one claim/replay/conflict protocol and one durable
-> store (§3.5). The `request_id`/`idempotency_key`/`correlation_id` field
-> family and the
-> `--robot-action-status`/`--robot-wait-request`/`--robot-cancel-request`
-> surfaces described below are design, not shipped; CLI examples in this
-> document use the shipped shapes.
+> `Idempotency-Key` header), `--robot-send-receipt=<ID>` retrieves send/interrupt
+> receipts, `--robot-action-status=<ID>`, `--robot-wait-request=<ID>`, and
+> `--robot-cancel-request=<ID>` (plus `GET /api/v1/requests/{id}`,
+> `POST /api/v1/requests/{id}/wait`, and `POST /api/v1/requests/{id}/cancel`)
+> provide generic request lifecycle inspection, wait, and cancellation, and
+> `ntm --robot-causality --causality-chain=<ID>` supports correlation queries.
 
 ---
 
