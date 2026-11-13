@@ -37,17 +37,27 @@ func main() {
 		os.Exit(2)
 	}
 
-	cfg := &packages.Config{Mode: packages.LoadAllSyntax | packages.NeedModule, Dir: *dir}
-	if *tags != "" {
-		cfg.BuildFlags = []string{"-tags=" + *tags}
-	}
-	initial, err := packages.Load(cfg, flag.Args()...)
+	lines, err := analyze(*dir, *tags, *filter, flag.Args()...)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "reflectdead: load:", err)
+		fmt.Fprintln(os.Stderr, "reflectdead:", err)
 		os.Exit(1)
+	}
+	for _, line := range lines {
+		fmt.Println(line)
+	}
+}
+
+func analyze(dir, tags, filter string, patterns ...string) ([]string, error) {
+	cfg := &packages.Config{Mode: packages.LoadAllSyntax | packages.NeedModule, Dir: dir}
+	if tags != "" {
+		cfg.BuildFlags = []string{"-tags=" + tags}
+	}
+	initial, err := packages.Load(cfg, patterns...)
+	if err != nil {
+		return nil, fmt.Errorf("load: %w", err)
 	}
 	if packages.PrintErrors(initial) > 0 {
-		os.Exit(1)
+		return nil, fmt.Errorf("package load errors in %v", patterns)
 	}
 	prog, pkgs := ssautil.AllPackages(initial, ssa.InstantiateGenerics)
 	prog.Build()
@@ -57,8 +67,7 @@ func main() {
 		roots = append(roots, p.Func("init"), p.Func("main"))
 	}
 	if len(roots) == 0 {
-		fmt.Fprintln(os.Stderr, "reflectdead: no main package in", flag.Args())
-		os.Exit(1)
+		return nil, fmt.Errorf("no main package in %v", patterns)
 	}
 	res := rta.Analyze(roots, true)
 
@@ -101,7 +110,7 @@ func main() {
 		if called[origin] || calledGeneric[origin] || origin.Synthetic != "" || origin.Pkg == nil {
 			continue
 		}
-		if !strings.HasPrefix(origin.Pkg.Pkg.Path(), *filter) {
+		if !strings.HasPrefix(origin.Pkg.Pkg.Path(), filter) {
 			continue
 		}
 		pos := prog.Fset.Position(origin.Pos())
@@ -122,9 +131,7 @@ func main() {
 		lines = append(lines, entry)
 	}
 	sort.Strings(lines)
-	for _, line := range lines {
-		fmt.Println(line)
-	}
+	return lines, nil
 }
 
 // funcName renders a function the way deadcode does: Func, or Recv.Method
