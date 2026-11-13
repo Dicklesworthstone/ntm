@@ -76,6 +76,7 @@ printf orphan > late-effect
 }
 
 func TestControlledPipelineEscapedStdinPreservesUnresolvedReceipt(t *testing.T) {
+	t.Setenv(ContainmentTierEnv, ContainmentTierProcPGID)
 	setsid, err := exec.LookPath("setsid")
 	if err != nil {
 		t.Skip("setsid is required for the escaped-input fixture")

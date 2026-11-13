@@ -94,7 +94,7 @@ func runCommandOutput(ctx context.Context, cmd *exec.Cmd, stdoutLimit, stderrLim
 		return nil, err
 	}
 	settled = false
-	if err := cmd.Start(); err != nil {
+	if _, err := startCommandWithContainment(ownedCtx, cmd, commandStartOptions{}); err != nil {
 		settled = true
 		return nil, err
 	}

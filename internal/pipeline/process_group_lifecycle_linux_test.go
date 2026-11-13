@@ -519,6 +519,7 @@ func TestCommandInputSettlementRequiresCopyOrClosedReaders(t *testing.T) {
 }
 
 func TestCommandOutputRefusesEscapedStdin(t *testing.T) {
+	t.Setenv(ContainmentTierEnv, ContainmentTierProcPGID)
 	setsid, err := exec.LookPath("setsid")
 	if err != nil {
 		t.Skip("setsid is required for the escaped-input fixture")
@@ -558,6 +559,7 @@ exit 7
 // still prevent a false workflow success when an escaped child holds a pipe
 // open and can perform work after the executor returns.
 func TestWaitNoneUnsettledCleanupReachesWorkflowOutcome(t *testing.T) {
+	t.Setenv(ContainmentTierEnv, ContainmentTierProcPGID)
 	setsid, err := exec.LookPath("setsid")
 	if err != nil {
 		t.Skip("setsid is required for the escaped-descriptor fixture")

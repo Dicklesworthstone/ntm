@@ -32,7 +32,17 @@ const (
 // (flock belongs to the open file description, so two descriptions contend
 // even in one process) — but ntm#324 is a two-PROCESS bug, so it is worth one
 // test that is literally two processes.
+var testMainHelperHook func() (int, bool)
+
 func TestMain(m *testing.M) {
+	if len(os.Args) >= 2 && os.Args[1] == StepReaperSubcommand {
+		ExitFromStepReaper(RunStepReaper(os.Args[2:]))
+	}
+	if testMainHelperHook != nil {
+		if code, handled := testMainHelperHook(); handled {
+			os.Exit(code)
+		}
+	}
 	if dir := os.Getenv(paneLockHelperEnv); dir != "" {
 		os.Exit(runPaneLockHelper(dir))
 	}

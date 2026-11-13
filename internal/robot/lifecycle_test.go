@@ -501,6 +501,7 @@ func waitLifecycleAgentPID(t *testing.T, path string) int {
 func startLifecycleShellProcess(t *testing.T, root, mode string, active bool) *lifecycleShellProcess {
 	t.Helper()
 	cmd := exec.Command("/bin/sh", "-i")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	input, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)

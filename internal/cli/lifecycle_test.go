@@ -673,6 +673,7 @@ func TestForcedRotationLifecycleHelper(t *testing.T) {
 	startShell := func(active bool) (int, int) {
 		t.Helper()
 		cmd := exec.Command("/bin/sh", "-i")
+		process.DetachControllingTerminal(cmd)
 		stdin, err := cmd.StdinPipe()
 		if err != nil {
 			t.Fatal(err)

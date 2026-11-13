@@ -37,3 +37,13 @@ func TestPipelineWorkerEndpointIsRegisteredAndHidden(t *testing.T) {
 		t.Fatal("worker accepted incomplete identity")
 	}
 }
+
+func TestInternalStepReaperEndpointIsRegisteredAndHidden(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"internal-step-reaper"})
+	if err != nil || cmd == nil || cmd.Name() != "internal-step-reaper" || !cmd.Hidden {
+		t.Fatalf("internal-step-reaper endpoint unavailable or visible: %v %v", cmd, err)
+	}
+	if !cmd.DisableFlagParsing {
+		t.Fatal("expected internal-step-reaper to disable flag parsing so child flags pass through")
+	}
+}

@@ -53,6 +53,7 @@ func SnapshotContext(ctx context.Context) (map[int]SnapshotProcess, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, processSnapshotTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(probeCtx, "ps", "-ww", "-axo", "pid=,ppid=,pgid=,tpgid=,stat=,lstart=,ucomm=")
+	DetachControllingTerminal(cmd)
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	cmd.WaitDelay = 100 * time.Millisecond
 	var output processSnapshotBuffer
@@ -384,6 +385,7 @@ func GetCmdlineContext(ctx context.Context, pid int) []string {
 	// boundaries inside arguments, but it's enough for substring
 	// matching against agent binary names.
 	cmd := exec.CommandContext(ctx, "ps", "-o", "command=", "-p", strconv.Itoa(pid))
+	DetachControllingTerminal(cmd)
 	cmd.WaitDelay = 100 * time.Millisecond
 	out, err := cmd.Output()
 	if err != nil {

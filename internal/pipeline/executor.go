@@ -1579,7 +1579,20 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 			return e.completeCommandResult(step, result)
 		}
 		if prior.Result.Status == StatusCompleted && !prior.Result.RerunOnResume {
+			if prior.Reconciled && prior.Result.ParsedData == nil && step.OutputParse.Type != "" && step.OutputParse.Type != "none" {
+				return e.completeCommandResult(step, prior.Result)
+			}
 			return prior.Result
+		}
+		if prior.Reconciled && prior.Result.Status == StatusFailed && !prior.Result.RerunOnResume {
+			e.stateMu.RLock()
+			_, alreadyPublished := e.state.Steps[step.ID]
+			e.stateMu.RUnlock()
+			if !alreadyPublished {
+				prior.Reconciled = false
+				_ = e.saveCommandExecution(prior)
+				return prior.Result
+			}
 		}
 		if (!prior.Background || prior.ProcessID == 0) && prior.Result.Status == StatusFailed {
 			if delivery, pending := e.pendingOnFailureDelivery(step); pending {
@@ -1775,16 +1788,25 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		waitCondition = WaitCompletion
 	}
 
-	record := CommandExecutionState{
-		Version: commandExecutionVersion, StepID: step.ID, StepHash: stepHash,
-		Status: commandExecutionStarting, Background: waitCondition == WaitNone,
-		StartedAt: result.StartedAt,
-	}
 	// Explicit bounded on_cancel cleanup is allowed after storage failure
 	// (checkpointCleanupKey). Preserve that existing best-effort release path;
 	// ordinary command dispatch always requires a durable launch intent.
 	cleanupAfterCheckpointFailure, _ := ctx.Value(checkpointCleanupKey{}).(bool)
 	journalCommand := !(cleanupAfterCheckpointFailure && e.checkpointFailure() != nil)
+	var exitCodeFile string
+	if journalCommand && e.config.ProjectDir != "" && waitCondition != WaitNone {
+		exitCodeFile = stepExitReceiptPath(e.config.ProjectDir, e.state.RunID, step.ID, result.StartedAt)
+	}
+	record := CommandExecutionState{
+		Version:         commandExecutionVersion,
+		StepID:          step.ID,
+		StepHash:        stepHash,
+		Status:          commandExecutionStarting,
+		ContainmentTier: previewContainmentTier(cmdCtx),
+		ExitCodeFile:    exitCodeFile,
+		Background:      waitCondition == WaitNone,
+		StartedAt:       result.StartedAt,
+	}
 	if journalCommand {
 		if err := e.saveCommandExecution(record); err != nil {
 			result.Status, result.FinishedAt = StatusFailed, time.Now()
@@ -1817,7 +1839,16 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 	if e.stopBeforeDispatch(cmdCtx, &result) {
 		return result
 	}
-	if err := cmd.Start(); err != nil {
+	if exitCodeFile != "" {
+		_ = os.MkdirAll(filepath.Dir(exitCodeFile), 0o700)
+	}
+	launchMeta, err := startCommandWithContainment(cmdCtx, cmd, commandStartOptions{
+		RecordLaunchMetadata: journalCommand,
+		ExitCodeFile:         exitCodeFile,
+		StepID:               step.ID,
+		StepHash:             stepHash,
+	})
+	if err != nil {
 		result.Status = StatusFailed
 		result.Error = stepRuntimeError(step, "command", "command",
 			fmt.Sprintf("start failed: %v", err),
@@ -1832,7 +1863,13 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		return result
 	}
 	commandSettled = false
-	record.Status, record.ProcessID = commandExecutionRunning, cmd.Process.Pid
+	record.Status = commandExecutionRunning
+	record.ProcessID = cmd.Process.Pid
+	record.LeaderPID = launchMeta.LeaderPID
+	record.LeaderStartTimeTicks = launchMeta.LeaderStartTimeTicks
+	record.ContainmentTier = launchMeta.Tier
+	record.CgroupPath = launchMeta.CgroupPath
+	record.ExitCodeFile = launchMeta.ExitCodeFile
 	if hook, _ := ctx.Value(commandStartedTestHookKey{}).(func(int)); hook != nil {
 		hook(cmd.Process.Pid)
 	}

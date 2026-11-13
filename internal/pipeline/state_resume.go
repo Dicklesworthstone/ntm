@@ -177,15 +177,21 @@ const CommandEvaluationResolutionAccept = "accept"
 // settlement. Its terminal Result preserves output and cleanup diagnostics,
 // but only settled receipts authorize automatic retry or ordinary resume.
 type CommandExecutionState struct {
-	Version    int        `json:"version"`
-	StepID     string     `json:"step_id"`
-	StepHash   string     `json:"step_hash"`
-	Status     string     `json:"status"`
-	ProcessID  int        `json:"process_id,omitempty"`
-	Background bool       `json:"background,omitempty"`
-	StartedAt  time.Time  `json:"started_at"`
-	SettledAt  time.Time  `json:"settled_at,omitempty"`
-	Result     StepResult `json:"result,omitempty"`
+	Version              int        `json:"version"`
+	StepID               string     `json:"step_id"`
+	StepHash             string     `json:"step_hash"`
+	Status               string     `json:"status"`
+	ProcessID            int        `json:"process_id,omitempty"`
+	LeaderPID            int        `json:"leader_pid,omitempty"`
+	LeaderStartTimeTicks uint64     `json:"leader_start_time_ticks,omitempty"`
+	ContainmentTier      string     `json:"containment_tier,omitempty"`
+	CgroupPath           string     `json:"cgroup_path,omitempty"`
+	ExitCodeFile         string     `json:"exit_code_file,omitempty"`
+	Reconciled           bool       `json:"reconciled,omitempty"`
+	Background           bool       `json:"background,omitempty"`
+	StartedAt            time.Time  `json:"started_at"`
+	SettledAt            time.Time  `json:"settled_at,omitempty"`
+	Result               StepResult `json:"result,omitempty"`
 	// An accepted Result retains the exact supplied output, before parsing.
 	// Ordinary resume interprets it only after checking the materialized step
 	// definition. The scheduler's Steps and output aliases remain untouched here.
@@ -1242,8 +1248,17 @@ func validateCommandExecution(key string, record CommandExecutionState) error {
 		return invalid("unsupported version or mismatched step identity")
 	}
 	hash, err := hex.DecodeString(record.StepHash)
-	if err != nil || len(hash) != sha256.Size || record.StartedAt.IsZero() || record.ProcessID < 0 {
+	if err != nil || len(hash) != sha256.Size || record.StartedAt.IsZero() || record.ProcessID < 0 || record.LeaderPID < 0 {
 		return invalid("missing definition hash, invalid process ID or start time")
+	}
+	if record.LeaderPID != 0 && record.ProcessID != 0 && record.LeaderPID != record.ProcessID {
+		return invalid("mismatched leader_pid and process_id")
+	}
+	if record.ContainmentTier != "" && !validContainmentTier(record.ContainmentTier) {
+		return invalid(fmt.Sprintf("unsupported containment_tier %q", record.ContainmentTier))
+	}
+	if record.Reconciled && record.Status != commandExecutionSettled {
+		return invalid("reconciled flag set on non-settled command execution")
 	}
 	switch record.Status {
 	case commandExecutionStarting, commandExecutionRunning:
@@ -2397,6 +2412,7 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 		e.stateMu.RUnlock()
 		return fmt.Errorf("resume state is nil")
 	}
+	checkpoint := resumeCheckpointTime(state)
 	graph := e.graph
 	if graph == nil && workflow != nil {
 		graph = NewDependencyGraph(workflow)
@@ -2407,7 +2423,6 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 			return phaseErrors[0]
 		}
 	}
-	checkpoint := resumeCheckpointTime(state)
 	if err := validateStepAdmissions(state.StepAdmissions); err != nil {
 		e.stateMu.RUnlock()
 		return err
@@ -2476,17 +2491,33 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 				return fmt.Errorf("accepted command outcome for step %q belongs to session %q; explicit reset is required before moving to session %q", stepID, priorSession, targetSession)
 			}
 		}
+	}
+	var reconciledCommands map[string]CommandExecutionState
+	for stepID, record := range state.CommandExecutions {
+		effectiveRecord := record
 		if record.Status != commandExecutionSettled && !resumeResetsCommandExecution(state, opts, stepID) {
-			e.stateMu.RUnlock()
-			return uncertainCommandExecutionError(stepID, record.ProcessID)
+			updated, reconciled, recErr := reconcileInterruptedCommandExecution(workflow, state, stepID, record)
+			if recErr != nil {
+				e.stateMu.RUnlock()
+				return recErr
+			}
+			if !reconciled {
+				e.stateMu.RUnlock()
+				return uncertainCommandExecutionError(stepID, record.ProcessID)
+			}
+			if reconciledCommands == nil {
+				reconciledCommands = make(map[string]CommandExecutionState)
+			}
+			reconciledCommands[stepID] = cloneCommandExecution(updated)
+			effectiveRecord = updated
 		}
-		if _, cleanup := resolveOnCancelRuntimeStep(workflow, stepID); cleanup && record.Status == commandExecutionSettled {
+		if _, cleanup := resolveOnCancelRuntimeStep(workflow, stepID); cleanup && effectiveRecord.Status == commandExecutionSettled {
 			// Proven-settled cleanup belongs to the previous cancellation
 			// attempt. A resumed attempt can acquire resources again.
 			continue
 		}
 		if opts.KeepState && opts.Mode != ResumeModeForceIter &&
-			(record.Result.RerunOnResume || resumeResetsCommandExecution(state, opts, stepID)) {
+			(effectiveRecord.Result.RerunOnResume || resumeResetsCommandExecution(state, opts, stepID)) {
 			if err := e.validateLeafReplayScopeLocked(workflow, state, stepID, StepKindCommand); err != nil {
 				e.stateMu.RUnlock()
 				return err
@@ -2526,6 +2557,11 @@ func (e *Executor) applyResumeOptions(workflow *Workflow, opts ResumeOptions) er
 	}
 	e.stateMu.Lock()
 	admissionErr := e.seedStepAdmissionsLocked(workflow, graph)
+	if admissionErr == nil && opts.KeepState && len(reconciledCommands) > 0 && e.state != nil {
+		for stepID, updated := range reconciledCommands {
+			e.state.CommandExecutions[stepID] = updated
+		}
+	}
 	e.stateMu.Unlock()
 	if admissionErr != nil {
 		return admissionErr

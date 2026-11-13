@@ -676,6 +676,7 @@ func escapedCommandOutputFixture(t *testing.T, root, stream string, exitCode int
 
 func escapedCommandOutputFixtureWithOutput(t *testing.T, root, stream string, exitCode int, output string) (string, func()) {
 	t.Helper()
+	t.Setenv(ContainmentTierEnv, ContainmentTierProcPGID)
 	setsid, err := exec.LookPath("setsid")
 	if err != nil {
 		t.Skip("setsid is required for escaped output fixtures")

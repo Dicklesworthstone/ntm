@@ -11,6 +11,7 @@ import (
 
 func init() {
 	rootCmd.AddCommand(newPipelineWorkerCmd())
+	rootCmd.AddCommand(newInternalStepReaperCmd())
 	pipeline.BackgroundWorkerFlags = pipelineWorkerFlags
 }
 
@@ -38,6 +39,24 @@ func newPipelineWorkerCmd() *cobra.Command {
 		Args: cobra.ExactArgs(2), SilenceErrors: true, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return pipeline.RunBackgroundWorker(cmd.Context(), args[0], args[1], os.Stdin)
+		},
+	}
+}
+
+// newInternalStepReaperCmd runs a pipeline command step under a Linux
+// PR_SET_CHILD_SUBREAPER supervisor (Tier 2 containment) when writable
+// cgroup v2 delegation is unavailable.
+func newInternalStepReaperCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:                pipeline.StepReaperSubcommand + " [flags] -- <command> [args...]",
+		Hidden:             true,
+		DisableFlagParsing: true,
+		SilenceErrors:      true,
+		SilenceUsage:       true,
+		PersistentPreRunE:  func(*cobra.Command, []string) error { return nil },
+		PersistentPostRunE: func(*cobra.Command, []string) error { return nil },
+		Run: func(_ *cobra.Command, args []string) {
+			pipeline.ExitFromStepReaper(pipeline.RunStepReaper(args))
 		},
 	}
 }

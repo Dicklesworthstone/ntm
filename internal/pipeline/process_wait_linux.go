@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strconv"
@@ -33,7 +34,22 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	if cmd == nil || cmd.Process == nil || cmd.ProcessState != nil {
 		return commandCleanupResult{Err: errors.New("command cleanup requires a started, unwaited command")}
 	}
-	defer func() { verifyCommandOutputSettlement(cmd, &result) }()
+	if handle, ok := takeCommandContainmentHandle(cmd); ok {
+		return waitCommandWithContainmentHandle(ctx, cmd, handle)
+	}
+	return waitCommandWithProcPGID(ctx, cmd)
+}
+
+func waitCommandWithProcPGID(ctx context.Context, cmd *exec.Cmd) (result commandCleanupResult) {
+	waitStart := time.Now()
+	defer func() {
+		verifyCommandOutputSettlement(cmd, &result)
+		slog.Debug("command containment settled",
+			"containment_tier", ContainmentTierProcPGID,
+			"settlement_latency_us", time.Since(waitStart).Microseconds(),
+			"reaped_descendants", 0,
+		)
+	}()
 	if cmd.WaitDelay == 0 {
 		cmd.WaitDelay = commandPipeDrainTimeout
 	}
@@ -412,9 +428,14 @@ func groupSignalFoundOnlyZombies(int) bool {
 // leader in its expected group. Missing evidence must not authorize replay.
 func commandGroupHasLiveMembers(pgid int) (bool, error) {
 	return inspectCommandGroup(pgid, commandGroupInspector{
-		readDir:  os.ReadDir,
-		readFile: os.ReadFile,
-		getpgid:  syscall.Getpgid,
+		readDir: os.ReadDir,
+		readFile: func(path string) ([]byte, error) {
+			if strings.HasPrefix(path, "/proc/") && strings.HasSuffix(path, "/stat") && path != "/proc/stat" {
+				commandGroupProcStatOpens.Add(1)
+			}
+			return os.ReadFile(path)
+		},
+		getpgid: syscall.Getpgid,
 	})
 }
 

@@ -39,7 +39,8 @@ var CommandClassification = map[string]CommandRequirement{
 
 	// `ntm config migrate` reads the config file leniently itself — loading
 	// the (by definition possibly broken) config first would defeat it.
-	"migrate": RequirePhase1Only,
+	"migrate":              RequirePhase1Only,
+	"internal-step-reaper": RequirePhase1Only,
 
 	// Config-only commands
 	"config":   RequireConfig,
