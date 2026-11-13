@@ -590,6 +590,17 @@ func TestCommandGroupObservationPolicy(t *testing.T) {
 			t.Fatalf("unknown observation shortened its budget or lost the failure: %v", err)
 		}
 	})
+	t.Run("settlement budget accepts completed quiet census at deadline", func(t *testing.T) {
+		settle, stop := withCommandSettlementBudget(context.Background(), 20*time.Millisecond)
+		defer stop()
+		err := waitCommandGroupObservation(settle, 42, func() (bool, error) {
+			<-settle.Done()
+			return false, nil
+		})
+		if err != nil {
+			t.Fatalf("completed post-kill quiet census discarded at deadline boundary: %v", err)
+		}
+	})
 }
 
 func TestParseCommandGroupPSOutputRequiresCompleteEvidence(t *testing.T) {

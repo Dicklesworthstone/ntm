@@ -64,7 +64,7 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 		if errors.Is(killErr, os.ErrProcessDone) {
 			killErr = nil
 		}
-		settle, stop := context.WithTimeout(context.WithoutCancel(ctx), commandPipeDrainTimeout)
+		settle, stop := withCommandSettlementBudget(ctx, commandPipeDrainTimeout)
 		quietErr = waitCommandGroupQuiescent(settle, cmd.Process.Pid)
 		stop()
 		if killErr == nil {
@@ -91,7 +91,7 @@ func waitCommandWithProcessGroupCleanup(ctx context.Context, cmd *exec.Cmd) (res
 	if errors.Is(killErr, os.ErrProcessDone) {
 		killErr = nil
 	}
-	settle, stop := context.WithTimeout(context.WithoutCancel(ctx), commandPipeDrainTimeout)
+	settle, stop := withCommandSettlementBudget(ctx, commandPipeDrainTimeout)
 	quietErr = waitCommandGroupQuiescent(settle, cmd.Process.Pid)
 	stop()
 	if killErr == nil {

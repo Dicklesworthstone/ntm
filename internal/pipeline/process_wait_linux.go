@@ -172,7 +172,7 @@ func cleanupCancelledCommandGroup(ctx context.Context, cmd *exec.Cmd, observatio
 	if errors.Is(killErr, os.ErrProcessDone) {
 		killErr = nil
 	}
-	settle, stop := context.WithTimeout(context.WithoutCancel(ctx), commandPipeDrainTimeout)
+	settle, stop := withCommandSettlementBudget(ctx, commandPipeDrainTimeout)
 	quietErr := waitCommandGroupQuiescent(settle, cmd.Process.Pid)
 	stop()
 	if killErr == nil {
@@ -427,7 +427,8 @@ func groupSignalFoundOnlyZombies(int) bool {
 // A quiet result requires a complete, valid census containing the unreaped
 // leader in its expected group. Missing evidence must not authorize replay.
 func commandGroupHasLiveMembers(pgid int) (bool, error) {
-	return inspectCommandGroup(pgid, commandGroupInspector{
+	const maxBirthRaceImmediateRetries = 4
+	inspector := commandGroupInspector{
 		readDir: os.ReadDir,
 		readFile: func(path string) ([]byte, error) {
 			if strings.HasPrefix(path, "/proc/") && strings.HasSuffix(path, "/stat") && path != "/proc/stat" {
@@ -436,7 +437,13 @@ func commandGroupHasLiveMembers(pgid int) (bool, error) {
 			return os.ReadFile(path)
 		},
 		getpgid: syscall.Getpgid,
-	})
+	}
+	for attempt := 0; ; attempt++ {
+		alive, err := inspectCommandGroup(pgid, inspector)
+		if !errors.Is(err, errCommandGroupBirthRace) || attempt >= maxBirthRaceImmediateRetries {
+			return alive, err
+		}
+	}
 }
 
 // Keep the observation operations local to each census. Besides making the

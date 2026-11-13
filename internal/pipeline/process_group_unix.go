@@ -31,6 +31,19 @@ const (
 // contexts retain these values even after the command's context is cancelled.
 type commandGroupObservationTestHookKey struct{}
 
+// commandSettlementBudgetContextKey marks post-signal settlement/recovery
+// contexts created with context.WithoutCancel(ctx), where only the local
+// settlement deadline can expire and a completed quiet census remains valid.
+type commandSettlementBudgetContextKey struct{}
+
+func withCommandSettlementBudget(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	base := context.WithValue(context.WithoutCancel(parent), commandSettlementBudgetContextKey{}, true)
+	return context.WithTimeout(base, timeout)
+}
+
 type commandCleanupResult struct {
 	Err        error
 	Cancelled  bool
@@ -188,6 +201,10 @@ func waitCommandGroupObservation(ctx context.Context, pgid int, observe func() (
 		}
 		alive, err := observe()
 		observationErr = err
+		settlementBudget, _ := ctx.Value(commandSettlementBudgetContextKey{}).(bool)
+		if settlementBudget && err == nil && !alive {
+			return nil
+		}
 		// A caller can cancel during the observation. Do not let a late quiet
 		// snapshot bypass the cancellation path and its cleanup evidence.
 		if ctx.Err() != nil {
@@ -220,7 +237,7 @@ func reconcileCommandGroupSettlement(ctx context.Context, pgid int, observationE
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	recovery, cancel := context.WithTimeout(context.WithoutCancel(ctx), commandSettlementRecoveryTimeout)
+	recovery, cancel := withCommandSettlementBudget(ctx, commandSettlementRecoveryTimeout)
 	defer cancel()
 	if err := waitCommandGroupQuiescent(recovery, pgid); err != nil {
 		return errors.Join(observationErr, fmt.Errorf("command group settlement recovery exhausted: %w", err))
