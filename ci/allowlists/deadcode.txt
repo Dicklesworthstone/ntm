@@ -23,9 +23,6 @@ internal/agent/types.go:Recommendation.RequiresWaiting	bd-ld4j2	reachable only t
 internal/agentmail/client.go:Client.InvalidateCache	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/agentmail/client.go:Client.ProjectKey	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/agentmail/client.go:Client.SetProjectKey	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/agentmail/tools.go:Client.ContactHandshake	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/agentmail/tools.go:Client.PrepareThread	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/agentmail/tools.go:Client.StartSession	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/agentsession/discover.go:Discoverer.Discover	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/alerts/types.go:Alert.IsResolved	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/assignment/store.go:AssignmentStore.Assign	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
@@ -167,8 +164,6 @@ internal/integrations/caut/cache.go:UsageCache.GetUpdateCount	bd-ld4j2	reachable
 internal/integrations/caut/cache.go:UsageCache.Snapshot	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/integrations/caut/cache.go:UsageCache.UpdateAllUsage	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/integrations/caut/cache.go:UsageCache.UpdateUsage	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/metrics/collector.go:MetricsReport.ExportCSV	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/metrics/collector.go:MetricsReport.ExportJSON	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/output/errors.go:CLIError.WithCause	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/pipeline/deps.go:DependencyGraph.IsFailed	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/pipeline/deps.go:DependencyGraph.Resolve	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
@@ -222,20 +217,14 @@ internal/robot/routing.go:AgentScorer.GetBestAgent	bd-ld4j2	reachable only throu
 internal/robot/routing.go:AgentScorer.ScoreAgentsWithContext	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/robot/routing.go:AgentScorer.SetAgentMapping	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/robot/routing.go:ReservationCache.GetAllReservations	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/robot/routing.go:Router.RouteWithRelaxation	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/robot/types.go:ErrorDetails.WithDuration	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/robot/types.go:ErrorDetails.WithExitMethod	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/robot/types.go:ErrorDetails.WithProcessState	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/rotation/provider.go:ClaudeProvider.AuthSuccessPatterns	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/rotation/provider.go:CodexProvider.AuthSuccessPatterns	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/rotation/provider.go:GeminiProvider.AuthSuccessPatterns	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/scanner/scanner.go:Scanner.ScanDiff	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/scanner/scanner.go:Scanner.ScanDirectory	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/scanner/scanner.go:Scanner.ScanFile	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/scanner/scanner.go:Scanner.ScanStaged	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/scanner/types.go:ScanResult.FilterByFile	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/scanner/types.go:ScanResult.FilterBySeverity	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
-internal/scanner/types.go:ScanResult.TotalIssues	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/serve/redact.go:redactingResponseWriter.Push	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/serve/server.go:responseRecorder.Bytes	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
 internal/state/routing_state.go:Store.SaveRoutingState	bd-ld4j2	reachable only through RTA's reflection rule at the 2026-10-05 baseline; wire it (surface + behavioral test) or delete it
@@ -662,6 +651,7 @@ internal/swarm/synthetic.go:validateSyntheticScenario	permanent	verification-mat
 internal/swarm/synthetic.go:writeJSONFile	permanent	verification-matrix proof harness: 8 tests cited in docs/verification-matrix-swarm-scale-vnext.md resolve here; FindSyntheticExperimentScenario reached by tests/matrix_conformance_test.go (WS7-H10 gate)
 internal/swarm/synthetic.go:WriteSyntheticExperimentArtifacts	permanent	verification-matrix proof harness: 8 tests cited in docs/verification-matrix-swarm-scale-vnext.md resolve here; FindSyntheticExperimentScenario reached by tests/matrix_conformance_test.go (WS7-H10 gate)
 pkg:internal/robot/contract	permanent	contract-clean assertion library reached by tests/matrix_conformance_test.go (WS7-H10 CI gate over the D3 token corpus); API-for-tests-of-live-code
+pkg:internal/testutil	permanent	shared hermetic test-env sanitizer reached by e2e/harness.go, e2e/helpers_test.go, and internal/testutil/hermetic_test.go (GH #341)
 internal/cass/client.go:WithExecutor	permanent	test-only executor injection hook; reached by internal/cass/client_test.go and internal/tui/components/cass_search_test.go
 internal/caut/client.go:WithExecutor	permanent	test-only executor injection hook; reached by internal/caut/client_test.go
 # permanent: test-helper (bd-g1 final triage 2026-08-19)
