@@ -21,7 +21,7 @@ covered in the encryption library task (`bd-z7ses`).
 ## Supported Artifacts
 - Prompt history (`ENC:v1:` line-level AES-256-GCM)
 - Event logs (`ENC:v1:` line-level AES-256-GCM)
-- Checkpoint pane scrollback captures, git patches, and exported `.tar.gz` / `.zip` archives (`NTMENC1\n` binary AEAD envelope, integrated with `ArtifactIntegrity` digest verification)
+- Checkpoint metadata (`metadata.json`), session state (`session.json`), pane scrollback captures, git patches/status (`git.patch`, `git_status.txt`), and exported `.tar.gz` / `.zip` archives (`NTMENC1\n` binary AEAD envelope, integrated with `ArtifactIntegrity` digest verification and `key_source = "keyring"` OS keyring resolution)
 - Support bundles (if encrypted output requested)
 
 ## Configuration
