@@ -447,6 +447,7 @@ esac
 func startLifecycleRootProcess(t *testing.T, name string, args ...string) int {
 	t.Helper()
 	cmd := exec.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
