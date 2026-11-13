@@ -38,6 +38,20 @@ func newIsolatedTmuxSession(t *testing.T, prefix, workDir string) string {
 			_ = tmux.KillSession(sessionName)
 		}
 	})
+	// Wait for tmux's forked pane process to complete chdir(workDir)+exec(shell)
+	// so raw #{pane_current_path} probes do not observe the server's pre-chdir cwd.
+	target := tmux.SessionPaneTarget(sessionName)
+	for deadline := time.Now().Add(500 * time.Millisecond); time.Now().Before(deadline); {
+		cmdOut, err := tmux.DefaultClient.Run("display-message", "-p", "-t", target, "#{pane_current_command}")
+		if err != nil {
+			break
+		}
+		cmd := strings.TrimSpace(cmdOut)
+		if cmd != "tmux" && !strings.HasPrefix(cmd, "tmux:") && !strings.HasPrefix(cmd, "tmux ") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	return sessionName
 }
 

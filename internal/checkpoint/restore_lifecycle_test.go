@@ -461,18 +461,47 @@ func TestRestoreLifecycleReportsOnlyCompletedContextDeliveries(t *testing.T) {
 		}
 	})
 	t.Run("partial failure", func(t *testing.T) {
-		restoreLifecycleFixture(t)
-		cp := lifecycleCheckpoint(t, 3)
-		storage := saveLifecycleScrollback(t, cp, []string{"delivered agent context"})
-		cp.Session.Panes[1].ScrollbackFile = "panes/missing-first.txt"
-		cp.Session.Panes[2].ScrollbackFile = "panes/missing-second.txt"
-		out, err := NewRestorerWithStorage(storage).RestoreFromCheckpointContext(context.Background(), cp, RestoreOptions{SkipGitCheck: true, InjectContext: true})
-		if err == nil || out == nil || !out.ContextInjected || out.ContextPanesInjected != 1 || out.Stage != "injecting_context" {
-			t.Fatalf("partial delivery was lost: %+v, %v", out, err)
-		}
-		if !strings.Contains(err.Error(), "checkpoint pane 1") || !strings.Contains(err.Error(), "checkpoint pane 2") {
-			t.Fatalf("restore discarded individual delivery failures: %v", err)
-		}
+		t.Run("default fails closed at preflight even with force", func(t *testing.T) {
+			log, _ := restoreLifecycleFixture(t)
+			cp := lifecycleCheckpoint(t, 3)
+			storage := saveLifecycleScrollback(t, cp, []string{"delivered agent context"})
+			cp.Session.Panes[1].ScrollbackFile = "panes/missing-first.txt"
+			cp.Session.Panes[2].ScrollbackFile = "panes/missing-second.txt"
+			out, err := NewRestorerWithStorage(storage).RestoreFromCheckpointContext(context.Background(), cp, RestoreOptions{
+				Force: true, SkipGitCheck: true, InjectContext: true,
+			})
+			if !errors.Is(err, ErrArtifactIntegrity) {
+				t.Fatalf("expected ErrArtifactIntegrity when AllowDegradedContext is false, got: %v", err)
+			}
+			if out == nil || out.Stage != "validating" || out.PanesRestored != 0 || out.ContextInjected || out.ContextPanesInjected != 0 {
+				t.Fatalf("restore progressed past validating without AllowDegradedContext: %+v", out)
+			}
+			calls, _ := os.ReadFile(log)
+			if strings.Contains(string(calls), "new-session") || strings.Contains(string(calls), "load-buffer") {
+				t.Fatalf("preflight failure mutated tmux session: %s", calls)
+			}
+		})
+
+		t.Run("allow degraded context injects intact panes and reports missing pane errors", func(t *testing.T) {
+			restoreLifecycleFixture(t)
+			cp := lifecycleCheckpoint(t, 3)
+			storage := saveLifecycleScrollback(t, cp, []string{"delivered agent context"})
+			cp.Session.Panes[1].ScrollbackFile = "panes/missing-first.txt"
+			cp.Session.Panes[2].ScrollbackFile = "panes/missing-second.txt"
+			out, err := NewRestorerWithStorage(storage).RestoreFromCheckpointContext(context.Background(), cp, RestoreOptions{
+				SkipGitCheck: true, InjectContext: true, AllowDegradedContext: true,
+			})
+			if err == nil || out == nil || !out.ContextInjected || out.ContextPanesInjected != 1 || out.PanesRestored != 3 || out.Stage != "injecting_context" {
+				t.Fatalf("partial delivery was lost: %+v, %v", out, err)
+			}
+			if !strings.Contains(err.Error(), "checkpoint pane 1") || !strings.Contains(err.Error(), "checkpoint pane 2") {
+				t.Fatalf("restore discarded individual delivery failures: %v", err)
+			}
+			warnings := strings.Join(out.Warnings, "\n")
+			if !strings.Contains(warnings, "panes/missing-first.txt") || !strings.Contains(warnings, "panes/missing-second.txt") {
+				t.Fatalf("expected degraded context warnings for missing scrollback files, got: %v", out.Warnings)
+			}
+		})
 	})
 }
 

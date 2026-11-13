@@ -2,7 +2,9 @@ package checkpoint
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 )
@@ -66,12 +68,42 @@ func (cp *Checkpoint) recordArtifactChecksums(dir string) error {
 	return nil
 }
 
-func (cp *Checkpoint) checkArtifactChecksums(dir string, result *IntegrityResult) {
-	cp.checkArtifactChecksumsContext(context.Background(), dir, result)
+func checkpointPaneScrollbackFiles(cp *Checkpoint) map[string]bool {
+	files := make(map[string]bool, len(cp.Session.Panes))
+	for _, pane := range cp.Session.Panes {
+		if pane.ScrollbackFile != "" {
+			files[pane.ScrollbackFile] = true
+		}
+	}
+	return files
 }
 
-func (cp *Checkpoint) checkArtifactChecksumsContext(ctx context.Context, dir string, result *IntegrityResult) {
-	cp.checkArtifactChecksumsUsing(result, func(rel string, expected ArtifactChecksum) error {
+func (cp *Checkpoint) checkArtifactChecksums(dir string, result *IntegrityResult) {
+	cp.checkArtifactChecksumsContext(context.Background(), dir, result, false)
+}
+
+func (cp *Checkpoint) checkArtifactChecksumsContext(ctx context.Context, dir string, result *IntegrityResult, allowDegradedContext bool) {
+	var degradedPaneCheck func(string, bool) (string, bool, error)
+	if allowDegradedContext {
+		degradedPaneCheck = func(rel string, hasChecksum bool) (string, bool, error) {
+			if err := ctx.Err(); err != nil {
+				return "", false, err
+			}
+			_, err := resolveExistingCheckpointArtifactPath(dir, rel)
+			if err == nil {
+				// Existing regular files must still have a recorded checksum and pass verification.
+				return "", false, nil
+			}
+			if errors.Is(err, os.ErrNotExist) {
+				if !hasChecksum {
+					return fmt.Sprintf("degraded context: missing pane scrollback artifact %q (unrecorded in integrity manifest)", rel), true, nil
+				}
+				return fmt.Sprintf("degraded context: missing pane scrollback artifact %q", rel), true, nil
+			}
+			return "", false, err
+		}
+	}
+	cp.checkArtifactChecksumsUsingWithDegraded(result, func(rel string, expected ArtifactChecksum) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -80,12 +112,20 @@ func (cp *Checkpoint) checkArtifactChecksumsContext(ctx context.Context, dir str
 			return err
 		}
 		return verifyArtifactFileContext(ctx, path, expected)
-	})
+	}, degradedPaneCheck)
 }
 
 // Keep manifest membership rules identical for on-disk checkpoints and
 // archive entries, which must be validated before publication.
 func (cp *Checkpoint) checkArtifactChecksumsUsing(result *IntegrityResult, verify func(string, ArtifactChecksum) error) {
+	cp.checkArtifactChecksumsUsingWithDegraded(result, verify, nil)
+}
+
+func (cp *Checkpoint) checkArtifactChecksumsUsingWithDegraded(
+	result *IntegrityResult,
+	verify func(string, ArtifactChecksum) error,
+	degradedPaneCheck func(rel string, hasChecksum bool) (string, bool, error),
+) {
 	paths := checkpointPayloadFiles(cp)
 	result.Details["checksums_checked"] = "0"
 	if err := validateCheckpointArtifactReferences(cp); err != nil {
@@ -134,9 +174,24 @@ func (cp *Checkpoint) checkArtifactChecksumsUsing(result *IntegrityResult, verif
 		fail(fmt.Sprintf("checksum references unreferenced artifact %q", path))
 	}
 
+	paneScrollbacks := checkpointPaneScrollbackFiles(cp)
 	checked := 0
 	for _, rel := range paths {
 		expected, ok := cp.ArtifactIntegrity.Files[rel]
+		if degradedPaneCheck != nil && paneScrollbacks[rel] {
+			warning, skippedMissing, err := degradedPaneCheck(rel, ok)
+			if err != nil {
+				fail(fmt.Sprintf("artifact %q: %v", rel, err))
+				continue
+			}
+			if skippedMissing {
+				result.Warnings = append(result.Warnings, warning)
+				if result.Details["checksum_status"] == "verified" {
+					result.Details["checksum_status"] = "degraded"
+				}
+				continue
+			}
+		}
 		if !ok {
 			fail(fmt.Sprintf("missing checksum for artifact %q", rel))
 			continue

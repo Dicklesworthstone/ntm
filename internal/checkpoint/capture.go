@@ -320,9 +320,30 @@ func (c *Capturer) captureGitState(workingDir, sessionName, checkpointID string,
 // The target must be the pane-qualified exact form (`=name:`): `display-message
 // -p -t =name` exits 0 with empty output on tmux 3.4/3.6a, which used to be
 // recorded as an empty working_dir with Git capture silently skipped (ntm#310).
+//
+// On Linux, tmux resolves `#{pane_current_path}` via `/proc/<pane_pid>/cwd`.
+// Immediately after `new-session -d -c dir` or `new-window -c dir`, the tmux
+// server has forked `pane_pid` (`#{pane_current_command}` is still `tmux`) but
+// the child may not yet have executed `chdir(dir)` + `execve(shell)`, temporarily
+// exposing the tmux server's own working directory. Waiting briefly while the
+// pane command is still `tmux` ensures we observe the pane's actual directory
+// without breaking mock tmux scripts (which return empty for unknown formats)
+// or nested tmux clients (which settle to their own cwd once the bound expires).
 // An empty answer is an error here so callers cannot mistake it for a path.
 func getSessionDir(sessionName string) (string, error) {
-	out, err := tmux.DefaultClient.Run("display-message", "-p", "-t", tmux.SessionPaneTarget(sessionName), "#{pane_current_path}")
+	target := tmux.SessionPaneTarget(sessionName)
+	for deadline := time.Now().Add(500 * time.Millisecond); time.Now().Before(deadline); {
+		cmdOut, err := tmux.DefaultClient.Run("display-message", "-p", "-t", target, "#{pane_current_command}")
+		if err != nil {
+			return "", err
+		}
+		cmd := strings.TrimSpace(cmdOut)
+		if cmd != "tmux" && !strings.HasPrefix(cmd, "tmux:") && !strings.HasPrefix(cmd, "tmux ") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	out, err := tmux.DefaultClient.Run("display-message", "-p", "-t", target, "#{pane_current_path}")
 	if err != nil {
 		return "", err
 	}

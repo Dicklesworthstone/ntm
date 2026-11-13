@@ -95,6 +95,12 @@ func TestNewCheckpointRestoreCmd(t *testing.T) {
 	if cmd.Use != "restore <session> [checkpoint-id]" {
 		t.Errorf("Use = %q, want %q", cmd.Use, "restore <session> [checkpoint-id]")
 	}
+
+	for _, flag := range []string{"force", "inject-context", "allow-degraded-context", "dry-run"} {
+		if cmd.Flags().Lookup(flag) == nil {
+			t.Errorf("missing flag: %s", flag)
+		}
+	}
 }
 
 func TestFormatAge(t *testing.T) {
@@ -788,7 +794,7 @@ fi
 case "$1" in
   has-session) echo "can't find session" >&2; exit 1 ;;
   list-windows) echo 0 ;;
-  list-panes) echo '%0_NTM_SEP_0_NTM_SEP__NTM_SEP_bash_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_user_NTM_SEP__NTM_SEP__NTM_SEP_0' ;;
+  list-panes) echo "%0_NTM_SEP_0_NTM_SEP__NTM_SEP_${NTM_CLI_RESTORE_PANE_CMD:-bash}_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_user_NTM_SEP__NTM_SEP__NTM_SEP_0" ;;
 esac
 `
 	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
@@ -897,5 +903,89 @@ func TestCheckpointRestoreCmd_CancellationRetainsPartialProgress(t *testing.T) {
 	}
 	if strings.Contains(string(calls), "kill-session") || strings.Contains(string(calls), "respawn-pane") {
 		t.Fatalf("cancellation caused further mutations: %s", calls)
+	}
+}
+
+func TestCheckpointRestoreCmd_AllowDegradedContextFlag(t *testing.T) {
+	cp, logPath, _ := checkpointRestoreCommandFixture(t, 1)
+	t.Setenv("NTM_CLI_RESTORE_PANE_CMD", "claude")
+	storage := checkpoint.NewStorage()
+	// Record an expected pane scrollback in the checkpoint metadata and manifest,
+	// then corrupt its existence by saving with an intact pane scrollback and
+	// replacing metadata to point at a missing pane scrollback artifact.
+	cp.Session.Panes[0].ScrollbackFile = "panes/pane__0.txt"
+	cp.Session.Panes[0].ScrollbackLines = 1
+	if err := storage.Save(cp); err == nil {
+		t.Fatal("expected Save to fail when declared scrollback file is missing")
+	}
+	// Save a valid checkpoint first, then declare a second pane with an unrecorded
+	// missing scrollback artifact and re-seal metadata with missing artifact entry.
+	cp.Session.Panes[0].ScrollbackFile = ""
+	cp.Session.Panes[0].ScrollbackLines = 0
+	if err := storage.Save(cp); err != nil {
+		t.Fatalf("save base checkpoint: %v", err)
+	}
+	cpDir := storage.CheckpointDir(cp.SessionName, cp.ID)
+	metaPath := filepath.Join(cpDir, checkpoint.MetadataFile)
+	rawMeta, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	var persisted checkpoint.Checkpoint
+	if err := json.Unmarshal(rawMeta, &persisted); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
+	}
+	persisted.Session.Panes[0].AgentType = "cc"
+	persisted.Session.Panes[0].Command = "claude"
+	persisted.Session.Panes[0].ScrollbackFile = "panes/pane__0.txt"
+	persisted.Session.Panes[0].ScrollbackLines = 3
+	updatedSession, err := json.MarshalIndent(persisted.Session, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal session: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cpDir, checkpoint.SessionFile), updatedSession, 0o600); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+	persisted.ArtifactIntegrity.Files["panes/pane__0.txt"] = checkpoint.ArtifactChecksum{
+		SHA256:    strings.Repeat("a", 64),
+		SizeBytes: 12,
+	}
+	updatedMeta, err := json.MarshalIndent(&persisted, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	if err := os.WriteFile(metaPath, updatedMeta, 0o600); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+
+	// Default restore (even with --force) must fail closed at validating before tmux mutations.
+	cmd := newCheckpointRestoreCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{cp.SessionName, cp.ID, "--as", "restore-strict", "--skip-git-check", "--inject-context", "--force"})
+	strictOut, strictErr := captureStdout(t, cmd.Execute)
+	if !errors.Is(strictErr, checkpoint.ErrArtifactIntegrity) {
+		t.Fatalf("strict restore err = %v, want ErrArtifactIntegrity; output=%s", strictErr, strictOut)
+	}
+	if calls, readErr := os.ReadFile(logPath); readErr == nil && strings.Contains(string(calls), "new-session") {
+		t.Fatalf("strict restore mutated tmux before artifact integrity failure: %s", calls)
+	}
+
+	// Explicit --allow-degraded-context permits missing pane scrollback during preflight
+	// and reports the missing context delivery at injecting_context.
+	cmdDegraded := newCheckpointRestoreCmd()
+	cmdDegraded.SetOut(io.Discard)
+	cmdDegraded.SetErr(io.Discard)
+	cmdDegraded.SetArgs([]string{cp.SessionName, cp.ID, "--as", "restore-degraded", "--skip-git-check", "--inject-context", "--allow-degraded-context"})
+	degOut, degErr := captureStdout(t, cmdDegraded.Execute)
+	if degErr == nil || errors.Is(degErr, checkpoint.ErrArtifactIntegrity) {
+		t.Fatalf("degraded restore err = %v, want non-integrity context delivery error; output=%s", degErr, degOut)
+	}
+	var degPayload map[string]interface{}
+	if err := json.Unmarshal([]byte(degOut), &degPayload); err != nil {
+		t.Fatalf("unmarshal degraded output: %v (%s)", err, degOut)
+	}
+	if degPayload["stage"] != "injecting_context" || degPayload["panes_restored"] != float64(1) {
+		t.Fatalf("unexpected degraded restore payload: %#v", degPayload)
 	}
 }

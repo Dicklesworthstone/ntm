@@ -676,14 +676,15 @@ Examples:
 
 func newCheckpointRestoreCmd() *cobra.Command {
 	var (
-		force           bool
-		attach          bool
-		skipGitCheck    bool
-		injectContext   bool
-		dryRun          bool
-		customDirectory string
-		targetSession   string
-		scrollbackLines int
+		force                bool
+		attach               bool
+		skipGitCheck         bool
+		injectContext        bool
+		allowDegradedContext bool
+		dryRun               bool
+		customDirectory      string
+		targetSession        string
+		scrollbackLines      int
 	)
 
 	cmd := &cobra.Command{
@@ -786,14 +787,15 @@ Examples:
 			}
 
 			opts := checkpoint.RestoreOptions{
-				Config:          cfg,
-				TargetSession:   targetSession,
-				Force:           force,
-				SkipGitCheck:    skipGitCheck,
-				InjectContext:   injectContext,
-				DryRun:          dryRun,
-				CustomDirectory: customDirectory,
-				ScrollbackLines: scrollbackLines,
+				Config:               cfg,
+				TargetSession:        targetSession,
+				Force:                force,
+				SkipGitCheck:         skipGitCheck,
+				InjectContext:        injectContext,
+				AllowDegradedContext: allowDegradedContext,
+				DryRun:               dryRun,
+				CustomDirectory:      customDirectory,
+				ScrollbackLines:      scrollbackLines,
 			}
 
 			restorer := checkpoint.NewRestorer()
@@ -928,6 +930,7 @@ Examples:
 	cmd.Flags().BoolVarP(&attach, "attach", "a", false, "attach after restore")
 	cmd.Flags().BoolVar(&skipGitCheck, "skip-git-check", false, "skip git branch and commit mismatch warnings")
 	cmd.Flags().BoolVar(&injectContext, "inject-context", false, "inject captured scrollback into restored panes")
+	cmd.Flags().BoolVar(&allowDegradedContext, "allow-degraded-context", false, "allow restore when optional pane scrollback artifacts are missing on disk")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview the restore without making changes")
 	cmd.Flags().StringVar(&targetSession, "as", "", "restore into another tmux session, retaining the source session and checkpoint")
 	cmd.Flags().StringVar(&customDirectory, "directory", "", "override the checkpoint working directory")

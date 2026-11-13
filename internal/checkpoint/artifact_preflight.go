@@ -18,7 +18,7 @@ func artifactIntegrityError(result *IntegrityResult) error {
 	return fmt.Errorf("%w: %s", ErrArtifactIntegrity, strings.Join(result.Errors, "; "))
 }
 
-func preflightCheckpointArtifacts(ctx context.Context, storage *Storage, cp *Checkpoint, sourceSession string) ([]string, error) {
+func preflightCheckpointArtifacts(ctx context.Context, storage *Storage, cp *Checkpoint, sourceSession string, allowDegradedContext bool) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -39,7 +39,7 @@ func preflightCheckpointArtifacts(ctx context.Context, storage *Storage, cp *Che
 		}
 	}
 	result := newIntegrityResult()
-	cp.checkArtifactChecksumsContext(ctx, dir, result)
+	cp.checkArtifactChecksumsContext(ctx, dir, result, allowDegradedContext)
 	if err := ctx.Err(); err != nil {
 		return result.Warnings, err
 	}

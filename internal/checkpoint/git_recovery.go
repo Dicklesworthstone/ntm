@@ -65,7 +65,7 @@ func PrepareGitRollback(ctx context.Context, storage *Storage, cp *Checkpoint, w
 		return nil, fmt.Errorf("resolving checkpoint commit: %w", err)
 	}
 	plan := &GitRollbackPlan{WorkDir: root, Commit: strings.TrimSpace(resolved.String())}
-	plan.Warnings, err = preflightCheckpointArtifacts(ctx, storage, cp, cp.SessionName)
+	plan.Warnings, err = preflightCheckpointArtifacts(ctx, storage, cp, cp.SessionName, false)
 	if err != nil {
 		return nil, err
 	}

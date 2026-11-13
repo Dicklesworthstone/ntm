@@ -43,6 +43,12 @@ type RestoreOptions struct {
 	SkipGitCheck bool
 	// InjectContext sends scrollback/summary to agents after spawning
 	InjectContext bool
+	// AllowDegradedContext permits restoration to proceed when optional pane
+	// scrollback artifacts are missing on disk (including unrecorded missing
+	// scrollback references), recording structured warnings while still failing
+	// closed on git artifact errors, path traversal, symlinks, version
+	// mismatches, extra manifest entries, or checksum mismatches on existing files.
+	AllowDegradedContext bool
 	// DryRun shows what would be done without making changes
 	DryRun bool
 	// CustomDirectory overrides the checkpoint's working directory
@@ -263,7 +269,7 @@ func (r *Restorer) restoreFromCheckpoint(cp *Checkpoint, opts RestoreOptions) (r
 
 	// Validate saved payloads before any replacement, launch, or context
 	// injection. --force authorizes replacement, never ignoring corruption.
-	warnings, err := preflightCheckpointArtifacts(ctx, r.storage, cp, r.sourceSession)
+	warnings, err := preflightCheckpointArtifacts(ctx, r.storage, cp, r.sourceSession, opts.AllowDegradedContext)
 	result.Warnings = append(result.Warnings, warnings...)
 	if err != nil {
 		return result, err

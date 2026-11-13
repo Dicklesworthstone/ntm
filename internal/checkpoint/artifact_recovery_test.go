@@ -16,30 +16,32 @@ import (
 
 func TestRestoreArtifactIntegrityPrecedesMutation(t *testing.T) {
 	for _, dryRun := range []bool{false, true} {
-		for _, target := range []string{"", "checksum-restore-target"} {
-			t.Run(fmt.Sprintf("dry_run=%t/target=%s", dryRun, target), func(t *testing.T) {
-				storage, cp := newArtifactIntegrityFixture(t)
-				if err := os.WriteFile(storage.GitPatchPath(cp.SessionName, cp.ID), []byte("bad!!"), 0600); err != nil {
-					t.Fatal(err)
-				}
-				// A missing directory also prevents a real restore if the
-				// integrity guard regresses; dry runs never mutate tmux.
-				cp.WorkingDir = filepath.Join(t.TempDir(), "missing")
-				cp.Session.Panes[0].AgentType = "cc"
-				source := cp.SessionName
-				result, err := NewRestorerWithStorage(storage).RestoreFromCheckpointContext(context.Background(), cp, RestoreOptions{
-					Force: true, DryRun: dryRun, TargetSession: target, SkipGitCheck: true,
+		for _, allowDegraded := range []bool{false, true} {
+			for _, target := range []string{"", "checksum-restore-target"} {
+				t.Run(fmt.Sprintf("dry_run=%t/allow_degraded=%t/target=%s", dryRun, allowDegraded, target), func(t *testing.T) {
+					storage, cp := newArtifactIntegrityFixture(t)
+					if err := os.WriteFile(storage.GitPatchPath(cp.SessionName, cp.ID), []byte("bad!!"), 0600); err != nil {
+						t.Fatal(err)
+					}
+					// A missing directory also prevents a real restore if the
+					// integrity guard regresses; dry runs never mutate tmux.
+					cp.WorkingDir = filepath.Join(t.TempDir(), "missing")
+					cp.Session.Panes[0].AgentType = "cc"
+					source := cp.SessionName
+					result, err := NewRestorerWithStorage(storage).RestoreFromCheckpointContext(context.Background(), cp, RestoreOptions{
+						Force: true, AllowDegradedContext: allowDegraded, DryRun: dryRun, TargetSession: target, SkipGitCheck: true,
+					})
+					if !errors.Is(err, ErrArtifactIntegrity) || !strings.Contains(err.Error(), "SHA-256 mismatch") {
+						t.Fatalf("restore did not reject source corruption in preflight: %v", err)
+					}
+					if result == nil || result.Stage != "validating" || result.PanesRestored != 0 || result.ContextInjected {
+						t.Fatalf("restore progressed past integrity validation: %+v", result)
+					}
+					if cp.SessionName != source || result.SourceSession != source {
+						t.Fatal("restore lost or mutated the source storage namespace")
+					}
 				})
-				if !errors.Is(err, ErrArtifactIntegrity) || !strings.Contains(err.Error(), "SHA-256 mismatch") {
-					t.Fatalf("restore did not reject source corruption in preflight: %v", err)
-				}
-				if result == nil || result.Stage != "validating" || result.PanesRestored != 0 || result.ContextInjected {
-					t.Fatalf("restore progressed past integrity validation: %+v", result)
-				}
-				if cp.SessionName != source || result.SourceSession != source {
-					t.Fatal("restore lost or mutated the source storage namespace")
-				}
-			})
+			}
 		}
 	}
 }
@@ -48,24 +50,85 @@ func TestArtifactPreflightSourceAndLegacy(t *testing.T) {
 	storage, cp := newArtifactIntegrityFixture(t)
 	source := cp.SessionName
 	cp.SessionName = "renamed-target"
-	if _, err := preflightCheckpointArtifacts(context.Background(), storage, cp, source); err != nil {
+	if _, err := preflightCheckpointArtifacts(context.Background(), storage, cp, source, false); err != nil {
 		t.Fatalf("valid source checkpoint rejected for renamed target: %v", err)
 	}
-	if _, err := preflightCheckpointArtifacts(context.Background(), nil, cp, source); !errors.Is(err, ErrArtifactIntegrity) {
+	if _, err := preflightCheckpointArtifacts(context.Background(), nil, cp, source, false); !errors.Is(err, ErrArtifactIntegrity) {
 		t.Fatalf("missing storage accepted: %v", err)
 	}
 	cp.ArtifactIntegrity = nil
-	warnings, err := preflightCheckpointArtifacts(context.Background(), nil, cp, source)
+	warnings, err := preflightCheckpointArtifacts(context.Background(), nil, cp, source, false)
 	if err != nil || !strings.Contains(strings.Join(warnings, "\n"), "legacy checkpoint") {
 		t.Fatalf("legacy preflight: warnings=%v err=%v", warnings, err)
 	}
+}
+
+func TestArtifactPreflightAllowDegradedContextInvariants(t *testing.T) {
+	t.Run("missing recorded scrollback allowed only with AllowDegradedContext", func(t *testing.T) {
+		storage, cp := newArtifactIntegrityFixture(t)
+		scrollbackPath := filepath.Join(storage.CheckpointDir(cp.SessionName, cp.ID), cp.Session.Panes[0].ScrollbackFile)
+		if err := os.Remove(scrollbackPath); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := preflightCheckpointArtifacts(context.Background(), storage, cp, "", false); !errors.Is(err, ErrArtifactIntegrity) {
+			t.Fatalf("expected ErrArtifactIntegrity without AllowDegradedContext, got: %v", err)
+		}
+		warnings, err := preflightCheckpointArtifacts(context.Background(), storage, cp, "", true)
+		if err != nil {
+			t.Fatalf("expected missing recorded scrollback to pass under AllowDegradedContext, got: %v", err)
+		}
+		if !strings.Contains(strings.Join(warnings, "\n"), cp.Session.Panes[0].ScrollbackFile) {
+			t.Fatalf("expected degraded context warning, got: %v", warnings)
+		}
+	})
+
+	t.Run("tampered existing scrollback fails closed even with AllowDegradedContext", func(t *testing.T) {
+		storage, cp := newArtifactIntegrityFixture(t)
+		scrollbackPath := filepath.Join(storage.CheckpointDir(cp.SessionName, cp.ID), cp.Session.Panes[0].ScrollbackFile)
+		if err := os.WriteFile(scrollbackPath, []byte("tampered scrollback"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := preflightCheckpointArtifacts(context.Background(), storage, cp, "", true); !errors.Is(err, ErrArtifactIntegrity) {
+			t.Fatalf("tampered existing scrollback bypassed AllowDegradedContext: %v", err)
+		}
+	})
+
+	t.Run("existing unrecorded scrollback fails closed even with AllowDegradedContext", func(t *testing.T) {
+		storage, cp := newArtifactIntegrityFixture(t)
+		unrecorded := "panes/unrecorded.txt"
+		if err := os.WriteFile(filepath.Join(storage.CheckpointDir(cp.SessionName, cp.ID), unrecorded), []byte("unverified"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cp.Session.Panes = append(cp.Session.Panes, PaneState{ID: "%9", Index: 1, ScrollbackFile: unrecorded})
+		if _, err := preflightCheckpointArtifacts(context.Background(), storage, cp, "", true); !errors.Is(err, ErrArtifactIntegrity) {
+			t.Fatalf("existing unrecorded scrollback bypassed AllowDegradedContext: %v", err)
+		}
+	})
+
+	t.Run("missing git patch fails closed even with AllowDegradedContext", func(t *testing.T) {
+		storage, cp := newArtifactIntegrityFixture(t)
+		if err := os.Remove(storage.GitPatchPath(cp.SessionName, cp.ID)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := preflightCheckpointArtifacts(context.Background(), storage, cp, "", true); !errors.Is(err, ErrArtifactIntegrity) {
+			t.Fatalf("missing git patch bypassed AllowDegradedContext: %v", err)
+		}
+	})
+
+	t.Run("path traversal fails closed even with AllowDegradedContext", func(t *testing.T) {
+		storage, cp := newArtifactIntegrityFixture(t)
+		cp.Session.Panes[0].ScrollbackFile = "../escape.txt"
+		if _, err := preflightCheckpointArtifacts(context.Background(), storage, cp, "", true); !errors.Is(err, ErrArtifactIntegrity) {
+			t.Fatalf("path traversal bypassed AllowDegradedContext: %v", err)
+		}
+	})
 }
 
 func TestArtifactVerificationCancellation(t *testing.T) {
 	storage, cp := newArtifactIntegrityFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := preflightCheckpointArtifacts(ctx, storage, cp, ""); !errors.Is(err, context.Canceled) {
+	if _, err := preflightCheckpointArtifacts(ctx, storage, cp, "", false); !errors.Is(err, context.Canceled) {
 		t.Fatalf("preflight ignored cancellation: %v", err)
 	}
 	path := storage.GitPatchPath(cp.SessionName, cp.ID)
@@ -282,7 +345,7 @@ func TestArtifactIntegrityRejectsReservedPathAliases(t *testing.T) {
 		if legacy {
 			cp.ArtifactIntegrity = nil
 		}
-		if _, err := preflightCheckpointArtifacts(context.Background(), storage, cp, ""); !errors.Is(err, ErrArtifactIntegrity) {
+		if _, err := preflightCheckpointArtifacts(context.Background(), storage, cp, "", false); !errors.Is(err, ErrArtifactIntegrity) {
 			t.Fatalf("reserved metadata alias accepted (legacy=%t): %v", legacy, err)
 		}
 	}
