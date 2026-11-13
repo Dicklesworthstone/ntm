@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -758,6 +759,63 @@ func TestMetricsReport_GeneratedAtIsRecent(t *testing.T) {
 	if report.GeneratedAt.Before(before) || report.GeneratedAt.After(after) {
 		t.Errorf("GeneratedAt = %v, expected between %v and %v",
 			report.GeneratedAt, before, after)
+	}
+}
+
+func TestExportJSON_NonNullEmptyCollections(t *testing.T) {
+	empty := &MetricsReport{SessionID: "zero-sess"}
+	raw, err := empty.ExportJSON()
+	if err != nil {
+		t.Fatalf("ExportJSON failed: %v", err)
+	}
+	text := string(raw)
+	for _, forbidden := range []string{`"api_call_counts": null`, `"latency_stats": null`, `"target_comparison": null`} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("ExportJSON emitted null collection (%s):\n%s", forbidden, text)
+		}
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("unmarshal ExportJSON: %v", err)
+	}
+	if _, ok := parsed["target_comparison"].([]interface{}); !ok {
+		t.Fatalf("target_comparison = %T, want JSON array", parsed["target_comparison"])
+	}
+}
+
+func TestExportMarkdown_EmptyAndPopulated(t *testing.T) {
+	empty := &MetricsReport{}
+	emptyMD := empty.ExportMarkdown()
+	for _, want := range []string{
+		"# NTM Metrics Report (`default`)",
+		"_No API calls recorded._",
+		"_No latency samples recorded._",
+	} {
+		if !strings.Contains(emptyMD, want) {
+			t.Errorf("empty ExportMarkdown missing %q:\n%s", want, emptyMD)
+		}
+	}
+
+	c := NewCollector(nil, "prod-sess")
+	recordAPICallForTest(c, "bv", "triage")
+	recordAPICallForTest(c, "bv", "triage")
+	recordLatencyForTest(c, "cm_query", 42*time.Millisecond)
+	report, err := c.GenerateReport()
+	if err != nil {
+		t.Fatalf("GenerateReport: %v", err)
+	}
+	md := report.ExportMarkdown()
+	for _, want := range []string{
+		"# NTM Metrics Report (`prod-sess`)",
+		"## API Call Counts",
+		"| `bv:triage` | 2 |",
+		"## Latency Statistics",
+		"| `cm_query` | 1 |",
+		"## Target Comparison",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("populated ExportMarkdown missing %q:\n%s", want, md)
+		}
 	}
 }
 

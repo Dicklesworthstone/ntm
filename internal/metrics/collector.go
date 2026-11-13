@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -512,15 +513,25 @@ func (c *Collector) getDB() *sql.DB {
 
 // Export formats for CLI commands
 
-// ExportJSON exports the report as JSON.
+// ExportJSON exports the report as JSON with non-null collections.
 func (r *MetricsReport) ExportJSON() ([]byte, error) {
-	return json.MarshalIndent(r, "", "  ")
+	normalized := *r
+	if normalized.APICallCounts == nil {
+		normalized.APICallCounts = make(map[string]int64)
+	}
+	if normalized.LatencyStats == nil {
+		normalized.LatencyStats = make(map[string]LatencyStats)
+	}
+	if normalized.TargetComparison == nil {
+		normalized.TargetComparison = make([]TargetComparison, 0)
+	}
+	return json.MarshalIndent(&normalized, "", "  ")
 }
 
 // ExportCSV exports latency data as CSV.
 func (r *MetricsReport) ExportCSV() string {
-	var sb string
-	sb += "operation,count,min_ms,max_ms,avg_ms,p50_ms,p95_ms,p99_ms\n"
+	var sb strings.Builder
+	sb.WriteString("operation,count,min_ms,max_ms,avg_ms,p50_ms,p95_ms,p99_ms\n")
 	// Sort keys for deterministic output
 	keys := make([]string, 0, len(r.LatencyStats))
 	for k := range r.LatencyStats {
@@ -530,9 +541,71 @@ func (r *MetricsReport) ExportCSV() string {
 
 	for _, op := range keys {
 		stats := r.LatencyStats[op]
-		sb += fmt.Sprintf("%s,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
+		sb.WriteString(fmt.Sprintf("%s,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
 			op, stats.Count, stats.MinMs, stats.MaxMs, stats.AvgMs,
-			stats.P50Ms, stats.P95Ms, stats.P99Ms)
+			stats.P50Ms, stats.P95Ms, stats.P99Ms))
 	}
-	return sb
+	return sb.String()
+}
+
+// ExportMarkdown exports the full metrics report as GitHub-flavored Markdown.
+func (r *MetricsReport) ExportMarkdown() string {
+	var sb strings.Builder
+	session := r.SessionID
+	if session == "" {
+		session = "default"
+	}
+
+	sb.WriteString(fmt.Sprintf("# NTM Metrics Report (`%s`)\n\n", session))
+	if !r.GeneratedAt.IsZero() {
+		sb.WriteString(fmt.Sprintf("- **Generated At:** %s\n", r.GeneratedAt.UTC().Format(time.RFC3339)))
+	}
+	sb.WriteString(fmt.Sprintf("- **Blocked Commands:** %d\n", r.BlockedCommands))
+	sb.WriteString(fmt.Sprintf("- **File Conflicts:** %d\n", r.FileConflicts))
+
+	sb.WriteString("\n## API Call Counts\n\n")
+	if len(r.APICallCounts) == 0 {
+		sb.WriteString("_No API calls recorded._\n")
+	} else {
+		sb.WriteString("| Operation | Count |\n")
+		sb.WriteString("| --- | ---: |\n")
+		apiKeys := make([]string, 0, len(r.APICallCounts))
+		for k := range r.APICallCounts {
+			apiKeys = append(apiKeys, k)
+		}
+		sort.Strings(apiKeys)
+		for _, op := range apiKeys {
+			sb.WriteString(fmt.Sprintf("| `%s` | %d |\n", op, r.APICallCounts[op]))
+		}
+	}
+
+	sb.WriteString("\n## Latency Statistics\n\n")
+	if len(r.LatencyStats) == 0 {
+		sb.WriteString("_No latency samples recorded._\n")
+	} else {
+		sb.WriteString("| Operation | Count | Min (ms) | Avg (ms) | P50 (ms) | P95 (ms) | P99 (ms) | Max (ms) |\n")
+		sb.WriteString("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
+		latKeys := make([]string, 0, len(r.LatencyStats))
+		for k := range r.LatencyStats {
+			latKeys = append(latKeys, k)
+		}
+		sort.Strings(latKeys)
+		for _, op := range latKeys {
+			s := r.LatencyStats[op]
+			sb.WriteString(fmt.Sprintf("| `%s` | %d | %.2f | %.2f | %.2f | %.2f | %.2f | %.2f |\n",
+				op, s.Count, s.MinMs, s.AvgMs, s.P50Ms, s.P95Ms, s.P99Ms, s.MaxMs))
+		}
+	}
+
+	if len(r.TargetComparison) > 0 {
+		sb.WriteString("\n## Target Comparison\n\n")
+		sb.WriteString("| Metric | Current | Target | Baseline | Status |\n")
+		sb.WriteString("| --- | ---: | ---: | ---: | --- |\n")
+		for _, tc := range r.TargetComparison {
+			sb.WriteString(fmt.Sprintf("| `%s` | %.2f | %.2f | %.2f | %s |\n",
+				tc.Metric, tc.Current, tc.Target, tc.Baseline, tc.Status))
+		}
+	}
+
+	return sb.String()
 }

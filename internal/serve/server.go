@@ -48,6 +48,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
+	"github.com/Dicklesworthstone/ntm/internal/metrics"
 	"github.com/Dicklesworthstone/ntm/internal/pipeline"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
@@ -1553,6 +1554,9 @@ func (s *Server) buildRouter() chi.Router {
 
 		// Streaming stats endpoint
 		r.With(s.RequirePermission(PermReadHealth)).Get("/streaming/stats", s.handleStreamingStatsV1)
+
+		// Metrics export endpoint
+		r.With(s.RequirePermission(PermReadHealth)).Get("/metrics/export", s.handleMetricsExportV1)
 
 		// Agents API - manage AI agents within sessions
 		r.Route("/sessions/{sessionId}/agents", func(r chi.Router) {
@@ -4976,6 +4980,75 @@ func (s *Server) handleStreamingStatsV1(w http.ResponseWriter, r *http.Request) 
 	stats["active_targets"] = s.streamManager.ListActive()
 
 	writeSuccessResponse(w, http.StatusOK, stats, reqID)
+}
+
+// handleMetricsExportV1 handles GET /api/v1/metrics/export?format=json|csv|md|prometheus&session=...
+func (s *Server) handleMetricsExportV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+
+	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+	if format == "" {
+		format = "json"
+	}
+	switch format {
+	case "json", "csv", "md", "markdown", "prometheus", "prom":
+	default:
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			fmt.Sprintf("invalid format %q: must be json, csv, md, or prometheus", format), nil, reqID)
+		return
+	}
+
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session"))
+	if sessionID == "" {
+		sessionID = "default"
+	}
+
+	collector := metrics.NewCollector(s.stateStore, sessionID)
+	report, err := collector.GenerateReport()
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
+			fmt.Sprintf("generating metrics report: %v", err), nil, reqID)
+		return
+	}
+
+	switch format {
+	case "csv":
+		if requestIDHeader != "" && reqID != "" {
+			w.Header().Set(requestIDHeader, reqID)
+		}
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, report.ExportCSV())
+	case "md", "markdown":
+		if requestIDHeader != "" && reqID != "" {
+			w.Header().Set(requestIDHeader, reqID)
+		}
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, report.ExportMarkdown())
+	case "prometheus", "prom":
+		if requestIDHeader != "" && reqID != "" {
+			w.Header().Set(requestIDHeader, reqID)
+		}
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, report.ExportPrometheus())
+	default:
+		rawJSON, err := report.ExportJSON()
+		if err != nil {
+			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
+				fmt.Sprintf("encoding metrics report: %v", err), nil, reqID)
+			return
+		}
+		data := make(map[string]interface{})
+		if err := json.Unmarshal(rawJSON, &data); err != nil {
+			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
+				fmt.Sprintf("decoding metrics report: %v", err), nil, reqID)
+			return
+		}
+		data["format"] = "json"
+		writeSuccessResponse(w, http.StatusOK, data, reqID)
+	}
 }
 
 // =============================================================================

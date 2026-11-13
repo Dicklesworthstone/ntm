@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"encoding/csv"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -123,21 +121,27 @@ func newMetricsExportCmd() *cobra.Command {
 Formats:
   json        Full metrics report as JSON (default)
   csv         Latency data as CSV
+  md          Full metrics report as Markdown (alias: markdown)
   prometheus  Prometheus exposition format
 
 Examples:
   ntm metrics export                             # JSON to stdout
   ntm metrics export --format csv                # CSV to stdout
+  ntm metrics export --format md                 # Markdown to stdout
   ntm metrics export --format prometheus         # Prometheus to stdout
   ntm metrics export -o metrics.json             # JSON to file
   ntm metrics export --format prometheus -o m.prom`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runMetricsExport(sessionID, format, outputFile)
+			sid, fmtArg, outArg := sessionID, format, outputFile
+			sessionID = ""
+			format = "json"
+			outputFile = ""
+			return runMetricsExport(sid, fmtArg, outArg)
 		},
 	}
 
 	cmd.Flags().StringVar(&sessionID, "session", "", "filter to specific session")
-	cmd.Flags().StringVarP(&format, "format", "f", "json", "output format: json, csv, prometheus")
+	cmd.Flags().StringVarP(&format, "format", "f", "json", "output format: json, csv, md, prometheus")
 	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "output file (default: stdout)")
 
 	return cmd
@@ -328,13 +332,16 @@ func runMetricsCompare(sessionID, baselineName string) error {
 // runMetricsExport exports metrics in the specified format.
 func runMetricsExport(sessionID, format, outputFile string) error {
 	format = strings.ToLower(strings.TrimSpace(format))
+	if format == "" {
+		format = "json"
+	}
 	if IsJSONOutput() {
 		format = "json"
 	}
 	switch format {
-	case "json", "csv", "prometheus", "prom":
+	case "json", "csv", "md", "markdown", "prometheus", "prom":
 	default:
-		return fmt.Errorf("invalid --format %q: must be json, csv, or prometheus", format)
+		return fmt.Errorf("invalid --format %q: must be json, csv, md, or prometheus", format)
 	}
 
 	store, collector, err := getMetricsCollector(sessionID)
@@ -343,8 +350,6 @@ func runMetricsExport(sessionID, format, outputFile string) error {
 	}
 	if store != nil {
 		defer store.Close()
-	}
-	if collector != nil {
 	}
 
 	report, err := collector.GenerateReport()
@@ -365,47 +370,24 @@ func runMetricsExport(sessionID, format, outputFile string) error {
 
 	switch format {
 	case "csv":
-		return exportCSV(out, report)
+		_, err = fmt.Fprint(out, report.ExportCSV())
+		return err
+	case "md", "markdown":
+		_, err = fmt.Fprint(out, report.ExportMarkdown())
+		return err
 	case "prometheus", "prom":
 		_, err = fmt.Fprint(out, report.ExportPrometheus())
 		return err
 	case "json":
-		encoder := json.NewEncoder(out)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(report)
-	default:
-		return fmt.Errorf("invalid --format %q: must be json, csv, or prometheus", format)
-	}
-}
-
-// exportCSV exports latency data as CSV.
-func exportCSV(out *os.File, report *metrics.MetricsReport) error {
-	w := csv.NewWriter(out)
-	defer w.Flush()
-
-	// Header
-	if err := w.Write([]string{"operation", "count", "min_ms", "max_ms", "avg_ms", "p50_ms", "p95_ms", "p99_ms"}); err != nil {
+		data, err := report.ExportJSON()
+		if err != nil {
+			return fmt.Errorf("encoding JSON report: %w", err)
+		}
+		_, err = fmt.Fprintln(out, string(data))
 		return err
+	default:
+		return fmt.Errorf("invalid --format %q: must be json, csv, md, or prometheus", format)
 	}
-
-	// Data rows
-	for op, stats := range report.LatencyStats {
-		row := []string{
-			op,
-			fmt.Sprintf("%d", stats.Count),
-			fmt.Sprintf("%.2f", stats.MinMs),
-			fmt.Sprintf("%.2f", stats.MaxMs),
-			fmt.Sprintf("%.2f", stats.AvgMs),
-			fmt.Sprintf("%.2f", stats.P50Ms),
-			fmt.Sprintf("%.2f", stats.P95Ms),
-			fmt.Sprintf("%.2f", stats.P99Ms),
-		}
-		if err := w.Write(row); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 // runMetricsSnapshotSave saves current metrics as a named snapshot.

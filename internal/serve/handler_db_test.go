@@ -185,3 +185,72 @@ func TestHandleScannerStatus_NilScannerStore(t *testing.T) {
 		t.Error("expected non-zero status code")
 	}
 }
+
+func TestHandleMetricsExportV1_FormatsAndValidation(t *testing.T) {
+	srv, store := setupTestServer(t)
+	createTestSessionForServe(t, store, "rest-export-sess")
+
+	doGet := func(target string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.RemoteAddr = "127.0.0.1:12345"
+		req = req.WithContext(withRoleContext(req.Context(), &RoleContext{
+			Role:   RoleAdmin,
+			UserID: "tester",
+		}))
+		rec := httptest.NewRecorder()
+		srv.Router().ServeHTTP(rec, req)
+		return rec
+	}
+
+	t.Run("json default and explicit", func(t *testing.T) {
+		rec := doGet("/api/v1/metrics/export?session=rest-export-sess&format=json")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d body = %s, want 200", rec.Code, rec.Body.String())
+		}
+		var resp map[string]interface{}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal json export: %v", err)
+		}
+		if resp["success"] != true || resp["format"] != "json" || resp["session_id"] != "rest-export-sess" {
+			t.Fatalf("unexpected json payload: %v", resp)
+		}
+		if _, ok := resp["target_comparison"].([]interface{}); !ok {
+			t.Fatalf("target_comparison = %T, want non-null JSON array", resp["target_comparison"])
+		}
+	})
+
+	t.Run("csv format", func(t *testing.T) {
+		rec := doGet("/api/v1/metrics/export?session=rest-export-sess&format=csv")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d body = %s, want 200", rec.Code, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "text/csv; charset=utf-8" {
+			t.Fatalf("Content-Type = %q, want text/csv; charset=utf-8", ct)
+		}
+		const wantHeader = "operation,count,min_ms,max_ms,avg_ms,p50_ms,p95_ms,p99_ms\n"
+		if rec.Body.String() != wantHeader {
+			t.Fatalf("csv body = %q, want %q", rec.Body.String(), wantHeader)
+		}
+	})
+
+	t.Run("markdown format", func(t *testing.T) {
+		rec := doGet("/api/v1/metrics/export?session=rest-export-sess&format=md")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d body = %s, want 200", rec.Code, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "text/markdown; charset=utf-8" {
+			t.Fatalf("Content-Type = %q, want text/markdown; charset=utf-8", ct)
+		}
+		if body := rec.Body.String(); !bytes.Contains([]byte(body), []byte("# NTM Metrics Report (`rest-export-sess`)")) {
+			t.Fatalf("markdown body missing header:\n%s", body)
+		}
+	})
+
+	t.Run("invalid format returns 400", func(t *testing.T) {
+		rec := doGet("/api/v1/metrics/export?session=rest-export-sess&format=xml")
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d body = %s, want 400", rec.Code, rec.Body.String())
+		}
+	})
+}

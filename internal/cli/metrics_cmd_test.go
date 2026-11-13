@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -187,4 +188,79 @@ func TestMetricsSnapshotList_TextOutput(t *testing.T) {
 	if strings.Contains(out, "requires active session with state store") {
 		t.Errorf("text output still shows the old placebo message:\n%s", out)
 	}
+}
+
+func TestMetricsExportCLI_FormatsAndValidation(t *testing.T) {
+	const session = "metrics-export-e2e"
+	tmp := setupMetricsStateDB(t, session)
+
+	prev := jsonOutput
+	jsonOutput = false
+	t.Cleanup(func() { jsonOutput = prev })
+
+	t.Run("json format", func(t *testing.T) {
+		out, err := captureStdout(t, func() error {
+			_, runErr := execCommand(t, "metrics", "export", "--session", session, "--format", "json")
+			return runErr
+		})
+		if err != nil {
+			t.Fatalf("metrics export --format json: %v", err)
+		}
+		if strings.Contains(out, `"target_comparison": null`) {
+			t.Fatalf("target_comparison encoded as null:\n%s", out)
+		}
+		var doc map[string]interface{}
+		if err := json.Unmarshal([]byte(out), &doc); err != nil {
+			t.Fatalf("unmarshal json export: %v\nout:\n%s", err, out)
+		}
+		if doc["session_id"] != session {
+			t.Fatalf("session_id = %v, want %q", doc["session_id"], session)
+		}
+	})
+
+	t.Run("csv format", func(t *testing.T) {
+		out, err := captureStdout(t, func() error {
+			_, runErr := execCommand(t, "metrics", "export", "--session", session, "--format", "csv")
+			return runErr
+		})
+		if err != nil {
+			t.Fatalf("metrics export --format csv: %v", err)
+		}
+		const wantHeader = "operation,count,min_ms,max_ms,avg_ms,p50_ms,p95_ms,p99_ms"
+		if !strings.HasPrefix(out, wantHeader) {
+			t.Fatalf("csv output = %q, want prefix %q", out, wantHeader)
+		}
+	})
+
+	t.Run("markdown format and file output", func(t *testing.T) {
+		outPath := filepath.Join(tmp, "report.md")
+		_, err := execCommand(t, "metrics", "export", "--session", session, "--format", "md", "--output", outPath)
+		if err != nil {
+			t.Fatalf("metrics export --format md --output: %v", err)
+		}
+		fileBytes, err := os.ReadFile(outPath)
+		if err != nil {
+			t.Fatalf("read exported file: %v", err)
+		}
+		if !strings.Contains(string(fileBytes), "# NTM Metrics Report (`"+session+"`)") {
+			t.Fatalf("exported file missing markdown header:\n%s", string(fileBytes))
+		}
+		out, err := captureStdout(t, func() error {
+			_, runErr := execCommand(t, "metrics", "export", "--session", session, "--format", "markdown")
+			return runErr
+		})
+		if err != nil {
+			t.Fatalf("metrics export --format markdown: %v", err)
+		}
+		if !strings.Contains(out, "# NTM Metrics Report (`"+session+"`)") || !strings.Contains(out, "## Latency Statistics") {
+			t.Fatalf("unexpected markdown output:\n%s", out)
+		}
+	})
+
+	t.Run("invalid format fails cleanly", func(t *testing.T) {
+		_, err := execCommand(t, "metrics", "export", "--session", session, "--format", "xml")
+		if err == nil || !strings.Contains(err.Error(), "invalid --format") {
+			t.Fatalf("metrics export --format xml err = %v, want invalid --format error", err)
+		}
+	})
 }
