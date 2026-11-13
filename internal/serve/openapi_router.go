@@ -134,15 +134,15 @@ var verifiedRobotHandlers = map[string]string{
 	"handleRobotStatus": "status",
 	"handleRobotHealth": "health",
 	// System, policy, and agent-lifecycle handlers verified to serialize robot outputs.
-	"handleCapabilitiesV1":    "capabilities",
-	"handlePolicyDecisionsV1": "policy_decisions",
-	"handleAgentSpawnV1":        "spawn",
-	"handleAgentSendV1":         "send",
-	"handleAgentInterruptV1":    "interrupt",
-	"handleAgentWaitV1":         "wait",
-	"handleGetRequestStatusV1":  "action_status",
-	"handleWaitRequestV1":       "wait_request",
-	"handleCancelRequestV1":     "cancel_request",
+	"handleCapabilitiesV1":     "capabilities",
+	"handlePolicyDecisionsV1":  "policy_decisions",
+	"handleAgentSpawnV1":       "spawn",
+	"handleAgentSendV1":        "send",
+	"handleAgentInterruptV1":   "interrupt",
+	"handleAgentWaitV1":        "wait",
+	"handleGetRequestStatusV1": "action_status",
+	"handleWaitRequestV1":      "wait_request",
+	"handleCancelRequestV1":    "cancel_request",
 }
 
 // robotSchemaForHandler joins a handler name to a robot schema registry key

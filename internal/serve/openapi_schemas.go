@@ -149,24 +149,24 @@ type WSProtocolCatalog struct {
 }
 
 type AttentionEventsEnvelopeResponse struct {
-	Success        bool                             `json:"success"`
-	Timestamp      string                           `json:"timestamp"`
-	Version        string                           `json:"version"`
-	OutputFormat   string                           `json:"output_format"`
-	Events         []robot.AttentionEvent           `json:"events"`
-	SinceCursor    int64                            `json:"since_cursor"`
-	NextCursor     int64                            `json:"next_cursor"`
-	NewestCursor   int64                            `json:"newest_cursor"`
-	OldestCursor   int64                            `json:"oldest_cursor"`
-	EventCount     int                              `json:"event_count"`
-	Truncated      bool                             `json:"truncated"`
+	Success        bool                          `json:"success"`
+	Timestamp      string                        `json:"timestamp"`
+	Version        string                        `json:"version"`
+	OutputFormat   string                        `json:"output_format"`
+	Events         []robot.AttentionEvent        `json:"events"`
+	SinceCursor    int64                         `json:"since_cursor"`
+	NextCursor     int64                         `json:"next_cursor"`
+	NewestCursor   int64                         `json:"newest_cursor"`
+	OldestCursor   int64                         `json:"oldest_cursor"`
+	EventCount     int                           `json:"event_count"`
+	Truncated      bool                          `json:"truncated"`
 	ReplayTarget   *robot.HistoricalReplayTarget `json:"replay_target,omitempty"`
 	Reconstruction *robot.ReconstructionMeta     `json:"reconstruction,omitempty"`
 	Boundedness    *robot.HistoricalBoundedness  `json:"boundedness,omitempty"`
 	Incident       *robot.SnapshotIncident       `json:"incident,omitempty"`
-	Error          string                           `json:"error,omitempty"`
-	ErrorCode      string                           `json:"error_code,omitempty"`
-	Hint           string                           `json:"hint,omitempty"`
+	Error          string                        `json:"error,omitempty"`
+	ErrorCode      string                        `json:"error_code,omitempty"`
+	Hint           string                        `json:"hint,omitempty"`
 }
 
 type AttentionItemTarget struct {
@@ -533,35 +533,35 @@ type PipelinesListEnvelopeResponse struct {
 
 type PipelineExecutionEnvelopeResponse struct {
 	APIResponse
-	RunID      string                    `json:"run_id"`
-	WorkflowID string                    `json:"workflow_id,omitempty"`
-	Session    string                    `json:"session,omitempty"`
-	Status     string                    `json:"status"`
-	DryRun     bool                      `json:"dry_run,omitempty"`
-	Resumed    bool                      `json:"resumed,omitempty"`
-	Background bool                      `json:"background,omitempty"`
-	StartedAt  string                    `json:"started_at,omitempty"`
-	FinishedAt string                    `json:"finished_at,omitempty"`
-	DurationMs int64                     `json:"duration_ms,omitempty"`
-	CurrentStep string                   `json:"current_step,omitempty"`
-	Progress   pipeline.PipelineProgress `json:"progress,omitempty"`
-	Steps      map[string]pipeline.PipelineStep `json:"steps,omitempty"`
-	Message    string                    `json:"message,omitempty"`
-	Error      string                    `json:"error,omitempty"`
+	RunID       string                           `json:"run_id"`
+	WorkflowID  string                           `json:"workflow_id,omitempty"`
+	Session     string                           `json:"session,omitempty"`
+	Status      string                           `json:"status"`
+	DryRun      bool                             `json:"dry_run,omitempty"`
+	Resumed     bool                             `json:"resumed,omitempty"`
+	Background  bool                             `json:"background,omitempty"`
+	StartedAt   string                           `json:"started_at,omitempty"`
+	FinishedAt  string                           `json:"finished_at,omitempty"`
+	DurationMs  int64                            `json:"duration_ms,omitempty"`
+	CurrentStep string                           `json:"current_step,omitempty"`
+	Progress    pipeline.PipelineProgress        `json:"progress,omitempty"`
+	Steps       map[string]pipeline.PipelineStep `json:"steps,omitempty"`
+	Message     string                           `json:"message,omitempty"`
+	Error       string                           `json:"error,omitempty"`
 }
 
 type PipelineRecoveryEnvelopeResponse struct {
 	APIResponse
-	RunID      string                                        `json:"run_id"`
-	WorkflowID string                                        `json:"workflow_id"`
-	Session    string                                        `json:"session,omitempty"`
-	Deliveries []pipeline.AgentDeliveryRecoveryEntry         `json:"deliveries,omitempty"`
-	Commands   []pipeline.CommandExecutionRecoveryEntry      `json:"commands,omitempty"`
-	Selectors  []pipeline.CommandEvaluationRecoveryEntry     `json:"selectors,omitempty"`
-	Delivery   *pipeline.AgentDeliveryRecoveryEntry          `json:"delivery,omitempty"`
-	Command    *pipeline.CommandExecutionRecoveryEntry       `json:"command,omitempty"`
-	Selector   *pipeline.CommandEvaluationRecoveryEntry      `json:"selector,omitempty"`
-	Replaced   bool                                          `json:"replaced,omitempty"`
+	RunID      string                                    `json:"run_id"`
+	WorkflowID string                                    `json:"workflow_id"`
+	Session    string                                    `json:"session,omitempty"`
+	Deliveries []pipeline.AgentDeliveryRecoveryEntry     `json:"deliveries,omitempty"`
+	Commands   []pipeline.CommandExecutionRecoveryEntry  `json:"commands,omitempty"`
+	Selectors  []pipeline.CommandEvaluationRecoveryEntry `json:"selectors,omitempty"`
+	Delivery   *pipeline.AgentDeliveryRecoveryEntry      `json:"delivery,omitempty"`
+	Command    *pipeline.CommandExecutionRecoveryEntry   `json:"command,omitempty"`
+	Selector   *pipeline.CommandEvaluationRecoveryEntry  `json:"selector,omitempty"`
+	Replaced   bool                                      `json:"replaced,omitempty"`
 }
 
 type PipelineValidateEnvelopeResponse struct {
@@ -676,9 +676,9 @@ type SessionDetailEnvelopeResponse struct {
 
 type SessionEventsEnvelopeResponse struct {
 	APIResponse
-	SessionID string          `json:"session_id"`
+	SessionID string           `json:"session_id"`
 	Events    []map[string]any `json:"events"`
-	Count     int             `json:"count"`
+	Count     int              `json:"count"`
 }
 
 type PaneSummaryRecord struct {
@@ -1010,30 +1010,30 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 	"handleKernelCommands": {Response: KernelCommandsEnvelopeResponse{}, Envelope: true},
 
 	// Sessions, Panes, Agents, Streaming, Metrics, Jobs
-	"handleSessionsV1":            {Response: SessionsListEnvelopeResponse{}, Envelope: true},
-	"handleSessionV1":             {Response: SessionDetailEnvelopeResponse{}, Envelope: true},
-	"handleSessionEventsRouteV1":  {Response: SessionEventsEnvelopeResponse{}, Envelope: true},
-	"handleCreateSessionV1":       {ComponentName: "CreateSessionEnvelopeResponse", Response: output.CreateResponse{}, Envelope: true, Request: CreateSessionRequest{}, RequestReq: true},
-	"handleSessionStatusV1":       {ComponentName: "SessionStatusEnvelopeResponse", Response: output.StatusResponse{}, Envelope: true},
-	"handleSessionAttachV1":       {ComponentName: "SessionAttachEnvelopeResponse", Response: output.SessionResponse{}, Envelope: true},
-	"handleSessionZoomV1":         {ComponentName: "SessionActionEnvelopeResponse", Response: output.SuccessResponse{}, Envelope: true, Request: SessionZoomRequest{}, RequestReq: true},
-	"handleSessionViewV1":         {ComponentName: "SessionActionEnvelopeResponse", Response: output.SuccessResponse{}, Envelope: true},
-	"handleListPanesV1":           {Response: PanesListEnvelopeResponse{}, Envelope: true},
-	"handleGetPaneV1":             {Response: PaneDetailEnvelopeResponse{}, Envelope: true},
-	"handlePaneInputV1":           {Response: PaneInputEnvelopeResponse{}, Envelope: true, Request: PaneInputRequest{}, RequestReq: true},
-	"handlePaneInterruptV1":       {Response: PaneInterruptEnvelopeResponse{}, Envelope: true},
-	"handlePaneOutputV1":          {Response: PaneOutputEnvelopeResponse{}, Envelope: true, QueryParams: []routeQueryParam{{Name: "lines", Type: "integer", Description: "Number of scrollback lines to capture (default 100)."}}},
-	"handleGetPaneTitleV1":        {Response: PaneTitleEnvelopeResponse{}, Envelope: true},
-	"handleSetPaneTitleV1":        {Response: PaneTitleEnvelopeResponse{}, Envelope: true, Request: PaneTitleRequest{}, RequestReq: true},
-	"handleStartPaneStreamV1":     {Response: PaneStreamEnvelopeResponse{}, Envelope: true},
-	"handleStopPaneStreamV1":      {Response: PaneStreamEnvelopeResponse{}, Envelope: true},
-	"handleStreamingStatsV1":      {Response: StreamingStatsEnvelopeResponse{}, Envelope: true},
-	"handleMetricsExportV1":       {Response: MetricsExportEnvelopeResponse{}, Envelope: true},
-	"handleListAgentsV1":          {Response: SessionAgentsEnvelopeResponse{}, Envelope: true},
-	"handleListJobs":              {Response: JobsListEnvelopeResponse{}, Envelope: true},
-	"handleCreateJob":             {Response: JobEnvelopeResponse{}, Envelope: true, Request: CreateJobRequest{}, RequestReq: true},
-	"handleGetJob":                {Response: JobEnvelopeResponse{}, Envelope: true},
-	"handleCancelJob":             {Response: JobEnvelopeResponse{}, Envelope: true},
+	"handleSessionsV1":           {Response: SessionsListEnvelopeResponse{}, Envelope: true},
+	"handleSessionV1":            {Response: SessionDetailEnvelopeResponse{}, Envelope: true},
+	"handleSessionEventsRouteV1": {Response: SessionEventsEnvelopeResponse{}, Envelope: true},
+	"handleCreateSessionV1":      {ComponentName: "CreateSessionEnvelopeResponse", Response: output.CreateResponse{}, Envelope: true, Request: CreateSessionRequest{}, RequestReq: true},
+	"handleSessionStatusV1":      {ComponentName: "SessionStatusEnvelopeResponse", Response: output.StatusResponse{}, Envelope: true},
+	"handleSessionAttachV1":      {ComponentName: "SessionAttachEnvelopeResponse", Response: output.SessionResponse{}, Envelope: true},
+	"handleSessionZoomV1":        {ComponentName: "SessionActionEnvelopeResponse", Response: output.SuccessResponse{}, Envelope: true, Request: SessionZoomRequest{}, RequestReq: true},
+	"handleSessionViewV1":        {ComponentName: "SessionActionEnvelopeResponse", Response: output.SuccessResponse{}, Envelope: true},
+	"handleListPanesV1":          {Response: PanesListEnvelopeResponse{}, Envelope: true},
+	"handleGetPaneV1":            {Response: PaneDetailEnvelopeResponse{}, Envelope: true},
+	"handlePaneInputV1":          {Response: PaneInputEnvelopeResponse{}, Envelope: true, Request: PaneInputRequest{}, RequestReq: true},
+	"handlePaneInterruptV1":      {Response: PaneInterruptEnvelopeResponse{}, Envelope: true},
+	"handlePaneOutputV1":         {Response: PaneOutputEnvelopeResponse{}, Envelope: true, QueryParams: []routeQueryParam{{Name: "lines", Type: "integer", Description: "Number of scrollback lines to capture (default 100)."}}},
+	"handleGetPaneTitleV1":       {Response: PaneTitleEnvelopeResponse{}, Envelope: true},
+	"handleSetPaneTitleV1":       {Response: PaneTitleEnvelopeResponse{}, Envelope: true, Request: PaneTitleRequest{}, RequestReq: true},
+	"handleStartPaneStreamV1":    {Response: PaneStreamEnvelopeResponse{}, Envelope: true},
+	"handleStopPaneStreamV1":     {Response: PaneStreamEnvelopeResponse{}, Envelope: true},
+	"handleStreamingStatsV1":     {Response: StreamingStatsEnvelopeResponse{}, Envelope: true},
+	"handleMetricsExportV1":      {Response: MetricsExportEnvelopeResponse{}, Envelope: true},
+	"handleListAgentsV1":         {Response: SessionAgentsEnvelopeResponse{}, Envelope: true},
+	"handleListJobs":             {Response: JobsListEnvelopeResponse{}, Envelope: true},
+	"handleCreateJob":            {Response: JobEnvelopeResponse{}, Envelope: true, Request: CreateJobRequest{}, RequestReq: true},
+	"handleGetJob":               {Response: JobEnvelopeResponse{}, Envelope: true},
+	"handleCancelJob":            {Response: JobEnvelopeResponse{}, Envelope: true},
 
 	// Request bodies for robot-joined mutation handlers
 	"handleAgentSpawnV1":     {Request: AgentSpawnRequest{}, RequestReq: true},
@@ -1101,14 +1101,14 @@ func (r *openapiReflector) registerRootType(sample any, explicitName string, wit
 		}
 	}
 
-	placeholder := &Schema{Type: "object"}
-	r.components.Schemas[name] = placeholder
+	cycleGuard := &Schema{Type: "object"}
+	r.components.Schemas[name] = cycleGuard
 	r.seenTypes[name] = t
 	if !withEnvelope {
 		r.namesByTyp[t] = name
 	}
 	schema := r.structSchema(t, withEnvelope)
-	*placeholder = *schema
+	*cycleGuard = *schema
 	return name
 }
 
@@ -1298,11 +1298,11 @@ func (r *openapiReflector) typeSchema(t reflect.Type) *Schema {
 			return r.structSchema(t, false)
 		}
 		if _, exists := r.components.Schemas[compName]; !exists {
-			// Insert placeholder first so self-referential structs terminate cleanly.
-			placeholder := &Schema{Type: "object"}
-			r.components.Schemas[compName] = placeholder
+			// Insert cycle guard first so self-referential structs terminate cleanly.
+			cycleGuard := &Schema{Type: "object"}
+			r.components.Schemas[compName] = cycleGuard
 			built := r.structSchema(t, false)
-			*placeholder = *built
+			*cycleGuard = *built
 		}
 		return &Schema{Ref: "#/components/schemas/" + compName}
 	case reflect.Interface:
