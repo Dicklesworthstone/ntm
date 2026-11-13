@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 )
 
 // OpenCode (sst/opencode 1.18.x) draws its composer as a run of rows prefixed
@@ -22,65 +24,14 @@ import (
 // transcript with the same bar prefix, but always separated from the composer
 // by a non-bar row, so only the contiguous run ending at the rule is the
 // composer (all verified live, GH #333).
-const (
-	opencodeComposerBar  = "┃"
-	opencodeComposerRule = "╹"
-	opencodePlaceholder  = "Ask anything"
-	opencodePasteToken   = "[Pasted ~"
-)
+const opencodePasteToken = "[Pasted ~"
 
 // opencodeComposerDraft extracts the text currently in an OpenCode composer
 // from a visible-pane capture. found is false when no composer is on screen.
 // The returned draft joins the input rows with newlines and is empty for an
 // empty composer (including one showing only the hint text).
-//
-// Rows are cut to the columns spanned by the closing rule: once a session
-// exists, a wide pane draws a sidebar (session title, context, cwd) on the
-// same rows, to the right of the composer box.
 func opencodeComposerDraft(capture string) (draft string, found bool) {
-	lines := strings.Split(strings.ReplaceAll(capture, "\r\n", "\n"), "\n")
-	rule, ruleCol, ruleEnd := -1, -1, 0
-	for i := len(lines) - 1; i >= 0; i-- {
-		runes := []rune(strings.TrimRight(lines[i], " \t"))
-		for col, r := range runes {
-			if r == ' ' || r == '\t' {
-				continue
-			}
-			if string(r) == opencodeComposerRule {
-				rule, ruleCol, ruleEnd = i, col, len(runes)
-			}
-			break
-		}
-		if rule >= 0 {
-			break
-		}
-	}
-	if rule < 1 {
-		return "", false
-	}
-	var rows []string // bottom-up
-	for i := rule - 1; i >= 0; i-- {
-		runes := []rune(lines[i])
-		if len(runes) <= ruleCol || string(runes[ruleCol]) != opencodeComposerBar {
-			break
-		}
-		end := min(len(runes), ruleEnd)
-		rows = append(rows, strings.TrimSpace(string(runes[ruleCol+1:end])))
-	}
-	if len(rows) == 0 {
-		return "", false
-	}
-	// rows[0] is the agent/model line; the rest, reversed, is the input box.
-	input := make([]string, 0, len(rows)-1)
-	for i := len(rows) - 1; i >= 1; i-- {
-		if rows[i] != "" {
-			input = append(input, rows[i])
-		}
-	}
-	if len(input) == 1 && strings.HasPrefix(input[0], opencodePlaceholder) {
-		return "", true
-	}
-	return strings.Join(input, "\n"), true
+	return agent.ParseOpencodeComposer(capture)
 }
 
 // OpencodeComposerVisible reports whether an OpenCode capture shows the

@@ -323,6 +323,8 @@ func isKnownAgentType(agentType string) bool {
 	case agent.AgentTypeClaudeCode,
 		agent.AgentTypeCodex,
 		agent.AgentTypeGemini,
+		agent.AgentTypeAntigravity,
+		agent.AgentTypeGrok,
 		agent.AgentTypeCursor,
 		agent.AgentTypeWindsurf,
 		agent.AgentTypeAider,

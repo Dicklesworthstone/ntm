@@ -96,7 +96,7 @@ func DetectInteractiveGate(content string, paneWidth int) (gate string, found bo
 	if ClaudeActivelyWorking(content, paneWidth) || CodexActivelyWorking(content, paneWidth) {
 		return "", false
 	}
-	clean := stripANSICodes(content)
+	clean := trimTrailingBlankLines(stripANSICodes(content))
 	tail := util.GetLastNLines(clean, util.WidthAdaptiveTailLines(paneWidth, gateTailBaseLines))
 	if strings.TrimSpace(tail) == "" {
 		return "", false

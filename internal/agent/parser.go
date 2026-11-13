@@ -402,7 +402,7 @@ func (p *parserImpl) detectStateFlags(output string, state *AgentState) {
 // detectRateLimit checks if the agent hit an API usage limit.
 // We scan recent output (last 50 lines) to avoid stale errors triggering state.
 func (p *parserImpl) detectRateLimit(output string, agentType AgentType) bool {
-	recentOutput := util.GetLastNLines(output, 50)
+	recentOutput := util.GetLastNLines(trimTrailingBlankLines(output), 50)
 
 	switch agentType {
 	case AgentTypeClaudeCode:
@@ -444,8 +444,11 @@ func (p *parserImpl) detectRateLimit(output string, agentType AgentType) bool {
 // detectWorking checks if the agent is actively producing output.
 // This focuses on recent output (last 20 lines) for accuracy.
 func (p *parserImpl) detectWorking(output string, agentType AgentType) bool {
+	if agentType != AgentTypeUnknown && agentType != AgentTypeUser && HasTrailingShellExitPrompt(output) {
+		return false
+	}
 	// Check recent output - recent activity is more relevant
-	recentOutput := util.GetLastNLines(output, 20)
+	recentOutput := util.GetLastNLines(trimTrailingBlankLines(output), 20)
 
 	switch agentType {
 	case AgentTypeClaudeCode:
@@ -492,19 +495,23 @@ func (p *parserImpl) detectWorking(output string, agentType AgentType) bool {
 // detectIdle checks if the agent is waiting for user input.
 // This examines the last few lines for prompt patterns.
 func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
+	trimmedOutput := trimTrailingBlankLines(output)
 	// Check last lines for prompt indicators.
 	// Claude Code's TUI has a status bar (project path, bypass status, context %) that can be 5-8 lines below the prompt. Use a larger window for CC.
 	lineCount := 5
 	if agentType == AgentTypeClaudeCode {
 		lineCount = 12
 	}
-	lastLines := util.GetLastNLines(output, lineCount)
+	lastLines := util.GetLastNLines(trimmedOutput, lineCount)
 
 	switch agentType {
 	case AgentTypeClaudeCode:
 		// Handle empty output with known agent type as idle
-		if strings.TrimSpace(lastLines) == "" {
+		if strings.TrimSpace(trimmedOutput) == "" {
 			return true
+		}
+		if HasTrailingShellExitPrompt(trimmedOutput) || TrustDialogVisible(trimmedOutput) {
+			return false
 		}
 		// A genuinely WORKING pane is NEVER idle. Claude pins its "❯ " input
 		// box to the bottom of the screen even while busy, so an empty-chevron
@@ -530,6 +537,9 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 		}
 		return false
 	case AgentTypeCodex:
+		if HasTrailingShellExitPrompt(trimmedOutput) || TrustDialogVisible(trimmedOutput) {
+			return false
+		}
 		// Codex keeps its chevron visible throughout a turn. Use the same
 		// live-work veto as the canonical detector, including spinners above
 		// the composer and truncated interrupt hints in narrow panes.
@@ -539,6 +549,9 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 		// or spinner must veto idle, including when drawn above the prompt.
 		return DetectGeminiTurn(output) == GeminiTurnIdle
 	case AgentTypeAntigravity:
+		if HasTrailingShellExitPrompt(trimmedOutput) || TrustDialogVisible(trimmedOutput) {
+			return false
+		}
 		if AntigravityActivelyWorking(output, 0) {
 			return false
 		}
@@ -555,8 +568,11 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 		// Empty output with a known grok pane reads as idle (fresh spawn),
 		// mirroring the Claude arm. A live in-flight marker vetoes idle: the
 		// bordered composer is permanent chrome drawn during work.
-		if strings.TrimSpace(lastLines) == "" {
+		if strings.TrimSpace(trimmedOutput) == "" {
 			return true
+		}
+		if HasTrailingShellExitPrompt(trimmedOutput) || TrustDialogVisible(trimmedOutput) {
+			return false
 		}
 		if GrokActivelyWorking(output, 0) {
 			return false
@@ -565,14 +581,11 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 	case AgentTypeOpencode:
 		// Mirrors the grok arm: a fresh pane with no output reads as idle; the
 		// `esc interrupt` footer vetoes idle while a turn runs; otherwise the
-		// empty-composer hint text is the idle signal.
-		if strings.TrimSpace(lastLines) == "" {
+		// structural heavy-bar composer or hint text is the idle signal.
+		if strings.TrimSpace(trimmedOutput) == "" {
 			return true
 		}
-		if OpencodeActivelyWorking(output, 0) {
-			return false
-		}
-		return matchAnyRegex(lastLines, ocIdlePatterns)
+		return OpencodeIdlePromptShowing(output)
 	case AgentTypeOmp:
 		// Unlike grok/Claude, a blank omp pane is NOT idle: omp draws nothing
 		// for ~1s after launch and its composer appears in the same frame as
@@ -583,6 +596,9 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 		// patterns veto idle, its Idle patterns decide; with no Idle patterns
 		// declared fall through to the generic union (ntm#260).
 		if pp, ok := LookupPluginPatterns(agentType); ok && pp.Declared() {
+			if HasTrailingShellExitPrompt(trimmedOutput) || TrustDialogVisible(trimmedOutput) {
+				return false
+			}
 			if PluginActivelyWorking(output, agentType, 0) {
 				return false
 			}
@@ -604,7 +620,7 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 // detectError checks if the agent is in an error state.
 func (p *parserImpl) detectError(output string, agentType AgentType) bool {
 	// Check recent output for error patterns
-	recentOutput := util.GetLastNLines(output, 10)
+	recentOutput := util.GetLastNLines(trimTrailingBlankLines(output), 10)
 
 	switch agentType {
 	case AgentTypeClaudeCode:
@@ -664,7 +680,7 @@ func (p *parserImpl) detectError(output string, agentType AgentType) bool {
 // collectLimitIndicators returns the specific patterns that matched for rate limiting.
 func (p *parserImpl) collectLimitIndicators(output string, agentType AgentType) []string {
 	// Focus on recent output to match detection logic
-	recentOutput := util.GetLastNLines(output, 50)
+	recentOutput := util.GetLastNLines(trimTrailingBlankLines(output), 50)
 
 	switch agentType {
 	case AgentTypeClaudeCode:
@@ -705,7 +721,7 @@ func (p *parserImpl) collectLimitIndicators(output string, agentType AgentType) 
 // collectWorkIndicators returns the specific patterns that matched for working state.
 func (p *parserImpl) collectWorkIndicators(output string, agentType AgentType) []string {
 	// Focus on recent output
-	recentOutput := util.GetLastNLines(output, 20)
+	recentOutput := util.GetLastNLines(trimTrailingBlankLines(output), 20)
 
 	switch agentType {
 	case AgentTypeClaudeCode:

@@ -974,8 +974,28 @@ func shellHasLiveDescendant(pid, maxDepth int) bool {
 	if pid <= 0 {
 		return false
 	}
-	_ = maxDepth
-	return len(process.GetChildPIDs(pid, 8)) > 0
+	if maxDepth <= 0 {
+		maxDepth = 1
+	}
+	seen := map[int]bool{pid: true}
+	frontier := []int{pid}
+	for depth := 0; depth < maxDepth && len(frontier) > 0; depth++ {
+		var next []int
+		for _, parent := range frontier {
+			for _, child := range process.GetChildPIDs(parent, 8) {
+				if child <= 0 || seen[child] {
+					continue
+				}
+				seen[child] = true
+				if process.IsAlive(child) {
+					return true
+				}
+				next = append(next, child)
+			}
+		}
+		frontier = next
+	}
+	return false
 }
 
 func isAgentWrapperCommand(command string) bool {
@@ -2718,7 +2738,8 @@ const boxRuleRunes = "─━╌┄┈╰╯└┘╭╮┌┐┏┓┗┛"
 // continuation rows inside its bordered composer. Keep empty rows so payload
 // matching cannot silently bridge a blank line.
 func composerBlockRows(capture string, markers []string) (rows []string, bordered, found bool) {
-	lines := strings.Split(capture, "\n")
+	clean := strings.ReplaceAll(antigravityANSIRe.ReplaceAllString(capture, ""), "\r\n", "\n")
+	lines := strings.Split(clean, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		idx, marker := indexAnyMarker(lines[i], markers)
 		if idx < 0 {
@@ -2877,6 +2898,10 @@ var queuedMessagesMarkers = []string{
 // scrolled away hours ago.
 const queuedMarkerTailLines = 10
 
+func isPiAgentType(agentType AgentType) bool {
+	return strings.EqualFold(strings.TrimSpace(string(agentType)), "pi")
+}
+
 // InspectComposer derives the message-independent composer state from a
 // pane capture. The composer is bottom-pinned in both Claude Code and
 // codex, so the bottom-most marker line is the live input box even in a
@@ -2899,8 +2924,24 @@ func InspectComposer(capture string, agentType AgentType) ComposerState {
 		// line box, whose bottom border is the draft's input row. omp steers
 		// a message sent mid-turn straight into the running turn, so it never
 		// holds queued messages outside the composer.
-		composer := agent.ParseOmpComposer(capture)
 		state.QueuedMessages = false
+		if agent.TrustDialogVisible(capture) || agent.HasTrailingShellExitPrompt(capture) {
+			return state
+		}
+		composer := agent.ParseOmpComposer(capture)
+		state.MarkerVisible = composer.Found
+		state.HoldsText = composer.Found && composer.Draft != ""
+		return state
+	}
+	if isPiAgentType(agentType) {
+		state.QueuedMessages = false
+		if agent.TrustDialogVisible(capture) || agent.HasTrailingShellExitPrompt(capture) {
+			return state
+		}
+		if _, gated := agent.DetectInteractiveGate(capture, 0); gated {
+			return state
+		}
+		composer := agent.ParsePiComposer(capture)
 		state.MarkerVisible = composer.Found
 		state.HoldsText = composer.Found && composer.Draft != ""
 		return state
@@ -2922,6 +2963,9 @@ func InspectComposer(capture string, agentType AgentType) ComposerState {
 	}
 	markers := composerMarkersForAgent(agentType)
 	if len(markers) == 0 {
+		return state
+	}
+	if !composerVisibleForDelivery(capture, markers) {
 		return state
 	}
 	// Block-aware: a Claude entry long enough to wrap puts its tail on the
@@ -3026,7 +3070,7 @@ var antigravityANSIRe = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\a\x1
 // the interactive-gate veto and the footer anchor are required.
 func antigravityComposerDraft(capture string) (draft string, found bool) {
 	clean := strings.ReplaceAll(antigravityANSIRe.ReplaceAllString(capture, ""), "\r\n", "\n")
-	if strings.TrimSpace(clean) == "" {
+	if strings.TrimSpace(clean) == "" || agent.HasTrailingShellExitPrompt(clean) {
 		return "", false
 	}
 	if _, gated := agent.DetectInteractiveGate(clean, 0); gated {
@@ -3139,12 +3183,25 @@ func codexTranscriptBrowsing(capture string) bool {
 // browsing. Empty captures and agent types without a known marker return
 // false. Held draft text is allowed; this check does not establish emptiness.
 func ComposerVisibleForDelivery(capture string, agentType AgentType) bool {
+	if isPiAgentType(agentType) {
+		if agent.TrustDialogVisible(capture) || agent.HasTrailingShellExitPrompt(capture) {
+			return false
+		}
+		if _, gated := agent.DetectInteractiveGate(capture, 0); gated {
+			return false
+		}
+		composer := agent.ParsePiComposer(capture)
+		return composer.Found && composer.CompletionRows == 0
+	}
 	switch agentType.Canonical() {
 	case AgentAntigravity:
 		return AntigravityComposerVisible(capture)
 	case AgentOpencode:
 		return OpencodeComposerVisible(capture)
 	case AgentOmp:
+		if agent.TrustDialogVisible(capture) {
+			return false
+		}
 		composer := agent.ParseOmpComposer(capture)
 		return composer.Found && composer.RowsBelow == 0
 	}
@@ -3159,12 +3216,19 @@ func ComposerVisibleForDelivery(capture string, agentType AgentType) bool {
 // enter to continue" at or just below the marker, is a selection cursor, not
 // an input box (GH#273 root cause 3).
 func composerVisibleForDelivery(capture string, markers []string) bool {
+	if len(markers) == 0 {
+		return false
+	}
+	clean := strings.ReplaceAll(antigravityANSIRe.ReplaceAllString(capture, ""), "\r\n", "\n")
+	if agent.TrustDialogVisible(clean) || agent.HasTrailingShellExitPrompt(clean) {
+		return false
+	}
 	for _, marker := range markers {
-		if (marker == "›" || marker == "»") && codexTranscriptBrowsing(capture) {
+		if (marker == "›" || marker == "»") && codexTranscriptBrowsing(clean) {
 			return false
 		}
 	}
-	lines := strings.Split(capture, "\n")
+	lines := strings.Split(clean, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		idx, marker := indexAnyMarker(lines[i], markers)
 		if idx < 0 {

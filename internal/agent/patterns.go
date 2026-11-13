@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
@@ -238,10 +239,10 @@ var (
 
 	// codIdlePatterns indicates waiting for input.
 	codIdlePatterns = []*regexp.Regexp{
-		regexp.MustCompile(`>\s*$`),                  // Standard prompt
-		regexp.MustCompile(`\?\s*for\s*shortcuts`),   // Codex prompt line
-		regexp.MustCompile(`codex>\s*$`),             // Codex prompt
-		regexp.MustCompile(`(?m)^\s*[›»](?:\s.*)?$`), // Codex chevron prompt, empty or with prefilled input ("»" at effort ultra, GH#273)
+		regexp.MustCompile(`>\s*$`),                               // Standard prompt
+		regexp.MustCompile(`\?\s*for\s*shortcuts`),                // Codex prompt line
+		regexp.MustCompile(`codex>\s*$`),                          // Codex prompt
+		regexp.MustCompile(`(?m)^\s*(?:[│┃|]\s*)?[›»](?:\s.*)?$`), // Codex chevron prompt, bare or bordered ("»" at effort ultra, GH#273)
 	}
 
 	// codErrorPatterns indicates error conditions.
@@ -340,7 +341,7 @@ const agyLiveTailLines = 15
 // AntigravityActivelyWorking reports whether the trailing live TUI frame
 // contains the provider's in-flight cancel hint.
 func AntigravityActivelyWorking(output string, paneWidth int) bool {
-	clean := stripANSICodes(output)
+	clean := trimTrailingBlankLines(stripANSICodes(output))
 	tail := util.GetLastNLines(clean, util.WidthAdaptiveTailLines(paneWidth, agyLiveTailLines))
 	return agyCancelHintRe.MatchString(tail)
 }
@@ -520,7 +521,7 @@ var (
 // Grok Build composer's bottom border (e.g. "Grok 4.6 (high)" -> "grok-4.6"),
 // or returns "" when no Grok status border is visible.
 func GrokStatusLineModel(output string) string {
-	clean := stripANSICodes(output)
+	clean := trimTrailingBlankLines(stripANSICodes(output))
 	tail := util.GetLastNLines(clean, grokLiveTailLines)
 	matches := grokStatusModelRe.FindAllStringSubmatch(tail, -1)
 	if len(matches) == 0 {
@@ -544,7 +545,7 @@ const grokLiveTailLines = 15
 // of which grok renders only while a turn is running. The live window is
 // width-adaptive; paneWidth is the real tmux pane width, pass 0 when unknown.
 func GrokActivelyWorking(output string, paneWidth int) bool {
-	clean := stripANSICodes(output)
+	clean := trimTrailingBlankLines(stripANSICodes(output))
 	tail := util.GetLastNLines(clean, util.WidthAdaptiveTailLines(paneWidth, grokLiveTailLines))
 	return grokActiveWorkLineRe.MatchString(tail) || grokCancelHintRe.MatchString(tail)
 }
@@ -594,9 +595,121 @@ const ocLiveTailLines = 15
 // window shows an in-flight turn via the `esc interrupt` footer hint.
 // paneWidth is the real tmux pane width; pass 0 when unknown.
 func OpencodeActivelyWorking(output string, paneWidth int) bool {
-	clean := stripANSICodes(output)
+	clean := trimTrailingBlankLines(stripANSICodes(output))
 	tail := util.GetLastNLines(clean, util.WidthAdaptiveTailLines(paneWidth, ocLiveTailLines))
 	return ocInterruptHintRe.MatchString(tail)
+}
+
+const (
+	opencodeComposerBar         = "┃"
+	opencodeComposerRule        = "╹"
+	opencodePlaceholderPrefix   = "Ask anything"
+	opencodeIdleTrailingMaxRows = 12
+)
+
+// ParseOpencodeComposer extracts the text currently in an OpenCode (sst/opencode
+// 1.18+) composer from a visible-pane capture. found is false when no live
+// composer is on screen or when an interactive gate or shell-exit prompt owns
+// input. The returned draft joins input rows with newlines and is empty for an
+// empty composer (including one showing only the default prompt hint).
+func ParseOpencodeComposer(output string) (draft string, found bool) {
+	clean := strings.ReplaceAll(stripANSICodes(output), "\r\n", "\n")
+	if strings.TrimSpace(clean) == "" {
+		return "", false
+	}
+	if TrustDialogVisible(clean) || HasTrailingShellExitPrompt(clean) {
+		return "", false
+	}
+	if _, gated := DetectInteractiveGate(clean, 0); gated {
+		return "", false
+	}
+	lines := strings.Split(clean, "\n")
+	rule, ruleCol, ruleEnd := -1, -1, 0
+	for i := len(lines) - 1; i >= 0; i-- {
+		runes := []rune(strings.TrimRight(lines[i], " \t"))
+		for col, r := range runes {
+			if r == ' ' || r == '\t' {
+				continue
+			}
+			if string(r) == opencodeComposerRule {
+				rule, ruleCol, ruleEnd = i, col, len(runes)
+			}
+			break
+		}
+		if rule >= 0 {
+			break
+		}
+	}
+	if rule < 1 {
+		return "", false
+	}
+	for j := rule + 1; j < len(lines); j++ {
+		below := strings.TrimSpace(lines[j])
+		if below == "" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(below), "press enter to continue") {
+			return "", false
+		}
+	}
+	var rows []string // bottom-up
+	for i := rule - 1; i >= 0; i-- {
+		runes := []rune(lines[i])
+		if len(runes) <= ruleCol || string(runes[ruleCol]) != opencodeComposerBar {
+			break
+		}
+		end := min(len(runes), ruleEnd)
+		rows = append(rows, strings.TrimSpace(string(runes[ruleCol+1:end])))
+	}
+	if len(rows) == 0 {
+		return "", false
+	}
+	// rows[0] is the agent/model line; the rest, reversed, is the input box.
+	input := make([]string, 0, len(rows)-1)
+	for i := len(rows) - 1; i >= 1; i-- {
+		if rows[i] != "" {
+			input = append(input, rows[i])
+		}
+	}
+	if len(input) > 0 && (strings.HasPrefix(input[0], "Ask anything…") ||
+		strings.HasPrefix(input[0], "Ask anything...") ||
+		(len(input) == 1 && strings.HasPrefix(input[0], opencodePlaceholderPrefix))) {
+		return "", true
+	}
+	return strings.Join(input, "\n"), true
+}
+
+// OpencodeIdlePromptShowing reports whether an OpenCode pane is displaying an
+// idle prompt (either the 1.18+ heavy-bar composer at any viewport height or
+// the earlier boxed "Ask anything" composer), gated against in-flight work,
+// modal trust gates, and shell-exit prompts.
+func OpencodeIdlePromptShowing(output string) bool {
+	clean := strings.ReplaceAll(stripANSICodes(output), "\r\n", "\n")
+	if strings.TrimSpace(clean) == "" {
+		return false
+	}
+	if OpencodeActivelyWorking(clean, 0) || TrustDialogVisible(clean) || HasTrailingShellExitPrompt(clean) {
+		return false
+	}
+	if _, gated := DetectInteractiveGate(clean, 0); gated {
+		return false
+	}
+	if _, found := ParseOpencodeComposer(clean); found {
+		return true
+	}
+	lines := strings.Split(clean, "\n")
+	checked := 0
+	for i := len(lines) - 1; i >= 0 && checked < opencodeIdleTrailingMaxRows; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			continue
+		}
+		checked++
+		if matchAnyRegex(trimmed, ocIdlePatterns) {
+			return true
+		}
+	}
+	return false
 }
 
 var (
@@ -1017,6 +1130,190 @@ func OmpContextUsage(output string) (usedPct float64, windowTokens int64, ok boo
 	return pct, windowTokens, true
 }
 
+// Pi coding agent (pi) structural composer and footer patterns (ntm#361).
+// Unlike omp, pi has no vertical box borders or prompt glyph: two full-width
+// horizontal rules enclose the draft, anchored directly above pi's two-row
+// footer (cwd row + token/context stats row, plus optional extension status).
+var (
+	piPlainRule         = regexp.MustCompile(`^─{4,}$`)
+	piTopScrollRule     = regexp.MustCompile(`^─+ ↑ [1-9][0-9]* more ─+$`)
+	piBottomScrollRule  = regexp.MustCompile(`^─+ ↓ [1-9][0-9]* more ─+$`)
+	piWorkingRule       = regexp.MustCompile(`^─{2,} [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: .*)? ─+$`)
+	piNarrowWorkingRule = regexp.MustCompile(`^─{1,3}[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]─*$`)
+	piContextGauge      = regexp.MustCompile(`^(?:[0-9]+(?:\.[0-9]+)?%|\?)/[0-9]+(?:\.[0-9]+)?[kKMG]?$`)
+	piUsageToken        = regexp.MustCompile(`^(?:[↑↓RW][0-9]+(?:\.[0-9]+)?[kKMG]?|CH[0-9]+(?:\.[0-9]+)?%|\$[0-9]+(?:\.[0-9]+)?)$`)
+	piWindowsPath       = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
+	piVersionBanner     = regexp.MustCompile(`(?i)^(?:▀▀█|pi)\s+v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$`)
+	piShellLaunch       = regexp.MustCompile(`^.*[$%❯>#]\s+(?:cd\s+.+\s+&&\s+)?(?:exec\s+)?(?:[^\s]+/)?pi(?:\s|$)`)
+	piUserShellPromptRe = regexp.MustCompile(`^(?:[\w@:.~\-/\[\]()]+\s*)?[$%>]\s*$|^(?:[\w@:.~\-/\[\]()]+\s*)?❯\s*$`)
+)
+
+const (
+	piChromeScanLines = 40
+	piComposerMaxRows = 256
+)
+
+// PiComposer describes a complete, recognizable pi editor and footer frame.
+type PiComposer struct {
+	Found           bool
+	Working         bool
+	Draft           string
+	CompletionRows  int
+	TopLine         int
+	TranscriptStart int
+}
+
+// ParsePiComposer parses the bottom-anchored pi editor and footer from output.
+func ParsePiComposer(output string) PiComposer {
+	lines := strings.Split(strings.ReplaceAll(stripANSICodes(output), "\r\n", "\n"), "\n")
+	return ParsePiComposerLines(lines)
+}
+
+// ParsePiComposerLines parses a pi editor and footer over already-split lines
+// (which may still carry ANSI SGR codes), preserving indices into lines so
+// callers can slice transcript rows directly.
+func ParsePiComposerLines(lines []string) PiComposer {
+	end := len(lines)
+	for end > 0 && strings.TrimSpace(stripANSICodes(lines[end-1])) == "" {
+		end--
+	}
+	footer := -1
+	for stats := end - 1; stats >= end-2 && stats >= 1; stats-- {
+		if stats < end-1 && isPiUserShellPrompt(lines[end-1]) {
+			continue // pi exited to a shell; this is no longer pinned chrome.
+		}
+		if isPiFooterCwd(lines[stats-1]) && isPiFooterStats(lines[stats]) {
+			footer = stats - 1
+			break
+		}
+	}
+	if footer < 0 {
+		return PiComposer{}
+	}
+	start := max(0, footer-piChromeScanLines)
+	for bottom := footer - 1; bottom >= start; bottom-- {
+		width := piRuleWidth(lines[bottom], false)
+		if width == 0 {
+			continue
+		}
+		compOK, compRows := piCompletionRows(lines[bottom+1 : footer])
+		if !compOK {
+			return PiComposer{}
+		}
+		for top := bottom - 2; top >= max(0, bottom-piComposerMaxRows); top-- {
+			if piRuleWidth(lines[top], true) == width {
+				topStripped := strings.TrimRight(stripANSICodes(lines[top]), " \t\r")
+				draftRows := make([]string, 0, bottom-top-1)
+				for _, row := range lines[top+1 : bottom] {
+					draftRows = append(draftRows, strings.TrimSpace(stripANSICodes(row)))
+				}
+				return PiComposer{
+					Found:           true,
+					Working:         piWorkingRule.MatchString(topStripped) || piNarrowWorkingRule.MatchString(topStripped),
+					Draft:           strings.TrimSpace(strings.Join(draftRows, "\n")),
+					CompletionRows:  compRows,
+					TopLine:         top,
+					TranscriptStart: piTranscriptStart(lines[:top]),
+				}
+			}
+			if strings.HasPrefix(stripANSICodes(lines[top]), "─") {
+				return PiComposer{}
+			}
+		}
+		return PiComposer{}
+	}
+	return PiComposer{}
+}
+
+func isPiUserShellPrompt(line string) bool {
+	trimmed := strings.TrimSpace(stripANSICodes(line))
+	return trimmed != "" && piUserShellPromptRe.MatchString(trimmed)
+}
+
+func piRuleWidth(line string, top bool) int {
+	line = strings.TrimRight(stripANSICodes(line), " \t\r")
+	width := utf8.RuneCountInString(line)
+	if width < 4 {
+		return 0
+	}
+	if piPlainRule.MatchString(line) || (!top && piBottomScrollRule.MatchString(line)) ||
+		(top && (piTopScrollRule.MatchString(line) || piWorkingRule.MatchString(line) || piNarrowWorkingRule.MatchString(line))) {
+		return width
+	}
+	return 0
+}
+
+func isPiFooterCwd(line string) bool {
+	line = strings.TrimSpace(stripANSICodes(line))
+	return line == "~" || strings.HasPrefix(line, "~/") || strings.HasPrefix(line, "~ (") ||
+		strings.HasPrefix(line, "~ • ") || strings.HasPrefix(line, "/") ||
+		strings.HasPrefix(line, "\\\\") || piWindowsPath.MatchString(line)
+}
+
+func isPiFooterStats(line string) bool {
+	fields := strings.Fields(stripANSICodes(line))
+	usage := false
+	for i, field := range fields {
+		if piContextGauge.MatchString(field) {
+			return true
+		}
+		if piUsageToken.MatchString(field) {
+			usage = true
+			continue
+		}
+		if field == "(sub)" && i > 0 && strings.HasPrefix(fields[i-1], "$") {
+			continue
+		}
+		return i == len(fields)-1 && strings.HasSuffix(field, "...") &&
+			(usage || piUsageToken.MatchString(strings.TrimSuffix(field, "...")))
+	}
+	return false
+}
+
+func piCompletionRows(lines []string) (bool, int) {
+	selected, nonblank, noMatch := 0, 0, false
+	for _, line := range lines {
+		line = stripANSICodes(line)
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		nonblank++
+		switch {
+		case strings.HasPrefix(trimmed, "→ "):
+			selected++
+		case trimmed == "No matching commands":
+			noMatch = true
+		case !strings.HasPrefix(line, "  "):
+			return false, 0
+		}
+	}
+	ok := nonblank == 0 || (selected == 1 && !noMatch) || (nonblank == 1 && noMatch)
+	return ok, nonblank
+}
+
+func piTranscriptStart(lines []string) int {
+	first := 0
+	for first < len(lines) && strings.TrimSpace(stripANSICodes(lines[first])) == "" {
+		first++
+	}
+	if first >= len(lines) {
+		return 0
+	}
+	header := first
+	if piShellLaunch.MatchString(stripANSICodes(lines[first])) {
+		header++
+		for header < len(lines) && strings.TrimSpace(stripANSICodes(lines[header])) == "" {
+			header++
+		}
+	}
+	if header+1 < len(lines) && piVersionBanner.MatchString(strings.TrimSpace(stripANSICodes(lines[header]))) &&
+		strings.Contains(strings.ToLower(stripANSICodes(lines[header+1])), "interrupt") {
+		return header
+	}
+	return 0
+}
+
 // Ollama (ollama) patterns.
 var (
 	ollamaRateLimitPatterns = []string{
@@ -1103,7 +1400,7 @@ func DetectClaudeTurnState(output string, paneWidth int) ClaudeTurnState {
 	if output == "" {
 		return ClaudeTurnUnknown
 	}
-	clean := stripANSICodes(output)
+	clean := trimTrailingBlankLines(stripANSICodes(output))
 	tail := util.GetLastNLines(clean, util.WidthAdaptiveTailLines(paneWidth, claudeLiveTailLines))
 	if strings.TrimSpace(tail) == "" {
 		return ClaudeTurnUnknown
@@ -1143,7 +1440,7 @@ func ClaudeActivelyWorking(output string, paneWidth int) bool {
 // The live window is width-adaptive (bd-eeifh). paneWidth is the real tmux
 // pane width; pass 0 when unknown to keep the calibrated budget.
 func CodexActivelyWorking(output string, paneWidth int) bool {
-	clean := stripANSICodes(output)
+	clean := trimTrailingBlankLines(stripANSICodes(output))
 	tail := util.GetLastNLines(clean, util.WidthAdaptiveTailLines(paneWidth, codexLiveTailLines))
 	return codexActiveWorkLineRe.MatchString(tail) || codexInterruptHintRe.MatchString(tail)
 }
@@ -1211,12 +1508,16 @@ var claudeComposeBoxFooterRe = regexp.MustCompile(`⏵⏵`)
 // recognizer intentionally matches the input box even while a turn is in flight
 // (the box is always drawn). Used alone it would false-idle a working pane.
 func ClaudeIdlePromptShowing(output string) bool {
+	clean := trimTrailingBlankLines(stripANSICodes(output))
+	if strings.TrimSpace(clean) == "" || HasTrailingShellExitPrompt(clean) || TrustDialogVisible(clean) {
+		return false
+	}
 	// Bound the prompt scan to the same trailing window detectIdle uses for
 	// Claude (claudeIdleScanLines) so a stale prompt deep in scrollback is not
 	// matched, then check the finished-turn footer over the slightly wider live
 	// tail. Empty/whitespace output is NOT a positive idle signal here: callers
 	// that want "empty ⇒ idle" (parser.detectIdle) handle that explicitly.
-	tail := util.GetLastNLines(stripANSICodes(output), claudeIdleScanLines)
+	tail := util.GetLastNLines(clean, claudeIdleScanLines)
 	if strings.TrimSpace(tail) == "" {
 		return false
 	}
@@ -1224,15 +1525,23 @@ func ClaudeIdlePromptShowing(output string) bool {
 	// matching `>\s*$` against the whole block would miss a prompt that is not
 	// the very last line (e.g. "claude>\nfollowup"), so we match per line — the
 	// same line-oriented semantics the legacy prompt scan used.
-	for _, line := range strings.Split(tail, "\n") {
+	lastIdleIdx := -1
+	lastBlockingErrIdx := -1
+	for i, line := range strings.Split(tail, "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		if matchAnyRegex(line, ccIdlePatterns) {
-			return true
+			lastIdleIdx = i
+		}
+		if matchAny(line, ccRateLimitPatterns) || claudeIsTerminalErrorLine(line) {
+			lastBlockingErrIdx = i
 		}
 	}
-	return claudeFinishedTurnIdle(output)
+	if lastIdleIdx >= 0 {
+		return lastIdleIdx > lastBlockingErrIdx
+	}
+	return claudeFinishedTurnIdle(clean)
 }
 
 // claudeFinishedTurnIdle reports whether the live tail shows a finished-turn
@@ -1242,7 +1551,7 @@ func ClaudeIdlePromptShowing(output string) bool {
 // beyond the empty-chevron-only ccIdlePatterns and never overrides a working
 // verdict.
 func claudeFinishedTurnIdle(output string) bool {
-	clean := stripANSICodes(output)
+	clean := trimTrailingBlankLines(stripANSICodes(output))
 	tail := util.GetLastNLines(clean, claudeLiveTailLines)
 	if strings.TrimSpace(tail) == "" {
 		return false
@@ -1403,6 +1712,46 @@ func stripANSICodes(text string) string {
 	}
 
 	return sb.String()
+}
+
+var trailingShellExitPromptRe = regexp.MustCompile(`^(?:[\w.\-]+@[\w.\-]+:[^\s$%#]*\s*[$%#]|(?:bash|zsh|sh)(?:-[\d.]+)?[$%]|\$)\s*$`)
+
+// trimTrailingBlankLines removes trailing whitespace-only rows from a viewport
+// capture while preserving all characters on the bottom-most non-empty row.
+// Full-viewport captures on tall panes can have dozens of unused blank rows
+// below an inline TUI's composer; trimming them keeps bounded live-tail scans
+// anchored to the active TUI frame.
+func trimTrailingBlankLines(text string) string {
+	for len(text) > 0 {
+		idx := strings.LastIndexByte(text, '\n')
+		if idx < 0 {
+			if strings.TrimSpace(text) == "" {
+				return ""
+			}
+			return text
+		}
+		if strings.TrimSpace(text[idx+1:]) != "" {
+			return text
+		}
+		text = text[:idx]
+	}
+	return ""
+}
+
+// HasTrailingShellExitPrompt reports whether the bottom-most non-empty row of
+// output is a bare shell prompt ("$", "bash-5.2$", "user@host:~/proj$"). In an
+// agent pane, a shell prompt below TUI chrome means the agent exited back to
+// the parent shell; any composer rendered above it is historical scrollback.
+func HasTrailingShellExitPrompt(output string) bool {
+	lines := strings.Split(strings.ReplaceAll(stripANSICodes(output), "\r\n", "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			continue
+		}
+		return trailingShellExitPromptRe.MatchString(trimmed)
+	}
+	return false
 }
 
 // PatternSet groups all patterns for a specific agent type.

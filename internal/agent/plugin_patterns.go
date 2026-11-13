@@ -153,7 +153,8 @@ func PluginActivelyWorking(output string, t AgentType, paneWidth int) bool {
 	if !ok || len(pp.Working) == 0 {
 		return false
 	}
-	tail := util.GetLastNLines(output, util.WidthAdaptiveTailLines(paneWidth, pluginLiveTailLines))
+	clean := trimTrailingBlankLines(stripANSICodes(output))
+	tail := util.GetLastNLines(clean, util.WidthAdaptiveTailLines(paneWidth, pluginLiveTailLines))
 	return matchAnyLine(tail, pp.Working)
 }
 

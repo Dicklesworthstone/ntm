@@ -15,9 +15,7 @@ package status
 // which had grown its own private copy of the prompt-line half of the job.
 
 import (
-	"regexp"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 )
@@ -216,23 +214,6 @@ func trimOmpChrome(lines []string) []string {
 	return lines[:cut]
 }
 
-var (
-	piPlainRule         = regexp.MustCompile(`^─{4,}$`)
-	piTopScrollRule     = regexp.MustCompile(`^─+ ↑ [1-9][0-9]* more ─+$`)
-	piBottomScrollRule  = regexp.MustCompile(`^─+ ↓ [1-9][0-9]* more ─+$`)
-	piWorkingRule       = regexp.MustCompile(`^─{2,} [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: .*)? ─+$`)
-	piNarrowWorkingRule = regexp.MustCompile(`^─{1,3}[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]─*$`)
-	piContextGauge      = regexp.MustCompile(`^(?:[0-9]+(?:\.[0-9]+)?%|\?)/[0-9]+(?:\.[0-9]+)?[kKMG]?$`)
-	piUsageToken        = regexp.MustCompile(`^(?:[↑↓RW][0-9]+(?:\.[0-9]+)?[kKMG]?|CH[0-9]+(?:\.[0-9]+)?%|\$[0-9]+(?:\.[0-9]+)?)$`)
-	piWindowsPath       = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
-	piVersionBanner     = regexp.MustCompile(`(?i)^(?:▀▀█|pi)\s+v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$`)
-	piShellLaunch       = regexp.MustCompile(`^.*[$%❯>#]\s+(?:cd\s+.+\s+&&\s+)?(?:exec\s+)?(?:[^\s]+/)?pi(?:\s|$)`)
-)
-
-// Pi permits a draft to occupy 30% of the terminal height. Keep a generous
-// independent bound so a tall editor is not confused with a partial redraw.
-const piComposerMaxRows = 256
-
 // trimPiChrome recognizes pi's default editor and footer, independently of
 // Oh My Pi's bordered status-line composer. Pi's editor has no prompt glyph:
 // two full-width rules enclose its draft, followed by cwd and usage/model rows.
@@ -247,141 +228,11 @@ func trimPiChrome(lines []string) []string {
 // editor/footer frame. A partial redraw can leave unsubmitted draft text on
 // screen; preserving that text for display must not make it response evidence.
 func parsePiChrome(lines []string) ([]string, bool) {
-	end := len(lines)
-	for end > 0 && strings.TrimSpace(StripANSI(lines[end-1])) == "" {
-		end--
-	}
-	// The built-in footer has two rows and may add one extension-status row.
-	// Anchor it at the bottom rather than scanning arbitrary transcript text.
-	footer := -1
-	for stats := end - 1; stats >= end-2 && stats >= 1; stats-- {
-		if stats < end-1 && IsPromptLine(lines[end-1], "user") {
-			continue // pi exited to a shell; this is no longer pinned chrome.
-		}
-		if isPiFooterCwd(lines[stats-1]) && isPiFooterStats(lines[stats]) {
-			footer = stats - 1
-			break
-		}
-	}
-	if footer < 0 {
+	composer := agent.ParsePiComposerLines(lines)
+	if !composer.Found || composer.TranscriptStart < 0 || composer.TopLine < composer.TranscriptStart || composer.TopLine > len(lines) {
 		return lines, false
 	}
-	start := max(0, footer-chromeScanLines)
-	for bottom := footer - 1; bottom >= start; bottom-- {
-		width := piRuleWidth(lines[bottom], false)
-		if width == 0 {
-			continue
-		}
-		if !piCompletionRows(lines[bottom+1 : footer]) {
-			return lines, false
-		}
-		// The editor renders at least one draft row. Draft text has padding
-		// (or a reserved cursor column), so an indented/shorter rule inside a
-		// pasted draft cannot masquerade as its full-width top border.
-		for top := bottom - 2; top >= max(0, bottom-piComposerMaxRows); top-- {
-			if piRuleWidth(lines[top], true) == width {
-				return lines[piTranscriptStart(lines[:top]):top], true
-			}
-			if strings.HasPrefix(StripANSI(lines[top]), "─") {
-				// An unknown or mismatched border cannot be skipped to find
-				// an older, conveniently matching rule in the transcript.
-				return lines, false
-			}
-		}
-		return lines, false // Do not pair a partial box with an older transcript rule.
-	}
-	return lines, false
-}
-
-func piRuleWidth(line string, top bool) int {
-	line = strings.TrimRight(StripANSI(line), " \t\r")
-	width := utf8.RuneCountInString(line)
-	if width < 4 {
-		return 0
-	}
-	if piPlainRule.MatchString(line) || (!top && piBottomScrollRule.MatchString(line)) ||
-		(top && (piTopScrollRule.MatchString(line) || piWorkingRule.MatchString(line) || piNarrowWorkingRule.MatchString(line))) {
-		return width
-	}
-	return 0
-}
-
-func isPiFooterCwd(line string) bool {
-	line = strings.TrimSpace(StripANSI(line))
-	return line == "~" || strings.HasPrefix(line, "~/") || strings.HasPrefix(line, "~ (") ||
-		strings.HasPrefix(line, "~ • ") || strings.HasPrefix(line, "/") ||
-		strings.HasPrefix(line, "\\\\") || piWindowsPath.MatchString(line)
-}
-
-func isPiFooterStats(line string) bool {
-	fields := strings.Fields(StripANSI(line))
-	usage := false
-	for i, field := range fields {
-		if piContextGauge.MatchString(field) {
-			return true
-		}
-		if piUsageToken.MatchString(field) {
-			usage = true
-			continue
-		}
-		if field == "(sub)" && i > 0 && strings.HasPrefix(fields[i-1], "$") {
-			continue
-		}
-		// Narrow panes truncate the stats before its context gauge. Require
-		// recognizable usage first and the renderer's terminal ellipsis.
-		return i == len(fields)-1 && strings.HasSuffix(field, "...") &&
-			(usage || piUsageToken.MatchString(strings.TrimSuffix(field, "...")))
-	}
-	return false
-}
-
-// Completion rows belong to the editor, but arbitrary text between a rule
-// and the footer does not. Pi's SelectList has one arrow-selected row and
-// indented alternatives, or the single "No matching commands" empty-list row.
-func piCompletionRows(lines []string) bool {
-	selected, nonblank, noMatch := 0, 0, false
-	for _, line := range lines {
-		line = StripANSI(line)
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		nonblank++
-		switch {
-		case strings.HasPrefix(trimmed, "→ "):
-			selected++
-		case trimmed == "No matching commands":
-			noMatch = true
-		case !strings.HasPrefix(line, "  "):
-			return false
-		}
-	}
-	return nonblank == 0 || (selected == 1 && !noMatch) || (nonblank == 1 && noMatch)
-}
-
-// pi clears the launch command above its startup header on its first turn.
-// Exclude only that recognizable preamble, never arbitrary text before a
-// banner quoted in a later answer. The header itself remains a stable anchor.
-func piTranscriptStart(lines []string) int {
-	first := 0
-	for first < len(lines) && strings.TrimSpace(StripANSI(lines[first])) == "" {
-		first++
-	}
-	if first >= len(lines) {
-		return 0
-	}
-	header := first
-	if piShellLaunch.MatchString(StripANSI(lines[first])) {
-		header++
-		for header < len(lines) && strings.TrimSpace(StripANSI(lines[header])) == "" {
-			header++
-		}
-	}
-	if header+1 < len(lines) && piVersionBanner.MatchString(strings.TrimSpace(StripANSI(lines[header]))) &&
-		strings.Contains(strings.ToLower(StripANSI(lines[header+1])), "interrupt") {
-		return header
-	}
-	return 0
+	return lines[composer.TranscriptStart:composer.TopLine], true
 }
 
 // AgentTranscript removes recognized pinned composer and footer chrome while

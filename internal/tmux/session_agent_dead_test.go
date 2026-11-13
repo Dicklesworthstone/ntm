@@ -4,6 +4,8 @@ import (
 	"os/exec"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/process"
 )
 
 // A shell whose foreground is the pane's process-group leader but which is
@@ -13,6 +15,7 @@ func TestAgentCLIDeadLooksUnderWrapperShells(t *testing.T) {
 	// A command list keeps the shell as sleep's parent; bash and zsh exec a
 	// lone -c command in place.
 	wrapper := exec.Command("sh", "-c", "sleep 30; :")
+	process.DetachControllingTerminal(wrapper)
 	if err := wrapper.Start(); err != nil {
 		t.Fatalf("start wrapper: %v", err)
 	}
@@ -37,6 +40,7 @@ func TestAgentCLIDeadLooksUnderWrapperShells(t *testing.T) {
 	}
 
 	bare := exec.Command("sh", "-i")
+	process.DetachControllingTerminal(bare)
 	stdin, err := bare.StdinPipe()
 	if err != nil {
 		t.Fatalf("stdin pipe: %v", err)

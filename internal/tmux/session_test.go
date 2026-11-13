@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 	"unicode"
+
+	"github.com/Dicklesworthstone/ntm/internal/process"
 )
 
 func TestMain(m *testing.M) {
@@ -3521,6 +3523,7 @@ func TestValidatePanePersistentShellRootIdentity(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := exec.Command(tc.file, tc.args...)
+			process.DetachControllingTerminal(cmd)
 			if tc.argv0 != "" {
 				cmd.Args[0] = tc.argv0
 			}

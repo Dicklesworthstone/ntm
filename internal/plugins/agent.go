@@ -127,7 +127,7 @@ func ShippedPiPlugin() AgentPlugin {
 	p.Name = "pi"
 	p.Command = "pi{{if .Model}} --model {{shellQuote .Model}}{{end}}{{if .ReasoningEffort}} --thinking {{shellQuote .ReasoningEffort}}{{end}}{{if .SystemPromptFile}} --append-system-prompt {{shellQuote .SystemPromptFile}}{{end}}"
 	p.Description = "pi coding agent (N[:model[:effort]])"
-	p.Readiness.IdlePatterns = []string{`^\s*─{4,}\s*$`}
+	p.Readiness.IdlePatterns = []string{`^\s*─{4,}\s*$`, `^\s*─+\s*[↑↓]\s*[1-9][0-9]*\s+more\s*─+\s*$`}
 	p.Readiness.WorkingPatterns = []string{`^\s*─+\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏].*─+\s*$`}
 	return p
 }

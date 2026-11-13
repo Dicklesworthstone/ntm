@@ -47,10 +47,13 @@ var promptPatterns = []PromptPattern{
 
 	// Codex CLI patterns
 	{AgentType: "cod", Regex: regexp.MustCompile(`(?i)codex>?\s*$`), Description: "Codex prompt"},
-	{AgentType: "cod", Regex: regexp.MustCompile(`^\s*[›»]\s*.*$`), Description: "Codex chevron prompt (\"»\" at effort ultra, GH#273)"},
+	{AgentType: "cod", Regex: regexp.MustCompile(`^\s*(?:[│┃|]\s*)?[›»]\s*.*$`), Description: "Codex chevron prompt (\"»\" at effort ultra, optional box border, GH#273)"},
 
 	// Gemini CLI patterns
 	{AgentType: "gmi", Regex: regexp.MustCompile(`(?i)gemini>?\s*$`), Description: "Gemini prompt"},
+
+	// Antigravity CLI patterns (GH#270)
+	{AgentType: "agy", Regex: regexp.MustCompile(`(?i)^\?\s+for\s+shortcuts\b`), Description: "Antigravity shortcuts footer"},
 
 	// Cursor patterns
 	{AgentType: "cursor", Regex: regexp.MustCompile(`(?i)cursor>?\s*$`), Description: "Cursor prompt"},
@@ -266,9 +269,9 @@ func DetectIdleFromOutput(output string, agentType string) bool {
 	}
 
 	// OpenCode: the `esc interrupt` footer is drawn only while a turn runs
-	// and vetoes the composer-hint idle pattern (ntm#261).
-	if agentType == string(agent.AgentTypeOpencode) && agent.OpencodeActivelyWorking(output, 0) {
-		return false
+	// and vetoes idle; otherwise the heavy-bar composer or hint text decides.
+	if agentType == string(agent.AgentTypeOpencode) {
+		return agent.OpencodeIdlePromptShowing(output)
 	}
 
 	// Oh My Pi has no prompt glyph to scan for: its idle signal is the
@@ -283,6 +286,9 @@ func DetectIdleFromOutput(output string, agentType string) bool {
 	// Idle patterns are consulted alongside the generic prompt scan (ntm#260).
 	pluginPatterns, isPlugin := agent.LookupPluginPatterns(agent.AgentType(agentType))
 	if isPlugin && agent.PluginActivelyWorking(output, agent.AgentType(agentType), 0) {
+		return false
+	}
+	if (knownAgentTypes[agentType] || isPlugin) && (agent.HasTrailingShellExitPrompt(output) || agent.TrustDialogVisible(output)) {
 		return false
 	}
 
@@ -304,18 +310,19 @@ func DetectIdleFromOutput(output string, agentType string) bool {
 		if isPlugin && len(pluginPatterns.Idle) > 0 {
 			for _, re := range pluginPatterns.Idle {
 				if re.MatchString(line) {
+					if activeWorkBelow(lines, i) || errorBelow(lines, i) {
+						return false
+					}
 					return true
 				}
 			}
 		}
 		if IsPromptLine(line, agentType) {
 			// Guard against false idle: if the agent is actively working its
-			// input box is still drawn, but a spinner sits below the prompt.
-			// Only treat the prompt as authoritative when nothing below it
-			// indicates ongoing work. (Claude already short-circuits above via
-			// ClaudeActivelyWorking, which uses spinner-vs-completion ordering
-			// rather than this below-the-prompt heuristic.)
-			if activeWorkBelow(lines, i) {
+			// input box is still drawn, but a spinner sits below the prompt; or
+			// if an unrecovered rate-limit/error banner rendered below an earlier
+			// version header / prompt line, the prompt above it is stale.
+			if activeWorkBelow(lines, i) || errorBelow(lines, i) {
 				return false
 			}
 			return true
@@ -345,6 +352,32 @@ func activeWorkBelow(lines []string, promptIdx int) bool {
 		}
 	}
 	return false
+}
+
+// errorBelow reports whether any non-empty line rendered below promptIdx
+// matches a known terminal error / rate-limit pattern. When a startup version
+// banner (e.g. "Claude Code v2.1.12", "Grok Build 1.0.5") sits above an active
+// rate-limit or fatal error banner with no recovered prompt below the error,
+// the header above the error must not force idle classification.
+func errorBelow(lines []string, promptIdx int) bool {
+	if promptIdx+1 >= len(lines) {
+		return false
+	}
+	var b strings.Builder
+	for j := promptIdx + 1; j < len(lines); j++ {
+		line := strings.TrimSpace(lines[j])
+		if line == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(line)
+	}
+	if b.Len() == 0 {
+		return false
+	}
+	return DetectErrorInOutput(b.String()) != ErrorNone
 }
 
 // GetLastNonEmptyLine returns the last non-empty line from output

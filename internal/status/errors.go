@@ -94,8 +94,8 @@ var errorPatterns = []ErrorPattern{
 // It only scans the last N lines for performance and relevance.
 // Returns ErrorNone if no errors detected.
 func DetectErrorInOutput(output string) ErrorType {
-	// Strip ANSI codes for cleaner matching
-	output = StripANSI(output)
+	// Strip ANSI codes and trailing blank viewport padding for cleaner matching
+	output = strings.TrimRight(StripANSI(output), " \t\r\n")
 
 	// Check recent output only (last 50 lines) for performance
 	recent := util.GetLastNLines(output, 50)
@@ -119,7 +119,7 @@ func DetectErrorInOutput(output string) ErrorType {
 // DetectAllErrorsInOutput returns all error types found in output.
 // Useful for debugging or detailed error reporting.
 func DetectAllErrorsInOutput(output string) []ErrorType {
-	output = StripANSI(output)
+	output = strings.TrimRight(StripANSI(output), " \t\r\n")
 
 	recent := util.GetLastNLines(output, 50)
 
