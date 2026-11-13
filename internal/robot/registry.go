@@ -1005,6 +1005,14 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 				RemediationFormat: "next_actions with recovery commands",
 			},
 		},
+		"ubs-scan": {
+			SchemaType: "ubs_scan",
+			Sections:   []string{"source_health", "next_actions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Run full or incremental UBS static bug scans (staged, diff, file, or directory) in JSON",
+				SummaryHint: "Inspect summary.healthy and triage_preview for top-priority findings",
+			},
+		},
 	}
 }
 

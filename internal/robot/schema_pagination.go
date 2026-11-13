@@ -120,6 +120,7 @@ var SchemaPagination = map[string]SchemaPaginationFlag{
 	"send_receipt":     {Reason: "bounded: receipt for one idempotent send or interrupt"},
 	"spawn":            {Reason: "bounded: per-request spawned pane rows"},
 	"support_bundle":   {Reason: "bounded: bundle manifest for one collection run"},
+	"ubs_scan":         {Reason: "bounded: per-scan findings and top-K triage preview for one target"},
 
 	// --- Unpaginated by design: nested list shapes ------------------------
 	// The classifier recurses into struct fields and map values, so these

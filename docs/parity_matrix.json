@@ -1,6 +1,6 @@
 {
   "source": "chi-router-walk",
-  "count": 183,
+  "count": 185,
   "endpoints": [
     {
       "method": "GET",
@@ -465,6 +465,11 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/metrics/export",
+      "handler": "handleMetricsExportV1"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/openapi.json",
       "handler": "handleOpenAPISpec"
     },
@@ -729,6 +734,11 @@
     {
       "method": "POST",
       "path": "/api/v1/scanner/run",
+      "handler": "handleRunScan"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/scanner/scan",
       "handler": "handleRunScan"
     },
     {

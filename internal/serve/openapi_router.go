@@ -381,6 +381,26 @@ func buildRouterOperation(rt RouterRoute, components *OpenAPIComponents) *Operat
 	case "handleCancelJob":
 		op.Responses["409"] = errorResponse("Job is not cancellable in its current state")
 		op.Responses["503"] = errorResponse("Cancellation signalled but its receipt could not be checkpointed")
+	case "handleMetricsExportV1":
+		op.Parameters = append(op.Parameters,
+			Parameter{
+				Name:        "format",
+				In:          "query",
+				Description: "Export format: json (default), csv, md (alias: markdown), or prometheus (alias: prom).",
+				Schema:      &Schema{Type: "string"},
+			},
+			Parameter{
+				Name:        "session",
+				In:          "query",
+				Description: "Optional session identifier to scope exported metrics (defaults to 'default').",
+				Schema:      &Schema{Type: "string"},
+			},
+		)
+		okResp := op.Responses["200"]
+		okResp.Content["text/csv"] = MediaType{Schema: &Schema{Type: "string"}}
+		okResp.Content["text/markdown"] = MediaType{Schema: &Schema{Type: "string"}}
+		okResp.Content["text/plain"] = MediaType{Schema: &Schema{Type: "string"}}
+		op.Responses["200"] = okResp
 	case "handleResumePipeline":
 		op.Description += " By default this request waits for the resumed workflow and remains tied to the HTTP connection. Set background=true to continue the saved run in a detached worker that survives client disconnection and server exit. A 202 response acknowledges worker startup, not workflow completion; poll the existing run ID for status and use its cancel endpoint to stop it. Detached resume uses saved variables and rejects nonempty variable overrides. An omitted session is resolved from the checkpoint by the worker after it acquires run ownership."
 		synchronous := op.Responses["200"]

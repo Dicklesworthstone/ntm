@@ -642,7 +642,7 @@
       "name": "exit-cli",
       "flag": "--robot-exit-cli",
       "category": "control",
-      "summary": "Gracefully exit agent CLIs (encapsulated double Ctrl+C choreography) without destroying panes; verifies via the pane's foreground command.",
+      "summary": "Gracefully exit agent CLIs beneath a verified persistent interactive shell.",
       "output_formats": [
         "json"
       ],
@@ -668,7 +668,7 @@
       "name": "kill-agent",
       "flag": "--robot-kill-agent",
       "category": "control",
-      "summary": "SIGTERM-then-SIGKILL the agent process tree under a pane's shell while preserving the pane and shell; structured per-pane evidence.",
+      "summary": "SIGTERM-then-SIGKILL observed agent process lifetimes beneath a verified persistent shell, preserving pane and shell.",
       "output_formats": [
         "json"
       ],
@@ -1852,6 +1852,19 @@
       "default_output_format": "json",
       "schema_id": "ntm:robot:tools:v1",
       "schema_type": "tools",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "ubs-scan",
+      "flag": "--robot-ubs-scan",
+      "category": "utility",
+      "summary": "Run UBS static bug analysis across a directory, single file, git-staged files, or working-tree diff.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:ubs-scan:v1",
+      "schema_type": "ubs_scan",
       "schema_source": "built_in"
     },
     {

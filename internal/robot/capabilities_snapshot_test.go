@@ -21,9 +21,7 @@ import (
 // with a brief justification.
 //
 // The key is the command Name, the value is a justification for why it is gated.
-var knownGatedCommands = map[string]string{
-	"ensemble_spawn": "Requires build tag: ensemble_experimental. Complex multi-branch tmux layouts still being stabilized.",
-}
+var knownGatedCommands = map[string]string{}
 
 // TestCapabilitiesSnapshot_GatedCommandsNotFullyAvailable verifies that any
 // command whose Note contains "experimental" or "build tag" is not presented

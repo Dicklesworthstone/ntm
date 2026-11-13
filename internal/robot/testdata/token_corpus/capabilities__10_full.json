@@ -2132,9 +2132,6 @@
       "category": "ensemble",
       "summary": "Spawn a reasoning ensemble session with mode assignments.",
       "description": "Spawn a reasoning ensemble session with mode assignments.",
-      "note": "Gated by build tag: ensemble_experimental. Enabled in official release builds; untagged source builds return NOT_IMPLEMENTED.",
-      "unavailable": true,
-      "unavailable_reason": "not available in this build: rebuild with -tags ensemble_experimental to enable --robot-ensemble-spawn",
       "output_formats": [
         "json"
       ],
@@ -2381,10 +2378,19 @@
           "required": false,
           "default": "simple",
           "description": "Strategy: simple (sequential pairing), balanced, speed, quality, dependency"
+        },
+        {
+          "name": "relax",
+          "flag": "--relax",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Relax routing constraints to include THINKING agents when idle agents are insufficient"
         }
       ],
       "examples": [
-        "ntm --robot-assign=proj --strategy=speed --beads=bd-abc,bd-xyz"
+        "ntm --robot-assign=proj --strategy=speed --beads=bd-abc,bd-xyz",
+        "ntm --robot-assign=proj --strategy=balanced --relax"
       ],
       "transports": [
         {
@@ -2603,8 +2609,8 @@
       "name": "exit-cli",
       "flag": "--robot-exit-cli",
       "category": "control",
-      "summary": "Gracefully exit agent CLIs (encapsulated double Ctrl+C choreography) without destroying panes; verifies via the pane's foreground command.",
-      "description": "Gracefully exit agent CLIs (encapsulated double Ctrl+C choreography) without destroying panes; verifies via the pane's foreground command.",
+      "summary": "Gracefully exit agent CLIs beneath a verified persistent interactive shell.",
+      "description": "Gracefully exit agent CLIs beneath a verified persistent interactive shell. Refuses direct-exec panes before input; reports original process state separately from pane presence and observation failures.",
       "output_formats": [
         "json"
       ],
@@ -2762,8 +2768,8 @@
       "name": "kill-agent",
       "flag": "--robot-kill-agent",
       "category": "control",
-      "summary": "SIGTERM-then-SIGKILL the agent process tree under a pane's shell while preserving the pane and shell; structured per-pane evidence.",
-      "description": "SIGTERM-then-SIGKILL the agent process tree under a pane's shell while preserving the pane and shell; structured per-pane evidence.",
+      "summary": "SIGTERM-then-SIGKILL observed agent process lifetimes beneath a verified persistent shell, preserving pane and shell.",
+      "description": "SIGTERM-then-SIGKILL observed agent process lifetimes beneath a verified persistent shell, preserving pane and shell. Cancellation or failed observations stop escalation; structured results distinguish process exit from pane preservation.",
       "output_formats": [
         "json"
       ],
@@ -3059,12 +3065,21 @@
           "type": "string",
           "required": false,
           "description": "Message being routed (or --msg-file); its file paths drive reservation affinity. Required with --strategy=affinity"
+        },
+        {
+          "name": "relax",
+          "flag": "--relax",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Relax routing constraints to include THINKING agents when no idle candidate qualifies"
         }
       ],
       "examples": [
         "ntm --robot-route=proj --strategy=least-loaded --type=claude --exclude=0",
         "ntm --robot-route=proj --strategy=round-robin --last-agent=%7",
-        "ntm --robot-route=proj --strategy=affinity --msg='Fix internal/auth/session.go'"
+        "ntm --robot-route=proj --strategy=affinity --msg='Fix internal/auth/session.go'",
+        "ntm --robot-route=proj --strategy=least-loaded --relax"
       ],
       "transports": [
         {
@@ -6911,6 +6926,113 @@
       ]
     },
     {
+      "name": "ubs-scan",
+      "flag": "--robot-ubs-scan",
+      "category": "utility",
+      "summary": "Run UBS static bug analysis across a directory, single file, git-staged files, or working-tree diff.",
+      "description": "Run UBS static bug analysis across a directory, single file, git-staged files, or working-tree diff.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:ubs-scan:v1",
+      "schema_type": "ubs_scan",
+      "schema_source": "built_in",
+      "sections": [
+        "source_health",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "path",
+          "flag": "--robot-ubs-scan",
+          "type": "string",
+          "required": false,
+          "description": "Optional directory path to scan (or pass --scan-path)"
+        },
+        {
+          "name": "scan-path",
+          "flag": "--scan-path",
+          "type": "string",
+          "required": false,
+          "description": "Directory path to scan (defaults to current working directory)"
+        },
+        {
+          "name": "scan-file",
+          "flag": "--scan-file",
+          "type": "string",
+          "required": false,
+          "description": "Single file path to scan incrementally"
+        },
+        {
+          "name": "scan-staged",
+          "flag": "--scan-staged",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Scan only git-staged files"
+        },
+        {
+          "name": "scan-diff",
+          "flag": "--scan-diff",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Scan only modified working-tree files"
+        },
+        {
+          "name": "scan-only",
+          "flag": "--scan-only",
+          "type": "string",
+          "required": false,
+          "description": "Comma-separated languages to include (e.g. go,ts)"
+        },
+        {
+          "name": "scan-exclude",
+          "flag": "--scan-exclude",
+          "type": "string",
+          "required": false,
+          "description": "Comma-separated languages to exclude"
+        },
+        {
+          "name": "scan-fail-on-warning",
+          "flag": "--scan-fail-on-warning",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Mark summary.healthy=false when warnings are present"
+        },
+        {
+          "name": "scan-timeout",
+          "flag": "--scan-timeout",
+          "type": "duration",
+          "required": false,
+          "default": "1m0s",
+          "description": "Timeout for UBS execution"
+        },
+        {
+          "name": "limit",
+          "flag": "--limit",
+          "type": "int",
+          "required": false,
+          "default": "10",
+          "description": "Maximum prioritized items in triage_preview"
+        }
+      ],
+      "examples": [
+        "ntm --robot-ubs-scan --scan-staged",
+        "ntm --robot-ubs-scan --scan-diff",
+        "ntm --robot-ubs-scan --scan-file=internal/cli/scan.go",
+        "ntm --robot-ubs-scan=./internal/robot --scan-only=go"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-ubs-scan"
+        }
+      ]
+    },
+    {
       "name": "version",
       "flag": "--robot-version",
       "category": "utility",
@@ -7481,7 +7603,9 @@
       "paginated_reason": "bounded: top-K suggestions"
     },
     {
-      "name": "ensemble_spawn"
+      "name": "ensemble_spawn",
+      "paginated": false,
+      "paginated_reason": "bounded: per-request spawn echo (one row per spawned mode)"
     },
     {
       "name": "ack",
@@ -8019,6 +8143,15 @@
       "name": "tools",
       "paginated": false,
       "paginated_reason": "bounded: fixed tool catalog"
+    },
+    {
+      "name": "ubs-scan",
+      "paginated": false,
+      "paginated_reason": "bounded: per-scan findings and top-K triage preview for one target",
+      "consumer_guidance": {
+        "intended_use": "Run full or incremental UBS static bug scans (staged, diff, file, or directory) in JSON",
+        "summary_hint": "Inspect summary.healthy and triage_preview for top-priority findings"
+      }
     },
     {
       "name": "version"

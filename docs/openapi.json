@@ -5789,6 +5789,91 @@
         }
       }
     },
+    "/api/v1/metrics/export": {
+      "get": {
+        "tags": [
+          "metrics"
+        ],
+        "summary": "Metrics export",
+        "description": "Served route `GET /api/v1/metrics/export`. Handler: `handleMetricsExportV1`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
+        "operationId": "get_api_v1_metrics_export",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "description": "Export format: json (default), csv, md (alias: markdown), or prometheus (alias: prom).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "Optional session identifier to scope exported metrics (defaults to 'default').",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessEnvelope"
+                }
+              },
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/openapi.json": {
       "get": {
         "tags": [
@@ -9140,6 +9225,68 @@
         "summary": "Run scan",
         "description": "Served route `POST /api/v1/scanner/run`. Handler: `handleRunScan`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
         "operationId": "post_api_v1_scanner_run",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/scanner/scan": {
+      "post": {
+        "tags": [
+          "scanner"
+        ],
+        "summary": "Run scan",
+        "description": "Served route `POST /api/v1/scanner/scan`. Handler: `handleRunScan`. Response payload is not registered in the robot schema registry; the generic success envelope documents only the envelope fields.",
+        "operationId": "post_api_v1_scanner_scan",
         "requestBody": {
           "content": {
             "application/json": {
@@ -13173,6 +13320,10 @@
             "type": "string",
             "description": "Entity type"
           },
+          "evidence_ledger": {
+            "description": "Evidence",
+            "$ref": "#/components/schemas/EvidenceLedger"
+          },
           "expires_at": {
             "type": "string",
             "format": "date-time",
@@ -14236,6 +14387,79 @@
           "error",
           "error_code",
           "timestamp"
+        ]
+      },
+      "EvidenceLedger": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Action"
+          },
+          "calibration_score": {
+            "type": "number",
+            "description": "Calibration score"
+          },
+          "chosen_expected_loss": {
+            "type": "number",
+            "description": "Chosen expected loss"
+          },
+          "component": {
+            "type": "string",
+            "description": "Component"
+          },
+          "decision_id": {
+            "type": "string",
+            "description": "Decision i d"
+          },
+          "expected_loss_by_action": {
+            "type": "object",
+            "description": "Expected loss by action",
+            "additionalProperties": {
+              "type": "number"
+            }
+          },
+          "fallback_active": {
+            "type": "boolean",
+            "description": "Fallback active"
+          },
+          "fallback_reason": {
+            "type": "string",
+            "description": "Fallback reason"
+          },
+          "regret_by_action": {
+            "type": "object",
+            "description": "Regret by action",
+            "additionalProperties": {
+              "type": "number"
+            }
+          },
+          "schema_version": {
+            "type": "string",
+            "description": "Schema version"
+          },
+          "top_features": {
+            "type": "object",
+            "description": "Top features",
+            "additionalProperties": {
+              "type": "number"
+            }
+          },
+          "trace_id": {
+            "type": "string",
+            "description": "Trace i d"
+          }
+        },
+        "required": [
+          "schema_version",
+          "decision_id",
+          "component",
+          "action",
+          "expected_loss_by_action",
+          "chosen_expected_loss",
+          "regret_by_action",
+          "calibration_score",
+          "fallback_active"
         ]
       },
       "Exclusion": {
@@ -20067,6 +20291,10 @@
     {
       "name": "memory",
       "description": "Operations related to memory"
+    },
+    {
+      "name": "metrics",
+      "description": "Operations related to metrics"
     },
     {
       "name": "openapi",

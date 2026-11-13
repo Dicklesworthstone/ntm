@@ -12,7 +12,7 @@
     "utility"
   ],
   "category_count": 10,
-  "schema_type_count": 134,
+  "schema_type_count": 136,
   "schema_types": [
     "account_status",
     "accounts_list",
@@ -105,6 +105,7 @@
     "palette",
     "pane_address",
     "plan",
+    "policy_decisions",
     "probe",
     "productivity",
     "proxy_status",
@@ -142,6 +143,7 @@
     "tokens",
     "tools",
     "triage",
+    "ubs_scan",
     "version",
     "wait",
     "wait_cancel",
@@ -150,7 +152,7 @@
     "xf_status"
   ],
   "section_count": 13,
-  "surface_count": 146,
+  "surface_count": 148,
   "surfaces": [
     {
       "category": "state",
@@ -1981,6 +1983,21 @@
     },
     {
       "category": "utility",
+      "flag": "--robot-policy-decisions",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": false,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "policy-decisions",
+      "schema_id": "ntm:robot:policy-decisions:v1",
+      "schema_type": "policy_decisions"
+    },
+    {
+      "category": "utility",
       "flag": "--robot-profile-list",
       "has_action_handoff": false,
       "has_attention_ops": false,
@@ -2309,6 +2326,21 @@
       "name": "tools",
       "schema_id": "ntm:robot:tools:v1",
       "schema_type": "tools"
+    },
+    {
+      "category": "utility",
+      "flag": "--robot-ubs-scan",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": false,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "ubs-scan",
+      "schema_id": "ntm:robot:ubs-scan:v1",
+      "schema_type": "ubs_scan"
     },
     {
       "category": "utility",

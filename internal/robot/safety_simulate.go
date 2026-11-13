@@ -136,7 +136,7 @@ func GetPolicyDecisionsForStore(store *state.Store, opts PolicyDecisionsOptions)
 			EntityID:   entityID,
 			Limit:      limit,
 		}
-		output.Meta = meta.WithExitCode(2)
+		output.Meta = meta.WithExitCode(ExitCodeForResponse(output.RobotResponse))
 		return output, nil
 	}
 

@@ -1231,11 +1231,13 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "exclude", Flag: "--exclude", Type: "string", Required: false, Description: "Exclude pane indices"},
 				{Name: "last-agent", Flag: "--last-agent", Type: "string", Required: false, Description: "Pane ID (%N) of the previously routed agent; anchors sticky and round-robin rotation across stateless invocations"},
 				{Name: "msg", Flag: "--msg", Type: "string", Required: false, Description: "Message being routed (or --msg-file); its file paths drive reservation affinity. Required with --strategy=affinity"},
+				{Name: "relax", Flag: "--relax", Type: "bool", Required: false, Default: "false", Description: "Relax routing constraints to include THINKING agents when no idle candidate qualifies"},
 			},
 			Examples: []string{
 				"ntm --robot-route=proj --strategy=least-loaded --type=claude --exclude=0",
 				"ntm --robot-route=proj --strategy=round-robin --last-agent=%7",
 				"ntm --robot-route=proj --strategy=affinity --msg='Fix internal/auth/session.go'",
+				"ntm --robot-route=proj --strategy=least-loaded --relax",
 			},
 		},
 		{
@@ -1247,8 +1249,12 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "session", Flag: "--robot-assign", Type: "string", Required: true, Description: "Session name"},
 				{Name: "beads", Flag: "--beads", Type: "string", Required: false, Description: "Specific bead IDs to assign (comma-separated)"},
 				{Name: "strategy", Flag: "--strategy", Type: "string", Required: false, Default: "simple", Description: "Strategy: simple (sequential pairing), balanced, speed, quality, dependency"},
+				{Name: "relax", Flag: "--relax", Type: "bool", Required: false, Default: "false", Description: "Relax routing constraints to include THINKING agents when idle agents are insufficient"},
 			},
-			Examples: []string{"ntm --robot-assign=proj --strategy=speed --beads=bd-abc,bd-xyz"},
+			Examples: []string{
+				"ntm --robot-assign=proj --strategy=speed --beads=bd-abc,bd-xyz",
+				"ntm --robot-assign=proj --strategy=balanced --relax",
+			},
 		},
 		{
 			Name:        "bulk-assign",
@@ -1373,7 +1379,6 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Flag:              "--robot-ensemble-spawn",
 			Category:          "ensemble",
 			Description:       "Spawn a reasoning ensemble session with mode assignments.",
-			Note:              "Gated by build tag: ensemble_experimental. Enabled in official release builds; untagged source builds return NOT_IMPLEMENTED.",
 			Unavailable:       !ensembleSpawnAvailable,
 			UnavailableReason: ensembleSpawnUnavailableReason,
 			Parameters: []RobotParameter{
@@ -2335,6 +2340,30 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Description: "Get Agent Mail state.",
 			Parameters:  []RobotParameter{},
 			Examples:    []string{"ntm --robot-mail"},
+		},
+		{
+			Name:        "ubs-scan",
+			Flag:        "--robot-ubs-scan",
+			Category:    "utility",
+			Description: "Run UBS static bug analysis across a directory, single file, git-staged files, or working-tree diff.",
+			Parameters: []RobotParameter{
+				{Name: "path", Flag: "--robot-ubs-scan", Type: "string", Required: false, Description: "Optional directory path to scan (or pass --scan-path)"},
+				{Name: "scan-path", Flag: "--scan-path", Type: "string", Required: false, Description: "Directory path to scan (defaults to current working directory)"},
+				{Name: "scan-file", Flag: "--scan-file", Type: "string", Required: false, Description: "Single file path to scan incrementally"},
+				{Name: "scan-staged", Flag: "--scan-staged", Type: "bool", Required: false, Default: "false", Description: "Scan only git-staged files"},
+				{Name: "scan-diff", Flag: "--scan-diff", Type: "bool", Required: false, Default: "false", Description: "Scan only modified working-tree files"},
+				{Name: "scan-only", Flag: "--scan-only", Type: "string", Required: false, Description: "Comma-separated languages to include (e.g. go,ts)"},
+				{Name: "scan-exclude", Flag: "--scan-exclude", Type: "string", Required: false, Description: "Comma-separated languages to exclude"},
+				{Name: "scan-fail-on-warning", Flag: "--scan-fail-on-warning", Type: "bool", Required: false, Default: "false", Description: "Mark summary.healthy=false when warnings are present"},
+				{Name: "scan-timeout", Flag: "--scan-timeout", Type: "duration", Required: false, Default: "1m0s", Description: "Timeout for UBS execution"},
+				{Name: "limit", Flag: "--limit", Type: "int", Required: false, Default: "10", Description: "Maximum prioritized items in triage_preview"},
+			},
+			Examples: []string{
+				"ntm --robot-ubs-scan --scan-staged",
+				"ntm --robot-ubs-scan --scan-diff",
+				"ntm --robot-ubs-scan --scan-file=internal/cli/scan.go",
+				"ntm --robot-ubs-scan=./internal/robot --scan-only=go",
+			},
 		},
 	})
 }

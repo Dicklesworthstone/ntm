@@ -6,6 +6,33 @@
   "schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "AttentionCursorInfo": {
+        "properties": {
+          "end_cursor": {
+            "description": "End cursor",
+            "type": "integer"
+          },
+          "next_command": {
+            "description": "Next command",
+            "type": "string"
+          },
+          "oldest_cursor": {
+            "description": "Oldest cursor",
+            "type": "integer"
+          },
+          "start_cursor": {
+            "description": "Start cursor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start_cursor",
+          "end_cursor",
+          "oldest_cursor",
+          "next_command"
+        ],
+        "type": "object"
+      },
       "AttentionEvent": {
         "properties": {
           "actionability": {
@@ -163,6 +190,53 @@
         },
         "type": "object"
       },
+      "SnapshotReplayWindowInfo": {
+        "properties": {
+          "event_count": {
+            "description": "Event count",
+            "type": "integer"
+          },
+          "latest_cursor": {
+            "description": "Latest cursor",
+            "type": "integer"
+          },
+          "latest_timestamp": {
+            "description": "Latest timestamp",
+            "type": "string"
+          },
+          "oldest_cursor": {
+            "description": "Oldest cursor",
+            "type": "integer"
+          },
+          "oldest_timestamp": {
+            "description": "Oldest timestamp",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Reason",
+            "type": "string"
+          },
+          "resync_command": {
+            "description": "Resync command",
+            "type": "string"
+          },
+          "retention_period": {
+            "description": "Retention period",
+            "type": "string"
+          },
+          "supported": {
+            "description": "Supported",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "supported",
+          "oldest_cursor",
+          "latest_cursor",
+          "event_count"
+        ],
+        "type": "object"
+      },
       "StructuredError": {
         "properties": {
           "code": {
@@ -210,6 +284,10 @@
         "description": "Counts",
         "type": "object"
       },
+      "cursor_info": {
+        "$ref": "#/definitions/AttentionCursorInfo",
+        "description": "Cursor info"
+      },
       "error": {
         "description": "Error",
         "type": "string"
@@ -232,6 +310,14 @@
       "output_format": {
         "description": "Output format",
         "type": "string"
+      },
+      "profile": {
+        "description": "Profile",
+        "type": "string"
+      },
+      "replay_window": {
+        "$ref": "#/definitions/SnapshotReplayWindowInfo",
+        "description": "Replay window"
       },
       "structured_error": {
         "$ref": "#/definitions/StructuredError",
