@@ -790,8 +790,8 @@ func TestGetSpawnAssignWorkEnrichesWorkPromptAndReplaysWithoutRequery(t *testing
 		t.Fatalf("delivered prompt history=%d task=%d, want the history above the work prompt:\n%s", history, task, prompt)
 	}
 	cassCalls := bulkContextStubCalls(t, cassLog)
-	if strings.Count(cassCalls, "search") != 1 || !strings.Contains(cassCalls, "gateway") || !strings.Contains(cassCalls, "bucket") {
-		t.Fatalf("cass calls = %q, want one search over the bead's title, labels, and description", cassCalls)
+	if strings.Count(cassCalls, "search") != 2 || strings.Count(cassCalls, "--workspace") != 1 || !strings.Contains(cassCalls, "gateway") || !strings.Contains(cassCalls, "bucket") {
+		t.Fatalf("cass calls = %q, want two-scope (global + --workspace) search over the bead's title, labels, and description", cassCalls)
 	}
 	row := store.Get("bd-ctx")
 	if row == nil || row.PromptSent != prompt || row.BaseIntentSHA256 == "" || row.BaseIntentSHA256 == row.IntentSHA256 {

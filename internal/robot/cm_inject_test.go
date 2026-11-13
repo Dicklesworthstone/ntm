@@ -750,7 +750,10 @@ case "$1" in
     printf '%%7_NTM_SEP_1_NTM_SEP_target__aider_1_NTM_SEP_aider_NTM_SEP_120_NTM_SEP_40_NTM_SEP_1_NTM_SEP_%s_NTM_SEP_0_NTM_SEP_aider_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$NTM_CM_SCOPE_PID"
     ;;
   display-message)
-    if [ "$NTM_CM_SCOPE_MODE" = unknown ]; then printf 'relative/app\n'; else printf '%s\n' "$NTM_CM_SCOPE_TARGET"; fi
+    case "$*" in
+      *"@ntm_rotation_token"*) printf '[]\n' ;;
+      *) if [ "$NTM_CM_SCOPE_MODE" = unknown ]; then printf 'relative/app\n'; else printf '%s\n' "$NTM_CM_SCOPE_TARGET"; fi ;;
+    esac
     ;;
   capture-pane)
     printf 'Ready for work\n'

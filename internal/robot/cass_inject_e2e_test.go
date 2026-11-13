@@ -49,7 +49,12 @@ case "$1" in
     case "$*" in *'%72'*) used=90 ;; *) used=20 ;; esac
     printf '> Type your message or @path/to/file\n/model context\ngemini-pro %s%% used\n' "$used"
     ;;
-  display-message) printf '%s\n' "$NTM_CASS_CAPACITY_ROOT" ;;
+  display-message)
+    case "$*" in
+      *"@ntm_rotation_token"*) printf '[]\n' ;;
+      *) printf '%s\n' "$NTM_CASS_CAPACITY_ROOT" ;;
+    esac
+    ;;
   load-buffer) cat >> "$NTM_CASS_CAPACITY_ROOT/payload" ;;
   send-keys) printf '%s\n' "$@" >> "$NTM_CASS_CAPACITY_ROOT/payload" ;;
 esac
