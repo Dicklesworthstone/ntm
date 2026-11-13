@@ -3,7 +3,6 @@ package hooks
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -232,9 +231,4 @@ func (r *PreCommitResult) ExitCode() int {
 		return 0
 	}
 	return 1
-}
-
-// WriteResult writes the result as exit code to os.Exit.
-func (r *PreCommitResult) Exit() {
-	os.Exit(r.ExitCode())
 }

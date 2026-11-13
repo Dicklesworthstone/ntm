@@ -362,7 +362,7 @@ func runDeps(verbose bool) error {
 
 	if missingRequired {
 		fmt.Printf("%s✗%s Missing required dependencies!\n", colorize(t.Error), "\033[0m")
-		os.Exit(1)
+		return newSilentExitError(1)
 	} else if agentsAvailable == 0 {
 		fmt.Printf("%s⚠%s No AI agents installed. Install at least one to use ntm spawn.\n",
 			colorize(t.Warning), "\033[0m")

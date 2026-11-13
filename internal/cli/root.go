@@ -648,10 +648,40 @@ func levenshteinDistance(a, b string) int {
 	return prev[len(b)]
 }
 
+// silentExitError propagates a specific process exit code up through Execute()
+// so cleanup/audit defers run cleanly without calling os.Exit inside internal/
+// handlers or re-decorating already-printed output.
+type silentExitError struct {
+	code int
+}
+
+func newSilentExitError(code int) error {
+	if code == 0 {
+		return nil
+	}
+	return &silentExitError{code: code}
+}
+
+func (e *silentExitError) Error() string {
+	return fmt.Sprintf("exit status %d", e.code)
+}
+
+func (e *silentExitError) ExitCode() int {
+	return e.code
+}
+
+func (e *silentExitError) RawExitCode() int {
+	return e.code
+}
+
 // ExitCode maps an Execute error onto the public robot process contract.
 func ExitCode(err error) int {
 	if err == nil {
 		return 0
+	}
+	var rawExit interface{ RawExitCode() int }
+	if errors.As(err, &rawExit) {
+		return rawExit.RawExitCode()
 	}
 	var exitCoder interface{ ExitCode() int }
 	if errors.As(err, &exitCoder) {
@@ -3552,6 +3582,10 @@ func Execute() error {
 		// to stdout; the only remaining job is to exit non-zero. Don't decorate
 		// stderr — the JSON is the contract.
 		if errors.Is(err, errJSONFailure) {
+			return err
+		}
+		var silentExit *silentExitError
+		if errors.As(err, &silentExit) {
 			return err
 		}
 		if machineInvocation || jsonOutput {

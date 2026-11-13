@@ -352,7 +352,9 @@ func runPreCommitHook(verbose, failOnWarning bool, timeout int) error {
 	}
 
 	hooks.PrintPreCommitResult(result)
-	result.Exit()
+	if !result.Passed {
+		return newSilentExitError(result.ExitCode())
+	}
 	return nil
 }
 

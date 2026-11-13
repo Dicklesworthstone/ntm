@@ -317,7 +317,7 @@ Examples:
 				}
 				exitCode := pipeline.PrintPipelineRun(opts)
 				if exitCode != 0 {
-					os.Exit(exitCode)
+					return newSilentExitError(exitCode)
 				}
 				return nil
 			}
@@ -456,7 +456,7 @@ Examples:
 					state := result.state
 					if state == nil {
 						fmt.Fprintf(os.Stderr, "❌ Pipeline crashed unexpectedly\n")
-						os.Exit(1)
+						return newSilentExitError(1)
 					} else if state.Status == pipeline.StatusCompleted {
 						output.SuccessCheck("Pipeline completed successfully!")
 					} else {
@@ -553,7 +553,7 @@ Examples:
 			if jsonOutput {
 				exitCode := pipeline.PrintPipelineStatus(runID)
 				if exitCode != 0 {
-					os.Exit(exitCode)
+					return newSilentExitError(exitCode)
 				}
 				return nil
 			}
@@ -597,7 +597,7 @@ func newPipelineCancelCmd() *cobra.Command {
 			if jsonOutput {
 				exitCode := pipeline.PrintPipelineCancel(runID)
 				if exitCode != 0 {
-					os.Exit(exitCode)
+					return newSilentExitError(exitCode)
 				}
 				return nil
 			}
@@ -931,7 +931,7 @@ Examples:
 					fmt.Println()
 					if finalState == nil {
 						fmt.Fprintf(os.Stderr, "❌ Pipeline crashed unexpectedly\n")
-						os.Exit(1)
+						return newSilentExitError(1)
 					} else if finalState.Status == pipeline.StatusCompleted {
 						output.SuccessCheck("Pipeline completed successfully!")
 					} else {

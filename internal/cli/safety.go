@@ -61,7 +61,7 @@ func newSafetyClaudeHookCmd() *cobra.Command {
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if code := runSafetyClaudeHook(cmd.InOrStdin(), cmd.ErrOrStderr()); code != 0 {
-				os.Exit(code)
+				return newSilentExitError(code)
 			}
 			return nil
 		},
@@ -529,7 +529,7 @@ func runSafetyCheck(command string, hook bool) error {
 	// Exit with code 1 for blocked or approval-required commands (both JSON and TUI modes).
 	// This is critical for wrapper scripts that rely on exit code to intercept commands.
 	if exitCode != 0 {
-		os.Exit(exitCode)
+		return newSilentExitError(exitCode)
 	}
 
 	return nil

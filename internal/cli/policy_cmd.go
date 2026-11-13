@@ -360,7 +360,7 @@ func outputValidationResult(policyPath string, valid bool, errors, warnings []st
 	fmt.Println()
 
 	if !valid {
-		os.Exit(1)
+		return newSilentExitError(1)
 	}
 
 	return nil
