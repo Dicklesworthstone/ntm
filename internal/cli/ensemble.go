@@ -370,28 +370,27 @@ func runEnsembleStop(w io.Writer, session string, opts ensembleStopOptions) erro
 	}
 
 	var captured int
-	var collectErrors []error
 
-	// Collect partial outputs if requested
+	// Capture is a precondition for a destructive stop. Otherwise a failed
+	// snapshot would silently destroy the only remaining partial output.
 	if !opts.NoCollect {
 		capture := ensemble.NewOutputCapture(tmux.DefaultClient)
 		capturedOutputs, err := capture.CaptureAll(state)
 		if err != nil {
-			slog.Default().Warn("failed to capture partial outputs", "error", err)
-			collectErrors = append(collectErrors, err)
-		} else {
-			captured = len(capturedOutputs)
-			slog.Default().Info("captured partial outputs",
-				"session", session,
-				"count", captured,
-			)
+			return fmt.Errorf("capture partial ensemble outputs before stopping %q: %w", session, err)
 		}
+		captured = len(capturedOutputs)
+		slog.Default().Info("captured partial outputs",
+			"session", session,
+			"count", captured,
+		)
 	}
 
-	// Get all panes for the session
+	// A failed pane query is not evidence of zero panes. Do not send
+	// interrupts or kill a session when its targets cannot be observed.
 	panes, err := tmux.GetPanes(session)
 	if err != nil {
-		slog.Default().Warn("failed to get panes", "error", err)
+		return fmt.Errorf("inspect ensemble panes before stopping %q: %w", session, err)
 	}
 
 	stoppedCount := 0
@@ -414,14 +413,13 @@ func runEnsembleStop(w io.Writer, session string, opts ensembleStopOptions) erro
 		time.Sleep(5 * time.Second)
 	}
 
-	// Kill the session (force or after graceful timeout)
+	// Kill must succeed before the durable state can say "stopped".
+	// A failed kill leaves the original status for retry/reconciliation.
 	if err := tmux.KillSession(session); err != nil {
-		slog.Default().Warn("failed to kill session", "session", session, "error", err)
-		stopErrors = append(stopErrors, err)
-	} else {
-		stoppedCount = len(panes)
-		slog.Default().Info("killed session", "session", session, "panes", stoppedCount)
+		return fmt.Errorf("kill ensemble session %q: %w", session, err)
 	}
+	stoppedCount = len(panes)
+	slog.Default().Info("killed session", "session", session, "panes", stoppedCount)
 
 	// Update ensemble state to stopped
 	state.Status = ensemble.EnsembleStopped
@@ -437,7 +435,7 @@ func runEnsembleStop(w io.Writer, session string, opts ensembleStopOptions) erro
 		Success:     len(stopErrors) == 0,
 		Captured:    captured,
 		Stopped:     stoppedCount,
-		Errors:      len(stopErrors) + len(collectErrors),
+		Errors:      len(stopErrors),
 		FinalStatus: ensemble.EnsembleStopped.String(),
 	}
 
@@ -456,7 +454,7 @@ func runEnsembleStop(w io.Writer, session string, opts ensembleStopOptions) erro
 		"session", session,
 		"stopped", stoppedCount,
 		"captured", captured,
-		"errors", len(stopErrors)+len(collectErrors),
+		"errors", len(stopErrors),
 	)
 
 	if !result.Success {
