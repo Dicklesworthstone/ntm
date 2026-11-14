@@ -1,9 +1,12 @@
 package ensemble
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -11,6 +14,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	tokenpkg "github.com/Dicklesworthstone/ntm/internal/tokens"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 const defaultCaptureLines = 1000
@@ -20,6 +24,7 @@ type CapturedOutput struct {
 	ModeID        string
 	PaneName      string
 	RawOutput     string
+	OutputPath    string // Durable path to the raw transcript for this capture.
 	Parsed        *ModeOutput
 	ParseErrors   []error
 	CapturedAt    time.Time
@@ -150,6 +155,120 @@ func (c *OutputCapture) CaptureAll(session *EnsembleSession) ([]CapturedOutput, 
 	}
 
 	return outputs, errors.Join(captureErrs...)
+}
+
+// CaptureAndSave captures every assignment and persists the outputs before
+// callers interrupt or destroy the session. Parse failures retain raw output;
+// only schema-valid outputs mark an assignment complete.
+func (c *OutputCapture) CaptureAndSave(session *EnsembleSession) ([]CapturedOutput, error) {
+	captured, err := c.CaptureAll(session)
+	if err != nil {
+		return captured, err
+	}
+	if err := saveCapturedOutputs(session, captured); err != nil {
+		return captured, err
+	}
+	return captured, nil
+}
+
+func saveCapturedOutputs(session *EnsembleSession, captured []CapturedOutput) error {
+	if session == nil {
+		return errors.New("ensemble session is nil")
+	}
+	sessionName, err := NormalizeCheckpointRunID(session.SessionName)
+	if err != nil {
+		return fmt.Errorf("invalid output session name: %w", err)
+	}
+	if sessionName != session.SessionName {
+		return errors.New("output session name must not contain surrounding whitespace")
+	}
+	if len(captured) != len(session.Assignments) {
+		return fmt.Errorf("captured %d outputs for %d assignments", len(captured), len(session.Assignments))
+	}
+	for i, output := range captured {
+		assignment := session.Assignments[i]
+		if output.ModeID != assignment.ModeID || output.PaneName != assignment.PaneName {
+			return fmt.Errorf("capture %d does not match assignment %s in pane %s", i, assignment.ModeID, assignment.PaneName)
+		}
+	}
+	if len(captured) == 0 {
+		return nil
+	}
+
+	store, err := defaultSQLiteStore()
+	if err != nil {
+		return err
+	}
+	stateDir, err := filepath.Abs(filepath.Dir(store.store.Path()))
+	if err != nil {
+		return fmt.Errorf("resolve ensemble output directory: %w", err)
+	}
+	outputRoot := filepath.Join(stateDir, "ensemble-outputs")
+	sessionDir := filepath.Join(outputRoot, sessionName)
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		return fmt.Errorf("create ensemble output directory: %w", err)
+	}
+	// Every attempt has its own directory, so a failed retry cannot overwrite
+	// the last recoverable snapshot.
+	captureDir, err := os.MkdirTemp(sessionDir, "capture-")
+	if err != nil {
+		return fmt.Errorf("create ensemble capture directory: %w", err)
+	}
+
+	next := *session
+	next.Assignments = append([]ModeAssignment(nil), session.Assignments...)
+	validator := NewSchemaValidator()
+	for i := range captured {
+		output := &captured[i]
+		assignment := &next.Assignments[i]
+		rawPath := filepath.Join(captureDir, fmt.Sprintf("%03d.raw.txt", i))
+		if err := util.AtomicWriteFile(rawPath, []byte(output.RawOutput), 0o600); err != nil {
+			return fmt.Errorf("save raw output for %s: %w", output.ModeID, err)
+		}
+		output.OutputPath = rawPath
+
+		// Preserve an earlier valid structured result if the latest pane
+		// contains an incomplete response. Its new raw transcript is still saved.
+		if assignment.Status != AssignmentDone || assignment.OutputPath == "" {
+			assignment.OutputPath = rawPath
+		}
+		if output.Parsed == nil || len(output.ParseErrors) != 0 ||
+			output.Parsed.ModeID != assignment.ModeID || len(validator.Validate(output.Parsed)) != 0 {
+			continue
+		}
+
+		parsed := *output.Parsed
+		parsed.RawOutput = output.RawOutput
+		data, err := json.MarshalIndent(parsed, "", "  ")
+		if err != nil {
+			return fmt.Errorf("encode output for %s: %w", output.ModeID, err)
+		}
+		outputPath := filepath.Join(captureDir, fmt.Sprintf("%03d.json", i))
+		if err := util.AtomicWriteFile(outputPath, data, 0o600); err != nil {
+			return fmt.Errorf("save structured output for %s: %w", output.ModeID, err)
+		}
+		completedAt := output.CapturedAt
+		if completedAt.IsZero() {
+			completedAt = time.Now().UTC()
+		}
+		assignment.OutputPath = outputPath
+		assignment.Status = AssignmentDone
+		assignment.CompletedAt = &completedAt
+		assignment.Error = ""
+	}
+
+	// AtomicWriteFile syncs each file and captureDir. Sync the new directory
+	// entries before publishing paths in SQLite.
+	for _, dir := range []string{sessionDir, outputRoot, stateDir} {
+		if err := util.SyncDirectory(dir); err != nil {
+			return fmt.Errorf("sync ensemble output directory: %w", err)
+		}
+	}
+	if err := store.Save(&next); err != nil {
+		return fmt.Errorf("save captured ensemble state: %w", err)
+	}
+	*session = next
+	return nil
 }
 
 func (c *OutputCapture) capturePane(pane string) (string, error) {

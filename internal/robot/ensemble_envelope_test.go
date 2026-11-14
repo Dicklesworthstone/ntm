@@ -3,10 +3,12 @@ package robot
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // TestEnvelope_EnsembleModes verifies envelope compliance for --robot-ensemble-modes.
@@ -208,7 +210,7 @@ func TestGetEnsembleStopCaptureFailureLeavesSessionRunning(t *testing.T) {
 
 	deps := defaultEnsembleStopDependencies()
 	deps.SessionExists = func(string) bool { return true }
-	deps.CaptureAll = func(*ensemble.EnsembleSession) ([]ensemble.CapturedOutput, error) {
+	deps.CaptureAndSave = func(*ensemble.EnsembleSession) ([]ensemble.CapturedOutput, error) {
 		return nil, errors.New("capture-pane failed")
 	}
 	killed := false
@@ -424,4 +426,137 @@ func TestEnvelope_ModesArrayFieldsNotNil(t *testing.T) {
 	}
 
 	t.Log("TEST: TestEnvelope_ModesArrayFieldsNotNil - assertion: mode fields present")
+}
+
+func TestGetEnsembleStopPaneInspectionFailureLeavesSessionRunning(t *testing.T) {
+	for _, force := range []bool{false, true} {
+		for _, noCollect := range []bool{false, true} {
+			t.Run(fmt.Sprintf("force=%t/no_collect=%t", force, noCollect), func(t *testing.T) {
+				t.Setenv("HOME", t.TempDir())
+				t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+				t.Setenv("NTM_CONFIG", "")
+				ensemble.CloseDefaultStateStore()
+				t.Cleanup(ensemble.CloseDefaultStateStore)
+
+				state := &ensemble.EnsembleSession{
+					SessionName:       "inspect-failure-ensemble-stop",
+					Question:          "Leave running if pane inspection fails",
+					Status:            ensemble.EnsembleActive,
+					SynthesisStrategy: ensemble.StrategyConsensus,
+					CreatedAt:         time.Now().UTC(),
+				}
+				if err := ensemble.SaveSession("", state); err != nil {
+					t.Fatal(err)
+				}
+
+				deps := defaultEnsembleStopDependencies()
+				deps.SessionExists = func(string) bool { return true }
+				deps.CaptureAndSave = func(*ensemble.EnsembleSession) ([]ensemble.CapturedOutput, error) {
+					return nil, nil
+				}
+				deps.GetPanes = func(string) ([]tmux.Pane, error) {
+					return nil, errors.New("list-panes failed")
+				}
+				interrupted, slept, killed := false, false, false
+				deps.SendKeys = func(string, string, bool) error {
+					interrupted = true
+					return nil
+				}
+				deps.Sleep = func(time.Duration) { slept = true }
+				deps.KillSession = func(string) error {
+					killed = true
+					return nil
+				}
+
+				out, err := getEnsembleStop(state.SessionName, EnsembleStopOptions{Force: force, NoCollect: noCollect}, deps)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if out.Success || out.ErrorCode != ErrCodeInternalError {
+					t.Fatalf("pane inspection failure was not reported: %+v", out)
+				}
+				if interrupted || slept || killed {
+					t.Fatalf("shutdown proceeded after inspection failed: interrupted=%t slept=%t killed=%t", interrupted, slept, killed)
+				}
+				if out.Result.FinalStatus != ensemble.EnsembleActive.String() {
+					t.Fatalf("final status=%q, want active", out.Result.FinalStatus)
+				}
+				saved, err := ensemble.LoadSession(state.SessionName)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if saved.Status != ensemble.EnsembleActive {
+					t.Fatalf("saved status=%s, want active", saved.Status)
+				}
+			})
+		}
+	}
+}
+
+func TestGetEnsembleStopFinalCaptureFailureKeepsFirstSnapshot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("NTM_CONFIG", "")
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       "final-capture-failure-ensemble-stop",
+		Question:          "Keep the first snapshot if final capture fails",
+		Status:            ensemble.EnsembleActive,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         time.Now().UTC(),
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "deductive", PaneName: "%1", AgentType: "cc", Status: ensemble.AssignmentActive},
+		},
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatal(err)
+	}
+
+	deps := defaultEnsembleStopDependencies()
+	deps.SessionExists = func(string) bool { return true }
+	captures := 0
+	deps.CaptureAndSave = func(*ensemble.EnsembleSession) ([]ensemble.CapturedOutput, error) {
+		captures++
+		if captures > 1 {
+			return nil, errors.New("final capture failed")
+		}
+		return []ensemble.CapturedOutput{{ModeID: "deductive", PaneName: "%1", OutputPath: "/saved/first-transcript.txt"}}, nil
+	}
+	deps.GetPanes = func(string) ([]tmux.Pane, error) {
+		return []tmux.Pane{{ID: "%1"}}, nil
+	}
+	interrupts := 0
+	deps.SendKeys = func(string, string, bool) error {
+		interrupts++
+		return nil
+	}
+	deps.Sleep = func(time.Duration) {}
+	killed := false
+	deps.KillSession = func(string) error {
+		killed = true
+		return nil
+	}
+
+	out, err := getEnsembleStop(state.SessionName, EnsembleStopOptions{}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Success || out.ErrorCode != ErrCodeInternalError || killed {
+		t.Fatalf("final capture failure must leave the session alive: output=%+v killed=%t", out, killed)
+	}
+	if captures != 2 || interrupts != 1 {
+		t.Fatalf("captures=%d interrupts=%d, want two captures around one interrupt", captures, interrupts)
+	}
+	if out.Result.Captured != 1 || len(out.Result.SavedOutputPaths) != 1 || out.Result.SavedOutputPaths[0] != "/saved/first-transcript.txt" {
+		t.Fatalf("first recoverable snapshot was lost: %+v", out.Result)
+	}
+	saved, err := ensemble.LoadSession(state.SessionName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Status != ensemble.EnsembleActive {
+		t.Fatalf("saved status=%s, want active", saved.Status)
+	}
 }

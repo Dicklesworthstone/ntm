@@ -223,15 +223,16 @@ type ensembleStopOptions struct {
 }
 
 type ensembleStopOutput struct {
-	GeneratedAt time.Time `json:"generated_at" yaml:"generated_at"`
-	Session     string    `json:"session" yaml:"session"`
-	Success     bool      `json:"success" yaml:"success"`
-	Message     string    `json:"message,omitempty" yaml:"message,omitempty"`
-	Captured    int       `json:"captured,omitempty" yaml:"captured,omitempty"`
-	Stopped     int       `json:"stopped" yaml:"stopped"`
-	Errors      int       `json:"errors,omitempty" yaml:"errors,omitempty"`
-	FinalStatus string    `json:"final_status" yaml:"final_status"`
-	Error       string    `json:"error,omitempty" yaml:"error,omitempty"`
+	GeneratedAt      time.Time `json:"generated_at" yaml:"generated_at"`
+	Session          string    `json:"session" yaml:"session"`
+	Success          bool      `json:"success" yaml:"success"`
+	Message          string    `json:"message,omitempty" yaml:"message,omitempty"`
+	Captured         int       `json:"captured,omitempty" yaml:"captured,omitempty"`
+	SavedOutputPaths []string  `json:"saved_output_paths,omitempty" yaml:"saved_output_paths,omitempty"`
+	Stopped          int       `json:"stopped" yaml:"stopped"`
+	Errors           int       `json:"errors,omitempty" yaml:"errors,omitempty"`
+	FinalStatus      string    `json:"final_status" yaml:"final_status"`
+	Error            string    `json:"error,omitempty" yaml:"error,omitempty"`
 }
 
 func newEnsembleStopCmd() *cobra.Command {
@@ -245,12 +246,12 @@ func newEnsembleStopCmd() *cobra.Command {
 		Long: `Stop all agents in an ensemble run and save partial state.
 
 Behavior:
-  1. Signal all ensemble agents to stop (SIGTERM)
-  2. Wait for graceful shutdown (5s timeout)
-  3. Force kill remaining agents
-  4. Collect any partial outputs available
+  1. Save available agent output before interrupting work
+  2. Send each agent its interrupt key
+  3. Wait for graceful shutdown (5s timeout) and save final output
+  4. Terminate the tmux session only after output is saved
   5. Update ensemble state to 'stopped'
-  6. Show summary of what was captured
+  6. Show the capture summary (JSON/YAML includes saved_output_paths)
 
 Flags:
   --force        Skip graceful shutdown, force kill immediately
@@ -315,8 +316,8 @@ func runEnsembleStop(w io.Writer, session string, opts ensembleStopOptions) erro
 		return fmt.Errorf("load session: %w", err)
 	}
 
-	// Check if already stopped
-	if state.Status.IsTerminal() {
+	// A terminal record can still have live agents after an interrupted spawn.
+	if state.Status.IsTerminal() && !sessionLive {
 		result := ensembleStopOutput{
 			GeneratedAt: output.Timestamp(),
 			Session:     session,
@@ -370,16 +371,20 @@ func runEnsembleStop(w io.Writer, session string, opts ensembleStopOptions) erro
 	}
 
 	var captured int
+	var savedOutputPaths []string
 
 	// Capture is a precondition for a destructive stop. Otherwise a failed
 	// snapshot would silently destroy the only remaining partial output.
 	if !opts.NoCollect {
 		capture := ensemble.NewOutputCapture(tmux.DefaultClient)
-		capturedOutputs, err := capture.CaptureAll(state)
+		capturedOutputs, err := capture.CaptureAndSave(state)
 		if err != nil {
 			return fmt.Errorf("capture partial ensemble outputs before stopping %q: %w", session, err)
 		}
 		captured = len(capturedOutputs)
+		for _, capturedOutput := range capturedOutputs {
+			savedOutputPaths = append(savedOutputPaths, capturedOutput.OutputPath)
+		}
 		slog.Default().Info("captured partial outputs",
 			"session", session,
 			"count", captured,
@@ -411,6 +416,18 @@ func runEnsembleStop(w io.Writer, session string, opts ensembleStopOptions) erro
 
 		// Wait for graceful shutdown
 		time.Sleep(5 * time.Second)
+
+		if !opts.NoCollect {
+			capture := ensemble.NewOutputCapture(tmux.DefaultClient)
+			capturedOutputs, err := capture.CaptureAndSave(state)
+			if err != nil {
+				return fmt.Errorf("save final ensemble outputs before stopping %q: %w", session, err)
+			}
+			captured = len(capturedOutputs)
+			for _, capturedOutput := range capturedOutputs {
+				savedOutputPaths = append(savedOutputPaths, capturedOutput.OutputPath)
+			}
+		}
 	}
 
 	// Kill must succeed before the durable state can say "stopped".
@@ -421,7 +438,14 @@ func runEnsembleStop(w io.Writer, session string, opts ensembleStopOptions) erro
 	stoppedCount = len(panes)
 	slog.Default().Info("killed session", "session", session, "panes", stoppedCount)
 
-	// Update ensemble state to stopped
+	// Stopped agents cannot finish pending work. Preserve valid completed
+	// outputs, and make unfinished assignments explicit for recovery.
+	for i := range state.Assignments {
+		if !state.Assignments[i].Status.IsTerminal() {
+			state.Assignments[i].Status = ensemble.AssignmentError
+			state.Assignments[i].Error = "ensemble stopped before a valid mode output was collected"
+		}
+	}
 	state.Status = ensemble.EnsembleStopped
 	if err := ensemble.SaveSession(session, state); err != nil {
 		slog.Default().Warn("failed to save stopped state", "error", err)
@@ -430,13 +454,14 @@ func runEnsembleStop(w io.Writer, session string, opts ensembleStopOptions) erro
 
 	// Build result
 	result := ensembleStopOutput{
-		GeneratedAt: output.Timestamp(),
-		Session:     session,
-		Success:     len(stopErrors) == 0,
-		Captured:    captured,
-		Stopped:     stoppedCount,
-		Errors:      len(stopErrors),
-		FinalStatus: ensemble.EnsembleStopped.String(),
+		GeneratedAt:      output.Timestamp(),
+		Session:          session,
+		Success:          len(stopErrors) == 0,
+		Captured:         captured,
+		SavedOutputPaths: savedOutputPaths,
+		Stopped:          stoppedCount,
+		Errors:           len(stopErrors),
+		FinalStatus:      ensemble.EnsembleStopped.String(),
 	}
 
 	if len(stopErrors) > 0 {

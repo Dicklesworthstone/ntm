@@ -1,6 +1,14 @@
 package ensemble
 
-import "testing"
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"testing"
+	"time"
+)
 
 func TestOutputCapture_CaptureAll_NilCapture(t *testing.T) {
 	var capture *OutputCapture
@@ -205,5 +213,184 @@ func TestOutputCapture_DefaultsAndLineCount(t *testing.T) {
 	}
 	if countLines("a\nb") != 2 {
 		t.Fatal("countLines should count lines")
+	}
+}
+
+func TestSaveCapturedOutputs_PreservesRecoveryAcrossReopenAndRetry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("NTM_CONFIG", "")
+	resetDefaultStateStoreForTest()
+	t.Cleanup(CloseDefaultStateStore)
+
+	session := &EnsembleSession{
+		SessionName: "capture-recovery",
+		Question:    "Which results survive stopping the agents?",
+		Status:      EnsembleActive,
+		Assignments: []ModeAssignment{
+			{ModeID: "deductive", PaneName: "%1", AgentType: "cc", Status: AssignmentActive},
+			{ModeID: "inductive", PaneName: "%2", AgentType: "cod", Status: AssignmentActive},
+		},
+	}
+	if err := SaveSession(session.SessionName, session); err != nil {
+		t.Fatal(err)
+	}
+	capturedAt := time.Now().UTC()
+	captured := []CapturedOutput{
+		{
+			ModeID:     "deductive",
+			PaneName:   "%1",
+			RawOutput:  "complete raw transcript\n",
+			CapturedAt: capturedAt,
+			Parsed: &ModeOutput{
+				ModeID:      "deductive",
+				Thesis:      "Keep recoverable outputs before stopping.",
+				Confidence:  0.8,
+				TopFindings: []Finding{{Finding: "Agent output is recoverable.", Impact: ImpactHigh, Confidence: 0.8}},
+			},
+		},
+		{ModeID: "inductive", PaneName: "%2", RawOutput: "unfinished response\n", CapturedAt: capturedAt},
+	}
+	if err := saveCapturedOutputs(session, captured); err != nil {
+		t.Fatalf("save captures: %v", err)
+	}
+	if session.Status != EnsembleActive {
+		t.Fatalf("capture changed session status to %s", session.Status)
+	}
+	for i, output := range captured {
+		if !filepath.IsAbs(output.OutputPath) {
+			t.Fatalf("capture %d has no absolute recovery path: %q", i, output.OutputPath)
+		}
+		data, err := os.ReadFile(output.OutputPath)
+		if err != nil || string(data) != output.RawOutput {
+			t.Fatalf("raw capture %d = %q, %v", i, data, err)
+		}
+		info, err := os.Stat(output.OutputPath)
+		if err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("capture %d is not private: %v, %v", i, info, err)
+		}
+		dirInfo, err := os.Stat(filepath.Dir(output.OutputPath))
+		if err != nil || dirInfo.Mode().Perm() != 0o700 {
+			t.Fatalf("capture directory is not private: %v, %v", dirInfo, err)
+		}
+	}
+	validPath := session.Assignments[0].OutputPath
+	if validPath == captured[0].OutputPath {
+		t.Fatal("valid assignment must reference structured output, not the raw transcript")
+	}
+	data, err := os.ReadFile(validPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved ModeOutput
+	if err := json.Unmarshal(data, &saved); err != nil || saved.RawOutput != captured[0].RawOutput {
+		t.Fatalf("structured output lost the original transcript: %+v, %v", saved, err)
+	}
+	if session.Assignments[0].Status != AssignmentDone || session.Assignments[0].CompletedAt == nil {
+		t.Fatal("valid output did not complete its assignment")
+	}
+	if session.Assignments[1].Status != AssignmentActive || session.Assignments[1].CompletedAt != nil ||
+		session.Assignments[1].OutputPath != captured[1].OutputPath {
+		t.Fatalf("partial output was incorrectly completed or lost: %+v", session.Assignments[1])
+	}
+
+	CloseDefaultStateStore()
+	reloaded, err := LoadSession(session.SessionName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Assignments[0].OutputPath != validPath || reloaded.Assignments[0].Status != AssignmentDone ||
+		reloaded.Assignments[1].OutputPath != captured[1].OutputPath {
+		t.Fatalf("reopened store lost recovery metadata: %+v", reloaded.Assignments)
+	}
+	collector, err := CollectModeOutputs(reloaded, nil)
+	if err != nil || collector.Count() != 1 || collector.Outputs[0].ModeID != "deductive" {
+		t.Fatalf("offline collection = %+v, %v", collector, err)
+	}
+
+	retry := []CapturedOutput{
+		{ModeID: "deductive", PaneName: "%1", RawOutput: "later incomplete response", ParseErrors: []error{errors.New("incomplete")}},
+		{ModeID: "inductive", PaneName: "%2", RawOutput: "more partial work"},
+	}
+	if err := saveCapturedOutputs(reloaded, retry); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Assignments[0].OutputPath != validPath || reloaded.Assignments[0].Status != AssignmentDone {
+		t.Fatal("incomplete retry replaced the last valid output")
+	}
+	for i := range retry {
+		if retry[i].OutputPath == captured[i].OutputPath {
+			t.Fatal("retry overwrote an earlier capture")
+		}
+		data, err := os.ReadFile(captured[i].OutputPath)
+		if err != nil || string(data) != captured[i].RawOutput {
+			t.Fatalf("retry damaged original capture %d: %q, %v", i, data, err)
+		}
+	}
+}
+
+func TestSaveCapturedOutputs_FailureDoesNotPublishAssignmentChanges(t *testing.T) {
+	for _, failure := range []string{"output-directory", "state-save", "missing-capture", "wrong-pane"} {
+		t.Run(failure, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("XDG_CONFIG_HOME", "")
+			t.Setenv("NTM_CONFIG", "")
+			resetDefaultStateStoreForTest()
+			t.Cleanup(CloseDefaultStateStore)
+
+			session := &EnsembleSession{
+				SessionName: "capture-failure",
+				Question:    "Preserve state if capture cannot be saved.",
+				Status:      EnsembleActive,
+				Assignments: []ModeAssignment{
+					{ModeID: "deductive", PaneName: "%1", AgentType: "cc", Status: AssignmentActive},
+				},
+			}
+			if err := SaveSession(session.SessionName, session); err != nil {
+				t.Fatal(err)
+			}
+			before := append([]ModeAssignment(nil), session.Assignments...)
+			captured := []CapturedOutput{{
+				ModeID:    "deductive",
+				PaneName:  "%1",
+				RawOutput: "recoverable work",
+				Parsed: &ModeOutput{
+					ModeID:      "deductive",
+					Thesis:      "A completed result.",
+					Confidence:  0.8,
+					TopFindings: []Finding{{Finding: "A finding.", Impact: ImpactHigh, Confidence: 0.8}},
+				},
+			}}
+			switch failure {
+			case "output-directory":
+				store, err := defaultSQLiteStore()
+				if err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(filepath.Dir(store.store.Path()), "ensemble-outputs")
+				if err := os.WriteFile(path, []byte("not a directory"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "state-save":
+				session.Question = ""
+			case "missing-capture":
+				captured = nil
+			case "wrong-pane":
+				captured[0].PaneName = "%99"
+			}
+			if err := saveCapturedOutputs(session, captured); err == nil {
+				t.Fatal("expected persistence failure")
+			}
+			if session.Status != EnsembleActive || !reflect.DeepEqual(session.Assignments, before) {
+				t.Fatalf("failure published assignment changes: %+v", session.Assignments)
+			}
+			reloaded, err := LoadSession(session.SessionName)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reloaded.Status != EnsembleActive || !reflect.DeepEqual(reloaded.Assignments, before) {
+				t.Fatalf("failure changed durable assignment state: %+v", reloaded.Assignments)
+			}
+		})
 	}
 }

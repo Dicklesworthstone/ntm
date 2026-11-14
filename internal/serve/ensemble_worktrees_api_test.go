@@ -17,6 +17,8 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	statepkg "github.com/Dicklesworthstone/ntm/internal/state"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestEnsembleAndWorktreesOpenAPIReflection(t *testing.T) {
@@ -1176,5 +1178,183 @@ func TestAsyncEnsembleSpawnCancellationStopsRunningTmuxWork(t *testing.T) {
 		if strings.Contains(string(calls), command) {
 			t.Fatalf("cancelled ensemble continued with %s:\n%s", command, calls)
 		}
+	}
+}
+
+func TestEnsembleStopHTTPSavesRecoverableOutputsBeforeKill(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		status      ensemble.EnsembleStatus
+		failPersist bool
+	}{
+		{name: "active ensemble", status: ensemble.EnsembleActive},
+		{name: "live session after spawn failure", status: ensemble.EnsembleError},
+		{name: "output persistence failure", status: ensemble.EnsembleActive, failPersist: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			t.Setenv("NTM_CONFIG", "")
+			ensemble.CloseDefaultStateStore()
+			t.Cleanup(ensemble.CloseDefaultStateStore)
+
+			const session = "durable-ensemble-stop"
+			now := time.Now().UTC()
+			modeOutput := ensemble.ModeOutput{
+				ModeID: "deductive",
+				Thesis: "Persist completed reasoning before stopping an ensemble.",
+				TopFindings: []ensemble.Finding{
+					{
+						Finding:         "Stopping tmux destroys the only copy of unsaved agent output",
+						Impact:          ensemble.ImpactHigh,
+						Confidence:      0.95,
+						EvidencePointer: "internal/robot/ensemble_stop.go",
+						Reasoning:       "A durable snapshot must precede session destruction",
+					},
+				},
+				Confidence:  0.95,
+				GeneratedAt: now,
+			}
+			validJSON, err := json.Marshal(modeOutput)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rawA := "Analysis before result\n```json\n" + string(validJSON) + "\n```\n"
+			rawB := "Still investigating the second hypothesis; no final structured result yet.\n"
+			dir := t.TempDir()
+			captureA, captureB := filepath.Join(dir, "capture-a.txt"), filepath.Join(dir, "capture-b.txt")
+			if err := os.WriteFile(captureA, []byte(rawA), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(captureB, []byte(rawB), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			logPath, killedPath := filepath.Join(dir, "tmux.log"), filepath.Join(dir, "killed")
+			t.Setenv("NTM_STOP_LOG", logPath)
+			t.Setenv("NTM_STOP_KILLED", killedPath)
+			t.Setenv("NTM_STOP_CAPTURE_A", captureA)
+			t.Setenv("NTM_STOP_CAPTURE_B", captureB)
+			script := `#!/bin/sh
+printf '%s\n' "$*" >> "$NTM_STOP_LOG"
+case "$1" in
+  -V) echo 'tmux 3.5a' ;;
+  has-session) if [ -e "$NTM_STOP_KILLED" ]; then exit 1; fi ;;
+  list-sessions) echo 'durable-ensemble-stop' ;;
+  list-panes)
+    printf '%s\n' '%1_NTM_SEP_0_NTM_SEP_durable-ensemble-stop__cc_1_NTM_SEP_claude_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0'
+    printf '%s\n' '%2_NTM_SEP_1_NTM_SEP_durable-ensemble-stop__cod_1_NTM_SEP_codex_NTM_SEP_80_NTM_SEP_24_NTM_SEP_0_NTM_SEP_0_NTM_SEP_0_NTM_SEP_cod_NTM_SEP__NTM_SEP__NTM_SEP_0'
+    ;;
+  capture-pane)
+    for arg in "$@"; do
+      case "$arg" in
+        %1) cat "$NTM_STOP_CAPTURE_A"; exit 0 ;;
+        %2) cat "$NTM_STOP_CAPTURE_B"; exit 0 ;;
+      esac
+    done
+    exit 1
+    ;;
+  kill-session) touch "$NTM_STOP_KILLED" ;;
+esac
+exit 0
+`
+			binPath := filepath.Join(dir, "tmux")
+			if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("NTM_TMUX_BINARY", binPath)
+			oldClient := tmux.DefaultClient
+			tmux.DefaultClient = tmux.NewClient("")
+			t.Cleanup(func() { tmux.DefaultClient = oldClient })
+
+			state := &ensemble.EnsembleSession{
+				SessionName:       session,
+				Question:          "Can stopped ensemble results be recovered?",
+				Status:            tc.status,
+				SynthesisStrategy: ensemble.StrategyConsensus,
+				CreatedAt:         now,
+				Assignments: []ensemble.ModeAssignment{
+					{ModeID: "deductive", PaneName: session + "__cc_1", AgentType: "cc", Status: ensemble.AssignmentActive, AssignedAt: now},
+					{ModeID: "bayesian", PaneName: session + "__cod_1", AgentType: "cod", Status: ensemble.AssignmentActive, AssignedAt: now},
+				},
+			}
+			if err := ensemble.SaveSession(session, state); err != nil {
+				t.Fatal(err)
+			}
+			if tc.failPersist {
+				// A file where the output directory must be makes the failure
+				// deterministic, including when tests run as root.
+				blocker := filepath.Join(filepath.Dir(statepkg.DefaultPath()), "ensemble-outputs")
+				if err := os.WriteFile(blocker, []byte("blocked"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			srv := NewHermeticServer("ensemble-stop-output-test")
+			t.Cleanup(srv.Stop)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/ensemble/sessions/"+session+"/stop", strings.NewReader("{\"force\":true}"))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			srv.Router().ServeHTTP(rec, req)
+
+			if tc.failPersist {
+				if rec.Code != http.StatusInternalServerError {
+					t.Fatalf("persistence failure status=%d body=%s", rec.Code, rec.Body.String())
+				}
+				if _, err := os.Stat(killedPath); !os.IsNotExist(err) {
+					t.Fatalf("session was killed after output persistence failed: %v", err)
+				}
+				saved, err := ensemble.LoadSession(session)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if saved.Status != tc.status || saved.Assignments[0].OutputPath != "" || saved.Assignments[1].OutputPath != "" {
+					t.Fatalf("failed preservation changed durable state: %+v", saved)
+				}
+				return
+			}
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("stop status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			var out robot.EnsembleStopOutput
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+				t.Fatal(err)
+			}
+			if !out.Success || out.Result.Stopped != 2 || out.Result.Captured != 2 || len(out.Result.SavedOutputPaths) != 2 {
+				t.Fatalf("stop did not report both saved outputs: %+v", out)
+			}
+			if _, err := os.Stat(killedPath); err != nil {
+				t.Fatalf("session was not killed: %v", err)
+			}
+			for i, want := range []string{rawA, rawB} {
+				raw, err := os.ReadFile(out.Result.SavedOutputPaths[i])
+				if err != nil || string(raw) != want {
+					t.Fatalf("saved raw output %d = %q, err=%v, want %q", i, raw, err, want)
+				}
+			}
+
+			ensemble.CloseDefaultStateStore()
+			saved, err := ensemble.LoadSession(session)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if saved.Status != ensemble.EnsembleStopped || saved.Assignments[0].Status != ensemble.AssignmentDone || saved.Assignments[1].Status != ensemble.AssignmentError {
+				t.Fatalf("reopened state lost completed or partial output status: %+v", saved)
+			}
+			collector, err := ensemble.CollectModeOutputs(saved, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(collector.Outputs) != 1 || collector.Outputs[0].Thesis != modeOutput.Thesis {
+				t.Fatalf("saved completed output cannot be recovered: %+v", collector.Outputs)
+			}
+			calls, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Count(string(calls), "kill-session") != 1 || strings.Index(string(calls), "capture-pane") > strings.Index(string(calls), "kill-session") {
+				t.Fatalf("outputs were not captured before one session kill:\n%s", calls)
+			}
+		})
 	}
 }
