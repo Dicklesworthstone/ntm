@@ -194,18 +194,59 @@ func TestCommandHelpBarDropsDeadKeys(t *testing.T) {
 }
 
 // TestTargetHelpBarAdvertisesLiveKeys: in the target phase no text input is
-// focused, so 1-6/e/?/q are genuinely live and must stay advertised.
+// focused, so 1-9/e/?/q are genuinely live and must stay advertised.
 func TestTargetHelpBarAdvertisesLiveKeys(t *testing.T) {
 	m := New("test-session", testCommands)
 	m.phase = PhaseTarget
 	m.selected = &testCommands[0]
-	m.width = 120
+	m.width = 140
 	m.height = 40
 
 	view := stripANSI(m.View())
-	for _, live := range []string{"1-5", "6", "e", "?", "esc", "q"} {
+	for _, live := range []string{"1-5", "6", "7", "8", "9", "e", "?", "esc", "q"} {
 		if !strings.Contains(view, live) {
 			t.Errorf("target phase view missing advertised key %q", live)
+		}
+	}
+}
+
+func TestTargetKeyMapIncludesGrokAndOpencode(t *testing.T) {
+	if !key.Matches(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'8'}}, targetKeys.TargetGrok) {
+		t.Fatal("expected key 8 to match targetKeys.TargetGrok")
+	}
+	if !key.Matches(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'9'}}, targetKeys.TargetOpencode) {
+		t.Fatal("expected key 9 to match targetKeys.TargetOpencode")
+	}
+	for _, other := range []rune{'6', '7', '9'} {
+		if key.Matches(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{other}}, targetKeys.TargetGrok) {
+			t.Fatalf("key %q must not match targetKeys.TargetGrok", other)
+		}
+	}
+	for _, other := range []rune{'6', '7', '8'} {
+		if key.Matches(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{other}}, targetKeys.TargetOpencode) {
+			t.Fatalf("key %q must not match targetKeys.TargetOpencode", other)
+		}
+	}
+
+	m := New("test-session", testCommands)
+	m.phase = PhaseTarget
+	m.selected = &testCommands[0]
+	m.width = 140
+	m.height = 50
+
+	bar := stripANSI(m.renderTargetHelpBar())
+	for _, want := range []string{"8", "grok", "9", "opencode"} {
+		if !strings.Contains(bar, want) {
+			t.Fatalf("target help bar missing %q: %s", want, bar)
+		}
+	}
+
+	newModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m = newModel.(Model)
+	overlay := stripANSI(m.View())
+	for _, want := range []string{"Grok (grok)", "OpenCode (oc)"} {
+		if !strings.Contains(overlay, want) {
+			t.Fatalf("target help overlay missing %q:\n%s", want, overlay)
 		}
 	}
 }

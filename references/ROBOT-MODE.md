@@ -61,6 +61,18 @@ ntm --robot-attention --since-cursor=42
 ntm --robot-overlay --overlay-session=myproject --overlay-no-wait
 ```
 
+### Operator Attention Actions
+
+Durable operator state transitions for surfaced attention items (reflected in subsequent `--robot-snapshot` and `--robot-attention` digests):
+
+```bash
+ntm attention list --json
+ntm attention ack 42 --reason "investigating pane_2"
+ntm attention snooze 42 --until 30m --reason "waiting on build"
+ntm attention pin 42 --reason "release blocker"
+ntm attention dismiss 42 --reason "false alarm"
+```
+
 ### Attention Profiles
 
 | Profile | Flag | Behavior |
@@ -113,6 +125,39 @@ ntm --robot-ack=myproject --timeout=30s
 ntm --robot-tail=myproject --lines=50
 ntm --robot-interrupt=myproject
 ntm --robot-inspect-pane=myproject --index=2
+
+# Idempotent sends and durable request tracking
+ntm --robot-send=myproject --msg="Apply schema migration" --op-id=deploy-42
+ntm --robot-send-receipt=deploy-42
+ntm --robot-action-status=deploy-42
+ntm --robot-wait-request=deploy-42 --timeout=30s
+ntm --robot-cancel-request=deploy-42
+```
+
+## Reasoning Ensembles
+
+```bash
+ntm --robot-ensemble=myensemble
+ntm --robot-ensemble-modes --tier=core
+ntm --robot-ensemble-presets
+ntm --robot-ensemble-suggest="What security issues exist?"
+ntm --robot-ensemble-spawn=myensemble --preset=project-diagnosis --question="What are the main risks?"
+ntm --robot-ensemble-stop=myensemble
+```
+
+## Backpressure, Swarm Lab, Scanner, and Support Bundles
+
+```bash
+ntm --robot-backpressure
+ntm --robot-backpressure --session=myproject
+ntm --robot-swarm-lab --lab-action=list
+ntm --robot-swarm-lab --lab-action=run --lab-scenario=short_smoke --lab-gate=short
+ntm --robot-swarm-lab --lab-action=corpus --lab-gate=short
+ntm --robot-swarm-lab --lab-action=calibrate
+ntm --robot-ubs-scan=.
+ntm --robot-ubs-scan --scan-staged
+ntm --robot-ubs-scan --scan-diff
+ntm --robot-support-bundle=myproject --bundle-output=/tmp/ntm-debug.zip
 ```
 
 ## Beads, Mail, and CASS

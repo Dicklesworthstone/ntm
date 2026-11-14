@@ -12,8 +12,13 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiFetch, type ApiEnvelope } from "@/lib/api/client";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  apiFetch,
+  formatApiErrorMessage,
+  type ApiEnvelope,
+  type components,
+} from "@/lib/api/client";
 import { useConnection } from "@/lib/hooks/use-query";
 import {
   applyPaneOutputEvent,
@@ -623,7 +628,417 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
           </div>
         </section>
       </div>
+
+      <SessionCheckpointsSection
+        sessionId={sessionId}
+        encodedSessionId={encodedSessionId}
+        onNotice={setStatusNotice}
+      />
     </div>
+  );
+}
+
+type CheckpointsListResponse =
+  components["schemas"]["CheckpointsListEnvelopeResponse"];
+type CheckpointEnvelopeResponse =
+  components["schemas"]["CheckpointEnvelopeResponse"];
+type VerifyCheckpointResponse =
+  components["schemas"]["VerifyCheckpointResponse"];
+type RestoreCheckpointResponse =
+  components["schemas"]["RestoreCheckpointResponse"];
+type DeleteCheckpointResponse =
+  components["schemas"]["DeleteCheckpointEnvelopeResponse"];
+
+function createCheckpointIdempotencyKey(prefix: string): string {
+  const randomPart =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}-${randomPart}`;
+}
+
+function SessionCheckpointsSection({
+  sessionId,
+  encodedSessionId,
+  onNotice,
+}: {
+  sessionId: string;
+  encodedSessionId: string;
+  onNotice: (next: Notice) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [cpName, setCpName] = useState("");
+  const [cpDescription, setCpDescription] = useState("");
+  const [verifyById, setVerifyById] = useState<
+    Record<string, VerifyCheckpointResponse>
+  >({});
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  const checkpointsQuery = useQuery({
+    queryKey: ["session-checkpoints", sessionId],
+    queryFn: () =>
+      apiFetch<CheckpointsListResponse>(
+        `/api/v1/sessions/${encodedSessionId}/checkpoints`
+      ),
+  });
+
+  const createCheckpointMutation = useMutation({
+    mutationFn: (payload: { name?: string; description?: string }) =>
+      apiFetch<CheckpointEnvelopeResponse>(
+        `/api/v1/sessions/${encodedSessionId}/checkpoints`,
+        {
+          method: "POST",
+          headers: {
+            "Idempotency-Key": createCheckpointIdempotencyKey("cp-create"),
+          },
+          body: JSON.stringify(payload),
+        }
+      ),
+    onSuccess: (res) => {
+      setCpName("");
+      setCpDescription("");
+      onNotice({
+        type: "success",
+        message: `Saved checkpoint "${res.checkpoint.name || res.checkpoint.id}".`,
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["session-checkpoints", sessionId],
+      });
+    },
+    onError: (err) => {
+      onNotice({
+        type: "error",
+        message: `Save checkpoint failed: ${formatApiErrorMessage(err)}`,
+      });
+    },
+  });
+
+  const restoreCheckpointMutation = useMutation({
+    mutationFn: (checkpointId: string) =>
+      apiFetch<RestoreCheckpointResponse>(
+        `/api/v1/sessions/${encodedSessionId}/checkpoints/${encodeURIComponent(checkpointId)}/restore`,
+        {
+          method: "POST",
+          headers: {
+            "Idempotency-Key": createCheckpointIdempotencyKey("cp-restore"),
+          },
+          body: JSON.stringify({ force: true }),
+        }
+      ),
+    onSuccess: (res, cpId) => {
+      onNotice({
+        type: "success",
+        message: `Restored checkpoint "${cpId}" (${res.panes_restored} pane(s) restored).`,
+      });
+      void queryClient.invalidateQueries({ queryKey: ["sessions", sessionId] });
+      void queryClient.invalidateQueries({
+        queryKey: ["session-panes", sessionId],
+      });
+    },
+    onError: (err) => {
+      onNotice({
+        type: "error",
+        message: `Restore failed: ${formatApiErrorMessage(err)}`,
+      });
+    },
+  });
+
+  const deleteCheckpointMutation = useMutation({
+    mutationFn: (checkpointId: string) =>
+      apiFetch<DeleteCheckpointResponse>(
+        `/api/v1/sessions/${encodedSessionId}/checkpoints/${encodeURIComponent(checkpointId)}`,
+        {
+          method: "DELETE",
+          headers: {
+            "Idempotency-Key": createCheckpointIdempotencyKey("cp-delete"),
+          },
+        }
+      ),
+    onSuccess: (_res, cpId) => {
+      setConfirmDeleteId((prev) => (prev === cpId ? null : prev));
+      setVerifyById((prev) => {
+        const next = { ...prev };
+        delete next[cpId];
+        return next;
+      });
+      onNotice({
+        type: "success",
+        message: `Deleted checkpoint "${cpId}".`,
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["session-checkpoints", sessionId],
+      });
+    },
+    onError: (err) => {
+      onNotice({
+        type: "error",
+        message: `Delete failed: ${formatApiErrorMessage(err)}`,
+      });
+    },
+  });
+
+  const handleSaveCheckpoint = (event: React.FormEvent) => {
+    event.preventDefault();
+    const trimmedName = cpName.trim();
+    const trimmedDesc = cpDescription.trim();
+    createCheckpointMutation.mutate({
+      ...(trimmedName ? { name: trimmedName } : {}),
+      ...(trimmedDesc ? { description: trimmedDesc } : {}),
+    });
+  };
+
+  const handleVerifyIntegrity = async (checkpointId: string) => {
+    setVerifyingId(checkpointId);
+    try {
+      const result = await apiFetch<VerifyCheckpointResponse>(
+        `/api/v1/sessions/${encodedSessionId}/checkpoints/${encodeURIComponent(checkpointId)}/verify`
+      );
+      setVerifyById((prev) => ({ ...prev, [checkpointId]: result }));
+    } catch (err) {
+      onNotice({
+        type: "error",
+        message: `Integrity check failed: ${formatApiErrorMessage(err)}`,
+      });
+    } finally {
+      setVerifyingId((prev) => (prev === checkpointId ? null : prev));
+    }
+  };
+
+  const checkpoints = checkpointsQuery.data?.checkpoints ?? [];
+
+  return (
+    <section className="rounded-lg border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-800 space-y-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+            Session Checkpoints
+          </h2>
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            Capture pane scrollback & Git state snapshots, verify archive
+            integrity, or restore checkpoints.
+          </p>
+        </div>
+        <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+          {checkpoints.length} checkpoint{checkpoints.length === 1 ? "" : "s"}
+        </span>
+      </div>
+
+      {/* Save Checkpoint Form */}
+      <form
+        onSubmit={handleSaveCheckpoint}
+        aria-label="Save session checkpoint"
+        className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end"
+      >
+        <div>
+          <label
+            htmlFor="cp-save-name"
+            className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1"
+          >
+            Checkpoint Name
+          </label>
+          <input
+            id="cp-save-name"
+            value={cpName}
+            onChange={(e) => setCpName(e.target.value)}
+            placeholder="e.g. pre-refactor-snapshot"
+            className="w-full rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2 text-sm text-gray-900 dark:text-white focus:border-blue-500 focus:outline-none"
+          />
+        </div>
+        <div>
+          <label
+            htmlFor="cp-save-description"
+            className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1"
+          >
+            Description (optional)
+          </label>
+          <input
+            id="cp-save-description"
+            value={cpDescription}
+            onChange={(e) => setCpDescription(e.target.value)}
+            placeholder="Notes about current swarm state..."
+            className="w-full rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2 text-sm text-gray-900 dark:text-white focus:border-blue-500 focus:outline-none"
+          />
+        </div>
+        <div>
+          <button
+            type="submit"
+            disabled={createCheckpointMutation.isPending}
+            className="w-full rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            {createCheckpointMutation.isPending
+              ? "Saving…"
+              : "Save Checkpoint"}
+          </button>
+        </div>
+      </form>
+
+      {checkpointsQuery.error && (
+        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-700 dark:bg-red-900/20 dark:text-red-300">
+          {formatApiErrorMessage(checkpointsQuery.error)}
+        </div>
+      )}
+
+      {!checkpointsQuery.isLoading &&
+        !checkpointsQuery.error &&
+        checkpoints.length === 0 && (
+          <div className="py-6 text-center text-sm text-gray-400">
+            No checkpoints saved for this session yet.
+          </div>
+        )}
+
+      {checkpoints.length > 0 && (
+        <div className="space-y-3">
+          {checkpoints.map((cp) => {
+            const verification = verifyById[cp.id];
+            const isVerifying = verifyingId === cp.id;
+            const isConfirmingDelete = confirmDeleteId === cp.id;
+            const isRestoring =
+              restoreCheckpointMutation.isPending &&
+              restoreCheckpointMutation.variables === cp.id;
+            const isDeleting =
+              deleteCheckpointMutation.isPending &&
+              deleteCheckpointMutation.variables === cp.id;
+
+            return (
+              <div
+                key={cp.id}
+                className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40 p-3.5 space-y-2.5"
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold text-sm text-gray-900 dark:text-white">
+                        {cp.name || cp.id}
+                      </span>
+                      <span className="text-xs font-mono text-gray-500 dark:text-gray-400">
+                        {cp.id}
+                      </span>
+                      <span className="rounded-full bg-gray-200 dark:bg-gray-700 px-2 py-0.5 text-xs text-gray-700 dark:text-gray-200">
+                        {cp.pane_count} pane{cp.pane_count === 1 ? "" : "s"}
+                      </span>
+                      {cp.git?.branch && (
+                        <span className="rounded-full bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200 px-2 py-0.5 text-xs font-mono">
+                          {cp.git.branch}
+                          {cp.git.commit ? `@${cp.git.commit.slice(0, 7)}` : ""}
+                        </span>
+                      )}
+                    </div>
+                    {cp.description && (
+                      <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                        {cp.description}
+                      </p>
+                    )}
+                    <div className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                      {cp.age ||
+                        (cp.created_at
+                          ? new Date(cp.created_at).toLocaleString()
+                          : "—")}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      disabled={isVerifying}
+                      aria-label={`Verify Integrity ${cp.id}`}
+                      onClick={() => void handleVerifyIntegrity(cp.id)}
+                      className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+                    >
+                      {isVerifying ? "Verifying…" : "Verify Integrity"}
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isRestoring}
+                      aria-label={`Restore ${cp.id}`}
+                      onClick={() => restoreCheckpointMutation.mutate(cp.id)}
+                      className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                    >
+                      {isRestoring ? "Restoring…" : "Restore"}
+                    </button>
+
+                    {!isConfirmingDelete ? (
+                      <button
+                        type="button"
+                        aria-label={`Delete ${cp.id}`}
+                        onClick={() => setConfirmDeleteId(cp.id)}
+                        className="rounded-md border border-red-300 dark:border-red-700 px-3 py-1.5 text-xs font-medium text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/20"
+                      >
+                        Delete
+                      </button>
+                    ) : (
+                      <div className="flex items-center gap-2 rounded-md border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-2.5 py-1">
+                        <button
+                          type="button"
+                          disabled={isDeleting}
+                          aria-label={`Confirm delete ${cp.id}`}
+                          onClick={() => deleteCheckpointMutation.mutate(cp.id)}
+                          className="rounded bg-red-600 px-2 py-0.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                        >
+                          {isDeleting ? "Deleting…" : "Confirm Delete"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteId(null)}
+                          className="text-xs text-gray-600 dark:text-gray-300 hover:underline"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Inline Integrity Verification Status */}
+                {verification && (
+                  <div
+                    className={`rounded-md border px-3 py-2 text-xs space-y-1.5 ${
+                      verification.valid
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-200"
+                        : "border-red-200 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-900/20 dark:text-red-200"
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center gap-3 font-medium">
+                      <span>
+                        {verification.valid
+                          ? "Integrity Verified (SHA256 & Archive Valid)"
+                          : "Integrity Verification Failed"}
+                      </span>
+                      <span className="font-mono text-[11px] opacity-90">
+                        schema={verification.schema_valid ? "ok" : "fail"} ·
+                        files={verification.files_present ? "ok" : "fail"} ·
+                        consistency=
+                        {verification.consistency_valid ? "ok" : "fail"}
+                      </span>
+                    </div>
+                    {verification.details &&
+                      Object.keys(verification.details).length > 0 && (
+                        <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] opacity-90">
+                          {Object.entries(verification.details).map(
+                            ([k, v]) => (
+                              <span key={k}>
+                                {k}: {v}
+                              </span>
+                            )
+                          )}
+                        </div>
+                      )}
+                    {verification.errors && verification.errors.length > 0 && (
+                      <div>Errors: {verification.errors.join("; ")}</div>
+                    )}
+                    {verification.warnings &&
+                      verification.warnings.length > 0 && (
+                        <div>Warnings: {verification.warnings.join("; ")}</div>
+                      )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }
 

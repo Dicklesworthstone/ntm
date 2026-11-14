@@ -2,7 +2,9 @@ package serve
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
 
 func TestEnsembleAndWorktreesOpenAPIReflection(t *testing.T) {
@@ -747,6 +750,355 @@ func TestBackpressureAndSwarmLabRESTEndpoints(t *testing.T) {
 		})
 		if badActionRec.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 for unsupported action, got %d", badActionRec.Code)
+		}
+	})
+}
+
+func TestAsyncJobsEnsembleSpawnAndSynthesizeValidationAndLifecycle(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("NTM_CONFIG", "")
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	projectDir := t.TempDir()
+	srv, _ := newJournalHTTPServer(t, filepath.Join(t.TempDir(), "jobs-ensemble.db"))
+	srv.mu.Lock()
+	srv.projectDir = projectDir
+	srv.mu.Unlock()
+
+	doRaw := func(method, target, rawBody string) (*httptest.ResponseRecorder, map[string]interface{}) {
+		t.Helper()
+		var bodyReader *bytes.Reader
+		if rawBody != "" {
+			bodyReader = bytes.NewReader([]byte(rawBody))
+		} else {
+			bodyReader = bytes.NewReader(nil)
+		}
+		req := httptest.NewRequest(method, target, bodyReader)
+		if rawBody != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		srv.Router().ServeHTTP(rec, req)
+		var decoded map[string]interface{}
+		if rec.Body.Len() > 0 {
+			if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+				t.Fatalf("%s %s invalid JSON (%d): %v\nbody=%s", method, target, rec.Code, err, rec.Body.String())
+			}
+		}
+		return rec, decoded
+	}
+
+	t.Run("Admission400EnvelopeAndSessionValidation", func(t *testing.T) {
+		badEnvelopes := []struct {
+			name string
+			body string
+		}{
+			{
+				name: "ensemble_spawn session conflict",
+				body: `{"type":"ensemble_spawn","session":"ens-a","params":{"session":"ens-b","question":"q","preset":"project-diagnosis"}}`,
+			},
+			{
+				name: "ensemble_spawn whitespace session",
+				body: `{"type":"ensemble_spawn","session":"   ","params":{"question":"q","preset":"project-diagnosis"}}`,
+			},
+			{
+				name: "ensemble_synthesize session conflict",
+				body: `{"type":"ensemble_synthesize","session":"ens-a","params":{"session":"ens-b"}}`,
+			},
+			{
+				name: "ensemble_synthesize non-string params.session",
+				body: `{"type":"ensemble_synthesize","session":"ens-a","params":{"session":123}}`,
+			},
+			{
+				name: "ensemble_synthesize whitespace session",
+				body: `{"type":"ensemble_synthesize","session":"   "}`,
+			},
+		}
+		for _, tc := range badEnvelopes {
+			rec, body := doRaw(http.MethodPost, "/api/v1/jobs", tc.body)
+			if rec.Code != http.StatusBadRequest || body["error_code"] != ErrCodeBadRequest {
+				t.Fatalf("%s: status=%d body=%v, want 400 BAD_REQUEST", tc.name, rec.Code, body)
+			}
+		}
+	})
+
+	t.Run("ParameterValidationWrapsInvalidJobRequestAndFailsClosed", func(t *testing.T) {
+		invalidCases := []struct {
+			name     string
+			jobType  string
+			params   map[string]interface{}
+			wantFrag string
+		}{
+			{
+				name:     "spawn missing session",
+				jobType:  JobTypeEnsembleSpawn,
+				params:   map[string]interface{}{"question": "What broke?", "preset": "project-diagnosis"},
+				wantFrag: "session is required",
+			},
+			{
+				name:     "spawn invalid session name",
+				jobType:  JobTypeEnsembleSpawn,
+				params:   map[string]interface{}{"session": "bad:name", "question": "What broke?", "preset": "project-diagnosis"},
+				wantFrag: "invalid session name",
+			},
+			{
+				name:     "spawn missing question",
+				jobType:  JobTypeEnsembleSpawn,
+				params:   map[string]interface{}{"session": "ens-val-1", "preset": "project-diagnosis"},
+				wantFrag: "question is required",
+			},
+			{
+				name:     "spawn missing preset and modes",
+				jobType:  JobTypeEnsembleSpawn,
+				params:   map[string]interface{}{"session": "ens-val-1", "question": "What broke?"},
+				wantFrag: "either preset or modes is required",
+			},
+			{
+				name:     "spawn preset and modes mutually exclusive",
+				jobType:  JobTypeEnsembleSpawn,
+				params:   map[string]interface{}{"session": "ens-val-1", "question": "What broke?", "preset": "project-diagnosis", "modes": []string{"deductive", "bayesian"}},
+				wantFrag: "preset and modes are mutually exclusive",
+			},
+			{
+				name:     "spawn negative budget",
+				jobType:  JobTypeEnsembleSpawn,
+				params:   map[string]interface{}{"session": "ens-val-1", "question": "What broke?", "preset": "project-diagnosis", "budget_total": -5},
+				wantFrag: "budget_total and budget_per_agent must be non-negative",
+			},
+			{
+				name:     "synthesize missing session",
+				jobType:  JobTypeEnsembleSynthesize,
+				params:   map[string]interface{}{"strategy": "consensus"},
+				wantFrag: "session name is required",
+			},
+			{
+				name:     "synthesize invalid session",
+				jobType:  JobTypeEnsembleSynthesize,
+				params:   map[string]interface{}{"session": "bad:name"},
+				wantFrag: "invalid session name",
+			},
+			{
+				name:     "synthesize unsupported output_format",
+				jobType:  JobTypeEnsembleSynthesize,
+				params:   map[string]interface{}{"session": "ens-val-1", "output_format": "xml"},
+				wantFrag: "unsupported output_format",
+			},
+			{
+				name:     "synthesize invalid strategy",
+				jobType:  JobTypeEnsembleSynthesize,
+				params:   map[string]interface{}{"session": "ens-val-1", "strategy": "not-a-strategy"},
+				wantFrag: "invalid",
+			},
+		}
+
+		for _, tc := range invalidCases {
+			_, err := srv.executeJobOperation(context.Background(), "val-check", CreateJobRequest{
+				Type:   tc.jobType,
+				Params: tc.params,
+			})
+			if !errors.Is(err, errInvalidJobRequest) {
+				t.Fatalf("%s: executeJobOperation err = %v, want errors.Is(..., errInvalidJobRequest)", tc.name, err)
+			}
+			if !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tc.wantFrag)) {
+				t.Fatalf("%s: err = %q, want substring %q", tc.name, err.Error(), tc.wantFrag)
+			}
+
+			rawReq, marshalErr := json.Marshal(CreateJobRequest{Type: tc.jobType, Params: tc.params})
+			if marshalErr != nil {
+				t.Fatalf("%s: marshal: %v", tc.name, marshalErr)
+			}
+			env := postJob(t, srv, string(rawReq))
+			final := pollJobTerminal(t, srv, env.Job.ID)
+			if JobStatus(final.Job.Status) != JobStatusFailed || !strings.Contains(strings.ToLower(final.Job.Error), strings.ToLower(tc.wantFrag)) {
+				t.Fatalf("%s: final job = %+v, want failed containing %q", tc.name, final.Job, tc.wantFrag)
+			}
+		}
+	})
+
+	t.Run("MissingSessionSynthesizeReachesFailedOutcome", func(t *testing.T) {
+		rec, body := doRaw(http.MethodPost, "/api/v1/jobs", `{"type":"ensemble_synthesize","params":{"session":"missing-async-ens"}}`)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("POST /api/v1/jobs status=%d body=%v, want 202", rec.Code, body)
+		}
+		loc := rec.Header().Get("Location")
+		jobObj, _ := body["job"].(map[string]interface{})
+		jobID, _ := jobObj["id"].(string)
+		if jobID == "" || loc != "/api/v1/jobs/"+jobID {
+			t.Fatalf("Location=%q jobID=%q, want /api/v1/jobs/<id>", loc, jobID)
+		}
+		final := pollJobTerminal(t, srv, jobID)
+		if JobStatus(final.Job.Status) != JobStatusFailed {
+			t.Fatalf("missing session synthesize status=%s, want failed (result=%#v)", final.Job.Status, final.Job.Result)
+		}
+		if !strings.Contains(final.Job.Error, "SESSION_NOT_FOUND") || !strings.Contains(final.Job.Error, "missing-async-ens") {
+			t.Fatalf("expected real SESSION_NOT_FOUND error, got %q", final.Job.Error)
+		}
+	})
+
+	t.Run("SynthesizeCompletedFromPersistedEnsembleFixture", func(t *testing.T) {
+		outDir := t.TempDir()
+		outPathA := filepath.Join(outDir, "deductive.json")
+		outPathB := filepath.Join(outDir, "bayesian.json")
+		now := time.Now().UTC()
+
+		writeModeOutputFile(t, outPathA, ensemble.ModeOutput{
+			ModeID: "deductive",
+			Thesis: "Async ensemble jobs must share the synchronous REST execution path.",
+			TopFindings: []ensemble.Finding{
+				{
+					Finding:         "Shared execution guarantees identical validation and synthesis payloads",
+					Impact:          ensemble.ImpactHigh,
+					Confidence:      0.91,
+					EvidencePointer: "internal/serve/server_ensemble.go:475",
+					Reasoning:       "Single implementation eliminates drift between sync and async surfaces",
+				},
+			},
+			Confidence:  0.9,
+			GeneratedAt: now,
+		})
+		writeModeOutputFile(t, outPathB, ensemble.ModeOutput{
+			ModeID: "bayesian",
+			Thesis: "Durable progress checkpoints improve crash observability during synthesis.",
+			TopFindings: []ensemble.Finding{
+				{
+					Finding:         "Progress checkpoints preserve session identity if a worker stops early",
+					Impact:          ensemble.ImpactMedium,
+					Confidence:      0.85,
+					EvidencePointer: "internal/serve/jobs_dispatch.go:132",
+					Reasoning:       "Journaled progress merges cleanly with final outcomes",
+				},
+			},
+			Confidence:  0.86,
+			GeneratedAt: now,
+		})
+
+		sessName := "async-ens-synth-ok"
+		completedAt := now
+		state := &ensemble.EnsembleSession{
+			SessionName:       sessName,
+			Question:          "How should async ensemble synthesis preserve parity and durability?",
+			PresetUsed:        "architecture-review",
+			Status:            ensemble.EnsembleReady,
+			SynthesisStrategy: ensemble.StrategyConsensus,
+			CreatedAt:         now,
+			Assignments: []ensemble.ModeAssignment{
+				{
+					ModeID:      "deductive",
+					PaneName:    sessName + "__cc_1",
+					AgentType:   "cc",
+					Status:      ensemble.AssignmentDone,
+					OutputPath:  outPathA,
+					AssignedAt:  now,
+					CompletedAt: &completedAt,
+				},
+				{
+					ModeID:      "bayesian",
+					PaneName:    sessName + "__cod_1",
+					AgentType:   "cod",
+					Status:      ensemble.AssignmentDone,
+					OutputPath:  outPathB,
+					AssignedAt:  now,
+					CompletedAt: &completedAt,
+				},
+			},
+		}
+		if err := ensemble.SaveSession(sessName, state); err != nil {
+			t.Fatalf("SaveSession: %v", err)
+		}
+
+		rec, body := doRaw(http.MethodPost, "/api/v1/jobs",
+			`{"type":"ensemble_synthesize","session":"`+sessName+`","params":{"strategy":"consensus","output_format":"markdown"}}`)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("POST /api/v1/jobs status=%d body=%v, want 202", rec.Code, body)
+		}
+		jobObj, _ := body["job"].(map[string]interface{})
+		jobID, _ := jobObj["id"].(string)
+		if rec.Header().Get("Location") != "/api/v1/jobs/"+jobID {
+			t.Fatalf("Location=%q, want /api/v1/jobs/%s", rec.Header().Get("Location"), jobID)
+		}
+
+		final := pollJobTerminal(t, srv, jobID)
+		if JobStatus(final.Job.Status) != JobStatusCompleted || final.Job.Progress != 100 {
+			t.Fatalf("job status=%s progress=%v error=%q, want completed/100", final.Job.Status, final.Job.Progress, final.Job.Error)
+		}
+		if final.Job.Result["status"] != "complete" || final.Job.Result["session"] != sessName {
+			t.Fatalf("unexpected job result metadata: %#v", final.Job.Result)
+		}
+		report, ok := final.Job.Result["report"].(map[string]interface{})
+		if !ok || report["summary"] == "" {
+			t.Fatalf("expected non-empty synthesis report in job result, got %#v", final.Job.Result["report"])
+		}
+		if formatted, _ := final.Job.Result["formatted_output"].(string); strings.TrimSpace(formatted) == "" {
+			t.Fatalf("expected non-empty formatted_output in job result")
+		}
+		if _, ok := final.Job.Result["redundancy"].(map[string]interface{}); !ok {
+			t.Fatalf("expected redundancy analysis in job result, got %#v", final.Job.Result["redundancy"])
+		}
+	})
+
+	t.Run("DeleteJobCancelsEnsembleJobsAndRespectsContext", func(t *testing.T) {
+		cancelledCtx, cancelNow := context.WithCancel(context.Background())
+		cancelNow()
+		for _, jt := range []string{JobTypeEnsembleSpawn, JobTypeEnsembleSynthesize} {
+			out, err := srv.executeJobOperation(cancelledCtx, "precancelled-"+jt, CreateJobRequest{
+				Type:   jt,
+				Params: map[string]interface{}{"session": "never-runs"},
+			})
+			if !errors.Is(err, context.Canceled) || out != nil {
+				t.Fatalf("%s with cancelled ctx returned (%v, %v), want (nil, context.Canceled)", jt, out, err)
+			}
+		}
+
+		blockerStarted := make(chan struct{})
+		releaseBlocker := make(chan struct{})
+		srv.spawnAgents = func(ctx context.Context, opts robot.SpawnOptions) (*robot.SpawnOutput, error) {
+			close(blockerStarted)
+			select {
+			case <-releaseBlocker:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			out := &robot.SpawnOutput{Session: opts.Session}
+			out.Success = true
+			return out, nil
+		}
+		t.Cleanup(func() {
+			select {
+			case <-releaseBlocker:
+			default:
+				close(releaseBlocker)
+			}
+		})
+
+		blockerEnv := postJob(t, srv, `{"type":"swarm_spawn","params":{"session":"barrier-holder","cc_count":1}}`)
+		select {
+		case <-blockerStarted:
+		case <-time.After(5 * time.Second):
+			t.Fatal("barrier holder job did not start")
+		}
+
+		// Queue an ensemble_spawn job behind the barrier, then cancel it via DELETE /api/v1/jobs/{id}.
+		ensRec, ensBody := doRaw(http.MethodPost, "/api/v1/jobs",
+			`{"type":"ensemble_spawn","params":{"session":"cancel-me","question":"Should cancel?","preset":"project-diagnosis"}}`)
+		if ensRec.Code != http.StatusAccepted {
+			t.Fatalf("POST ensemble_spawn status=%d body=%v, want 202", ensRec.Code, ensBody)
+		}
+		ensJobObj, _ := ensBody["job"].(map[string]interface{})
+		ensJobID, _ := ensJobObj["id"].(string)
+
+		delRec, delBody := doRaw(http.MethodDelete, "/api/v1/jobs/"+ensJobID, "")
+		if delRec.Code != http.StatusOK {
+			t.Fatalf("DELETE /api/v1/jobs/%s status=%d body=%v, want 200", ensJobID, delRec.Code, delBody)
+		}
+
+		close(releaseBlocker)
+		_ = pollJobTerminal(t, srv, blockerEnv.Job.ID)
+		cancelledFinal := pollJobTerminal(t, srv, ensJobID)
+		if JobStatus(cancelledFinal.Job.Status) != JobStatusCancelled {
+			t.Fatalf("cancelled ensemble_spawn status=%s, want cancelled (%+v)", cancelledFinal.Job.Status, cancelledFinal.Job)
 		}
 	})
 }

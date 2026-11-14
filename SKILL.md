@@ -6,7 +6,7 @@ description: >-
   operating `ntm` as an agent or human operator.
 ---
 
-<!-- TOC: Quick Start | Session Orchestration | Dispatch & Reusable Assets | Work Intelligence | Coordination | Safety | Robot Mode | Serve API | Project Resolution | References | Related Skills -->
+<!-- TOC: Quick Start | Session Orchestration | Dispatch & Reusable Assets | Reasoning Ensembles | Work Intelligence | Coordination | Safety | Robot Mode | Serve API | Project Resolution | References | Related Skills -->
 
 # NTM — Named Tmux Manager
 
@@ -15,9 +15,9 @@ description: >-
 > **Read the repo first.** If the target repository has `AGENTS.md` or `README.md`, read those before applying this skill. Repo-local instructions override generic NTM advice.
 
 > **Interactive vs automation:**
-> - `ntm dashboard`, `ntm palette`, and other TUI surfaces are for humans.
+> - `ntm dashboard`, `ntm palette`, `ntm web`, and other TUI/web surfaces are for humans.
 > - For machine-readable automation, prefer `--robot-*`.
-> - Non-interactive CLI commands such as `ntm send`, `ntm work triage`, `ntm locks list`, `ntm pipeline status`, and `ntm serve` are fine when they are the clearest tool.
+> - Non-interactive CLI commands such as `ntm send`, `ntm work triage`, `ntm attention list`, `ntm locks list`, `ntm pipeline status`, and `ntm serve` are fine when they are the clearest tool.
 
 > **Coordination and isolation:**
 > - Agent Mail reservations are the default coordination primitive.
@@ -51,6 +51,7 @@ Use these for day-to-day session lifecycle management:
 
 ```bash
 ntm spawn myproject --cc=3 --cod=2 --agy=1
+ntm spawn myproject --grok=1 --omp=1 --oc=1
 ntm spawn myproject --label frontend --cc=2
 ntm spawn myproject --label backend --cc=2 --worktrees
 ntm add myproject --cc=1
@@ -62,7 +63,10 @@ ntm zoom myproject 3
 ntm attach myproject
 ntm dashboard myproject
 ntm palette myproject
+ntm web
 ```
+
+In `ntm palette`, target selection keys cover every built-in harness: `1-5` (All / Claude / Codex / Gemini / Antigravity), `7` Oh My Pi (`omp`), `8` Grok (`grok`), `9` OpenCode (`oc`), and `6` to pick individual agent panes.
 
 Useful spawn patterns:
 
@@ -110,6 +114,20 @@ User-level and project-level assets both matter. NTM can resolve configuration f
 `~/.config/ntm/...` and project-local `.ntm/...` trees, so check the repo before
 assuming defaults.
 
+## Reasoning Ensembles
+
+Multi-mode reasoning ensembles are graduated into default NTM builds for structured diagnosis, adversarial review, synthesis, run comparison, and finding provenance:
+
+```bash
+ntm modes list --tier core
+ntm ensemble suggest "What security issues exist in the auth layer?" --json
+ntm ensemble spawn myensemble --preset project-diagnosis --question "What are the main architectural risks?"
+ntm ensemble status myensemble --format=json
+ntm ensemble synthesize myensemble --format=json
+ntm ensemble compare myensemble-v1 myensemble-v2 --format=json
+ntm ensemble provenance --all --format=json
+```
+
 ## Work Intelligence
 
 NTM is no longer just a pane launcher. It has first-class work selection and assignment:
@@ -143,6 +161,11 @@ ntm locks force-release myproject 42 --note "agent inactive"
 ntm coordinator status myproject
 ntm coordinator digest myproject
 ntm coordinator conflicts myproject
+ntm attention list --json
+ntm attention ack 42 --reason "investigating pane_2"
+ntm attention snooze 42 --until 30m --reason "waiting on build"
+ntm attention pin 42 --reason "release blocker"
+ntm attention dismiss 42 --reason "false alarm"
 ntm checkpoint save myproject -m "before risky refactor"
 ntm checkpoint list myproject
 ntm checkpoint restore myproject
@@ -222,6 +245,14 @@ ntm --robot-cass-search="authentication error"
 ntm --robot-beads-list --status=open
 ntm --robot-bead-claim=br-123 --bead-assignee=agent1
 ntm --robot-bead-close=br-123 --bead-close-reason="Completed"
+ntm --robot-ensemble=myensemble
+ntm --robot-ensemble-modes --tier=core
+ntm --robot-ensemble-presets
+ntm --robot-ensemble-suggest="What security issues exist?"
+ntm --robot-send=myproject --msg="Apply schema migration" --op-id=deploy-42
+ntm --robot-action-status=deploy-42
+ntm --robot-wait-request=deploy-42 --timeout=30s
+ntm --robot-cancel-request=deploy-42
 ```
 
 `--spawn-prompt` (or `--spawn-prompt-file`) waits for readiness, then reaches
@@ -243,9 +274,10 @@ Prefer `--robot-*` when another agent or script needs structured output.
 
 ## Serve API and Pipeline Surfaces
 
-NTM also exposes local API and durable workflow surfaces:
+NTM also exposes the embedded web cockpit, local REST/SSE/WebSocket API, and durable workflow surfaces:
 
 ```bash
+ntm web
 ntm serve --port 7337
 ntm openapi generate
 ntm pipeline run .ntm/pipelines/review.yaml --session myproject
@@ -255,7 +287,7 @@ ntm pipeline resume run-20241230-123456-abcd
 ntm pipeline cleanup --older=7d
 ```
 
-Use `ntm serve` for long-lived local integrations. Use `--robot-*` for single-shot agent control.
+`ntm web` mounts the embedded browser cockpit at `http://127.0.0.1:7337` alongside the REST/SSE/WebSocket API and live OpenAPI 3.1 spec at `http://127.0.0.1:7337/api/v1/openapi.json`. Use `ntm serve` for headless local integrations, and `--robot-*` for single-shot agent control.
 
 ## Project Resolution
 

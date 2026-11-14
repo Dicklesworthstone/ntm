@@ -1,6 +1,6 @@
 # Vision Checklist — v1.39.0
 
-generated: 2026-11-13T17:54:50Z by scripts/reality_audit.sh (seed 2553148806)
+generated: 2026-11-14T05:19:59Z by scripts/reality_audit.sh (seed 2553148806)
 
 - README.md:29 TL;DR
 - README.md:31 The Problem
@@ -143,59 +143,64 @@ generated: 2026-11-13T17:54:50Z by scripts/reality_audit.sh (seed 2553148806)
 - docs/ORCHESTRATION_FEATURES.md:1457 Success Criteria
 - SKILL.md:27 Quick Start
 - SKILL.md:48 Session Orchestration
-- SKILL.md:85 Dispatch and Reusable Assets
-- SKILL.md:113 Work Intelligence
-- SKILL.md:133 Coordination and Recovery
-- SKILL.md:175 Safety and Approvals
-- SKILL.md:198 Canonical Robot Mode
-- SKILL.md:244 Serve API and Pipeline Surfaces
-- SKILL.md:260 Project Resolution
-- SKILL.md:273 Reference Index
-- SKILL.md:284 Related Skills
-- command_palette.md:26 Analysis & Review
-- command_palette.md:28 fresh_review | Fresh Review
-- command_palette.md:31 check_other_agents_work | Check Other Agents Work
-- command_palette.md:34 randomly_inspect_code | Randomly Inspect Code
-- command_palette.md:37 analyze_beads_and_allocate | Analyze Beads and Allocate
-- command_palette.md:40 check_orm_and_schemas | Check ORM and Schemas
-- command_palette.md:43 scrutinize_and_improve_workflow_and_ui | Scrutinize and Improve Workflow and UI
-- command_palette.md:46 apply_ubs | Apply UBS
-- command_palette.md:49 Coding & Development
-- command_palette.md:51 fix_bug | Fix Bug
-- command_palette.md:54 create_tests | Create Tests
-- command_palette.md:57 leverage_tanstack_libraries | Leverage TanStack Libraries
-- command_palette.md:60 build_ui_ux | Build UI/UX
-- command_palette.md:63 Ensemble
-- command_palette.md:65 ensemble_list | Ensemble Presets (Core)
-- command_palette.md:68 ensemble_run | Ensemble Run (Pick Preset + Prompt)
-- command_palette.md:73 ensemble_status | Ensemble Status
-- command_palette.md:76 ensemble_synthesize | Ensemble Synthesize
-- command_palette.md:79 ensemble_modes_core | Ensemble Modes (Core)
-- command_palette.md:82 ensemble_modes_advanced | Ensemble Modes (Advanced)
-- command_palette.md:85 Documentation
-- command_palette.md:87 complete_docusaurus_site | Complete Docusaurus Site
-- command_palette.md:90 improve_readme | Improve README
-- command_palette.md:93 revise_readme | Revise README
-- command_palette.md:96 add_missing_features_to_readme | Add Missing Features to README
-- command_palette.md:99 Planning & Workflow
-- command_palette.md:101 combine_plans_into_hybrid | Combine Plans Into Hybrid
-- command_palette.md:104 improve_beads | Improve Beads
-- command_palette.md:107 turn_plan_into_beads | Turn Plan Into Beads
-- command_palette.md:110 use_bv | Use BV
-- command_palette.md:113 next_bead | Next Bead
-- command_palette.md:116 work_on_your_beads | Work on Your Beads
-- command_palette.md:119 do_all_of_it | Do All Of It
-- command_palette.md:122 Git & Operations
-- command_palette.md:124 git_commit | Git Commit
-- command_palette.md:127 do_gh_flow | Do GH Flow
-- command_palette.md:130 Agent Coordination
-- command_palette.md:132 default_new_agent | Default New Agent
-- command_palette.md:135 check_and_respond_to_mail | Check and Respond to Mail
-- command_palette.md:138 introduce_to_fellow_agents | Introduce to Fellow Agents
-- command_palette.md:141 check_project_inbox | Check Project Inbox
-- command_palette.md:145 start_out_with_agent_mail | Start Out With Agent Mail
-- command_palette.md:147 Investigation
-- command_palette.md:149 read_agents_and_investigate | Read Agents and Investigate
-- command_palette.md:152 reread_agents_md | Reread AGENTS.md
-- command_palette.md:155 Quick Commands
-- command_palette.md:157 ultrathink | Ultrathink
+- SKILL.md:89 Dispatch and Reusable Assets
+- SKILL.md:117 Reasoning Ensembles
+- SKILL.md:131 Work Intelligence
+- SKILL.md:151 Coordination and Recovery
+- SKILL.md:198 Safety and Approvals
+- SKILL.md:221 Canonical Robot Mode
+- SKILL.md:275 Serve API and Pipeline Surfaces
+- SKILL.md:292 Project Resolution
+- SKILL.md:305 Reference Index
+- SKILL.md:316 Related Skills
+- command_palette.md:27 Analysis & Review
+- command_palette.md:29 fresh_review | Fresh Review
+- command_palette.md:32 check_other_agents_work | Check Other Agents Work
+- command_palette.md:35 randomly_inspect_code | Randomly Inspect Code
+- command_palette.md:38 analyze_beads_and_allocate | Analyze Beads and Allocate
+- command_palette.md:41 check_orm_and_schemas | Check ORM and Schemas
+- command_palette.md:44 scrutinize_and_improve_workflow_and_ui | Scrutinize and Improve Workflow and UI
+- command_palette.md:47 apply_ubs | Apply UBS
+- command_palette.md:50 Coding & Development
+- command_palette.md:52 fix_bug | Fix Bug
+- command_palette.md:55 create_tests | Create Tests
+- command_palette.md:58 leverage_tanstack_libraries | Leverage TanStack Libraries
+- command_palette.md:61 build_ui_ux | Build UI/UX
+- command_palette.md:64 Ensemble
+- command_palette.md:66 ensemble_suggest | Ensemble Suggest Preset
+- command_palette.md:69 ensemble_list | Ensemble Presets (Core)
+- command_palette.md:72 ensemble_run | Ensemble Run (Pick Preset + Prompt)
+- command_palette.md:77 ensemble_status | Ensemble Status
+- command_palette.md:80 ensemble_synthesize | Ensemble Synthesize
+- command_palette.md:83 ensemble_modes_core | Ensemble Modes (Core)
+- command_palette.md:86 ensemble_modes_advanced | Ensemble Modes (Advanced)
+- command_palette.md:89 Documentation
+- command_palette.md:91 complete_docusaurus_site | Complete Docusaurus Site
+- command_palette.md:94 improve_readme | Improve README
+- command_palette.md:97 revise_readme | Revise README
+- command_palette.md:100 add_missing_features_to_readme | Add Missing Features to README
+- command_palette.md:103 Planning & Workflow
+- command_palette.md:105 combine_plans_into_hybrid | Combine Plans Into Hybrid
+- command_palette.md:108 improve_beads | Improve Beads
+- command_palette.md:111 turn_plan_into_beads | Turn Plan Into Beads
+- command_palette.md:114 use_bv | Use BV
+- command_palette.md:117 next_bead | Next Bead
+- command_palette.md:120 work_on_your_beads | Work on Your Beads
+- command_palette.md:123 do_all_of_it | Do All Of It
+- command_palette.md:126 Git & Operations
+- command_palette.md:128 git_commit | Git Commit
+- command_palette.md:131 do_gh_flow | Commit, Preflight & DSR Release
+- command_palette.md:134 Swarm Triage & Diagnostics
+- command_palette.md:136 attention_triage | Attention Triage
+- command_palette.md:139 backpressure_heatmap | Swarm Backpressure & Heatmap
+- command_palette.md:142 Agent Coordination
+- command_palette.md:144 default_new_agent | Default New Agent
+- command_palette.md:147 check_and_respond_to_mail | Check and Respond to Mail
+- command_palette.md:150 introduce_to_fellow_agents | Introduce to Fellow Agents
+- command_palette.md:153 check_project_inbox | Check Project Inbox
+- command_palette.md:157 start_out_with_agent_mail | Start Out With Agent Mail
+- command_palette.md:159 Investigation
+- command_palette.md:161 read_agents_and_investigate | Read Agents and Investigate
+- command_palette.md:164 reread_agents_md | Reread AGENTS.md
+- command_palette.md:167 Quick Commands
+- command_palette.md:169 ultrathink | Ultrathink

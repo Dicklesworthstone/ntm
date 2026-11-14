@@ -10,7 +10,9 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/Dicklesworthstone/ntm/internal/backpressure"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/pressure"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/components"
 	"github.com/Dicklesworthstone/ntm/internal/tui/dashboard/panels"
@@ -416,6 +418,7 @@ func (m Model) renderFooterSection() string {
 		GeminiCount:      m.geminiCount,
 		GrokCount:        m.grokCount,
 		OmpCount:         m.ompCount,
+		OpencodeCount:    m.opencodeCount,
 		AntigravityCount: m.antigravityCount,
 		UserCount:        m.userCount,
 		FocusedPanel:     panelIDString(m.focusedPanel),
@@ -480,6 +483,9 @@ func (m Model) renderStatsBar() string {
 	if healthBadge := m.renderHealthBadge(); healthBadge != "" {
 		parts = append(parts, healthBadge)
 	}
+	if bpBadge := m.renderBackpressureBadge(); bpBadge != "" {
+		parts = append(parts, bpBadge)
+	}
 
 	totalBadge := lipgloss.NewStyle().
 		Background(t.Surface0).
@@ -527,6 +533,18 @@ func (m Model) renderStatsBar() string {
 			Bold(true).
 			Padding(0, 1).
 			Render(fmt.Sprintf("OMP %d", m.ompCount)))
+	}
+	if m.opencodeCount > 0 {
+		ocColor := t.Semantic().AgentOpencode
+		if ocColor == "" {
+			ocColor = t.Teal
+		}
+		parts = append(parts, lipgloss.NewStyle().
+			Background(ocColor).
+			Foreground(t.Base).
+			Bold(true).
+			Padding(0, 1).
+			Render(fmt.Sprintf("OC %d", m.opencodeCount)))
 	}
 	if m.antigravityCount > 0 {
 		parts = append(parts, lipgloss.NewStyle().
@@ -624,6 +642,46 @@ func (m Model) renderHealthBadge() string {
 	return lipgloss.NewStyle().
 		Background(bgColor).
 		Foreground(fgColor).
+		Bold(true).
+		Padding(0, 1).
+		Render(fmt.Sprintf("%s %s", icon, label))
+}
+
+func classifyBackpressureSnapshot(bp backpressure.BackpressureSnapshot) (pressure.Level, bool) {
+	switch bp.Decision {
+	case backpressure.DecisionCoalesce:
+		return pressure.LevelElevated, false
+	case backpressure.DecisionDefer:
+		return pressure.LevelCritical, false
+	case backpressure.DecisionDegrade:
+		return pressure.LevelCritical, true
+	default:
+		return pressure.LevelNormal, false
+	}
+}
+
+func (m Model) renderBackpressureBadge() string {
+	bp := m.effectiveBackpressure()
+	level, overload := classifyBackpressureSnapshot(bp)
+	if level <= pressure.LevelNormal && !overload {
+		return ""
+	}
+
+	t := m.theme
+	var bgColor lipgloss.Color
+	var icon, label string
+	switch {
+	case overload:
+		bgColor, icon, label = t.Red, "✗", "BP: overload"
+	case level >= pressure.LevelCritical:
+		bgColor, icon, label = t.Peach, "⚠", "BP: critical"
+	default:
+		bgColor, icon, label = t.Yellow, "⚡", "BP: elevated"
+	}
+
+	return lipgloss.NewStyle().
+		Background(bgColor).
+		Foreground(t.Base).
 		Bold(true).
 		Padding(0, 1).
 		Render(fmt.Sprintf("%s %s", icon, label))
@@ -956,13 +1014,57 @@ func (m Model) renderDiagnosticsBar(width int) string {
 		parts = append(parts, labelStyle.Render("age")+":"+agePart)
 	}
 
+	content := strings.Join(parts, "  ")
+	if bpLine := m.renderBackpressureDiagnosticsLine(m.effectiveBackpressure()); bpLine != "" {
+		content += "\n" + bpLine
+	}
+
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(t.Surface1).
 		Padding(0, 1).
 		Width(width)
 
-	return box.Render(strings.Join(parts, "  "))
+	return box.Render(content)
+}
+
+func (m Model) renderBackpressureDiagnosticsLine(bp backpressure.BackpressureSnapshot) string {
+	level, overload := classifyBackpressureSnapshot(bp)
+	if level <= pressure.LevelNormal && !overload {
+		return ""
+	}
+
+	t := m.theme
+	labelStyle := lipgloss.NewStyle().Foreground(t.Subtext).Bold(true)
+	valueStyle := lipgloss.NewStyle().Foreground(t.Text)
+
+	var levelLabel string
+	var levelColor lipgloss.Color
+	switch {
+	case overload:
+		levelLabel, levelColor = "overload", t.Red
+	case level >= pressure.LevelCritical:
+		levelLabel, levelColor = "critical", t.Peach
+	default:
+		levelLabel, levelColor = "elevated", t.Yellow
+	}
+
+	reasons := make([]string, 0, len(bp.ReasonCodes))
+	for _, rc := range bp.ReasonCodes {
+		reasons = append(reasons, string(rc))
+	}
+	reasonText := "none"
+	if len(reasons) > 0 {
+		reasonText = strings.Join(reasons, ",")
+	}
+
+	detail := fmt.Sprintf("decision=%s reasons=%s", bp.Decision, reasonText)
+	if bp.RetryAfterMS > 0 {
+		detail += fmt.Sprintf(" retry=%dms", bp.RetryAfterMS)
+	}
+
+	levelStyled := lipgloss.NewStyle().Foreground(levelColor).Bold(true).Render(levelLabel)
+	return labelStyle.Render("backpressure") + ":" + levelStyled + "  " + valueStyle.Render(detail)
 }
 
 func hintForSessionFetchError(err error) string {

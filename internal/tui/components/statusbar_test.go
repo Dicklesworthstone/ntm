@@ -188,3 +188,25 @@ func TestSparklineWithLabel_RespectsRequestedWidth(t *testing.T) {
 		t.Fatalf("SparklineWithLabel width = %d, want <= 6 (output=%q)", width, got)
 	}
 }
+
+func TestRenderStatusBarIncludesOpencodeCount(t *testing.T) {
+	withoutOC := RenderStatusBar(StatusBarOptions{
+		Width:         120,
+		Session:       "dev",
+		ClaudeCount:   1,
+		OpencodeCount: 0,
+	})
+	if strings.Contains(withoutOC, "OC:") {
+		t.Fatalf("did not expect OC badge when OpencodeCount is 0, got %q", withoutOC)
+	}
+
+	withOC := RenderStatusBar(StatusBarOptions{
+		Width:         120,
+		Session:       "dev",
+		ClaudeCount:   1,
+		OpencodeCount: 2,
+	})
+	if !strings.Contains(withOC, "OC:2") {
+		t.Fatalf("expected OC:2 badge in status bar, got %q", withOC)
+	}
+}

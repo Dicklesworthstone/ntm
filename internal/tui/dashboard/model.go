@@ -13,6 +13,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
+	"github.com/Dicklesworthstone/ntm/internal/backpressure"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/cass"
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
@@ -138,12 +139,16 @@ type Model struct {
 	geminiCount      int
 	grokCount        int
 	ompCount         int
+	opencodeCount    int
 	antigravityCount int
 	cursorCount      int
 	windsurfCount    int
 	aiderCount       int
 	ollamaCount      int
 	userCount        int
+
+	// Live swarm backpressure snapshot
+	backpressure backpressure.BackpressureSnapshot
 
 	// Theme
 	theme theme.Theme

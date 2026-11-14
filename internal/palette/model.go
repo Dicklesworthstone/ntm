@@ -51,9 +51,11 @@ const (
 	TargetGemini
 	TargetAntigravity
 	TargetSelected // explicit per-pane selection (#205)
-	// TargetOmp is appended (key 7) so existing target values and the
-	// documented "6 = pick agents" binding stay stable.
+	// TargetOmp, TargetGrok, and TargetOpencode are appended (keys 7, 8, 9) so
+	// existing target values and the documented "6 = pick agents" binding stay stable.
 	TargetOmp
+	TargetGrok
+	TargetOpencode
 )
 
 // ReloadMsg is emitted when palette commands are reloaded from config changes.
@@ -68,6 +70,8 @@ type paneCounts struct {
 	gemini      int
 	antigravity int
 	omp         int
+	grok        int
+	opencode    int
 
 	// Representative pane titles per target (best-effort, used for UI clarity).
 	allSamples         []string
@@ -76,6 +80,8 @@ type paneCounts struct {
 	geminiSamples      []string
 	antigravitySamples []string
 	ompSamples         []string
+	grokSamples        []string
+	opencodeSamples    []string
 }
 
 type paneCountsMsg struct {
@@ -319,6 +325,60 @@ func (m Model) savePaletteState() tea.Cmd {
 	}
 }
 
+func countAgentPanes(panes []tmux.Pane) paneCounts {
+	var counts paneCounts
+	const (
+		maxAllSamples  = 3
+		maxTypeSamples = 2
+	)
+	addSample := func(dst *[]string, value string, max int) {
+		if value == "" || len(*dst) >= max {
+			return
+		}
+		*dst = append(*dst, value)
+	}
+
+	for _, p := range panes {
+		canonical := p.Type.Canonical()
+		if canonical == tmux.AgentUser {
+			continue
+		}
+
+		title := strings.TrimSpace(p.Title)
+		if title == "" {
+			title = fmt.Sprintf("pane %d", p.Index)
+		}
+
+		counts.totalAgents++
+		addSample(&counts.allSamples, title, maxAllSamples)
+		switch canonical {
+		case tmux.AgentClaude:
+			counts.claude++
+			addSample(&counts.claudeSamples, title, maxTypeSamples)
+		case tmux.AgentCodex:
+			counts.codex++
+			addSample(&counts.codexSamples, title, maxTypeSamples)
+		case tmux.AgentGemini:
+			counts.gemini++
+			addSample(&counts.geminiSamples, title, maxTypeSamples)
+		case tmux.AgentAntigravity:
+			counts.antigravity++
+			addSample(&counts.antigravitySamples, title, maxTypeSamples)
+		case tmux.AgentOmp:
+			counts.omp++
+			addSample(&counts.ompSamples, title, maxTypeSamples)
+		case tmux.AgentGrok:
+			counts.grok++
+			addSample(&counts.grokSamples, title, maxTypeSamples)
+		case tmux.AgentOpencode:
+			counts.opencode++
+			addSample(&counts.opencodeSamples, title, maxTypeSamples)
+		}
+	}
+
+	return counts
+}
+
 func (m Model) fetchPaneCounts() tea.Cmd {
 	session := m.session
 	return func() tea.Msg {
@@ -331,50 +391,7 @@ func (m Model) fetchPaneCounts() tea.Cmd {
 			return paneCountsMsg{err: err}
 		}
 
-		var counts paneCounts
-		const (
-			maxAllSamples  = 3
-			maxTypeSamples = 2
-		)
-		addSample := func(dst *[]string, value string, max int) {
-			if value == "" || len(*dst) >= max {
-				return
-			}
-			*dst = append(*dst, value)
-		}
-
-		for _, p := range panes {
-			if p.Type == tmux.AgentUser {
-				continue
-			}
-
-			title := strings.TrimSpace(p.Title)
-			if title == "" {
-				title = fmt.Sprintf("pane %d", p.Index)
-			}
-
-			counts.totalAgents++
-			addSample(&counts.allSamples, title, maxAllSamples)
-			switch p.Type {
-			case tmux.AgentClaude:
-				counts.claude++
-				addSample(&counts.claudeSamples, title, maxTypeSamples)
-			case tmux.AgentCodex:
-				counts.codex++
-				addSample(&counts.codexSamples, title, maxTypeSamples)
-			case tmux.AgentGemini:
-				counts.gemini++
-				addSample(&counts.geminiSamples, title, maxTypeSamples)
-			case tmux.AgentAntigravity:
-				counts.antigravity++
-				addSample(&counts.antigravitySamples, title, maxTypeSamples)
-			case tmux.AgentOmp:
-				counts.omp++
-				addSample(&counts.ompSamples, title, maxTypeSamples)
-			}
-		}
-
-		return paneCountsMsg{counts: counts}
+		return paneCountsMsg{counts: countAgentPanes(panes)}
 	}
 }
 
@@ -860,6 +877,14 @@ func (m *Model) updateTargetPhase(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.target = TargetOmp
 		return m.send()
 
+	case key.Matches(msg, targetKeys.TargetGrok):
+		m.target = TargetGrok
+		return m.send()
+
+	case key.Matches(msg, targetKeys.TargetOpencode):
+		m.target = TargetOpencode
+		return m.send()
+
 	case key.Matches(msg, targetKeys.SelectAgents):
 		return m.enterSelectAgentsPhase()
 	}
@@ -1333,6 +1358,10 @@ func (m *Model) sendWith(
 			shouldSend = p.Type == tmux.AgentAntigravity
 		case TargetOmp:
 			shouldSend = p.Type.Canonical() == tmux.AgentOmp
+		case TargetGrok:
+			shouldSend = p.Type.Canonical() == tmux.AgentGrok
+		case TargetOpencode:
+			shouldSend = p.Type.Canonical() == tmux.AgentOpencode
 		case TargetSelected:
 			// Explicit per-pane selection (#205): send only to checked agent panes.
 			shouldSend = p.Type != tmux.AgentUser && m.agentChecked[p.ID]
@@ -1509,6 +1538,7 @@ func (m Model) viewQuitting() string {
 
 	if m.sent {
 		// Beautiful success message with gradient
+		sem := t.Semantic()
 		targetName := "all agents"
 		targetColor := string(t.Green)
 		targetIcon := ic.All
@@ -1532,7 +1562,15 @@ func (m Model) viewQuitting() string {
 			targetIcon = ic.Gemini
 		case TargetOmp:
 			targetName = "Oh My Pi"
-			targetColor = string(t.Sky)
+			targetColor = string(sem.AgentOmp)
+			targetIcon = ic.Robot
+		case TargetGrok:
+			targetName = "Grok"
+			targetColor = string(sem.AgentGrok)
+			targetIcon = ic.Robot
+		case TargetOpencode:
+			targetName = "OpenCode"
+			targetColor = string(sem.AgentOpencode)
 			targetIcon = ic.Robot
 		case TargetSelected:
 			targetName = "selected agents"
@@ -1939,7 +1977,10 @@ func isKnownPaletteAgentCategory(category agent.AgentType) bool {
 	case agent.AgentTypeClaudeCode,
 		agent.AgentTypeCodex,
 		agent.AgentTypeGemini,
+		agent.AgentTypeAntigravity,
+		agent.AgentTypeGrok,
 		agent.AgentTypeOmp,
+		agent.AgentTypeOpencode,
 		agent.AgentTypeCursor,
 		agent.AgentTypeWindsurf,
 		agent.AgentTypeAider,
@@ -1953,6 +1994,7 @@ func isKnownPaletteAgentCategory(category agent.AgentType) bool {
 
 func (m Model) renderTargetSummaryBadges() string {
 	t := m.theme
+	sem := t.Semantic()
 	ic := m.icons
 
 	labelWithIcon := func(icon, fallback, label string, count *int) string {
@@ -1991,6 +2033,17 @@ func (m Model) renderTargetSummaryBadges() string {
 		styles.TextBadge(labelWithIcon(ic.Gemini, "", "gmi", gemini), t.Gemini, t.Base),
 		styles.TextBadge(labelWithIcon(ic.Gemini, "", "agy", antigravity), t.Lavender, t.Base),
 	}
+	if m.paneCountsKnown {
+		if m.paneCounts.omp > 0 {
+			badges = append(badges, styles.TextBadge(labelWithIcon(ic.Robot, "", "omp", &m.paneCounts.omp), sem.AgentOmp, t.Base))
+		}
+		if m.paneCounts.grok > 0 {
+			badges = append(badges, styles.TextBadge(labelWithIcon(ic.Robot, "", "grok", &m.paneCounts.grok), sem.AgentGrok, t.Base))
+		}
+		if m.paneCounts.opencode > 0 {
+			badges = append(badges, styles.TextBadge(labelWithIcon(ic.Robot, "", "oc", &m.paneCounts.opencode), sem.AgentOpencode, t.Base))
+		}
+	}
 
 	return styles.BadgeGroup(badges...)
 }
@@ -2014,6 +2067,10 @@ func (m Model) samplePaneTitlesForTargetKey(key string, max int) []string {
 		src = m.paneCounts.antigravitySamples
 	case "7":
 		src = m.paneCounts.ompSamples
+	case "8":
+		src = m.paneCounts.grokSamples
+	case "9":
+		src = m.paneCounts.opencodeSamples
 	}
 
 	if len(src) > max {
@@ -2174,6 +2231,7 @@ func (m Model) viewTargetPhase() string {
 	// ═══════════════════════════════════════════════════════════════
 	// TARGET OPTIONS with visual styling
 	// ═══════════════════════════════════════════════════════════════
+	sem := t.Semantic()
 	targets := []struct {
 		key     string
 		icon    string
@@ -2187,7 +2245,9 @@ func (m Model) viewTargetPhase() string {
 		{"3", ic.Codex, "Codex (cod)", "OpenAI agents", t.Codex, t.Surface0},
 		{"4", ic.Gemini, "Gemini (gmi)", "Google agents (legacy)", t.Gemini, t.Surface0},
 		{"5", ic.Gemini, "Antigravity (agy)", "Google agents", t.Lavender, t.Surface0},
-		{"7", ic.Robot, "Oh My Pi (omp)", "omp agents", t.Sky, t.Surface0},
+		{"7", ic.Robot, "Oh My Pi (omp)", "omp agents", sem.AgentOmp, t.Surface0},
+		{"8", ic.Robot, "Grok (grok)", "xAI Grok agents", sem.AgentGrok, t.Surface0},
+		{"9", ic.Robot, "OpenCode (oc)", "OpenCode agents", sem.AgentOpencode, t.Surface0},
 		{"6", ic.Target, "Select agents…", "pick specific panes", t.Mauve, t.Surface0},
 	}
 
@@ -2208,6 +2268,10 @@ func (m Model) viewTargetPhase() string {
 				countSuffix = fmt.Sprintf(" (%d)", m.paneCounts.antigravity)
 			case "7":
 				countSuffix = fmt.Sprintf(" (%d)", m.paneCounts.omp)
+			case "8":
+				countSuffix = fmt.Sprintf(" (%d)", m.paneCounts.grok)
+			case "9":
+				countSuffix = fmt.Sprintf(" (%d)", m.paneCounts.opencode)
 			case "6":
 				countSuffix = fmt.Sprintf(" (%d)", m.paneCounts.totalAgents)
 			}

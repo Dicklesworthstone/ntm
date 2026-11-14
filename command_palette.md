@@ -6,7 +6,8 @@
 #   - `ntm palette [session]` (or press the tmux popup key after `ntm bind`, default: F6)
 #   - In the palette: type to filter, `Enter` select, `F1` for help
 #   - Target selection: press `1-5` to choose recipients (All / Claude / Codex / Gemini /
-#     Antigravity), `7` for Oh My Pi (omp), `6` to pick individual agents, `?` for help
+#     Antigravity), `7` for Oh My Pi (`omp`), `8` for Grok (`grok`), `9` for OpenCode (`oc`),
+#     `6` to pick individual agents, `?` for help
 #
 # Preview pane:
 #   - Shows targets + prompt metadata (lines/chars) and lightweight warning badges.
@@ -61,6 +62,9 @@ Ok I want you to look through the ENTIRE project and look for areas where, if we
 I also want you to do a spectacular job building absolutely world-class UI/UX components, with an intense focus on making the most visually appealing, user-friendly, intuitive, slick, polished, "Stripe level" of quality UI/UX possible for this that leverages the good libraries that are already part of the project. 
 
 ## Ensemble
+
+### ensemble_suggest | Ensemble Suggest Preset
+Run `ntm ensemble suggest "<question>" --json` to rank the best-fit ensemble presets for the current question, summarize the top recommendation and why it matched, and confirm the question or session name before spawning.
 
 ### ensemble_list | Ensemble Presets (Core)
 Run `ntm ensemble list` and summarize the core presets available. If the output includes advanced/experimental presets, call them out separately and keep the main list core-only.
@@ -117,15 +121,23 @@ Pick the next bead you can actually do usefully now and start coding on it immed
 OK, so start systematically and methodically and meticulously and diligently executing those remaining beads tasks that you created in the optimal logical order! Don't forget to mark beads as you work on them. 
 
 ### do_all_of_it | Do All Of It
-OK, please do ALL of that now. Track work via bd beads (no markdown TODO lists): create/claim/update/close beads as you go so nothing gets lost, and keep communicating via Agent Mail when you start/finish work. 
+OK, please do ALL of that now. Track work via br beads (no markdown TODO lists): create/claim/update/close beads as you go so nothing gets lost, and keep communicating via Agent Mail when you start/finish work. 
 
 ## Git & Operations
 
 ### git_commit | Git Commit
 Now, based on your knowledge of the project, commit all changed files now in a series of logically connected groupings with super detailed commit messages for each and then push. Take your time to do it right. Don't edit the code at all. Don't commit obviously ephemeral files. Use ultrathink. 
 
-### do_gh_flow | Do GH Flow
-Do all the GitHub stuff: commit, deploy, create tag, bump version, release, monitor gh actions, compute checksums, etc. 
+### do_gh_flow | Commit, Preflight & DSR Release
+Prepare a clean release on `main`: verify all tests pass, run `bash scripts/release_preflight.sh <tag>` to confirm every release artifact and checksum contract is green, commit and push on `main`, and publish the release exclusively via `dsr` (NEVER use, dispatch, or monitor GitHub Actions).
+
+## Swarm Triage & Diagnostics
+
+### attention_triage | Attention Triage
+Run `ntm attention list --json` to inspect surfaced operator attention items across sessions, summarize urgent blockers or action-required items, and propose the exact `ntm attention ack`, `snooze`, `pin`, or `dismiss` follow-ups.
+
+### backpressure_heatmap | Swarm Backpressure & Heatmap
+Run `ntm health --backpressure --heatmap` (or `ntm --robot-backpressure` for JSON) and summarize live subsystem pressure, heatmap buckets, coalescing recommendations, and any load-shedding actions needed.
 
 ## Agent Coordination
 

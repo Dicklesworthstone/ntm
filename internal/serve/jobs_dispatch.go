@@ -1,6 +1,7 @@
 // jobs_dispatch.go is the real async job dispatcher behind POST /api/v1/jobs
 // (D5, bd-ws3-contract-breadth-psvyu.5). The Jobs API accepts long operations —
-// pipeline run/exec/resume, swarm spawn, and checkpoint restore —
+// pipeline run/exec/resume, swarm spawn, checkpoint restore, and ensemble
+// spawn/synthesize —
 // and each dispatches to the same production code path the synchronous REST
 // handlers use. A job's terminal state reflects the REAL operation's outcome:
 // a failing operation reaches JobStatusFailed carrying the real error, never a
@@ -27,16 +28,26 @@ import (
 // Job types accepted by the async dispatcher. Everything else is honestly
 // NOT_IMPLEMENTED at POST time — see handleCreateJob.
 const (
-	JobTypePipelineRun       = "pipeline_run"
-	JobTypePipelineExec      = "pipeline_exec"
-	JobTypePipelineResume    = "pipeline_resume"
-	JobTypeSwarmSpawn        = "swarm_spawn"
-	JobTypeCheckpointRestore = "checkpoint_restore"
+	JobTypePipelineRun        = "pipeline_run"
+	JobTypePipelineExec       = "pipeline_exec"
+	JobTypePipelineResume     = "pipeline_resume"
+	JobTypeSwarmSpawn         = "swarm_spawn"
+	JobTypeCheckpointRestore  = "checkpoint_restore"
+	JobTypeEnsembleSpawn      = "ensemble_spawn"
+	JobTypeEnsembleSynthesize = "ensemble_synthesize"
 )
 
 // implementedJobTypes lists the allow-listed async operations in the order
 // they are documented.
-var implementedJobTypes = []string{JobTypePipelineRun, JobTypePipelineExec, JobTypePipelineResume, JobTypeSwarmSpawn, JobTypeCheckpointRestore}
+var implementedJobTypes = []string{
+	JobTypePipelineRun,
+	JobTypePipelineExec,
+	JobTypePipelineResume,
+	JobTypeSwarmSpawn,
+	JobTypeCheckpointRestore,
+	JobTypeEnsembleSpawn,
+	JobTypeEnsembleSynthesize,
+}
 
 func isImplementedJobType(jobType string) bool {
 	for _, t := range implementedJobTypes {
@@ -182,6 +193,10 @@ func (s *Server) executeJobRequest(ctx context.Context, req CreateJobRequest) (m
 		return s.jobSwarmSpawn(ctx, params)
 	case JobTypeCheckpointRestore:
 		return s.jobCheckpointRestore(ctx, params)
+	case JobTypeEnsembleSpawn:
+		return s.jobEnsembleSpawn(ctx, params)
+	case JobTypeEnsembleSynthesize:
+		return s.jobEnsembleSynthesize(ctx, params)
 	default:
 		return nil, fmt.Errorf("job type %q accepted but has no dispatcher", req.Type)
 	}
@@ -639,4 +654,35 @@ func (s *Server) jobCheckpointRestore(ctx context.Context, params map[string]int
 		return nil, errors.New("restore checkpoint returned no result")
 	}
 	return payload, nil
+}
+
+// jobEnsembleSpawn spawns a reasoning ensemble through the same production
+// path as POST /api/v1/ensemble/spawn.
+func (s *Server) jobEnsembleSpawn(ctx context.Context, params map[string]interface{}) (map[string]interface{}, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var req EnsembleSpawnRequest
+	if err := decodeJobParams(params, &req); err != nil {
+		return nil, fmt.Errorf("%w: %v", errInvalidJobRequest, err)
+	}
+	return s.executeEnsembleSpawn(ctx, req)
+}
+
+type jobEnsembleSynthesizeParams struct {
+	Session string `json:"session"`
+	EnsembleSynthesizeRequest
+}
+
+// jobEnsembleSynthesize synthesizes a reasoning ensemble session through the
+// same production path as POST /api/v1/ensemble/sessions/{session}/synthesize.
+func (s *Server) jobEnsembleSynthesize(ctx context.Context, params map[string]interface{}) (map[string]interface{}, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var req jobEnsembleSynthesizeParams
+	if err := decodeJobParams(params, &req); err != nil {
+		return nil, fmt.Errorf("%w: %v", errInvalidJobRequest, err)
+	}
+	return s.executeEnsembleSynthesize(ctx, req.Session, req.EnsembleSynthesizeRequest)
 }

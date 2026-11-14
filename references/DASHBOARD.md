@@ -7,14 +7,25 @@ These surfaces are for humans, not agents trying to automate NTM.
 ```bash
 ntm dashboard myproject
 ntm palette myproject
+ntm web
 ntm bind
 ntm view myproject
 ```
 
-- `dashboard`: live operator overview
+- `dashboard`: live terminal operator overview
 - `palette`: fuzzy searchable command launcher
+- `web`: embedded browser cockpit (`http://127.0.0.1:7337`) with REST/SSE/WebSocket API
 - `bind`: install convenience bindings such as the palette keybinding
 - `view`: quick way to tile and attach
+
+## Embedded Web Cockpit
+
+```bash
+ntm web
+ntm web --port 8080 --project-dir .
+```
+
+`ntm web` serves the embedded browser cockpit at `http://127.0.0.1:7337` alongside the REST/SSE/WebSocket API and live OpenAPI 3.1 spec at `http://127.0.0.1:7337/api/v1/openapi.json` (`--auth-mode local|api_key|oidc|mtls`).
 
 ## Command Palette
 
@@ -22,14 +33,30 @@ ntm view myproject
 ntm palette myproject
 ```
 
-Useful keys:
+Command list keys (search filter stays focused, so printable characters filter commands):
 
 | Key | Action |
 | --- | --- |
-| `↑/↓` or `j/k` | Navigate |
-| `1-9` | Quick select |
-| `Enter` | Execute |
-| `?` | Help |
+| `↑/↓` | Navigate commands (`PgUp/PgDn`, `Ctrl+U/Ctrl+D`, `Home/End` scroll) |
+| `Enter` | Select command and open target picker |
+| `Ctrl+P` / `Ctrl+F` | Pin / favorite selected command |
+| `Ctrl+N` | Compose a custom message |
+| `Ctrl+K` | Search `xf` archive |
+| `F1` | Toggle help overlay |
+| `Esc` / `Ctrl+C` | Quit |
+
+Target selection keys (after choosing a command):
+
+| Key | Action |
+| --- | --- |
+| `1-5` | Send to All / Claude (`cc`) / Codex (`cod`) / Gemini (`gmi`) / Antigravity (`agy`) |
+| `7` | Send to Oh My Pi (`omp`) agents |
+| `8` | Send to Grok (`grok`) agents |
+| `9` | Send to OpenCode (`oc`) agents |
+| `6` | Pick individual agent panes (`Space` toggle, `a` all, `n` none, `Enter` send) |
+| `e` | Edit prompt before sending (`Ctrl+S` save) |
+| `?` / `F1` | Toggle help overlay |
+| `Esc` / `q` | Back to command list / quit |
 
 ## Dashboard Notes
 

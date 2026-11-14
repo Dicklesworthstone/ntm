@@ -101,6 +101,27 @@ export const navItems: NavItem[] = [
     ),
   },
   {
+    href: "/swarm",
+    label: "Swarm",
+    icon: (
+      <LucideSvg>
+        <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+      </LucideSvg>
+    ),
+  },
+  {
+    href: "/worktrees",
+    label: "Worktrees",
+    icon: (
+      <LucideSvg>
+        <line x1="6" x2="6" y1="3" y2="15" />
+        <circle cx="18" cy="6" r="3" />
+        <circle cx="6" cy="18" r="3" />
+        <path d="M18 9a9 9 0 0 1-9 9" />
+      </LucideSvg>
+    ),
+  },
+  {
     href: "/attention",
     label: "Attention",
     icon: (

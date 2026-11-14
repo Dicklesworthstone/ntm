@@ -2,6 +2,7 @@ package serve
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -241,7 +242,32 @@ func ensembleRobotErrorStatus(code string) int {
 	}
 }
 
-func writeEnsembleRobotFailure(w http.ResponseWriter, resp robot.RobotResponse, reqID string) {
+type ensembleExecError struct {
+	status  int
+	code    string
+	message string
+	details map[string]interface{}
+	cause   error
+}
+
+func (e *ensembleExecError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.code != "" {
+		return fmt.Sprintf("ensemble operation failed [%s]: %s", e.code, e.message)
+	}
+	return e.message
+}
+
+func (e *ensembleExecError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func ensembleExecErrorFromRobot(resp robot.RobotResponse) *ensembleExecError {
 	code := strings.TrimSpace(resp.ErrorCode)
 	if code == "" {
 		code = ErrCodeInternalError
@@ -254,7 +280,39 @@ func writeEnsembleRobotFailure(w http.ResponseWriter, resp robot.RobotResponse, 
 	if strings.TrimSpace(resp.Hint) != "" {
 		details = map[string]interface{}{"hint": resp.Hint}
 	}
-	writeErrorResponse(w, ensembleRobotErrorStatus(code), code, msg, details, reqID)
+	status := ensembleRobotErrorStatus(code)
+	var cause error
+	if status == http.StatusBadRequest {
+		cause = errInvalidJobRequest
+	}
+	return &ensembleExecError{
+		status:  status,
+		code:    code,
+		message: msg,
+		details: details,
+		cause:   cause,
+	}
+}
+
+func writeEnsembleOperationError(w http.ResponseWriter, err error, reqID string) {
+	var execErr *ensembleExecError
+	if errors.As(err, &execErr) && execErr != nil {
+		status := execErr.status
+		if status == 0 {
+			status = http.StatusInternalServerError
+		}
+		code := execErr.code
+		if code == "" {
+			code = ErrCodeInternalError
+		}
+		writeErrorResponse(w, status, code, execErr.message, execErr.details, reqID)
+		return
+	}
+	writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+}
+
+func writeEnsembleRobotFailure(w http.ResponseWriter, resp robot.RobotResponse, reqID string) {
+	writeEnsembleOperationError(w, ensembleExecErrorFromRobot(resp), reqID)
 }
 
 func parseNonNegativeQueryInt(r *http.Request, name string) (int, error) {
@@ -412,44 +470,65 @@ func (s *Server) handleEnsembleSessionV1(w http.ResponseWriter, r *http.Request)
 	writeSuccessResponse(w, http.StatusOK, payload, reqID)
 }
 
-// handleEnsembleSpawnV1 handles POST /api/v1/ensemble/spawn.
-func (s *Server) handleEnsembleSpawnV1(w http.ResponseWriter, r *http.Request) {
-	reqID := requestIDFromContext(r.Context())
-
-	var req EnsembleSpawnRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidRequest, "invalid JSON request body", nil, reqID)
-		return
+// executeEnsembleSpawn validates and executes an ensemble spawn operation.
+// Shared by POST /api/v1/ensemble/spawn and async job type ensemble_spawn.
+func (s *Server) executeEnsembleSpawn(ctx context.Context, req EnsembleSpawnRequest) (map[string]interface{}, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	session := strings.TrimSpace(req.Session)
 	if session == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidRequest, "session is required", nil, reqID)
-		return
+		return nil, &ensembleExecError{
+			status:  http.StatusBadRequest,
+			code:    ErrCodeInvalidRequest,
+			message: "session is required",
+			cause:   errInvalidJobRequest,
+		}
 	}
 	if err := tmux.ValidateSessionName(session); err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidRequest, fmt.Sprintf("invalid session name: %v", err), nil, reqID)
-		return
+		return nil, &ensembleExecError{
+			status:  http.StatusBadRequest,
+			code:    ErrCodeInvalidRequest,
+			message: fmt.Sprintf("invalid session name: %v", err),
+			cause:   errInvalidJobRequest,
+		}
 	}
 
 	question := strings.TrimSpace(req.Question)
 	if question == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidRequest, "question is required", nil, reqID)
-		return
+		return nil, &ensembleExecError{
+			status:  http.StatusBadRequest,
+			code:    ErrCodeInvalidRequest,
+			message: "question is required",
+			cause:   errInvalidJobRequest,
+		}
 	}
 
 	preset := strings.TrimSpace(req.Preset)
 	if preset != "" && len(req.Modes) > 0 {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidRequest, "preset and modes are mutually exclusive", nil, reqID)
-		return
+		return nil, &ensembleExecError{
+			status:  http.StatusBadRequest,
+			code:    ErrCodeInvalidRequest,
+			message: "preset and modes are mutually exclusive",
+			cause:   errInvalidJobRequest,
+		}
 	}
 	if preset == "" && len(req.Modes) == 0 {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidRequest, "either preset or modes is required", nil, reqID)
-		return
+		return nil, &ensembleExecError{
+			status:  http.StatusBadRequest,
+			code:    ErrCodeInvalidRequest,
+			message: "either preset or modes is required",
+			cause:   errInvalidJobRequest,
+		}
 	}
 	if req.BudgetTotal < 0 || req.BudgetPerAgent < 0 {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidRequest, "budget_total and budget_per_agent must be non-negative", nil, reqID)
-		return
+		return nil, &ensembleExecError{
+			status:  http.StatusBadRequest,
+			code:    ErrCodeInvalidRequest,
+			message: "budget_total and budget_per_agent must be non-negative",
+			cause:   errInvalidJobRequest,
+		}
 	}
 
 	rawProjectDir := strings.TrimSpace(req.ProjectDir)
@@ -457,14 +536,21 @@ func (s *Server) handleEnsembleSpawnV1(w http.ResponseWriter, r *http.Request) {
 		rawProjectDir = s.projectDirSnapshot()
 	}
 	if rawProjectDir == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidRequest,
-			"project_dir is required when server has no default project directory configured", nil, reqID)
-		return
+		return nil, &ensembleExecError{
+			status:  http.StatusBadRequest,
+			code:    ErrCodeInvalidRequest,
+			message: "project_dir is required when server has no default project directory configured",
+			cause:   errInvalidJobRequest,
+		}
 	}
 	projectDir, err := ResolveProjectDir(rawProjectDir)
 	if err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidRequest, err.Error(), nil, reqID)
-		return
+		return nil, &ensembleExecError{
+			status:  http.StatusBadRequest,
+			code:    ErrCodeInvalidRequest,
+			message: err.Error(),
+			cause:   errInvalidJobRequest,
+		}
 	}
 
 	baseCfg := s.loadEnsembleConfig(projectDir)
@@ -472,14 +558,27 @@ func (s *Server) handleEnsembleSpawnV1(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.SynthesisStrategy) != "" {
 		strategy, stratErr := ensemble.ValidateOrMigrateStrategy(strings.TrimSpace(req.SynthesisStrategy))
 		if stratErr != nil {
-			writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidRequest, stratErr.Error(), nil, reqID)
-			return
+			return nil, &ensembleExecError{
+				status:  http.StatusBadRequest,
+				code:    ErrCodeInvalidRequest,
+				message: stratErr.Error(),
+				cause:   errInvalidJobRequest,
+			}
 		}
 		cfgCopy.Ensemble.Synthesis.Strategy = string(strategy)
 	}
 
-	SetAuditSession(r, session, "", "")
-	SetAuditResource(r, "ensemble", session)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := reportJobProgress(ctx, map[string]interface{}{
+		"action":      "ensemble_spawn",
+		"session":     session,
+		"project_dir": projectDir,
+		"status":      "spawning",
+	}); err != nil {
+		return nil, err
+	}
 
 	opts := robot.EnsembleSpawnOptions{
 		Session:       session,
@@ -497,39 +596,78 @@ func (s *Server) handleEnsembleSpawnV1(w http.ResponseWriter, r *http.Request) {
 
 	out, err := robot.GetEnsembleSpawn(opts, &cfgCopy)
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
-		return
+		return nil, &ensembleExecError{
+			status:  http.StatusInternalServerError,
+			code:    ErrCodeInternalError,
+			message: err.Error(),
+			cause:   err,
+		}
+	}
+	payload, encodeErr := toJSONMap(out)
+	if encodeErr != nil {
+		return nil, &ensembleExecError{
+			status:  http.StatusInternalServerError,
+			code:    ErrCodeInternalError,
+			message: encodeErr.Error(),
+			cause:   encodeErr,
+		}
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return payload, ctxErr
 	}
 	if !out.Success {
-		writeEnsembleRobotFailure(w, out.RobotResponse, reqID)
+		return payload, ensembleExecErrorFromRobot(out.RobotResponse)
+	}
+	return payload, nil
+}
+
+// handleEnsembleSpawnV1 handles POST /api/v1/ensemble/spawn.
+func (s *Server) handleEnsembleSpawnV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+
+	var req EnsembleSpawnRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidRequest, "invalid JSON request body", nil, reqID)
 		return
 	}
 
-	payload, err := toJSONMap(out)
+	payload, err := s.executeEnsembleSpawn(r.Context(), req)
+	if !errors.Is(err, errInvalidJobRequest) {
+		if session := strings.TrimSpace(req.Session); session != "" {
+			SetAuditSession(r, session, "", "")
+			SetAuditResource(r, "ensemble", session)
+		}
+	}
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		writeEnsembleOperationError(w, err, reqID)
 		return
 	}
 	writeSuccessResponse(w, http.StatusOK, payload, reqID)
 }
 
-// handleEnsembleSynthesizeV1 handles POST /api/v1/ensemble/sessions/{session}/synthesize.
-func (s *Server) handleEnsembleSynthesizeV1(w http.ResponseWriter, r *http.Request) {
-	reqID := requestIDFromContext(r.Context())
-	session := strings.TrimSpace(chi.URLParam(r, "session"))
-	if session == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidRequest, "session name is required", nil, reqID)
-		return
-	}
-	if err := tmux.ValidateSessionName(session); err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidRequest, fmt.Sprintf("invalid session name: %v", err), nil, reqID)
-		return
+// executeEnsembleSynthesize validates and executes synthesis over an ensemble session.
+// Shared by POST /api/v1/ensemble/sessions/{session}/synthesize and async job type ensemble_synthesize.
+func (s *Server) executeEnsembleSynthesize(ctx context.Context, session string, req EnsembleSynthesizeRequest) (map[string]interface{}, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
-	var req EnsembleSynthesizeRequest
-	if err := decodeOptionalJSONBody(r, &req); err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidRequest, "invalid JSON request body", nil, reqID)
-		return
+	session = strings.TrimSpace(session)
+	if session == "" {
+		return nil, &ensembleExecError{
+			status:  http.StatusBadRequest,
+			code:    ErrCodeInvalidRequest,
+			message: "session name is required",
+			cause:   errInvalidJobRequest,
+		}
+	}
+	if err := tmux.ValidateSessionName(session); err != nil {
+		return nil, &ensembleExecError{
+			status:  http.StatusBadRequest,
+			code:    ErrCodeInvalidRequest,
+			message: fmt.Sprintf("invalid session name: %v", err),
+			cause:   errInvalidJobRequest,
+		}
 	}
 
 	formatName := strings.ToLower(strings.TrimSpace(req.OutputFormat))
@@ -547,55 +685,84 @@ func (s *Server) handleEnsembleSynthesizeV1(w http.ResponseWriter, r *http.Reque
 		formatName = "yaml"
 		outputFormat = ensemble.FormatYAML
 	default:
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidRequest,
-			fmt.Sprintf("unsupported output_format %q (use markdown, json, or yaml)", req.OutputFormat), nil, reqID)
-		return
+		return nil, &ensembleExecError{
+			status:  http.StatusBadRequest,
+			code:    ErrCodeInvalidRequest,
+			message: fmt.Sprintf("unsupported output_format %q (use markdown, json, or yaml)", req.OutputFormat),
+			cause:   errInvalidJobRequest,
+		}
 	}
 
 	var explicitStrategy ensemble.SynthesisStrategy
 	if strings.TrimSpace(req.Strategy) != "" {
 		validated, stratErr := ensemble.ValidateOrMigrateStrategy(strings.TrimSpace(req.Strategy))
 		if stratErr != nil {
-			writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidRequest, stratErr.Error(), nil, reqID)
-			return
+			return nil, &ensembleExecError{
+				status:  http.StatusBadRequest,
+				code:    ErrCodeInvalidRequest,
+				message: stratErr.Error(),
+				cause:   errInvalidJobRequest,
+			}
 		}
 		explicitStrategy = validated
 	}
 
-	SetAuditSession(r, session, "", "")
-	SetAuditResource(r, "ensemble", session)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	sessionLive := tmux.IsInstalled() && tmux.SessionExists(session)
 	state, err := ensemble.LoadSession(session)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			if !sessionLive {
-				writeErrorResponse(w, http.StatusNotFound, robot.ErrCodeSessionNotFound,
-					fmt.Sprintf("session %q not found", session), nil, reqID)
-				return
+				return nil, &ensembleExecError{
+					status:  http.StatusNotFound,
+					code:    robot.ErrCodeSessionNotFound,
+					message: fmt.Sprintf("session %q not found", session),
+				}
 			}
-			writeErrorResponse(w, http.StatusNotFound, robot.ErrCodeEnsembleNotFound,
-				fmt.Sprintf("no ensemble state found in session %q", session), nil, reqID)
-			return
+			return nil, &ensembleExecError{
+				status:  http.StatusNotFound,
+				code:    robot.ErrCodeEnsembleNotFound,
+				message: fmt.Sprintf("no ensemble state found in session %q", session),
+			}
 		}
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
-		return
+		return nil, &ensembleExecError{
+			status:  http.StatusInternalServerError,
+			code:    ErrCodeInternalError,
+			message: err.Error(),
+			cause:   err,
+		}
 	}
 
 	ready, pending, working := countEnsembleAgentStates(state)
 	if !req.Force && (pending > 0 || working > 0) {
-		writeErrorResponse(w, http.StatusConflict, robot.ErrCodeSynthesisNotReady,
-			fmt.Sprintf("synthesis not ready: %d pending, %d working", pending, working),
-			map[string]interface{}{"hint": "Set force=true to synthesize available outputs before all modes finish"},
-			reqID)
-		return
+		return nil, &ensembleExecError{
+			status:  http.StatusConflict,
+			code:    robot.ErrCodeSynthesisNotReady,
+			message: fmt.Sprintf("synthesis not ready: %d pending, %d working", pending, working),
+			details: map[string]interface{}{"hint": "Set force=true to synthesize available outputs before all modes finish"},
+		}
 	}
 	if ready == 0 && !req.Force {
-		writeErrorResponse(w, http.StatusConflict, robot.ErrCodeSynthesisNotReady,
-			"no completed mode outputs to synthesize",
-			map[string]interface{}{"hint": "Wait for reasoning modes to complete or pass force=true if saved outputs exist"},
-			reqID)
-		return
+		return nil, &ensembleExecError{
+			status:  http.StatusConflict,
+			code:    robot.ErrCodeSynthesisNotReady,
+			message: "no completed mode outputs to synthesize",
+			details: map[string]interface{}{"hint": "Wait for reasoning modes to complete or pass force=true if saved outputs exist"},
+		}
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := reportJobProgress(ctx, map[string]interface{}{
+		"action":  "ensemble_synthesize",
+		"session": session,
+		"status":  "collecting_outputs",
+	}); err != nil {
+		return nil, err
 	}
 
 	var captured []ensemble.CapturedOutput
@@ -611,17 +778,23 @@ func (s *Server) handleEnsembleSynthesizeV1(w http.ResponseWriter, r *http.Reque
 
 	availableOutputs, err := ensemble.CollectModeOutputs(state, captured)
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
-			fmt.Sprintf("collect mode outputs: %v", err), nil, reqID)
-		return
+		return nil, &ensembleExecError{
+			status:  http.StatusInternalServerError,
+			code:    ErrCodeInternalError,
+			message: fmt.Sprintf("collect mode outputs: %v", err),
+			cause:   err,
+		}
 	}
 
 	collector := ensemble.NewOutputCollector(ensemble.DefaultOutputCollectorConfig())
 	for _, modeOutput := range availableOutputs.Outputs {
 		if addErr := collector.Add(modeOutput); addErr != nil {
-			writeErrorResponse(w, http.StatusUnprocessableEntity, robot.ErrCodeOutputSchemaInvalid,
-				fmt.Sprintf("invalid output from mode %s: %v", modeOutput.ModeID, addErr), nil, reqID)
-			return
+			return nil, &ensembleExecError{
+				status:  http.StatusUnprocessableEntity,
+				code:    robot.ErrCodeOutputSchemaInvalid,
+				message: fmt.Sprintf("invalid output from mode %s: %v", modeOutput.ModeID, addErr),
+				cause:   addErr,
+			}
 		}
 	}
 	for modeID, errs := range availableOutputs.ValidationErrors {
@@ -632,14 +805,18 @@ func (s *Server) handleEnsembleSynthesizeV1(w http.ResponseWriter, r *http.Reque
 
 	if collector.Count() == 0 {
 		if collector.ErrorCount() > 0 {
-			writeErrorResponse(w, http.StatusUnprocessableEntity, robot.ErrCodeOutputSchemaInvalid,
-				fmt.Sprintf("no valid mode outputs collected (%d validation errors)", collector.ErrorCount()),
-				map[string]interface{}{"validation_errors": collector.ValidationErrors}, reqID)
-			return
+			return nil, &ensembleExecError{
+				status:  http.StatusUnprocessableEntity,
+				code:    robot.ErrCodeOutputSchemaInvalid,
+				message: fmt.Sprintf("no valid mode outputs collected (%d validation errors)", collector.ErrorCount()),
+				details: map[string]interface{}{"validation_errors": collector.ValidationErrors},
+			}
 		}
-		writeErrorResponse(w, http.StatusConflict, robot.ErrCodeSynthesisNotReady,
-			"no mode outputs available for synthesis", nil, reqID)
-		return
+		return nil, &ensembleExecError{
+			status:  http.StatusConflict,
+			code:    robot.ErrCodeSynthesisNotReady,
+			message: "no mode outputs available for synthesis",
+		}
 	}
 
 	cfg := s.loadEnsembleConfig(s.projectDirSnapshot())
@@ -662,22 +839,43 @@ func (s *Server) handleEnsembleSynthesizeV1(w http.ResponseWriter, r *http.Reque
 
 	synth, err := ensemble.NewSynthesizer(synthConfig)
 	if err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidRequest, err.Error(), nil, reqID)
-		return
+		return nil, &ensembleExecError{
+			status:  http.StatusBadRequest,
+			code:    ErrCodeInvalidRequest,
+			message: err.Error(),
+			cause:   errInvalidJobRequest,
+		}
 	}
 
 	input, err := collector.BuildSynthesisInput(state.Question, nil, synthConfig)
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
-			fmt.Sprintf("build synthesis input: %v", err), nil, reqID)
-		return
+		return nil, &ensembleExecError{
+			status:  http.StatusInternalServerError,
+			code:    ErrCodeInternalError,
+			message: fmt.Sprintf("build synthesis input: %v", err),
+			cause:   err,
+		}
 	}
 
-	result, err := synth.SynthesizeContext(r.Context(), input)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := reportJobProgress(ctx, map[string]interface{}{
+		"action":  "ensemble_synthesize",
+		"session": session,
+		"status":  "synthesizing",
+	}); err != nil {
+		return nil, err
+	}
+
+	result, err := synth.SynthesizeContext(ctx, input)
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
-			fmt.Sprintf("synthesis failed: %v", err), nil, reqID)
-		return
+		return nil, &ensembleExecError{
+			status:  http.StatusInternalServerError,
+			code:    ErrCodeInternalError,
+			message: fmt.Sprintf("synthesis failed: %v", err),
+			cause:   err,
+		}
 	}
 
 	catalog, _ := ensemble.GlobalCatalog()
@@ -692,9 +890,12 @@ func (s *Server) handleEnsembleSynthesizeV1(w http.ResponseWriter, r *http.Reque
 	formatter.IncludeRaw = synthConfig.IncludeRawOutputs
 	formatter.IncludeAudit = true
 	if err := formatter.FormatResult(&rendered, result, input.AuditReport); err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
-			fmt.Sprintf("format synthesis output: %v", err), nil, reqID)
-		return
+		return nil, &ensembleExecError{
+			status:  http.StatusInternalServerError,
+			code:    ErrCodeInternalError,
+			message: fmt.Sprintf("format synthesis output: %v", err),
+			cause:   err,
+		}
 	}
 
 	generatedAt := result.GeneratedAt
@@ -733,7 +934,45 @@ func (s *Server) handleEnsembleSynthesizeV1(w http.ResponseWriter, r *http.Reque
 
 	payload, err := toJSONMap(respObj)
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return nil, &ensembleExecError{
+			status:  http.StatusInternalServerError,
+			code:    ErrCodeInternalError,
+			message: err.Error(),
+			cause:   err,
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return payload, err
+	}
+	return payload, nil
+}
+
+// handleEnsembleSynthesizeV1 handles POST /api/v1/ensemble/sessions/{session}/synthesize.
+func (s *Server) handleEnsembleSynthesizeV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	session := strings.TrimSpace(chi.URLParam(r, "session"))
+	if session == "" {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidRequest, "session name is required", nil, reqID)
+		return
+	}
+	if err := tmux.ValidateSessionName(session); err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidRequest, fmt.Sprintf("invalid session name: %v", err), nil, reqID)
+		return
+	}
+
+	var req EnsembleSynthesizeRequest
+	if err := decodeOptionalJSONBody(r, &req); err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidRequest, "invalid JSON request body", nil, reqID)
+		return
+	}
+
+	payload, err := s.executeEnsembleSynthesize(r.Context(), session, req)
+	if !errors.Is(err, errInvalidJobRequest) {
+		SetAuditSession(r, session, "", "")
+		SetAuditResource(r, "ensemble", session)
+	}
+	if err != nil {
+		writeEnsembleOperationError(w, err, reqID)
 		return
 	}
 	writeSuccessResponse(w, http.StatusOK, payload, reqID)

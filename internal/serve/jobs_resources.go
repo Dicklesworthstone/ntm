@@ -22,6 +22,12 @@ func jobExecutionResources(jobType string, params map[string]interface{}) []stri
 	switch jobType {
 	case JobTypePipelineRun, JobTypePipelineExec:
 		return []string{"session:" + session}
+	case JobTypeEnsembleSpawn, JobTypeEnsembleSynthesize:
+		trimmed := strings.TrimSpace(session)
+		if trimmed == "" {
+			return []string{"*"}
+		}
+		return []string{"session:" + trimmed}
 	case JobTypeSwarmSpawn:
 		if raw, present := params["label"]; present {
 			label, ok := raw.(string)

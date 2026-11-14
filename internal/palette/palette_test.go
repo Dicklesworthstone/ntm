@@ -79,18 +79,22 @@ func TestPhaseConstants(t *testing.T) {
 }
 
 func TestTargetConstants(t *testing.T) {
-	// Verify target constants are distinct
-	targets := []Target{TargetAll, TargetClaude, TargetCodex, TargetGemini}
-	seen := make(map[Target]bool)
-	for _, t := range targets {
-		if seen[t] {
-			// Skip error for duplicate check
-			continue
-		}
-		seen[t] = true
+	// Verify target constants are distinct and preserve 0..6 enum values.
+	targets := []Target{
+		TargetAll,
+		TargetClaude,
+		TargetCodex,
+		TargetGemini,
+		TargetAntigravity,
+		TargetSelected,
+		TargetOmp,
+		TargetGrok,
+		TargetOpencode,
 	}
-	if len(seen) != 4 {
-		t.Error("Expected 4 distinct Target values")
+	for idx, tgt := range targets {
+		if int(tgt) != idx {
+			t.Fatalf("Target index %d enum value = %d, want %d (must keep 0..6 stable)", idx, tgt, idx)
+		}
 	}
 }
 
@@ -1371,6 +1375,111 @@ func TestOmpQuickTarget(t *testing.T) {
 	got := model.(Model)
 	if got.err != nil || !reflect.DeepEqual(sentTargets, []string{"%2", "%3"}) {
 		t.Fatalf("omp quick target sent to %v (err %v), want the two omp panes", sentTargets, got.err)
+	}
+}
+
+func TestPaletteTargetGrokAndOpencodeSelectionAndCounts(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	panes := []tmux.Pane{
+		{ID: "%0", Index: 0, Title: "user-shell", Type: tmux.AgentUser},
+		{ID: "%1", Index: 1, Title: "swarm__cc_1", Type: tmux.AgentClaude},
+		{ID: "%2", Index: 2, Title: "swarm__grok_1", Type: tmux.AgentGrok},
+		{ID: "%3", Index: 3, Title: "swarm__grok_2", Type: tmux.AgentType("grok-build")},
+		{ID: "%4", Index: 4, Title: "swarm__oc_1", Type: tmux.AgentOpencode},
+		{ID: "%5", Index: 5, Title: "swarm__oc_2", Type: tmux.AgentType("opencode")},
+	}
+
+	counts := countAgentPanes(panes)
+	if counts.totalAgents != 5 || counts.claude != 1 || counts.grok != 2 || counts.opencode != 2 {
+		t.Fatalf("unexpected paneCounts: %+v", counts)
+	}
+	if !reflect.DeepEqual(counts.grokSamples, []string{"swarm__grok_1", "swarm__grok_2"}) {
+		t.Fatalf("grokSamples = %v, want [swarm__grok_1 swarm__grok_2]", counts.grokSamples)
+	}
+	if !reflect.DeepEqual(counts.opencodeSamples, []string{"swarm__oc_1", "swarm__oc_2"}) {
+		t.Fatalf("opencodeSamples = %v, want [swarm__oc_1 swarm__oc_2]", counts.opencodeSamples)
+	}
+
+	m := New("multi-harness", testCommands)
+	m.phase = PhaseTarget
+	m.selected = &testCommands[0]
+	m.paneCountsKnown = true
+	m.paneCounts = counts
+	newModel, _ := m.Update(tea.WindowSizeMsg{Width: 220, Height: 60})
+	m = newModel.(Model)
+
+	view := stripANSI(m.View())
+	for _, want := range []string{
+		"Grok (grok) (2)",
+		"swarm__grok_1",
+		"OpenCode (oc) (2)",
+		"swarm__oc_1",
+		"8",
+		"9",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("target phase view missing %q:\n%s", want, view)
+		}
+	}
+
+	preview := stripANSI(m.renderPreview(100))
+	for _, want := range []string{"grok 2", "oc 2"} {
+		if !strings.Contains(preview, want) {
+			t.Fatalf("preview target summary missing %q:\n%s", want, preview)
+		}
+	}
+
+	// Key 8 selects TargetGrok; key 9 selects TargetOpencode.
+	pressed8, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'8'}})
+	if pressed8.(Model).target != TargetGrok {
+		t.Fatalf("pressing 8 set target %v, want TargetGrok", pressed8.(Model).target)
+	}
+	pressed9, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'9'}})
+	if pressed9.(Model).target != TargetOpencode {
+		t.Fatalf("pressing 9 set target %v, want TargetOpencode", pressed9.(Model).target)
+	}
+
+	// Verify recipient pane filtering and quitting summary for TargetGrok.
+	m.target = TargetGrok
+	var grokSent []string
+	grokModel, _ := m.sendWith(
+		func(string) ([]tmux.Pane, error) { return panes, nil },
+		func(target, _ string, agentType tmux.AgentType) error {
+			if agentType.Canonical() != tmux.AgentGrok {
+				t.Fatalf("TargetGrok dispatched to %s (%s)", target, agentType)
+			}
+			grokSent = append(grokSent, target)
+			return nil
+		},
+	)
+	gotGrok := grokModel.(Model)
+	if gotGrok.err != nil || !reflect.DeepEqual(grokSent, []string{"%2", "%3"}) {
+		t.Fatalf("TargetGrok sent to %v (err %v), want [%%2 %%3]", grokSent, gotGrok.err)
+	}
+	if !strings.Contains(stripANSI(gotGrok.View()), "Grok") {
+		t.Fatalf("expected quitting view to mention Grok, got %q", stripANSI(gotGrok.View()))
+	}
+
+	// Verify recipient pane filtering and quitting summary for TargetOpencode.
+	m.target = TargetOpencode
+	var ocSent []string
+	ocModel, _ := m.sendWith(
+		func(string) ([]tmux.Pane, error) { return panes, nil },
+		func(target, _ string, agentType tmux.AgentType) error {
+			if agentType.Canonical() != tmux.AgentOpencode {
+				t.Fatalf("TargetOpencode dispatched to %s (%s)", target, agentType)
+			}
+			ocSent = append(ocSent, target)
+			return nil
+		},
+	)
+	gotOC := ocModel.(Model)
+	if gotOC.err != nil || !reflect.DeepEqual(ocSent, []string{"%4", "%5"}) {
+		t.Fatalf("TargetOpencode sent to %v (err %v), want [%%4 %%5]", ocSent, gotOC.err)
+	}
+	if !strings.Contains(stripANSI(gotOC.View()), "OpenCode") {
+		t.Fatalf("expected quitting view to mention OpenCode, got %q", stripANSI(gotOC.View()))
 	}
 }
 

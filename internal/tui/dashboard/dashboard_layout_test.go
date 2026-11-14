@@ -3444,7 +3444,7 @@ func TestFleetCount_Consistent(t *testing.T) {
 	}
 
 	// Verify agent type counts sum correctly
-	sumAgentTypes := m.claudeCount + m.codexCount + m.geminiCount + m.grokCount + m.cursorCount + m.windsurfCount + m.aiderCount + m.ollamaCount + m.userCount
+	sumAgentTypes := m.claudeCount + m.codexCount + m.geminiCount + m.grokCount + m.ompCount + m.opencodeCount + m.antigravityCount + m.cursorCount + m.windsurfCount + m.aiderCount + m.ollamaCount + m.userCount
 	if sumAgentTypes != totalPanes {
 		t.Errorf("agent type counts (%d) should equal total panes (%d)", sumAgentTypes, totalPanes)
 	}
@@ -3539,17 +3539,19 @@ func TestFleetCount_AgentTypesSumCorrectly(t *testing.T) {
 		codexCount    int
 		geminiCount   int
 		grokCount     int
+		opencodeCount int
 		cursorCount   int
 		windsurfCount int
 		aiderCount    int
 		ollamaCount   int
 		userCount     int
 	}{
-		{"all_claude", 5, 0, 0, 0, 0, 0, 0, 0, 0},
-		{"all_grok", 0, 0, 0, 4, 0, 0, 0, 0, 0},
-		{"mixed_agents", 2, 2, 1, 1, 1, 1, 1, 1, 1},
-		{"all_user", 0, 0, 0, 0, 0, 0, 0, 0, 4},
-		{"empty", 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{"all_claude", 5, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{"all_grok", 0, 0, 0, 4, 0, 0, 0, 0, 0, 0},
+		{"all_opencode", 0, 0, 0, 0, 3, 0, 0, 0, 0, 0},
+		{"mixed_agents", 2, 2, 1, 1, 2, 1, 1, 1, 1, 1},
+		{"all_user", 0, 0, 0, 0, 0, 0, 0, 0, 0, 4},
+		{"empty", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 	}
 
 	for _, tc := range tests {
@@ -3586,6 +3588,13 @@ func TestFleetCount_AgentTypesSumCorrectly(t *testing.T) {
 			for i := 0; i < tc.grokCount; i++ {
 				m.panes = append(m.panes, tmux.Pane{
 					ID: fmt.Sprintf("%d", idx), Index: idx, Type: tmux.AgentType("grok-build"),
+				})
+				idx++
+			}
+			// Add OpenCode panes
+			for i := 0; i < tc.opencodeCount; i++ {
+				m.panes = append(m.panes, tmux.Pane{
+					ID: fmt.Sprintf("%d", idx), Index: idx, Type: tmux.AgentOpencode,
 				})
 				idx++
 			}
@@ -3627,15 +3636,18 @@ func TestFleetCount_AgentTypesSumCorrectly(t *testing.T) {
 
 			m.updateStats()
 
-			expectedTotal := tc.claudeCount + tc.codexCount + tc.geminiCount + tc.grokCount + tc.cursorCount + tc.windsurfCount + tc.aiderCount + tc.ollamaCount + tc.userCount
-			actualSum := m.claudeCount + m.codexCount + m.geminiCount + m.grokCount + m.cursorCount + m.windsurfCount + m.aiderCount + m.ollamaCount + m.userCount
+			expectedTotal := tc.claudeCount + tc.codexCount + tc.geminiCount + tc.grokCount + tc.opencodeCount + tc.cursorCount + tc.windsurfCount + tc.aiderCount + tc.ollamaCount + tc.userCount
+			actualSum := m.claudeCount + m.codexCount + m.geminiCount + m.grokCount + m.opencodeCount + m.cursorCount + m.windsurfCount + m.aiderCount + m.ollamaCount + m.userCount
 
 			if actualSum != expectedTotal {
-				t.Errorf("expected sum %d, got %d (claude=%d codex=%d gemini=%d grok=%d cursor=%d windsurf=%d aider=%d ollama=%d user=%d)",
-					expectedTotal, actualSum, m.claudeCount, m.codexCount, m.geminiCount, m.grokCount, m.cursorCount, m.windsurfCount, m.aiderCount, m.ollamaCount, m.userCount)
+				t.Errorf("expected sum %d, got %d (claude=%d codex=%d gemini=%d grok=%d opencode=%d cursor=%d windsurf=%d aider=%d ollama=%d user=%d)",
+					expectedTotal, actualSum, m.claudeCount, m.codexCount, m.geminiCount, m.grokCount, m.opencodeCount, m.cursorCount, m.windsurfCount, m.aiderCount, m.ollamaCount, m.userCount)
 			}
 			if m.grokCount != tc.grokCount {
 				t.Errorf("grokCount = %d, want %d", m.grokCount, tc.grokCount)
+			}
+			if m.opencodeCount != tc.opencodeCount {
+				t.Errorf("opencodeCount = %d, want %d", m.opencodeCount, tc.opencodeCount)
 			}
 			if m.ollamaCount != tc.ollamaCount {
 				t.Errorf("ollamaCount = %d, want %d", m.ollamaCount, tc.ollamaCount)

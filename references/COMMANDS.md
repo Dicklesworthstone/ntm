@@ -10,6 +10,7 @@ ntm quick myproject --template=go
 ntm quick myproject --label frontend
 
 ntm spawn myproject --cc=3 --cod=2 --agy=1
+ntm spawn myproject --grok=1 --omp=1 --oc=1
 ntm spawn myproject --label frontend --cc=3
 ntm spawn myproject --label backend --cc=2 --worktrees
 ntm spawn myproject --no-user --cc=5 --cod=5
@@ -89,6 +90,15 @@ ntm logs myproject --panes=1,2
 ntm extract myproject --lines=200
 ntm diff myproject cc_1 cod_1
 ntm grep "timeout" myproject -C 3
+
+# Backpressure, swarm lab, and support bundles
+ntm health --backpressure --heatmap
+ntm health myproject --backpressure --heatmap --json
+ntm swarm lab list
+ntm swarm lab run --scenario short_smoke --gate short
+ntm swarm lab corpus --gate short
+ntm support-bundle --output bundle.zip --include-sessions
+ntm support-bundle --verify bundle.zip
 ```
 
 ### Human-Only Surfaces
@@ -98,8 +108,22 @@ These are excellent for operators, but not for agents driving automation:
 ```bash
 ntm dashboard myproject
 ntm palette myproject
+ntm web
 ntm bind
 ntm tutorial
+```
+
+## Reasoning Ensembles
+
+```bash
+ntm modes list --tier core
+ntm ensemble presets --format=json
+ntm ensemble suggest "What security issues exist in the auth layer?" --json
+ntm ensemble spawn myensemble --preset project-diagnosis --question "What are the main architectural risks?"
+ntm ensemble status myensemble --format=json
+ntm ensemble synthesize myensemble --format=json
+ntm ensemble compare myensemble-v1 myensemble-v2 --format=json
+ntm ensemble provenance --all --format=json
 ```
 
 ## Work Intelligence
@@ -142,6 +166,16 @@ ntm locks force-release myproject 42 --note "agent inactive"  # approval-gated b
 ntm coordinator status myproject
 ntm coordinator digest myproject
 ntm coordinator conflicts myproject
+ntm attention list --session myproject --json
+ntm attention ack 42 --reason "investigating pane_2"
+ntm attention snooze 42 --until 30m --reason "waiting on build"
+ntm attention pin 42 --reason "release blocker"
+ntm attention dismiss 42 --reason "false alarm"
+
+ntm context recover myproject
+ntm context recover myproject --pane-id %17
+ntm rotate context pending
+ntm rotate context pending myproject
 
 ntm checkpoint save myproject -m "before risky refactor"
 ntm checkpoint list myproject

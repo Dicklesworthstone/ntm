@@ -23,6 +23,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
+	"github.com/Dicklesworthstone/ntm/internal/backpressure"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/clipboard"
@@ -30,6 +31,7 @@ import (
 	ctxmon "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/cost"
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
+	ntmevents "github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/integrations/caut"
@@ -2198,6 +2200,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.alertsPanel.SetData(m.activeAlerts, m.alertsError)
+		m.refreshBackpressure()
 		return m, nil
 
 	case AttentionUpdateMsg:
@@ -2981,6 +2984,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.markUpdated(refreshStatus, msg.Time)
 		}
 		m.lastRefresh = msg.Time
+		m.refreshBackpressure()
 		// Also refresh health data after status update.
 		cmds = append(cmds, followUp, m.fetchHealthCmd())
 		return m, tea.Batch(cmds...)
@@ -2988,6 +2992,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case HealthUpdateMsg:
 		m.clearAllPaneHealthDetails()
 		if msg.Err != nil || msg.Health == nil {
+			m.refreshBackpressure()
 			return m, nil
 		}
 
@@ -3012,6 +3017,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ps.UptimeSeconds = healthInfo.Uptime
 			m.paneStatus[paneKey] = ps
 		}
+		m.refreshBackpressure()
 		return m, nil
 
 	case ConfigReloadMsg:
@@ -3160,6 +3166,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.agentMailUnread = unread
 		m.agentMailUrgent = urgent
 		m.markUpdated(refreshAgentMailInbox, now)
+		m.refreshBackpressure()
 		return m, m.selectedPaneInboxDetailCmd()
 
 	case AgentMailInboxDetailMsg:
@@ -3277,6 +3284,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.rotationConfirmPanel != nil {
 			m.rotationConfirmPanel.SetData(m.pendingRotations, m.pendingRotationsErr)
 		}
+		m.refreshBackpressure()
 		return m, nil
 
 	case panels.RotationConfirmActionMsg:
@@ -3907,6 +3915,7 @@ func (m *Model) updateStats() {
 	m.geminiCount = 0
 	m.grokCount = 0
 	m.ompCount = 0
+	m.opencodeCount = 0
 	m.antigravityCount = 0
 	m.cursorCount = 0
 	m.windsurfCount = 0
@@ -3926,6 +3935,8 @@ func (m *Model) updateStats() {
 			m.grokCount++
 		case tmux.AgentOmp:
 			m.ompCount++
+		case tmux.AgentOpencode:
+			m.opencodeCount++
 		case tmux.AgentAntigravity:
 			m.antigravityCount++
 		case tmux.AgentCursor:
@@ -3940,6 +3951,141 @@ func (m *Model) updateStats() {
 			m.userCount++
 		}
 	}
+	m.refreshBackpressure()
+}
+
+func (m *Model) refreshBackpressure() {
+	m.backpressure = m.computeBackpressureSnapshot()
+}
+
+func backpressureDecisionRank(d backpressure.Decision) int {
+	switch d {
+	case backpressure.DecisionCoalesce:
+		return 1
+	case backpressure.DecisionDefer:
+		return 2
+	case backpressure.DecisionDegrade:
+		return 3
+	default:
+		return 0
+	}
+}
+
+func (m Model) effectiveBackpressure() backpressure.BackpressureSnapshot {
+	if len(m.panes) == 0 {
+		return backpressure.BackpressureSnapshot{
+			Success:  true,
+			Decision: backpressure.DecisionOK,
+		}
+	}
+	live := m.computeBackpressureSnapshot()
+	if backpressureDecisionRank(m.backpressure.Decision) > backpressureDecisionRank(live.Decision) {
+		return m.backpressure
+	}
+	return live
+}
+
+func (m Model) computeBackpressureSnapshot() backpressure.BackpressureSnapshot {
+	if len(m.panes) == 0 {
+		return backpressure.BackpressureSnapshot{
+			Success:  true,
+			Decision: backpressure.DecisionOK,
+		}
+	}
+
+	thresholds := backpressure.DefaultThresholds()
+
+	captureLatencyMS := m.sessionFetchLatency.Milliseconds()
+	if statusMS := m.statusFetchLatency.Milliseconds(); statusMS > captureLatencyMS {
+		captureLatencyMS = statusMS
+	}
+
+	var rateLimitedPanes, errorPanes, stalledOrWarnPanes int
+	var maxContextPct float64
+	for _, p := range m.panes {
+		ps, hasPS := m.paneStatus[paneStatusKey(p)]
+		st, hasAS := m.agentStatuses[p.ID]
+
+		stateStr := strings.ToLower(strings.TrimSpace(ps.State))
+		switch {
+		case stateStr == "rate_limited" || (hasAS && st.State == status.StateError && st.ErrorType == status.ErrorRateLimit):
+			rateLimitedPanes++
+		case stateStr == "error" || ps.HealthStatus == "error" || (hasAS && st.State == status.StateError):
+			errorPanes++
+		case stateStr == "stalled" || stateStr == "compacted" || ps.HealthStatus == "warning":
+			stalledOrWarnPanes++
+		}
+		if hasPS && ps.ContextPercent > maxContextPct {
+			maxContextPct = ps.ContextPercent
+		}
+	}
+
+	var critAlerts, warnAlerts int
+	for _, a := range m.activeAlerts {
+		switch a.Severity {
+		case alerts.SeverityCritical:
+			critAlerts++
+		case alerts.SeverityWarning:
+			warnAlerts++
+		}
+	}
+
+	droppedSignal := int64(stalledOrWarnPanes + warnAlerts)
+	if m.agentMailUrgent > 0 {
+		droppedSignal++
+	}
+
+	inputs := make([]backpressure.SurfaceInput, 0, 3)
+	inputs = append(inputs, backpressure.SurfaceInput{
+		Surface:       backpressure.SurfaceTmuxCapture,
+		Session:       m.session,
+		Command:       "pane-capture",
+		QueueDepth:    len(m.panes),
+		QueueCapacity: thresholds.QueueDepthCritical,
+		DroppedCount:  droppedSignal,
+		LatencyMS:     captureLatencyMS,
+		SourceLoaded:  true,
+	})
+
+	faultWeight := rateLimitedPanes + errorPanes + critAlerts + len(m.pendingRotations)
+	var healthLatencyMS int64
+	switch {
+	case faultWeight >= 3 || (len(m.panes) >= 2 && (rateLimitedPanes+errorPanes) == len(m.panes)):
+		healthLatencyMS = thresholds.LatencyCriticalMS
+	case faultWeight >= 1:
+		healthLatencyMS = thresholds.LatencyWarnMS
+	}
+	if maxContextPct > 0 || healthLatencyMS > 0 {
+		inputs = append(inputs, backpressure.SurfaceInput{
+			Surface:       backpressure.SurfaceProfiler,
+			Session:       m.session,
+			Command:       "pane-health",
+			QueueDepth:    int(maxContextPct),
+			QueueCapacity: 100,
+			LatencyMS:     healthLatencyMS,
+			SourceLoaded:  true,
+		})
+	}
+
+	if ntmevents.DefaultBus != nil {
+		inflight, semUsed, semCap := ntmevents.DefaultBus.QueueMetrics()
+		busDepth := inflight
+		if semUsed > busDepth {
+			busDepth = semUsed
+		}
+		inputs = append(inputs, backpressure.SurfaceInput{
+			Surface:       backpressure.SurfaceRobot,
+			Session:       m.session,
+			Command:       "event-bus",
+			QueueDepth:    busDepth,
+			QueueCapacity: semCap,
+			SourceLoaded:  true,
+		})
+	}
+
+	return backpressure.Evaluate(inputs, backpressure.SnapshotOptions{
+		Thresholds: thresholds,
+	})
 }
 
 func (m *Model) seedInitialPanes(panesWithActivity []tmux.PaneActivity) {
@@ -3981,7 +4127,7 @@ func (m *Model) updateTickerData() {
 	if activeAgents == 0 && len(m.panes) > 0 {
 		// Status detection hasn't populated yet; show total agents as placeholder
 		// This prevents showing "0/17" when we simply haven't fetched status yet
-		activeAgents = m.claudeCount + m.codexCount + m.geminiCount + m.grokCount + m.ompCount + m.antigravityCount + m.cursorCount + m.windsurfCount + m.aiderCount + m.ollamaCount
+		activeAgents = m.claudeCount + m.codexCount + m.geminiCount + m.grokCount + m.ompCount + m.opencodeCount + m.antigravityCount + m.cursorCount + m.windsurfCount + m.aiderCount + m.ollamaCount
 	}
 
 	// Count alerts by severity

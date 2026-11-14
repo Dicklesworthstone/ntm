@@ -1109,3 +1109,177 @@ func TestResolveCostModelForPane_Omp(t *testing.T) {
 		t.Fatalf("omp variant cost model = %q, want opus", got)
 	}
 }
+
+func TestDashboardBackpressureBadgeAndOpencodeCount(t *testing.T) {
+	th := theme.Current()
+	ic := icons.Current()
+
+	t.Run("zero panes and normal panes omit backpressure badge and diagnostics line", func(t *testing.T) {
+		emptyModel := Model{theme: th, icons: ic, width: 120, height: 32}
+		if got := emptyModel.renderBackpressureBadge(); got != "" {
+			t.Fatalf("empty session renderBackpressureBadge() = %q, want empty", got)
+		}
+
+		normalModel := Model{
+			theme:   th,
+			icons:   ic,
+			session: "healthy-proj",
+			width:   120,
+			height:  32,
+			panes: []tmux.Pane{
+				{ID: "%1", Index: 1, Type: tmux.AgentClaude},
+				{ID: "%2", Index: 2, Type: tmux.AgentCodex},
+			},
+			paneStatus: map[string]PaneStatus{
+				"%1": {State: "working", ContextPercent: 35},
+				"%2": {State: "idle", ContextPercent: 20},
+			},
+		}
+		normalModel.updateStats()
+
+		if got := normalModel.renderBackpressureBadge(); got != "" {
+			t.Fatalf("normal session renderBackpressureBadge() = %q, want empty", got)
+		}
+		statsPlain := status.StripANSI(normalModel.renderStatsBar())
+		if strings.Contains(statsPlain, "BP:") {
+			t.Fatalf("normal stats bar should not contain BP badge, got %q", statsPlain)
+		}
+		diagPlain := status.StripANSI(normalModel.renderDiagnosticsBar(120))
+		if strings.Contains(diagPlain, "backpressure") {
+			t.Fatalf("normal diagnostics bar should not include backpressure summary, got %q", diagPlain)
+		}
+	})
+
+	t.Run("elevated backpressure renders badge and coalesce diagnostics summary", func(t *testing.T) {
+		m := Model{
+			theme:           th,
+			icons:           ic,
+			session:         "elevated-proj",
+			width:           120,
+			height:          32,
+			showDiagnostics: true,
+			panes: []tmux.Pane{
+				{ID: "%1", Index: 1, Type: tmux.AgentClaude},
+				{ID: "%2", Index: 2, Type: tmux.AgentCodex},
+			},
+			paneStatus: map[string]PaneStatus{
+				"%1": {State: "stalled", ContextPercent: 85},
+				"%2": {State: "working", ContextPercent: 40},
+			},
+		}
+		m.updateStats()
+
+		badgePlain := status.StripANSI(m.renderBackpressureBadge())
+		if !strings.Contains(badgePlain, "⚡ BP: elevated") {
+			t.Fatalf("elevated badge = %q, want %q", badgePlain, "⚡ BP: elevated")
+		}
+		statsPlain := status.StripANSI(m.renderStatsBar())
+		if !strings.Contains(statsPlain, "BP: elevated") {
+			t.Fatalf("stats bar missing elevated BP badge: %q", statsPlain)
+		}
+		diagPlain := status.StripANSI(m.renderDiagnosticsBar(120))
+		for _, want := range []string{"backpressure:elevated", "decision=coalesce", "dropped_output", "queue_depth"} {
+			if !strings.Contains(diagPlain, want) {
+				t.Fatalf("diagnostics bar = %q, missing %q", diagPlain, want)
+			}
+		}
+	})
+
+	t.Run("critical backpressure renders warning badge and defer diagnostics summary", func(t *testing.T) {
+		m := Model{
+			theme:           th,
+			icons:           ic,
+			session:         "critical-proj",
+			width:           120,
+			height:          32,
+			showDiagnostics: true,
+			panes: []tmux.Pane{
+				{ID: "%1", Index: 1, Type: tmux.AgentClaude},
+				{ID: "%2", Index: 2, Type: tmux.AgentCodex},
+			},
+			paneStatus: map[string]PaneStatus{
+				"%1": {State: "rate_limited", ContextPercent: 50},
+				"%2": {State: "working", ContextPercent: 30},
+			},
+		}
+		m.updateStats()
+
+		badgePlain := status.StripANSI(m.renderBackpressureBadge())
+		if !strings.Contains(badgePlain, "⚠ BP: critical") {
+			t.Fatalf("critical badge = %q, want %q", badgePlain, "⚠ BP: critical")
+		}
+		diagPlain := status.StripANSI(m.renderDiagnosticsBar(120))
+		for _, want := range []string{"backpressure:critical", "decision=defer", "slow_handler"} {
+			if !strings.Contains(diagPlain, want) {
+				t.Fatalf("diagnostics bar = %q, missing %q", diagPlain, want)
+			}
+		}
+	})
+
+	t.Run("overload backpressure renders overload badge and degrade diagnostics summary", func(t *testing.T) {
+		m := Model{
+			theme:           th,
+			icons:           ic,
+			session:         "overload-proj",
+			width:           120,
+			height:          32,
+			showDiagnostics: true,
+			panes: []tmux.Pane{
+				{ID: "%1", Index: 1, Type: tmux.AgentClaude},
+				{ID: "%2", Index: 2, Type: tmux.AgentCodex},
+				{ID: "%3", Index: 3, Type: tmux.AgentGemini},
+			},
+			paneStatus: map[string]PaneStatus{
+				"%1": {State: "rate_limited", ContextPercent: 97},
+				"%2": {State: "error", ContextPercent: 60},
+				"%3": {State: "rate_limited", ContextPercent: 55},
+			},
+		}
+		m.updateStats()
+
+		badgePlain := status.StripANSI(m.renderBackpressureBadge())
+		if !strings.Contains(badgePlain, "✗ BP: overload") {
+			t.Fatalf("overload badge = %q, want %q", badgePlain, "✗ BP: overload")
+		}
+		diagPlain := status.StripANSI(m.renderDiagnosticsBar(120))
+		for _, want := range []string{"backpressure:overload", "decision=degrade", "retry=5000ms"} {
+			if !strings.Contains(diagPlain, want) {
+				t.Fatalf("diagnostics bar = %q, missing %q", diagPlain, want)
+			}
+		}
+	})
+
+	t.Run("opencode panes tally opencodeCount and render OC in stats bar and footer status bar", func(t *testing.T) {
+		m := New("oc-proj", "")
+		m.width = 140
+		m.height = 36
+		m.panes = []tmux.Pane{
+			{ID: "%1", Index: 1, Title: "oc-proj__oc_1", Type: tmux.AgentOpencode},
+			{ID: "%2", Index: 2, Title: "oc-proj__oc_2", Type: tmux.AgentType("opencode")},
+			{ID: "%3", Index: 3, Title: "oc-proj__cc_1", Type: tmux.AgentClaude},
+		}
+
+		m.updateStats()
+		m.updateTickerData()
+
+		if m.opencodeCount != 2 {
+			t.Fatalf("opencodeCount = %d, want 2", m.opencodeCount)
+		}
+		if m.claudeCount != 1 {
+			t.Fatalf("claudeCount = %d, want 1", m.claudeCount)
+		}
+		if m.userCount != 0 {
+			t.Fatalf("userCount = %d, want 0 (opencode panes must not fall through to user)", m.userCount)
+		}
+
+		statsPlain := status.StripANSI(m.renderStatsBar())
+		if !strings.Contains(statsPlain, "OC 2") {
+			t.Fatalf("stats bar missing 'OC 2': %q", statsPlain)
+		}
+
+		footerPlain := status.StripANSI(m.renderFooterSection())
+		if !strings.Contains(footerPlain, "OC:2") {
+			t.Fatalf("footer status bar missing 'OC:2': %q", footerPlain)
+		}
+	})
+}
