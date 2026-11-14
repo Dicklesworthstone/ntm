@@ -66,7 +66,7 @@ func TestEnsembleSynthesize_UsesModeOutputCache(t *testing.T) {
 		t.Fatalf("cache init: %v", err)
 	}
 	generator := ensemble.NewContextPackGenerator(workDir, nil, nil)
-	pack, err := generator.Generate(state.Question, "", ensemble.CacheConfig{Enabled: false})
+	pack, err := generator.Generate(t.Context(), state.Question, "", ensemble.CacheConfig{Enabled: false})
 	if err != nil {
 		t.Fatalf("context pack generate: %v", err)
 	}

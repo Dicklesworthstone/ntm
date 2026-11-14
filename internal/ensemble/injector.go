@@ -1,6 +1,7 @@
 package ensemble
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -30,8 +31,8 @@ type BatchInjectionResult struct {
 // BasicInjector defines the interface for basic prompt injection.
 // This is implemented by swarm.PromptInjector.
 type BasicInjector interface {
-	// InjectPrompt sends a prompt to a single pane.
-	InjectPrompt(sessionPane, agentType, prompt string) error
+	// InjectPromptContext sends a prompt to a single pane with caller cancellation.
+	InjectPromptContext(ctx context.Context, sessionPane, agentType, prompt string) error
 	// GetDelayForAgent returns the appropriate delay for an agent type.
 	GetDelayForAgent(agentType string) time.Duration
 }
@@ -80,6 +81,7 @@ func (e *EnsembleInjector) logger() *slog.Logger {
 // InjectWithMode sends a mode-specific preamble and question to a single pane.
 // The preamble is rendered from the reasoning mode metadata and schema contract.
 func (e *EnsembleInjector) InjectWithMode(
+	ctx context.Context,
 	sessionPane string,
 	mode *ReasoningMode,
 	question string,
@@ -95,6 +97,17 @@ func (e *EnsembleInjector) InjectWithMode(
 		SentAt:      start,
 	}
 
+	if ctx == nil {
+		err := fmt.Errorf("prompt injection context is required")
+		result.Error = err.Error()
+		result.Duration = time.Since(start)
+		return result, err
+	}
+	if err := ctx.Err(); err != nil {
+		result.Error = err.Error()
+		result.Duration = time.Since(start)
+		return result, err
+	}
 	if mode == nil {
 		err := fmt.Errorf("mode is required")
 		result.Success = false
@@ -153,7 +166,7 @@ func (e *EnsembleInjector) InjectWithMode(
 	}
 	prompt := strings.Join(parts, "\n\n")
 
-	if err := e.BasicInjector.InjectPrompt(sessionPane, agentType, prompt); err != nil {
+	if err := e.BasicInjector.InjectPromptContext(ctx, sessionPane, agentType, prompt); err != nil {
 		result.Success = false
 		result.Error = err.Error()
 		result.Duration = time.Since(start)
@@ -181,8 +194,10 @@ func (e *EnsembleInjector) InjectWithMode(
 }
 
 // InjectEnsemble sends mode-specific preambles to all assigned panes.
-// It continues on per-pane errors and returns a batch result summary.
+// It continues on per-pane errors, but cancellation stops the batch and retains
+// receipts only for the panes whose delivery was attempted.
 func (e *EnsembleInjector) InjectEnsemble(
+	ctx context.Context,
 	assignments []ModeAssignment,
 	question string,
 	catalog *ModeCatalog,
@@ -191,6 +206,9 @@ func (e *EnsembleInjector) InjectEnsemble(
 ) (*BatchInjectionResult, error) {
 	start := time.Now()
 
+	if ctx == nil {
+		return nil, fmt.Errorf("prompt injection context is required")
+	}
 	if catalog == nil {
 		return nil, fmt.Errorf("catalog cannot be nil")
 	}
@@ -202,6 +220,10 @@ func (e *EnsembleInjector) InjectEnsemble(
 		TotalPanes: len(assignments),
 		Results:    make([]InjectionResult, 0, len(assignments)),
 	}
+	defer func() { result.Duration = time.Since(start) }()
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 
 	if len(assignments) == 0 {
 		return result, nil
@@ -211,6 +233,9 @@ func (e *EnsembleInjector) InjectEnsemble(
 		"total_assignments", len(assignments))
 
 	for i, assignment := range assignments {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		if i > 0 {
 			delay := e.BasicInjector.GetDelayForAgent(assignment.AgentType)
 			if delay > 0 {
@@ -219,7 +244,11 @@ func (e *EnsembleInjector) InjectEnsemble(
 					"delay_ms", delay.Milliseconds(),
 					"index", i,
 					"total", len(assignments))
-				time.Sleep(delay)
+				select {
+				case <-ctx.Done():
+					return result, ctx.Err()
+				case <-time.After(delay):
+				}
 			}
 		}
 
@@ -243,6 +272,7 @@ func (e *EnsembleInjector) InjectEnsemble(
 		}
 
 		injResult, err := e.InjectWithMode(
+			ctx,
 			assignment.PaneName,
 			mode,
 			question,
@@ -258,6 +288,9 @@ func (e *EnsembleInjector) InjectEnsemble(
 		}
 		if injResult != nil {
 			result.Results = append(result.Results, *injResult)
+		}
+		if err := ctx.Err(); err != nil {
+			return result, err
 		}
 
 		e.logger().Info("[EnsembleInjector] ensemble_inject_progress",

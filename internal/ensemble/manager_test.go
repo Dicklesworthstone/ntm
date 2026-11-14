@@ -1,7 +1,12 @@
 package ensemble
 
 import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -914,5 +919,133 @@ func TestEnsembleManager_HelpersWithValues(t *testing.T) {
 	// Test logger with set value
 	if m.logger() == nil {
 		t.Error("logger() should return set logger")
+	}
+}
+
+func TestSpawnEnsemble_CancelledBeforeCreation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	manager := NewEnsembleManager()
+	state, err := manager.SpawnEnsemble(ctx, &EnsembleConfig{
+		SessionName: "cancelled-ensemble",
+		Question:    "What should we analyze?",
+		Modes:       []string{"deductive", "abductive"},
+	})
+	if !errors.Is(err, context.Canceled) || state != nil {
+		t.Fatalf("SpawnEnsemble = %+v, %v; want nil, context canceled", state, err)
+	}
+}
+
+type cancellationTestInjector struct {
+	inject func(context.Context, string, string, string) error
+	delay  func(string) time.Duration
+}
+
+func (f cancellationTestInjector) InjectPromptContext(ctx context.Context, pane, agentType, prompt string) error {
+	return f.inject(ctx, pane, agentType, prompt)
+}
+
+func (f cancellationTestInjector) GetDelayForAgent(agentType string) time.Duration {
+	if f.delay == nil {
+		return 0
+	}
+	return f.delay(agentType)
+}
+
+func TestEnsembleInjection_CancellationPreservesCompletedReceipts(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	deliveries := 0
+	basic := cancellationTestInjector{
+		inject: func(got context.Context, pane, agentType, prompt string) error {
+			if got != ctx {
+				t.Fatal("caller context was not propagated to prompt delivery")
+			}
+			deliveries++
+			if deliveries == 2 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	injector := NewEnsembleInjector().WithBasicInjector(basic).
+		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	assignments := []ModeAssignment{
+		{ModeID: "deductive", PaneName: "%1", AgentType: "cc"},
+		{ModeID: "abductive", PaneName: "%2", AgentType: "cod"},
+		{ModeID: "practical", PaneName: "%3", AgentType: "cc"},
+	}
+
+	result, err := injector.InjectEnsemble(ctx, assignments, "Analyze cancellation", testModeCatalog(t), nil, 1000)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("InjectEnsemble error = %v, want context canceled", err)
+	}
+	if deliveries != 2 || result == nil || result.TotalPanes != 3 || result.Successful != 1 || result.Failed != 1 || len(result.Results) != 2 {
+		t.Fatalf("partial receipts were lost or later panes were dispatched: deliveries=%d result=%+v", deliveries, result)
+	}
+	if !result.Results[0].Success || result.Results[1].Success || result.Results[1].Error != context.Canceled.Error() {
+		t.Fatalf("unexpected completed receipts: %+v", result.Results)
+	}
+}
+
+func TestEnsembleInjection_CancellationInterruptsStagger(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	deliveries := 0
+	basic := cancellationTestInjector{
+		inject: func(context.Context, string, string, string) error {
+			deliveries++
+			return nil
+		},
+		delay: func(string) time.Duration {
+			cancel()
+			return 5 * time.Second
+		},
+	}
+	injector := NewEnsembleInjector().WithBasicInjector(basic).
+		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	assignments := []ModeAssignment{
+		{ModeID: "deductive", PaneName: "%1", AgentType: "cc"},
+		{ModeID: "abductive", PaneName: "%2", AgentType: "cod"},
+	}
+
+	start := time.Now()
+	result, err := injector.InjectEnsemble(ctx, assignments, "Analyze cancellation", testModeCatalog(t), nil, 1000)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("InjectEnsemble error = %v, want context canceled", err)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("cancellation waited for the prompt stagger delay")
+	}
+	if deliveries != 1 || result == nil || result.Successful != 1 || result.Failed != 0 || len(result.Results) != 1 {
+		t.Fatalf("unexpected receipts after stagger cancellation: deliveries=%d result=%+v", deliveries, result)
+	}
+}
+
+func TestEnsembleInjection_PerPaneErrorStillAllowsOtherModes(t *testing.T) {
+	deliveries := 0
+	basic := cancellationTestInjector{
+		inject: func(context.Context, string, string, string) error {
+			deliveries++
+			if deliveries == 1 {
+				return errors.New("pane delivery failed")
+			}
+			return nil
+		},
+	}
+	injector := NewEnsembleInjector().WithBasicInjector(basic).
+		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	assignments := []ModeAssignment{
+		{ModeID: "deductive", PaneName: "%1", AgentType: "cc"},
+		{ModeID: "abductive", PaneName: "%2", AgentType: "cod"},
+	}
+
+	result, err := injector.InjectEnsemble(context.Background(), assignments, "Analyze resilience", testModeCatalog(t), nil, 1000)
+	if err != nil || deliveries != 2 || result == nil || result.Successful != 1 || result.Failed != 1 || len(result.Results) != 2 {
+		t.Fatalf("per-pane error stopped other modes: deliveries=%d result=%+v err=%v", deliveries, result, err)
+	}
+	if result.Results[0].Success || !result.Results[1].Success {
+		t.Fatalf("unexpected delivery receipts: %+v", result.Results)
 	}
 }

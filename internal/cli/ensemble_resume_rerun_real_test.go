@@ -673,7 +673,7 @@ func TestEnsembleTOMLConfigKeys_AllSixAndCLIOverrides(t *testing.T) {
 
 		gen := ensemble.NewContextPackGenerator(projectDir, nil, nil)
 		gen.MaxTokens = cfg.Ensemble.Budget.ContextPack
-		pack, err := gen.Generate("Verify context pack token cap", "", ensemble.CacheConfig{Enabled: false})
+		pack, err := gen.Generate(t.Context(), "Verify context pack token cap", "", ensemble.CacheConfig{Enabled: false})
 		if err != nil {
 			t.Fatalf("ContextPackGenerator.Generate() error = %v", err)
 		}

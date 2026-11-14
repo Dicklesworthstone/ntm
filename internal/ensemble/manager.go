@@ -160,6 +160,9 @@ func (m *EnsembleManager) SpawnEnsemble(ctx context.Context, cfg *EnsembleConfig
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	logger := m.logger()
 
@@ -192,6 +195,9 @@ func (m *EnsembleManager) SpawnEnsemble(ctx context.Context, cfg *EnsembleConfig
 	if err != nil {
 		return nil, err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	state := &EnsembleSession{
 		SessionName:       cfg.SessionName,
@@ -202,9 +208,33 @@ func (m *EnsembleManager) SpawnEnsemble(ctx context.Context, cfg *EnsembleConfig
 		SynthesisStrategy: resolvedCfg.synthesis.Strategy,
 		CreatedAt:         time.Now().UTC(),
 	}
+	// Cancellation stops further orchestration, not agents that may already
+	// have received work. Preserve their assignments and the tmux session so
+	// the caller can inspect or explicitly stop them without losing output.
+	interrupted := func(err error) (*EnsembleSession, error) {
+		state.Status = EnsembleError
+		state.Error = fmt.Sprintf("ensemble spawn interrupted: %v", err)
+		for i := range state.Assignments {
+			assignment := &state.Assignments[i]
+			switch assignment.Status {
+			case AssignmentActive, AssignmentDone:
+				state.Status = EnsembleActive
+			case AssignmentPending:
+				assignment.Status = AssignmentError
+				assignment.Error = fmt.Sprintf("prompt not dispatched: %v", err)
+			case AssignmentInjecting:
+				assignment.Status = AssignmentError
+				assignment.Error = fmt.Sprintf("prompt delivery interrupted; inspect pane before retrying: %v", err)
+			}
+		}
+		if saveErr := SaveSession(cfg.SessionName, state); saveErr != nil {
+			return state, errors.Join(err, fmt.Errorf("save interrupted ensemble state: %w", saveErr))
+		}
+		return state, err
+	}
 
 	if saveErr := SaveSession(cfg.SessionName, state); saveErr != nil {
-		logger.Warn("ensemble state save failed", "session", cfg.SessionName, "error", saveErr)
+		return state, fmt.Errorf("save initial ensemble state: %w", saveErr)
 	}
 
 	paneSpecs, err := buildPaneSpecs(cfg, len(modeIDs))
@@ -226,7 +256,10 @@ func (m *EnsembleManager) SpawnEnsemble(ctx context.Context, cfg *EnsembleConfig
 	orchestrator.TmuxClient = m.tmuxClient()
 
 	plan := &swarm.SwarmPlan{Sessions: []swarm.SessionSpec{sessionSpec}}
-	createResult, createErr := orchestrator.CreateSessions(plan)
+	createResult, createErr := orchestrator.CreateSessionsContext(ctx, plan)
+	if err := ctx.Err(); err != nil {
+		return interrupted(err)
+	}
 	if createErr != nil || createResult == nil {
 		state.Status = EnsembleError
 		state.Error = fmt.Sprintf("session creation failed: %v", createErr)
@@ -244,14 +277,11 @@ func (m *EnsembleManager) SpawnEnsemble(ctx context.Context, cfg *EnsembleConfig
 		return state, err
 	}
 
-	launcher := m.paneLauncher()
-	launcher.TmuxClient = m.tmuxClient()
-	if _, err := launcher.LaunchSession(ctx, sessionSpec, 300*time.Millisecond); err != nil {
-		logger.Warn("ensemble agent launch errors", "session", cfg.SessionName, "error", err)
-	}
-
-	panes, err := m.tmuxClient().GetPanes(cfg.SessionName)
+	panes, err := m.tmuxClient().GetPanesContext(ctx, cfg.SessionName)
 	if err != nil {
+		if ctx.Err() != nil {
+			return interrupted(ctx.Err())
+		}
 		state.Status = EnsembleError
 		state.Error = fmt.Sprintf("get panes: %v", err)
 		_ = SaveSession(cfg.SessionName, state)
@@ -267,14 +297,41 @@ func (m *EnsembleManager) SpawnEnsemble(ctx context.Context, cfg *EnsembleConfig
 	}
 
 	state.Assignments = assignments
-	state.Status = spawnCompletionStatus(cfg.SkipInject, 0, 0, 0)
 	if saveErr := SaveSession(cfg.SessionName, state); saveErr != nil {
 		logger.Warn("ensemble state save failed", "session", cfg.SessionName, "error", saveErr)
 	}
 
+	launcher := m.paneLauncher()
+	launcher.TmuxClient = m.tmuxClient()
+	launchResult, launchErr := launcher.LaunchSession(ctx, sessionSpec, 300*time.Millisecond)
+	if err := ctx.Err(); err != nil {
+		return interrupted(err)
+	}
+	if launchErr != nil {
+		return interrupted(fmt.Errorf("launch ensemble agents: %w", launchErr))
+	}
+	if launchResult == nil {
+		return interrupted(errors.New("launch ensemble agents: missing launch result"))
+	}
+	if launchResult.Failed > 0 {
+		launchErr := errors.Join(launchResult.Errors...)
+		if launchErr == nil {
+			launchErr = fmt.Errorf("%d agent launches failed", launchResult.Failed)
+		}
+		return interrupted(fmt.Errorf("launch ensemble agents: %w", launchErr))
+	}
+
 	if cfg.SkipInject {
+		state.Status = EnsembleReady
+		if saveErr := SaveSession(cfg.SessionName, state); saveErr != nil {
+			logger.Warn("ensemble state save failed", "session", cfg.SessionName, "error", saveErr)
+		}
 		logger.Info("ensemble prompt injection skipped", "session", cfg.SessionName)
 		return state, nil
+	}
+	state.Status = EnsembleInjecting
+	if saveErr := SaveSession(cfg.SessionName, state); saveErr != nil {
+		logger.Warn("ensemble state save failed", "session", cfg.SessionName, "error", saveErr)
 	}
 
 	injector := m.ensembleInjector()
@@ -284,11 +341,15 @@ func (m *EnsembleManager) SpawnEnsemble(ctx context.Context, cfg *EnsembleConfig
 	}
 	var sharedContext *ContextPack
 	if cacheCfg.ShareAcrossModes {
-		if pack, err := contextGenerator.Generate(cfg.Question, "", cacheCfg); err == nil {
+		if pack, err := contextGenerator.Generate(ctx, cfg.Question, "", cacheCfg); err == nil {
 			sharedContext = CapContextPackTokens(pack, resolvedCfg.budget.ContextReserveTokens)
 		} else {
 			logger.Warn("context pack generation failed", "session", cfg.SessionName, "error", err)
 		}
+	}
+
+	if err := ctx.Err(); err != nil {
+		return interrupted(err)
 	}
 
 	targets := buildPaneTargetMap(cfg.SessionName, panes)
@@ -326,10 +387,10 @@ func (m *EnsembleManager) SpawnEnsemble(ctx context.Context, cfg *EnsembleConfig
 			if target := targets[a.PaneName]; target != "" {
 				a.PaneName = target
 			}
-			state.Assignments[assignmentIndex].Status = AssignmentInjecting
 			batchAssignments = append(batchAssignments, a)
 		}
 		batchRes, batchErr := injector.InjectEnsemble(
+			ctx,
 			batchAssignments,
 			cfg.Question,
 			catalog,
@@ -345,6 +406,9 @@ func (m *EnsembleManager) SpawnEnsemble(ctx context.Context, cfg *EnsembleConfig
 		} else if batchRes != nil {
 			for i, assignmentIndex := range order {
 				assignment := &state.Assignments[assignmentIndex]
+				if i >= len(batchRes.Results) && ctx.Err() != nil {
+					continue
+				}
 				if i < len(batchRes.Results) && batchRes.Results[i].Success {
 					assignment.Status = AssignmentActive
 					assignment.Error = ""
@@ -362,6 +426,9 @@ func (m *EnsembleManager) SpawnEnsemble(ctx context.Context, cfg *EnsembleConfig
 		}
 	} else {
 		for orderIndex, assignmentIndex := range order {
+			if err := ctx.Err(); err != nil {
+				return interrupted(err)
+			}
 			if timeboxExpired(deadline, time.Now()) {
 				skippedModes = append(skippedModes, markAssignmentsSkipped(
 					state.Assignments,
@@ -386,16 +453,20 @@ func (m *EnsembleManager) SpawnEnsemble(ctx context.Context, cfg *EnsembleConfig
 				target = assignment.PaneName
 			}
 
-			assignment.Status = AssignmentInjecting
 			contextPack := sharedContext
 			if contextPack == nil && !cacheCfg.ShareAcrossModes {
-				if pack, err := contextGenerator.Generate(cfg.Question, assignment.ModeID, cacheCfg); err == nil {
+				if pack, err := contextGenerator.Generate(ctx, cfg.Question, assignment.ModeID, cacheCfg); err == nil {
 					contextPack = CapContextPackTokens(pack, resolvedCfg.budget.ContextReserveTokens)
 				} else {
 					logger.Warn("context pack generation failed", "session", cfg.SessionName, "mode", assignment.ModeID, "error", err)
 				}
 			}
+			if err := ctx.Err(); err != nil {
+				return interrupted(err)
+			}
+			assignment.Status = AssignmentInjecting
 			injResult, err := injector.InjectWithMode(
+				ctx,
 				target,
 				mode,
 				cfg.Question,
@@ -422,6 +493,10 @@ func (m *EnsembleManager) SpawnEnsemble(ctx context.Context, cfg *EnsembleConfig
 			assignment.Status = AssignmentActive
 			successes++
 		}
+	}
+
+	if err := ctx.Err(); err != nil {
+		return interrupted(err)
 	}
 
 	state.Status = spawnCompletionStatus(false, successes, len(injectErrors), len(skippedModes))

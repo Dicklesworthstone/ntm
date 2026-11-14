@@ -1,19 +1,23 @@
 package ensemble
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestContextPackGenerator_Generate_FullProject(t *testing.T) {
 	root := copyFixture(t, "full-project")
 	gen := NewContextPackGenerator(root, nil, nil)
 
-	pack, err := gen.Generate(strings.Repeat("Q", minProblemStatementLen+5), "mode-a", CacheConfig{Enabled: false})
+	pack, err := gen.Generate(t.Context(), strings.Repeat("Q", minProblemStatementLen+5), "mode-a", CacheConfig{Enabled: false})
 	if err != nil {
 		t.Fatalf("Generate error: %v", err)
 	}
@@ -59,7 +63,7 @@ func TestContextPackGenerator_Generate_MinimalProject(t *testing.T) {
 	root := copyFixture(t, "minimal-project")
 	gen := NewContextPackGenerator(root, nil, nil)
 
-	pack, err := gen.Generate("Short question", "", CacheConfig{Enabled: false})
+	pack, err := gen.Generate(t.Context(), "Short question", "", CacheConfig{Enabled: false})
 	if err != nil {
 		t.Fatalf("Generate error: %v", err)
 	}
@@ -77,7 +81,7 @@ func TestContextPackGenerator_Generate_MinimalProject(t *testing.T) {
 func TestContextPackGenerator_DetectLanguages_Go(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "main.go"), "package main\n")
-	_, languages, _ := scanProjectStructure(root)
+	_, languages, _ := scanProjectStructure(t.Context(), root)
 	if !containsString(languages, "Go") {
 		t.Errorf("expected Go in languages: %v", languages)
 	}
@@ -86,7 +90,7 @@ func TestContextPackGenerator_DetectLanguages_Go(t *testing.T) {
 func TestContextPackGenerator_DetectLanguages_TypeScript(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "app.ts"), "export const ok = true\n")
-	_, languages, _ := scanProjectStructure(root)
+	_, languages, _ := scanProjectStructure(t.Context(), root)
 	if !containsString(languages, "TypeScript") {
 		t.Errorf("expected TypeScript in languages: %v", languages)
 	}
@@ -96,7 +100,7 @@ func TestContextPackGenerator_DetectLanguages_Mixed(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "main.go"), "package main\n")
 	writeFile(t, filepath.Join(root, "web", "app.tsx"), "export const App = () => null\n")
-	_, languages, _ := scanProjectStructure(root)
+	_, languages, _ := scanProjectStructure(t.Context(), root)
 	if !containsString(languages, "Go") || !containsString(languages, "TypeScript") {
 		t.Errorf("expected mixed languages, got %v", languages)
 	}
@@ -183,7 +187,7 @@ func TestContextPackGenerator_GetRecentCommits(t *testing.T) {
 		t.Skipf("git repo init failed: %v", err)
 	}
 
-	commits := recentCommits(root, 5)
+	commits := recentCommits(t.Context(), root, 5)
 	if len(commits) == 0 {
 		t.Fatal("expected at least one commit")
 	}
@@ -201,7 +205,7 @@ func TestContextPackGenerator_CountOpenIssues(t *testing.T) {
 	issues := "{\"status\":\"open\"}\n{\"status\":\"closed\"}\n{\"status\":\"in_progress\"}\n"
 	writeFile(t, filepath.Join(issuesDir, "issues.jsonl"), issues)
 
-	count := countOpenIssues(root)
+	count := countOpenIssues(t.Context(), root)
 	if count != 2 {
 		t.Errorf("open issues = %d, want 2", count)
 	}
@@ -293,4 +297,100 @@ func containsString(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func TestContextPackGenerator_CancelledGitProbeDoesNotCachePartialContext(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake git fixture requires a POSIX shell")
+	}
+	for _, blocked := range []string{
+		"rev-parse --show-toplevel",
+		"rev-parse HEAD",
+		"status --porcelain",
+		"log -8",
+	} {
+		t.Run(blocked, func(t *testing.T) {
+			projectDir := t.TempDir()
+			fixtureDir := t.TempDir()
+			callsPath := filepath.Join(fixtureDir, "calls")
+			readyPath := filepath.Join(fixtureDir, "ready")
+			script := "#!/bin/sh\n" +
+				"printf '%s %s\\n' \"$1\" \"$2\" >> \"$NTM_CONTEXT_GIT_CALLS\"\n" +
+				"if [ \"$1 $2\" = \"$NTM_CONTEXT_GIT_BLOCK\" ]; then\n" +
+				"  : > \"$NTM_CONTEXT_GIT_READY\"\n" +
+				"  exec sleep 30\n" +
+				"fi\n" +
+				"case \"$1 $2\" in\n" +
+				"  'rev-parse --show-toplevel') printf '%s\\n' \"$NTM_CONTEXT_GIT_ROOT\" ;;\n" +
+				"  'rev-parse HEAD') printf '%s\\n' 1111111111111111111111111111111111111111 ;;\n" +
+				"esac\n"
+			if err := os.WriteFile(filepath.Join(fixtureDir, "git"), []byte(script), 0o755); err != nil {
+				t.Fatalf("write fake git: %v", err)
+			}
+			t.Setenv("PATH", fixtureDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("NTM_CONTEXT_GIT_CALLS", callsPath)
+			t.Setenv("NTM_CONTEXT_GIT_READY", readyPath)
+			t.Setenv("NTM_CONTEXT_GIT_BLOCK", blocked)
+			t.Setenv("NTM_CONTEXT_GIT_ROOT", projectDir)
+
+			cacheDir := t.TempDir()
+			cacheCfg := CacheConfig{Enabled: true}
+			cache, err := NewContextPackCacheWithDir(cacheDir, cacheCfg, nil)
+			if err != nil {
+				t.Fatalf("new cache: %v", err)
+			}
+			generator := NewContextPackGenerator(projectDir, cache, nil)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			type generationResult struct {
+				pack *ContextPack
+				err  error
+			}
+			done := make(chan generationResult, 1)
+			go func() {
+				pack, err := generator.Generate(ctx, "Analyze this project", "", cacheCfg)
+				done <- generationResult{pack: pack, err: err}
+			}()
+
+			ticker := time.NewTicker(10 * time.Millisecond)
+			defer ticker.Stop()
+			deadline := time.NewTimer(5 * time.Second)
+			defer deadline.Stop()
+			ready := false
+			for !ready {
+				select {
+				case result := <-done:
+					t.Fatalf("Generate returned before blocked git probe: %+v", result)
+				case <-ticker.C:
+					if _, err := os.Stat(readyPath); err == nil {
+						ready = true
+					}
+				case <-deadline.C:
+					t.Fatal("git probe did not reach the blocking fixture")
+				}
+			}
+			cancel()
+			select {
+			case result := <-done:
+				if !errors.Is(result.err, context.Canceled) || result.pack != nil {
+					t.Fatalf("Generate = %+v, %v; want nil, context canceled", result.pack, result.err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("cancellation did not interrupt the git probe")
+			}
+
+			entries, err := os.ReadDir(cacheDir)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("cancelled generation wrote partial cache: entries=%v err=%v", entries, err)
+			}
+			calls, err := os.ReadFile(callsPath)
+			if err != nil {
+				t.Fatalf("read git calls: %v", err)
+			}
+			lines := strings.Split(strings.TrimSpace(string(calls)), "\n")
+			if len(lines) == 0 || lines[len(lines)-1] != blocked {
+				t.Fatalf("git commands continued after cancellation: %s", calls)
+			}
+		})
+	}
 }

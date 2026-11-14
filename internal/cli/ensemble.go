@@ -1116,7 +1116,7 @@ func runEnsembleSynthesize(ctx context.Context, w io.Writer, session string, opt
 				} else {
 					generator := ensemble.NewContextPackGenerator(projectDir, nil, logger)
 					generator.MaxTokens = budgetCfg.ContextReserveTokens
-					pack, packErr := generator.Generate(state.Question, "", ensemble.CacheConfig{Enabled: false})
+					pack, packErr := generator.Generate(ctx, state.Question, "", ensemble.CacheConfig{Enabled: false})
 					if packErr != nil {
 						logger.Warn("context pack generation failed for cache", "error", packErr)
 						cacheEnabled = false

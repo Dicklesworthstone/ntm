@@ -2,6 +2,7 @@ package ensemble
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -42,9 +43,18 @@ func NewContextPackGenerator(projectDir string, cache *ContextPackCache, logger 
 }
 
 // Generate builds a context pack and uses cache when enabled.
-func (g *ContextPackGenerator) Generate(question string, modeKey string, cacheCfg CacheConfig) (*ContextPack, error) {
-	projectRoot := g.resolveProjectRoot()
-	fingerprint := g.buildFingerprint(projectRoot, question, modeKey)
+func (g *ContextPackGenerator) Generate(ctx context.Context, question string, modeKey string, cacheCfg CacheConfig) (*ContextPack, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("context pack generation context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	projectRoot := g.resolveProjectRoot(ctx)
+	fingerprint := g.buildFingerprint(ctx, projectRoot, question, modeKey)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	cacheKey := fingerprint.cacheKey()
 
 	if cacheCfg.Enabled && g.Cache != nil {
@@ -64,7 +74,10 @@ func (g *ContextPackGenerator) Generate(question string, modeKey string, cacheCf
 		)
 	}
 
-	brief := g.buildProjectBrief(projectRoot)
+	brief := g.buildProjectBrief(ctx, projectRoot)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	userCtx := &UserContext{
 		ProblemStatement: strings.TrimSpace(question),
 	}
@@ -110,11 +123,11 @@ func (g *ContextPackGenerator) Generate(question string, modeKey string, cacheCf
 	return pack, nil
 }
 
-func (g *ContextPackGenerator) resolveProjectRoot() string {
+func (g *ContextPackGenerator) resolveProjectRoot(ctx context.Context) string {
 	if g.ProjectDir == "" {
 		return "."
 	}
-	root, err := findProjectRoot(g.ProjectDir)
+	root, err := findProjectRoot(ctx, g.ProjectDir)
 	if err == nil && root != "" {
 		return root
 	}
@@ -123,9 +136,10 @@ func (g *ContextPackGenerator) resolveProjectRoot() string {
 
 // findProjectRoot returns the git repository root for the given directory.
 // This is inlined here to avoid import cycles with the git package.
-func findProjectRoot(startDir string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+func findProjectRoot(ctx context.Context, startDir string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel")
 	cmd.Dir = startDir
+	cmd.WaitDelay = time.Second
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -133,8 +147,8 @@ func findProjectRoot(startDir string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
-func (g *ContextPackGenerator) buildFingerprint(projectRoot, question, modeKey string) ContextFingerprint {
-	head, status := gitState(projectRoot)
+func (g *ContextPackGenerator) buildFingerprint(ctx context.Context, projectRoot, question, modeKey string) ContextFingerprint {
+	head, status := gitState(ctx, projectRoot)
 	readme := findReadme(projectRoot)
 	return ContextFingerprint{
 		ProjectRoot:  projectRoot,
@@ -153,11 +167,11 @@ func (g *ContextPackGenerator) loggerSafe() *slog.Logger {
 	return slog.Default()
 }
 
-func (g *ContextPackGenerator) buildProjectBrief(projectRoot string) *ProjectBrief {
+func (g *ContextPackGenerator) buildProjectBrief(ctx context.Context, projectRoot string) *ProjectBrief {
 	name, description := readProjectOverview(projectRoot)
-	structure, languages, frameworks := scanProjectStructure(projectRoot)
-	commits := recentCommits(projectRoot, 8)
-	openIssues := countOpenIssues(projectRoot)
+	structure, languages, frameworks := scanProjectStructure(ctx, projectRoot)
+	commits := recentCommits(ctx, projectRoot, 8)
+	openIssues := countOpenIssues(ctx, projectRoot)
 
 	sort.Strings(languages)
 	sort.Strings(frameworks)
@@ -246,7 +260,7 @@ type projectScan struct {
 	frameworks  map[string]bool
 }
 
-func scanProjectStructure(root string) (*ProjectStructure, []string, []string) {
+func scanProjectStructure(ctx context.Context, root string) (*ProjectStructure, []string, []string) {
 	scan := &projectScan{
 		entryPoints: make(map[string]bool),
 		corePkgs:    make(map[string]bool),
@@ -270,6 +284,9 @@ func scanProjectStructure(root string) (*ProjectStructure, []string, []string) {
 	}
 
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err != nil {
 			return nil
 		}
@@ -530,12 +547,13 @@ func frameworksFromPython(path string) []string {
 	return frameworks
 }
 
-func recentCommits(root string, limit int) []CommitSummary {
+func recentCommits(ctx context.Context, root string, limit int) []CommitSummary {
 	if limit <= 0 {
 		return nil
 	}
-	cmd := exec.Command("git", "log", fmt.Sprintf("-%d", limit), "--pretty=format:%H|%an|%s|%cI")
+	cmd := exec.CommandContext(ctx, "git", "log", fmt.Sprintf("-%d", limit), "--pretty=format:%H|%an|%s|%cI")
 	cmd.Dir = root
+	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	if err != nil {
 		return nil
@@ -561,18 +579,20 @@ func recentCommits(root string, limit int) []CommitSummary {
 	return commits
 }
 
-func gitState(root string) (string, string) {
+func gitState(ctx context.Context, root string) (string, string) {
 	head := ""
 	statusHash := ""
 
-	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
 	cmd.Dir = root
+	cmd.WaitDelay = time.Second
 	if out, err := cmd.Output(); err == nil {
 		head = strings.TrimSpace(string(out))
 	}
 
-	cmd = exec.Command("git", "status", "--porcelain")
+	cmd = exec.CommandContext(ctx, "git", "status", "--porcelain")
 	cmd.Dir = root
+	cmd.WaitDelay = time.Second
 	if out, err := cmd.Output(); err == nil {
 		statusHash = hashString(string(out))
 	}
@@ -580,7 +600,7 @@ func gitState(root string) (string, string) {
 	return head, statusHash
 }
 
-func countOpenIssues(root string) int {
+func countOpenIssues(ctx context.Context, root string) int {
 	path := filepath.Join(root, ".beads", "issues.jsonl")
 	file, err := os.Open(path)
 	if err != nil {
@@ -594,6 +614,9 @@ func countOpenIssues(root string) int {
 
 	openCount := 0
 	for scanner.Scan() {
+		if ctx.Err() != nil {
+			return openCount
+		}
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue

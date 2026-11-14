@@ -4,6 +4,7 @@ package robot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -73,7 +74,10 @@ type EnsembleSpawnBudget struct {
 
 // GetEnsembleSpawn spawns a reasoning ensemble session and returns the result.
 // This function returns the data struct directly, enabling CLI/REST parity.
-func GetEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) (*EnsembleSpawnOutput, error) {
+func GetEnsembleSpawn(ctx context.Context, opts EnsembleSpawnOptions, cfg *config.Config) (*EnsembleSpawnOutput, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("ensemble spawn context is required")
+	}
 	opts = applyEnsembleSpawnDefaults(opts, cfg)
 
 	output := &EnsembleSpawnOutput{
@@ -85,6 +89,11 @@ func GetEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) (*EnsembleS
 		Assignment:    normalizeEnsembleAssignment(opts.Assignment),
 		Modes:         []EnsembleSpawnMode{},
 		Budget:        EnsembleSpawnBudget{},
+	}
+
+	if err := ctx.Err(); err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodeTimeout, "Ensemble spawn was canceled; no panes were created")
+		return output, nil
 	}
 
 	if output.Session == "" {
@@ -103,7 +112,17 @@ func GetEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) (*EnsembleS
 		output.RobotResponse = NewErrorResponse(err, ErrCodeDependencyMissing, "Install tmux to spawn ensembles")
 		return output, nil
 	}
-	if tmux.SessionExists(output.Session) {
+	exists, err := tmux.SessionExistsContext(ctx, output.Session)
+	if err != nil {
+		code := ErrCodeInternalError
+		if ctx.Err() != nil {
+			err = ctx.Err()
+			code = ErrCodeTimeout
+		}
+		output.RobotResponse = NewErrorResponse(err, code, "Failed to check existing tmux sessions")
+		return output, nil
+	}
+	if exists {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("session '%s' already exists", output.Session),
 			ErrCodeInvalidFlag,
@@ -270,22 +289,28 @@ func GetEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) (*EnsembleS
 
 	output.Budget = resolveEnsembleSpawnBudget(ensembleCfg, registry)
 
-	state, spawnErr := manager.SpawnEnsemble(context.Background(), ensembleCfg)
+	state, spawnErr := manager.SpawnEnsemble(ctx, ensembleCfg)
 	if state != nil {
 		output.Status = state.Status.String()
 		output.Modes = buildSpawnModes(state.Assignments, catalog)
 	}
 
 	if spawnErr != nil {
-		output.RobotResponse = NewErrorResponse(spawnErr, ErrCodeInternalError, "Ensemble spawn encountered errors")
+		code := ErrCodeInternalError
+		hint := "Ensemble spawn encountered errors"
+		if errors.Is(spawnErr, context.Canceled) || errors.Is(spawnErr, context.DeadlineExceeded) {
+			code = ErrCodeTimeout
+			hint = "Ensemble spawn was interrupted; inspect the preserved session before retrying"
+		}
+		output.RobotResponse = NewErrorResponse(spawnErr, code, hint)
 	}
 
 	return output, nil
 }
 
 // PrintEnsembleSpawn spawns a reasoning ensemble session and returns structured JSON.
-func PrintEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) error {
-	output, err := GetEnsembleSpawn(opts, cfg)
+func PrintEnsembleSpawn(ctx context.Context, opts EnsembleSpawnOptions, cfg *config.Config) error {
+	output, err := GetEnsembleSpawn(ctx, opts, cfg)
 	if err != nil {
 		return err
 	}

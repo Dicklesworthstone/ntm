@@ -233,7 +233,7 @@ func (m *EnsembleManager) RunStage1(ctx context.Context, cfg *EnsembleConfig) (*
 	if resolvedCfg.budget.ContextReserveTokens > 0 {
 		generator.MaxTokens = resolvedCfg.budget.ContextReserveTokens
 	}
-	pack, err := generator.Generate(cfg.Question, "", cacheCfg)
+	pack, err := generator.Generate(ctx, cfg.Question, "", cacheCfg)
 	if err != nil {
 		return nil, fmt.Errorf("generate context pack: %w", err)
 	}
@@ -1056,7 +1056,7 @@ func (m *EnsembleManager) ResumeRun(ctx context.Context, store *CheckpointStore,
 		var activeAssignments []ModeAssignment
 		injectErrors := make(map[string]string)
 		if len(injectTargets) > 1 {
-			batchRes, batchErr := injector.InjectEnsemble(injectTargets, meta.Question, catalog, contextPack, tokenCap)
+			batchRes, batchErr := injector.InjectEnsemble(ctx, injectTargets, meta.Question, catalog, contextPack, tokenCap)
 			for i, a := range assignments {
 				if batchRes != nil && i < len(batchRes.Results) && batchRes.Results[i].Success {
 					a.Status = AssignmentActive
@@ -1073,6 +1073,7 @@ func (m *EnsembleManager) ResumeRun(ctx context.Context, store *CheckpointStore,
 			}
 		} else if len(injectTargets) == 1 {
 			injRes, injErr := injector.InjectWithMode(
+				ctx,
 				injectTargets[0].PaneName,
 				resolvedModes[0],
 				meta.Question,
@@ -1359,6 +1360,7 @@ func (m *EnsembleManager) RerunMode(ctx context.Context, store *CheckpointStore,
 	}
 
 	injRes, injErr := m.ensembleInjector().InjectWithMode(
+		ctx,
 		paneTarget,
 		mode,
 		meta.Question,
@@ -1531,7 +1533,7 @@ func (m *EnsembleManager) loadOrBuildCheckpointContext(
 		if budgetCfg.ContextReserveTokens > 0 {
 			gen.MaxTokens = budgetCfg.ContextReserveTokens
 		}
-		generated, err := gen.Generate(meta.Question, "", resolvedCache)
+		generated, err := gen.Generate(ctx, meta.Question, "", resolvedCache)
 		if err != nil {
 			return nil, fmt.Errorf("generate context pack: %w", err)
 		}

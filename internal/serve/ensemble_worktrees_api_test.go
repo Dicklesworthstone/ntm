@@ -1102,3 +1102,79 @@ func TestAsyncJobsEnsembleSpawnAndSynthesizeValidationAndLifecycle(t *testing.T)
 		}
 	})
 }
+
+func TestAsyncEnsembleSpawnCancellationStopsRunningTmuxWork(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("NTM_CONFIG", "")
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	tmuxLog := installFakeTmux(t)
+	t.Setenv("NTM_JOB_RESTORE_BLOCK", "new-session")
+	srv, closeServer := newJournalHTTPServer(t, filepath.Join(t.TempDir(), "jobs-ensemble-cancel.db"))
+	srv.mu.Lock()
+	srv.projectDir = t.TempDir()
+	srv.mu.Unlock()
+
+	const session = "cancel-running-ensemble"
+	env := postJob(t, srv, "{\"type\":\"ensemble_spawn\",\"params\":{\"session\":\"cancel-running-ensemble\",\"question\":\"What should we investigate?\",\"modes\":[\"deductive\",\"bayesian\"]}}")
+	t.Cleanup(func() { _, _ = srv.cancelJob(env.Job.ID) })
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(os.Getenv("NTM_JOB_RESTORE_READY")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("ensemble spawn did not reach new-session: %+v", srv.jobStore.Get(env.Job.ID))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/v1/jobs/"+env.Job.ID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DELETE job status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	deadline = time.Now().Add(5 * time.Second)
+	for !srv.jobExecutor.idle() {
+		if time.Now().After(deadline) {
+			t.Fatal("cancellation changed the job row but did not stop the ensemble worker")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	final := pollJobTerminal(t, srv, env.Job.ID)
+	if JobStatus(final.Job.Status) != JobStatusCancelled {
+		t.Fatalf("cancelled ensemble status=%s error=%q", final.Job.Status, final.Job.Error)
+	}
+	if final.Job.Result["session"] != session {
+		t.Fatalf("cancelled ensemble lost its partial result: %#v", final.Job.Result)
+	}
+	if final.Job.Result["_execution_in_progress"] == true {
+		t.Fatalf("cancelled ensemble worker still appears active: %#v", final.Job.Result)
+	}
+
+	saved, err := ensemble.LoadSession(session)
+	if err != nil {
+		t.Fatalf("load interrupted ensemble: %v", err)
+	}
+	if saved.Error == "" || saved.Status == ensemble.EnsembleActive || saved.Status == ensemble.EnsembleSpawning {
+		t.Fatalf("interrupted ensemble lost its failure state: %+v", saved)
+	}
+
+	closeServer()
+	calls, err := os.ReadFile(tmuxLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(calls), "new-session") != 1 {
+		t.Fatalf("expected exactly one attempted session creation, got:\n%s", calls)
+	}
+	for _, command := range []string{"split-window", "send-keys", "kill-session"} {
+		if strings.Contains(string(calls), command) {
+			t.Fatalf("cancelled ensemble continued with %s:\n%s", command, calls)
+		}
+	}
+}

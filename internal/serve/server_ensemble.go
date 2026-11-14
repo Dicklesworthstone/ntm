@@ -594,15 +594,7 @@ func (s *Server) executeEnsembleSpawn(ctx context.Context, req EnsembleSpawnRequ
 		ProjectDir:    projectDir,
 	}
 
-	out, err := robot.GetEnsembleSpawn(opts, &cfgCopy)
-	if err != nil {
-		return nil, &ensembleExecError{
-			status:  http.StatusInternalServerError,
-			code:    ErrCodeInternalError,
-			message: err.Error(),
-			cause:   err,
-		}
-	}
+	out, spawnErr := robot.GetEnsembleSpawn(ctx, opts, &cfgCopy)
 	payload, encodeErr := toJSONMap(out)
 	if encodeErr != nil {
 		return nil, &ensembleExecError{
@@ -613,7 +605,15 @@ func (s *Server) executeEnsembleSpawn(ctx context.Context, req EnsembleSpawnRequ
 		}
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return payload, ctxErr
+		return payload, errors.Join(spawnErr, ctxErr)
+	}
+	if spawnErr != nil {
+		return payload, &ensembleExecError{
+			status:  http.StatusInternalServerError,
+			code:    ErrCodeInternalError,
+			message: spawnErr.Error(),
+			cause:   spawnErr,
+		}
 	}
 	if !out.Success {
 		return payload, ensembleExecErrorFromRobot(out.RobotResponse)

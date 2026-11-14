@@ -92,7 +92,13 @@ type ModeAlternative struct {
 }
 
 // Estimate computes token usage and budget fit for the provided input.
-func (e *Estimator) Estimate(_ context.Context, input EstimateInput, opts EstimateOptions) (*EnsembleEstimate, error) {
+func (e *Estimator) Estimate(ctx context.Context, input EstimateInput, opts EstimateOptions) (*EnsembleEstimate, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if e == nil || e.Catalog == nil {
 		return nil, fmt.Errorf("mode catalog is nil")
 	}
@@ -135,10 +141,13 @@ func (e *Estimator) Estimate(_ context.Context, input EstimateInput, opts Estima
 		}
 		generator := NewContextPackGenerator(projectDir, cache, logger)
 		generator.MaxTokens = budget.ContextReserveTokens
-		if generated, genErr := generator.Generate(question, "", cacheCfg); genErr == nil {
+		if generated, genErr := generator.Generate(ctx, question, "", cacheCfg); genErr == nil {
 			pack = generated
 		} else {
 			logger.Warn("context pack generation failed", "error", genErr)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 	}
 	if pack != nil && budget.ContextReserveTokens > 0 {

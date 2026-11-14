@@ -409,7 +409,7 @@ func dispatchRobotInspectionAndOps(cmd *cobra.Command, args []string) bool {
 			NoCache:       robotEnsembleNoCache,
 			ProjectDir:    robotEnsembleProject,
 		}
-		if err := robot.PrintEnsembleSpawn(opts, cfg); err != nil {
+		if err := robot.PrintEnsembleSpawn(cmd.Context(), opts, cfg); err != nil {
 			recordRobotProcessExit(err)
 		}
 		return true

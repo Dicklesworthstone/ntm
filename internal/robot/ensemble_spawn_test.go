@@ -1,6 +1,10 @@
 package robot
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
+)
 
 func TestNormalizeEnsembleAgentType_Aliases(t *testing.T) {
 
@@ -58,5 +62,29 @@ func TestParseEnsembleAgentMix_AcceptsSharedAliases(t *testing.T) {
 	}
 	if mix["windsurf"] != 1 {
 		t.Fatalf("windsurf count = %d, want 1", mix["windsurf"])
+	}
+}
+
+func TestGetEnsembleSpawn_CancelledBeforeTmuxInspection(t *testing.T) {
+	t.Setenv("NTM_TMUX_BINARY", t.TempDir()+"/missing-tmux")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	output, err := GetEnsembleSpawn(ctx, EnsembleSpawnOptions{
+		Session:  "cancelled-ensemble",
+		Question: "What should we analyze?",
+		Modes:    "deductive,abductive",
+	}, nil)
+	if err != nil {
+		t.Fatalf("GetEnsembleSpawn returned Go error: %v", err)
+	}
+	if output == nil {
+		t.Fatal("expected cancellation envelope")
+	}
+	if output.Success || output.ErrorCode != ErrCodeTimeout || !strings.Contains(output.Error, context.Canceled.Error()) {
+		t.Fatalf("expected cancellation envelope, got %+v", output)
+	}
+	if output.Modes == nil || len(output.Modes) != 0 || output.Status != "" {
+		t.Fatalf("cancelled spawn reported created panes: %+v", output)
 	}
 }
