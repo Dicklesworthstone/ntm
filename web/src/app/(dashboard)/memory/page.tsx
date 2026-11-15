@@ -20,6 +20,7 @@ import {
   formatApiErrorMessage,
   type ApiEnvelope,
 } from "@/lib/api/client";
+import { MemoryWorkbenchPanel } from "@/components/memory/MemoryWorkbenchPanel";
 
 interface MemoryDaemonStatusResponse extends ApiEnvelope {
   installed: boolean;
@@ -431,7 +432,14 @@ export default function MemoryPage() {
               <option value="claude">Claude (claude)</option>
               <option value="codex">Codex (codex)</option>
               <option value="gemini">Gemini (gemini)</option>
+              <option value="antigravity">Antigravity (antigravity)</option>
               <option value="cursor">Cursor (cursor)</option>
+              <option value="windsurf">Windsurf (windsurf)</option>
+              <option value="aider">Aider (aider)</option>
+              <option value="ollama">Ollama (ollama)</option>
+              <option value="opencode">OpenCode (opencode)</option>
+              <option value="copilot">GitHub Copilot (copilot)</option>
+              <option value="pi">Pi Agent (pi)</option>
             </select>
           </div>
 
@@ -535,6 +543,11 @@ export default function MemoryPage() {
           </div>
         )}
       </section>
+
+      <MemoryWorkbenchPanel
+        onApplySuggestedQuery={(query) => setSearchInput(query)}
+        onNotice={(next) => setNotice(next)}
+      />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <RuleList

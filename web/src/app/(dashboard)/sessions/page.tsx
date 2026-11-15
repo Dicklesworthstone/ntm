@@ -26,6 +26,7 @@ import {
   type ConnectionState,
 } from "@/lib/ws/client";
 import { SessionHandoffsPanel } from "@/components/sessions/SessionHandoffsPanel";
+import { SessionRollbackAndArchivePanel } from "@/components/sessions/SessionRollbackAndArchivePanel";
 
 interface Session {
   name: string;
@@ -901,6 +902,7 @@ function SessionCheckpointsSection({
   const checkpoints = checkpointsQuery.data?.checkpoints ?? [];
 
   return (
+    <>
     <section className="rounded-lg border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-800 space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div>
@@ -1132,6 +1134,14 @@ function SessionCheckpointsSection({
         </div>
       )}
     </section>
+
+    <SessionRollbackAndArchivePanel
+      sessionId={sessionId}
+      encodedSessionId={encodedSessionId}
+      checkpoints={checkpoints}
+      onNotice={onNotice}
+    />
+    </>
   );
 }
 

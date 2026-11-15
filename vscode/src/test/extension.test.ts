@@ -13,6 +13,7 @@ import {
     buildWebCockpitCommand,
     DEFAULT_WEB_PORT,
     mapBackpressureLevel,
+    normalizeAnalyticsResult,
     normalizeBackpressure,
     normalizeEnsembleSynthesize,
     normalizeHandoffResult,
@@ -45,6 +46,7 @@ import {
 import { NtmSessionTreeProvider, NtmTreeItem } from '../sessionTreeView';
 import {
     activate,
+    ANALYTICS_WINDOW_OPTIONS,
     attentionSeverityIcon,
     backpressureLevelIcon,
     buildAttentionActionQuickPickItems,
@@ -57,6 +59,7 @@ import {
     buildWorktreeQuickPickItems,
     defaultEnsembleSessionName,
     ENSEMBLE_SYNTHESIS_STRATEGY_OPTIONS,
+    formatAnalyticsMarkdown,
     formatHandoffMarkdown,
     HANDOFF_MODE_OPTIONS,
     PALETTE_ACTION_OPTIONS,
@@ -2324,6 +2327,174 @@ describe('Wave 9: VSCode ntm.triageIncidents & ntm.handoffSession', () => {
             assert.deepEqual(mockState.openedExternalUris, [
                 'http://127.0.0.1:7337/sessions?session=ntm-prod',
             ]);
+        } finally {
+            for (const sub of subscriptions) {
+                sub.dispose();
+            }
+        }
+    });
+});
+
+const REAL_ANALYTICS_PAYLOAD = {
+    success: true,
+    timestamp: '2026-11-15T10:30:00Z',
+    schema_id: 'ntm:robot:analytics:v1',
+    schema_version: '1.0.0',
+    period: 'Last 30 days',
+    since: '2026-10-16',
+    days: 30,
+    total_sessions: 4,
+    total_agents: 11,
+    total_prompts: 27,
+    total_chars_sent: 18400,
+    total_tokens_estimated: 5200,
+    agent_breakdown: {
+        claude: { count: 4, prompts: 12, chars_sent: 8200, tokens_estimated: 2300 },
+        antigravity: { count: 3, prompts: 9, chars_sent: 6100, tokens_estimated: 1750 },
+        oc: { count: 2, prompts: 4, chars_sent: 2900, tokens_estimated: 810 },
+        ollama: { count: 2, prompts: 2, chars_sent: 1200, tokens_estimated: 340 },
+    },
+    sessions: [
+        {
+            name: 'wave10-swarm',
+            created_at: '2026-11-15T09:00:00Z',
+            agent_count: 5,
+            prompt_count: 14,
+        },
+    ],
+    error_count: 2,
+    error_types: { rate_limit: 2 },
+    agent_crashes: 1,
+    agent_restarts: 1,
+};
+
+describe('Swarm & Harness Analytics Contracts and Commands', () => {
+    beforeEach(() => {
+        resetVscodeMock();
+    });
+
+    it('serializes --robot-analytics flags, normalizes multi-harness stats, formats Markdown, and maintains manifest parity', async () => {
+        const calls: string[][] = [];
+        const client = new NtmClient({
+            execFile: async (_file, args) => {
+                calls.push(args);
+                if (args.includes('--robot-analytics')) {
+                    return { stdout: JSON.stringify(REAL_ANALYTICS_PAYLOAD), stderr: '' };
+                }
+                throw new Error(`unexpected args: ${args.join(' ')}`);
+            },
+        });
+
+        const byDays = await client.getAnalytics({ days: 30, sessions: true });
+        assert.deepEqual(calls[0], [
+            '--robot-analytics',
+            '--analytics-days=30',
+            '--analytics-sessions',
+            '--robot-format=json',
+        ]);
+        assert.equal(byDays.total_sessions, 4);
+        assert.equal(byDays.total_agents, 11);
+        assert.equal(byDays.agent_breakdown.antigravity.tokens_estimated, 1750);
+        assert.equal(byDays.agent_breakdown.oc.prompts, 4);
+        assert.equal(byDays.agent_crashes, 1);
+        assert.equal(byDays.agent_restarts, 1);
+        assert.equal(byDays.sessions.length, 1);
+        assert.equal(byDays.sessions[0].name, 'wave10-swarm');
+
+        await client.getAnalytics({ since: '2026-11-01', sessions: true });
+        assert.deepEqual(calls[1], [
+            '--robot-analytics',
+            '--analytics-since=2026-11-01',
+            '--analytics-sessions',
+            '--robot-format=json',
+        ]);
+
+        await assert.rejects(
+            () => client.getAnalytics({ days: -1 }),
+            /Analytics days must be a non-negative integer/
+        );
+        assert.throws(
+            () => normalizeAnalyticsResult({ success: false, error: 'invalid --analytics-since date' }),
+            /invalid --analytics-since date/
+        );
+
+        const md = formatAnalyticsMarkdown(byDays);
+        assert.ok(md.includes('# NTM Swarm & Harness Analytics (Last 30 days)'));
+        assert.ok(md.includes('| `claude` | 4 | 12 | 8200 | 2300 |'));
+        assert.ok(md.includes('| `antigravity` | 3 | 9 | 6100 | 1750 |'));
+        assert.ok(md.includes('| `oc` | 2 | 4 | 2900 | 810 |'));
+        assert.ok(md.includes('`rate_limit`: 2'));
+        assert.ok(md.includes('**wave10-swarm** — 5 agents · 14 prompts'));
+        assert.equal(ANALYTICS_WINDOW_OPTIONS.length, 5);
+
+        const pkgPath = path.resolve(__dirname, '../../package.json');
+        const pkgJson = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        const activationEvents: string[] = pkgJson.activationEvents ?? [];
+        assert.ok(activationEvents.includes('onCommand:ntm.showAnalytics'));
+        assert.ok(PALETTE_ACTION_OPTIONS.some(p => p.command === 'ntm.showAnalytics'));
+    });
+
+    it('executes ntm.showAnalytics across preset windows, custom since date, and Web Cockpit /analytics routing', async () => {
+        mockState.binaryPath = '/opt/ntm/bin/ntm';
+        mockState.webPort = 7337;
+        const seenArgs: string[][] = [];
+
+        const client = new NtmClient({
+            execFile: async (_file, args) => {
+                seenArgs.push(args);
+                if (args.includes('--robot-analytics')) {
+                    return { stdout: JSON.stringify(REAL_ANALYTICS_PAYLOAD), stderr: '' };
+                }
+                return { stdout: JSON.stringify(REAL_SNAPSHOT_PAYLOAD), stderr: '' };
+            },
+        });
+
+        const subscriptions: Array<{ dispose(): void }> = [];
+        const context = {
+            subscriptions,
+            extensionUri: vscode.Uri.file('/ext'),
+        } as unknown as vscode.ExtensionContext;
+
+        activate(context, client);
+        try {
+            // 1. Run Last 7 Days report and click "Open /analytics in Web Cockpit"
+            mockState.quickPickQueue.push(
+                (items: Array<{ mode: string; days?: number }>) =>
+                    items.find(i => i.mode === 'window' && i.days === 7)
+            );
+            mockState.infoMessageActionQueue.push('Open /analytics in Web Cockpit');
+
+            await vscode.commands.executeCommand('ntm.showAnalytics');
+            assert.ok(
+                seenArgs.some(
+                    a =>
+                        a.includes('--robot-analytics') &&
+                        a.includes('--analytics-days=7') &&
+                        a.includes('--analytics-sessions')
+                )
+            );
+            assert.equal(mockState.openedTextDocuments.length, 1);
+            assert.ok(mockState.openedTextDocuments[0].content.includes('`antigravity`'));
+            assert.deepEqual(mockState.openedExternalUris, ['http://127.0.0.1:7337/analytics']);
+
+            // 2. Run custom Since cutoff via ntm.openPalette -> showAnalytics
+            mockState.quickPickQueue.push(
+                (options: Array<{ actionId: string }>) =>
+                    options.find(o => o.actionId === 'showAnalytics'),
+                (items: Array<{ mode: string }>) => items.find(i => i.mode === 'customSince')
+            );
+            mockState.inputBoxQueue.push('2026-11-01');
+
+            await vscode.commands.executeCommand('ntm.openPalette');
+            assert.ok(
+                seenArgs.some(
+                    a =>
+                        a.includes('--robot-analytics') &&
+                        a.includes('--analytics-since=2026-11-01') &&
+                        a.includes('--analytics-sessions')
+                )
+            );
+            assert.equal(mockState.openedTextDocuments.length, 2);
         } finally {
             for (const sub of subscriptions) {
                 sub.dispose();

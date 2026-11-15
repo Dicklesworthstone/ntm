@@ -1034,6 +1034,19 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 				TruncationBehavior: "Recent handoffs capped by --handoff-limit (default 10)",
 			},
 		},
+		"analytics": {
+			SchemaID:   "ntm:robot:analytics:v1",
+			SchemaType: "analytics",
+			Sections:   []string{"summary", "sessions", "next_actions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Inspect aggregated multi-harness session, prompt, token, crash, restart, and error analytics from event history",
+				SummaryHint: "Read total_sessions, total_agents, agent_breakdown, error_types, agent_crashes, and agent_restarts; pass --analytics-sessions for per-session breakdown",
+			},
+			Boundedness: &BoundednessInfo{
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded to events within --analytics-days (default 30) or --analytics-since window",
+			},
+		},
 	}
 }
 

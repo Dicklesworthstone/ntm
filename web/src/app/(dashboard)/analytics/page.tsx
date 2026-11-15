@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api/client";
+import { EventAnalyticsPanel } from "@/components/analytics/EventAnalyticsPanel";
 
 // Types based on REST API
 interface SessionMetrics {
@@ -261,9 +262,14 @@ export default function AnalyticsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-100">Analytics</h1>
-          <p className="text-sm text-gray-400">Live session inventory and reservation pressure</p>
+          <p className="text-sm text-gray-400">
+            Multi-harness event telemetry, live session inventory, and reservation pressure
+          </p>
         </div>
       </div>
+
+      {/* Historical Event Telemetry & Multi-Harness Breakdown */}
+      <EventAnalyticsPanel />
 
       {connectionError && (
         <div className="rounded-lg border border-red-800 bg-red-900/20 p-4">

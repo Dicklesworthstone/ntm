@@ -299,6 +299,12 @@ var (
 	robotTokensSession string // filter to session
 	robotTokensAgent   string // filter to agent type
 
+	// Robot-analytics flags for multi-harness event analytics
+	robotAnalytics         bool   // event analytics output
+	robotAnalyticsDays     int    // number of days of event history
+	robotAnalyticsSince    string // cutoff date (YYYY-MM-DD or RFC3339)
+	robotAnalyticsSessions bool   // include per-session breakdown
+
 	// Robot-history flags for command history tracking
 	robotHistory      string // session name for history query
 	robotHistoryPane  string // filter by pane ID
@@ -1001,6 +1007,12 @@ func registerRobotFlags() {
 	rootCmd.Flags().StringVar(&robotTokensSession, "tokens-session", "", "Filter to session. Optional with --robot-tokens. Example: --tokens-session=myproject")
 	rootCmd.Flags().StringVar(&robotTokensAgent, "tokens-agent", "", "Filter to agent type. Optional with --robot-tokens. Example: --tokens-agent=claude")
 
+	// Robot-analytics flags for multi-harness event analytics
+	rootCmd.Flags().BoolVar(&robotAnalytics, "robot-analytics", false, "Get aggregated session, harness, prompt, token, and error analytics")
+	rootCmd.Flags().IntVar(&robotAnalyticsDays, "analytics-days", 30, "Number of days of event history for --robot-analytics")
+	rootCmd.Flags().StringVar(&robotAnalyticsSince, "analytics-since", "", "Cutoff date (YYYY-MM-DD or RFC3339) for --robot-analytics")
+	rootCmd.Flags().BoolVar(&robotAnalyticsSessions, "analytics-sessions", false, "Include per-session breakdown in --robot-analytics")
+
 	// Robot-history flags for command history tracking
 	rootCmd.Flags().StringVar(&robotHistory, "robot-history", "", "Get command history for a session (JSON). Required: SESSION. Example: ntm --robot-history=myproject")
 	rootCmd.Flags().StringVar(&robotHistoryPane, "history-pane", "", "Filter by pane ID. Optional with --robot-history. Example: --history-pane=0.1")
@@ -1586,6 +1598,10 @@ func resolveRobotHistorySince(cmd *cobra.Command) string {
 
 func resolveRobotTokensSince(cmd *cobra.Command) string {
 	return resolveRobotSharedFlag(cmd, "tokens-since", robotTokensSince, "since", robotSince)
+}
+
+func resolveRobotAnalyticsSince(cmd *cobra.Command) string {
+	return resolveRobotSharedFlag(cmd, "analytics-since", robotAnalyticsSince, "since", robotSince)
 }
 
 func resolveRobotWaitType(cmd *cobra.Command) string {

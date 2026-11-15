@@ -328,6 +328,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/analytics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get analytics
+         * @description Served route `GET /api/v1/analytics`. Handler: `handleGetAnalyticsV1`. Response shape reflected from Go type `AnalyticsEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_analytics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/approvals/": {
         parameters: {
             query?: never;
@@ -4416,6 +4436,45 @@ export interface components {
             timestamp: string;
             /** @description Version */
             version?: string;
+        };
+        AnalyticsAgentStats: {
+            chars_sent: number;
+            count: number;
+            prompts: number;
+            tokens_estimated: number;
+        };
+        AnalyticsEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            agent_breakdown: {
+                [key: string]: components["schemas"]["AnalyticsAgentStats"];
+            };
+            agent_crashes: number;
+            agent_restarts: number;
+            days?: number;
+            error_count: number;
+            error_types: {
+                [key: string]: number;
+            };
+            period: string;
+            request_id?: string;
+            schema_id: string;
+            schema_version: string;
+            sessions?: components["schemas"]["AnalyticsSessionSummary"][];
+            since: string;
+            success: boolean;
+            timestamp: string;
+            total_agents: number;
+            total_chars_sent: number;
+            total_prompts: number;
+            total_sessions: number;
+            total_tokens_estimated: number;
+        };
+        AnalyticsSessionSummary: {
+            agent_count: number;
+            /** Format: date-time */
+            created_at: string;
+            name: string;
+            prompt_count: number;
         };
         Approval: {
             action: string;
@@ -12582,6 +12641,62 @@ export interface operations {
             };
             /** @description Not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_analytics: {
+        parameters: {
+            query?: {
+                /** @description Lookback window in days when 'since' is omitted (default 30). */
+                days?: number;
+                /** @description Explicit cutoff date in YYYY-MM-DD or RFC3339 format. */
+                since?: string;
+                /** @description Include per-session activity breakdown when true. */
+                sessions?: boolean;
+                /** @description Response format: 'json' (default) or 'prometheus' (text/plain exposition). */
+                format?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalyticsEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };

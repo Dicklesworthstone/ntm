@@ -939,6 +939,22 @@ func buildCommandRegistry() []RobotCommandInfo {
 				"ntm --robot-handoff=myproject --handoff-create --handoff-auto",
 			},
 		},
+		{
+			Name:        "analytics",
+			Flag:        "--robot-analytics",
+			Category:    "state",
+			Description: "Get aggregated session, harness, prompt, token, and error analytics.",
+			Parameters: []RobotParameter{
+				{Name: "analytics-days", Flag: "--analytics-days", Type: "int", Required: false, Default: "30", Description: "Number of days of event history for --robot-analytics"},
+				{Name: "analytics-since", Flag: "--analytics-since", Type: "string", Required: false, Description: "Cutoff date (YYYY-MM-DD or RFC3339) for --robot-analytics"},
+				{Name: "analytics-sessions", Flag: "--analytics-sessions", Type: "bool", Required: false, Default: "false", Description: "Include per-session breakdown in --robot-analytics"},
+			},
+			Examples: []string{
+				"ntm --robot-analytics",
+				"ntm --robot-analytics --analytics-days=7 --analytics-sessions",
+				"ntm --robot-analytics --analytics-since=2026-01-01",
+			},
+		},
 
 		// === ATTENTION FEED (Operator Loop) ===
 		{

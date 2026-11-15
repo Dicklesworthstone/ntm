@@ -1037,6 +1037,92 @@
         }
       }
     },
+    "/api/v1/analytics": {
+      "get": {
+        "tags": [
+          "analytics"
+        ],
+        "summary": "Get analytics",
+        "description": "Served route `GET /api/v1/analytics`. Handler: `handleGetAnalyticsV1`. Response shape reflected from Go type `AnalyticsEnvelopeResponse`.",
+        "operationId": "get_api_v1_analytics",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "description": "Lookback window in days when 'since' is omitted (default 30).",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Explicit cutoff date in YYYY-MM-DD or RFC3339 format.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sessions",
+            "in": "query",
+            "description": "Include per-session activity breakdown when true.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "Response format: 'json' (default) or 'prometheus' (text/plain exposition).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyticsEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/approvals/": {
       "get": {
         "tags": [
@@ -16519,6 +16605,145 @@
           "enabled",
           "active",
           "summary"
+        ]
+      },
+      "AnalyticsAgentStats": {
+        "type": "object",
+        "properties": {
+          "chars_sent": {
+            "type": "integer"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "prompts": {
+            "type": "integer"
+          },
+          "tokens_estimated": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "chars_sent",
+          "count",
+          "prompts",
+          "tokens_estimated"
+        ]
+      },
+      "AnalyticsEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "agent_breakdown": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AnalyticsAgentStats"
+            }
+          },
+          "agent_crashes": {
+            "type": "integer"
+          },
+          "agent_restarts": {
+            "type": "integer"
+          },
+          "days": {
+            "type": "integer"
+          },
+          "error_count": {
+            "type": "integer"
+          },
+          "error_types": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "period": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AnalyticsSessionSummary"
+            }
+          },
+          "since": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "total_agents": {
+            "type": "integer"
+          },
+          "total_chars_sent": {
+            "type": "integer"
+          },
+          "total_prompts": {
+            "type": "integer"
+          },
+          "total_sessions": {
+            "type": "integer"
+          },
+          "total_tokens_estimated": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_breakdown",
+          "agent_crashes",
+          "agent_restarts",
+          "error_count",
+          "error_types",
+          "period",
+          "schema_id",
+          "schema_version",
+          "since",
+          "success",
+          "timestamp",
+          "total_agents",
+          "total_chars_sent",
+          "total_prompts",
+          "total_sessions",
+          "total_tokens_estimated"
+        ]
+      },
+      "AnalyticsSessionSummary": {
+        "type": "object",
+        "properties": {
+          "agent_count": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prompt_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_count",
+          "created_at",
+          "name",
+          "prompt_count"
         ]
       },
       "Approval": {
@@ -38696,6 +38921,10 @@
     {
       "name": "accounts",
       "description": "Operations related to accounts"
+    },
+    {
+      "name": "analytics",
+      "description": "Operations related to analytics"
     },
     {
       "name": "approvals",

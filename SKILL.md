@@ -257,6 +257,9 @@ ntm --robot-cancel-request=deploy-42
 ntm --robot-handoff=myproject
 ntm --robot-handoff=myproject --handoff-create --handoff-goal="Implemented auth" --handoff-now="Run E2E suite"
 ntm --robot-handoff=myproject --handoff-create --handoff-auto
+ntm --robot-analytics
+ntm --robot-analytics --analytics-days=7 --analytics-sessions
+ntm --robot-analytics --analytics-since=2026-01-01
 ```
 
 `--spawn-prompt` (or `--spawn-prompt-file`) waits for readiness, then reaches

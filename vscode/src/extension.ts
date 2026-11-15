@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import {
     AgentInfo,
+    AnalyticsResult,
     AttentionItem,
     AttentionMutationAction,
     BackpressureLevel,
@@ -132,6 +133,7 @@ export interface PaletteActionQuickPickItem extends vscode.QuickPickItem {
         | 'triageAttention'
         | 'triageIncidents'
         | 'handoffSession'
+        | 'showAnalytics'
         | 'openWebCockpit'
         | 'showBackpressure'
         | 'manageWorktrees'
@@ -182,6 +184,13 @@ export const PALETTE_ACTION_OPTIONS: readonly PaletteActionQuickPickItem[] = [
         detail: 'Inspect latest Goal/Now handoff quality report or persist manual/auto handoff',
         actionId: 'handoffSession',
         command: 'ntm.handoffSession',
+    },
+    {
+        label: '$(graph) Show Swarm & Harness Analytics',
+        description: 'NTM: Show Swarm & Harness Analytics',
+        detail: 'Inspect multi-harness spawns, prompts, token estimates, crashes, and session activity',
+        actionId: 'showAnalytics',
+        command: 'ntm.showAnalytics',
     },
     {
         label: '$(pulse) Show Swarm Backpressure',
@@ -565,6 +574,109 @@ export function formatHandoffMarkdown(res: HandoffResult): string {
             lines.push(`- \`${h.date}\` **${h.session}**${autoTag}: ${h.goal || h.path}`);
         }
     }
+    lines.push('');
+    return lines.join('\n');
+}
+
+export interface AnalyticsWindowQuickPickItem extends vscode.QuickPickItem {
+    mode: 'window' | 'customSince' | 'openAnalyticsCockpit';
+    days?: number;
+}
+
+export const ANALYTICS_WINDOW_OPTIONS: readonly AnalyticsWindowQuickPickItem[] = [
+    {
+        label: '$(graph) Last 7 Days',
+        description: '--analytics-days=7 --analytics-sessions',
+        detail: 'Inspect recent multi-harness spawns, prompts, token volume, crashes, and sessions',
+        mode: 'window',
+        days: 7,
+    },
+    {
+        label: '$(calendar) Last 30 Days',
+        description: '--analytics-days=30 --analytics-sessions',
+        detail: 'Monthly swarm & harness activity report across all coding agents',
+        mode: 'window',
+        days: 30,
+    },
+    {
+        label: '$(history) Last 90 Days',
+        description: '--analytics-days=90 --analytics-sessions',
+        detail: 'Quarterly multi-harness utilization and error summary',
+        mode: 'window',
+        days: 90,
+    },
+    {
+        label: '$(filter) Since Specific Date (YYYY-MM-DD)...',
+        description: '--analytics-since=<date> --analytics-sessions',
+        detail: 'Aggregate event telemetry from an explicit YYYY-MM-DD or RFC3339 cutoff',
+        mode: 'customSince',
+    },
+    {
+        label: '$(globe) Open /analytics in Web Cockpit',
+        description: 'Web Cockpit (/analytics)',
+        detail: 'Open interactive multi-harness charts and Prometheus preview in browser',
+        mode: 'openAnalyticsCockpit',
+    },
+];
+
+export function formatAnalyticsMarkdown(res: AnalyticsResult): string {
+    const lines: string[] = [
+        `# NTM Swarm & Harness Analytics (${res.period})`,
+        '',
+        `- **Since:** ${res.since || '—'}`,
+        `- **Total Sessions:** ${res.total_sessions}`,
+        `- **Total Agents Spawned:** ${res.total_agents}`,
+        `- **Total Prompts Sent:** ${res.total_prompts} (${res.total_chars_sent} chars)`,
+        `- **Estimated Tokens:** ${res.total_tokens_estimated}`,
+        `- **Agent Crashes / Restarts:** ${res.agent_crashes} crashes · ${res.agent_restarts} restarts`,
+        `- **Errors:** ${res.error_count}`,
+    ];
+
+    const harnessEntries = Object.entries(res.agent_breakdown).sort((a, b) => {
+        if (b[1].tokens_estimated !== a[1].tokens_estimated) {
+            return b[1].tokens_estimated - a[1].tokens_estimated;
+        }
+        if (b[1].prompts !== a[1].prompts) {
+            return b[1].prompts - a[1].prompts;
+        }
+        if (b[1].count !== a[1].count) {
+            return b[1].count - a[1].count;
+        }
+        return a[0].localeCompare(b[0]);
+    });
+
+    lines.push('', '## Multi-Harness Breakdown', '');
+    if (harnessEntries.length === 0) {
+        lines.push('No harness activity recorded in this window.');
+    } else {
+        lines.push('| Harness | Agents | Prompts | Chars Sent | Est. Tokens |');
+        lines.push('|---|---:|---:|---:|---:|');
+        for (const [harness, st] of harnessEntries) {
+            lines.push(
+                `| \`${harness}\` | ${st.count} | ${st.prompts} | ${st.chars_sent} | ${st.tokens_estimated} |`
+            );
+        }
+    }
+
+    const errorEntries = Object.entries(res.error_types).sort(
+        (a, b) => b[1] - a[1] || a[0].localeCompare(b[0])
+    );
+    if (errorEntries.length > 0) {
+        lines.push('', '## Error Breakdown', '');
+        for (const [errType, count] of errorEntries) {
+            lines.push(`- \`${errType}\`: ${count}`);
+        }
+    }
+
+    if (res.sessions.length > 0) {
+        lines.push('', '## Session Activity', '');
+        for (const s of res.sessions) {
+            lines.push(
+                `- **${s.name}** — ${s.agent_count} agents · ${s.prompt_count} prompts${s.created_at ? ` (${s.created_at})` : ''}`
+            );
+        }
+    }
+
     lines.push('');
     return lines.join('\n');
 }
@@ -1689,6 +1801,54 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
         }
     );
 
+    const dispShowAnalytics = vscode.commands.registerCommand('ntm.showAnalytics', async () => {
+        try {
+            const windowPick = await vscode.window.showQuickPick(ANALYTICS_WINDOW_OPTIONS, {
+                placeHolder: 'Select NTM analytics reporting window',
+            });
+            if (!windowPick) {
+                return;
+            }
+            if (windowPick.mode === 'openAnalyticsCockpit') {
+                await openWebCockpitRoute('/analytics');
+                return;
+            }
+
+            let since: string | undefined;
+            if (windowPick.mode === 'customSince') {
+                const rawSince = await vscode.window.showInputBox({
+                    prompt: 'Start date for NTM analytics (YYYY-MM-DD or RFC3339)',
+                    placeHolder: 'e.g. 2026-11-01',
+                });
+                const trimmedSince = (rawSince ?? '').trim();
+                if (!trimmedSince) {
+                    return;
+                }
+                since = trimmedSince;
+            }
+
+            const res = await client.getAnalytics({
+                days: since ? undefined : (windowPick.days ?? 30),
+                since,
+                sessions: true,
+            });
+            const doc = await vscode.workspace.openTextDocument({
+                content: formatAnalyticsMarkdown(res),
+                language: 'markdown',
+            });
+            await vscode.window.showTextDocument(doc);
+            const nextBtn = await vscode.window.showInformationMessage(
+                `Loaded NTM analytics (${res.period}: ${res.total_sessions} sessions, ${res.total_agents} agents, ${res.total_prompts} prompts)`,
+                'Open /analytics in Web Cockpit'
+            );
+            if (nextBtn === 'Open /analytics in Web Cockpit') {
+                await openWebCockpitRoute('/analytics');
+            }
+        } catch (e) {
+            vscode.window.showErrorMessage(`Analytics query failed: ${e}`);
+        }
+    });
+
     context.subscriptions.push(
         dispStatus,
         dispSpawn,
@@ -1697,6 +1857,7 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
         dispTriageAttention,
         dispTriageIncidents,
         dispHandoffSession,
+        dispShowAnalytics,
         dispOpenWebCockpit,
         dispShowBackpressure,
         dispManageWorktrees,

@@ -1217,6 +1217,18 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 		Request:    CreateHandoffRequest{},
 		RequestReq: true,
 	},
+
+	// Event Analytics & Multi-Harness Telemetry REST API
+	"handleGetAnalyticsV1": {
+		Response: AnalyticsEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "days", Type: "integer", Description: "Lookback window in days when 'since' is omitted (default 30)."},
+			{Name: "since", Type: "string", Description: "Explicit cutoff date in YYYY-MM-DD or RFC3339 format."},
+			{Name: "sessions", Type: "boolean", Description: "Include per-session activity breakdown when true."},
+			{Name: "format", Type: "string", Description: "Response format: 'json' (default) or 'prometheus' (text/plain exposition)."},
+		},
+	},
 }
 
 func lookupServedRouteSchema(rt RouterRoute) (routeSchemaSpec, bool) {

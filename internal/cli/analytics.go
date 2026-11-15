@@ -1,49 +1,19 @@
 package cli
 
 import (
+	"context"
 	"encoding/csv"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
-
-// AnalyticsStats holds aggregated analytics data.
-type AnalyticsStats struct {
-	Period         string                `json:"period"`
-	TotalSessions  int                   `json:"total_sessions"`
-	TotalAgents    int                   `json:"total_agents"`
-	TotalPrompts   int                   `json:"total_prompts"`
-	TotalCharsSent int                   `json:"total_chars_sent"`
-	TotalTokensEst int                   `json:"total_tokens_estimated"`
-	AgentBreakdown map[string]AgentStats `json:"agent_breakdown"`
-	SessionDetails []SessionSummary      `json:"sessions,omitempty"`
-	ErrorCount     int                   `json:"error_count"`
-	ErrorTypes     map[string]int        `json:"error_types,omitempty"`
-}
-
-// AgentStats holds per-agent-type statistics.
-type AgentStats struct {
-	Count     int `json:"count"`
-	Prompts   int `json:"prompts"`
-	CharsSent int `json:"chars_sent"`
-	TokensEst int `json:"tokens_estimated"`
-}
-
-// SessionSummary provides details about a single session.
-type SessionSummary struct {
-	Name        string    `json:"name"`
-	CreatedAt   time.Time `json:"created_at"`
-	AgentCount  int       `json:"agent_count"`
-	PromptCount int       `json:"prompt_count"`
-}
 
 func newAnalyticsCmd() *cobra.Command {
 	var days int
@@ -58,13 +28,13 @@ func newAnalyticsCmd() *cobra.Command {
 
 Shows summary statistics including:
   - Total sessions created
-  - Agent spawn counts by type (Claude, Codex, Gemini, Grok, OMP)
-  - Prompts sent and character counts
-  - Error occurrences
+  - Agent spawn counts by harness (Claude, Codex, Gemini, Antigravity, Opencode, Grok, Cursor, Windsurf, Aider, OMP, Ollama)
+  - Prompts sent, character counts, and estimated tokens
+  - Error occurrences, agent crashes, and agent restarts
 
 Time Filtering:
   --days N      Show last N days (default: 30)
-  --since DATE  Show events since DATE (YYYY-MM-DD format)
+  --since DATE  Show events since DATE (YYYY-MM-DD or RFC3339)
 
 Output Formats:
   --format text        Human-readable output (default)
@@ -80,379 +50,99 @@ Examples:
   ntm analytics --format prometheus       # Prometheus output
   ntm analytics --sessions               # Include per-session details`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAnalytics(days, since, format, showSessions)
+			return runAnalytics(cmd.Context(), days, since, format, showSessions)
 		},
 	}
 
 	cmd.Flags().IntVar(&days, "days", 30, "show last N days of analytics")
-	cmd.Flags().StringVar(&since, "since", "", "show analytics since date (YYYY-MM-DD)")
+	cmd.Flags().StringVar(&since, "since", "", "show analytics since date (YYYY-MM-DD or RFC3339)")
 	cmd.Flags().StringVar(&format, "format", "text", "output format: text, json, csv, prometheus")
 	cmd.Flags().BoolVar(&showSessions, "sessions", false, "include per-session breakdown")
 
 	return cmd
 }
 
-func runAnalytics(days int, since, format string, showSessions bool) error {
+func runAnalytics(ctx context.Context, days int, since, format string, showSessions bool) error {
 	format = strings.ToLower(strings.TrimSpace(format))
 	if IsJSONOutput() {
 		format = "json"
 	}
 
-	// Determine the cutoff time
-	var cutoff time.Time
-	if since != "" {
-		parsed, err := time.Parse("2006-01-02", since)
-		if err != nil {
-			return fmt.Errorf("invalid --since format (expected YYYY-MM-DD): %w", err)
-		}
-		cutoff = parsed
-	} else {
-		cutoff = time.Now().AddDate(0, 0, -days)
-	}
-
-	// Read events from the log file
-	logPath := events.DefaultOptions().Path
-	eventList, err := readEvents(logPath, cutoff)
+	out, err := robot.GetAnalytics(ctx, robot.AnalyticsOptions{
+		Days:     days,
+		Since:    since,
+		Sessions: showSessions,
+	})
 	if err != nil {
-		if os.IsNotExist(err) {
-			// No events file yet - output empty stats
-			stats := AnalyticsStats{
-				Period:         fmt.Sprintf("Last %d days (no events)", days),
-				AgentBreakdown: make(map[string]AgentStats),
-				ErrorTypes:     make(map[string]int),
-			}
-			return outputStats(stats, format, showSessions)
-		}
-		return fmt.Errorf("reading events: %w", err)
+		return err
+	}
+	if !out.Success {
+		return errors.New(out.Error)
 	}
 
-	// Aggregate statistics
-	stats := aggregateStats(eventList, days, since, cutoff)
-	stats.SessionDetails = nil // Clear unless requested
-	if showSessions {
-		stats.SessionDetails = buildSessionDetails(eventList)
-	}
-
-	return outputStats(stats, format, showSessions)
-}
-
-// readEvents reads and filters events from the JSONL file using streaming.
-// It delegates to the events package so encrypted logs are decrypted for
-// display; reading the raw lines here would silently report zero events
-// whenever encryption at rest is enabled.
-func readEvents(path string, cutoff time.Time) ([]events.Event, error) {
-	return events.ReadSince(path, cutoff)
-}
-
-// aggregateStats computes statistics from event list.
-func aggregateStats(eventList []events.Event, days int, since string, cutoff time.Time) AnalyticsStats {
-	stats := AnalyticsStats{
-		AgentBreakdown: make(map[string]AgentStats),
-		ErrorTypes:     make(map[string]int),
-	}
-
-	// Set period description
-	if since != "" {
-		stats.Period = fmt.Sprintf("Since %s", since)
-	} else {
-		stats.Period = fmt.Sprintf("Last %d days", days)
-	}
-
-	// Track unique sessions
-	sessions := make(map[string]bool)
-
-	for _, event := range eventList {
-		switch event.Type {
-		case events.EventSessionCreate:
-			stats.TotalSessions++
-			sessions[event.Session] = true
-
-			// Count agents from session create data
-			if cc, ok := event.Data["claude_count"].(float64); ok {
-				stats.TotalAgents += int(cc)
-				updateAgentStats(stats.AgentBreakdown, "claude", int(cc), 0, 0, 0)
-			}
-			if cod, ok := event.Data["codex_count"].(float64); ok {
-				stats.TotalAgents += int(cod)
-				updateAgentStats(stats.AgentBreakdown, "codex", int(cod), 0, 0, 0)
-			}
-			if gmi, ok := event.Data["gemini_count"].(float64); ok {
-				stats.TotalAgents += int(gmi)
-				updateAgentStats(stats.AgentBreakdown, "gemini", int(gmi), 0, 0, 0)
-			}
-			if grok, ok := event.Data["grok_count"].(float64); ok {
-				stats.TotalAgents += int(grok)
-				updateAgentStats(stats.AgentBreakdown, "grok", int(grok), 0, 0, 0)
-			}
-			if omp, ok := event.Data["omp_count"].(float64); ok {
-				stats.TotalAgents += int(omp)
-				updateAgentStats(stats.AgentBreakdown, "omp", int(omp), 0, 0, 0)
-			}
-			if cursor, ok := event.Data["cursor_count"].(float64); ok {
-				stats.TotalAgents += int(cursor)
-				updateAgentStats(stats.AgentBreakdown, "cursor", int(cursor), 0, 0, 0)
-			}
-			if windsurf, ok := event.Data["windsurf_count"].(float64); ok {
-				stats.TotalAgents += int(windsurf)
-				updateAgentStats(stats.AgentBreakdown, "windsurf", int(windsurf), 0, 0, 0)
-			}
-			if aider, ok := event.Data["aider_count"].(float64); ok {
-				stats.TotalAgents += int(aider)
-				updateAgentStats(stats.AgentBreakdown, "aider", int(aider), 0, 0, 0)
-			}
-			if ollama, ok := event.Data["ollama_count"].(float64); ok {
-				stats.TotalAgents += int(ollama)
-				updateAgentStats(stats.AgentBreakdown, "ollama", int(ollama), 0, 0, 0)
-			}
-
-		case events.EventAgentSpawn:
-			if agentType, ok := event.Data["agent_type"].(string); ok {
-				// Agent was spawned - already counted in session create
-				_ = agentType
-			}
-
-		case events.EventAgentAdd:
-			// Agents registered after session creation via `ntm add` are NOT
-			// covered by the session_create provider counts; they were the
-			// audit's named blind spot (bd-ws7-docs-ux-truth-tqh3l.4).
-			if agentType, ok := event.Data["agent_type"].(string); ok {
-				normalized := normalizeAgentType(agentType)
-				if isAnalyticsAgentType(normalized) {
-					stats.TotalAgents++
-					updateAgentStats(stats.AgentBreakdown, normalized, 1, 0, 0, 0)
-				}
-			}
-
-		case events.EventPromptSend:
-			stats.TotalPrompts++
-
-			var chars int
-			if length, ok := event.Data["prompt_length"].(float64); ok {
-				chars = int(length)
-				stats.TotalCharsSent += chars
-			}
-
-			// Aggregate token estimates
-			var tokenEst int
-			if tokens, ok := event.Data["estimated_tokens"].(float64); ok {
-				tokenEst = int(tokens)
-			} else if length, ok := event.Data["prompt_length"].(float64); ok {
-				// Fallback: estimate from prompt_length (~3.5 chars/token)
-				tokenEst = int(length) * 10 / 35
-			}
-			stats.TotalTokensEst += tokenEst
-
-			// Update per-type stats based on target_types.
-			// When a prompt is sent to multiple agent types, divide the tokens
-			// and characters proportionally to avoid over-counting in the
-			// per-agent breakdown. Characters use exact-sum division (the
-			// remainder goes to the first target) so the per-agent chars_sent
-			// values always sum to the event's true payload byte count —
-			// chars_sent was previously never updated at all and stayed a
-			// hardcoded 0 (bd-ws7-docs-ux-truth-tqh3l.4).
-			if targetTypes, ok := event.Data["target_types"].(string); ok {
-				targets := parseTargetTypes(targetTypes)
-				if len(targets) > 0 {
-					tokensPerTarget := tokenEst / len(targets)
-					charsPerTarget := chars / len(targets)
-					charsRemainder := chars % len(targets)
-					for i, t := range targets {
-						charsDelta := charsPerTarget
-						if i == 0 {
-							charsDelta += charsRemainder
-						}
-						updateAgentStats(stats.AgentBreakdown, t, 0, 1, charsDelta, tokensPerTarget)
-					}
-				}
-			}
-
-		case events.EventError:
-			stats.ErrorCount++
-			if errType, ok := event.Data["error_type"].(string); ok {
-				stats.ErrorTypes[errType]++
-			}
-		}
-	}
-
-	return stats
-}
-
-// updateAgentStats updates or creates agent stats entry.
-func updateAgentStats(breakdown map[string]AgentStats, agentType string, countDelta, promptsDelta, charsDelta, tokensDelta int) {
-	current := breakdown[agentType]
-	current.Count += countDelta
-	current.Prompts += promptsDelta
-	current.CharsSent += charsDelta
-	current.TokensEst += tokensDelta
-	breakdown[agentType] = current
+	return outputAnalytics(out, format, showSessions)
 }
 
 func isAnalyticsAgentType(agentType string) bool {
-	switch agentType {
-	case "claude", "codex", "gemini", "grok", "cursor", "windsurf", "aider", "oc", "omp", "ollama":
-		return true
-	default:
-		return false
-	}
+	return robot.IsAnalyticsAgentType(agentType)
 }
 
-// parseTargetTypes parses the target_types string to extract agent types.
-func parseTargetTypes(targets string) []string {
-	legacyAll := false
-	seen := make(map[string]struct{})
-	result := make([]string, 0)
-
-	for _, part := range strings.Split(strings.ToLower(targets), ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		switch {
-		case part == "all" || part == "agents" || part == "all-agents":
-			legacyAll = true
-			continue
-		case strings.HasPrefix(part, "pane:"):
-			continue
-		case strings.HasPrefix(part, "tags:["):
-			continue
-		}
-		normalized := normalizeAgentType(part)
-		if !isAnalyticsAgentType(normalized) {
-			continue
-		}
-		if _, ok := seen[normalized]; ok {
-			continue
-		}
-		seen[normalized] = struct{}{}
-		result = append(result, normalized)
-	}
-
-	if legacyAll && len(result) == 0 {
-		return []string{"claude", "codex", "gemini", "grok"}
-	}
-	return result
-}
-
-// buildSessionDetails creates per-session summaries.
-func buildSessionDetails(eventList []events.Event) []SessionSummary {
-	sessionMap := make(map[string]*SessionSummary)
-
-	for _, event := range eventList {
-		if event.Session == "" {
-			continue
-		}
-
-		summary, exists := sessionMap[event.Session]
-		if !exists {
-			summary = &SessionSummary{
-				Name:      event.Session,
-				CreatedAt: event.Timestamp,
-			}
-			sessionMap[event.Session] = summary
-		}
-
-		switch event.Type {
-		case events.EventSessionCreate:
-			summary.CreatedAt = event.Timestamp
-			// Count agents
-			if cc, ok := event.Data["claude_count"].(float64); ok {
-				summary.AgentCount += int(cc)
-			}
-			if cod, ok := event.Data["codex_count"].(float64); ok {
-				summary.AgentCount += int(cod)
-			}
-			if gmi, ok := event.Data["gemini_count"].(float64); ok {
-				summary.AgentCount += int(gmi)
-			}
-			if grok, ok := event.Data["grok_count"].(float64); ok {
-				summary.AgentCount += int(grok)
-			}
-			if omp, ok := event.Data["omp_count"].(float64); ok {
-				summary.AgentCount += int(omp)
-			}
-			if cursor, ok := event.Data["cursor_count"].(float64); ok {
-				summary.AgentCount += int(cursor)
-			}
-			if windsurf, ok := event.Data["windsurf_count"].(float64); ok {
-				summary.AgentCount += int(windsurf)
-			}
-			if aider, ok := event.Data["aider_count"].(float64); ok {
-				summary.AgentCount += int(aider)
-			}
-			if ollama, ok := event.Data["ollama_count"].(float64); ok {
-				summary.AgentCount += int(ollama)
-			}
-		case events.EventAgentAdd:
-			summary.AgentCount++
-		case events.EventPromptSend:
-			summary.PromptCount++
-		}
-	}
-
-	// Convert to slice and sort by time
-	var result []SessionSummary
-	for _, s := range sessionMap {
-		result = append(result, *s)
-	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].CreatedAt.After(result[j].CreatedAt)
-	})
-
-	return result
-}
-
-// outputStats outputs the statistics in the requested format.
-func outputStats(stats AnalyticsStats, format string, showSessions bool) error {
+func outputAnalytics(out *robot.AnalyticsOutput, format string, showSessions bool) error {
 	switch format {
 	case "json":
-		return outputStatsJSON(stats)
+		return outputAnalyticsJSON(out)
 	case "csv":
-		return outputStatsCSV(stats)
+		return outputAnalyticsCSV(out)
 	case "prometheus", "prom":
-		return outputStatsPrometheus(stats)
+		return outputAnalyticsPrometheus(out)
 	default:
-		return outputStatsText(stats, showSessions)
+		return outputAnalyticsText(out, showSessions)
 	}
 }
 
-func outputStatsJSON(stats AnalyticsStats) error {
-	if IsJSONOutput() {
-		resp := output.AnalyticsResponse{
-			TimestampedResponse: output.NewTimestamped(),
-			Period:              stats.Period,
-			TotalSessions:       stats.TotalSessions,
-			TotalAgents:         stats.TotalAgents,
-			TotalPrompts:        stats.TotalPrompts,
-			TotalCharsSent:      stats.TotalCharsSent,
-			TotalTokensEst:      stats.TotalTokensEst,
-			ErrorCount:          stats.ErrorCount,
-		}
-		return output.PrintJSON(resp)
+func outputAnalyticsJSON(out *robot.AnalyticsOutput) error {
+	breakdown := out.AgentBreakdown
+	if breakdown == nil {
+		breakdown = map[string]robot.AnalyticsAgentStats{}
 	}
-
-	encoder := json.NewEncoder(os.Stdout)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(stats)
+	resp := output.AnalyticsResponse{
+		TimestampedResponse: output.NewTimestamped(),
+		Period:              out.Period,
+		Since:               out.Since,
+		Days:                out.Days,
+		TotalSessions:       out.TotalSessions,
+		TotalAgents:         out.TotalAgents,
+		TotalPrompts:        out.TotalPrompts,
+		TotalCharsSent:      out.TotalCharsSent,
+		TotalTokensEst:      out.TotalTokensEst,
+		AgentBreakdown:      breakdown,
+		Sessions:            out.Sessions,
+		ErrorCount:          out.ErrorCount,
+		ErrorTypes:          out.ErrorTypes,
+		AgentCrashes:        out.AgentCrashes,
+		AgentRestarts:       out.AgentRestarts,
+	}
+	return output.PrintJSON(resp)
 }
 
-func outputStatsCSV(stats AnalyticsStats) error {
+func outputAnalyticsCSV(out *robot.AnalyticsOutput) error {
 	w := csv.NewWriter(os.Stdout)
 	defer w.Flush()
 
-	// Header
 	if err := w.Write([]string{"metric", "value"}); err != nil {
 		return err
 	}
 
-	// Write metrics
 	rows := [][]string{
-		{"period", stats.Period},
-		{"total_sessions", fmt.Sprintf("%d", stats.TotalSessions)},
-		{"total_agents", fmt.Sprintf("%d", stats.TotalAgents)},
-		{"total_prompts", fmt.Sprintf("%d", stats.TotalPrompts)},
-		{"total_chars_sent", fmt.Sprintf("%d", stats.TotalCharsSent)},
-		{"total_tokens_estimated", fmt.Sprintf("%d", stats.TotalTokensEst)},
-		{"error_count", fmt.Sprintf("%d", stats.ErrorCount)},
+		{"period", out.Period},
+		{"total_sessions", fmt.Sprintf("%d", out.TotalSessions)},
+		{"total_agents", fmt.Sprintf("%d", out.TotalAgents)},
+		{"total_prompts", fmt.Sprintf("%d", out.TotalPrompts)},
+		{"total_chars_sent", fmt.Sprintf("%d", out.TotalCharsSent)},
+		{"total_tokens_estimated", fmt.Sprintf("%d", out.TotalTokensEst)},
+		{"error_count", fmt.Sprintf("%d", out.ErrorCount)},
+		{"agent_crashes", fmt.Sprintf("%d", out.AgentCrashes)},
+		{"agent_restarts", fmt.Sprintf("%d", out.AgentRestarts)},
 	}
 
 	for _, row := range rows {
@@ -461,8 +151,14 @@ func outputStatsCSV(stats AnalyticsStats) error {
 		}
 	}
 
-	// Agent breakdown
-	for agentType, agentStats := range stats.AgentBreakdown {
+	agentTypes := make([]string, 0, len(out.AgentBreakdown))
+	for agentType := range out.AgentBreakdown {
+		agentTypes = append(agentTypes, agentType)
+	}
+	sort.Strings(agentTypes)
+
+	for _, agentType := range agentTypes {
+		agentStats := out.AgentBreakdown[agentType]
 		if err := w.Write([]string{agentType + "_count", fmt.Sprintf("%d", agentStats.Count)}); err != nil {
 			return err
 		}
@@ -472,99 +168,44 @@ func outputStatsCSV(stats AnalyticsStats) error {
 		if err := w.Write([]string{agentType + "_chars_sent", fmt.Sprintf("%d", agentStats.CharsSent)}); err != nil {
 			return err
 		}
+		if err := w.Write([]string{agentType + "_tokens_estimated", fmt.Sprintf("%d", agentStats.TokensEst)}); err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
-func outputStatsPrometheus(stats AnalyticsStats) error {
-	fmt.Println("# HELP ntm_sessions_total Total sessions in the analytics period.")
-	fmt.Println("# TYPE ntm_sessions_total gauge")
-	fmt.Printf("ntm_sessions_total{period=%q} %d\n", stats.Period, stats.TotalSessions)
-	fmt.Println()
-
-	fmt.Println("# HELP ntm_agents_total Total agents spawned in the analytics period.")
-	fmt.Println("# TYPE ntm_agents_total gauge")
-	fmt.Printf("ntm_agents_total{period=%q} %d\n", stats.Period, stats.TotalAgents)
-	fmt.Println()
-
-	fmt.Println("# HELP ntm_prompts_total Total prompts sent in the analytics period.")
-	fmt.Println("# TYPE ntm_prompts_total gauge")
-	fmt.Printf("ntm_prompts_total{period=%q} %d\n", stats.Period, stats.TotalPrompts)
-	fmt.Println()
-
-	fmt.Println("# HELP ntm_chars_sent_total Total characters sent in the analytics period.")
-	fmt.Println("# TYPE ntm_chars_sent_total gauge")
-	fmt.Printf("ntm_chars_sent_total{period=%q} %d\n", stats.Period, stats.TotalCharsSent)
-	fmt.Println()
-
-	fmt.Println("# HELP ntm_tokens_estimated_total Estimated total tokens in the analytics period.")
-	fmt.Println("# TYPE ntm_tokens_estimated_total gauge")
-	fmt.Printf("ntm_tokens_estimated_total{period=%q} %d\n", stats.Period, stats.TotalTokensEst)
-	fmt.Println()
-
-	fmt.Println("# HELP ntm_errors_total Total errors in the analytics period.")
-	fmt.Println("# TYPE ntm_errors_total gauge")
-	fmt.Printf("ntm_errors_total{period=%q} %d\n", stats.Period, stats.ErrorCount)
-	fmt.Println()
-
-	if len(stats.AgentBreakdown) > 0 {
-		fmt.Println("# HELP ntm_agent_spawns Agent spawn count by type.")
-		fmt.Println("# TYPE ntm_agent_spawns gauge")
-		for agentType, as := range stats.AgentBreakdown {
-			fmt.Printf("ntm_agent_spawns{period=%q,agent_type=%q} %d\n", stats.Period, agentType, as.Count)
-		}
-		fmt.Println()
-
-		fmt.Println("# HELP ntm_agent_prompts Prompts sent by agent type.")
-		fmt.Println("# TYPE ntm_agent_prompts gauge")
-		for agentType, as := range stats.AgentBreakdown {
-			fmt.Printf("ntm_agent_prompts{period=%q,agent_type=%q} %d\n", stats.Period, agentType, as.Prompts)
-		}
-		fmt.Println()
-
-		fmt.Println("# HELP ntm_agent_chars_sent Characters sent by agent type.")
-		fmt.Println("# TYPE ntm_agent_chars_sent gauge")
-		for agentType, as := range stats.AgentBreakdown {
-			fmt.Printf("ntm_agent_chars_sent{period=%q,agent_type=%q} %d\n", stats.Period, agentType, as.CharsSent)
-		}
-		fmt.Println()
-
-		fmt.Println("# HELP ntm_agent_tokens_estimated Estimated tokens by agent type.")
-		fmt.Println("# TYPE ntm_agent_tokens_estimated gauge")
-		for agentType, as := range stats.AgentBreakdown {
-			fmt.Printf("ntm_agent_tokens_estimated{period=%q,agent_type=%q} %d\n", stats.Period, agentType, as.TokensEst)
-		}
-		fmt.Println()
-	}
-
-	if len(stats.ErrorTypes) > 0 {
-		fmt.Println("# HELP ntm_errors_by_type Error count by type.")
-		fmt.Println("# TYPE ntm_errors_by_type gauge")
-		for errType, count := range stats.ErrorTypes {
-			fmt.Printf("ntm_errors_by_type{period=%q,error_type=%q} %d\n", stats.Period, errType, count)
-		}
-		fmt.Println()
-	}
-
-	return nil
+func outputAnalyticsPrometheus(out *robot.AnalyticsOutput) error {
+	_, err := fmt.Print(robot.FormatAnalyticsPrometheus(out))
+	return err
 }
 
-func outputStatsText(stats AnalyticsStats, showSessions bool) error {
-	fmt.Printf("NTM Analytics - %s\n", stats.Period)
+func outputAnalyticsText(out *robot.AnalyticsOutput, showSessions bool) error {
+	fmt.Printf("NTM Analytics - %s\n", out.Period)
 	fmt.Println(strings.Repeat("=", 40))
 
 	fmt.Printf("\nSummary:\n")
-	fmt.Printf("  Sessions:     %d\n", stats.TotalSessions)
-	fmt.Printf("  Agents:       %d\n", stats.TotalAgents)
-	fmt.Printf("  Prompts:      %d\n", stats.TotalPrompts)
-	fmt.Printf("  Characters:   %d\n", stats.TotalCharsSent)
-	fmt.Printf("  Tokens (est): %s\n", formatTokenCount(stats.TotalTokensEst))
+	fmt.Printf("  Sessions:     %d\n", out.TotalSessions)
+	fmt.Printf("  Agents:       %d\n", out.TotalAgents)
+	fmt.Printf("  Prompts:      %d\n", out.TotalPrompts)
+	fmt.Printf("  Characters:   %d\n", out.TotalCharsSent)
+	fmt.Printf("  Tokens (est): %s\n", formatTokenCount(out.TotalTokensEst))
+	if out.AgentCrashes > 0 || out.AgentRestarts > 0 {
+		fmt.Printf("  Crashes:      %d\n", out.AgentCrashes)
+		fmt.Printf("  Restarts:     %d\n", out.AgentRestarts)
+	}
 
-	if len(stats.AgentBreakdown) > 0 {
+	if len(out.AgentBreakdown) > 0 {
+		agentTypes := make([]string, 0, len(out.AgentBreakdown))
+		for agentType := range out.AgentBreakdown {
+			agentTypes = append(agentTypes, agentType)
+		}
+		sort.Strings(agentTypes)
+
 		fmt.Printf("\nAgent Breakdown:\n")
-		for agentType, agentStats := range stats.AgentBreakdown {
-			// Capitalize first letter (strings.Title is deprecated)
+		for _, agentType := range agentTypes {
+			agentStats := out.AgentBreakdown[agentType]
 			displayName := agentType
 			if len(agentType) > 0 {
 				displayName = strings.ToUpper(agentType[:1]) + agentType[1:]
@@ -577,18 +218,23 @@ func outputStatsText(stats AnalyticsStats, showSessions bool) error {
 		}
 	}
 
-	if stats.ErrorCount > 0 {
-		fmt.Printf("\nErrors: %d\n", stats.ErrorCount)
-		if len(stats.ErrorTypes) > 0 {
-			for errType, count := range stats.ErrorTypes {
-				fmt.Printf("  %s: %d\n", errType, count)
+	if out.ErrorCount > 0 {
+		fmt.Printf("\nErrors: %d\n", out.ErrorCount)
+		if len(out.ErrorTypes) > 0 {
+			errTypes := make([]string, 0, len(out.ErrorTypes))
+			for errType := range out.ErrorTypes {
+				errTypes = append(errTypes, errType)
+			}
+			sort.Strings(errTypes)
+			for _, errType := range errTypes {
+				fmt.Printf("  %s: %d\n", errType, out.ErrorTypes[errType])
 			}
 		}
 	}
 
-	if showSessions && len(stats.SessionDetails) > 0 {
+	if showSessions && len(out.Sessions) > 0 {
 		fmt.Printf("\nRecent Sessions:\n")
-		for _, s := range stats.SessionDetails {
+		for _, s := range out.Sessions {
 			fmt.Printf("  %s (%s): %d agents, %d prompts\n",
 				s.Name,
 				s.CreatedAt.Format("2006-01-02 15:04"),

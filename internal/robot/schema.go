@@ -114,6 +114,7 @@ var SchemaCommand = map[string]interface{}{
 	"ubs_scan":         UBSScanOutput{},
 	"save":             SaveResult{},
 	"handoff":          HandoffOutput{},
+	"analytics":        AnalyticsOutput{},
 
 	// Pane inspection
 	"inspect":              InspectPaneOutput{},

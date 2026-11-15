@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/events"
 	hookspkg "github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
@@ -363,33 +364,37 @@ func TestAggregatedLogPrefix(t *testing.T) {
 }
 
 // =============================================================================
-// analytics.go: updateAgentStats
+// robot/analytics.go: cumulative per-agent breakdown updates
 // =============================================================================
 
 func TestUpdateAgentStats(t *testing.T) {
+	now := time.Now().UTC()
+	cutoff := now.AddDate(0, 0, -30)
 
-	breakdown := make(map[string]AgentStats)
-
-	// First update creates entry
-	updateAgentStats(breakdown, "claude", 1, 5, 350, 100)
-	if s := breakdown["claude"]; s.Count != 1 || s.Prompts != 5 || s.CharsSent != 350 || s.TokensEst != 100 {
+	// First batch creates claude entry (1 spawn, 1 prompt, 350 chars, 100 tokens)
+	evs := []events.Event{
+		{Timestamp: now, Type: events.EventSessionCreate, Session: "s1", Data: map[string]interface{}{"claude_count": float64(1)}},
+		{Timestamp: now, Type: events.EventPromptSend, Session: "s1", Data: map[string]interface{}{"prompt_length": float64(350), "estimated_tokens": float64(100), "target_types": "claude"}},
+	}
+	out := robot.AggregateAnalyticsEvents(evs, 30, "", cutoff)
+	if s := out.AgentBreakdown["claude"]; s.Count != 1 || s.Prompts != 1 || s.CharsSent != 350 || s.TokensEst != 100 {
 		t.Errorf("after first update: %+v", s)
 	}
 
-	// Second update accumulates
-	updateAgentStats(breakdown, "claude", 2, 3, 700, 200)
-	if s := breakdown["claude"]; s.Count != 3 || s.Prompts != 8 || s.CharsSent != 1050 || s.TokensEst != 300 {
+	// Second batch accumulates claude + adds codex
+	evs = append(evs,
+		events.Event{Timestamp: now, Type: events.EventSessionCreate, Session: "s2", Data: map[string]interface{}{"claude_count": float64(2), "codex_count": float64(1)}},
+		events.Event{Timestamp: now, Type: events.EventPromptSend, Session: "s2", Data: map[string]interface{}{"prompt_length": float64(700), "estimated_tokens": float64(200), "target_types": "claude"}},
+		events.Event{Timestamp: now, Type: events.EventPromptSend, Session: "s2", Data: map[string]interface{}{"prompt_length": float64(175), "estimated_tokens": float64(50), "target_types": "codex"}},
+	)
+	out = robot.AggregateAnalyticsEvents(evs, 30, "", cutoff)
+	if s := out.AgentBreakdown["claude"]; s.Count != 3 || s.Prompts != 2 || s.CharsSent != 1050 || s.TokensEst != 300 {
 		t.Errorf("after second update: %+v", s)
 	}
-
-	// Different agent type
-	updateAgentStats(breakdown, "codex", 1, 1, 175, 50)
-	if s := breakdown["codex"]; s.Count != 1 || s.Prompts != 1 || s.CharsSent != 175 || s.TokensEst != 50 {
+	if s := out.AgentBreakdown["codex"]; s.Count != 1 || s.Prompts != 1 || s.CharsSent != 175 || s.TokensEst != 50 {
 		t.Errorf("codex entry: %+v", s)
 	}
-
-	// Original unchanged
-	if s := breakdown["claude"]; s.Count != 3 {
+	if s := out.AgentBreakdown["claude"]; s.Count != 3 {
 		t.Errorf("claude changed unexpectedly: %+v", s)
 	}
 }

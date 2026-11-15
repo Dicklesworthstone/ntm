@@ -335,13 +335,20 @@ type VersionResponse struct {
 // AnalyticsResponse is the output format for analytics command
 type AnalyticsResponse struct {
 	TimestampedResponse
-	Period         string `json:"period"`
-	TotalSessions  int    `json:"total_sessions"`
-	TotalAgents    int    `json:"total_agents"`
-	TotalPrompts   int    `json:"total_prompts"`
-	TotalCharsSent int    `json:"total_chars_sent"`
-	TotalTokensEst int    `json:"total_tokens_estimated"`
-	ErrorCount     int    `json:"error_count"`
+	Period         string                               `json:"period"`
+	Since          string                               `json:"since,omitempty"`
+	Days           int                                  `json:"days,omitempty"`
+	TotalSessions  int                                  `json:"total_sessions"`
+	TotalAgents    int                                  `json:"total_agents"`
+	TotalPrompts   int                                  `json:"total_prompts"`
+	TotalCharsSent int                                  `json:"total_chars_sent"`
+	TotalTokensEst int                                  `json:"total_tokens_estimated"`
+	AgentBreakdown map[string]robot.AnalyticsAgentStats `json:"agent_breakdown"`
+	Sessions       []robot.AnalyticsSessionSummary      `json:"sessions,omitempty"`
+	ErrorCount     int                                  `json:"error_count"`
+	ErrorTypes     map[string]int                       `json:"error_types,omitempty"`
+	AgentCrashes   int                                  `json:"agent_crashes"`
+	AgentRestarts  int                                  `json:"agent_restarts"`
 }
 
 // AssignmentResponse represents a single bead-to-agent assignment

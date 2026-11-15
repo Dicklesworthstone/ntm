@@ -23,6 +23,7 @@
     "onCommand:ntm.triageAttention",
     "onCommand:ntm.triageIncidents",
     "onCommand:ntm.handoffSession",
+    "onCommand:ntm.showAnalytics",
     "onCommand:ntm.openWebCockpit",
     "onCommand:ntm.showBackpressure",
     "onCommand:ntm.manageWorktrees",
@@ -115,6 +116,11 @@
         "command": "ntm.handoffSession",
         "title": "NTM: Session Handoff (Inspect / Create)",
         "icon": "$(note)"
+      },
+      {
+        "command": "ntm.showAnalytics",
+        "title": "NTM: Show Swarm & Harness Analytics",
+        "icon": "$(graph)"
       },
       {
         "command": "ntm.openWebCockpit",

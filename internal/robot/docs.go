@@ -196,7 +196,8 @@ func getCommandsContent() *DocsContent {
 --robot-health-restart-stuck=SESSION: Detect and restart stuck agents
 --robot-probe=SESSION: Active pane responsiveness probe (--panes follows the shared selector convention: on a multi-window session a bare index selects a WINDOW and every pane in it is probed; each result carries pane_ref, the exact "window.pane" address probed)
 --robot-pane-address=SESSION: Per-pane addressing cards (canonical selector, stable %pane_id, tmux target)
---robot-handoff=SESSION: Inspect or create Goal/Now session continuity handoffs with quality scores (use SESSION or 'all')`,
+--robot-handoff=SESSION: Inspect or create Goal/Now session continuity handoffs with quality scores (use SESSION or 'all')
+--robot-analytics: Aggregated multi-harness session, prompt, token, crash/restart, and error analytics (--analytics-days, --analytics-since, --analytics-sessions)`,
 			},
 			{
 				Heading: "Agent Control",
@@ -363,6 +364,12 @@ func getExamplesContent() *DocsContent {
 				Description: "Create or inspect a structured Goal/Now continuity handoff with quality scoring",
 				Command:     "ntm --robot-handoff=proj --handoff-create --handoff-goal='Implemented auth' --handoff-now='Run E2E suite'",
 				Notes:       "Omit --handoff-create to inspect the latest handoff and quality dimensions, or pass --handoff-auto to synthesize from session/git state",
+			},
+			{
+				Name:        "event_analytics",
+				Description: "Get multi-harness event analytics with per-session breakdown",
+				Command:     "ntm --robot-analytics --analytics-days=7 --analytics-sessions",
+				Notes:       "Aggregates spawns, prompts, characters, estimated tokens, crashes, restarts, and error types across all harnesses",
 			},
 			{
 				Name:        "restart_with_bead",

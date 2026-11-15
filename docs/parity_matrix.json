@@ -1,6 +1,6 @@
 {
   "source": "chi-router-walk",
-  "count": 213,
+  "count": 214,
   "endpoints": [
     {
       "method": "GET",
@@ -86,6 +86,11 @@
       "method": "POST",
       "path": "/api/v1/accounts/{provider}/rotate",
       "handler": "handleRotateProviderAccountV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/analytics",
+      "handler": "handleGetAnalyticsV1"
     },
     {
       "method": "GET",

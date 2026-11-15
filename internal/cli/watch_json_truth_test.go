@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/events"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
@@ -286,7 +287,7 @@ func TestAggregateStats_CharsSentEqualsPayloadAndAddCounted(t *testing.T) {
 		{Timestamp: now.Add(-1 * time.Hour), Type: events.EventPromptSend, Session: "s", Data: map[string]interface{}{"prompt_length": float64(43), "target_types": "claude,codex"}},
 	}
 
-	stats := aggregateStats(testEvents, 30, "", cutoff)
+	stats := robot.AggregateAnalyticsEvents(testEvents, 30, "", cutoff)
 
 	// Exact-value totals: 42 + 58 + 43.
 	if stats.TotalCharsSent != 143 {
@@ -322,14 +323,14 @@ func TestAggregateStats_CharsSentEqualsPayloadAndAddCounted(t *testing.T) {
 	}
 }
 
-// buildSessionDetails counts add-registered agents into the session summary.
+// BuildAnalyticsSessionDetails counts add-registered agents into the session summary.
 func TestBuildSessionDetails_CountsAgentAdd(t *testing.T) {
 	now := time.Now().UTC()
 	testEvents := []events.Event{
 		{Timestamp: now.Add(-2 * time.Hour), Type: events.EventSessionCreate, Session: "s", Data: map[string]interface{}{"claude_count": float64(2)}},
 		{Timestamp: now.Add(-1 * time.Hour), Type: events.EventAgentAdd, Session: "s", Data: map[string]interface{}{"agent_type": "codex"}},
 	}
-	details := buildSessionDetails(testEvents)
+	details := robot.BuildAnalyticsSessionDetails(testEvents)
 	if len(details) != 1 {
 		t.Fatalf("got %d sessions, want 1", len(details))
 	}

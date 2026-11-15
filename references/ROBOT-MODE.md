@@ -138,6 +138,11 @@ ntm --robot-handoff=myproject
 ntm --robot-handoff=all --handoff-limit=5
 ntm --robot-handoff=myproject --handoff-create --handoff-goal="Implemented auth" --handoff-now="Run E2E suite"
 ntm --robot-handoff=myproject --handoff-create --handoff-auto
+
+# Multi-harness session, prompt, token, crash/restart, and error analytics
+ntm --robot-analytics
+ntm --robot-analytics --analytics-days=7 --analytics-sessions
+ntm --robot-analytics --analytics-since=2026-01-01
 ```
 
 ## Reasoning Ensembles

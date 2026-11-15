@@ -546,6 +546,46 @@ export interface HandoffCreateOptions {
     projectDir?: string;
 }
 
+export interface AnalyticsOptions {
+    days?: number;
+    since?: string;
+    sessions?: boolean;
+}
+
+export interface AnalyticsAgentStats {
+    count: number;
+    prompts: number;
+    chars_sent: number;
+    tokens_estimated: number;
+}
+
+export interface AnalyticsSessionSummary {
+    name: string;
+    created_at: string;
+    agent_count: number;
+    prompt_count: number;
+}
+
+export interface AnalyticsResult {
+    success: boolean;
+    schema_id?: string;
+    schema_version?: string;
+    period: string;
+    since: string;
+    days?: number;
+    total_sessions: number;
+    total_agents: number;
+    total_prompts: number;
+    total_chars_sent: number;
+    total_tokens_estimated: number;
+    agent_breakdown: Record<string, AnalyticsAgentStats>;
+    sessions: AnalyticsSessionSummary[];
+    error_count: number;
+    error_types: Record<string, number>;
+    agent_crashes: number;
+    agent_restarts: number;
+}
+
 export type ExecFileRunner = (
     file: string,
     args: string[],
@@ -1706,6 +1746,86 @@ export function normalizeHandoffResult(raw: unknown): HandoffResult {
     };
 }
 
+/**
+ * Normalize `--robot-analytics` JSON output into a strongly typed `AnalyticsResult`.
+ */
+export function normalizeAnalyticsResult(raw: unknown): AnalyticsResult {
+    const obj = asRecord(raw);
+    if (!obj) {
+        throw new Error('Invalid analytics response payload');
+    }
+    if (obj.success === false) {
+        const msg = typeof obj.error === 'string' && obj.error.length > 0
+            ? obj.error
+            : 'Analytics command failed';
+        throw new Error(msg);
+    }
+
+    const agentBreakdown: Record<string, AnalyticsAgentStats> = {};
+    const rawBreakdown = asRecord(obj.agent_breakdown);
+    if (rawBreakdown) {
+        for (const [key, val] of Object.entries(rawBreakdown)) {
+            const st = asRecord(val);
+            if (!st) {
+                continue;
+            }
+            agentBreakdown[key] = {
+                count: typeof st.count === 'number' ? st.count : 0,
+                prompts: typeof st.prompts === 'number' ? st.prompts : 0,
+                chars_sent: typeof st.chars_sent === 'number' ? st.chars_sent : 0,
+                tokens_estimated: typeof st.tokens_estimated === 'number' ? st.tokens_estimated : 0,
+            };
+        }
+    }
+
+    const sessions: AnalyticsSessionSummary[] = Array.isArray(obj.sessions)
+        ? obj.sessions
+            .map(entry => {
+                const sr = asRecord(entry);
+                if (!sr || typeof sr.name !== 'string') {
+                    return undefined;
+                }
+                return {
+                    name: sr.name,
+                    created_at: typeof sr.created_at === 'string' ? sr.created_at : '',
+                    agent_count: typeof sr.agent_count === 'number' ? sr.agent_count : 0,
+                    prompt_count: typeof sr.prompt_count === 'number' ? sr.prompt_count : 0,
+                };
+            })
+            .filter((entry): entry is AnalyticsSessionSummary => entry !== undefined)
+        : [];
+
+    const errorTypes: Record<string, number> = {};
+    const rawErrors = asRecord(obj.error_types);
+    if (rawErrors) {
+        for (const [errKey, errVal] of Object.entries(rawErrors)) {
+            if (typeof errVal === 'number') {
+                errorTypes[errKey] = errVal;
+            }
+        }
+    }
+
+    return {
+        success: true,
+        schema_id: typeof obj.schema_id === 'string' ? obj.schema_id : undefined,
+        schema_version: typeof obj.schema_version === 'string' ? obj.schema_version : undefined,
+        period: typeof obj.period === 'string' ? obj.period : 'Last 30 days',
+        since: typeof obj.since === 'string' ? obj.since : '',
+        days: typeof obj.days === 'number' ? obj.days : undefined,
+        total_sessions: typeof obj.total_sessions === 'number' ? obj.total_sessions : 0,
+        total_agents: typeof obj.total_agents === 'number' ? obj.total_agents : 0,
+        total_prompts: typeof obj.total_prompts === 'number' ? obj.total_prompts : 0,
+        total_chars_sent: typeof obj.total_chars_sent === 'number' ? obj.total_chars_sent : 0,
+        total_tokens_estimated: typeof obj.total_tokens_estimated === 'number' ? obj.total_tokens_estimated : 0,
+        agent_breakdown: agentBreakdown,
+        sessions,
+        error_count: typeof obj.error_count === 'number' ? obj.error_count : 0,
+        error_types: errorTypes,
+        agent_crashes: typeof obj.agent_crashes === 'number' ? obj.agent_crashes : 0,
+        agent_restarts: typeof obj.agent_restarts === 'number' ? obj.agent_restarts : 0,
+    };
+}
+
 function extractJsonErrorDetail(stdout?: string): string | undefined {
     if (typeof stdout !== 'string') {
         return undefined;
@@ -2261,5 +2381,29 @@ export class NtmClient {
 
         const stdout = await this.run(args);
         return normalizeHandoffResult(JSON.parse(stdout));
+    }
+
+    /**
+     * Fetch multi-harness event analytics (spawns, prompts, token estimates, crashes,
+     * restarts, error distribution, and per-session summaries) via `ntm --robot-analytics`.
+     */
+    async getAnalytics(options?: AnalyticsOptions): Promise<AnalyticsResult> {
+        const args: string[] = ['--robot-analytics'];
+        const since = (options?.since ?? '').trim();
+        if (since) {
+            args.push(`--analytics-since=${since}`);
+        } else if (options?.days !== undefined) {
+            if (!Number.isInteger(options.days) || options.days < 0) {
+                throw new Error('Analytics days must be a non-negative integer');
+            }
+            args.push(`--analytics-days=${options.days}`);
+        }
+        if (options?.sessions) {
+            args.push('--analytics-sessions');
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeAnalyticsResult(JSON.parse(stdout));
     }
 }

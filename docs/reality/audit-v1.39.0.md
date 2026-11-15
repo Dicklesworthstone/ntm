@@ -1,6 +1,6 @@
 # Reality Audit — v1.39.0
 
-generated: 2026-11-15T14:48:30Z by scripts/reality_audit.sh
+generated: 2026-11-15T16:33:28Z by scripts/reality_audit.sh
 seed: 2553148806
 allowlist-lines: 86
 gates: yes
@@ -8,7 +8,7 @@ total-minutes: 3 (budget 90)
 
 ## Step timings
 - 1-checklist: 0m (budget 10m)
-- 2-gates: 3m (budget 15m)
+- 2-gates: 2m (budget 15m)
 - 3-probes: 1m (budget 30m)
 - 4-ledger: 1m (budget 20m)
 
@@ -72,16 +72,16 @@ total-minutes: 3 (budget 90)
 ## Spot-probes (seeded from tag; exercise against the BUILT artifact, not the tree)
 | # | claim row | verdict (WORKS / PARTIAL / NO_SURFACE / NO_BEAD) | evidence |
 |---|-----------|--------------------------------------------------|----------|
-| 1 | README.md:368 2. Dispatch, Monitoring, and Recovery | WORKS | Executed built `/tmp/ntm_wave9_probe --robot-handoff=all --robot-format=json` (`"action":"handoff_inspect","success":true`), `attention incidents list --json` (`"count":0,"incidents":[]`), `rotate context pending --json`, and `analytics --days 7 --json`. |
-| 2 | README.md:1991 FAQ | WORKS | Executed built `ntm --robot-status` (`"schema_id":"ntm:robot:status:v1","success":true`), `ntm hooks run post-checkout --json` (`"hook_type":"post-checkout","passed":true`), and `ntm timeline list --json`. |
-| 3 | command_palette.md:164 `reread_agents_md \| Reread AGENTS.md` | WORKS | Executed `ntm --robot-palette` (`47` commands loaded from `command_palette.md`), returning `{"key":"reread_agents_md","label":"Reread AGENTS.md","category":"Investigation","prompt":"Reread AGENTS.md so it's still fresh in your mind."}`. |
-| 4 | README.md:1941 `claude`, `codex`, `agy`, `grok`, or `gemini` not detected over SSH / tmux / non-login shells | WORKS | Executed `ntm deps -v --json`, verifying runtime `PATH` discovery across `21` dependency checks including `tmux`, `Claude Code`, `OpenAI Codex`, `Antigravity CLI (agy)`, `Grok Build (xAI)`, `Gemini CLI (legacy)`, `OpenCode`, and `Oh My Pi (omp)`. |
-| 5 | docs/ORCHESTRATION_FEATURES.md:1266 Historical Proposal: Soft-Claim Files | WORKS | Executed `ntm claim list --json` (`{"success":true,"claims":[]}`) and `ntm assign --help`, matching the documented distinction between authoritative Beads/ledger claims in `ntm assign` and optional advisory `ntm claim` helpers. |
-| 6 | README.md:1918 From Source | WORKS | Built `/tmp/ntm_wave9_probe` via `go build -o /tmp/ntm_wave9_probe ./cmd/ntm` and executed `version --json` (`"version":"dev","go_version":"go1.26.11","platform":"linux/amd64"`). |
-| 7 | docs/ORCHESTRATION_FEATURES.md:86 Feature 1: Agent Activity Detection | WORKS | Verified `ntm --robot-activity` against live tmux session `ntm_probe_2220566` (`ntm_probe_2220566__cc_1` emitting `claude> `), returning `"agent_type":"claude","state":"WAITING","confidence":0.9,"detected_patterns":["claude_prompt"]`. |
-| 8 | command_palette.md:29 `fresh_review \| Fresh Review` | WORKS | Executed `ntm --robot-palette`, returning `{"key":"fresh_review","label":"Fresh Review","category":"Analysis & Review"}` with full prompt body. |
-| 9 | README.md:1503 REST, SSE, WebSocket, and OpenAPI | WORKS | Launched `/tmp/ntm_wave9_probe serve --port 17396`, verified `GET /api/v1/handoffs?session=all` (`"success":true`), `GET /api/v1/config` / `PATCH /api/v1/config`, `POST /api/v1/ensemble/estimate`, and `GET /api/v1/openapi.json` (`OpenAPI 3.1.0`, `190` paths, `637` component schemas). |
-| 10 | docs/ORCHESTRATION_FEATURES.md:505 Solution Overview | WORKS | Verified `ntm --robot-route=ntm_probe_2220566 --strategy=least-loaded` against live tmux session `ntm_probe_2220566`, returning `"recommendation":{"pane_id":"%198","pane_index":1,"agent_type":"claude","score":58.32,"state":"WAITING","reason":"primary strategy succeeded"}`. |
+| 1 | README.md:368 2. Dispatch, Monitoring, and Recovery | WORKS | Executed built `/tmp/ntm_wave10_probe --robot-analytics --analytics-days=7 --analytics-sessions --robot-format=json` (`"schema_id":"ntm:robot:analytics:v1","success":true,"total_sessions":30,"total_agents":81,"total_prompts":574`), `analytics --days 7 --format prometheus`, `--robot-handoff=all --robot-format=json`, and `attention incidents list --json`. |
+| 2 | README.md:1991 FAQ | WORKS | Executed built `/tmp/ntm_wave10_probe --robot-status` (`"schema_id":"ntm:robot:status:v1","success":true`) and `hooks run post-checkout --json` (`"hook_type":"post-checkout","passed":true`). |
+| 3 | command_palette.md:164 `reread_agents_md \| Reread AGENTS.md` | WORKS | Executed `/tmp/ntm_wave10_probe --robot-palette` (`47` commands loaded from `command_palette.md`), returning `{"key":"reread_agents_md","label":"Reread AGENTS.md"}`. |
+| 4 | README.md:1941 `claude`, `codex`, `agy`, `grok`, or `gemini` not detected over SSH / tmux / non-login shells | WORKS | Executed `/tmp/ntm_wave10_probe deps -v --json`, verifying runtime `PATH` discovery across `21` dependency checks (`dependencies` length `21`). |
+| 5 | docs/ORCHESTRATION_FEATURES.md:1266 Historical Proposal: Soft-Claim Files | WORKS | Executed `/tmp/ntm_wave10_probe claim list --json` (`{"success":true,"claims":[]}`) matching the documented distinction between authoritative Beads/ledger claims in `ntm assign` and optional advisory `ntm claim` helpers. |
+| 6 | README.md:1918 From Source | WORKS | Built `/tmp/ntm_wave10_probe` via `go build -o /tmp/ntm_wave10_probe ./cmd/ntm` and executed `version --json` (`"version":"dev","go_version":"go1.26.11","platform":"linux/amd64"`). |
+| 7 | docs/ORCHESTRATION_FEATURES.md:86 Feature 1: Agent Activity Detection | WORKS | Verified `/tmp/ntm_wave10_probe --robot-activity` against live tmux pane `%235` (`__cc_1` emitting `claude> `), returning `{"agent_type":"claude","state":"WAITING","confidence":0.9}`. |
+| 8 | command_palette.md:29 `fresh_review \| Fresh Review` | WORKS | Executed `/tmp/ntm_wave10_probe --robot-palette` (`47` commands), returning `{"key":"fresh_review","label":"Fresh Review"}`. |
+| 9 | README.md:1503 REST, SSE, WebSocket, and OpenAPI | WORKS | Launched `/tmp/ntm_wave10_probe serve --port 17397`, verified `GET /api/v1/analytics?days=7&sessions=true` (`"schema_id":"ntm:robot:analytics:v1","success":true,"total_sessions":30`), `Accept: text/plain` Prometheus exposition (`ntm_sessions_total{period="Last 7 days"} 30`), and `GET /api/v1/openapi.json` (`OpenAPI 3.1.0`, `191` paths, `640` component schemas). |
+| 10 | docs/ORCHESTRATION_FEATURES.md:505 Solution Overview | WORKS | Verified `/tmp/ntm_wave10_probe --robot-route` (`--strategy=least-loaded`) against live tmux pane `%235`, returning `"recommendation":{"pane_id":"%235","pane_index":2,"agent_type":"claude","score":58.32,"state":"WAITING","reason":"primary strategy succeeded"}`. |
 
 ## Ledger audit (10 seeded closed beads; Proof test must exist in go test -list)
 
@@ -93,12 +93,12 @@ scope: closed since previous audit (2026-08-20T01:17:47Z) — post-discipline er
 | bd-9ny67 | OK (TestBeadsEndpointsWithoutWorkspace) |
 | bd-6n16a | OK (TestAccountRotatorListAccountsContext_ParsesRateLimitedPerAccount) |
 | bd-t0flp | OK (TestEnsembleAnalysisRESTEndpoints) |
+| bd-3dyeo.2 | OK (TestAnalyticsOpenAPIReflection) |
 | bd-yhc8r | OK (TestNewScenarioHarnessCreatesExpectedLayout) |
 | bd-rc-track-e-uplift-xkt68.4 | OK (TestGetRoute_RelaxPersistsEvidenceLedger) |
 | bd-hqblz | OK (TestAsyncJobsEnsembleSpawnAndSynthesizeValidationAndLifecycle) |
 | bd-event-bus-reentrant-semaphore-deadlock-n8isd | OK (TestEventBus_ReentrantPublishAtCapacityDoesNotDeadlock) |
 | bd-wvadh | OK (TestWorkflowResumeRetainsTimeoutDeadlineAndAcknowledgesOnce) |
-| bd-g789p | OK (TestWorkflowResumeObservesFilesChangedWhileStopped) |
 
 ## Completeness-language check (draft notes: not provided)
 ```
@@ -106,7 +106,7 @@ scope: closed since previous audit (2026-08-20T01:17:47Z) — post-discipline er
 ```
 
 ## Findings
-- none (`0` scripted findings; `10/10` seeded spot-probes verified `WORKS` against built binary; `10/10` seeded post-`v1.29.0` closed beads out of `112` candidates verified `OK` in `go test -list`; `allowlist-lines = 86 <= 216`).
+- none (`0` scripted findings; `10/10` seeded spot-probes verified `WORKS` against built binary `/tmp/ntm_wave10_probe`; `10/10` seeded post-`v1.29.0` closed beads out of `116` candidates verified `OK` in `go test -list`; `allowlist-lines = 86 <= 216`).
 
 ## Verdict
 - New `NO_BEAD` gaps found: `0`.

@@ -55,6 +55,7 @@ var SchemaPagination = map[string]SchemaPaginationFlag{
 	"activity":           {Reason: "bounded: one entry per live agent pane"},
 	"agent_names":        {Reason: "bounded: one entry per live agent pane"},
 	"alerts":             {Reason: "bounded: active alerts capped by alert engine retention"},
+	"analytics":          {Reason: "bounded: aggregated event summary, harness breakdown, and per-session summary rows within requested window"},
 	"answer_dialog":      {Reason: "bounded: per-request dialog answer results"},
 	"assign":             {Reason: "bounded: per-request assignment results"},
 	"attention":          {Reason: "cursor-based continuation (attention cursor), not offset pagination"},

@@ -661,6 +661,9 @@ func (s *Server) buildRouter() chi.Router {
 		// Session Handoffs API (delegated via ADR ORI to robot.GetHandoff)
 		s.registerHandoffRoutes(r)
 
+		// Event Analytics & Multi-Harness Telemetry API (delegated via ADR ORI to robot.GetAnalytics)
+		s.registerAnalyticsRoutes(r)
+
 		// Attention Feed API - normalized event streaming for operator agents
 		r.Route("/attention", func(r chi.Router) {
 			// SSE stream with cursor-based replay

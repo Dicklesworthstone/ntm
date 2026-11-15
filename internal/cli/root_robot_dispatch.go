@@ -734,6 +734,17 @@ func dispatchRobotInspectionAndOps(cmd *cobra.Command, args []string) bool {
 		}
 		return true
 	}
+	if robotAnalytics {
+		opts := robot.AnalyticsOptions{
+			Days:     robotAnalyticsDays,
+			Since:    resolveRobotAnalyticsSince(cmd),
+			Sessions: robotAnalyticsSessions,
+		}
+		if err := robot.PrintAnalytics(cmd.Context(), opts); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
 	if robotHistory != "" {
 		session, err := resolveRobotSessionFilter(cmd.Context(), robotHistory)
 		if err != nil {
