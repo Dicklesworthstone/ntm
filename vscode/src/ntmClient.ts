@@ -286,6 +286,46 @@ export interface EnsembleSpawnResult {
     warnings?: string[];
 }
 
+export type EnsembleSynthesisFormat = 'markdown' | 'json' | 'yaml';
+
+export interface EnsembleSynthesizeOptions {
+    session: string;
+    strategy?: string;
+    format?: EnsembleSynthesisFormat;
+    output?: string;
+    force?: boolean;
+}
+
+export interface EnsembleSynthesizeReport {
+    summary: string;
+    strategy: string;
+    output_path?: string;
+    format: string;
+    findings_count: number;
+    recommendations_count: number;
+    risks_count: number;
+    questions_count: number;
+    confidence: number;
+    generated_at?: string;
+    synthesized_by?: string;
+    fallback_reason?: string;
+}
+
+export interface EnsembleSynthesizeAudit {
+    conflict_count: number;
+    unresolved_count: number;
+    high_conflict_pairs: string[];
+}
+
+export interface EnsembleSynthesizeResult {
+    action: string;
+    session: string;
+    status: string;
+    report?: EnsembleSynthesizeReport;
+    audit?: EnsembleSynthesizeAudit;
+    formatted_output?: string;
+}
+
 export interface AttentionListOptions {
     actionRequired?: boolean;
     limit?: number;
@@ -971,6 +1011,60 @@ export function normalizeEnsembleSpawn(raw: unknown): EnsembleSpawnResult {
         budget,
         status: typeof obj.status === 'string' ? obj.status : undefined,
         warnings: Array.isArray(obj.warnings) ? toStringArray(obj.warnings) : undefined,
+    };
+}
+
+/**
+ * Normalize an `ntm --robot-ensemble-synthesize=<session>` payload into `EnsembleSynthesizeResult`.
+ */
+export function normalizeEnsembleSynthesize(raw: unknown): EnsembleSynthesizeResult {
+    const obj = assertSuccessPayload(raw, 'ensemble synthesize');
+    const rawReport = asRecord(obj.report);
+    const report: EnsembleSynthesizeReport | undefined = rawReport
+        ? {
+            summary: typeof rawReport.summary === 'string' ? rawReport.summary : '',
+            strategy: typeof rawReport.strategy === 'string' ? rawReport.strategy : '',
+            output_path: typeof rawReport.output_path === 'string' && rawReport.output_path.length > 0
+                ? rawReport.output_path
+                : undefined,
+            format: typeof rawReport.format === 'string' && rawReport.format.length > 0
+                ? rawReport.format
+                : 'markdown',
+            findings_count: typeof rawReport.findings_count === 'number' ? rawReport.findings_count : 0,
+            recommendations_count: typeof rawReport.recommendations_count === 'number'
+                ? rawReport.recommendations_count
+                : 0,
+            risks_count: typeof rawReport.risks_count === 'number' ? rawReport.risks_count : 0,
+            questions_count: typeof rawReport.questions_count === 'number' ? rawReport.questions_count : 0,
+            confidence: typeof rawReport.confidence === 'number' ? rawReport.confidence : 0,
+            generated_at: typeof rawReport.generated_at === 'string' ? rawReport.generated_at : undefined,
+            synthesized_by: typeof rawReport.synthesized_by === 'string' && rawReport.synthesized_by.length > 0
+                ? rawReport.synthesized_by
+                : undefined,
+            fallback_reason: typeof rawReport.fallback_reason === 'string' && rawReport.fallback_reason.length > 0
+                ? rawReport.fallback_reason
+                : undefined,
+        }
+        : undefined;
+
+    const rawAudit = asRecord(obj.audit);
+    const audit: EnsembleSynthesizeAudit | undefined = rawAudit
+        ? {
+            conflict_count: typeof rawAudit.conflict_count === 'number' ? rawAudit.conflict_count : 0,
+            unresolved_count: typeof rawAudit.unresolved_count === 'number' ? rawAudit.unresolved_count : 0,
+            high_conflict_pairs: toStringArray(rawAudit.high_conflict_pairs),
+        }
+        : undefined;
+
+    return {
+        action: typeof obj.action === 'string' ? obj.action : 'ensemble_synthesize',
+        session: typeof obj.session === 'string' ? obj.session : '',
+        status: typeof obj.status === 'string' ? obj.status : 'completed',
+        report,
+        audit,
+        formatted_output: typeof obj.formatted_output === 'string' && obj.formatted_output.length > 0
+            ? obj.formatted_output
+            : undefined,
     };
 }
 
@@ -1689,6 +1783,38 @@ export class NtmClient {
 
         const stdout = await this.run(args);
         return normalizeEnsembleSpawn(JSON.parse(stdout));
+    }
+
+    /**
+     * Synthesize completed reasoning mode outputs for an ensemble session via
+     * `ntm --robot-ensemble-synthesize=<session>`.
+     */
+    async synthesizeEnsemble(options: EnsembleSynthesizeOptions): Promise<EnsembleSynthesizeResult> {
+        const session = (options?.session ?? '').trim();
+        if (!session) {
+            throw new Error('Session name is required to synthesize an ensemble');
+        }
+
+        const args: string[] = [`--robot-ensemble-synthesize=${session}`];
+        const strategy = (options?.strategy ?? '').trim();
+        if (strategy) {
+            args.push(`--synth-strategy=${strategy}`);
+        }
+        const format = (options?.format ?? '').trim();
+        if (format) {
+            args.push(`--synth-format=${format}`);
+        }
+        const output = (options?.output ?? '').trim();
+        if (output) {
+            args.push(`--synth-output=${output}`);
+        }
+        if (options?.force) {
+            args.push('--synth-force');
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeEnsembleSynthesize(JSON.parse(stdout));
     }
 
     /**

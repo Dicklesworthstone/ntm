@@ -19,6 +19,7 @@
     "onView:ntmSessions",
     "onCommand:ntm.spawn",
     "onCommand:ntm.spawnEnsemble",
+    "onCommand:ntm.synthesizeEnsemble",
     "onCommand:ntm.triageAttention",
     "onCommand:ntm.openWebCockpit",
     "onCommand:ntm.showBackpressure",
@@ -92,6 +93,11 @@
         "command": "ntm.spawnEnsemble",
         "title": "NTM: Spawn Reasoning Ensemble",
         "icon": "$(sparkle)"
+      },
+      {
+        "command": "ntm.synthesizeEnsemble",
+        "title": "NTM: Synthesize Reasoning Ensemble",
+        "icon": "$(combine)"
       },
       {
         "command": "ntm.triageAttention",

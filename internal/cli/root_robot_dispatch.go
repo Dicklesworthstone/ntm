@@ -431,6 +431,25 @@ func dispatchRobotInspectionAndOps(cmd *cobra.Command, args []string) bool {
 		}
 		return true
 	}
+	if robotEnsembleSynthesize != "" {
+		session, err := resolveRobotOfflineCapableSession(cmd.Context(), robotEnsembleSynthesize)
+		if err != nil {
+			failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-ensemble-synthesize")
+			return true
+		}
+		opts := robot.EnsembleSynthesizeOptions{
+			Session:    session,
+			Strategy:   robotEnsembleSynthStrategy,
+			Format:     robotEnsembleSynthFormat,
+			Output:     robotEnsembleSynthOutput,
+			Force:      robotEnsembleSynthForce,
+			ProjectDir: robotEnsembleProject,
+		}
+		if err := robot.PrintEnsembleSynthesize(cmd.Context(), opts, cfg); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
 	if robotEnsembleStop != "" {
 		session, err := resolveRobotOfflineCapableSession(cmd.Context(), robotEnsembleStop)
 		if err != nil {

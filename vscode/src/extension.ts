@@ -69,6 +69,49 @@ export interface EnsemblePresetQuickPickItem extends vscode.QuickPickItem {
     recommended: boolean;
 }
 
+export interface EnsembleSynthesisQuickPickItem extends vscode.QuickPickItem {
+    strategy: string;
+    force: boolean;
+}
+
+export const ENSEMBLE_SYNTHESIS_STRATEGY_OPTIONS: readonly EnsembleSynthesisQuickPickItem[] = [
+    {
+        label: '$(combine) Preset Default Strategy',
+        description: 'Automatic strategy from session/preset',
+        detail: 'Synthesize completed mode outputs using the ensemble preset strategy',
+        strategy: '',
+        force: false,
+    },
+    {
+        label: '$(check-all) Consensus',
+        description: '--synth-strategy=consensus',
+        detail: 'Merge convergent findings and surface shared high-confidence conclusions',
+        strategy: 'consensus',
+        force: false,
+    },
+    {
+        label: '$(flame) Adversarial',
+        description: '--synth-strategy=adversarial',
+        detail: 'Prioritize contradictions, failure modes, and counter-evidence across modes',
+        strategy: 'adversarial',
+        force: false,
+    },
+    {
+        label: '$(git-compare) Dialectical',
+        description: '--synth-strategy=dialectical',
+        detail: 'Synthesize thesis, antithesis, and resolved trade-offs across viewpoints',
+        strategy: 'dialectical',
+        force: false,
+    },
+    {
+        label: '$(warning) Force Partial Synthesis',
+        description: '--synth-force',
+        detail: 'Synthesize available mode outputs even if some modes are still pending or working',
+        strategy: '',
+        force: true,
+    },
+];
+
 export interface AttentionQuickPickItem extends vscode.QuickPickItem {
     item: AttentionItem;
 }
@@ -82,6 +125,7 @@ export interface PaletteActionQuickPickItem extends vscode.QuickPickItem {
     actionId:
         | 'terminalPalette'
         | 'spawnEnsemble'
+        | 'synthesizeEnsemble'
         | 'triageAttention'
         | 'openWebCockpit'
         | 'showBackpressure'
@@ -105,6 +149,13 @@ export const PALETTE_ACTION_OPTIONS: readonly PaletteActionQuickPickItem[] = [
         detail: 'Suggest preset for a question and launch a multi-agent reasoning ensemble',
         actionId: 'spawnEnsemble',
         command: 'ntm.spawnEnsemble',
+    },
+    {
+        label: '$(combine) Synthesize Reasoning Ensemble',
+        description: 'NTM: Synthesize Reasoning Ensemble',
+        detail: 'Collect completed mode outputs and synthesize findings, audit conflicts, and recommendations',
+        actionId: 'synthesizeEnsemble',
+        command: 'ntm.synthesizeEnsemble',
     },
     {
         label: '$(bell) Triage Attention Feed',
@@ -1050,6 +1101,73 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
         }
     });
 
+    const dispSynthesizeEnsemble = vscode.commands.registerCommand(
+        'ntm.synthesizeEnsemble',
+        async (sessionArg?: string | NtmTreeItem) => {
+            try {
+                const chosenSession = await resolveSessionInteractive(
+                    extractSessionName(sessionArg),
+                    'Ensemble session name to synthesize'
+                );
+                if (!chosenSession) {
+                    return;
+                }
+
+                const pickedStrategy = await vscode.window.showQuickPick(
+                    ENSEMBLE_SYNTHESIS_STRATEGY_OPTIONS,
+                    {
+                        placeHolder: `Select synthesis strategy for ensemble "${chosenSession}"`,
+                    }
+                );
+                if (!pickedStrategy) {
+                    return;
+                }
+
+                const synthResult = await vscode.window.withProgress(
+                    {
+                        location: vscode.ProgressLocation.Notification,
+                        title: `Synthesizing NTM reasoning ensemble "${chosenSession}"...`,
+                        cancellable: false,
+                    },
+                    async () => client.synthesizeEnsemble({
+                        session: chosenSession,
+                        strategy: pickedStrategy.strategy || undefined,
+                        format: 'markdown',
+                        force: pickedStrategy.force,
+                    })
+                );
+
+                const resolvedSession = synthResult.session || chosenSession;
+                currentSession = resolvedSession;
+                const strategyLabel = synthResult.report?.strategy
+                    || pickedStrategy.strategy
+                    || 'preset';
+                const findingsCount = synthResult.report?.findings_count ?? 0;
+                const conflictCount = synthResult.audit?.conflict_count ?? 0;
+
+                const nextAction = await vscode.window.showInformationMessage(
+                    `Synthesized ensemble "${resolvedSession}" (${strategyLabel}: ${findingsCount} findings, ${conflictCount} conflicts)`,
+                    'Open Synthesis Report',
+                    'Open /ensemble in Web Cockpit'
+                );
+                if (nextAction === 'Open Synthesis Report') {
+                    const markdownBody = synthResult.formatted_output
+                        || synthResult.report?.summary
+                        || `# Ensemble Synthesis: ${resolvedSession}\n\nStatus: ${synthResult.status}\n`;
+                    const doc = await vscode.workspace.openTextDocument({
+                        content: markdownBody,
+                        language: 'markdown',
+                    });
+                    await vscode.window.showTextDocument(doc);
+                } else if (nextAction === 'Open /ensemble in Web Cockpit') {
+                    await openWebCockpitRoute('/ensemble');
+                }
+            } catch (e) {
+                vscode.window.showErrorMessage(`Ensemble synthesis failed: ${e}`);
+            }
+        }
+    );
+
     const dispTriageAttention = vscode.commands.registerCommand('ntm.triageAttention', async () => {
         try {
             const items = await client.listAttentionItems({ limit: 30 });
@@ -1268,6 +1386,7 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
         dispStatus,
         dispSpawn,
         dispSpawnEnsemble,
+        dispSynthesizeEnsemble,
         dispTriageAttention,
         dispOpenWebCockpit,
         dispShowBackpressure,

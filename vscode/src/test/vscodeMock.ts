@@ -53,6 +53,7 @@ export interface VscodeMockState {
     errorMessages: string[];
     openedExternalUris: string[];
     progressTitles: string[];
+    openedTextDocuments: Array<{ content: string; language?: string }>;
 }
 
 export const mockState: VscodeMockState = {
@@ -76,6 +77,7 @@ export const mockState: VscodeMockState = {
     errorMessages: [],
     openedExternalUris: [],
     progressTitles: [],
+    openedTextDocuments: [],
 };
 
 export function resetVscodeMock(): void {
@@ -99,6 +101,7 @@ export function resetVscodeMock(): void {
     mockState.errorMessages.length = 0;
     mockState.openedExternalUris.length = 0;
     mockState.progressTitles.length = 0;
+    mockState.openedTextDocuments.length = 0;
 }
 
 class MockEventEmitter<T> {
@@ -243,9 +246,22 @@ const vscodeMockObject = {
             }
             return uriObj.fsPath;
         },
+        async openTextDocument(options?: { content?: string; language?: string } | string) {
+            const doc = typeof options === 'string'
+                ? { content: '', language: undefined }
+                : { content: options?.content ?? '', language: options?.language };
+            mockState.openedTextDocuments.push(doc);
+            return {
+                getText: () => doc.content,
+                languageId: doc.language ?? 'plaintext',
+            };
+        },
     },
     window: {
         activeTextEditor: undefined as unknown,
+        async showTextDocument(doc: unknown) {
+            return { document: doc };
+        },
         get terminals() {
             return mockState.openTerminals;
         },

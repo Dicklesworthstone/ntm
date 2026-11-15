@@ -4030,6 +4030,130 @@
         }
       }
     },
+    "/api/v1/ensemble/compare": {
+      "post": {
+        "tags": [
+          "ensemble"
+        ],
+        "summary": "Ensemble compare",
+        "description": "Served route `POST /api/v1/ensemble/compare`. Handler: `handleEnsembleCompareV1`. Response shape reflected from Go type `EnsembleCompareEnvelopeResponse`.",
+        "operationId": "post_api_v1_ensemble_compare",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnsembleCompareRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnsembleCompareEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ensemble/estimate": {
+      "post": {
+        "tags": [
+          "ensemble"
+        ],
+        "summary": "Ensemble estimate",
+        "description": "Served route `POST /api/v1/ensemble/estimate`. Handler: `handleEnsembleEstimateV1`. Response shape reflected from Go type `EnsembleEstimateEnvelopeResponse`.",
+        "operationId": "post_api_v1_ensemble_estimate",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnsembleEstimateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnsembleEstimateEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/ensemble/modes": {
       "get": {
         "tags": [
@@ -4176,6 +4300,68 @@
         }
       }
     },
+    "/api/v1/ensemble/runs": {
+      "get": {
+        "tags": [
+          "ensemble"
+        ],
+        "summary": "Ensemble runs",
+        "description": "Served route `GET /api/v1/ensemble/runs`. Handler: `handleEnsembleRunsV1`. Response shape reflected from Go type `EnsembleRunsEnvelopeResponse`.",
+        "operationId": "get_api_v1_ensemble_runs",
+        "parameters": [
+          {
+            "name": "project_dir",
+            "in": "query",
+            "description": "Optional existing absolute project directory override (alias: ?project=).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnsembleRunsEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/ensemble/sessions/{session}": {
       "get": {
         "tags": [
@@ -4202,6 +4388,95 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EnsembleSessionEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ensemble/sessions/{session}/provenance": {
+      "get": {
+        "tags": [
+          "ensemble"
+        ],
+        "summary": "Ensemble provenance",
+        "description": "Served route `GET /api/v1/ensemble/sessions/{session}/provenance`. Handler: `handleEnsembleProvenanceV1`. Response shape reflected from Go type `EnsembleProvenanceEnvelopeResponse`.",
+        "operationId": "get_api_v1_ensemble_sessions_session_provenance",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "path",
+            "description": "The session identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "finding",
+            "in": "query",
+            "description": "Optional finding ID or prefix to filter provenance chains.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project_dir",
+            "in": "query",
+            "description": "Optional existing absolute project directory override (alias: ?project=).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnsembleProvenanceEnvelopeResponse"
                 }
               }
             }
@@ -19367,6 +19642,69 @@
           "step_id"
         ]
       },
+      "ComparisonResult": {
+        "type": "object",
+        "properties": {
+          "conclusion_diff": {
+            "$ref": "#/components/schemas/ConclusionDiff"
+          },
+          "contribution_diff": {
+            "$ref": "#/components/schemas/ContributionDiff"
+          },
+          "findings_diff": {
+            "$ref": "#/components/schemas/FindingsDiff"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "mode_diff": {
+            "$ref": "#/components/schemas/ModeDiff"
+          },
+          "run_a": {
+            "type": "string"
+          },
+          "run_b": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "conclusion_diff",
+          "contribution_diff",
+          "findings_diff",
+          "generated_at",
+          "mode_diff",
+          "run_a",
+          "run_b",
+          "summary"
+        ]
+      },
+      "ConclusionDiff": {
+        "type": "object",
+        "properties": {
+          "synthesis_a": {
+            "type": "string"
+          },
+          "synthesis_b": {
+            "type": "string"
+          },
+          "synthesis_changed": {
+            "type": "boolean"
+          },
+          "thesis_changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ThesisChange"
+            }
+          }
+        },
+        "required": [
+          "synthesis_changed"
+        ]
+      },
       "ConclusionExplanation": {
         "type": "object",
         "properties": {
@@ -19628,6 +19966,41 @@
           "accept",
           "from_agent",
           "to_agent"
+        ]
+      },
+      "ContributionDiff": {
+        "type": "object",
+        "properties": {
+          "diversity_score_a": {
+            "type": "number"
+          },
+          "diversity_score_b": {
+            "type": "number"
+          },
+          "overlap_rate_a": {
+            "type": "number"
+          },
+          "overlap_rate_b": {
+            "type": "number"
+          },
+          "rank_changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RankChange"
+            }
+          },
+          "score_deltas": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScoreDelta"
+            }
+          }
+        },
+        "required": [
+          "diversity_score_a",
+          "diversity_score_b",
+          "overlap_rate_a",
+          "overlap_rate_b"
         ]
       },
       "ContributionReport": {
@@ -20512,6 +20885,271 @@
           }
         }
       },
+      "EnsembleCompareEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "changed_sections": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "result": {
+            "$ref": "#/components/schemas/ComparisonResult"
+          },
+          "run_a": {
+            "type": "string"
+          },
+          "run_b": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "unchanged": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "generated_at",
+          "run_a",
+          "run_b",
+          "success",
+          "summary",
+          "timestamp",
+          "unchanged"
+        ]
+      },
+      "EnsembleCompareRequest": {
+        "type": "object",
+        "properties": {
+          "project_dir": {
+            "type": "string"
+          },
+          "run_a": {
+            "type": "string"
+          },
+          "run_b": {
+            "type": "string"
+          },
+          "verbose": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run_a",
+          "run_b"
+        ]
+      },
+      "EnsembleEstimateBudgetSummary": {
+        "type": "object",
+        "properties": {
+          "budget_override": {
+            "type": "integer"
+          },
+          "context_reserve_tokens": {
+            "type": "integer"
+          },
+          "estimated_mode_tokens": {
+            "type": "integer"
+          },
+          "estimated_total_tokens": {
+            "type": "integer"
+          },
+          "max_tokens_per_mode": {
+            "type": "integer"
+          },
+          "max_total_tokens": {
+            "type": "integer"
+          },
+          "mode_count": {
+            "type": "integer"
+          },
+          "synthesis_reserve_tokens": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "estimated_mode_tokens",
+          "estimated_total_tokens",
+          "max_tokens_per_mode",
+          "max_total_tokens",
+          "mode_count"
+        ]
+      },
+      "EnsembleEstimateEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "budget": {
+            "$ref": "#/components/schemas/EnsembleEstimateBudgetSummary"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "modes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnsembleEstimateModeRow"
+            }
+          },
+          "over_budget": {
+            "type": "boolean"
+          },
+          "preset_label": {
+            "type": "string"
+          },
+          "preset_name": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "suggestions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnsembleEstimateSuggestion"
+            }
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "budget",
+          "generated_at",
+          "modes",
+          "over_budget",
+          "success",
+          "timestamp"
+        ]
+      },
+      "EnsembleEstimateModeRow": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "mode_code": {
+            "type": "string"
+          },
+          "mode_id": {
+            "type": "string"
+          },
+          "mode_name": {
+            "type": "string"
+          },
+          "tier": {
+            "type": "string"
+          },
+          "token_estimate": {
+            "type": "integer"
+          },
+          "value_per_token": {
+            "type": "number"
+          },
+          "value_score": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "mode_id",
+          "token_estimate"
+        ]
+      },
+      "EnsembleEstimateRequest": {
+        "type": "object",
+        "properties": {
+          "allow_advanced": {
+            "type": "boolean"
+          },
+          "budget_context_pack": {
+            "type": "integer"
+          },
+          "budget_per_agent": {
+            "type": "integer"
+          },
+          "budget_synthesis": {
+            "type": "integer"
+          },
+          "budget_total": {
+            "type": "integer"
+          },
+          "modes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "preset": {
+            "type": "string"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          }
+        }
+      },
+      "EnsembleEstimateSuggestion": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "replace_mode_id": {
+            "type": "string"
+          },
+          "replace_mode_name": {
+            "type": "string"
+          },
+          "replace_tokens": {
+            "type": "integer"
+          },
+          "savings_tokens": {
+            "type": "integer"
+          },
+          "suggested_mode_id": {
+            "type": "string"
+          },
+          "suggested_mode_name": {
+            "type": "string"
+          },
+          "suggested_tokens": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "replace_mode_id",
+          "replace_tokens",
+          "savings_tokens",
+          "suggested_mode_id",
+          "suggested_tokens"
+        ]
+      },
       "EnsembleFinding": {
         "type": "object",
         "properties": {
@@ -20731,6 +21369,153 @@
           "action",
           "count",
           "presets",
+          "success",
+          "timestamp"
+        ]
+      },
+      "EnsembleProvenanceEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "chain": {
+            "$ref": "#/components/schemas/ProvenanceChain"
+          },
+          "chains": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProvenanceChain"
+            }
+          },
+          "context_hash": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "finding_filter": {
+            "type": "string"
+          },
+          "invalid_count": {
+            "type": "integer"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/ProvenanceStats"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "validation_errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "chains",
+          "count",
+          "session",
+          "stats",
+          "success",
+          "timestamp"
+        ]
+      },
+      "EnsembleRunSummary": {
+        "type": "object",
+        "properties": {
+          "completed_modes": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "error_modes": {
+            "type": "integer"
+          },
+          "has_synthesis": {
+            "type": "boolean"
+          },
+          "live": {
+            "type": "boolean"
+          },
+          "pending_modes": {
+            "type": "integer"
+          },
+          "preset_used": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "session_name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "synthesis_strategy": {
+            "type": "string"
+          },
+          "total_modes": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "completed_modes",
+          "created_at",
+          "error_modes",
+          "has_synthesis",
+          "pending_modes",
+          "run_id",
+          "source",
+          "status",
+          "total_modes"
+        ]
+      },
+      "EnsembleRunsEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnsembleRunSummary"
+            }
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "count",
+          "runs",
           "success",
           "timestamp"
         ]
@@ -21927,6 +22712,73 @@
           "title"
         ]
       },
+      "FindingChange": {
+        "type": "object",
+        "properties": {
+          "changes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "confidence_a": {
+            "type": "number"
+          },
+          "confidence_b": {
+            "type": "number"
+          },
+          "finding_id": {
+            "type": "string"
+          },
+          "impact_a": {
+            "type": "string"
+          },
+          "impact_b": {
+            "type": "string"
+          },
+          "mode_id": {
+            "type": "string"
+          },
+          "text_a": {
+            "type": "string"
+          },
+          "text_b": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "changes",
+          "finding_id",
+          "mode_id"
+        ]
+      },
+      "FindingDiffEntry": {
+        "type": "object",
+        "properties": {
+          "confidence": {
+            "type": "number"
+          },
+          "finding_id": {
+            "type": "string"
+          },
+          "impact": {
+            "type": "string"
+          },
+          "mode_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "confidence",
+          "finding_id",
+          "impact",
+          "mode_id",
+          "text"
+        ]
+      },
       "FindingEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -22016,6 +22868,53 @@
           "finding",
           "id",
           "scan_id"
+        ]
+      },
+      "FindingsDiff": {
+        "type": "object",
+        "properties": {
+          "changed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FindingChange"
+            }
+          },
+          "changed_count": {
+            "type": "integer"
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FindingDiffEntry"
+            }
+          },
+          "missing_count": {
+            "type": "integer"
+          },
+          "new": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FindingDiffEntry"
+            }
+          },
+          "new_count": {
+            "type": "integer"
+          },
+          "unchanged": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FindingDiffEntry"
+            }
+          },
+          "unchanged_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "changed_count",
+          "missing_count",
+          "new_count",
+          "unchanged_count"
         ]
       },
       "FollowUpInfo": {
@@ -25137,6 +26036,43 @@
           "surface"
         ]
       },
+      "ModeDiff": {
+        "type": "object",
+        "properties": {
+          "added": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "added_count": {
+            "type": "integer"
+          },
+          "removed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "removed_count": {
+            "type": "integer"
+          },
+          "unchanged": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "unchanged_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "added_count",
+          "removed_count",
+          "unchanged_count"
+        ]
+      },
       "ModeInfo": {
         "type": "object",
         "properties": {
@@ -27726,6 +28662,136 @@
           }
         }
       },
+      "ProvenanceChain": {
+        "type": "object",
+        "properties": {
+          "confidence": {
+            "type": "number"
+          },
+          "context_hash": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "current_text": {
+            "type": "string"
+          },
+          "finding_id": {
+            "type": "string"
+          },
+          "impact": {
+            "type": "string"
+          },
+          "merged_from": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "merged_into": {
+            "type": "string"
+          },
+          "original_text": {
+            "type": "string"
+          },
+          "source_mode": {
+            "type": "string"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProvenanceStep"
+            }
+          },
+          "synthesis_citations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "confidence",
+          "context_hash",
+          "created_at",
+          "current_text",
+          "finding_id",
+          "impact",
+          "original_text",
+          "source_mode",
+          "steps",
+          "updated_at"
+        ]
+      },
+      "ProvenanceStats": {
+        "type": "object",
+        "properties": {
+          "active_findings": {
+            "type": "integer"
+          },
+          "cited_count": {
+            "type": "integer"
+          },
+          "filtered_count": {
+            "type": "integer"
+          },
+          "merged_findings": {
+            "type": "integer"
+          },
+          "mode_breakdown": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "total_findings": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "active_findings",
+          "cited_count",
+          "filtered_count",
+          "merged_findings",
+          "mode_breakdown",
+          "total_findings"
+        ]
+      },
+      "ProvenanceStep": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "details": {
+            "type": "string"
+          },
+          "related_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "stage": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "action",
+          "stage",
+          "timestamp"
+        ]
+      },
       "ProviderSeatQuota": {
         "type": "object",
         "properties": {
@@ -27925,6 +28991,29 @@
             "type": "string"
           }
         }
+      },
+      "RankChange": {
+        "type": "object",
+        "properties": {
+          "delta": {
+            "type": "integer"
+          },
+          "mode_id": {
+            "type": "string"
+          },
+          "rank_a": {
+            "type": "integer"
+          },
+          "rank_b": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "delta",
+          "mode_id",
+          "rank_a",
+          "rank_b"
+        ]
       },
       "Recipe": {
         "type": "object",
@@ -29992,6 +31081,29 @@
           "staleness",
           "time_to_impact",
           "urgency"
+        ]
+      },
+      "ScoreDelta": {
+        "type": "object",
+        "properties": {
+          "delta": {
+            "type": "number"
+          },
+          "mode_id": {
+            "type": "string"
+          },
+          "score_a": {
+            "type": "number"
+          },
+          "score_b": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "delta",
+          "mode_id",
+          "score_a",
+          "score_b"
         ]
       },
       "SearchHit": {
@@ -34406,6 +35518,25 @@
           "attention_interesting",
           "critical_alerts",
           "warning_alerts"
+        ]
+      },
+      "ThesisChange": {
+        "type": "object",
+        "properties": {
+          "mode_id": {
+            "type": "string"
+          },
+          "thesis_a": {
+            "type": "string"
+          },
+          "thesis_b": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode_id",
+          "thesis_a",
+          "thesis_b"
         ]
       },
       "ThreadSummary": {

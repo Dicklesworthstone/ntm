@@ -921,6 +921,16 @@ describe("EnsemblePage reasoning studio, recommender & synthesis", () => {
         }
 
         if (
+          url.pathname === "/api/v1/ensemble/runs" &&
+          (options?.method ?? "GET") === "GET"
+        ) {
+          return reply({
+            runs: [],
+            count: 0,
+          });
+        }
+
+        if (
           url.pathname === "/api/v1/jobs/" &&
           (options?.method ?? "GET") === "GET"
         ) {
@@ -2364,6 +2374,13 @@ describe("EnsemblePage durable async background jobs (/api/v1/jobs/)", () => {
           });
         }
 
+        if (url.pathname === "/api/v1/ensemble/runs" && method === "GET") {
+          return reply({
+            runs: [],
+            count: 0,
+          });
+        }
+
         if (url.pathname === "/api/v1/jobs/" && method === "GET") {
           const running = jobs.filter((j) => j.status === "running").length;
           const queued = jobs.filter((j) => j.status === "pending").length;
@@ -2679,5 +2696,399 @@ describe("OverviewPage on-demand System Doctor & Async Jobs pulse", () => {
       within(doctorSection).getByText("listening on port 8765")
     ).toBeInTheDocument();
     expect(within(doctorSection).getByText("guard-hook")).toBeInTheDocument();
+  });
+});
+
+describe("EnsemblePage analysis workbench (estimate, runs, compare & provenance)", () => {
+  it("estimates token budgets with substitution advice, compares saved runs side-by-side, and inspects finding provenance chains", async () => {
+    const estimateBodies: Array<Record<string, unknown>> = [];
+    const compareBodies: Array<Record<string, unknown>> = [];
+    const provenanceUrls: string[] = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, options?: RequestInit) => {
+        const url = new URL(String(input));
+        const method = options?.method ?? "GET";
+        const reply = (payload: object, status = 200) =>
+          new Response(JSON.stringify({ success: true, ...payload }), {
+            status,
+            headers: { "Content-Type": "application/json" },
+          });
+
+        if (url.pathname === "/api/v1/ensemble/modes") {
+          return reply({
+            total_modes: 2,
+            core_modes: 2,
+            advanced_modes: 0,
+            experimental_modes: 0,
+            default_tier: "core",
+            categories: [{ code: "A", name: "Formal", mode_count: 2 }],
+            modes: [
+              {
+                id: "deductive",
+                code: "A1",
+                name: "Deductive Proof",
+                category: { code: "A", name: "Formal" },
+                tier: "core",
+                short_desc: "Stepwise invariant verification",
+              },
+            ],
+          });
+        }
+
+        if (url.pathname === "/api/v1/ensemble/presets") {
+          return reply({
+            count: 1,
+            presets: [
+              {
+                name: "project-diagnosis",
+                display: "Project Diagnosis",
+                description: "Broad architectural diagnosis",
+                modes: ["A1"],
+                mode_count: 1,
+                synthesis: { strategy: "consensus" },
+                budget: { total_tokens: 30000 },
+                allow_advanced: false,
+              },
+            ],
+          });
+        }
+
+        if (url.pathname === "/api/v1/sessions") {
+          return reply({ sessions: [{ name: "ens-alpha", status: "active" }] });
+        }
+
+        if (url.pathname === "/api/v1/jobs/" && method === "GET") {
+          return reply({
+            count: 0,
+            execution: {
+              accepting: true,
+              max_concurrent: 4,
+              owned: 0,
+              preparing: 0,
+              queue_capacity: 16,
+              queued: 0,
+              running: 0,
+              waiting_for_resources: 0,
+            },
+            jobs: [],
+          });
+        }
+
+        if (url.pathname === "/api/v1/ensemble/runs" && method === "GET") {
+          return reply({
+            count: 2,
+            runs: [
+              {
+                run_id: "ens-alpha",
+                session_name: "ens-alpha",
+                source: "session",
+                question: "Audit durability fences",
+                preset_used: "project-diagnosis",
+                status: "ready",
+                total_modes: 2,
+                completed_modes: 2,
+                pending_modes: 0,
+                error_modes: 0,
+                has_synthesis: true,
+                created_at: "2026-11-15T01:00:00Z",
+              },
+              {
+                run_id: "ckpt-beta-01",
+                session_name: "ens-beta",
+                source: "checkpoint",
+                question: "Audit durability fences v2",
+                status: "complete",
+                total_modes: 3,
+                completed_modes: 3,
+                pending_modes: 0,
+                error_modes: 0,
+                has_synthesis: false,
+                created_at: "2026-11-15T01:10:00Z",
+              },
+            ],
+          });
+        }
+
+        if (url.pathname === "/api/v1/ensemble/estimate" && method === "POST") {
+          const parsed = JSON.parse(String(options?.body ?? "{}")) as Record<
+            string,
+            unknown
+          >;
+          estimateBodies.push(parsed);
+          return reply({
+            generated_at: "2026-11-15T01:15:00Z",
+            over_budget: true,
+            modes: [
+              {
+                mode_id: "deductive",
+                mode_code: "A1",
+                mode_name: "Deductive Logic",
+                tier: "core",
+                token_estimate: 4200,
+                value_score: 0.88,
+                value_per_token: 0.00021,
+              },
+              {
+                mode_id: "failure-mode",
+                mode_code: "E1",
+                mode_name: "Failure Mode Analysis",
+                tier: "core",
+                token_estimate: 4800,
+                value_score: 0.79,
+                value_per_token: 0.00016,
+              },
+            ],
+            budget: {
+              max_tokens_per_mode: 4000,
+              max_total_tokens: 5000,
+              estimated_mode_tokens: 9000,
+              estimated_total_tokens: 12500,
+              mode_count: 2,
+              budget_override: 5000,
+            },
+            warnings: ["Estimated total 12500 exceeds budget cap 5000"],
+            suggestions: [
+              {
+                replace_mode_id: "failure-mode",
+                replace_mode_name: "Failure Mode Analysis",
+                replace_tokens: 4800,
+                suggested_mode_id: "edge-case",
+                suggested_mode_name: "Edge Case Probe",
+                suggested_tokens: 2600,
+                savings_tokens: 2200,
+              },
+            ],
+          });
+        }
+
+        if (url.pathname === "/api/v1/ensemble/compare" && method === "POST") {
+          const parsed = JSON.parse(String(options?.body ?? "{}")) as Record<
+            string,
+            unknown
+          >;
+          compareBodies.push(parsed);
+          return reply({
+            generated_at: "2026-11-15T01:16:00Z",
+            run_a: String(parsed.run_a),
+            run_b: String(parsed.run_b),
+            summary: "+1 mode, +1 finding, -1 finding",
+            unchanged: false,
+            changed_sections: ["modes", "findings"],
+            result: {
+              run_a: String(parsed.run_a),
+              run_b: String(parsed.run_b),
+              generated_at: "2026-11-15T01:16:00Z",
+              summary: "+1 mode, +1 finding, -1 finding",
+              mode_diff: {
+                added: ["systems-thinking"],
+                removed: [],
+                unchanged: ["deductive", "failure-mode"],
+                added_count: 1,
+                removed_count: 0,
+                unchanged_count: 2,
+              },
+              findings_diff: {
+                new: [
+                  {
+                    finding_id: "find-new-99",
+                    mode_id: "systems-thinking",
+                    text: "Queue backpressure propagates to SSE hub",
+                    impact: "high",
+                    confidence: 0.91,
+                  },
+                ],
+                missing: [
+                  {
+                    finding_id: "find-old-01",
+                    mode_id: "deductive",
+                    text: "Stale lock timeout hypothesis",
+                    impact: "low",
+                    confidence: 0.55,
+                  },
+                ],
+                changed: [],
+                unchanged: [],
+                new_count: 1,
+                missing_count: 1,
+                changed_count: 0,
+                unchanged_count: 2,
+              },
+              conclusion_diff: {
+                synthesis_changed: false,
+              },
+              contribution_diff: {
+                score_deltas: [],
+                rank_changes: [],
+                overlap_delta: 0,
+                diversity_delta: 0,
+              },
+            },
+          });
+        }
+
+        if (
+          url.pathname === "/api/v1/ensemble/sessions/ens-alpha/provenance" &&
+          method === "GET"
+        ) {
+          provenanceUrls.push(`${url.pathname}${url.search}`);
+          return reply({
+            session: "ens-alpha",
+            finding_filter: url.searchParams.get("finding") ?? undefined,
+            count: 1,
+            stats: {
+              total_findings: 3,
+              active_findings: 2,
+              merged_findings: 1,
+              filtered_count: 0,
+              cited_count: 1,
+              mode_breakdown: { deductive: 2, "failure-mode": 1 },
+            },
+            chains: [
+              {
+                finding_id: "f-ded-01",
+                source_mode: "deductive",
+                context_hash: "ctx-123",
+                original_text: "Nested SQLite rows scan holds connection lock",
+                current_text: "Nested SQLite rows scan holds connection lock",
+                impact: "high",
+                confidence: 0.93,
+                synthesis_citations: ["synthesis:primary-thesis"],
+                steps: [
+                  {
+                    stage: "discovery",
+                    action: "recorded",
+                    details: "Extracted from deductive mode output",
+                    timestamp: "2026-11-15T01:01:00Z",
+                  },
+                  {
+                    stage: "synthesis",
+                    action: "cited",
+                    details: "Referenced in consensus report",
+                    timestamp: "2026-11-15T01:03:00Z",
+                  },
+                ],
+                created_at: "2026-11-15T01:01:00Z",
+                updated_at: "2026-11-15T01:03:00Z",
+              },
+            ],
+          });
+        }
+
+        throw new Error(`Unexpected request: ${method} ${url.pathname}`);
+      })
+    );
+
+    const client = createTestQueryClient();
+    render(
+      <QueryClientProvider client={client}>
+        <EnsemblePage />
+      </QueryClientProvider>
+    );
+
+    const workbench = await screen.findByRole("region", {
+      name: "Ensemble Analysis Workbench",
+    });
+
+    // Saved runs loaded from GET /api/v1/ensemble/runs
+    const alphaRow = await within(workbench).findByTestId(
+      "saved-run-ens-alpha"
+    );
+    const betaRow = await within(workbench).findByTestId(
+      "saved-run-ckpt-beta-01"
+    );
+    expect(within(alphaRow).getByText("synthesized")).toBeInTheDocument();
+
+    // 1. Token Budget Estimator (explicit modes + cap override)
+    fireEvent.change(screen.getByLabelText("Analysis Question"), {
+      target: { value: "Audit durability fences" },
+    });
+    const estimator = within(workbench).getByRole("region", {
+      name: "Token Budget Estimator",
+    });
+    fireEvent.change(within(estimator).getByLabelText("Estimate Target"), {
+      target: { value: "modes" },
+    });
+    fireEvent.change(
+      within(estimator).getByLabelText("Explicit Mode IDs / Codes"),
+      {
+        target: { value: "deductive, failure-mode" },
+      }
+    );
+    fireEvent.change(within(estimator).getByLabelText("Budget Cap Override"), {
+      target: { value: "5000" },
+    });
+    fireEvent.click(
+      within(estimator).getByRole("button", { name: "Estimate Budget" })
+    );
+
+    expect(
+      await within(estimator).findByTestId("estimate-budget-status")
+    ).toHaveTextContent("Over Budget");
+    expect(estimateBodies[0]).toEqual({
+      modes: ["deductive", "failure-mode"],
+      budget_total: 5000,
+      question: "Audit durability fences",
+    });
+    expect(
+      within(estimator).getByText("Estimated total 12500 exceeds budget cap 5000")
+    ).toBeInTheDocument();
+    expect(
+      within(estimator).getByText(/Edge Case Probe/)
+    ).toBeInTheDocument();
+
+    // 2. Compare Saved Runs side-by-side
+    fireEvent.click(within(alphaRow).getByRole("button", { name: "Run A" }));
+    fireEvent.click(within(betaRow).getByRole("button", { name: "Run B" }));
+    const compareRegion = within(workbench).getByRole("region", {
+      name: "Saved Runs & Comparison",
+    });
+    fireEvent.click(
+      within(compareRegion).getByRole("button", { name: "Compare Runs" })
+    );
+
+    expect(
+      await within(compareRegion).findByText(
+        "+1 mode, +1 finding, -1 finding"
+      )
+    ).toBeInTheDocument();
+    expect(compareBodies[0]).toEqual({
+      run_a: "ens-alpha",
+      run_b: "ckpt-beta-01",
+    });
+    expect(
+      within(compareRegion).getByText(
+        /\+ \[systems-thinking\] Queue backpressure propagates to SSE hub/
+      )
+    ).toBeInTheDocument();
+
+    // 3. Finding Provenance Chain Inspector (with finding filter)
+    const provRegion = within(workbench).getByRole("region", {
+      name: "Finding Provenance Inspector",
+    });
+    fireEvent.change(within(provRegion).getByLabelText("Finding ID Filter"), {
+      target: { value: "f-ded" },
+    });
+    fireEvent.click(
+      within(alphaRow).getByRole("button", { name: "Provenance" })
+    );
+
+    const chainCard = await within(provRegion).findByTestId(
+      "provenance-chain-f-ded-01"
+    );
+    expect(provenanceUrls).toEqual([
+      "/api/v1/ensemble/sessions/ens-alpha/provenance?finding=f-ded",
+    ]);
+    expect(within(provRegion).getByText("Cited: 1")).toBeInTheDocument();
+    expect(
+      within(chainCard).getByText("Nested SQLite rows scan holds connection lock")
+    ).toBeInTheDocument();
+    expect(
+      within(chainCard).getByText("synthesis:primary-thesis")
+    ).toBeInTheDocument();
+    expect(
+      within(chainCard).getByText(/Extracted from deductive mode output/)
+    ).toBeInTheDocument();
   });
 });

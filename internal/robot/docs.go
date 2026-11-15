@@ -216,6 +216,7 @@ func getCommandsContent() *DocsContent {
 				Heading: "Session Management",
 				Body: `--robot-spawn=SESSION: Create session with agents
 --robot-ensemble-spawn=SESSION: Spawn reasoning ensemble
+--robot-ensemble-synthesize=SESSION: Synthesize ensemble reasoning outputs
 --robot-recipes: List available spawn presets`,
 			},
 			{
@@ -280,7 +281,7 @@ func getExamplesContent() *DocsContent {
 				Name:        "ensemble_session",
 				Description: "Spawn reasoning ensemble for analysis",
 				Command:     "ntm --robot-ensemble-spawn=analysis --preset=project-diagnosis --question='Review architecture'",
-				Notes:       "Requires ensemble build tag",
+				Notes:       "Inspect progress with --robot-ensemble=analysis and synthesize with --robot-ensemble-synthesize=analysis",
 			},
 			// Prompt Sending
 			{

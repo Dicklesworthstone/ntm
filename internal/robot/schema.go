@@ -130,10 +130,11 @@ var SchemaCommand = map[string]interface{}{
 	"answer_dialog":        AnswerDialogOutput{},
 
 	// Ensemble
-	"ensemble":         EnsembleOutput{},
-	"ensemble_spawn":   EnsembleSpawnOutput{},
-	"ensemble_presets": EnsemblePresetsOutput{},
-	"ensemble_modes":   EnsembleModesOutput{},
+	"ensemble":            EnsembleOutput{},
+	"ensemble_spawn":      EnsembleSpawnOutput{},
+	"ensemble_presets":    EnsemblePresetsOutput{},
+	"ensemble_modes":      EnsembleModesOutput{},
+	"ensemble_synthesize": EnsembleSynthesizeOutput{},
 
 	// Beads/work management
 	"beads_list":      BeadsListOutput{},

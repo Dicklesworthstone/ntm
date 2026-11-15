@@ -1,6 +1,6 @@
 {
   "source": "chi-router-walk",
-  "count": 202,
+  "count": 206,
   "endpoints": [
     {
       "method": "GET",
@@ -309,6 +309,16 @@
       "handler": "handleDoctorV1"
     },
     {
+      "method": "POST",
+      "path": "/api/v1/ensemble/compare",
+      "handler": "handleEnsembleCompareV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/ensemble/estimate",
+      "handler": "handleEnsembleEstimateV1"
+    },
+    {
       "method": "GET",
       "path": "/api/v1/ensemble/modes",
       "handler": "handleEnsembleModesV1"
@@ -320,8 +330,18 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/ensemble/runs",
+      "handler": "handleEnsembleRunsV1"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/ensemble/sessions/{session}",
       "handler": "handleEnsembleSessionV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/ensemble/sessions/{session}/provenance",
+      "handler": "handleEnsembleProvenanceV1"
     },
     {
       "method": "POST",

@@ -1123,9 +1123,16 @@ func TestVSCodeExtensionManifestAndVSIXContract(t *testing.T) {
 			t.Errorf("vscode/package.json command %q is never registered via registerCommand in vscode/src/*.ts", cmd.Command)
 		}
 	}
-	for _, required := range []string{"ntm.spawnEnsemble", "ntm.triageAttention", "ntm.openWebCockpit"} {
+	for _, required := range []string{
+		"ntm.spawnEnsemble",
+		"ntm.synthesizeEnsemble",
+		"ntm.triageAttention",
+		"ntm.openWebCockpit",
+		"ntm.showBackpressure",
+		"ntm.manageWorktrees",
+	} {
 		if !declaredCommands[required] {
-			t.Errorf("vscode/package.json missing required Wave 5 command %q", required)
+			t.Errorf("vscode/package.json missing required command %q", required)
 		}
 	}
 
@@ -1139,6 +1146,9 @@ func TestVSCodeExtensionManifestAndVSIXContract(t *testing.T) {
 		{"--robot-ensemble-presets", "--robot-format=json"},
 		{"--robot-ensemble-suggest=architecture review", "--robot-format=json"},
 		{"--robot-ensemble-spawn=proj-ensemble", "--preset=project-diagnosis", "--question=check risks", "--agents=cc=2", "--assignment=affinity", "--allow-advanced", "--project=/tmp/proj", "--robot-format=json"},
+		{"--robot-ensemble-synthesize=proj-ensemble", "--synth-strategy=consensus", "--synth-format=markdown", "--synth-output=/tmp/synth.md", "--synth-force", "--robot-format=json"},
+		{"--robot-backpressure", "--session=proj", "--robot-format=json"},
+		{"worktrees", "list", "--session=proj", "--json"},
 		{"attention", "list", "--session=proj", "--limit=30", "--all", "--json"},
 		{"attention", "ack", "1", "--json"},
 		{"attention", "pin", "1", "--json"},

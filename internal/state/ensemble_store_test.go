@@ -521,3 +521,63 @@ func TestEnsembleExecutionConfigMigrationPreservesOlderRuns(t *testing.T) {
 		t.Fatalf("explicit zero configuration lost: %+v", reloaded)
 	}
 }
+
+func TestEnsembleStore_ListEnsembles(t *testing.T) {
+	t.Parallel()
+
+	store := testStoreFile(t)
+	es := NewEnsembleStore(store)
+
+	empty, err := es.ListEnsembles()
+	if err != nil {
+		t.Fatalf("ListEnsembles (empty): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("expected 0 sessions on empty store, got %d", len(empty))
+	}
+
+	t1 := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)
+	if err := es.SaveEnsemble(&EnsembleSession{
+		SessionName:       "alpha-run",
+		Question:          "First run question",
+		PresetUsed:        "project-diagnosis",
+		Status:            "ready",
+		SynthesisStrategy: "consensus",
+		CreatedAt:         t1,
+		Assignments: []ModeAssignment{
+			{ModeID: "deductive", PaneName: "alpha-run__cc_1", AgentType: "cc", Status: "done", OutputPath: "/tmp/a.json"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveEnsemble(alpha-run): %v", err)
+	}
+	if err := es.SaveEnsemble(&EnsembleSession{
+		SessionName:       "beta-run",
+		Question:          "Second run question",
+		PresetUsed:        "security-review",
+		Status:            "complete",
+		SynthesisStrategy: "adversarial",
+		CreatedAt:         t2,
+		SynthesisOutput:   "Consolidated synthesis",
+		Assignments: []ModeAssignment{
+			{ModeID: "bayesian", PaneName: "beta-run__cod_1", AgentType: "cod", Status: "done", OutputPath: "/tmp/b1.json"},
+			{ModeID: "abductive", PaneName: "beta-run__cc_1", AgentType: "cc", Status: "pending"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveEnsemble(beta-run): %v", err)
+	}
+
+	listed, err := es.ListEnsembles()
+	if err != nil {
+		t.Fatalf("ListEnsembles: %v", err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("expected 2 listed ensembles, got %d", len(listed))
+	}
+	if listed[0].SessionName != "beta-run" || listed[1].SessionName != "alpha-run" {
+		t.Fatalf("expected newest-first order [beta-run, alpha-run], got [%s, %s]", listed[0].SessionName, listed[1].SessionName)
+	}
+	if len(listed[0].Assignments) != 2 || len(listed[1].Assignments) != 1 {
+		t.Fatalf("expected assignments hydrated per session, got %+v / %+v", listed[0].Assignments, listed[1].Assignments)
+	}
+}

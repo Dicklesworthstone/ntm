@@ -477,6 +477,25 @@ func buildCommandRegistry() []RobotCommandInfo {
 			},
 		},
 		{
+			Name:        "ensemble-synthesize",
+			Flag:        "--robot-ensemble-synthesize",
+			Category:    "ensemble",
+			Description: "Synthesize completed reasoning mode outputs for an ensemble session with disagreement audit and redundancy analysis.",
+			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--robot-ensemble-synthesize", Type: "string", Required: true, Description: "Session name to synthesize"},
+				{Name: "synth-strategy", Flag: "--synth-strategy", Type: "string", Required: false, Description: "Synthesis strategy override (consensus, dialectical, adversarial, bayesian, meta-reasoning)"},
+				{Name: "synth-format", Flag: "--synth-format", Type: "string", Required: false, Default: "markdown", Description: "Rendered synthesis output format: markdown, json, yaml"},
+				{Name: "synth-output", Flag: "--synth-output", Type: "string", Required: false, Description: "Optional file path to persist formatted synthesis output"},
+				{Name: "synth-force", Flag: "--synth-force", Type: "bool", Required: false, Description: "Synthesize available mode outputs even while other modes are pending or working"},
+				{Name: "project", Flag: "--project", Type: "string", Required: false, Description: "Project directory override"},
+			},
+			Examples: []string{
+				"ntm --robot-ensemble-synthesize=myproject",
+				"ntm --robot-ensemble-synthesize=myproject --synth-strategy=dialectical --synth-format=json",
+				"ntm --robot-ensemble-synthesize=myproject --synth-force --synth-output=synthesis.md",
+			},
+		},
+		{
 			Name:        "ensemble-stop",
 			Flag:        "--robot-ensemble-stop",
 			Category:    "ensemble",

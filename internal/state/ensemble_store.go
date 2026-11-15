@@ -229,6 +229,73 @@ func (s *EnsembleStore) GetEnsemble(sessionName string) (*EnsembleSession, error
 	return &session, nil
 }
 
+// ListEnsembles returns all persisted ensemble sessions ordered by creation time descending.
+func (s *EnsembleStore) ListEnsembles() ([]EnsembleSession, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("ensemble store is nil")
+	}
+
+	s.store.mu.RLock()
+	defer s.store.mu.RUnlock()
+
+	rows, err := s.store.db.Query(`
+		SELECT id, session_name, question, COALESCE(preset_used, ''), status,
+		       COALESCE(synthesis_strategy, ''), COALESCE(budget_json, ''), COALESCE(synthesis_config_json, ''), created_at, synthesized_at,
+		       COALESCE(synthesis_output, ''), COALESCE(error, '')
+		FROM ensemble_sessions
+		ORDER BY created_at DESC, id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list ensemble sessions: %w", err)
+	}
+
+	var sessions []EnsembleSession
+	for rows.Next() {
+		var (
+			session       EnsembleSession
+			synthesizedAt sql.NullTime
+		)
+		if err := rows.Scan(
+			&session.ID,
+			&session.SessionName,
+			&session.Question,
+			&session.PresetUsed,
+			&session.Status,
+			&session.SynthesisStrategy,
+			&session.BudgetJSON,
+			&session.SynthesisConfigJSON,
+			&session.CreatedAt,
+			&synthesizedAt,
+			&session.SynthesisOutput,
+			&session.Error,
+		); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scan ensemble session: %w", err)
+		}
+		if synthesizedAt.Valid {
+			t := synthesizedAt.Time
+			session.SynthesizedAt = &t
+		}
+		sessions = append(sessions, session)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("iterate ensemble sessions: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close ensemble session rows: %w", err)
+	}
+
+	for i := range sessions {
+		assignments, err := s.fetchAssignments(sessions[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		sessions[i].Assignments = assignments
+	}
+
+	return sessions, nil
+}
+
 func (s *EnsembleStore) fetchAssignments(ensembleID int64) ([]ModeAssignment, error) {
 	rows, err := s.store.db.Query(`
 		SELECT id, ensemble_id, mode_id, pane_name, agent_type, status, COALESCE(output_path, ''),

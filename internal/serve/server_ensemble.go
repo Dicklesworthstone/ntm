@@ -6,13 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -208,7 +205,11 @@ func (s *Server) registerEnsembleRoutes(r chi.Router) {
 		r.With(s.RequirePermission(PermReadSessions)).Get("/modes", s.handleEnsembleModesV1)
 		r.With(s.RequirePermission(PermReadSessions)).Get("/presets", s.handleEnsemblePresetsV1)
 		r.With(s.RequirePermission(PermReadSessions)).Post("/suggest", s.handleEnsembleSuggestV1)
+		r.With(s.RequirePermission(PermReadSessions)).Post("/estimate", s.handleEnsembleEstimateV1)
+		r.With(s.RequirePermission(PermReadSessions)).Get("/runs", s.handleEnsembleRunsV1)
+		r.With(s.RequirePermission(PermReadSessions)).Post("/compare", s.handleEnsembleCompareV1)
 		r.With(s.RequirePermission(PermReadSessions)).Get("/sessions/{session}", s.handleEnsembleSessionV1)
+		r.With(s.RequirePermission(PermReadSessions)).Get("/sessions/{session}/provenance", s.handleEnsembleProvenanceV1)
 		r.With(s.RequirePermission(PermWriteSessions), s.RequirePermission(PermWriteAgents)).Post("/spawn", s.handleEnsembleSpawnV1)
 		r.With(s.RequirePermission(PermWriteSessions)).Post("/sessions/{session}/synthesize", s.handleEnsembleSynthesizeV1)
 		r.With(s.RequirePermission(PermWriteSessions)).Post("/sessions/{session}/stop", s.handleEnsembleStopV1)
@@ -645,7 +646,8 @@ func (s *Server) handleEnsembleSpawnV1(w http.ResponseWriter, r *http.Request) {
 	writeSuccessResponse(w, http.StatusOK, payload, reqID)
 }
 
-// executeEnsembleSynthesize validates and executes synthesis over an ensemble session.
+// executeEnsembleSynthesize validates and executes synthesis over an ensemble session
+// by delegating to the canonical robot.GetEnsembleSynthesize engine (ORI).
 // Shared by POST /api/v1/ensemble/sessions/{session}/synthesize and async job type ensemble_synthesize.
 func (s *Server) executeEnsembleSynthesize(ctx context.Context, session string, req EnsembleSynthesizeRequest) (map[string]interface{}, error) {
 	if err := ctx.Err(); err != nil {
@@ -653,313 +655,51 @@ func (s *Server) executeEnsembleSynthesize(ctx context.Context, session string, 
 	}
 
 	session = strings.TrimSpace(session)
-	if session == "" {
-		return nil, &ensembleExecError{
-			status:  http.StatusBadRequest,
-			code:    ErrCodeInvalidRequest,
-			message: "session name is required",
-			cause:   errInvalidJobRequest,
-		}
-	}
-	if err := tmux.ValidateSessionName(session); err != nil {
-		return nil, &ensembleExecError{
-			status:  http.StatusBadRequest,
-			code:    ErrCodeInvalidRequest,
-			message: fmt.Sprintf("invalid session name: %v", err),
-			cause:   errInvalidJobRequest,
-		}
-	}
-
-	formatName := strings.ToLower(strings.TrimSpace(req.OutputFormat))
-	if formatName == "" {
-		formatName = "markdown"
-	}
-	var outputFormat ensemble.OutputFormat
-	switch formatName {
-	case "markdown", "md":
-		formatName = "markdown"
-		outputFormat = ensemble.FormatMarkdown
-	case "json":
-		outputFormat = ensemble.FormatJSON
-	case "yaml", "yml":
-		formatName = "yaml"
-		outputFormat = ensemble.FormatYAML
-	default:
-		return nil, &ensembleExecError{
-			status:  http.StatusBadRequest,
-			code:    ErrCodeInvalidRequest,
-			message: fmt.Sprintf("unsupported output_format %q (use markdown, json, or yaml)", req.OutputFormat),
-			cause:   errInvalidJobRequest,
-		}
-	}
-
-	var explicitStrategy ensemble.SynthesisStrategy
-	if strings.TrimSpace(req.Strategy) != "" {
-		validated, stratErr := ensemble.ValidateOrMigrateStrategy(strings.TrimSpace(req.Strategy))
-		if stratErr != nil {
-			return nil, &ensembleExecError{
-				status:  http.StatusBadRequest,
-				code:    ErrCodeInvalidRequest,
-				message: stratErr.Error(),
-				cause:   errInvalidJobRequest,
-			}
-		}
-		explicitStrategy = validated
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	sessionLive := tmux.IsInstalled() && tmux.SessionExists(session)
-	state, err := ensemble.LoadSession(session)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			if !sessionLive {
-				return nil, &ensembleExecError{
-					status:  http.StatusNotFound,
-					code:    robot.ErrCodeSessionNotFound,
-					message: fmt.Sprintf("session %q not found", session),
-				}
-			}
-			return nil, &ensembleExecError{
-				status:  http.StatusNotFound,
-				code:    robot.ErrCodeEnsembleNotFound,
-				message: fmt.Sprintf("no ensemble state found in session %q", session),
-			}
-		}
-		return nil, &ensembleExecError{
-			status:  http.StatusInternalServerError,
-			code:    ErrCodeInternalError,
-			message: err.Error(),
-			cause:   err,
-		}
-	}
-
-	var captured []ensemble.CapturedOutput
-	var refreshFailure error
-	if sessionLive {
-		captured, err = ensemble.NewOutputCapture(tmux.DefaultClient).CaptureForSynthesis(ctx, state)
-		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, ctxErr
-			}
-			if !req.Force || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return nil, &ensembleExecError{
-					status:  http.StatusInternalServerError,
-					code:    ErrCodeInternalError,
-					message: fmt.Sprintf("refresh ensemble outputs: %v", err),
-					cause:   err,
-				}
-			}
-			// Failed observation or persistence cannot authorize a new prompt.
-			// Force is limited to validated, previously saved completed outputs.
-			refreshFailure = err
-			captured = nil
-			slog.Warn("ensemble live output refresh failed; forcing mechanical synthesis from saved outputs",
-				"session", session, "error", err)
-		}
-	}
-
-	ready, pending, working := countEnsembleAgentStates(state)
-	if !req.Force && (pending > 0 || working > 0) {
-		return nil, &ensembleExecError{
-			status:  http.StatusConflict,
-			code:    robot.ErrCodeSynthesisNotReady,
-			message: fmt.Sprintf("synthesis not ready: %d pending, %d working", pending, working),
-			details: map[string]interface{}{"hint": "Set force=true to synthesize available outputs before all modes finish"},
-		}
-	}
-	if ready == 0 && !req.Force {
-		return nil, &ensembleExecError{
-			status:  http.StatusConflict,
-			code:    robot.ErrCodeSynthesisNotReady,
-			message: "no completed mode outputs to synthesize",
-			details: map[string]interface{}{"hint": "Wait for reasoning modes to complete or pass force=true if saved outputs exist"},
-		}
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := reportJobProgress(ctx, map[string]interface{}{
-		"action":  "ensemble_synthesize",
-		"session": session,
-		"status":  "collecting_outputs",
-	}); err != nil {
-		return nil, err
-	}
-
-	availableOutputs, err := ensemble.CollectModeOutputs(state, captured)
-	if err != nil {
-		return nil, &ensembleExecError{
-			status:  http.StatusInternalServerError,
-			code:    ErrCodeInternalError,
-			message: fmt.Sprintf("collect mode outputs: %v", err),
-			cause:   err,
-		}
-	}
-
-	collector := ensemble.NewOutputCollector(ensemble.DefaultOutputCollectorConfig())
-	for _, modeOutput := range availableOutputs.Outputs {
-		if addErr := collector.Add(modeOutput); addErr != nil {
-			return nil, &ensembleExecError{
-				status:  http.StatusUnprocessableEntity,
-				code:    robot.ErrCodeOutputSchemaInvalid,
-				message: fmt.Sprintf("invalid output from mode %s: %v", modeOutput.ModeID, addErr),
-				cause:   addErr,
-			}
-		}
-	}
-	for modeID, errs := range availableOutputs.ValidationErrors {
-		if _, exists := collector.ValidationErrors[modeID]; !exists {
-			collector.ValidationErrors[modeID] = errs
-		}
-	}
-
-	if collector.Count() == 0 {
-		if collector.ErrorCount() > 0 {
-			return nil, &ensembleExecError{
-				status:  http.StatusUnprocessableEntity,
-				code:    robot.ErrCodeOutputSchemaInvalid,
-				message: fmt.Sprintf("no valid mode outputs collected (%d validation errors)", collector.ErrorCount()),
-				details: map[string]interface{}{"validation_errors": collector.ValidationErrors},
-			}
-		}
-		return nil, &ensembleExecError{
-			status:  http.StatusConflict,
-			code:    robot.ErrCodeSynthesisNotReady,
-			message: "no mode outputs available for synthesis",
-		}
-	}
-
 	cfg := s.loadEnsembleConfig(s.projectDirSnapshot())
-	budgetCfg := state.EffectiveBudget(ensemble.BudgetConfigFromTOML(ensemble.DefaultBudgetConfig(), cfg.Ensemble.Budget))
-	baseSynth := ensemble.SynthesisConfig{
-		Strategy:      state.SynthesisStrategy,
-		MaxFindings:   20,
-		MinConfidence: 0.3,
-	}
-	synthConfig := state.EffectiveSynthesis(ensemble.SynthesisConfigFromTOML(baseSynth, cfg.Ensemble.Synthesis))
-	if state.SynthesisStrategy != "" && explicitStrategy == "" {
-		synthConfig.Strategy = state.SynthesisStrategy
-	}
-	if explicitStrategy != "" {
-		synthConfig.Strategy = explicitStrategy
-	}
-	if state.Synthesis == nil && synthConfig.MaxSynthesisTokens <= 0 && budgetCfg.SynthesisReserveTokens > 0 {
-		synthConfig.MaxSynthesisTokens = budgetCfg.SynthesisReserveTokens
-	}
 
-	synth, err := ensemble.NewSynthesizer(synthConfig)
+	out, err := robot.GetEnsembleSynthesize(ctx, robot.EnsembleSynthesizeOptions{
+		Session:  session,
+		Strategy: req.Strategy,
+		Format:   req.OutputFormat,
+		Force:    req.Force,
+		OnProgress: func(stage string) error {
+			return reportJobProgress(ctx, map[string]interface{}{
+				"action":  "ensemble_synthesize",
+				"session": session,
+				"status":  stage,
+			})
+		},
+	}, cfg)
 	if err != nil {
-		return nil, &ensembleExecError{
-			status:  http.StatusBadRequest,
-			code:    ErrCodeInvalidRequest,
-			message: err.Error(),
-			cause:   errInvalidJobRequest,
-		}
+		return nil, err
 	}
-
-	if sessionLive && refreshFailure == nil {
-		manager := ensemble.NewEnsembleManager()
-		if err := manager.ConfigureSessionSynthesis(ctx, state, synth, budgetCfg.TimeoutPerMode); err != nil {
-			return nil, &ensembleExecError{
-				status:  http.StatusInternalServerError,
-				code:    ErrCodeInternalError,
-				message: fmt.Sprintf("configure lead synthesis: %v", err),
-				cause:   err,
+	if !out.Success {
+		execErr := ensembleExecErrorFromRobot(out.RobotResponse)
+		if out.ErrorCode == robot.ErrCodeInvalidFlag {
+			execErr.code = ErrCodeInvalidRequest
+			execErr.status = http.StatusBadRequest
+			execErr.cause = errInvalidJobRequest
+		}
+		if len(out.ValidationErrors) > 0 {
+			if execErr.details == nil {
+				execErr.details = make(map[string]interface{})
 			}
+			execErr.details["validation_errors"] = out.ValidationErrors
 		}
+		return nil, execErr
 	}
-
-	input, err := collector.BuildSynthesisInput(state.Question, nil, synthConfig)
-	if err != nil {
-		return nil, &ensembleExecError{
-			status:  http.StatusInternalServerError,
-			code:    ErrCodeInternalError,
-			message: fmt.Sprintf("build synthesis input: %v", err),
-			cause:   err,
-		}
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := reportJobProgress(ctx, map[string]interface{}{
-		"action":  "ensemble_synthesize",
-		"session": session,
-		"status":  "synthesizing",
-	}); err != nil {
-		return nil, err
-	}
-
-	result, err := synth.SynthesizeContext(ctx, input)
-	if err != nil {
-		return nil, &ensembleExecError{
-			status:  http.StatusInternalServerError,
-			code:    ErrCodeInternalError,
-			message: fmt.Sprintf("synthesis failed: %v", err),
-			cause:   err,
-		}
-	}
-	if refreshFailure != nil {
-		result.FallbackReason = fmt.Sprintf("live output refresh failed; used validated saved outputs for mechanical synthesis: %v", refreshFailure)
-	}
-
-	catalog, _ := ensemble.GlobalCatalog()
-	redundancy := result.Redundancy
-	if redundancy == nil {
-		redundancy = ensemble.AnalyzeRedundancy(input.Outputs, catalog)
-		result.Redundancy = redundancy
-	}
-
-	var rendered bytes.Buffer
-	formatter := ensemble.NewSynthesisFormatter(outputFormat)
-	formatter.IncludeRaw = synthConfig.IncludeRawOutputs
-	formatter.IncludeAudit = true
-	formatter.IncludeExplanation = synthConfig.IncludeExplanation
-	if err := formatter.FormatResult(&rendered, result, input.AuditReport); err != nil {
-		return nil, &ensembleExecError{
-			status:  http.StatusInternalServerError,
-			code:    ErrCodeInternalError,
-			message: fmt.Sprintf("format synthesis output: %v", err),
-			cause:   err,
-		}
-	}
-
-	generatedAt := result.GeneratedAt
-	if generatedAt.IsZero() {
-		generatedAt = time.Now().UTC()
-	}
-
-	report := &robot.SynthesisReport{
-		Summary:              result.Summary,
-		Strategy:             string(synth.Strategy.Name),
-		Format:               formatName,
-		FindingsCount:        len(result.Findings),
-		RecommendationsCount: len(result.Recommendations),
-		RisksCount:           len(result.Risks),
-		QuestionsCount:       len(result.QuestionsForUser),
-		Confidence:           float64(result.Confidence),
-		GeneratedAt:          generatedAt.UTC().Format(time.RFC3339),
-		SynthesizedBy:        result.SynthesizedBy,
-		FallbackReason:       result.FallbackReason,
-		Redundancy:           redundancy,
-	}
-
-	auditSummary := summarizeSynthesisAudit(input.AuditReport)
 
 	respObj := EnsembleSynthesizeEnvelopeResponse{
-		Action:          "ensemble_synthesize",
-		Session:         session,
-		Status:          "complete",
-		Report:          report,
-		Audit:           auditSummary,
-		Result:          result,
-		AuditReport:     input.AuditReport,
-		Redundancy:      redundancy,
-		FormattedOutput: rendered.String(),
+		Action:          out.Action,
+		Session:         out.Session,
+		Status:          out.Status,
+		Report:          out.Report,
+		Audit:           out.Audit,
+		Result:          out.Result,
+		AuditReport:     out.AuditReport,
+		Redundancy:      out.Redundancy,
+		FormattedOutput: out.FormattedOutput,
+		AgentHints:      out.AgentHints,
 	}
 
 	payload, err := toJSONMap(respObj)
@@ -1049,59 +789,4 @@ func (s *Server) handleEnsembleStopV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeSuccessResponse(w, http.StatusOK, payload, reqID)
-}
-
-func countEnsembleAgentStates(state *ensemble.EnsembleSession) (ready, pending, working int) {
-	if state == nil {
-		return 0, 0, 0
-	}
-	for _, a := range state.Assignments {
-		switch a.Status {
-		case ensemble.AssignmentDone:
-			ready++
-		case ensemble.AssignmentPending, ensemble.AssignmentInjecting:
-			pending++
-		case ensemble.AssignmentActive:
-			working++
-		}
-	}
-	return ready, pending, working
-}
-
-func summarizeSynthesisAudit(auditReport *ensemble.AuditReport) *robot.SynthesisAudit {
-	summary := &robot.SynthesisAudit{
-		HighConflictPairs: []string{},
-	}
-	if auditReport == nil {
-		return summary
-	}
-	summary.ConflictCount = len(auditReport.Conflicts)
-	pairSet := make(map[string]struct{})
-	for _, c := range auditReport.Conflicts {
-		if strings.TrimSpace(c.ResolutionPath) == "" {
-			summary.UnresolvedCount++
-		}
-		if c.Severity == ensemble.ConflictHigh && len(c.Positions) >= 2 {
-			modes := make([]string, 0, len(c.Positions))
-			for _, pos := range c.Positions {
-				if m := strings.TrimSpace(pos.ModeID); m != "" {
-					modes = append(modes, m)
-				}
-			}
-			sort.Strings(modes)
-			if len(modes) >= 2 {
-				pairSet[modes[0]+" vs "+modes[1]] = struct{}{}
-			}
-		}
-	}
-	for pair := range auditReport.ModeDisagreements {
-		if len(auditReport.ModeDisagreements[pair]) >= 2 {
-			pairSet[pair] = struct{}{}
-		}
-	}
-	for pair := range pairSet {
-		summary.HighConflictPairs = append(summary.HighConflictPairs, pair)
-	}
-	sort.Strings(summary.HighConflictPairs)
-	return summary
 }

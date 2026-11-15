@@ -49,6 +49,10 @@ func TestEnsembleAndWorktreesOpenAPIReflection(t *testing.T) {
 		{"POST", "/api/v1/ensemble/spawn", "#/components/schemas/EnsembleSpawnEnvelopeResponse", "#/components/schemas/EnsembleSpawnRequest", "modes"},
 		{"POST", "/api/v1/ensemble/sessions/{session}/synthesize", "#/components/schemas/EnsembleSynthesizeEnvelopeResponse", "#/components/schemas/EnsembleSynthesizeRequest", "report"},
 		{"POST", "/api/v1/ensemble/sessions/{session}/stop", "#/components/schemas/EnsembleStopEnvelopeResponse", "#/components/schemas/EnsembleStopRequest", "result"},
+		{"POST", "/api/v1/ensemble/estimate", "#/components/schemas/EnsembleEstimateEnvelopeResponse", "#/components/schemas/EnsembleEstimateRequest", "budget"},
+		{"GET", "/api/v1/ensemble/runs", "#/components/schemas/EnsembleRunsEnvelopeResponse", "", "runs"},
+		{"GET", "/api/v1/ensemble/sessions/{session}/provenance", "#/components/schemas/EnsembleProvenanceEnvelopeResponse", "", "chains"},
+		{"POST", "/api/v1/ensemble/compare", "#/components/schemas/EnsembleCompareEnvelopeResponse", "#/components/schemas/EnsembleCompareRequest", "result"},
 		{"GET", "/api/v1/worktrees", "#/components/schemas/WorktreesListEnvelopeResponse", "", "worktrees"},
 		{"POST", "/api/v1/worktrees", "#/components/schemas/WorktreeCreateEnvelopeResponse", "#/components/schemas/CreateWorktreeRequest", "worktree"},
 		{"POST", "/api/v1/worktrees/{agent}/merge", "#/components/schemas/WorktreeMergeEnvelopeResponse", "#/components/schemas/MergeWorktreeRequest", "merged"},
@@ -1627,4 +1631,299 @@ func TestStandaloneEnsembleSynthesisHTTPCancellationDoesNotDispatch(t *testing.T
 	if saved.Assignments[0].Status != ensemble.AssignmentActive {
 		t.Fatalf("canceled request changed assignment state: %+v", saved.Assignments[0])
 	}
+}
+
+func TestEnsembleAnalysisRESTEndpoints(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("NTM_CONFIG", "")
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	projectDir := t.TempDir()
+	srv := New(Config{ProjectDir: projectDir})
+	t.Cleanup(srv.Stop)
+	router := srv.Router()
+
+	doJSON := func(method, target string, body interface{}) (*httptest.ResponseRecorder, map[string]interface{}) {
+		t.Helper()
+		var reader *bytes.Reader
+		if body != nil {
+			raw, err := json.Marshal(body)
+			if err != nil {
+				t.Fatalf("marshal request body: %v", err)
+			}
+			reader = bytes.NewReader(raw)
+		} else {
+			reader = bytes.NewReader(nil)
+		}
+		req := httptest.NewRequest(method, target, reader)
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		var parsed map[string]interface{}
+		if rec.Body.Len() > 0 {
+			if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+				t.Fatalf("%s %s returned invalid JSON (%d): %v\nbody=%s", method, target, rec.Code, err, rec.Body.String())
+			}
+		}
+		return rec, parsed
+	}
+
+	// 1. POST /api/v1/ensemble/estimate
+	t.Run("EstimatePresetModesAndValidation", func(t *testing.T) {
+		badRec, _ := doJSON(http.MethodPost, "/api/v1/ensemble/estimate", map[string]interface{}{})
+		if badRec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 when neither preset nor modes given, got %d", badRec.Code)
+		}
+		conflictRec, _ := doJSON(http.MethodPost, "/api/v1/ensemble/estimate", map[string]interface{}{
+			"preset": "project-diagnosis",
+			"modes":  []string{"deductive"},
+		})
+		if conflictRec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 when both preset and modes given, got %d", conflictRec.Code)
+		}
+		notFoundRec, _ := doJSON(http.MethodPost, "/api/v1/ensemble/estimate", map[string]interface{}{
+			"preset": "nonexistent-preset-xyz",
+		})
+		if notFoundRec.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 on unknown preset, got %d", notFoundRec.Code)
+		}
+
+		presetRec, presetBody := doJSON(http.MethodPost, "/api/v1/ensemble/estimate", map[string]interface{}{
+			"preset":   "project-diagnosis",
+			"question": "Diagnose architecture bottlenecks in session dispatch",
+		})
+		if presetRec.Code != http.StatusOK {
+			t.Fatalf("POST /api/v1/ensemble/estimate (preset) status=%d body=%v", presetRec.Code, presetBody)
+		}
+		modesArr, ok := presetBody["modes"].([]interface{})
+		if !ok || len(modesArr) == 0 {
+			t.Fatalf("expected non-empty modes estimate array, got %#v", presetBody["modes"])
+		}
+		budgetMap, ok := presetBody["budget"].(map[string]interface{})
+		if !ok || budgetMap["estimated_total_tokens"] == nil {
+			t.Fatalf("expected budget summary, got %#v", presetBody["budget"])
+		}
+
+		// Tight budget override triggers over_budget=true.
+		tightRec, tightBody := doJSON(http.MethodPost, "/api/v1/ensemble/estimate", map[string]interface{}{
+			"modes":        "deductive,failure-mode",
+			"budget_total": 50,
+		})
+		if tightRec.Code != http.StatusOK {
+			t.Fatalf("POST /api/v1/ensemble/estimate (modes) status=%d body=%v", tightRec.Code, tightBody)
+		}
+		if tightBody["over_budget"] != true {
+			t.Fatalf("expected over_budget=true with budget_total=50, got %#v", tightBody["over_budget"])
+		}
+	})
+
+	// Seed Run A (persisted EnsembleSession) and Run B (CheckpointStore run)
+	now := time.Now().UTC()
+	outDir := t.TempDir()
+	outPathA1 := filepath.Join(outDir, "runA-deductive.json")
+	writeModeOutputFile(t, outPathA1, ensemble.ModeOutput{
+		ModeID: "deductive",
+		Thesis: "Session lock contention dominates p99 latency under burst spawn.",
+		TopFindings: []ensemble.Finding{
+			{
+				Finding:         "Global mutex serializes unrelated session status polls",
+				Impact:          ensemble.ImpactHigh,
+				Confidence:      0.91,
+				EvidencePointer: "internal/serve/server.go:126",
+				Reasoning:       "Write lock held across tmux subprocess invocation",
+			},
+		},
+		Confidence:  0.89,
+		GeneratedAt: now.Add(-10 * time.Minute),
+	})
+
+	doneAt := now.Add(-9 * time.Minute)
+	if err := ensemble.SaveSession("analysis-run-a", &ensemble.EnsembleSession{
+		SessionName:       "analysis-run-a",
+		Question:          "What causes p99 spikes during swarm bursts?",
+		PresetUsed:        "project-diagnosis",
+		Status:            ensemble.EnsembleComplete,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         now.Add(-12 * time.Minute),
+		SynthesisOutput:   "Initial synthesis: lock contention in status polling.",
+		Assignments: []ensemble.ModeAssignment{
+			{
+				ModeID:      "deductive",
+				PaneName:    "analysis-run-a__cc_1",
+				AgentType:   "cc",
+				Status:      ensemble.AssignmentDone,
+				OutputPath:  outPathA1,
+				AssignedAt:  now.Add(-11 * time.Minute),
+				CompletedAt: &doneAt,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("SaveSession(analysis-run-a): %v", err)
+	}
+
+	cpStore, err := ensemble.NewCheckpointStore(filepath.Join(projectDir, ".ntm"))
+	if err != nil {
+		t.Fatalf("NewCheckpointStore: %v", err)
+	}
+	if err := cpStore.SaveMetadata(ensemble.CheckpointMetadata{
+		RunID:        "checkpoint-run-b",
+		SessionName:  "analysis-run-b",
+		Question:     "What causes p99 spikes during swarm bursts?",
+		Status:       ensemble.EnsembleReady,
+		CreatedAt:    now.Add(-5 * time.Minute),
+		CompletedIDs: []string{"deductive", "abductive"},
+		TotalModes:   2,
+	}); err != nil {
+		t.Fatalf("SaveMetadata(checkpoint-run-b): %v", err)
+	}
+	if err := cpStore.SaveCheckpoint("checkpoint-run-b", ensemble.ModeCheckpoint{
+		ModeID:      "deductive",
+		Status:      string(ensemble.AssignmentDone),
+		CapturedAt:  now.Add(-4 * time.Minute),
+		ContextHash: "ctx-b",
+		Output: &ensemble.ModeOutput{
+			ModeID: "deductive",
+			Thesis: "Session lock contention dominates p99 latency under burst spawn.",
+			TopFindings: []ensemble.Finding{
+				{
+					Finding:         "Global mutex serializes unrelated session status polls",
+					Impact:          ensemble.ImpactHigh,
+					Confidence:      0.91,
+					EvidencePointer: "internal/serve/server.go:126",
+					Reasoning:       "Write lock held across tmux subprocess invocation",
+				},
+			},
+			Confidence:  0.89,
+			GeneratedAt: now.Add(-4 * time.Minute),
+		},
+	}); err != nil {
+		t.Fatalf("SaveCheckpoint(deductive): %v", err)
+	}
+	if err := cpStore.SaveCheckpoint("checkpoint-run-b", ensemble.ModeCheckpoint{
+		ModeID:      "abductive",
+		Status:      string(ensemble.AssignmentDone),
+		CapturedAt:  now.Add(-3 * time.Minute),
+		ContextHash: "ctx-b",
+		Output: &ensemble.ModeOutput{
+			ModeID: "abductive",
+			Thesis: "Backpressure queue saturation amplifies retry storms.",
+			TopFindings: []ensemble.Finding{
+				{
+					Finding:         "Unjittered client retries synchronize on 429 Retry-After boundaries",
+					Impact:          ensemble.ImpactMedium,
+					Confidence:      0.84,
+					EvidencePointer: "internal/backpressure/evaluate.go:88",
+					Reasoning:       "Burst correlation matches retry interval",
+				},
+			},
+			Confidence:  0.84,
+			GeneratedAt: now.Add(-3 * time.Minute),
+		},
+	}); err != nil {
+		t.Fatalf("SaveCheckpoint(abductive): %v", err)
+	}
+
+	// 2. GET /api/v1/ensemble/runs
+	t.Run("RunsAggregatesSessionsAndCheckpoints", func(t *testing.T) {
+		runsRec, runsBody := doJSON(http.MethodGet, "/api/v1/ensemble/runs", nil)
+		if runsRec.Code != http.StatusOK {
+			t.Fatalf("GET /api/v1/ensemble/runs status=%d body=%v", runsRec.Code, runsBody)
+		}
+		runsArr, ok := runsBody["runs"].([]interface{})
+		if !ok || len(runsArr) < 2 {
+			t.Fatalf("expected >= 2 runs (session + checkpoint), got %#v", runsBody["runs"])
+		}
+		foundSession, foundCheckpoint := false, false
+		for _, raw := range runsArr {
+			item, _ := raw.(map[string]interface{})
+			if item["run_id"] == "analysis-run-a" && item["source"] == "session" {
+				foundSession = true
+			}
+			if item["run_id"] == "checkpoint-run-b" && item["source"] == "checkpoint" {
+				foundCheckpoint = true
+			}
+		}
+		if !foundSession || !foundCheckpoint {
+			t.Fatalf("expected both analysis-run-a (session) and checkpoint-run-b (checkpoint), got %#v", runsArr)
+		}
+	})
+
+	// 3. GET /api/v1/ensemble/sessions/{session}/provenance
+	t.Run("ProvenanceForSessionAndCheckpointWithFilter", func(t *testing.T) {
+		missRec, _ := doJSON(http.MethodGet, "/api/v1/ensemble/sessions/no-such-run/provenance", nil)
+		if missRec.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 on missing provenance session, got %d", missRec.Code)
+		}
+
+		provRec, provBody := doJSON(http.MethodGet, "/api/v1/ensemble/sessions/checkpoint-run-b/provenance", nil)
+		if provRec.Code != http.StatusOK {
+			t.Fatalf("GET provenance status=%d body=%v", provRec.Code, provBody)
+		}
+		chains, ok := provBody["chains"].([]interface{})
+		if !ok || len(chains) < 2 {
+			t.Fatalf("expected >= 2 provenance chains for checkpoint-run-b, got %#v", provBody["chains"])
+		}
+		firstChain, _ := chains[0].(map[string]interface{})
+		findingID, _ := firstChain["finding_id"].(string)
+		if len(findingID) < 6 {
+			t.Fatalf("expected non-empty finding_id, got %q", findingID)
+		}
+
+		filtRec, filtBody := doJSON(http.MethodGet, "/api/v1/ensemble/sessions/checkpoint-run-b/provenance?finding="+findingID[:6], nil)
+		if filtRec.Code != http.StatusOK {
+			t.Fatalf("GET filtered provenance status=%d body=%v", filtRec.Code, filtBody)
+		}
+		if filtBody["chain"] == nil {
+			t.Fatalf("expected matched chain object on prefix filter, got %#v", filtBody)
+		}
+
+		missFindRec, _ := doJSON(http.MethodGet, "/api/v1/ensemble/sessions/checkpoint-run-b/provenance?finding=deadbeef999999", nil)
+		if missFindRec.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 on unknown finding filter, got %d", missFindRec.Code)
+		}
+	})
+
+	// 4. POST /api/v1/ensemble/compare
+	t.Run("CompareSessionAgainstCheckpoint", func(t *testing.T) {
+		badCmp, _ := doJSON(http.MethodPost, "/api/v1/ensemble/compare", map[string]interface{}{"run_a": "analysis-run-a"})
+		if badCmp.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 when run_b missing, got %d", badCmp.Code)
+		}
+		missCmp, _ := doJSON(http.MethodPost, "/api/v1/ensemble/compare", map[string]interface{}{
+			"run_a": "analysis-run-a",
+			"run_b": "missing-run-z",
+		})
+		if missCmp.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 when run_b does not exist, got %d", missCmp.Code)
+		}
+
+		cmpRec, cmpBody := doJSON(http.MethodPost, "/api/v1/ensemble/compare", map[string]interface{}{
+			"run_a": "analysis-run-a",
+			"run_b": "checkpoint-run-b",
+		})
+		if cmpRec.Code != http.StatusOK {
+			t.Fatalf("POST /api/v1/ensemble/compare status=%d body=%v", cmpRec.Code, cmpBody)
+		}
+		if cmpBody["unchanged"] != false {
+			t.Fatalf("expected unchanged=false between 1-mode run A and 2-mode run B, got %#v", cmpBody["unchanged"])
+		}
+		resMap, ok := cmpBody["result"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected comparison result object, got %#v", cmpBody["result"])
+		}
+		modeDiff, _ := resMap["mode_diff"].(map[string]interface{})
+		if modeDiff["added_count"] != float64(1) {
+			t.Fatalf("expected mode_diff.added_count=1 (abductive), got %#v", modeDiff)
+		}
+		findingsDiff, _ := resMap["findings_diff"].(map[string]interface{})
+		if findingsDiff["new_count"] != float64(1) {
+			t.Fatalf("expected findings_diff.new_count=1, got %#v", findingsDiff)
+		}
+	})
 }

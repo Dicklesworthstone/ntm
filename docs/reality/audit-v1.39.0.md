@@ -1,6 +1,6 @@
 # Reality Audit — v1.39.0
 
-generated: 2026-11-15T05:54:04Z by scripts/reality_audit.sh
+generated: 2026-11-15T07:24:14Z by scripts/reality_audit.sh
 seed: 2553148806
 allowlist-lines: 86
 gates: yes
@@ -8,7 +8,7 @@ total-minutes: 3 (budget 90)
 
 ## Step timings
 - 1-checklist: 0m (budget 10m)
-- 2-gates: 3m (budget 15m)
+- 2-gates: 2m (budget 15m)
 - 3-probes: 1m (budget 30m)
 - 4-ledger: 1m (budget 20m)
 
@@ -80,7 +80,7 @@ total-minutes: 3 (budget 90)
 | 6 | README.md:1918 From Source | WORKS | Built `./ntm` via `go build -o ntm ./cmd/ntm` and executed `./ntm version --json` (`"version":"dev","go_version":"go1.26.11","platform":"linux/amd64"`). |
 | 7 | docs/ORCHESTRATION_FEATURES.md:86 Feature 1: Agent Activity Detection | WORKS | Spawned live tmux session `ntm_probe_2220566` (`ntm_probe_2220566__cc_1` emitting `claude> `) and executed `./ntm --robot-activity=ntm_probe_2220566`, returning `"agent_type":"claude","state":"WAITING","confidence":0.9,"detected_patterns":["claude_prompt"]`. |
 | 8 | command_palette.md:29 `fresh_review \| Fresh Review` | WORKS | Executed `./ntm --robot-palette`, returning `{"key":"fresh_review","label":"Fresh Review","category":"Analysis & Review"}` with full prompt body. |
-| 9 | README.md:1503 REST, SSE, WebSocket, and OpenAPI | WORKS | Launched `./ntm serve --port 17395 --project-dir $PROJ_A`, verified `GET /api/v1/config` (`project_dir` + `startup_project_dir`), `PATCH /api/v1/config` switching `project_dir` to `$PROJ_B` (`"updated":true,"success":true`), and `GET /api/v1/openapi.json` (`OpenAPI 3.1.0`, `180` paths, `593` component schemas). |
+| 9 | README.md:1503 REST, SSE, WebSocket, and OpenAPI | WORKS | Launched `./ntm serve --port 17395 --project-dir $PROJ_A`, verified `GET /api/v1/config` (`project_dir` + `startup_project_dir`), `PATCH /api/v1/config` switching `project_dir` to `$PROJ_B` (`"updated":true,"success":true`), `POST /api/v1/ensemble/estimate` (`"success":true`, `5` modes), and `GET /api/v1/openapi.json` (`OpenAPI 3.1.0`, `184` paths, `616` component schemas). |
 | 10 | docs/ORCHESTRATION_FEATURES.md:505 Solution Overview | WORKS | Executed `./ntm --robot-route=ntm_probe_2220566 --strategy=least-loaded` against live tmux session `ntm_probe_2220566`, returning `"recommendation":{"pane_id":"%198","pane_index":1,"agent_type":"claude","score":58.32,"state":"WAITING","reason":"primary strategy succeeded"}`. |
 
 ## Ledger audit (10 seeded closed beads; Proof test must exist in go test -list)
@@ -92,13 +92,13 @@ scope: closed since previous audit (2026-08-20T01:17:47Z) — post-discipline er
 | bd-39eyk | OK (TestContextInjectCobraRejectsFullOrChangedQualifiedNativeSession) |
 | bd-9ny67 | OK (TestBeadsEndpointsWithoutWorkspace) |
 | bd-6n16a | OK (TestAccountRotatorListAccountsContext_ParsesRateLimitedPerAccount) |
+| bd-t0flp | OK (TestEnsembleAnalysisRESTEndpoints) |
 | bd-yhc8r | OK (TestNewScenarioHarnessCreatesExpectedLayout) |
 | bd-rc-track-e-uplift-xkt68.4 | OK (TestGetRoute_RelaxPersistsEvidenceLedger) |
 | bd-hqblz | OK (TestAsyncJobsEnsembleSpawnAndSynthesizeValidationAndLifecycle) |
 | bd-event-bus-reentrant-semaphore-deadlock-n8isd | OK (TestEventBus_ReentrantPublishAtCapacityDoesNotDeadlock) |
 | bd-wvadh | OK (TestWorkflowResumeRetainsTimeoutDeadlineAndAcknowledgesOnce) |
 | bd-g789p | OK (TestWorkflowResumeObservesFilesChangedWhileStopped) |
-| bd-rc-track-b-core-bugs-y2bre.5 | OK (TestApprovalApproveV1_SLBSelfApproval) |
 
 ## Completeness-language check (draft notes: not provided)
 ```
@@ -106,7 +106,7 @@ scope: closed since previous audit (2026-08-20T01:17:47Z) — post-discipline er
 ```
 
 ## Findings
-- none (`0` scripted findings; `10/10` seeded spot-probes verified `WORKS` against built `./ntm`; `10/10` seeded post-`v1.29.0` closed beads out of `103` candidates verified `OK` in `go test -list`; `allowlist-lines = 86 <= 216`).
+- none (`0` scripted findings; `10/10` seeded spot-probes verified `WORKS` against built `./ntm`; `10/10` seeded post-`v1.29.0` closed beads out of `107` candidates verified `OK` in `go test -list`; `allowlist-lines = 86 <= 216`).
 
 ## Verdict
 - New `NO_BEAD` gaps found: `0`.

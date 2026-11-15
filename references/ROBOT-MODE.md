@@ -142,6 +142,7 @@ ntm --robot-ensemble-modes --tier=core
 ntm --robot-ensemble-presets
 ntm --robot-ensemble-suggest="What security issues exist?"
 ntm --robot-ensemble-spawn=myensemble --preset=project-diagnosis --question="What are the main risks?"
+ntm --robot-ensemble-synthesize=myensemble --synth-strategy=consensus --synth-format=markdown
 ntm --robot-ensemble-stop=myensemble
 ```
 

@@ -14,6 +14,7 @@ import {
     DEFAULT_WEB_PORT,
     mapBackpressureLevel,
     normalizeBackpressure,
+    normalizeEnsembleSynthesize,
     normalizeSnapshot,
     normalizeStatusHeader,
     normalizeWebPort,
@@ -49,6 +50,7 @@ import {
     buildWebCockpitCommand as extensionBuildWebCockpitCommand,
     buildWorktreeQuickPickItems,
     defaultEnsembleSessionName,
+    ENSEMBLE_SYNTHESIS_STRATEGY_OPTIONS,
     PALETTE_ACTION_OPTIONS,
     parseCustomSpawnFlags,
     resolveSendTargetsFromSelection,
@@ -1829,6 +1831,178 @@ describe('Swarm Backpressure & Agent Worktrees Contracts and Commands', () => {
                 'http://127.0.0.1:7337/swarm',
                 'http://127.0.0.1:7337/worktrees',
             ]);
+        } finally {
+            for (const sub of subscriptions) {
+                sub.dispose();
+            }
+        }
+    });
+});
+
+const REAL_ENSEMBLE_SYNTHESIZE_PAYLOAD = {
+    success: true,
+    timestamp: '2026-11-15T01:20:00Z',
+    action: 'ensemble_synthesize',
+    session: 'ntm-prod-ensemble',
+    status: 'completed',
+    report: {
+        summary: 'Synthesized 3 convergent findings across deductive and failure-mode operators.',
+        strategy: 'adversarial',
+        format: 'markdown',
+        findings_count: 3,
+        recommendations_count: 2,
+        risks_count: 1,
+        questions_count: 1,
+        confidence: 0.89,
+        generated_at: '2026-11-15T01:20:00Z',
+        synthesized_by: 'mechanical',
+    },
+    audit: {
+        conflict_count: 1,
+        unresolved_count: 0,
+        high_conflict_pairs: ['deductive <-> failure-mode'],
+    },
+    formatted_output: '# Synthesis Report\n\n## Findings\n1. Queue backpressure bounded.\n',
+};
+
+describe('Wave 8: VSCode ntm.synthesizeEnsemble (--robot-ensemble-synthesize)', () => {
+    beforeEach(() => {
+        resetVscodeMock();
+    });
+
+    it('normalizes --robot-ensemble-synthesize JSON, builds CLI flags, and maintains manifest + palette parity', async () => {
+        const recordedCalls: string[][] = [];
+        const client = new NtmClient({
+            execFile: async (_file, args) => {
+                recordedCalls.push(args);
+                return { stdout: JSON.stringify(REAL_ENSEMBLE_SYNTHESIZE_PAYLOAD), stderr: '' };
+            },
+        });
+
+        const res = await client.synthesizeEnsemble({
+            session: 'ntm-prod-ensemble',
+            strategy: 'adversarial',
+            format: 'markdown',
+            output: '/tmp/synth.md',
+            force: true,
+        });
+
+        assert.deepEqual(recordedCalls[0], [
+            '--robot-ensemble-synthesize=ntm-prod-ensemble',
+            '--synth-strategy=adversarial',
+            '--synth-format=markdown',
+            '--synth-output=/tmp/synth.md',
+            '--synth-force',
+            '--robot-format=json',
+        ]);
+        assert.equal(res.action, 'ensemble_synthesize');
+        assert.equal(res.session, 'ntm-prod-ensemble');
+        assert.equal(res.status, 'completed');
+        assert.equal(res.report?.strategy, 'adversarial');
+        assert.equal(res.report?.findings_count, 3);
+        assert.equal(res.audit?.conflict_count, 1);
+        assert.deepEqual(res.audit?.high_conflict_pairs, ['deductive <-> failure-mode']);
+        assert.ok(res.formatted_output?.includes('# Synthesis Report'));
+
+        await assert.rejects(
+            () => client.synthesizeEnsemble({ session: '   ' }),
+            /Session name is required/
+        );
+        assert.throws(
+            () =>
+                normalizeEnsembleSynthesize({
+                    success: false,
+                    error: 'ensemble outputs incomplete (1/3 ready)',
+                    error_code: 'SYNTHESIS_NOT_READY',
+                }),
+            /ensemble outputs incomplete/
+        );
+
+        const pkgPath = path.resolve(__dirname, '../../package.json');
+        const pkgJson = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        const activationEvents: string[] = pkgJson.activationEvents ?? [];
+        assert.ok(activationEvents.includes('onCommand:ntm.synthesizeEnsemble'));
+
+        const commands: Array<{ command: string; title: string; icon?: string }> =
+            pkgJson.contributes?.commands ?? [];
+        const synthCmd = commands.find(c => c.command === 'ntm.synthesizeEnsemble');
+        assert.deepEqual(synthCmd, {
+            command: 'ntm.synthesizeEnsemble',
+            title: 'NTM: Synthesize Reasoning Ensemble',
+            icon: '$(combine)',
+        });
+
+        const synthPalette = PALETTE_ACTION_OPTIONS.find(p => p.actionId === 'synthesizeEnsemble');
+        assert.equal(synthPalette?.command, 'ntm.synthesizeEnsemble');
+        assert.ok(ENSEMBLE_SYNTHESIS_STRATEGY_OPTIONS.length >= 5);
+    });
+
+    it('executes ntm.synthesizeEnsemble via palette and opens markdown report or /ensemble Web Cockpit', async () => {
+        mockState.binaryPath = '/opt/ntm/bin/ntm';
+        mockState.webPort = 7337;
+
+        const synthArgsSeen: string[][] = [];
+        const client = new NtmClient({
+            execFile: async (_file, args) => {
+                if (args.some(a => a.startsWith('--robot-ensemble-synthesize='))) {
+                    synthArgsSeen.push(args);
+                    return { stdout: JSON.stringify(REAL_ENSEMBLE_SYNTHESIZE_PAYLOAD), stderr: '' };
+                }
+                return { stdout: JSON.stringify(REAL_SNAPSHOT_PAYLOAD), stderr: '' };
+            },
+        });
+
+        const subscriptions: Array<{ dispose(): void }> = [];
+        const context = {
+            subscriptions,
+            extensionUri: vscode.Uri.file('/ext'),
+        } as unknown as vscode.ExtensionContext;
+
+        activate(context, client);
+        try {
+            // 1. Dispatch via ntm.openPalette -> adversarial strategy -> Open Synthesis Report
+            mockState.quickPickQueue.push(
+                (options: Array<{ actionId: string }>) =>
+                    options.find(o => o.actionId === 'synthesizeEnsemble'),
+                (strategies: Array<{ strategy: string; force: boolean }>) =>
+                    strategies.find(s => s.strategy === 'adversarial')
+            );
+            mockState.infoMessageActionQueue.push('Open Synthesis Report');
+
+            await vscode.commands.executeCommand('ntm.openPalette');
+
+            assert.equal(synthArgsSeen.length, 1);
+            assert.deepEqual(synthArgsSeen[0], [
+                '--robot-ensemble-synthesize=ntm-prod',
+                '--synth-strategy=adversarial',
+                '--synth-format=markdown',
+                '--robot-format=json',
+            ]);
+            assert.ok(
+                mockState.infoMessages.some(msg =>
+                    msg.includes('Synthesized ensemble "ntm-prod-ensemble" (adversarial: 3 findings, 1 conflicts)')
+                )
+            );
+            assert.equal(mockState.openedTextDocuments.length, 1);
+            assert.equal(mockState.openedTextDocuments[0].language, 'markdown');
+            assert.ok(mockState.openedTextDocuments[0].content.includes('# Synthesis Report'));
+
+            // 2. Direct invocation with explicit session + Force Partial Synthesis -> Open /ensemble in Web Cockpit
+            mockState.quickPickQueue.push((strategies: Array<{ strategy: string; force: boolean }>) =>
+                strategies.find(s => s.force === true)
+            );
+            mockState.infoMessageActionQueue.push('Open /ensemble in Web Cockpit');
+
+            await vscode.commands.executeCommand('ntm.synthesizeEnsemble', 'custom-ensemble');
+
+            assert.equal(synthArgsSeen.length, 2);
+            assert.deepEqual(synthArgsSeen[1], [
+                '--robot-ensemble-synthesize=custom-ensemble',
+                '--synth-format=markdown',
+                '--synth-force',
+                '--robot-format=json',
+            ]);
+            assert.deepEqual(mockState.openedExternalUris, ['http://127.0.0.1:7337/ensemble']);
         } finally {
             for (const sub of subscriptions) {
                 sub.dispose();

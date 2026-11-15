@@ -1084,6 +1084,33 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 		Envelope: true,
 		Request:  EnsembleStopRequest{},
 	},
+	"handleEnsembleEstimateV1": {
+		Response:   EnsembleEstimateEnvelopeResponse{},
+		Envelope:   true,
+		Request:    EnsembleEstimateRequest{},
+		RequestReq: true,
+	},
+	"handleEnsembleRunsV1": {
+		Response: EnsembleRunsEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
+		},
+	},
+	"handleEnsembleProvenanceV1": {
+		Response: EnsembleProvenanceEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "finding", Type: "string", Description: "Optional finding ID or prefix to filter provenance chains."},
+			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
+		},
+	},
+	"handleEnsembleCompareV1": {
+		Response:   EnsembleCompareEnvelopeResponse{},
+		Envelope:   true,
+		Request:    EnsembleCompareRequest{},
+		RequestReq: true,
+	},
 
 	// Worktrees REST API
 	"handleListWorktreesV1": {

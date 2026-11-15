@@ -45,6 +45,15 @@ func LoadSession(sessionName string) (*EnsembleSession, error) {
 	return store.Load(sessionName)
 }
 
+// ListSessions returns all persisted ensemble sessions from SQLite, newest first.
+func ListSessions() ([]EnsembleSession, error) {
+	store, err := defaultSQLiteStore()
+	if err != nil {
+		return nil, err
+	}
+	return store.List()
+}
+
 // SaveSession persists an ensemble session state to SQLite.
 func SaveSession(sessionName string, state *EnsembleSession) error {
 	if state == nil {

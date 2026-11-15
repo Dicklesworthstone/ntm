@@ -110,6 +110,7 @@ var robotHelpSections = []robotHelpSection{
 			"tail",
 			"ensemble",
 			"ensemble-suggest",
+			"ensemble-synthesize",
 			"ensemble-stop",
 			"interrupt",
 			"overlay",

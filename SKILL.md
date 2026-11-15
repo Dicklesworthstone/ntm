@@ -249,6 +249,7 @@ ntm --robot-ensemble=myensemble
 ntm --robot-ensemble-modes --tier=core
 ntm --robot-ensemble-presets
 ntm --robot-ensemble-suggest="What security issues exist?"
+ntm --robot-ensemble-synthesize=myensemble --synth-force
 ntm --robot-send=myproject --msg="Apply schema migration" --op-id=deploy-42
 ntm --robot-action-status=deploy-42
 ntm --robot-wait-request=deploy-42 --timeout=30s

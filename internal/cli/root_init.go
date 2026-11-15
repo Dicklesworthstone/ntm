@@ -1045,7 +1045,7 @@ func needsConfigLoading(cmdName string) bool {
 			robotSend != "" || robotAck != "" || robotSpawn != "" ||
 			robotInterrupt != "" || robotRestartPane != "" || robotExitCLI != "" || robotKillAgent != "" || robotKillPane != "" || robotDialogs != "" || robotAnswerDialog != "" || robotIncidentResolve != "" || robotProbe != "" || robotGraph || robotMail || robotHealth != "" ||
 			robotHealthOAuth != "" || robotHealthRestartStuck != "" || robotLogs != "" || robotDiagnose != "" || robotTerse || robotMarkdown || robotSave != "" || robotRestore != "" ||
-			robotContext != "" || robotEnsemble != "" || robotEnsembleSpawn != "" || robotEnsembleSuggest != "" || robotEnsembleStop != "" || robotAlerts || robotIsWorking != "" || robotAgentHealth != "" ||
+			robotContext != "" || robotEnsemble != "" || robotEnsembleSpawn != "" || robotEnsembleSuggest != "" || robotEnsembleSynthesize != "" || robotEnsembleStop != "" || robotAlerts || robotIsWorking != "" || robotAgentHealth != "" ||
 			robotSmartRestart != "" || robotMonitor != "" || robotEnv != "" || robotSupportBundle != "" ||
 			robotActivity != "" || robotProductivity != "" || robotSendReceipt != "" ||
 			robotActionStatus != "" || robotWaitRequest != "" || robotCancelRequest != "" {

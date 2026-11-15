@@ -12,7 +12,7 @@
     "utility"
   ],
   "category_count": 10,
-  "schema_type_count": 141,
+  "schema_type_count": 142,
   "schema_types": [
     "account_status",
     "accounts_list",
@@ -57,6 +57,7 @@
     "ensemble_spawn",
     "ensemble_stop",
     "ensemble_suggest",
+    "ensemble_synthesize",
     "env",
     "errors",
     "events",
@@ -157,7 +158,7 @@
     "xf_status"
   ],
   "section_count": 13,
-  "surface_count": 153,
+  "surface_count": 154,
   "surfaces": [
     {
       "category": "state",
@@ -828,6 +829,21 @@
       "name": "ensemble-suggest",
       "schema_id": "ntm:robot:ensemble-suggest:v1",
       "schema_type": "ensemble_suggest"
+    },
+    {
+      "category": "ensemble",
+      "flag": "--robot-ensemble-synthesize",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": false,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "ensemble-synthesize",
+      "schema_id": "ntm:robot:ensemble-synthesize:v1",
+      "schema_type": "ensemble_synthesize"
     },
     {
       "category": "ensemble",

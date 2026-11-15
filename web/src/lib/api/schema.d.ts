@@ -1144,6 +1144,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ensemble/compare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ensemble compare
+         * @description Served route `POST /api/v1/ensemble/compare`. Handler: `handleEnsembleCompareV1`. Response shape reflected from Go type `EnsembleCompareEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_ensemble_compare"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ensemble/estimate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ensemble estimate
+         * @description Served route `POST /api/v1/ensemble/estimate`. Handler: `handleEnsembleEstimateV1`. Response shape reflected from Go type `EnsembleEstimateEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_ensemble_estimate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/ensemble/modes": {
         parameters: {
             query?: never;
@@ -1184,6 +1224,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ensemble/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ensemble runs
+         * @description Served route `GET /api/v1/ensemble/runs`. Handler: `handleEnsembleRunsV1`. Response shape reflected from Go type `EnsembleRunsEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_ensemble_runs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/ensemble/sessions/{session}": {
         parameters: {
             query?: never;
@@ -1196,6 +1256,26 @@ export interface paths {
          * @description Served route `GET /api/v1/ensemble/sessions/{session}`. Handler: `handleEnsembleSessionV1`. Response shape reflected from Go type `EnsembleSessionEnvelopeResponse`.
          */
         get: operations["get_api_v1_ensemble_sessions_session"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ensemble/sessions/{session}/provenance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ensemble provenance
+         * @description Served route `GET /api/v1/ensemble/sessions/{session}/provenance`. Handler: `handleEnsembleProvenanceV1`. Response shape reflected from Go type `EnsembleProvenanceEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_ensemble_sessions_session_provenance"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5428,6 +5508,23 @@ export interface components {
             status: string;
             step_id: string;
         };
+        ComparisonResult: {
+            conclusion_diff: components["schemas"]["ConclusionDiff"];
+            contribution_diff: components["schemas"]["ContributionDiff"];
+            findings_diff: components["schemas"]["FindingsDiff"];
+            /** Format: date-time */
+            generated_at: string;
+            mode_diff: components["schemas"]["ModeDiff"];
+            run_a: string;
+            run_b: string;
+            summary: string;
+        };
+        ConclusionDiff: {
+            synthesis_a?: string;
+            synthesis_b?: string;
+            synthesis_changed: boolean;
+            thesis_changes?: components["schemas"]["ThesisChange"][];
+        };
         ConclusionExplanation: {
             conclusion_id: string;
             confidence: number;
@@ -5511,6 +5608,14 @@ export interface components {
             from_agent: string;
             to_agent: string;
             ttl_seconds?: number;
+        };
+        ContributionDiff: {
+            diversity_score_a: number;
+            diversity_score_b: number;
+            overlap_rate_a: number;
+            overlap_rate_b: number;
+            rank_changes?: components["schemas"]["RankChange"][];
+            score_deltas?: components["schemas"]["ScoreDelta"][];
         };
         ContributionReport: {
             deduped_findings: number;
@@ -5811,6 +5916,80 @@ export interface components {
             spent_tokens?: number;
             total_tokens?: number;
         };
+        EnsembleCompareEnvelopeResponse: {
+            changed_sections?: string[];
+            /** Format: date-time */
+            generated_at: string;
+            request_id?: string;
+            result?: components["schemas"]["ComparisonResult"];
+            run_a: string;
+            run_b: string;
+            success: boolean;
+            summary: string;
+            timestamp: string;
+            unchanged: boolean;
+        };
+        EnsembleCompareRequest: {
+            project_dir?: string;
+            run_a: string;
+            run_b: string;
+            verbose?: boolean;
+        };
+        EnsembleEstimateBudgetSummary: {
+            budget_override?: number;
+            context_reserve_tokens?: number;
+            estimated_mode_tokens: number;
+            estimated_total_tokens: number;
+            max_tokens_per_mode: number;
+            max_total_tokens: number;
+            mode_count: number;
+            synthesis_reserve_tokens?: number;
+        };
+        EnsembleEstimateEnvelopeResponse: {
+            budget: components["schemas"]["EnsembleEstimateBudgetSummary"];
+            /** Format: date-time */
+            generated_at: string;
+            modes: components["schemas"]["EnsembleEstimateModeRow"][];
+            over_budget: boolean;
+            preset_label?: string;
+            preset_name?: string;
+            request_id?: string;
+            success: boolean;
+            suggestions?: components["schemas"]["EnsembleEstimateSuggestion"][];
+            timestamp: string;
+            warnings?: string[];
+        };
+        EnsembleEstimateModeRow: {
+            category?: string;
+            mode_code?: string;
+            mode_id: string;
+            mode_name?: string;
+            tier?: string;
+            token_estimate: number;
+            value_per_token?: number;
+            value_score?: number;
+        };
+        EnsembleEstimateRequest: {
+            allow_advanced?: boolean;
+            budget_context_pack?: number;
+            budget_per_agent?: number;
+            budget_synthesis?: number;
+            budget_total?: number;
+            modes?: string[];
+            preset?: string;
+            project_dir?: string;
+            question?: string;
+        };
+        EnsembleEstimateSuggestion: {
+            reason?: string;
+            replace_mode_id: string;
+            replace_mode_name?: string;
+            replace_tokens: number;
+            savings_tokens: number;
+            suggested_mode_id: string;
+            suggested_mode_name?: string;
+            suggested_tokens: number;
+        };
         EnsembleFinding: {
             confidence: number;
             evidence_pointer?: string;
@@ -5874,6 +6053,46 @@ export interface components {
             success: boolean;
             timestamp: string;
             version?: string;
+        };
+        EnsembleProvenanceEnvelopeResponse: {
+            chain?: components["schemas"]["ProvenanceChain"];
+            chains: components["schemas"]["ProvenanceChain"][];
+            context_hash?: string;
+            count: number;
+            finding_filter?: string;
+            invalid_count?: number;
+            request_id?: string;
+            session: string;
+            stats: components["schemas"]["ProvenanceStats"];
+            success: boolean;
+            timestamp: string;
+            validation_errors?: string[];
+        };
+        EnsembleRunSummary: {
+            completed_modes: number;
+            /** Format: date-time */
+            created_at: string;
+            error_modes: number;
+            has_synthesis: boolean;
+            live?: boolean;
+            pending_modes: number;
+            preset_used?: string;
+            question?: string;
+            run_id: string;
+            session_name?: string;
+            source: string;
+            status: string;
+            synthesis_strategy?: string;
+            total_modes: number;
+            /** Format: date-time */
+            updated_at?: string;
+        };
+        EnsembleRunsEnvelopeResponse: {
+            count: number;
+            request_id?: string;
+            runs: components["schemas"]["EnsembleRunSummary"][];
+            success: boolean;
+            timestamp: string;
         };
         EnsembleSessionEnvelopeResponse: {
             _agent_hints?: components["schemas"]["RobotAgentHints"];
@@ -6269,6 +6488,24 @@ export interface components {
             timestamp: string;
             title: string;
         };
+        FindingChange: {
+            changes: string[];
+            confidence_a?: number;
+            confidence_b?: number;
+            finding_id: string;
+            impact_a?: string;
+            impact_b?: string;
+            mode_id: string;
+            text_a?: string;
+            text_b?: string;
+        };
+        FindingDiffEntry: {
+            confidence: number;
+            finding_id: string;
+            impact: string;
+            mode_id: string;
+            text: string;
+        };
         FindingEnvelopeResponse: {
             bead_id?: string;
             /** Format: date-time */
@@ -6301,6 +6538,16 @@ export interface components {
             finding: components["schemas"]["Finding"];
             id: string;
             scan_id: string;
+        };
+        FindingsDiff: {
+            changed?: components["schemas"]["FindingChange"][];
+            changed_count: number;
+            missing?: components["schemas"]["FindingDiffEntry"][];
+            missing_count: number;
+            new?: components["schemas"]["FindingDiffEntry"][];
+            new_count: number;
+            unchanged?: components["schemas"]["FindingDiffEntry"][];
+            unchanged_count: number;
         };
         FollowUpInfo: {
             /** @description Drill down pattern */
@@ -7340,6 +7587,14 @@ export interface components {
             session?: string;
             surface: string;
         };
+        ModeDiff: {
+            added?: string[];
+            added_count: number;
+            removed?: string[];
+            removed_count: number;
+            unchanged?: string[];
+            unchanged_count: number;
+        };
         ModeInfo: {
             best_for?: string[];
             category: components["schemas"]["CategoryRef"];
@@ -8156,6 +8411,41 @@ export interface components {
                 [key: string]: number;
             };
         };
+        ProvenanceChain: {
+            confidence: number;
+            context_hash: string;
+            /** Format: date-time */
+            created_at: string;
+            current_text: string;
+            finding_id: string;
+            impact: string;
+            merged_from?: string[];
+            merged_into?: string;
+            original_text: string;
+            source_mode: string;
+            steps: components["schemas"]["ProvenanceStep"][];
+            synthesis_citations?: string[];
+            /** Format: date-time */
+            updated_at: string;
+        };
+        ProvenanceStats: {
+            active_findings: number;
+            cited_count: number;
+            filtered_count: number;
+            merged_findings: number;
+            mode_breakdown: {
+                [key: string]: number;
+            };
+            total_findings: number;
+        };
+        ProvenanceStep: {
+            action: string;
+            details?: string;
+            related_ids?: string[];
+            stage: string;
+            /** Format: date-time */
+            timestamp: string;
+        };
         ProviderSeatQuota: {
             binding_window?: string;
             eligible: boolean;
@@ -8220,6 +8510,12 @@ export interface components {
         RESTBinding: {
             method?: string;
             path?: string;
+        };
+        RankChange: {
+            delta: number;
+            mode_id: string;
+            rank_a: number;
+            rank_b: number;
         };
         Recipe: {
             description: string;
@@ -8901,6 +9197,12 @@ export interface components {
             time_to_impact_explanation?: string;
             urgency: number;
             urgency_explanation?: string;
+        };
+        ScoreDelta: {
+            delta: number;
+            mode_id: string;
+            score_a: number;
+            score_b: number;
         };
         SearchHit: {
             agent: string;
@@ -10453,6 +10755,11 @@ export interface components {
             warning_alerts: number;
             /** @description Working agents */
             working_agents: number;
+        };
+        ThesisChange: {
+            mode_id: string;
+            thesis_a: string;
+            thesis_b: string;
         };
         ThreadSummary: {
             action_items: string[];
@@ -14287,6 +14594,108 @@ export interface operations {
             };
         };
     };
+    post_api_v1_ensemble_compare: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnsembleCompareRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnsembleCompareEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_ensemble_estimate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnsembleEstimateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnsembleEstimateEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     get_api_v1_ensemble_modes: {
         parameters: {
             query?: {
@@ -14392,6 +14801,56 @@ export interface operations {
             };
         };
     };
+    get_api_v1_ensemble_runs: {
+        parameters: {
+            query?: {
+                /** @description Optional existing absolute project directory override (alias: ?project=). */
+                project_dir?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnsembleRunsEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     get_api_v1_ensemble_sessions_session: {
         parameters: {
             query?: never;
@@ -14411,6 +14870,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EnsembleSessionEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_ensemble_sessions_session_provenance: {
+        parameters: {
+            query?: {
+                /** @description Optional finding ID or prefix to filter provenance chains. */
+                finding?: string;
+                /** @description Optional existing absolute project directory override (alias: ?project=). */
+                project_dir?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The session identifier */
+                session: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnsembleProvenanceEnvelopeResponse"];
                 };
             };
             /** @description Bad request */

@@ -917,6 +917,13 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 		"ensemble-stop": {
 			Sections: []string{"sessions", "next_actions"},
 		},
+		"ensemble-synthesize": {
+			Sections: []string{"sessions", "next_actions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Synthesize completed reasoning mode outputs for an ensemble session with disagreement audit and redundancy analysis",
+				SummaryHint: "Inspect report, audit, and formatted_output; pass --synth-force to synthesize completed modes before all panes finish",
+			},
+		},
 		"proxy-status": {
 			Sections: []string{"source_health"},
 		},

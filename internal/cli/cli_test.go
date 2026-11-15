@@ -6210,6 +6210,8 @@ func TestRobotProcessErrorContract(t *testing.T) {
 		{name: "coordinator interval on wrong feature", args: []string{"--json", "coordinator", "enable", "auto-assign", "--interval=30m"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
 		{name: "format before bulk metadata", args: []string{"--robot-format=json", "--robot-bulk-assign=proj", "--not-a-real-flag"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1, expectedCommand: "robot-bulk-assign"},
 		{name: "default ensemble spawn stub", args: []string{"--robot-ensemble-spawn=contract", "--robot-format=toon"}, errorCode: robot.ErrCodeNotImplemented, expectedExit: 2},
+		{name: "missing ensemble synthesize session", args: []string{"--robot-ensemble-synthesize=ntm-robot-contract-missing-session", "--robot-format=json"}, errorCode: robot.ErrCodeSessionNotFound, expectedExit: 1},
+		{name: "invalid ensemble synthesize strategy", args: []string{"--robot-ensemble-synthesize=ntm-robot-contract-missing-session", "--synth-strategy=bogus", "--robot-format=json"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
 		{name: "unavailable feature", args: []string{"__robot_contract_unavailable__"}, errorCode: robot.ErrCodeNotImplemented, expectedExit: 2},
 	}
 

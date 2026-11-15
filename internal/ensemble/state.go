@@ -37,6 +37,18 @@ func NewStateStore(path string) (*StateStore, error) {
 	return &StateStore{store: store, ensembles: ensembleStore}, nil
 }
 
+// NewStateStoreFromDB wraps an existing shared state.Store without opening a second handle.
+func NewStateStoreFromDB(store *state.Store) *StateStore {
+	if store == nil {
+		return nil
+	}
+	ensembleStore := state.NewEnsembleStore(store)
+	if ensembleStore == nil {
+		return nil
+	}
+	return &StateStore{store: store, ensembles: ensembleStore}
+}
+
 // Close closes the underlying SQLite store.
 func (s *StateStore) Close() error {
 	if s == nil || s.store == nil {
@@ -84,6 +96,29 @@ func (s *StateStore) Load(sessionName string) (*EnsembleSession, error) {
 		return nil, os.ErrNotExist
 	}
 	return fromStateSession(session)
+}
+
+// List returns all persisted ensemble sessions from SQLite, newest first.
+func (s *StateStore) List() ([]EnsembleSession, error) {
+	if s == nil || s.ensembles == nil {
+		return nil, errors.New("ensemble state store is nil")
+	}
+
+	persisted, err := s.ensembles.ListEnsembles()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]EnsembleSession, 0, len(persisted))
+	for i := range persisted {
+		converted, err := fromStateSession(&persisted[i])
+		if err != nil {
+			return nil, err
+		}
+		if converted != nil {
+			out = append(out, *converted)
+		}
+	}
+	return out, nil
 }
 
 var defaultStateStore struct {

@@ -11,6 +11,10 @@
  *   - GET  /api/v1/ensemble/sessions/{session}
  *   - POST /api/v1/ensemble/sessions/{session}/synthesize
  *   - POST /api/v1/ensemble/sessions/{session}/stop
+ *   - POST /api/v1/ensemble/estimate
+ *   - GET  /api/v1/ensemble/runs
+ *   - GET  /api/v1/ensemble/sessions/{session}/provenance
+ *   - POST /api/v1/ensemble/compare
  */
 
 import { useMemo, useState } from "react";
@@ -21,6 +25,7 @@ import {
   type ApiEnvelope,
   type components,
 } from "@/lib/api/client";
+import { EnsembleAnalysisWorkbench } from "@/components/ensemble/EnsembleAnalysisWorkbench";
 
 type EnsembleModesResponse =
   components["schemas"]["EnsembleModesEnvelopeResponse"];
@@ -931,6 +936,14 @@ export default function EnsemblePage() {
           </div>
         )}
       </section>
+
+      {/* Token Budget Estimator, Saved Runs Diff & Finding Provenance Workbench */}
+      <EnsembleAnalysisWorkbench
+        presets={presets}
+        selectedPreset={selectedPreset}
+        question={question}
+        inspectSession={inspectSession}
+      />
 
       {/* Curated Presets Grid */}
       <section className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 space-y-3">

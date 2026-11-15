@@ -77,6 +77,11 @@ var (
 	robotEnsembleProject       string // project directory override
 	robotEnsembleSuggest       string // question for ensemble suggestion
 	robotEnsembleSuggestIDOnly bool   // output only preset name
+	robotEnsembleSynthesize    string // session name to synthesize
+	robotEnsembleSynthStrategy string // synthesis strategy override
+	robotEnsembleSynthFormat   string // synthesis output format
+	robotEnsembleSynthOutput   string // optional synthesis output path
+	robotEnsembleSynthForce    bool   // force synthesis with partial outputs
 	robotEnsembleStop          string // session name to stop
 	robotEnsembleStopForce     bool   // force kill without graceful shutdown
 	robotEnsembleStopNoCollect bool   // skip partial output collection
@@ -692,6 +697,11 @@ func registerRobotFlags() {
 	rootCmd.Flags().StringVar(&robotEnsembleProject, "project", "", "Project directory override for robot commands (e.g., ensemble spawn, JFP install)")
 	rootCmd.Flags().StringVar(&robotEnsembleSuggest, "robot-ensemble-suggest", "", "Suggest best ensemble preset for a question. Example: ntm --robot-ensemble-suggest=\"What security issues exist?\"")
 	rootCmd.Flags().BoolVar(&robotEnsembleSuggestIDOnly, "suggest-id-only", false, "Output only preset name with --robot-ensemble-suggest")
+	rootCmd.Flags().StringVar(&robotEnsembleSynthesize, "robot-ensemble-synthesize", "", "Synthesize completed reasoning mode outputs for an ensemble session. Required: SESSION. Example: ntm --robot-ensemble-synthesize=myproject")
+	rootCmd.Flags().StringVar(&robotEnsembleSynthStrategy, "synth-strategy", "", "Synthesis strategy override (consensus, dialectical, adversarial, bayesian, meta-reasoning). Optional with --robot-ensemble-synthesize")
+	rootCmd.Flags().StringVar(&robotEnsembleSynthFormat, "synth-format", "markdown", "Rendered synthesis format: markdown, json, yaml. Optional with --robot-ensemble-synthesize")
+	rootCmd.Flags().StringVar(&robotEnsembleSynthOutput, "synth-output", "", "Optional file path to save formatted synthesis output. Optional with --robot-ensemble-synthesize")
+	rootCmd.Flags().BoolVar(&robotEnsembleSynthForce, "synth-force", false, "Synthesize available outputs even if some modes are still pending or working. Optional with --robot-ensemble-synthesize")
 	rootCmd.Flags().StringVar(&robotEnsembleStop, "robot-ensemble-stop", "", "Stop an ensemble and save partial state. Required: SESSION. Example: ntm --robot-ensemble-stop=myproject")
 	rootCmd.Flags().BoolVar(&robotEnsembleStopForce, "stop-force", false, "Force kill without graceful shutdown. Optional with --robot-ensemble-stop")
 	rootCmd.Flags().BoolVar(&robotEnsembleStopNoCollect, "stop-no-collect", false, "Skip partial output collection. Optional with --robot-ensemble-stop")
