@@ -2,6 +2,7 @@ package state
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -432,5 +433,91 @@ func TestEnsembleStore_SaveReplacesAssignments(t *testing.T) {
 	}
 	if got.Assignments[0].ModeID != "c" {
 		t.Errorf("ModeID: want %q, got %q", "c", got.Assignments[0].ModeID)
+	}
+}
+
+func TestEnsembleExecutionConfigMigrationPreservesOlderRuns(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "legacy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.db.Exec(`
+		CREATE TABLE _migrations (
+			version INTEGER PRIMARY KEY,
+			name TEXT NOT NULL,
+			applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`); err != nil {
+		t.Fatal(err)
+	}
+	files, err := GetMigrationFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range files {
+		if name >= "031_ensemble_execution_config.sql" {
+			continue
+		}
+		migration, err := ReadMigration(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.Exec(migration); err != nil {
+			t.Fatalf("apply old migration %s: %v", name, err)
+		}
+		var version int
+		if n, _ := fmt.Sscanf(name, "%03d_", &version); n != 1 {
+			t.Fatalf("invalid migration name %q", name)
+		}
+		if _, err := store.db.Exec("INSERT INTO _migrations (version, name) VALUES (?, ?)", version, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.db.Exec(`
+		INSERT INTO ensemble_sessions
+			(session_name, question, status, synthesis_strategy, created_at, synthesis_output)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		"legacy", "Keep the completed analysis", "complete", "manual", time.Now().UTC(), "Saved synthesis"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`
+		INSERT INTO mode_assignments (ensemble_id, mode_id, pane_name, agent_type, status, output_path)
+		SELECT id, 'deductive', 'cc_1', 'cc', 'done', '/saved/output.md'
+		FROM ensemble_sessions WHERE session_name = 'legacy'`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(); err != nil {
+		t.Fatalf("repeat migration: %v", err)
+	}
+	ensembles := NewEnsembleStore(store)
+	loaded, err := ensembles.GetEnsemble("legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded == nil || loaded.Question != "Keep the completed analysis" || loaded.SynthesisOutput != "Saved synthesis" {
+		t.Fatalf("migration changed legacy analysis: %+v", loaded)
+	}
+	if len(loaded.Assignments) != 1 || loaded.Assignments[0].OutputPath != "/saved/output.md" {
+		t.Fatalf("migration changed legacy assignments: %+v", loaded.Assignments)
+	}
+	if loaded.BudgetJSON != "" || loaded.SynthesisConfigJSON != "" {
+		t.Fatalf("legacy snapshots should be absent: %+v", loaded)
+	}
+
+	loaded.BudgetJSON = "{}"
+	loaded.SynthesisConfigJSON = `{"strategy":"manual"}`
+	if err := ensembles.SaveEnsemble(loaded); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := ensembles.GetEnsemble("legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.BudgetJSON != loaded.BudgetJSON || reloaded.SynthesisConfigJSON != loaded.SynthesisConfigJSON {
+		t.Fatalf("explicit zero configuration lost: %+v", reloaded)
 	}
 }

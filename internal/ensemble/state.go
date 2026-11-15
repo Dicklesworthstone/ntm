@@ -1,6 +1,7 @@
 package ensemble
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -59,7 +60,11 @@ func (s *StateStore) Save(session *EnsembleSession) error {
 		session.CreatedAt = time.Now().UTC()
 	}
 
-	return s.ensembles.SaveEnsemble(toStateSession(session))
+	persisted, err := toStateSession(session)
+	if err != nil {
+		return err
+	}
+	return s.ensembles.SaveEnsemble(persisted)
 }
 
 // Load fetches an ensemble session from SQLite.
@@ -78,7 +83,7 @@ func (s *StateStore) Load(sessionName string) (*EnsembleSession, error) {
 	if session == nil {
 		return nil, os.ErrNotExist
 	}
-	return fromStateSession(session), nil
+	return fromStateSession(session)
 }
 
 var defaultStateStore struct {
@@ -114,9 +119,25 @@ func CloseDefaultStateStore() {
 	}
 }
 
-func toStateSession(session *EnsembleSession) *state.EnsembleSession {
+func toStateSession(session *EnsembleSession) (*state.EnsembleSession, error) {
 	if session == nil {
-		return nil
+		return nil, nil
+	}
+
+	var budgetJSON, synthesisJSON string
+	if session.Budget != nil {
+		encoded, err := json.Marshal(session.Budget)
+		if err != nil {
+			return nil, fmt.Errorf("encode ensemble budget: %w", err)
+		}
+		budgetJSON = string(encoded)
+	}
+	if session.Synthesis != nil {
+		encoded, err := json.Marshal(session.Synthesis)
+		if err != nil {
+			return nil, fmt.Errorf("encode ensemble synthesis config: %w", err)
+		}
+		synthesisJSON = string(encoded)
 	}
 
 	assignments := make([]state.ModeAssignment, 0, len(session.Assignments))
@@ -138,22 +159,43 @@ func toStateSession(session *EnsembleSession) *state.EnsembleSession {
 	}
 
 	return &state.EnsembleSession{
-		SessionName:       session.SessionName,
-		Question:          session.Question,
-		PresetUsed:        session.PresetUsed,
-		Status:            session.Status.String(),
-		SynthesisStrategy: session.SynthesisStrategy.String(),
-		CreatedAt:         session.CreatedAt,
-		SynthesizedAt:     session.SynthesizedAt,
-		SynthesisOutput:   session.SynthesisOutput,
-		Error:             session.Error,
-		Assignments:       assignments,
-	}
+		SessionName:         session.SessionName,
+		Question:            session.Question,
+		PresetUsed:          session.PresetUsed,
+		Status:              session.Status.String(),
+		SynthesisStrategy:   session.SynthesisStrategy.String(),
+		BudgetJSON:          budgetJSON,
+		SynthesisConfigJSON: synthesisJSON,
+		CreatedAt:           session.CreatedAt,
+		SynthesizedAt:       session.SynthesizedAt,
+		SynthesisOutput:     session.SynthesisOutput,
+		Error:               session.Error,
+		Assignments:         assignments,
+	}, nil
 }
 
-func fromStateSession(session *state.EnsembleSession) *EnsembleSession {
+func fromStateSession(session *state.EnsembleSession) (*EnsembleSession, error) {
 	if session == nil {
-		return nil
+		return nil, nil
+	}
+
+	var budget *BudgetConfig
+	if session.BudgetJSON != "" {
+		if err := json.Unmarshal([]byte(session.BudgetJSON), &budget); err != nil {
+			return nil, fmt.Errorf("decode ensemble budget: %w", err)
+		}
+		if budget == nil {
+			return nil, errors.New("decode ensemble budget: expected a configuration object")
+		}
+	}
+	var synthesis *SynthesisConfig
+	if session.SynthesisConfigJSON != "" {
+		if err := json.Unmarshal([]byte(session.SynthesisConfigJSON), &synthesis); err != nil {
+			return nil, fmt.Errorf("decode ensemble synthesis config: %w", err)
+		}
+		if synthesis == nil {
+			return nil, errors.New("decode ensemble synthesis config: expected a configuration object")
+		}
 	}
 
 	assignments := make([]ModeAssignment, 0, len(session.Assignments))
@@ -177,9 +219,11 @@ func fromStateSession(session *state.EnsembleSession) *EnsembleSession {
 		Assignments:       assignments,
 		Status:            EnsembleStatus(session.Status),
 		SynthesisStrategy: SynthesisStrategy(session.SynthesisStrategy),
+		Budget:            budget,
+		Synthesis:         synthesis,
 		CreatedAt:         session.CreatedAt,
 		SynthesizedAt:     session.SynthesizedAt,
 		SynthesisOutput:   session.SynthesisOutput,
 		Error:             session.Error,
-	}
+	}, nil
 }

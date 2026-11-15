@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -1047,5 +1048,86 @@ func TestEnsembleInjection_PerPaneErrorStillAllowsOtherModes(t *testing.T) {
 	}
 	if result.Results[0].Success || !result.Results[1].Success {
 		t.Fatalf("unexpected delivery receipts: %+v", result.Results)
+	}
+}
+
+func TestSpawnEnsemblePersistsResolvedConfigBeforeCreation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("NTM_CONFIG", "")
+	resetDefaultStateStoreForTest()
+	t.Cleanup(CloseDefaultStateStore)
+
+	catalog := testModeCatalog(t)
+	preset := EnsemblePreset{
+		Name:  "persisted-settings",
+		Modes: []ModeRef{ModeRefFromID("deductive")},
+		Synthesis: SynthesisConfig{
+			Strategy:      StrategyManual,
+			MinConfidence: 0.8,
+			MaxFindings:   12,
+		},
+		Budget: BudgetConfig{
+			MaxTokensPerMode:     1100,
+			MaxTotalTokens:       9000,
+			ContextReserveTokens: 100,
+			TimeoutPerMode:       time.Minute,
+			TotalTimeout:         4 * time.Minute,
+			MaxRetries:           1,
+		},
+	}
+	manager := NewEnsembleManager()
+	manager.Catalog = catalog
+	manager.Registry = NewEnsembleRegistry([]EnsemblePreset{preset}, catalog)
+	manager.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := &EnsembleConfig{
+		SessionName: "persisted-settings",
+		Question:    "Retain the settings selected for this run",
+		Ensemble:    preset.Name,
+		// Fail pane planning after initial persistence, before any tmux calls.
+		AgentMix: map[string]int{"": 1},
+		Budget: BudgetConfig{
+			MaxTokensPerMode:       1600,
+			SynthesisReserveTokens: 600,
+		},
+		Synthesis: SynthesisConfig{
+			MinConfidence: 0.65,
+			MaxFindings:   3,
+		},
+	}
+
+	spawned, err := manager.SpawnEnsemble(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "empty agent type") {
+		t.Fatalf("SpawnEnsemble error = %v, want injected planning failure", err)
+	}
+	if spawned == nil || spawned.Budget == nil || spawned.Synthesis == nil {
+		t.Fatal("spawn did not snapshot its resolved configuration")
+	}
+	CloseDefaultStateStore()
+	loaded, err := LoadSession(cfg.SessionName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Status != EnsembleError || loaded.Budget == nil || loaded.Synthesis == nil {
+		t.Fatalf("initial failure state lost configuration: %+v", loaded)
+	}
+	wantBudget := preset.Budget
+	wantBudget.MaxTokensPerMode = 1600
+	wantBudget.SynthesisReserveTokens = 600
+	if got := loaded.EffectiveBudget(DefaultBudgetConfig()); got != wantBudget {
+		t.Fatalf("saved budget = %+v, want %+v", got, wantBudget)
+	}
+	wantSynthesis := preset.Synthesis
+	wantSynthesis.MinConfidence = 0.65
+	wantSynthesis.MaxFindings = 3
+	wantSynthesis.MaxSynthesisTokens = 600
+	if got := loaded.EffectiveSynthesis(DefaultSynthesisConfig()); got != wantSynthesis {
+		t.Fatalf("saved synthesis = %+v, want %+v", got, wantSynthesis)
+	}
+
+	cfg.Budget.MaxTokensPerMode = 9999
+	cfg.Synthesis.MaxFindings = 99
+	if spawned.Budget.MaxTokensPerMode != 1600 || spawned.Synthesis.MaxFindings != 3 {
+		t.Fatal("spawned configuration aliases mutable caller settings")
 	}
 }

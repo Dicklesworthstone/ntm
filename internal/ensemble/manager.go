@@ -206,6 +206,8 @@ func (m *EnsembleManager) SpawnEnsemble(ctx context.Context, cfg *EnsembleConfig
 		Assignments:       nil,
 		Status:            EnsembleSpawning,
 		SynthesisStrategy: resolvedCfg.synthesis.Strategy,
+		Budget:            &resolvedCfg.budget,
+		Synthesis:         &resolvedCfg.synthesis,
 		CreatedAt:         time.Now().UTC(),
 	}
 	// Cancellation stops further orchestration, not agents that may already

@@ -10,17 +10,19 @@ import (
 
 // EnsembleSession represents persisted ensemble state.
 type EnsembleSession struct {
-	ID                int64            `json:"id"`
-	SessionName       string           `json:"session_name"`
-	Question          string           `json:"question"`
-	PresetUsed        string           `json:"preset_used,omitempty"`
-	Status            string           `json:"status"`
-	SynthesisStrategy string           `json:"synthesis_strategy,omitempty"`
-	CreatedAt         time.Time        `json:"created_at"`
-	SynthesizedAt     *time.Time       `json:"synthesized_at,omitempty"`
-	SynthesisOutput   string           `json:"synthesis_output,omitempty"`
-	Error             string           `json:"error,omitempty"`
-	Assignments       []ModeAssignment `json:"assignments,omitempty"`
+	ID                  int64            `json:"id"`
+	SessionName         string           `json:"session_name"`
+	Question            string           `json:"question"`
+	PresetUsed          string           `json:"preset_used,omitempty"`
+	Status              string           `json:"status"`
+	SynthesisStrategy   string           `json:"synthesis_strategy,omitempty"`
+	BudgetJSON          string           `json:"budget_json,omitempty"`
+	SynthesisConfigJSON string           `json:"synthesis_config_json,omitempty"`
+	CreatedAt           time.Time        `json:"created_at"`
+	SynthesizedAt       *time.Time       `json:"synthesized_at,omitempty"`
+	SynthesisOutput     string           `json:"synthesis_output,omitempty"`
+	Error               string           `json:"error,omitempty"`
+	Assignments         []ModeAssignment `json:"assignments,omitempty"`
 }
 
 // ModeAssignment represents a persisted mode assignment for an ensemble session.
@@ -80,9 +82,9 @@ func (s *EnsembleStore) SaveEnsemble(e *EnsembleSession) error {
 	if err := func() error {
 		result, err := tx.Exec(`
 			UPDATE ensemble_sessions
-			SET question = ?, preset_used = ?, status = ?, synthesis_strategy = ?, synthesized_at = ?, synthesis_output = ?, error = ?
+			SET question = ?, preset_used = ?, status = ?, synthesis_strategy = ?, budget_json = ?, synthesis_config_json = ?, synthesized_at = ?, synthesis_output = ?, error = ?
 			WHERE session_name = ?`,
-			e.Question, e.PresetUsed, e.Status, e.SynthesisStrategy, e.SynthesizedAt, e.SynthesisOutput, e.Error, e.SessionName,
+			e.Question, e.PresetUsed, e.Status, e.SynthesisStrategy, e.BudgetJSON, e.SynthesisConfigJSON, e.SynthesizedAt, e.SynthesisOutput, e.Error, e.SessionName,
 		)
 		if err != nil {
 			return fmt.Errorf("update ensemble session: %w", err)
@@ -95,9 +97,9 @@ func (s *EnsembleStore) SaveEnsemble(e *EnsembleSession) error {
 		if rows == 0 {
 			_, err := tx.Exec(`
 				INSERT INTO ensemble_sessions
-					(session_name, question, preset_used, status, synthesis_strategy, created_at, synthesized_at, synthesis_output, error)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				e.SessionName, e.Question, e.PresetUsed, e.Status, e.SynthesisStrategy, e.CreatedAt, e.SynthesizedAt, e.SynthesisOutput, e.Error,
+					(session_name, question, preset_used, status, synthesis_strategy, budget_json, synthesis_config_json, created_at, synthesized_at, synthesis_output, error)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				e.SessionName, e.Question, e.PresetUsed, e.Status, e.SynthesisStrategy, e.BudgetJSON, e.SynthesisConfigJSON, e.CreatedAt, e.SynthesizedAt, e.SynthesisOutput, e.Error,
 			)
 			if err != nil {
 				return fmt.Errorf("insert ensemble session: %w", err)
@@ -190,7 +192,7 @@ func (s *EnsembleStore) GetEnsemble(sessionName string) (*EnsembleSession, error
 
 	err := s.store.db.QueryRow(`
 		SELECT id, session_name, question, COALESCE(preset_used, ''), status,
-		       COALESCE(synthesis_strategy, ''), created_at, synthesized_at,
+		       COALESCE(synthesis_strategy, ''), COALESCE(budget_json, ''), COALESCE(synthesis_config_json, ''), created_at, synthesized_at,
 		       COALESCE(synthesis_output, ''), COALESCE(error, '')
 		FROM ensemble_sessions
 		WHERE session_name = ?`, sessionName,
@@ -201,6 +203,8 @@ func (s *EnsembleStore) GetEnsemble(sessionName string) (*EnsembleSession, error
 		&session.PresetUsed,
 		&session.Status,
 		&session.SynthesisStrategy,
+		&session.BudgetJSON,
+		&session.SynthesisConfigJSON,
 		&session.CreatedAt,
 		&synthesizedAt,
 		&session.SynthesisOutput,

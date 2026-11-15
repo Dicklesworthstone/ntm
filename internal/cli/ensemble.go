@@ -752,7 +752,7 @@ func resolveEnsembleBudget(state *ensemble.EnsembleSession) (string, ensemble.Bu
 
 	registry, err := ensemble.GlobalEnsembleRegistry()
 	if err != nil || registry == nil {
-		return name, budget
+		return name, state.EffectiveBudget(budget)
 	}
 
 	if preset := registry.Get(state.PresetUsed); preset != nil {
@@ -763,7 +763,7 @@ func resolveEnsembleBudget(state *ensemble.EnsembleSession) (string, ensemble.Bu
 		budget = mergeBudgetDefaults(preset.Budget, budget)
 	}
 
-	return name, budget
+	return name, state.EffectiveBudget(budget)
 }
 
 func mergeBudgetDefaults(current, defaults ensemble.BudgetConfig) ensemble.BudgetConfig {
@@ -930,6 +930,7 @@ type synthesizeOptions struct {
 	Force                 bool
 	Verbose               bool
 	Explain               bool
+	ExplainSet            bool
 	Stream                bool
 	RunID                 string
 	Resume                bool
@@ -978,6 +979,7 @@ Use --force to synthesize even if some agents haven't completed.`,
 			opts.MinConfidenceSet = cmd.Flags().Changed("min-confidence")
 			opts.MaxFindingsSet = cmd.Flags().Changed("max-findings")
 			opts.IncludeRawOutputsSet = cmd.Flags().Changed("include-raw-outputs")
+			opts.ExplainSet = cmd.Flags().Changed("explain")
 			opts.ConflictResolutionSet = cmd.Flags().Changed("conflict-resolution")
 			opts.BudgetSynthesisSet = cmd.Flags().Changed("budget-synthesis")
 			opts.BudgetContextPackSet = cmd.Flags().Changed("budget-context-pack")
@@ -1113,7 +1115,7 @@ func runEnsembleSynthesize(ctx context.Context, w io.Writer, session string, opt
 	if cfg != nil {
 		ensCfg = cfg.Ensemble
 	}
-	budgetCfg := ensemble.BudgetConfigFromTOML(ensemble.DefaultBudgetConfig(), ensCfg.Budget)
+	budgetCfg := state.EffectiveBudget(ensemble.BudgetConfigFromTOML(ensemble.DefaultBudgetConfig(), ensCfg.Budget))
 	if opts.BudgetSynthesisSet || opts.BudgetSynthesis > 0 {
 		budgetCfg.SynthesisReserveTokens = opts.BudgetSynthesis
 	}
@@ -1264,7 +1266,7 @@ func runEnsembleSynthesize(ctx context.Context, w io.Writer, session string, opt
 		MinConfidence:      0.3,
 		IncludeExplanation: opts.Explain,
 	}
-	synthConfig := ensemble.SynthesisConfigFromTOML(baseSynth, ensCfg.Synthesis)
+	synthConfig := state.EffectiveSynthesis(ensemble.SynthesisConfigFromTOML(baseSynth, ensCfg.Synthesis))
 	if state.SynthesisStrategy != "" && strings.TrimSpace(opts.Strategy) == "" {
 		synthConfig.Strategy = state.SynthesisStrategy
 	}
@@ -1285,10 +1287,14 @@ func runEnsembleSynthesize(ctx context.Context, w io.Writer, session string, opt
 	if opts.ConflictResolutionSet || strings.TrimSpace(opts.ConflictResolution) != "" {
 		synthConfig.ConflictResolution = strings.TrimSpace(opts.ConflictResolution)
 	}
-	if budgetCfg.SynthesisReserveTokens > 0 {
+	if opts.BudgetSynthesisSet || opts.BudgetSynthesis > 0 {
+		synthConfig.MaxSynthesisTokens = budgetCfg.SynthesisReserveTokens
+	} else if state.Synthesis == nil && synthConfig.MaxSynthesisTokens <= 0 && budgetCfg.SynthesisReserveTokens > 0 {
 		synthConfig.MaxSynthesisTokens = budgetCfg.SynthesisReserveTokens
 	}
-	synthConfig.IncludeExplanation = opts.Explain
+	if opts.ExplainSet || opts.Explain {
+		synthConfig.IncludeExplanation = opts.Explain
+	}
 
 	// Create synthesizer
 	synth, err := ensemble.NewSynthesizer(synthConfig)
@@ -1339,7 +1345,7 @@ func runEnsembleSynthesize(ctx context.Context, w io.Writer, session string, opt
 	formatter.Verbose = opts.Verbose
 	formatter.IncludeRaw = synthConfig.IncludeRawOutputs
 	formatter.IncludeAudit = true
-	formatter.IncludeExplanation = opts.Explain
+	formatter.IncludeExplanation = synthConfig.IncludeExplanation
 
 	// Determine output destination
 	out := io.Writer(w)

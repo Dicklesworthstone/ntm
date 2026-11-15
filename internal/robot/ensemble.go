@@ -142,7 +142,7 @@ func GetEnsemble(session string) (*EnsembleOutput, error) {
 		Status:   synthesisStatus(state.Status, state.Assignments),
 	}
 
-	budget := resolveEnsembleBudget(state.PresetUsed)
+	budget := state.EffectiveBudget(resolveEnsembleBudget(state.PresetUsed))
 	output.Ensemble.Budget = EnsembleBudget{
 		TotalTokens:     budget.MaxTotalTokens,
 		SpentTokens:     0,

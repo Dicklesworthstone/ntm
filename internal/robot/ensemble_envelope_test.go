@@ -560,3 +560,32 @@ func TestGetEnsembleStopFinalCaptureFailureKeepsFirstSnapshot(t *testing.T) {
 		t.Fatalf("saved status=%s, want active", saved.Status)
 	}
 }
+
+func TestGetEnsemblePreservesSpawnBudgetAfterReopen(t *testing.T) {
+	t.Setenv("NTM_CONFIG", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	for _, total := range []int{17500, 0} {
+		session := &ensemble.EnsembleSession{
+			SessionName: fmt.Sprintf("saved-budget-%d", total),
+			Question:    "Use this run's configured budget.",
+			PresetUsed:  "project-diagnosis",
+			Status:      ensemble.EnsembleStopped,
+			Budget:      &ensemble.BudgetConfig{MaxTotalTokens: total},
+		}
+		if err := ensemble.SaveSession("", session); err != nil {
+			t.Fatal(err)
+		}
+		ensemble.CloseDefaultStateStore()
+		result, err := GetEnsemble(session.SessionName)
+		if err != nil || !result.Success {
+			t.Fatalf("status lookup failed: %+v, %v", result, err)
+		}
+		if result.Ensemble.Budget.TotalTokens != total {
+			t.Fatalf("status replaced saved budget %d with preset defaults: %+v", total, result.Ensemble.Budget)
+		}
+	}
+}

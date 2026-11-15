@@ -361,3 +361,143 @@ func TestEnsembleSynthesizeCommandReconcilesFinishedLiveModes(t *testing.T) {
 		})
 	}
 }
+
+func TestEnsembleSynthesizeCommandUsesPersistedSettings(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+	oldJSON, oldConfig := jsonOutput, cfg
+	jsonOutput, cfg = false, nil
+	t.Cleanup(func() { jsonOutput, cfg = oldJSON, oldConfig })
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(binPath, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", binPath)
+	oldClient := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("")
+	t.Cleanup(func() { tmux.DefaultClient = oldClient })
+
+	outputPath := filepath.Join(dir, "deductive.json")
+	modeOutput := ensemble.ModeOutput{
+		ModeID:     "deductive",
+		Thesis:     "The saved run controls synthesis.",
+		Confidence: 0.9,
+		TopFindings: []ensemble.Finding{
+			{Finding: "Use bounded retries for network delivery.", Impact: ensemble.ImpactHigh, Confidence: 0.95},
+			{Finding: "Separate audit storage from status rendering.", Impact: ensemble.ImpactMedium, Confidence: 0.1},
+		},
+	}
+	data, err := json.Marshal(modeOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outputPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := &ensemble.EnsembleSession{
+		SessionName:       "cli-saved-synthesis-settings",
+		Question:          "Preserve settings while allowing an explicit new override.",
+		Status:            ensemble.EnsembleStopped,
+		SynthesisStrategy: ensemble.StrategyManual,
+		Budget:            &ensemble.BudgetConfig{SynthesisReserveTokens: 2000},
+		Synthesis: &ensemble.SynthesisConfig{
+			Strategy:      ensemble.StrategyManual,
+			MinConfidence: 0.75,
+			MaxFindings:   1,
+		},
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "deductive", PaneName: "%1", AgentType: "cc", Status: ensemble.AssignmentDone, OutputPath: outputPath},
+		},
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatal(err)
+	}
+	ensemble.CloseDefaultStateStore()
+
+	for _, tt := range []struct {
+		name string
+		args []string
+		want int
+	}{
+		{"saved settings", nil, 1},
+		{"explicit override", []string{"--min-confidence=0.1", "--max-findings=4"}, 2},
+		{"explicit zero", []string{"--min-confidence=0", "--max-findings=0"}, 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			cmd := newEnsembleSynthesizeCmd()
+			cmd.SetOut(&buf)
+			cmd.SetErr(io.Discard)
+			args := append([]string{state.SessionName, "--no-cache", "--format=json"}, tt.args...)
+			cmd.SetArgs(args)
+			if err := cmd.ExecuteContext(t.Context()); err != nil {
+				t.Fatalf("synthesize: %v\n%s", err, buf.String())
+			}
+			var payload struct {
+				Synthesis *ensemble.SynthesisResult `json:"synthesis"`
+			}
+			if err := json.Unmarshal(buf.Bytes(), &payload); err != nil || payload.Synthesis == nil {
+				t.Fatalf("invalid synthesis response: %v\n%s", err, buf.String())
+			}
+			if len(payload.Synthesis.Findings) != tt.want {
+				t.Fatalf("finding count = %d, want %d: %+v", len(payload.Synthesis.Findings), tt.want, payload.Synthesis.Findings)
+			}
+		})
+	}
+
+	// A synthesis cap is distinct from the allocation reserved for the step.
+	// The saved cap must survive until an operator explicitly overrides it.
+	state.Synthesis.MaxSynthesisTokens = 50
+	modeOutput.TopFindings[0].Finding = strings.Repeat("Detailed independent evidence. ", 40)
+	data, err = json.Marshal(modeOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outputPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatal(err)
+	}
+	ensemble.CloseDefaultStateStore()
+
+	for _, tt := range []struct {
+		name    string
+		args    []string
+		trimmed bool
+	}{
+		{"saved cap differs from reserve", nil, true},
+		{"explicit unlimited cap", []string{"--budget-synthesis=0"}, false},
+		{"explicit larger cap", []string{"--budget-synthesis=2000"}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			cmd := newEnsembleSynthesizeCmd()
+			cmd.SetOut(&buf)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs(append([]string{state.SessionName, "--no-cache", "--format=json"}, tt.args...))
+			if err := cmd.ExecuteContext(t.Context()); err != nil {
+				t.Fatalf("synthesize: %v\n%s", err, buf.String())
+			}
+			var payload struct {
+				Synthesis *ensemble.SynthesisResult `json:"synthesis"`
+			}
+			if err := json.Unmarshal(buf.Bytes(), &payload); err != nil || payload.Synthesis == nil {
+				t.Fatalf("invalid synthesis response: %v\n%s", err, buf.String())
+			}
+			if len(payload.Synthesis.Findings) != 1 {
+				t.Fatalf("saved findings limit changed: %+v", payload.Synthesis.Findings)
+			}
+			finding := payload.Synthesis.Findings[0].Finding
+			if tt.trimmed {
+				if len(finding) > 64 || payload.Synthesis.TokensUsed > state.Synthesis.MaxSynthesisTokens {
+					t.Fatalf("saved cap was replaced by reserve: %+v", payload.Synthesis)
+				}
+			} else if finding != modeOutput.TopFindings[0].Finding {
+				t.Fatalf("explicit cap override did not preserve the finding: %q", finding)
+			}
+		})
+	}
+}

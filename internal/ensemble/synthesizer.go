@@ -219,13 +219,10 @@ func (s *Synthesizer) SynthesizeContext(ctx context.Context, input *SynthesisInp
 		return nil, fmt.Errorf("no outputs to synthesize")
 	}
 
-	// Apply config overrides
-	if s.Config.MaxFindings > 0 {
-		s.MergeConfig.MaxFindings = s.Config.MaxFindings
-	}
-	if s.Config.MinConfidence > 0 {
-		s.MergeConfig.MinConfidence = s.Config.MinConfidence
-	}
+	// These are already effective settings. Zero means no finding cap or
+	// confidence floor; it must not inherit the mechanical merge defaults.
+	s.MergeConfig.MaxFindings = s.Config.MaxFindings
+	s.MergeConfig.MinConfidence = s.Config.MinConfidence
 
 	effectiveInput := *input
 	effectiveInput.AuditReport = applyConflictResolutionToAudit(input.AuditReport, input.Outputs, s.Config.ConflictResolution)
@@ -393,13 +390,18 @@ func (s *Synthesizer) GeneratePrompt(input *SynthesisInput) string {
 		}
 	}
 
+	maxFindings := "unlimited"
+	if s.Config.MaxFindings > 0 {
+		maxFindings = fmt.Sprintf("%d", s.Config.MaxFindings)
+	}
+
 	return fmt.Sprintf(synthesizerPromptTemplate,
 		input.OriginalQuestion,
 		s.Strategy.Name,
 		s.Strategy.Description,
 		modeOutputsText,
 		formatAuditSummary(input.AuditReport),
-		s.Config.MaxFindings,
+		maxFindings,
 		float64(s.Config.MinConfidence),
 		conflictPolicy,
 		synthesisSchemaJSON(),
@@ -423,7 +425,7 @@ Your role: Combine outputs from multiple reasoning modes into a cohesive, high-q
 %s
 
 ## Constraints
-- Maximum findings to include: %d
+- Maximum findings to include: %s
 - Minimum confidence threshold: %.2f
 - Conflict resolution policy: %s
 

@@ -821,20 +821,20 @@ func (s *Server) executeEnsembleSynthesize(ctx context.Context, session string, 
 	}
 
 	cfg := s.loadEnsembleConfig(s.projectDirSnapshot())
-	budgetCfg := ensemble.BudgetConfigFromTOML(ensemble.DefaultBudgetConfig(), cfg.Ensemble.Budget)
+	budgetCfg := state.EffectiveBudget(ensemble.BudgetConfigFromTOML(ensemble.DefaultBudgetConfig(), cfg.Ensemble.Budget))
 	baseSynth := ensemble.SynthesisConfig{
 		Strategy:      state.SynthesisStrategy,
 		MaxFindings:   20,
 		MinConfidence: 0.3,
 	}
-	synthConfig := ensemble.SynthesisConfigFromTOML(baseSynth, cfg.Ensemble.Synthesis)
+	synthConfig := state.EffectiveSynthesis(ensemble.SynthesisConfigFromTOML(baseSynth, cfg.Ensemble.Synthesis))
 	if state.SynthesisStrategy != "" && explicitStrategy == "" {
 		synthConfig.Strategy = state.SynthesisStrategy
 	}
 	if explicitStrategy != "" {
 		synthConfig.Strategy = explicitStrategy
 	}
-	if budgetCfg.SynthesisReserveTokens > 0 {
+	if state.Synthesis == nil && synthConfig.MaxSynthesisTokens <= 0 && budgetCfg.SynthesisReserveTokens > 0 {
 		synthConfig.MaxSynthesisTokens = budgetCfg.SynthesisReserveTokens
 	}
 
@@ -902,6 +902,7 @@ func (s *Server) executeEnsembleSynthesize(ctx context.Context, session string, 
 	formatter := ensemble.NewSynthesisFormatter(outputFormat)
 	formatter.IncludeRaw = synthConfig.IncludeRawOutputs
 	formatter.IncludeAudit = true
+	formatter.IncludeExplanation = synthConfig.IncludeExplanation
 	if err := formatter.FormatResult(&rendered, result, input.AuditReport); err != nil {
 		return nil, &ensembleExecError{
 			status:  http.StatusInternalServerError,

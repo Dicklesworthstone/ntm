@@ -652,3 +652,105 @@ func TestSynthesizer_GeneratePrompt_NoAudit(t *testing.T) {
 		t.Error("Prompt should indicate no audit available")
 	}
 }
+
+func TestSynthesizerZeroLimitsPreserveAllFindings(t *testing.T) {
+	findingTexts := []string{
+		"Authentication refresh abandons credentials",
+		"Backups omit symlink contents",
+		"Cache eviction stalls readers",
+		"Database migrations retain transactions",
+		"Event consumers reorder notifications",
+		"File descriptors leak under cancellation",
+		"Garbage collection pauses workers",
+		"Handshake retries overload endpoints",
+		"Index compaction duplicates documents",
+		"Job scheduling ignores priorities",
+		"Kernel buffers truncate payloads",
+		"Logging sinks lose diagnostics",
+		"Metrics aggregation mislabels dimensions",
+		"Network redirects expose authorization",
+		"Output parsers accept malformed envelopes",
+		"Process supervision forgets descendants",
+		"Queue capacity blocks acknowledgements",
+		"Rate limits reset incorrectly",
+		"Session restore discards snapshots",
+		"Timer cleanup strands goroutines",
+		"Unicode normalization changes identifiers",
+		"Version negotiation rejects peers",
+		"Workspace reservations expire early",
+		"YAML decoding drops null values",
+		"Zero deadlines disable polling",
+	}
+	findings := make([]Finding, len(findingTexts))
+	for i, text := range findingTexts {
+		findings[i] = Finding{Finding: text, Impact: ImpactMedium, Confidence: 0.9}
+	}
+	findings[0].Confidence = 0.1
+	input := &SynthesisInput{
+		OriginalQuestion: "Retain every distinct finding when limits are disabled.",
+		Outputs: []ModeOutput{
+			{
+				ModeID:      "deductive",
+				Thesis:      "Each finding identifies an independent failure.",
+				Confidence:  0.9,
+				TopFindings: findings,
+			},
+		},
+	}
+
+	for _, strategy := range []SynthesisStrategy{StrategyManual, StrategyConsensus} {
+		t.Run(string(strategy), func(t *testing.T) {
+			synth, err := NewSynthesizer(SynthesisConfig{Strategy: strategy})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := synth.Synthesize(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.SynthesizedBy != SynthesisPathMechanical {
+				t.Fatalf("path = %q, want mechanical synthesis", result.SynthesizedBy)
+			}
+			if len(result.Findings) != len(findings) {
+				t.Fatalf("zero limits retained %d findings, want all %d", len(result.Findings), len(findings))
+			}
+			retained := make(map[string]Confidence, len(result.Findings))
+			for _, finding := range result.Findings {
+				retained[finding.Finding] = finding.Confidence
+			}
+			for _, finding := range findings {
+				confidence, ok := retained[finding.Finding]
+				if !ok || confidence != finding.Confidence {
+					t.Errorf("lost or changed finding %q: confidence=%v, present=%v", finding.Finding, confidence, ok)
+				}
+			}
+		})
+	}
+}
+
+func TestSynthesizerGeneratePromptFindingLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		maxFindings int
+		want        string
+	}{
+		{name: "zero", maxFindings: 0, want: "unlimited"},
+		{name: "negative", maxFindings: -1, want: "unlimited"},
+		{name: "positive", maxFindings: 7, want: "7"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synth, err := NewSynthesizer(SynthesisConfig{
+				Strategy:    StrategyConsensus,
+				MaxFindings: tc.maxFindings,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			prompt := synth.GeneratePrompt(&SynthesisInput{OriginalQuestion: "Review the findings."})
+			want := "- Maximum findings to include: " + tc.want + "\n"
+			if !strings.Contains(prompt, want) {
+				t.Errorf("prompt missing finding limit %q", want)
+			}
+		})
+	}
+}
