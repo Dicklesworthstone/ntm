@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"sort"
@@ -736,15 +737,27 @@ func (s *Server) executeEnsembleSynthesize(ctx context.Context, session string, 
 	}
 
 	var captured []ensemble.CapturedOutput
+	var refreshFailure error
 	if sessionLive {
 		captured, err = ensemble.NewOutputCapture(tmux.DefaultClient).CaptureForSynthesis(ctx, state)
 		if err != nil {
-			return nil, &ensembleExecError{
-				status:  http.StatusInternalServerError,
-				code:    ErrCodeInternalError,
-				message: fmt.Sprintf("refresh ensemble outputs: %v", err),
-				cause:   err,
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
 			}
+			if !req.Force || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, &ensembleExecError{
+					status:  http.StatusInternalServerError,
+					code:    ErrCodeInternalError,
+					message: fmt.Sprintf("refresh ensemble outputs: %v", err),
+					cause:   err,
+				}
+			}
+			// Failed observation or persistence cannot authorize a new prompt.
+			// Force is limited to validated, previously saved completed outputs.
+			refreshFailure = err
+			captured = nil
+			slog.Warn("ensemble live output refresh failed; forcing mechanical synthesis from saved outputs",
+				"session", session, "error", err)
 		}
 	}
 
@@ -848,7 +861,7 @@ func (s *Server) executeEnsembleSynthesize(ctx context.Context, session string, 
 		}
 	}
 
-	if sessionLive {
+	if sessionLive && refreshFailure == nil {
 		manager := ensemble.NewEnsembleManager()
 		if err := manager.ConfigureSessionSynthesis(ctx, state, synth, budgetCfg.TimeoutPerMode); err != nil {
 			return nil, &ensembleExecError{
@@ -889,6 +902,9 @@ func (s *Server) executeEnsembleSynthesize(ctx context.Context, session string, 
 			message: fmt.Sprintf("synthesis failed: %v", err),
 			cause:   err,
 		}
+	}
+	if refreshFailure != nil {
+		result.FallbackReason = fmt.Sprintf("live output refresh failed; used validated saved outputs for mechanical synthesis: %v", refreshFailure)
 	}
 
 	catalog, _ := ensemble.GlobalCatalog()

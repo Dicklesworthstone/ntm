@@ -1077,10 +1077,22 @@ func runEnsembleSynthesize(ctx context.Context, w io.Writer, session string, opt
 	// Reconcile finished live agents before inspecting their durable status.
 	// Spawn leaves assignments active until a validated, idle response is saved.
 	var captured []ensemble.CapturedOutput
+	var refreshFailure error
 	if sessionLive {
 		captured, err = ensemble.NewOutputCapture(tmux.DefaultClient).CaptureForSynthesis(ctx, state)
 		if err != nil {
-			return fmt.Errorf("refresh ensemble outputs: %w", err)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return fmt.Errorf("refresh ensemble outputs: %w", ctxErr)
+			}
+			if !opts.Force || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return fmt.Errorf("refresh ensemble outputs: %w", err)
+			}
+			// Force may recover durable completed work, but a failed capture
+			// cannot authorize using partial output or repurposing a live pane.
+			refreshFailure = err
+			captured = nil
+			slog.Warn("ensemble live output refresh failed; forcing mechanical synthesis from saved outputs",
+				"session", session, "error", err)
 		}
 	}
 
@@ -1125,7 +1137,7 @@ func runEnsembleSynthesize(ctx context.Context, w io.Writer, session string, opt
 
 	collector := ensemble.NewOutputCollector(ensemble.DefaultOutputCollectorConfig())
 
-	cacheEnabled := sessionLive && opts.UseCache && !opts.NoCache
+	cacheEnabled := sessionLive && refreshFailure == nil && opts.UseCache && !opts.NoCache
 	collectedModes := make(map[string]bool)
 	cacheFingerprints := make(map[string]ensemble.ModeOutputFingerprint)
 	var outputCache *ensemble.ModeOutputCache
@@ -1301,7 +1313,7 @@ func runEnsembleSynthesize(ctx context.Context, w io.Writer, session string, opt
 	if err != nil {
 		return fmt.Errorf("create synthesizer: %w", err)
 	}
-	if sessionLive {
+	if sessionLive && refreshFailure == nil {
 		manager := ensemble.NewEnsembleManager()
 		if err := manager.ConfigureSessionSynthesis(ctx, state, synth, budgetCfg.TimeoutPerMode); err != nil {
 			return fmt.Errorf("configure lead synthesis: %w", err)
@@ -1322,6 +1334,9 @@ func runEnsembleSynthesize(ctx context.Context, w io.Writer, session string, opt
 	result, err := synth.SynthesizeContext(ctx, input)
 	if err != nil {
 		return fmt.Errorf("synthesis failed: %w", err)
+	}
+	if refreshFailure != nil {
+		result.FallbackReason = fmt.Sprintf("live output refresh failed; used validated saved outputs for mechanical synthesis: %v", refreshFailure)
 	}
 
 	slog.Default().Info("ensemble synthesis completed",
