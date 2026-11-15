@@ -352,25 +352,36 @@ func isNTMHook(content string) bool {
 // generateHookScript generates the hook script content.
 func generateHookScript(hookType HookType, repoRoot string) (string, error) {
 	switch hookType {
-	case HookPreCommit:
-		// Ensure ntm is available (pre-commit invokes ntm hooks)
+	case HookPreCommit, HookPrePush, HookCommitMsg, HookPostCommit:
+		// Ensure ntm is available for hooks that invoke `ntm hooks run` / `ntm guards check`.
 		ntmPath, err := exec.LookPath("ntm")
 		if err != nil {
 			return "", ErrNTMNotFound
 		}
-		return generatePreCommitScript(ntmPath, repoRoot), nil
+		switch hookType {
+		case HookPreCommit:
+			return generatePreCommitScript(ntmPath, repoRoot), nil
+		case HookPrePush:
+			return generatePrePushScript(ntmPath, repoRoot), nil
+		case HookCommitMsg:
+			return generateCommitMsgScript(ntmPath, repoRoot), nil
+		case HookPostCommit:
+			return generatePostCommitScript(ntmPath, repoRoot), nil
+		}
 	case HookPostCheckout:
 		return generatePostCheckoutScript(repoRoot), nil
-	default:
-		return "", fmt.Errorf("hook type %s not yet implemented", hookType)
 	}
+	return "", fmt.Errorf("unsupported hook type %q (supported: pre-commit, pre-push, commit-msg, post-commit, post-checkout)", hookType)
+}
+
+func sanitizeCommentValue(s string) string {
+	safe := strings.ReplaceAll(s, "\n", " ")
+	return strings.ReplaceAll(safe, "\r", " ")
 }
 
 // generatePreCommitScript generates the pre-commit hook script.
 func generatePreCommitScript(ntmPath, repoRoot string) string {
-	// Sanitize repoRoot to prevent injection via newlines
-	safeRepoRoot := strings.ReplaceAll(repoRoot, "\n", " ")
-	safeRepoRoot = strings.ReplaceAll(safeRepoRoot, "\r", " ")
+	safeRepoRoot := sanitizeCommentValue(repoRoot)
 	repoRootQuoted := quoteShell(repoRoot)
 
 	return fmt.Sprintf(`#!/bin/bash
@@ -418,6 +429,106 @@ exit 0
 `, safeRepoRoot, repoRootQuoted, quoteShell(ntmPath))
 }
 
+// generatePrePushScript generates the pre-push hook script.
+func generatePrePushScript(ntmPath, repoRoot string) string {
+	safeRepoRoot := sanitizeCommentValue(repoRoot)
+	repoRootQuoted := quoteShell(repoRoot)
+
+	return fmt.Sprintf(`#!/bin/bash
+# NTM_MANAGED_HOOK - Do not edit manually
+# Installed by: ntm hooks install pre-push
+# Repository: %s
+
+set -e
+
+# Repo root for hooks that need project context
+REPO_ROOT=%s
+
+# Check active Agent Mail reservations (respects NTM_GUARD_STRICT)
+GUARD_EXIT=0
+%[3]s guards check --staged || GUARD_EXIT=$?
+
+# Run NTM pre-push checks
+HOOK_EXIT=0
+%[3]s hooks run pre-push "$@" || HOOK_EXIT=$?
+
+# Chain to backup hook if it exists
+BACKUP_EXIT=0
+BACKUP_HOOK="$(dirname "$0")/pre-push.backup"
+if [ -x "$BACKUP_HOOK" ]; then
+    "$BACKUP_HOOK" "$@" || BACKUP_EXIT=$?
+fi
+
+if [ $GUARD_EXIT -ne 0 ] || [ $HOOK_EXIT -ne 0 ] || [ $BACKUP_EXIT -ne 0 ]; then
+    exit 1
+fi
+
+exit 0
+`, safeRepoRoot, repoRootQuoted, quoteShell(ntmPath))
+}
+
+// generateCommitMsgScript generates the commit-msg hook script.
+func generateCommitMsgScript(ntmPath, repoRoot string) string {
+	safeRepoRoot := sanitizeCommentValue(repoRoot)
+	repoRootQuoted := quoteShell(repoRoot)
+
+	return fmt.Sprintf(`#!/bin/bash
+# NTM_MANAGED_HOOK - Do not edit manually
+# Installed by: ntm hooks install commit-msg
+# Repository: %s
+
+set -e
+
+# Repo root for hooks that need project context
+REPO_ROOT=%s
+
+# Run NTM commit-msg validation
+HOOK_EXIT=0
+%[3]s hooks run commit-msg "$@" || HOOK_EXIT=$?
+
+# Chain to backup hook if it exists
+BACKUP_EXIT=0
+BACKUP_HOOK="$(dirname "$0")/commit-msg.backup"
+if [ -x "$BACKUP_HOOK" ]; then
+    "$BACKUP_HOOK" "$@" || BACKUP_EXIT=$?
+fi
+
+if [ $HOOK_EXIT -ne 0 ] || [ $BACKUP_EXIT -ne 0 ]; then
+    exit 1
+fi
+
+exit 0
+`, safeRepoRoot, repoRootQuoted, quoteShell(ntmPath))
+}
+
+// generatePostCommitScript generates the post-commit hook script.
+func generatePostCommitScript(ntmPath, repoRoot string) string {
+	safeRepoRoot := sanitizeCommentValue(repoRoot)
+	repoRootQuoted := quoteShell(repoRoot)
+
+	return fmt.Sprintf(`#!/bin/bash
+# NTM_MANAGED_HOOK - Do not edit manually
+# Installed by: ntm hooks install post-commit
+# Repository: %s
+
+set -e
+
+# Repo root for hooks that need project context
+REPO_ROOT=%s
+
+# Run NTM post-commit checks (non-fatal)
+%[3]s hooks run post-commit "$@" || true
+
+# Chain to backup hook if it exists
+BACKUP_HOOK="$(dirname "$0")/post-commit.backup"
+if [ -x "$BACKUP_HOOK" ]; then
+    "$BACKUP_HOOK" "$@" || true
+fi
+
+exit 0
+`, safeRepoRoot, repoRootQuoted, quoteShell(ntmPath))
+}
+
 // PreCommitRunsReservationGuard reports whether a pre-commit hook runs ntm's
 // file-reservation check: the standalone guard `ntm guards install` writes,
 // or ntm's managed pre-commit hook, which includes the check.
@@ -443,9 +554,7 @@ func quoteShell(s string) string {
 }
 
 func generatePostCheckoutScript(repoRoot string) string {
-	// Sanitize repoRoot to prevent injection via newlines
-	safeRepoRoot := strings.ReplaceAll(repoRoot, "\n", " ")
-	safeRepoRoot = strings.ReplaceAll(safeRepoRoot, "\r", " ")
+	safeRepoRoot := sanitizeCommentValue(repoRoot)
 	repoRootQuoted := quoteShell(repoRoot)
 
 	return fmt.Sprintf(`#!/bin/bash
@@ -463,6 +572,12 @@ if [ -d "$REPO_ROOT/.beads" ]; then
     if git -C "$REPO_ROOT" status --porcelain .beads | grep -q .; then
         echo "[ntm] Warning: .beads has uncommitted changes. Run: br sync --flush-only and commit .beads/"
     fi
+fi
+
+# Chain to backup hook if it exists
+BACKUP_HOOK="$(dirname "$0")/post-checkout.backup"
+if [ -x "$BACKUP_HOOK" ]; then
+    "$BACKUP_HOOK" "$@" || true
 fi
 
 exit 0

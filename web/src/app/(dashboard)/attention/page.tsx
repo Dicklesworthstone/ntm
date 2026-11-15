@@ -16,6 +16,7 @@ import {
   formatApiErrorMessage,
   type components,
 } from "@/lib/api/client";
+import { IncidentsTriagePanel } from "@/components/attention/IncidentsTriagePanel";
 
 type AttentionDigest = components["schemas"]["AttentionDigest"];
 type AttentionEventsResponse =
@@ -348,6 +349,9 @@ export default function AttentionPage() {
           </div>
         </div>
       </div>
+
+      {/* Durable Operator Incidents Triage */}
+      <IncidentsTriagePanel />
 
       {/* Filters & Cursor Controls */}
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-3">

@@ -113,6 +113,7 @@ var SchemaCommand = map[string]interface{}{
 	"policy_decisions": PolicyDecisionsOutput{},
 	"ubs_scan":         UBSScanOutput{},
 	"save":             SaveResult{},
+	"handoff":          HandoffOutput{},
 
 	// Pane inspection
 	"inspect":              InspectPaneOutput{},

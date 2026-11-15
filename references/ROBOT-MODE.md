@@ -132,6 +132,12 @@ ntm --robot-send-receipt=deploy-42
 ntm --robot-action-status=deploy-42
 ntm --robot-wait-request=deploy-42 --timeout=30s
 ntm --robot-cancel-request=deploy-42
+
+# Session Goal/Now continuity handoffs and quality scores
+ntm --robot-handoff=myproject
+ntm --robot-handoff=all --handoff-limit=5
+ntm --robot-handoff=myproject --handoff-create --handoff-goal="Implemented auth" --handoff-now="Run E2E suite"
+ntm --robot-handoff=myproject --handoff-create --handoff-auto
 ```
 
 ## Reasoning Ensembles

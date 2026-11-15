@@ -61,6 +61,36 @@ type AttentionMutationResponse struct {
 	AttentionState state.AttentionItemState `json:"attention_state"`
 }
 
+// AttentionIncidentsListResponse is the structured output of `ntm attention incidents [list]`.
+type AttentionIncidentsListResponse struct {
+	Success   bool             `json:"success"`
+	Timestamp string           `json:"timestamp"`
+	Count     int              `json:"count"`
+	Incidents []state.Incident `json:"incidents"`
+}
+
+// AttentionIncidentShowResponse is the structured output of `ntm attention incidents show`.
+type AttentionIncidentShowResponse struct {
+	Success    bool                         `json:"success"`
+	Timestamp  string                       `json:"timestamp"`
+	Incident   *state.Incident              `json:"incident"`
+	EventCount int                          `json:"event_count"`
+	Events     []state.StoredAttentionEvent `json:"events"`
+}
+
+// AttentionIncidentMutationResponse is the structured output of `ntm attention incidents <action>`.
+type AttentionIncidentMutationResponse struct {
+	Success        bool            `json:"success"`
+	Timestamp      string          `json:"timestamp"`
+	Action         string          `json:"action"`
+	IncidentID     string          `json:"incident_id"`
+	PreviousStatus string          `json:"previous_status"`
+	Status         string          `json:"status"`
+	Idempotent     bool            `json:"idempotent,omitempty"`
+	Note           string          `json:"note,omitempty"`
+	Incident       *state.Incident `json:"incident"`
+}
+
 func newAttentionCmd() *cobra.Command {
 	var robotOut bool
 	var listSession string
@@ -69,8 +99,8 @@ func newAttentionCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "attention",
-		Short: "Inspect and manage operator attention state (ack, snooze, dismiss, pin)",
-		Long: `Inspect and transition durable operator attention state on surfaced events.
+		Short: "Inspect and manage operator attention state and durable incidents",
+		Long: `Inspect and transition durable operator attention state and incidents.
 
 Provides the human CLI companion to --robot-attention (docs/robot-attention-state.md):
   ntm attention list
@@ -80,7 +110,12 @@ Provides the human CLI companion to --robot-attention (docs/robot-attention-stat
   ntm attention pin <cursor-or-key>
   ntm attention unpin <cursor-or-key>
   ntm attention escalate <cursor-or-key> --priority critical
-  ntm attention restore <cursor-or-key>`,
+  ntm attention restore <cursor-or-key>
+  ntm attention incidents list
+  ntm attention incidents show <incident-id>
+  ntm attention incidents investigate <incident-id>
+  ntm attention incidents resolve <incident-id>
+  ntm attention incidents mute <incident-id>`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runAttentionList(cmd, listSession, listLimit, listIncludeAll, jsonOutput || robotOut)
@@ -101,6 +136,7 @@ Provides the human CLI companion to --robot-attention (docs/robot-attention-stat
 		newAttentionActionCmd("unpin", "Remove pin from an attention item", &robotOut),
 		newAttentionEscalateCmd(&robotOut),
 		newAttentionActionCmd("restore", "Restore a snoozed or dismissed attention item to new", &robotOut),
+		newAttentionIncidentsCmd(&robotOut),
 	)
 
 	return cmd
@@ -601,4 +637,352 @@ func writeAttentionError(cmd *cobra.Command, err error, code string, emitJSON bo
 		cmd.SilenceUsage = true
 	}
 	return err
+}
+
+func newAttentionIncidentsCmd(robotOut *bool) *cobra.Command {
+	var includeAll bool
+	var limit int
+	var statusFilter string
+
+	cmd := &cobra.Command{
+		Use:     "incidents",
+		Aliases: []string{"incident"},
+		Short:   "Inspect and transition durable operator incidents",
+		Long: `List, inspect, investigate, resolve, and mute durable operator incidents.
+
+Subcommands:
+  ntm attention incidents list [--all] [--limit 50] [--status open]
+  ntm attention incidents show <incident-id> [--events-limit 50]
+  ntm attention incidents investigate <incident-id> [--reason ...] [--by operator]
+  ntm attention incidents resolve <incident-id> [--reason ...] [--by operator]
+  ntm attention incidents mute <incident-id> [--reason ...] [--by operator]`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAttentionIncidentsList(cmd, includeAll, limit, statusFilter, jsonOutput || (robotOut != nil && *robotOut))
+		},
+	}
+
+	cmd.Flags().BoolVar(&includeAll, "all", false, "Include resolved and muted incidents")
+	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum number of incidents to display")
+	cmd.Flags().StringVar(&statusFilter, "status", "", "Filter incidents by status (open, investigating, resolved, muted)")
+
+	cmd.AddCommand(
+		newAttentionIncidentsListCmd(robotOut),
+		newAttentionIncidentsShowCmd(robotOut),
+		newAttentionIncidentsTransitionCmd("investigate", "Mark an incident as under investigation", state.IncidentStatusInvestigating, robotOut),
+		newAttentionIncidentsTransitionCmd("resolve", "Resolve an incident (idempotent if already resolved)", state.IncidentStatusResolved, robotOut),
+		newAttentionIncidentsTransitionCmd("mute", "Mute an incident", state.IncidentStatusMuted, robotOut),
+	)
+
+	return cmd
+}
+
+func newAttentionIncidentsListCmd(robotOut *bool) *cobra.Command {
+	var includeAll bool
+	var limit int
+	var statusFilter string
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List durable incidents",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAttentionIncidentsList(cmd, includeAll, limit, statusFilter, jsonOutput || (robotOut != nil && *robotOut))
+		},
+	}
+
+	cmd.Flags().BoolVar(&includeAll, "all", false, "Include resolved and muted incidents")
+	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum number of incidents to display")
+	cmd.Flags().StringVar(&statusFilter, "status", "", "Filter incidents by status (open, investigating, resolved, muted)")
+
+	return cmd
+}
+
+func newAttentionIncidentsShowCmd(robotOut *bool) *cobra.Command {
+	var eventsLimit int
+
+	cmd := &cobra.Command{
+		Use:   "show <incident-id>",
+		Short: "Show metadata and linked events for an incident",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAttentionIncidentShow(cmd, args[0], eventsLimit, jsonOutput || (robotOut != nil && *robotOut))
+		},
+	}
+
+	cmd.Flags().IntVar(&eventsLimit, "events-limit", 50, "Maximum number of linked events to display")
+
+	return cmd
+}
+
+func newAttentionIncidentsTransitionCmd(action, short string, targetStatus state.IncidentStatus, robotOut *bool) *cobra.Command {
+	var reason string
+	var by string
+
+	cmd := &cobra.Command{
+		Use:   fmt.Sprintf("%s <incident-id>", action),
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAttentionIncidentTransition(cmd, action, args[0], targetStatus, by, reason, jsonOutput || (robotOut != nil && *robotOut))
+		},
+	}
+
+	cmd.Flags().StringVar(&reason, "reason", "", "Optional operator reason or resolution note")
+	cmd.Flags().StringVar(&by, "by", "operator", "Actor recording the incident transition")
+
+	return cmd
+}
+
+func runAttentionIncidentsList(cmd *cobra.Command, includeAll bool, limit int, statusFilter string, emitJSON bool) error {
+	statusFilter = strings.ToLower(strings.TrimSpace(statusFilter))
+	switch statusFilter {
+	case "", string(state.IncidentStatusOpen), string(state.IncidentStatusInvestigating), string(state.IncidentStatusResolved), string(state.IncidentStatusMuted):
+	default:
+		return writeAttentionError(cmd, fmt.Errorf("invalid --status %q (expected open, investigating, resolved, or muted)", statusFilter), "INVALID_FLAG", emitJSON)
+	}
+
+	store, err := openAttentionStore()
+	if err != nil {
+		return writeAttentionError(cmd, err, "INTERNAL_ERROR", emitJSON)
+	}
+	defer store.Close()
+
+	if limit <= 0 {
+		limit = 50
+	}
+
+	includeResolved := includeAll ||
+		statusFilter == string(state.IncidentStatusResolved) ||
+		statusFilter == string(state.IncidentStatusMuted)
+
+	queryLimit := limit
+	if statusFilter != "" {
+		queryLimit = 0
+	}
+
+	raw, err := store.ListIncidents(includeResolved, queryLimit)
+	if err != nil {
+		return writeAttentionError(cmd, fmt.Errorf("list incidents: %w", err), "INTERNAL_ERROR", emitJSON)
+	}
+
+	incidents := make([]state.Incident, 0, len(raw))
+	for _, inc := range raw {
+		if statusFilter != "" && string(inc.Status) != statusFilter {
+			continue
+		}
+		incidents = append(incidents, inc)
+		if len(incidents) >= limit {
+			break
+		}
+	}
+
+	now := time.Now().UTC()
+	resp := AttentionIncidentsListResponse{
+		Success:   true,
+		Timestamp: now.Format(time.RFC3339),
+		Count:     len(incidents),
+		Incidents: incidents,
+	}
+	if emitJSON {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(resp)
+	}
+
+	out := cmd.OutOrStdout()
+	if len(incidents) == 0 {
+		fmt.Fprintln(out, "No matching incidents.")
+		return nil
+	}
+
+	fmt.Fprintf(out, "%-22s %-14s %-10s %-7s %-7s %-20s %s\n",
+		"ID", "STATUS", "SEVERITY", "ALERTS", "EVENTS", "STARTED", "TITLE")
+	for _, inc := range incidents {
+		fmt.Fprintf(out, "%-22s %-14s %-10s %-7d %-7d %-20s %s\n",
+			inc.ID,
+			inc.Status,
+			inc.Severity,
+			inc.AlertCount,
+			inc.EventCount,
+			inc.StartedAt.UTC().Format(time.RFC3339),
+			inc.Title,
+		)
+	}
+	return nil
+}
+
+func runAttentionIncidentShow(cmd *cobra.Command, id string, eventsLimit int, emitJSON bool) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return writeAttentionError(cmd, fmt.Errorf("incident ID is required"), "INVALID_FLAG", emitJSON)
+	}
+
+	store, err := openAttentionStore()
+	if err != nil {
+		return writeAttentionError(cmd, err, "INTERNAL_ERROR", emitJSON)
+	}
+	defer store.Close()
+
+	incident, err := store.GetIncident(id)
+	if err != nil {
+		return writeAttentionError(cmd, fmt.Errorf("load incident %s: %w", id, err), "INTERNAL_ERROR", emitJSON)
+	}
+	if incident == nil {
+		return writeAttentionError(cmd, fmt.Errorf("incident %q not found", id), "NOT_FOUND", emitJSON)
+	}
+
+	if eventsLimit <= 0 {
+		eventsLimit = 50
+	}
+	events, err := store.GetEventsForIncident(id, eventsLimit)
+	if err != nil {
+		return writeAttentionError(cmd, fmt.Errorf("load events for incident %s: %w", id, err), "INTERNAL_ERROR", emitJSON)
+	}
+	if events == nil {
+		events = []state.StoredAttentionEvent{}
+	}
+
+	now := time.Now().UTC()
+	resp := AttentionIncidentShowResponse{
+		Success:    true,
+		Timestamp:  now.Format(time.RFC3339),
+		Incident:   incident,
+		EventCount: len(events),
+		Events:     events,
+	}
+	if emitJSON {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(resp)
+	}
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Incident: %s\n", incident.ID)
+	fmt.Fprintf(out, "  Title:       %s\n", incident.Title)
+	fmt.Fprintf(out, "  Status:      %s\n", incident.Status)
+	fmt.Fprintf(out, "  Severity:    %s\n", incident.Severity)
+	if incident.Family != "" {
+		fmt.Fprintf(out, "  Family:      %s\n", incident.Family)
+	}
+	if incident.Category != "" {
+		fmt.Fprintf(out, "  Category:    %s\n", incident.Category)
+	}
+	if incident.Fingerprint != "" {
+		fmt.Fprintf(out, "  Fingerprint: %s\n", incident.Fingerprint)
+	}
+	fmt.Fprintf(out, "  Alerts:      %d\n", incident.AlertCount)
+	fmt.Fprintf(out, "  Events:      %d\n", incident.EventCount)
+	fmt.Fprintf(out, "  Started:     %s\n", incident.StartedAt.UTC().Format(time.RFC3339))
+	fmt.Fprintf(out, "  Last Event:  %s\n", incident.LastEventAt.UTC().Format(time.RFC3339))
+	if incident.AcknowledgedBy != "" {
+		fmt.Fprintf(out, "  Acked By:    %s\n", incident.AcknowledgedBy)
+	}
+	if incident.ResolvedBy != "" {
+		fmt.Fprintf(out, "  Resolved By: %s\n", incident.ResolvedBy)
+	}
+	if incident.Resolution != "" {
+		fmt.Fprintf(out, "  Resolution:  %s\n", incident.Resolution)
+	}
+	if incident.MutedBy != "" {
+		fmt.Fprintf(out, "  Muted By:    %s\n", incident.MutedBy)
+	}
+	if incident.MutedReason != "" {
+		fmt.Fprintf(out, "  Mute Reason: %s\n", incident.MutedReason)
+	}
+	if incident.Notes != "" {
+		fmt.Fprintf(out, "  Notes:       %s\n", incident.Notes)
+	}
+
+	fmt.Fprintln(out)
+	if len(events) == 0 {
+		fmt.Fprintln(out, "Linked Events: none")
+		return nil
+	}
+	fmt.Fprintf(out, "Linked Events (%d):\n", len(events))
+	fmt.Fprintf(out, "  %-8s %-20s %-10s %-14s %s\n", "CURSOR", "TIMESTAMP", "SEVERITY", "TYPE", "SUMMARY")
+	for _, ev := range events {
+		fmt.Fprintf(out, "  %-8d %-20s %-10s %-14s %s\n",
+			ev.Cursor,
+			ev.Ts.UTC().Format(time.RFC3339),
+			ev.Severity,
+			ev.EventType,
+			ev.Summary,
+		)
+	}
+	return nil
+}
+
+func runAttentionIncidentTransition(cmd *cobra.Command, action, id string, targetStatus state.IncidentStatus, by, reason string, emitJSON bool) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return writeAttentionError(cmd, fmt.Errorf("incident ID is required"), "INVALID_FLAG", emitJSON)
+	}
+	actor := strings.TrimSpace(by)
+	if actor == "" {
+		actor = "operator"
+	}
+	reason = strings.TrimSpace(reason)
+
+	store, err := openAttentionStore()
+	if err != nil {
+		return writeAttentionError(cmd, err, "INTERNAL_ERROR", emitJSON)
+	}
+	defer store.Close()
+
+	prior, err := store.GetIncident(id)
+	if err != nil {
+		return writeAttentionError(cmd, fmt.Errorf("load incident %s: %w", id, err), "INTERNAL_ERROR", emitJSON)
+	}
+	if prior == nil {
+		return writeAttentionError(cmd, fmt.Errorf("incident %q not found", id), "NOT_FOUND", emitJSON)
+	}
+
+	prevStatus := string(prior.Status)
+	updated := prior
+	idempotent := false
+	note := reason
+
+	if targetStatus == state.IncidentStatusResolved && prior.Status == state.IncidentStatusResolved {
+		idempotent = true
+		if note == "" {
+			note = "already resolved (idempotent no-op)"
+		}
+	} else {
+		if err := store.UpdateIncidentStatus(id, targetStatus, actor, reason); err != nil {
+			return writeAttentionError(cmd, fmt.Errorf("update incident %s: %w", id, err), "INTERNAL_ERROR", emitJSON)
+		}
+		reloaded, reloadErr := store.GetIncident(id)
+		if reloadErr != nil {
+			return writeAttentionError(cmd, fmt.Errorf("reload incident %s: %w", id, reloadErr), "INTERNAL_ERROR", emitJSON)
+		}
+		if reloaded != nil {
+			updated = reloaded
+		}
+	}
+
+	now := time.Now().UTC()
+	resp := AttentionIncidentMutationResponse{
+		Success:        true,
+		Timestamp:      now.Format(time.RFC3339),
+		Action:         action,
+		IncidentID:     id,
+		PreviousStatus: prevStatus,
+		Status:         string(updated.Status),
+		Idempotent:     idempotent,
+		Note:           note,
+		Incident:       updated,
+	}
+	if emitJSON {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(resp)
+	}
+
+	if idempotent {
+		fmt.Fprintf(cmd.OutOrStdout(), "Incident %s: already %s (no-op)\n", id, updated.Status)
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "Incident %s: %s -> %s (by %s)\n", id, prevStatus, updated.Status, actor)
+	}
+	return nil
 }

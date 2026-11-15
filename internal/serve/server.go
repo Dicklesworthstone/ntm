@@ -655,6 +655,12 @@ func (s *Server) buildRouter() chi.Router {
 		// Backpressure, Synthetic Swarm Lab & Host-Capacity Calibration API
 		s.registerBackpressureRoutes(r)
 
+		// Durable Incidents Triage API
+		s.registerIncidentRoutes(r)
+
+		// Session Handoffs API (delegated via ADR ORI to robot.GetHandoff)
+		s.registerHandoffRoutes(r)
+
 		// Attention Feed API - normalized event streaming for operator agents
 		r.Route("/attention", func(r chi.Router) {
 			// SSE stream with cursor-based replay

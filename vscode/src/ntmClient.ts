@@ -457,6 +457,95 @@ export interface WorktreeListResult {
     worktrees: WorktreeInfo[];
 }
 
+export type IncidentAction = 'investigate' | 'resolve' | 'mute';
+
+export const SUPPORTED_INCIDENT_ACTIONS: readonly IncidentAction[] = [
+    'investigate',
+    'resolve',
+    'mute',
+];
+
+export interface IncidentItem {
+    id: string;
+    title: string;
+    fingerprint: string;
+    family: string;
+    category: string;
+    status: string;
+    severity: string;
+    session_names?: string;
+    event_count: number;
+    alert_count: number;
+    started_at?: string;
+    last_event_at?: string;
+    notes?: string;
+}
+
+export interface IncidentListOptions {
+    includeAll?: boolean;
+    limit?: number;
+    status?: string;
+}
+
+export interface IncidentMutationResult {
+    success: boolean;
+    action: IncidentAction;
+    incident_id: string;
+    previous_status: string;
+    status: string;
+    idempotent: boolean;
+    note?: string;
+}
+
+export interface HandoffQualityReport {
+    score: number;
+    status: string;
+    scored_at?: string;
+    dimensions: Array<{ name: string; score: number }>;
+    hints: string[];
+}
+
+export interface HandoffSummaryEntry {
+    path: string;
+    session: string;
+    date: string;
+    status?: string;
+    goal?: string;
+    is_auto: boolean;
+}
+
+export interface HandoffResult {
+    success: boolean;
+    action: string;
+    session: string;
+    created_path?: string;
+    latest_path?: string;
+    total_returned: number;
+    handoffs: HandoffSummaryEntry[];
+    latest?: {
+        session: string;
+        goal: string;
+        now: string;
+        status?: string;
+        outcome?: string;
+    };
+    quality?: HandoffQualityReport;
+    ledger?: {
+        path: string;
+        exists: boolean;
+        bytes: number;
+    };
+}
+
+export interface HandoffCreateOptions {
+    session: string;
+    auto?: boolean;
+    goal?: string;
+    now?: string;
+    description?: string;
+    projectDir?: string;
+}
+
 export type ExecFileRunner = (
     file: string,
     args: string[],
@@ -1470,6 +1559,153 @@ export function normalizeWorktreeList(raw: unknown): WorktreeListResult {
     };
 }
 
+/**
+ * Normalize an `ntm attention incidents list --json` payload into `IncidentItem[]`.
+ */
+export function normalizeIncidentList(raw: unknown): IncidentItem[] {
+    const obj = assertSuccessPayload(raw, 'attention incidents list');
+    if (!Array.isArray(obj.incidents)) {
+        return [];
+    }
+    return obj.incidents
+        .map(entry => {
+            const inc = asRecord(entry);
+            if (!inc || typeof inc.id !== 'string' || inc.id.trim().length === 0) {
+                return undefined;
+            }
+            const item: IncidentItem = {
+                id: inc.id.trim(),
+                title: typeof inc.title === 'string' ? inc.title : inc.id.trim(),
+                fingerprint: typeof inc.fingerprint === 'string' ? inc.fingerprint : '',
+                family: typeof inc.family === 'string' ? inc.family : '',
+                category: typeof inc.category === 'string' ? inc.category : '',
+                status: typeof inc.status === 'string' && inc.status.length > 0 ? inc.status : 'open',
+                severity: typeof inc.severity === 'string' && inc.severity.length > 0 ? inc.severity : 'info',
+                session_names: typeof inc.session_names === 'string' && inc.session_names.length > 0 ? inc.session_names : undefined,
+                event_count: typeof inc.event_count === 'number' && Number.isFinite(inc.event_count) ? inc.event_count : 0,
+                alert_count: typeof inc.alert_count === 'number' && Number.isFinite(inc.alert_count) ? inc.alert_count : 0,
+                started_at: typeof inc.started_at === 'string' ? inc.started_at : undefined,
+                last_event_at: typeof inc.last_event_at === 'string' ? inc.last_event_at : undefined,
+                notes: typeof inc.notes === 'string' && inc.notes.length > 0 ? inc.notes : undefined,
+            };
+            return item;
+        })
+        .filter((i): i is IncidentItem => i !== undefined);
+}
+
+/**
+ * Normalize an `ntm attention incidents <action> <id> --json` payload.
+ */
+export function normalizeIncidentMutation(raw: unknown): IncidentMutationResult {
+    const obj = assertSuccessPayload(raw, 'attention incidents mutation');
+    const actionRaw = typeof obj.action === 'string' ? obj.action : 'investigate';
+    const action: IncidentAction = SUPPORTED_INCIDENT_ACTIONS.includes(actionRaw as IncidentAction)
+        ? (actionRaw as IncidentAction)
+        : 'investigate';
+    return {
+        success: true,
+        action,
+        incident_id: typeof obj.incident_id === 'string' ? obj.incident_id : '',
+        previous_status: typeof obj.previous_status === 'string' ? obj.previous_status : '',
+        status: typeof obj.status === 'string' ? obj.status : '',
+        idempotent: Boolean(obj.idempotent),
+        note: typeof obj.note === 'string' && obj.note.length > 0 ? obj.note : undefined,
+    };
+}
+
+/**
+ * Normalize an `ntm --robot-handoff=<session>` payload into `HandoffResult`.
+ */
+export function normalizeHandoffResult(raw: unknown): HandoffResult {
+    const obj = assertSuccessPayload(raw, 'robot-handoff');
+    const handoffs: HandoffSummaryEntry[] = Array.isArray(obj.handoffs)
+        ? obj.handoffs
+            .map(entry => {
+                const h = asRecord(entry);
+                if (!h || typeof h.path !== 'string' || h.path.trim().length === 0) {
+                    return undefined;
+                }
+                const item: HandoffSummaryEntry = {
+                    path: h.path,
+                    session: typeof h.session === 'string' ? h.session : '',
+                    date: typeof h.date === 'string' ? h.date : '',
+                    status: typeof h.status === 'string' && h.status.length > 0 ? h.status : undefined,
+                    goal: typeof h.goal === 'string' && h.goal.length > 0 ? h.goal : undefined,
+                    is_auto: Boolean(h.is_auto),
+                };
+                return item;
+            })
+            .filter((h): h is HandoffSummaryEntry => h !== undefined)
+        : [];
+
+    const latestRec = asRecord(obj.latest);
+    const latest = latestRec
+        ? {
+            session: typeof latestRec.Session === 'string'
+                ? latestRec.Session
+                : (typeof latestRec.session === 'string' ? latestRec.session : ''),
+            goal: typeof latestRec.Goal === 'string'
+                ? latestRec.Goal
+                : (typeof latestRec.goal === 'string' ? latestRec.goal : ''),
+            now: typeof latestRec.Now === 'string'
+                ? latestRec.Now
+                : (typeof latestRec.now === 'string' ? latestRec.now : ''),
+            status: typeof latestRec.Status === 'string'
+                ? latestRec.Status
+                : (typeof latestRec.status === 'string' ? latestRec.status : undefined),
+            outcome: typeof latestRec.Outcome === 'string'
+                ? latestRec.Outcome
+                : (typeof latestRec.outcome === 'string' ? latestRec.outcome : undefined),
+        }
+        : undefined;
+
+    const qualRec = asRecord(obj.quality) ?? (latestRec ? asRecord(latestRec.Quality) : undefined);
+    const quality: HandoffQualityReport | undefined = qualRec && typeof qualRec.score === 'number'
+        ? {
+            score: qualRec.score,
+            status: typeof qualRec.status === 'string' ? qualRec.status : 'unknown',
+            scored_at: typeof qualRec.scored_at === 'string' ? qualRec.scored_at : undefined,
+            dimensions: Array.isArray(qualRec.dimensions)
+                ? qualRec.dimensions
+                    .map(d => {
+                        const dr = asRecord(d);
+                        if (!dr || typeof dr.name !== 'string') {
+                            return undefined;
+                        }
+                        return {
+                            name: dr.name,
+                            score: typeof dr.score === 'number' ? dr.score : 0,
+                        };
+                    })
+                    .filter((d): d is { name: string; score: number } => d !== undefined)
+                : [],
+            hints: toStringArray(qualRec.hints),
+        }
+        : undefined;
+
+    const ledgerRec = asRecord(obj.ledger);
+    const ledger = ledgerRec && typeof ledgerRec.path === 'string'
+        ? {
+            path: ledgerRec.path,
+            exists: Boolean(ledgerRec.exists),
+            bytes: typeof ledgerRec.bytes === 'number' ? ledgerRec.bytes : 0,
+        }
+        : undefined;
+
+    return {
+        success: true,
+        action: typeof obj.action === 'string' ? obj.action : 'list',
+        session: typeof obj.session === 'string' ? obj.session : '',
+        created_path: typeof obj.created_path === 'string' && obj.created_path.length > 0 ? obj.created_path : undefined,
+        latest_path: typeof obj.latest_path === 'string' && obj.latest_path.length > 0 ? obj.latest_path : undefined,
+        total_returned: typeof obj.total_returned === 'number' ? obj.total_returned : handoffs.length,
+        handoffs,
+        latest,
+        quality,
+        ledger,
+    };
+}
+
 function extractJsonErrorDetail(stdout?: string): string | undefined {
     if (typeof stdout !== 'string') {
         return undefined;
@@ -1913,5 +2149,117 @@ export class NtmClient {
 
         const stdout = await this.run(args);
         return normalizeWorktreeList(JSON.parse(stdout));
+    }
+
+    /**
+     * List durable operator incidents via `ntm attention incidents list --json`.
+     */
+    async listIncidents(options?: IncidentListOptions): Promise<IncidentItem[]> {
+        const args: string[] = ['attention', 'incidents', 'list'];
+        if (options?.limit !== undefined) {
+            if (!Number.isInteger(options.limit) || options.limit < 1) {
+                throw new Error('Incident list limit must be a positive integer');
+            }
+            args.push(`--limit=${options.limit}`);
+        }
+        if (options?.includeAll) {
+            args.push('--all');
+        }
+        const status = (options?.status ?? '').trim();
+        if (status) {
+            args.push(`--status=${status}`);
+        }
+        args.push('--json');
+
+        const stdout = await this.run(args);
+        return normalizeIncidentList(JSON.parse(stdout));
+    }
+
+    /**
+     * Transition a durable operator incident via `ntm attention incidents <action> <id> [--reason=...] --json`.
+     */
+    async mutateIncident(
+        action: IncidentAction,
+        incidentId: string,
+        reason?: string
+    ): Promise<IncidentMutationResult> {
+        if (!SUPPORTED_INCIDENT_ACTIONS.includes(action)) {
+            throw new Error(`Unsupported incident action: ${String(action)}`);
+        }
+        const id = (incidentId ?? '').trim();
+        if (!id) {
+            throw new Error('Incident ID is required');
+        }
+        const args: string[] = ['attention', 'incidents', action, id];
+        const trimmedReason = (reason ?? '').trim();
+        if (trimmedReason) {
+            args.push(`--reason=${trimmedReason}`);
+        }
+        args.push('--json');
+
+        const stdout = await this.run(args);
+        return normalizeIncidentMutation(JSON.parse(stdout));
+    }
+
+    /**
+     * Inspect recent handoffs, latest Goal/Now handoff, quality report, and continuity ledger
+     * via `ntm --robot-handoff=<session> --robot-format=json`.
+     */
+    async getHandoff(
+        session: string,
+        options?: { limit?: number; projectDir?: string }
+    ): Promise<HandoffResult> {
+        const sess = (session ?? '').trim();
+        if (!sess) {
+            throw new Error('Session name is required to inspect handoffs');
+        }
+        const args: string[] = [`--robot-handoff=${sess}`];
+        if (options?.limit !== undefined) {
+            if (!Number.isInteger(options.limit) || options.limit < 1) {
+                throw new Error('Handoff limit must be a positive integer');
+            }
+            args.push(`--handoff-limit=${options.limit}`);
+        }
+        const projectDir = (options?.projectDir ?? '').trim();
+        if (projectDir) {
+            args.push(`--handoff-project-dir=${projectDir}`);
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeHandoffResult(JSON.parse(stdout));
+    }
+
+    /**
+     * Create a manual or auto-generated session handoff via `ntm --robot-handoff=<session> --handoff-create`.
+     */
+    async createHandoff(options: HandoffCreateOptions): Promise<HandoffResult> {
+        const sess = (options?.session ?? '').trim();
+        if (!sess) {
+            throw new Error('Session name is required to create a handoff');
+        }
+        const args: string[] = [`--robot-handoff=${sess}`, '--handoff-create'];
+        if (options?.auto) {
+            args.push('--handoff-auto');
+        } else {
+            const goal = (options?.goal ?? '').trim();
+            const now = (options?.now ?? '').trim();
+            if (!goal || !now) {
+                throw new Error('Both goal and now are required for a manual handoff');
+            }
+            args.push(`--handoff-goal=${goal}`, `--handoff-now=${now}`);
+            const desc = (options?.description ?? '').trim();
+            if (desc) {
+                args.push(`--handoff-description=${desc}`);
+            }
+        }
+        const projectDir = (options?.projectDir ?? '').trim();
+        if (projectDir) {
+            args.push(`--handoff-project-dir=${projectDir}`);
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeHandoffResult(JSON.parse(stdout));
     }
 }

@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, type ApiEnvelope } from "@/lib/api/client";
+import { BeadsActionsAndPlan } from "@/components/beads/BeadsActionsAndPlan";
 
 type BeadStatus = "open" | "in_progress" | "closed";
 
@@ -387,6 +388,11 @@ export default function BeadsPage() {
           />
         ))}
       </div>
+
+      <BeadsActionsAndPlan
+        onNotice={setStatusNotice}
+        onSelectBead={setSelectedBeadId}
+      />
 
       <div className="grid gap-6 lg:grid-cols-3">
         <section className="lg:col-span-2 space-y-4">

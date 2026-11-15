@@ -2220,6 +2220,106 @@ func TestCreateOrUpdateIncidentCreatesNewRowAfterResolvedWindow(t *testing.T) {
 	}
 }
 
+func TestListIncidentsFilteringOrderingAndLimit(t *testing.T) {
+	store := testStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+
+	empty, err := store.ListIncidents(true, 10)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("ListIncidents(empty) = %+v, err=%v; want empty", empty, err)
+	}
+
+	resolvedAt := now.Add(-2 * time.Minute)
+	mutedAt := now.Add(-1 * time.Minute)
+	seed := []Incident{
+		{
+			ID:          "inc-a",
+			Title:       "older open",
+			Fingerprint: "fp-a",
+			Status:      IncidentStatusOpen,
+			Severity:    SeverityWarning,
+			StartedAt:   now.Add(-10 * time.Minute),
+			LastEventAt: now.Add(-10 * time.Minute),
+		},
+		{
+			ID:          "inc-b",
+			Title:       "tie investigating lower id",
+			Fingerprint: "fp-b",
+			Status:      IncidentStatusInvestigating,
+			Severity:    SeverityError,
+			StartedAt:   now.Add(-5 * time.Minute),
+			LastEventAt: now.Add(-5 * time.Minute),
+		},
+		{
+			ID:          "inc-c",
+			Title:       "tie open higher id",
+			Fingerprint: "fp-c",
+			Status:      IncidentStatusOpen,
+			Severity:    SeverityCritical,
+			StartedAt:   now.Add(-5 * time.Minute),
+			LastEventAt: now.Add(-5 * time.Minute),
+		},
+		{
+			ID:          "inc-d",
+			Title:       "resolved incident",
+			Fingerprint: "fp-d",
+			Status:      IncidentStatusResolved,
+			Severity:    SeverityError,
+			StartedAt:   now.Add(-3 * time.Minute),
+			LastEventAt: now.Add(-3 * time.Minute),
+			ResolvedAt:  &resolvedAt,
+			ResolvedBy:  "operator",
+		},
+		{
+			ID:          "inc-e",
+			Title:       "muted incident",
+			Fingerprint: "fp-e",
+			Status:      IncidentStatusMuted,
+			Severity:    SeverityWarning,
+			StartedAt:   now.Add(-1 * time.Minute),
+			LastEventAt: now.Add(-1 * time.Minute),
+			MutedAt:     &mutedAt,
+			MutedBy:     "operator",
+		},
+	}
+	for i := range seed {
+		if err := store.CreateIncident(&seed[i]); err != nil {
+			t.Fatalf("CreateIncident(%s): %v", seed[i].ID, err)
+		}
+	}
+
+	active, err := store.ListIncidents(false, 0)
+	if err != nil {
+		t.Fatalf("ListIncidents(false, 0): %v", err)
+	}
+	if len(active) != 3 {
+		t.Fatalf("len(active) = %d, want 3: %+v", len(active), active)
+	}
+	// Deterministic started_at DESC, id DESC tiebreaker: inc-c before inc-b, then inc-a.
+	if active[0].ID != "inc-c" || active[1].ID != "inc-b" || active[2].ID != "inc-a" {
+		t.Fatalf("unexpected active ordering: [%s, %s, %s]", active[0].ID, active[1].ID, active[2].ID)
+	}
+
+	all, err := store.ListIncidents(true, 0)
+	if err != nil {
+		t.Fatalf("ListIncidents(true, 0): %v", err)
+	}
+	if len(all) != 5 {
+		t.Fatalf("len(all) = %d, want 5", len(all))
+	}
+	if all[0].ID != "inc-e" || all[1].ID != "inc-d" || all[2].ID != "inc-c" {
+		t.Fatalf("unexpected all ordering: %+v", all)
+	}
+
+	limited, err := store.ListIncidents(true, 2)
+	if err != nil {
+		t.Fatalf("ListIncidents(true, 2): %v", err)
+	}
+	if len(limited) != 2 || limited[0].ID != "inc-e" || limited[1].ID != "inc-d" {
+		t.Fatalf("unexpected limited result: %+v", limited)
+	}
+}
+
 func TestRobotWaitHandleCancellationLifecycle(t *testing.T) {
 	store := testStore(t)
 	now := time.Now().UTC()

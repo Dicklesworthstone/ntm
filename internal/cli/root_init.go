@@ -1048,6 +1048,7 @@ func needsConfigLoading(cmdName string) bool {
 			robotContext != "" || robotEnsemble != "" || robotEnsembleSpawn != "" || robotEnsembleSuggest != "" || robotEnsembleSynthesize != "" || robotEnsembleStop != "" || robotAlerts || robotIsWorking != "" || robotAgentHealth != "" ||
 			robotSmartRestart != "" || robotMonitor != "" || robotEnv != "" || robotSupportBundle != "" ||
 			robotActivity != "" || robotProductivity != "" || robotSendReceipt != "" ||
+			robotHandoff != "" || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-handoff")) ||
 			robotActionStatus != "" || robotWaitRequest != "" || robotCancelRequest != "" {
 			return true
 		}

@@ -423,6 +423,14 @@ func resetFlags() {
 	robotScanExclude = nil
 	robotScanFailOnWarning = false
 	robotScanTimeout = 60 * time.Second
+	robotHandoff = ""
+	robotHandoffCreate = false
+	robotHandoffAuto = false
+	robotHandoffGoal = ""
+	robotHandoffNow = ""
+	robotHandoffDescription = ""
+	robotHandoffLimit = 10
+	robotHandoffProjectDir = ""
 	robotProcessExit = nil
 }
 
@@ -6212,6 +6220,9 @@ func TestRobotProcessErrorContract(t *testing.T) {
 		{name: "default ensemble spawn stub", args: []string{"--robot-ensemble-spawn=contract", "--robot-format=toon"}, errorCode: robot.ErrCodeNotImplemented, expectedExit: 2},
 		{name: "missing ensemble synthesize session", args: []string{"--robot-ensemble-synthesize=ntm-robot-contract-missing-session", "--robot-format=json"}, errorCode: robot.ErrCodeSessionNotFound, expectedExit: 1},
 		{name: "invalid ensemble synthesize strategy", args: []string{"--robot-ensemble-synthesize=ntm-robot-contract-missing-session", "--synth-strategy=bogus", "--robot-format=json"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
+		{name: "empty robot handoff session", args: []string{"--robot-handoff=", "--robot-format=json"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
+		{name: "path traversal robot handoff session", args: []string{"--robot-handoff=../bad", "--robot-format=json"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
+		{name: "manual robot handoff create missing goal and now", args: []string{"--robot-handoff=myproject", "--handoff-create", "--robot-format=json"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
 		{name: "unavailable feature", args: []string{"__robot_contract_unavailable__"}, errorCode: robot.ErrCodeNotImplemented, expectedExit: 2},
 	}
 
@@ -8106,5 +8117,145 @@ func TestRobotSpawnOptionsFromFlagsCarriesOpencode(t *testing.T) {
 	}
 	if opts.OcCount != 2 || opts.OcModel != "opencode/space-bunny-free" {
 		t.Fatalf("oc options = count:%d model:%q, want 2 opencode/space-bunny-free", opts.OcCount, opts.OcModel)
+	}
+}
+
+func TestRobotHandoffFlagsRegistered(t *testing.T) {
+	expected := []string{
+		"robot-handoff",
+		"handoff-create",
+		"handoff-auto",
+		"handoff-goal",
+		"handoff-now",
+		"handoff-description",
+		"handoff-limit",
+		"handoff-project-dir",
+	}
+	for _, flagName := range expected {
+		if rootCmd.Flags().Lookup(flagName) == nil {
+			t.Errorf("expected root flag --%s to be registered", flagName)
+		}
+	}
+}
+
+func TestRobotHandoffInspectCreateAutoAndAllSubprocess(t *testing.T) {
+	tmpRoot := t.TempDir()
+	homeDir := filepath.Join(tmpRoot, "home")
+	configHome := filepath.Join(tmpRoot, "config")
+	projectDir := filepath.Join(tmpRoot, "project")
+	emptyBin := filepath.Join(tmpRoot, "bin")
+	for _, dir := range []string{homeDir, configHome, projectDir, emptyBin} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+
+	runSubprocess := func(t *testing.T, args ...string) (robot.HandoffOutput, int, string) {
+		t.Helper()
+		rawArgs, err := json.Marshal(args)
+		if err != nil {
+			t.Fatalf("marshal args: %v", err)
+		}
+		cmd := exec.Command(os.Args[0], "-test.run=^TestRobotProcessContractHelper$")
+		cmd.Dir = projectDir
+		cmd.Env = envWithOverrides(os.Environ(),
+			"HOME="+homeDir,
+			"XDG_CONFIG_HOME="+configHome,
+			"PATH="+emptyBin,
+			"NTM_NO_COLOR=1",
+			"NTM_CONFIG=",
+			"NTM_ROBOT_FORMAT=json",
+			"NTM_OUTPUT_FORMAT=",
+			"TOON_DEFAULT_FORMAT=",
+			"NTM_ROBOT_VERBOSITY=",
+			"NTM_ROBOT_CONTRACT_ARGS="+string(rawArgs),
+		)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		runErr := cmd.Run()
+		exitCode := 0
+		if runErr != nil {
+			var exitErr *exec.ExitError
+			if !errors.As(runErr, &exitErr) {
+				t.Fatalf("run subprocess %v: %v (stderr=%s)", args, runErr, stderr.String())
+			}
+			exitCode = exitErr.ExitCode()
+		}
+		var out robot.HandoffOutput
+		if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+			t.Fatalf("decode stdout for %v: %v\nstdout=%s\nstderr=%s", args, err, stdout.String(), stderr.String())
+		}
+		return out, exitCode, stdout.String()
+	}
+
+	// 1. Inspect empty session -> exit 0, success: true, handoffs: []
+	inspectEmpty, code, _ := runSubprocess(t,
+		"--robot-handoff=myproject",
+		"--handoff-project-dir="+projectDir,
+	)
+	if code != 0 || !inspectEmpty.Success {
+		t.Fatalf("expected exit 0 and success=true for empty inspect, got code=%d out=%+v", code, inspectEmpty)
+	}
+	if inspectEmpty.Action != "handoff_inspect" || len(inspectEmpty.Handoffs) != 0 {
+		t.Fatalf("unexpected empty inspect output: %+v", inspectEmpty)
+	}
+
+	// 2. Manual create -> exit 0, persists YAML + ledger + 4-dimension quality report
+	created, code, _ := runSubprocess(t,
+		"--robot-handoff=myproject",
+		"--handoff-create",
+		"--handoff-goal=Wired --robot-handoff CLI dispatch",
+		"--handoff-now=Verify subprocess contract tests",
+		"--handoff-description=cli-dispatch",
+		"--handoff-project-dir="+projectDir,
+	)
+	if code != 0 || !created.Success {
+		t.Fatalf("expected exit 0 and success=true for manual create, got code=%d out=%+v", code, created)
+	}
+	if created.Action != "handoff_create" || created.CreatedPath == "" {
+		t.Fatalf("unexpected manual create output: %+v", created)
+	}
+	if created.Quality == nil || created.Quality.Score <= 0 || len(created.Quality.Dimensions) != 4 {
+		t.Fatalf("expected 4-dimension quality report, got %+v", created.Quality)
+	}
+	if created.Ledger == nil || !created.Ledger.Exists || created.Ledger.Bytes <= 0 {
+		t.Fatalf("expected continuity ledger to exist, got %+v", created.Ledger)
+	}
+
+	// 3. Auto create on second session -> exit 0, fallback synthesis + quality report
+	autoCreated, code, _ := runSubprocess(t,
+		"--robot-handoff=autoproj",
+		"--handoff-create",
+		"--handoff-auto",
+		"--handoff-project-dir="+projectDir,
+	)
+	if code != 0 || !autoCreated.Success {
+		t.Fatalf("expected exit 0 and success=true for auto create, got code=%d out=%+v", code, autoCreated)
+	}
+	if autoCreated.Quality == nil || len(autoCreated.Quality.Dimensions) != 4 {
+		t.Fatalf("expected 4-dimension quality report for auto create, got %+v", autoCreated.Quality)
+	}
+
+	// 4. Inspect all with --handoff-limit=1 -> exit 0, 2 sessions discovered, 1 handoff returned
+	inspectAll, code, _ := runSubprocess(t,
+		"--robot-handoff=all",
+		"--handoff-limit=1",
+		"--handoff-project-dir="+projectDir,
+	)
+	if code != 0 || !inspectAll.Success {
+		t.Fatalf("expected exit 0 and success=true for --robot-handoff=all, got code=%d out=%+v", code, inspectAll)
+	}
+	if len(inspectAll.Sessions) != 2 || inspectAll.TotalReturned != 1 || len(inspectAll.Handoffs) != 1 {
+		t.Fatalf("expected 2 sessions and 1 bounded handoff, got sessions=%v handoffs=%+v", inspectAll.Sessions, inspectAll.Handoffs)
+	}
+
+	// 5. Relative --handoff-project-dir -> exit 1, INVALID_FLAG
+	badDirOut, code, _ := runSubprocess(t,
+		"--robot-handoff=myproject",
+		"--handoff-project-dir=relative/dir",
+	)
+	if code != 1 || badDirOut.Success || badDirOut.ErrorCode != robot.ErrCodeInvalidFlag {
+		t.Fatalf("expected exit 1 and INVALID_FLAG for relative project dir, got code=%d out=%+v", code, badDirOut)
 	}
 }

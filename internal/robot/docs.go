@@ -195,7 +195,8 @@ func getCommandsContent() *DocsContent {
 --robot-diagnose=SESSION: Comprehensive health check
 --robot-health-restart-stuck=SESSION: Detect and restart stuck agents
 --robot-probe=SESSION: Active pane responsiveness probe (--panes follows the shared selector convention: on a multi-window session a bare index selects a WINDOW and every pane in it is probed; each result carries pane_ref, the exact "window.pane" address probed)
---robot-pane-address=SESSION: Per-pane addressing cards (canonical selector, stable %pane_id, tmux target)`,
+--robot-pane-address=SESSION: Per-pane addressing cards (canonical selector, stable %pane_id, tmux target)
+--robot-handoff=SESSION: Inspect or create Goal/Now session continuity handoffs with quality scores (use SESSION or 'all')`,
 			},
 			{
 				Heading: "Agent Control",
@@ -356,6 +357,12 @@ func getExamplesContent() *DocsContent {
 				Description: "Open the dashboard overlay as a structured human handoff actuator",
 				Command:     "ntm --robot-overlay --overlay-session=proj --overlay-cursor=42 --overlay-no-wait",
 				Notes:       "Use this when an operator should jump directly to the relevant attention item instead of parsing free-form instructions",
+			},
+			{
+				Name:        "session_handoff",
+				Description: "Create or inspect a structured Goal/Now continuity handoff with quality scoring",
+				Command:     "ntm --robot-handoff=proj --handoff-create --handoff-goal='Implemented auth' --handoff-now='Run E2E suite'",
+				Notes:       "Omit --handoff-create to inspect the latest handoff and quality dimensions, or pass --handoff-auto to synthesize from session/git state",
 			},
 			{
 				Name:        "restart_with_bead",

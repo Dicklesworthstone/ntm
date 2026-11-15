@@ -4812,6 +4812,214 @@
         }
       }
     },
+    "/api/v1/handoffs": {
+      "get": {
+        "tags": [
+          "handoffs"
+        ],
+        "summary": "List handoffs",
+        "description": "Served route `GET /api/v1/handoffs`. Handler: `handleListHandoffsV1`. Response shape reflected from Go type `HandoffsEnvelopeResponse`.",
+        "operationId": "get_api_v1_handoffs",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "Session name or 'all' to list handoffs across sessions (default 'all').",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum handoff entries to return (default 20, max 200).",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "project_dir",
+            "in": "query",
+            "description": "Optional existing absolute project directory override (alias: ?project=).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HandoffsEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "handoffs"
+        ],
+        "summary": "Create handoff",
+        "description": "Served route `POST /api/v1/handoffs`. Handler: `handleCreateHandoffV1`. Response shape reflected from Go type `HandoffsEnvelopeResponse`.",
+        "operationId": "post_api_v1_handoffs",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateHandoffRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HandoffsEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/handoffs/latest": {
+      "get": {
+        "tags": [
+          "handoffs"
+        ],
+        "summary": "Latest handoff",
+        "description": "Served route `GET /api/v1/handoffs/latest`. Handler: `handleLatestHandoffV1`. Response shape reflected from Go type `HandoffLatestEnvelopeResponse`.",
+        "operationId": "get_api_v1_handoffs_latest",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "Session name or 'all' to inspect the newest handoff (default 'all').",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project_dir",
+            "in": "query",
+            "description": "Optional existing absolute project directory override (alias: ?project=).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HandoffLatestEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/health": {
       "get": {
         "tags": [
@@ -4905,6 +5113,330 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/incidents": {
+      "get": {
+        "tags": [
+          "incidents"
+        ],
+        "summary": "List incidents",
+        "description": "Served route `GET /api/v1/incidents`. Handler: `handleListIncidentsV1`. Response shape reflected from Go type `IncidentsListEnvelopeResponse`.",
+        "operationId": "get_api_v1_incidents",
+        "parameters": [
+          {
+            "name": "include_resolved",
+            "in": "query",
+            "description": "Include resolved and muted incidents alongside active open/investigating incidents.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Optional status filter (open, investigating, resolved, muted).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum incidents to return (default 50, max 500).",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentsListEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/incidents/{id}": {
+      "get": {
+        "tags": [
+          "incidents"
+        ],
+        "summary": "Get incident",
+        "description": "Served route `GET /api/v1/incidents/{id}`. Handler: `handleGetIncidentV1`. Response shape reflected from Go type `IncidentDetailEnvelopeResponse`.",
+        "operationId": "get_api_v1_incidents_id",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "events_limit",
+            "in": "query",
+            "description": "Maximum linked attention events to return (default 50, max 500).",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentDetailEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/incidents/{id}/resolve": {
+      "post": {
+        "tags": [
+          "incidents"
+        ],
+        "summary": "Resolve incident",
+        "description": "Served route `POST /api/v1/incidents/{id}/resolve`. Handler: `handleResolveIncidentV1`. Response shape reflected from Go type `IncidentStatusEnvelopeResponse`.",
+        "operationId": "post_api_v1_incidents_id_resolve",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IncidentResolveRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentStatusEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/incidents/{id}/status": {
+      "post": {
+        "tags": [
+          "incidents"
+        ],
+        "summary": "Update incident status",
+        "description": "Served route `POST /api/v1/incidents/{id}/status`. Handler: `handleUpdateIncidentStatusV1`. Response shape reflected from Go type `IncidentStatusEnvelopeResponse`.",
+        "operationId": "post_api_v1_incidents_id_status",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IncidentStatusUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentStatusEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -17124,6 +17656,31 @@
           "filters"
         ]
       },
+      "AttentionReplayWindow": {
+        "type": "object",
+        "properties": {
+          "event_count": {
+            "type": "integer"
+          },
+          "last_event_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "newest_cursor": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "oldest_cursor": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "required": [
+          "event_count",
+          "newest_cursor",
+          "oldest_cursor"
+        ]
+      },
       "AuditDecision": {
         "type": "object",
         "properties": {
@@ -20186,6 +20743,53 @@
           "name"
         ]
       },
+      "CreateHandoffRequest": {
+        "type": "object",
+        "properties": {
+          "auto": {
+            "type": "boolean"
+          },
+          "blockers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "decisions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "description": {
+            "type": "string"
+          },
+          "goal": {
+            "type": "string"
+          },
+          "include_git": {
+            "type": "boolean"
+          },
+          "next": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "now": {
+            "type": "string"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      },
       "CreateJobRequest": {
         "type": "object",
         "properties": {
@@ -20870,6 +21474,21 @@
       },
       "Duration": {
         "type": "object"
+      },
+      "EnrichmentWarning": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "source"
+        ]
       },
       "EnsembleBudget": {
         "type": "object",
@@ -22510,6 +23129,34 @@
           "at"
         ]
       },
+      "FileChanges": {
+        "type": "object",
+        "properties": {
+          "Created": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "Deleted": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "Modified": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "Created",
+          "Deleted",
+          "Modified"
+        ]
+      },
       "FileReservation": {
         "type": "object",
         "properties": {
@@ -23389,6 +24036,231 @@
           }
         }
       },
+      "Handoff": {
+        "type": "object",
+        "properties": {
+          "ActiveBeads": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "AgentID": {
+            "type": "string"
+          },
+          "AgentMailThreads": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "AgentType": {
+            "type": "string"
+          },
+          "Blockers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "CMMemories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "CreatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "Date": {
+            "type": "string"
+          },
+          "Decisions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "DoneThisSession": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TaskRecord"
+            }
+          },
+          "Failed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "Files": {
+            "$ref": "#/components/schemas/FileChanges"
+          },
+          "Findings": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "Goal": {
+            "type": "string"
+          },
+          "Next": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "Now": {
+            "type": "string"
+          },
+          "Outcome": {
+            "type": "string"
+          },
+          "PaneID": {
+            "type": "string"
+          },
+          "Quality": {
+            "$ref": "#/components/schemas/QualityReport"
+          },
+          "Questions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "ReservationTransfer": {
+            "$ref": "#/components/schemas/ReservationTransfer"
+          },
+          "Session": {
+            "type": "string"
+          },
+          "Status": {
+            "type": "string"
+          },
+          "Test": {
+            "type": "string"
+          },
+          "TokensMax": {
+            "type": "integer"
+          },
+          "TokensPct": {
+            "type": "number"
+          },
+          "TokensUsed": {
+            "type": "integer"
+          },
+          "UpdatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "Version": {
+            "type": "string"
+          },
+          "Warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnrichmentWarning"
+            }
+          },
+          "Worked": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "ActiveBeads",
+          "AgentID",
+          "AgentMailThreads",
+          "AgentType",
+          "Blockers",
+          "CMMemories",
+          "CreatedAt",
+          "Date",
+          "Decisions",
+          "DoneThisSession",
+          "Failed",
+          "Files",
+          "Findings",
+          "Goal",
+          "Next",
+          "Now",
+          "Outcome",
+          "PaneID",
+          "Questions",
+          "Session",
+          "Status",
+          "Test",
+          "TokensMax",
+          "TokensPct",
+          "TokensUsed",
+          "UpdatedAt",
+          "Version",
+          "Worked"
+        ]
+      },
+      "HandoffLatestEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "latest": {
+            "$ref": "#/components/schemas/Handoff"
+          },
+          "latest_path": {
+            "type": "string"
+          },
+          "ledger": {
+            "$ref": "#/components/schemas/HandoffLedgerSummary"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "quality": {
+            "$ref": "#/components/schemas/QualityReport"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "success",
+          "timestamp"
+        ]
+      },
+      "HandoffLedgerSummary": {
+        "type": "object",
+        "properties": {
+          "bytes": {
+            "type": "integer"
+          },
+          "exists": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "bytes",
+          "exists",
+          "path"
+        ]
+      },
       "HandoffStatus": {
         "type": "object",
         "properties": {
@@ -23490,6 +24362,100 @@
         },
         "required": [
           "session"
+        ]
+      },
+      "HandoffSummaryItem": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string"
+          },
+          "goal": {
+            "type": "string"
+          },
+          "is_auto": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "date",
+          "is_auto",
+          "path",
+          "session"
+        ]
+      },
+      "HandoffsEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "action": {
+            "type": "string"
+          },
+          "created_path": {
+            "type": "string"
+          },
+          "handoffs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HandoffSummaryItem"
+            }
+          },
+          "latest": {
+            "$ref": "#/components/schemas/Handoff"
+          },
+          "latest_path": {
+            "type": "string"
+          },
+          "ledger": {
+            "$ref": "#/components/schemas/HandoffLedgerSummary"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "quality": {
+            "$ref": "#/components/schemas/QualityReport"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "total_returned": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action",
+          "handoffs",
+          "session",
+          "sessions",
+          "success",
+          "timestamp",
+          "total_returned"
         ]
       },
       "HealthBackpressureEnvelopeResponse": {
@@ -23942,6 +24908,239 @@
           "importance",
           "kind",
           "subject"
+        ]
+      },
+      "Incident": {
+        "type": "object",
+        "properties": {
+          "acknowledged_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "acknowledged_by": {
+            "type": "string"
+          },
+          "agent_ids": {
+            "type": "string"
+          },
+          "alert_count": {
+            "type": "integer"
+          },
+          "category": {
+            "type": "string"
+          },
+          "event_count": {
+            "type": "integer"
+          },
+          "family": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "first_event_cursor": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_event_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_event_cursor": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "muted_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "muted_by": {
+            "type": "string"
+          },
+          "muted_reason": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "resolution": {
+            "type": "string"
+          },
+          "resolved_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "resolved_by": {
+            "type": "string"
+          },
+          "root_cause": {
+            "type": "string"
+          },
+          "session_names": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "alert_count",
+          "category",
+          "event_count",
+          "family",
+          "fingerprint",
+          "id",
+          "last_event_at",
+          "severity",
+          "started_at",
+          "status",
+          "title"
+        ]
+      },
+      "IncidentDetailEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "event_count": {
+            "type": "integer"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StoredAttentionEvent"
+            }
+          },
+          "incident": {
+            "$ref": "#/components/schemas/Incident"
+          },
+          "replay_window": {
+            "$ref": "#/components/schemas/AttentionReplayWindow"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_count",
+          "events",
+          "success",
+          "timestamp"
+        ]
+      },
+      "IncidentResolveRequest": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "IncidentStatusEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "idempotent": {
+            "type": "boolean"
+          },
+          "incident": {
+            "$ref": "#/components/schemas/Incident"
+          },
+          "incident_id": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "previous_status": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "idempotent",
+          "incident_id",
+          "previous_status",
+          "status",
+          "success",
+          "timestamp"
+        ]
+      },
+      "IncidentStatusUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "IncidentsListEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "incidents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Incident"
+            }
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "count",
+          "incidents",
+          "success",
+          "timestamp"
         ]
       },
       "InsightsResponse": {
@@ -28895,6 +30094,72 @@
           "current"
         ]
       },
+      "QualityDimensionScore": {
+        "type": "object",
+        "properties": {
+          "hints": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": "string"
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "score": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "score"
+        ]
+      },
+      "QualityReport": {
+        "type": "object",
+        "properties": {
+          "dimensions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QualityDimensionScore"
+            }
+          },
+          "hints": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "score": {
+            "type": "integer"
+          },
+          "scored_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "dimensions",
+          "score",
+          "scored_at",
+          "status"
+        ]
+      },
       "Question": {
         "type": "object",
         "properties": {
@@ -29515,6 +30780,82 @@
           "reservation",
           "success",
           "timestamp"
+        ]
+      },
+      "ReservationSnapshot": {
+        "type": "object",
+        "properties": {
+          "AgentName": {
+            "type": "string"
+          },
+          "CreatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "Exclusive": {
+            "type": "boolean"
+          },
+          "ExpiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ID": {
+            "type": "integer"
+          },
+          "PathPattern": {
+            "type": "string"
+          },
+          "ProjectID": {
+            "type": "integer"
+          },
+          "Reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "AgentName",
+          "CreatedAt",
+          "Exclusive",
+          "ExpiresAt",
+          "ID",
+          "PathPattern",
+          "ProjectID",
+          "Reason"
+        ]
+      },
+      "ReservationTransfer": {
+        "type": "object",
+        "properties": {
+          "CreatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "FromAgent": {
+            "type": "string"
+          },
+          "GracePeriodSeconds": {
+            "type": "integer"
+          },
+          "ProjectKey": {
+            "type": "string"
+          },
+          "Reservations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReservationSnapshot"
+            }
+          },
+          "TTLSeconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "CreatedAt",
+          "FromAgent",
+          "GracePeriodSeconds",
+          "ProjectKey",
+          "Reservations",
+          "TTLSeconds"
         ]
       },
       "ReservationsListEnvelopeResponse": {
@@ -33940,6 +35281,73 @@
           "id"
         ]
       },
+      "StoredAttentionEvent": {
+        "type": "object",
+        "properties": {
+          "actionability": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "cursor": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "dedup_count": {
+            "type": "integer"
+          },
+          "dedup_key": {
+            "type": "string"
+          },
+          "details": {
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "next_actions": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          },
+          "reason_code": {
+            "type": "string"
+          },
+          "session_name": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "ts": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "actionability",
+          "category",
+          "cursor",
+          "dedup_count",
+          "event_type",
+          "severity",
+          "source",
+          "summary",
+          "ts"
+        ]
+      },
       "StreamingStatsEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -35369,6 +36777,24 @@
           "metric",
           "status",
           "target"
+        ]
+      },
+      "TaskRecord": {
+        "type": "object",
+        "properties": {
+          "Files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "Task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "Files",
+          "Task"
         ]
       },
       "TerseOutput": {
@@ -37324,8 +38750,16 @@
       "description": "Operations related to events"
     },
     {
+      "name": "handoffs",
+      "description": "Operations related to handoffs"
+    },
+    {
       "name": "health",
       "description": "Operations related to health"
+    },
+    {
+      "name": "incidents",
+      "description": "Operations related to incidents"
     },
     {
       "name": "jobs",

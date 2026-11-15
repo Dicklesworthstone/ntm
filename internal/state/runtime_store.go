@@ -2143,16 +2143,30 @@ func (s *Store) GetIncident(id string) (*Incident, error) {
 
 // ListOpenIncidents returns all non-resolved incidents.
 func (s *Store) ListOpenIncidents() ([]Incident, error) {
+	return s.ListIncidents(false, 0)
+}
+
+// ListIncidents returns incidents ordered by started_at DESC (tiebroken by id DESC).
+// When includeResolved is false, resolved and muted incidents are excluded.
+// When limit > 0, at most limit rows are returned.
+func (s *Store) ListIncidents(includeResolved bool, limit int) ([]Incident, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`
-		SELECT ` + incidentSelectColumns + `
-		FROM incidents
-		WHERE status NOT IN ('resolved', 'muted')
-		ORDER BY started_at DESC`)
+	query := `SELECT ` + incidentSelectColumns + ` FROM incidents`
+	var args []any
+	if !includeResolved {
+		query += ` WHERE status NOT IN ('resolved', 'muted')`
+	}
+	query += ` ORDER BY started_at DESC, id DESC`
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list open incidents: %w", err)
+		return nil, fmt.Errorf("list incidents: %w", err)
 	}
 	defer rows.Close()
 

@@ -15,6 +15,9 @@ import {
     mapBackpressureLevel,
     normalizeBackpressure,
     normalizeEnsembleSynthesize,
+    normalizeHandoffResult,
+    normalizeIncidentList,
+    normalizeIncidentMutation,
     normalizeSnapshot,
     normalizeStatusHeader,
     normalizeWebPort,
@@ -23,6 +26,7 @@ import {
     RobotMail,
     shellQuote,
     SUPPORTED_ATTENTION_ACTIONS,
+    SUPPORTED_INCIDENT_ACTIONS,
     SUPPORTED_SEND_HARNESSES,
     SUPPORTED_SPAWN_HARNESSES,
 } from '../ntmClient';
@@ -47,10 +51,14 @@ import {
     buildAttentionQuickPickItems,
     buildBackpressureQuickPickItems,
     buildEnsemblePresetQuickPickItems,
+    buildIncidentActionQuickPickItems,
+    buildIncidentQuickPickItems,
     buildWebCockpitCommand as extensionBuildWebCockpitCommand,
     buildWorktreeQuickPickItems,
     defaultEnsembleSessionName,
     ENSEMBLE_SYNTHESIS_STRATEGY_OPTIONS,
+    formatHandoffMarkdown,
+    HANDOFF_MODE_OPTIONS,
     PALETTE_ACTION_OPTIONS,
     parseCustomSpawnFlags,
     resolveSendTargetsFromSelection,
@@ -2003,6 +2011,319 @@ describe('Wave 8: VSCode ntm.synthesizeEnsemble (--robot-ensemble-synthesize)', 
                 '--robot-format=json',
             ]);
             assert.deepEqual(mockState.openedExternalUris, ['http://127.0.0.1:7337/ensemble']);
+        } finally {
+            for (const sub of subscriptions) {
+                sub.dispose();
+            }
+        }
+    });
+});
+
+const REAL_INCIDENTS_LIST_PAYLOAD = {
+    success: true,
+    timestamp: '2026-11-15T10:00:00Z',
+    count: 1,
+    incidents: [
+        {
+            id: 'inc-wave9-01',
+            title: 'Repeated agent stall in ntm-prod:%1',
+            fingerprint: 'fp:stall:ntm-prod:1',
+            family: 'agent_stall',
+            category: 'agent',
+            status: 'open',
+            severity: 'critical',
+            session_names: 'ntm-prod',
+            event_count: 5,
+            alert_count: 3,
+            started_at: '2026-11-15T09:45:00Z',
+            last_event_at: '2026-11-15T09:59:00Z',
+        },
+    ],
+};
+
+const REAL_HANDOFF_PAYLOAD = {
+    success: true,
+    timestamp: '2026-11-15T10:05:00Z',
+    action: 'list',
+    session: 'ntm-prod',
+    sessions: ['ntm-prod'],
+    total_returned: 1,
+    latest_path: '.ntm/handoffs/ntm-prod/2026-11-15_handoff.yaml',
+    handoffs: [
+        {
+            path: '.ntm/handoffs/ntm-prod/2026-11-15_handoff.yaml',
+            session: 'ntm-prod',
+            date: '2026-11-15',
+            status: 'complete',
+            goal: 'Completed full-stack Incidents & Handoffs surfaces',
+            is_auto: false,
+        },
+    ],
+    latest: {
+        Session: 'ntm-prod',
+        Goal: 'Completed full-stack Incidents & Handoffs surfaces',
+        Now: 'Run final qualification gates and push to main',
+        Status: 'complete',
+    },
+    quality: {
+        score: 94,
+        status: 'ready',
+        scored_at: '2026-11-15T10:05:00Z',
+        dimensions: [{ name: 'completeness', score: 96 }],
+        hints: [],
+    },
+    ledger: {
+        path: '.ntm/continuity/CONTINUITY_ntm-prod.md',
+        exists: true,
+        bytes: 2048,
+    },
+};
+
+describe('Wave 9: VSCode ntm.triageIncidents & ntm.handoffSession', () => {
+    beforeEach(() => {
+        resetVscodeMock();
+    });
+
+    it('constructs exact CLI argv and normalizes JSON for listIncidents, mutateIncident, getHandoff, and createHandoff', async () => {
+        const calls: string[][] = [];
+        const client = new NtmClient({
+            execFile: async (_file, args) => {
+                calls.push(args);
+                if (args[0] === 'attention' && args[1] === 'incidents' && args[2] === 'list') {
+                    return { stdout: JSON.stringify(REAL_INCIDENTS_LIST_PAYLOAD), stderr: '' };
+                }
+                if (args[0] === 'attention' && args[1] === 'incidents') {
+                    const action = args[2];
+                    const id = args[3];
+                    return {
+                        stdout: JSON.stringify({
+                            success: true,
+                            timestamp: '2026-11-15T10:02:00Z',
+                            action,
+                            incident_id: id,
+                            previous_status: 'open',
+                            status: action === 'resolve' ? 'resolved' : (action === 'mute' ? 'muted' : 'investigating'),
+                            idempotent: false,
+                            note: 'Handled via VSCode',
+                        }),
+                        stderr: '',
+                    };
+                }
+                if (args.some(a => a.startsWith('--robot-handoff='))) {
+                    return {
+                        stdout: JSON.stringify({
+                            ...REAL_HANDOFF_PAYLOAD,
+                            action: args.includes('--handoff-create')
+                                ? (args.includes('--handoff-auto') ? 'create_auto' : 'create')
+                                : 'list',
+                            created_path: args.includes('--handoff-create')
+                                ? '.ntm/handoffs/ntm-prod/created.yaml'
+                                : undefined,
+                        }),
+                        stderr: '',
+                    };
+                }
+                throw new Error(`unexpected args: ${args.join(' ')}`);
+            },
+        });
+
+        const incidents = await client.listIncidents({ limit: 25, includeAll: true, status: 'open' });
+        assert.deepEqual(calls[0], [
+            'attention',
+            'incidents',
+            'list',
+            '--limit=25',
+            '--all',
+            '--status=open',
+            '--json',
+        ]);
+        assert.equal(incidents.length, 1);
+        assert.equal(incidents[0].id, 'inc-wave9-01');
+        assert.equal(incidents[0].alert_count, 3);
+        assert.deepEqual(SUPPORTED_INCIDENT_ACTIONS, ['investigate', 'resolve', 'mute']);
+
+        const resolved = await client.mutateIncident('resolve', 'inc-wave9-01', 'Rotated stuck pane');
+        assert.deepEqual(calls[1], [
+            'attention',
+            'incidents',
+            'resolve',
+            'inc-wave9-01',
+            '--reason=Rotated stuck pane',
+            '--json',
+        ]);
+        assert.equal(resolved.status, 'resolved');
+        assert.equal(resolved.incident_id, 'inc-wave9-01');
+
+        const inspected = await client.getHandoff('ntm-prod', {
+            limit: 10,
+            projectDir: '/data/projects/ntm',
+        });
+        assert.deepEqual(calls[2], [
+            '--robot-handoff=ntm-prod',
+            '--handoff-limit=10',
+            '--handoff-project-dir=/data/projects/ntm',
+            '--robot-format=json',
+        ]);
+        assert.equal(inspected.latest?.goal, 'Completed full-stack Incidents & Handoffs surfaces');
+        assert.equal(inspected.quality?.score, 94);
+        assert.equal(inspected.ledger?.exists, true);
+
+        const createdManual = await client.createHandoff({
+            session: 'ntm-prod',
+            goal: 'Shipped Wave 9',
+            now: 'Verify preflight',
+            description: 'wave9',
+            projectDir: '/data/projects/ntm',
+        });
+        assert.deepEqual(calls[3], [
+            '--robot-handoff=ntm-prod',
+            '--handoff-create',
+            '--handoff-goal=Shipped Wave 9',
+            '--handoff-now=Verify preflight',
+            '--handoff-description=wave9',
+            '--handoff-project-dir=/data/projects/ntm',
+            '--robot-format=json',
+        ]);
+        assert.equal(createdManual.action, 'create');
+
+        const createdAuto = await client.createHandoff({
+            session: 'ntm-prod',
+            auto: true,
+        });
+        assert.deepEqual(calls[4], [
+            '--robot-handoff=ntm-prod',
+            '--handoff-create',
+            '--handoff-auto',
+            '--robot-format=json',
+        ]);
+        assert.equal(createdAuto.action, 'create_auto');
+
+        const md = formatHandoffMarkdown(inspected);
+        assert.ok(md.includes('# Session Handoff: ntm-prod'));
+        assert.ok(md.includes('94/100'));
+        assert.ok(md.includes('Completed full-stack Incidents & Handoffs surfaces'));
+        assert.ok(buildIncidentQuickPickItems(incidents).length === 2);
+        assert.ok(buildIncidentActionQuickPickItems(incidents[0]).length >= 3);
+        assert.equal(HANDOFF_MODE_OPTIONS.length, 4);
+        assert.ok(normalizeIncidentList({ success: true, incidents: [] }).length === 0);
+        assert.equal(
+            normalizeIncidentMutation({
+                success: true,
+                action: 'mute',
+                incident_id: 'inc-1',
+                previous_status: 'open',
+                status: 'muted',
+            }).status,
+            'muted'
+        );
+        assert.equal(
+            normalizeHandoffResult({ success: true, action: 'list', session: 's1', handoffs: [] }).session,
+            's1'
+        );
+
+        const pkgPath = path.resolve(__dirname, '../../package.json');
+        const pkgJson = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        const activationEvents: string[] = pkgJson.activationEvents ?? [];
+        assert.ok(activationEvents.includes('onCommand:ntm.triageIncidents'));
+        assert.ok(activationEvents.includes('onCommand:ntm.handoffSession'));
+        assert.ok(PALETTE_ACTION_OPTIONS.some(p => p.command === 'ntm.triageIncidents'));
+        assert.ok(PALETTE_ACTION_OPTIONS.some(p => p.command === 'ntm.handoffSession'));
+    });
+
+    it('executes ntm.triageIncidents and ntm.handoffSession end-to-end across inspect and manual create flows', async () => {
+        mockState.binaryPath = '/opt/ntm/bin/ntm';
+        mockState.webPort = 7337;
+        const seenArgs: string[][] = [];
+
+        const client = new NtmClient({
+            execFile: async (_file, args) => {
+                seenArgs.push(args);
+                if (args[0] === 'attention' && args[1] === 'incidents' && args[2] === 'list') {
+                    return { stdout: JSON.stringify(REAL_INCIDENTS_LIST_PAYLOAD), stderr: '' };
+                }
+                if (args[0] === 'attention' && args[1] === 'incidents') {
+                    return {
+                        stdout: JSON.stringify({
+                            success: true,
+                            action: args[2],
+                            incident_id: args[3],
+                            previous_status: 'open',
+                            status: 'resolved',
+                        }),
+                        stderr: '',
+                    };
+                }
+                if (args.some(a => a.startsWith('--robot-handoff='))) {
+                    return { stdout: JSON.stringify(REAL_HANDOFF_PAYLOAD), stderr: '' };
+                }
+                return { stdout: JSON.stringify(REAL_SNAPSHOT_PAYLOAD), stderr: '' };
+            },
+        });
+
+        const subscriptions: Array<{ dispose(): void }> = [];
+        const context = {
+            subscriptions,
+            extensionUri: vscode.Uri.file('/ext'),
+        } as unknown as vscode.ExtensionContext;
+
+        activate(context, client);
+        try {
+            // 1. Triage operator incident -> Resolve with note
+            mockState.quickPickQueue.push(
+                (items: Array<{ itemAction: string }>) => items.find(i => i.itemAction === 'incident'),
+                (actions: Array<{ action: string }>) => actions.find(a => a.action === 'resolve')
+            );
+            mockState.inputBoxQueue.push('Resolved stalled pane');
+
+            await vscode.commands.executeCommand('ntm.triageIncidents');
+            assert.ok(
+                seenArgs.some(
+                    a =>
+                        a[0] === 'attention' &&
+                        a[1] === 'incidents' &&
+                        a[2] === 'resolve' &&
+                        a[3] === 'inc-wave9-01' &&
+                        a.includes('--reason=Resolved stalled pane')
+                )
+            );
+            assert.ok(
+                mockState.infoMessages.some(m =>
+                    m.includes('Incident inc-wave9-01 updated (resolve -> resolved)')
+                )
+            );
+
+            // 2. Inspect session handoff -> opens Markdown summary document
+            mockState.quickPickQueue.push((modes: Array<{ mode: string }>) =>
+                modes.find(m => m.mode === 'inspect')
+            );
+            await vscode.commands.executeCommand('ntm.handoffSession', 'ntm-prod');
+            assert.equal(mockState.openedTextDocuments.length, 1);
+            assert.ok(
+                mockState.openedTextDocuments[0].content.includes(
+                    'Completed full-stack Incidents & Handoffs surfaces'
+                )
+            );
+
+            // 3. Create manual session handoff -> Open /sessions in Web Cockpit
+            mockState.quickPickQueue.push((modes: Array<{ mode: string }>) =>
+                modes.find(m => m.mode === 'createManual')
+            );
+            mockState.inputBoxQueue.push('Finished Wave 9 VSCode parity', 'Run full repo test suite');
+            mockState.infoMessageActionQueue.push('Open /sessions in Web Cockpit');
+
+            await vscode.commands.executeCommand('ntm.handoffSession', 'ntm-prod');
+            assert.ok(
+                seenArgs.some(
+                    a =>
+                        a.includes('--robot-handoff=ntm-prod') &&
+                        a.includes('--handoff-create') &&
+                        a.includes('--handoff-goal=Finished Wave 9 VSCode parity') &&
+                        a.includes('--handoff-now=Run full repo test suite')
+                )
+            );
+            assert.deepEqual(mockState.openedExternalUris, [
+                'http://127.0.0.1:7337/sessions?session=ntm-prod',
+            ]);
         } finally {
             for (const sub of subscriptions) {
                 sub.dispose();

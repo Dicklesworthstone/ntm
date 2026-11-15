@@ -1,6 +1,6 @@
 {
   "source": "chi-router-walk",
-  "count": 206,
+  "count": 213,
   "endpoints": [
     {
       "method": "GET",
@@ -365,6 +365,21 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/handoffs",
+      "handler": "handleListHandoffsV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/handoffs",
+      "handler": "handleCreateHandoffV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/handoffs/latest",
+      "handler": "handleLatestHandoffV1"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/health",
       "handler": "handleHealthV1"
     },
@@ -372,6 +387,26 @@
       "method": "GET",
       "path": "/api/v1/health/backpressure",
       "handler": "handleHealthBackpressureV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/incidents",
+      "handler": "handleListIncidentsV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/incidents/{id}",
+      "handler": "handleGetIncidentV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/incidents/{id}/resolve",
+      "handler": "handleResolveIncidentV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/incidents/{id}/status",
+      "handler": "handleUpdateIncidentStatusV1"
     },
     {
       "method": "GET",

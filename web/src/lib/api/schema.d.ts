@@ -1364,6 +1364,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/handoffs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List handoffs
+         * @description Served route `GET /api/v1/handoffs`. Handler: `handleListHandoffsV1`. Response shape reflected from Go type `HandoffsEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_handoffs"];
+        put?: never;
+        /**
+         * Create handoff
+         * @description Served route `POST /api/v1/handoffs`. Handler: `handleCreateHandoffV1`. Response shape reflected from Go type `HandoffsEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_handoffs"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/handoffs/latest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Latest handoff
+         * @description Served route `GET /api/v1/handoffs/latest`. Handler: `handleLatestHandoffV1`. Response shape reflected from Go type `HandoffLatestEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_handoffs_latest"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/health": {
         parameters: {
             query?: never;
@@ -1398,6 +1442,86 @@ export interface paths {
         get: operations["get_api_v1_health_backpressure"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List incidents
+         * @description Served route `GET /api/v1/incidents`. Handler: `handleListIncidentsV1`. Response shape reflected from Go type `IncidentsListEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_incidents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get incident
+         * @description Served route `GET /api/v1/incidents/{id}`. Handler: `handleGetIncidentV1`. Response shape reflected from Go type `IncidentDetailEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_incidents_id"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{id}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve incident
+         * @description Served route `POST /api/v1/incidents/{id}/resolve`. Handler: `handleResolveIncidentV1`. Response shape reflected from Go type `IncidentStatusEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_incidents_id_resolve"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Update incident status
+         * @description Served route `POST /api/v1/incidents/{id}/status`. Handler: `handleUpdateIncidentStatusV1`. Response shape reflected from Go type `IncidentStatusEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_incidents_id_status"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4677,6 +4801,15 @@ export interface components {
             /** @description Name */
             name: string;
         };
+        AttentionReplayWindow: {
+            event_count: number;
+            /** Format: date-time */
+            last_event_at?: string;
+            /** Format: int64 */
+            newest_cursor: number;
+            /** Format: int64 */
+            oldest_cursor: number;
+        };
         AuditDecision: {
             /** @description Actor i d */
             actor_id?: string;
@@ -5666,6 +5799,20 @@ export interface components {
             name: string;
             scrollback_lines?: number;
         };
+        CreateHandoffRequest: {
+            auto?: boolean;
+            blockers?: string[];
+            decisions?: {
+                [key: string]: string;
+            };
+            description?: string;
+            goal?: string;
+            include_git?: boolean;
+            next?: string[];
+            now?: string;
+            project_dir?: string;
+            session: string;
+        };
         CreateJobRequest: {
             params?: {
                 [key: string]: unknown;
@@ -5911,6 +6058,10 @@ export interface components {
             status: string;
         };
         Duration: Record<string, never>;
+        EnrichmentWarning: {
+            message: string;
+            source: string;
+        };
         EnsembleBudget: {
             remaining_tokens?: number;
             spent_tokens?: number;
@@ -6425,6 +6576,11 @@ export interface components {
             /** @description Type */
             type: string;
         };
+        FileChanges: {
+            Created: string[];
+            Deleted: string[];
+            Modified: string[];
+        };
         FileReservation: {
             agent_name: string;
             /** Format: date-time */
@@ -6739,6 +6895,62 @@ export interface components {
             /** @description Summary */
             summary?: string;
         };
+        Handoff: {
+            ActiveBeads: string[];
+            AgentID: string;
+            AgentMailThreads: string[];
+            AgentType: string;
+            Blockers: string[];
+            CMMemories: string[];
+            /** Format: date-time */
+            CreatedAt: string;
+            Date: string;
+            Decisions: {
+                [key: string]: string;
+            };
+            DoneThisSession: components["schemas"]["TaskRecord"][];
+            Failed: string[];
+            Files: components["schemas"]["FileChanges"];
+            Findings: {
+                [key: string]: string;
+            };
+            Goal: string;
+            Next: string[];
+            Now: string;
+            Outcome: string;
+            PaneID: string;
+            Quality?: components["schemas"]["QualityReport"];
+            Questions: string[];
+            ReservationTransfer?: components["schemas"]["ReservationTransfer"];
+            Session: string;
+            Status: string;
+            Test: string;
+            TokensMax: number;
+            TokensPct: number;
+            TokensUsed: number;
+            /** Format: date-time */
+            UpdatedAt: string;
+            Version: string;
+            Warnings?: components["schemas"]["EnrichmentWarning"][];
+            Worked: string[];
+        };
+        HandoffLatestEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            latest?: components["schemas"]["Handoff"];
+            latest_path?: string;
+            ledger?: components["schemas"]["HandoffLedgerSummary"];
+            project_dir?: string;
+            quality?: components["schemas"]["QualityReport"];
+            request_id?: string;
+            session: string;
+            success: boolean;
+            timestamp: string;
+        };
+        HandoffLedgerSummary: {
+            bytes: number;
+            exists: boolean;
+            path: string;
+        };
         HandoffStatus: {
             /** Format: int64 */
             age_seconds?: number;
@@ -6777,6 +6989,31 @@ export interface components {
             status?: string;
             /** @description Updated at */
             updated_at?: string;
+        };
+        HandoffSummaryItem: {
+            date: string;
+            goal?: string;
+            is_auto: boolean;
+            path: string;
+            session: string;
+            status?: string;
+        };
+        HandoffsEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            action: string;
+            created_path?: string;
+            handoffs: components["schemas"]["HandoffSummaryItem"][];
+            latest?: components["schemas"]["Handoff"];
+            latest_path?: string;
+            ledger?: components["schemas"]["HandoffLedgerSummary"];
+            project_dir?: string;
+            quality?: components["schemas"]["QualityReport"];
+            request_id?: string;
+            session: string;
+            sessions: string[];
+            success: boolean;
+            timestamp: string;
+            total_returned: number;
         };
         HealthBackpressureEnvelopeResponse: {
             _meta?: components["schemas"]["RobotResponseMeta"];
@@ -6935,6 +7172,76 @@ export interface components {
             read_at?: string;
             subject: string;
             thread_id?: string;
+        };
+        Incident: {
+            /** Format: date-time */
+            acknowledged_at?: string;
+            acknowledged_by?: string;
+            agent_ids?: string;
+            alert_count: number;
+            category: string;
+            event_count: number;
+            family: string;
+            fingerprint: string;
+            /** Format: int64 */
+            first_event_cursor?: number;
+            id: string;
+            /** Format: date-time */
+            last_event_at: string;
+            /** Format: int64 */
+            last_event_cursor?: number;
+            /** Format: date-time */
+            muted_at?: string;
+            muted_by?: string;
+            muted_reason?: string;
+            notes?: string;
+            resolution?: string;
+            /** Format: date-time */
+            resolved_at?: string;
+            resolved_by?: string;
+            root_cause?: string;
+            session_names?: string;
+            severity: string;
+            /** Format: date-time */
+            started_at: string;
+            status: string;
+            title: string;
+        };
+        IncidentDetailEnvelopeResponse: {
+            event_count: number;
+            events: components["schemas"]["StoredAttentionEvent"][];
+            incident?: components["schemas"]["Incident"];
+            replay_window?: components["schemas"]["AttentionReplayWindow"];
+            request_id?: string;
+            success: boolean;
+            timestamp: string;
+        };
+        IncidentResolveRequest: {
+            note?: string;
+            reason?: string;
+        };
+        IncidentStatusEnvelopeResponse: {
+            action: string;
+            idempotent: boolean;
+            incident?: components["schemas"]["Incident"];
+            incident_id: string;
+            note?: string;
+            previous_status: string;
+            request_id?: string;
+            status: string;
+            success: boolean;
+            timestamp: string;
+        };
+        IncidentStatusUpdateRequest: {
+            reason?: string;
+            status: string;
+        };
+        IncidentsListEnvelopeResponse: {
+            count: number;
+            incidents: components["schemas"]["Incident"][];
+            request_id?: string;
+            success: boolean;
+            timestamp: string;
         };
         InsightsResponse: {
             Authorities?: components["schemas"]["BvNodeScore"][];
@@ -8477,6 +8784,21 @@ export interface components {
             tier?: string;
             usage_percent?: number;
         };
+        QualityDimensionScore: {
+            hints?: string[];
+            name: string;
+            reasons?: string[];
+            score: number;
+        };
+        QualityReport: {
+            dimensions: components["schemas"]["QualityDimensionScore"][];
+            hints?: string[];
+            reasons?: string[];
+            score: number;
+            /** Format: date-time */
+            scored_at: string;
+            status: string;
+        };
         Question: {
             blocking?: boolean;
             context?: string;
@@ -8674,6 +8996,27 @@ export interface components {
             reservation: components["schemas"]["FileReservation"];
             success: boolean;
             timestamp: string;
+        };
+        ReservationSnapshot: {
+            AgentName: string;
+            /** Format: date-time */
+            CreatedAt: string;
+            Exclusive: boolean;
+            /** Format: date-time */
+            ExpiresAt: string;
+            ID: number;
+            PathPattern: string;
+            ProjectID: number;
+            Reason: string;
+        };
+        ReservationTransfer: {
+            /** Format: date-time */
+            CreatedAt: string;
+            FromAgent: string;
+            GracePeriodSeconds: number;
+            ProjectKey: string;
+            Reservations: components["schemas"]["ReservationSnapshot"][];
+            TTLSeconds: number;
         };
         ReservationsListEnvelopeResponse: {
             count: number;
@@ -10271,6 +10614,27 @@ export interface components {
             wait?: string;
             when?: string;
         };
+        StoredAttentionEvent: {
+            actionability: string;
+            category: string;
+            /** Format: int64 */
+            cursor: number;
+            dedup_count: number;
+            dedup_key?: string;
+            details?: string;
+            event_type: string;
+            /** Format: date-time */
+            expires_at?: string;
+            next_actions?: string;
+            pane?: string;
+            reason_code?: string;
+            session_name?: string;
+            severity: string;
+            source: string;
+            summary: string;
+            /** Format: date-time */
+            ts: string;
+        };
         StreamingStatsEnvelopeResponse: {
             active_streams?: number;
             active_targets: string[];
@@ -10696,6 +11060,10 @@ export interface components {
             metric: string;
             status: string;
             target: number;
+        };
+        TaskRecord: {
+            Files: string[];
+            Task: string;
         };
         /** @description Single-line encoded state for minimal token usage. */
         TerseOutput: {
@@ -15202,6 +15570,163 @@ export interface operations {
             };
         };
     };
+    get_api_v1_handoffs: {
+        parameters: {
+            query?: {
+                /** @description Session name or 'all' to list handoffs across sessions (default 'all'). */
+                session?: string;
+                /** @description Maximum handoff entries to return (default 20, max 200). */
+                limit?: number;
+                /** @description Optional existing absolute project directory override (alias: ?project=). */
+                project_dir?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HandoffsEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_handoffs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateHandoffRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HandoffsEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_handoffs_latest: {
+        parameters: {
+            query?: {
+                /** @description Session name or 'all' to inspect the newest handoff (default 'all'). */
+                session?: string;
+                /** @description Optional existing absolute project directory override (alias: ?project=). */
+                project_dir?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HandoffLatestEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     get_api_v1_health: {
         parameters: {
             query?: never;
@@ -15281,6 +15806,248 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_incidents: {
+        parameters: {
+            query?: {
+                /** @description Include resolved and muted incidents alongside active open/investigating incidents. */
+                include_resolved?: boolean;
+                /** @description Optional status filter (open, investigating, resolved, muted). */
+                status?: string;
+                /** @description Maximum incidents to return (default 50, max 500). */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentsListEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_incidents_id: {
+        parameters: {
+            query?: {
+                /** @description Maximum linked attention events to return (default 50, max 500). */
+                events_limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description The id identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentDetailEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_incidents_id_resolve: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The id identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["IncidentResolveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentStatusEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_incidents_id_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The id identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IncidentStatusUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentStatusEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

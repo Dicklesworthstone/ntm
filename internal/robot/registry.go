@@ -1020,6 +1020,20 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 				SummaryHint: "Inspect summary.healthy and triage_preview for top-priority findings",
 			},
 		},
+		"handoff": {
+			SchemaID:   "ntm:robot:handoff:v1",
+			SchemaType: "handoff",
+			Sections:   []string{"sessions", "next_actions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Inspect or create Goal/Now session continuity handoffs with 4-dimension quality scoring",
+				SummaryHint: "Read latest, quality, handoffs, and ledger; pass --handoff-create with --handoff-goal/--handoff-now or --handoff-auto to persist a new handoff",
+			},
+			Boundedness: &BoundednessInfo{
+				DefaultLimit:       10,
+				SupportsPagination: false,
+				TruncationBehavior: "Recent handoffs capped by --handoff-limit (default 10)",
+			},
+		},
 	}
 }
 

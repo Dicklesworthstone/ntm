@@ -441,6 +441,15 @@ describe("SessionsPage live WebSocket PaneStreamer & URL segment encoding", () =
             count: 0,
           });
         }
+        if (url.pathname === "/api/v1/handoffs") {
+          return reply({
+            action: "list",
+            session: sessionId,
+            sessions: [],
+            handoffs: [],
+            total_returned: 0,
+          });
+        }
         if (
           url.pathname === "/api/v1/sessions/my%2Fproj%231/panes/0/input" &&
           options?.method === "POST"
@@ -599,6 +608,15 @@ describe("SessionsPage live WebSocket PaneStreamer & URL segment encoding", () =
             count: 0,
           });
         }
+        if (url.pathname === "/api/v1/handoffs") {
+          return reply({
+            action: "list",
+            session: "offline-proj",
+            sessions: [],
+            handoffs: [],
+            total_returned: 0,
+          });
+        }
         throw new Error(`Unexpected path: ${url.pathname}`);
       })
     );
@@ -743,6 +761,14 @@ describe("AttentionPage triage inbox & durable state mutations", () => {
               actor_type: "api",
               actor_id: "anonymous",
             },
+          });
+        }
+
+        if (url.pathname === "/api/v1/incidents") {
+          return reply({
+            success: true,
+            incidents: [],
+            count: 0,
           });
         }
 
@@ -1588,6 +1614,16 @@ describe("SessionsPage checkpoints & integrity verification", () => {
           const idx = checkpoints.findIndex((c) => c.id === "cp-20261113");
           if (idx >= 0) checkpoints.splice(idx, 1);
           return reply({ deleted: "cp-20261113", session_name: sessionId });
+        }
+
+        if (url.pathname === "/api/v1/handoffs") {
+          return reply({
+            action: "list",
+            session: sessionId,
+            sessions: [],
+            handoffs: [],
+            total_returned: 0,
+          });
         }
 
         throw new Error(`Unexpected request: ${method} ${url.pathname}`);

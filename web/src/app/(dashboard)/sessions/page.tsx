@@ -25,12 +25,20 @@ import {
   getWsClient,
   type ConnectionState,
 } from "@/lib/ws/client";
+import { SessionHandoffsPanel } from "@/components/sessions/SessionHandoffsPanel";
 
 interface Session {
   name: string;
   created_at?: string;
   project_path?: string;
   status?: string;
+  windows?: number;
+  attached?: boolean;
+}
+
+interface SessionsListResponse extends ApiEnvelope {
+  sessions: Session[];
+  count?: number;
 }
 
 interface SessionResponse extends ApiEnvelope {
@@ -100,18 +108,98 @@ function SessionDetail() {
   const sessionId = searchParams.get("session") || "";
 
   if (!sessionId) {
-    return (
-      <div className="rounded-lg border border-gray-200 bg-white p-6 text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
-        No session selected. Pick one from the{" "}
-        <Link href="/" className="text-blue-600 dark:text-blue-400 hover:underline">
-          sessions list
-        </Link>
-        .
-      </div>
-    );
+    return <SessionSelectorOverview />;
   }
 
   return <SessionDetailView sessionId={sessionId} />;
+}
+
+function SessionSelectorOverview() {
+  const sessionsQuery = useQuery({
+    queryKey: ["sessions", "picker-list"],
+    queryFn: () => apiFetch<SessionsListResponse>("/api/v1/sessions"),
+    retry: false,
+  });
+
+  const sessions = sessionsQuery.data?.sessions ?? [];
+
+  return (
+    <div className="space-y-6">
+      <section className="rounded-lg border border-gray-200 bg-white p-6 dark:border-gray-700 dark:bg-gray-800 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+              Select a Tmux Session
+            </h2>
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              Choose an active session below to stream pane output, send
+              prompts, manage checkpoints, or inspect handoffs (or view the{" "}
+              <Link
+                href="/"
+                className="text-blue-600 dark:text-blue-400 hover:underline"
+              >
+                overview dashboard
+              </Link>
+              ).
+            </p>
+          </div>
+          <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+            {sessions.length} active session{sessions.length === 1 ? "" : "s"}
+          </span>
+        </div>
+
+        {sessionsQuery.isLoading ? (
+          <div className="py-4 text-sm text-gray-400">Loading sessions…</div>
+        ) : sessionsQuery.isError ? (
+          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-700 dark:bg-red-900/20 dark:text-red-300">
+            {formatApiErrorMessage(sessionsQuery.error)}
+          </div>
+        ) : sessions.length === 0 ? (
+          <div className="rounded-md border border-dashed border-gray-300 dark:border-gray-700 p-4 text-sm text-gray-500 dark:text-gray-400">
+            No active tmux sessions detected right now. Spawn one from{" "}
+            <Link
+              href="/swarm"
+              className="text-blue-600 dark:text-blue-400 hover:underline"
+            >
+              Swarm Orchestration
+            </Link>{" "}
+            or create/inspect saved session handoffs below.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {sessions.map((sess) => (
+              <Link
+                key={sess.name}
+                href={`/sessions?session=${encodeURIComponent(sess.name)}`}
+                className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-900/40 p-4 hover:border-blue-500 dark:hover:border-blue-400 transition-colors space-y-1.5"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono font-semibold text-sm text-gray-900 dark:text-white truncate">
+                    {sess.name}
+                  </span>
+                  {sess.status && (
+                    <span className="rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200 px-2 py-0.5 text-xs">
+                      {sess.status}
+                    </span>
+                  )}
+                </div>
+                {sess.project_path && (
+                  <div className="text-xs font-mono text-gray-500 dark:text-gray-400 truncate">
+                    {sess.project_path}
+                  </div>
+                )}
+              </Link>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <SessionHandoffsPanel
+        sessionId="all"
+        defaultTargetSession={sessions[0]?.name ?? ""}
+      />
+    </div>
+  );
 }
 
 function SessionDetailView({ sessionId }: { sessionId: string }) {
@@ -628,6 +716,11 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
           </div>
         </section>
       </div>
+
+      <SessionHandoffsPanel
+        sessionId={sessionId}
+        onNotice={setStatusNotice}
+      />
 
       <SessionCheckpointsSection
         sessionId={sessionId}

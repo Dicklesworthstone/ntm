@@ -11,6 +11,9 @@ import {
     DEFAULT_WEB_PORT,
     EnsemblePreset,
     EnsembleSuggestResult,
+    HandoffResult,
+    IncidentAction,
+    IncidentItem,
     normalizeWebPort,
     NtmClient,
     RobotStatus,
@@ -127,6 +130,8 @@ export interface PaletteActionQuickPickItem extends vscode.QuickPickItem {
         | 'spawnEnsemble'
         | 'synthesizeEnsemble'
         | 'triageAttention'
+        | 'triageIncidents'
+        | 'handoffSession'
         | 'openWebCockpit'
         | 'showBackpressure'
         | 'manageWorktrees'
@@ -163,6 +168,20 @@ export const PALETTE_ACTION_OPTIONS: readonly PaletteActionQuickPickItem[] = [
         detail: 'Inspect pending attention items and acknowledge, pin, snooze, or dismiss',
         actionId: 'triageAttention',
         command: 'ntm.triageAttention',
+    },
+    {
+        label: '$(flame) Triage Operator Incidents',
+        description: 'NTM: Triage Operator Incidents',
+        detail: 'Inspect durable escalated incidents and investigate, resolve, or mute',
+        actionId: 'triageIncidents',
+        command: 'ntm.triageIncidents',
+    },
+    {
+        label: '$(note) Session Handoff (Inspect / Create)',
+        description: 'NTM: Session Handoff (Inspect / Create)',
+        detail: 'Inspect latest Goal/Now handoff quality report or persist manual/auto handoff',
+        actionId: 'handoffSession',
+        command: 'ntm.handoffSession',
     },
     {
         label: '$(pulse) Show Swarm Backpressure',
@@ -403,6 +422,151 @@ export interface WorktreeQuickPickItem extends vscode.QuickPickItem {
         | 'mergeWorktree'
         | 'openWorktreesCockpit';
     worktree?: WorktreeInfo;
+}
+
+export interface IncidentQuickPickItem extends vscode.QuickPickItem {
+    itemAction: 'incident' | 'openAttentionCockpit';
+    incident?: IncidentItem;
+}
+
+export interface IncidentActionQuickPickItem extends vscode.QuickPickItem {
+    action: IncidentAction | 'openAttentionCockpit';
+}
+
+export interface HandoffModeQuickPickItem extends vscode.QuickPickItem {
+    mode: 'inspect' | 'createManual' | 'createAuto' | 'openSessionsCockpit';
+}
+
+export const HANDOFF_MODE_OPTIONS: readonly HandoffModeQuickPickItem[] = [
+    {
+        label: '$(eye) Inspect Latest Handoff & Quality Score',
+        description: '--robot-handoff=<session>',
+        detail: 'Open a Markdown report with Goal, Now, quality dimensions, and continuity ledger status',
+        mode: 'inspect',
+    },
+    {
+        label: '$(edit) Create Manual Goal/Now Handoff',
+        description: '--handoff-create --handoff-goal=... --handoff-now=...',
+        detail: 'Record accomplished Goal and next Now action with automatic quality scoring',
+        mode: 'createManual',
+    },
+    {
+        label: '$(sparkle) Auto-Generate Handoff Snapshot',
+        description: '--handoff-create --handoff-auto',
+        detail: 'Capture an automatic handoff snapshot from session output, git, and beads state',
+        mode: 'createAuto',
+    },
+    {
+        label: '$(globe) Open /sessions in Web Cockpit',
+        description: 'Web Cockpit (/sessions)',
+        detail: 'Inspect and manage session handoffs and checkpoints in browser',
+        mode: 'openSessionsCockpit',
+    },
+];
+
+export function buildIncidentQuickPickItems(incidents: readonly IncidentItem[]): IncidentQuickPickItem[] {
+    const items: IncidentQuickPickItem[] = incidents.map(inc => {
+        const icon = attentionSeverityIcon(inc.severity);
+        const descParts = [
+            inc.id,
+            inc.session_names || 'global',
+            `${inc.alert_count} alerts · ${inc.event_count} events`,
+        ].filter(Boolean);
+        const detailParts = [
+            `status: ${inc.status}`,
+            inc.category && inc.family ? `${inc.category}/${inc.family}` : (inc.category || inc.family),
+            inc.notes,
+        ].filter(Boolean);
+        return {
+            label: `${icon} [${inc.status}] ${inc.title}`,
+            description: descParts.join(' · '),
+            detail: detailParts.join(' • '),
+            itemAction: 'incident',
+            incident: inc,
+        };
+    });
+    items.push({
+        label: '$(globe) Open /attention in Web Cockpit',
+        description: 'Web Cockpit (/attention)',
+        detail: 'Inspect durable incident timelines and attention feed in browser',
+        itemAction: 'openAttentionCockpit',
+    });
+    return items;
+}
+
+export function buildIncidentActionQuickPickItems(inc: IncidentItem): IncidentActionQuickPickItem[] {
+    const actions: IncidentActionQuickPickItem[] = [];
+    if (inc.status !== 'investigating' && inc.status !== 'resolved') {
+        actions.push({
+            label: '$(search) Investigate Incident',
+            description: `ntm attention incidents investigate ${inc.id}`,
+            detail: 'Mark this incident as actively under investigation',
+            action: 'investigate',
+        });
+    }
+    if (inc.status !== 'resolved') {
+        actions.push({
+            label: '$(check) Resolve Incident',
+            description: `ntm attention incidents resolve ${inc.id}`,
+            detail: 'Resolve this incident with an optional operator resolution note',
+            action: 'resolve',
+        });
+    }
+    if (inc.status !== 'muted' && inc.status !== 'resolved') {
+        actions.push({
+            label: '$(mute) Mute Incident',
+            description: `ntm attention incidents mute ${inc.id}`,
+            detail: 'Mute recurring alert escalation for this incident fingerprint',
+            action: 'mute',
+        });
+    }
+    actions.push({
+        label: '$(globe) Open /attention in Web Cockpit',
+        description: 'Web Cockpit (/attention)',
+        detail: 'View linked incident events in browser',
+        action: 'openAttentionCockpit',
+    });
+    return actions;
+}
+
+export function formatHandoffMarkdown(res: HandoffResult): string {
+    const lines: string[] = [
+        `# Session Handoff: ${res.session || 'all'}`,
+        '',
+    ];
+    if (res.quality) {
+        lines.push(`- **Quality Score:** ${res.quality.score}/100 (\`${res.quality.status}\`)`);
+        if (res.quality.dimensions.length > 0) {
+            lines.push(
+                `- **Dimensions:** ${res.quality.dimensions.map(d => `${d.name}=${d.score}`).join(', ')}`
+            );
+        }
+        if (res.quality.hints.length > 0) {
+            lines.push(`- **Hints:** ${res.quality.hints.join('; ')}`);
+        }
+    }
+    if (res.ledger) {
+        lines.push(
+            `- **Continuity Ledger:** ${res.ledger.exists ? `${res.ledger.path} (${res.ledger.bytes} bytes)` : 'none'}`
+        );
+    }
+    if (res.latest) {
+        lines.push('', '## Latest Handoff', '');
+        lines.push(`- **Goal:** ${res.latest.goal || '—'}`);
+        lines.push(`- **Now:** ${res.latest.now || '—'}`);
+        if (res.latest.status) {
+            lines.push(`- **Status:** ${res.latest.status}`);
+        }
+    }
+    if (res.handoffs.length > 0) {
+        lines.push('', '## Recent Handoff History', '');
+        for (const h of res.handoffs) {
+            const autoTag = h.is_auto ? ' [auto]' : '';
+            lines.push(`- \`${h.date}\` **${h.session}**${autoTag}: ${h.goal || h.path}`);
+        }
+    }
+    lines.push('');
+    return lines.join('\n');
 }
 
 /**
@@ -728,7 +892,7 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
             }
 
             if (picked.actionId !== 'terminalPalette' && picked.command) {
-                if (picked.actionId === 'sendPrompt' && sessionArg) {
+                if ((picked.actionId === 'sendPrompt' || picked.actionId === 'handoffSession') && sessionArg) {
                     await vscode.commands.executeCommand(picked.command, sessionArg);
                 } else {
                     await vscode.commands.executeCommand(picked.command);
@@ -1382,12 +1546,157 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
         }
     );
 
+    const dispTriageIncidents = vscode.commands.registerCommand('ntm.triageIncidents', async () => {
+        try {
+            const incidents = await client.listIncidents({ limit: 30 });
+            const picks = buildIncidentQuickPickItems(incidents);
+            const picked = await vscode.window.showQuickPick(picks, {
+                placeHolder: incidents.length > 0
+                    ? `Select an operator incident to triage (${incidents.length} active)`
+                    : 'No active operator incidents — open /attention in Web Cockpit',
+            });
+            if (!picked) {
+                return;
+            }
+            if (picked.itemAction === 'openAttentionCockpit' || !picked.incident) {
+                await openWebCockpitRoute('/attention');
+                return;
+            }
+
+            const actionPick = await vscode.window.showQuickPick(
+                buildIncidentActionQuickPickItems(picked.incident),
+                { placeHolder: `Choose transition for incident ${picked.incident.id}` }
+            );
+            if (!actionPick) {
+                return;
+            }
+            if (actionPick.action === 'openAttentionCockpit') {
+                await openWebCockpitRoute('/attention');
+                return;
+            }
+
+            const rawReason = await vscode.window.showInputBox({
+                prompt: `Optional operator note for "${actionPick.action}" on ${picked.incident.id}`,
+                placeHolder: 'Leave blank to transition without a note',
+            });
+            if (rawReason === undefined) {
+                return;
+            }
+
+            const res = await client.mutateIncident(
+                actionPick.action,
+                picked.incident.id,
+                rawReason.trim() || undefined
+            );
+            updateStatus(client, statusBarItem).catch(() => undefined);
+            vscode.window.showInformationMessage(
+                `Incident ${res.incident_id} updated (${res.action} -> ${res.status})`
+            );
+        } catch (e) {
+            vscode.window.showErrorMessage(`Incident triage failed: ${e}`);
+        }
+    });
+
+    const dispHandoffSession = vscode.commands.registerCommand(
+        'ntm.handoffSession',
+        async (sessionArg?: string | NtmTreeItem) => {
+            try {
+                const chosenSession = await resolveSessionInteractive(
+                    extractSessionName(sessionArg),
+                    'NTM Session for Handoff'
+                );
+                if (!chosenSession) {
+                    return;
+                }
+
+                const modePick = await vscode.window.showQuickPick(HANDOFF_MODE_OPTIONS, {
+                    placeHolder: `Session Handoff for "${chosenSession}"`,
+                });
+                if (!modePick) {
+                    return;
+                }
+
+                if (modePick.mode === 'openSessionsCockpit') {
+                    await openWebCockpitRoute(`/sessions?session=${encodeURIComponent(chosenSession)}`);
+                    return;
+                }
+
+                if (modePick.mode === 'inspect') {
+                    const res = await client.getHandoff(chosenSession, {
+                        limit: 10,
+                        projectDir: client.getWorkspaceCwd(),
+                    });
+                    const doc = await vscode.workspace.openTextDocument({
+                        content: formatHandoffMarkdown(res),
+                        language: 'markdown',
+                    });
+                    await vscode.window.showTextDocument(doc);
+                    const qLabel = res.quality
+                        ? ` (quality ${res.quality.score}/100 · ${res.quality.status})`
+                        : '';
+                    vscode.window.showInformationMessage(
+                        `Loaded handoff summary for "${chosenSession}"${qLabel}`
+                    );
+                    return;
+                }
+
+                let handoffRes: HandoffResult;
+                if (modePick.mode === 'createAuto') {
+                    handoffRes = await client.createHandoff({
+                        session: chosenSession,
+                        auto: true,
+                        projectDir: client.getWorkspaceCwd(),
+                    });
+                } else {
+                    const rawGoal = await vscode.window.showInputBox({
+                        prompt: `Goal accomplished in session "${chosenSession}"`,
+                        placeHolder: 'e.g. Implemented REST endpoints and OpenAPI schemas',
+                    });
+                    const goal = (rawGoal ?? '').trim();
+                    if (!goal) {
+                        return;
+                    }
+                    const rawNow = await vscode.window.showInputBox({
+                        prompt: `Immediate next step (Now) for "${chosenSession}"`,
+                        placeHolder: 'e.g. Run browser qualification and push to main',
+                    });
+                    const now = (rawNow ?? '').trim();
+                    if (!now) {
+                        return;
+                    }
+                    handoffRes = await client.createHandoff({
+                        session: chosenSession,
+                        goal,
+                        now,
+                        projectDir: client.getWorkspaceCwd(),
+                    });
+                }
+
+                currentSession = chosenSession;
+                const qSuffix = handoffRes.quality
+                    ? ` (quality ${handoffRes.quality.score}/100 · ${handoffRes.quality.status})`
+                    : '';
+                const nextBtn = await vscode.window.showInformationMessage(
+                    `Created handoff for "${chosenSession}"${qSuffix}`,
+                    'Open /sessions in Web Cockpit'
+                );
+                if (nextBtn === 'Open /sessions in Web Cockpit') {
+                    await openWebCockpitRoute(`/sessions?session=${encodeURIComponent(chosenSession)}`);
+                }
+            } catch (e) {
+                vscode.window.showErrorMessage(`Session handoff failed: ${e}`);
+            }
+        }
+    );
+
     context.subscriptions.push(
         dispStatus,
         dispSpawn,
         dispSpawnEnsemble,
         dispSynthesizeEnsemble,
         dispTriageAttention,
+        dispTriageIncidents,
+        dispHandoffSession,
         dispOpenWebCockpit,
         dispShowBackpressure,
         dispManageWorktrees,

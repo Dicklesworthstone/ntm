@@ -84,6 +84,7 @@ var SchemaPagination = map[string]SchemaPaginationFlag{
 	"events":             {Reason: "cursor-based continuation (event cursor + --limit), not offset pagination"},
 	"exit_cli":           {Reason: "bounded: per-request exit results for addressed panes"},
 	"files":              {Reason: "bounded: recent file activity capped per response"},
+	"handoff":            {Reason: "bounded: session list plus recent handoffs capped by --handoff-limit (default 10)"},
 	"health":             {Reason: "bounded: one row per source/adapter"},
 	"health_oauth":       {Reason: "bounded: one row per provider credential"},
 	"inspect_agent":      {Reason: "bounded: single-agent inspection detail"},

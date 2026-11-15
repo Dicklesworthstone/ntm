@@ -92,6 +92,16 @@ var (
 	robotOverlayCursor  int64  // attention cursor for pre-focus
 	robotOverlayNoWait  bool   // return immediately without blocking
 
+	// Robot-handoff flags for Goal/Now session continuity handoffs (bd-8pjf5.2)
+	robotHandoff            string // session name or 'all' for --robot-handoff
+	robotHandoffCreate      bool   // create and persist a new session handoff
+	robotHandoffAuto        bool   // auto-generate handoff from session/git/beads state
+	robotHandoffGoal        string // explicit goal when creating a handoff
+	robotHandoffNow         string // explicit next action when creating a handoff
+	robotHandoffDescription string // optional filename slug description
+	robotHandoffLimit       int    // max handoffs to list (default 10)
+	robotHandoffProjectDir  string // explicit absolute project directory override
+
 	// Robot-send flags
 	robotSend             string // session name for send
 	robotSendMsg          string // message to send
@@ -711,6 +721,16 @@ func registerRobotFlags() {
 	rootCmd.Flags().StringVar(&robotOverlaySession, "overlay-session", "", "Session for overlay. Optional with --robot-overlay, defaults to current session. Example: --overlay-session=myproject")
 	rootCmd.Flags().Int64Var(&robotOverlayCursor, "overlay-cursor", 0, "Pre-focus attention panel on this cursor. Optional with --robot-overlay. Example: --overlay-cursor=42")
 	rootCmd.Flags().BoolVar(&robotOverlayNoWait, "overlay-no-wait", false, "Return immediately without blocking. Optional with --robot-overlay")
+
+	// Session handoff flags for Goal/Now continuity and quality scoring (bd-8pjf5.2)
+	rootCmd.Flags().StringVar(&robotHandoff, "robot-handoff", "", "Inspect or create session Goal/Now handoffs with quality scores (use SESSION or 'all'). Example: ntm --robot-handoff=myproject")
+	rootCmd.Flags().BoolVar(&robotHandoffCreate, "handoff-create", false, "Create and persist a new session handoff (use with --robot-handoff=SESSION)")
+	rootCmd.Flags().BoolVar(&robotHandoffAuto, "handoff-auto", false, "Auto-generate handoff from session output and git state (use with --handoff-create)")
+	rootCmd.Flags().StringVar(&robotHandoffGoal, "handoff-goal", "", "What this session accomplished (use with --robot-handoff --handoff-create)")
+	rootCmd.Flags().StringVar(&robotHandoffNow, "handoff-now", "", "What the next session should do first (use with --robot-handoff --handoff-create)")
+	rootCmd.Flags().StringVar(&robotHandoffDescription, "handoff-description", "", "Optional short slug for handoff filename (use with --handoff-create)")
+	rootCmd.Flags().IntVar(&robotHandoffLimit, "handoff-limit", 10, "Max handoffs to return for --robot-handoff")
+	rootCmd.Flags().StringVar(&robotHandoffProjectDir, "handoff-project-dir", "", "Explicit absolute project directory for --robot-handoff")
 
 	rootCmd.Flags().IntVar(&robotBeadLimit, "bead-limit", 5, "Max beads per category in snapshot. Optional with --robot-snapshot, --robot-status. Example: --bead-limit=10")
 	rootCmd.Flags().IntVar(&robotLimit, "robot-limit", 0, "Max items to return for robot list outputs (status, snapshot, history). Example: --robot-limit=10")

@@ -481,6 +481,32 @@ func dispatchRobotInspectionAndOps(cmd *cobra.Command, args []string) bool {
 		}
 		return true
 	}
+	if robotHandoff != "" || cmd.Flags().Changed("robot-handoff") {
+		if strings.TrimSpace(robotHandoff) == "" {
+			failRobotCommand(
+				errors.New("--robot-handoff requires a session name or 'all'"),
+				robot.ErrCodeInvalidFlag,
+				"Provide a session name or 'all': ntm --robot-handoff=myproject",
+				"robot-handoff",
+			)
+			return true
+		}
+		opts := robot.HandoffOptions{
+			Session:     robotHandoff,
+			ProjectDir:  robotHandoffProjectDir,
+			Limit:       robotHandoffLimit,
+			Create:      robotHandoffCreate,
+			Auto:        robotHandoffAuto,
+			Goal:        robotHandoffGoal,
+			Now:         robotHandoffNow,
+			Description: robotHandoffDescription,
+			IncludeGit:  true,
+		}
+		if err := robot.PrintHandoff(cmd.Context(), opts); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
 	if robotTools {
 		if err := robot.PrintTools(); err != nil {
 			recordRobotProcessExit(err)

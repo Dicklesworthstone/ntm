@@ -2196,6 +2196,8 @@ func newReservationJournalFixture(t *testing.T, mode string) (*httptest.Server, 
 			}
 			if cancelInbox != nil {
 				cancelInbox()
+				<-r.Context().Done()
+				return
 			}
 			if failInbox {
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req.ID, "error": map[string]interface{}{"code": -32000, "message": "gate not ready"}})

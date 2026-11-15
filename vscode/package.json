@@ -21,6 +21,8 @@
     "onCommand:ntm.spawnEnsemble",
     "onCommand:ntm.synthesizeEnsemble",
     "onCommand:ntm.triageAttention",
+    "onCommand:ntm.triageIncidents",
+    "onCommand:ntm.handoffSession",
     "onCommand:ntm.openWebCockpit",
     "onCommand:ntm.showBackpressure",
     "onCommand:ntm.manageWorktrees",
@@ -105,6 +107,16 @@
         "icon": "$(bell)"
       },
       {
+        "command": "ntm.triageIncidents",
+        "title": "NTM: Triage Operator Incidents",
+        "icon": "$(flame)"
+      },
+      {
+        "command": "ntm.handoffSession",
+        "title": "NTM: Session Handoff (Inspect / Create)",
+        "icon": "$(note)"
+      },
+      {
         "command": "ntm.openWebCockpit",
         "title": "NTM: Open Web Cockpit (ntm web)",
         "icon": "$(globe)"
@@ -154,6 +166,11 @@
         },
         {
           "command": "ntm.viewSession",
+          "when": "view == ntmSessions && viewItem == session",
+          "group": "navigation"
+        },
+        {
+          "command": "ntm.handoffSession",
           "when": "view == ntmSessions && viewItem == session",
           "group": "navigation"
         },

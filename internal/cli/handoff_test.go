@@ -1801,3 +1801,96 @@ func TestHandoffCreateFromInvalidFileFormatsAllFieldValidationErrors(t *testing.
 		}
 	}
 }
+
+func TestHandoffCreateManualComputesQualityReport(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	prevCfg := cfg
+	prevJSON := jsonOutput
+	cfg = nil
+	jsonOutput = false
+	t.Cleanup(func() {
+		cfg = prevCfg
+		jsonOutput = prevJSON
+	})
+
+	root := &cobra.Command{Use: "ntm"}
+	root.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
+	root.AddCommand(newHandoffCmd())
+
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{
+		"handoff", "create", "myproject",
+		"--goal", "Implemented ORI robot handoff surface",
+		"--now", "Run quality and deadcode gates",
+		"--include-git=false",
+		"--json",
+	})
+
+	if err := root.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("handoff create myproject --json failed: %v; output=%s", err, out.String())
+	}
+
+	var payload struct {
+		Success bool                   `json:"success"`
+		Path    string                 `json:"path"`
+		Session string                 `json:"session"`
+		Quality *handoff.QualityReport `json:"quality"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("decode JSON output: %v; raw=%s", err, out.String())
+	}
+	if !payload.Success || payload.Path == "" {
+		t.Fatalf("expected success=true and non-empty path, got %+v", payload)
+	}
+	if payload.Quality == nil || payload.Quality.Score <= 0 || len(payload.Quality.Dimensions) != 4 {
+		t.Fatalf("expected JSON stdout quality report with score>0 and 4 dimensions, got %+v", payload.Quality)
+	}
+
+	persisted, err := handoff.NewReader(tmpDir).Read(payload.Path)
+	if err != nil {
+		t.Fatalf("read persisted handoff YAML %s: %v", payload.Path, err)
+	}
+	if persisted.Quality == nil {
+		t.Fatal("expected persisted manual handoff YAML to include non-nil QualityReport")
+	}
+	if persisted.Quality.Score <= 0 {
+		t.Fatalf("expected persisted Quality.Score > 0, got %d", persisted.Quality.Score)
+	}
+	if len(persisted.Quality.Dimensions) != 4 {
+		t.Fatalf("expected 4 Quality.Dimensions, got %d (%+v)", len(persisted.Quality.Dimensions), persisted.Quality.Dimensions)
+	}
+
+	// Verify --from-file handoffs without precomputed quality also persist a 4-dimension QualityReport.
+	srcFile := filepath.Join(tmpDir, "source-handoff.yaml")
+	srcYAML := "session: myproject\ngoal: Seeded from file\nnow: Verify quality report on import\nstatus: complete\noutcome: SUCCEEDED\n"
+	if err := os.WriteFile(srcFile, []byte(srcYAML), 0o600); err != nil {
+		t.Fatalf("write source handoff YAML: %v", err)
+	}
+
+	fromFileCmd := newHandoffCreateCmd()
+	var fromFileOut bytes.Buffer
+	fromFileCmd.SetOut(&fromFileOut)
+	fromFileCmd.SetErr(&fromFileOut)
+	jsonOutput = false
+	fromFileDest := filepath.Join(tmpDir, "imported-handoff.yaml")
+	fromFileCmd.SetArgs([]string{
+		"myproject",
+		"--from-file", srcFile,
+		"--output", fromFileDest,
+		"--format", "json",
+	})
+	if err := fromFileCmd.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("handoff create --from-file failed: %v; output=%s", err, fromFileOut.String())
+	}
+	imported, err := handoff.NewReader(tmpDir).Read(fromFileDest)
+	if err != nil {
+		t.Fatalf("read imported handoff YAML: %v", err)
+	}
+	if imported.Quality == nil || imported.Quality.Score <= 0 || len(imported.Quality.Dimensions) != 4 {
+		t.Fatalf("expected imported handoff YAML quality report with score>0 and 4 dimensions, got %+v", imported.Quality)
+	}
+}

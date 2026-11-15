@@ -917,6 +917,28 @@ func buildCommandRegistry() []RobotCommandInfo {
 				"ntm --robot-summary=myproject --since=2026-03-22T03:50:00Z",
 			},
 		},
+		{
+			Name:        "handoff",
+			Flag:        "--robot-handoff",
+			Category:    "state",
+			Description: "Inspect or create session Goal/Now continuity handoffs with deterministic 4-dimension quality scores and ledger metadata.",
+			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--robot-handoff", Type: "string", Required: true, Description: "Session name, or 'all' / '*' to list recent handoffs across sessions"},
+				{Name: "handoff-create", Flag: "--handoff-create", Type: "bool", Required: false, Default: "false", Description: "Create and persist a new session handoff"},
+				{Name: "handoff-auto", Flag: "--handoff-auto", Type: "bool", Required: false, Default: "false", Description: "Auto-generate handoff from session output and git/beads state when creating"},
+				{Name: "handoff-goal", Flag: "--handoff-goal", Type: "string", Required: false, Description: "What this session accomplished (required for manual --handoff-create)"},
+				{Name: "handoff-now", Flag: "--handoff-now", Type: "string", Required: false, Description: "What the next session should do first (required for manual --handoff-create)"},
+				{Name: "handoff-description", Flag: "--handoff-description", Type: "string", Required: false, Description: "Optional short slug for handoff filename"},
+				{Name: "handoff-limit", Flag: "--handoff-limit", Type: "int", Required: false, Default: "10", Description: "Max handoffs to return"},
+				{Name: "handoff-project-dir", Flag: "--handoff-project-dir", Type: "string", Required: false, Description: "Explicit absolute project directory"},
+			},
+			Examples: []string{
+				"ntm --robot-handoff=myproject",
+				"ntm --robot-handoff=all --handoff-limit=5",
+				"ntm --robot-handoff=myproject --handoff-create --handoff-goal='Implemented auth' --handoff-now='Add integration tests'",
+				"ntm --robot-handoff=myproject --handoff-create --handoff-auto",
+			},
+		},
 
 		// === ATTENTION FEED (Operator Loop) ===
 		{

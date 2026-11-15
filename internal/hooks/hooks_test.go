@@ -395,3 +395,212 @@ func TestHookTypeConstants(t *testing.T) {
 		t.Errorf("HookPostCheckout = %q", HookPostCheckout)
 	}
 }
+
+func TestGenerateHookScriptAllFiveTypesAndUnsupported(t *testing.T) {
+	binDir := t.TempDir()
+	fakeNTM := filepath.Join(binDir, "ntm")
+	if err := os.WriteFile(fakeNTM, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	repoRoot := "/tmp/repo with spaces"
+	for _, ht := range []HookType{HookPreCommit, HookPrePush, HookCommitMsg, HookPostCommit, HookPostCheckout} {
+		script, err := generateHookScript(ht, repoRoot)
+		if err != nil {
+			t.Fatalf("generateHookScript(%s) error: %v", ht, err)
+		}
+		if !strings.Contains(script, "# NTM_MANAGED_HOOK - Do not edit manually") {
+			t.Errorf("hook %s missing NTM_MANAGED_HOOK marker", ht)
+		}
+		if !strings.Contains(script, "REPO_ROOT="+quoteShell(repoRoot)) {
+			t.Errorf("hook %s missing quoted REPO_ROOT", ht)
+		}
+		if !strings.Contains(script, string(ht)+".backup") {
+			t.Errorf("hook %s missing backup chaining to %s.backup", ht, ht)
+		}
+	}
+
+	_, err := generateHookScript(HookType("bogus-hook"), repoRoot)
+	if err == nil || !strings.Contains(err.Error(), "unsupported hook type") {
+		t.Fatalf("expected unsupported hook type error, got: %v", err)
+	}
+}
+
+func TestGeneratePrePushScriptRunsGuardHookAndBackup(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	dir := t.TempDir()
+	fakeNTM := filepath.Join(dir, "ntm")
+	if err := os.WriteFile(fakeNTM, []byte(`#!/bin/sh
+echo "ntm:$*" >> "$CALLS"
+if [ "$1 $2" = "guards check" ] && [ -n "$FAIL_GUARD" ]; then
+  exit 1
+fi
+if [ "$1 $2 $3" = "hooks run pre-push" ] && [ -n "$FAIL_HOOK" ]; then
+  exit 1
+fi
+exit 0
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	hookPath := filepath.Join(dir, "pre-push")
+	script := generatePrePushScript(fakeNTM, "/tmp/evil\ninjection")
+	if err := os.WriteFile(hookPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	backupPath := filepath.Join(dir, "pre-push.backup")
+	if err := os.WriteFile(backupPath, []byte(`#!/bin/sh
+echo "backup:$*" >> "$CALLS"
+if [ -n "$FAIL_BACKUP" ]; then
+  exit 1
+fi
+exit 0
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(tag string, extraEnv ...string) (int, string) {
+		calls := filepath.Join(dir, "calls-"+tag)
+		cmd := exec.Command("bash", hookPath, "origin", "https://example.com/repo.git")
+		cmd.Env = append(append(os.Environ(), "CALLS="+calls, "PATH=/usr/bin:/bin"), extraEnv...)
+		out, err := cmd.CombinedOutput()
+		recorded, _ := os.ReadFile(calls)
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return exitErr.ExitCode(), string(out) + string(recorded)
+		}
+		if err != nil {
+			t.Fatalf("running pre-push (%s): %v", tag, err)
+		}
+		return 0, string(out) + string(recorded)
+	}
+
+	if code, out := run("clean"); code != 0 ||
+		!strings.Contains(out, "ntm:guards check --staged") ||
+		!strings.Contains(out, "ntm:hooks run pre-push origin") ||
+		!strings.Contains(out, "backup:origin") {
+		t.Fatalf("clean pre-push: code=%d out=%q", code, out)
+	}
+	if code, _ := run("guard-fail", "FAIL_GUARD=1"); code == 0 {
+		t.Fatal("expected pre-push to fail when guard check fails")
+	}
+	if code, _ := run("hook-fail", "FAIL_HOOK=1"); code == 0 {
+		t.Fatal("expected pre-push to fail when ntm hooks run pre-push fails")
+	}
+	if code, _ := run("backup-fail", "FAIL_BACKUP=1"); code == 0 {
+		t.Fatal("expected pre-push to fail when backup hook fails")
+	}
+}
+
+func TestGenerateCommitMsgScriptRunsHookAndBackup(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	dir := t.TempDir()
+	fakeNTM := filepath.Join(dir, "ntm")
+	if err := os.WriteFile(fakeNTM, []byte(`#!/bin/sh
+echo "ntm:$*" >> "$CALLS"
+if [ -n "$FAIL_HOOK" ]; then
+  exit 1
+fi
+exit 0
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	hookPath := filepath.Join(dir, "commit-msg")
+	if err := os.WriteFile(hookPath, []byte(generateCommitMsgScript(fakeNTM, dir)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	backupPath := filepath.Join(dir, "commit-msg.backup")
+	if err := os.WriteFile(backupPath, []byte(`#!/bin/sh
+echo "backup:$*" >> "$CALLS"
+if [ -n "$FAIL_BACKUP" ]; then
+  exit 1
+fi
+exit 0
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(tag string, extraEnv ...string) (int, string) {
+		calls := filepath.Join(dir, "calls-"+tag)
+		cmd := exec.Command("bash", hookPath, ".git/COMMIT_EDITMSG")
+		cmd.Env = append(append(os.Environ(), "CALLS="+calls, "PATH=/usr/bin:/bin"), extraEnv...)
+		out, err := cmd.CombinedOutput()
+		recorded, _ := os.ReadFile(calls)
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return exitErr.ExitCode(), string(out) + string(recorded)
+		}
+		if err != nil {
+			t.Fatalf("running commit-msg (%s): %v", tag, err)
+		}
+		return 0, string(out) + string(recorded)
+	}
+
+	if code, out := run("clean"); code != 0 ||
+		!strings.Contains(out, "ntm:hooks run commit-msg .git/COMMIT_EDITMSG") ||
+		!strings.Contains(out, "backup:.git/COMMIT_EDITMSG") {
+		t.Fatalf("clean commit-msg: code=%d out=%q", code, out)
+	}
+	if code, _ := run("hook-fail", "FAIL_HOOK=1"); code == 0 {
+		t.Fatal("expected commit-msg to fail when ntm hooks run commit-msg fails")
+	}
+	if code, _ := run("backup-fail", "FAIL_BACKUP=1"); code == 0 {
+		t.Fatal("expected commit-msg to fail when backup hook fails")
+	}
+}
+
+func TestGeneratePostCommitAndPostCheckoutScriptsAreNonFatalAndChainBackup(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	dir := t.TempDir()
+	fakeNTM := filepath.Join(dir, "ntm")
+	if err := os.WriteFile(fakeNTM, []byte(`#!/bin/sh
+echo "ntm:$*" >> "$CALLS"
+exit 1
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	postCommitPath := filepath.Join(dir, "post-commit")
+	if err := os.WriteFile(postCommitPath, []byte(generatePostCommitScript(fakeNTM, dir)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(postCommitPath+".backup", []byte("#!/bin/sh\necho \"post-commit-backup:$*\" >> \"$CALLS\"\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	callsPC := filepath.Join(dir, "calls-post-commit")
+	cmdPC := exec.Command("bash", postCommitPath)
+	cmdPC.Env = append(os.Environ(), "CALLS="+callsPC, "PATH=/usr/bin:/bin")
+	if out, err := cmdPC.CombinedOutput(); err != nil {
+		t.Fatalf("post-commit should never block even if ntm/backup exit 1: %v\nout=%s", err, string(out))
+	}
+	recordedPC, _ := os.ReadFile(callsPC)
+	if !strings.Contains(string(recordedPC), "ntm:hooks run post-commit") || !strings.Contains(string(recordedPC), "post-commit-backup:") {
+		t.Fatalf("post-commit calls = %q", string(recordedPC))
+	}
+
+	postCheckoutPath := filepath.Join(dir, "post-checkout")
+	if err := os.WriteFile(postCheckoutPath, []byte(generatePostCheckoutScript(dir)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(postCheckoutPath+".backup", []byte("#!/bin/sh\necho \"post-checkout-backup:$*\" >> \"$CALLS\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	callsCO := filepath.Join(dir, "calls-post-checkout")
+	cmdCO := exec.Command("bash", postCheckoutPath, "abc", "def", "1")
+	cmdCO.Env = append(os.Environ(), "CALLS="+callsCO)
+	if out, err := cmdCO.CombinedOutput(); err != nil {
+		t.Fatalf("post-checkout failed: %v\nout=%s", err, string(out))
+	}
+	recordedCO, _ := os.ReadFile(callsCO)
+	if !strings.Contains(string(recordedCO), "post-checkout-backup:abc def 1") {
+		t.Fatalf("post-checkout backup calls = %q", string(recordedCO))
+	}
+}

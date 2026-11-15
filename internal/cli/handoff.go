@@ -325,7 +325,9 @@ func runHandoffCreate(cmd *cobra.Command, sessionName, goal, now, fromFile strin
 		return err
 	}
 
-	// Set defaults and validate
+	// Set defaults, compute deterministic quality report, and validate
+	h.SetDefaults()
+	h.UpdateQuality(time.Now())
 	if errs := h.ValidateAndSetDefaults(); errs.HasErrors() {
 		return formatHandoffValidationFailure(errs)
 	}
@@ -381,6 +383,9 @@ func runHandoffCreate(cmd *cobra.Command, sessionName, goal, now, fromFile strin
 			"is_blocked":    h.IsBlocked(),
 			"file_count":    h.TotalFileChanges(),
 			"blocker_count": len(h.Blockers),
+		}
+		if h.Quality != nil {
+			payload["quality"] = h.Quality
 		}
 		if len(h.Warnings) > 0 {
 			payload["warnings"] = h.Warnings

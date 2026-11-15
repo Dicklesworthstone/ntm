@@ -1163,6 +1163,60 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 		Envelope: true,
 		Request:  SwarmLabRunRequest{},
 	},
+
+	// Durable Incidents Triage REST API
+	"handleListIncidentsV1": {
+		Response: IncidentsListEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "include_resolved", Type: "boolean", Description: "Include resolved and muted incidents alongside active open/investigating incidents."},
+			{Name: "status", Type: "string", Description: "Optional status filter (open, investigating, resolved, muted)."},
+			{Name: "limit", Type: "integer", Description: "Maximum incidents to return (default 50, max 500)."},
+		},
+	},
+	"handleGetIncidentV1": {
+		Response: IncidentDetailEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "events_limit", Type: "integer", Description: "Maximum linked attention events to return (default 50, max 500)."},
+		},
+	},
+	"handleUpdateIncidentStatusV1": {
+		Response:   IncidentStatusEnvelopeResponse{},
+		Envelope:   true,
+		Request:    IncidentStatusUpdateRequest{},
+		RequestReq: true,
+	},
+	"handleResolveIncidentV1": {
+		Response: IncidentStatusEnvelopeResponse{},
+		Envelope: true,
+		Request:  IncidentResolveRequest{},
+	},
+
+	// Session Handoffs REST API
+	"handleListHandoffsV1": {
+		Response: HandoffsEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "session", Type: "string", Description: "Session name or 'all' to list handoffs across sessions (default 'all')."},
+			{Name: "limit", Type: "integer", Description: "Maximum handoff entries to return (default 20, max 200)."},
+			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
+		},
+	},
+	"handleLatestHandoffV1": {
+		Response: HandoffLatestEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "session", Type: "string", Description: "Session name or 'all' to inspect the newest handoff (default 'all')."},
+			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
+		},
+	},
+	"handleCreateHandoffV1": {
+		Response:   HandoffsEnvelopeResponse{},
+		Envelope:   true,
+		Request:    CreateHandoffRequest{},
+		RequestReq: true,
+	},
 }
 
 func lookupServedRouteSchema(rt RouterRoute) (routeSchemaSpec, bool) {

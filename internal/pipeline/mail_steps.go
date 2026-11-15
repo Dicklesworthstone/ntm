@@ -1272,7 +1272,21 @@ func (e *Executor) executeMailInboxCheckStep(ctx context.Context, step *Step, re
 		AgentName:  agentName,
 	})
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			result.Status = StatusCancelled
+			result.SkipKind = SkipKindCancelled
+			result.SkipReason = ctxErr.Error()
+			result.FinishedAt = time.Now()
+			return result
+		}
 		return failMailStep(result, "agent_mail", fmt.Sprintf("mail_inbox_check failed: %v", err))
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		result.Status = StatusCancelled
+		result.SkipKind = SkipKindCancelled
+		result.SkipReason = ctxErr.Error()
+		result.FinishedAt = time.Now()
+		return result
 	}
 
 	ackRequired := 0

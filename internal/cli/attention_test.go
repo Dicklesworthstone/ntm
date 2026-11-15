@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,5 +179,193 @@ func TestAttentionCLIValidationErrors(t *testing.T) {
 	}
 	if errEnv["error_code"] != "NOT_FOUND" {
 		t.Fatalf("expected NOT_FOUND, got %+v", errEnv)
+	}
+}
+
+func TestAttentionIncidentsCLILifecycle(t *testing.T) {
+	store, cursor := seedTestAttentionStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// 1. Empty store returns [] (never null) in JSON mode.
+	out, err := execAttentionCLI(t, "incidents", "--robot")
+	if err != nil {
+		t.Fatalf("attention incidents --robot (empty) error: %v\nout: %s", err, out)
+	}
+	var emptyList AttentionIncidentsListResponse
+	if err := json.Unmarshal([]byte(out), &emptyList); err != nil {
+		t.Fatalf("decode empty incidents list: %v\nraw: %s", err, out)
+	}
+	if !emptyList.Success || emptyList.Count != 0 || emptyList.Incidents == nil {
+		t.Fatalf("expected non-nil empty incidents slice, got %+v", emptyList)
+	}
+
+	// Seed two incidents and link the seeded attention event to inc-1.
+	if err := store.CreateIncident(&state.Incident{
+		ID:          "inc-1",
+		Title:       "Agent cc_2 stuck loop",
+		Fingerprint: "alert:agent_stuck:pane-2",
+		Family:      "agent_stuck",
+		Category:    "alert",
+		Status:      state.IncidentStatusOpen,
+		Severity:    state.SeverityError,
+		AlertCount:  2,
+		StartedAt:   now.Add(-2 * time.Minute),
+		LastEventAt: now.Add(-1 * time.Minute),
+	}); err != nil {
+		t.Fatalf("CreateIncident(inc-1): %v", err)
+	}
+	if err := store.LinkEventToIncident("inc-1", cursor); err != nil {
+		t.Fatalf("LinkEventToIncident: %v", err)
+	}
+
+	if err := store.CreateIncident(&state.Incident{
+		ID:          "inc-2",
+		Title:       "Mail bridge flap",
+		Fingerprint: "source.outage:mail",
+		Family:      "source.outage",
+		Category:    "availability",
+		Status:      state.IncidentStatusOpen,
+		Severity:    state.SeverityWarning,
+		AlertCount:  1,
+		StartedAt:   now.Add(-1 * time.Minute),
+		LastEventAt: now,
+	}); err != nil {
+		t.Fatalf("CreateIncident(inc-2): %v", err)
+	}
+
+	// 2. Human list + JSON list return both open incidents ordered newest-first.
+	humanOut, err := execAttentionCLI(t, "incidents", "list")
+	if err != nil {
+		t.Fatalf("attention incidents list (human): %v\nout: %s", err, humanOut)
+	}
+	if !strings.Contains(humanOut, "inc-1") || !strings.Contains(humanOut, "inc-2") {
+		t.Fatalf("expected human table to include inc-1 and inc-2, got:\n%s", humanOut)
+	}
+
+	out, err = execAttentionCLI(t, "incidents", "list", "--robot")
+	if err != nil {
+		t.Fatalf("attention incidents list --robot: %v", err)
+	}
+	var listResp AttentionIncidentsListResponse
+	if err := json.Unmarshal([]byte(out), &listResp); err != nil {
+		t.Fatalf("decode incidents list: %v", err)
+	}
+	if listResp.Count != 2 || listResp.Incidents[0].ID != "inc-2" || listResp.Incidents[1].ID != "inc-1" {
+		t.Fatalf("unexpected incidents list: %+v", listResp)
+	}
+
+	// 3. Show returns incident metadata + linked event in JSON and human modes.
+	out, err = execAttentionCLI(t, "incidents", "show", "inc-1", "--events-limit", "10", "--robot")
+	if err != nil {
+		t.Fatalf("attention incidents show --robot: %v\nout: %s", err, out)
+	}
+	var showResp AttentionIncidentShowResponse
+	if err := json.Unmarshal([]byte(out), &showResp); err != nil {
+		t.Fatalf("decode incident show: %v\nraw: %s", err, out)
+	}
+	if !showResp.Success || showResp.Incident == nil || showResp.Incident.ID != "inc-1" || len(showResp.Events) != 1 || showResp.Events[0].Cursor != cursor {
+		t.Fatalf("unexpected incident show response: %+v", showResp)
+	}
+	humanShow, err := execAttentionCLI(t, "incidents", "show", "inc-1")
+	if err != nil || !strings.Contains(humanShow, "Linked Events (1):") {
+		t.Fatalf("unexpected human show: err=%v out=%s", err, humanShow)
+	}
+
+	// 4. Investigate transitions inc-1 to investigating with actor attribution.
+	out, err = execAttentionCLI(t, "incidents", "investigate", "inc-1", "--by", "alice", "--reason", "checking logs", "--robot")
+	if err != nil {
+		t.Fatalf("incidents investigate: %v\nout: %s", err, out)
+	}
+	var mutResp AttentionIncidentMutationResponse
+	if err := json.Unmarshal([]byte(out), &mutResp); err != nil {
+		t.Fatalf("decode investigate JSON: %v", err)
+	}
+	if mutResp.PreviousStatus != "open" || mutResp.Status != string(state.IncidentStatusInvestigating) || mutResp.Incident.AcknowledgedBy != "alice" {
+		t.Fatalf("unexpected investigate response: %+v", mutResp)
+	}
+
+	// 5. Resolve transitions inc-1 to resolved, hides it from default list, and repeat resolve is idempotent.
+	out, err = execAttentionCLI(t, "incidents", "resolve", "inc-1", "--by", "alice", "--reason", "restarted pane", "--robot")
+	if err != nil {
+		t.Fatalf("incidents resolve: %v\nout: %s", err, out)
+	}
+	if err := json.Unmarshal([]byte(out), &mutResp); err != nil {
+		t.Fatalf("decode resolve JSON: %v", err)
+	}
+	if mutResp.Idempotent || mutResp.Status != string(state.IncidentStatusResolved) || mutResp.Incident.Resolution != "restarted pane" {
+		t.Fatalf("unexpected first resolve response: %+v", mutResp)
+	}
+
+	// Repeat resolve is idempotent and preserves original resolution note & actor.
+	out, err = execAttentionCLI(t, "incidents", "resolve", "inc-1", "--by", "bob", "--robot")
+	if err != nil {
+		t.Fatalf("incidents repeat resolve: %v\nout: %s", err, out)
+	}
+	var repeatResp AttentionIncidentMutationResponse
+	if err := json.Unmarshal([]byte(out), &repeatResp); err != nil {
+		t.Fatalf("decode repeat resolve JSON: %v", err)
+	}
+	if !repeatResp.Idempotent || repeatResp.Incident.ResolvedBy != "alice" || repeatResp.Incident.Resolution != "restarted pane" {
+		t.Fatalf("expected idempotent repeat resolve preserving alice/restarted pane, got %+v", repeatResp)
+	}
+
+	// 6. Mute transitions inc-2 to muted; default list is now empty, while --all and --status surface resolved/muted.
+	if _, err := execAttentionCLI(t, "incidents", "mute", "inc-2", "--reason", "expected maintenance", "--robot"); err != nil {
+		t.Fatalf("incidents mute: %v", err)
+	}
+
+	out, _ = execAttentionCLI(t, "incidents", "list", "--robot")
+	_ = json.Unmarshal([]byte(out), &listResp)
+	if listResp.Count != 0 {
+		t.Fatalf("expected 0 active incidents after resolve+mute, got %d", listResp.Count)
+	}
+
+	out, _ = execAttentionCLI(t, "incidents", "list", "--status", "resolved", "--robot")
+	_ = json.Unmarshal([]byte(out), &listResp)
+	if listResp.Count != 1 || listResp.Incidents[0].ID != "inc-1" {
+		t.Fatalf("expected --status resolved to return inc-1, got %+v", listResp)
+	}
+
+	out, _ = execAttentionCLI(t, "incidents", "list", "--all", "--limit", "1", "--robot")
+	_ = json.Unmarshal([]byte(out), &listResp)
+	if listResp.Count != 1 || listResp.Incidents[0].ID != "inc-2" {
+		t.Fatalf("expected --all --limit 1 to return newest incident inc-2, got %+v", listResp)
+	}
+}
+
+func TestAttentionIncidentsCLIValidationAndNotFound(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(xdg, "cfg"))
+	t.Setenv("HOME", xdg)
+
+	// Invalid --status returns INVALID_FLAG.
+	out, err := execAttentionCLI(t, "incidents", "list", "--status", "bogus", "--robot")
+	if err == nil {
+		t.Fatal("expected error for invalid --status")
+	}
+	var errEnv map[string]any
+	if decErr := json.Unmarshal([]byte(out), &errEnv); decErr != nil {
+		t.Fatalf("expected JSON error envelope, got %v\nraw: %s", decErr, out)
+	}
+	if errEnv["error_code"] != "INVALID_FLAG" {
+		t.Fatalf("expected INVALID_FLAG, got %+v", errEnv)
+	}
+
+	// Missing incident ID on show / resolve returns NOT_FOUND.
+	for _, action := range [][]string{
+		{"incidents", "show", "inc-missing", "--robot"},
+		{"incidents", "resolve", "inc-missing", "--robot"},
+	} {
+		out, err = execAttentionCLI(t, action...)
+		if err == nil {
+			t.Fatalf("expected NOT_FOUND error for %v", action)
+		}
+		errEnv = nil
+		if decErr := json.Unmarshal([]byte(out), &errEnv); decErr != nil {
+			t.Fatalf("decode error envelope for %v: %v\nraw: %s", action, decErr, out)
+		}
+		if errEnv["error_code"] != "NOT_FOUND" {
+			t.Fatalf("expected NOT_FOUND for %v, got %+v", action, errEnv)
+		}
 	}
 }

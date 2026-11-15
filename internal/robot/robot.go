@@ -114,6 +114,7 @@ var robotHelpSections = []robotHelpSection{
 			"ensemble-stop",
 			"interrupt",
 			"overlay",
+			"handoff",
 			"is-working",
 			"restart-pane",
 			"smart-restart",
