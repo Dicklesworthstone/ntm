@@ -13,7 +13,7 @@ import (
 // PaneCapturer captures scrollback from a tmux pane.
 // *tmux.Client satisfies this interface.
 type PaneCapturer interface {
-	CapturePaneOutput(pane string, lines int) (string, error)
+	CapturePaneOutputContext(ctx context.Context, pane string, lines int) (string, error)
 }
 
 // PaneSynthesisCollector polls a tmux pane until it contains a parseable
@@ -64,7 +64,13 @@ func (c *PaneSynthesisCollector) CollectSynthesisResponse(ctx context.Context, p
 
 	var lastErr error
 	for {
-		raw, err := c.Client.CapturePaneOutput(paneTarget, maxLines)
+		if err := ctx.Err(); err != nil {
+			return "", fmt.Errorf("lead pane produced no parseable synthesis output: %w", err)
+		}
+		raw, err := c.Client.CapturePaneOutputContext(ctx, paneTarget, maxLines)
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("capture lead synthesis output: %w", ctx.Err())
+		}
 		if err != nil {
 			lastErr = err
 		} else {

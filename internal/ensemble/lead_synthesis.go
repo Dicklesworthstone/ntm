@@ -45,7 +45,7 @@ const leadResponseInstructions = "\n## Response Envelope\n" +
 // SynthesisDispatcher sends a synthesis prompt to the designated lead pane
 // through the gated dispatch path (rate-limited, agent-aware injection).
 type SynthesisDispatcher interface {
-	DispatchSynthesisPrompt(paneTarget, agentType, prompt string) error
+	DispatchSynthesisPrompt(ctx context.Context, paneTarget, agentType, prompt string) error
 }
 
 // SynthesisResponseCollector waits for the lead pane to produce a parseable
@@ -61,7 +61,7 @@ type LeadAgentConfig struct {
 	PaneTarget string
 	// AgentType is the agent kind in the lead pane (cc, cod, gmi).
 	AgentType string
-	// Timeout bounds the wait for the lead response (default 5m).
+	// Timeout bounds prompt delivery and the lead response together (default 5m).
 	Timeout time.Duration
 	// Dispatcher sends the synthesis prompt to the pane.
 	Dispatcher SynthesisDispatcher
@@ -96,10 +96,21 @@ func (s *Synthesizer) agentSynthesize(ctx context.Context, input *SynthesisInput
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	lead := s.Lead
 	if err := lead.validate(); err != nil {
 		return nil, err
 	}
+	timeout := lead.Timeout
+	if timeout <= 0 {
+		timeout = DefaultLeadSynthesisTimeout
+	}
+	// Bound readiness, prompt delivery, and collection together. A canceled
+	// job must not keep sending a synthesis prompt while its collector stops.
+	leadCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	prompt := s.GeneratePrompt(input)
 	if strings.TrimSpace(prompt) == "" {
@@ -107,25 +118,30 @@ func (s *Synthesizer) agentSynthesize(ctx context.Context, input *SynthesisInput
 	}
 	prompt += leadResponseInstructions
 
-	if err := lead.Dispatcher.DispatchSynthesisPrompt(lead.PaneTarget, lead.AgentType, prompt); err != nil {
+	if err := leadCtx.Err(); err != nil {
+		return nil, err
+	}
+	if err := lead.Dispatcher.DispatchSynthesisPrompt(leadCtx, lead.PaneTarget, lead.AgentType, prompt); err != nil {
 		return nil, fmt.Errorf("dispatch synthesis prompt to lead pane %s: %w", lead.PaneTarget, err)
 	}
-
-	timeout := lead.Timeout
-	if timeout <= 0 {
-		timeout = DefaultLeadSynthesisTimeout
+	if err := leadCtx.Err(); err != nil {
+		return nil, err
 	}
-	collectCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 
-	raw, err := lead.Collector.CollectSynthesisResponse(collectCtx, lead.PaneTarget)
+	raw, err := lead.Collector.CollectSynthesisResponse(leadCtx, lead.PaneTarget)
 	if err != nil {
 		return nil, fmt.Errorf("collect lead synthesis response from pane %s: %w", lead.PaneTarget, err)
+	}
+	if err := leadCtx.Err(); err != nil {
+		return nil, err
 	}
 
 	result, err := ParseLeadSynthesisResponse(raw)
 	if err != nil {
 		return nil, fmt.Errorf("parse lead synthesis response: %w", err)
+	}
+	if err := leadCtx.Err(); err != nil {
+		return nil, err
 	}
 	return result, nil
 }

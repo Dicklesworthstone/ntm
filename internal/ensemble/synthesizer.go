@@ -3,6 +3,7 @@ package ensemble
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -28,6 +29,10 @@ type Synthesizer struct {
 	// When nil, agent-based strategies fall back to mechanical merging
 	// with an explicit fallback reason recorded on the result.
 	Lead *LeadAgentConfig
+
+	// leadUnavailableReason preserves why session lead discovery failed so
+	// offline or busy sessions report an actionable mechanical fallback.
+	leadUnavailableReason string
 }
 
 // SynthesisChunkType identifies the type of streamed synthesis output.
@@ -198,6 +203,12 @@ func (s *Synthesizer) Synthesize(input *SynthesisInput) (*SynthesisResult, error
 // fails, the result falls back to mechanical merging with an explicit
 // FallbackReason recorded (never silently).
 func (s *Synthesizer) SynthesizeContext(ctx context.Context, input *SynthesisInput) (*SynthesisResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if s == nil {
 		return nil, fmt.Errorf("synthesizer is nil")
 	}
@@ -228,20 +239,44 @@ func (s *Synthesizer) SynthesizeContext(ctx context.Context, input *SynthesisInp
 		}
 		result.SynthesizedBy = SynthesisPathMechanical
 		s.finalizeSynthesisResult(result, &effectiveInput)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return result, nil
 	}
 
 	// Agent-based strategies: run the lead-agent synthesis path.
 	if s.Lead == nil {
-		return s.mechanicalFallback(&effectiveInput, fmt.Sprintf("no lead agent configured for agent-based strategy %q", s.Strategy.Name))
+		reason := s.leadUnavailableReason
+		if reason == "" {
+			reason = fmt.Sprintf("no lead agent configured for agent-based strategy %q", s.Strategy.Name)
+		}
+		result, err := s.mechanicalFallback(&effectiveInput, reason)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return result, err
 	}
 
 	result, err := s.agentSynthesize(ctx, &effectiveInput)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if err != nil {
-		return s.mechanicalFallback(&effectiveInput, fmt.Sprintf("lead agent synthesis failed: %v", err))
+		if errors.Is(err, context.Canceled) {
+			return nil, err
+		}
+		result, fallbackErr := s.mechanicalFallback(&effectiveInput, fmt.Sprintf("lead agent synthesis failed: %v", err))
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return result, fallbackErr
 	}
 	result.SynthesizedBy = SynthesisPathAgent
 	s.finalizeSynthesisResult(result, &effectiveInput)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 

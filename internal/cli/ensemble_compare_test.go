@@ -2,10 +2,12 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 type testError struct {
@@ -1196,5 +1199,244 @@ func TestRenderProvenanceValidation(t *testing.T) {
 	}
 	if !strings.Contains(textBuf.String(), "Validation: INVALID") {
 		t.Fatalf("expected INVALID provenance banner in text output, got:\n%s", textBuf.String())
+	}
+}
+
+const standaloneCLIModeOutput = "Analysis complete.\n" +
+	"```yaml\nmode_id: deductive\nthesis: Preserve member reasoning before lead synthesis.\n" +
+	"top_findings:\n  - finding: Durable capture must precede lead dispatch.\n" +
+	"    impact: high\n    confidence: 0.9\n    evidence_pointer: internal/ensemble/capture.go\n" +
+	"    reasoning: Sending the next task replaces the only live result.\nconfidence: 0.9\n```\nclaude>\n"
+
+func setupStandaloneCLISynthesis(t *testing.T, output string) (string, string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake tmux requires a POSIX shell")
+	}
+	isolateSessionAgentStorage(t)
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+	oldCfg, oldJSON := cfg, jsonOutput
+	cfg, jsonOutput = config.Default(), false
+	t.Cleanup(func() { cfg, jsonOutput = oldCfg, oldJSON })
+
+	const session = "standalone-cli-synthesis"
+	dir := t.TempDir()
+	t.Setenv("NTM_SYNTH_ROOT", dir)
+	t.Setenv("NTM_SYNTH_SESSION", session)
+	t.Setenv("NTM_SYNTH_HOLD", "")
+	t.Setenv("NTM_SYNTH_PANES", "%1_NTM_SEP_0_NTM_SEP_"+session+"__cc_1_NTM_SEP_claude_NTM_SEP_120_NTM_SEP_40_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0_NTM_SEP_[]")
+	for name, content := range map[string]string{
+		"member.txt": output,
+		"lead.txt": "\n```json\n" +
+			`{"summary":"Fresh synthesis from the live lead agent.","findings":[{"finding":"Save completed reasoning before dispatch.","impact":"high","confidence":0.94}],"confidence":0.94}` +
+			"\n```\nclaude>\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script := `#!/bin/sh
+printf '%s\n' "$1" >> "$NTM_SYNTH_ROOT/tmux.log"
+case "$1" in
+  -V) printf 'tmux 3.5a\n' ;;
+  has-session) ;;
+  list-sessions) printf '%s_NTM_SEP_1_NTM_SEP_0_NTM_SEP_now\n' "$NTM_SYNTH_SESSION" ;;
+  list-panes) printf '%s\n' "$NTM_SYNTH_PANES" ;;
+  display-message)
+    case "$*" in
+      *session_name*) printf '%s\n' "$NTM_SYNTH_SESSION" ;;
+      *rotation_token*) printf '[]\n' ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  capture-pane)
+    cat "$NTM_SYNTH_ROOT/member.txt"
+    if [ -e "$NTM_SYNTH_ROOT/submitted" ]; then cat "$NTM_SYNTH_ROOT/lead.txt"; fi
+    ;;
+  load-buffer)
+    cat > "$NTM_SYNTH_ROOT/prompt.txt"
+    : > "$NTM_SYNTH_ROOT/before-prompt"
+    if [ "$NTM_SYNTH_HOLD" = "1" ]; then
+      while [ ! -e "$NTM_SYNTH_ROOT/release" ]; do sleep 0.01; done
+    fi
+    ;;
+  paste-buffer|delete-buffer) ;;
+  send-keys)
+    case "$*" in
+      *Enter*) : > "$NTM_SYNTH_ROOT/submitted" ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  *) printf 'unexpected tmux command: %s\n' "$1" >&2; exit 1 ;;
+esac
+`
+	binPath := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", binPath)
+	oldClient := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("")
+	t.Cleanup(func() { tmux.DefaultClient = oldClient })
+	now := time.Now().UTC()
+	state := &ensemble.EnsembleSession{
+		SessionName:       session,
+		Question:          "How should completed ensemble reasoning be preserved?",
+		Status:            ensemble.EnsembleActive,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         now,
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "deductive", PaneName: session + "__cc_1", AgentType: "cc", Status: ensemble.AssignmentActive, AssignedAt: now},
+		},
+	}
+	if err := ensemble.SaveSession(session, state); err != nil {
+		t.Fatal(err)
+	}
+	return session, dir
+}
+
+func TestEnsembleSynthesizeCommandCapturesActiveAgentsBeforeLeadDispatch(t *testing.T) {
+	session, dir := setupStandaloneCLISynthesis(t, standaloneCLIModeOutput)
+	t.Setenv("NTM_SYNTH_HOLD", "1")
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	var output bytes.Buffer
+	cmd := newEnsembleSynthesizeCmd()
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	cmd.SetArgs([]string{session, "--format=json", "--no-cache"})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	done := make(chan struct{})
+	var runErr error
+	go func() {
+		defer close(done)
+		runErr = cmd.ExecuteContext(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		_ = os.WriteFile(filepath.Join(dir, "release"), nil, 0o600)
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("synthesis command did not stop after cancellation")
+		}
+	})
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "before-prompt")); err == nil {
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		select {
+		case <-done:
+			t.Fatalf("command ended before lead dispatch: %v; output=%s", runErr, output.String())
+		case <-ctx.Done():
+			t.Fatal("command never reached lead dispatch")
+		case <-ticker.C:
+		}
+	}
+
+	saved, err := ensemble.LoadSession(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignment := saved.Assignments[0]
+	if assignment.Status != ensemble.AssignmentDone || assignment.OutputPath == "" || assignment.CompletedAt == nil {
+		t.Fatalf("member result was not durable before lead dispatch: %+v", assignment)
+	}
+	recovered, err := ensemble.CollectModeOutputs(saved, nil)
+	if err != nil || len(recovered.Outputs) != 1 || recovered.Outputs[0].Thesis != "Preserve member reasoning before lead synthesis." {
+		t.Fatalf("saved member result cannot be recovered before dispatch: %+v, err=%v", recovered, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "submitted")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("lead prompt submitted before release: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "release"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("command did not finish after lead reply")
+	}
+	if runErr != nil {
+		t.Fatalf("synthesize without --force: %v; output=%s", runErr, output.String())
+	}
+	var decoded struct {
+		Synthesis *ensemble.SynthesisResult `json:"synthesis"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode synthesis: %v; output=%s", err, output.String())
+	}
+	if decoded.Synthesis == nil || decoded.Synthesis.SynthesizedBy != "agent" ||
+		decoded.Synthesis.FallbackReason != "" || decoded.Synthesis.Summary != "Fresh synthesis from the live lead agent." {
+		t.Fatalf("expected a fresh lead synthesis, got %+v", decoded.Synthesis)
+	}
+	prompt, err := os.ReadFile(filepath.Join(dir, "prompt.txt"))
+	if err != nil || !strings.Contains(string(prompt), saved.Question) ||
+		!strings.Contains(string(prompt), "Durable capture must precede lead dispatch.") {
+		t.Fatalf("lead did not receive the question and captured reasoning: %q, err=%v", prompt, err)
+	}
+}
+
+func TestEnsembleSynthesizeCommandRefusesUnfinishedLiveOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		output string
+	}{
+		{name: "complete schema while still busy", output: strings.TrimSuffix(standaloneCLIModeOutput, "claude>\n") + "Continuing analysis...\n"},
+		{name: "idle with incomplete output", output: "Partial analysis with no structured result.\nclaude>\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, dir := setupStandaloneCLISynthesis(t, tc.output)
+			var output bytes.Buffer
+			cmd := newEnsembleSynthesizeCmd()
+			cmd.SetOut(&output)
+			cmd.SetErr(&output)
+			cmd.SetArgs([]string{session, "--format=json", "--no-cache"})
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			err := cmd.ExecuteContext(t.Context())
+			if err == nil || !strings.Contains(err.Error(), "synthesis not ready") {
+				t.Fatalf("unfinished output must remain not ready: err=%v output=%s", err, output.String())
+			}
+			saved, err := ensemble.LoadSession(session)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if saved.Assignments[0].Status != ensemble.AssignmentActive || saved.Assignments[0].OutputPath != "" {
+				t.Fatalf("unfinished output was promoted to completed: %+v", saved.Assignments[0])
+			}
+			if _, err := os.Stat(filepath.Join(dir, "prompt.txt")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("unfinished member received a synthesis prompt: %v", err)
+			}
+		})
+	}
+}
+
+func TestEnsembleSynthesizeCommandCancellationDoesNotDispatch(t *testing.T) {
+	session, dir := setupStandaloneCLISynthesis(t, standaloneCLIModeOutput)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	var output bytes.Buffer
+	cmd := newEnsembleSynthesizeCmd()
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	cmd.SetArgs([]string{session, "--format=json", "--no-cache"})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	if err := cmd.ExecuteContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled command returned %v, want context.Canceled", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "prompt.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("canceled command dispatched a prompt: %v", err)
+	}
+	saved, err := ensemble.LoadSession(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Assignments[0].Status != ensemble.AssignmentActive {
+		t.Fatalf("canceled command changed assignment state: %+v", saved.Assignments[0])
 	}
 }

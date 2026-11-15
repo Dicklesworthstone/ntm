@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/state"
+	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	tokenpkg "github.com/Dicklesworthstone/ntm/internal/tokens"
@@ -151,9 +152,29 @@ func (m *EnsembleManager) Run(ctx context.Context, cfg *EnsembleConfig, runCfg R
 		"succeeded", stage2Result.ModesSucceeded,
 	)
 
+	return m.finishPipelineSynthesis(ctx, cfg, runCfg, result)
+}
+
+// finishPipelineSynthesis completes a run using the collected member outputs.
+// Caller interruption is terminal even when those outputs remain recoverable.
+func (m *EnsembleManager) finishPipelineSynthesis(ctx context.Context, cfg *EnsembleConfig, runCfg RunConfig, result *EnsembleResult) (*EnsembleResult, error) {
+	logger := m.logger()
+	interrupted := func(stage PipelineStage, cause error) (*EnsembleResult, error) {
+		result.Stage = StageFailed
+		result.Error = fmt.Sprintf("%s interrupted: %v", stage, cause)
+		result.CompletedAt = time.Now().UTC()
+		return result, NewPipelineError(stage, "pipeline interrupted", cause)
+	}
+	if err := ctx.Err(); err != nil {
+		return interrupted(StageModeRun, err)
+	}
+
 	// Stage 3: Synthesis (skip if configured)
 	if runCfg.SkipStage3 {
 		logger.Info("stage3: skipped by config")
+		if err := ctx.Err(); err != nil {
+			return interrupted(StageModeRun, err)
+		}
 		result.Stage = StageComplete
 		result.CompletedAt = time.Now().UTC()
 		return result, nil
@@ -161,6 +182,9 @@ func (m *EnsembleManager) Run(ctx context.Context, cfg *EnsembleConfig, runCfg R
 
 	if len(result.ModeOutputs) == 0 {
 		logger.Warn("stage3: no outputs to synthesize")
+		if err := ctx.Err(); err != nil {
+			return interrupted(StageModeRun, err)
+		}
 		result.Stage = StageComplete
 		result.CompletedAt = time.Now().UTC()
 		return result, nil
@@ -168,6 +192,12 @@ func (m *EnsembleManager) Run(ctx context.Context, cfg *EnsembleConfig, runCfg R
 
 	stage3Start := time.Now()
 	stage3Result, err := m.RunStage3(ctx, cfg, result.ModeOutputs)
+	if ctx.Err() != nil {
+		return interrupted(StageSynthesis, ctx.Err())
+	}
+	if errors.Is(err, context.Canceled) {
+		return interrupted(StageSynthesis, err)
+	}
 	if err != nil {
 		// Synthesis failure is non-fatal - we still have mode outputs
 		logger.Warn("stage3 failed, returning partial result",
@@ -180,6 +210,9 @@ func (m *EnsembleManager) Run(ctx context.Context, cfg *EnsembleConfig, runCfg R
 		result.Metrics.SynthesisTokens = stage3Result.TokensUsed
 	}
 
+	if err := ctx.Err(); err != nil {
+		return interrupted(StageSynthesis, err)
+	}
 	result.Stage = StageComplete
 	result.CompletedAt = time.Now().UTC()
 
@@ -194,6 +227,9 @@ func (m *EnsembleManager) Run(ctx context.Context, cfg *EnsembleConfig, runCfg R
 		"outputs", len(result.ModeOutputs),
 		"synthesis", result.Synthesis != nil,
 	)
+	if err := ctx.Err(); err != nil {
+		return interrupted(StageSynthesis, err)
+	}
 
 	return result, nil
 }
@@ -369,6 +405,12 @@ func (m *EnsembleManager) RunStage3(ctx context.Context, cfg *EnsembleConfig, ou
 // with an explicit "fell back to mechanical: <reason>" audit entry - never
 // silently. Manual strategies use mechanical merging directly (unchanged).
 func (m *EnsembleManager) synthesizeStage3Report(ctx context.Context, cfg *EnsembleConfig, outputs []ModeOutput) (*SynthesisReport, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	logger := m.logger()
 
 	effectiveCfg := *cfg
@@ -397,10 +439,19 @@ func (m *EnsembleManager) synthesizeStage3Report(ctx context.Context, cfg *Ensem
 				Details:   reason,
 			})
 		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return report, nil
 	}
 
 	result, agentErr := m.runLeadSynthesis(ctx, &effectiveCfg, outputs)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if errors.Is(agentErr, context.Canceled) {
+		return nil, agentErr
+	}
 	if agentErr == nil {
 		logger.Info("stage3: lead agent synthesis complete",
 			"strategy", strategyName,
@@ -408,6 +459,9 @@ func (m *EnsembleManager) synthesizeStage3Report(ctx context.Context, cfg *Ensem
 		)
 		report := synthesisResultToReport(result, strategy)
 		finalizeSynthesisReportPolicy(report, outputs, effectiveCfg.Synthesis)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return report, nil
 	}
 
@@ -425,22 +479,30 @@ func (m *EnsembleManager) synthesizeStage3Report(ctx context.Context, cfg *Ensem
 		Action:    "fallback_to_mechanical",
 		Details:   reason,
 	})
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return report, nil
 }
 
 // runLeadSynthesis dispatches the synthesis prompt to the designated lead
 // pane and collects/parses the response.
 func (m *EnsembleManager) runLeadSynthesis(ctx context.Context, cfg *EnsembleConfig, outputs []ModeOutput) (*SynthesisResult, error) {
-	lead, err := m.leadAgentConfig(cfg)
+	session, err := LoadSession(cfg.SessionName)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("no lead pane available: load session state: %w", err)
 	}
 
 	synth, err := NewSynthesizer(cfg.Synthesis)
 	if err != nil {
 		return nil, fmt.Errorf("create synthesizer: %w", err)
 	}
-	synth.Lead = lead
+	if err := m.ConfigureSessionSynthesis(ctx, session, synth, cfg.Budget.TimeoutPerMode); err != nil {
+		return nil, err
+	}
+	if synth.Lead == nil {
+		return nil, errors.New(synth.leadUnavailableReason)
+	}
 
 	input := &SynthesisInput{
 		Outputs:          outputs,
@@ -451,64 +513,124 @@ func (m *EnsembleManager) runLeadSynthesis(ctx context.Context, cfg *EnsembleCon
 	return synth.agentSynthesize(ctx, input)
 }
 
-// leadAgentConfig designates the lead pane for agent-based synthesis: the
-// first active/done assignment in the persisted session whose pane still
-// exists. Dispatch goes through the gated swarm.PromptInjector path.
-func (m *EnsembleManager) leadAgentConfig(cfg *EnsembleConfig) (*LeadAgentConfig, error) {
-	session, err := LoadSession(cfg.SessionName)
-	if err != nil {
-		return nil, fmt.Errorf("no lead pane available: load session state: %w", err)
+// ConfigureSessionSynthesis connects an existing session's synthesizer to a
+// live idle lead through the same gated delivery path used by the pipeline.
+// Callers must capture member results before allowing the lead to start a new
+// turn. Missing or unusable panes retain an explicit mechanical fallback;
+// caller cancellation and invalid arguments are returned as errors.
+func (m *EnsembleManager) ConfigureSessionSynthesis(ctx context.Context, session *EnsembleSession, synth *Synthesizer, timeout time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	if session == nil || len(session.Assignments) == 0 {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if m == nil || session == nil || synth == nil || synth.Strategy == nil {
+		return errors.New("session synthesis requires a manager, session, and configured synthesizer")
+	}
+	if err := tmux.ValidateSessionName(session.SessionName); err != nil {
+		return fmt.Errorf("invalid synthesis session: %w", err)
+	}
+	synth.Lead = nil
+	synth.leadUnavailableReason = ""
+	if !synth.Strategy.RequiresAgent {
+		return nil
+	}
+	lead, err := m.leadAgentConfig(ctx, session, timeout)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if errors.Is(err, context.Canceled) {
+		return err
+	}
+	if err != nil {
+		synth.leadUnavailableReason = err.Error()
+		return nil
+	}
+	synth.Lead = lead
+	return nil
+}
+
+// leadAgentConfig prefers completed assignments and only selects a uniquely
+// identified, live, idle agent pane. Baseline capture must succeed before
+// dispatch so an earlier synthesis cannot be mistaken for the new response.
+func (m *EnsembleManager) leadAgentConfig(ctx context.Context, session *EnsembleSession, timeout time.Duration) (*LeadAgentConfig, error) {
+	if len(session.Assignments) == 0 {
 		return nil, errors.New("no lead pane available: session has no assignments")
 	}
+	inspectionCtx, cancel := context.WithTimeout(ctx, tmux.DefaultCommandTimeout)
+	defer cancel()
 
-	panes, err := m.tmuxClient().GetPanes(cfg.SessionName)
+	client := m.tmuxClient()
+	panes, err := client.GetPanesContext(inspectionCtx, session.SessionName)
 	if err != nil {
 		return nil, fmt.Errorf("no lead pane available: get panes: %w", err)
 	}
-	targets := buildPaneTargetMap(cfg.SessionName, panes)
-
-	var chosen *ModeAssignment
-	for i := range session.Assignments {
-		a := &session.Assignments[i]
-		if a.Status != AssignmentActive && a.Status != AssignmentDone {
-			continue
-		}
-		if targets[a.PaneName] == "" {
-			continue
-		}
-		chosen = a
-		break
-	}
-	if chosen == nil {
-		return nil, errors.New("no lead pane available: no responsive active/done assignment pane found")
-	}
-
-	injector := m.promptInjector()
-	injector.TmuxClient = m.tmuxClient()
-
-	timeout := cfg.Budget.TimeoutPerMode
 	if timeout <= 0 {
 		timeout = DefaultLeadSynthesisTimeout
 	}
 
-	paneTarget := targets[chosen.PaneName]
-	collector := NewPaneSynthesisCollector(m.tmuxClient())
-	if timeout > 0 && timeout < collector.PollInterval {
-		collector.PollInterval = max(100*time.Millisecond, timeout/5)
-	}
-	if baseline, err := m.tmuxClient().CapturePaneOutput(paneTarget, collector.MaxLines); err == nil {
-		collector.Baseline = baseline
+	var refusal error
+	for _, candidateStatus := range []AssignmentStatus{AssignmentDone, AssignmentActive} {
+		for _, assignment := range session.Assignments {
+			if err := inspectionCtx.Err(); err != nil {
+				return nil, err
+			}
+			if assignment.Status != candidateStatus || assignment.PaneName == "" {
+				continue
+			}
+			var candidate *tmux.Pane
+			matches := 0
+			for i := range panes {
+				pane := &panes[i]
+				if pane.ID == assignment.PaneName || pane.Title == assignment.PaneName {
+					candidate = pane
+					matches++
+				}
+			}
+			if matches != 1 {
+				refusal = fmt.Errorf("assignment pane %q has %d matches", assignment.PaneName, matches)
+				continue
+			}
+			agentType := tmux.AgentType(assignment.AgentType).Canonical()
+			if err := agentType.ValidateAutomatedPromptDelivery(); err != nil {
+				refusal = err
+				continue
+			}
+			if candidate.ID == "" || candidate.Type.Canonical() != agentType || candidate.Dead || candidate.IsServicePane() || candidate.AgentCLIDead() || candidate.RotationToken != "" || strings.TrimSpace(candidate.Command) == "" || tmux.PaneCommandIsStarting(candidate.Command) {
+				refusal = fmt.Errorf("pane %s no longer contains an available %s agent", assignment.PaneName, agentType)
+				continue
+			}
+			collector := NewPaneSynthesisCollector(client)
+			baseline, err := client.CapturePaneOutputContext(inspectionCtx, candidate.ID, collector.MaxLines)
+			if err != nil {
+				refusal = fmt.Errorf("capture lead baseline for %s: %w", candidate.ID, err)
+				continue
+			}
+			if !status.DetectIdleFromOutput(baseline, string(agentType)) {
+				refusal = fmt.Errorf("pane %s is not at an idle agent prompt", candidate.ID)
+				continue
+			}
+			collector.Baseline = baseline
+			if timeout < collector.PollInterval {
+				collector.PollInterval = max(100*time.Millisecond, timeout/5)
+			}
+			injector := m.promptInjector()
+			injector.TmuxClient = client
+			return &LeadAgentConfig{
+				PaneTarget: candidate.ID,
+				AgentType:  string(agentType),
+				Timeout:    timeout,
+				Dispatcher: promptInjectorDispatcher{injector: injector},
+				Collector:  collector,
+			}, nil
+		}
 	}
 
-	return &LeadAgentConfig{
-		PaneTarget: paneTarget,
-		AgentType:  chosen.AgentType,
-		Timeout:    timeout,
-		Dispatcher: promptInjectorDispatcher{injector: injector},
-		Collector:  collector,
-	}, nil
+	if refusal != nil {
+		return nil, fmt.Errorf("no live idle lead pane available: %w", refusal)
+	}
+	return nil, errors.New("no live idle lead pane available: no active or completed assignments")
 }
 
 // synthesisResultToReport converts an agent SynthesisResult into the
@@ -551,11 +673,11 @@ type promptInjectorDispatcher struct {
 	injector *swarm.PromptInjector
 }
 
-func (d promptInjectorDispatcher) DispatchSynthesisPrompt(paneTarget, agentType, prompt string) error {
+func (d promptInjectorDispatcher) DispatchSynthesisPrompt(ctx context.Context, paneTarget, agentType, prompt string) error {
 	if d.injector == nil {
 		return errors.New("prompt injector is nil")
 	}
-	return d.injector.InjectPrompt(paneTarget, agentType, prompt)
+	return d.injector.InjectPromptContext(ctx, paneTarget, agentType, prompt)
 }
 
 // mechanicalSynthesis performs basic merging without an AI synthesizer agent.
@@ -1771,7 +1893,7 @@ func (m *EnsembleManager) collectAssignedModeOutputsWithEarlyStop(
 
 	var lastErr error
 	for {
-		captured, err := capture.CaptureAll(tempSession)
+		captured, err := capture.CaptureAllContext(pollCtx, tempSession)
 		if err != nil {
 			lastErr = err
 		}
@@ -1779,7 +1901,7 @@ func (m *EnsembleManager) collectAssignedModeOutputsWithEarlyStop(
 			if _, stopped := stoppedModes[item.ModeID]; stopped {
 				continue
 			}
-			if item.Parsed != nil {
+			if item.Parsed != nil && len(item.ParseErrors) == 0 {
 				out := *item.Parsed
 				if strings.TrimSpace(out.RawOutput) == "" {
 					out.RawOutput = item.RawOutput
@@ -1790,6 +1912,9 @@ func (m *EnsembleManager) collectAssignedModeOutputsWithEarlyStop(
 						ctrl.RecordCompletedMode(item.ModeID, out.RawOutput)
 					}
 				}
+				continue
+			}
+			if pollCtx.Err() != nil {
 				continue
 			}
 			if ctrl != nil && strings.TrimSpace(item.RawOutput) != "" {
@@ -1807,11 +1932,15 @@ func (m *EnsembleManager) collectAssignedModeOutputsWithEarlyStop(
 							stopSummary.Reason = fmt.Sprintf("mode %s stopped early (e_value=%.2f >= %.2f)", item.ModeID, dec.EValue, dec.Threshold)
 						}
 						if item.PaneName != "" {
-							_ = m.tmuxClient().SendKeys(item.PaneName, "\x03", false)
+							_ = m.tmuxClient().SendKeysContext(pollCtx, item.PaneName, "\x03", false)
 						}
 					}
 				}
 			}
+		}
+		if err := pollCtx.Err(); err != nil {
+			outputs := orderedModeOutputsFromMap(assignments, byMode)
+			return outputs, byMode, stopSummary, fmt.Errorf("collect mode outputs interrupted (%d/%d collected): %w", len(byMode), len(assignments), errors.Join(err, lastErr))
 		}
 		if len(byMode)+len(stoppedModes) >= len(assignments) {
 			break
@@ -1820,10 +1949,7 @@ func (m *EnsembleManager) collectAssignedModeOutputsWithEarlyStop(
 		select {
 		case <-pollCtx.Done():
 			outputs := orderedModeOutputsFromMap(assignments, byMode)
-			if lastErr != nil {
-				return outputs, byMode, stopSummary, fmt.Errorf("collect mode outputs timed out (%d/%d collected): %w", len(byMode), len(assignments), lastErr)
-			}
-			return outputs, byMode, stopSummary, fmt.Errorf("collect mode outputs timed out (%d/%d collected)", len(byMode), len(assignments))
+			return outputs, byMode, stopSummary, fmt.Errorf("collect mode outputs interrupted (%d/%d collected): %w", len(byMode), len(assignments), errors.Join(pollCtx.Err(), lastErr))
 		case <-ticker.C:
 		}
 	}

@@ -200,54 +200,86 @@ func (c *OutputCapture) CaptureAndSaveContext(ctx context.Context, session *Ense
 }
 
 // CaptureForSynthesis reconciles finished live assignments before readiness is
-// checked. A valid response must also end at an idle prompt: a partial response
-// or an echoed schema must not authorize dispatching a synthesis prompt. Queued
-// assignments cannot complete from scrollback left by an earlier task.
+// checked. Durable, schema-valid results do not depend on a pane still existing.
+// A live response must end at an idle prompt, and queued assignments cannot
+// complete from scrollback left by an earlier task.
 func (c *OutputCapture) CaptureForSynthesis(ctx context.Context, session *EnsembleSession) ([]CapturedOutput, error) {
-	captured, err := c.CaptureAllContext(ctx, session)
+	if c == nil {
+		return nil, errors.New("output capture is nil")
+	}
+	if session == nil {
+		return nil, errors.New("ensemble session is nil")
+	}
+	if ctx == nil {
+		return nil, errors.New("output capture context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	live := *session
+	live.Assignments = nil
+	for _, assignment := range session.Assignments {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		switch assignment.Status {
+		case AssignmentDone:
+			// Use the same schema and mode-identity checks as the final
+			// collector. Validate each assignment separately so a saved
+			// result cannot satisfy another assignment with the same mode.
+			saved := NewOutputCollector(DefaultOutputCollectorConfig())
+			completed := &EnsembleSession{Assignments: []ModeAssignment{assignment}}
+			if err := saved.CollectFromSavedOutputs(completed); err != nil {
+				return nil, fmt.Errorf("check saved output for %s: %w", assignment.ModeID, err)
+			}
+			if saved.Count() > 0 {
+				continue
+			}
+		case AssignmentActive:
+		default:
+			continue
+		}
+		live.Assignments = append(live.Assignments, assignment)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(live.Assignments) == 0 {
+		return nil, nil
+	}
+
+	captured, err := c.CaptureAllContext(ctx, &live)
 	if err != nil {
 		return captured, err
 	}
 	needsSave := false
 	for i := range captured {
 		output := &captured[i]
-		assignment := session.Assignments[i]
-		switch assignment.Status {
-		case AssignmentActive:
-			if !status.DetectIdleFromOutput(output.RawOutput, assignment.AgentType) {
-				output.ParseErrors = append(output.ParseErrors, errors.New("mode agent has not returned to an idle prompt"))
-			}
-		case AssignmentDone:
-			// Saved results remain usable if the live pane has since moved on.
-		default:
-			output.ParseErrors = append(output.ParseErrors, fmt.Errorf("mode assignment is %s", assignment.Status))
+		assignment := live.Assignments[i]
+		if !status.DetectIdleFromOutput(output.RawOutput, assignment.AgentType) {
+			output.ParseErrors = append(output.ParseErrors, errors.New("mode agent has not returned to an idle prompt"))
 		}
-		if output.Parsed != nil && len(output.ParseErrors) == 0 &&
-			(assignment.Status != AssignmentDone || assignment.OutputPath == "") {
+		if output.Parsed != nil && len(output.ParseErrors) == 0 {
 			needsSave = true
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return captured, err
+	}
 	if needsSave {
-		if err := ctx.Err(); err != nil {
-			return captured, err
-		}
-		if err := saveCapturedOutputs(session, captured); err != nil {
+		if err := saveCapturedAssignmentOutputs(session, captured); err != nil {
 			return captured, err
 		}
 	}
 	return captured, nil
 }
 
+// saveCapturedOutputs requires a complete, ordered capture for destructive
+// callers such as stop. Synthesis uses the shared subset persistence below.
 func saveCapturedOutputs(session *EnsembleSession, captured []CapturedOutput) error {
 	if session == nil {
 		return errors.New("ensemble session is nil")
-	}
-	sessionName, err := NormalizeCheckpointRunID(session.SessionName)
-	if err != nil {
-		return fmt.Errorf("invalid output session name: %w", err)
-	}
-	if sessionName != session.SessionName {
-		return errors.New("output session name must not contain surrounding whitespace")
 	}
 	if len(captured) != len(session.Assignments) {
 		return fmt.Errorf("captured %d outputs for %d assignments", len(captured), len(session.Assignments))
@@ -258,8 +290,47 @@ func saveCapturedOutputs(session *EnsembleSession, captured []CapturedOutput) er
 			return fmt.Errorf("capture %d does not match assignment %s in pane %s", i, assignment.ModeID, assignment.PaneName)
 		}
 	}
+	return saveCapturedAssignmentOutputs(session, captured)
+}
+
+// saveCapturedAssignmentOutputs updates only the uniquely identified captured
+// assignments. Other assignments and earlier recoverable files are preserved.
+func saveCapturedAssignmentOutputs(session *EnsembleSession, captured []CapturedOutput) error {
+	if session == nil {
+		return errors.New("ensemble session is nil")
+	}
+	sessionName, err := NormalizeCheckpointRunID(session.SessionName)
+	if err != nil {
+		return fmt.Errorf("invalid output session name: %w", err)
+	}
+	if sessionName != session.SessionName {
+		return errors.New("output session name must not contain surrounding whitespace")
+	}
 	if len(captured) == 0 {
 		return nil
+	}
+
+	assignmentIndices := make(map[[2]string]int, len(session.Assignments))
+	for i, assignment := range session.Assignments {
+		key := [2]string{assignment.ModeID, assignment.PaneName}
+		if _, exists := assignmentIndices[key]; exists {
+			return fmt.Errorf("duplicate assignment %s in pane %s", assignment.ModeID, assignment.PaneName)
+		}
+		assignmentIndices[key] = i
+	}
+	indices := make([]int, len(captured))
+	seen := make(map[[2]string]bool, len(captured))
+	for i, output := range captured {
+		key := [2]string{output.ModeID, output.PaneName}
+		index, exists := assignmentIndices[key]
+		if !exists {
+			return fmt.Errorf("capture %d has no matching assignment %s in pane %s", i, output.ModeID, output.PaneName)
+		}
+		if seen[key] {
+			return fmt.Errorf("duplicate capture for %s in pane %s", output.ModeID, output.PaneName)
+		}
+		seen[key] = true
+		indices[i] = index
 	}
 
 	store, err := defaultSQLiteStore()
@@ -284,15 +355,16 @@ func saveCapturedOutputs(session *EnsembleSession, captured []CapturedOutput) er
 
 	next := *session
 	next.Assignments = append([]ModeAssignment(nil), session.Assignments...)
+	rawPaths := make([]string, len(captured))
 	validator := NewSchemaValidator()
 	for i := range captured {
 		output := &captured[i]
-		assignment := &next.Assignments[i]
-		rawPath := filepath.Join(captureDir, fmt.Sprintf("%03d.raw.txt", i))
+		assignment := &next.Assignments[indices[i]]
+		rawPath := filepath.Join(captureDir, fmt.Sprintf("%03d.raw.txt", indices[i]))
 		if err := util.AtomicWriteFile(rawPath, []byte(output.RawOutput), 0o600); err != nil {
 			return fmt.Errorf("save raw output for %s: %w", output.ModeID, err)
 		}
-		output.OutputPath = rawPath
+		rawPaths[i] = rawPath
 
 		// Preserve an earlier valid structured result if the latest pane
 		// contains an incomplete response. Its new raw transcript is still saved.
@@ -310,7 +382,7 @@ func saveCapturedOutputs(session *EnsembleSession, captured []CapturedOutput) er
 		if err != nil {
 			return fmt.Errorf("encode output for %s: %w", output.ModeID, err)
 		}
-		outputPath := filepath.Join(captureDir, fmt.Sprintf("%03d.json", i))
+		outputPath := filepath.Join(captureDir, fmt.Sprintf("%03d.json", indices[i]))
 		if err := util.AtomicWriteFile(outputPath, data, 0o600); err != nil {
 			return fmt.Errorf("save structured output for %s: %w", output.ModeID, err)
 		}
@@ -335,6 +407,9 @@ func saveCapturedOutputs(session *EnsembleSession, captured []CapturedOutput) er
 		return fmt.Errorf("save captured ensemble state: %w", err)
 	}
 	*session = next
+	for i := range captured {
+		captured[i].OutputPath = rawPaths[i]
+	}
 	return nil
 }
 

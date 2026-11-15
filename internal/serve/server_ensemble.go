@@ -848,6 +848,18 @@ func (s *Server) executeEnsembleSynthesize(ctx context.Context, session string, 
 		}
 	}
 
+	if sessionLive {
+		manager := ensemble.NewEnsembleManager()
+		if err := manager.ConfigureSessionSynthesis(ctx, state, synth, budgetCfg.TimeoutPerMode); err != nil {
+			return nil, &ensembleExecError{
+				status:  http.StatusInternalServerError,
+				code:    ErrCodeInternalError,
+				message: fmt.Sprintf("configure lead synthesis: %v", err),
+				cause:   err,
+			}
+		}
+	}
+
 	input, err := collector.BuildSynthesisInput(state.Question, nil, synthConfig)
 	if err != nil {
 		return nil, &ensembleExecError{

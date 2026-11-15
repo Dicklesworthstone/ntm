@@ -11,32 +11,40 @@ import (
 
 // fakeDispatcher records the dispatched prompt and optionally fails.
 type fakeDispatcher struct {
-	pane      string
-	agentType string
-	prompt    string
-	err       error
-	calls     int
+	pane       string
+	agentType  string
+	prompt     string
+	err        error
+	calls      int
+	onDispatch func(context.Context) error
 }
 
-func (d *fakeDispatcher) DispatchSynthesisPrompt(paneTarget, agentType, prompt string) error {
+func (d *fakeDispatcher) DispatchSynthesisPrompt(ctx context.Context, paneTarget, agentType, prompt string) error {
 	d.calls++
 	d.pane = paneTarget
 	d.agentType = agentType
 	d.prompt = prompt
+	if d.onDispatch != nil {
+		return d.onDispatch(ctx)
+	}
 	return d.err
 }
 
 // fakeCollector returns a canned response or fails.
 type fakeCollector struct {
-	response string
-	err      error
-	calls    int
-	pane     string
+	response  string
+	err       error
+	calls     int
+	pane      string
+	onCollect func(context.Context) (string, error)
 }
 
-func (c *fakeCollector) CollectSynthesisResponse(_ context.Context, paneTarget string) (string, error) {
+func (c *fakeCollector) CollectSynthesisResponse(ctx context.Context, paneTarget string) (string, error) {
 	c.calls++
 	c.pane = paneTarget
+	if c.onCollect != nil {
+		return c.onCollect(ctx)
+	}
 	if c.err != nil {
 		return "", c.err
 	}
@@ -261,6 +269,109 @@ func TestManualStrategyMechanicalPathUnchanged(t *testing.T) {
 	}
 	if result.Summary == "" || len(result.Findings) == 0 {
 		t.Errorf("mechanical synthesis result incomplete: %+v", result)
+	}
+}
+
+func TestSynthesisCanceledBeforeStartNeverDispatchesOrFallsBack(t *testing.T) {
+	for _, strategy := range []SynthesisStrategy{StrategyManual, StrategyConsensus} {
+		t.Run(string(strategy), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			dispatcher := &fakeDispatcher{}
+			collector := &fakeCollector{response: leadAgentResponse}
+			synth := newAgentSynthesizer(t, strategy, &LeadAgentConfig{
+				PaneTarget: "%1",
+				AgentType:  "cc",
+				Dispatcher: dispatcher,
+				Collector:  collector,
+			})
+			result, err := synth.SynthesizeContext(ctx, leadTestInput())
+			if result != nil || !errors.Is(err, context.Canceled) {
+				t.Fatalf("canceled synthesis returned result=%+v, err=%v", result, err)
+			}
+			if dispatcher.calls != 0 || collector.calls != 0 {
+				t.Fatalf("canceled synthesis dispatched=%d collected=%d", dispatcher.calls, collector.calls)
+			}
+		})
+	}
+}
+
+func TestAgentSynthesisCancellationDuringDispatchStopsCollection(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dispatcher := &fakeDispatcher{onDispatch: func(deliveryCtx context.Context) error {
+		if _, ok := deliveryCtx.Deadline(); !ok {
+			t.Error("lead timeout did not cover prompt dispatch")
+		}
+		cancel()
+		return nil
+	}}
+	collector := &fakeCollector{response: leadAgentResponse}
+	synth := newAgentSynthesizer(t, StrategyConsensus, &LeadAgentConfig{
+		PaneTarget: "%1",
+		AgentType:  "cc",
+		Dispatcher: dispatcher,
+		Collector:  collector,
+	})
+	result, err := synth.SynthesizeContext(ctx, leadTestInput())
+	if result != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled delivery became successful synthesis: result=%+v, err=%v", result, err)
+	}
+	if dispatcher.calls != 1 || collector.calls != 0 {
+		t.Fatalf("dispatches=%d collections=%d", dispatcher.calls, collector.calls)
+	}
+}
+
+func TestAgentSynthesisCallerCancellationDuringCollectionNeverFallsBack(t *testing.T) {
+	for _, returnResponse := range []bool{false, true} {
+		t.Run(fmt.Sprint("response_after_cancel=", returnResponse), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			collector := &fakeCollector{onCollect: func(collectCtx context.Context) (string, error) {
+				cancel()
+				if returnResponse {
+					return leadAgentResponse, nil
+				}
+				return "", collectCtx.Err()
+			}}
+			synth := newAgentSynthesizer(t, StrategyConsensus, &LeadAgentConfig{
+				PaneTarget: "%1",
+				AgentType:  "cc",
+				Dispatcher: &fakeDispatcher{},
+				Collector:  collector,
+			})
+			result, err := synth.SynthesizeContext(ctx, leadTestInput())
+			if result != nil || !errors.Is(err, context.Canceled) {
+				t.Fatalf("canceled collection became successful synthesis: result=%+v, err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestAgentSynthesisLeadTimeoutBoundsDispatchAndReportsFallback(t *testing.T) {
+	dispatcher := &fakeDispatcher{onDispatch: func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}}
+	collector := &fakeCollector{response: leadAgentResponse}
+	synth := newAgentSynthesizer(t, StrategyConsensus, &LeadAgentConfig{
+		PaneTarget: "%1",
+		AgentType:  "cc",
+		Timeout:    10 * time.Millisecond,
+		Dispatcher: dispatcher,
+		Collector:  collector,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := synth.SynthesizeContext(ctx, leadTestInput())
+	if err != nil || result == nil || result.SynthesizedBy != SynthesisPathMechanical {
+		t.Fatalf("lead-specific timeout should retain explicit fallback: result=%+v, err=%v", result, err)
+	}
+	if !strings.Contains(result.FallbackReason, "dispatch synthesis prompt") || !strings.Contains(result.FallbackReason, context.DeadlineExceeded.Error()) {
+		t.Fatalf("fallback lost dispatch timeout evidence: %q", result.FallbackReason)
+	}
+	if collector.calls != 0 {
+		t.Fatal("collector ran after dispatch deadline")
 	}
 }
 

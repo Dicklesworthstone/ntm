@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1356,5 +1357,274 @@ exit 0
 				t.Fatalf("outputs were not captured before one session kill:\n%s", calls)
 			}
 		})
+	}
+}
+
+const standaloneHTTPModeOutput = "Analysis complete.\n" +
+	"```yaml\nmode_id: deductive\nthesis: Preserve member reasoning before lead synthesis.\n" +
+	"top_findings:\n  - finding: Durable capture must precede lead dispatch.\n" +
+	"    impact: high\n    confidence: 0.9\n    evidence_pointer: internal/ensemble/capture.go\n" +
+	"    reasoning: Sending the next task replaces the only live result.\nconfidence: 0.9\n```\nclaude>\n"
+
+func setupStandaloneHTTPSynthesis(t *testing.T, output string) (string, string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake tmux requires a POSIX shell")
+	}
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("NTM_CONFIG", "")
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	const session = "standalone-http-synthesis"
+	dir := t.TempDir()
+	t.Setenv("NTM_SYNTH_ROOT", dir)
+	t.Setenv("NTM_SYNTH_SESSION", session)
+	t.Setenv("NTM_SYNTH_HOLD", "")
+	t.Setenv("NTM_SYNTH_PANES", "%1_NTM_SEP_0_NTM_SEP_"+session+"__cc_1_NTM_SEP_claude_NTM_SEP_120_NTM_SEP_40_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0_NTM_SEP_[]")
+	for name, content := range map[string]string{
+		"member.txt": output,
+		"lead.txt": "\n```json\n" +
+			`{"summary":"Fresh synthesis from the live lead agent.","findings":[{"finding":"Save completed reasoning before dispatch.","impact":"high","confidence":0.94}],"confidence":0.94}` +
+			"\n```\nclaude>\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script := `#!/bin/sh
+printf '%s\n' "$1" >> "$NTM_SYNTH_ROOT/tmux.log"
+case "$1" in
+  -V) printf 'tmux 3.5a\n' ;;
+  has-session) ;;
+  list-sessions) printf '%s_NTM_SEP_1_NTM_SEP_0_NTM_SEP_now\n' "$NTM_SYNTH_SESSION" ;;
+  list-panes) printf '%s\n' "$NTM_SYNTH_PANES" ;;
+  display-message)
+    case "$*" in
+      *session_name*) printf '%s\n' "$NTM_SYNTH_SESSION" ;;
+      *rotation_token*) printf '[]\n' ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  capture-pane)
+    cat "$NTM_SYNTH_ROOT/member.txt"
+    if [ -e "$NTM_SYNTH_ROOT/submitted" ]; then cat "$NTM_SYNTH_ROOT/lead.txt"; fi
+    ;;
+  load-buffer)
+    cat > "$NTM_SYNTH_ROOT/prompt.txt"
+    : > "$NTM_SYNTH_ROOT/before-prompt"
+    if [ "$NTM_SYNTH_HOLD" = "1" ]; then
+      while [ ! -e "$NTM_SYNTH_ROOT/release" ]; do sleep 0.01; done
+    fi
+    ;;
+  paste-buffer|delete-buffer) ;;
+  send-keys)
+    case "$*" in
+      *Enter*) : > "$NTM_SYNTH_ROOT/submitted" ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  *) printf 'unexpected tmux command: %s\n' "$1" >&2; exit 1 ;;
+esac
+`
+	binPath := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", binPath)
+	oldClient := tmux.DefaultClient
+	tmux.DefaultClient = tmux.NewClient("")
+	t.Cleanup(func() { tmux.DefaultClient = oldClient })
+	now := time.Now().UTC()
+	state := &ensemble.EnsembleSession{
+		SessionName:       session,
+		Question:          "How should completed ensemble reasoning be preserved?",
+		Status:            ensemble.EnsembleActive,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         now,
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "deductive", PaneName: session + "__cc_1", AgentType: "cc", Status: ensemble.AssignmentActive, AssignedAt: now},
+		},
+	}
+	if err := ensemble.SaveSession(session, state); err != nil {
+		t.Fatal(err)
+	}
+	return session, dir
+}
+
+// This barrier is inside the real tmux buffer send. It proves that the API
+// published the member's durable result before the next prompt is submitted.
+func awaitStandaloneHTTPLead(t *testing.T, ctx context.Context, session, dir string, done <-chan struct{}) {
+	t.Helper()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "before-prompt")); err == nil {
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		select {
+		case <-done:
+			t.Fatal("synthesis ended before reaching the lead dispatcher")
+		case <-ctx.Done():
+			t.Fatal("synthesis never reached the lead dispatcher")
+		case <-ticker.C:
+		}
+	}
+	saved, err := ensemble.LoadSession(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignment := saved.Assignments[0]
+	if assignment.Status != ensemble.AssignmentDone || assignment.OutputPath == "" || assignment.CompletedAt == nil {
+		t.Fatalf("member result was not durable before lead dispatch: %+v", assignment)
+	}
+	recovered, err := ensemble.CollectModeOutputs(saved, nil)
+	if err != nil || len(recovered.Outputs) != 1 || recovered.Outputs[0].Thesis != "Preserve member reasoning before lead synthesis." {
+		t.Fatalf("saved member result cannot be recovered before dispatch: %+v, err=%v", recovered, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "submitted")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("lead prompt submitted before release: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "release"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStandaloneEnsembleSynthesisHTTPDispatchesLiveLeadWithoutForce(t *testing.T) {
+	session, dir := setupStandaloneHTTPSynthesis(t, standaloneHTTPModeOutput)
+	t.Setenv("NTM_SYNTH_HOLD", "1")
+	srv := NewHermeticServer("standalone-synthesis-test")
+	t.Cleanup(srv.Stop)
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ensemble/sessions/"+session+"/synthesize",
+		strings.NewReader(`{"output_format":"json"}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.Router().ServeHTTP(rec, req)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		_ = os.WriteFile(filepath.Join(dir, "release"), nil, 0o600)
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("synthesis request did not stop after cancellation")
+		}
+	})
+	awaitStandaloneHTTPLead(t, ctx, session, dir, done)
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("synthesis request did not finish after the lead reply")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("synthesize without force: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response EnsembleSynthesizeEnvelopeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.Success || response.Result == nil || response.Result.SynthesizedBy != "agent" ||
+		response.Result.FallbackReason != "" || response.Result.Summary != "Fresh synthesis from the live lead agent." {
+		t.Fatalf("expected a fresh lead synthesis, got %+v", response)
+	}
+	prompt, err := os.ReadFile(filepath.Join(dir, "prompt.txt"))
+	if err != nil || !strings.Contains(string(prompt), "How should completed ensemble reasoning be preserved?") ||
+		!strings.Contains(string(prompt), "Durable capture must precede lead dispatch.") {
+		t.Fatalf("lead did not receive the question and captured reasoning: %q, err=%v", prompt, err)
+	}
+}
+
+func TestStandaloneEnsembleSynthesisAsyncJobUsesLiveLead(t *testing.T) {
+	session, dir := setupStandaloneHTTPSynthesis(t, standaloneHTTPModeOutput)
+	t.Setenv("NTM_SYNTH_HOLD", "1")
+	srv, _ := newJournalHTTPServer(t, filepath.Join(t.TempDir(), "standalone-synthesis-jobs.db"))
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	t.Cleanup(func() {
+		cancel()
+		_ = os.WriteFile(filepath.Join(dir, "release"), nil, 0o600)
+	})
+	env := postJob(t, srv, `{"type":"ensemble_synthesize","session":"`+session+`","params":{"output_format":"json"}}`)
+	awaitStandaloneHTTPLead(t, ctx, session, dir, nil)
+	final := pollJobTerminal(t, srv, env.Job.ID)
+	if JobStatus(final.Job.Status) != JobStatusCompleted || final.Job.Progress != 100 {
+		t.Fatalf("live synthesis job did not complete: %+v", final.Job)
+	}
+	result, ok := final.Job.Result["result"].(map[string]interface{})
+	if !ok || result["synthesized_by"] != "agent" || result["summary"] != "Fresh synthesis from the live lead agent." {
+		t.Fatalf("async job did not retain the live agent result: %#v", final.Job.Result)
+	}
+	if reason, _ := result["fallback_reason"].(string); reason != "" {
+		t.Fatalf("async job unexpectedly fell back: %s", reason)
+	}
+}
+
+func TestStandaloneEnsembleSynthesisHTTPRefusesUnfinishedOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		output string
+	}{
+		{name: "complete schema while still busy", output: strings.TrimSuffix(standaloneHTTPModeOutput, "claude>\n") + "Continuing analysis...\n"},
+		{name: "idle with incomplete output", output: "Partial analysis with no structured result.\nclaude>\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, dir := setupStandaloneHTTPSynthesis(t, tc.output)
+			srv := NewHermeticServer("unfinished-synthesis-test")
+			t.Cleanup(srv.Stop)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/ensemble/sessions/"+session+"/synthesize",
+				strings.NewReader(`{"output_format":"json"}`)).WithContext(t.Context())
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			srv.Router().ServeHTTP(rec, req)
+			var response APIError
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if rec.Code != http.StatusConflict || response.Success || response.ErrorCode != robot.ErrCodeSynthesisNotReady {
+				t.Fatalf("unfinished result was not rejected: status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			saved, err := ensemble.LoadSession(session)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if saved.Assignments[0].Status != ensemble.AssignmentActive || saved.Assignments[0].OutputPath != "" {
+				t.Fatalf("unfinished result was promoted: %+v", saved.Assignments[0])
+			}
+			if _, err := os.Stat(filepath.Join(dir, "prompt.txt")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("unfinished member received a synthesis prompt: %v", err)
+			}
+		})
+	}
+}
+
+func TestStandaloneEnsembleSynthesisHTTPCancellationDoesNotDispatch(t *testing.T) {
+	session, dir := setupStandaloneHTTPSynthesis(t, standaloneHTTPModeOutput)
+	srv := NewHermeticServer("canceled-synthesis-test")
+	t.Cleanup(srv.Stop)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ensemble/sessions/"+session+"/synthesize",
+		strings.NewReader(`{"output_format":"json"}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	if rec.Code < http.StatusBadRequest || !strings.Contains(rec.Body.String(), context.Canceled.Error()) {
+		t.Fatalf("canceled request reported success: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "prompt.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("canceled request dispatched a prompt: %v", err)
+	}
+	saved, err := ensemble.LoadSession(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Assignments[0].Status != ensemble.AssignmentActive {
+		t.Fatalf("canceled request changed assignment state: %+v", saved.Assignments[0])
 	}
 }

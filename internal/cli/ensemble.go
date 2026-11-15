@@ -1295,6 +1295,12 @@ func runEnsembleSynthesize(ctx context.Context, w io.Writer, session string, opt
 	if err != nil {
 		return fmt.Errorf("create synthesizer: %w", err)
 	}
+	if sessionLive {
+		manager := ensemble.NewEnsembleManager()
+		if err := manager.ConfigureSessionSynthesis(ctx, state, synth, budgetCfg.TimeoutPerMode); err != nil {
+			return fmt.Errorf("configure lead synthesis: %w", err)
+		}
+	}
 
 	// Build synthesis input
 	input, err := collector.BuildSynthesisInput(state.Question, synthContextPack, synthConfig)
@@ -1307,7 +1313,7 @@ func runEnsembleSynthesize(ctx context.Context, w io.Writer, session string, opt
 	}
 
 	// Run synthesis
-	result, err := synth.Synthesize(input)
+	result, err := synth.SynthesizeContext(ctx, input)
 	if err != nil {
 		return fmt.Errorf("synthesis failed: %w", err)
 	}

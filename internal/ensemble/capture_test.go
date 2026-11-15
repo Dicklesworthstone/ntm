@@ -7,8 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestOutputCapture_CaptureAll_NilCapture(t *testing.T) {
@@ -416,5 +420,278 @@ func TestOutputCaptureCanceledBeforeAnyObservation(t *testing.T) {
 		if session.Assignments[0].Status != AssignmentActive || session.Assignments[0].OutputPath != "" {
 			t.Fatalf("canceled observation changed assignment: %+v", session.Assignments[0])
 		}
+	}
+}
+
+func savedSynthesisCaptureOutput(t *testing.T, modeID string) (ModeOutput, string) {
+	t.Helper()
+	output := ModeOutput{
+		ModeID:      modeID,
+		Thesis:      "Preserve this completed analysis.",
+		Confidence:  0.8,
+		TopFindings: []Finding{{Finding: "The result remains recoverable.", Impact: ImpactHigh, Confidence: 0.8}},
+	}
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "saved.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return output, path
+}
+
+// synthesisCaptureWithLivePane exposes only %2, so touching saved, queued, or
+// failed assignments with other pane identities causes the test to fail.
+func synthesisCaptureWithLivePane(t *testing.T, transcript string) *OutputCapture {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake tmux requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	transcriptPath := filepath.Join(dir, "transcript.txt")
+	if err := os.WriteFile(transcriptPath, []byte(transcript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_SYNTHESIS_CAPTURE_TRANSCRIPT", transcriptPath)
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"case \"$1\" in",
+		"  list-panes) printf '%s\\n' '%2_NTM_SEP_1_NTM_SEP_capture-subset__cc_2_NTM_SEP_claude_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0_NTM_SEP_[]' ;;",
+		"  capture-pane) cat \"$NTM_SYNTHESIS_CAPTURE_TRANSCRIPT\" ;;",
+		"  *) exit 1 ;;",
+		"esac",
+	}, "\n") + "\n"
+	binaryPath := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", binaryPath)
+	return NewOutputCapture(tmux.NewClient(""))
+}
+
+func TestCaptureForSynthesisUsesSavedOutputsWithoutTmux(t *testing.T) {
+	_, firstPath := savedSynthesisCaptureOutput(t, "deductive")
+	_, secondPath := savedSynthesisCaptureOutput(t, "inductive")
+	t.Setenv("NTM_TMUX_BINARY", filepath.Join(t.TempDir(), "missing-tmux"))
+	capture := NewOutputCapture(tmux.NewClient(""))
+	session := &EnsembleSession{
+		SessionName: "saved-only",
+		Assignments: []ModeAssignment{
+			{ModeID: "deductive", PaneName: "%91", Status: AssignmentDone, OutputPath: firstPath},
+			{ModeID: "inductive", PaneName: "%92", Status: AssignmentDone, OutputPath: secondPath},
+		},
+	}
+	before := append([]ModeAssignment(nil), session.Assignments...)
+	captured, err := capture.CaptureForSynthesis(t.Context(), session)
+	if err != nil || len(captured) != 0 {
+		t.Fatalf("saved-only synthesis tried to capture panes: %+v, %v", captured, err)
+	}
+	collected, err := CollectModeOutputs(session, captured)
+	if err != nil || collected.Count() != 2 {
+		t.Fatalf("saved results unavailable: %+v, %v", collected, err)
+	}
+	if !reflect.DeepEqual(session.Assignments, before) {
+		t.Fatal("saved-only capture changed completed assignments")
+	}
+
+	for _, assignmentStatus := range []AssignmentStatus{AssignmentPending, AssignmentInjecting, AssignmentError} {
+		session.Assignments = append(session.Assignments, ModeAssignment{
+			ModeID: string(assignmentStatus), PaneName: "%missing", Status: assignmentStatus,
+		})
+	}
+	if captured, err := capture.CaptureForSynthesis(t.Context(), session); err != nil || len(captured) != 0 {
+		t.Fatalf("unstarted or failed assignments triggered capture: %+v, %v", captured, err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := capture.CaptureForSynthesis(ctx, session); !errors.Is(err, context.Canceled) {
+		t.Fatalf("saved output concealed cancellation: %v", err)
+	}
+	if _, err := capture.CaptureForSynthesis(nil, session); err == nil {
+		t.Fatal("nil context accepted through saved-output fallback")
+	}
+}
+
+func TestCaptureForSynthesisPreservesSavedAssignmentsWhileCompletingLiveSubset(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("NTM_CONFIG", "")
+	resetDefaultStateStoreForTest()
+	t.Cleanup(CloseDefaultStateStore)
+	_, savedPath := savedSynthesisCaptureOutput(t, "deductive")
+	live, _ := savedSynthesisCaptureOutput(t, "inductive")
+	data, err := json.Marshal(live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture := synthesisCaptureWithLivePane(t, "\x60\x60\x60json\n"+string(data)+"\n\x60\x60\x60\nclaude> \n")
+	session := &EnsembleSession{
+		SessionName: "capture-subset",
+		Question:    "Combine durable and live work without losing either.",
+		Status:      EnsembleActive,
+		Assignments: []ModeAssignment{
+			{ModeID: "deductive", PaneName: "%91", AgentType: "cc", Status: AssignmentDone, OutputPath: savedPath},
+			{ModeID: "inductive", PaneName: "%2", AgentType: "cc", Status: AssignmentActive},
+			{ModeID: "abductive", PaneName: "%92", AgentType: "cc", Status: AssignmentPending},
+			{ModeID: "creative", PaneName: "%93", AgentType: "cc", Status: AssignmentInjecting},
+			{ModeID: "analytical", PaneName: "%94", AgentType: "cc", Status: AssignmentError, Error: "earlier failure"},
+		},
+	}
+	if err := SaveSession(session.SessionName, session); err != nil {
+		t.Fatal(err)
+	}
+	before := append([]ModeAssignment(nil), session.Assignments...)
+	captured, err := capture.CaptureForSynthesis(t.Context(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(captured) != 1 || captured[0].ModeID != "inductive" || captured[0].PaneName != "%2" || captured[0].OutputPath == "" {
+		t.Fatalf("unexpected capture subset: %+v", captured)
+	}
+	if session.Assignments[1].Status != AssignmentDone || session.Assignments[1].CompletedAt == nil {
+		t.Fatalf("live assignment was not completed: %+v", session.Assignments[1])
+	}
+	for _, i := range []int{0, 2, 3, 4} {
+		if !reflect.DeepEqual(session.Assignments[i], before[i]) {
+			t.Fatalf("uncaptured assignment %d changed: %+v", i, session.Assignments[i])
+		}
+	}
+	CloseDefaultStateStore()
+	reloaded, err := LoadSession(session.SessionName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reloaded.Assignments, session.Assignments) {
+		t.Fatalf("subset state did not survive reopen: %+v", reloaded.Assignments)
+	}
+	collected, err := CollectModeOutputs(reloaded, captured)
+	if err != nil || collected.Count() != 2 || collected.ErrorCount() != 0 {
+		t.Fatalf("saved and live merge = %+v, %v", collected, err)
+	}
+}
+
+func TestCaptureForSynthesisRecoversInvalidSavedOutputOnlyWhenIdle(t *testing.T) {
+	for _, idle := range []bool{false, true} {
+		name := "working"
+		if idle {
+			name = "idle"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("XDG_CONFIG_HOME", "")
+			t.Setenv("NTM_CONFIG", "")
+			resetDefaultStateStoreForTest()
+			t.Cleanup(CloseDefaultStateStore)
+			output, savedPath := savedSynthesisCaptureOutput(t, "inductive")
+			if err := os.WriteFile(savedPath, []byte("invalid structured output"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			transcript := "\x60\x60\x60json\n" + string(data) + "\n\x60\x60\x60\nThinking...\n"
+			if idle {
+				transcript = "\x60\x60\x60json\n" + string(data) + "\n\x60\x60\x60\nclaude> \n"
+			}
+			capture := synthesisCaptureWithLivePane(t, transcript)
+			session := &EnsembleSession{
+				SessionName: "capture-subset",
+				Question:    "Repair a missing durable result.",
+				Status:      EnsembleActive,
+				Assignments: []ModeAssignment{
+					{ModeID: "inductive", PaneName: "%2", AgentType: "cc", Status: AssignmentDone, OutputPath: savedPath},
+				},
+			}
+			if err := SaveSession(session.SessionName, session); err != nil {
+				t.Fatal(err)
+			}
+			captured, err := capture.CaptureForSynthesis(t.Context(), session)
+			if err != nil || len(captured) != 1 {
+				t.Fatalf("capture = %+v, %v", captured, err)
+			}
+			if idle {
+				if len(captured[0].ParseErrors) != 0 || session.Assignments[0].OutputPath == savedPath || session.Assignments[0].CompletedAt == nil {
+					t.Fatalf("valid idle result did not repair saved output: %+v", session.Assignments[0])
+				}
+			} else if len(captured[0].ParseErrors) == 0 || session.Assignments[0].OutputPath != savedPath || session.Assignments[0].CompletedAt != nil {
+				t.Fatalf("working result replaced saved state: %+v, %+v", captured, session.Assignments[0])
+			}
+		})
+	}
+}
+
+func TestCaptureForSynthesisDoesNotHideMissingActivePane(t *testing.T) {
+	_, savedPath := savedSynthesisCaptureOutput(t, "deductive")
+	capture := synthesisCaptureWithLivePane(t, "claude> \n")
+	session := &EnsembleSession{
+		SessionName: "capture-subset",
+		Assignments: []ModeAssignment{
+			{ModeID: "deductive", PaneName: "%91", Status: AssignmentDone, OutputPath: savedPath},
+			{ModeID: "inductive", PaneName: "%99", AgentType: "cc", Status: AssignmentActive},
+		},
+	}
+	before := append([]ModeAssignment(nil), session.Assignments...)
+	captured, err := capture.CaptureForSynthesis(t.Context(), session)
+	if err == nil || !strings.Contains(err.Error(), "0 matches") || len(captured) != 1 {
+		t.Fatalf("missing active pane was hidden by saved output: %+v, %v", captured, err)
+	}
+	if !reflect.DeepEqual(session.Assignments, before) {
+		t.Fatal("failed capture changed assignment state")
+	}
+}
+
+func TestSaveCapturedAssignmentOutputsRejectsInvalidSubsetWithoutPublishing(t *testing.T) {
+	for _, failure := range []string{"state-save", "wrong-pane", "duplicate-capture", "duplicate-assignment"} {
+		t.Run(failure, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("XDG_CONFIG_HOME", "")
+			t.Setenv("NTM_CONFIG", "")
+			resetDefaultStateStoreForTest()
+			t.Cleanup(CloseDefaultStateStore)
+			_, savedPath := savedSynthesisCaptureOutput(t, "deductive")
+			output, _ := savedSynthesisCaptureOutput(t, "inductive")
+			session := &EnsembleSession{
+				SessionName: "capture-subset-failure",
+				Question:    "Preserve all previous recoverable state.",
+				Status:      EnsembleActive,
+				Assignments: []ModeAssignment{
+					{ModeID: "deductive", PaneName: "%91", Status: AssignmentDone, OutputPath: savedPath},
+					{ModeID: "inductive", PaneName: "%2", Status: AssignmentActive},
+				},
+			}
+			if err := SaveSession(session.SessionName, session); err != nil {
+				t.Fatal(err)
+			}
+			persistedBefore := append([]ModeAssignment(nil), session.Assignments...)
+			captured := []CapturedOutput{{ModeID: "inductive", PaneName: "%2", RawOutput: "completed transcript", Parsed: &output}}
+			switch failure {
+			case "state-save":
+				session.Question = ""
+			case "wrong-pane":
+				captured[0].PaneName = "%99"
+			case "duplicate-capture":
+				captured = append(captured, captured[0])
+			case "duplicate-assignment":
+				session.Assignments = append(session.Assignments, session.Assignments[1])
+			}
+			before := append([]ModeAssignment(nil), session.Assignments...)
+			capturesBefore := append([]CapturedOutput(nil), captured...)
+			if err := saveCapturedAssignmentOutputs(session, captured); err == nil {
+				t.Fatal("expected subset persistence failure")
+			}
+			if !reflect.DeepEqual(session.Assignments, before) || !reflect.DeepEqual(captured, capturesBefore) {
+				t.Fatalf("failure published caller state: %+v, %+v", session.Assignments, captured)
+			}
+			reloaded, err := LoadSession(session.SessionName)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(reloaded.Assignments, persistedBefore) {
+				t.Fatalf("failure changed durable assignments: %+v", reloaded.Assignments)
+			}
+		})
 	}
 }
