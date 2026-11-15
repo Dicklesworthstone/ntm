@@ -1057,6 +1057,9 @@ func runEnsembleSynthesize(ctx context.Context, w io.Writer, session string, opt
 	if err := validateSynthesizeOptions(opts); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	state, sessionLive, err := loadEnsembleStateWithRuntimePresence(session)
 	if err != nil {
@@ -1069,7 +1072,17 @@ func runEnsembleSynthesize(ctx context.Context, w io.Writer, session string, opt
 		return fmt.Errorf("load session: %w", err)
 	}
 
-	// Check if agents are ready
+	// Reconcile finished live agents before inspecting their durable status.
+	// Spawn leaves assignments active until a validated, idle response is saved.
+	var captured []ensemble.CapturedOutput
+	if sessionLive {
+		captured, err = ensemble.NewOutputCapture(tmux.DefaultClient).CaptureForSynthesis(ctx, state)
+		if err != nil {
+			return fmt.Errorf("refresh ensemble outputs: %w", err)
+		}
+	}
+
+	// Check if agents are ready.
 	ready, pending, working := countAgentStates(state)
 	if !opts.Force && (pending > 0 || working > 0) {
 		return fmt.Errorf("synthesis not ready: %d pending, %d working (use --force to override)", pending, working)
@@ -1195,21 +1208,6 @@ func runEnsembleSynthesize(ctx context.Context, w io.Writer, session string, opt
 						}
 					}
 				}
-			}
-		}
-	}
-
-	// Collect outputs from panes for cache misses when the session is still live.
-	var captured []ensemble.CapturedOutput
-	if sessionLive && len(collectedModes) < len(state.Assignments) {
-		capture := ensemble.NewOutputCapture(tmux.DefaultClient)
-		var err error
-		captured, err = capture.CaptureAll(state)
-		if err != nil {
-			if len(collectedModes) == 0 {
-				logger.Warn("capture outputs failed; falling back to saved outputs", "error", err)
-			} else {
-				logger.Warn("capture outputs failed; continuing with cached outputs", "error", err)
 			}
 		}
 	}

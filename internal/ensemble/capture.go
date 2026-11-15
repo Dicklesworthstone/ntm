@@ -1,6 +1,7 @@
 package ensemble
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,6 +54,11 @@ func NewOutputCapture(client *tmux.Client) *OutputCapture {
 
 // CaptureAll captures output from all assignments in the session.
 func (c *OutputCapture) CaptureAll(session *EnsembleSession) ([]CapturedOutput, error) {
+	return c.CaptureAllContext(context.Background(), session)
+}
+
+// CaptureAllContext captures assignment output while honoring caller cancellation.
+func (c *OutputCapture) CaptureAllContext(ctx context.Context, session *EnsembleSession) ([]CapturedOutput, error) {
 	if c == nil {
 		return nil, errors.New("output capture is nil")
 	}
@@ -60,20 +66,28 @@ func (c *OutputCapture) CaptureAll(session *EnsembleSession) ([]CapturedOutput, 
 		return nil, errors.New("ensemble session is nil")
 	}
 
+	if ctx == nil {
+		return nil, errors.New("output capture context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	c.ensureDefaults()
 
-	panes, err := c.tmuxClient.GetPanes(session.SessionName)
+	panes, err := c.tmuxClient.GetPanesContext(ctx, session.SessionName)
 	if err != nil {
 		return nil, fmt.Errorf("get panes: %w", err)
 	}
 
-	paneIDs := make(map[string]string, len(panes)*2)
+	paneIDs := make(map[string][]string, len(panes)*2)
 	for _, pane := range panes {
-		if pane.Title != "" {
-			paneIDs[pane.Title] = pane.ID
+		if pane.ID == "" {
+			continue
 		}
-		if pane.ID != "" {
-			paneIDs[pane.ID] = pane.ID
+		paneIDs[pane.ID] = append(paneIDs[pane.ID], pane.ID)
+		if pane.Title != "" && pane.Title != pane.ID {
+			paneIDs[pane.Title] = append(paneIDs[pane.Title], pane.ID)
 		}
 	}
 
@@ -81,16 +95,18 @@ func (c *OutputCapture) CaptureAll(session *EnsembleSession) ([]CapturedOutput, 
 	var captureErrs []error
 
 	for _, assignment := range session.Assignments {
-		target := paneIDs[assignment.PaneName]
-		if target == "" {
-			target = assignment.PaneName
-			slog.Warn("ensemble output capture pane not found by title",
-				"pane_name", assignment.PaneName,
-				"session", session.SessionName,
-			)
+		if err := ctx.Err(); err != nil {
+			return outputs, err
 		}
-
-		raw, captureErr := c.capturePane(target)
+		var target, raw string
+		var captureErr error
+		matches := paneIDs[assignment.PaneName]
+		if len(matches) != 1 {
+			captureErr = fmt.Errorf("assignment pane %q has %d matches in session %q", assignment.PaneName, len(matches), session.SessionName)
+		} else {
+			target = matches[0]
+			raw, captureErr = c.capturePane(ctx, target)
+		}
 		captured := CapturedOutput{
 			ModeID:     assignment.ModeID,
 			PaneName:   assignment.PaneName,
@@ -120,6 +136,10 @@ func (c *OutputCapture) CaptureAll(session *EnsembleSession) ([]CapturedOutput, 
 				captured.ParseErrors = append(captured.ParseErrors, parseErr)
 			} else {
 				captured.Parsed = parsed
+				if parsed != nil && parsed.ModeID != assignment.ModeID {
+					captured.ParseErrors = append(captured.ParseErrors,
+						fmt.Errorf("output mode %q does not match assignment %q", parsed.ModeID, assignment.ModeID))
+				}
 			}
 			for i := range validationErrs {
 				captured.ParseErrors = append(captured.ParseErrors, validationErrs[i])
@@ -154,19 +174,66 @@ func (c *OutputCapture) CaptureAll(session *EnsembleSession) ([]CapturedOutput, 
 		outputs = append(outputs, captured)
 	}
 
-	return outputs, errors.Join(captureErrs...)
+	return outputs, errors.Join(append(captureErrs, ctx.Err())...)
 }
 
 // CaptureAndSave captures every assignment and persists the outputs before
 // callers interrupt or destroy the session. Parse failures retain raw output;
 // only schema-valid outputs mark an assignment complete.
 func (c *OutputCapture) CaptureAndSave(session *EnsembleSession) ([]CapturedOutput, error) {
-	captured, err := c.CaptureAll(session)
+	return c.CaptureAndSaveContext(context.Background(), session)
+}
+
+// CaptureAndSaveContext persists a complete capture unless the caller cancels.
+func (c *OutputCapture) CaptureAndSaveContext(ctx context.Context, session *EnsembleSession) ([]CapturedOutput, error) {
+	captured, err := c.CaptureAllContext(ctx, session)
 	if err != nil {
+		return captured, err
+	}
+	if err := ctx.Err(); err != nil {
 		return captured, err
 	}
 	if err := saveCapturedOutputs(session, captured); err != nil {
 		return captured, err
+	}
+	return captured, nil
+}
+
+// CaptureForSynthesis reconciles finished live assignments before readiness is
+// checked. A valid response must also end at an idle prompt: a partial response
+// or an echoed schema must not authorize dispatching a synthesis prompt. Queued
+// assignments cannot complete from scrollback left by an earlier task.
+func (c *OutputCapture) CaptureForSynthesis(ctx context.Context, session *EnsembleSession) ([]CapturedOutput, error) {
+	captured, err := c.CaptureAllContext(ctx, session)
+	if err != nil {
+		return captured, err
+	}
+	needsSave := false
+	for i := range captured {
+		output := &captured[i]
+		assignment := session.Assignments[i]
+		switch assignment.Status {
+		case AssignmentActive:
+			if !status.DetectIdleFromOutput(output.RawOutput, assignment.AgentType) {
+				output.ParseErrors = append(output.ParseErrors, errors.New("mode agent has not returned to an idle prompt"))
+			}
+		case AssignmentDone:
+			// Saved results remain usable if the live pane has since moved on.
+		default:
+			output.ParseErrors = append(output.ParseErrors, fmt.Errorf("mode assignment is %s", assignment.Status))
+		}
+		if output.Parsed != nil && len(output.ParseErrors) == 0 &&
+			(assignment.Status != AssignmentDone || assignment.OutputPath == "") {
+			needsSave = true
+		}
+	}
+	if needsSave {
+		if err := ctx.Err(); err != nil {
+			return captured, err
+		}
+		if err := saveCapturedOutputs(session, captured); err != nil {
+			return captured, err
+		}
 	}
 	return captured, nil
 }
@@ -271,7 +338,7 @@ func saveCapturedOutputs(session *EnsembleSession, captured []CapturedOutput) er
 	return nil
 }
 
-func (c *OutputCapture) capturePane(pane string) (string, error) {
+func (c *OutputCapture) capturePane(ctx context.Context, pane string) (string, error) {
 	if pane == "" {
 		return "", errors.New("pane is empty")
 	}
@@ -279,7 +346,7 @@ func (c *OutputCapture) capturePane(pane string) (string, error) {
 	if lines <= 0 {
 		lines = defaultCaptureLines
 	}
-	return c.tmuxClient.CapturePaneOutput(pane, lines)
+	return c.tmuxClient.CapturePaneOutputContext(ctx, pane, lines)
 }
 
 func (c *OutputCapture) extractYAML(raw string) (string, bool) {

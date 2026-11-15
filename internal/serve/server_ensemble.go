@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"os"
 	"sort"
@@ -736,6 +735,19 @@ func (s *Server) executeEnsembleSynthesize(ctx context.Context, session string, 
 		}
 	}
 
+	var captured []ensemble.CapturedOutput
+	if sessionLive {
+		captured, err = ensemble.NewOutputCapture(tmux.DefaultClient).CaptureForSynthesis(ctx, state)
+		if err != nil {
+			return nil, &ensembleExecError{
+				status:  http.StatusInternalServerError,
+				code:    ErrCodeInternalError,
+				message: fmt.Sprintf("refresh ensemble outputs: %v", err),
+				cause:   err,
+			}
+		}
+	}
+
 	ready, pending, working := countEnsembleAgentStates(state)
 	if !req.Force && (pending > 0 || working > 0) {
 		return nil, &ensembleExecError{
@@ -763,17 +775,6 @@ func (s *Server) executeEnsembleSynthesize(ctx context.Context, session string, 
 		"status":  "collecting_outputs",
 	}); err != nil {
 		return nil, err
-	}
-
-	var captured []ensemble.CapturedOutput
-	if sessionLive {
-		capture := ensemble.NewOutputCapture(tmux.DefaultClient)
-		var capErr error
-		captured, capErr = capture.CaptureAll(state)
-		if capErr != nil {
-			slog.Warn("ensemble pane output capture failed; using saved outputs",
-				"session", session, "error", capErr)
-		}
 	}
 
 	availableOutputs, err := ensemble.CollectModeOutputs(state, captured)

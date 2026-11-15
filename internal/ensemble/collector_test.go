@@ -2,6 +2,7 @@ package ensemble
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -545,5 +546,61 @@ func TestCollectorResult_Stats(t *testing.T) {
 	}
 	if len(result.InvalidOutputs) != 1 {
 		t.Errorf("InvalidOutputs count = %d, want 1", len(result.InvalidOutputs))
+	}
+}
+
+func TestCollectModeOutputsRejectsUnfinishedCaptureAndRetainsSavedResult(t *testing.T) {
+	output := ModeOutput{
+		ModeID:      "deductive",
+		Thesis:      "A durable completed analysis.",
+		Confidence:  0.8,
+		TopFindings: []Finding{{Finding: "Retain the completed analysis.", Impact: ImpactHigh, Confidence: 0.8}},
+	}
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "saved.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	session := &EnsembleSession{Assignments: []ModeAssignment{
+		{ModeID: "deductive", Status: AssignmentDone, OutputPath: path},
+	}}
+	unfinished := output
+	unfinished.Thesis = "A new response is still streaming."
+	captured := []CapturedOutput{{
+		ModeID:      "deductive",
+		Parsed:      &unfinished,
+		RawOutput:   string(data),
+		ParseErrors: []error{errors.New("mode agent has not returned to an idle prompt")},
+	}}
+	collected, err := CollectModeOutputs(session, captured)
+	if err != nil || collected.Count() != 1 || collected.Outputs[0].Thesis != output.Thesis || collected.ErrorCount() != 0 {
+		t.Fatalf("unfinished capture displaced saved analysis: %+v, %v", collected, err)
+	}
+	session.Assignments[0].Status = AssignmentActive
+	collected, err = CollectModeOutputs(session, captured)
+	if err != nil || collected.Count() != 0 || collected.ErrorCount() != 1 {
+		t.Fatalf("unfinished capture accepted without a saved result: %+v, %v", collected, err)
+	}
+}
+
+func TestCollectModeOutputsRejectsMismatchedModeAndInvalidSavedSchema(t *testing.T) {
+	for _, raw := range []string{
+		"{\"mode_id\":\"inductive\",\"thesis\":\"Other mode\",\"confidence\":0.8,\"top_findings\":[{\"finding\":\"Wrong assignment\",\"impact\":\"high\",\"confidence\":0.8}]}",
+		"{\"mode_id\":\"deductive\",\"thesis\":\"Invalid risk\",\"confidence\":0.8,\"top_findings\":[{\"finding\":\"A finding\",\"impact\":\"high\",\"confidence\":0.8}],\"risks\":[{\"risk\":\"Risk\",\"impact\":\"invalid\",\"likelihood\":0.4}]}",
+	} {
+		path := filepath.Join(t.TempDir(), "output.json")
+		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		session := &EnsembleSession{Assignments: []ModeAssignment{
+			{ModeID: "deductive", Status: AssignmentDone, OutputPath: path},
+		}}
+		collected, err := CollectModeOutputs(session, nil)
+		if err != nil || collected.Count() != 0 || collected.ErrorCount() != 1 {
+			t.Fatalf("invalid saved output accepted: %+v, %v", collected, err)
+		}
 	}
 }

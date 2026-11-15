@@ -279,11 +279,23 @@ func (c *OutputCollector) CollectFromCapturesFiltered(captured []CapturedOutput,
 		if include != nil && !include(cap) {
 			continue
 		}
+		if len(cap.ParseErrors) > 0 {
+			errs := make([]string, 0, len(cap.ParseErrors))
+			for _, err := range cap.ParseErrors {
+				errs = append(errs, err.Error())
+			}
+			c.ValidationErrors[cap.ModeID] = errs
+			continue
+		}
 		if cap.Parsed != nil {
 			// Use pre-parsed output
 			output := *cap.Parsed
 			if output.ModeID == "" {
 				output.ModeID = cap.ModeID
+			}
+			if output.ModeID != cap.ModeID {
+				c.ValidationErrors[cap.ModeID] = []string{fmt.Sprintf("output mode %q does not match assignment %q", output.ModeID, cap.ModeID)}
+				continue
 			}
 			normalizeOutput(&output)
 			if err := c.Add(output); err != nil {
@@ -340,13 +352,24 @@ func (c *OutputCollector) CollectFromSavedOutputs(session *EnsembleSession) erro
 			continue
 		}
 
-		parsed, _, err := validator.ParseNormalizeAndValidate(string(raw), assignment.ModeID)
+		parsed, validationErrors, err := validator.ParseNormalizeAndValidate(string(raw), assignment.ModeID)
 		if err != nil {
 			c.ValidationErrors[assignment.ModeID] = []string{fmt.Sprintf("parse saved output %q: %v", path, err)}
 			continue
 		}
 		if parsed == nil {
 			c.ValidationErrors[assignment.ModeID] = []string{fmt.Sprintf("empty saved output %q", path)}
+			continue
+		}
+
+		if parsed.ModeID != assignment.ModeID {
+			c.ValidationErrors[assignment.ModeID] = []string{fmt.Sprintf("output mode %q does not match assignment %q", parsed.ModeID, assignment.ModeID)}
+			continue
+		}
+		if len(validationErrors) > 0 {
+			for _, validationErr := range validationErrors {
+				c.ValidationErrors[assignment.ModeID] = append(c.ValidationErrors[assignment.ModeID], validationErr.Error())
+			}
 			continue
 		}
 

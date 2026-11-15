@@ -259,3 +259,105 @@ exit 0
 		})
 	}
 }
+
+func TestEnsembleSynthesizeCommandReconcilesFinishedLiveModes(t *testing.T) {
+	const session = "cli-live-synthesis"
+	const valid = "\x60\x60\x60yaml\nmode_id: deductive\nthesis: Save completed analysis before synthesis.\nconfidence: 0.8\ntop_findings:\n  - finding: The live result is available without force or stop.\n    impact: high\n    confidence: 0.8\n\x60\x60\x60\n"
+	tests := []struct {
+		name       string
+		transcript string
+		status     ensemble.AssignmentStatus
+		complete   bool
+	}{
+		{"finished", valid + "claude> \n", ensemble.AssignmentActive, true},
+		{"still working", valid + "Thinking...\n", ensemble.AssignmentActive, false},
+		{"queued with old output", valid + "claude> \n", ensemble.AssignmentPending, false},
+		{"partial response", "\x60\x60\x60yaml\nthesis: Incomplete\n\x60\x60\x60\nclaude> \n", ensemble.AssignmentActive, false},
+		{"wrong mode", strings.Replace(valid, "mode_id: deductive", "mode_id: inductive", 1) + "claude> \n", ensemble.AssignmentActive, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateSessionAgentStorage(t)
+			ensemble.CloseDefaultStateStore()
+			t.Cleanup(ensemble.CloseDefaultStateStore)
+			oldJSON, oldConfig := jsonOutput, cfg
+			jsonOutput, cfg = false, nil
+			t.Cleanup(func() { jsonOutput, cfg = oldJSON, oldConfig })
+
+			dir := t.TempDir()
+			capturePath := filepath.Join(dir, "capture.txt")
+			if err := os.WriteFile(capturePath, []byte(tt.transcript), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("NTM_RECONCILE_CAPTURE", capturePath)
+			script := strings.Join([]string{
+				"#!/bin/sh",
+				"case \"$1\" in",
+				"  -V) echo 'tmux 3.5a' ;;",
+				"  has-session) exit 0 ;;",
+				"  list-sessions) echo 'cli-live-synthesis' ;;",
+				"  list-panes) printf '%s\\n' '%1_NTM_SEP_0_NTM_SEP_cli-live-synthesis__cc_1_NTM_SEP_claude_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0_NTM_SEP_[]' ;;",
+				"  capture-pane) cat \"$NTM_RECONCILE_CAPTURE\" ;;",
+				"  *) exit 1 ;;",
+				"esac",
+			}, "\n") + "\n"
+			binPath := filepath.Join(dir, "tmux")
+			if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("NTM_TMUX_BINARY", binPath)
+			oldClient := tmux.DefaultClient
+			tmux.DefaultClient = tmux.NewClient("")
+			t.Cleanup(func() { tmux.DefaultClient = oldClient })
+
+			now := time.Now().UTC()
+			state := &ensemble.EnsembleSession{
+				SessionName:       session,
+				Question:          "Can normal synthesis collect finished live work?",
+				Status:            ensemble.EnsembleActive,
+				SynthesisStrategy: ensemble.StrategyManual,
+				CreatedAt:         now,
+				Assignments: []ensemble.ModeAssignment{
+					{ModeID: "deductive", PaneName: session + "__cc_1", AgentType: "cc", Status: tt.status, AssignedAt: now},
+				},
+			}
+			if err := ensemble.SaveSession(session, state); err != nil {
+				t.Fatal(err)
+			}
+			var buf bytes.Buffer
+			cmd := newEnsembleSynthesizeCmd()
+			cmd.SetOut(&buf)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{session, "--strategy=manual", "--no-cache", "--format=json"})
+			err := cmd.ExecuteContext(t.Context())
+			if tt.complete {
+				if err != nil {
+					t.Fatalf("normal synthesis failed: %v\n%s", err, buf.String())
+				}
+				if !json.Valid(buf.Bytes()) || !strings.Contains(buf.String(), "The live result is available") {
+					t.Fatalf("synthesis lost the completed analysis: %s", buf.String())
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "synthesis not ready") {
+				t.Fatalf("unfinished mode became ready: err=%v output=%s", err, buf.String())
+			}
+
+			ensemble.CloseDefaultStateStore()
+			saved, err := ensemble.LoadSession(session)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assignment := saved.Assignments[0]
+			if tt.complete {
+				if assignment.Status != ensemble.AssignmentDone || assignment.CompletedAt == nil || assignment.OutputPath == "" {
+					t.Fatalf("completion was not durable: %+v", assignment)
+				}
+				offline, err := ensemble.CollectModeOutputs(saved, nil)
+				if err != nil || offline.Count() != 1 || !strings.Contains(offline.Outputs[0].Thesis, "Save completed") {
+					t.Fatalf("saved analysis unavailable after reopen: %+v, %v", offline, err)
+				}
+			} else if assignment.Status != tt.status || assignment.CompletedAt != nil || assignment.OutputPath != "" {
+				t.Fatalf("unfinished assignment changed: %+v", assignment)
+			}
+		})
+	}
+}

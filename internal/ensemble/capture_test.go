@@ -1,6 +1,7 @@
 package ensemble
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -82,7 +83,7 @@ func TestOutputCapture_ExtractYAML_CodeBlock(t *testing.T) {
 
 func TestOutputCapture_CapturePane_EmptyPane(t *testing.T) {
 	capture := NewOutputCapture(nil)
-	_, err := capture.capturePane("")
+	_, err := capture.capturePane(t.Context(), "")
 	if err == nil {
 		t.Error("expected error for empty pane")
 	}
@@ -392,5 +393,28 @@ func TestSaveCapturedOutputs_FailureDoesNotPublishAssignmentChanges(t *testing.T
 				t.Fatalf("failure changed durable assignment state: %+v", reloaded.Assignments)
 			}
 		})
+	}
+}
+
+func TestOutputCaptureCanceledBeforeAnyObservation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	capture := NewOutputCapture(nil)
+	session := &EnsembleSession{
+		SessionName: "not-observed",
+		Assignments: []ModeAssignment{{ModeID: "deductive", PaneName: "%1", Status: AssignmentActive}},
+	}
+	for _, run := range []func(context.Context, *EnsembleSession) ([]CapturedOutput, error){
+		capture.CaptureAllContext,
+		capture.CaptureAndSaveContext,
+		capture.CaptureForSynthesis,
+	} {
+		captured, err := run(ctx, session)
+		if !errors.Is(err, context.Canceled) || len(captured) != 0 {
+			t.Fatalf("canceled capture = %+v, %v", captured, err)
+		}
+		if session.Assignments[0].Status != AssignmentActive || session.Assignments[0].OutputPath != "" {
+			t.Fatalf("canceled observation changed assignment: %+v", session.Assignments[0])
+		}
 	}
 }
