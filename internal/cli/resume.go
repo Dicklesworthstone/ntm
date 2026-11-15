@@ -82,7 +82,9 @@ func newResumeCmd() *cobra.Command {
 		codCount    int
 		gmiCount    int
 		agyCount    int
+		grokCount   int
 		ompCount    int
+		ocCount     int
 		pluginSpecs AgentSpecs
 	)
 	pluginMap := make(map[string]plugins.AgentPlugin)
@@ -110,7 +112,7 @@ Examples:
 			}
 			effectiveJSON := IsJSONOutput()
 			err := runResume(cmd, sessionName, fromPath, spawn, inject, dryRun,
-				resumeSpawnCounts{CC: ccCount, Cod: codCount, Gmi: gmiCount, Agy: agyCount, Omp: ompCount, Plugins: pluginSpecs, PluginMap: pluginMap}, effectiveJSON)
+				resumeSpawnCounts{CC: ccCount, Cod: codCount, Gmi: gmiCount, Agy: agyCount, Grok: grokCount, Omp: ompCount, Oc: ocCount, Plugins: pluginSpecs, PluginMap: pluginMap}, effectiveJSON)
 			return outputResumeCommandError(cmd, resumeAction(spawn, inject), effectiveJSON, err)
 		},
 	}
@@ -123,7 +125,9 @@ Examples:
 	cmd.Flags().IntVar(&codCount, "cod", 0, "Number of Codex agents to spawn (requires --spawn)")
 	cmd.Flags().IntVar(&gmiCount, "gmi", 0, "Number of Gemini agents to spawn (requires --spawn)")
 	cmd.Flags().IntVar(&agyCount, "agy", 0, "Number of Antigravity agents to spawn (requires --spawn)")
+	cmd.Flags().IntVar(&grokCount, "grok", 0, "Number of Grok Build agents to spawn (requires --spawn)")
 	cmd.Flags().IntVar(&ompCount, "omp", 0, "Number of Oh My Pi (omp) agents to spawn (requires --spawn)")
+	cmd.Flags().IntVar(&ocCount, "oc", 0, "Number of OpenCode (oc) agents to spawn (requires --spawn)")
 	// Pin the same plugin configuration used to register spawn selectors.
 	// Pi is a separate plugin from the built-in omp agent.
 	for _, p := range registerAgentPluginTypes(pluginAgentsDirForArgs(os.Args[1:])) {
@@ -136,13 +140,13 @@ Examples:
 
 // resumeSpawnCounts carries the per-type agent counts for `resume --spawn`.
 type resumeSpawnCounts struct {
-	CC, Cod, Gmi, Agy, Omp int
-	Plugins                AgentSpecs
-	PluginMap              map[string]plugins.AgentPlugin
+	CC, Cod, Gmi, Agy, Grok, Omp, Oc int
+	Plugins                          AgentSpecs
+	PluginMap                        map[string]plugins.AgentPlugin
 }
 
 func (c resumeSpawnCounts) total() int {
-	total := c.CC + c.Cod + c.Gmi + c.Agy + c.Omp
+	total := c.CC + c.Cod + c.Gmi + c.Agy + c.Grok + c.Omp + c.Oc
 	for _, spec := range c.Plugins {
 		total += spec.Count
 	}
@@ -157,7 +161,9 @@ func (c resumeSpawnCounts) spawnOptions(sessionName, projectDir string) SpawnOpt
 		CodCount:           c.Cod,
 		GmiCount:           c.Gmi,
 		AgyCount:           c.Agy,
+		GrokCount:          c.Grok,
 		OmpCount:           c.Omp,
+		OpencodeCount:      c.Oc,
 		UserPane:           true,
 		NoHooks:            true,
 		PluginMap:          c.PluginMap,
@@ -170,7 +176,9 @@ func (c resumeSpawnCounts) spawnOptions(sessionName, projectDir string) SpawnOpt
 			{Type: AgentTypeCodex, Count: c.Cod},
 			{Type: AgentTypeGemini, Count: c.Gmi},
 			{Type: AgentTypeAntigravity, Count: c.Agy},
+			{Type: AgentTypeGrok, Count: c.Grok},
 			{Type: AgentTypeOmp, Count: c.Omp},
+			{Type: AgentTypeOpencode, Count: c.Oc},
 		}
 		opts.Agents = append(specs, c.Plugins...).Flatten()
 	}
@@ -404,13 +412,15 @@ func spawnWithHandoff(cmd *cobra.Command, sessionName string, h *handoff.Handoff
 			"cod", counts.Cod,
 			"gmi", counts.Gmi,
 			"agy", counts.Agy,
+			"grok", counts.Grok,
 			"omp", counts.Omp,
+			"oc", counts.Oc,
 		)
 	}
 
 	// Validate counts
 	if counts.total() == 0 {
-		return fmt.Errorf("--spawn requires at least one agent count (--cc, --cod, --gmi, --agy, --omp, or a plugin agent flag)")
+		return fmt.Errorf("--spawn requires at least one agent count (--cc, --cod, --gmi, --agy, --grok, --omp, --oc, or a plugin agent flag)")
 	}
 
 	// Format context for injection

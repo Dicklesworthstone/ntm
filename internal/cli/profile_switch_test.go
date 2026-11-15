@@ -414,3 +414,57 @@ func TestGenerateTransitionPromptUsesRenderedPromptInsteadOfRawTemplate(t *testi
 		t.Fatalf("transition prompt did not use rendered profile: %q", got)
 	}
 }
+
+func TestSupportsProfileSwitchAgentType_MultiHarness(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		agentType tmux.AgentType
+		want      bool
+	}{
+		{tmux.AgentAntigravity, true},
+		{tmux.AgentType("antigravity"), true},
+		{tmux.AgentGrok, true},
+		{tmux.AgentType("grok-build"), true},
+		{tmux.AgentOmp, true},
+		{tmux.AgentOpencode, true},
+		{tmux.AgentUser, false},
+		{tmux.AgentUnknown, false},
+	} {
+		if got := supportsProfileSwitchAgentType(tc.agentType); got != tc.want {
+			t.Errorf("supportsProfileSwitchAgentType(%q) = %v, want %v", tc.agentType, got, tc.want)
+		}
+	}
+
+	for _, tc := range []struct {
+		id       string
+		wantType string
+		wantIdx  int
+	}{
+		{"agy_1", "agy", 1},
+		{"antigravity_2", "agy", 2},
+		{"grok_1", "grok", 1},
+		{"grok-build_3", "grok", 3},
+		{"omp_1", "omp", 1},
+		{"opencode_2", "oc", 2},
+	} {
+		gotType, gotIdx, err := parseAgentID(tc.id)
+		if err != nil {
+			t.Fatalf("parseAgentID(%q) unexpected error: %v", tc.id, err)
+		}
+		if gotType != tc.wantType || gotIdx != tc.wantIdx {
+			t.Errorf("parseAgentID(%q) = (%q, %d), want (%q, %d)", tc.id, gotType, gotIdx, tc.wantType, tc.wantIdx)
+		}
+	}
+
+	panes := []tmux.Pane{
+		{ID: "%1", Title: "proj__agy_1_architect", Type: tmux.AgentAntigravity, NTMIndex: 1, Variant: "architect"},
+		{ID: "%2", Title: "proj__grok_2_debugger", Type: tmux.AgentGrok, NTMIndex: 2, Variant: "debugger"},
+	}
+	if p, oldProf, err := findPaneByAgentID(panes, "proj", "antigravity", 1); err != nil || p.ID != "%1" || oldProf != "architect" {
+		t.Fatalf("findPaneByAgentID(antigravity_1) = (%+v, %q, %v), want %%1/architect/nil", p, oldProf, err)
+	}
+	if p, oldProf, err := findPaneByAgentID(panes, "proj", "grok-build", 2); err != nil || p.ID != "%2" || oldProf != "debugger" {
+		t.Fatalf("findPaneByAgentID(grok-build_2) = (%+v, %q, %v), want %%2/debugger/nil", p, oldProf, err)
+	}
+}

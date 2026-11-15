@@ -1925,6 +1925,8 @@ func modelNameForPane(p tmux.Pane) string {
 		return defaults.DefaultAntigravity
 	case tmux.AgentGrok:
 		return defaults.DefaultGrok
+	case tmux.AgentOpencode:
+		return defaults.DefaultOpencode
 	case tmux.AgentOmp:
 		return defaults.DefaultOmp
 	case tmux.AgentOllama:

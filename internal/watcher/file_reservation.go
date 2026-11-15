@@ -541,7 +541,7 @@ func (w *FileReservationWatcher) queueReservationEditsLocked(paneID string, file
 
 // mapAgentTypeToPatternAgent converts tmux.AgentType to pattern agent string.
 func mapAgentTypeToPatternAgent(agentType tmux.AgentType) string {
-	switch agentType {
+	switch agentType.Canonical() {
 	case tmux.AgentClaude:
 		return "claude"
 	case tmux.AgentCodex:
@@ -550,6 +550,12 @@ func mapAgentTypeToPatternAgent(agentType tmux.AgentType) string {
 		return "gemini"
 	case tmux.AgentAntigravity:
 		return "antigravity"
+	case tmux.AgentGrok:
+		return "grok"
+	case tmux.AgentOmp:
+		return "omp"
+	case tmux.AgentOpencode:
+		return "opencode"
 	default:
 		return "*"
 	}
@@ -1224,6 +1230,34 @@ var filePathPatterns = map[string][]*regexp.Regexp{
 		regexp.MustCompile(`(?im)^Editing:\s*(.+)$`),
 		regexp.MustCompile(`(?im)^Created:\s*(.+)$`),
 		regexp.MustCompile(`(?i)(?:edited|modified)\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
+	},
+	"antigravity": {
+		regexp.MustCompile(`"file_path"\s*:\s*"([^"]+)"`),
+		regexp.MustCompile(`"Path"\s*:\s*"([^"]+)"`),
+		regexp.MustCompile(`(?im)^Writing:\s*(.+)$`),
+		regexp.MustCompile(`(?im)^Editing:\s*(.+)$`),
+		regexp.MustCompile(`(?im)^Created:\s*(.+)$`),
+		regexp.MustCompile(`(?i)(?:edited|modified)\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
+	},
+	"grok": {
+		regexp.MustCompile(`"file_path"\s*:\s*"([^"]+)"`),
+		regexp.MustCompile(`(?i)(?:editing|edited|modified)\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
+		regexp.MustCompile(`(?i)created\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
+		regexp.MustCompile(`(?i)(?:writing|wrote)\s+(?:to\s+)?(?:file:?\s+)?([^\s,]+\.\w+)`),
+	},
+	"omp": {
+		regexp.MustCompile(`"file_path"\s*:\s*"([^"]+)"`),
+		regexp.MustCompile(`"path"\s*:\s*"([^"]+)"`),
+		regexp.MustCompile(`(?i)(?:editing|edited|modified)\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
+		regexp.MustCompile(`(?i)created\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
+		regexp.MustCompile(`(?i)(?:writing|wrote)\s+(?:to\s+)?(?:file:?\s+)?([^\s,]+\.\w+)`),
+	},
+	"opencode": {
+		regexp.MustCompile(`"filePath"\s*:\s*"([^"]+)"`),
+		regexp.MustCompile(`"file_path"\s*:\s*"([^"]+)"`),
+		regexp.MustCompile(`(?i)(?:editing|edited|modified)\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
+		regexp.MustCompile(`(?i)created\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
+		regexp.MustCompile(`(?i)(?:writing|wrote)\s+(?:to\s+)?(?:file:?\s+)?([^\s,]+\.\w+)`),
 	},
 	"*": {
 		// Generic patterns as fallback

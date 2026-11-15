@@ -10,8 +10,20 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { apiFetch, type ApiEnvelope } from "@/lib/api/client";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  apiFetch,
+  formatApiErrorMessage,
+  type ApiEnvelope,
+  type components,
+} from "@/lib/api/client";
+
+type AgentSpawnRequest = components["schemas"]["AgentSpawnRequest"];
+type SpawnOutput = components["schemas"]["SpawnOutput"];
+type AgentSendRequest = components["schemas"]["AgentSendRequest"];
+type SendOutput = components["schemas"]["SendOutput"];
+type AgentInterruptRequest = components["schemas"]["AgentInterruptRequest"];
+type InterruptOutput = components["schemas"]["InterruptOutput"];
 
 interface SessionRecord {
   name: string;
@@ -43,14 +55,39 @@ interface SessionAgentsResponse extends ApiEnvelope {
   count: number;
 }
 
-const AGENT_TYPE_LABELS: Record<string, string> = {
+export const AGENT_TYPE_LABELS: Record<string, string> = {
   cc: "Claude Code",
   cod: "Codex",
   gmi: "Gemini",
   agy: "Antigravity",
   grok: "Grok",
   omp: "Oh My Pi",
+  oc: "OpenCode",
+  ollama: "Ollama",
 };
+
+const SPAWN_COUNT_FIELDS = [
+  { key: "cc_count", label: "Claude Code (cc)" },
+  { key: "cod_count", label: "Codex (cod)" },
+  { key: "agy_count", label: "Antigravity (agy)" },
+  { key: "grok_count", label: "Grok (grok)" },
+  { key: "omp_count", label: "Oh My Pi (omp)" },
+  { key: "oc_count", label: "OpenCode (oc)" },
+  { key: "gmi_count", label: "Gemini (gmi)" },
+] as const;
+
+type SpawnCountKey = (typeof SPAWN_COUNT_FIELDS)[number]["key"];
+
+const CONTROL_AGENT_TYPES = [
+  { value: "all", label: "All Agents (all)" },
+  { value: "cc", label: "Claude Code (cc)" },
+  { value: "cod", label: "Codex (cod)" },
+  { value: "agy", label: "Antigravity (agy)" },
+  { value: "grok", label: "Grok (grok)" },
+  { value: "omp", label: "Oh My Pi (omp)" },
+  { value: "oc", label: "OpenCode (oc)" },
+  { value: "gmi", label: "Gemini (gmi)" },
+] as const;
 
 const STATUS_CLASSES: Record<string, string> = {
   active: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300",
@@ -60,11 +97,40 @@ const STATUS_CLASSES: Record<string, string> = {
   dead: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300",
 };
 
+const INITIAL_SPAWN_COUNTS: Record<SpawnCountKey, number> = {
+  cc_count: 0,
+  cod_count: 0,
+  agy_count: 0,
+  grok_count: 0,
+  omp_count: 0,
+  oc_count: 0,
+  gmi_count: 0,
+};
+
 export default function AgentsPage() {
+  const queryClient = useQueryClient();
   const [filter, setFilter] = useState("");
 
+  // Fleet Operations state
+  const [fleetOpen, setFleetOpen] = useState(true);
+  const [targetSession, setTargetSession] = useState("");
+  const [spawnCounts, setSpawnCounts] =
+    useState<Record<SpawnCountKey, number>>(INITIAL_SPAWN_COUNTS);
+  const [spawnPreset, setSpawnPreset] = useState("");
+  const [spawnLabel, setSpawnLabel] = useState("");
+  const [waitReady, setWaitReady] = useState(false);
+
+  const [targetAgentType, setTargetAgentType] = useState<string>("all");
+  const [promptMessage, setPromptMessage] = useState("");
+  const [forceInterrupt, setForceInterrupt] = useState(false);
+
+  const [notice, setNotice] = useState<{
+    kind: "success" | "error";
+    text: string;
+  } | null>(null);
+
   const {
-    data: agents,
+    data: fleetData,
     isLoading,
     error,
   } = useQuery({
@@ -88,12 +154,116 @@ export default function AgentsPage() {
           }
         })
       );
-      return perSession.flat();
+      return {
+        sessions,
+        agents: perSession.flat(),
+      };
     },
     refetchInterval: 10000,
   });
 
-  const agentList = useMemo(() => agents ?? [], [agents]);
+  const sessionOptions = useMemo(
+    () => fleetData?.sessions ?? [],
+    [fleetData?.sessions]
+  );
+  const agentList = useMemo(() => fleetData?.agents ?? [], [fleetData?.agents]);
+
+  const spawnMutation = useMutation({
+    mutationFn: ({
+      sessionId,
+      body,
+    }: {
+      sessionId: string;
+      body: AgentSpawnRequest;
+    }) =>
+      apiFetch<SpawnOutput>(
+        `/api/v1/sessions/${encodeURIComponent(sessionId)}/agents/spawn`,
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+        }
+      ),
+    onSuccess: (res, vars) => {
+      const spawnedCount = res.agents?.length ?? 0;
+      setNotice({
+        kind: "success",
+        text: `Spawned ${spawnedCount} agent pane${spawnedCount === 1 ? "" : "s"} in session "${res.session || vars.sessionId}".`,
+      });
+      void queryClient.invalidateQueries({ queryKey: ["agents"] });
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    },
+    onError: (err) => {
+      setNotice({
+        kind: "error",
+        text: `Spawn failed: ${formatApiErrorMessage(err)}`,
+      });
+    },
+  });
+
+  const sendMutation = useMutation({
+    mutationFn: ({
+      sessionId,
+      body,
+    }: {
+      sessionId: string;
+      body: AgentSendRequest;
+    }) =>
+      apiFetch<SendOutput>(
+        `/api/v1/sessions/${encodeURIComponent(sessionId)}/agents/send`,
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+        }
+      ),
+    onSuccess: (res, vars) => {
+      const delivered = res.successful?.length ?? res.targets?.length ?? 0;
+      setNotice({
+        kind: "success",
+        text: `Sent prompt to ${delivered} pane${delivered === 1 ? "" : "s"} in session "${res.session || vars.sessionId}".`,
+      });
+      setPromptMessage("");
+      void queryClient.invalidateQueries({ queryKey: ["agents"] });
+    },
+    onError: (err) => {
+      setNotice({
+        kind: "error",
+        text: `Send failed: ${formatApiErrorMessage(err)}`,
+      });
+    },
+  });
+
+  const interruptMutation = useMutation({
+    mutationFn: ({
+      sessionId,
+      body,
+    }: {
+      sessionId: string;
+      body: AgentInterruptRequest;
+    }) =>
+      apiFetch<InterruptOutput>(
+        `/api/v1/sessions/${encodeURIComponent(sessionId)}/agents/interrupt`,
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+        }
+      ),
+    onSuccess: (res, vars) => {
+      const interruptedCount = res.interrupted?.length ?? 0;
+      const readyCount = res.ready_for_input?.length ?? 0;
+      setNotice({
+        kind: "success",
+        text: `Interrupted ${interruptedCount} pane${interruptedCount === 1 ? "" : "s"} in session "${res.session || vars.sessionId}" (${readyCount} ready for input).`,
+      });
+      void queryClient.invalidateQueries({ queryKey: ["agents"] });
+    },
+    onError: (err) => {
+      setNotice({
+        kind: "error",
+        text: `Interrupt failed: ${formatApiErrorMessage(err)}`,
+      });
+    },
+  });
+
   const filtered = useMemo(() => {
     if (!filter) return agentList;
     const q = filter.toLowerCase();
@@ -112,6 +282,94 @@ export default function AgentsPage() {
     }, {});
   }, [agentList]);
 
+  const handleSpawnSubmit = () => {
+    const sessionId = targetSession.trim();
+    if (!sessionId) {
+      setNotice({
+        kind: "error",
+        text: "Target session name is required to spawn agents.",
+      });
+      return;
+    }
+
+    const body: AgentSpawnRequest = {};
+    let totalCount = 0;
+    for (const field of SPAWN_COUNT_FIELDS) {
+      const raw = spawnCounts[field.key];
+      const count = Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : 0;
+      if (count > 0) {
+        body[field.key] = count;
+        totalCount += count;
+      }
+    }
+
+    const trimmedPreset = spawnPreset.trim();
+    const trimmedLabel = spawnLabel.trim();
+    if (trimmedPreset) {
+      body.preset = trimmedPreset;
+    }
+    if (trimmedLabel) {
+      body.label = trimmedLabel;
+    }
+    if (waitReady) {
+      body.wait_ready = true;
+    }
+
+    if (totalCount === 0 && !trimmedPreset) {
+      setNotice({
+        kind: "error",
+        text: "Specify at least one agent count greater than 0 or a preset name.",
+      });
+      return;
+    }
+
+    spawnMutation.mutate({ sessionId, body });
+  };
+
+  const handleSendPrompt = () => {
+    const sessionId = targetSession.trim();
+    const msg = promptMessage.trim();
+    if (!sessionId) {
+      setNotice({
+        kind: "error",
+        text: "Target session name is required to send a prompt.",
+      });
+      return;
+    }
+    if (!msg) {
+      setNotice({
+        kind: "error",
+        text: "Enter a prompt message to send.",
+      });
+      return;
+    }
+
+    const body: AgentSendRequest = {
+      message: msg,
+      ...(targetAgentType !== "all" ? { agent_types: [targetAgentType] } : {}),
+    };
+    sendMutation.mutate({ sessionId, body });
+  };
+
+  const handleInterruptAgents = () => {
+    const sessionId = targetSession.trim();
+    if (!sessionId) {
+      setNotice({
+        kind: "error",
+        text: "Target session name is required to interrupt agents.",
+      });
+      return;
+    }
+
+    const msg = promptMessage.trim();
+    const body: AgentInterruptRequest = {
+      ...(targetAgentType !== "all" ? { agent_types: [targetAgentType] } : {}),
+      ...(msg ? { message: msg } : {}),
+      ...(forceInterrupt ? { force: true } : {}),
+    };
+    interruptMutation.mutate({ sessionId, body });
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -127,6 +385,298 @@ export default function AgentsPage() {
           {filtered.length} agent{filtered.length !== 1 ? "s" : ""}
         </span>
       </div>
+
+      {/* Fleet Operations Panel (accessible even when 0 agents are registered) */}
+      <section
+        aria-label="Fleet Operations"
+        className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 space-y-4"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-base font-semibold text-gray-900 dark:text-white">
+              Fleet Operations
+            </h2>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Spawn multi-harness agent panes, broadcast prompts, or interrupt
+              running panes in any session.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setFleetOpen((prev) => !prev)}
+            className="px-2.5 py-1 text-xs font-medium rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
+          >
+            {fleetOpen ? "Collapse" : "Expand"}
+          </button>
+        </div>
+
+        {notice && (
+          <div
+            role={notice.kind === "error" ? "alert" : "status"}
+            className={`rounded-lg border px-4 py-2.5 text-sm flex items-center justify-between gap-3 ${
+              notice.kind === "error"
+                ? "bg-red-50 border-red-200 text-red-800 dark:bg-red-900/20 dark:border-red-800 dark:text-red-200"
+                : "bg-emerald-50 border-emerald-200 text-emerald-800 dark:bg-emerald-900/20 dark:border-emerald-800 dark:text-emerald-200"
+            }`}
+          >
+            <span>{notice.text}</span>
+            <button
+              type="button"
+              onClick={() => setNotice(null)}
+              className="text-xs underline opacity-80 hover:opacity-100"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {fleetOpen && (
+          <div className="space-y-4">
+            {/* Shared Session Selector / Input */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label
+                  htmlFor="fleet-target-session"
+                  className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1"
+                >
+                  Target Session
+                </label>
+                <input
+                  id="fleet-target-session"
+                  type="text"
+                  list="fleet-session-datalist"
+                  value={targetSession}
+                  onChange={(e) => setTargetSession(e.target.value)}
+                  placeholder="Select existing or type session name..."
+                  className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-white"
+                />
+                <datalist id="fleet-session-datalist">
+                  {sessionOptions.map((s) => (
+                    <option key={s.name} value={s.name} />
+                  ))}
+                </datalist>
+              </div>
+
+              {sessionOptions.length > 0 && (
+                <div>
+                  <label
+                    htmlFor="fleet-existing-session-select"
+                    className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1"
+                  >
+                    Quick Pick Existing Session
+                  </label>
+                  <select
+                    id="fleet-existing-session-select"
+                    value={
+                      sessionOptions.some((s) => s.name === targetSession)
+                        ? targetSession
+                        : ""
+                    }
+                    onChange={(e) => {
+                      if (e.target.value) setTargetSession(e.target.value);
+                    }}
+                    className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-white"
+                  >
+                    <option value="">Choose active session...</option>
+                    {sessionOptions.map((s) => (
+                      <option key={s.name} value={s.name}>
+                        {s.name}
+                        {s.status ? ` (${s.status})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {/* Spawn Agents Card */}
+              <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-4 space-y-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+                    Spawn Agents
+                  </h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    Launch new agent panes by harness count or preset.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                  {SPAWN_COUNT_FIELDS.map((field) => (
+                    <div key={field.key}>
+                      <label
+                        htmlFor={`spawn-${field.key}`}
+                        className="block text-[11px] font-medium text-gray-700 dark:text-gray-300 mb-1"
+                      >
+                        {field.label}
+                      </label>
+                      <input
+                        id={`spawn-${field.key}`}
+                        type="number"
+                        min={0}
+                        max={32}
+                        value={spawnCounts[field.key]}
+                        onChange={(e) => {
+                          const parsed = Number.parseInt(e.target.value, 10);
+                          setSpawnCounts((prev) => ({
+                            ...prev,
+                            [field.key]: Number.isNaN(parsed)
+                              ? 0
+                              : Math.max(0, parsed),
+                          }));
+                        }}
+                        className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2.5 py-1 text-sm text-gray-900 dark:text-white font-mono"
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label
+                      htmlFor="fleet-spawn-preset"
+                      className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1"
+                    >
+                      Preset (optional)
+                    </label>
+                    <input
+                      id="fleet-spawn-preset"
+                      type="text"
+                      value={spawnPreset}
+                      onChange={(e) => setSpawnPreset(e.target.value)}
+                      placeholder="e.g. review-pair"
+                      className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2.5 py-1.5 text-xs text-gray-900 dark:text-white"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="fleet-spawn-label"
+                      className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1"
+                    >
+                      Goal Label (optional)
+                    </label>
+                    <input
+                      id="fleet-spawn-label"
+                      type="text"
+                      value={spawnLabel}
+                      onChange={(e) => setSpawnLabel(e.target.value)}
+                      placeholder="e.g. backend-wave"
+                      className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2.5 py-1.5 text-xs text-gray-900 dark:text-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                  <label className="inline-flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                    <input
+                      id="fleet-spawn-wait-ready"
+                      type="checkbox"
+                      checked={waitReady}
+                      onChange={(e) => setWaitReady(e.target.checked)}
+                      className="rounded border-gray-300 dark:border-gray-600"
+                    />
+                    Wait until agents are ready
+                  </label>
+
+                  <button
+                    type="button"
+                    disabled={spawnMutation.isPending}
+                    onClick={handleSpawnSubmit}
+                    className="px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {spawnMutation.isPending ? "Spawning..." : "Spawn Agents"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Broadcast / Send Prompt & Interrupt Card */}
+              <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-4 space-y-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+                    Broadcast Prompt &amp; Interrupt
+                  </h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    Dispatch instructions or send Ctrl+C across matching session
+                    panes.
+                  </p>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="fleet-agent-type-filter"
+                    className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1"
+                  >
+                    Target Agent Type
+                  </label>
+                  <select
+                    id="fleet-agent-type-filter"
+                    value={targetAgentType}
+                    onChange={(e) => setTargetAgentType(e.target.value)}
+                    className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2.5 py-1.5 text-xs text-gray-900 dark:text-white"
+                  >
+                    {CONTROL_AGENT_TYPES.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="fleet-prompt-message"
+                    className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1"
+                  >
+                    Prompt / Follow-up Message
+                  </label>
+                  <textarea
+                    id="fleet-prompt-message"
+                    rows={3}
+                    value={promptMessage}
+                    onChange={(e) => setPromptMessage(e.target.value)}
+                    placeholder="Enter prompt to broadcast (or optional post-interrupt steering message)..."
+                    className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2.5 py-1.5 text-xs text-gray-900 dark:text-white"
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                  <label className="inline-flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                    <input
+                      id="fleet-interrupt-force"
+                      type="checkbox"
+                      checked={forceInterrupt}
+                      onChange={(e) => setForceInterrupt(e.target.checked)}
+                      className="rounded border-gray-300 dark:border-gray-600"
+                    />
+                    Force interrupt idle panes
+                  </label>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={sendMutation.isPending}
+                      onClick={handleSendPrompt}
+                      className="px-3 py-1.5 text-xs font-medium rounded-md bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+                    >
+                      {sendMutation.isPending ? "Sending..." : "Send Prompt"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={interruptMutation.isPending}
+                      onClick={handleInterruptAgents}
+                      className="px-3 py-1.5 text-xs font-medium rounded-md border border-red-300 dark:border-red-700 text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-50"
+                    >
+                      {interruptMutation.isPending
+                        ? "Interrupting..."
+                        : "Interrupt Agents"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
 
       <div className="flex flex-wrap items-center gap-2">
         {Object.entries(typeCounts).map(([type, count]) => (

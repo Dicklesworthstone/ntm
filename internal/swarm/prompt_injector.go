@@ -211,14 +211,8 @@ func (p *PromptInjector) SetTemplate(name, template string) {
 	p.Templates[name] = template
 }
 
-// InjectPrompt sends a prompt to a single pane.
-// agentType is used to handle agent-specific quirks (e.g., Codex needs double-Enter).
-// This method satisfies the ensemble.BasicInjector interface.
-func (p *PromptInjector) InjectPrompt(sessionPane, agentType, prompt string) error {
-	return p.InjectPromptContext(context.Background(), sessionPane, agentType, prompt)
-}
-
-// InjectPromptContext honors cancellation during readiness and every send.
+// InjectPromptContext sends a prompt to a single pane and honors cancellation
+// during readiness and every send. This method satisfies ensemble.BasicInjector.
 func (p *PromptInjector) InjectPromptContext(ctx context.Context, sessionPane, agentType, prompt string) error {
 	if err := validatePromptInjectionTarget(InjectionTarget{SessionPane: sessionPane, AgentType: agentType}); err != nil {
 		return err

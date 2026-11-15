@@ -939,3 +939,127 @@ func TestIsAssignableAgentType_Various(t *testing.T) {
 		}
 	}
 }
+
+func TestCategoryAffinities_IncludesModernHarnesses(t *testing.T) {
+	modern := []string{
+		string(tmux.AgentAntigravity),
+		string(tmux.AgentOmp),
+		string(tmux.AgentGrok),
+		string(tmux.AgentOpencode),
+	}
+
+	for _, want := range modern {
+		found := false
+		for _, got := range defaultPreferredTypes {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("defaultPreferredTypes %v missing %q", defaultPreferredTypes, want)
+		}
+	}
+
+	for _, cat := range AllCategories() {
+		prefs := CategoryAffinities[cat]
+		for _, want := range modern {
+			found := false
+			for _, got := range prefs {
+				if got == want {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("CategoryAffinities[%s] = %v, missing %q", cat, prefs, want)
+			}
+		}
+	}
+
+	// Ampliative and Vagueness should prefer Antigravity immediately after Gemini.
+	for _, cat := range []ModeCategory{CategoryAmpliative, CategoryVagueness} {
+		prefs := CategoryAffinities[cat]
+		if len(prefs) < 2 || prefs[0] != string(tmux.AgentGemini) || prefs[1] != string(tmux.AgentAntigravity) {
+			t.Errorf("CategoryAffinities[%s] = %v, want [%s %s ...]", cat, prefs, tmux.AgentGemini, tmux.AgentAntigravity)
+		}
+	}
+}
+
+func TestAssignByCategory_MultiHarnessSession(t *testing.T) {
+	modes := []ReasoningMode{
+		{ID: "ampliative-mode", Code: CategoryAmpliative.CategoryLetter() + "1", Name: "Ampliative", Category: CategoryAmpliative, Tier: TierCore, ShortDesc: "amp"},
+		{ID: "formal-mode", Code: CategoryFormal.CategoryLetter() + "1", Name: "Formal", Category: CategoryFormal, Tier: TierCore, ShortDesc: "formal"},
+		{ID: "practical-mode", Code: CategoryPractical.CategoryLetter() + "1", Name: "Practical", Category: CategoryPractical, Tier: TierCore, ShortDesc: "prac"},
+		{ID: "uncertainty-mode", Code: CategoryUncertainty.CategoryLetter() + "1", Name: "Uncertainty", Category: CategoryUncertainty, Tier: TierCore, ShortDesc: "unc"},
+	}
+	catalog, err := NewModeCatalog(modes, "1.0.0")
+	if err != nil {
+		t.Fatalf("NewModeCatalog error: %v", err)
+	}
+
+	panes := []tmux.Pane{
+		{Title: "pane-agy", Type: tmux.AgentAntigravity, Index: 1, NTMIndex: 1},
+		{Title: "pane-omp", Type: tmux.AgentOmp, Index: 2, NTMIndex: 2},
+		{Title: "pane-grok", Type: tmux.AgentGrok, Index: 3, NTMIndex: 3},
+		{Title: "pane-oc", Type: tmux.AgentOpencode, Index: 4, NTMIndex: 4},
+	}
+
+	assignments := AssignByCategory([]string{"ampliative-mode", "formal-mode", "practical-mode", "uncertainty-mode"}, panes, catalog)
+	if len(assignments) != 4 {
+		t.Fatalf("expected 4 assignments, got %d", len(assignments))
+	}
+
+	got := make(map[string]string, len(assignments))
+	for _, a := range assignments {
+		got[a.ModeID] = a.PaneName
+	}
+
+	if got["ampliative-mode"] != "pane-agy" {
+		t.Errorf("ampliative-mode assigned to %q, want pane-agy", got["ampliative-mode"])
+	}
+	if got["formal-mode"] != "pane-omp" {
+		t.Errorf("formal-mode assigned to %q, want pane-omp", got["formal-mode"])
+	}
+	if got["practical-mode"] != "pane-grok" {
+		t.Errorf("practical-mode assigned to %q, want pane-grok", got["practical-mode"])
+	}
+	if got["uncertainty-mode"] != "pane-oc" {
+		t.Errorf("uncertainty-mode assigned to %q, want pane-oc", got["uncertainty-mode"])
+	}
+}
+
+func TestAssignExplicit_MultiHarnessAndAliases(t *testing.T) {
+	panes := []tmux.Pane{
+		{Title: "pane-agy", Type: tmux.AgentAntigravity, Index: 1, NTMIndex: 1},
+		{Title: "pane-omp", Type: tmux.AgentOmp, Index: 2, NTMIndex: 2},
+		{Title: "pane-grok", Type: tmux.AgentGrok, Index: 3, NTMIndex: 3},
+		{Title: "pane-oc", Type: tmux.AgentOpencode, Index: 4, NTMIndex: 4},
+	}
+	specs := []string{
+		"m1:antigravity",
+		"m2:oh-my-pi",
+		"m3:grok-build",
+		"m4:opencode",
+	}
+
+	assignments, err := AssignExplicit(specs, panes)
+	if err != nil {
+		t.Fatalf("AssignExplicit error: %v", err)
+	}
+	if len(assignments) != 4 {
+		t.Fatalf("expected 4 assignments, got %d", len(assignments))
+	}
+
+	wantPane := map[string]string{
+		"m1": "pane-agy",
+		"m2": "pane-omp",
+		"m3": "pane-grok",
+		"m4": "pane-oc",
+	}
+	for _, a := range assignments {
+		if a.PaneName != wantPane[a.ModeID] {
+			t.Errorf("mode %s assigned to %q, want %q", a.ModeID, a.PaneName, wantPane[a.ModeID])
+		}
+	}
+}

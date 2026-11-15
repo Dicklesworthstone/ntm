@@ -5974,6 +5974,7 @@ export interface components {
             final_status: string;
             message?: string;
             prev_status: string;
+            saved_output_paths?: string[];
             session: string;
             stopped: number;
         };

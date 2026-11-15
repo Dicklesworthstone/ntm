@@ -2377,33 +2377,41 @@ type SendConfig struct {
 
 // PromptsConfig holds per-agent-type default prompts (bd-2ywo).
 type PromptsConfig struct {
-	CCDefault      string `toml:"cc_default"`       // Default prompt for Claude agents
-	CCDefaultFile  string `toml:"cc_default_file"`  // File path for Claude default prompt
-	CodDefault     string `toml:"cod_default"`      // Default prompt for Codex agents
-	CodDefaultFile string `toml:"cod_default_file"` // File path for Codex default prompt
-	GmiDefault     string `toml:"gmi_default"`      // Default prompt for Gemini agents
-	GmiDefaultFile string `toml:"gmi_default_file"` // File path for Gemini default prompt
-	AgyDefault     string `toml:"agy_default"`      // Default prompt for Antigravity (agy) agents
-	AgyDefaultFile string `toml:"agy_default_file"` // File path for Antigravity default prompt
-	OmpDefault     string `toml:"omp_default"`      // Default prompt for Oh My Pi (omp) agents
-	OmpDefaultFile string `toml:"omp_default_file"` // File path for Oh My Pi default prompt
+	CCDefault       string `toml:"cc_default"`        // Default prompt for Claude agents
+	CCDefaultFile   string `toml:"cc_default_file"`   // File path for Claude default prompt
+	CodDefault      string `toml:"cod_default"`       // Default prompt for Codex agents
+	CodDefaultFile  string `toml:"cod_default_file"`  // File path for Codex default prompt
+	GmiDefault      string `toml:"gmi_default"`       // Default prompt for Gemini agents
+	GmiDefaultFile  string `toml:"gmi_default_file"`  // File path for Gemini default prompt
+	AgyDefault      string `toml:"agy_default"`       // Default prompt for Antigravity (agy) agents
+	AgyDefaultFile  string `toml:"agy_default_file"`  // File path for Antigravity default prompt
+	OmpDefault      string `toml:"omp_default"`       // Default prompt for Oh My Pi (omp) agents
+	OmpDefaultFile  string `toml:"omp_default_file"`  // File path for Oh My Pi default prompt
+	GrokDefault     string `toml:"grok_default"`      // Default prompt for Grok Build (grok) agents
+	GrokDefaultFile string `toml:"grok_default_file"` // File path for Grok Build default prompt
+	OcDefault       string `toml:"oc_default"`        // Default prompt for OpenCode (oc) agents
+	OcDefaultFile   string `toml:"oc_default_file"`   // File path for OpenCode default prompt
 }
 
-// ResolveForType returns the default prompt for a given agent type string (cc, cod, gmi, agy, omp).
+// ResolveForType returns the default prompt for a given agent type string (cc, cod, gmi, agy, omp, grok, oc).
 // It reads from the inline string first, falling back to the file if configured.
 func (p PromptsConfig) ResolveForType(agentType string) (string, error) {
-	var val, filePath string
-	switch agentType {
-	case "cc":
-		val, filePath = p.CCDefault, p.CCDefaultFile
-	case "cod":
-		val, filePath = p.CodDefault, p.CodDefaultFile
-	case "gmi":
-		val, filePath = p.GmiDefault, p.GmiDefaultFile
-	case "agy":
-		val, filePath = p.AgyDefault, p.AgyDefaultFile
-	case "omp":
-		val, filePath = p.OmpDefault, p.OmpDefaultFile
+	var val, filePath, keyPrefix string
+	switch agent.AgentType(agentType).Canonical() {
+	case agent.AgentTypeClaudeCode:
+		val, filePath, keyPrefix = p.CCDefault, p.CCDefaultFile, "cc"
+	case agent.AgentTypeCodex:
+		val, filePath, keyPrefix = p.CodDefault, p.CodDefaultFile, "cod"
+	case agent.AgentTypeGemini:
+		val, filePath, keyPrefix = p.GmiDefault, p.GmiDefaultFile, "gmi"
+	case agent.AgentTypeAntigravity:
+		val, filePath, keyPrefix = p.AgyDefault, p.AgyDefaultFile, "agy"
+	case agent.AgentTypeOmp:
+		val, filePath, keyPrefix = p.OmpDefault, p.OmpDefaultFile, "omp"
+	case agent.AgentTypeGrok:
+		val, filePath, keyPrefix = p.GrokDefault, p.GrokDefaultFile, "grok"
+	case agent.AgentTypeOpencode:
+		val, filePath, keyPrefix = p.OcDefault, p.OcDefaultFile, "oc"
 	default:
 		return "", nil
 	}
@@ -2413,7 +2421,7 @@ func (p PromptsConfig) ResolveForType(agentType string) (string, error) {
 	if filePath != "" {
 		data, err := os.ReadFile(filePath)
 		if err != nil {
-			return "", fmt.Errorf("reading prompts.%s_default_file: %w", agentType, err)
+			return "", fmt.Errorf("reading prompts.%s_default_file: %w", keyPrefix, err)
 		}
 		return strings.TrimSpace(string(data)), nil
 	}
@@ -4027,6 +4035,26 @@ func Print(cfg *Config, w io.Writer) error {
 	} else {
 		fmt.Fprintln(w, "# omp_default_file = \"\"")
 	}
+	if cfg.Prompts.GrokDefault != "" {
+		fmt.Fprintf(w, "grok_default = %q\n", cfg.Prompts.GrokDefault)
+	} else {
+		fmt.Fprintln(w, "# grok_default = \"\"")
+	}
+	if cfg.Prompts.GrokDefaultFile != "" {
+		fmt.Fprintf(w, "grok_default_file = %q\n", cfg.Prompts.GrokDefaultFile)
+	} else {
+		fmt.Fprintln(w, "# grok_default_file = \"\"")
+	}
+	if cfg.Prompts.OcDefault != "" {
+		fmt.Fprintf(w, "oc_default = %q\n", cfg.Prompts.OcDefault)
+	} else {
+		fmt.Fprintln(w, "# oc_default = \"\"")
+	}
+	if cfg.Prompts.OcDefaultFile != "" {
+		fmt.Fprintf(w, "oc_default_file = %q\n", cfg.Prompts.OcDefaultFile)
+	} else {
+		fmt.Fprintln(w, "# oc_default_file = \"\"")
+	}
 	fmt.Fprintln(w)
 
 	// Write models configuration
@@ -5314,6 +5342,14 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Prompts.OmpDefault, nil
 		case "omp_default_file":
 			return cfg.Prompts.OmpDefaultFile, nil
+		case "grok_default":
+			return cfg.Prompts.GrokDefault, nil
+		case "grok_default_file":
+			return cfg.Prompts.GrokDefaultFile, nil
+		case "oc_default":
+			return cfg.Prompts.OcDefault, nil
+		case "oc_default_file":
+			return cfg.Prompts.OcDefaultFile, nil
 		}
 	case "spawn_pacing":
 		if len(parts) < 2 {
@@ -5952,6 +5988,10 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("prompts.agy_default_file", defaults.Prompts.AgyDefaultFile, cfg.Prompts.AgyDefaultFile)
 	addDiff("prompts.omp_default", defaults.Prompts.OmpDefault, cfg.Prompts.OmpDefault)
 	addDiff("prompts.omp_default_file", defaults.Prompts.OmpDefaultFile, cfg.Prompts.OmpDefaultFile)
+	addDiff("prompts.grok_default", defaults.Prompts.GrokDefault, cfg.Prompts.GrokDefault)
+	addDiff("prompts.grok_default_file", defaults.Prompts.GrokDefaultFile, cfg.Prompts.GrokDefaultFile)
+	addDiff("prompts.oc_default", defaults.Prompts.OcDefault, cfg.Prompts.OcDefault)
+	addDiff("prompts.oc_default_file", defaults.Prompts.OcDefaultFile, cfg.Prompts.OcDefaultFile)
 
 	// Context Rotation
 	addDiff("context_rotation.rotate_threshold", defaults.ContextRotation.RotateThreshold, cfg.ContextRotation.RotateThreshold)

@@ -2111,7 +2111,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.healthMessage = "Spawn cancelled"
 			return m, nil
 		}
-		total := msg.Result.CCCount + msg.Result.CodCount + msg.Result.GmiCount + msg.Result.AgyCount
+		total := msg.Result.TotalCount()
 		m.healthMessage = fmt.Sprintf("Adding %d agent(s)...", total)
 		if m.toasts != nil {
 			m.toasts.PushPersistent(spawnWizardProgressToastID, m.healthMessage, components.ToastInfo)
@@ -2654,40 +2654,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					continue
 				}
 
-				// Map type string to model name for context limits
+				// Map agent type and pane variant to canonical context/cost model names.
 				statusAgentType := data.Observation.AgentType
-				modelName := ""
-				switch data.AgentType {
-				case string(tmux.AgentClaude):
-					if m.cfg != nil && m.cfg.Models.DefaultClaude != "" {
-						modelName = m.cfg.Models.DefaultClaude
-					} else {
-						modelName = config.ClaudeEstimationModel
-					}
-				case string(tmux.AgentCodex):
-					if m.cfg != nil {
-						modelName = m.cfg.Models.DefaultCodex
-					} else {
-						modelName = "gpt-4"
-					}
-				case string(tmux.AgentGemini):
-					if m.cfg != nil {
-						modelName = m.cfg.Models.DefaultGemini
-					} else {
-						modelName = "gemini-2.0-flash"
-					}
-				case string(tmux.AgentCursor):
-					modelName = "cursor"
-				case string(tmux.AgentWindsurf):
-					modelName = "windsurf"
-				case string(tmux.AgentAider):
-					modelName = "aider"
+				effectivePane := currentPane
+				if rawType := tmux.AgentType(data.AgentType).Canonical(); rawType != "" && rawType != tmux.AgentUnknown {
+					effectivePane.Type = rawType
 				}
-
-				// Use variant if available
-				if found && currentPane.Variant != "" {
-					modelName = currentPane.Variant
-				}
+				modelName := m.resolveContextModelForPane(effectivePane)
+				costModelName := m.resolveCostModelForPane(effectivePane)
 
 				// Compute delta once (used for cost + local perf).
 				delta := ""
@@ -2701,7 +2675,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				// Record estimated output delta tokens for cost tracking BEFORE updating caches.
 				if data.PaneID != "" && data.Output != "" {
-					m.recordCostOutputDelta(data.PaneID, modelName, prevOutput, data.Output)
+					m.recordCostOutputDelta(data.PaneID, costModelName, prevOutput, data.Output)
 				}
 
 				// Update output caches after cost tracking
@@ -2901,7 +2875,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Best-effort refresh of Ollama /api/ps, only if we have any local panes.
 		hasOllama := false
 		for _, p := range m.panes {
-			if string(p.Type) == "ollama" {
+			if p.Type.Canonical() == tmux.AgentOllama {
 				hasOllama = true
 				break
 			}
@@ -2942,7 +2916,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ps.TokenVelocity = m.paneTokenVelocity(st)
 
 			// Local perf snapshot + memory enrichment (Ollama panes only).
-			if string(pane.Type) == "ollama" {
+			if pane.Type.Canonical() == tmux.AgentOllama {
 				if tr := m.ensureLocalPerfTracker(st.PaneID); tr != nil {
 					tps, total, lastLat, avgLat := tr.snapshot()
 					ps.LocalTokensPerSecond = tps
@@ -4999,11 +4973,11 @@ func (m *Model) updateCostFromPrompts(now time.Time) {
 
 			if strings.EqualFold(target, "all") {
 				for _, p := range m.panes {
-					if p.Type == tmux.AgentUser {
+					if p.Type.Canonical() == tmux.AgentUser {
 						continue
 					}
 					m.costInputTokens[p.ID] += promptTokens
-					if string(p.Type) == "ollama" {
+					if p.Type.Canonical() == tmux.AgentOllama {
 						if tr := m.ensureLocalPerfTracker(p.ID); tr != nil {
 							tr.addPrompt(entry.Timestamp)
 						}
@@ -5017,11 +4991,11 @@ func (m *Model) updateCostFromPrompts(now time.Time) {
 				continue
 			}
 			pane, ok := paneByIndex[idx]
-			if !ok || pane.Type == tmux.AgentUser {
+			if !ok || pane.Type.Canonical() == tmux.AgentUser {
 				continue
 			}
 			m.costInputTokens[pane.ID] += promptTokens
-			if string(pane.Type) == "ollama" {
+			if pane.Type.Canonical() == tmux.AgentOllama {
 				if tr := m.ensureLocalPerfTracker(pane.ID); tr != nil {
 					tr.addPrompt(entry.Timestamp)
 				}
@@ -5039,12 +5013,24 @@ func (m *Model) updateCostFromPrompts(now time.Time) {
 	m.costError = nil
 }
 
+func (m *Model) resolveContextModelForPane(pane tmux.Pane) string {
+	if model := m.resolveCostModelForPane(pane); model != "" {
+		return model
+	}
+	switch pane.Type.Canonical() {
+	case tmux.AgentCursor, tmux.AgentWindsurf, tmux.AgentAider:
+		return string(pane.Type.Canonical())
+	default:
+		return ""
+	}
+}
+
 func (m *Model) resolveCostModelForPane(pane tmux.Pane) string {
 	if pane.Variant != "" {
 		return pane.Variant
 	}
 
-	switch pane.Type {
+	switch pane.Type.Canonical() {
 	case tmux.AgentClaude:
 		if m.cfg != nil && m.cfg.Models.DefaultClaude != "" {
 			return m.cfg.Models.DefaultClaude
@@ -5055,16 +5041,39 @@ func (m *Model) resolveCostModelForPane(pane tmux.Pane) string {
 			return m.cfg.Models.DefaultCodex
 		}
 		return "gpt-4"
-	case tmux.AgentGemini, tmux.AgentAntigravity:
+	case tmux.AgentGemini:
 		if m.cfg != nil && m.cfg.Models.DefaultGemini != "" {
 			return m.cfg.Models.DefaultGemini
 		}
 		return "gemini-2.0-flash"
+	case tmux.AgentAntigravity:
+		if m.cfg != nil && m.cfg.Models.DefaultAntigravity != "" {
+			return m.cfg.Models.DefaultAntigravity
+		}
+		if m.cfg != nil && m.cfg.Models.DefaultGemini != "" {
+			return m.cfg.Models.DefaultGemini
+		}
+		return config.AntigravityRequiredModel
+	case tmux.AgentGrok:
+		if m.cfg != nil {
+			return m.cfg.Models.DefaultGrok
+		}
+		return ""
 	case tmux.AgentOmp:
 		// omp chooses its own model when none is configured, so there is no
 		// safe hardcoded pricing fallback.
 		if m.cfg != nil {
 			return m.cfg.Models.DefaultOmp
+		}
+		return ""
+	case tmux.AgentOpencode:
+		if m.cfg != nil {
+			return m.cfg.Models.DefaultOpencode
+		}
+		return ""
+	case tmux.AgentOllama:
+		if m.cfg != nil {
+			return m.cfg.Models.DefaultOllama
 		}
 		return ""
 	default:

@@ -21066,6 +21066,12 @@
           "prev_status": {
             "type": "string"
           },
+          "saved_output_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "session": {
             "type": "string"
           },

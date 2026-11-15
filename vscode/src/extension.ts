@@ -4,6 +4,8 @@ import {
     AgentInfo,
     AttentionItem,
     AttentionMutationAction,
+    BackpressureLevel,
+    BackpressureResult,
     buildNtmTerminalCommand,
     buildWebCockpitCommand,
     DEFAULT_WEB_PORT,
@@ -16,6 +18,8 @@ import {
     SessionInfo,
     shellQuote,
     SpawnHarness,
+    WorktreeInfo,
+    WorktreeListResult,
 } from './ntmClient';
 import { NtmDashboard } from './dashboard';
 import { normalizeWorkspaceRelativePath, registerFileDecorations } from './fileDecorations';
@@ -80,6 +84,8 @@ export interface PaletteActionQuickPickItem extends vscode.QuickPickItem {
         | 'spawnEnsemble'
         | 'triageAttention'
         | 'openWebCockpit'
+        | 'showBackpressure'
+        | 'manageWorktrees'
         | 'dashboard'
         | 'spawn'
         | 'sendPrompt'
@@ -106,6 +112,20 @@ export const PALETTE_ACTION_OPTIONS: readonly PaletteActionQuickPickItem[] = [
         detail: 'Inspect pending attention items and acknowledge, pin, snooze, or dismiss',
         actionId: 'triageAttention',
         command: 'ntm.triageAttention',
+    },
+    {
+        label: '$(pulse) Show Swarm Backpressure',
+        description: 'NTM: Show Swarm Backpressure',
+        detail: 'Inspect queue utilization, load-shedding regime, and per-session overload buckets',
+        actionId: 'showBackpressure',
+        command: 'ntm.showBackpressure',
+    },
+    {
+        label: '$(git-branch) Manage Agent Worktrees',
+        description: 'NTM: Manage Agent Worktrees',
+        detail: 'Inspect isolated agent worktrees, create new checkouts, or merge back',
+        actionId: 'manageWorktrees',
+        command: 'ntm.manageWorktrees',
     },
     {
         label: '$(globe) Open Web Cockpit (ntm web)',
@@ -313,6 +333,184 @@ export function buildAttentionActionQuickPickItems(item?: AttentionItem): Attent
     );
 
     return actions;
+}
+
+export interface BackpressureQuickPickItem extends vscode.QuickPickItem {
+    itemAction:
+        | 'summary'
+        | 'shedPolicy'
+        | 'session'
+        | 'openSwarmCockpit'
+        | 'runBackpressureHeatmap';
+    sessionName?: string;
+}
+
+export interface WorktreeQuickPickItem extends vscode.QuickPickItem {
+    itemAction:
+        | 'worktree'
+        | 'createWorktree'
+        | 'mergeWorktree'
+        | 'openWorktreesCockpit';
+    worktree?: WorktreeInfo;
+}
+
+/**
+ * Map normalized backpressure level to a VS Code codicon.
+ */
+export function backpressureLevelIcon(level: BackpressureLevel): string {
+    switch (level) {
+        case 'overload':
+            return '$(error)';
+        case 'critical':
+            return '$(warning)';
+        case 'elevated':
+            return '$(pulse)';
+        default:
+            return '$(pass)';
+    }
+}
+
+/**
+ * Build QuickPick items summarizing overall swarm backpressure, queue utilization,
+ * load-shedding contract, per-session overload buckets, and cockpit/CLI actions.
+ */
+export function buildBackpressureQuickPickItems(
+    result: BackpressureResult
+): BackpressureQuickPickItem[] {
+    const utilPct = `${Math.round(result.utilization * 100)}%`;
+    const queueLabel = result.queue_capacity > 0
+        ? `${result.queue_depth}/${result.queue_capacity}`
+        : String(result.queue_depth);
+    const summaryDescParts = [
+        `Utilization ${utilPct}`,
+        `Queue ${queueLabel}`,
+        result.dropped_count > 0 ? `${result.dropped_count} dropped` : undefined,
+    ].filter(Boolean);
+
+    const items: BackpressureQuickPickItem[] = [
+        {
+            label: `${backpressureLevelIcon(result.level)} Overall Pressure: ${result.level.toUpperCase()} (${result.regime})`,
+            description: summaryDescParts.join(' · '),
+            detail: result.reason_codes.length > 0
+                ? `Reasons: ${result.reason_codes.join(', ')}`
+                : 'All monitored transport surfaces nominal',
+            itemAction: 'summary',
+        },
+        {
+            label: `$(shield) Load Shedding: ${result.shed_policy.decision}`,
+            description: [
+                `Action: ${result.shed_policy.recommended_action}`,
+                result.shed_policy.degraded_surface
+                    ? `Surface: ${result.shed_policy.degraded_surface}`
+                    : undefined,
+            ]
+                .filter(Boolean)
+                .join(' · '),
+            detail: [
+                result.shed_policy.retry_after_ms !== undefined
+                    ? `retry_after=${result.shed_policy.retry_after_ms}ms`
+                    : undefined,
+                result.shed_policy.reason_codes.length > 0
+                    ? `Reasons: ${result.shed_policy.reason_codes.join(', ')}`
+                    : undefined,
+            ]
+                .filter(Boolean)
+                .join(' · ') || 'No active load shedding',
+            itemAction: 'shedPolicy',
+        },
+    ];
+
+    for (const sess of result.sessions) {
+        const sessUtilPct = `${Math.round(sess.max_utilization * 100)}%`;
+        const sessQueue = sess.queue_capacity > 0
+            ? `${sess.queue_depth}/${sess.queue_capacity}`
+            : String(sess.queue_depth);
+        const sessDescParts = [
+            `${sessUtilPct} util`,
+            `queue ${sessQueue}`,
+            sess.dropped_count > 0 ? `${sess.dropped_count} dropped` : undefined,
+        ].filter(Boolean);
+        const sessDetailParts = [
+            sess.hot_surfaces.length > 0 ? `Surfaces: ${sess.hot_surfaces.join(', ')}` : undefined,
+            sess.reason_codes.length > 0 ? `Reasons: ${sess.reason_codes.join(', ')}` : undefined,
+            sess.recommended_action ? `Action: ${sess.recommended_action}` : undefined,
+        ].filter(Boolean);
+
+        items.push({
+            label: `${backpressureLevelIcon(sess.level)} Session: ${sess.session} [${sess.level}]`,
+            description: sessDescParts.join(' · '),
+            detail: sessDetailParts.join(' · ') || `Decision: ${sess.decision}`,
+            itemAction: 'session',
+            sessionName: sess.session,
+        });
+    }
+
+    items.push(
+        {
+            label: '$(globe) Open /swarm in Web Cockpit',
+            description: 'Web Cockpit (/swarm)',
+            detail: 'Inspect live overload heatmap and run synthetic scale scenarios',
+            itemAction: 'openSwarmCockpit',
+        },
+        {
+            label: '$(terminal) Run ntm health --backpressure --heatmap',
+            description: 'Integrated Terminal',
+            detail: 'Print live backpressure & heatmap report in terminal',
+            itemAction: 'runBackpressureHeatmap',
+        }
+    );
+
+    return items;
+}
+
+/**
+ * Build QuickPick items displaying active agent worktrees alongside create, merge,
+ * and Web Cockpit actions.
+ */
+export function buildWorktreeQuickPickItems(
+    result: WorktreeListResult
+): WorktreeQuickPickItem[] {
+    const items: WorktreeQuickPickItem[] = result.worktrees.map(wt => {
+        const icon = wt.status === 'error'
+            ? '$(error)'
+            : (wt.status === 'pending' ? '$(clock)' : '$(git-branch)');
+        const detailParts = [
+            wt.path,
+            wt.session_id ? `session: ${wt.session_id}` : undefined,
+            wt.error ? `error: ${wt.error}` : undefined,
+        ].filter(Boolean);
+
+        return {
+            label: `${icon} ${wt.agent_name}`,
+            description: `${wt.branch_name || 'detached'} · ${wt.status}`,
+            detail: detailParts.join(' · '),
+            itemAction: 'worktree',
+            worktree: wt,
+        };
+    });
+
+    items.push(
+        {
+            label: '$(add) Create Worktree for Agent',
+            description: 'ntm worktrees create <agent>',
+            detail: 'Provision a new isolated Git worktree for an agent',
+            itemAction: 'createWorktree',
+        },
+        {
+            label: '$(git-merge) Merge Worktree',
+            description: 'ntm worktrees merge <agent>',
+            detail: 'Merge an agent worktree branch back into main',
+            itemAction: 'mergeWorktree',
+        },
+        {
+            label: '$(globe) Open /worktrees in Web Cockpit',
+            description: 'Web Cockpit (/worktrees)',
+            detail: 'Preview 3-way merge conflicts and manage worktrees in browser',
+            itemAction: 'openWorktreesCockpit',
+        }
+    );
+
+    return items;
 }
 
 /**
@@ -891,32 +1089,180 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
     });
 
     const webCockpitCommands = new WeakMap<vscode.Terminal, string>();
+    const openWebCockpitRoute = async (routePath = ''): Promise<void> => {
+        const config = vscode.workspace.getConfiguration('ntm');
+        const port = normalizeWebPort(config.get<number>('webPort', DEFAULT_WEB_PORT));
+        const cmd = buildWebCockpitCommand(client.getBinaryPath(), port);
+
+        const openTerminals = vscode.window.terminals ?? [];
+        let terminal = openTerminals.find(
+            t => t.name === WEB_COCKPIT_TERMINAL_NAME && t.exitStatus === undefined
+        );
+        const isNewTerminal = !terminal;
+        if (!terminal) {
+            terminal = vscode.window.createTerminal({ name: WEB_COCKPIT_TERMINAL_NAME });
+        }
+
+        terminal.show(true);
+        if (isNewTerminal || webCockpitCommands.get(terminal) !== cmd) {
+            terminal.sendText(cmd, true);
+            webCockpitCommands.set(terminal, cmd);
+        }
+
+        const suffix = routePath
+            ? (routePath.startsWith('/') ? routePath : `/${routePath}`)
+            : '';
+        await vscode.env.openExternal(vscode.Uri.parse(`http://127.0.0.1:${port}${suffix}`));
+    };
+
     const dispOpenWebCockpit = vscode.commands.registerCommand('ntm.openWebCockpit', async () => {
         try {
-            const config = vscode.workspace.getConfiguration('ntm');
-            const port = normalizeWebPort(config.get<number>('webPort', DEFAULT_WEB_PORT));
-            const cmd = buildWebCockpitCommand(client.getBinaryPath(), port);
-
-            const openTerminals = vscode.window.terminals ?? [];
-            let terminal = openTerminals.find(
-                t => t.name === WEB_COCKPIT_TERMINAL_NAME && t.exitStatus === undefined
-            );
-            const isNewTerminal = !terminal;
-            if (!terminal) {
-                terminal = vscode.window.createTerminal({ name: WEB_COCKPIT_TERMINAL_NAME });
-            }
-
-            terminal.show(true);
-            if (isNewTerminal || webCockpitCommands.get(terminal) !== cmd) {
-                terminal.sendText(cmd, true);
-                webCockpitCommands.set(terminal, cmd);
-            }
-
-            await vscode.env.openExternal(vscode.Uri.parse('http://127.0.0.1:' + port));
+            await openWebCockpitRoute();
         } catch (e) {
             vscode.window.showErrorMessage(`Failed to open NTM Web Cockpit: ${e}`);
         }
     });
+
+    const dispShowBackpressure = vscode.commands.registerCommand(
+        'ntm.showBackpressure',
+        async (sessionArg?: string | NtmTreeItem) => {
+            try {
+                const explicitSession = extractSessionName(sessionArg);
+                const bp = await client.getBackpressure(explicitSession);
+                const picks = buildBackpressureQuickPickItems(bp);
+                const picked = await vscode.window.showQuickPick(picks, {
+                    placeHolder: 'NTM Swarm Backpressure & Load Shedding',
+                });
+                if (!picked) {
+                    return;
+                }
+
+                if (picked.itemAction === 'openSwarmCockpit') {
+                    await openWebCockpitRoute('/swarm');
+                } else if (picked.itemAction === 'runBackpressureHeatmap') {
+                    const terminal = vscode.window.createTerminal({ name: 'NTM Backpressure' });
+                    terminal.show(true);
+                    terminal.sendText(
+                        buildNtmTerminalCommand(client.getBinaryPath(), [
+                            'health',
+                            '--backpressure',
+                            '--heatmap',
+                        ]),
+                        true
+                    );
+                } else if (picked.itemAction === 'session' && picked.sessionName) {
+                    currentSession = picked.sessionName;
+                }
+            } catch (e) {
+                vscode.window.showErrorMessage(`Failed to fetch swarm backpressure: ${e}`);
+            }
+        }
+    );
+
+    const runWorktreeMergeInTerminal = (agentName: string): void => {
+        const trimmed = agentName.trim();
+        if (!trimmed) {
+            return;
+        }
+        const terminal = vscode.window.createTerminal({ name: `NTM Worktree Merge: ${trimmed}` });
+        terminal.show(true);
+        terminal.sendText(
+            buildNtmTerminalCommand(client.getBinaryPath(), 'worktrees', 'merge', trimmed),
+            true
+        );
+    };
+
+    const dispManageWorktrees = vscode.commands.registerCommand(
+        'ntm.manageWorktrees',
+        async (sessionArg?: string | NtmTreeItem) => {
+            try {
+                const explicitSession = extractSessionName(sessionArg);
+                const result = await client.listWorktrees(explicitSession);
+                const picks = buildWorktreeQuickPickItems(result);
+                const picked = await vscode.window.showQuickPick(picks, {
+                    placeHolder: result.worktrees.length > 0
+                        ? `NTM Agent Worktrees (${result.worktrees.length} active)`
+                        : 'No active agent worktrees — select an action',
+                });
+                if (!picked) {
+                    return;
+                }
+
+                if (picked.itemAction === 'createWorktree') {
+                    const rawAgent = await vscode.window.showInputBox({
+                        prompt: 'Agent name for new isolated worktree',
+                        placeHolder: 'e.g. BlueLake or cc_1',
+                    });
+                    const agentName = (rawAgent ?? '').trim();
+                    if (!agentName) {
+                        return;
+                    }
+                    const terminal = vscode.window.createTerminal({
+                        name: `NTM Worktree: ${agentName}`,
+                    });
+                    terminal.show(true);
+                    terminal.sendText(
+                        buildNtmTerminalCommand(
+                            client.getBinaryPath(),
+                            'worktrees',
+                            'create',
+                            agentName
+                        ),
+                        true
+                    );
+                } else if (picked.itemAction === 'mergeWorktree') {
+                    let agentName: string | undefined;
+                    if (result.worktrees.length > 0) {
+                        const wtChoices = result.worktrees.map(wt => ({
+                            label: wt.agent_name,
+                            description: wt.branch_name || undefined,
+                            detail: wt.path || undefined,
+                            agentName: wt.agent_name,
+                        }));
+                        const chosen = await vscode.window.showQuickPick(wtChoices, {
+                            placeHolder: 'Select agent worktree to merge into main',
+                        });
+                        agentName = chosen?.agentName;
+                    } else {
+                        const rawAgent = await vscode.window.showInputBox({
+                            prompt: 'Agent name for worktree merge',
+                            placeHolder: 'e.g. BlueLake',
+                        });
+                        agentName = (rawAgent ?? '').trim() || undefined;
+                    }
+                    if (agentName) {
+                        runWorktreeMergeInTerminal(agentName);
+                    }
+                } else if (picked.itemAction === 'worktree' && picked.worktree) {
+                    const wt = picked.worktree;
+                    const subAction = await vscode.window.showQuickPick(
+                        [
+                            {
+                                label: `$(git-merge) Merge Worktree (${wt.agent_name})`,
+                                description: `ntm worktrees merge ${wt.agent_name}`,
+                                action: 'merge' as const,
+                            },
+                            {
+                                label: '$(globe) Open /worktrees in Web Cockpit',
+                                description: 'Web Cockpit (/worktrees)',
+                                action: 'web' as const,
+                            },
+                        ],
+                        { placeHolder: `Worktree ${wt.agent_name} (${wt.branch_name || wt.path})` }
+                    );
+                    if (subAction?.action === 'merge') {
+                        runWorktreeMergeInTerminal(wt.agent_name);
+                    } else if (subAction?.action === 'web') {
+                        await openWebCockpitRoute('/worktrees');
+                    }
+                } else if (picked.itemAction === 'openWorktreesCockpit') {
+                    await openWebCockpitRoute('/worktrees');
+                }
+            } catch (e) {
+                vscode.window.showErrorMessage(`Failed to manage worktrees: ${e}`);
+            }
+        }
+    );
 
     context.subscriptions.push(
         dispStatus,
@@ -924,6 +1270,8 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
         dispSpawnEnsemble,
         dispTriageAttention,
         dispOpenWebCockpit,
+        dispShowBackpressure,
+        dispManageWorktrees,
         dispOpenPalette,
         dispDashboard,
         dispSendPrompt,

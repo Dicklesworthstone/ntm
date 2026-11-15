@@ -436,3 +436,52 @@ func TestRunSessionsDelete_NotFoundRoutesThroughJSONEnvelope(t *testing.T) {
 		t.Fatalf("runSessionsDelete returned %v, want errJSONFailure (not-found path must emit JSON envelope under --json)", err)
 	}
 }
+
+func TestAgentTemplateAndType_Grok(t *testing.T) {
+	prevCfg := cfg
+	cfg = config.Default()
+	cfg.Agents.Grok = "grok --always-approve{{if .Model}} --model {{shellQuote .Model}}{{end}}"
+	t.Cleanup(func() { cfg = prevCfg })
+
+	for _, rawType := range []string{"grok", "grok-build", "xai-grok-build"} {
+		tmpl, cliType, ok := agentTemplateAndType(rawType)
+		if !ok {
+			t.Fatalf("agentTemplateAndType(%q) ok = false, want true", rawType)
+		}
+		if cliType != AgentTypeGrok {
+			t.Fatalf("agentTemplateAndType(%q) cliType = %q, want %q", rawType, cliType, AgentTypeGrok)
+		}
+		if tmpl != cfg.Agents.Grok {
+			t.Fatalf("agentTemplateAndType(%q) tmpl = %q, want %q", rawType, tmpl, cfg.Agents.Grok)
+		}
+	}
+}
+
+func TestApplyModelCommands_GrokRoundTrip(t *testing.T) {
+	prevCfg := cfg
+	cfg = config.Default()
+	cfg.Agents.Grok = "grok --always-approve{{if .Model}} --model {{shellQuote .Model}}{{end}}"
+	t.Cleanup(func() { cfg = prevCfg })
+
+	state := &session.SessionState{
+		Name:    "grok-restore",
+		WorkDir: "/tmp/grok-restore",
+		Panes: []session.PaneState{
+			{Index: 1, AgentType: string(tmux.AgentGrok)},
+			{Index: 2, AgentType: "grok-build", Model: "grok-4"},
+			{Index: 3, AgentType: string(tmux.AgentGrok), SessionID: "sess-123", SessionFreshness: agentsession.BindingFresh, SessionConfidence: 0.99},
+		},
+	}
+
+	applyModelCommands(state)
+
+	if state.Panes[0].Command != "grok --always-approve" {
+		t.Fatalf("no-model Grok pane Command = %q, want %q", state.Panes[0].Command, "grok --always-approve")
+	}
+	if !strings.Contains(state.Panes[1].Command, "grok --always-approve") || !strings.Contains(state.Panes[1].Command, "--model") || !strings.Contains(state.Panes[1].Command, "grok-4") {
+		t.Fatalf("model Grok pane Command = %q, want rendered grok-4 launch command", state.Panes[1].Command)
+	}
+	if state.Panes[2].Command != "" {
+		t.Fatalf("fresh-session-bound Grok pane Command = %q, want empty so native session binding is preserved", state.Panes[2].Command)
+	}
+}

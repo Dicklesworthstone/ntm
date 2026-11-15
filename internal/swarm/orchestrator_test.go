@@ -26,7 +26,7 @@ func TestNewSessionOrchestrator(t *testing.T) {
 func TestSessionOrchestrator_CreateSessions_NilPlan(t *testing.T) {
 	orch := NewSessionOrchestrator()
 
-	result, err := orch.CreateSessions(nil)
+	result, err := orch.CreateSessionsContext(context.Background(), nil)
 
 	if err == nil {
 		t.Error("expected error for nil plan")
@@ -44,7 +44,7 @@ func TestSessionOrchestrator_CreateSessions_EmptyPlan(t *testing.T) {
 		Sessions: []SessionSpec{},
 	}
 
-	result, err := orch.CreateSessions(plan)
+	result, err := orch.CreateSessionsContext(context.Background(), plan)
 
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)

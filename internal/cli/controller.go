@@ -439,7 +439,7 @@ func controllerAgentList(panes []tmux.Pane) ([]string, int) {
 	for _, p := range panes {
 		canonical := p.Type.Canonical()
 		switch canonical {
-		case tmux.AgentClaude, tmux.AgentCodex, tmux.AgentGemini, tmux.AgentCursor, tmux.AgentWindsurf, tmux.AgentAider, tmux.AgentOpencode, tmux.AgentOmp, tmux.AgentOllama:
+		case tmux.AgentClaude, tmux.AgentCodex, tmux.AgentGemini, tmux.AgentAntigravity, tmux.AgentGrok, tmux.AgentCursor, tmux.AgentWindsurf, tmux.AgentAider, tmux.AgentOpencode, tmux.AgentOmp, tmux.AgentOllama:
 			count++
 			list = append(list, fmt.Sprintf("- Pane %d: %s", p.Index, canonical))
 		}

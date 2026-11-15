@@ -382,3 +382,23 @@ func TestRunMailInboxSessionAgentsUsesSavedRegistryIdentity(t *testing.T) {
 		t.Fatalf("expected registry-backed message in output, got:\n%s", output)
 	}
 }
+
+func TestResolveAgentName_GrokAndMultiHarness(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		pane tmux.Pane
+		want string
+	}{
+		{tmux.Pane{Index: 1, Type: tmux.AgentGrok}, "GrokAgent1"},
+		{tmux.Pane{Index: 2, Type: tmux.AgentType("grok-build")}, "GrokAgent2"},
+		{tmux.Pane{Index: 3, Type: tmux.AgentAntigravity}, "AntigravityAgent3"},
+		{tmux.Pane{Index: 4, Type: tmux.AgentOmp}, "OmpAgent4"},
+		{tmux.Pane{Index: 5, Type: tmux.AgentOpencode}, "OpencodeAgent5"},
+		{tmux.Pane{Index: 0, Type: tmux.AgentUser}, ""},
+	} {
+		if got := resolveAgentName(tc.pane); got != tc.want {
+			t.Errorf("resolveAgentName(%+v) = %q, want %q", tc.pane, got, tc.want)
+		}
+	}
+}

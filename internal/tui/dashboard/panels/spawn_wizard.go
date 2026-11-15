@@ -30,7 +30,15 @@ type SpawnWizardResult struct {
 	CodCount  int
 	GmiCount  int
 	AgyCount  int
+	GrokCount int
+	OmpCount  int
+	OcCount   int
 	Confirmed bool
+}
+
+// TotalCount returns the total number of agents configured across all harnesses.
+func (r SpawnWizardResult) TotalCount() int {
+	return r.CCCount + r.CodCount + r.GmiCount + r.AgyCount + r.GrokCount + r.OmpCount + r.OcCount
 }
 
 // SpawnWizardDoneMsg is sent when the wizard completes or is cancelled.
@@ -58,6 +66,9 @@ type SpawnWizard struct {
 	codStr     string
 	gmiStr     string
 	agyStr     string
+	grokStr    string
+	ompStr     string
+	ocStr      string
 
 	// Step 3: Confirmation
 	confirmForm *huh.Form
@@ -84,6 +95,16 @@ func NewSpawnWizard(sessionName string, width, height int) *SpawnWizard {
 func (sw *SpawnWizard) SetSize(width, height int) {
 	sw.width = width
 	sw.height = height
+	contentWidth := sw.modalContentWidth()
+	if sw.methodForm != nil {
+		sw.methodForm.WithWidth(contentWidth)
+	}
+	if sw.countsForm != nil {
+		sw.countsForm.WithWidth(contentWidth).WithHeight(sw.countsFormHeight())
+	}
+	if sw.confirmForm != nil {
+		sw.confirmForm.WithWidth(contentWidth)
+	}
 }
 
 // Size returns the wizard's current width and height.
@@ -138,11 +159,7 @@ func (sw *SpawnWizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = c
 		if sw.countsForm.State == huh.StateCompleted {
 			// Validate counts
-			cc := parseCount(sw.ccStr)
-			cod := parseCount(sw.codStr)
-			gmi := parseCount(sw.gmiStr)
-			agy := parseCount(sw.agyStr)
-			if cc+cod+gmi+agy == 0 {
+			if sw.currentResult().TotalCount() == 0 {
 				sw.err = fmt.Errorf("at least one agent is required")
 				sw.initCountsForm() // Reset form
 				return sw, sw.countsForm.Init()
@@ -159,13 +176,7 @@ func (sw *SpawnWizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmd = c
 		if sw.confirmForm.State == huh.StateCompleted {
-			result := SpawnWizardResult{
-				CCCount:   parseCount(sw.ccStr),
-				CodCount:  parseCount(sw.codStr),
-				GmiCount:  parseCount(sw.gmiStr),
-				AgyCount:  parseCount(sw.agyStr),
-				Confirmed: sw.confirmed,
-			}
+			result := sw.currentResult()
 			return sw, func() tea.Msg {
 				return SpawnWizardDoneMsg{
 					Result:    result,
@@ -178,6 +189,35 @@ func (sw *SpawnWizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return sw, cmd
 }
 
+func (sw *SpawnWizard) currentResult() SpawnWizardResult {
+	return SpawnWizardResult{
+		CCCount:   parseCount(sw.ccStr),
+		CodCount:  parseCount(sw.codStr),
+		GmiCount:  parseCount(sw.gmiStr),
+		AgyCount:  parseCount(sw.agyStr),
+		GrokCount: parseCount(sw.grokStr),
+		OmpCount:  parseCount(sw.ompStr),
+		OcCount:   parseCount(sw.ocStr),
+		Confirmed: sw.confirmed,
+	}
+}
+
+func (sw *SpawnWizard) modalBoxHeight() int {
+	modalHeight := min(28, max(14, sw.height-6))
+	if sw.height > 0 && modalHeight > sw.height-3 {
+		modalHeight = max(6, sw.height-3)
+	}
+	return modalHeight
+}
+
+func (sw *SpawnWizard) countsFormHeight() int {
+	overhead := 10
+	if sw.err != nil {
+		overhead += 2
+	}
+	return max(6, sw.modalBoxHeight()-overhead)
+}
+
 // View renders the wizard overlay.
 func (sw *SpawnWizard) View() string {
 	t := sw.theme
@@ -188,10 +228,7 @@ func (sw *SpawnWizard) View() string {
 		modalWidth = max(10, sw.width-2)
 	}
 
-	modalHeight := min(20, max(12, sw.height-10))
-	if sw.height > 0 && modalHeight > sw.height-2 {
-		modalHeight = max(6, sw.height-2)
-	}
+	modalHeight := sw.modalBoxHeight()
 
 	// Build content
 	var content strings.Builder
@@ -305,11 +342,17 @@ func (sw *SpawnWizard) initCountsForm() {
 		sw.codStr = "1"
 		sw.gmiStr = "0"
 		sw.agyStr = "1"
+		sw.grokStr = "0"
+		sw.ompStr = "0"
+		sw.ocStr = "0"
 	case "minimal":
 		sw.ccStr = "1"
 		sw.codStr = "0"
 		sw.gmiStr = "0"
 		sw.agyStr = "0"
+		sw.grokStr = "0"
+		sw.ompStr = "0"
+		sw.ocStr = "0"
 	default:
 		// Manual - keep existing values or defaults
 		if sw.ccStr == "" {
@@ -323,6 +366,15 @@ func (sw *SpawnWizard) initCountsForm() {
 		}
 		if sw.agyStr == "" {
 			sw.agyStr = "0"
+		}
+		if sw.grokStr == "" {
+			sw.grokStr = "0"
+		}
+		if sw.ompStr == "" {
+			sw.ompStr = "0"
+		}
+		if sw.ocStr == "" {
+			sw.ocStr = "0"
 		}
 	}
 
@@ -352,19 +404,36 @@ func (sw *SpawnWizard) initCountsForm() {
 				Placeholder("0").
 				Value(&sw.agyStr).
 				Validate(validateAgentCount),
+			huh.NewInput().
+				Title("Grok agents (grok)").
+				Description("Number of xAI Grok Build agents").
+				Placeholder("0").
+				Value(&sw.grokStr).
+				Validate(validateAgentCount),
+			huh.NewInput().
+				Title("Oh My Pi agents (omp)").
+				Description("Number of Oh My Pi agents").
+				Placeholder("0").
+				Value(&sw.ompStr).
+				Validate(validateAgentCount),
+			huh.NewInput().
+				Title("OpenCode agents (oc)").
+				Description("Number of OpenCode agents").
+				Placeholder("0").
+				Value(&sw.ocStr).
+				Validate(validateAgentCount),
 		),
-	).WithTheme(theme.HuhTheme()).WithWidth(sw.modalContentWidth())
+	).WithTheme(theme.HuhTheme()).WithWidth(sw.modalContentWidth()).WithHeight(sw.countsFormHeight())
 }
 
 func (sw *SpawnWizard) initConfirmForm() {
-	cc := parseCount(sw.ccStr)
-	cod := parseCount(sw.codStr)
-	gmi := parseCount(sw.gmiStr)
-	agy := parseCount(sw.agyStr)
-	total := cc + cod + gmi + agy
+	res := sw.currentResult()
+	total := res.TotalCount()
 
-	summary := fmt.Sprintf("Spawn %d agent(s):\n  Claude: %d, Codex: %d, Gemini: %d, Antigravity: %d",
-		total, cc, cod, gmi, agy)
+	summary := fmt.Sprintf(
+		"Spawn %d agent(s):\n  Claude: %d, Codex: %d, Gemini: %d, Antigravity: %d\n  Grok: %d, Omp: %d, OpenCode: %d",
+		total, res.CCCount, res.CodCount, res.GmiCount, res.AgyCount, res.GrokCount, res.OmpCount, res.OcCount,
+	)
 
 	sw.confirmForm = huh.NewForm(
 		huh.NewGroup(

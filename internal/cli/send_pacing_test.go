@@ -103,3 +103,36 @@ func sendPacingHasReason(reasons []coordinator.DispatchPacingReasonCode, want co
 	}
 	return false
 }
+
+func TestIsInterruptibleAgentPane_MultiHarness(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		paneType tmux.AgentType
+		want     bool
+	}{
+		{tmux.AgentClaude, true},
+		{tmux.AgentCodex, true},
+		{tmux.AgentGemini, true},
+		{tmux.AgentAntigravity, true},
+		{tmux.AgentType("antigravity"), true},
+		{tmux.AgentGrok, true},
+		{tmux.AgentType("grok-build"), true},
+		{tmux.AgentOmp, true},
+		{tmux.AgentType("oh-my-pi"), true},
+		{tmux.AgentOpencode, true},
+		{tmux.AgentType("opencode"), true},
+		{tmux.AgentCursor, true},
+		{tmux.AgentWindsurf, true},
+		{tmux.AgentAider, true},
+		{tmux.AgentOllama, true},
+		{tmux.AgentUser, false},
+		{tmux.AgentUnknown, false},
+		{tmux.AgentType("shell"), false},
+	} {
+		got := isInterruptibleAgentPane(tmux.Pane{Type: tc.paneType})
+		if got != tc.want {
+			t.Errorf("isInterruptibleAgentPane(%q) = %v, want %v", tc.paneType, got, tc.want)
+		}
+	}
+}

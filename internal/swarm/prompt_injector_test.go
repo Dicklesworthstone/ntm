@@ -354,7 +354,7 @@ func TestPromptInjector_GrokDirectPathsDeliverViaTmux(t *testing.T) {
 		inject func() error
 	}{
 		{name: "public", inject: func() error {
-			return injector.InjectPrompt("proj:1.2", "grok-build", "continue")
+			return injector.InjectPromptContext(context.Background(), "proj:1.2", "grok-build", "continue")
 		}},
 		{name: "direct helper", inject: func() error {
 			return injector.sendToPane(context.Background(), "proj:1.2", "xai_grok_build", "continue")

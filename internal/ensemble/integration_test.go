@@ -1,6 +1,7 @@
 package ensemble
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -132,7 +133,7 @@ func TestOutputCapture_ExtractYAML_PrefersValidBlock(t *testing.T) {
 
 func TestOutputCapture_CapturePane_Empty(t *testing.T) {
 	capture := NewOutputCapture(nil)
-	if _, err := capture.capturePane(""); err == nil {
+	if _, err := capture.capturePane(context.Background(), ""); err == nil {
 		t.Fatal("expected error for empty pane")
 	}
 }

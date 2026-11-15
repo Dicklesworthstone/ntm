@@ -335,3 +335,50 @@ func TestCopyCommandPasteFlagReadsFiltersAndWrites(t *testing.T) {
 		t.Fatalf("saved paste file = %q, want %q", string(saved), "ERROR: boom")
 	}
 }
+
+func TestCopyAgentFilter_MultiHarness(t *testing.T) {
+	t.Parallel()
+
+	cmd := newCopyCmd()
+	for _, flagName := range []string{"agy", "grok", "omp", "oc"} {
+		if cmd.Flags().Lookup(flagName) == nil {
+			t.Fatalf("expected --%s flag on copy command", flagName)
+		}
+	}
+
+	if !(AgentFilter{}).IsEmpty() {
+		t.Fatal("zero AgentFilter should be empty")
+	}
+	for _, nonEmpty := range []AgentFilter{
+		{Antigravity: true},
+		{Grok: true},
+		{Omp: true},
+		{Opencode: true},
+	} {
+		if nonEmpty.IsEmpty() {
+			t.Fatalf("expected AgentFilter %+v to be non-empty", nonEmpty)
+		}
+	}
+
+	cases := []struct {
+		filter    AgentFilter
+		agentType tmux.AgentType
+		want      bool
+	}{
+		{AgentFilter{Antigravity: true}, tmux.AgentAntigravity, true},
+		{AgentFilter{Antigravity: true}, tmux.AgentType("antigravity"), true},
+		{AgentFilter{Grok: true}, tmux.AgentGrok, true},
+		{AgentFilter{Grok: true}, tmux.AgentType("grok-build"), true},
+		{AgentFilter{Omp: true}, tmux.AgentOmp, true},
+		{AgentFilter{Omp: true}, tmux.AgentType("oh-my-pi"), true},
+		{AgentFilter{Opencode: true}, tmux.AgentOpencode, true},
+		{AgentFilter{Opencode: true}, tmux.AgentType("opencode"), true},
+		{AgentFilter{Grok: true}, tmux.AgentOpencode, false},
+		{AgentFilter{Opencode: true}, tmux.AgentUser, false},
+	}
+	for _, tc := range cases {
+		if got := tc.filter.Matches(tc.agentType); got != tc.want {
+			t.Errorf("filter %+v Matches(%q) = %v, want %v", tc.filter, tc.agentType, got, tc.want)
+		}
+	}
+}

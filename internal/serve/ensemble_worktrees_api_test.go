@@ -1121,7 +1121,7 @@ func TestAsyncEnsembleSpawnCancellationStopsRunningTmuxWork(t *testing.T) {
 	srv.mu.Unlock()
 
 	const session = "cancel-running-ensemble"
-	env := postJob(t, srv, "{\"type\":\"ensemble_spawn\",\"params\":{\"session\":\"cancel-running-ensemble\",\"question\":\"What should we investigate?\",\"modes\":[\"deductive\",\"bayesian\"]}}")
+	env := postJob(t, srv, "{\"type\":\"ensemble_spawn\",\"params\":{\"session\":\"cancel-running-ensemble\",\"question\":\"What should we investigate?\",\"modes\":[\"deductive\",\"bayesian\"],\"allow_advanced\":true}}")
 	t.Cleanup(func() { _, _ = srv.cancelJob(env.Job.ID) })
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -1220,14 +1220,14 @@ func TestEnsembleStopHTTPSavesRecoverableOutputsBeforeKill(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			rawA := "Analysis before result\n```json\n" + string(validJSON) + "\n```\n"
-			rawB := "Still investigating the second hypothesis; no final structured result yet.\n"
+			rawA := "Analysis before result\n```json\n" + string(validJSON) + "\n```"
+			rawB := "Still investigating the second hypothesis; no final structured result yet."
 			dir := t.TempDir()
 			captureA, captureB := filepath.Join(dir, "capture-a.txt"), filepath.Join(dir, "capture-b.txt")
-			if err := os.WriteFile(captureA, []byte(rawA), 0o600); err != nil {
+			if err := os.WriteFile(captureA, []byte(rawA+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(captureB, []byte(rawB), 0o600); err != nil {
+			if err := os.WriteFile(captureB, []byte(rawB+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			logPath, killedPath := filepath.Join(dir, "tmux.log"), filepath.Join(dir, "killed")

@@ -587,3 +587,68 @@ func decodeSingleScaleResponse(t *testing.T, data []byte) ScaleResponse {
 	}
 	return response
 }
+
+func TestScaleMultiHarnessSupport(t *testing.T) {
+	cmd := newScaleCmd()
+	for _, name := range []string{"agy", "grok", "omp", "oc"} {
+		if cmd.Flags().Lookup(name) == nil {
+			t.Fatalf("expected --%s flag on scale command", name)
+		}
+	}
+
+	for _, tc := range []struct {
+		agentType tmux.AgentType
+		want      string
+	}{
+		{tmux.AgentAntigravity, "agy"},
+		{tmux.AgentType("antigravity"), "agy"},
+		{tmux.AgentGrok, "grok"},
+		{tmux.AgentType("grok-build"), "grok"},
+		{tmux.AgentOmp, "omp"},
+		{tmux.AgentType("oh-my-pi"), "omp"},
+		{tmux.AgentOpencode, "oc"},
+		{tmux.AgentType("opencode"), "oc"},
+	} {
+		if got := scaleAgentTypeLabel(tc.agentType); got != tc.want {
+			t.Errorf("scaleAgentTypeLabel(%q) = %q, want %q", tc.agentType, got, tc.want)
+		}
+	}
+
+	t.Run("no_targets_error_mentions_modern_harnesses", func(t *testing.T) {
+		session := newScaleJSONTestSession(t, "cat")
+		jsonOutput = false
+
+		noTargetCmd := newScaleCmd()
+		noTargetCmd.SetOut(io.Discard)
+		noTargetCmd.SetErr(io.Discard)
+		noTargetCmd.SetArgs([]string{session})
+		err := noTargetCmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "--grok, --omp, or --oc") {
+			t.Fatalf("expected no-targets error mentioning --grok, --omp, or --oc, got: %v", err)
+		}
+	})
+
+	planOut, _ := captureScaleStdout(t, func() error {
+		printScalePlan(
+			"proj",
+			map[string]int{"grok": 0, "omp": 1, "oc": 2},
+			map[string]int{"grok": 2, "omp": 3, "oc": 0},
+			[]ScaleAction{
+				{ActionType: "spawn", AgentType: "grok", Count: 2},
+				{ActionType: "spawn", AgentType: "omp", Count: 2},
+				{ActionType: "kill", AgentType: "oc", Count: 2, Agents: []string{"proj__oc_2", "proj__oc_1"}},
+			},
+		)
+		return nil
+	})
+	text := string(planOut)
+	for _, want := range []string{
+		"Grok (grok): 0 → 2 (+2)",
+		"Oh My Pi (omp): 1 → 3 (+2)",
+		"OpenCode (oc): 2 → 0 (-2)",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("printScalePlan output missing %q:\n%s", want, text)
+		}
+	}
+}

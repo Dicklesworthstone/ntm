@@ -1,6 +1,7 @@
 package swarm
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -673,7 +674,7 @@ func TestSwarmOrchestrator_SwarmPlanValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Logf("[TEST] Testing: %s", tc.description)
 
-			_, err := orchestrator.CreateSessions(tc.plan)
+			_, err := orchestrator.CreateSessionsContext(context.Background(), tc.plan)
 
 			isValid := (err == nil)
 

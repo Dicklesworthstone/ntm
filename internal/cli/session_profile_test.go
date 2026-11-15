@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // Tests that mutate the package-level sessionProfileDirFunc are grouped into
@@ -549,4 +552,26 @@ func TestApplySessionProfileToSpawnOptions(t *testing.T) {
 			t.Errorf("InitPrompt: want empty, got %q", opts.InitPrompt)
 		}
 	})
+}
+
+func TestModelNameForPane_OpencodeFallbackAndOverride(t *testing.T) {
+	prevCfg := cfg
+	t.Cleanup(func() { cfg = prevCfg })
+
+	defaults := config.DefaultModels()
+
+	cfg = nil
+	for _, paneType := range []tmux.AgentType{tmux.AgentOpencode, tmux.AgentType("opencode")} {
+		if got := modelNameForPane(tmux.Pane{Type: paneType}); got != defaults.DefaultOpencode {
+			t.Fatalf("modelNameForPane(%q) with nil cfg = %q, want default %q", paneType, got, defaults.DefaultOpencode)
+		}
+	}
+
+	cfg = config.Default()
+	cfg.Models.DefaultOpencode = "anthropic/claude-sonnet-4-5"
+	for _, paneType := range []tmux.AgentType{tmux.AgentOpencode, tmux.AgentType("opencode")} {
+		if got := modelNameForPane(tmux.Pane{Type: paneType}); got != "anthropic/claude-sonnet-4-5" {
+			t.Fatalf("modelNameForPane(%q) with configured DefaultOpencode = %q, want anthropic/claude-sonnet-4-5", paneType, got)
+		}
+	}
 }

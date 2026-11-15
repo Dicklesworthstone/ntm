@@ -47,16 +47,22 @@ type scaleTarget struct {
 
 func newScaleCmd() *cobra.Command {
 	var (
-		targetCC  int
-		targetCod int
-		targetGmi int
-		targetAgy int
-		dryRun    bool
-		force     bool
-		setCc     bool
-		setCod    bool
-		setGmi    bool
-		setAgy    bool
+		targetCC   int
+		targetCod  int
+		targetGmi  int
+		targetAgy  int
+		targetGrok int
+		targetOmp  int
+		targetOc   int
+		dryRun     bool
+		force      bool
+		setCc      bool
+		setCod     bool
+		setGmi     bool
+		setAgy     bool
+		setGrok    bool
+		setOmp     bool
+		setOc      bool
 	)
 
 	cmd := &cobra.Command{
@@ -80,6 +86,9 @@ Examples:
 			setCod = cmd.Flags().Changed("cod")
 			setGmi = cmd.Flags().Changed("gmi")
 			setAgy = cmd.Flags().Changed("agy")
+			setGrok = cmd.Flags().Changed("grok")
+			setOmp = cmd.Flags().Changed("omp")
+			setOc = cmd.Flags().Changed("oc")
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			session := args[0]
@@ -89,6 +98,9 @@ Examples:
 				{agentType: AgentTypeCodex, count: targetCod, set: setCod},
 				{agentType: AgentTypeGemini, count: targetGmi, set: setGmi},
 				{agentType: AgentTypeAntigravity, count: targetAgy, set: setAgy},
+				{agentType: AgentTypeGrok, count: targetGrok, set: setGrok},
+				{agentType: AgentTypeOmp, count: targetOmp, set: setOmp},
+				{agentType: AgentTypeOpencode, count: targetOc, set: setOc},
 			}
 
 			return runScale(cmd.Context(), session, targets, dryRun, force)
@@ -99,6 +111,9 @@ Examples:
 	cmd.Flags().IntVar(&targetCod, "cod", 0, "Target Codex agent count")
 	cmd.Flags().IntVar(&targetGmi, "gmi", 0, "Target Gemini agent count")
 	cmd.Flags().IntVar(&targetAgy, "agy", 0, "Target Antigravity agent count")
+	cmd.Flags().IntVar(&targetGrok, "grok", 0, "Target Grok Build agent count")
+	cmd.Flags().IntVar(&targetOmp, "omp", 0, "Target Oh My Pi (omp) agent count")
+	cmd.Flags().IntVar(&targetOc, "oc", 0, "Target OpenCode (oc) agent count")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview changes without executing")
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Skip confirmation on scale-down")
 
@@ -160,7 +175,7 @@ func runScale(ctx context.Context, session string, targets []scaleTarget, dryRun
 		}
 	}
 	if !anySet {
-		return outputError(fmt.Errorf("no target counts specified (use --cc, --cod, --gmi, or --agy)"))
+		return outputError(fmt.Errorf("no target counts specified (use --cc, --cod, --gmi, --agy, --grok, --omp, or --oc)"))
 	}
 
 	// Validate target counts
@@ -190,10 +205,13 @@ func runScale(ctx context.Context, session string, targets []scaleTarget, dryRun
 
 	// Build before snapshot
 	before := map[string]int{
-		"cc":  currentCounts["cc"],
-		"cod": currentCounts["cod"],
-		"gmi": currentCounts["gmi"],
-		"agy": currentCounts["agy"],
+		"cc":   currentCounts["cc"],
+		"cod":  currentCounts["cod"],
+		"gmi":  currentCounts["gmi"],
+		"agy":  currentCounts["agy"],
+		"grok": currentCounts["grok"],
+		"omp":  currentCounts["omp"],
+		"oc":   currentCounts["oc"],
 	}
 
 	// Calculate deltas and build actions
@@ -508,8 +526,9 @@ func runScale(ctx context.Context, session string, targets []scaleTarget, dryRun
 		return emitJSONFailureEnvelope(resp)
 	}
 
-	fmt.Printf("\nScaling complete. Current state: cc=%d, cod=%d, gmi=%d, agy=%d\n",
-		finalCounts["cc"], finalCounts["cod"], finalCounts["gmi"], finalCounts["agy"])
+	fmt.Printf("\nScaling complete. Current state: cc=%d, cod=%d, gmi=%d, agy=%d, grok=%d, omp=%d, oc=%d\n",
+		finalCounts["cc"], finalCounts["cod"], finalCounts["gmi"], finalCounts["agy"],
+		finalCounts["grok"], finalCounts["omp"], finalCounts["oc"])
 
 	if len(operationErrors) > 0 {
 		fmt.Println("\nErrors encountered:")
@@ -561,6 +580,12 @@ func scaleAgentTypeLabel(t tmux.AgentType) string {
 		return "gmi"
 	case tmux.AgentAntigravity:
 		return "agy"
+	case tmux.AgentGrok:
+		return "grok"
+	case tmux.AgentOmp:
+		return "omp"
+	case tmux.AgentOpencode:
+		return "oc"
 	case tmux.AgentUser:
 		return "user"
 	default:
@@ -572,8 +597,16 @@ func scaleAgentTypeLabel(t tmux.AgentType) string {
 func printScalePlan(session string, before, after map[string]int, actions []ScaleAction) {
 	fmt.Printf("Scale plan for session '%s':\n\n", session)
 
-	types := []string{"cc", "cod", "gmi", "agy"}
-	labels := map[string]string{"cc": "Claude", "cod": "Codex", "gmi": "Gemini", "agy": "Antigravity"}
+	types := []string{"cc", "cod", "gmi", "agy", "grok", "omp", "oc"}
+	labels := map[string]string{
+		"cc":   "Claude",
+		"cod":  "Codex",
+		"gmi":  "Gemini",
+		"agy":  "Antigravity",
+		"grok": "Grok",
+		"omp":  "Oh My Pi",
+		"oc":   "OpenCode",
+	}
 
 	for _, t := range types {
 		b := before[t]

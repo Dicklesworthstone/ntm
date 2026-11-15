@@ -88,12 +88,6 @@ type OrchestrationResult struct {
 	Errors          []error
 }
 
-// CreateSessions creates all sessions defined in the SwarmPlan.
-// It creates sessions, splits panes, sets titles, and applies tiled layout.
-func (o *SessionOrchestrator) CreateSessions(plan *SwarmPlan) (*OrchestrationResult, error) {
-	return o.CreateSessionsContext(context.Background(), plan)
-}
-
 // CreateSessionsContext preserves completed creations if cancellation interrupts
 // the workflow. Sessions and panes remain available for inspection and recovery.
 func (o *SessionOrchestrator) CreateSessionsContext(ctx context.Context, plan *SwarmPlan) (*OrchestrationResult, error) {

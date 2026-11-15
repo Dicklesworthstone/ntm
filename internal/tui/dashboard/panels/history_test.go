@@ -633,6 +633,17 @@ func TestHistoryPanel_FilterAgentCycle_UsesPaneMeta(t *testing.T) {
 		t.Fatalf("expected 0 visible entries after Gemini filter, got %d", got)
 	}
 
+	// a => Antigravity, Grok, Omp, OpenCode (none in this fixture)
+	for _, wantLabel := range []string{"Antigravity", "Grok", "Omp", "OpenCode"} {
+		panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+		if got := panel.agentFilter.Label(); got != wantLabel {
+			t.Fatalf("agentFilter.Label() = %q, want %q", got, wantLabel)
+		}
+		if got := len(panel.visibleEntries); got != 0 {
+			t.Fatalf("expected 0 visible entries after %s filter, got %d", wantLabel, got)
+		}
+	}
+
 	// a => Any (all)
 	panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
 	if got := len(panel.visibleEntries); got != 2 {
@@ -700,5 +711,115 @@ func TestHistoryPanel_PreviewOverlayToggleAndCopyMsg(t *testing.T) {
 	panel.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if panel.showPreview {
 		t.Fatal("expected preview overlay to be closed after Esc")
+	}
+}
+
+func TestHistoryAgentFilter_FullEightStateCycle(t *testing.T) {
+	t.Parallel()
+
+	steps := []struct {
+		filter    historyAgentFilter
+		wantLabel string
+		wantType  tmux.AgentType
+	}{
+		{historyAgentAll, "any", ""},
+		{historyAgentClaude, "Claude", tmux.AgentClaude},
+		{historyAgentCodex, "Codex", tmux.AgentCodex},
+		{historyAgentGemini, "Gemini", tmux.AgentGemini},
+		{historyAgentAntigravity, "Antigravity", tmux.AgentAntigravity},
+		{historyAgentGrok, "Grok", tmux.AgentGrok},
+		{historyAgentOmp, "Omp", tmux.AgentOmp},
+		{historyAgentOpencode, "OpenCode", tmux.AgentOpencode},
+	}
+
+	cur := historyAgentAll
+	for i, step := range steps {
+		if cur != step.filter {
+			t.Fatalf("step %d filter = %v, want %v", i, cur, step.filter)
+		}
+		if got := cur.Label(); got != step.wantLabel {
+			t.Fatalf("step %d Label() = %q, want %q", i, got, step.wantLabel)
+		}
+		if got := cur.AgentType(); got != step.wantType {
+			t.Fatalf("step %d AgentType() = %q, want %q", i, got, step.wantType)
+		}
+		cur = cur.Next()
+	}
+	if cur != historyAgentAll {
+		t.Fatalf("expected cycle to wrap back to historyAgentAll, got %v", cur)
+	}
+}
+
+func TestHistoryPanel_FilterAgentCanonicalMatching(t *testing.T) {
+	t.Parallel()
+
+	panel := NewHistoryPanel()
+	panel.SetSize(100, 24)
+	panel.Focus()
+
+	now := time.Now().UTC()
+	entries := []history.HistoryEntry{
+		// Matched via SetPanes canonicalizing alias "antigravity" -> "agy".
+		{ID: "agy-pane", Prompt: "antigravity via pane", Targets: []string{"1"}, Success: true, Timestamp: now},
+		// Matched via target prefix "agy_2".
+		{ID: "agy-target", Prompt: "antigravity via target", Targets: []string{"agy_2"}, Success: true, Timestamp: now},
+		// Matched via bare alias target "grok-build".
+		{ID: "grok-alias", Prompt: "grok via alias", Targets: []string{"grok-build"}, Success: true, Timestamp: now},
+		// Matched via AgentTypes slice alias "oh-my-pi".
+		{ID: "omp-types", Prompt: "omp via agent_types", Targets: []string{"99"}, AgentTypes: []string{"oh-my-pi"}, Success: true, Timestamp: now},
+		// Matched via short prefix "oc_1" AND bare "opencode" against OpenCode filter.
+		{ID: "oc-prefix", Prompt: "opencode via oc_1", Targets: []string{"oc_1"}, Success: true, Timestamp: now},
+		{ID: "oc-types", Prompt: "opencode via oc type", Targets: []string{"98"}, AgentTypes: []string{"oc"}, Success: true, Timestamp: now},
+	}
+	panel.SetEntries(entries, nil)
+	panel.SetPanes([]tmux.Pane{
+		{ID: "%1", Index: 1, Type: tmux.AgentType("antigravity"), NTMIndex: 1, Title: "sess__agy_1"},
+	})
+
+	// Advance: All -> Claude -> Codex -> Gemini -> Antigravity
+	for i := 0; i < 4; i++ {
+		panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	}
+	if got := panel.agentFilter; got != historyAgentAntigravity {
+		t.Fatalf("expected historyAgentAntigravity, got %v (%s)", got, got.Label())
+	}
+	if got := len(panel.visibleEntries); got != 2 || panel.visibleEntries[0].ID != "agy-pane" || panel.visibleEntries[1].ID != "agy-target" {
+		t.Fatalf("Antigravity visible entries = %+v, want [agy-pane, agy-target]", panel.visibleEntries)
+	}
+
+	// Next: Grok
+	panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if got := panel.agentFilter; got != historyAgentGrok {
+		t.Fatalf("expected historyAgentGrok, got %v", got)
+	}
+	if got := len(panel.visibleEntries); got != 1 || panel.visibleEntries[0].ID != "grok-alias" {
+		t.Fatalf("Grok visible entries = %+v, want [grok-alias]", panel.visibleEntries)
+	}
+
+	// Next: Omp
+	panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if got := panel.agentFilter; got != historyAgentOmp {
+		t.Fatalf("expected historyAgentOmp, got %v", got)
+	}
+	if got := len(panel.visibleEntries); got != 1 || panel.visibleEntries[0].ID != "omp-types" {
+		t.Fatalf("Omp visible entries = %+v, want [omp-types]", panel.visibleEntries)
+	}
+
+	// Next: OpenCode
+	panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if got := panel.agentFilter; got != historyAgentOpencode {
+		t.Fatalf("expected historyAgentOpencode, got %v", got)
+	}
+	if got := len(panel.visibleEntries); got != 2 || panel.visibleEntries[0].ID != "oc-prefix" || panel.visibleEntries[1].ID != "oc-types" {
+		t.Fatalf("OpenCode visible entries = %+v, want [oc-prefix, oc-types]", panel.visibleEntries)
+	}
+
+	// Next: wraps to All
+	panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if got := panel.agentFilter; got != historyAgentAll {
+		t.Fatalf("expected wrap to historyAgentAll, got %v", got)
+	}
+	if got := len(panel.visibleEntries); got != len(entries) {
+		t.Fatalf("All visible entries = %d, want %d", got, len(entries))
 	}
 }

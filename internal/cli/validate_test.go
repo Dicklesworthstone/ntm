@@ -853,3 +853,45 @@ func TestValidateAgentExecutables_BareCommandFlowsThrough(t *testing.T) {
 		)
 	}
 }
+
+func TestValidateMainConfigReferences_GrokAndOpencodePromptFiles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.ProjectsBase = dir
+	cfg.Prompts.GrokDefaultFile = filepath.Join(dir, "missing_grok_prompt.md")
+	cfg.Prompts.OcDefaultFile = filepath.Join(dir, "missing_oc_prompt.md")
+
+	missingResult := &ValidationResult{Valid: true, Errors: []ValidationIssue{}, Warnings: []ValidationIssue{}}
+	validateMainConfigReferences(cfg, missingResult, false)
+
+	warnFields := make(map[string]bool)
+	for _, w := range missingResult.Warnings {
+		warnFields[w.Field] = true
+	}
+	for _, field := range []string{"prompts.grok_default_file", "prompts.oc_default_file"} {
+		if !warnFields[field] {
+			t.Fatalf("expected warning for %s, got warnings=%+v", field, missingResult.Warnings)
+		}
+	}
+
+	validGrok := filepath.Join(dir, "grok_prompt.md")
+	validOc := filepath.Join(dir, "oc_prompt.md")
+	if err := os.WriteFile(validGrok, []byte("grok prompt\n"), 0o600); err != nil {
+		t.Fatalf("write grok prompt: %v", err)
+	}
+	if err := os.WriteFile(validOc, []byte("oc prompt\n"), 0o600); err != nil {
+		t.Fatalf("write oc prompt: %v", err)
+	}
+	cfg.Prompts.GrokDefaultFile = validGrok
+	cfg.Prompts.OcDefaultFile = validOc
+
+	validResult := &ValidationResult{Valid: true, Errors: []ValidationIssue{}, Warnings: []ValidationIssue{}}
+	validateMainConfigReferences(cfg, validResult, false)
+	for _, w := range validResult.Warnings {
+		if w.Field == "prompts.grok_default_file" || w.Field == "prompts.oc_default_file" {
+			t.Fatalf("unexpected warning for existing prompt file: %+v", w)
+		}
+	}
+}

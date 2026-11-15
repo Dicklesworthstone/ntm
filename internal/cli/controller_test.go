@@ -594,3 +594,37 @@ func TestControllerReusablePane(t *testing.T) {
 		})
 	}
 }
+
+func TestControllerAgentList_MultiHarness(t *testing.T) {
+	t.Parallel()
+
+	panes := []tmux.Pane{
+		{Index: 0, Type: tmux.AgentUser},
+		{Index: 1, Type: tmux.AgentAntigravity},
+		{Index: 2, Type: tmux.AgentType("antigravity")},
+		{Index: 3, Type: tmux.AgentGrok},
+		{Index: 4, Type: tmux.AgentType("grok-build")},
+		{Index: 5, Type: tmux.AgentOmp},
+		{Index: 6, Type: tmux.AgentType("opencode")},
+		{Index: 7, Type: tmux.AgentUnknown},
+	}
+
+	list, count := controllerAgentList(panes)
+	if count != 6 || len(list) != 6 {
+		t.Fatalf("controllerAgentList() count=%d list=%v, want 6 agent entries", count, list)
+	}
+
+	want := []string{
+		"- Pane 1: agy",
+		"- Pane 2: agy",
+		"- Pane 3: grok",
+		"- Pane 4: grok",
+		"- Pane 5: omp",
+		"- Pane 6: oc",
+	}
+	for i := range want {
+		if list[i] != want[i] {
+			t.Errorf("list[%d] = %q, want %q", i, list[i], want[i])
+		}
+	}
+}

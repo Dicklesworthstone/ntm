@@ -260,3 +260,70 @@ func TestGlobalMatrix(t *testing.T) {
 		t.Errorf("GetAgentScoreByString != GlobalMatrix().GetScore: %f vs %f", score1, score2)
 	}
 }
+
+func TestDefaultCapabilities_GrokAndOpencode(t *testing.T) {
+	allTasks := []TaskType{
+		TaskRefactor,
+		TaskAnalysis,
+		TaskDocs,
+		TaskDocumentation,
+		TaskBug,
+		TaskFeature,
+		TaskTesting,
+		TaskTask,
+		TaskChore,
+		TaskEpic,
+	}
+
+	m := NewCapabilityMatrix()
+	for _, agentType := range []tmux.AgentType{tmux.AgentGrok, tmux.AgentOpencode, tmux.AgentOmp, tmux.AgentAntigravity} {
+		caps, ok := DefaultCapabilities[agentType]
+		if !ok {
+			t.Fatalf("DefaultCapabilities missing %q", agentType)
+		}
+		for _, task := range allTasks {
+			score, exists := caps[task]
+			if !exists {
+				t.Errorf("DefaultCapabilities[%s] missing task %s", agentType, task)
+			}
+			if score <= 0.5 || score > 1.0 {
+				t.Errorf("DefaultCapabilities[%s][%s] = %f, want calibrated score in (0.5, 1.0]", agentType, task, score)
+			}
+			if got := m.GetScore(agentType, task); got != score {
+				t.Errorf("matrix.GetScore(%s, %s) = %f, want %f", agentType, task, got, score)
+			}
+		}
+	}
+}
+
+func TestParseAgentType_GrokAndOpencode(t *testing.T) {
+	tests := []struct {
+		input string
+		want  tmux.AgentType
+	}{
+		{"grok", tmux.AgentGrok},
+		{"grok-build", tmux.AgentGrok},
+		{"xai-grok-build", tmux.AgentGrok},
+		{"GROK", tmux.AgentGrok},
+		{"oc", tmux.AgentOpencode},
+		{"opencode", tmux.AgentOpencode},
+		{"opencode-cli", tmux.AgentOpencode},
+		{"open-code", tmux.AgentOpencode},
+		{"OC", tmux.AgentOpencode},
+		{"omp", tmux.AgentOmp},
+		{"oh-my-pi", tmux.AgentOmp},
+		{"agy", tmux.AgentAntigravity},
+		{"antigravity", tmux.AgentAntigravity},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			if got := ParseAgentType(tc.input); got != tc.want {
+				t.Fatalf("ParseAgentType(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+			if score := GetAgentScoreByString(tc.input, "feature"); score <= 0.5 {
+				t.Fatalf("GetAgentScoreByString(%q, \"feature\") = %f, want > 0.5", tc.input, score)
+			}
+		})
+	}
+}

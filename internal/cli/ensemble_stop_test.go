@@ -167,12 +167,12 @@ func TestEnsembleStopCommandPreservesPartialOutputFromLiveSessions(t *testing.T)
 			t.Cleanup(func() { jsonOutput = oldJSON })
 
 			const session = "cli-durable-stop"
-			const transcript = "Partial investigation: still checking the failing request path.\n"
+			const transcript = "Partial investigation: still checking the failing request path."
 			dir := t.TempDir()
 			capturePath := filepath.Join(dir, "capture.txt")
 			logPath := filepath.Join(dir, "tmux.log")
 			killedPath := filepath.Join(dir, "killed")
-			if err := os.WriteFile(capturePath, []byte(transcript), 0o600); err != nil {
+			if err := os.WriteFile(capturePath, []byte(transcript+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("NTM_CLI_STOP_CAPTURE", capturePath)

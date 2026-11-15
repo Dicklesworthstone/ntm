@@ -16,6 +16,7 @@ ntm spawn myproject --label backend --cc=2 --worktrees
 ntm spawn myproject --no-user --cc=5 --cod=5
 ntm add myproject --cc=2
 ntm add myproject --label frontend --cc=1
+ntm scale myproject --cc=2 --grok=1 --omp=1 --oc=1 --dry-run
 
 ntm list
 ntm status myproject
@@ -77,6 +78,8 @@ ntm send myproject --all --randomize
 ntm copy myproject:1
 ntm copy myproject --all
 ntm copy myproject --cc
+ntm copy myproject --grok
+ntm copy myproject --omp --oc
 ntm copy myproject --code
 ntm save myproject
 
@@ -186,6 +189,7 @@ ntm history search "authentication error"
 ntm audit show myproject
 ntm conflicts myproject
 ntm resume myproject
+ntm resume myproject --spawn --grok=1 --omp=1 --oc=1
 ```
 
 `mail session-start` runs the Agent Mail bootstrap macro and saves the returned

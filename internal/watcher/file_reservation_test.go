@@ -1419,3 +1419,84 @@ func TestExtractEditedFilesIgnoresProseTokens(t *testing.T) {
 		t.Fatalf("expected main.go to be detected, got %v", got)
 	}
 }
+
+func TestMapAgentTypeToPatternAgent_MultiHarness(t *testing.T) {
+	tests := []struct {
+		input tmux.AgentType
+		want  string
+	}{
+		{tmux.AgentClaude, "claude"},
+		{tmux.AgentType("claude-code"), "claude"},
+		{tmux.AgentCodex, "codex"},
+		{tmux.AgentGemini, "gemini"},
+		{tmux.AgentAntigravity, "antigravity"},
+		{tmux.AgentType("antigravity"), "antigravity"},
+		{tmux.AgentGrok, "grok"},
+		{tmux.AgentType("grok-build"), "grok"},
+		{tmux.AgentOmp, "omp"},
+		{tmux.AgentType("oh-my-pi"), "omp"},
+		{tmux.AgentOpencode, "opencode"},
+		{tmux.AgentType("opencode"), "opencode"},
+		{tmux.AgentUser, "*"},
+	}
+
+	for _, tc := range tests {
+		if got := mapAgentTypeToPatternAgent(tc.input); got != tc.want {
+			t.Errorf("mapAgentTypeToPatternAgent(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestExtractEditedFiles_MultiHarnessPatterns(t *testing.T) {
+	projectDir := t.TempDir()
+	for _, rel := range []string{"agy.go", "grok.go", "omp.go", "oc.go"} {
+		if err := os.WriteFile(filepath.Join(projectDir, rel), []byte("package p\n"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	cases := []struct {
+		name      string
+		paneType  tmux.AgentType
+		output    string
+		wantMatch string
+	}{
+		{
+			name:      "antigravity tool Path",
+			paneType:  tmux.AgentAntigravity,
+			output:    `{"Path": "agy.go"}`,
+			wantMatch: "agy.go",
+		},
+		{
+			name:      "grok prose modified",
+			paneType:  tmux.AgentGrok,
+			output:    "Modified file grok.go successfully\n",
+			wantMatch: "grok.go",
+		},
+		{
+			name:      "omp tool path",
+			paneType:  tmux.AgentOmp,
+			output:    `{"path": "omp.go"}`,
+			wantMatch: "omp.go",
+		},
+		{
+			name:      "opencode tool filePath",
+			paneType:  tmux.AgentOpencode,
+			output:    `{"filePath": "oc.go"}`,
+			wantMatch: "oc.go",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			patternAgent := mapAgentTypeToPatternAgent(tc.paneType)
+			got := extractEditedFiles(tc.output, patternAgent, projectDir)
+			for _, f := range got {
+				if f == tc.wantMatch {
+					return
+				}
+			}
+			t.Fatalf("extractEditedFiles(%q) = %v, want %q", patternAgent, got, tc.wantMatch)
+		})
+	}
+}

@@ -328,6 +328,95 @@ export interface AttentionMutationResult {
     snoozed_until?: string;
 }
 
+export type BackpressureLevel = 'normal' | 'elevated' | 'critical' | 'overload';
+
+export interface BackpressureSurfaceReport {
+    surface: string;
+    session?: string;
+    pane?: string;
+    command?: string;
+    queue_depth: number;
+    queue_capacity?: number;
+    dropped_count: number;
+    latency_ms: number;
+    client_lag_ms?: number;
+    decision: string;
+    reason_codes: string[];
+}
+
+export interface BackpressureHeatmapBucket {
+    heatmap_bucket: string;
+    surface: string;
+    session?: string;
+    pane?: string;
+    severity: string;
+    decision?: string;
+    score: number;
+    retry_after_ms?: number;
+    reason_codes: string[];
+    recommended_action: string;
+}
+
+export interface BackpressureLoadShedding {
+    schema_version?: string;
+    decision: string;
+    error_code?: string;
+    retry_after_ms?: number;
+    degraded_surface?: string;
+    recommended_action: string;
+    reason_codes: string[];
+}
+
+export interface BackpressureSessionSummary {
+    session: string;
+    level: BackpressureLevel;
+    decision: string;
+    max_utilization: number;
+    queue_depth: number;
+    queue_capacity: number;
+    dropped_count: number;
+    hot_surfaces: string[];
+    reason_codes: string[];
+    recommended_action?: string;
+}
+
+export interface BackpressureResult {
+    success: boolean;
+    timestamp: string;
+    session?: string;
+    level: BackpressureLevel;
+    regime: string;
+    decision: string;
+    utilization: number;
+    queue_depth: number;
+    queue_capacity: number;
+    dropped_count: number;
+    retry_after_ms?: number;
+    reason_codes: string[];
+    shed_policy: BackpressureLoadShedding;
+    surfaces: BackpressureSurfaceReport[];
+    buckets: BackpressureHeatmapBucket[];
+    sessions: BackpressureSessionSummary[];
+    recommended_actions: string[];
+    hint?: string;
+}
+
+export interface WorktreeInfo {
+    agent_name: string;
+    branch_name: string;
+    path: string;
+    session_id: string;
+    created: boolean;
+    status: 'active' | 'pending' | 'error';
+    error?: string;
+}
+
+export interface WorktreeListResult {
+    session: string;
+    total: number;
+    worktrees: WorktreeInfo[];
+}
+
 export type ExecFileRunner = (
     file: string,
     args: string[],
@@ -966,6 +1055,327 @@ export function normalizeAttentionMutation(raw: unknown): AttentionMutationResul
     };
 }
 
+const BACKPRESSURE_LEVEL_ORDER: Record<BackpressureLevel, number> = {
+    normal: 0,
+    elevated: 1,
+    critical: 2,
+    overload: 3,
+};
+
+/**
+ * Map a backpressure decision/severity/regime token to a normalized `BackpressureLevel`.
+ */
+export function mapBackpressureLevel(raw?: string): BackpressureLevel {
+    switch ((raw ?? '').trim().toLowerCase()) {
+        case 'degrade':
+        case 'overload':
+        case 'shed':
+            return 'overload';
+        case 'defer':
+        case 'critical':
+        case 'warning':
+        case 'high':
+            return 'critical';
+        case 'coalesce':
+        case 'elevated':
+        case 'watch':
+            return 'elevated';
+        default:
+            return 'normal';
+    }
+}
+
+/**
+ * Normalize an `ntm --robot-backpressure` JSON payload into `BackpressureResult`.
+ */
+export function normalizeBackpressure(raw: unknown): BackpressureResult {
+    const obj = assertSuccessPayload(raw, 'backpressure');
+    const bp = asRecord(obj.backpressure);
+    const dash = asRecord(obj.dashboard);
+    const heatmap = asRecord(obj.heatmap) ?? asRecord(bp?.heatmap);
+    const shedRaw = asRecord(obj.load_shedding) ?? asRecord(obj.shed_policy);
+
+    const decision = typeof bp?.decision === 'string' && bp.decision.length > 0
+        ? bp.decision
+        : (typeof obj.regime === 'string' && obj.regime.length > 0
+            ? obj.regime
+            : (typeof dash?.decision === 'string' && dash.decision.length > 0 ? dash.decision : 'ok'));
+
+    const explicitLevel = typeof obj.level === 'string' && obj.level.length > 0 ? obj.level : decision;
+    const level = mapBackpressureLevel(explicitLevel);
+
+    const surfaces: BackpressureSurfaceReport[] = Array.isArray(bp?.surfaces)
+        ? bp.surfaces
+            .map(entry => {
+                const s = asRecord(entry);
+                if (!s || typeof s.surface !== 'string') {
+                    return undefined;
+                }
+                const report: BackpressureSurfaceReport = {
+                    surface: s.surface,
+                    session: typeof s.session === 'string' && s.session.length > 0 ? s.session : undefined,
+                    pane: typeof s.pane === 'string' && s.pane.length > 0 ? s.pane : undefined,
+                    command: typeof s.command === 'string' && s.command.length > 0 ? s.command : undefined,
+                    queue_depth: typeof s.queue_depth === 'number' && Number.isFinite(s.queue_depth) ? s.queue_depth : 0,
+                    queue_capacity: typeof s.queue_capacity === 'number' && Number.isFinite(s.queue_capacity)
+                        ? s.queue_capacity
+                        : undefined,
+                    dropped_count: typeof s.dropped_count === 'number' && Number.isFinite(s.dropped_count)
+                        ? s.dropped_count
+                        : 0,
+                    latency_ms: typeof s.latency_ms === 'number' && Number.isFinite(s.latency_ms) ? s.latency_ms : 0,
+                    client_lag_ms: typeof s.client_lag_ms === 'number' && Number.isFinite(s.client_lag_ms)
+                        ? s.client_lag_ms
+                        : undefined,
+                    decision: typeof s.decision === 'string' && s.decision.length > 0 ? s.decision : 'ok',
+                    reason_codes: toStringArray(s.reason_codes),
+                };
+                return report;
+            })
+            .filter((s): s is BackpressureSurfaceReport => s !== undefined)
+        : [];
+
+    const buckets: BackpressureHeatmapBucket[] = Array.isArray(heatmap?.buckets)
+        ? heatmap.buckets
+            .map(entry => {
+                const b = asRecord(entry);
+                if (!b) {
+                    return undefined;
+                }
+                const bucketName = typeof b.heatmap_bucket === 'string' && b.heatmap_bucket.length > 0
+                    ? b.heatmap_bucket
+                    : (typeof b.surface === 'string' ? b.surface : 'host');
+                const bucket: BackpressureHeatmapBucket = {
+                    heatmap_bucket: bucketName,
+                    surface: typeof b.surface === 'string' ? b.surface : 'host',
+                    session: typeof b.session === 'string' && b.session.length > 0 ? b.session : undefined,
+                    pane: typeof b.pane === 'string' && b.pane.length > 0 ? b.pane : undefined,
+                    severity: typeof b.severity === 'string' && b.severity.length > 0 ? b.severity : 'info',
+                    decision: typeof b.decision === 'string' ? b.decision : undefined,
+                    score: typeof b.score === 'number' && Number.isFinite(b.score) ? b.score : 0,
+                    retry_after_ms: typeof b.retry_after_ms === 'number' ? b.retry_after_ms : undefined,
+                    reason_codes: toStringArray(b.reason_codes),
+                    recommended_action: typeof b.recommended_action === 'string' ? b.recommended_action : '',
+                };
+                return bucket;
+            })
+            .filter((b): b is BackpressureHeatmapBucket => b !== undefined)
+        : [];
+
+    let totalDepth = 0;
+    let totalCapacity = 0;
+    let totalDropped = 0;
+    let maxUtilization = typeof obj.utilization === 'number' && Number.isFinite(obj.utilization)
+        ? Math.max(0, obj.utilization)
+        : 0;
+
+    for (const s of surfaces) {
+        totalDepth += s.queue_depth;
+        totalDropped += s.dropped_count;
+        if (typeof s.queue_capacity === 'number' && s.queue_capacity > 0) {
+            totalCapacity += s.queue_capacity;
+            const ratio = s.queue_depth / s.queue_capacity;
+            if (ratio > maxUtilization) {
+                maxUtilization = ratio;
+            }
+        }
+    }
+
+    const shed_policy: BackpressureLoadShedding = {
+        schema_version: typeof shedRaw?.schema_version === 'string' ? shedRaw.schema_version : undefined,
+        decision: typeof shedRaw?.decision === 'string' && shedRaw.decision.length > 0 ? shedRaw.decision : decision,
+        error_code: typeof shedRaw?.error_code === 'string' && shedRaw.error_code.length > 0
+            ? shedRaw.error_code
+            : undefined,
+        retry_after_ms: typeof shedRaw?.retry_after_ms === 'number' ? shedRaw.retry_after_ms : undefined,
+        degraded_surface: typeof shedRaw?.degraded_surface === 'string' && shedRaw.degraded_surface.length > 0
+            ? shedRaw.degraded_surface
+            : undefined,
+        recommended_action: typeof shedRaw?.recommended_action === 'string' && shedRaw.recommended_action.length > 0
+            ? shedRaw.recommended_action
+            : 'none',
+        reason_codes: toStringArray(shedRaw?.reason_codes),
+    };
+
+    // Aggregate per-session overload summaries from explicit sessions, surfaces, and heatmap buckets
+    const sessionMap = new Map<string, BackpressureSessionSummary>();
+    const ensureSession = (sessionName: string): BackpressureSessionSummary => {
+        const existing = sessionMap.get(sessionName);
+        if (existing) {
+            return existing;
+        }
+        const created: BackpressureSessionSummary = {
+            session: sessionName,
+            level: 'normal',
+            decision: 'ok',
+            max_utilization: 0,
+            queue_depth: 0,
+            queue_capacity: 0,
+            dropped_count: 0,
+            hot_surfaces: [],
+            reason_codes: [],
+        };
+        sessionMap.set(sessionName, created);
+        return created;
+    };
+
+    const promoteSessionDecision = (target: BackpressureSessionSummary, candidateDecision: string) => {
+        const candidateLevel = mapBackpressureLevel(candidateDecision);
+        if (BACKPRESSURE_LEVEL_ORDER[candidateLevel] > BACKPRESSURE_LEVEL_ORDER[target.level]) {
+            target.level = candidateLevel;
+            target.decision = candidateDecision;
+        }
+    };
+
+    if (Array.isArray(obj.sessions)) {
+        for (const rawSess of obj.sessions) {
+            const s = asRecord(rawSess);
+            const name = typeof s?.session === 'string' ? s.session.trim() : (typeof s?.name === 'string' ? s.name.trim() : '');
+            if (!name || !s) {
+                continue;
+            }
+            const entry = ensureSession(name);
+            const dec = typeof s.decision === 'string' ? s.decision : (typeof s.level === 'string' ? s.level : 'ok');
+            promoteSessionDecision(entry, dec);
+            if (typeof s.utilization === 'number' && s.utilization > entry.max_utilization) {
+                entry.max_utilization = s.utilization;
+            }
+            for (const code of toStringArray(s.reason_codes)) {
+                if (!entry.reason_codes.includes(code)) {
+                    entry.reason_codes.push(code);
+                }
+            }
+        }
+    }
+
+    for (const s of surfaces) {
+        if (!s.session) {
+            continue;
+        }
+        const entry = ensureSession(s.session);
+        promoteSessionDecision(entry, s.decision);
+        entry.queue_depth += s.queue_depth;
+        entry.dropped_count += s.dropped_count;
+        if (typeof s.queue_capacity === 'number' && s.queue_capacity > 0) {
+            entry.queue_capacity += s.queue_capacity;
+            const ratio = s.queue_depth / s.queue_capacity;
+            if (ratio > entry.max_utilization) {
+                entry.max_utilization = ratio;
+            }
+        }
+        if (mapBackpressureLevel(s.decision) !== 'normal' && !entry.hot_surfaces.includes(s.surface)) {
+            entry.hot_surfaces.push(s.surface);
+        }
+        for (const code of s.reason_codes) {
+            if (!entry.reason_codes.includes(code)) {
+                entry.reason_codes.push(code);
+            }
+        }
+    }
+
+    for (const b of buckets) {
+        const bucketSession = b.session
+            ?? (b.heatmap_bucket.startsWith('session:') ? b.heatmap_bucket.slice('session:'.length).trim() : undefined);
+        if (!bucketSession) {
+            continue;
+        }
+        const entry = ensureSession(bucketSession);
+        promoteSessionDecision(entry, b.decision || b.severity);
+        if (!entry.hot_surfaces.includes(b.surface)) {
+            entry.hot_surfaces.push(b.surface);
+        }
+        for (const code of b.reason_codes) {
+            if (!entry.reason_codes.includes(code)) {
+                entry.reason_codes.push(code);
+            }
+        }
+        if (!entry.recommended_action && b.recommended_action) {
+            entry.recommended_action = b.recommended_action;
+        }
+    }
+
+    const sessions = Array.from(sessionMap.values()).sort(
+        (a, b) => BACKPRESSURE_LEVEL_ORDER[b.level] - BACKPRESSURE_LEVEL_ORDER[a.level]
+            || b.max_utilization - a.max_utilization
+            || a.session.localeCompare(b.session)
+    );
+
+    const reasonCodes = toStringArray(bp?.reason_codes);
+    if (reasonCodes.length === 0) {
+        for (const code of toStringArray(dash?.reason_codes)) {
+            if (!reasonCodes.includes(code)) {
+                reasonCodes.push(code);
+            }
+        }
+    }
+
+    return {
+        success: true,
+        timestamp: typeof obj.timestamp === 'string' ? obj.timestamp : new Date().toISOString(),
+        session: typeof obj.session === 'string' && obj.session.length > 0 ? obj.session : undefined,
+        level,
+        regime: decision,
+        decision,
+        utilization: Math.round(maxUtilization * 10000) / 10000,
+        queue_depth: totalDepth,
+        queue_capacity: totalCapacity,
+        dropped_count: totalDropped,
+        retry_after_ms: typeof bp?.retry_after_ms === 'number'
+            ? bp.retry_after_ms
+            : shed_policy.retry_after_ms,
+        reason_codes: reasonCodes,
+        shed_policy,
+        surfaces,
+        buckets,
+        sessions,
+        recommended_actions: toStringArray(dash?.recommended_actions),
+        hint: typeof obj.hint === 'string' ? obj.hint : undefined,
+    };
+}
+
+/**
+ * Normalize an `ntm worktrees list --json` payload into `WorktreeListResult`.
+ */
+export function normalizeWorktreeList(raw: unknown): WorktreeListResult {
+    const obj = assertSuccessPayload(raw, 'worktrees list');
+    const session = typeof obj.session === 'string' ? obj.session : '';
+    const worktrees: WorktreeInfo[] = Array.isArray(obj.worktrees)
+        ? obj.worktrees
+            .map(entry => {
+                const w = asRecord(entry);
+                if (!w || typeof w.agent_name !== 'string' || w.agent_name.trim().length === 0) {
+                    return undefined;
+                }
+                const errStr = typeof w.error === 'string' && w.error.trim().length > 0 ? w.error.trim() : undefined;
+                const created = typeof w.created === 'boolean' ? w.created : true;
+                const status: WorktreeInfo['status'] = errStr ? 'error' : (created ? 'active' : 'pending');
+                const info: WorktreeInfo = {
+                    agent_name: w.agent_name.trim(),
+                    branch_name: typeof w.branch_name === 'string'
+                        ? w.branch_name
+                        : (typeof w.branch === 'string' ? w.branch : ''),
+                    path: typeof w.path === 'string' ? w.path : '',
+                    session_id: typeof w.session_id === 'string' && w.session_id.length > 0 ? w.session_id : session,
+                    created,
+                    status,
+                    error: errStr,
+                };
+                return info;
+            })
+            .filter((w): w is WorktreeInfo => w !== undefined)
+        : [];
+
+    const total = typeof obj.total === 'number' && Number.isFinite(obj.total)
+        ? obj.total
+        : (typeof obj.count === 'number' && Number.isFinite(obj.count) ? obj.count : worktrees.length);
+
+    return {
+        session,
+        total,
+        worktrees,
+    };
+}
+
 function extractJsonErrorDetail(stdout?: string): string | undefined {
     if (typeof stdout !== 'string') {
         return undefined;
@@ -1346,5 +1756,36 @@ export class NtmClient {
 
         const stdout = await this.run(args);
         return normalizeAttentionMutation(JSON.parse(stdout));
+    }
+
+    /**
+     * Fetch live swarm backpressure, utilization, load-shedding contract, and overload heatmap
+     * via `ntm --robot-backpressure [--session=<session>] --robot-format=json`.
+     */
+    async getBackpressure(session?: string): Promise<BackpressureResult> {
+        const args: string[] = ['--robot-backpressure'];
+        const trimmedSession = (session ?? '').trim();
+        if (trimmedSession) {
+            args.push(`--session=${trimmedSession}`);
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeBackpressure(JSON.parse(stdout));
+    }
+
+    /**
+     * List isolated per-agent git worktrees via `ntm worktrees list [--session=<session>] --json`.
+     */
+    async listWorktrees(session?: string): Promise<WorktreeListResult> {
+        const args: string[] = ['worktrees', 'list'];
+        const trimmedSession = (session ?? '').trim();
+        if (trimmedSession) {
+            args.push(`--session=${trimmedSession}`);
+        }
+        args.push('--json');
+
+        const stdout = await this.run(args);
+        return normalizeWorktreeList(JSON.parse(stdout));
     }
 }

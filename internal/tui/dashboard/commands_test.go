@@ -260,6 +260,50 @@ func TestNewDashboardAddAgentsCommand_ValidatesSession(t *testing.T) {
 	}
 }
 
+func TestNewDashboardAddAgentsCommand_MultiHarnessFlags(t *testing.T) {
+	t.Parallel()
+
+	t.Run("grok omp and oc only", func(t *testing.T) {
+		cmd, err := newDashboardAddAgentsCommand(context.Background(), "/tmp/project", "proj", panels.SpawnWizardResult{
+			GrokCount: 2,
+			OmpCount:  1,
+			OcCount:   3,
+		})
+		if err != nil {
+			t.Fatalf("newDashboardAddAgentsCommand(multi-harness) error = %v", err)
+		}
+		wantArgs := []string{"add", "proj", "--grok=2", "--omp=1", "--oc=3"}
+		if got := cmd.Args[1:]; !slices.Equal(got, wantArgs) {
+			t.Fatalf("cmd.Args[1:] = %v, want %v", got, wantArgs)
+		}
+	})
+
+	t.Run("all seven harnesses in deterministic order", func(t *testing.T) {
+		cmd, err := newDashboardAddAgentsCommand(context.Background(), "/tmp/project", "proj", panels.SpawnWizardResult{
+			CCCount:   1,
+			CodCount:  2,
+			GmiCount:  3,
+			AgyCount:  4,
+			GrokCount: 5,
+			OmpCount:  6,
+			OcCount:   7,
+		})
+		if err != nil {
+			t.Fatalf("newDashboardAddAgentsCommand(all-7) error = %v", err)
+		}
+		wantArgs := []string{"add", "proj", "--cc=1", "--cod=2", "--gmi=3", "--agy=4", "--grok=5", "--omp=6", "--oc=7"}
+		if got := cmd.Args[1:]; !slices.Equal(got, wantArgs) {
+			t.Fatalf("cmd.Args[1:] = %v, want %v", got, wantArgs)
+		}
+	})
+
+	t.Run("all zero counts rejected", func(t *testing.T) {
+		if _, err := newDashboardAddAgentsCommand(context.Background(), "/tmp/project", "proj", panels.SpawnWizardResult{}); err == nil {
+			t.Fatal("expected empty SpawnWizardResult to be rejected")
+		}
+	})
+}
+
 func TestDashboardEditorTokensSafe_RejectsPositionalArgs(t *testing.T) {
 
 	if !dashboardEditorTokensSafe([]string{"code", "-w"}) {

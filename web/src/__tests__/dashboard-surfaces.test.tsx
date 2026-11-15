@@ -920,6 +920,26 @@ describe("EnsemblePage reasoning studio, recommender & synthesis", () => {
           });
         }
 
+        if (
+          url.pathname === "/api/v1/jobs/" &&
+          (options?.method ?? "GET") === "GET"
+        ) {
+          return reply({
+            count: 0,
+            execution: {
+              accepting: true,
+              max_concurrent: 4,
+              owned: 0,
+              preparing: 0,
+              queue_capacity: 16,
+              queued: 0,
+              running: 0,
+              waiting_for_resources: 0,
+            },
+            jobs: [],
+          });
+        }
+
         throw new Error(`Unexpected request: ${options?.method ?? "GET"} ${url.pathname}`);
       })
     );
@@ -1837,6 +1857,39 @@ describe("OverviewPage (/) apiFetch migration & non-blocking pulse cards", () =>
             count: 4,
           });
         }
+        if (url.pathname === "/api/v1/jobs/") {
+          return reply({
+            count: 2,
+            execution: {
+              accepting: true,
+              max_concurrent: 4,
+              owned: 1,
+              preparing: 0,
+              queue_capacity: 16,
+              queued: 0,
+              running: 1,
+              waiting_for_resources: 0,
+            },
+            jobs: [
+              {
+                id: "job-active-1",
+                type: "ensemble_spawn",
+                status: "running",
+                progress: 40,
+                created_at: "2026-11-14T03:00:00Z",
+                updated_at: "2026-11-14T03:00:05Z",
+              },
+              {
+                id: "job-done-2",
+                type: "swarm_spawn",
+                status: "completed",
+                progress: 100,
+                created_at: "2026-11-14T02:55:00Z",
+                updated_at: "2026-11-14T02:56:00Z",
+              },
+            ],
+          });
+        }
 
         throw new Error(`Unexpected path: ${url.pathname}`);
       })
@@ -1856,6 +1909,7 @@ describe("OverviewPage (/) apiFetch migration & non-blocking pulse cards", () =>
     expect(await within(pulseRegion).findByText("elevated")).toBeInTheDocument();
     expect(within(pulseRegion).getByText("3")).toBeInTheDocument();
     expect(within(pulseRegion).getByText("4")).toBeInTheDocument();
+    expect(await within(pulseRegion).findByText(/2 recent jobs/)).toBeInTheDocument();
 
     const quickLinks = screen.getByLabelText("Quick cockpit links");
     expect(within(quickLinks).getByRole("link", { name: /Swarm Lab/ })).toHaveAttribute(
@@ -1875,10 +1929,12 @@ describe("OverviewPage (/) apiFetch migration & non-blocking pulse cards", () =>
   });
 
   it("renders sessions cleanly with graceful card fallback when secondary pulse endpoints fail", async () => {
+    const requestedPaths: string[] = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
         const url = new URL(String(input));
+        requestedPaths.push(url.pathname);
         if (url.pathname === "/api/v1/sessions") {
           return new Response(
             JSON.stringify({
@@ -1911,7 +1967,717 @@ describe("OverviewPage (/) apiFetch migration & non-blocking pulse cards", () =>
 
     const pulseRegion = screen.getByLabelText("Overview pulse");
     await waitFor(() => {
-      expect(within(pulseRegion).getAllByText("Unavailable")).toHaveLength(3);
+      expect(within(pulseRegion).getAllByText("Unavailable")).toHaveLength(4);
     });
+    expect(requestedPaths).not.toContain("/api/v1/doctor");
+  });
+});
+
+describe("AgentsPage fleet spawn, broadcast send, and interrupt controls", () => {
+  it("spawns multi-harness agents from an empty roster, renders OpenCode/Ollama labels, broadcasts prompts, and interrupts panes", async () => {
+    const sessionId = "my/proj";
+    const encodedSession = encodeURIComponent(sessionId);
+
+    const sessions: Array<{ name: string; status: string }> = [];
+    const roster: Array<{
+      id: string;
+      session_id: string;
+      name: string;
+      type: string;
+      tmux_pane_id: string;
+      status: string;
+    }> = [];
+    const recordedPosts: Array<{
+      path: string;
+      body: Record<string, unknown>;
+    }> = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, options?: RequestInit) => {
+        const url = new URL(String(input));
+        const method = options?.method ?? "GET";
+        const reply = (payload: object) =>
+          new Response(JSON.stringify({ success: true, ...payload }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+
+        if (url.pathname === "/api/v1/sessions" && method === "GET") {
+          return reply({ sessions, count: sessions.length });
+        }
+
+        if (
+          url.pathname === `/api/v1/sessions/${encodedSession}/agents` &&
+          method === "GET"
+        ) {
+          return reply({
+            session_id: sessionId,
+            agents: roster,
+            count: roster.length,
+          });
+        }
+
+        if (
+          url.pathname === `/api/v1/sessions/${encodedSession}/agents/spawn` &&
+          method === "POST"
+        ) {
+          const parsed = JSON.parse(String(options?.body ?? "{}")) as Record<
+            string,
+            unknown
+          >;
+          recordedPosts.push({ path: url.pathname, body: parsed });
+          sessions.splice(0, sessions.length, { name: sessionId, status: "active" });
+          roster.splice(
+            0,
+            roster.length,
+            {
+              id: "%11",
+              session_id: sessionId,
+              name: "JadeFox",
+              type: "oc",
+              tmux_pane_id: "%11",
+              status: "active",
+            },
+            {
+              id: "%12",
+              session_id: sessionId,
+              name: "LocalRunner",
+              type: "ollama",
+              tmux_pane_id: "%12",
+              status: "idle",
+            }
+          );
+          return reply({
+            session: sessionId,
+            agents: [
+              { pane: "1", agent_type: "oc", title: "my/proj__oc_1" },
+              { pane: "2", agent_type: "cc", title: "my/proj__cc_1" },
+            ],
+          });
+        }
+
+        if (
+          url.pathname === `/api/v1/sessions/${encodedSession}/agents/send` &&
+          method === "POST"
+        ) {
+          const parsed = JSON.parse(String(options?.body ?? "{}")) as Record<
+            string,
+            unknown
+          >;
+          recordedPosts.push({ path: url.pathname, body: parsed });
+          return reply({
+            session: sessionId,
+            targets: ["%11"],
+            successful: ["%11"],
+            failed: [],
+          });
+        }
+
+        if (
+          url.pathname === `/api/v1/sessions/${encodedSession}/agents/interrupt` &&
+          method === "POST"
+        ) {
+          const parsed = JSON.parse(String(options?.body ?? "{}")) as Record<
+            string,
+            unknown
+          >;
+          recordedPosts.push({ path: url.pathname, body: parsed });
+          return reply({
+            session: sessionId,
+            interrupted: ["%11"],
+            ready_for_input: ["%11"],
+            failed: [],
+          });
+        }
+
+        throw new Error(`Unexpected request: ${method} ${url.pathname}`);
+      })
+    );
+
+    const client = createTestQueryClient();
+    render(
+      <QueryClientProvider client={client}>
+        <AgentsPage />
+      </QueryClientProvider>
+    );
+
+    // Empty state renders AND Fleet Operations remains accessible to bootstrap
+    expect(await screen.findByText(/No agents registered/)).toBeInTheDocument();
+    const fleetOps = screen.getByRole("region", { name: "Fleet Operations" });
+    expect(fleetOps).toBeInTheDocument();
+
+    // 1. Multi-harness spawn into URL-encoded session "my/proj"
+    fireEvent.change(within(fleetOps).getByLabelText("Target Session"), {
+      target: { value: sessionId },
+    });
+    fireEvent.change(within(fleetOps).getByLabelText("Claude Code (cc)"), {
+      target: { value: "1" },
+    });
+    fireEvent.change(within(fleetOps).getByLabelText("OpenCode (oc)"), {
+      target: { value: "1" },
+    });
+    fireEvent.change(within(fleetOps).getByLabelText("Preset (optional)"), {
+      target: { value: "review-pair" },
+    });
+    fireEvent.change(within(fleetOps).getByLabelText("Goal Label (optional)"), {
+      target: { value: "wave-1" },
+    });
+    fireEvent.click(
+      within(fleetOps).getByLabelText("Wait until agents are ready")
+    );
+    fireEvent.click(within(fleetOps).getByRole("button", { name: "Spawn Agents" }));
+
+    expect(
+      await screen.findByText(/Spawned 2 agent panes in session "my\/proj"\./)
+    ).toBeInTheDocument();
+    expect(recordedPosts[0]).toEqual({
+      path: "/api/v1/sessions/my%2Fproj/agents/spawn",
+      body: {
+        cc_count: 1,
+        oc_count: 1,
+        preset: "review-pair",
+        label: "wave-1",
+        wait_ready: true,
+      },
+    });
+
+    // Roster refreshes automatically and renders OpenCode + Ollama labels
+    expect(await screen.findByText("JadeFox")).toBeInTheDocument();
+    expect(screen.getByText("LocalRunner")).toBeInTheDocument();
+    expect(screen.getByText("OpenCode: 1")).toBeInTheDocument();
+    expect(screen.getByText("Ollama: 1")).toBeInTheDocument();
+
+    // 2. Broadcast prompt filtered to OpenCode ("oc")
+    fireEvent.change(within(fleetOps).getByLabelText("Target Agent Type"), {
+      target: { value: "oc" },
+    });
+    fireEvent.change(
+      within(fleetOps).getByLabelText("Prompt / Follow-up Message"),
+      {
+        target: { value: "Audit error handling in server_agents.go" },
+      }
+    );
+    fireEvent.click(within(fleetOps).getByRole("button", { name: "Send Prompt" }));
+
+    expect(
+      await screen.findByText(/Sent prompt to 1 pane in session "my\/proj"\./)
+    ).toBeInTheDocument();
+    expect(recordedPosts[1]).toEqual({
+      path: "/api/v1/sessions/my%2Fproj/agents/send",
+      body: {
+        message: "Audit error handling in server_agents.go",
+        agent_types: ["oc"],
+      },
+    });
+
+    // 3. One-click Interrupt with force=true and optional follow-up message
+    fireEvent.change(
+      within(fleetOps).getByLabelText("Prompt / Follow-up Message"),
+      {
+        target: { value: "Pause and report status" },
+      }
+    );
+    fireEvent.click(
+      within(fleetOps).getByLabelText("Force interrupt idle panes")
+    );
+    fireEvent.click(
+      within(fleetOps).getByRole("button", { name: "Interrupt Agents" })
+    );
+
+    expect(
+      await screen.findByText(
+        /Interrupted 1 pane in session "my\/proj" \(1 ready for input\)\./
+      )
+    ).toBeInTheDocument();
+    expect(recordedPosts[2]).toEqual({
+      path: "/api/v1/sessions/my%2Fproj/agents/interrupt",
+      body: {
+        agent_types: ["oc"],
+        message: "Pause and report status",
+        force: true,
+      },
+    });
+  });
+
+  it("validates required session and count/message fields before dispatching fleet mutations", async () => {
+    const fetchSpy = vi.fn(
+      async (input: RequestInfo | URL, _init?: RequestInit) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/api/v1/sessions") {
+          return new Response(
+            JSON.stringify({ success: true, sessions: [], count: 0 }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        throw new Error(`Unexpected request: ${url.pathname}`);
+      }
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const client = createTestQueryClient();
+    render(
+      <QueryClientProvider client={client}>
+        <AgentsPage />
+      </QueryClientProvider>
+    );
+
+    const fleetOps = await screen.findByRole("region", {
+      name: "Fleet Operations",
+    });
+
+    fireEvent.click(within(fleetOps).getByRole("button", { name: "Spawn Agents" }));
+    expect(
+      within(fleetOps).getByText("Target session name is required to spawn agents.")
+    ).toBeInTheDocument();
+
+    fireEvent.change(within(fleetOps).getByLabelText("Target Session"), {
+      target: { value: "alpha" },
+    });
+    fireEvent.click(within(fleetOps).getByRole("button", { name: "Spawn Agents" }));
+    expect(
+      within(fleetOps).getByText(
+        "Specify at least one agent count greater than 0 or a preset name."
+      )
+    ).toBeInTheDocument();
+
+    fireEvent.click(within(fleetOps).getByRole("button", { name: "Send Prompt" }));
+    expect(
+      within(fleetOps).getByText("Enter a prompt message to send.")
+    ).toBeInTheDocument();
+
+    expect(
+      fetchSpy.mock.calls.every(([, init]) => (init?.method ?? "GET") === "GET")
+    ).toBe(true);
+  });
+});
+
+describe("EnsemblePage durable async background jobs (/api/v1/jobs/)", () => {
+  it("queues ensemble_spawn and ensemble_synthesize background jobs and cancels active jobs", async () => {
+    const jobs: Array<{
+      id: string;
+      type: string;
+      status: string;
+      progress?: number;
+      result?: Record<string, unknown>;
+      error?: string;
+      created_at: string;
+      updated_at: string;
+    }> = [
+      {
+        id: "job-prev-failed",
+        type: "swarm_spawn",
+        status: "failed",
+        progress: 0,
+        result: { session: "old-swarm" },
+        error: "tmux server unavailable",
+        created_at: "2026-11-14T02:00:00Z",
+        updated_at: "2026-11-14T02:00:05Z",
+      },
+    ];
+    const jobCreateBodies: Array<Record<string, unknown>> = [];
+    const cancelledJobIds: string[] = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, options?: RequestInit) => {
+        const url = new URL(String(input));
+        const method = options?.method ?? "GET";
+        const reply = (payload: object, status = 200) =>
+          new Response(JSON.stringify({ success: true, ...payload }), {
+            status,
+            headers: { "Content-Type": "application/json" },
+          });
+
+        if (url.pathname === "/api/v1/ensemble/modes") {
+          return reply({
+            total_modes: 1,
+            core_modes: 1,
+            advanced_modes: 0,
+            experimental_modes: 0,
+            filtered_count: 1,
+            default_tier: "core",
+            categories: [{ code: "A", name: "Formal", mode_count: 1 }],
+            modes: [
+              {
+                id: "deductive",
+                code: "A1",
+                name: "Deductive Proof",
+                category: { code: "A", name: "Formal" },
+                tier: "core",
+                short_desc: "Stepwise invariant verification",
+              },
+            ],
+          });
+        }
+
+        if (url.pathname === "/api/v1/ensemble/presets") {
+          return reply({
+            count: 1,
+            presets: [
+              {
+                name: "project-diagnosis",
+                display: "Project Diagnosis",
+                description: "Broad architectural diagnosis",
+                modes: ["A1"],
+                mode_count: 1,
+                synthesis: { strategy: "consensus" },
+                budget: { total_tokens: 30000 },
+                allow_advanced: false,
+              },
+            ],
+          });
+        }
+
+        if (url.pathname === "/api/v1/sessions") {
+          return reply({ sessions: [{ name: "ens-async", status: "active" }] });
+        }
+
+        if (url.pathname === "/api/v1/ensemble/sessions/ens-async") {
+          return reply({
+            ensemble: {
+              session: "ens-async",
+              question: "Audit durability fences in jobs_dispatch.go",
+              preset: "project-diagnosis",
+              status: "ready",
+              modes: [
+                {
+                  id: "deductive",
+                  code: "A1",
+                  name: "Deductive Proof",
+                  agent_type: "cc",
+                  status: "done",
+                },
+              ],
+              synthesis: { strategy: "consensus", status: "ready" },
+              budget: { total_tokens: 30000 },
+              metrics: { coverage_map: { A: 1 } },
+            },
+            summary: {
+              total_modes: 1,
+              completed: 1,
+              working: 0,
+              pending: 0,
+              core_modes: 1,
+              advanced_modes: 0,
+            },
+          });
+        }
+
+        if (url.pathname === "/api/v1/jobs/" && method === "GET") {
+          const running = jobs.filter((j) => j.status === "running").length;
+          const queued = jobs.filter((j) => j.status === "pending").length;
+          return reply({
+            count: jobs.length,
+            execution: {
+              accepting: true,
+              max_concurrent: 4,
+              owned: running + queued,
+              preparing: 0,
+              queue_capacity: 16,
+              queued,
+              running,
+              waiting_for_resources: 0,
+            },
+            jobs,
+          });
+        }
+
+        if (url.pathname === "/api/v1/jobs/" && method === "POST") {
+          const parsed = JSON.parse(String(options?.body ?? "{}")) as Record<
+            string,
+            unknown
+          >;
+          jobCreateBodies.push(parsed);
+          const newId =
+            parsed.type === "ensemble_spawn"
+              ? "job-spawn-101"
+              : "job-synth-202";
+          const created = {
+            id: newId,
+            type: String(parsed.type),
+            status: "running",
+            progress: 50,
+            result: {
+              session: String(parsed.session ?? ""),
+              progress_msg: "Dispatching cognitive modes",
+            },
+            created_at: "2026-11-14T03:10:00Z",
+            updated_at: "2026-11-14T03:10:01Z",
+          };
+          jobs.unshift(created);
+          return reply({ job: created }, 202);
+        }
+
+        if (
+          url.pathname.startsWith("/api/v1/jobs/") &&
+          method === "DELETE"
+        ) {
+          const jobId = decodeURIComponent(
+            url.pathname.slice("/api/v1/jobs/".length)
+          );
+          cancelledJobIds.push(jobId);
+          const target = jobs.find((j) => j.id === jobId);
+          if (target) {
+            target.status = "cancelled";
+          }
+          return reply({ job: target });
+        }
+
+        throw new Error(`Unexpected request: ${method} ${url.pathname}`);
+      })
+    );
+
+    const client = createTestQueryClient();
+    render(
+      <QueryClientProvider client={client}>
+        <EnsemblePage />
+      </QueryClientProvider>
+    );
+
+    const jobsCard = await screen.findByRole("region", {
+      name: "Async Ensemble & Swarm Jobs",
+    });
+    expect(
+      await within(jobsCard).findByText("job-prev-failed")
+    ).toBeInTheDocument();
+    expect(
+      within(jobsCard).getByText("tmux server unavailable")
+    ).toBeInTheDocument();
+
+    // 1. Queue Async Spawn
+    fireEvent.change(screen.getByLabelText("Analysis Question"), {
+      target: { value: "Audit durability fences in jobs_dispatch.go" },
+    });
+    fireEvent.change(screen.getByLabelText("Session Name"), {
+      target: { value: "ens-async" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Queue Async Spawn" }));
+
+    expect(
+      await screen.findByText(
+        /Queued async ensemble_spawn job "job-spawn-101" for session "ens-async"\./
+      )
+    ).toBeInTheDocument();
+    expect(jobCreateBodies[0]).toEqual({
+      type: "ensemble_spawn",
+      session: "ens-async",
+      params: {
+        session: "ens-async",
+        preset: "project-diagnosis",
+        question: "Audit durability fences in jobs_dispatch.go",
+        agents: "cc=2,cod=1",
+        allow_advanced: false,
+      },
+    });
+
+    // 2. Queue Async Synthesis from Live Session Inspector
+    expect(await screen.findByText("[A1] Deductive Proof")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Force partial synthesis"));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Queue Async Synthesis" })
+    );
+
+    expect(
+      await screen.findByText(
+        /Queued async ensemble_synthesize job "job-synth-202" for session "ens-async"\./
+      )
+    ).toBeInTheDocument();
+    expect(jobCreateBodies[1]).toEqual({
+      type: "ensemble_synthesize",
+      session: "ens-async",
+      params: {
+        session: "ens-async",
+        force: true,
+        output_format: "markdown",
+      },
+    });
+
+    // 3. Cancel active running job
+    const synthRow = await within(jobsCard).findByTestId(
+      "job-row-job-synth-202"
+    );
+    expect(within(synthRow).getByText("50%")).toBeInTheDocument();
+    fireEvent.click(
+      within(synthRow).getByRole("button", { name: "Cancel Job" })
+    );
+
+    expect(
+      await screen.findByText(/Cancelled async job "job-synth-202"\./)
+    ).toBeInTheDocument();
+    expect(cancelledJobIds).toEqual(["job-synth-202"]);
+  });
+});
+
+describe("OverviewPage on-demand System Doctor & Async Jobs pulse", () => {
+  it("never calls /api/v1/doctor on mount, displays active/recent jobs pulse, and renders doctor checks when Run Doctor Check is clicked", async () => {
+    let doctorCalls = 0;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input));
+        const reply = (body: object) =>
+          new Response(JSON.stringify({ success: true, ...body }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+
+        if (url.pathname === "/api/v1/sessions") {
+          return reply({
+            sessions: [{ id: "s1", name: "prod-swarm", status: "active" }],
+          });
+        }
+        if (url.pathname === "/api/v1/health/backpressure") {
+          return reply({
+            timestamp: "2026-11-14T03:00:00Z",
+            backpressure: {
+              captured_at: "2026-11-14T03:00:00Z",
+              decision: "ok",
+              surfaces: [],
+            },
+          });
+        }
+        if (url.pathname === "/api/v1/attention/digest") {
+          return new Response(
+            JSON.stringify({
+              cursor_start: 1,
+              cursor_end: 5,
+              event_count: 2,
+              by_category: {},
+              by_actionability: { action_required: 0 },
+              buckets: { action_required: [], interesting: [], background: [] },
+              suppressed: { total: 0 },
+              summary: "nominal",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        if (url.pathname === "/api/v1/worktrees") {
+          return reply({ project_dir: "/dp/ntm", worktrees: [], count: 0 });
+        }
+        if (url.pathname === "/api/v1/jobs/") {
+          return reply({
+            count: 3,
+            execution: {
+              accepting: true,
+              max_concurrent: 4,
+              owned: 2,
+              preparing: 0,
+              queue_capacity: 16,
+              queued: 1,
+              running: 1,
+              waiting_for_resources: 0,
+            },
+            jobs: [
+              {
+                id: "j1",
+                type: "ensemble_spawn",
+                status: "running",
+                created_at: "2026-11-14T03:00:00Z",
+                updated_at: "2026-11-14T03:00:01Z",
+              },
+              {
+                id: "j2",
+                type: "ensemble_synthesize",
+                status: "pending",
+                created_at: "2026-11-14T03:00:02Z",
+                updated_at: "2026-11-14T03:00:02Z",
+              },
+              {
+                id: "j3",
+                type: "swarm_spawn",
+                status: "completed",
+                progress: 100,
+                created_at: "2026-11-14T02:50:00Z",
+                updated_at: "2026-11-14T02:51:00Z",
+              },
+            ],
+          });
+        }
+        if (url.pathname === "/api/v1/doctor") {
+          doctorCalls += 1;
+          return reply({
+            timestamp: "2026-11-14T03:05:00Z",
+            overall: "warning",
+            warnings: 1,
+            errors: 0,
+            dependencies: [
+              {
+                name: "tmux",
+                required: true,
+                installed: true,
+                status: "ok",
+                version: "3.4",
+                path: "/usr/bin/tmux",
+              },
+              {
+                name: "cass",
+                required: false,
+                installed: false,
+                status: "warning",
+                message: "cass not installed (optional)",
+              },
+            ],
+            daemons: [
+              {
+                name: "agent-mail",
+                port: 8765,
+                running: true,
+                status: "ok",
+                message: "listening on port 8765",
+              },
+            ],
+            guard_hook: {
+              name: "guard-hook",
+              status: "ok",
+              degraded_runs: 0,
+            },
+          });
+        }
+
+        throw new Error(`Unexpected path: ${url.pathname}`);
+      })
+    );
+
+    const client = createTestQueryClient();
+    render(
+      <QueryClientProvider client={client}>
+        <OverviewPage />
+      </QueryClientProvider>
+    );
+
+    expect(await screen.findByText("prod-swarm")).toBeInTheDocument();
+    const pulseRegion = screen.getByLabelText("Overview pulse");
+    expect(
+      await within(pulseRegion).findByText(/3 recent jobs/)
+    ).toBeInTheDocument();
+    expect(within(pulseRegion).getByText("2")).toBeInTheDocument();
+
+    // Doctor was NOT called automatically on mount
+    expect(doctorCalls).toBe(0);
+
+    // Click Run Doctor Check
+    const doctorSection = screen.getByRole("region", { name: "System Doctor" });
+    fireEvent.click(
+      within(doctorSection).getByRole("button", { name: "Run Doctor Check" })
+    );
+
+    expect(await screen.findByTestId("doctor-overall-status")).toHaveTextContent(
+      "warning"
+    );
+    expect(doctorCalls).toBe(1);
+    expect(within(doctorSection).getByText("Passed: 3")).toBeInTheDocument();
+    expect(within(doctorSection).getByText("Warnings: 1")).toBeInTheDocument();
+    expect(within(doctorSection).getByText("Failed: 0")).toBeInTheDocument();
+    expect(within(doctorSection).getByText("tmux")).toBeInTheDocument();
+    expect(within(doctorSection).getByText(/v3\.4 · \/usr\/bin\/tmux/)).toBeInTheDocument();
+    expect(
+      within(doctorSection).getByText("cass not installed (optional)")
+    ).toBeInTheDocument();
+    expect(
+      within(doctorSection).getByText("listening on port 8765")
+    ).toBeInTheDocument();
+    expect(within(doctorSection).getByText("guard-hook")).toBeInTheDocument();
   });
 });

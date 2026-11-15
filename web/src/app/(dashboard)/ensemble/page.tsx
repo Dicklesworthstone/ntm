@@ -41,9 +41,63 @@ type EnsembleSynthesizeResponse =
   components["schemas"]["EnsembleSynthesizeEnvelopeResponse"];
 type EnsembleStopResponse =
   components["schemas"]["EnsembleStopEnvelopeResponse"];
+type CreateJobRequest = components["schemas"]["CreateJobRequest"];
+type Job = components["schemas"]["Job"];
+type JobsListResponse = components["schemas"]["JobsListEnvelopeResponse"];
+type JobEnvelopeResponse = components["schemas"]["JobEnvelopeResponse"];
 
 interface SessionsListResponse extends ApiEnvelope {
   sessions?: Array<{ name: string; status?: string }>;
+}
+
+const JOB_STATUS_CLASSES: Record<string, string> = {
+  pending:
+    "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
+  running: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200",
+  completed:
+    "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200",
+  failed: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200",
+  cancelled:
+    "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300",
+};
+
+function extractJobSession(job: Job): string {
+  const raw = job as unknown as Record<string, unknown>;
+  const direct = raw.session_name ?? raw.session;
+  if (typeof direct === "string" && direct.trim()) {
+    return direct.trim();
+  }
+  const fromResult = job.result?.session ?? job.result?.session_name;
+  if (typeof fromResult === "string" && fromResult.trim()) {
+    return fromResult.trim();
+  }
+  return "";
+}
+
+function extractJobDetail(job: Job): string {
+  if (job.error) {
+    return job.error;
+  }
+  const raw = job as unknown as Record<string, unknown>;
+  if (typeof raw.progress_msg === "string" && raw.progress_msg.trim()) {
+    return raw.progress_msg.trim();
+  }
+  const resultMsg = job.result?.progress_msg ?? job.result?.message ?? job.result?.status;
+  if (typeof resultMsg === "string" && resultMsg.trim()) {
+    return resultMsg.trim();
+  }
+  return "";
+}
+
+function formatJobProgress(progress?: number): string {
+  if (typeof progress !== "number" || Number.isNaN(progress)) {
+    return "0%";
+  }
+  const normalized =
+    progress > 0 && progress <= 1 && !Number.isInteger(progress)
+      ? Math.round(progress * 100)
+      : Math.round(progress);
+  return `${Math.max(0, Math.min(100, normalized))}%`;
 }
 
 export default function EnsemblePage() {
@@ -208,6 +262,69 @@ export default function EnsemblePage() {
     },
   });
 
+  const jobsQuery = useQuery({
+    queryKey: ["jobs", "list"],
+    queryFn: () => apiFetch<JobsListResponse>("/api/v1/jobs/"),
+    retry: false,
+    refetchInterval: (query) => {
+      const items = query.state.data?.jobs ?? [];
+      const hasActive = items.some(
+        (j) => j.status === "pending" || j.status === "running"
+      );
+      return hasActive ? 3000 : 15000;
+    },
+  });
+
+  const createJobMutation = useMutation({
+    mutationFn: (body: CreateJobRequest) =>
+      apiFetch<JobEnvelopeResponse>("/api/v1/jobs/", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: (res, vars) => {
+      const jobId = res.job?.id || "queued";
+      if (vars.session) {
+        setInspectSession(vars.session);
+      }
+      setNotice({
+        kind: "success",
+        text: `Queued async ${vars.type} job "${jobId}"${
+          vars.session ? ` for session "${vars.session}"` : ""
+        }.`,
+      });
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    },
+    onError: (err) => {
+      setNotice({
+        kind: "error",
+        text: `Queue async job failed: ${formatApiErrorMessage(err)}`,
+      });
+    },
+  });
+
+  const cancelJobMutation = useMutation({
+    mutationFn: (jobId: string) =>
+      apiFetch<JobEnvelopeResponse>(
+        `/api/v1/jobs/${encodeURIComponent(jobId)}`,
+        {
+          method: "DELETE",
+        }
+      ),
+    onSuccess: (res, jobId) => {
+      setNotice({
+        kind: "success",
+        text: `Cancelled async job "${res.job?.id || jobId}".`,
+      });
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    },
+    onError: (err) => {
+      setNotice({
+        kind: "error",
+        text: `Cancel job failed: ${formatApiErrorMessage(err)}`,
+      });
+    },
+  });
+
   const presets = presetsQuery.data?.presets ?? [];
   const modes = modesQuery.data?.modes ?? [];
   const categories = modesQuery.data?.categories ?? [];
@@ -215,6 +332,16 @@ export default function EnsemblePage() {
   const activeSessions = sessionsQuery.data?.sessions ?? [];
   const inspected = ensembleSessionQuery.data?.ensemble;
   const inspectedSummary = ensembleSessionQuery.data?.summary;
+  const jobs = useMemo(
+    () => jobsQuery.data?.jobs ?? [],
+    [jobsQuery.data?.jobs]
+  );
+  const activeJobCount = useMemo(
+    () =>
+      jobs.filter((j) => j.status === "pending" || j.status === "running")
+        .length,
+    [jobs]
+  );
 
   const handleSuggest = () => {
     const q = question.trim();
@@ -244,6 +371,29 @@ export default function EnsemblePage() {
       question: q,
       agents: agentMix.trim() || undefined,
       allow_advanced: allowAdvanced,
+    });
+  };
+
+  const handleQueueSpawn = () => {
+    const sess = spawnSession.trim();
+    const q = question.trim();
+    if (!sess || !q) {
+      setNotice({
+        kind: "error",
+        text: "Both a session name and a question are required to queue an async ensemble job.",
+      });
+      return;
+    }
+    createJobMutation.mutate({
+      type: "ensemble_spawn",
+      session: sess,
+      params: {
+        session: sess,
+        preset: selectedPreset,
+        question: q,
+        ...(agentMix.trim() ? { agents: agentMix.trim() } : {}),
+        allow_advanced: allowAdvanced,
+      },
     });
   };
 
@@ -437,7 +587,7 @@ export default function EnsemblePage() {
                 Allow advanced/experimental modes
               </label>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   disabled={suggestMutation.isPending}
@@ -447,6 +597,16 @@ export default function EnsemblePage() {
                   {suggestMutation.isPending
                     ? "Ranking..."
                     : "Recommend Preset"}
+                </button>
+                <button
+                  type="button"
+                  disabled={createJobMutation.isPending}
+                  onClick={handleQueueSpawn}
+                  className="px-3 py-1.5 text-xs font-medium rounded-md border border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 disabled:opacity-50"
+                >
+                  {createJobMutation.isPending
+                    ? "Queueing..."
+                    : "Queue Async Spawn"}
                 </button>
                 <button
                   type="button"
@@ -597,7 +757,27 @@ export default function EnsemblePage() {
                   Force partial synthesis
                 </label>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={createJobMutation.isPending}
+                    onClick={() =>
+                      createJobMutation.mutate({
+                        type: "ensemble_synthesize",
+                        session: inspected.session,
+                        params: {
+                          session: inspected.session,
+                          force: forceSynthesize,
+                          output_format: "markdown",
+                        },
+                      })
+                    }
+                    className="px-3 py-1.5 text-xs font-medium rounded-md border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 disabled:opacity-50"
+                  >
+                    {createJobMutation.isPending
+                      ? "Queueing..."
+                      : "Queue Async Synthesis"}
+                  </button>
                   <button
                     type="button"
                     disabled={synthesizeMutation.isPending}
@@ -643,6 +823,114 @@ export default function EnsemblePage() {
           )}
         </section>
       </div>
+
+      {/* Async Ensemble & Swarm Jobs Queue */}
+      <section
+        aria-label="Async Ensemble & Swarm Jobs"
+        className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 space-y-3"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-base font-semibold text-gray-900 dark:text-white">
+              Async Ensemble &amp; Swarm Jobs
+            </h2>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Durable background job queue (/api/v1/jobs/) with live execution
+              telemetry.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="rounded-full bg-gray-100 dark:bg-gray-700 px-2.5 py-0.5 font-mono text-gray-700 dark:text-gray-200">
+              {activeJobCount} active &middot; {jobs.length} total
+            </span>
+            <button
+              type="button"
+              onClick={() => void jobsQuery.refetch()}
+              className="px-2.5 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
+            >
+              Refresh Jobs
+            </button>
+          </div>
+        </div>
+
+        {jobsQuery.isError ? (
+          <div className="rounded border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3 text-xs text-amber-800 dark:text-amber-200">
+            Async job queue unavailable: {formatApiErrorMessage(jobsQuery.error)}
+          </div>
+        ) : jobs.length === 0 ? (
+          <div className="rounded border border-dashed border-gray-200 dark:border-gray-700 p-4 text-center text-xs text-gray-500 dark:text-gray-400">
+            No async jobs queued yet. Use &ldquo;Queue Async Spawn&rdquo; or
+            &ldquo;Queue Async Synthesis&rdquo; to dispatch durable background
+            operations.
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {jobs.map((job) => {
+              const sessionName = extractJobSession(job);
+              const detail = extractJobDetail(job);
+              const isCancellable =
+                job.status === "pending" || job.status === "running";
+              return (
+                <div
+                  key={job.id}
+                  data-testid={`job-row-${job.id}`}
+                  className="rounded border border-gray-200 dark:border-gray-700 p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-xs"
+                >
+                  <div className="space-y-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono font-semibold text-gray-900 dark:text-white">
+                        {job.id}
+                      </span>
+                      <span className="rounded bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 font-mono text-gray-700 dark:text-gray-200">
+                        {job.type}
+                      </span>
+                      <span
+                        className={`rounded-full px-2 py-0.5 font-medium ${
+                          JOB_STATUS_CLASSES[job.status] ||
+                          "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300"
+                        }`}
+                      >
+                        {job.status}
+                      </span>
+                      {sessionName && (
+                        <span className="text-gray-600 dark:text-gray-300">
+                          Session:{" "}
+                          <span className="font-mono">{sessionName}</span>
+                        </span>
+                      )}
+                      <span className="font-mono text-gray-500 dark:text-gray-400">
+                        {formatJobProgress(job.progress)}
+                      </span>
+                    </div>
+                    {detail && (
+                      <div
+                        className={
+                          job.error
+                            ? "text-red-600 dark:text-red-400"
+                            : "text-gray-500 dark:text-gray-400"
+                        }
+                      >
+                        {detail}
+                      </div>
+                    )}
+                  </div>
+
+                  {isCancellable && (
+                    <button
+                      type="button"
+                      disabled={cancelJobMutation.isPending}
+                      onClick={() => cancelJobMutation.mutate(job.id)}
+                      className="px-2.5 py-1 font-medium rounded border border-red-300 dark:border-red-700 text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-50 shrink-0 self-start sm:self-center"
+                    >
+                      Cancel Job
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
 
       {/* Curated Presets Grid */}
       <section className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 space-y-3">

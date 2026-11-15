@@ -234,6 +234,9 @@ const (
 	AgentCodex       AgentType = "codex"
 	AgentGemini      AgentType = "gemini"
 	AgentAntigravity AgentType = "antigravity"
+	AgentGrok        AgentType = "grok"
+	AgentOmp         AgentType = "omp"
+	AgentOpencode    AgentType = "opencode"
 )
 
 // AgentContextBudget defines context window sizes per agent type.
@@ -242,4 +245,7 @@ var AgentContextBudget = map[AgentType]int{
 	AgentCodex:       120000, // Codex has medium context
 	AgentGemini:      100000, // Gemini has smaller context
 	AgentAntigravity: 100000, // Antigravity (Gemini successor): mirrors Gemini
+	AgentGrok:        128000, // Grok Build context budget
+	AgentOmp:         150000, // Oh My Pi frontier CLI context budget
+	AgentOpencode:    150000, // OpenCode frontier CLI context budget
 }

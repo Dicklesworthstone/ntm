@@ -1061,7 +1061,7 @@ func TestSpawnEnsemblePersistsResolvedConfigBeforeCreation(t *testing.T) {
 	catalog := testModeCatalog(t)
 	preset := EnsemblePreset{
 		Name:  "persisted-settings",
-		Modes: []ModeRef{ModeRefFromID("deductive")},
+		Modes: []ModeRef{ModeRefFromID("deductive"), ModeRefFromID("abductive")},
 		Synthesis: SynthesisConfig{
 			Strategy:      StrategyManual,
 			MinConfidence: 0.8,
@@ -1085,7 +1085,7 @@ func TestSpawnEnsemblePersistsResolvedConfigBeforeCreation(t *testing.T) {
 		Question:    "Retain the settings selected for this run",
 		Ensemble:    preset.Name,
 		// Fail pane planning after initial persistence, before any tmux calls.
-		AgentMix: map[string]int{"": 1},
+		AgentMix: map[string]int{"": 2},
 		Budget: BudgetConfig{
 			MaxTokensPerMode:       1600,
 			SynthesisReserveTokens: 600,

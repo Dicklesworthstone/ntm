@@ -69,6 +69,10 @@ const (
 	historyAgentClaude
 	historyAgentCodex
 	historyAgentGemini
+	historyAgentAntigravity
+	historyAgentGrok
+	historyAgentOmp
+	historyAgentOpencode
 )
 
 func (f historyAgentFilter) Next() historyAgentFilter {
@@ -79,6 +83,14 @@ func (f historyAgentFilter) Next() historyAgentFilter {
 		return historyAgentCodex
 	case historyAgentCodex:
 		return historyAgentGemini
+	case historyAgentGemini:
+		return historyAgentAntigravity
+	case historyAgentAntigravity:
+		return historyAgentGrok
+	case historyAgentGrok:
+		return historyAgentOmp
+	case historyAgentOmp:
+		return historyAgentOpencode
 	default:
 		return historyAgentAll
 	}
@@ -92,6 +104,14 @@ func (f historyAgentFilter) Label() string {
 		return "Codex"
 	case historyAgentGemini:
 		return "Gemini"
+	case historyAgentAntigravity:
+		return "Antigravity"
+	case historyAgentGrok:
+		return "Grok"
+	case historyAgentOmp:
+		return "Omp"
+	case historyAgentOpencode:
+		return "OpenCode"
 	default:
 		return "any"
 	}
@@ -105,6 +125,14 @@ func (f historyAgentFilter) AgentType() tmux.AgentType {
 		return tmux.AgentCodex
 	case historyAgentGemini:
 		return tmux.AgentGemini
+	case historyAgentAntigravity:
+		return tmux.AgentAntigravity
+	case historyAgentGrok:
+		return tmux.AgentGrok
+	case historyAgentOmp:
+		return tmux.AgentOmp
+	case historyAgentOpencode:
+		return tmux.AgentOpencode
 	default:
 		return ""
 	}
@@ -211,12 +239,22 @@ func (m *HistoryPanel) SetPanes(panes []tmux.Pane) {
 		return
 	}
 
-	meta := make(map[string]historyPaneMeta, len(panes))
+	meta := make(map[string]historyPaneMeta, len(panes)*3)
+	multiWindow := tmux.PanesSpanMultipleWindows(panes)
 	for _, p := range panes {
-		key := strconv.Itoa(p.Index)
-		meta[key] = historyPaneMeta{
+		pm := historyPaneMeta{
 			Label:     formatHistoryPaneLabel(p),
-			AgentType: p.Type,
+			AgentType: p.Type.Canonical(),
+		}
+		key := strconv.Itoa(p.Index)
+		if !multiWindow {
+			meta[key] = pm
+		} else if _, exists := meta[key]; !exists {
+			meta[key] = pm
+		}
+		meta[p.Ref().Physical()] = pm
+		if p.ID != "" {
+			meta[p.ID] = pm
 		}
 	}
 	m.panesByIndex = meta
@@ -699,27 +737,38 @@ func (m *HistoryPanel) syncOffsetFromTable() {
 }
 
 func (m *HistoryPanel) matchesAgentFilter(e history.HistoryEntry) bool {
-	want := m.agentFilter.AgentType()
+	want := m.agentFilter.AgentType().Canonical()
 	if want == "" {
 		return true
 	}
 
-	// If targets are empty, this entry was a broadcast; include it regardless.
+	for _, rawType := range e.AgentTypes {
+		if at := tmux.AgentType(rawType).Canonical(); at != "" && at == want {
+			return true
+		}
+	}
+
+	// If targets and explicit agent types are empty, this entry was a broadcast; include it regardless.
 	if len(e.Targets) == 0 {
-		return true
+		return len(e.AgentTypes) == 0
 	}
 
 	for _, target := range e.Targets {
-		// Fast path: pane index mapping.
+		// Fast path: pane index/ID/physical ref mapping.
 		if meta, ok := m.panesByIndex[target]; ok {
-			if meta.AgentType == want {
+			if meta.AgentType.Canonical() == want {
 				return true
 			}
 			continue
 		}
 
-		// Heuristic fallback: parse "cc_1"/"cod_2" style labels.
+		// Heuristic fallback: parse "cc_1"/"cod_2"/"opencode_1"/"sess__agy_1" style labels.
 		if at, ok := parseAgentTypePrefix(target); ok && at == want {
+			return true
+		}
+
+		// Direct agent type alias fallback (e.g., "oc", "opencode", "agy", "antigravity").
+		if at := tmux.AgentType(target).Canonical(); at.IsValid() && at != tmux.AgentUser && at == want {
 			return true
 		}
 	}
@@ -731,11 +780,14 @@ func parseAgentTypePrefix(target string) (tmux.AgentType, bool) {
 	if target == "" {
 		return "", false
 	}
+	if suffix := tmux.PaneTitleSuffix(target); suffix != "" {
+		target = suffix
+	}
 	parts := strings.SplitN(target, "_", 2)
 	if len(parts) != 2 {
 		return "", false
 	}
-	t := tmux.AgentType(parts[0])
+	t := tmux.AgentType(parts[0]).Canonical()
 	if !t.IsValid() || t == tmux.AgentUser {
 		return "", false
 	}
@@ -744,7 +796,7 @@ func parseAgentTypePrefix(target string) (tmux.AgentType, bool) {
 
 func formatHistoryPaneLabel(p tmux.Pane) string {
 	if p.NTMIndex > 0 && p.Type != tmux.AgentUnknown && p.Type != tmux.AgentUser && p.Type != "" {
-		return fmt.Sprintf("%s_%d", p.Type, p.NTMIndex)
+		return fmt.Sprintf("%s_%d", p.Type.Canonical(), p.NTMIndex)
 	}
 	if p.Title != "" {
 		if suffix := tmux.PaneTitleSuffix(p.Title); suffix != "" {

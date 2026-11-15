@@ -131,6 +131,36 @@ var DefaultCapabilities = map[tmux.AgentType]map[TaskType]float64{
 		TaskChore:         0.75, // (0.70 + 0.80) / 2
 		TaskEpic:          0.75, // (0.90 + 0.60) / 2
 	},
+	// Grok Build (grok) is xAI's frontier coding CLI agent: strong at bug
+	// triage, feature implementation, and fast code analysis, with solid
+	// refactoring and testing scores across general software tasks.
+	tmux.AgentGrok: {
+		TaskRefactor:      0.82,
+		TaskAnalysis:      0.85,
+		TaskDocs:          0.80,
+		TaskDocumentation: 0.80,
+		TaskBug:           0.88,
+		TaskFeature:       0.88,
+		TaskTesting:       0.83,
+		TaskTask:          0.85,
+		TaskChore:         0.80,
+		TaskEpic:          0.75,
+	},
+	// OpenCode (oc) is a model-agnostic frontier CLI coding harness (similar to
+	// Oh My Pi) whose runtime model follows the operator's configured provider.
+	// Basis: the per-task midpoint of the Claude and Codex frontier CLI profiles.
+	tmux.AgentOpencode: {
+		TaskRefactor:      0.85, // (0.95 + 0.75) / 2
+		TaskAnalysis:      0.80, // (0.90 + 0.70) / 2
+		TaskDocs:          0.78, // (0.85 + 0.70) / 2
+		TaskDocumentation: 0.78,
+		TaskBug:           0.85, // (0.80 + 0.90) / 2
+		TaskFeature:       0.88, // (0.85 + 0.90) / 2
+		TaskTesting:       0.80, // (0.75 + 0.85) / 2
+		TaskTask:          0.83, // (0.80 + 0.85) / 2
+		TaskChore:         0.75, // (0.70 + 0.80) / 2
+		TaskEpic:          0.75, // (0.90 + 0.60) / 2
+	},
 	tmux.AgentOllama: {
 		TaskRefactor:      0.70,
 		TaskAnalysis:      0.75,
@@ -236,6 +266,10 @@ func ParseAgentType(s string) tmux.AgentType {
 		return tmux.AgentGemini
 	case agent.AgentTypeAntigravity:
 		return tmux.AgentAntigravity
+	case agent.AgentTypeGrok:
+		return tmux.AgentGrok
+	case agent.AgentTypeOpencode:
+		return tmux.AgentOpencode
 	case agent.AgentTypeOmp:
 		return tmux.AgentOmp
 	case agent.AgentTypeCursor:

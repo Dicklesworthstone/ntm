@@ -201,3 +201,25 @@ func TestDefaultMarkdownOptions(t *testing.T) {
 		t.Error("expected IncludeScores to be false by default")
 	}
 }
+
+func TestAgentContextBudget_MultiHarness(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		agentType AgentType
+		wantValue string
+	}{
+		{AgentAntigravity, "antigravity"},
+		{AgentGrok, "grok"},
+		{AgentOmp, "omp"},
+		{AgentOpencode, "opencode"},
+	} {
+		if string(tc.agentType) != tc.wantValue {
+			t.Errorf("AgentType constant = %q, want %q", tc.agentType, tc.wantValue)
+		}
+		budget, ok := AgentContextBudget[tc.agentType]
+		if !ok || budget <= 0 {
+			t.Errorf("AgentContextBudget[%q] = %d (ok=%v), want > 0", tc.agentType, budget, ok)
+		}
+	}
+}

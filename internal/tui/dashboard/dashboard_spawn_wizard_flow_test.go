@@ -143,8 +143,8 @@ func TestDashboardSpawnWizardMinimalFlowRunsAddOnce(t *testing.T) {
 	m = pressDashboard(t, m, tea.KeyMsg{Type: tea.KeyDown})
 	m = pressDashboard(t, m, tea.KeyMsg{Type: tea.KeyDown})
 	m = pressDashboard(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	// Four count inputs pre-filled by Minimal; Enter through each.
-	for i := 0; i < 4; i++ {
+	// Seven count inputs pre-filled by Minimal; Enter through each.
+	for i := 0; i < 7; i++ {
 		m = pressDashboard(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	}
 	if view := status.StripANSI(m.View()); !strings.Contains(view, "Spawn 1 agent(s)") {
@@ -160,8 +160,55 @@ func TestDashboardSpawnWizardMinimalFlowRunsAddOnce(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("add-agents runner called %d times, want exactly 1", calls)
 	}
-	if !gotResult.Confirmed || gotResult.CCCount != 1 || gotResult.CodCount != 0 || gotResult.GmiCount != 0 || gotResult.AgyCount != 0 {
-		t.Fatalf("runner result = %+v, want confirmed cc=1 cod=0 gmi=0 agy=0", gotResult)
+	if !gotResult.Confirmed || gotResult.CCCount != 1 || gotResult.CodCount != 0 || gotResult.GmiCount != 0 || gotResult.AgyCount != 0 ||
+		gotResult.GrokCount != 0 || gotResult.OmpCount != 0 || gotResult.OcCount != 0 || gotResult.TotalCount() != 1 {
+		t.Fatalf("runner result = %+v, want confirmed cc=1 and all other counts 0", gotResult)
+	}
+}
+
+func TestDashboardSpawnWizardMultiHarnessDoneMsgSchedulesAdd(t *testing.T) {
+	oldRun := dashboardRunAddAgents
+	defer func() { dashboardRunAddAgents = oldRun }()
+
+	var gotResult panels.SpawnWizardResult
+	dashboardRunAddAgents = func(ctx context.Context, projectDir, session string, result panels.SpawnWizardResult) (string, error) {
+		gotResult = result
+		return "ok", nil
+	}
+
+	m := newTestModel(140)
+	m.projectDir = "/tmp/ntm-project"
+
+	updated, cmd := m.Update(panels.SpawnWizardDoneMsg{
+		Result: panels.SpawnWizardResult{
+			GrokCount: 2,
+			OmpCount:  1,
+			OcCount:   3,
+			Confirmed: true,
+		},
+	})
+	m = updated.(Model)
+
+	if m.healthMessage != "Adding 6 agent(s)..." {
+		t.Fatalf("healthMessage = %q, want %q", m.healthMessage, "Adding 6 agent(s)...")
+	}
+	if cmd == nil {
+		t.Fatal("expected add-agents command to be scheduled")
+	}
+
+	msg := cmd()
+	execMsg, ok := msg.(SpawnWizardExecResultMsg)
+	if !ok {
+		t.Fatalf("expected SpawnWizardExecResultMsg, got %T", msg)
+	}
+	if execMsg.Err != nil {
+		t.Fatalf("unexpected SpawnWizardExecResultMsg error: %v", execMsg.Err)
+	}
+	if execMsg.Added != 6 {
+		t.Fatalf("execMsg.Added = %d, want 6", execMsg.Added)
+	}
+	if gotResult.GrokCount != 2 || gotResult.OmpCount != 1 || gotResult.OcCount != 3 || gotResult.TotalCount() != 6 {
+		t.Fatalf("gotResult = %+v, want grok=2 omp=1 oc=3 total=6", gotResult)
 	}
 }
 

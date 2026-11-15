@@ -301,6 +301,8 @@ func validateMainConfigReferences(cfg *config.Config, result *ValidationResult, 
 	validateRegularFileReference("prompts.gmi_default_file", cfg.Prompts.GmiDefaultFile, result)
 	validateRegularFileReference("prompts.agy_default_file", cfg.Prompts.AgyDefaultFile, result)
 	validateRegularFileReference("prompts.omp_default_file", cfg.Prompts.OmpDefaultFile, result)
+	validateRegularFileReference("prompts.grok_default_file", cfg.Prompts.GrokDefaultFile, result)
+	validateRegularFileReference("prompts.oc_default_file", cfg.Prompts.OcDefaultFile, result)
 	if cfg.Encryption.Enabled && strings.EqualFold(strings.TrimSpace(cfg.Encryption.KeySource), "file") {
 		validateRegularFileReference("encryption.key_file", cfg.Encryption.KeyFile, result)
 	}

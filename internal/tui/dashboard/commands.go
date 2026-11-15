@@ -101,6 +101,15 @@ func newDashboardAddAgentsCommand(ctx context.Context, projectDir, session strin
 	if result.AgyCount > 0 {
 		args = append(args, fmt.Sprintf("--agy=%d", result.AgyCount))
 	}
+	if result.GrokCount > 0 {
+		args = append(args, fmt.Sprintf("--grok=%d", result.GrokCount))
+	}
+	if result.OmpCount > 0 {
+		args = append(args, fmt.Sprintf("--omp=%d", result.OmpCount))
+	}
+	if result.OcCount > 0 {
+		args = append(args, fmt.Sprintf("--oc=%d", result.OcCount))
+	}
 	if len(args) == 2 {
 		return nil, fmt.Errorf("no agents requested")
 	}
@@ -253,7 +262,7 @@ func (m Model) openFileInEditor(change tracker.RecordedFileChange) tea.Cmd {
 func (m Model) runSpawnWizardAdd(result panels.SpawnWizardResult) tea.Cmd {
 	session := m.session
 	projectDir := m.projectDir
-	added := result.CCCount + result.CodCount + result.GmiCount + result.AgyCount
+	added := result.TotalCount()
 
 	return func() tea.Msg {
 		if added <= 0 {

@@ -378,7 +378,7 @@ func (h pipelineInterruptLogHandler) Handle(_ context.Context, record slog.Recor
 	return nil
 }
 func (h pipelineInterruptLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h pipelineInterruptLogHandler) WithGroup(string) slog.Handler     { return h }
+func (h pipelineInterruptLogHandler) WithGroup(string) slog.Handler      { return h }
 
 func TestCollectAssignedModeOutputsCancellationAfterFinalCapture(t *testing.T) {
 	const sessionName = "final-capture-canceled"

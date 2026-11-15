@@ -21,6 +21,8 @@
     "onCommand:ntm.spawnEnsemble",
     "onCommand:ntm.triageAttention",
     "onCommand:ntm.openWebCockpit",
+    "onCommand:ntm.showBackpressure",
+    "onCommand:ntm.manageWorktrees",
     "onCommand:ntm.showStatus",
     "onCommand:ntm.openPalette"
   ],
@@ -100,6 +102,16 @@
         "command": "ntm.openWebCockpit",
         "title": "NTM: Open Web Cockpit (ntm web)",
         "icon": "$(globe)"
+      },
+      {
+        "command": "ntm.showBackpressure",
+        "title": "NTM: Show Swarm Backpressure",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "ntm.manageWorktrees",
+        "title": "NTM: Manage Agent Worktrees",
+        "icon": "$(git-branch)"
       },
       {
         "command": "ntm.openPalette",

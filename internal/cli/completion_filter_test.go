@@ -50,7 +50,10 @@ func TestProfileSwitchCompletionAgentID(t *testing.T) {
 	}{
 		{name: "supported claude", pane: tmux.Pane{Type: tmux.AgentClaude, NTMIndex: 1}, want: "cc_1", ok: true},
 		{name: "supported codex alias", pane: tmux.Pane{Type: tmux.AgentType("openai-codex"), NTMIndex: 2}, want: "cod_2", ok: true},
-		{name: "unsupported grok", pane: tmux.Pane{Type: tmux.AgentType("xai-grok-build"), NTMIndex: 3}, ok: false},
+		{name: "supported grok alias", pane: tmux.Pane{Type: tmux.AgentType("xai-grok-build"), NTMIndex: 3}, want: "grok_3", ok: true},
+		{name: "supported antigravity", pane: tmux.Pane{Type: tmux.AgentAntigravity, NTMIndex: 4}, want: "agy_4", ok: true},
+		{name: "unsupported user pane", pane: tmux.Pane{Type: tmux.AgentUser, NTMIndex: 5}, want: "", ok: false},
+		{name: "unsupported unknown pane", pane: tmux.Pane{Type: tmux.AgentUnknown, NTMIndex: 6}, want: "", ok: false},
 	}
 
 	for _, tc := range tests {

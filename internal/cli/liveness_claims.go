@@ -242,6 +242,10 @@ func init() {
 		"prompts.agy_default_file",
 		"prompts.omp_default",
 		"prompts.omp_default_file",
+		"prompts.grok_default",
+		"prompts.grok_default_file",
+		"prompts.oc_default",
+		"prompts.oc_default_file",
 	} {
 		config.RegisterReader(key, resolveSpawnPanePrompt)
 	}

@@ -12,9 +12,12 @@ import {
     buildNtmTerminalCommand,
     buildWebCockpitCommand,
     DEFAULT_WEB_PORT,
+    mapBackpressureLevel,
+    normalizeBackpressure,
     normalizeSnapshot,
     normalizeStatusHeader,
     normalizeWebPort,
+    normalizeWorktreeList,
     NtmClient,
     RobotMail,
     shellQuote,
@@ -38,10 +41,13 @@ import { NtmSessionTreeProvider, NtmTreeItem } from '../sessionTreeView';
 import {
     activate,
     attentionSeverityIcon,
+    backpressureLevelIcon,
     buildAttentionActionQuickPickItems,
     buildAttentionQuickPickItems,
+    buildBackpressureQuickPickItems,
     buildEnsemblePresetQuickPickItems,
     buildWebCockpitCommand as extensionBuildWebCockpitCommand,
+    buildWorktreeQuickPickItems,
     defaultEnsembleSessionName,
     PALETTE_ACTION_OPTIONS,
     parseCustomSpawnFlags,
@@ -1460,6 +1466,369 @@ describe('Ensemble Spawn, Attention Triage, Web Cockpit & Palette Commands', () 
             await vscode.commands.executeCommand('ntm.openWebCockpit');
             assert.equal(mockState.createdTerminals.length, 2);
             assert.equal(mockState.createdTerminals[1].name, WEB_COCKPIT_TERMINAL_NAME);
+        } finally {
+            for (const sub of subscriptions) {
+                sub.dispose();
+            }
+        }
+    });
+});
+
+const REAL_BACKPRESSURE_PAYLOAD = {
+    success: true,
+    timestamp: '2026-11-14T22:10:00Z',
+    backpressure: {
+        decision: 'degrade',
+        retry_after_ms: 1500,
+        reason_codes: ['stream_lag', 'ws_drop'],
+        surfaces: [
+            {
+                surface: 'websocket_events',
+                session: 'swarm-heavy',
+                pane: '1.2',
+                queue_depth: 92,
+                queue_capacity: 100,
+                dropped_count: 14,
+                latency_ms: 420,
+                client_lag_ms: 1100,
+                decision: 'degrade',
+                reason_codes: ['ws_drop'],
+            },
+            {
+                surface: 'tmux_poller',
+                session: 'ntm-prod',
+                queue_depth: 30,
+                queue_capacity: 100,
+                dropped_count: 0,
+                latency_ms: 85,
+                decision: 'coalesce',
+                reason_codes: ['poll_coalesce'],
+            },
+        ],
+    },
+    load_shedding: {
+        schema_version: 'ntm.load_shedding.v1',
+        decision: 'degrade',
+        error_code: 'OVERLOADED',
+        retry_after_ms: 1500,
+        degraded_surface: 'websocket_events',
+        recommended_action: 'switch_to_polling',
+        reason_codes: ['ws_drop'],
+    },
+    heatmap: {
+        generated_at: '2026-11-14T22:10:00Z',
+        overall_decision: 'degrade',
+        buckets: [
+            {
+                heatmap_bucket: 'session:swarm-heavy',
+                surface: 'websocket_events',
+                session: 'swarm-heavy',
+                severity: 'critical',
+                decision: 'degrade',
+                score: 0.92,
+                retry_after_ms: 1500,
+                reason_codes: ['ws_drop'],
+                recommended_action: 'throttle_agent_output',
+            },
+        ],
+    },
+    dashboard: {
+        decision: 'degrade',
+        reason_codes: ['stream_lag', 'ws_drop'],
+        recommended_actions: ['pause_spawns', 'switch_to_polling'],
+    },
+};
+
+const REAL_WORKTREES_LIST_PAYLOAD = {
+    session: 'ntm-prod',
+    total: 3,
+    worktrees: [
+        {
+            agent_name: 'BlueLake',
+            branch_name: 'ntm/ntm-prod/BlueLake',
+            path: '/repo/.ntm/worktrees/BlueLake',
+            session_id: 'ntm-prod',
+            created: true,
+        },
+        {
+            agent_name: 'GreenForge',
+            branch_name: 'ntm/ntm-prod/GreenForge',
+            path: '/repo/.ntm/worktrees/GreenForge',
+            session_id: 'ntm-prod',
+            created: false,
+        },
+        {
+            agent_name: 'RedStone',
+            branch_name: 'ntm/ntm-prod/RedStone',
+            path: '/repo/.ntm/worktrees/RedStone',
+            session_id: 'ntm-prod',
+            created: false,
+            error: 'branch already exists',
+        },
+    ],
+};
+
+describe('Swarm Backpressure & Agent Worktrees Contracts and Commands', () => {
+    beforeEach(() => {
+        resetVscodeMock();
+    });
+
+    it('normalizes --robot-backpressure and worktrees list --json CLI contracts and rejects error envelopes', async () => {
+        const recordedCalls: string[][] = [];
+        const client = new NtmClient({
+            execFile: async (_file, args) => {
+                recordedCalls.push(args);
+                if (args.includes('--robot-backpressure')) {
+                    const sessArg = args.find(a => a.startsWith('--session='));
+                    return {
+                        stdout: JSON.stringify({
+                            ...REAL_BACKPRESSURE_PAYLOAD,
+                            session: sessArg ? sessArg.slice('--session='.length) : undefined,
+                        }),
+                        stderr: '',
+                    };
+                }
+                if (args[0] === 'worktrees' && args[1] === 'list') {
+                    return {
+                        stdout: JSON.stringify(REAL_WORKTREES_LIST_PAYLOAD),
+                        stderr: '',
+                    };
+                }
+                return { stdout: '{}', stderr: '' };
+            },
+        });
+
+        const bpGlobal = await client.getBackpressure();
+        assert.deepEqual(recordedCalls[0], ['--robot-backpressure', '--robot-format=json']);
+        assert.equal(bpGlobal.level, 'overload');
+        assert.equal(bpGlobal.regime, 'degrade');
+        assert.equal(bpGlobal.utilization, 0.92);
+        assert.equal(bpGlobal.queue_depth, 122);
+        assert.equal(bpGlobal.queue_capacity, 200);
+        assert.equal(bpGlobal.dropped_count, 14);
+        assert.equal(bpGlobal.shed_policy.decision, 'degrade');
+        assert.equal(bpGlobal.shed_policy.degraded_surface, 'websocket_events');
+        assert.equal(bpGlobal.shed_policy.recommended_action, 'switch_to_polling');
+        assert.equal(bpGlobal.sessions.length, 2);
+        assert.equal(bpGlobal.sessions[0].session, 'swarm-heavy');
+        assert.equal(bpGlobal.sessions[0].level, 'overload');
+        assert.equal(bpGlobal.sessions[0].max_utilization, 0.92);
+        assert.equal(bpGlobal.sessions[1].session, 'ntm-prod');
+        assert.equal(bpGlobal.sessions[1].level, 'elevated');
+
+        const bpScoped = await client.getBackpressure('swarm-heavy');
+        assert.deepEqual(recordedCalls[1], [
+            '--robot-backpressure',
+            '--session=swarm-heavy',
+            '--robot-format=json',
+        ]);
+        assert.equal(bpScoped.session, 'swarm-heavy');
+
+        const wtGlobal = await client.listWorktrees();
+        assert.deepEqual(recordedCalls[2], ['worktrees', 'list', '--json']);
+        assert.equal(wtGlobal.session, 'ntm-prod');
+        assert.equal(wtGlobal.total, 3);
+        assert.deepEqual(
+            wtGlobal.worktrees.map(w => ({ agent: w.agent_name, status: w.status })),
+            [
+                { agent: 'BlueLake', status: 'active' },
+                { agent: 'GreenForge', status: 'pending' },
+                { agent: 'RedStone', status: 'error' },
+            ]
+        );
+
+        await client.listWorktrees('ntm-prod');
+        assert.deepEqual(recordedCalls[3], ['worktrees', 'list', '--session=ntm-prod', '--json']);
+
+        assert.throws(
+            () => normalizeBackpressure({ success: false, error: 'telemetry collector offline' }),
+            /telemetry collector offline/
+        );
+        assert.throws(
+            () => normalizeWorktreeList({ success: false, error: 'not a git repository' }),
+            /not a git repository/
+        );
+    });
+
+    it('formats backpressure & worktree QuickPick items and maintains package.json + PALETTE_ACTION_OPTIONS parity', () => {
+        assert.equal(mapBackpressureLevel('ok'), 'normal');
+        assert.equal(mapBackpressureLevel('coalesce'), 'elevated');
+        assert.equal(mapBackpressureLevel('defer'), 'critical');
+        assert.equal(mapBackpressureLevel('degrade'), 'overload');
+
+        assert.equal(backpressureLevelIcon('normal'), '$(pass)');
+        assert.equal(backpressureLevelIcon('elevated'), '$(pulse)');
+        assert.equal(backpressureLevelIcon('critical'), '$(warning)');
+        assert.equal(backpressureLevelIcon('overload'), '$(error)');
+
+        const bpItems = buildBackpressureQuickPickItems(normalizeBackpressure(REAL_BACKPRESSURE_PAYLOAD));
+        assert.equal(bpItems[0].itemAction, 'summary');
+        assert.ok(bpItems[0].label.includes('OVERLOAD (degrade)'));
+        assert.ok(bpItems[0].description?.includes('Utilization 92%'));
+        assert.ok(bpItems[0].description?.includes('Queue 122/200'));
+        assert.ok(bpItems[0].description?.includes('14 dropped'));
+        assert.equal(bpItems[1].itemAction, 'shedPolicy');
+        assert.ok(bpItems[1].label.includes('Load Shedding: degrade'));
+        assert.ok(bpItems[1].description?.includes('switch_to_polling'));
+        assert.equal(bpItems[2].itemAction, 'session');
+        assert.equal(bpItems[2].sessionName, 'swarm-heavy');
+        assert.equal(bpItems[3].itemAction, 'session');
+        assert.equal(bpItems[3].sessionName, 'ntm-prod');
+        assert.equal(bpItems[4].itemAction, 'openSwarmCockpit');
+        assert.ok(bpItems[4].label.includes('Open /swarm in Web Cockpit'));
+        assert.equal(bpItems[5].itemAction, 'runBackpressureHeatmap');
+        assert.ok(bpItems[5].label.includes('ntm health --backpressure --heatmap'));
+
+        const wtItems = buildWorktreeQuickPickItems(normalizeWorktreeList(REAL_WORKTREES_LIST_PAYLOAD));
+        assert.equal(wtItems.length, 6);
+        assert.equal(wtItems[0].label, '$(git-branch) BlueLake');
+        assert.ok(wtItems[0].description?.includes('ntm/ntm-prod/BlueLake · active'));
+        assert.equal(wtItems[1].label, '$(clock) GreenForge');
+        assert.ok(wtItems[1].description?.includes('pending'));
+        assert.equal(wtItems[2].label, '$(error) RedStone');
+        assert.ok(wtItems[2].detail?.includes('error: branch already exists'));
+        assert.deepEqual(
+            wtItems.slice(3).map(i => i.itemAction),
+            ['createWorktree', 'mergeWorktree', 'openWorktreesCockpit']
+        );
+
+        // Verify package.json activationEvents + contributes.commands parity
+        const pkgPath = path.resolve(__dirname, '../../package.json');
+        const pkgJson = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        const activationEvents: string[] = pkgJson.activationEvents ?? [];
+        assert.ok(activationEvents.includes('onCommand:ntm.showBackpressure'));
+        assert.ok(activationEvents.includes('onCommand:ntm.manageWorktrees'));
+
+        const commands: Array<{ command: string; title: string; icon?: string }> =
+            pkgJson.contributes?.commands ?? [];
+        const bpCmd = commands.find(c => c.command === 'ntm.showBackpressure');
+        assert.deepEqual(bpCmd, {
+            command: 'ntm.showBackpressure',
+            title: 'NTM: Show Swarm Backpressure',
+            icon: '$(pulse)',
+        });
+        const wtCmd = commands.find(c => c.command === 'ntm.manageWorktrees');
+        assert.deepEqual(wtCmd, {
+            command: 'ntm.manageWorktrees',
+            title: 'NTM: Manage Agent Worktrees',
+            icon: '$(git-branch)',
+        });
+
+        // Verify PALETTE_ACTION_OPTIONS parity
+        const bpPalette = PALETTE_ACTION_OPTIONS.find(p => p.actionId === 'showBackpressure');
+        assert.equal(bpPalette?.command, 'ntm.showBackpressure');
+        const wtPalette = PALETTE_ACTION_OPTIONS.find(p => p.actionId === 'manageWorktrees');
+        assert.equal(wtPalette?.command, 'ntm.manageWorktrees');
+    });
+
+    it('executes ntm.showBackpressure and ntm.manageWorktrees actions (CLI terminals, Web Cockpit /swarm & /worktrees routes, palette dispatch)', async () => {
+        mockState.binaryPath = '/opt/my tools/ntm';
+        mockState.webPort = 7337;
+
+        const client = new NtmClient({
+            execFile: async (_file, args) => {
+                if (args.includes('--robot-backpressure')) {
+                    return { stdout: JSON.stringify(REAL_BACKPRESSURE_PAYLOAD), stderr: '' };
+                }
+                if (args[0] === 'worktrees' && args[1] === 'list') {
+                    return { stdout: JSON.stringify(REAL_WORKTREES_LIST_PAYLOAD), stderr: '' };
+                }
+                return { stdout: JSON.stringify(REAL_SNAPSHOT_PAYLOAD), stderr: '' };
+            },
+        });
+
+        const subscriptions: Array<{ dispose(): void }> = [];
+        const context = {
+            subscriptions,
+            extensionUri: vscode.Uri.file('/ext'),
+        } as unknown as vscode.ExtensionContext;
+
+        activate(context, client);
+        try {
+            // 1. Dispatch showBackpressure via ntm.openPalette -> run ntm health --backpressure --heatmap
+            mockState.quickPickQueue.push(
+                (options: Array<{ actionId: string }>) =>
+                    options.find(o => o.actionId === 'showBackpressure'),
+                (picks: Array<{ itemAction: string }>) =>
+                    picks.find(p => p.itemAction === 'runBackpressureHeatmap')
+            );
+            await vscode.commands.executeCommand('ntm.openPalette');
+
+            assert.equal(mockState.createdTerminals.length, 1);
+            assert.equal(mockState.createdTerminals[0].name, 'NTM Backpressure');
+            assert.deepEqual(mockState.createdTerminals[0].sentCommands, [
+                {
+                    text: `'/opt/my tools/ntm' health --backpressure --heatmap`,
+                    shouldExecute: true,
+                },
+            ]);
+
+            // 2. Open /swarm in Web Cockpit from ntm.showBackpressure
+            mockState.quickPickQueue.push((picks: Array<{ itemAction: string }>) =>
+                picks.find(p => p.itemAction === 'openSwarmCockpit')
+            );
+            await vscode.commands.executeCommand('ntm.showBackpressure');
+
+            assert.equal(mockState.createdTerminals.length, 2);
+            assert.equal(mockState.createdTerminals[1].name, WEB_COCKPIT_TERMINAL_NAME);
+            assert.deepEqual(mockState.createdTerminals[1].sentCommands, [
+                { text: `'/opt/my tools/ntm' web --port 7337`, shouldExecute: true },
+            ]);
+            assert.deepEqual(mockState.openedExternalUris, ['http://127.0.0.1:7337/swarm']);
+
+            // 3. Dispatch manageWorktrees via ntm.openPalette -> Create Worktree for Agent
+            mockState.quickPickQueue.push(
+                (options: Array<{ actionId: string }>) =>
+                    options.find(o => o.actionId === 'manageWorktrees'),
+                (picks: Array<{ itemAction: string }>) =>
+                    picks.find(p => p.itemAction === 'createWorktree')
+            );
+            mockState.inputBoxQueue.push('BlueLake');
+            await vscode.commands.executeCommand('ntm.openPalette');
+
+            assert.equal(mockState.createdTerminals.length, 3);
+            assert.equal(mockState.createdTerminals[2].name, 'NTM Worktree: BlueLake');
+            assert.deepEqual(mockState.createdTerminals[2].sentCommands, [
+                {
+                    text: `'/opt/my tools/ntm' worktrees create BlueLake`,
+                    shouldExecute: true,
+                },
+            ]);
+
+            // 4. Merge Worktree action in ntm.manageWorktrees
+            mockState.quickPickQueue.push(
+                (picks: Array<{ itemAction: string }>) =>
+                    picks.find(p => p.itemAction === 'mergeWorktree'),
+                (choices: Array<{ agentName: string }>) =>
+                    choices.find(c => c.agentName === 'BlueLake')
+            );
+            await vscode.commands.executeCommand('ntm.manageWorktrees');
+
+            assert.equal(mockState.createdTerminals.length, 4);
+            assert.equal(mockState.createdTerminals[3].name, 'NTM Worktree Merge: BlueLake');
+            assert.deepEqual(mockState.createdTerminals[3].sentCommands, [
+                {
+                    text: `'/opt/my tools/ntm' worktrees merge BlueLake`,
+                    shouldExecute: true,
+                },
+            ]);
+
+            // 5. Open /worktrees in Web Cockpit reuses active NTM Web Cockpit terminal
+            mockState.quickPickQueue.push((picks: Array<{ itemAction: string }>) =>
+                picks.find(p => p.itemAction === 'openWorktreesCockpit')
+            );
+            await vscode.commands.executeCommand('ntm.manageWorktrees');
+
+            assert.equal(
+                mockState.createdTerminals.length,
+                4,
+                'must reuse active NTM Web Cockpit terminal when opening /worktrees'
+            );
+            assert.equal(mockState.createdTerminals[1].sentCommands.length, 1);
+            assert.deepEqual(mockState.openedExternalUris, [
+                'http://127.0.0.1:7337/swarm',
+                'http://127.0.0.1:7337/worktrees',
+            ]);
         } finally {
             for (const sub of subscriptions) {
                 sub.dispose();

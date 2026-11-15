@@ -17,24 +17,28 @@ import (
 // CategoryAffinities maps reasoning categories to preferred agent types (ordered).
 // These preferences are applied when assigning modes to panes by category.
 var CategoryAffinities = map[ModeCategory][]string{
-	CategoryFormal:      {string(tmux.AgentClaude), string(tmux.AgentCodex)},
-	CategoryUncertainty: {string(tmux.AgentCodex), string(tmux.AgentClaude)},
-	CategoryCausal:      {string(tmux.AgentClaude), string(tmux.AgentCodex)},
-	CategoryPractical:   {string(tmux.AgentCodex), string(tmux.AgentClaude)},
-	CategoryStrategic:   {string(tmux.AgentClaude), string(tmux.AgentCodex)},
-	CategoryDialectical: {string(tmux.AgentClaude)},
-	CategoryModal:       {string(tmux.AgentClaude), string(tmux.AgentCodex)},
-	CategoryDomain:      {string(tmux.AgentClaude), string(tmux.AgentGemini)},
-	CategoryMeta:        {string(tmux.AgentClaude)},
-	CategoryAmpliative:  {string(tmux.AgentGemini), string(tmux.AgentClaude)},
-	CategoryVagueness:   {string(tmux.AgentGemini), string(tmux.AgentClaude)},
-	CategoryChange:      {string(tmux.AgentClaude), string(tmux.AgentCodex)},
+	CategoryFormal:      {string(tmux.AgentClaude), string(tmux.AgentCodex), string(tmux.AgentOmp), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
+	CategoryUncertainty: {string(tmux.AgentCodex), string(tmux.AgentClaude), string(tmux.AgentGrok), string(tmux.AgentOmp), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
+	CategoryCausal:      {string(tmux.AgentClaude), string(tmux.AgentCodex), string(tmux.AgentOmp), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
+	CategoryPractical:   {string(tmux.AgentCodex), string(tmux.AgentClaude), string(tmux.AgentGrok), string(tmux.AgentOmp), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
+	CategoryStrategic:   {string(tmux.AgentClaude), string(tmux.AgentCodex), string(tmux.AgentOmp), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
+	CategoryDialectical: {string(tmux.AgentClaude), string(tmux.AgentOmp), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
+	CategoryModal:       {string(tmux.AgentClaude), string(tmux.AgentCodex), string(tmux.AgentOmp), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
+	CategoryDomain:      {string(tmux.AgentClaude), string(tmux.AgentGemini), string(tmux.AgentAntigravity), string(tmux.AgentOmp), string(tmux.AgentGrok), string(tmux.AgentOpencode)},
+	CategoryMeta:        {string(tmux.AgentClaude), string(tmux.AgentOmp), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
+	CategoryAmpliative:  {string(tmux.AgentGemini), string(tmux.AgentAntigravity), string(tmux.AgentClaude), string(tmux.AgentGrok), string(tmux.AgentOmp), string(tmux.AgentOpencode)},
+	CategoryVagueness:   {string(tmux.AgentGemini), string(tmux.AgentAntigravity), string(tmux.AgentClaude), string(tmux.AgentGrok), string(tmux.AgentOmp), string(tmux.AgentOpencode)},
+	CategoryChange:      {string(tmux.AgentClaude), string(tmux.AgentCodex), string(tmux.AgentOmp), string(tmux.AgentGrok), string(tmux.AgentOpencode), string(tmux.AgentAntigravity)},
 }
 
 var defaultPreferredTypes = []string{
 	string(tmux.AgentClaude),
 	string(tmux.AgentCodex),
 	string(tmux.AgentGemini),
+	string(tmux.AgentAntigravity),
+	string(tmux.AgentOmp),
+	string(tmux.AgentGrok),
+	string(tmux.AgentOpencode),
 }
 
 // AssignRoundRobin distributes modes evenly across available panes.
@@ -187,7 +191,7 @@ func AssignExplicit(specs []string, panes []tmux.Pane) ([]ModeAssignment, error)
 		if _, exists := modeToAgent[modeID]; exists {
 			return nil, fmt.Errorf("duplicate assignment for mode %q", modeID)
 		}
-		modeToAgent[modeID] = agentType
+		modeToAgent[modeID] = string(agent.AgentType(agentType).Canonical())
 	}
 
 	modeIDs := make([]string, 0, len(modeToAgent))
@@ -234,7 +238,7 @@ func groupPanesByType(panes []tmux.Pane) map[string][]tmux.Pane {
 		if !isAssignablePane(pane) {
 			continue
 		}
-		agentType := string(pane.Type)
+		agentType := string(pane.Type.Canonical())
 		result[agentType] = append(result[agentType], pane)
 	}
 	for agentType := range result {
@@ -432,7 +436,7 @@ func sortAssignablePanes(panes []tmux.Pane) []tmux.Pane {
 }
 
 func isAssignablePane(pane tmux.Pane) bool {
-	if pane.Type == tmux.AgentUser {
+	if pane.Type.Canonical() == tmux.AgentUser {
 		return false
 	}
 	if pane.Title == "" {

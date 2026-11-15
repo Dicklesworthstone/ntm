@@ -906,12 +906,14 @@ func applyModelCommands(state *session.SessionState) {
 		if ps.LaunchSpec != nil || ps.Command != "" {
 			continue
 		}
-		modelAlias := strings.TrimSpace(ps.Model)
-		if modelAlias == "" {
-			continue
-		}
 		tmpl, cliType, ok := agentTemplateAndType(ps.AgentType)
 		if !ok || tmpl == "" {
+			continue
+		}
+		modelAlias := strings.TrimSpace(ps.Model)
+		// session.AgentCommands has no dedicated Grok slot, so no-model Grok
+		// saves also materialize their configured launch command here.
+		if modelAlias == "" && (cliType != AgentTypeGrok || ps.HasFreshSessionBinding()) {
 			continue
 		}
 		v := config.AgentTemplateVars{
@@ -919,9 +921,11 @@ func applyModelCommands(state *session.SessionState) {
 			ProjectDir:     state.WorkDir,
 			PaneIndex:      ps.Index,
 			AgentType:      string(cliType),
-			Model:          ResolveModel(cliType, modelAlias),
-			ModelAlias:     modelAlias,
-			ModelRequested: true,
+			ModelRequested: modelAlias != "",
+		}
+		if modelAlias != "" {
+			v.Model = ResolveModel(cliType, modelAlias)
+			v.ModelAlias = modelAlias
 		}
 		if cliType == AgentTypeClaude {
 			v.ClaudeSettings = policy.ClaudeAgentLaunchSettings(cfg).Settings
@@ -950,6 +954,8 @@ func agentTemplateAndType(agentType string) (string, AgentType, bool) {
 		return cfg.Agents.Gemini, AgentTypeGemini, true
 	case tmux.AgentAntigravity:
 		return cfg.Agents.Antigravity, AgentTypeAntigravity, true
+	case tmux.AgentGrok:
+		return cfg.Agents.Grok, AgentTypeGrok, true
 	case tmux.AgentCursor:
 		return cfg.Agents.Cursor, AgentTypeCursor, true
 	case tmux.AgentWindsurf:
