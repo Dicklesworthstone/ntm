@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, apiRequestSignal, type ApiEnvelope } from "@/lib/api/client";
 import PipelineRecoveryPanel from "@/components/pipelines/PipelineRecoveryPanel";
+import { InlineWorkflowStudioPanel } from "@/components/pipelines/InlineWorkflowStudioPanel";
 
 interface PipelineProgress {
   completed: number;
@@ -685,6 +686,9 @@ export default function PipelinesPage() {
           )}
         </section>
       </div>
+
+      {/* Inline Workflow Studio & State Cleanup */}
+      <InlineWorkflowStudioPanel onNotice={setStatusNotice} />
 
       {/* Run Modal */}
       {showRunModal && (

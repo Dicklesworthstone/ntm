@@ -9,6 +9,7 @@
  */
 
 import Link from "next/link";
+import { SystemDiagnosticsToolbar } from "@/components/overview/SystemDiagnosticsToolbar";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
@@ -611,6 +612,8 @@ export default function SessionsPage() {
             )}
           </div>
         )}
+
+        <SystemDiagnosticsToolbar />
       </section>
 
       {isLoading && (

@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, type ApiEnvelope } from "@/lib/api/client";
+import { AuditAndPolicyPanel } from "@/components/safety/AuditAndPolicyPanel";
 
 interface SafetyStatus {
   installed: boolean;
@@ -1124,6 +1125,8 @@ export default function SafetyPage() {
           </div>
         </section>
       </div>
+
+      <AuditAndPolicyPanel initialAutomation={policyData?.automation} />
     </div>
   );
 }

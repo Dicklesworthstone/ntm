@@ -256,6 +256,13 @@ export default function ScannerPage() {
   const queryClient = useQueryClient();
   const [severityFilter, setSeverityFilter] = useState<string>('');
   const [showDismissed, setShowDismissed] = useState(false);
+  const [scanPath, setScanPath] = useState<string>('');
+  const [stagedOnly, setStagedOnly] = useState<boolean>(false);
+  const [diffOnly, setDiffOnly] = useState<boolean>(false);
+  const [notifyChannel, setNotifyChannel] = useState<'webhook' | 'slack' | 'email'>('webhook');
+  const [notifyEndpoint, setNotifyEndpoint] = useState<string>('');
+  const [notifyMinSeverity, setNotifyMinSeverity] = useState<'critical' | 'warning' | 'info'>('critical');
+  const [notifyConfirmation, setNotifyConfirmation] = useState<string | null>(null);
   // Scanner status
   const { data: status, error: statusError } = useQuery({
     queryKey: ['scanner', 'status'],
@@ -338,6 +345,41 @@ export default function ScannerPage() {
     },
   });
 
+  // Notify bug channel mutation
+  const notifyBugsMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ notified?: boolean; findings_count?: number; channel?: string }>(
+        '/api/v1/bugs/notify',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            channel: notifyChannel,
+            endpoint: notifyEndpoint.trim(),
+            min_severity: notifyMinSeverity,
+          }),
+        }
+      ),
+    onSuccess: (res) => {
+      setNotifyConfirmation(
+        `Sent bug notification via ${res.channel || notifyChannel}${typeof res.findings_count === 'number' ? ` (${res.findings_count} findings)` : ''}.`
+      );
+    },
+  });
+
+  const buildScanOptions = (): ScanOptions => {
+    const opts: ScanOptions = {};
+    if (scanPath.trim()) {
+      opts.path = scanPath.trim();
+    }
+    if (stagedOnly) {
+      opts.staged_only = true;
+    }
+    if (diffOnly) {
+      opts.diff_only = true;
+    }
+    return opts;
+  };
+
   const isScanning = status?.current_scan?.state === 'running' || status?.current_scan?.state === 'pending';
   const findings = findingsData?.findings || [];
   const history = historyData?.scans || [];
@@ -369,12 +411,105 @@ export default function ScannerPage() {
             </span>
           )}
           <button
-            onClick={() => runScanMutation.mutate({})}
+            onClick={() => runScanMutation.mutate(buildScanOptions())}
             disabled={!status?.available || isScanning || runScanMutation.isPending}
             className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 disabled:opacity-50 rounded-lg font-medium transition-colors"
           >
             {isScanning ? 'Scanning...' : 'Scan Now'}
           </button>
+        </div>
+      </div>
+
+      {/* Scan Options & Bug Alert Dispatch */}
+      <div
+        role="region"
+        aria-label="Scan Scope & Bug Alert Dispatch"
+        className="grid grid-cols-1 lg:grid-cols-2 gap-4"
+      >
+        <div className="bg-gray-800 rounded-lg p-4 border border-gray-700 space-y-3">
+          <div className="text-sm font-semibold text-gray-100">Scan Scope Options</div>
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+            <input
+              type="text"
+              aria-label="Scan Path"
+              value={scanPath}
+              onChange={(e) => setScanPath(e.target.value)}
+              placeholder="Optional target path (e.g. internal/serve)"
+              className="flex-1 bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-xs font-mono text-gray-200"
+            />
+            <label className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={stagedOnly}
+                onChange={(e) => setStagedOnly(e.target.checked)}
+                className="rounded bg-gray-700 border-gray-600"
+              />
+              Staged only
+            </label>
+            <label className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={diffOnly}
+                onChange={(e) => setDiffOnly(e.target.checked)}
+                className="rounded bg-gray-700 border-gray-600"
+              />
+              Diff only
+            </label>
+          </div>
+        </div>
+
+        <div className="bg-gray-800 rounded-lg p-4 border border-gray-700 space-y-3">
+          <div className="text-sm font-semibold text-gray-100">
+            Notify Bug Channel (<code className="font-mono text-xs">/api/v1/bugs/notify</code>)
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              aria-label="Notification Channel"
+              value={notifyChannel}
+              onChange={(e) => setNotifyChannel(e.target.value as 'webhook' | 'slack' | 'email')}
+              className="bg-gray-900 border border-gray-600 rounded px-2 py-1.5 text-xs text-gray-200"
+            >
+              <option value="webhook">webhook</option>
+              <option value="slack">slack</option>
+              <option value="email">email</option>
+            </select>
+            <select
+              aria-label="Minimum Alert Severity"
+              value={notifyMinSeverity}
+              onChange={(e) => setNotifyMinSeverity(e.target.value as 'critical' | 'warning' | 'info')}
+              className="bg-gray-900 border border-gray-600 rounded px-2 py-1.5 text-xs text-gray-200"
+            >
+              <option value="critical">critical+</option>
+              <option value="warning">warning+</option>
+              <option value="info">info+</option>
+            </select>
+            <input
+              type="text"
+              aria-label="Notification Endpoint"
+              value={notifyEndpoint}
+              onChange={(e) => setNotifyEndpoint(e.target.value)}
+              placeholder="https://hooks.example.com/ntm"
+              className="flex-1 min-w-[160px] bg-gray-900 border border-gray-600 rounded px-2.5 py-1.5 text-xs font-mono text-gray-200"
+            />
+            <button
+              type="button"
+              disabled={!notifyEndpoint.trim() || notifyBugsMutation.isPending}
+              onClick={() => notifyBugsMutation.mutate()}
+              className="px-3 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-white"
+            >
+              {notifyBugsMutation.isPending ? 'Sending...' : 'Notify Bugs'}
+            </button>
+          </div>
+          {notifyBugsMutation.error && (
+            <div className="text-xs text-red-400">
+              {getErrorMessage(notifyBugsMutation.error)}
+            </div>
+          )}
+          {notifyConfirmation && (
+            <div data-testid="scanner-notify-confirmation" className="text-xs text-green-400">
+              {notifyConfirmation}
+            </div>
+          )}
         </div>
       </div>
 

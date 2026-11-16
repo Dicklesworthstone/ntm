@@ -27,6 +27,7 @@ import {
 } from "@/lib/ws/client";
 import { SessionHandoffsPanel } from "@/components/sessions/SessionHandoffsPanel";
 import { SessionRollbackAndArchivePanel } from "@/components/sessions/SessionRollbackAndArchivePanel";
+import { SessionTimelinePanel } from "@/components/sessions/SessionTimelinePanel";
 
 interface Session {
   name: string;
@@ -722,6 +723,8 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
         sessionId={sessionId}
         onNotice={setStatusNotice}
       />
+
+      <SessionTimelinePanel sessionId={sessionId} />
 
       <SessionCheckpointsSection
         sessionId={sessionId}

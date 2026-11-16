@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, type ApiEnvelope } from "@/lib/api/client";
+import { MailContactsPanel } from "@/components/mail/MailContactsPanel";
 
 interface Agent {
   id: number;
@@ -1098,6 +1099,8 @@ export default function MailPage() {
           </div>
         )}
       </section>
+
+      <MailContactsPanel selectedAgentName={agentName} />
     </div>
   );
 }
