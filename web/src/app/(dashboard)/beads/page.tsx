@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, type ApiEnvelope } from "@/lib/api/client";
 import { BeadsActionsAndPlan } from "@/components/beads/BeadsActionsAndPlan";
+import { BeadsGraphAndDepsPanel } from "@/components/beads/BeadsGraphAndDepsPanel";
 
 type BeadStatus = "open" | "in_progress" | "closed";
 
@@ -390,6 +391,11 @@ export default function BeadsPage() {
       </div>
 
       <BeadsActionsAndPlan
+        onNotice={setStatusNotice}
+        onSelectBead={setSelectedBeadId}
+      />
+
+      <BeadsGraphAndDepsPanel
         onNotice={setStatusNotice}
         onSelectBead={setSelectedBeadId}
       />

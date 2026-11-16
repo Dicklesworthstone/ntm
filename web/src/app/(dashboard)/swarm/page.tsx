@@ -12,6 +12,7 @@
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { SwarmOrchestrationWorkbench } from "@/components/swarm/SwarmOrchestrationWorkbench";
 import {
   apiFetch,
   formatApiErrorMessage,
@@ -815,6 +816,8 @@ export default function SwarmPage() {
           </div>
         )}
       </section>
+
+      <SwarmOrchestrationWorkbench defaultSession={trimmedSession} />
     </div>
   );
 }

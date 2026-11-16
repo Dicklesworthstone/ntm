@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, type ApiEnvelope } from "@/lib/api/client";
+import { ProviderQuotaTelemetryPanel } from "@/components/accounts/ProviderQuotaTelemetryPanel";
 
 interface AccountInfo {
   provider: string;
@@ -344,6 +345,8 @@ export default function AccountsPage() {
       )}
 
       {/* Active Account Cards */}
+      <ProviderQuotaTelemetryPanel onNotice={setStatusNotice} />
+
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {quotasList.map((quota) => {
           const active = activeAccounts[quota.provider];

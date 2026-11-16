@@ -10,6 +10,7 @@
 
 import Link from "next/link";
 import { SystemDiagnosticsToolbar } from "@/components/overview/SystemDiagnosticsToolbar";
+import { WorkspaceConfigPanel } from "@/components/overview/WorkspaceConfigPanel";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
@@ -615,6 +616,8 @@ export default function SessionsPage() {
 
         <SystemDiagnosticsToolbar />
       </section>
+
+      <WorkspaceConfigPanel />
 
       {isLoading && (
         <div className="flex items-center justify-center h-64">
