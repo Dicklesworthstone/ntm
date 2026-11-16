@@ -119,6 +119,19 @@ func formatAuditTimestamp(ts time.Time) string {
 	return ts.UTC().Format(time.RFC3339Nano)
 }
 
+func parseAuditTimestamp(raw string) time.Time {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return time.Time{}
+	}
+	for _, layout := range auditTimestampLayouts {
+		if parsed, err := time.Parse(layout, trimmed); err == nil {
+			return parsed.UTC()
+		}
+	}
+	return time.Time{}
+}
+
 // DefaultAuditStoreConfig returns sensible defaults for audit storage.
 func DefaultAuditStoreConfig(dataDir string) AuditStoreConfig {
 	return AuditStoreConfig{
@@ -343,6 +356,218 @@ type AuditFilter struct {
 	Until      time.Time
 	Limit      int
 	Offset     int
+}
+
+const (
+	defaultAuditQueryLimit = 50
+	maxAuditQueryLimit     = 1000
+)
+
+// NormalizeAuditQueryPage normalizes limit and offset using AuditStore.Query bounds.
+func NormalizeAuditQueryPage(limit, offset int) (int, int) {
+	if limit <= 0 {
+		limit = defaultAuditQueryLimit
+	} else if limit > maxAuditQueryLimit {
+		limit = maxAuditQueryLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
+}
+
+// Query retrieves persisted HTTP/WebSocket audit records matching filter,
+// ordered newest-first, along with the total unpaginated match count.
+func (s *AuditStore) Query(ctx context.Context, filter AuditFilter) ([]AuditRecord, int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if s == nil {
+		return []AuditRecord{}, 0, nil
+	}
+
+	s.mu.Lock()
+	db := s.db
+	s.mu.Unlock()
+	if db == nil {
+		return []AuditRecord{}, 0, nil
+	}
+
+	var clauses []string
+	var args []any
+
+	if filter.UserID != "" {
+		clauses = append(clauses, "user_id = ?")
+		args = append(args, filter.UserID)
+	}
+	if filter.Action != "" {
+		clauses = append(clauses, "action = ?")
+		args = append(args, string(filter.Action))
+	}
+	if filter.Resource != "" {
+		clauses = append(clauses, "resource = ?")
+		args = append(args, filter.Resource)
+	}
+	if filter.SessionID != "" {
+		clauses = append(clauses, "session_id = ?")
+		args = append(args, filter.SessionID)
+	}
+	if filter.RequestID != "" {
+		clauses = append(clauses, "request_id = ?")
+		args = append(args, filter.RequestID)
+	}
+	if filter.ApprovalID != "" {
+		clauses = append(clauses, "approval_id = ?")
+		args = append(args, filter.ApprovalID)
+	}
+	if !filter.Since.IsZero() {
+		clauses = append(clauses, "datetime(timestamp) >= datetime(?)")
+		args = append(args, formatAuditTimestamp(filter.Since))
+	}
+	if !filter.Until.IsZero() {
+		clauses = append(clauses, "datetime(timestamp) <= datetime(?)")
+		args = append(args, formatAuditTimestamp(filter.Until))
+	}
+
+	whereSQL := ""
+	if len(clauses) > 0 {
+		whereSQL = " WHERE " + strings.Join(clauses, " AND ")
+	}
+
+	var totalCount int
+	countQuery := "SELECT COUNT(*) FROM audit_records" + whereSQL
+	if err := db.QueryRowContext(ctx, countQuery, args...).Scan(&totalCount); err != nil {
+		return nil, 0, fmt.Errorf("count audit records: %w", err)
+	}
+
+	limit, offset := NormalizeAuditQueryPage(filter.Limit, filter.Offset)
+	records := []AuditRecord{}
+	if totalCount == 0 || offset >= totalCount {
+		return records, totalCount, nil
+	}
+
+	selectQuery := `
+		SELECT
+			id, timestamp, request_id, user_id, role, action, resource, resource_id,
+			method, path, status_code, duration_ms, session_id, pane_id, agent_id,
+			details, remote_addr, user_agent, approval_id
+		FROM audit_records` + whereSQL + `
+		ORDER BY datetime(timestamp) DESC, id DESC
+		LIMIT ? OFFSET ?`
+	queryArgs := make([]any, 0, len(args)+2)
+	queryArgs = append(queryArgs, args...)
+	queryArgs = append(queryArgs, limit, offset)
+
+	rows, err := db.QueryContext(ctx, selectQuery, queryArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query audit records: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			rec        AuditRecord
+			rawTS      string
+			roleStr    string
+			actionStr  string
+			resourceID sql.NullString
+			sessionID  sql.NullString
+			paneID     sql.NullString
+			agentID    sql.NullString
+			details    sql.NullString
+			userAgent  sql.NullString
+			approvalID sql.NullString
+		)
+		if err := rows.Scan(
+			&rec.ID,
+			&rawTS,
+			&rec.RequestID,
+			&rec.UserID,
+			&roleStr,
+			&actionStr,
+			&rec.Resource,
+			&resourceID,
+			&rec.Method,
+			&rec.Path,
+			&rec.StatusCode,
+			&rec.Duration,
+			&sessionID,
+			&paneID,
+			&agentID,
+			&details,
+			&rec.RemoteAddr,
+			&userAgent,
+			&approvalID,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan audit record: %w", err)
+		}
+		rec.Timestamp = parseAuditTimestamp(rawTS)
+		rec.Role = Role(roleStr)
+		rec.Action = AuditAction(actionStr)
+		rec.ResourceID = resourceID.String
+		rec.SessionID = sessionID.String
+		rec.PaneID = paneID.String
+		rec.AgentID = agentID.String
+		rec.Details = details.String
+		rec.UserAgent = userAgent.String
+		rec.ApprovalID = approvalID.String
+		records = append(records, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate audit records: %w", err)
+	}
+
+	return records, totalCount, nil
+}
+
+// QueryAuditDBFile queries an existing audit SQLite database file without
+// creating files, mutating schema, or starting retention goroutines. When
+// dbPath does not exist yet, it returns an empty slice and zero matches.
+func QueryAuditDBFile(ctx context.Context, dbPath string, filter AuditFilter) ([]AuditRecord, int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	trimmed := strings.TrimSpace(dbPath)
+	if trimmed == "" {
+		return []AuditRecord{}, 0, nil
+	}
+
+	info, err := os.Stat(trimmed)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []AuditRecord{}, 0, nil
+		}
+		return nil, 0, fmt.Errorf("stat audit db: %w", err)
+	}
+	if info.IsDir() {
+		return nil, 0, fmt.Errorf("audit db path %q is a directory", trimmed)
+	}
+	if info.Size() == 0 {
+		return []AuditRecord{}, 0, nil
+	}
+
+	db, err := sql.Open(sqliteutil.DriverName, sqliteutil.FileDSN(
+		trimmed,
+		"busy_timeout(5000)",
+		"query_only(1)",
+	))
+	if err != nil {
+		return nil, 0, fmt.Errorf("open audit db: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	defer db.Close()
+
+	var tableExists int
+	if err := db.QueryRowContext(ctx, `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'audit_records'`).Scan(&tableExists); err != nil {
+		if err == sql.ErrNoRows {
+			return []AuditRecord{}, 0, nil
+		}
+		return nil, 0, fmt.Errorf("inspect audit db schema: %w", err)
+	}
+
+	tempStore := &AuditStore{db: db}
+	return tempStore.Query(ctx, filter)
 }
 
 // maxJSONLBytes is the size at which the active audit log is rotated. An

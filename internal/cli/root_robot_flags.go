@@ -305,6 +305,26 @@ var (
 	robotAnalyticsSince    string // cutoff date (YYYY-MM-DD or RFC3339)
 	robotAnalyticsSessions bool   // include per-session breakdown
 
+	// Robot-audit flags for tamper-evident audit log inspection, search, verification, and source health
+	robotAudit        string // session name or 'all' (optional via NoOptDefVal)
+	robotAuditAction  string // list, show, search, verify, sources
+	robotAuditSearch  string // regex pattern to search across audit logs
+	robotAuditVerify  bool   // verify hash-chain integrity
+	robotAuditSources bool   // query projection source health
+	robotAuditType    string // comma-separated event types
+	robotAuditActor   string // comma-separated actors
+	robotAuditSince   string // lower time bound
+	robotAuditDays    int    // search lookback days (default 30)
+	robotAuditLimit   int    // page size (default 50)
+	robotAuditOffset  int    // pagination offset (default 0)
+
+	// Robot-timeline flags for persisted session timeline inspection and storage stats
+	robotTimeline       string // session ID or 'all'/'list'/'stats' (optional via NoOptDefVal)
+	robotTimelineAction string // list, show, stats
+	robotTimelineEvents bool   // include state-transition event array on show
+	robotTimelineStats  bool   // show aggregate storage statistics
+	robotTimelineLimit  int    // max timelines to list (default 20)
+
 	// Robot-history flags for command history tracking
 	robotHistory      string // session name for history query
 	robotHistoryPane  string // filter by pane ID
@@ -1012,6 +1032,28 @@ func registerRobotFlags() {
 	rootCmd.Flags().IntVar(&robotAnalyticsDays, "analytics-days", 30, "Number of days of event history for --robot-analytics")
 	rootCmd.Flags().StringVar(&robotAnalyticsSince, "analytics-since", "", "Cutoff date (YYYY-MM-DD or RFC3339) for --robot-analytics")
 	rootCmd.Flags().BoolVar(&robotAnalyticsSessions, "analytics-sessions", false, "Include per-session breakdown in --robot-analytics")
+
+	// Robot-audit flags for tamper-evident audit log queries, search, verification, and source health
+	rootCmd.Flags().StringVar(&robotAudit, "robot-audit", "", "Query, search, list, or verify tamper-evident audit logs (optional SESSION or 'all'). Example: ntm --robot-audit=myproject")
+	rootCmd.Flags().Lookup("robot-audit").NoOptDefVal = "__present__"
+	rootCmd.Flags().StringVar(&robotAuditAction, "audit-action", "", "Audit action: list, show, search, verify, sources (auto-inferred when omitted)")
+	rootCmd.Flags().StringVar(&robotAuditSearch, "audit-search", "", "Regex pattern to search across audit logs (use with --robot-audit)")
+	rootCmd.Flags().BoolVar(&robotAuditVerify, "audit-verify", false, "Verify tamper-evident hash chain integrity of audit logs (use with --robot-audit)")
+	rootCmd.Flags().BoolVar(&robotAuditSources, "audit-sources", false, "Query runtime projection data-source health from state store (use with --robot-audit)")
+	rootCmd.Flags().StringVar(&robotAuditType, "audit-type", "", "Filter audit entries by event type (comma-separated: command,spawn,send,response,error,state_change)")
+	rootCmd.Flags().StringVar(&robotAuditActor, "audit-actor", "", "Filter audit entries by actor (comma-separated: user,agent,system)")
+	rootCmd.Flags().StringVar(&robotAuditSince, "audit-since", "", "Filter audit entries since time (RFC3339, YYYY-MM-DD, or relative like 1h, 7d)")
+	rootCmd.Flags().IntVar(&robotAuditDays, "audit-days", 30, "Number of days to search when --audit-since is omitted (default 30)")
+	rootCmd.Flags().IntVar(&robotAuditLimit, "audit-limit", 50, "Maximum audit entries or log files per page (default 50)")
+	rootCmd.Flags().IntVar(&robotAuditOffset, "audit-offset", 0, "Pagination offset for --robot-audit (default 0)")
+
+	// Robot-timeline flags for persisted session timeline inspection and storage stats
+	rootCmd.Flags().StringVar(&robotTimeline, "robot-timeline", "", "List saved session timelines, inspect a session timeline, or view timeline stats (optional SESSION, 'all', or 'stats'). Example: ntm --robot-timeline=myproject")
+	rootCmd.Flags().Lookup("robot-timeline").NoOptDefVal = "__present__"
+	rootCmd.Flags().StringVar(&robotTimelineAction, "timeline-action", "", "Timeline action: list, show, stats (auto-inferred when omitted)")
+	rootCmd.Flags().BoolVar(&robotTimelineEvents, "timeline-events", false, "Include full state-transition event array when showing a session timeline")
+	rootCmd.Flags().BoolVar(&robotTimelineStats, "timeline-stats", false, "Show aggregate storage statistics across all persisted timelines")
+	rootCmd.Flags().IntVar(&robotTimelineLimit, "timeline-limit", 20, "Maximum saved timelines to return when listing (default 20)")
 
 	// Robot-history flags for command history tracking
 	rootCmd.Flags().StringVar(&robotHistory, "robot-history", "", "Get command history for a session (JSON). Required: SESSION. Example: ntm --robot-history=myproject")

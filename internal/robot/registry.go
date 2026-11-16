@@ -1047,6 +1047,34 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 				TruncationBehavior: "Bounded to events within --analytics-days (default 30) or --analytics-since window",
 			},
 		},
+		"audit": {
+			SchemaID:   "ntm:robot:audit:v1",
+			SchemaType: "audit",
+			Sections:   []string{"events", "source_health", "next_actions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Query, regex-search, list, or verify tamper-evident JSONL audit logs and projection source health",
+				SummaryHint: "Read entries/logs/files/sources based on action; follow pagination and _agent_hints.next_offset for continuation",
+			},
+			Boundedness: &BoundednessInfo{
+				DefaultLimit:       50,
+				SupportsPagination: true,
+				TruncationBehavior: "Results paged via --audit-limit (default 50) and --audit-offset",
+			},
+		},
+		"timeline": {
+			SchemaID:   "ntm:robot:timeline:v1",
+			SchemaType: "timeline",
+			Sections:   []string{"sessions", "events", "next_actions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "List persisted session timelines, inspect agent state transitions for a session, or compute storage statistics",
+				SummaryHint: "Read timelines for list, info/session_stats/events for show, and aggregate_stats for stats",
+			},
+			Boundedness: &BoundednessInfo{
+				DefaultLimit:       20,
+				SupportsPagination: false,
+				TruncationBehavior: "Saved timelines capped by --timeline-limit (default 20)",
+			},
+		},
 	}
 }
 

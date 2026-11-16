@@ -149,6 +149,8 @@ Use --all to include the user pane (index depends on tmux pane-base-index).
 			"graph",
 			"context",
 			"analytics",
+			"audit",
+			"timeline",
 			"health",
 			"activity",
 			"agent-health",

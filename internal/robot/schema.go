@@ -115,6 +115,8 @@ var SchemaCommand = map[string]interface{}{
 	"save":             SaveResult{},
 	"handoff":          HandoffOutput{},
 	"analytics":        AnalyticsOutput{},
+	"audit":            AuditOutput{},
+	"timeline":         TimelineOutput{},
 
 	// Pane inspection
 	"inspect":              InspectPaneOutput{},

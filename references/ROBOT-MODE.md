@@ -143,6 +143,19 @@ ntm --robot-handoff=myproject --handoff-create --handoff-auto
 ntm --robot-analytics
 ntm --robot-analytics --analytics-days=7 --analytics-sessions
 ntm --robot-analytics --analytics-since=2026-01-01
+
+# Tamper-evident audit logs, hash-chain verification, and HTTP daemon audit trail
+ntm --robot-audit
+ntm --robot-audit=myproject --audit-limit=25
+ntm --robot-audit --audit-search=spawn --audit-days=7
+ntm --robot-audit=myproject --audit-verify
+ntm --robot-audit --audit-sources
+ntm audit http --action=create --limit=20 --json
+
+# Persisted session timelines and aggregate storage statistics
+ntm --robot-timeline
+ntm --robot-timeline=myproject --timeline-events
+ntm --robot-timeline --timeline-stats
 ```
 
 ## Reasoning Ensembles

@@ -12,7 +12,7 @@
     "utility"
   ],
   "category_count": 10,
-  "schema_type_count": 144,
+  "schema_type_count": 146,
   "schema_types": [
     "account_status",
     "accounts_list",
@@ -27,6 +27,7 @@
     "answer_dialog",
     "assign",
     "attention",
+    "audit",
     "auto_restart_stuck",
     "backpressure",
     "bead_claim",
@@ -147,6 +148,7 @@
     "switch_account",
     "tail",
     "terse",
+    "timeline",
     "tokens",
     "tools",
     "triage",
@@ -160,7 +162,7 @@
     "xf_status"
   ],
   "section_count": 13,
-  "surface_count": 156,
+  "surface_count": 158,
   "surfaces": [
     {
       "category": "state",
@@ -221,6 +223,22 @@
       "name": "analytics",
       "schema_id": "ntm:robot:analytics:v1",
       "schema_type": "analytics"
+    },
+    {
+      "category": "state",
+      "flag": "--robot-audit",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "audit",
+      "schema_id": "ntm:robot:audit:v1",
+      "schema_type": "audit",
+      "supports_pagination": true
     },
     {
       "category": "state",
@@ -724,6 +742,21 @@
       "name": "terse",
       "schema_id": "",
       "schema_type": ""
+    },
+    {
+      "category": "state",
+      "flag": "--robot-timeline",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "timeline",
+      "schema_id": "ntm:robot:timeline:v1",
+      "schema_type": "timeline"
     },
     {
       "category": "state",

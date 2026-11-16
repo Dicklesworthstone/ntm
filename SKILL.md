@@ -260,6 +260,11 @@ ntm --robot-handoff=myproject --handoff-create --handoff-auto
 ntm --robot-analytics
 ntm --robot-analytics --analytics-days=7 --analytics-sessions
 ntm --robot-analytics --analytics-since=2026-01-01
+ntm --robot-audit=myproject --audit-verify
+ntm --robot-audit --audit-search=spawn --audit-days=7
+ntm --robot-timeline=myproject --timeline-events
+ntm --robot-timeline --timeline-stats
+ntm audit http --limit=20 --json
 ```
 
 `--spawn-prompt` (or `--spawn-prompt-file`) waits for readiness, then reaches

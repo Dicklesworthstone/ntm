@@ -86,10 +86,19 @@ type Searcher struct {
 	mu       sync.RWMutex
 }
 
-// NewSearcher creates a new audit log searcher
+// NewSearcher creates a new audit log searcher using the default audit directory.
 func NewSearcher() (*Searcher, error) {
+	return NewSearcherWithDir(Dir())
+}
+
+// NewSearcherWithDir creates a new audit log searcher rooted at auditDir.
+// When auditDir is empty, Dir() is used.
+func NewSearcherWithDir(auditDir string) (*Searcher, error) {
+	if strings.TrimSpace(auditDir) == "" {
+		auditDir = Dir()
+	}
 	return &Searcher{
-		auditDir: Dir(),
+		auditDir: auditDir,
 		index:    newIndex(),
 	}, nil
 }

@@ -1155,6 +1155,7 @@ var robotSurfacesWithoutProjection = map[string]bool{
 	"robot-safety-simulate": true, "robot-policy-decisions": true, "robot-ubs-scan": true,
 	"robot-mail": true, "robot-mail-check": true, "robot-rano-stats": true, "robot-giil-fetch": true,
 	"robot-kill-pane": true, "robot-restart-pane": true,
+	"robot-audit": true, "robot-timeline": true,
 }
 
 func initializeRobotPersistence(ctx context.Context, refreshProjection bool) error {

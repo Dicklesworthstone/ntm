@@ -1,9 +1,9 @@
 package cli
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +16,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/serve"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
@@ -28,7 +29,7 @@ func newAuditCmd() *cobra.Command {
 
 Audit logs record all significant NTM actions with hash-chain integrity, while
 state.db tracks structured entity history, actor activity, request traces, and
-projection source health.
+projection source health, and audit.db records mutating HTTP/WebSocket daemon requests.
 
 Examples:
   ntm audit show myproject                  # Show audit log for session
@@ -36,6 +37,7 @@ Examples:
   ntm audit search --type=error --days=7    # Errors in last week
   ntm audit verify myproject                # Verify log integrity
   ntm audit export myproject --format=json  # Export session log
+  ntm audit http --action=create --limit=20 # HTTP/WebSocket daemon audit records
   ntm audit history approval appr-123       # Entity audit trail from state.db
   ntm audit actor user alice --since=24h    # Actor activity from state.db
   ntm audit trace req-42                    # Request trace from state.db
@@ -48,6 +50,7 @@ Examples:
 		newAuditVerifyCmd(),
 		newAuditExportCmd(),
 		newAuditListCmd(),
+		newAuditHTTPCmd(),
 		newAuditHistoryCmd(),
 		newAuditActorCmd(),
 		newAuditTraceCmd(),
@@ -219,36 +222,16 @@ func runAuditShow(session, since, until, evTypes string, limit, offset int) erro
 		return fmt.Errorf("failed to create searcher: %w", err)
 	}
 
-	// Leave Query.Limit unset: the searcher collects every match (with its
-	// internal scan cap) and pagination happens envelope-side so totals and
-	// has_more are honest.
-	q := audit.Query{
-		Sessions: []string{session},
-	}
-
-	if since != "" {
-		t, err := parseTimeArg(since)
-		if err != nil {
-			return fmt.Errorf("invalid --since: %w", err)
-		}
-		q.Since = &t
-	}
-	if until != "" {
-		t, err := parseTimeArg(until)
-		if err != nil {
-			return fmt.Errorf("invalid --until: %w", err)
-		}
-		q.Until = &t
-	}
-	if evTypes != "" {
-		for _, et := range strings.Split(evTypes, ",") {
-			q.EventTypes = append(q.EventTypes, audit.EventType(strings.TrimSpace(et)))
-		}
-	}
-
-	result, err := searcher.Search(q)
+	result, err := robot.RunAuditQuery(context.Background(), robot.AuditOptions{
+		Session:    session,
+		Action:     "show",
+		Since:      since,
+		Until:      until,
+		EventTypes: evTypes,
+		AuditDir:   searcher.AuditDir(),
+	})
 	if err != nil {
-		return fmt.Errorf("search failed: %w", err)
+		return err
 	}
 
 	out := buildAuditQueryOutput(result, limit, offset)
@@ -276,33 +259,18 @@ func runAuditSearch(pattern, sessions, evTypes, actors, target string, days, lim
 		return fmt.Errorf("failed to create searcher: %w", err)
 	}
 
-	since := time.Now().AddDate(0, 0, -days)
-	// Query.Limit stays unset; see runAuditShow — pagination is envelope-side.
-	q := audit.Query{
-		Since:       &since,
-		GrepPattern: pattern,
-	}
-
-	if sessions != "" {
-		q.Sessions = strings.Split(sessions, ",")
-	}
-	if evTypes != "" {
-		for _, et := range strings.Split(evTypes, ",") {
-			q.EventTypes = append(q.EventTypes, audit.EventType(strings.TrimSpace(et)))
-		}
-	}
-	if actors != "" {
-		for _, a := range strings.Split(actors, ",") {
-			q.Actors = append(q.Actors, audit.Actor(strings.TrimSpace(a)))
-		}
-	}
-	if target != "" {
-		q.TargetPattern = target
-	}
-
-	result, err := searcher.Search(q)
+	result, err := robot.RunAuditQuery(context.Background(), robot.AuditOptions{
+		Action:     "search",
+		Pattern:    pattern,
+		Sessions:   sessions,
+		EventTypes: evTypes,
+		Actors:     actors,
+		Target:     target,
+		Days:       days,
+		AuditDir:   searcher.AuditDir(),
+	})
 	if err != nil {
-		return fmt.Errorf("search failed: %w", err)
+		return err
 	}
 
 	out := buildAuditQueryOutput(result, limit, offset)
@@ -323,12 +291,7 @@ func runAuditVerify(session string) error {
 	return runAuditVerifyTo(os.Stdout, session)
 }
 
-type auditVerifyFileResult struct {
-	File     string `json:"file"`
-	Status   string `json:"status"`
-	Verified bool   `json:"verified"`
-	Error    string `json:"error,omitempty"`
-}
+type auditVerifyFileResult = robot.AuditVerifyFileResult
 
 type auditVerifyResult struct {
 	Success  bool                    `json:"success"`
@@ -344,54 +307,35 @@ func runAuditVerifyTo(w io.Writer, session string) error {
 		return fmt.Errorf("failed to create searcher: %w", err)
 	}
 
-	auditDir := searcher.AuditDir()
-	pattern := filepath.Join(auditDir, session+"-*.jsonl")
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return fmt.Errorf("failed to find log files: %w", err)
-	}
-	if len(matches) == 0 {
-		return fmt.Errorf("no audit logs found for session %q", session)
+	files, verified, verifyErr, lookupErr := robot.VerifyAuditLogs(searcher.AuditDir(), session)
+	if lookupErr != nil {
+		return lookupErr
 	}
 
 	t := theme.Current()
-	result := auditVerifyResult{
-		Success:  true,
-		Session:  session,
-		Verified: true,
-		Files:    make([]auditVerifyFileResult, 0, len(matches)),
-	}
-	var verificationErrors []error
-
-	for _, logPath := range matches {
-		fname := filepath.Base(logPath)
-		if err := audit.VerifyIntegrity(logPath); err != nil {
-			result.Success = false
-			result.Verified = false
-			result.Files = append(result.Files, auditVerifyFileResult{
-				File: fname, Status: "FAIL", Verified: false, Error: err.Error(),
-			})
-			verificationErrors = append(verificationErrors, fmt.Errorf("%s: %w", fname, err))
-			if !jsonOutput {
-				fmt.Printf("%s✗%s %s: FAIL - %v\n", colorize(t.Error), "\033[0m", fname, err)
-			}
-		} else {
-			result.Files = append(result.Files, auditVerifyFileResult{
-				File: fname, Status: "PASS", Verified: true,
-			})
-			if !jsonOutput {
-				fmt.Printf("%s✓%s %s: PASS\n", colorize(t.Success), "\033[0m", fname)
+	for _, f := range files {
+		if !jsonOutput {
+			if f.Verified {
+				fmt.Printf("%s✓%s %s: PASS\n", colorize(t.Success), "\033[0m", f.File)
+			} else {
+				fmt.Printf("%s✗%s %s: FAIL - %s\n", colorize(t.Error), "\033[0m", f.File, f.Error)
 			}
 		}
+	}
+
+	result := auditVerifyResult{
+		Success:  verified,
+		Session:  session,
+		Verified: verified,
+		Files:    files,
 	}
 
 	if !result.Success {
 		result.Error = "integrity verification failed for one or more files"
-		cause := errors.Join(verificationErrors...)
 		if jsonOutput {
-			return emitJSONFailureEnvelopeToWithCause(w, result, cause)
+			return emitJSONFailureEnvelopeToWithCause(w, result, verifyErr)
 		}
-		return fmt.Errorf("%s: %w", result.Error, cause)
+		return fmt.Errorf("%s: %w", result.Error, verifyErr)
 	}
 	if jsonOutput {
 		return json.NewEncoder(w).Encode(result)
@@ -468,12 +412,12 @@ func runAuditList() error {
 	}
 
 	auditDir := searcher.AuditDir()
-	matches, err := filepath.Glob(filepath.Join(auditDir, "*.jsonl"))
+	summaries, err := robot.ListAuditLogFiles(auditDir, "")
 	if err != nil {
-		return fmt.Errorf("failed to list audit logs: %w", err)
+		return err
 	}
 
-	if len(matches) == 0 {
+	if len(summaries) == 0 {
 		if jsonOutput {
 			return json.NewEncoder(os.Stdout).Encode([]interface{}{})
 		}
@@ -487,16 +431,12 @@ func runAuditList() error {
 		ModTime string `json:"mod_time"`
 	}
 
-	var logs []logInfo
-	for _, m := range matches {
-		info, err := os.Stat(m)
-		if err != nil {
-			continue
-		}
+	logs := make([]logInfo, 0, len(summaries))
+	for _, s := range summaries {
 		logs = append(logs, logInfo{
-			File:    filepath.Base(m),
-			Size:    info.Size(),
-			ModTime: info.ModTime().Format(time.RFC3339),
+			File:    s.File,
+			Size:    s.SizeBytes,
+			ModTime: s.ModifiedAt,
 		})
 	}
 
@@ -507,6 +447,170 @@ func runAuditList() error {
 	fmt.Printf("Audit logs in %s:\n\n", auditDir)
 	for _, l := range logs {
 		fmt.Printf("  %-50s  %8s  %s\n", l.File, formatBytes(l.Size), l.ModTime)
+	}
+	return nil
+}
+
+// AuditHTTPQueryOutput is the paginated JSON envelope for `ntm audit http`.
+type AuditHTTPQueryOutput struct {
+	Success      bool                        `json:"success"`
+	Records      []serve.AuditRecord         `json:"records"`
+	Count        int                         `json:"count"`
+	TotalMatches int                         `json:"total_matches"`
+	HasMore      bool                        `json:"has_more"`
+	Pagination   *robot.PaginationInfo       `json:"pagination,omitempty"`
+	AgentHints   *robot.PaginationAgentHints `json:"_agent_hints,omitempty"`
+}
+
+func newAuditHTTPCmd() *cobra.Command {
+	var (
+		userID     string
+		action     string
+		resource   string
+		sessionID  string
+		requestID  string
+		approvalID string
+		since      string
+		until      string
+		limit      int
+		offset     int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "http",
+		Short: "Query HTTP/WebSocket daemon audit records",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAuditHTTP(
+				cmd.Context(),
+				userID,
+				action,
+				resource,
+				sessionID,
+				requestID,
+				approvalID,
+				since,
+				until,
+				limit,
+				offset,
+			)
+		},
+	}
+
+	cmd.Flags().StringVar(&userID, "user", "", "Filter by user ID")
+	cmd.Flags().StringVar(&action, "action", "", "Filter by audit action (create, update, delete, approve, deny, execute, login, logout, subscribe)")
+	cmd.Flags().StringVar(&resource, "resource", "", "Filter by resource (e.g. sessions, panes, approvals)")
+	cmd.Flags().StringVar(&sessionID, "session", "", "Filter by session ID")
+	cmd.Flags().StringVar(&requestID, "request-id", "", "Filter by HTTP request ID")
+	cmd.Flags().StringVar(&approvalID, "approval-id", "", "Filter by approval ID")
+	cmd.Flags().StringVar(&since, "since", "", "Show records after this time (RFC3339 or relative like '1h', '7d')")
+	cmd.Flags().StringVar(&until, "until", "", "Show records before this time (RFC3339 or relative like '1h')")
+	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum records per page (max 1000)")
+	cmd.Flags().IntVar(&offset, "offset", 0, "Pagination offset (use _agent_hints.next_offset for the next page)")
+
+	return cmd
+}
+
+func runAuditHTTP(
+	ctx context.Context,
+	userID, action, resource, sessionID, requestID, approvalID, since, until string,
+	limit, offset int,
+) error {
+	filter := serve.AuditFilter{
+		UserID:     strings.TrimSpace(userID),
+		Action:     serve.AuditAction(strings.TrimSpace(action)),
+		Resource:   strings.TrimSpace(resource),
+		SessionID:  strings.TrimSpace(sessionID),
+		RequestID:  strings.TrimSpace(requestID),
+		ApprovalID: strings.TrimSpace(approvalID),
+		Limit:      limit,
+		Offset:     offset,
+	}
+
+	if strings.TrimSpace(since) != "" {
+		parsedSince, err := parseTimeArg(since)
+		if err != nil {
+			return outputError(fmt.Errorf("invalid --since: %w", err), IsJSONOutput())
+		}
+		filter.Since = parsedSince.UTC()
+	}
+	if strings.TrimSpace(until) != "" {
+		parsedUntil, err := parseTimeArg(until)
+		if err != nil {
+			return outputError(fmt.Errorf("invalid --until: %w", err), IsJSONOutput())
+		}
+		filter.Until = parsedUntil.UTC()
+	}
+
+	auditDir, err := serve.DefaultAuditDir()
+	if err != nil {
+		return outputError(err, IsJSONOutput())
+	}
+	dbPath := filepath.Join(auditDir, "audit.db")
+
+	records, totalCount, err := serve.QueryAuditDBFile(ctx, dbPath, filter)
+	if err != nil {
+		return outputError(err, IsJSONOutput())
+	}
+	if records == nil {
+		records = []serve.AuditRecord{}
+	}
+
+	normLimit, normOffset := serve.NormalizeAuditQueryPage(limit, offset)
+	hasMore := normOffset+len(records) < totalCount
+	var nextCursor *int
+	if hasMore {
+		next := normOffset + len(records)
+		nextCursor = &next
+	}
+	pageInfo := &robot.PaginationInfo{
+		Limit:      normLimit,
+		Offset:     normOffset,
+		Count:      len(records),
+		Total:      totalCount,
+		HasMore:    hasMore,
+		NextCursor: nextCursor,
+	}
+	out := AuditHTTPQueryOutput{
+		Success:      true,
+		Records:      records,
+		Count:        len(records),
+		TotalMatches: totalCount,
+		HasMore:      hasMore,
+		Pagination:   pageInfo,
+		AgentHints:   robot.PaginationHints(pageInfo),
+	}
+
+	if IsJSONOutput() {
+		return json.NewEncoder(os.Stdout).Encode(out)
+	}
+
+	if len(records) == 0 {
+		fmt.Println("No HTTP audit records found.")
+		return nil
+	}
+
+	fmt.Printf("HTTP Audit Records (%d of %d):\n\n", len(records), totalCount)
+	fmt.Printf("  %-20s  %-9s %-12s %-14s %-6s %-14s %s\n",
+		"TIMESTAMP", "ACTION", "RESOURCE", "USER", "STATUS", "SESSION", "REQUEST_ID")
+	for _, rec := range records {
+		ts := "-"
+		if !rec.Timestamp.IsZero() {
+			ts = rec.Timestamp.UTC().Format("2006-01-02 15:04:05")
+		}
+		sess := rec.SessionID
+		if sess == "" {
+			sess = "-"
+		}
+		req := rec.RequestID
+		if req == "" {
+			req = "-"
+		}
+		fmt.Printf("  %-20s  %-9s %-12s %-14s %-6d %-14s %s\n",
+			ts, rec.Action, rec.Resource, rec.UserID, rec.StatusCode, sess, req)
+	}
+	if hasMore && nextCursor != nil {
+		fmt.Printf("\n(showing %d of %d records, use --offset=%d to see more)\n", len(records), totalCount, *nextCursor)
 	}
 	return nil
 }
@@ -552,35 +656,7 @@ func renderAuditEntries(result *audit.QueryResult) error {
 // parseTimeArg parses a time argument that can be RFC3339 or a relative duration.
 // Relative durations: "1h" (1 hour ago), "7d" (7 days ago), "30m" (30 minutes ago).
 func parseTimeArg(s string) (time.Time, error) {
-	// Try RFC3339 first
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t, nil
-	}
-
-	// Try relative duration
-	s = strings.TrimSpace(s)
-	if len(s) < 2 {
-		return time.Time{}, fmt.Errorf("invalid time %q: use RFC3339 or relative like '1h', '7d'", s)
-	}
-
-	unit := s[len(s)-1]
-	numStr := s[:len(s)-1]
-	var n int
-	if _, err := fmt.Sscanf(numStr, "%d", &n); err != nil {
-		return time.Time{}, fmt.Errorf("invalid time %q: %w", s, err)
-	}
-
-	now := time.Now()
-	switch unit {
-	case 'm':
-		return now.Add(-time.Duration(n) * time.Minute), nil
-	case 'h':
-		return now.Add(-time.Duration(n) * time.Hour), nil
-	case 'd':
-		return now.AddDate(0, 0, -n), nil
-	default:
-		return time.Time{}, fmt.Errorf("invalid time unit %q: use m (minutes), h (hours), or d (days)", string(unit))
-	}
+	return robot.ParseAuditTimeArg(s)
 }
 
 // newAuditSearcherFunc is the factory for creating audit searchers.

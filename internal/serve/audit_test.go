@@ -801,3 +801,210 @@ func TestRotatedSegmentPath_TerminatesWhenTheDirectoryIsUnreadable(t *testing.T)
 		t.Fatal("rotatedSegmentPath did not terminate on an unreadable directory; it holds appendMu and mu while spinning")
 	}
 }
+
+func TestAuditStoreQueryFiltersPaginationAndMissingDB(t *testing.T) {
+	// 1. QueryAuditDBFile on non-existent DB returns non-nil empty slice without creating files.
+	missingDir := filepath.Join(t.TempDir(), "does-not-exist")
+	missingDB := filepath.Join(missingDir, "audit.db")
+	missingRecs, missingTotal, err := QueryAuditDBFile(context.Background(), missingDB, AuditFilter{})
+	if err != nil {
+		t.Fatalf("QueryAuditDBFile(missing): %v", err)
+	}
+	if missingRecs == nil || len(missingRecs) != 0 || missingTotal != 0 {
+		t.Fatalf("QueryAuditDBFile(missing) = (%v, %d), want non-nil [], 0", missingRecs, missingTotal)
+	}
+	if _, statErr := os.Stat(missingDir); !os.IsNotExist(statErr) {
+		t.Fatalf("QueryAuditDBFile created missing directory %s (stat err=%v)", missingDir, statErr)
+	}
+
+	// 2. JSONL-only store (nil db) returns non-nil empty slice.
+	jsonlOnlyDir := t.TempDir()
+	jsonlOnlyStore, err := NewAuditStore(AuditStoreConfig{
+		JSONLPath: filepath.Join(jsonlOnlyDir, "audit.jsonl"),
+		Retention: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewAuditStore(jsonlOnly): %v", err)
+	}
+	t.Cleanup(func() { _ = jsonlOnlyStore.Close() })
+
+	nilDBRecs, nilDBTotal, err := jsonlOnlyStore.Query(nil, AuditFilter{})
+	if err != nil {
+		t.Fatalf("jsonlOnlyStore.Query: %v", err)
+	}
+	if nilDBRecs == nil || len(nilDBRecs) != 0 || nilDBTotal != 0 {
+		t.Fatalf("jsonlOnlyStore.Query = (%v, %d), want non-nil [], 0", nilDBRecs, nilDBTotal)
+	}
+
+	// 3. Seed SQLite audit store with multiple records and verify all filters + pagination + 19 columns.
+	dbDir := t.TempDir()
+	dbPath := filepath.Join(dbDir, "audit.db")
+	store, err := NewAuditStore(AuditStoreConfig{
+		DBPath:          dbPath,
+		JSONLPath:       filepath.Join(dbDir, "audit.jsonl"),
+		Retention:       24 * time.Hour,
+		CleanupInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewAuditStore(db): %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	baseTS := time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)
+	fixtures := []AuditRecord{
+		{
+			Timestamp:  baseTS,
+			RequestID:  "req-1",
+			UserID:     "alice",
+			Role:       RoleOperator,
+			Action:     AuditActionCreate,
+			Resource:   "sessions",
+			ResourceID: "proj-alpha",
+			Method:     "POST",
+			Path:       "/api/v1/sessions",
+			StatusCode: 201,
+			Duration:   15,
+			SessionID:  "proj-alpha",
+			PaneID:     "%1",
+			AgentID:    "cc_1",
+			Details:    "created session alpha",
+			RemoteAddr: "127.0.0.1:40001",
+			UserAgent:  "NTM-Test/1.0",
+			ApprovalID: "appr-1",
+		},
+		{
+			Timestamp:  baseTS.Add(10 * time.Minute),
+			RequestID:  "req-2",
+			UserID:     "bob",
+			Role:       RoleAdmin,
+			Action:     AuditActionApprove,
+			Resource:   "approvals",
+			ResourceID: "appr-2",
+			Method:     "POST",
+			Path:       "/api/v1/approvals/appr-2/approve",
+			StatusCode: 200,
+			Duration:   8,
+			SessionID:  "proj-alpha",
+			PaneID:     "%2",
+			AgentID:    "cod_1",
+			Details:    "approved action",
+			RemoteAddr: "127.0.0.1:40002",
+			UserAgent:  "NTM-Test/1.0",
+			ApprovalID: "appr-2",
+		},
+		{
+			Timestamp:  baseTS.Add(20 * time.Minute),
+			RequestID:  "req-3",
+			UserID:     "alice",
+			Role:       RoleOperator,
+			Action:     AuditActionDelete,
+			Resource:   "sessions",
+			ResourceID: "proj-beta",
+			Method:     "DELETE",
+			Path:       "/api/v1/sessions/proj-beta",
+			StatusCode: 204,
+			Duration:   21,
+			SessionID:  "proj-beta",
+			RemoteAddr: "127.0.0.1:40003",
+		},
+		{
+			Timestamp:  baseTS.Add(30 * time.Minute),
+			RequestID:  "req-4",
+			UserID:     "alice",
+			Role:       RoleOperator,
+			Action:     AuditActionExecute,
+			Resource:   "panes",
+			ResourceID: "proj-alpha:1",
+			Method:     "POST",
+			Path:       "/api/v1/sessions/proj-alpha/panes/1/send",
+			StatusCode: 200,
+			Duration:   11,
+			SessionID:  "proj-alpha",
+			PaneID:     "%1",
+			AgentID:    "cc_1",
+			Details:    "sent prompt",
+			RemoteAddr: "127.0.0.1:40004",
+			UserAgent:  "NTM-Test/2.0",
+		},
+	}
+
+	for i := range fixtures {
+		rec := fixtures[i]
+		if err := store.Record(&rec); err != nil {
+			t.Fatalf("Record(%d): %v", i, err)
+		}
+	}
+
+	// Unfiltered newest-first + pagination
+	page1, total, err := store.Query(context.Background(), AuditFilter{Limit: 2, Offset: 0})
+	if err != nil {
+		t.Fatalf("Query page1: %v", err)
+	}
+	if total != 4 || len(page1) != 2 {
+		t.Fatalf("page1 len=%d total=%d, want len=2 total=4", len(page1), total)
+	}
+	if page1[0].RequestID != "req-4" || page1[1].RequestID != "req-3" {
+		t.Fatalf("page1 order = [%s, %s], want [req-4, req-3]", page1[0].RequestID, page1[1].RequestID)
+	}
+
+	page2, total2, err := store.Query(context.Background(), AuditFilter{Limit: 2, Offset: 2})
+	if err != nil {
+		t.Fatalf("Query page2: %v", err)
+	}
+	if total2 != 4 || len(page2) != 2 || page2[0].RequestID != "req-2" || page2[1].RequestID != "req-1" {
+		t.Fatalf("page2 = %+v (total=%d), want [req-2, req-1] total=4", page2, total2)
+	}
+
+	// Verify all 19 columns round-tripped on req-1
+	got1 := page2[1]
+	if got1.ID <= 0 || !got1.Timestamp.Equal(baseTS) || got1.UserID != "alice" || got1.Role != RoleOperator ||
+		got1.Action != AuditActionCreate || got1.Resource != "sessions" || got1.ResourceID != "proj-alpha" ||
+		got1.Method != "POST" || got1.Path != "/api/v1/sessions" || got1.StatusCode != 201 || got1.Duration != 15 ||
+		got1.SessionID != "proj-alpha" || got1.PaneID != "%1" || got1.AgentID != "cc_1" ||
+		got1.Details != "created session alpha" || got1.RemoteAddr != "127.0.0.1:40001" ||
+		got1.UserAgent != "NTM-Test/1.0" || got1.ApprovalID != "appr-1" {
+		t.Fatalf("req-1 19-column round-trip mismatch: %+v", got1)
+	}
+
+	// Filter combinations
+	byUserAction, totalUA, err := store.Query(context.Background(), AuditFilter{
+		UserID: "alice",
+		Action: AuditActionDelete,
+	})
+	if err != nil || totalUA != 1 || len(byUserAction) != 1 || byUserAction[0].RequestID != "req-3" {
+		t.Fatalf("filter UserID+Action = (%+v, %d, %v), want req-3", byUserAction, totalUA, err)
+	}
+
+	byApproval, totalAppr, err := store.Query(context.Background(), AuditFilter{ApprovalID: "appr-2"})
+	if err != nil || totalAppr != 1 || len(byApproval) != 1 || byApproval[0].UserID != "bob" {
+		t.Fatalf("filter ApprovalID = (%+v, %d, %v), want bob/appr-2", byApproval, totalAppr, err)
+	}
+
+	byTimeWindow, totalWin, err := store.Query(context.Background(), AuditFilter{
+		SessionID: "proj-alpha",
+		Since:     baseTS.Add(5 * time.Minute),
+		Until:     baseTS.Add(25 * time.Minute),
+	})
+	if err != nil || totalWin != 1 || len(byTimeWindow) != 1 || byTimeWindow[0].RequestID != "req-2" {
+		t.Fatalf("filter SessionID+Since+Until = (%+v, %d, %v), want req-2", byTimeWindow, totalWin, err)
+	}
+
+	// Read-only QueryAuditDBFile against existing WAL DB
+	roRecs, roTotal, err := QueryAuditDBFile(context.Background(), dbPath, AuditFilter{
+		Resource:  "panes",
+		RequestID: "req-4",
+	})
+	if err != nil || roTotal != 1 || len(roRecs) != 1 || roRecs[0].RequestID != "req-4" {
+		t.Fatalf("QueryAuditDBFile(existing) = (%+v, %d, %v), want req-4", roRecs, roTotal, err)
+	}
+
+	// Empty match marshals as [] not null
+	emptyRecs, emptyTotal, err := store.Query(context.Background(), AuditFilter{UserID: "nobody"})
+	if err != nil || emptyTotal != 0 || emptyRecs == nil {
+		t.Fatalf("empty match = (%v, %d, %v), want non-nil [], 0", emptyRecs, emptyTotal, err)
+	}
+	rawJSON, _ := json.Marshal(emptyRecs)
+	if string(rawJSON) != "[]" {
+		t.Fatalf("empty match JSON = %s, want []", rawJSON)
+	}
+}

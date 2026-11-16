@@ -745,6 +745,72 @@ func dispatchRobotInspectionAndOps(cmd *cobra.Command, args []string) bool {
 		}
 		return true
 	}
+	if robotAudit != "" || cmd.Flags().Changed("robot-audit") {
+		session := strings.TrimSpace(robotAudit)
+		if session == "__present__" {
+			session = ""
+		}
+		if session == "" && cmd.Flags().Changed("session") {
+			session = strings.TrimSpace(robotSharedSession)
+		}
+		limit := robotAuditLimit
+		if !cmd.Flags().Changed("audit-limit") {
+			if cmd.Flags().Changed("robot-limit") {
+				limit = robotLimit
+			} else if cmd.Flags().Changed("limit") {
+				limit = cassLimit
+			}
+		}
+		offset := robotAuditOffset
+		if !cmd.Flags().Changed("audit-offset") && (cmd.Flags().Changed("robot-offset") || cmd.Flags().Changed("offset")) {
+			offset = robotOffset
+		}
+		opts := robot.AuditOptions{
+			Session:    session,
+			Action:     robotAuditAction,
+			Pattern:    robotAuditSearch,
+			Verify:     robotAuditVerify,
+			Sources:    robotAuditSources,
+			EventTypes: resolveRobotSharedFlag(cmd, "audit-type", robotAuditType, "type", robotSendType),
+			Actors:     robotAuditActor,
+			Since:      resolveRobotSharedFlag(cmd, "audit-since", robotAuditSince, "since", robotSince),
+			Days:       robotAuditDays,
+			Limit:      limit,
+			Offset:     offset,
+		}
+		if err := robot.PrintAudit(cmd.Context(), opts); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
+	if robotTimeline != "" || cmd.Flags().Changed("robot-timeline") {
+		session := strings.TrimSpace(robotTimeline)
+		if session == "__present__" {
+			session = ""
+		}
+		if session == "" && cmd.Flags().Changed("session") {
+			session = strings.TrimSpace(robotSharedSession)
+		}
+		limit := robotTimelineLimit
+		if !cmd.Flags().Changed("timeline-limit") {
+			if cmd.Flags().Changed("robot-limit") {
+				limit = robotLimit
+			} else if cmd.Flags().Changed("limit") {
+				limit = cassLimit
+			}
+		}
+		opts := robot.TimelineOptions{
+			Session:       session,
+			Action:        robotTimelineAction,
+			IncludeEvents: robotTimelineEvents,
+			Stats:         robotTimelineStats,
+			Limit:         limit,
+		}
+		if err := robot.PrintTimeline(cmd.Context(), opts); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
 	if robotHistory != "" {
 		session, err := resolveRobotSessionFilter(cmd.Context(), robotHistory)
 		if err != nil {

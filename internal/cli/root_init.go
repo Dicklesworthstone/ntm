@@ -1049,6 +1049,8 @@ func needsConfigLoading(cmdName string) bool {
 			robotSmartRestart != "" || robotMonitor != "" || robotEnv != "" || robotSupportBundle != "" ||
 			robotActivity != "" || robotProductivity != "" || robotSendReceipt != "" || robotAnalytics ||
 			robotHandoff != "" || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-handoff")) ||
+			robotAudit != "" || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-audit")) ||
+			robotTimeline != "" || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-timeline")) ||
 			robotActionStatus != "" || robotWaitRequest != "" || robotCancelRequest != "" {
 			return true
 		}

@@ -1,10 +1,11 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/export"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
@@ -124,27 +126,21 @@ func runTimelineList() error {
 }
 
 func runTimelineListWithLimit(limit int) error {
-	persister, err := state.GetDefaultTimelinePersister()
+	out, err := robot.GetTimeline(context.Background(), robot.TimelineOptions{
+		Action: "list",
+		Limit:  limit,
+	})
 	if err != nil {
-		return fmt.Errorf("failed to get timeline persister: %w", err)
+		return err
 	}
-
-	timelines, err := persister.ListTimelines()
-	if err != nil {
-		return fmt.Errorf("failed to list timelines: %w", err)
-	}
-
-	totalCount := len(timelines)
-	showing := len(timelines)
-	if showing > limit {
-		timelines = timelines[:limit]
-		showing = limit
+	if !out.Success {
+		return errors.New(out.Error)
 	}
 
 	result := &TimelineListResult{
-		Timelines:  timelines,
-		TotalCount: totalCount,
-		Showing:    showing,
+		Timelines:  out.Timelines,
+		TotalCount: out.TotalCount,
+		Showing:    out.Showing,
 	}
 
 	formatter := output.New(output.WithJSON(jsonOutput))
@@ -175,16 +171,8 @@ type TimelineShowResult struct {
 	Stats  *TimelineEventStats `json:"stats"`
 }
 
-// TimelineEventStats contains aggregated statistics
-type TimelineEventStats struct {
-	TotalEvents    int                         `json:"total_events"`
-	UniqueAgents   int                         `json:"unique_agents"`
-	AgentBreakdown map[string]int              `json:"agent_breakdown"`
-	StateBreakdown map[state.TimelineState]int `json:"state_breakdown"`
-	Duration       time.Duration               `json:"duration"`
-	FirstEvent     time.Time                   `json:"first_event"`
-	LastEvent      time.Time                   `json:"last_event"`
-}
+// TimelineEventStats aliases the canonical ORI timeline event stats struct.
+type TimelineEventStats = robot.TimelineEventStats
 
 func (r *TimelineShowResult) Text(w io.Writer) error {
 	t := theme.Current()
@@ -273,66 +261,31 @@ func (r *TimelineShowResult) JSON() interface{} {
 }
 
 func runTimelineShow(sessionID string, showEvents bool) error {
-	persister, err := state.GetDefaultTimelinePersister()
+	out, err := robot.GetTimeline(context.Background(), robot.TimelineOptions{
+		Session:       sessionID,
+		Action:        "show",
+		IncludeEvents: showEvents,
+	})
 	if err != nil {
-		return fmt.Errorf("failed to get timeline persister: %w", err)
+		return err
 	}
-
-	info, err := persister.GetTimelineInfo(sessionID)
-	if err != nil {
-		return fmt.Errorf("failed to get timeline info: %w", err)
-	}
-
-	if info == nil {
-		return fmt.Errorf("timeline not found: %s", sessionID)
+	if !out.Success {
+		return errors.New(out.Error)
 	}
 
 	var events []state.AgentEvent
-	var stats *TimelineEventStats
-
-	// Always load events for stats
-	loadedEvents, err := persister.LoadTimeline(sessionID)
-	if err == nil && len(loadedEvents) > 0 {
-		stats = computeTimelineStats(loadedEvents)
-		if showEvents {
-			events = loadedEvents
-		}
+	if showEvents && len(out.Events) > 0 {
+		events = out.Events
 	}
 
 	result := &TimelineShowResult{
-		Info:   info,
+		Info:   out.Info,
 		Events: events,
-		Stats:  stats,
+		Stats:  out.SessionStats,
 	}
 
 	formatter := output.New(output.WithJSON(jsonOutput))
 	return formatter.Output(result)
-}
-
-func computeTimelineStats(events []state.AgentEvent) *TimelineEventStats {
-	if len(events) == 0 {
-		return nil
-	}
-
-	stats := &TimelineEventStats{
-		TotalEvents:    len(events),
-		AgentBreakdown: make(map[string]int),
-		StateBreakdown: make(map[state.TimelineState]int),
-		FirstEvent:     events[0].Timestamp,
-		LastEvent:      events[len(events)-1].Timestamp,
-	}
-
-	agents := make(map[string]struct{})
-	for _, e := range events {
-		agents[e.AgentID] = struct{}{}
-		stats.AgentBreakdown[e.AgentID]++
-		stats.StateBreakdown[e.State]++
-	}
-
-	stats.UniqueAgents = len(agents)
-	stats.Duration = stats.LastEvent.Sub(stats.FirstEvent)
-
-	return stats
 }
 
 func newTimelineDeleteCmd() *cobra.Command {
@@ -750,53 +703,25 @@ func (r *TimelineStatsResult) JSON() interface{} {
 }
 
 func runTimelineStats() error {
-	persister, err := state.GetDefaultTimelinePersister()
-	if err != nil {
-		return fmt.Errorf("failed to get timeline persister: %w", err)
-	}
-
-	timelines, err := persister.ListTimelines()
-	if err != nil {
-		return fmt.Errorf("failed to list timelines: %w", err)
-	}
-
-	result := &TimelineStatsResult{
-		TotalTimelines: len(timelines),
-	}
-
-	if len(timelines) == 0 {
-		formatter := output.New(output.WithJSON(jsonOutput))
-		return formatter.Output(result)
-	}
-
-	allAgents := make(map[string]struct{})
-	var totalSize int64
-
-	// Sort for oldest/newest
-	sort.Slice(timelines, func(i, j int) bool {
-		return timelines[i].ModifiedAt.Before(timelines[j].ModifiedAt)
+	out, err := robot.GetTimeline(context.Background(), robot.TimelineOptions{
+		Action: "stats",
 	})
-
-	for _, ti := range timelines {
-		result.TotalEvents += ti.EventCount
-		totalSize += ti.Size
-		if ti.Compressed {
-			result.CompressedCount++
-		}
-
-		// Load to count unique agents across all timelines
-		events, _ := persister.LoadTimeline(ti.SessionID)
-		for _, e := range events {
-			allAgents[e.AgentID] = struct{}{}
-		}
+	if err != nil {
+		return err
+	}
+	if !out.Success {
+		return errors.New(out.Error)
 	}
 
-	result.TotalSize = totalSize
-	result.TotalAgents = len(allAgents)
-
-	if len(timelines) > 0 {
-		result.OldestTimeline = timelines[0].SessionID
-		result.NewestTimeline = timelines[len(timelines)-1].SessionID
+	result := &TimelineStatsResult{}
+	if agg := out.AggregateStats; agg != nil {
+		result.TotalTimelines = agg.TotalTimelines
+		result.TotalEvents = agg.TotalEvents
+		result.TotalAgents = agg.TotalAgents
+		result.TotalSize = agg.TotalSize
+		result.CompressedCount = agg.CompressedCount
+		result.OldestTimeline = agg.OldestTimeline
+		result.NewestTimeline = agg.NewestTimeline
 	}
 
 	formatter := output.New(output.WithJSON(jsonOutput))

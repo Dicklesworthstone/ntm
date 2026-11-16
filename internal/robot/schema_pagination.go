@@ -46,6 +46,7 @@ var SchemaPagination = map[string]SchemaPaginationFlag{
 	"snapshot":       {Paginated: true, Reason: "sessions array pages via --robot-offset/--limit"},
 	"history":        {Paginated: true, Reason: "entries array pages via --limit/--offset"},
 	"ensemble_modes": {Paginated: true, Reason: "modes array pages via --limit/--offset"},
+	"audit":          {Paginated: true, Reason: "entries, logs, and sources arrays page via --audit-limit/--audit-offset (or --limit/--offset)"},
 
 	// --- Unpaginated by design ---------------------------------------------
 	"account_status":     {Reason: "bounded: one seat entry per configured CAAM profile per provider (handful)"},
@@ -125,6 +126,7 @@ var SchemaPagination = map[string]SchemaPaginationFlag{
 	"spawn":            {Reason: "bounded: per-request spawned pane rows"},
 	"support_bundle":   {Reason: "bounded: bundle manifest for one collection run"},
 	"swarm_lab":        {Reason: "bounded: synthetic lab scenarios, per-run experiment artifacts, and host calibration recommendations"},
+	"timeline":         {Reason: "bounded: saved timeline list capped by --timeline-limit (default 20); single-session events bounded by timeline retention"},
 	"ubs_scan":         {Reason: "bounded: per-scan findings and top-K triage preview for one target"},
 
 	// --- Unpaginated by design: nested list shapes ------------------------

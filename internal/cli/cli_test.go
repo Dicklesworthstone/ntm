@@ -431,6 +431,22 @@ func resetFlags() {
 	robotHandoffDescription = ""
 	robotHandoffLimit = 10
 	robotHandoffProjectDir = ""
+	robotAudit = ""
+	robotAuditAction = ""
+	robotAuditSearch = ""
+	robotAuditVerify = false
+	robotAuditSources = false
+	robotAuditType = ""
+	robotAuditActor = ""
+	robotAuditSince = ""
+	robotAuditDays = 30
+	robotAuditLimit = 50
+	robotAuditOffset = 0
+	robotTimeline = ""
+	robotTimelineAction = ""
+	robotTimelineEvents = false
+	robotTimelineStats = false
+	robotTimelineLimit = 20
 	robotProcessExit = nil
 }
 

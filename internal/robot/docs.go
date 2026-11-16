@@ -197,7 +197,9 @@ func getCommandsContent() *DocsContent {
 --robot-probe=SESSION: Active pane responsiveness probe (--panes follows the shared selector convention: on a multi-window session a bare index selects a WINDOW and every pane in it is probed; each result carries pane_ref, the exact "window.pane" address probed)
 --robot-pane-address=SESSION: Per-pane addressing cards (canonical selector, stable %pane_id, tmux target)
 --robot-handoff=SESSION: Inspect or create Goal/Now session continuity handoffs with quality scores (use SESSION or 'all')
---robot-analytics: Aggregated multi-harness session, prompt, token, crash/restart, and error analytics (--analytics-days, --analytics-since, --analytics-sessions)`,
+--robot-analytics: Aggregated multi-harness session, prompt, token, crash/restart, and error analytics (--analytics-days, --analytics-since, --analytics-sessions)
+--robot-audit[=SESSION]: Query, search, list, or verify tamper-evident audit logs and projection source health (--audit-search, --audit-verify, --audit-sources, --audit-limit, --audit-offset)
+--robot-timeline[=SESSION]: List saved session timelines, inspect session state transitions (--timeline-events), or view aggregate storage stats (--timeline-stats)`,
 			},
 			{
 				Heading: "Agent Control",
@@ -370,6 +372,18 @@ func getExamplesContent() *DocsContent {
 				Description: "Get multi-harness event analytics with per-session breakdown",
 				Command:     "ntm --robot-analytics --analytics-days=7 --analytics-sessions",
 				Notes:       "Aggregates spawns, prompts, characters, estimated tokens, crashes, restarts, and error types across all harnesses",
+			},
+			{
+				Name:        "audit_verify",
+				Description: "Verify tamper-evident audit log hash chains for a session",
+				Command:     "ntm --robot-audit=proj --audit-verify",
+				Notes:       "Omit --audit-verify to inspect entries, or pass --audit-search='pattern' across all sessions",
+			},
+			{
+				Name:        "session_timeline",
+				Description: "Inspect persisted agent state transitions and breakdown stats for a session",
+				Command:     "ntm --robot-timeline=proj --timeline-events",
+				Notes:       "Omit =SESSION to list saved timelines, or pass --timeline-stats for aggregate storage statistics",
 			},
 			{
 				Name:        "restart_with_bead",

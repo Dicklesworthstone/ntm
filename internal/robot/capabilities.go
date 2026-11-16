@@ -955,6 +955,50 @@ func buildCommandRegistry() []RobotCommandInfo {
 				"ntm --robot-analytics --analytics-since=2026-01-01",
 			},
 		},
+		{
+			Name:        "audit",
+			Flag:        "--robot-audit",
+			Category:    "state",
+			Description: "Query, search, list, verify, or inspect projection source health for tamper-evident audit logs.",
+			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--robot-audit", Type: "string", Required: false, Default: "all", Description: "Session name to inspect or verify, or 'all' / omit for global list/search"},
+				{Name: "audit-action", Flag: "--audit-action", Type: "string", Required: false, Description: "Audit action: list, show, search, verify, sources (auto-inferred when omitted)"},
+				{Name: "audit-search", Flag: "--audit-search", Type: "string", Required: false, Description: "Regex pattern to search across audit logs"},
+				{Name: "audit-verify", Flag: "--audit-verify", Type: "bool", Required: false, Default: "false", Description: "Verify tamper-evident hash chain integrity"},
+				{Name: "audit-sources", Flag: "--audit-sources", Type: "bool", Required: false, Default: "false", Description: "Query runtime projection data-source health from state store"},
+				{Name: "audit-type", Flag: "--audit-type", Type: "string", Required: false, Description: "Filter by event type (comma-separated: command,spawn,send,response,error,state_change)"},
+				{Name: "audit-actor", Flag: "--audit-actor", Type: "string", Required: false, Description: "Filter by actor (comma-separated: user,agent,system)"},
+				{Name: "audit-since", Flag: "--audit-since", Type: "string", Required: false, Description: "Filter entries since time (RFC3339, YYYY-MM-DD, or duration like 1h, 7d)"},
+				{Name: "audit-days", Flag: "--audit-days", Type: "int", Required: false, Default: "30", Description: "Number of days to search when --audit-since is omitted"},
+				{Name: "audit-limit", Flag: "--audit-limit", Type: "int", Required: false, Default: "50", Description: "Maximum entries or log files per page"},
+				{Name: "audit-offset", Flag: "--audit-offset", Type: "int", Required: false, Default: "0", Description: "Pagination offset"},
+			},
+			Examples: []string{
+				"ntm --robot-audit",
+				"ntm --robot-audit=myproject --audit-limit=25",
+				"ntm --robot-audit --audit-search=spawn --audit-days=7",
+				"ntm --robot-audit=myproject --audit-verify",
+				"ntm --robot-audit --audit-sources",
+			},
+		},
+		{
+			Name:        "timeline",
+			Flag:        "--robot-timeline",
+			Category:    "state",
+			Description: "List persisted session timelines, inspect a session timeline with transition stats, or compute aggregate storage statistics.",
+			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--robot-timeline", Type: "string", Required: false, Default: "all", Description: "Session ID to inspect, or 'all' / 'list' / 'stats' / omit"},
+				{Name: "timeline-action", Flag: "--timeline-action", Type: "string", Required: false, Description: "Timeline action: list, show, stats (auto-inferred when omitted)"},
+				{Name: "timeline-events", Flag: "--timeline-events", Type: "bool", Required: false, Default: "false", Description: "Include full state-transition event rows when showing a session timeline"},
+				{Name: "timeline-stats", Flag: "--timeline-stats", Type: "bool", Required: false, Default: "false", Description: "Show aggregate storage and agent statistics across all persisted timelines"},
+				{Name: "timeline-limit", Flag: "--timeline-limit", Type: "int", Required: false, Default: "20", Description: "Maximum saved timelines to return when listing"},
+			},
+			Examples: []string{
+				"ntm --robot-timeline",
+				"ntm --robot-timeline=myproject --timeline-events",
+				"ntm --robot-timeline --timeline-stats",
+			},
+		},
 
 		// === ATTENTION FEED (Operator Loop) ===
 		{
