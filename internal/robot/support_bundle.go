@@ -2,7 +2,9 @@
 package robot
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -248,6 +250,55 @@ func PrintSupportBundle(opts SupportBundleOptions) error {
 		return err
 	}
 	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot support bundle failed")
+}
+
+// GenerateSupportBundleArchive generates a support bundle into an ephemeral
+// temporary archive file, reads up to maxBytes of the resulting archive into
+// memory, and removes the temporary file before returning.
+func GenerateSupportBundleArchive(opts SupportBundleOptions, maxBytes int64) (*SupportBundleOutput, []byte, error) {
+	tempPattern := "ntm-support-bundle-*.zip"
+	if opts.Format == string(bundle.FormatTarGz) || opts.Format == "tgz" {
+		tempPattern = "ntm-support-bundle-*.tar.gz"
+	}
+
+	tmpFile, err := os.CreateTemp("", tempPattern)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create temp bundle file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return nil, nil, fmt.Errorf("prepare temp bundle file: %w", err)
+	}
+	defer func() {
+		if rmErr := os.Remove(tmpPath); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			_ = rmErr
+		}
+	}()
+
+	opts.OutputPath = tmpPath
+	out, err := GenerateSupportBundle(opts)
+	if err != nil || out == nil || !out.Success {
+		return out, nil, err
+	}
+
+	f, err := os.Open(tmpPath)
+	if err != nil {
+		return out, nil, fmt.Errorf("open generated bundle: %w", err)
+	}
+	var reader io.Reader = f
+	if maxBytes > 0 {
+		reader = io.LimitReader(f, maxBytes+1)
+	}
+	archiveBytes, readErr := io.ReadAll(reader)
+	closeErr := f.Close()
+	if readErr != nil {
+		return out, nil, fmt.Errorf("read generated bundle: %w", readErr)
+	}
+	if closeErr != nil {
+		return out, nil, fmt.Errorf("close generated bundle: %w", closeErr)
+	}
+	return out, archiveBytes, nil
 }
 
 // collectSessionDataWithPrivacy adds session data to the bundle, respecting privacy mode.
