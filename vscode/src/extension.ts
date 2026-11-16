@@ -5,6 +5,7 @@ import {
     AnalyticsResult,
     AttentionItem,
     AttentionMutationAction,
+    AuditResult,
     BackpressureLevel,
     BackpressureResult,
     buildNtmTerminalCommand,
@@ -22,6 +23,7 @@ import {
     SessionInfo,
     shellQuote,
     SpawnHarness,
+    SupportBundleResult,
     WorktreeInfo,
     WorktreeListResult,
 } from './ntmClient';
@@ -134,6 +136,8 @@ export interface PaletteActionQuickPickItem extends vscode.QuickPickItem {
         | 'triageIncidents'
         | 'handoffSession'
         | 'showAnalytics'
+        | 'showAudit'
+        | 'generateSupportBundle'
         | 'openWebCockpit'
         | 'showBackpressure'
         | 'manageWorktrees'
@@ -191,6 +195,20 @@ export const PALETTE_ACTION_OPTIONS: readonly PaletteActionQuickPickItem[] = [
         detail: 'Inspect multi-harness spawns, prompts, token estimates, crashes, and session activity',
         actionId: 'showAnalytics',
         command: 'ntm.showAnalytics',
+    },
+    {
+        label: '$(shield) Inspect & Verify Audit Logs',
+        description: 'NTM: Inspect & Verify Audit Logs',
+        detail: 'Inspect session audit logs, search entries, verify tamper-evident hash chains, or check source health',
+        actionId: 'showAudit',
+        command: 'ntm.showAudit',
+    },
+    {
+        label: '$(package) Generate Redacted Support Bundle',
+        description: 'NTM: Generate Redacted Support Bundle',
+        detail: 'Package disclosure-redacted diagnostic state, configs, and scrollback into a zip or tar.gz bundle',
+        actionId: 'generateSupportBundle',
+        command: 'ntm.generateSupportBundle',
     },
     {
         label: '$(pulse) Show Swarm Backpressure',
@@ -681,6 +699,139 @@ export function formatAnalyticsMarkdown(res: AnalyticsResult): string {
     return lines.join('\n');
 }
 
+export interface AuditQuickPickOption extends vscode.QuickPickItem {
+    mode: 'list' | 'showSession' | 'search' | 'verify' | 'sources' | 'openSafetyCockpit';
+}
+
+export const AUDIT_MODE_OPTIONS: readonly AuditQuickPickOption[] = [
+    {
+        label: '$(list-unordered) List Session Audit Logs',
+        description: '--robot-audit',
+        detail: 'List all tamper-evident JSONL audit log files across NTM sessions',
+        mode: 'list',
+    },
+    {
+        label: '$(eye) Inspect Session Audit Entries',
+        description: '--robot-audit=<session>',
+        detail: 'Inspect chronological audit entries (spawns, prompts, commands, errors) for a session',
+        mode: 'showSession',
+    },
+    {
+        label: '$(search) Search Audit Logs (Regex)...',
+        description: '--robot-audit --audit-search=<pattern>',
+        detail: 'Search across session audit logs with a regular expression',
+        mode: 'search',
+    },
+    {
+        label: '$(shield) Verify Session Hash-Chain Integrity',
+        description: '--robot-audit=<session> --audit-verify',
+        detail: 'Verify SHA-256 hash chains, sequence continuity, and entry checksums for tampering',
+        mode: 'verify',
+    },
+    {
+        label: '$(ServerProcess) Check Projection Source Health',
+        description: '--robot-audit --audit-sources',
+        detail: 'Inspect state.db runtime projection data-source availability and health',
+        mode: 'sources',
+    },
+    {
+        label: '$(globe) Open /safety Audit & Policy Cockpit',
+        description: 'Web Cockpit (/safety)',
+        detail: 'Open interactive HTTP/WS audit query, chain verifier, and automation policy cockpit in browser',
+        mode: 'openSafetyCockpit',
+    },
+];
+
+export interface SupportBundleFormatQuickPickOption extends vscode.QuickPickItem {
+    format: 'zip' | 'tar.gz';
+    redactMode: 'redact' | 'block';
+}
+
+export const SUPPORT_BUNDLE_FORMAT_OPTIONS: readonly SupportBundleFormatQuickPickOption[] = [
+    {
+        label: '$(package) ZIP Archive (Redact Secrets)',
+        description: '--bundle-format=zip --bundle-redact=redact',
+        detail: 'Recommended: scrub API keys, tokens, and PII into a portable .zip diagnostic archive',
+        format: 'zip',
+        redactMode: 'redact',
+    },
+    {
+        label: '$(file-zip) tar.gz Archive (Redact Secrets)',
+        description: '--bundle-format=tar.gz --bundle-redact=redact',
+        detail: 'Scrub API keys, tokens, and PII into a gzipped tarball (.tar.gz)',
+        format: 'tar.gz',
+        redactMode: 'redact',
+    },
+    {
+        label: '$(lock) ZIP Archive (Strict Block on Secrets)',
+        description: '--bundle-format=zip --bundle-redact=block',
+        detail: 'Fail closed if any secret pattern is detected instead of redacting in place',
+        format: 'zip',
+        redactMode: 'block',
+    },
+];
+
+export function formatAuditMarkdown(res: AuditResult): string {
+    const lines: string[] = [
+        `# NTM Audit Report (${res.action} — session: ${res.session || 'all'})`,
+        '',
+        `- **Action:** \`${res.action}\``,
+        `- **Session:** \`${res.session || 'all'}\``,
+        `- **Matches:** ${res.count} shown of ${res.total_matches}${res.has_more ? ' (more available)' : ''}`,
+    ];
+    if (typeof res.verified === 'boolean') {
+        lines.push(`- **Hash-Chain Integrity:** ${res.verified ? 'VERIFIED (INTACT)' : 'FAILED (TAMPERED / BROKEN)'}`);
+    }
+    if (res.error) {
+        lines.push(`- **Diagnostic:** ${res.error}`);
+    }
+
+    if (res.files.length > 0) {
+        lines.push('', '## Hash-Chain Verification Files', '');
+        lines.push('| File | Status | Verified | Error |');
+        lines.push('|---|---|---|---|');
+        for (const f of res.files) {
+            lines.push(
+                `| \`${f.file}\` | \`${f.status}\` | ${f.verified ? 'yes' : 'no'} | ${f.error ?? '—'} |`
+            );
+        }
+    }
+
+    if (res.logs.length > 0) {
+        lines.push('', '## Audit Log Files', '');
+        lines.push('| File | Session | Size (bytes) | Modified |');
+        lines.push('|---|---|---:|---|');
+        for (const l of res.logs) {
+            lines.push(
+                `| \`${l.file}\` | \`${l.session ?? '—'}\` | ${l.size_bytes} | ${l.modified_at || '—'} |`
+            );
+        }
+    }
+
+    if (res.entries.length > 0) {
+        lines.push('', '## Audit Entries', '');
+        for (const e of res.entries) {
+            lines.push(
+                `- \`#${e.sequence_num}\` **${e.event_type}** (${e.actor} → \`${e.target}\`) at ${e.timestamp || '—'}`
+            );
+        }
+    }
+
+    if (res.sources.length > 0) {
+        lines.push('', '## Projection Data Sources', '');
+        lines.push('| Source | Available | Healthy | Reason |');
+        lines.push('|---|---|---|---|');
+        for (const s of res.sources) {
+            lines.push(
+                `| \`${s.source_name}\` | ${s.available ? 'yes' : 'no'} | ${s.healthy ? 'yes' : 'no'} | ${s.reason ?? '—'} |`
+            );
+        }
+    }
+
+    lines.push('');
+    return lines.join('\n');
+}
+
 /**
  * Map normalized backpressure level to a VS Code codicon.
  */
@@ -1004,7 +1155,13 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
             }
 
             if (picked.actionId !== 'terminalPalette' && picked.command) {
-                if ((picked.actionId === 'sendPrompt' || picked.actionId === 'handoffSession') && sessionArg) {
+                if (
+                    (picked.actionId === 'sendPrompt' ||
+                        picked.actionId === 'handoffSession' ||
+                        picked.actionId === 'showAudit' ||
+                        picked.actionId === 'generateSupportBundle') &&
+                    sessionArg
+                ) {
                     await vscode.commands.executeCommand(picked.command, sessionArg);
                 } else {
                     await vscode.commands.executeCommand(picked.command);
@@ -1849,6 +2006,155 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
         }
     });
 
+    const dispShowAudit = vscode.commands.registerCommand(
+        'ntm.showAudit',
+        async (sessionArg?: string | NtmTreeItem) => {
+            try {
+                const modePick = await vscode.window.showQuickPick(AUDIT_MODE_OPTIONS, {
+                    placeHolder: 'Select NTM audit action',
+                });
+                if (!modePick) {
+                    return;
+                }
+                if (modePick.mode === 'openSafetyCockpit') {
+                    await openWebCockpitRoute('/safety');
+                    return;
+                }
+
+                const explicitSess = extractSessionName(sessionArg);
+                let res: AuditResult;
+
+                if (modePick.mode === 'list') {
+                    res = await client.getAudit({ action: 'list', limit: 50 });
+                } else if (modePick.mode === 'sources') {
+                    res = await client.getAudit({ action: 'sources', sources: true, limit: 50 });
+                } else if (modePick.mode === 'search') {
+                    const pattern = await vscode.window.showInputBox({
+                        prompt: 'Regular expression to search across NTM audit logs',
+                        placeHolder: 'e.g. spawn|rate_limit|error',
+                    });
+                    const trimmedPattern = (pattern ?? '').trim();
+                    if (!trimmedPattern) {
+                        return;
+                    }
+                    res = await client.getAudit({
+                        session: explicitSess ?? 'all',
+                        action: 'search',
+                        search: trimmedPattern,
+                        days: 30,
+                        limit: 50,
+                    });
+                } else {
+                    const targetSession = await resolveSessionInteractive(
+                        explicitSess,
+                        modePick.mode === 'verify'
+                            ? 'Session name to verify hash-chain audit integrity'
+                            : 'Session name to inspect audit entries'
+                    );
+                    if (!targetSession) {
+                        return;
+                    }
+                    if (modePick.mode === 'verify') {
+                        res = await client.getAudit({
+                            session: targetSession,
+                            action: 'verify',
+                            verify: true,
+                        });
+                    } else {
+                        res = await client.getAudit({
+                            session: targetSession,
+                            action: 'show',
+                            limit: 50,
+                        });
+                    }
+                }
+
+                const doc = await vscode.workspace.openTextDocument({
+                    content: formatAuditMarkdown(res),
+                    language: 'markdown',
+                });
+                await vscode.window.showTextDocument(doc);
+
+                if (typeof res.verified === 'boolean' && !res.verified) {
+                    vscode.window.showWarningMessage(
+                        `NTM audit verification FAILED for "${res.session}" (${res.files.length} file(s) inspected)`
+                    );
+                } else {
+                    const nextBtn = await vscode.window.showInformationMessage(
+                        `Loaded NTM audit (${res.action}: ${res.count} of ${res.total_matches})`,
+                        'Open /safety in Web Cockpit'
+                    );
+                    if (nextBtn === 'Open /safety in Web Cockpit') {
+                        await openWebCockpitRoute('/safety');
+                    }
+                }
+            } catch (e) {
+                vscode.window.showErrorMessage(`Audit query failed: ${e}`);
+            }
+        }
+    );
+
+    const dispGenerateSupportBundle = vscode.commands.registerCommand(
+        'ntm.generateSupportBundle',
+        async (sessionArg?: string | NtmTreeItem) => {
+            try {
+                const formatPick = await vscode.window.showQuickPick(SUPPORT_BUNDLE_FORMAT_OPTIONS, {
+                    placeHolder: 'Select support bundle archive format & redaction policy',
+                });
+                if (!formatPick) {
+                    return;
+                }
+
+                const explicitSess = extractSessionName(sessionArg);
+                let targetSession = explicitSess;
+                if (!targetSession) {
+                    const rawSession = await vscode.window.showInputBox({
+                        prompt: 'Session name to bundle (leave blank to bundle all active sessions)',
+                        value: currentSession ?? '',
+                        placeHolder: 'Leave empty for --all sessions',
+                    });
+                    if (rawSession === undefined) {
+                        return;
+                    }
+                    targetSession = rawSession.trim() || undefined;
+                }
+
+                const cwd = client.getWorkspaceCwd();
+                const defaultFilename = `ntm-support-bundle.${formatPick.format}`;
+                const suggestedOutput = cwd ? path.join(cwd, defaultFilename) : '';
+                const rawOutput = await vscode.window.showInputBox({
+                    prompt: 'Optional output path for support bundle (leave blank for NTM default)',
+                    value: suggestedOutput,
+                });
+                if (rawOutput === undefined) {
+                    return;
+                }
+
+                const res: SupportBundleResult = await client.generateSupportBundle({
+                    session: targetSession,
+                    all: !targetSession,
+                    outputPath: rawOutput.trim() || undefined,
+                    format: formatPick.format,
+                    redactMode: formatPick.redactMode,
+                    lines: 500,
+                });
+
+                const redactedNote = res.redaction_summary
+                    ? `, ${res.redaction_summary.files_redacted} file(s) redacted`
+                    : '';
+                const nextBtn = await vscode.window.showInformationMessage(
+                    `Generated support bundle: ${res.path} (${res.file_count} files, ${res.total_size} bytes${redactedNote})`,
+                    'Open Overview in Web Cockpit'
+                );
+                if (nextBtn === 'Open Overview in Web Cockpit') {
+                    await openWebCockpitRoute('/');
+                }
+            } catch (e) {
+                vscode.window.showErrorMessage(`Support bundle generation failed: ${e}`);
+            }
+        }
+    );
+
     context.subscriptions.push(
         dispStatus,
         dispSpawn,
@@ -1858,6 +2164,8 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
         dispTriageIncidents,
         dispHandoffSession,
         dispShowAnalytics,
+        dispShowAudit,
+        dispGenerateSupportBundle,
         dispOpenWebCockpit,
         dispShowBackpressure,
         dispManageWorktrees,

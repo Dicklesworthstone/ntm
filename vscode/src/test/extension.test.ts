@@ -14,6 +14,7 @@ import {
     DEFAULT_WEB_PORT,
     mapBackpressureLevel,
     normalizeAnalyticsResult,
+    normalizeAuditResult,
     normalizeBackpressure,
     normalizeEnsembleSynthesize,
     normalizeHandoffResult,
@@ -21,6 +22,7 @@ import {
     normalizeIncidentMutation,
     normalizeSnapshot,
     normalizeStatusHeader,
+    normalizeSupportBundleResult,
     normalizeWebPort,
     normalizeWorktreeList,
     NtmClient,
@@ -48,6 +50,7 @@ import {
     activate,
     ANALYTICS_WINDOW_OPTIONS,
     attentionSeverityIcon,
+    AUDIT_MODE_OPTIONS,
     backpressureLevelIcon,
     buildAttentionActionQuickPickItems,
     buildAttentionQuickPickItems,
@@ -60,6 +63,7 @@ import {
     defaultEnsembleSessionName,
     ENSEMBLE_SYNTHESIS_STRATEGY_OPTIONS,
     formatAnalyticsMarkdown,
+    formatAuditMarkdown,
     formatHandoffMarkdown,
     HANDOFF_MODE_OPTIONS,
     PALETTE_ACTION_OPTIONS,
@@ -68,6 +72,7 @@ import {
     SEND_TARGET_OPTIONS,
     shellQuote as extensionShellQuote,
     SPAWN_HARNESS_OPTIONS,
+    SUPPORT_BUNDLE_FORMAT_OPTIONS,
     WEB_COCKPIT_TERMINAL_NAME,
 } from '../extension';
 
@@ -2495,6 +2500,255 @@ describe('Swarm & Harness Analytics Contracts and Commands', () => {
                 )
             );
             assert.equal(mockState.openedTextDocuments.length, 2);
+        } finally {
+            for (const sub of subscriptions) {
+                sub.dispose();
+            }
+        }
+    });
+});
+
+describe('Wave 11 Audit Inspection/Verification & Support Bundle Commands', () => {
+    beforeEach(() => {
+        resetVscodeMock();
+    });
+
+    const REAL_AUDIT_SEARCH_PAYLOAD = {
+        success: true,
+        schema_id: 'ntm:robot:audit:v1',
+        schema_version: '1.0.0',
+        action: 'search',
+        session: 'all',
+        count: 1,
+        total_matches: 1,
+        has_more: false,
+        logs: [],
+        entries: [
+            {
+                timestamp: '2026-11-15T22:00:00Z',
+                session_id: 'wave11-swarm',
+                event_type: 'spawn',
+                actor: 'user',
+                target: 'wave11-swarm__pane_1',
+                sequence_num: 1,
+                checksum: 'abc123def456',
+                payload: { msg: 'spawned agy agent' },
+            },
+        ],
+    };
+
+    const REAL_AUDIT_VERIFY_TAMPERED_PAYLOAD = {
+        success: false,
+        error: 'integrity verification failed for one or more files: checksum mismatch at line 2',
+        error_code: 'INTERNAL_ERROR',
+        schema_id: 'ntm:robot:audit:v1',
+        schema_version: '1.0.0',
+        action: 'verify',
+        session: 'wave11-swarm',
+        count: 1,
+        total_matches: 1,
+        has_more: false,
+        verified: false,
+        logs: [],
+        entries: [],
+        files: [
+            {
+                file: 'wave11-swarm-2026-11-15.jsonl',
+                status: 'FAILED',
+                verified: false,
+                error: 'checksum mismatch at line 2',
+            },
+        ],
+    };
+
+    const REAL_SUPPORT_BUNDLE_PAYLOAD = {
+        success: true,
+        path: '/tmp/ntm-bundle-wave11.zip',
+        format: 'zip',
+        file_count: 6,
+        total_size: 4096,
+        privacy_mode: false,
+        content_suppressed: false,
+        redaction_summary: {
+            mode: 'redact',
+            total_findings: 2,
+            files_scanned: 6,
+            files_redacted: 1,
+        },
+        warnings: [],
+    };
+
+    it('normalizes --robot-audit (including tampered verify exit-1 JSON) and --robot-support-bundle payloads', async () => {
+        const calls: string[][] = [];
+        const client = new NtmClient({
+            execFile: async (_file, args) => {
+                calls.push(args);
+                if (args.includes('--audit-verify')) {
+                    const exitErr = Object.assign(new Error('Command failed: exit 1'), {
+                        stdout: JSON.stringify(REAL_AUDIT_VERIFY_TAMPERED_PAYLOAD),
+                        stderr: '',
+                    });
+                    throw exitErr;
+                }
+                if (args.some(a => a.startsWith('--robot-audit'))) {
+                    return { stdout: JSON.stringify(REAL_AUDIT_SEARCH_PAYLOAD), stderr: '' };
+                }
+                if (args.some(a => a.startsWith('--robot-support-bundle'))) {
+                    return { stdout: JSON.stringify(REAL_SUPPORT_BUNDLE_PAYLOAD), stderr: '' };
+                }
+                return { stdout: JSON.stringify(REAL_SNAPSHOT_PAYLOAD), stderr: '' };
+            },
+        });
+
+        const searchRes = await client.getAudit({
+            action: 'search',
+            search: 'spawn',
+            days: 7,
+            limit: 25,
+        });
+        assert.deepEqual(calls[0], [
+            '--robot-audit',
+            '--audit-action=search',
+            '--audit-search=spawn',
+            '--audit-days=7',
+            '--audit-limit=25',
+            '--robot-format=json',
+        ]);
+        assert.equal(searchRes.total_matches, 1);
+        assert.equal(searchRes.entries[0].event_type, 'spawn');
+
+        const tamperedRes = await client.getAudit({
+            session: 'wave11-swarm',
+            action: 'verify',
+            verify: true,
+        });
+        assert.equal(tamperedRes.verified, false);
+        assert.equal(tamperedRes.files.length, 1);
+        assert.equal(tamperedRes.files[0].status, 'FAILED');
+
+        const md = formatAuditMarkdown(tamperedRes);
+        assert.ok(md.includes('FAILED (TAMPERED / BROKEN)'));
+        assert.ok(md.includes('wave11-swarm-2026-11-15.jsonl'));
+        assert.equal(AUDIT_MODE_OPTIONS.length, 6);
+        assert.equal(SUPPORT_BUNDLE_FORMAT_OPTIONS.length, 3);
+
+        const bundleRes = await client.generateSupportBundle({
+            all: true,
+            outputPath: '/tmp/ntm-bundle-wave11.zip',
+            format: 'zip',
+            redactMode: 'redact',
+            lines: 500,
+        });
+        assert.deepEqual(calls[2], [
+            '--robot-support-bundle',
+            '--all',
+            '--bundle-output=/tmp/ntm-bundle-wave11.zip',
+            '--bundle-format=zip',
+            '--bundle-lines=500',
+            '--bundle-redact=redact',
+            '--robot-format=json',
+        ]);
+        assert.equal(bundleRes.file_count, 6);
+        assert.equal(bundleRes.redaction_summary?.files_redacted, 1);
+
+        assert.throws(
+            () => normalizeAuditResult({ success: false, error: 'no audit logs found' }),
+            /no audit logs found/
+        );
+        assert.throws(
+            () => normalizeSupportBundleResult({ success: false, error: 'invalid format' }),
+            /invalid format/
+        );
+
+        const pkgPath = path.resolve(__dirname, '../../package.json');
+        const pkgJson = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        const activationEvents: string[] = pkgJson.activationEvents ?? [];
+        assert.ok(activationEvents.includes('onCommand:ntm.showAudit'));
+        assert.ok(activationEvents.includes('onCommand:ntm.generateSupportBundle'));
+        assert.ok(PALETTE_ACTION_OPTIONS.some(p => p.command === 'ntm.showAudit'));
+        assert.ok(PALETTE_ACTION_OPTIONS.some(p => p.command === 'ntm.generateSupportBundle'));
+    });
+
+    it('executes ntm.showAudit and ntm.generateSupportBundle end-to-end with Web Cockpit routing', async () => {
+        mockState.binaryPath = '/opt/ntm/bin/ntm';
+        mockState.webPort = 7337;
+        const seenArgs: string[][] = [];
+
+        const client = new NtmClient({
+            execFile: async (_file, args) => {
+                seenArgs.push(args);
+                if (args.includes('--audit-verify')) {
+                    const exitErr = Object.assign(new Error('exit 1'), {
+                        stdout: JSON.stringify(REAL_AUDIT_VERIFY_TAMPERED_PAYLOAD),
+                        stderr: '',
+                    });
+                    throw exitErr;
+                }
+                if (args.some(a => a.startsWith('--robot-audit'))) {
+                    return { stdout: JSON.stringify(REAL_AUDIT_SEARCH_PAYLOAD), stderr: '' };
+                }
+                if (args.some(a => a.startsWith('--robot-support-bundle'))) {
+                    return { stdout: JSON.stringify(REAL_SUPPORT_BUNDLE_PAYLOAD), stderr: '' };
+                }
+                return { stdout: JSON.stringify(REAL_SNAPSHOT_PAYLOAD), stderr: '' };
+            },
+        });
+
+        const subscriptions: Array<{ dispose(): void }> = [];
+        const context = {
+            subscriptions,
+            extensionUri: vscode.Uri.file('/ext'),
+        } as unknown as vscode.ExtensionContext;
+
+        activate(context, client);
+        try {
+            // 1. Run regex audit search and route to /safety in Web Cockpit
+            mockState.quickPickQueue.push(
+                (items: Array<{ mode: string }>) => items.find(i => i.mode === 'search')
+            );
+            mockState.inputBoxQueue.push('spawn');
+            mockState.infoMessageActionQueue.push('Open /safety in Web Cockpit');
+
+            await vscode.commands.executeCommand('ntm.showAudit');
+            assert.ok(
+                seenArgs.some(
+                    a => a.includes('--robot-audit') && a.includes('--audit-search=spawn')
+                )
+            );
+            assert.equal(mockState.openedTextDocuments.length, 1);
+            assert.ok(mockState.openedTextDocuments[0].content.includes('**spawn**'));
+            assert.deepEqual(mockState.openedExternalUris, ['http://127.0.0.1:7337/safety']);
+
+            // 2. Run hash-chain verify on tampered session and assert warning message
+            mockState.quickPickQueue.push(
+                (items: Array<{ mode: string }>) => items.find(i => i.mode === 'verify')
+            );
+            await vscode.commands.executeCommand('ntm.showAudit', 'wave11-swarm');
+            assert.ok(
+                mockState.warningMessages.some(m => m.includes('FAILED for "wave11-swarm"'))
+            );
+
+            // 3. Generate redacted support bundle for all sessions and route to Overview
+            mockState.quickPickQueue.push(
+                (items: Array<{ format: string; redactMode: string }>) =>
+                    items.find(i => i.format === 'zip' && i.redactMode === 'redact')
+            );
+            mockState.inputBoxQueue.push('', '/tmp/ntm-bundle-wave11.zip');
+            mockState.infoMessageActionQueue.push('Open Overview in Web Cockpit');
+
+            await vscode.commands.executeCommand('ntm.generateSupportBundle');
+            assert.ok(
+                seenArgs.some(
+                    a =>
+                        a.includes('--robot-support-bundle') &&
+                        a.includes('--all') &&
+                        a.includes('--bundle-output=/tmp/ntm-bundle-wave11.zip')
+                )
+            );
+            assert.deepEqual(mockState.openedExternalUris, [
+                'http://127.0.0.1:7337/safety',
+                'http://127.0.0.1:7337/',
+            ]);
         } finally {
             for (const sub of subscriptions) {
                 sub.dispose();

@@ -24,6 +24,8 @@
     "onCommand:ntm.triageIncidents",
     "onCommand:ntm.handoffSession",
     "onCommand:ntm.showAnalytics",
+    "onCommand:ntm.showAudit",
+    "onCommand:ntm.generateSupportBundle",
     "onCommand:ntm.openWebCockpit",
     "onCommand:ntm.showBackpressure",
     "onCommand:ntm.manageWorktrees",
@@ -121,6 +123,16 @@
         "command": "ntm.showAnalytics",
         "title": "NTM: Show Swarm & Harness Analytics",
         "icon": "$(graph)"
+      },
+      {
+        "command": "ntm.showAudit",
+        "title": "NTM: Inspect & Verify Audit Logs",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "ntm.generateSupportBundle",
+        "title": "NTM: Generate Redacted Support Bundle",
+        "icon": "$(package)"
       },
       {
         "command": "ntm.openWebCockpit",

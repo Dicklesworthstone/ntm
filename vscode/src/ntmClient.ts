@@ -586,6 +586,97 @@ export interface AnalyticsResult {
     agent_restarts: number;
 }
 
+export type AuditModeAction = 'list' | 'show' | 'search' | 'verify' | 'sources';
+
+export interface AuditOptions {
+    session?: string;
+    action?: AuditModeAction;
+    search?: string;
+    verify?: boolean;
+    sources?: boolean;
+    eventTypes?: string;
+    actors?: string;
+    since?: string;
+    days?: number;
+    limit?: number;
+    offset?: number;
+}
+
+export interface AuditLogFileSummary {
+    file: string;
+    session?: string;
+    size_bytes: number;
+    modified_at: string;
+}
+
+export interface AuditEntrySummary {
+    timestamp: string;
+    session_id: string;
+    event_type: string;
+    actor: string;
+    target: string;
+    sequence_num: number;
+    checksum: string;
+    payload?: Record<string, unknown>;
+}
+
+export interface AuditVerifyFileResult {
+    file: string;
+    status: string;
+    verified: boolean;
+    error?: string;
+}
+
+export interface AuditSourceHealthSummary {
+    source_name: string;
+    available: boolean;
+    healthy: boolean;
+    reason?: string;
+}
+
+export interface AuditResult {
+    success: boolean;
+    action: string;
+    session: string;
+    count: number;
+    total_matches: number;
+    has_more: boolean;
+    verified?: boolean;
+    error?: string;
+    logs: AuditLogFileSummary[];
+    entries: AuditEntrySummary[];
+    files: AuditVerifyFileResult[];
+    sources: AuditSourceHealthSummary[];
+}
+
+export interface SupportBundleOptions {
+    session?: string;
+    all?: boolean;
+    outputPath?: string;
+    format?: 'zip' | 'tar.gz';
+    since?: string;
+    lines?: number;
+    maxSizeMB?: number;
+    redactMode?: 'redact' | 'block' | 'warn';
+}
+
+export interface SupportBundleResult {
+    success: boolean;
+    path: string;
+    format: string;
+    file_count: number;
+    total_size: number;
+    privacy_mode: boolean;
+    content_suppressed: boolean;
+    redaction_summary?: {
+        mode: string;
+        total_findings: number;
+        files_scanned: number;
+        files_redacted: number;
+    };
+    warnings: string[];
+}
+
 export type ExecFileRunner = (
     file: string,
     args: string[],
@@ -1826,6 +1917,163 @@ export function normalizeAnalyticsResult(raw: unknown): AnalyticsResult {
     };
 }
 
+/**
+ * Normalize `--robot-audit` JSON output into a strongly typed `AuditResult`.
+ * Preserves verification diagnostics (`verified: false` + `files`) when hash-chain
+ * tampering is detected.
+ */
+export function normalizeAuditResult(raw: unknown): AuditResult {
+    const obj = asRecord(raw);
+    if (!obj) {
+        throw new Error('Invalid audit response payload');
+    }
+    const hasVerifiedField = typeof obj.verified === 'boolean';
+    if (obj.success === false && !hasVerifiedField) {
+        const msg = typeof obj.error === 'string' && obj.error.length > 0
+            ? obj.error
+            : 'Audit command failed';
+        throw new Error(msg);
+    }
+
+    const logs: AuditLogFileSummary[] = Array.isArray(obj.logs)
+        ? obj.logs
+            .map(item => {
+                const lr = asRecord(item);
+                if (!lr || typeof lr.file !== 'string') {
+                    return undefined;
+                }
+                const entry: AuditLogFileSummary = {
+                    file: lr.file,
+                    size_bytes: typeof lr.size_bytes === 'number' ? lr.size_bytes : 0,
+                    modified_at: typeof lr.modified_at === 'string' ? lr.modified_at : '',
+                };
+                if (typeof lr.session === 'string' && lr.session.length > 0) {
+                    entry.session = lr.session;
+                }
+                return entry;
+            })
+            .filter((item): item is AuditLogFileSummary => item !== undefined)
+        : [];
+
+    const entries: AuditEntrySummary[] = Array.isArray(obj.entries)
+        ? obj.entries
+            .map(item => {
+                const er = asRecord(item);
+                if (!er) {
+                    return undefined;
+                }
+                const summary: AuditEntrySummary = {
+                    timestamp: typeof er.timestamp === 'string' ? er.timestamp : '',
+                    session_id: typeof er.session_id === 'string' ? er.session_id : '',
+                    event_type: typeof er.event_type === 'string' ? er.event_type : '',
+                    actor: typeof er.actor === 'string' ? er.actor : '',
+                    target: typeof er.target === 'string' ? er.target : '',
+                    sequence_num: typeof er.sequence_num === 'number' ? er.sequence_num : 0,
+                    checksum: typeof er.checksum === 'string' ? er.checksum : '',
+                };
+                const payloadRec = asRecord(er.payload);
+                if (payloadRec) {
+                    summary.payload = payloadRec;
+                }
+                return summary;
+            })
+            .filter((item): item is AuditEntrySummary => item !== undefined)
+        : [];
+
+    const files: AuditVerifyFileResult[] = Array.isArray(obj.files)
+        ? obj.files
+            .map(item => {
+                const fr = asRecord(item);
+                if (!fr || typeof fr.file !== 'string') {
+                    return undefined;
+                }
+                const vf: AuditVerifyFileResult = {
+                    file: fr.file,
+                    status: typeof fr.status === 'string' ? fr.status : 'unknown',
+                    verified: Boolean(fr.verified),
+                };
+                if (typeof fr.error === 'string' && fr.error.length > 0) {
+                    vf.error = fr.error;
+                }
+                return vf;
+            })
+            .filter((item): item is AuditVerifyFileResult => item !== undefined)
+        : [];
+
+    const sources: AuditSourceHealthSummary[] = Array.isArray(obj.sources)
+        ? obj.sources
+            .map(item => {
+                const sr = asRecord(item);
+                if (!sr || typeof sr.source_name !== 'string') {
+                    return undefined;
+                }
+                const sh: AuditSourceHealthSummary = {
+                    source_name: sr.source_name,
+                    available: Boolean(sr.available),
+                    healthy: Boolean(sr.healthy),
+                };
+                if (typeof sr.reason === 'string' && sr.reason.length > 0) {
+                    sh.reason = sr.reason;
+                }
+                return sh;
+            })
+            .filter((item): item is AuditSourceHealthSummary => item !== undefined)
+        : [];
+
+    return {
+        success: obj.success !== false,
+        action: typeof obj.action === 'string' ? obj.action : 'list',
+        session: typeof obj.session === 'string' ? obj.session : 'all',
+        count: typeof obj.count === 'number' ? obj.count : 0,
+        total_matches: typeof obj.total_matches === 'number' ? obj.total_matches : 0,
+        has_more: Boolean(obj.has_more),
+        verified: hasVerifiedField ? (obj.verified as boolean) : undefined,
+        error: typeof obj.error === 'string' && obj.error.length > 0 ? obj.error : undefined,
+        logs,
+        entries,
+        files,
+        sources,
+    };
+}
+
+/**
+ * Normalize `--robot-support-bundle` JSON output into a strongly typed `SupportBundleResult`.
+ */
+export function normalizeSupportBundleResult(raw: unknown): SupportBundleResult {
+    const obj = asRecord(raw);
+    if (!obj) {
+        throw new Error('Invalid support bundle response payload');
+    }
+    if (obj.success === false) {
+        const msg = typeof obj.error === 'string' && obj.error.length > 0
+            ? obj.error
+            : 'Support bundle generation failed';
+        throw new Error(msg);
+    }
+
+    const redRec = asRecord(obj.redaction_summary);
+    const redactionSummary = redRec && typeof redRec.mode === 'string'
+        ? {
+            mode: redRec.mode,
+            total_findings: typeof redRec.total_findings === 'number' ? redRec.total_findings : 0,
+            files_scanned: typeof redRec.files_scanned === 'number' ? redRec.files_scanned : 0,
+            files_redacted: typeof redRec.files_redacted === 'number' ? redRec.files_redacted : 0,
+        }
+        : undefined;
+
+    return {
+        success: true,
+        path: typeof obj.path === 'string' ? obj.path : '',
+        format: typeof obj.format === 'string' ? obj.format : 'zip',
+        file_count: typeof obj.file_count === 'number' ? obj.file_count : 0,
+        total_size: typeof obj.total_size === 'number' ? obj.total_size : 0,
+        privacy_mode: Boolean(obj.privacy_mode),
+        content_suppressed: Boolean(obj.content_suppressed),
+        redaction_summary: redactionSummary,
+        warnings: toStringArray(obj.warnings),
+    };
+}
+
 function extractJsonErrorDetail(stdout?: string): string | undefined {
     if (typeof stdout !== 'string') {
         return undefined;
@@ -2405,5 +2653,115 @@ export class NtmClient {
 
         const stdout = await this.run(args);
         return normalizeAnalyticsResult(JSON.parse(stdout));
+    }
+
+    /**
+     * Inspect, search, verify tamper-evident hash chains, or query projection source health
+     * via `ntm --robot-audit[=<session>] ... --robot-format=json`.
+     */
+    async getAudit(options?: AuditOptions): Promise<AuditResult> {
+        const sess = (options?.session ?? '').trim();
+        const args: string[] = [
+            sess && sess !== 'all' ? `--robot-audit=${sess}` : '--robot-audit',
+        ];
+
+        const action = (options?.action ?? '').trim();
+        if (action) {
+            args.push(`--audit-action=${action}`);
+        }
+        const search = (options?.search ?? '').trim();
+        if (search) {
+            args.push(`--audit-search=${search}`);
+        }
+        if (options?.verify) {
+            args.push('--audit-verify');
+        }
+        if (options?.sources) {
+            args.push('--audit-sources');
+        }
+        const eventTypes = (options?.eventTypes ?? '').trim();
+        if (eventTypes) {
+            args.push(`--audit-type=${eventTypes}`);
+        }
+        const actors = (options?.actors ?? '').trim();
+        if (actors) {
+            args.push(`--audit-actor=${actors}`);
+        }
+        const since = (options?.since ?? '').trim();
+        if (since) {
+            args.push(`--audit-since=${since}`);
+        }
+        if (options?.days !== undefined) {
+            if (!Number.isInteger(options.days) || options.days < 0) {
+                throw new Error('Audit days must be a non-negative integer');
+            }
+            args.push(`--audit-days=${options.days}`);
+        }
+        if (options?.limit !== undefined) {
+            if (!Number.isInteger(options.limit) || options.limit < 1) {
+                throw new Error('Audit limit must be a positive integer');
+            }
+            args.push(`--audit-limit=${options.limit}`);
+        }
+        if (options?.offset !== undefined) {
+            if (!Number.isInteger(options.offset) || options.offset < 0) {
+                throw new Error('Audit offset must be a non-negative integer');
+            }
+            args.push(`--audit-offset=${options.offset}`);
+        }
+        args.push('--robot-format=json');
+
+        const allowVerifyEnvelope = Boolean(options?.verify || action === 'verify');
+        const stdout = await this.run(args, { allowJsonErrorEnvelope: allowVerifyEnvelope });
+        return normalizeAuditResult(JSON.parse(stdout));
+    }
+
+    /**
+     * Generate a disclosure-redacted diagnostic support bundle archive via
+     * `ntm --robot-support-bundle[=<session>] [--all] ... --robot-format=json`.
+     */
+    async generateSupportBundle(options?: SupportBundleOptions): Promise<SupportBundleResult> {
+        const sess = (options?.session ?? '').trim();
+        const args: string[] = [
+            sess ? `--robot-support-bundle=${sess}` : '--robot-support-bundle',
+        ];
+        if (!sess && (options?.all ?? true)) {
+            args.push('--all');
+        }
+        const outputPath = (options?.outputPath ?? '').trim();
+        if (outputPath) {
+            args.push(`--bundle-output=${outputPath}`);
+        }
+        const format = options?.format ?? 'zip';
+        if (format !== 'zip' && format !== 'tar.gz') {
+            throw new Error(`Unsupported support bundle format: ${String(format)}`);
+        }
+        args.push(`--bundle-format=${format}`);
+
+        const since = (options?.since ?? '').trim();
+        if (since) {
+            args.push(`--bundle-since=${since}`);
+        }
+        if (options?.lines !== undefined) {
+            if (!Number.isInteger(options.lines) || options.lines < 1) {
+                throw new Error('Support bundle lines must be a positive integer');
+            }
+            args.push(`--bundle-lines=${options.lines}`);
+        }
+        if (options?.maxSizeMB !== undefined) {
+            if (!Number.isInteger(options.maxSizeMB) || options.maxSizeMB < 1) {
+                throw new Error('Support bundle maxSizeMB must be a positive integer');
+            }
+            args.push(`--bundle-max-size=${options.maxSizeMB}`);
+        }
+        const redactMode = options?.redactMode ?? 'redact';
+        if (redactMode !== 'redact' && redactMode !== 'block' && redactMode !== 'warn') {
+            throw new Error(`Unsupported support bundle redaction mode: ${String(redactMode)}`);
+        }
+        args.push(`--bundle-redact=${redactMode}`);
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeSupportBundleResult(JSON.parse(stdout));
     }
 }
