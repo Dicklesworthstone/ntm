@@ -47,9 +47,17 @@ var (
 	deadMailBaseURL string
 
 	serveSchemaBootstrapOnce sync.Once
-	serveSchemaBootstrapSQL  string
+	serveSchemaSnapshotBytes []byte
 	serveSchemaBootstrapErr  error
 )
+
+type sqliteConnSerializer interface {
+	Serialize() ([]byte, error)
+}
+
+type sqliteConnDeserializer interface {
+	Deserialize([]byte) error
+}
 
 // deadAgentMailClient returns a client whose base URL points at a closed
 // local port so every call fails immediately (agent mail disabled in serve
@@ -65,105 +73,83 @@ func deadAgentMailClient(t *testing.T) *agentmail.Client {
 	return agentmail.NewClient(agentmail.WithBaseURL(deadMailBaseURL))
 }
 
-// buildConsolidatedStateSchemaSQL runs state.Migrate() once on an isolated
-// in-memory store and extracts the resulting sqlite_master DDL + _migrations
-// rows into a single consolidated SQL script. Replaying that final-state DDL
-// avoids 31 incremental migration transactions, table rebuilds (015/023), and
-// ~22 ALTER TABLE schema-cookie re-parses in modernc.org/sqlite per test while
-// keeping store.Path() == ":memory:" and always staying in lockstep with
-// internal/state/migrations/*.sql.
-func buildConsolidatedStateSchemaSQL() (string, error) {
+// buildSerializedMigratedStateImage runs state.Migrate() once on an isolated
+// in-memory store and captures its binary B-tree page image via sqlite3_serialize.
+// Restoring that pre-migrated image into each test's ":memory:" connection via
+// sqlite3_deserialize (SQLITE_DESERIALIZE_RESIZEABLE|SQLITE_DESERIALIZE_FREEONCLOSE)
+// eliminates 31 incremental migration scripts, ~22 ALTER TABLE schema re-parses,
+// and 140 CREATE TABLE / CREATE INDEX statements per setupTestServer call while
+// preserving store.Path() == ":memory:", foreign_keys = ON, and 100% bit-exact
+// schema + _migrations parity.
+func buildSerializedMigratedStateImage() ([]byte, error) {
 	refStore, err := state.Open(":memory:")
 	if err != nil {
-		return "", fmt.Errorf("open reference memory store: %w", err)
+		return nil, fmt.Errorf("open reference memory store: %w", err)
 	}
 	defer refStore.Close()
 
 	if err := refStore.Migrate(); err != nil {
-		return "", fmt.Errorf("migrate reference memory store: %w", err)
+		return nil, fmt.Errorf("migrate reference memory store: %w", err)
 	}
 
-	rows, err := refStore.DB().Query(`
-		SELECT sql
-		FROM sqlite_master
-		WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
-		ORDER BY CASE type
-			WHEN 'table' THEN 0
-			WHEN 'index' THEN 1
-			WHEN 'view' THEN 2
-			WHEN 'trigger' THEN 3
-			ELSE 4
-		END, rowid
-	`)
+	sqlConn, err := refStore.DB().Conn(context.Background())
 	if err != nil {
-		return "", fmt.Errorf("query sqlite_master: %w", err)
+		return nil, fmt.Errorf("checkout reference sqlite conn: %w", err)
 	}
-	defer rows.Close()
+	defer sqlConn.Close()
 
-	var b strings.Builder
-	b.WriteString("BEGIN IMMEDIATE;\n")
-	for rows.Next() {
-		var ddl string
-		if err := rows.Scan(&ddl); err != nil {
-			return "", fmt.Errorf("scan sqlite_master ddl: %w", err)
+	var snapshot []byte
+	if err := sqlConn.Raw(func(driverConn any) error {
+		ser, ok := driverConn.(sqliteConnSerializer)
+		if !ok {
+			return fmt.Errorf("sqlite driver connection %T does not implement Serialize()", driverConn)
 		}
-		b.WriteString(strings.TrimSpace(ddl))
-		b.WriteString(";\n")
+		var sErr error
+		snapshot, sErr = ser.Serialize()
+		return sErr
+	}); err != nil {
+		return nil, fmt.Errorf("serialize reference memory store: %w", err)
 	}
-	if err := rows.Err(); err != nil {
-		return "", fmt.Errorf("iterate sqlite_master: %w", err)
+	if len(snapshot) == 0 {
+		return nil, errors.New("serialized sqlite image is empty")
 	}
-
-	mrows, err := refStore.DB().Query(`SELECT version, name, applied_at FROM _migrations ORDER BY version`)
-	if err != nil {
-		return "", fmt.Errorf("query _migrations: %w", err)
-	}
-	defer mrows.Close()
-
-	var migValues []string
-	for mrows.Next() {
-		var (
-			version   int
-			name      string
-			appliedAt string
-		)
-		if err := mrows.Scan(&version, &name, &appliedAt); err != nil {
-			return "", fmt.Errorf("scan _migrations: %w", err)
-		}
-		migValues = append(migValues, fmt.Sprintf("(%d, '%s', '%s')",
-			version,
-			strings.ReplaceAll(name, "'", "''"),
-			strings.ReplaceAll(appliedAt, "'", "''"),
-		))
-	}
-	if err := mrows.Err(); err != nil {
-		return "", fmt.Errorf("iterate _migrations: %w", err)
-	}
-	if len(migValues) > 0 {
-		b.WriteString("INSERT INTO _migrations (version, name, applied_at) VALUES ")
-		b.WriteString(strings.Join(migValues, ", "))
-		b.WriteString(";\n")
-	}
-	b.WriteString("COMMIT;\n")
-	return b.String(), nil
+	return snapshot, nil
 }
 
 func openFastMigratedMemoryStore(t testing.TB) *state.Store {
 	t.Helper()
 	serveSchemaBootstrapOnce.Do(func() {
-		serveSchemaBootstrapSQL, serveSchemaBootstrapErr = buildConsolidatedStateSchemaSQL()
+		serveSchemaSnapshotBytes, serveSchemaBootstrapErr = buildSerializedMigratedStateImage()
 	})
 	if serveSchemaBootstrapErr != nil {
-		t.Fatalf("build consolidated state schema: %v", serveSchemaBootstrapErr)
+		t.Fatalf("build serialized state schema image: %v", serveSchemaBootstrapErr)
 	}
 
 	store, err := state.Open(":memory:")
 	if err != nil {
 		t.Fatalf("Failed to open store: %v", err)
 	}
-	if _, err := store.DB().Exec(serveSchemaBootstrapSQL); err != nil {
+
+	sqlConn, err := store.DB().Conn(context.Background())
+	if err != nil {
 		store.Close()
-		t.Fatalf("Failed to apply consolidated schema: %v", err)
+		t.Fatalf("Failed to checkout sqlite conn: %v", err)
+	}
+	rawErr := sqlConn.Raw(func(driverConn any) error {
+		deser, ok := driverConn.(sqliteConnDeserializer)
+		if !ok {
+			return fmt.Errorf("sqlite driver connection %T does not implement Deserialize()", driverConn)
+		}
+		return deser.Deserialize(serveSchemaSnapshotBytes)
+	})
+	_ = sqlConn.Close()
+	if rawErr != nil {
+		store.Close()
+		t.Fatalf("Failed to deserialize state schema image: %v", rawErr)
+	}
+	if _, err := store.DB().Exec("PRAGMA foreign_keys = ON"); err != nil {
+		store.Close()
+		t.Fatalf("Failed to enable foreign_keys on deserialized store: %v", err)
 	}
 	return store
 }
