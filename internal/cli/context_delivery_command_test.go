@@ -203,7 +203,7 @@ func TestContextInjectCobraUsesCanonicalTargetsAcrossModes(t *testing.T) {
 	}
 }
 
-func installContextMutationTMUX(t *testing.T, kind tmux.AgentType, afterWrite string) (string, string) {
+func writeContextMutationTMUXFixture(t *testing.T, kind tmux.AgentType, afterWrite string) (string, string, []string) {
 	t.Helper()
 	if _, err := os.Stat("/bin/sh"); err != nil {
 		t.Skip("requires /bin/sh")
@@ -330,15 +330,27 @@ esac
 	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NTM_TMUX_BINARY", binary)
-	t.Setenv("NTM_CONTEXT_GUARD_DIR", dir)
-	t.Setenv("NTM_CONTEXT_GUARD_TYPE", string(kind))
-	t.Setenv("NTM_CONTEXT_GUARD_AFTER_WRITE", afterWrite)
+	envOverrides := []string{
+		"NTM_TMUX_BINARY=" + binary,
+		"NTM_CONTEXT_GUARD_DIR=" + dir,
+		"NTM_CONTEXT_GUARD_TYPE=" + string(kind),
+		"NTM_CONTEXT_GUARD_AFTER_WRITE=" + afterWrite,
+	}
+	return dir, filepath.Join(dir, "mutations"), envOverrides
+}
+
+func installContextMutationTMUX(t *testing.T, kind tmux.AgentType, afterWrite string) (string, string) {
+	t.Helper()
+	dir, mutationsPath, envOverrides := writeContextMutationTMUXFixture(t, kind, afterWrite)
+	for _, kv := range envOverrides {
+		k, v, _ := strings.Cut(kv, "=")
+		t.Setenv(k, v)
+	}
 
 	oldClient := tmux.DefaultClient
 	tmux.DefaultClient = tmux.NewClient("")
 	t.Cleanup(func() { tmux.DefaultClient = oldClient })
-	return dir, filepath.Join(dir, "mutations")
+	return dir, mutationsPath
 }
 
 func TestContextInjectionRetainsPaneIdentityThroughPreparationAndSubmission(t *testing.T) {
@@ -1321,8 +1333,10 @@ func TestContextInjectCobraChecksRedactedPayloadLimits(t *testing.T) {
 // Only tmux is substituted; file reads, config merging, redaction, receipts,
 // error exits and the guarded delivery protocol execute as shipped.
 func TestContextInjectionProcessHonorsRedactionConfigAndFlags(t *testing.T) {
+	t.Parallel()
 	secret := "ghp_" + strings.Repeat("B", 36)
 	for _, surface := range []string{"cli", "robot"} {
+		surface := surface
 		for _, tc := range []struct {
 			name     string
 			config   string
@@ -1343,8 +1357,10 @@ func TestContextInjectionProcessHonorsRedactionConfigAndFlags(t *testing.T) {
 			{name: "disabled_category", config: "disabled_categories = [\"GITHUB_TOKEN\"]\n", mode: "block"},
 			{name: "custom_pattern", config: "[redaction.extra_patterns]\nCONTEXT_TOKEN = [\"acme-private-credential\"]\n", flags: []string{"--redact=redact"}, mode: "redact", findings: true, text: "acme-private-credential"},
 		} {
+			tc := tc
 			t.Run(surface+"/"+tc.name, func(t *testing.T) {
-				dir, mutationsPath := installContextMutationTMUX(t, tmux.AgentClaude, "")
+				t.Parallel()
+				dir, mutationsPath, envOverrides := writeContextMutationTMUXFixture(t, tmux.AgentClaude, "")
 				text := tc.text
 				if text == "" {
 					text = secret
@@ -1368,7 +1384,7 @@ func TestContextInjectionProcessHonorsRedactionConfigAndFlags(t *testing.T) {
 						args = append(args, "--dry-run")
 					}
 				}
-				raw, code := newRobotProcessRunner(t)(args...)
+				raw, code := newRobotProcessRunnerWithEnv(t, envOverrides...)(args...)
 				encoded, err := json.Marshal(raw)
 				if err != nil {
 					t.Fatal(err)

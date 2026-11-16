@@ -1547,6 +1547,68 @@
         }
       }
     },
+    "/api/v1/assign": {
+      "post": {
+        "tags": [
+          "assign"
+        ],
+        "summary": "Recommend assign",
+        "description": "Served route `POST /api/v1/assign`. Handler: `handleRecommendAssignV1`. Response shape reflected from Go type `AssignPlanEnvelopeResponse`.",
+        "operationId": "post_api_v1_assign",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecommendAssignRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssignPlanEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/attention/digest": {
       "get": {
         "tags": [
@@ -4402,6 +4464,24 @@
         "summary": "Doctor",
         "description": "Served route `GET /api/v1/doctor`. Handler: `handleDoctorV1`. Response shape reflected from Go type `ServerDoctorEnvelopeResponse`.",
         "operationId": "get_api_v1_doctor",
+        "parameters": [
+          {
+            "name": "verbose",
+            "in": "query",
+            "description": "Include verbose version/detail probes for optional ecosystem tools.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "contention",
+            "in": "query",
+            "description": "Inspect live processes holding SQLite/Beads or swarm resource locks.",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful operation",
@@ -9627,6 +9707,130 @@
         }
       }
     },
+    "/api/v1/prompt/preflight": {
+      "post": {
+        "tags": [
+          "prompt"
+        ],
+        "summary": "Prompt preflight",
+        "description": "Served route `POST /api/v1/prompt/preflight`. Handler: `handlePromptPreflightV1`. Response shape reflected from Go type `PromptPreflightEnvelopeResponse`.",
+        "operationId": "post_api_v1_prompt_preflight",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromptPreflightRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptPreflightEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/quota": {
+      "get": {
+        "tags": [
+          "quota"
+        ],
+        "summary": "Get quota status",
+        "description": "Served route `GET /api/v1/quota`. Handler: `handleGetQuotaStatusV1`. Response shape reflected from Go type `QuotaStatusEnvelopeResponse`.",
+        "operationId": "get_api_v1_quota",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "query",
+            "description": "Optional provider filter (claude, openai/codex, gemini) for detailed seat quota.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuotaStatusEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/requests/{id}": {
       "get": {
         "tags": [
@@ -11136,6 +11340,68 @@
         }
       }
     },
+    "/api/v1/route": {
+      "post": {
+        "tags": [
+          "route"
+        ],
+        "summary": "Recommend route",
+        "description": "Served route `POST /api/v1/route`. Handler: `handleRecommendRouteV1`. Response shape reflected from Go type `RoutePlanEnvelopeResponse`.",
+        "operationId": "post_api_v1_route",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecommendRouteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoutePlanEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/safety/blocked": {
       "get": {
         "tags": [
@@ -12221,6 +12487,110 @@
             }
           }
         }
+      },
+      "delete": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Delete session",
+        "description": "Served route `DELETE /api/v1/sessions/{id}`. Handler: `handleDeleteSessionV1`. Response shape reflected from Go type `DeleteSessionEnvelopeResponse`.",
+        "operationId": "delete_api_v1_sessions_id",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "description": "Force session termination without interactive confirmation.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "no_hooks",
+            "in": "query",
+            "description": "Skip pre/post session teardown lifecycle hooks.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "summarize",
+            "in": "query",
+            "description": "Generate a session summary prior to teardown.",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteSessionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteSessionEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/sessions/{id}/attach": {
@@ -12306,6 +12676,88 @@
         }
       }
     },
+    "/api/v1/sessions/{id}/controller": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session controller",
+        "description": "Served route `POST /api/v1/sessions/{id}/controller`. Handler: `handleSessionControllerV1`. Response shape reflected from Go type `SessionControllerEnvelopeResponse`.",
+        "operationId": "post_api_v1_sessions_id_controller",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionControllerRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionControllerEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/sessions/{id}/events": {
       "get": {
         "tags": [
@@ -12332,6 +12784,185 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SessionEventsEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{id}/health": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session health",
+        "description": "Served route `GET /api/v1/sessions/{id}/health`. Handler: `handleSessionHealthV1`. Response shape reflected from Go type `SessionHealthEnvelopeResponse`.",
+        "operationId": "get_api_v1_sessions_id_health",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pane",
+            "in": "query",
+            "description": "Optional pane index or topology selector filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Optional agent health status filter (ok, warning, error).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "verbose",
+            "in": "query",
+            "description": "Include verbose diagnostic issue details.",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionHealthEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{id}/interrupt": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session interrupt",
+        "description": "Served route `POST /api/v1/sessions/{id}/interrupt`. Handler: `handleSessionInterruptV1`. Response shape reflected from Go type `SessionInterruptEnvelopeResponse`.",
+        "operationId": "post_api_v1_sessions_id_interrupt",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionInterruptRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInterruptEnvelopeResponse"
                 }
               }
             }
@@ -16729,6 +17360,92 @@
           "timestamp"
         ]
       },
+      "AgentHealth": {
+        "type": "object",
+        "properties": {
+          "activity": {
+            "type": "string"
+          },
+          "agent_type": {
+            "type": "string"
+          },
+          "idle_seconds": {
+            "type": "integer"
+          },
+          "issues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Issue"
+            }
+          },
+          "last_activity": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_known_state": {
+            "type": "string"
+          },
+          "observation_confidence": {
+            "type": "number"
+          },
+          "observation_freshness": {
+            "type": "string"
+          },
+          "observed_state": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "integer"
+          },
+          "pane_dead": {
+            "type": "boolean"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "process_status": {
+            "type": "string"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/Progress"
+          },
+          "rate_limited": {
+            "type": "boolean"
+          },
+          "safe_to_dispatch": {
+            "type": "boolean"
+          },
+          "shell_pid": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "uptime_seconds": {
+            "type": "integer"
+          },
+          "wait_seconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "activity",
+          "agent_type",
+          "idle_seconds",
+          "issues",
+          "observation_confidence",
+          "observation_freshness",
+          "observed_state",
+          "pane",
+          "pane_id",
+          "process_status",
+          "rate_limited",
+          "safe_to_dispatch",
+          "shell_pid",
+          "status",
+          "wait_seconds"
+        ]
+      },
       "AgentHealthInfo": {
         "type": "object",
         "properties": {
@@ -17628,6 +18345,192 @@
           "count",
           "success",
           "timestamp"
+        ]
+      },
+      "AssignAgentHints": {
+        "type": "object",
+        "properties": {
+          "suggested_commands": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "summary": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "AssignPlanEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/AssignAgentHints"
+          },
+          "blocked_beads": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BlockedBead"
+            }
+          },
+          "generated_at": {
+            "type": "string"
+          },
+          "idle_agents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "original_score": {
+            "type": "number"
+          },
+          "recommendations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AssignRecommend"
+            }
+          },
+          "relaxed": {
+            "type": "boolean"
+          },
+          "relaxed_constraints": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "relaxed_score": {
+            "type": "number"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "strategy": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/AssignSummary"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "unassignable_beads": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UnassignableBead"
+            }
+          },
+          "work_source_mismatch": {
+            "$ref": "#/components/schemas/StaleError"
+          }
+        },
+        "required": [
+          "blocked_beads",
+          "generated_at",
+          "idle_agents",
+          "original_score",
+          "recommendations",
+          "relaxed",
+          "relaxed_constraints",
+          "relaxed_score",
+          "session",
+          "strategy",
+          "success",
+          "summary",
+          "timestamp"
+        ]
+      },
+      "AssignRecommend": {
+        "type": "object",
+        "properties": {
+          "agent_type": {
+            "type": "string"
+          },
+          "assign_bead": {
+            "type": "string"
+          },
+          "bead_title": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "number"
+          },
+          "model": {
+            "type": "string"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "pane_target": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          },
+          "relaxation": {
+            "$ref": "#/components/schemas/ScoreRelaxation"
+          }
+        },
+        "required": [
+          "agent_type",
+          "assign_bead",
+          "bead_title",
+          "confidence",
+          "pane_id",
+          "pane_target",
+          "priority",
+          "reasoning"
+        ]
+      },
+      "AssignSummary": {
+        "type": "object",
+        "properties": {
+          "blocked_beads": {
+            "type": "integer"
+          },
+          "idle_agents": {
+            "type": "integer"
+          },
+          "ready_beads": {
+            "type": "integer"
+          },
+          "recommendations": {
+            "type": "integer"
+          },
+          "total_agents": {
+            "type": "integer"
+          },
+          "unassignable_beads": {
+            "type": "integer"
+          },
+          "working_agents": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "blocked_beads",
+          "idle_agents",
+          "ready_beads",
+          "recommendations",
+          "total_agents",
+          "unassignable_beads",
+          "working_agents"
         ]
       },
       "AssignmentFilters": {
@@ -19610,6 +20513,28 @@
           "recommendations",
           "success",
           "timestamp"
+        ]
+      },
+      "BlockedBead": {
+        "type": "object",
+        "properties": {
+          "blocked_by": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "blocked_by",
+          "id",
+          "title"
         ]
       },
       "BlockedEntry": {
@@ -22190,6 +23115,68 @@
           "timestamp"
         ]
       },
+      "DeleteSessionEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "killed": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Unique request correlation identifier."
+          },
+          "session": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean",
+            "description": "Whether the operation succeeded."
+          },
+          "summary": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "RFC3339 response timestamp."
+          }
+        },
+        "required": [
+          "generated_at",
+          "killed",
+          "session",
+          "success",
+          "timestamp"
+        ]
+      },
+      "DeleteSessionRequest": {
+        "type": "object",
+        "properties": {
+          "force": {
+            "type": "boolean"
+          },
+          "no_hooks": {
+            "type": "boolean"
+          },
+          "summarize": {
+            "type": "boolean"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "DependencyCheck": {
         "type": "object",
         "properties": {
@@ -22469,6 +23456,58 @@
           }
         }
       },
+      "DoctorConfigCheck": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "valid": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "status",
+          "valid"
+        ]
+      },
+      "DoctorContentionHolder": {
+        "type": "object",
+        "properties": {
+          "age": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "in_swarm": {
+            "type": "boolean"
+          },
+          "pid": {
+            "type": "integer"
+          },
+          "resource": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "age",
+          "command",
+          "in_swarm",
+          "pid",
+          "resource"
+        ]
+      },
       "DoctorDaemonStatus": {
         "type": "object",
         "properties": {
@@ -22550,6 +23589,123 @@
         "required": [
           "degraded_runs",
           "name",
+          "status"
+        ]
+      },
+      "DoctorInvariantCheck": {
+        "type": "object",
+        "properties": {
+          "details": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "status"
+        ]
+      },
+      "DoctorSafetyDefaults": {
+        "type": "object",
+        "properties": {
+          "claude_agent_hooks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "claude_agent_hooks_warning": {
+            "type": "string"
+          },
+          "claude_policy_hook_registered": {
+            "type": "boolean"
+          },
+          "encryption_at_rest_enabled": {
+            "type": "boolean"
+          },
+          "preflight_default_strict": {
+            "type": "boolean"
+          },
+          "privacy_default_enabled": {
+            "type": "boolean"
+          },
+          "redaction_allowlist_count": {
+            "type": "integer"
+          },
+          "redaction_allowlist_enabled": {
+            "type": "boolean"
+          },
+          "redaction_mode": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "claude_agent_hooks",
+          "claude_policy_hook_registered",
+          "encryption_at_rest_enabled",
+          "preflight_default_strict",
+          "privacy_default_enabled",
+          "redaction_allowlist_count",
+          "redaction_allowlist_enabled",
+          "redaction_mode"
+        ]
+      },
+      "DoctorToolCheck": {
+        "type": "object",
+        "properties": {
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "details": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "installed": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "installed",
+          "name",
+          "required",
           "status"
         ]
       },
@@ -25806,6 +26962,33 @@
           "BottleneckCount"
         ]
       },
+      "HealthSummaryModel": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "integer"
+          },
+          "healthy": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "unknown": {
+            "type": "integer"
+          },
+          "warning": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "error",
+          "healthy",
+          "total",
+          "unknown",
+          "warning"
+        ]
+      },
       "HistoricalBoundedness": {
         "type": "object",
         "properties": {
@@ -25930,20 +27113,16 @@
         "type": "object",
         "properties": {
           "head_sha": {
-            "type": "string",
-            "description": "Head s h a"
+            "type": "string"
           },
           "jsonl_path": {
-            "type": "string",
-            "description": "J s o n l path"
+            "type": "string"
           },
           "jsonl_sha256": {
-            "type": "string",
-            "description": "J s o n l s h a256"
+            "type": "string"
           },
           "project_dir": {
-            "type": "string",
-            "description": "Project dir"
+            "type": "string"
           }
         }
       },
@@ -26490,6 +27669,36 @@
           "timed_out"
         ]
       },
+      "InterruptPaneResult": {
+        "type": "object",
+        "properties": {
+          "agent_type": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "index": {
+            "type": "integer"
+          },
+          "pane": {
+            "type": "string"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_type",
+          "index",
+          "pane",
+          "pane_id",
+          "status"
+        ]
+      },
       "InterruptReceiptOutcome": {
         "type": "object",
         "properties": {
@@ -26567,6 +27776,21 @@
           "failed",
           "message_sent",
           "timed_out"
+        ]
+      },
+      "Issue": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "type"
         ]
       },
       "Job": {
@@ -28495,6 +29719,24 @@
         "required": [
           "ID",
           "Value"
+        ]
+      },
+      "ObservationFailure": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "stage"
         ]
       },
       "OnFailureSpec": {
@@ -30634,6 +31876,42 @@
           "strength"
         ]
       },
+      "PreflightFinding": {
+        "type": "object",
+        "properties": {
+          "end": {
+            "type": "integer"
+          },
+          "help": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "severity": {
+            "type": "string"
+          },
+          "start": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "help",
+          "id",
+          "message",
+          "severity"
+        ]
+      },
       "PresetInfo": {
         "type": "object",
         "properties": {
@@ -30914,6 +32192,36 @@
           }
         }
       },
+      "Progress": {
+        "type": "object",
+        "properties": {
+          "confidence": {
+            "type": "number"
+          },
+          "indicators": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "stage": {
+            "type": "string"
+          },
+          "stage_changed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "time_in_stage_sec": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "confidence",
+          "indicators",
+          "stage",
+          "time_in_stage_sec"
+        ]
+      },
       "ProgressSummary": {
         "type": "object",
         "properties": {
@@ -31003,6 +32311,95 @@
             }
           }
         }
+      },
+      "PromptPreflightEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "allowed": {
+            "type": "boolean"
+          },
+          "dcg_available": {
+            "type": "boolean"
+          },
+          "error_count": {
+            "type": "integer"
+          },
+          "estimated_tokens": {
+            "type": "integer"
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PreflightFinding"
+            }
+          },
+          "info_count": {
+            "type": "integer"
+          },
+          "preview": {
+            "type": "string"
+          },
+          "preview_hash": {
+            "type": "string"
+          },
+          "preview_len": {
+            "type": "integer"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "strict": {
+            "type": "boolean"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "warning_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "allowed",
+          "dcg_available",
+          "error_count",
+          "estimated_tokens",
+          "findings",
+          "info_count",
+          "preview_hash",
+          "preview_len",
+          "schema_id",
+          "schema_version",
+          "strict",
+          "success",
+          "timestamp",
+          "warning_count"
+        ]
+      },
+      "PromptPreflightRequest": {
+        "type": "object",
+        "properties": {
+          "prompt": {
+            "type": "string"
+          },
+          "strict": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "prompt"
+        ]
       },
       "ProvenanceChain": {
         "type": "object",
@@ -31132,6 +32529,96 @@
           "action",
           "stage",
           "timestamp"
+        ]
+      },
+      "ProviderQuota": {
+        "type": "object",
+        "properties": {
+          "account_email": {
+            "type": "string"
+          },
+          "cost_usd": {
+            "type": "number"
+          },
+          "has_usage_data": {
+            "type": "boolean"
+          },
+          "rate_limit": {
+            "$ref": "#/components/schemas/ProviderRateLimitStatus"
+          },
+          "rate_limited": {
+            "type": "boolean"
+          },
+          "requests_limit": {
+            "type": "integer"
+          },
+          "requests_used": {
+            "type": "integer"
+          },
+          "reset_at": {
+            "type": "string"
+          },
+          "reset_description": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "tokens_limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "tokens_used": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "usage_percent": {
+            "type": "number"
+          },
+          "window_minutes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cost_usd",
+          "status",
+          "usage_percent"
+        ]
+      },
+      "ProviderRateLimitStatus": {
+        "type": "object",
+        "properties": {
+          "cooldown_remaining_sec": {
+            "type": "integer"
+          },
+          "current_delay_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "in_cooldown": {
+            "type": "boolean"
+          },
+          "last_rate_limit": {
+            "type": "string"
+          },
+          "recent_events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RateLimitEvent"
+            }
+          },
+          "total_rate_limits": {
+            "type": "integer"
+          },
+          "total_successes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "current_delay_ms",
+          "in_cooldown",
+          "total_rate_limits",
+          "total_successes"
         ]
       },
       "ProviderSeatQuota": {
@@ -31326,6 +32813,53 @@
           "question"
         ]
       },
+      "QuotaInfo": {
+        "type": "object",
+        "properties": {
+          "cache_updates": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "caut_available": {
+            "type": "boolean"
+          },
+          "has_critical": {
+            "type": "boolean"
+          },
+          "has_warning": {
+            "type": "boolean"
+          },
+          "last_updated": {
+            "type": "string"
+          },
+          "providers": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ProviderQuota"
+            }
+          },
+          "rate_limits": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ProviderRateLimitStatus"
+            }
+          },
+          "total_cost_month_usd": {
+            "type": "number"
+          },
+          "total_cost_today_usd": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "caut_available",
+          "has_critical",
+          "has_warning",
+          "last_updated",
+          "providers",
+          "total_cost_today_usd"
+        ]
+      },
       "QuotaSection": {
         "type": "object",
         "properties": {
@@ -31352,6 +32886,34 @@
         "required": [
           "accounts",
           "available"
+        ]
+      },
+      "QuotaStatusEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/ProviderQuota"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "quota": {
+            "$ref": "#/components/schemas/QuotaInfo"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "quota",
+          "success",
+          "timestamp"
         ]
       },
       "QuotaSummary": {
@@ -31423,6 +32985,26 @@
           "rank_b"
         ]
       },
+      "RateLimitEvent": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "action",
+          "provider",
+          "time"
+        ]
+      },
       "Recipe": {
         "type": "object",
         "properties": {
@@ -31454,6 +33036,70 @@
         },
         "required": [
           "recipes"
+        ]
+      },
+      "RecommendAssignRequest": {
+        "type": "object",
+        "properties": {
+          "beads": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "relax": {
+            "type": "boolean"
+          },
+          "session": {
+            "type": "string"
+          },
+          "strategy": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      },
+      "RecommendRouteRequest": {
+        "type": "object",
+        "properties": {
+          "agent_type": {
+            "type": "string"
+          },
+          "exclude_pane_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "exclude_panes": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "last_agent": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "relax": {
+            "type": "boolean"
+          },
+          "session": {
+            "type": "string"
+          },
+          "strategy": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
         ]
       },
       "Recommendation": {
@@ -31999,6 +33645,35 @@
           "ProjectKey",
           "Reservations",
           "TTLSeconds"
+        ]
+      },
+      "ReservationWarning": {
+        "type": "object",
+        "properties": {
+          "holders": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "message": {
+            "type": "string"
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "selected_has_reserved": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "holders",
+          "message",
+          "paths",
+          "selected_has_reserved"
         ]
       },
       "ReservationsListEnvelopeResponse": {
@@ -32796,6 +34471,231 @@
           }
         }
       },
+      "RouteAgentHints": {
+        "type": "object",
+        "properties": {
+          "send_command": {
+            "type": "string"
+          },
+          "suggestions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "summary"
+        ]
+      },
+      "RouteCandidate": {
+        "type": "object",
+        "properties": {
+          "affinity_match": {
+            "type": "number"
+          },
+          "agent_type": {
+            "type": "string"
+          },
+          "context_usage": {
+            "type": "number"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "pane_index": {
+            "type": "integer"
+          },
+          "recency_score": {
+            "type": "number"
+          },
+          "score": {
+            "type": "number"
+          },
+          "state": {
+            "type": "string"
+          },
+          "state_score": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "agent_type",
+          "context_usage",
+          "pane_id",
+          "pane_index",
+          "recency_score",
+          "score",
+          "state",
+          "state_score"
+        ]
+      },
+      "RouteExcluded": {
+        "type": "object",
+        "properties": {
+          "agent_type": {
+            "type": "string"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "pane_index": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_type",
+          "pane_id",
+          "pane_index",
+          "reason"
+        ]
+      },
+      "RoutePlanEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RouteAgentHints"
+          },
+          "candidates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RouteCandidate"
+            }
+          },
+          "excluded": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RouteExcluded"
+            }
+          },
+          "fallback_used": {
+            "type": "boolean"
+          },
+          "original_score": {
+            "type": "number"
+          },
+          "recommendation": {
+            "$ref": "#/components/schemas/RouteRecommendation"
+          },
+          "relaxed": {
+            "type": "boolean"
+          },
+          "relaxed_constraints": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "relaxed_score": {
+            "type": "number"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "reservation_summary": {
+            "$ref": "#/components/schemas/RouteReservationSummary"
+          },
+          "session": {
+            "type": "string"
+          },
+          "strategy": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidates",
+          "original_score",
+          "relaxed",
+          "relaxed_constraints",
+          "relaxed_score",
+          "session",
+          "strategy",
+          "success",
+          "timestamp"
+        ]
+      },
+      "RouteRecommendation": {
+        "type": "object",
+        "properties": {
+          "agent_type": {
+            "type": "string"
+          },
+          "context_usage": {
+            "type": "number"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "pane_index": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "reservation_warning": {
+            "$ref": "#/components/schemas/ReservationWarning"
+          },
+          "score": {
+            "type": "number"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_type",
+          "context_usage",
+          "pane_id",
+          "pane_index",
+          "reason",
+          "score",
+          "state"
+        ]
+      },
+      "RouteReservationSummary": {
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "integer"
+          },
+          "holders": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "patterns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "total_cached": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "active",
+          "holders",
+          "patterns",
+          "total_cached"
+        ]
+      },
       "SSEEventStream": {
         "type": "object",
         "properties": {
@@ -33590,6 +35490,36 @@
           "score_b"
         ]
       },
+      "ScoreRelaxation": {
+        "type": "object",
+        "properties": {
+          "original_score": {
+            "type": "number"
+          },
+          "original_threshold": {
+            "type": "number"
+          },
+          "relaxed_constraints": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "relaxed_score": {
+            "type": "number"
+          },
+          "relaxed_threshold": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "original_score",
+          "original_threshold",
+          "relaxed_constraints",
+          "relaxed_score",
+          "relaxed_threshold"
+        ]
+      },
       "SearchHit": {
         "type": "object",
         "properties": {
@@ -34118,6 +36048,21 @@
       "ServerDoctorEnvelopeResponse": {
         "type": "object",
         "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "configuration": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DoctorConfigCheck"
+            }
+          },
+          "contention": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DoctorContentionHolder"
+            }
+          },
           "daemons": {
             "type": "array",
             "items": {
@@ -34136,17 +36081,32 @@
           "guard_hook": {
             "$ref": "#/components/schemas/DoctorGuardHookStatus"
           },
+          "invariants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DoctorInvariantCheck"
+            }
+          },
           "overall": {
             "type": "string"
           },
           "request_id": {
             "type": "string"
           },
+          "safety_defaults": {
+            "$ref": "#/components/schemas/DoctorSafetyDefaults"
+          },
           "success": {
             "type": "boolean"
           },
           "timestamp": {
             "type": "string"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DoctorToolCheck"
+            }
           },
           "warnings": {
             "type": "integer"
@@ -34397,6 +36357,64 @@
           "verified"
         ]
       },
+      "SessionControllerEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "agent_count": {
+            "type": "integer"
+          },
+          "agent_list": {
+            "type": "string"
+          },
+          "agent_type": {
+            "type": "string"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "pane_index": {
+            "type": "integer"
+          },
+          "prompt_used": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_count",
+          "agent_type",
+          "pane_id",
+          "pane_index",
+          "session",
+          "success",
+          "timestamp"
+        ]
+      },
+      "SessionControllerRequest": {
+        "type": "object",
+        "properties": {
+          "agent_type": {
+            "type": "string"
+          },
+          "no_prompt": {
+            "type": "boolean"
+          },
+          "prompt_file": {
+            "type": "string"
+          }
+        }
+      },
       "SessionDetailEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -34453,6 +36471,58 @@
           "timestamp"
         ]
       },
+      "SessionHealthEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentHealth"
+            }
+          },
+          "checked_at": {
+            "type": "string"
+          },
+          "observation_complete": {
+            "type": "boolean"
+          },
+          "observation_failures": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ObservationFailure"
+            }
+          },
+          "overall_status": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/HealthSummaryModel"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agents",
+          "checked_at",
+          "observation_complete",
+          "observation_failures",
+          "overall_status",
+          "session",
+          "success",
+          "summary",
+          "timestamp"
+        ]
+      },
       "SessionHealthInfo": {
         "type": "object",
         "properties": {
@@ -34472,6 +36542,76 @@
           "healthy",
           "agents"
         ]
+      },
+      "SessionInterruptEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "error_code": {
+            "type": "string"
+          },
+          "failed": {
+            "type": "integer"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "interrupted": {
+            "type": "integer"
+          },
+          "panes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterruptPaneResult"
+            }
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Unique request correlation identifier."
+          },
+          "session": {
+            "type": "string"
+          },
+          "skipped": {
+            "type": "integer"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "targeted_panes": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "RFC3339 response timestamp."
+          }
+        },
+        "required": [
+          "generated_at",
+          "interrupted",
+          "panes",
+          "session",
+          "success",
+          "timestamp"
+        ]
+      },
+      "SessionInterruptRequest": {
+        "type": "object",
+        "properties": {
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
       },
       "SessionStatusEnvelopeResponse": {
         "type": "object",
@@ -36075,16 +38215,13 @@
         "type": "object",
         "properties": {
           "expected": {
-            "description": "Expected",
             "$ref": "#/components/schemas/Identity"
           },
           "observed": {
-            "description": "Observed",
             "$ref": "#/components/schemas/Identity"
           },
           "reason": {
-            "type": "string",
-            "description": "Reason"
+            "type": "string"
           }
         },
         "required": [
@@ -39056,6 +41193,25 @@
           "unblocks"
         ]
       },
+      "UnassignableBead": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "reason",
+          "title"
+        ]
+      },
       "UnsupportedCondition": {
         "type": "object",
         "properties": {
@@ -40313,6 +42469,10 @@
       "description": "Operations related to approvals"
     },
     {
+      "name": "assign",
+      "description": "Operations related to assign"
+    },
+    {
       "name": "attention",
       "description": "Operations related to attention"
     },
@@ -40421,6 +42581,14 @@
       "description": "Operations related to policy"
     },
     {
+      "name": "prompt",
+      "description": "Operations related to prompt"
+    },
+    {
+      "name": "quota",
+      "description": "Operations related to quota"
+    },
+    {
       "name": "requests",
       "description": "Operations related to requests"
     },
@@ -40431,6 +42599,10 @@
     {
       "name": "robot",
       "description": "Operations related to robot"
+    },
+    {
+      "name": "route",
+      "description": "Operations related to route"
     },
     {
       "name": "safety",

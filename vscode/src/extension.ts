@@ -27,11 +27,30 @@ import {
     WorktreeInfo,
     WorktreeListResult,
 } from './ntmClient';
+import {
+    ASSIGN_STRATEGY_OPTIONS,
+    DOCTOR_MODE_OPTIONS,
+    formatAssignWorkMarkdown,
+    formatDoctorMarkdown,
+    formatPreflightMarkdown,
+    PREFLIGHT_MODE_OPTIONS,
+} from './orchestrationSupport';
 import { NtmDashboard } from './dashboard';
 import { normalizeWorkspaceRelativePath, registerFileDecorations } from './fileDecorations';
 import { NtmTreeItem, registerSessionTreeView } from './sessionTreeView';
 
-export { shellQuote, buildNtmTerminalCommand, buildWebCockpitCommand, normalizeWebPort };
+export {
+    ASSIGN_STRATEGY_OPTIONS,
+    buildNtmTerminalCommand,
+    buildWebCockpitCommand,
+    DOCTOR_MODE_OPTIONS,
+    formatAssignWorkMarkdown,
+    formatDoctorMarkdown,
+    formatPreflightMarkdown,
+    normalizeWebPort,
+    PREFLIGHT_MODE_OPTIONS,
+    shellQuote,
+};
 
 export const WEB_COCKPIT_TERMINAL_NAME = 'NTM Web Cockpit';
 
@@ -138,6 +157,9 @@ export interface PaletteActionQuickPickItem extends vscode.QuickPickItem {
         | 'showAnalytics'
         | 'showAudit'
         | 'generateSupportBundle'
+        | 'runDoctor'
+        | 'preflightPrompt'
+        | 'assignWork'
         | 'openWebCockpit'
         | 'showBackpressure'
         | 'manageWorktrees'
@@ -209,6 +231,27 @@ export const PALETTE_ACTION_OPTIONS: readonly PaletteActionQuickPickItem[] = [
         detail: 'Package disclosure-redacted diagnostic state, configs, and scrollback into a zip or tar.gz bundle',
         actionId: 'generateSupportBundle',
         command: 'ntm.generateSupportBundle',
+    },
+    {
+        label: '$(stethoscope) Run Ecosystem Doctor',
+        description: 'NTM: Run Ecosystem Doctor',
+        detail: 'Inspect required CLI tools, daemons, invariants, safety defaults, and SQLite/Beads lock contention',
+        actionId: 'runDoctor',
+        command: 'ntm.runDoctor',
+    },
+    {
+        label: '$(verified) Preflight Prompt / Selection',
+        description: 'NTM: Preflight Prompt / Selection',
+        detail: 'Lint editor selection or prompt text for token footprint, DCG guardrails, and safety risks',
+        actionId: 'preflightPrompt',
+        command: 'ntm.preflightPrompt',
+    },
+    {
+        label: '$(tasklist) Plan & Assign Beads Work',
+        description: 'NTM: Plan & Assign Beads Work',
+        detail: 'Score ready Beads issues against idle agents by strategy and optionally dispatch assignments',
+        actionId: 'assignWork',
+        command: 'ntm.assignWork',
     },
     {
         label: '$(pulse) Show Swarm Backpressure',
@@ -1159,7 +1202,8 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
                     (picked.actionId === 'sendPrompt' ||
                         picked.actionId === 'handoffSession' ||
                         picked.actionId === 'showAudit' ||
-                        picked.actionId === 'generateSupportBundle') &&
+                        picked.actionId === 'generateSupportBundle' ||
+                        picked.actionId === 'assignWork') &&
                     sessionArg
                 ) {
                     await vscode.commands.executeCommand(picked.command, sessionArg);
@@ -2155,6 +2199,157 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
         }
     );
 
+    const dispRunDoctor = vscode.commands.registerCommand('ntm.runDoctor', async () => {
+        try {
+            const modePick = await vscode.window.showQuickPick(DOCTOR_MODE_OPTIONS, {
+                placeHolder: 'Select NTM ecosystem doctor diagnostic mode',
+            });
+            if (!modePick) {
+                return;
+            }
+            if (modePick.mode === 'openOverviewCockpit') {
+                await openWebCockpitRoute('/');
+                return;
+            }
+
+            const res = await client.getDoctor({
+                contention: modePick.mode === 'contention',
+                verbose: true,
+            });
+            const doc = await vscode.workspace.openTextDocument({
+                content: formatDoctorMarkdown(res),
+                language: 'markdown',
+            });
+            await vscode.window.showTextDocument(doc);
+
+            if (res.errors > 0 || res.overall_status.toLowerCase() === 'unhealthy') {
+                vscode.window.showWarningMessage(
+                    `NTM Doctor: ${res.overall_status.toUpperCase()} (${res.errors} error(s), ${res.warnings} warning(s), ${res.contention.length} lock holder(s))`
+                );
+            } else {
+                const nextBtn = await vscode.window.showInformationMessage(
+                    `NTM Doctor: ${res.overall_status.toUpperCase()} (${res.passed} passed, ${res.warnings} warning(s))`,
+                    'Open Overview in Web Cockpit'
+                );
+                if (nextBtn === 'Open Overview in Web Cockpit') {
+                    await openWebCockpitRoute('/');
+                }
+            }
+        } catch (e) {
+            vscode.window.showErrorMessage(`Ecosystem doctor failed: ${e}`);
+        }
+    });
+
+    const dispPreflightPrompt = vscode.commands.registerCommand('ntm.preflightPrompt', async () => {
+        try {
+            const modePick = await vscode.window.showQuickPick(PREFLIGHT_MODE_OPTIONS, {
+                placeHolder: 'Select prompt preflight lint mode',
+            });
+            if (!modePick) {
+                return;
+            }
+            if (modePick.mode === 'openSwarmCockpit') {
+                await openWebCockpitRoute('/swarm');
+                return;
+            }
+
+            const editor = vscode.window.activeTextEditor;
+            const selectedText = editor ? editor.document.getText(editor.selection).trim() : '';
+            let promptText = selectedText;
+            if (!promptText) {
+                const rawPrompt = await vscode.window.showInputBox({
+                    prompt: 'Enter prompt text to preflight-lint before dispatching to agents',
+                    placeHolder: 'e.g. Implement typed OpenAPI schemas and run go test ./internal/serve',
+                });
+                promptText = (rawPrompt ?? '').trim();
+            }
+            if (!promptText) {
+                return;
+            }
+
+            const res = await client.preflightPrompt({
+                prompt: promptText,
+                strict: modePick.mode === 'strict',
+            });
+            const doc = await vscode.workspace.openTextDocument({
+                content: formatPreflightMarkdown(res),
+                language: 'markdown',
+            });
+            await vscode.window.showTextDocument(doc);
+
+            if (!res.allowed) {
+                vscode.window.showWarningMessage(
+                    `Prompt preflight BLOCKED (${res.error_count} error(s), ${res.warning_count} warning(s), ~${res.estimated_tokens} tokens)`
+                );
+            } else {
+                const nextBtn = await vscode.window.showInformationMessage(
+                    `Prompt preflight PASSED (~${res.estimated_tokens} tokens, ${res.warning_count} warning(s))`,
+                    'Open /swarm in Web Cockpit'
+                );
+                if (nextBtn === 'Open /swarm in Web Cockpit') {
+                    await openWebCockpitRoute('/swarm');
+                }
+            }
+        } catch (e) {
+            vscode.window.showErrorMessage(`Prompt preflight failed: ${e}`);
+        }
+    });
+
+    const dispAssignWork = vscode.commands.registerCommand(
+        'ntm.assignWork',
+        async (sessionArg?: string | NtmTreeItem) => {
+            try {
+                const strategyPick = await vscode.window.showQuickPick(ASSIGN_STRATEGY_OPTIONS, {
+                    placeHolder: 'Select Beads work assignment strategy',
+                });
+                if (!strategyPick) {
+                    return;
+                }
+                if (strategyPick.strategy === 'openSwarmCockpit') {
+                    await openWebCockpitRoute('/swarm');
+                    return;
+                }
+
+                const targetSession = await resolveSessionInteractive(
+                    extractSessionName(sessionArg),
+                    'Session name to plan Beads work assignments'
+                );
+                if (!targetSession) {
+                    return;
+                }
+
+                const rawBeads = await vscode.window.showInputBox({
+                    prompt: 'Optional comma-separated Bead IDs to scope assignment (leave blank for all ready beads)',
+                    placeHolder: 'Leave empty for all ready beads, or e.g. bd-101,bd-102',
+                });
+                if (rawBeads === undefined) {
+                    return;
+                }
+
+                const res = await client.getAssign({
+                    session: targetSession,
+                    strategy: strategyPick.strategy,
+                    beads: rawBeads.trim() || undefined,
+                });
+                const doc = await vscode.workspace.openTextDocument({
+                    content: formatAssignWorkMarkdown(res),
+                    language: 'markdown',
+                });
+                await vscode.window.showTextDocument(doc);
+
+                const nextBtn = await vscode.window.showInformationMessage(
+                    `Planned ${res.summary.recommendations} assignment(s) for "${res.session}" (${res.summary.idle_agents} idle agent(s), ${res.summary.ready_beads} ready bead(s))`,
+                    'Open /swarm in Web Cockpit'
+                );
+                if (nextBtn === 'Open /swarm in Web Cockpit') {
+                    await openWebCockpitRoute('/swarm');
+                }
+            } catch (e) {
+                vscode.window.showErrorMessage(`Work assignment planning failed: ${e}`);
+            }
+        }
+    );
+
     context.subscriptions.push(
         dispStatus,
         dispSpawn,
@@ -2166,6 +2361,9 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
         dispShowAnalytics,
         dispShowAudit,
         dispGenerateSupportBundle,
+        dispRunDoctor,
+        dispPreflightPrompt,
+        dispAssignWork,
         dispOpenWebCockpit,
         dispShowBackpressure,
         dispManageWorktrees,

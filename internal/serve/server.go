@@ -558,12 +558,16 @@ func (s *Server) buildRouter() chi.Router {
 		// on it, so a route registered here never runs.
 		r.With(s.RequirePermission(PermReadEvents)).Get("/sessions/{id}/events", s.handleSessionEventsRouteV1)
 
-		// Sessions - write endpoints (call kernel commands)
+		// Sessions - write & kernel lifecycle endpoints
 		r.With(s.RequirePermission(PermWriteSessions)).Post("/sessions", s.handleCreateSessionV1)
+		r.With(s.RequirePermission(PermWriteSessions)).Delete("/sessions/{id}", s.handleDeleteSessionV1)
 		r.With(s.RequirePermission(PermReadSessions)).Get("/sessions/{id}/status", s.handleSessionStatusV1)
+		r.With(s.RequirePermission(PermReadSessions)).Get("/sessions/{id}/health", s.handleSessionHealthV1)
 		r.With(s.RequirePermission(PermWriteSessions)).Post("/sessions/{id}/attach", s.handleSessionAttachV1)
 		r.With(s.RequirePermission(PermWriteSessions)).Post("/sessions/{id}/zoom", s.handleSessionZoomV1)
 		r.With(s.RequirePermission(PermWriteSessions)).Post("/sessions/{id}/view", s.handleSessionViewV1)
+		r.With(s.RequirePermission(PermWriteSessions)).Post("/sessions/{id}/interrupt", s.handleSessionInterruptV1)
+		r.With(s.RequirePermission(PermWriteSessions)).Post("/sessions/{id}/controller", s.handleSessionControllerV1)
 
 		// Robot endpoints (read-only) - thin adapters over robot package (bd-j9jo3.8.1)
 		r.With(s.RequirePermission(PermReadHealth)).Get("/robot/status", s.handleRobotStatusV1)
@@ -668,6 +672,9 @@ func (s *Server) buildRouter() chi.Router {
 
 		// Audit, Timelines & Support Bundle API (delegated via ADR ORI to AuditStore / robot)
 		s.registerAuditAndTimelineRoutes(r)
+
+		// Prompt Preflight, Task Assignment, Smart Routing & Provider Quota API (ADR ORI)
+		s.registerOrchestrationRoutes(r)
 
 		// Attention Feed API - normalized event streaming for operator agents
 		r.Route("/attention", func(r chi.Router) {
@@ -1135,7 +1142,7 @@ func writeSuccessResponse(w http.ResponseWriter, status int, data map[string]int
 
 func robotErrorHTTPStatus(code string) int {
 	switch code {
-	case robot.ErrCodeInvalidFlag:
+	case robot.ErrCodeInvalidFlag, robot.ErrCodeInvalidArgs:
 		return http.StatusBadRequest
 	case robot.ErrCodeSessionNotFound, robot.ErrCodePaneNotFound, robot.ErrCodeNotFound, robot.ErrCodeEnsembleNotFound:
 		return http.StatusNotFound

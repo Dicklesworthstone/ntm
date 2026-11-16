@@ -156,6 +156,7 @@ Use --all to include the user pane (index depends on tmux pane-base-index).
 			"agent-health",
 			"health-oauth",
 			"diagnose",
+			"doctor",
 			"errors",
 			"logs",
 			"monitor",
@@ -196,6 +197,7 @@ Use --all to include the user pane (index depends on tmux pane-base-index).
 			"slb-deny",
 			"tokens",
 			"history",
+			"preflight",
 		},
 	},
 }

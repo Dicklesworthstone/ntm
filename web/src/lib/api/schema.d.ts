@@ -468,6 +468,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/assign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Recommend assign
+         * @description Served route `POST /api/v1/assign`. Handler: `handleRecommendAssignV1`. Response shape reflected from Go type `AssignPlanEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_assign"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/attention/digest": {
         parameters: {
             query?: never;
@@ -2500,6 +2520,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/prompt/preflight": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prompt preflight
+         * @description Served route `POST /api/v1/prompt/preflight`. Handler: `handlePromptPreflightV1`. Response shape reflected from Go type `PromptPreflightEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_prompt_preflight"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/quota": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get quota status
+         * @description Served route `GET /api/v1/quota`. Handler: `handleGetQuotaStatusV1`. Response shape reflected from Go type `QuotaStatusEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_quota"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/requests/{id}": {
         parameters: {
             query?: never;
@@ -2928,6 +2988,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/route": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Recommend route
+         * @description Served route `POST /api/v1/route`. Handler: `handleRecommendRouteV1`. Response shape reflected from Go type `RoutePlanEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_route"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/safety/blocked": {
         parameters: {
             query?: never;
@@ -3226,7 +3306,11 @@ export interface paths {
         get: operations["get_api_v1_sessions_id"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete session
+         * @description Served route `DELETE /api/v1/sessions/{id}`. Handler: `handleDeleteSessionV1`. Response shape reflected from Go type `DeleteSessionEnvelopeResponse`.
+         */
+        delete: operations["delete_api_v1_sessions_id"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3252,6 +3336,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{id}/controller": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Session controller
+         * @description Served route `POST /api/v1/sessions/{id}/controller`. Handler: `handleSessionControllerV1`. Response shape reflected from Go type `SessionControllerEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_sessions_id_controller"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{id}/events": {
         parameters: {
             query?: never;
@@ -3266,6 +3370,46 @@ export interface paths {
         get: operations["get_api_v1_sessions_id_events"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{id}/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Session health
+         * @description Served route `GET /api/v1/sessions/{id}/health`. Handler: `handleSessionHealthV1`. Response shape reflected from Go type `SessionHealthEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_sessions_id_health"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{id}/interrupt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Session interrupt
+         * @description Served route `POST /api/v1/sessions/{id}/interrupt`. Handler: `handleSessionInterruptV1`. Response shape reflected from Go type `SessionInterruptEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_sessions_id_interrupt"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4405,6 +4549,29 @@ export interface components {
             timestamp: string;
             trigger?: string;
         };
+        AgentHealth: {
+            activity: string;
+            agent_type: string;
+            idle_seconds: number;
+            issues: components["schemas"]["Issue"][];
+            /** Format: date-time */
+            last_activity?: string;
+            last_known_state?: string;
+            observation_confidence: number;
+            observation_freshness: string;
+            observed_state: string;
+            pane: number;
+            pane_dead?: boolean;
+            pane_id: string;
+            process_status: string;
+            progress?: components["schemas"]["Progress"];
+            rate_limited: boolean;
+            safe_to_dispatch: boolean;
+            shell_pid: number;
+            status: string;
+            uptime_seconds?: number;
+            wait_seconds: number;
+        };
         AgentHealthInfo: {
             /** @description Issue */
             issue?: string;
@@ -4723,6 +4890,51 @@ export interface components {
              * @description RFC3339 response timestamp.
              */
             timestamp: string;
+        };
+        AssignAgentHints: {
+            suggested_commands?: string[];
+            summary?: string;
+            warnings?: string[];
+        };
+        AssignPlanEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["AssignAgentHints"];
+            blocked_beads: components["schemas"]["BlockedBead"][];
+            generated_at: string;
+            idle_agents: string[];
+            original_score: number;
+            recommendations: components["schemas"]["AssignRecommend"][];
+            relaxed: boolean;
+            relaxed_constraints: string[];
+            relaxed_score: number;
+            request_id?: string;
+            session: string;
+            strategy: string;
+            success: boolean;
+            summary: components["schemas"]["AssignSummary"];
+            timestamp: string;
+            unassignable_beads?: components["schemas"]["UnassignableBead"][];
+            work_source_mismatch?: components["schemas"]["StaleError"];
+        };
+        AssignRecommend: {
+            agent_type: string;
+            assign_bead: string;
+            bead_title: string;
+            confidence: number;
+            model?: string;
+            pane_id: string;
+            pane_target: string;
+            priority: string;
+            reasoning: string;
+            relaxation?: components["schemas"]["ScoreRelaxation"];
+        };
+        AssignSummary: {
+            blocked_beads: number;
+            idle_agents: number;
+            ready_beads: number;
+            recommendations: number;
+            total_agents: number;
+            unassignable_beads: number;
+            working_agents: number;
         };
         AssignmentFilters: {
             agent_type?: string;
@@ -5376,6 +5588,11 @@ export interface components {
             request_id?: string;
             success: boolean;
             timestamp: string;
+        };
+        BlockedBead: {
+            blocked_by: string[];
+            id: string;
+            title: string;
         };
         BlockedEntry: {
             action: string;
@@ -6216,6 +6433,31 @@ export interface components {
             success: boolean;
             timestamp: string;
         };
+        DeleteSessionEnvelopeResponse: {
+            /** Format: date-time */
+            generated_at: string;
+            killed: boolean;
+            message?: string;
+            /** @description Unique request correlation identifier. */
+            request_id?: string;
+            session: string;
+            /** @description Whether the operation succeeded. */
+            success: boolean;
+            summary?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Format: date-time
+             * @description RFC3339 response timestamp.
+             */
+            timestamp: string;
+        };
+        DeleteSessionRequest: {
+            force?: boolean;
+            no_hooks?: boolean;
+            summarize?: boolean;
+            tags?: string[];
+        };
         DependencyCheck: {
             category?: string;
             installed: boolean;
@@ -6320,6 +6562,20 @@ export interface components {
         DismissFindingRequest: {
             reason?: string;
         };
+        DoctorConfigCheck: {
+            message?: string;
+            name: string;
+            status: string;
+            valid: boolean;
+        };
+        DoctorContentionHolder: {
+            age: string;
+            command: string;
+            cwd?: string;
+            in_swarm: boolean;
+            pid: number;
+            resource: string;
+        };
         DoctorDaemonStatus: {
             message: string;
             name: string;
@@ -6342,6 +6598,35 @@ export interface components {
             name: string;
             since?: string;
             status: string;
+        };
+        DoctorInvariantCheck: {
+            details?: string[];
+            id: string;
+            message?: string;
+            name: string;
+            status: string;
+        };
+        DoctorSafetyDefaults: {
+            claude_agent_hooks: string[];
+            claude_agent_hooks_warning?: string;
+            claude_policy_hook_registered: boolean;
+            encryption_at_rest_enabled: boolean;
+            preflight_default_strict: boolean;
+            privacy_default_enabled: boolean;
+            redaction_allowlist_count: number;
+            redaction_allowlist_enabled: boolean;
+            redaction_mode: string;
+        };
+        DoctorToolCheck: {
+            capabilities?: string[];
+            details?: string[];
+            installed: boolean;
+            message?: string;
+            name: string;
+            path?: string;
+            required: boolean;
+            status: string;
+            version?: string;
         };
         Duration: Record<string, never>;
         EnrichmentWarning: {
@@ -7397,6 +7682,13 @@ export interface components {
             /** @description Top bottleneck */
             TopBottleneck: string;
         };
+        HealthSummaryModel: {
+            error: number;
+            healthy: number;
+            total: number;
+            unknown: number;
+            warning: number;
+        };
         HistoricalBoundedness: {
             /** Format: int64 */
             allowed_range_ms?: number;
@@ -7432,13 +7724,9 @@ export interface components {
             };
         };
         Identity: {
-            /** @description Head s h a */
             head_sha?: string;
-            /** @description J s o n l path */
             jsonl_path?: string;
-            /** @description J s o n l s h a256 */
             jsonl_sha256?: string;
-            /** @description Project dir */
             project_dir?: string;
         };
         ImportCheckpointRequest: {
@@ -7622,6 +7910,14 @@ export interface components {
             /** @description Would affect */
             would_affect?: string[];
         };
+        InterruptPaneResult: {
+            agent_type: string;
+            error?: string;
+            index: number;
+            pane: string;
+            pane_id: string;
+            status: string;
+        };
         InterruptReceiptOutcome: {
             /**
              * Format: date-time
@@ -7653,6 +7949,10 @@ export interface components {
             targets: string[];
             /** @description Timed out */
             timed_out: boolean;
+        };
+        Issue: {
+            message: string;
+            type: string;
         };
         Job: {
             created_at: string;
@@ -8226,6 +8526,11 @@ export interface components {
             ID: string;
             /** @description Value */
             Value: number;
+        };
+        ObservationFailure: {
+            error: string;
+            pane_id?: string;
+            stage: string;
         };
         OnFailureSpec: {
             Action: string;
@@ -8895,6 +9200,18 @@ export interface components {
             position: string;
             strength: number;
         };
+        PreflightFinding: {
+            end?: number;
+            help: string;
+            id: string;
+            line?: number;
+            message: string;
+            metadata?: {
+                [key: string]: unknown;
+            };
+            severity: string;
+            start?: number;
+        };
         PresetInfo: {
             allow_advanced: boolean;
             budget: components["schemas"]["BudgetInfo"];
@@ -8984,6 +9301,14 @@ export interface components {
             /** @description Min severity */
             min_severity?: string;
         };
+        Progress: {
+            confidence: number;
+            indicators: string[];
+            stage: string;
+            /** Format: date-time */
+            stage_changed_at?: string;
+            time_in_stage_sec: number;
+        };
         ProgressSummary: {
             /** @description Assigned */
             assigned: number;
@@ -9021,6 +9346,29 @@ export interface components {
                 [key: string]: number;
             };
         };
+        PromptPreflightEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            allowed: boolean;
+            dcg_available: boolean;
+            error_count: number;
+            estimated_tokens: number;
+            findings: components["schemas"]["PreflightFinding"][];
+            info_count: number;
+            preview?: string;
+            preview_hash: string;
+            preview_len: number;
+            request_id?: string;
+            schema_id: string;
+            schema_version: string;
+            strict: boolean;
+            success: boolean;
+            timestamp: string;
+            warning_count: number;
+        };
+        PromptPreflightRequest: {
+            prompt: string;
+            strict?: boolean;
+        };
         ProvenanceChain: {
             confidence: number;
             context_hash: string;
@@ -9055,6 +9403,34 @@ export interface components {
             stage: string;
             /** Format: date-time */
             timestamp: string;
+        };
+        ProviderQuota: {
+            account_email?: string;
+            cost_usd: number;
+            has_usage_data?: boolean;
+            rate_limit?: components["schemas"]["ProviderRateLimitStatus"];
+            rate_limited?: boolean;
+            requests_limit?: number;
+            requests_used?: number;
+            reset_at?: string;
+            reset_description?: string;
+            status: string;
+            /** Format: int64 */
+            tokens_limit?: number;
+            /** Format: int64 */
+            tokens_used?: number;
+            usage_percent: number;
+            window_minutes?: number;
+        };
+        ProviderRateLimitStatus: {
+            cooldown_remaining_sec?: number;
+            /** Format: int64 */
+            current_delay_ms: number;
+            in_cooldown: boolean;
+            last_rate_limit?: string;
+            recent_events?: components["schemas"]["RateLimitEvent"][];
+            total_rate_limits: number;
+            total_successes: number;
         };
         ProviderSeatQuota: {
             binding_window?: string;
@@ -9108,6 +9484,22 @@ export interface components {
             question: string;
             suggested_answers?: string[];
         };
+        QuotaInfo: {
+            /** Format: int64 */
+            cache_updates?: number;
+            caut_available: boolean;
+            has_critical: boolean;
+            has_warning: boolean;
+            last_updated: string;
+            providers: {
+                [key: string]: components["schemas"]["ProviderQuota"];
+            };
+            rate_limits?: {
+                [key: string]: components["schemas"]["ProviderRateLimitStatus"];
+            };
+            total_cost_month_usd?: number;
+            total_cost_today_usd: number;
+        };
         QuotaSection: {
             /** @description Accounts */
             accounts: components["schemas"]["AccountQuota"][];
@@ -9117,6 +9509,14 @@ export interface components {
             reason?: string;
             /** @description Summary */
             summary?: components["schemas"]["QuotaSummary"];
+        };
+        QuotaStatusEnvelopeResponse: {
+            detail?: components["schemas"]["ProviderQuota"];
+            provider?: string;
+            quota: components["schemas"]["QuotaInfo"];
+            request_id?: string;
+            success: boolean;
+            timestamp: string;
         };
         QuotaSummary: {
             /** @description Exceeded accounts */
@@ -9142,6 +9542,12 @@ export interface components {
             rank_a: number;
             rank_b: number;
         };
+        RateLimitEvent: {
+            action: string;
+            provider: string;
+            /** Format: date-time */
+            time: string;
+        };
         Recipe: {
             description: string;
             name: string;
@@ -9149,6 +9555,23 @@ export interface components {
         };
         RecipesResponse: {
             recipes: components["schemas"]["Recipe"][];
+        };
+        RecommendAssignRequest: {
+            beads?: string[];
+            project_dir?: string;
+            relax?: boolean;
+            session: string;
+            strategy?: string;
+        };
+        RecommendRouteRequest: {
+            agent_type?: string;
+            exclude_pane_ids?: string[];
+            exclude_panes?: number[];
+            last_agent?: string;
+            prompt?: string;
+            relax?: boolean;
+            session: string;
+            strategy?: string;
         };
         Recommendation: {
             effort?: string;
@@ -9320,6 +9743,12 @@ export interface components {
             ProjectKey: string;
             Reservations: components["schemas"]["ReservationSnapshot"][];
             TTLSeconds: number;
+        };
+        ReservationWarning: {
+            holders: string[];
+            message: string;
+            paths: string[];
+            selected_has_reserved: boolean;
         };
         ReservationsListEnvelopeResponse: {
             count: number;
@@ -9592,6 +10021,62 @@ export interface components {
             account_id?: string;
             reason?: string;
         };
+        RouteAgentHints: {
+            send_command?: string;
+            suggestions?: string[];
+            summary: string;
+        };
+        RouteCandidate: {
+            affinity_match?: number;
+            agent_type: string;
+            context_usage: number;
+            pane_id: string;
+            pane_index: number;
+            recency_score: number;
+            score: number;
+            state: string;
+            state_score: number;
+        };
+        RouteExcluded: {
+            agent_type: string;
+            pane_id: string;
+            pane_index: number;
+            reason: string;
+            state?: string;
+        };
+        RoutePlanEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RouteAgentHints"];
+            candidates: components["schemas"]["RouteCandidate"][];
+            excluded?: components["schemas"]["RouteExcluded"][];
+            fallback_used?: boolean;
+            original_score: number;
+            recommendation?: components["schemas"]["RouteRecommendation"];
+            relaxed: boolean;
+            relaxed_constraints: string[];
+            relaxed_score: number;
+            request_id?: string;
+            reservation_summary?: components["schemas"]["RouteReservationSummary"];
+            session: string;
+            strategy: string;
+            success: boolean;
+            timestamp: string;
+        };
+        RouteRecommendation: {
+            agent_type: string;
+            context_usage: number;
+            pane_id: string;
+            pane_index: number;
+            reason: string;
+            reservation_warning?: components["schemas"]["ReservationWarning"];
+            score: number;
+            state: string;
+        };
+        RouteReservationSummary: {
+            active: number;
+            holders: string[];
+            patterns: string[];
+            total_cached: number;
+        };
         SSEEventStream: {
             data: components["schemas"]["AttentionEvent"];
             event: string;
@@ -9850,6 +10335,13 @@ export interface components {
             score_a: number;
             score_b: number;
         };
+        ScoreRelaxation: {
+            original_score: number;
+            original_threshold: number;
+            relaxed_constraints: string[];
+            relaxed_score: number;
+            relaxed_threshold: number;
+        };
         SearchHit: {
             agent: string;
             content?: string;
@@ -10032,14 +10524,20 @@ export interface components {
             project_dir?: string;
         };
         ServerDoctorEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            configuration?: components["schemas"]["DoctorConfigCheck"][];
+            contention?: components["schemas"]["DoctorContentionHolder"][];
             daemons: components["schemas"]["DoctorDaemonStatus"][];
             dependencies: components["schemas"]["DoctorDependencyStatus"][];
             errors: number;
             guard_hook: components["schemas"]["DoctorGuardHookStatus"];
+            invariants?: components["schemas"]["DoctorInvariantCheck"][];
             overall: string;
             request_id?: string;
+            safety_defaults?: components["schemas"]["DoctorSafetyDefaults"];
             success: boolean;
             timestamp: string;
+            tools?: components["schemas"]["DoctorToolCheck"][];
             warnings: number;
         };
         SessionActionEnvelopeResponse: {
@@ -10113,6 +10611,23 @@ export interface components {
             verified: boolean;
             verify_error?: string;
         };
+        SessionControllerEnvelopeResponse: {
+            agent_count: number;
+            agent_list?: string;
+            agent_type: string;
+            pane_id: string;
+            pane_index: number;
+            prompt_used?: string;
+            request_id?: string;
+            session: string;
+            success: boolean;
+            timestamp: string;
+        };
+        SessionControllerRequest: {
+            agent_type?: string;
+            no_prompt?: boolean;
+            prompt_file?: string;
+        };
         SessionDetailEnvelopeResponse: {
             request_id?: string;
             session: components["schemas"]["SessionSummaryRecord"];
@@ -10129,6 +10644,18 @@ export interface components {
             success: boolean;
             timestamp: string;
         };
+        SessionHealthEnvelopeResponse: {
+            agents: components["schemas"]["AgentHealth"][];
+            checked_at: string;
+            observation_complete: boolean;
+            observation_failures: components["schemas"]["ObservationFailure"][];
+            overall_status: string;
+            request_id?: string;
+            session: string;
+            success: boolean;
+            summary: components["schemas"]["HealthSummaryModel"];
+            timestamp: string;
+        };
         SessionHealthInfo: {
             /** @description Agents */
             agents: {
@@ -10136,6 +10663,29 @@ export interface components {
             };
             /** @description Healthy */
             healthy: boolean;
+        };
+        SessionInterruptEnvelopeResponse: {
+            error?: string;
+            error_code?: string;
+            failed?: number;
+            /** Format: date-time */
+            generated_at: string;
+            interrupted: number;
+            panes: components["schemas"]["InterruptPaneResult"][];
+            /** @description Unique request correlation identifier. */
+            request_id?: string;
+            session: string;
+            skipped?: number;
+            success: boolean;
+            targeted_panes?: number[];
+            /**
+             * Format: date-time
+             * @description RFC3339 response timestamp.
+             */
+            timestamp: string;
+        };
+        SessionInterruptRequest: {
+            tags?: string[];
         };
         SessionStatusEnvelopeResponse: {
             agent_counts: components["schemas"]["AgentCountsResponse"];
@@ -10754,11 +11304,8 @@ export interface components {
             variant?: string;
         };
         StaleError: {
-            /** @description Expected */
             expected?: components["schemas"]["Identity"];
-            /** @description Observed */
             observed?: components["schemas"]["Identity"];
-            /** @description Reason */
             reason: string;
         };
         StateCleanupEntry: {
@@ -11726,6 +12273,11 @@ export interface components {
             title: string;
             /** @description Unblocks */
             unblocks: number;
+        };
+        UnassignableBead: {
+            id: string;
+            reason: string;
+            title: string;
         };
         UnsupportedCondition: {
             /** @description Name */
@@ -13412,6 +13964,57 @@ export interface operations {
             };
             /** @description Not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_assign: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecommendAssignRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssignPlanEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15596,7 +16199,12 @@ export interface operations {
     };
     get_api_v1_doctor: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Include verbose version/detail probes for optional ecosystem tools. */
+                verbose?: boolean;
+                /** @description Inspect live processes holding SQLite/Beads or swarm resource locks. */
+                contention?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -19733,6 +20341,107 @@ export interface operations {
             };
         };
     };
+    post_api_v1_prompt_preflight: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PromptPreflightRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptPreflightEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_quota: {
+        parameters: {
+            query?: {
+                /** @description Optional provider filter (claude, openai/codex, gemini) for detailed seat quota. */
+                provider?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuotaStatusEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     get_api_v1_requests_id: {
         parameters: {
             query?: never;
@@ -20963,6 +21672,57 @@ export interface operations {
             };
         };
     };
+    post_api_v1_route: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecommendRouteRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoutePlanEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     get_api_v1_safety_blocked: {
         parameters: {
             query?: {
@@ -21836,6 +22596,76 @@ export interface operations {
             };
         };
     };
+    delete_api_v1_sessions_id: {
+        parameters: {
+            query?: {
+                /** @description Force session termination without interactive confirmation. */
+                force?: boolean;
+                /** @description Skip pre/post session teardown lifecycle hooks. */
+                no_hooks?: boolean;
+                /** @description Generate a session summary prior to teardown. */
+                summarize?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The id identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DeleteSessionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteSessionEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     post_api_v1_sessions_id_attach: {
         parameters: {
             query?: never;
@@ -21901,6 +22731,69 @@ export interface operations {
             };
         };
     };
+    post_api_v1_sessions_id_controller: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The id identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SessionControllerRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionControllerEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     get_api_v1_sessions_id_events: {
         parameters: {
             query?: never;
@@ -21920,6 +22813,135 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SessionEventsEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_sessions_id_health: {
+        parameters: {
+            query?: {
+                /** @description Optional pane index or topology selector filter. */
+                pane?: string;
+                /** @description Optional agent health status filter (ok, warning, error). */
+                status?: string;
+                /** @description Include verbose diagnostic issue details. */
+                verbose?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The id identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionHealthEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_sessions_id_interrupt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The id identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SessionInterruptRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionInterruptEnvelopeResponse"];
                 };
             };
             /** @description Bad request */

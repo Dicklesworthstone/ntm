@@ -1075,6 +1075,32 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 				TruncationBehavior: "Saved timelines capped by --timeline-limit (default 20)",
 			},
 		},
+		"doctor": {
+			SchemaID:   doctorSchemaID,
+			SchemaType: "doctor",
+			Sections:   []string{"source_health", "next_actions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Validate NTM ecosystem health, tools, dependencies, daemons, configuration, invariants, and shared-resource contention",
+				SummaryHint: "Read overall, tools, dependencies, daemons, configuration, invariants, guard_hook, and contention; pass --doctor-contention to scan active process locks",
+			},
+			Boundedness: &BoundednessInfo{
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded to installed tool/dependency/daemon/config/invariant checks and live contention holders",
+			},
+		},
+		"preflight": {
+			SchemaID:   preflightSchemaID,
+			SchemaType: "preflight",
+			Sections:   []string{"next_actions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Lint and validate a prompt for secrets, destructive commands, PII, and size limits before sending to agents",
+				SummaryHint: "Read success, findings, error_count, warning_count, estimated_tokens, and preview; pass --preflight-strict to escalate warnings to errors",
+			},
+			Boundedness: &BoundednessInfo{
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded to lint findings for one submitted prompt; preview truncated at 500 characters",
+			},
+		},
 	}
 }
 

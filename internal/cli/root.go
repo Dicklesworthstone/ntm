@@ -1087,7 +1087,7 @@ func robotFlagSkipsPersistence(arg string) bool {
 		arg = arg[:i]
 	}
 	switch arg {
-	case "--robot-overlay":
+	case "--robot-overlay", "--robot-doctor", "--robot-preflight":
 		return true
 	default:
 		return false
@@ -1156,6 +1156,7 @@ var robotSurfacesWithoutProjection = map[string]bool{
 	"robot-mail": true, "robot-mail-check": true, "robot-rano-stats": true, "robot-giil-fetch": true,
 	"robot-kill-pane": true, "robot-restart-pane": true,
 	"robot-audit": true, "robot-timeline": true,
+	"robot-doctor": true, "robot-preflight": true,
 }
 
 func initializeRobotPersistence(ctx context.Context, refreshProjection bool) error {

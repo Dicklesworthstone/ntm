@@ -4,18 +4,83 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
+
+type contentionProcess struct {
+	pid       int
+	cwd       string
+	command   string
+	age       time.Duration
+	status    string
+	openFiles []string
+}
+
+func classifyContentionProcess(proc contentionProcess) []string {
+	return robot.ClassifyContentionProcess(robot.DoctorContentionProcess{
+		PID:       proc.pid,
+		CWD:       proc.cwd,
+		Command:   proc.command,
+		Age:       proc.age,
+		Status:    proc.status,
+		OpenFiles: proc.openFiles,
+	})
+}
+
+func buildSafetyDefaults(cfg *config.Config) SafetyDefaults {
+	return robot.BuildSafetyDefaults(cfg)
+}
+
+func sameOrChildPath(candidate, root string) bool {
+	return robot.SameOrChildPath(candidate, root)
+}
+
+func commandHasExecutable(command, executable string) bool {
+	return robot.CommandHasExecutable(command, executable)
+}
+
+func agentMailDaemonAddr() (string, int) {
+	return robot.AgentMailDaemonAddr()
+}
+
+func collectVerboseToolDetails(ctx context.Context, adapter tools.Adapter) []string {
+	return robot.CollectVerboseToolDetails(ctx, adapter)
+}
+
+func daemonVerdict(running, expected bool, port int) (string, string) {
+	return robot.DaemonVerdict(running, expected, port)
+}
+
+func checkDependencies(ctx context.Context) []DepCheck {
+	return robot.CheckDoctorDependencies(ctx)
+}
+
+func deadKnobDoctorMessage(knob config.RemovedKnob) string {
+	return robot.DeadKnobDoctorMessage(knob)
+}
+
+func guardDegradationCheck() ConfigCheck {
+	_, check := robot.CheckDoctorGuardState()
+	return check
+}
+
+func guardHookPathCheck() ConfigCheck {
+	return robot.CheckDoctorGuardHookPath()
+}
 
 func TestBuildSafetyDefaults(t *testing.T) {
 	cfg := config.Default()
@@ -387,5 +452,197 @@ fi
 	}
 	if !strings.Contains(out.String(), "selected_worker: w1 (load=25%)") {
 		t.Fatalf("verbose doctor output missing detail line:\n%s", out.String())
+	}
+}
+
+func TestKernelMapInputDecodingAndCanonicalRESTPaths(t *testing.T) {
+	// 1. Assert all 14 CLI kernel.MustRegister commands expose canonical /api/v1/* REST paths.
+	byName := make(map[string]kernel.Command)
+	for _, cmd := range kernel.List() {
+		byName[cmd.Name] = cmd
+	}
+	expectedREST := map[string][2]string{
+		"core.version":        {"GET", "/api/v1/version"},
+		"core.deps":           {"GET", "/api/v1/deps"},
+		"kernel.list":         {"GET", "/api/v1/kernel/commands"},
+		"sessions.create":     {"POST", "/api/v1/sessions"},
+		"sessions.list":       {"GET", "/api/v1/sessions"},
+		"sessions.status":     {"GET", "/api/v1/sessions/{id}/status"},
+		"sessions.attach":     {"POST", "/api/v1/sessions/{id}/attach"},
+		"sessions.view":       {"POST", "/api/v1/sessions/{id}/view"},
+		"sessions.zoom":       {"POST", "/api/v1/sessions/{id}/zoom"},
+		"sessions.health":     {"GET", "/api/v1/sessions/{id}/health"},
+		"sessions.controller": {"POST", "/api/v1/sessions/{id}/controller"},
+		"sessions.interrupt":  {"POST", "/api/v1/sessions/{id}/interrupt"},
+		"sessions.kill":       {"DELETE", "/api/v1/sessions/{id}"},
+		"prompt.preflight":    {"POST", "/api/v1/prompt/preflight"},
+	}
+	for name, want := range expectedREST {
+		cmd, ok := byName[name]
+		if !ok {
+			t.Fatalf("kernel command %q is not registered", name)
+		}
+		if cmd.REST == nil || cmd.REST.Method != want[0] || cmd.REST.Path != want[1] {
+			t.Fatalf("kernel command %q REST = %+v, want %s %s", name, cmd.REST, want[0], want[1])
+		}
+	}
+
+	// 2. Verify decodeKernelInput decodes all JSON fields from map[string]any.
+	killOpts, err := decodeKernelInput[SessionKillInput]("sessions.kill", map[string]any{
+		"session":   "demo",
+		"force":     true,
+		"tags":      []string{"cc", "cod"},
+		"no_hooks":  true,
+		"summarize": true,
+	})
+	if err != nil || killOpts.Session != "demo" || !killOpts.Force || len(killOpts.Tags) != 2 || !killOpts.NoHooks || !killOpts.Summarize {
+		t.Fatalf("decodeKernelInput[SessionKillInput] = (%+v, %v)", killOpts, err)
+	}
+
+	ctrlOpts, err := decodeKernelInput[ControllerInput]("sessions.controller", map[string]any{
+		"session":     "demo",
+		"agent_type":  "cod",
+		"prompt_file": "ctrl.md",
+		"no_prompt":   true,
+	})
+	if err != nil || ctrlOpts.Session != "demo" || ctrlOpts.AgentType != "cod" || ctrlOpts.PromptFile != "ctrl.md" || !ctrlOpts.NoPrompt {
+		t.Fatalf("decodeKernelInput[ControllerInput] = (%+v, %v)", ctrlOpts, err)
+	}
+
+	healthOpts, err := decodeKernelInput[SessionHealthInput]("sessions.health", map[string]any{
+		"session":       "demo",
+		"pane":          2,
+		"pane_selector": "0.2",
+		"status":        "warning",
+		"verbose":       true,
+	})
+	if err != nil || healthOpts.Session != "demo" || healthOpts.Pane == nil || *healthOpts.Pane != 2 || healthOpts.PaneSelector != "0.2" || healthOpts.Status != "warning" || !healthOpts.Verbose {
+		t.Fatalf("decodeKernelInput[SessionHealthInput] = (%+v, %v)", healthOpts, err)
+	}
+
+	// 3. Execute kernel.Run with map[string]any across session/core/preflight handlers
+	// and verify none fail with "session is required" when "session" is provided in the map.
+	ctx := context.Background()
+
+	if verRes, err := kernel.Run(ctx, "core.version", map[string]any{"short": true}); err != nil || verRes == nil {
+		t.Fatalf("kernel.Run(core.version, map) = (%#v, %v)", verRes, err)
+	}
+
+	healthRes, err := kernel.Run(ctx, "sessions.health", map[string]any{
+		"session": "nonexistent-kernel-session-xyz",
+		"status":  "warning",
+		"verbose": true,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "session is required") || !strings.Contains(err.Error(), "nonexistent-kernel-session-xyz") {
+			t.Fatalf("kernel.Run(sessions.health, map) failed to decode session field: %v", err)
+		}
+	} else {
+		healthOut, ok := healthRes.(HealthOutput)
+		if !ok || healthOut.SessionHealth == nil || healthOut.SessionHealth.Session != "nonexistent-kernel-session-xyz" {
+			t.Fatalf("kernel.Run(sessions.health, map) = %#v, want decoded session name", healthRes)
+		}
+	}
+
+	for _, tc := range []struct {
+		name  string
+		input map[string]any
+	}{
+		{"sessions.interrupt", map[string]any{"session": "nonexistent-kernel-session-xyz", "tags": []string{"cc"}}},
+		{"sessions.kill", map[string]any{"session": "nonexistent-kernel-session-xyz", "force": true, "no_hooks": true}},
+		{"sessions.controller", map[string]any{"session": "nonexistent-kernel-session-xyz", "agent_type": "cod", "no_prompt": true}},
+		{"sessions.status", map[string]any{"session": "nonexistent-kernel-session-xyz", "show_assignments": true}},
+		{"sessions.attach", map[string]any{"session": "nonexistent-kernel-session-xyz"}},
+		{"sessions.view", map[string]any{"session": "nonexistent-kernel-session-xyz"}},
+		{"sessions.zoom", map[string]any{"session": "nonexistent-kernel-session-xyz", "pane": 0}},
+	} {
+		_, runErr := kernel.Run(ctx, tc.name, tc.input)
+		if runErr != nil && (strings.Contains(runErr.Error(), "session is required") || strings.Contains(runErr.Error(), "pane is required")) {
+			t.Fatalf("kernel.Run(%s, map) failed to decode map fields: %v", tc.name, runErr)
+		}
+	}
+}
+
+func TestDoctor_RobotSubprocessExecution(t *testing.T) {
+	homeDir := t.TempDir()
+	configHome := t.TempDir()
+	dataHome := t.TempDir()
+	projectDir := t.TempDir()
+
+	runDoctorSubprocess := func(pathEnv, cfgPath string, args ...string) ([]byte, int) {
+		t.Helper()
+		rawArgs, err := json.Marshal(args)
+		if err != nil {
+			t.Fatalf("marshal args: %v", err)
+		}
+		cmd := exec.Command(os.Args[0], "-test.run=^TestRobotProcessContractHelper$")
+		cmd.Dir = projectDir
+		cmd.Env = envWithOverrides(os.Environ(),
+			"HOME="+homeDir,
+			"XDG_CONFIG_HOME="+configHome,
+			"XDG_DATA_HOME="+dataHome,
+			"PATH="+pathEnv,
+			"NTM_NO_COLOR=1",
+			"NTM_CONFIG="+cfgPath,
+			"NTM_ROBOT_FORMAT=json",
+			"NTM_OUTPUT_FORMAT=",
+			"TOON_DEFAULT_FORMAT=",
+			"NTM_ROBOT_VERBOSITY=",
+			"NTM_ROBOT_CONTRACT_ARGS="+string(rawArgs),
+		)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		runErr := cmd.Run()
+		exitCode := 0
+		if runErr != nil {
+			var exitErr *exec.ExitError
+			if !errors.As(runErr, &exitErr) {
+				t.Fatalf("run subprocess %v: %v (stderr=%s)", args, runErr, stderr.String())
+			}
+			exitCode = exitErr.ExitCode()
+		}
+		return stdout.Bytes(), exitCode
+	}
+
+	// 1. Empty PATH forces missing required tools/tmux -> overall="unhealthy", exitCode != 0, single JSON document.
+	emptyBin := t.TempDir()
+	rawUnhealthy, code := runDoctorSubprocess(emptyBin, "", "--robot-doctor")
+	if code == 0 {
+		t.Fatalf("--robot-doctor with empty PATH should exit non-zero, got 0: %s", string(rawUnhealthy))
+	}
+	var unhealthyOut robot.DoctorOutput
+	if err := json.Unmarshal(rawUnhealthy, &unhealthyOut); err != nil {
+		t.Fatalf("decode unhealthy --robot-doctor: %v (raw=%s)", err, string(rawUnhealthy))
+	}
+	if unhealthyOut.Success || unhealthyOut.Overall != "unhealthy" || unhealthyOut.SchemaID != "ntm:robot:doctor:v1" || unhealthyOut.Errors == 0 {
+		t.Fatalf("unexpected unhealthy --robot-doctor output: %+v", unhealthyOut)
+	}
+	if unhealthyOut.Tools == nil || unhealthyOut.Dependencies == nil || unhealthyOut.Contention == nil {
+		t.Fatalf("expected non-nil slices on unhealthy --robot-doctor: %+v", unhealthyOut)
+	}
+
+	// 2. Fake required binaries (tmux, bv, br) on PATH -> overall="healthy" or "warning", exitCode == 0.
+	fakeBin := t.TempDir()
+	for name, body := range map[string]string{
+		"tmux": "printf 'tmux 3.4\\n'",
+		"bv":   "printf 'bv 0.5.0\\n'",
+		"br":   "printf 'br 0.4.0\\n'",
+	} {
+		p := filepath.Join(fakeBin, name)
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+			t.Fatalf("write fake %s: %v", name, err)
+		}
+	}
+	rawHealthy, code := runDoctorSubprocess(fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"), "", "--robot-doctor")
+	if code != 0 {
+		t.Fatalf("--robot-doctor with fake required tools exited %d: %s", code, string(rawHealthy))
+	}
+	var healthyOut robot.DoctorOutput
+	if err := json.Unmarshal(rawHealthy, &healthyOut); err != nil {
+		t.Fatalf("decode healthy --robot-doctor: %v (raw=%s)", err, string(rawHealthy))
+	}
+	if !healthyOut.Success || healthyOut.Overall == "unhealthy" || healthyOut.GuardHook == nil {
+		t.Fatalf("unexpected healthy --robot-doctor output: %+v", healthyOut)
 	}
 }

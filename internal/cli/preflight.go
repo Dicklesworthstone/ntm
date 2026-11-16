@@ -2,55 +2,23 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
-	"github.com/Dicklesworthstone/ntm/internal/lint"
-	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
-	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
 
-// PreflightFinding represents a single lint finding in preflight output.
-type PreflightFinding struct {
-	ID       string         `json:"id"`
-	Severity string         `json:"severity"`
-	Message  string         `json:"message"`
-	Help     string         `json:"help"`
-	Metadata map[string]any `json:"metadata,omitempty"`
-	Start    int            `json:"start,omitempty"`
-	End      int            `json:"end,omitempty"`
-	Line     int            `json:"line,omitempty"`
-}
+// PreflightFinding aliases the canonical ORI preflight finding struct in internal/robot.
+type PreflightFinding = robot.PreflightFinding
 
-// PreflightResult is the JSON output for the preflight command.
-type PreflightResult struct {
-	robot.RobotResponse
-
-	// Core results
-	PreviewHash     string             `json:"preview_hash"`
-	PreviewLen      int                `json:"preview_len"`
-	EstimatedTokens int                `json:"estimated_tokens"`
-	Findings        []PreflightFinding `json:"findings"`
-
-	// Summary counts
-	ErrorCount   int `json:"error_count"`
-	WarningCount int `json:"warning_count"`
-	InfoCount    int `json:"info_count"`
-
-	// Prompt preview (truncated if long)
-	Preview string `json:"preview,omitempty"`
-
-	// DCG integration status
-	DCGAvailable bool `json:"dcg_available"`
-}
+// PreflightResult aliases the canonical ORI preflight output struct in internal/robot.
+type PreflightResult = robot.PreflightOutput
 
 // PreflightInput is the input for the kernel command.
 type PreflightInput struct {
@@ -74,7 +42,7 @@ func init() {
 		},
 		REST: &kernel.RESTBinding{
 			Method: "POST",
-			Path:   "/prompt/preflight",
+			Path:   "/api/v1/prompt/preflight",
 		},
 		Examples: []kernel.Example{
 			{
@@ -95,141 +63,29 @@ func init() {
 }
 
 func handlePreflight(ctx context.Context, input any) (any, error) {
-	opts := PreflightInput{}
-	switch v := input.(type) {
-	case PreflightInput:
-		opts = v
-	case *PreflightInput:
-		if v != nil {
-			opts = *v
-		}
-	case map[string]any:
-		if p, ok := v["prompt"].(string); ok {
-			opts.Prompt = p
-		}
-		if s, ok := v["strict"].(bool); ok {
-			opts.Strict = s
-		}
+	opts, err := decodeKernelInput[PreflightInput]("prompt.preflight", input)
+	if err != nil {
+		return nil, err
 	}
 
-	if opts.Prompt == "" {
+	if strings.TrimSpace(opts.Prompt) == "" {
 		return nil, fmt.Errorf("prompt is required")
 	}
 
-	return runPreflight(opts.Prompt, opts.Strict)
+	return robot.GetPreflight(ctx, robot.PreflightOptions{
+		Prompt: opts.Prompt,
+		Strict: opts.Strict,
+		Config: cfg,
+	})
 }
 
-// runPreflight performs the preflight check on a prompt.
+// runPreflight performs the preflight check on a prompt via the canonical robot engine.
 func runPreflight(prompt string, strict bool) (*PreflightResult, error) {
-	outputPrompt := prompt
-
-	// Set up lint rules
-	var ruleSet *lint.RuleSet
-	if strict {
-		ruleSet = lint.StrictRuleSet()
-	} else {
-		ruleSet = lint.DefaultRuleSet()
-	}
-
-	var (
-		linterOpts []lint.Option
-	)
-	linterOpts = append(linterOpts, lint.WithRuleSet(ruleSet))
-
-	// Configure from app config if available
-	if cfg != nil {
-		redactCfg := cfg.Redaction.ToRedactionLibConfig()
-
-		switch redactCfg.Mode {
-		case redaction.ModeOff:
-			// Redaction mode off explicitly disables scanning; keep lint in sync.
-			ruleSet.Disable(lint.RuleSecretDetected)
-		case redaction.ModeWarn, redaction.ModeRedact:
-			// Warn + redact modes should not block sends on secrets.
-			ruleSet.SetSeverity(lint.RuleSecretDetected, lint.SeverityWarning)
-		case redaction.ModeBlock:
-			ruleSet.SetSeverity(lint.RuleSecretDetected, lint.SeverityError)
-		}
-
-		// Avoid leaking raw secrets in preflight output when redaction is active.
-		// In redact mode, this matches what will actually be sent.
-		// In block mode, this matches the safe preview behavior used elsewhere (e.g. send.go).
-		if redactCfg.Mode == redaction.ModeRedact || redactCfg.Mode == redaction.ModeBlock {
-			previewCfg := redactCfg
-			previewCfg.Mode = redaction.ModeRedact
-			outputPrompt = redaction.ScanAndRedact(prompt, previewCfg).Output
-		}
-
-		if rule, ok := ruleSet.Rules[lint.RuleSecretDetected]; ok && rule.Enabled {
-			linterOpts = append(linterOpts, lint.WithRedactionConfig(&redactCfg))
-		}
-	}
-
-	l := lint.New(linterOpts...)
-	return buildPreflightResult(l.Lint(prompt), outputPrompt)
-}
-
-// buildPreflightResult converts lint.Result to PreflightResult.
-func buildPreflightResult(lintResult *lint.Result, prompt string) (*PreflightResult, error) {
-	// Compute hash
-	hash := sha256.Sum256([]byte(prompt))
-	hashStr := hex.EncodeToString(hash[:8]) // First 8 bytes = 16 hex chars
-
-	// Convert findings
-	findings := make([]PreflightFinding, len(lintResult.Findings))
-	var errCount, warnCount, infoCount int
-	for i, f := range lintResult.Findings {
-		findings[i] = PreflightFinding{
-			ID:       string(f.ID),
-			Severity: string(f.Severity),
-			Message:  f.Message,
-			Help:     f.Help,
-			Metadata: f.Metadata,
-			Start:    f.Start,
-			End:      f.End,
-			Line:     f.Line,
-		}
-		switch f.Severity {
-		case lint.SeverityError:
-			errCount++
-		case lint.SeverityWarning:
-			warnCount++
-		case lint.SeverityInfo:
-			infoCount++
-		}
-	}
-
-	// Check DCG availability
-	dcgAdapter := tools.NewDCGAdapter()
-	dcgAvailable := dcgAdapter.IsAvailable(context.Background())
-
-	// Build preview (truncate if too long)
-	preview := prompt
-	const maxPreview = 500
-	if len(preview) > maxPreview {
-		preview = preview[:maxPreview] + "..."
-	}
-
-	result := &PreflightResult{
-		RobotResponse:   robot.NewRobotResponse(lintResult.Success),
-		PreviewHash:     hashStr,
-		PreviewLen:      len(prompt),
-		EstimatedTokens: lintResult.Stats.TokenEstimate,
-		Findings:        findings,
-		ErrorCount:      errCount,
-		WarningCount:    warnCount,
-		InfoCount:       infoCount,
-		Preview:         preview,
-		DCGAvailable:    dcgAvailable,
-	}
-
-	// If not successful, add error info
-	if !lintResult.Success {
-		result.Error = "Prompt blocked due to lint errors"
-		result.ErrorCode = "PREFLIGHT_BLOCKED"
-	}
-
-	return result, nil
+	return robot.GetPreflight(context.Background(), robot.PreflightOptions{
+		Prompt: prompt,
+		Strict: strict,
+		Config: cfg,
+	})
 }
 
 func newPreflightCmd() *cobra.Command {
@@ -271,7 +127,7 @@ Examples:
 				prompt = string(data)
 			}
 
-			if prompt == "" {
+			if strings.TrimSpace(prompt) == "" {
 				return fmt.Errorf("prompt is required")
 			}
 

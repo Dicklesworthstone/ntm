@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -39,7 +38,7 @@ func init() {
 		},
 		REST: &kernel.RESTBinding{
 			Method: "POST",
-			Path:   "/sessions",
+			Path:   "/api/v1/sessions",
 		},
 		Examples: []kernel.Example{
 			{
@@ -57,22 +56,9 @@ func init() {
 		Idempotent:  false,
 	})
 	kernel.MustRegisterHandler("sessions.create", func(ctx context.Context, input any) (any, error) {
-		opts := SessionCreateInput{}
-		switch value := input.(type) {
-		case SessionCreateInput:
-			opts = value
-		case *SessionCreateInput:
-			if value != nil {
-				opts = *value
-			}
-		case map[string]interface{}:
-			raw, err := json.Marshal(value)
-			if err != nil {
-				return nil, fmt.Errorf("marshal sessions.create input: %w", err)
-			}
-			if err := json.Unmarshal(raw, &opts); err != nil {
-				return nil, fmt.Errorf("decode sessions.create input: %w", err)
-			}
+		opts, err := decodeKernelInput[SessionCreateInput]("sessions.create", input)
+		if err != nil {
+			return nil, err
 		}
 		if strings.TrimSpace(opts.Session) == "" {
 			return nil, fmt.Errorf("session is required")

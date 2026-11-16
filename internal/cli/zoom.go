@@ -40,7 +40,7 @@ func init() {
 		},
 		REST: &kernel.RESTBinding{
 			Method: "POST",
-			Path:   "/sessions/{sessionId}/zoom",
+			Path:   "/api/v1/sessions/{id}/zoom",
 		},
 		Examples: []kernel.Example{
 			{
@@ -53,14 +53,9 @@ func init() {
 		Idempotent:  false,
 	})
 	kernel.MustRegisterHandler("sessions.zoom", func(ctx context.Context, input any) (any, error) {
-		opts := SessionZoomInput{}
-		switch value := input.(type) {
-		case SessionZoomInput:
-			opts = value
-		case *SessionZoomInput:
-			if value != nil {
-				opts = *value
-			}
+		opts, err := decodeKernelInput[SessionZoomInput]("sessions.zoom", input)
+		if err != nil {
+			return nil, err
 		}
 		if strings.TrimSpace(opts.Session) == "" {
 			return nil, fmt.Errorf("session is required")

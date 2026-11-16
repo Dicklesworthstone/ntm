@@ -325,6 +325,16 @@ var (
 	robotTimelineStats  bool   // show aggregate storage statistics
 	robotTimelineLimit  int    // max timelines to list (default 20)
 
+	// Robot-preflight flags for prompt lint and safety preflight validation
+	robotPreflight       string // prompt text (or "__present__" when using --preflight-file)
+	robotPreflightStrict bool   // escalate warnings to blocking errors
+	robotPreflightFile   string // optional path to read prompt from
+
+	// Robot-doctor flags for ecosystem health and contention inspection
+	robotDoctor           bool // run ecosystem doctor check
+	robotDoctorContention bool // include shared-resource contention scan
+	robotDoctorVerbose    bool // include verbose adapter details
+
 	// Robot-history flags for command history tracking
 	robotHistory      string // session name for history query
 	robotHistoryPane  string // filter by pane ID
@@ -1055,6 +1065,17 @@ func registerRobotFlags() {
 	rootCmd.Flags().BoolVar(&robotTimelineEvents, "timeline-events", false, "Include full state-transition event array when showing a session timeline")
 	rootCmd.Flags().BoolVar(&robotTimelineStats, "timeline-stats", false, "Show aggregate storage statistics across all persisted timelines")
 	rootCmd.Flags().IntVar(&robotTimelineLimit, "timeline-limit", 20, "Maximum saved timelines to return when listing (default 20)")
+
+	// Robot-preflight flags for prompt lint and safety preflight validation
+	rootCmd.Flags().StringVar(&robotPreflight, "robot-preflight", "", "Validate and lint a prompt before sending (JSON). Pass prompt directly or use --preflight-file. Example: ntm --robot-preflight='fix auth.go'")
+	rootCmd.Flags().Lookup("robot-preflight").NoOptDefVal = "__present__"
+	rootCmd.Flags().BoolVar(&robotPreflightStrict, "preflight-strict", false, "Escalate all preflight warnings to blocking errors (use with --robot-preflight)")
+	rootCmd.Flags().StringVar(&robotPreflightFile, "preflight-file", "", "Read prompt text from file path (use with --robot-preflight)")
+
+	// Robot-doctor flags for ecosystem health and contention inspection
+	rootCmd.Flags().BoolVar(&robotDoctor, "robot-doctor", false, "Validate NTM ecosystem health, tools, daemons, configuration, invariants, and optional contention (JSON)")
+	rootCmd.Flags().BoolVar(&robotDoctorContention, "doctor-contention", false, "Include shared-resource process contention scan in --robot-doctor")
+	rootCmd.Flags().BoolVar(&robotDoctorVerbose, "doctor-verbose", false, "Include verbose tool adapter diagnostics in --robot-doctor")
 
 	// Robot-history flags for command history tracking
 	rootCmd.Flags().StringVar(&robotHistory, "robot-history", "", "Get command history for a session (JSON). Required: SESSION. Example: ntm --robot-history=myproject")

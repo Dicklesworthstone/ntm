@@ -264,6 +264,8 @@ ntm --robot-audit=myproject --audit-verify
 ntm --robot-audit --audit-search=spawn --audit-days=7
 ntm --robot-timeline=myproject --timeline-events
 ntm --robot-timeline --timeline-stats
+ntm --robot-doctor --doctor-contention
+ntm --robot-preflight="fix the bug in auth.go" --preflight-strict
 ntm audit http --limit=20 --json
 ```
 

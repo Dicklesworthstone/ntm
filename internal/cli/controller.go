@@ -94,7 +94,7 @@ func init() {
 		},
 		REST: &kernel.RESTBinding{
 			Method: "POST",
-			Path:   "/sessions/{session}/controller",
+			Path:   "/api/v1/sessions/{id}/controller",
 		},
 		Examples: []kernel.Example{
 			{
@@ -117,14 +117,9 @@ func init() {
 		Idempotent:  false,
 	})
 	kernel.MustRegisterHandler("sessions.controller", func(ctx context.Context, input any) (any, error) {
-		opts := ControllerInput{}
-		switch value := input.(type) {
-		case ControllerInput:
-			opts = value
-		case *ControllerInput:
-			if value != nil {
-				opts = *value
-			}
+		opts, err := decodeKernelInput[ControllerInput]("sessions.controller", input)
+		if err != nil {
+			return nil, err
 		}
 		if strings.TrimSpace(opts.Session) == "" {
 			return nil, fmt.Errorf("session is required")

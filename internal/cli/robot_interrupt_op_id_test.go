@@ -146,6 +146,11 @@ func TestRobotInterruptTypeFilterInterruptsOnlyThatAgentType(t *testing.T) {
 // isolated tmux server.
 func newRobotProcessRunner(t *testing.T) func(args ...string) (map[string]any, int) {
 	t.Helper()
+	return newRobotProcessRunnerWithEnv(t)
+}
+
+func newRobotProcessRunnerWithEnv(t *testing.T, extraEnv ...string) func(args ...string) (map[string]any, int) {
+	t.Helper()
 	tmpDir := t.TempDir()
 	homeDir := filepath.Join(tmpDir, "home")
 	configHome := filepath.Join(tmpDir, "xdg")
@@ -162,9 +167,9 @@ func newRobotProcessRunner(t *testing.T) func(args ...string) (map[string]any, i
 		}
 		cmd := exec.Command(os.Args[0], "-test.run=^TestRobotProcessContractHelper$")
 		cmd.Dir = tmpDir
-		cmd.Env = envWithOverrides(os.Environ(),
-			"HOME="+homeDir,
-			"XDG_CONFIG_HOME="+configHome,
+		overrides := []string{
+			"HOME=" + homeDir,
+			"XDG_CONFIG_HOME=" + configHome,
 			"NTM_NO_COLOR=1",
 			"NTM_CONFIG=",
 			"NTM_ROBOT_FORMAT=",
@@ -174,8 +179,10 @@ func newRobotProcessRunner(t *testing.T) func(args ...string) (map[string]any, i
 			// Keep the child on this process's isolated tmux server, where
 			// the fixture session lives.
 			"NTM_TEST_TMUX_ENV_OWNED=1",
-			"NTM_ROBOT_CONTRACT_ARGS="+string(rawArgs),
-		)
+			"NTM_ROBOT_CONTRACT_ARGS=" + string(rawArgs),
+		}
+		overrides = append(overrides, extraEnv...)
+		cmd.Env = envWithOverrides(os.Environ(), overrides...)
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr

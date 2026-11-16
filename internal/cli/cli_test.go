@@ -447,6 +447,12 @@ func resetFlags() {
 	robotTimelineEvents = false
 	robotTimelineStats = false
 	robotTimelineLimit = 20
+	robotPreflight = ""
+	robotPreflightStrict = false
+	robotPreflightFile = ""
+	robotDoctor = false
+	robotDoctorContention = false
+	robotDoctorVerbose = false
 	robotProcessExit = nil
 }
 

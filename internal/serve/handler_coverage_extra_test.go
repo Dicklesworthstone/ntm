@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
 
 // ---------------------------------------------------------------------------
@@ -996,7 +998,7 @@ func TestHandleDeleteCheckpoint(t *testing.T) {
 
 func TestPerformDoctorCheckAPI(t *testing.T) {
 	ctx := context.Background()
-	report := performDoctorCheckAPI(ctx)
+	report := performDoctorCheckAPIWithOptions(ctx, robot.DoctorOptions{})
 
 	if report["timestamp"] == nil {
 		t.Error("expected timestamp in report")

@@ -286,6 +286,17 @@ func GetAssign(ctx context.Context, opts AssignOptions) (*AssignOutput, error) {
 		return output, nil
 	}
 
+	// Normalize and validate strategy before shelling out to tmux
+	strategy := normalizeAssignStrategy(opts.Strategy)
+	if !isValidAssignStrategy(strategy) {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("invalid strategy '%s'", opts.Strategy),
+			ErrCodeInvalidFlag,
+			"Valid strategies: "+strings.Join(assignStrategyNames, ", "),
+		)
+		return output, nil
+	}
+
 	exists, err := tmux.SessionExistsContext(ctx, opts.Session)
 	if err != nil {
 		setAssignError(output, err, "Check tmux availability")
@@ -296,17 +307,6 @@ func GetAssign(ctx context.Context, opts AssignOptions) (*AssignOutput, error) {
 			fmt.Errorf("session '%s' not found", opts.Session),
 			ErrCodeSessionNotFound,
 			"Use 'ntm list' to see available sessions",
-		)
-		return output, nil
-	}
-
-	// Normalize strategy
-	strategy := normalizeAssignStrategy(opts.Strategy)
-	if !isValidAssignStrategy(strategy) {
-		output.RobotResponse = NewErrorResponse(
-			fmt.Errorf("invalid strategy '%s'", opts.Strategy),
-			ErrCodeInvalidFlag,
-			"Valid strategies: "+strings.Join(assignStrategyNames, ", "),
 		)
 		return output, nil
 	}

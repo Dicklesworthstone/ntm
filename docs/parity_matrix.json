@@ -1,6 +1,6 @@
 {
   "source": "chi-router-walk",
-  "count": 221,
+  "count": 229,
   "endpoints": [
     {
       "method": "GET",
@@ -121,6 +121,11 @@
       "method": "POST",
       "path": "/api/v1/approvals/{id}/deny",
       "handler": "handleApprovalDenyV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/assign",
+      "handler": "handleRecommendAssignV1"
     },
     {
       "method": "GET",
@@ -685,6 +690,16 @@
       "handler": "handlePolicyValidateV1"
     },
     {
+      "method": "POST",
+      "path": "/api/v1/prompt/preflight",
+      "handler": "handlePromptPreflightV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/quota",
+      "handler": "handleGetQuotaStatusV1"
+    },
+    {
       "method": "GET",
       "path": "/api/v1/requests/{id}",
       "handler": "handleGetRequestStatusV1",
@@ -815,6 +830,11 @@
       "robot_schema": "triage"
     },
     {
+      "method": "POST",
+      "path": "/api/v1/route",
+      "handler": "handleRecommendRouteV1"
+    },
+    {
       "method": "GET",
       "path": "/api/v1/safety/blocked",
       "handler": "handleSafetyBlockedV1"
@@ -890,6 +910,11 @@
       "handler": "handleCreateSessionV1"
     },
     {
+      "method": "DELETE",
+      "path": "/api/v1/sessions/{id}",
+      "handler": "handleDeleteSessionV1"
+    },
+    {
       "method": "GET",
       "path": "/api/v1/sessions/{id}",
       "handler": "handleSessionV1"
@@ -900,9 +925,24 @@
       "handler": "handleSessionAttachV1"
     },
     {
+      "method": "POST",
+      "path": "/api/v1/sessions/{id}/controller",
+      "handler": "handleSessionControllerV1"
+    },
+    {
       "method": "GET",
       "path": "/api/v1/sessions/{id}/events",
       "handler": "handleSessionEventsRouteV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/sessions/{id}/health",
+      "handler": "handleSessionHealthV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/sessions/{id}/interrupt",
+      "handler": "handleSessionInterruptV1"
     },
     {
       "method": "GET",

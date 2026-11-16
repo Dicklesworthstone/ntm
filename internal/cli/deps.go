@@ -92,7 +92,7 @@ func init() {
 		},
 		REST: &kernel.RESTBinding{
 			Method: "GET",
-			Path:   "/deps",
+			Path:   "/api/v1/deps",
 		},
 		Examples: []kernel.Example{
 			{
@@ -109,7 +109,10 @@ func init() {
 		SafetyLevel: kernel.SafetySafe,
 		Idempotent:  true,
 	})
-	kernel.MustRegisterHandler("core.deps", func(ctx context.Context, _ any) (any, error) {
+	kernel.MustRegisterHandler("core.deps", func(ctx context.Context, input any) (any, error) {
+		if _, err := decodeKernelInput[DepsInput]("core.deps", input); err != nil {
+			return nil, err
+		}
 		return buildDepsResponse()
 	})
 }

@@ -30,7 +30,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
-	"github.com/Dicklesworthstone/ntm/internal/hooks"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
@@ -65,7 +65,7 @@ const guardDegradedRetention = 30 * 24 * time.Hour
 // guardDegradedDoctorWindow is the reporting window for `ntm doctor`:
 // only degraded runs inside this window turn the check yellow, so a stale
 // incident stops warning once the window passes instead of forever.
-const guardDegradedDoctorWindow = 7 * 24 * time.Hour
+const guardDegradedDoctorWindow = robot.GuardDegradedDoctorWindow
 
 // guardTransportError reports whether the reservation-check failure was a
 // transport-level failure (server unreachable / request timed out) rather
@@ -234,95 +234,4 @@ func recordGuardDegradedEvent(stderr io.Writer, repoPath, projectKey, reason str
 	// ledger never becomes an all-time counter. Best effort; a prune failure
 	// must not block the commit.
 	_, _ = store.PruneGuardDegradedEvents(time.Now().UTC().Add(-guardDegradedRetention))
-}
-
-// guardDegradationCheck is the `ntm doctor` surface for degraded guard runs
-// (fail-open events recorded by the hook while Agent Mail was unreachable).
-func guardDegradationCheck() ConfigCheck {
-	check := ConfigCheck{Name: "guard-hook degraded runs", Valid: true, Status: "ok"}
-
-	store, err := state.Open("")
-	if err != nil {
-		check.Status = "warning"
-		check.Message = fmt.Sprintf("state DB unavailable: %v", err)
-		return check
-	}
-	defer func() { _ = store.Close() }()
-	if err := store.Migrate(); err != nil {
-		check.Status = "warning"
-		check.Message = fmt.Sprintf("state DB migrate failed: %v", err)
-		return check
-	}
-
-	// Windowed, not all-time (bd-2c0yh.2): an incident from months ago must
-	// not keep the light red forever — users learn to ignore a lamp that
-	// cannot clear.
-	since := time.Now().UTC().Add(-guardDegradedDoctorWindow)
-	stats, err := store.GuardDegradedEventStats(since)
-	if err != nil {
-		check.Status = "warning"
-		check.Message = fmt.Sprintf("could not read guard degraded events: %v", err)
-		return check
-	}
-	if stats.Count > 0 {
-		transport, app := 0, 0
-		if recent, listErr := store.ListGuardDegradedEvents(200); listErr == nil {
-			for _, ev := range recent {
-				if ev.CreatedAt.Before(since) {
-					continue
-				}
-				if ev.Reason == guardReasonUnreachable {
-					transport++
-				} else {
-					app++
-				}
-			}
-		}
-		check.Valid = false
-		check.Status = "warning"
-		check.Message = fmt.Sprintf("guard hook ran degraded %d time(s) in the last 7 days (first %s; %d with Agent Mail unreachable, %d with Agent Mail errors; commits were allowed unchecked)",
-			stats.Count, stats.FirstAt.Local().Format(time.RFC3339), transport, app)
-		return check
-	}
-	check.Message = "no degraded (unchecked) guard runs recorded in the last 7 days"
-	return check
-}
-
-// guardHookPathCheck is the `ntm doctor` surface for the one fail-open path
-// that can never record a ledger row (bd-2c0yh.4): the installed pre-commit
-// hook execs `ntm guards check --staged`, but when `ntm` itself is not on
-// PATH the hook prints a WARN into commit scrollback and exits 0 — no check,
-// no degraded event, nothing for doctor to count. Detect that combination
-// here, where `ntm` is definitionally runnable.
-func guardHookPathCheck() ConfigCheck {
-	check := ConfigCheck{Name: "guard-hook ntm on PATH", Valid: true, Status: "ok"}
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		check.Message = "could not determine current directory"
-		return check
-	}
-	repoPath, err := findGitRoot(cwd)
-	if err != nil {
-		check.Message = "not in a git repository (guard hook not applicable)"
-		return check
-	}
-	hookPath, err := findGitHookPath(repoPath, "pre-commit")
-	if err != nil || !fileExists(hookPath) {
-		check.Message = "no pre-commit guard hook installed here"
-		return check
-	}
-	content, err := os.ReadFile(hookPath)
-	if err != nil || !hooks.PreCommitRunsReservationGuard(string(content)) {
-		check.Message = "pre-commit hook is not an NTM guard"
-		return check
-	}
-	if _, err := exec.LookPath("ntm"); err != nil {
-		check.Valid = false
-		check.Status = "warning"
-		check.Message = "guard hook is installed but 'ntm' is not on PATH: the hook silently skips the reservation check on every commit (and cannot record a degraded event); add ntm to PATH or set NTM_GUARD_STRICT=1"
-		return check
-	}
-	check.Message = "guard hook installed and 'ntm' resolves on PATH"
-	return check
 }

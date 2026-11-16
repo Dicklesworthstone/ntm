@@ -46,6 +46,35 @@ func init() {
 	})
 }
 
+// decodeKernelInput decodes a typed struct, pointer, or map[string]any payload
+// passed to kernel.Run into T using JSON field tags.
+func decodeKernelInput[T any](name string, input any) (T, error) {
+	var opts T
+	if input == nil {
+		return opts, nil
+	}
+	switch value := input.(type) {
+	case T:
+		return value, nil
+	case *T:
+		if value != nil {
+			return *value, nil
+		}
+		return opts, nil
+	case map[string]any:
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return opts, fmt.Errorf("marshal %s input: %w", name, err)
+		}
+		if err := json.Unmarshal(raw, &opts); err != nil {
+			return opts, fmt.Errorf("decode %s input: %w", name, err)
+		}
+		return opts, nil
+	default:
+		return opts, fmt.Errorf("unsupported %s input type %T", name, input)
+	}
+}
+
 func newKernelCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "kernel",

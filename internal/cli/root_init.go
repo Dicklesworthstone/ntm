@@ -294,7 +294,7 @@ func registerCoreVersionKernel() {
 		},
 		REST: &kernel.RESTBinding{
 			Method: "GET",
-			Path:   "/version",
+			Path:   "/api/v1/version",
 		},
 		Examples: []kernel.Example{
 			{
@@ -311,7 +311,10 @@ func registerCoreVersionKernel() {
 		SafetyLevel: kernel.SafetySafe,
 		Idempotent:  true,
 	})
-	kernel.MustRegisterHandler("core.version", func(ctx context.Context, _ any) (any, error) {
+	kernel.MustRegisterHandler("core.version", func(ctx context.Context, input any) (any, error) {
+		if _, err := decodeKernelInput[VersionInput]("core.version", input); err != nil {
+			return nil, err
+		}
 		return buildVersionResponse(), nil
 	})
 }
@@ -1052,6 +1055,7 @@ func needsConfigLoading(cmdName string) bool {
 			robotHandoff != "" || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-handoff")) ||
 			robotAudit != "" || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-audit")) ||
 			robotTimeline != "" || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-timeline")) ||
+			robotDoctor || robotPreflight != "" || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-preflight")) ||
 			robotActionStatus != "" || robotWaitRequest != "" || robotCancelRequest != "" {
 			return true
 		}

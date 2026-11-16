@@ -811,6 +811,61 @@ func dispatchRobotInspectionAndOps(cmd *cobra.Command, args []string) bool {
 		}
 		return true
 	}
+	if robotPreflight != "" || cmd.Flags().Changed("robot-preflight") {
+		prompt := robotPreflight
+		if prompt == "__present__" {
+			prompt = ""
+		}
+		if strings.TrimSpace(robotPreflightFile) != "" {
+			if prompt != "" {
+				failRobotCommand(
+					errors.New("cannot specify both inline --robot-preflight=<prompt> and --preflight-file"),
+					robot.ErrCodeInvalidFlag,
+					"Pass either --robot-preflight='prompt' or --robot-preflight --preflight-file=path/to/prompt.txt",
+					"robot-preflight",
+				)
+				return true
+			}
+			data, err := os.ReadFile(util.ExpandPath(robotPreflightFile))
+			if err != nil {
+				failRobotCommand(
+					fmt.Errorf("failed to read --preflight-file %q: %w", robotPreflightFile, err),
+					robot.ErrCodeInvalidFlag,
+					"Ensure --preflight-file points to a readable prompt file",
+					"robot-preflight",
+				)
+				return true
+			}
+			prompt = string(data)
+		}
+		effectiveStrict := robotPreflightStrict
+		if cfg != nil && !cmd.Flags().Changed("preflight-strict") {
+			effectiveStrict = cfg.Preflight.Strict
+		}
+		opts := robot.PreflightOptions{
+			Prompt: prompt,
+			Strict: effectiveStrict,
+			Config: cfg,
+		}
+		if err := robot.PrintPreflight(cmd.Context(), opts); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
+	if robotDoctor {
+		cwd, _ := os.Getwd()
+		opts := robot.DoctorOptions{
+			Verbose:           robotDoctorVerbose,
+			IncludeContention: robotDoctorContention,
+			SwarmCWD:          cwd,
+			Config:            cfg,
+			ConfigPath:        selectedConfigPath(),
+		}
+		if err := robot.PrintDoctor(cmd.Context(), opts); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
 	if robotHistory != "" {
 		session, err := resolveRobotSessionFilter(cmd.Context(), robotHistory)
 		if err != nil {

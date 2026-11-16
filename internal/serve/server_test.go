@@ -4838,7 +4838,7 @@ func TestHealthV1Endpoint(t *testing.T) {
 }
 
 func TestPerformDoctorCheckAPI_DaemonList(t *testing.T) {
-	report := performDoctorCheckAPI(context.Background())
+	report := performDoctorCheckAPIWithOptions(context.Background(), robot.DoctorOptions{})
 
 	daemonsAny, ok := report["daemons"]
 	if !ok {

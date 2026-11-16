@@ -999,6 +999,21 @@ func buildCommandRegistry() []RobotCommandInfo {
 				"ntm --robot-timeline --timeline-stats",
 			},
 		},
+		{
+			Name:        "doctor",
+			Flag:        "--robot-doctor",
+			Category:    "state",
+			Description: "Validate NTM ecosystem health, tools, dependencies, daemons, configuration, invariants, and optional shared-resource contention.",
+			Parameters: []RobotParameter{
+				{Name: "doctor-contention", Flag: "--doctor-contention", Type: "bool", Required: false, Default: "false", Description: "Include shared-resource process contention scan"},
+				{Name: "doctor-verbose", Flag: "--doctor-verbose", Type: "bool", Required: false, Default: "false", Description: "Include verbose tool adapter diagnostics"},
+			},
+			Examples: []string{
+				"ntm --robot-doctor",
+				"ntm --robot-doctor --doctor-contention",
+				"ntm --robot-doctor --doctor-verbose",
+			},
+		},
 
 		// === ATTENTION FEED (Operator Loop) ===
 		{
@@ -2085,6 +2100,22 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "command", Flag: "--command", Type: "string", Required: true, Description: "Shell command to preflight"},
 			},
 			Examples: []string{"ntm --robot-dcg-check --command='rm -rf /tmp'"},
+		},
+		{
+			Name:        "preflight",
+			Flag:        "--robot-preflight",
+			Category:    "utility",
+			Description: "Lint and validate a prompt for secrets, destructive commands, PII, and oversize limits before sending.",
+			Parameters: []RobotParameter{
+				{Name: "prompt", Flag: "--robot-preflight", Type: "string", Required: false, Description: "Prompt text to validate (or omit when using --preflight-file)"},
+				{Name: "preflight-strict", Flag: "--preflight-strict", Type: "bool", Required: false, Default: "false", Description: "Escalate all preflight warnings to blocking errors"},
+				{Name: "preflight-file", Flag: "--preflight-file", Type: "string", Required: false, Description: "Read prompt text from file path"},
+			},
+			Examples: []string{
+				"ntm --robot-preflight='fix the bug in auth.go'",
+				"ntm --robot-preflight='rm -rf /tmp/cache' --preflight-strict",
+				"ntm --robot-preflight --preflight-file=prompt.txt",
+			},
 		},
 		{
 			Name:        "safety-simulate",

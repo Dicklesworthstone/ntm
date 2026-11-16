@@ -144,7 +144,7 @@ func init() {
 		},
 		REST: &kernel.RESTBinding{
 			Method: "GET",
-			Path:   "/sessions",
+			Path:   "/api/v1/sessions",
 		},
 		Examples: []kernel.Example{
 			{
@@ -162,14 +162,9 @@ func init() {
 		Idempotent:  true,
 	})
 	kernel.MustRegisterHandler("sessions.list", func(ctx context.Context, input any) (any, error) {
-		opts := SessionListInput{}
-		switch value := input.(type) {
-		case SessionListInput:
-			opts = value
-		case *SessionListInput:
-			if value != nil {
-				opts = *value
-			}
+		opts, err := decodeKernelInput[SessionListInput]("sessions.list", input)
+		if err != nil {
+			return nil, err
 		}
 		resp, err := buildSessionListResponse(opts.Tags, opts.Project)
 		if err != nil {
@@ -193,7 +188,7 @@ func init() {
 		},
 		REST: &kernel.RESTBinding{
 			Method: "GET",
-			Path:   "/sessions/{sessionId}/status",
+			Path:   "/api/v1/sessions/{id}/status",
 		},
 		Examples: []kernel.Example{
 			{
@@ -211,14 +206,9 @@ func init() {
 		Idempotent:  true,
 	})
 	kernel.MustRegisterHandler("sessions.status", func(ctx context.Context, input any) (any, error) {
-		opts := SessionStatusInput{}
-		switch value := input.(type) {
-		case SessionStatusInput:
-			opts = value
-		case *SessionStatusInput:
-			if value != nil {
-				opts = *value
-			}
+		opts, err := decodeKernelInput[SessionStatusInput]("sessions.status", input)
+		if err != nil {
+			return nil, err
 		}
 		if strings.TrimSpace(opts.Session) == "" {
 			return nil, fmt.Errorf("session is required")
@@ -252,7 +242,7 @@ func init() {
 		},
 		REST: &kernel.RESTBinding{
 			Method: "POST",
-			Path:   "/sessions/{sessionId}/attach",
+			Path:   "/api/v1/sessions/{id}/attach",
 		},
 		Examples: []kernel.Example{
 			{
@@ -265,14 +255,9 @@ func init() {
 		Idempotent:  false,
 	})
 	kernel.MustRegisterHandler("sessions.attach", func(ctx context.Context, input any) (any, error) {
-		opts := SessionAttachInput{}
-		switch value := input.(type) {
-		case SessionAttachInput:
-			opts = value
-		case *SessionAttachInput:
-			if value != nil {
-				opts = *value
-			}
+		opts, err := decodeKernelInput[SessionAttachInput]("sessions.attach", input)
+		if err != nil {
+			return nil, err
 		}
 		if strings.TrimSpace(opts.Session) == "" {
 			return nil, fmt.Errorf("session is required")

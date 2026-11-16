@@ -1,14 +1,22 @@
 package cli
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/lint"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
 
 func TestPreflightJSONBlockedReturnsOneTerminalFailure(t *testing.T) {
@@ -517,3 +525,128 @@ func TestRunPreflight_RespectsRedactionMode_Off(t *testing.T) {
 
 // Verify lint package imports work
 var _ = lint.DefaultRuleSet
+
+func TestPreflight_KernelMapInputAndRobotSubprocess(t *testing.T) {
+	// 1. Verify prompt.preflight kernel REST binding and map[string]any execution.
+	var cmdMeta kernel.Command
+	var ok bool
+	for _, c := range kernel.List() {
+		if c.Name == "prompt.preflight" {
+			cmdMeta = c
+			ok = true
+			break
+		}
+	}
+	if !ok || cmdMeta.REST == nil || cmdMeta.REST.Method != "POST" || cmdMeta.REST.Path != "/api/v1/prompt/preflight" {
+		t.Fatalf("unexpected prompt.preflight kernel metadata: %+v (ok=%v)", cmdMeta, ok)
+	}
+
+	res, err := kernel.Run(context.Background(), "prompt.preflight", map[string]any{
+		"prompt": "rm -rf /tmp/staging",
+		"strict": true,
+	})
+	if err != nil {
+		t.Fatalf("kernel.Run(prompt.preflight): %v", err)
+	}
+	pfOut, ok := res.(*robot.PreflightOutput)
+	if !ok || pfOut == nil {
+		t.Fatalf("kernel.Run(prompt.preflight) type = %T, want *robot.PreflightOutput", res)
+	}
+	if pfOut.Success || !pfOut.Strict || pfOut.ErrorCode != "PREFLIGHT_BLOCKED" {
+		t.Fatalf("expected strict PREFLIGHT_BLOCKED from map[string]any, got %+v", pfOut)
+	}
+
+	// 2. Subprocess execution of ntm --robot-preflight (inline, file, strict block, empty INVALID_FLAG).
+	homeDir := t.TempDir()
+	configHome := t.TempDir()
+	dataHome := t.TempDir()
+	projectDir := t.TempDir()
+
+	runRobotSubprocess := func(args ...string) ([]byte, int) {
+		t.Helper()
+		rawArgs, err := json.Marshal(args)
+		if err != nil {
+			t.Fatalf("marshal args: %v", err)
+		}
+		cmd := exec.Command(os.Args[0], "-test.run=^TestRobotProcessContractHelper$")
+		cmd.Dir = projectDir
+		cmd.Env = envWithOverrides(os.Environ(),
+			"HOME="+homeDir,
+			"XDG_CONFIG_HOME="+configHome,
+			"XDG_DATA_HOME="+dataHome,
+			"NTM_NO_COLOR=1",
+			"NTM_CONFIG=",
+			"NTM_ROBOT_FORMAT=json",
+			"NTM_OUTPUT_FORMAT=",
+			"TOON_DEFAULT_FORMAT=",
+			"NTM_ROBOT_VERBOSITY=",
+			"NTM_ROBOT_CONTRACT_ARGS="+string(rawArgs),
+		)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		runErr := cmd.Run()
+		exitCode := 0
+		if runErr != nil {
+			var exitErr *exec.ExitError
+			if !errors.As(runErr, &exitErr) {
+				t.Fatalf("run subprocess %v: %v (stderr=%s)", args, runErr, stderr.String())
+			}
+			exitCode = exitErr.ExitCode()
+		}
+		return stdout.Bytes(), exitCode
+	}
+
+	// Inline benign prompt -> exit 0
+	cleanRaw, code := runRobotSubprocess("--robot-preflight=Fix unit tests in auth.go")
+	if code != 0 {
+		t.Fatalf("--robot-preflight clean exit=%d, out=%s", code, string(cleanRaw))
+	}
+	var cleanOut robot.PreflightOutput
+	if err := json.Unmarshal(cleanRaw, &cleanOut); err != nil {
+		t.Fatalf("decode clean --robot-preflight: %v (raw=%s)", err, string(cleanRaw))
+	}
+	if !cleanOut.Success || cleanOut.SchemaID != "ntm:robot:preflight:v1" || cleanOut.Findings == nil {
+		t.Fatalf("unexpected clean --robot-preflight output: %+v", cleanOut)
+	}
+
+	// --preflight-file -> exit 0
+	promptFile := filepath.Join(projectDir, "prompt.txt")
+	if err := os.WriteFile(promptFile, []byte("Verify session status cleanly"), 0o644); err != nil {
+		t.Fatalf("write prompt file: %v", err)
+	}
+	fileRaw, code := runRobotSubprocess("--robot-preflight", "--preflight-file="+promptFile)
+	if code != 0 {
+		t.Fatalf("--robot-preflight --preflight-file exit=%d, out=%s", code, string(fileRaw))
+	}
+	var fileOut robot.PreflightOutput
+	if err := json.Unmarshal(fileRaw, &fileOut); err != nil || !fileOut.Success {
+		t.Fatalf("unexpected --preflight-file output: err=%v out=%+v", err, fileOut)
+	}
+
+	// --preflight-strict with destructive command -> exit 1 + PREFLIGHT_BLOCKED
+	strictRaw, code := runRobotSubprocess("--robot-preflight=rm -rf /tmp/build_cache", "--preflight-strict")
+	if code == 0 {
+		t.Fatalf("--robot-preflight --preflight-strict should exit non-zero on blocked prompt: %s", string(strictRaw))
+	}
+	var strictOut robot.PreflightOutput
+	if err := json.Unmarshal(strictRaw, &strictOut); err != nil {
+		t.Fatalf("decode strict --robot-preflight: %v (raw=%s)", err, string(strictRaw))
+	}
+	if strictOut.Success || strictOut.ErrorCode != "PREFLIGHT_BLOCKED" || !strictOut.Strict {
+		t.Fatalf("unexpected strict --robot-preflight output: %+v", strictOut)
+	}
+
+	// Empty prompt -> exit 1 + INVALID_FLAG
+	emptyRaw, code := runRobotSubprocess("--robot-preflight=")
+	if code == 0 {
+		t.Fatalf("--robot-preflight='' should exit non-zero: %s", string(emptyRaw))
+	}
+	var emptyOut robot.PreflightOutput
+	if err := json.Unmarshal(emptyRaw, &emptyOut); err != nil {
+		t.Fatalf("decode empty --robot-preflight: %v (raw=%s)", err, string(emptyRaw))
+	}
+	if emptyOut.Success || emptyOut.ErrorCode != robot.ErrCodeInvalidFlag || emptyOut.Findings == nil {
+		t.Fatalf("unexpected empty --robot-preflight output: %+v", emptyOut)
+	}
+}

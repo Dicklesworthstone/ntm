@@ -9,11 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
-	"net"
 	"net/http"
-	"os/exec"
 	"runtime"
 	"sort"
 	"strings"
@@ -921,10 +918,26 @@ func (s *Server) handleDoctorV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	slog.Info("doctor check", "request_id", reqID)
 
+	verbose, err := parseBoolQueryParam(firstQueryParam(r, "verbose"))
+	if err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid verbose query parameter", nil, reqID)
+		return
+	}
+	contention, err := parseBoolQueryParam(firstQueryParam(r, "contention"))
+	if err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid contention query parameter", nil, reqID)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	report := performDoctorCheckAPI(ctx)
+	report := performDoctorCheckAPIWithOptions(ctx, robot.DoctorOptions{
+		Verbose:           verbose,
+		IncludeContention: contention,
+		SwarmCWD:          s.projectDirSnapshot(),
+		Config:            s.loadEnsembleConfig(s.projectDirSnapshot()),
+	})
 	writeSuccessResponse(w, http.StatusOK, report, reqID)
 }
 
@@ -1066,128 +1079,99 @@ func (s *Server) recordConfigPatchRefusal(r *http.Request, field, reason string)
 	})
 }
 
-// performDoctorCheckAPI runs doctor checks for the REST API.
-func performDoctorCheckAPI(ctx context.Context) map[string]interface{} {
-	report := map[string]interface{}{
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
-		"overall":   "healthy",
-	}
-
-	warnings := 0
-	errors := 0
-
-	// Check dependencies
-	deps := []map[string]interface{}{}
-
-	// Check tmux
-	tmuxCheck := map[string]interface{}{
-		"name":     "tmux",
-		"required": true,
-	}
-	if _, err := exec.LookPath("tmux"); err == nil {
-		tmuxCheck["installed"] = true
-		tmuxCheck["status"] = "ok"
-		// Get version
-		if out, err := exec.CommandContext(ctx, "tmux", "-V").Output(); err == nil {
-			tmuxCheck["version"] = strings.TrimSpace(string(out))
+// performDoctorCheckAPIWithOptions runs doctor checks for the REST API via the
+// canonical ORI robot.GetDoctor engine.
+func performDoctorCheckAPIWithOptions(ctx context.Context, opts robot.DoctorOptions) map[string]interface{} {
+	out, err := robot.GetDoctor(ctx, opts)
+	if err != nil || out == nil {
+		errMsg := "doctor check failed"
+		if err != nil {
+			errMsg = err.Error()
 		}
-	} else {
-		tmuxCheck["installed"] = false
-		tmuxCheck["status"] = "error"
-		tmuxCheck["message"] = "tmux is required for NTM"
-		errors++
-	}
-	deps = append(deps, tmuxCheck)
-
-	// Check Go
-	goCheck := map[string]interface{}{
-		"name":     "go",
-		"required": false,
-	}
-	if path, err := exec.LookPath("go"); err == nil {
-		goCheck["installed"] = true
-		goCheck["path"] = path
-		goCheck["status"] = "ok"
-		if out, err := exec.CommandContext(ctx, "go", "version").Output(); err == nil {
-			goCheck["version"] = strings.TrimSpace(string(out))
+		return map[string]interface{}{
+			"timestamp":       time.Now().UTC().Format(time.RFC3339),
+			"overall":         "unhealthy",
+			"warnings":        0,
+			"errors":          1,
+			"dependencies":    []map[string]interface{}{},
+			"daemons":         []map[string]interface{}{},
+			"guard_hook":      map[string]interface{}{"name": "guard-hook", "status": "error", "degraded_runs": 0, "message": errMsg},
+			"tools":           []robot.DoctorToolCheck{},
+			"configuration":   []robot.DoctorConfigCheck{},
+			"invariants":      []robot.DoctorInvariantCheck{},
+			"contention":      []robot.DoctorContentionHolder{},
+			"safety_defaults": robot.DoctorSafetyDefaults{},
 		}
-	} else {
-		goCheck["installed"] = false
-		goCheck["status"] = "warning"
-		goCheck["message"] = "not found (needed for plugins)"
-		warnings++
-	}
-	deps = append(deps, goCheck)
-
-	report["dependencies"] = deps
-
-	// Check daemons
-	daemons := []map[string]interface{}{}
-	daemonPorts := []struct {
-		name string
-		port int
-	}{
-		{"agent-mail", 8765},
-		{"cm-server", 8766},
 	}
 
-	dialer := &net.Dialer{Timeout: time.Second}
-	for _, dp := range daemonPorts {
-		check := map[string]interface{}{
-			"name": dp.name,
-			"port": dp.port,
+	deps := make([]map[string]interface{}, 0, len(out.Dependencies))
+	for _, d := range out.Dependencies {
+		entry := map[string]interface{}{
+			"name":      d.Name,
+			"installed": d.Installed,
+			"required":  d.Required,
+			"status":    d.Status,
 		}
-		conn, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", dp.port))
-		if err == nil {
-			if closeErr := conn.Close(); closeErr != nil {
-				log.Printf("health check: close daemon probe conn name=%s port=%d error=%v", dp.name, dp.port, closeErr)
-			}
-			check["running"] = true
-			check["status"] = "ok"
-			check["message"] = fmt.Sprintf("listening on port %d", dp.port)
-		} else {
-			check["running"] = false
-			check["status"] = "ok"
-			check["message"] = fmt.Sprintf("port %d available", dp.port)
+		if d.Version != "" {
+			entry["version"] = d.Version
 		}
-		daemons = append(daemons, check)
+		if d.Path != "" {
+			entry["path"] = d.Path
+		}
+		if d.Message != "" {
+			entry["message"] = d.Message
+		}
+		deps = append(deps, entry)
 	}
-	report["daemons"] = daemons
 
-	// Pre-commit guard degraded runs (bd-ws1-truth-safety-l5ddi.1): the guard
-	// hook fails open when Agent Mail is unreachable and records each such run
-	// in the state DB; the dashboard surfaces the count as a warning line.
+	daemons := make([]map[string]interface{}, 0, len(out.Daemons))
+	for _, dm := range out.Daemons {
+		entry := map[string]interface{}{
+			"name":    dm.Name,
+			"port":    dm.Port,
+			"running": dm.Running,
+			"status":  dm.Status,
+		}
+		if dm.Message != "" {
+			entry["message"] = dm.Message
+		}
+		daemons = append(daemons, entry)
+	}
+
 	guardCheck := map[string]interface{}{
 		"name":          "guard-hook",
 		"status":        "ok",
 		"degraded_runs": 0,
 	}
-	if store, err := state.Open(""); err == nil {
-		if migrateErr := store.Migrate(); migrateErr != nil {
-			log.Printf("doctor: state store migrate error=%v", migrateErr)
-		} else if stats, statsErr := store.GuardDegradedEventStats(time.Time{}); statsErr == nil && stats.Count > 0 {
-			guardCheck["status"] = "warning"
-			guardCheck["degraded_runs"] = stats.Count
-			guardCheck["since"] = stats.FirstAt.UTC().Format(time.RFC3339)
-			guardCheck["message"] = fmt.Sprintf("guard hook ran degraded %d time(s) since %s (commits allowed without a reservation check)",
-				stats.Count, stats.FirstAt.UTC().Format(time.RFC3339))
-			warnings++
+	if out.GuardHook != nil {
+		guardCheck["name"] = out.GuardHook.Name
+		guardCheck["status"] = out.GuardHook.Status
+		guardCheck["degraded_runs"] = out.GuardHook.DegradedRuns
+		if out.GuardHook.Since != "" {
+			guardCheck["since"] = out.GuardHook.Since
 		}
-		if closeErr := store.Close(); closeErr != nil {
-			log.Printf("doctor: close state store error=%v", closeErr)
+		if out.GuardHook.Message != "" {
+			guardCheck["message"] = out.GuardHook.Message
 		}
 	}
-	report["guard_hook"] = guardCheck
 
-	// Set overall status
-	if errors > 0 {
-		report["overall"] = "unhealthy"
-	} else if warnings > 0 {
-		report["overall"] = "warning"
+	report := map[string]interface{}{
+		"timestamp":       out.Timestamp,
+		"overall":         out.Overall,
+		"warnings":        out.Warnings,
+		"errors":          out.Errors,
+		"dependencies":    deps,
+		"daemons":         daemons,
+		"guard_hook":      guardCheck,
+		"tools":           out.Tools,
+		"configuration":   out.Configuration,
+		"invariants":      out.Invariants,
+		"safety_defaults": out.SafetyDefaults,
+		"contention":      out.Contention,
 	}
-	report["warnings"] = warnings
-	report["errors"] = errors
-
+	if out.AgentHints != nil {
+		report["_agent_hints"] = out.AgentHints
+	}
 	return report
 }
 

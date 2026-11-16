@@ -1,6 +1,43 @@
 import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as vscode from 'vscode';
+import {
+    AssignStrategy,
+    AssignWorkOptions,
+    AssignWorkRecommendation,
+    AssignWorkResult,
+    AssignWorkSummary,
+    DoctorCheckItem,
+    DoctorContentionHolder,
+    DoctorOptions,
+    DoctorResult,
+    normalizeAssignWorkResult,
+    normalizeDoctorResult,
+    normalizePreflightResult,
+    PreflightFinding,
+    PreflightOptions,
+    PreflightResult,
+    SUPPORTED_ASSIGN_STRATEGIES,
+} from './orchestrationSupport';
+
+export {
+    AssignStrategy,
+    AssignWorkOptions,
+    AssignWorkRecommendation,
+    AssignWorkResult,
+    AssignWorkSummary,
+    DoctorCheckItem,
+    DoctorContentionHolder,
+    DoctorOptions,
+    DoctorResult,
+    normalizeAssignWorkResult,
+    normalizeDoctorResult,
+    normalizePreflightResult,
+    PreflightFinding,
+    PreflightOptions,
+    PreflightResult,
+    SUPPORTED_ASSIGN_STRATEGIES,
+};
 
 export const SUPPORTED_SPAWN_HARNESSES = [
     'cc',
@@ -2171,7 +2208,14 @@ export class NtmClient {
             if (opts?.allowJsonErrorEnvelope && typeof e.stdout === 'string' && e.stdout.trim().startsWith('{')) {
                 try {
                     const parsed = JSON.parse(e.stdout);
-                    if (parsed && typeof parsed === 'object' && ('available' in parsed || 'error' in parsed)) {
+                    if (
+                        parsed &&
+                        typeof parsed === 'object' &&
+                        ('available' in parsed ||
+                            'error' in parsed ||
+                            'overall_status' in parsed ||
+                            'findings' in parsed)
+                    ) {
                         return e.stdout;
                     }
                 } catch {
@@ -2763,5 +2807,75 @@ export class NtmClient {
 
         const stdout = await this.run(args);
         return normalizeSupportBundleResult(JSON.parse(stdout));
+    }
+
+    /**
+     * Run ecosystem diagnostics (dependencies, tools, daemons, invariants, safety defaults,
+     * and optional SQLite/Beads lock contention scan) via `ntm --robot-doctor`.
+     */
+    async getDoctor(options?: DoctorOptions): Promise<DoctorResult> {
+        const args: string[] = ['--robot-doctor'];
+        if (options?.contention) {
+            args.push('--doctor-contention');
+        }
+        if (options?.verbose) {
+            args.push('--doctor-verbose');
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args, { allowJsonErrorEnvelope: true });
+        return normalizeDoctorResult(JSON.parse(stdout));
+    }
+
+    /**
+     * Lint and safety-check a prompt before dispatching to agents via
+     * `ntm --robot-preflight=<prompt> [--preflight-strict] --robot-format=json`.
+     */
+    async preflightPrompt(options: PreflightOptions): Promise<PreflightResult> {
+        const filePath = (options?.filePath ?? '').trim();
+        const prompt = (options?.prompt ?? '').trim();
+        if (!filePath && !prompt) {
+            throw new Error('Either prompt text or filePath is required for preflight');
+        }
+        const args: string[] = filePath
+            ? ['--robot-preflight', `--preflight-file=${filePath}`]
+            : [`--robot-preflight=${prompt}`];
+        if (options?.strict) {
+            args.push('--preflight-strict');
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args, { allowJsonErrorEnvelope: true });
+        return normalizePreflightResult(JSON.parse(stdout));
+    }
+
+    /**
+     * Recommend ready-bead to idle-agent pairings via
+     * `ntm --robot-assign=<session> [--strategy=...] [--beads=...] [--relax] --robot-format=json`.
+     */
+    async getAssign(options: AssignWorkOptions): Promise<AssignWorkResult> {
+        const sess = (options?.session ?? '').trim();
+        if (!sess) {
+            throw new Error('Session name is required to recommend assignments');
+        }
+        const args: string[] = [`--robot-assign=${sess}`];
+        const strategy = options?.strategy;
+        if (strategy !== undefined) {
+            if (!SUPPORTED_ASSIGN_STRATEGIES.includes(strategy)) {
+                throw new Error(`Unsupported assignment strategy: ${String(strategy)}`);
+            }
+            args.push(`--strategy=${strategy}`);
+        }
+        const beads = (options?.beads ?? '').trim();
+        if (beads) {
+            args.push(`--beads=${beads}`);
+        }
+        if (options?.relax) {
+            args.push('--relax');
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeAssignWorkResult(JSON.parse(stdout));
     }
 }

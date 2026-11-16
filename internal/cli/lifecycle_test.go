@@ -559,6 +559,7 @@ func TestForcedRotationEscalatesOnlyWithVerifiedOriginalShell(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("forced rotation fixture requires POSIX shells")
 	}
+	t.Parallel()
 	const script = `#!/bin/sh
 set -eu
 root="$NTM_FORCED_ROTATION_TEST_ROOT"
@@ -645,7 +646,9 @@ case "$1" in
 esac
 `
 	for _, mode := range []string{"gone", "unverified", "replaced", "failed-send", "still-running", "replacement-at-fallback", "provider-at-fallback", "kill-unverified", "kill-replaced", "kill-exited-shell-lost"} {
+		mode := mode
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			tmuxPath := filepath.Join(root, "tmux")
 			if err := os.WriteFile(tmuxPath, []byte(script), 0700); err != nil {

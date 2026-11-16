@@ -156,6 +156,13 @@ ntm audit http --action=create --limit=20 --json
 ntm --robot-timeline
 ntm --robot-timeline=myproject --timeline-events
 ntm --robot-timeline --timeline-stats
+
+# Ecosystem health doctor and prompt preflight validation
+ntm --robot-doctor
+ntm --robot-doctor --doctor-contention --doctor-verbose
+ntm --robot-preflight="fix the bug in auth.go"
+ntm --robot-preflight="rm -rf /tmp/cache" --preflight-strict
+ntm --robot-preflight --preflight-file=prompt.txt
 ```
 
 ## Reasoning Ensembles

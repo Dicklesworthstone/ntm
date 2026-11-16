@@ -137,6 +137,68 @@ function normalizeDoctorReport(
     });
   }
 
+  for (const [field, categoryLabel] of [
+    ["tools", "Ecosystem Tool"],
+    ["invariants", "Invariant"],
+    ["configuration", "Configuration"],
+    ["safety_defaults", "Safety Default"],
+  ] as const) {
+    const arr = raw[field];
+    if (!Array.isArray(arr)) continue;
+    arr.forEach((item, idx) => {
+      if (!item || typeof item !== "object") return;
+      const entry = item as Record<string, unknown>;
+      const name =
+        typeof entry.name === "string" ? entry.name : `${field}-${idx}`;
+      const status =
+        typeof entry.status === "string"
+          ? entry.status
+          : entry.installed === false
+            ? "warning"
+            : "ok";
+      const detailParts = [
+        typeof entry.version === "string" ? entry.version : "",
+        typeof entry.details === "string" ? entry.details : "",
+      ].filter(Boolean);
+      checks.push({
+        id: `${field}-${idx}-${name}`,
+        category: categoryLabel,
+        name,
+        status,
+        message: typeof entry.message === "string" ? entry.message : "",
+        details: detailParts.join(" · "),
+      });
+    });
+  }
+
+  if (Array.isArray(raw.contention)) {
+    raw.contention.forEach((item, idx) => {
+      if (!item || typeof item !== "object") return;
+      const holder = item as Record<string, unknown>;
+      const procName =
+        typeof holder.command === "string"
+          ? holder.command
+          : typeof holder.process === "string"
+            ? holder.process
+            : "lock-holder";
+      const pid = typeof holder.pid === "number" ? holder.pid : 0;
+      const lockFile =
+        typeof holder.resource === "string"
+          ? holder.resource
+          : typeof holder.lock_file === "string"
+            ? holder.lock_file
+            : "";
+      checks.push({
+        id: `contention-${idx}-${pid}`,
+        category: "Lock Contention",
+        name: `${procName} (PID ${pid})`,
+        status: "warning",
+        message: lockFile ? `Holding ${lockFile}` : "Active lock holder",
+        details: typeof holder.cwd === "string" ? holder.cwd : "",
+      });
+    });
+  }
+
   const passed =
     typeof raw.passed === "number"
       ? raw.passed
@@ -269,9 +331,14 @@ export default function SessionsPage() {
     retry: false,
   });
 
+  const [includeContention, setIncludeContention] = useState(false);
+
   // On-demand ONLY: /api/v1/doctor is never polled on mount.
   const doctorMutation = useMutation({
-    mutationFn: () => apiFetch<ServerDoctorResponse>("/api/v1/doctor"),
+    mutationFn: (withContention?: boolean) =>
+      apiFetch<ServerDoctorResponse>(
+        withContention ? "/api/v1/doctor?contention=true" : "/api/v1/doctor"
+      ),
   });
 
   const doctorReport = useMemo(
@@ -517,16 +584,27 @@ export default function SessionsPage() {
               guard hooks on demand.
             </p>
           </div>
-          <button
-            type="button"
-            disabled={doctorMutation.isPending}
-            onClick={() => doctorMutation.mutate()}
-            className="px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 self-start sm:self-center"
-          >
-            {doctorMutation.isPending
-              ? "Running Doctor..."
-              : "Run Doctor Check"}
-          </button>
+          <div className="flex flex-wrap items-center gap-3 self-start sm:self-center">
+            <label className="inline-flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300">
+              <input
+                type="checkbox"
+                checked={includeContention}
+                onChange={(e) => setIncludeContention(e.target.checked)}
+                className="rounded border-gray-300 dark:border-gray-600"
+              />
+              Include Lock Contention
+            </label>
+            <button
+              type="button"
+              disabled={doctorMutation.isPending}
+              onClick={() => doctorMutation.mutate(includeContention)}
+              className="px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {doctorMutation.isPending
+                ? "Running Doctor..."
+                : "Run Doctor Check"}
+            </button>
+          </div>
         </div>
 
         {doctorMutation.isError && (

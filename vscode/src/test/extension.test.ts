@@ -14,12 +14,15 @@ import {
     DEFAULT_WEB_PORT,
     mapBackpressureLevel,
     normalizeAnalyticsResult,
+    normalizeAssignWorkResult,
     normalizeAuditResult,
     normalizeBackpressure,
+    normalizeDoctorResult,
     normalizeEnsembleSynthesize,
     normalizeHandoffResult,
     normalizeIncidentList,
     normalizeIncidentMutation,
+    normalizePreflightResult,
     normalizeSnapshot,
     normalizeStatusHeader,
     normalizeSupportBundleResult,
@@ -28,6 +31,7 @@ import {
     NtmClient,
     RobotMail,
     shellQuote,
+    SUPPORTED_ASSIGN_STRATEGIES,
     SUPPORTED_ATTENTION_ACTIONS,
     SUPPORTED_INCIDENT_ACTIONS,
     SUPPORTED_SEND_HARNESSES,
@@ -49,6 +53,7 @@ import { NtmSessionTreeProvider, NtmTreeItem } from '../sessionTreeView';
 import {
     activate,
     ANALYTICS_WINDOW_OPTIONS,
+    ASSIGN_STRATEGY_OPTIONS,
     attentionSeverityIcon,
     AUDIT_MODE_OPTIONS,
     backpressureLevelIcon,
@@ -61,13 +66,18 @@ import {
     buildWebCockpitCommand as extensionBuildWebCockpitCommand,
     buildWorktreeQuickPickItems,
     defaultEnsembleSessionName,
+    DOCTOR_MODE_OPTIONS,
     ENSEMBLE_SYNTHESIS_STRATEGY_OPTIONS,
     formatAnalyticsMarkdown,
+    formatAssignWorkMarkdown,
     formatAuditMarkdown,
+    formatDoctorMarkdown,
     formatHandoffMarkdown,
+    formatPreflightMarkdown,
     HANDOFF_MODE_OPTIONS,
     PALETTE_ACTION_OPTIONS,
     parseCustomSpawnFlags,
+    PREFLIGHT_MODE_OPTIONS,
     resolveSendTargetsFromSelection,
     SEND_TARGET_OPTIONS,
     shellQuote as extensionShellQuote,
@@ -2748,6 +2758,255 @@ describe('Wave 11 Audit Inspection/Verification & Support Bundle Commands', () =
             assert.deepEqual(mockState.openedExternalUris, [
                 'http://127.0.0.1:7337/safety',
                 'http://127.0.0.1:7337/',
+            ]);
+        } finally {
+            for (const sub of subscriptions) {
+                sub.dispose();
+            }
+        }
+    });
+});
+
+describe('Wave 12: VSCode ntm.runDoctor, ntm.preflightPrompt & ntm.assignWork', () => {
+    beforeEach(() => {
+        resetVscodeMock();
+    });
+
+    const REAL_DOCTOR_CONTENTION_PAYLOAD = {
+        success: true,
+        timestamp: '2026-11-16T05:00:00Z',
+        overall_status: 'warning',
+        passed: 8,
+        warnings: 1,
+        errors: 0,
+        dependencies: [
+            { name: 'tmux', installed: true, required: true, version: 'tmux 3.4', status: 'ok' },
+        ],
+        daemons: [
+            { name: 'agent-mail', port: 8765, running: true, status: 'ok', message: 'listening on port 8765' },
+        ],
+        guard_hook: {
+            name: 'guard-hook',
+            status: 'warning',
+            degraded_runs: 1,
+            since: '2026-11-15T10:00:00Z',
+        },
+        contention: [
+            { pid: 4242, process: 'br', lock_file: '.beads/beads.db-wal', cwd: '/data/projects/ntm' },
+        ],
+    };
+
+    const REAL_PREFLIGHT_BLOCKED_PAYLOAD = {
+        success: false,
+        error: 'prompt blocked by preflight',
+        error_code: 'PREFLIGHT_BLOCKED',
+        preview_hash: 'deadbeefcafebabe',
+        preview_len: 31,
+        estimated_tokens: 9,
+        error_count: 1,
+        warning_count: 0,
+        info_count: 0,
+        dcg_available: true,
+        findings: [
+            {
+                severity: 'error',
+                code: 'destructive_command',
+                message: 'Prompt embeds a destructive filesystem command',
+                remediation: 'Remove destructive command before dispatching',
+            },
+        ],
+    };
+
+    const REAL_ASSIGN_PAYLOAD = {
+        success: true,
+        session: 'wave12-swarm',
+        strategy: 'dependency',
+        relaxed: false,
+        idle_agents: ['%11', '%12'],
+        recommendations: [
+            {
+                pane_id: '%11',
+                pane_target: '0.1',
+                agent_type: 'claude',
+                assign_bead: 'bd-n5y0l.2',
+                bead_title: 'Expose Orchestration REST routes',
+                priority: 'P1',
+                confidence: 0.94,
+                reasoning: 'Unblocks 2 downstream tasks',
+            },
+        ],
+        summary: {
+            total_agents: 3,
+            idle_agents: 2,
+            working_agents: 1,
+            ready_beads: 2,
+            blocked_beads: 1,
+            recommendations: 1,
+            unassignable_beads: 0,
+        },
+    };
+
+    it('constructs exact CLI argv and normalizes JSON for getDoctor, preflightPrompt (including exit-1 blocked envelope), and getAssign', async () => {
+        const calls: string[][] = [];
+        const client = new NtmClient({
+            execFile: async (_file, args) => {
+                calls.push(args);
+                if (args.includes('--robot-doctor')) {
+                    return { stdout: JSON.stringify(REAL_DOCTOR_CONTENTION_PAYLOAD), stderr: '' };
+                }
+                if (args.some(a => a.startsWith('--robot-preflight'))) {
+                    const exitErr = Object.assign(new Error('exit 1'), {
+                        stdout: JSON.stringify(REAL_PREFLIGHT_BLOCKED_PAYLOAD),
+                        stderr: '',
+                    });
+                    throw exitErr;
+                }
+                if (args.some(a => a.startsWith('--robot-assign='))) {
+                    return { stdout: JSON.stringify(REAL_ASSIGN_PAYLOAD), stderr: '' };
+                }
+                throw new Error(`unexpected args: ${args.join(' ')}`);
+            },
+        });
+
+        const docRes = await client.getDoctor({ contention: true, verbose: true });
+        assert.deepEqual(calls[0], [
+            '--robot-doctor',
+            '--doctor-contention',
+            '--doctor-verbose',
+            '--robot-format=json',
+        ]);
+        assert.equal(docRes.overall_status, 'warning');
+        assert.equal(docRes.contention.length, 1);
+        assert.equal(docRes.contention[0].pid, 4242);
+
+        const pfRes = await client.preflightPrompt({
+            prompt: 'Check destructive safety command',
+            strict: true,
+        });
+        assert.deepEqual(calls[1], [
+            '--robot-preflight=Check destructive safety command',
+            '--preflight-strict',
+            '--robot-format=json',
+        ]);
+        assert.equal(pfRes.allowed, false);
+        assert.equal(pfRes.error_count, 1);
+        assert.equal(pfRes.findings[0].code, 'destructive_command');
+
+        const assignRes = await client.getAssign({
+            session: 'wave12-swarm',
+            strategy: 'dependency',
+            beads: 'bd-n5y0l.2',
+            relax: true,
+        });
+        assert.deepEqual(calls[2], [
+            '--robot-assign=wave12-swarm',
+            '--strategy=dependency',
+            '--beads=bd-n5y0l.2',
+            '--relax',
+            '--robot-format=json',
+        ]);
+        assert.equal(assignRes.recommendations.length, 1);
+        assert.equal(assignRes.recommendations[0].assign_bead, 'bd-n5y0l.2');
+
+        assert.ok(formatDoctorMarkdown(docRes).includes('4242'));
+        assert.ok(formatPreflightMarkdown(pfRes).includes('BLOCKED'));
+        assert.ok(formatAssignWorkMarkdown(assignRes).includes('94%'));
+        assert.equal(DOCTOR_MODE_OPTIONS.length, 3);
+        assert.equal(PREFLIGHT_MODE_OPTIONS.length, 3);
+        assert.equal(ASSIGN_STRATEGY_OPTIONS.length, 6);
+        assert.equal(SUPPORTED_ASSIGN_STRATEGIES.length, 5);
+
+        assert.throws(
+            () => normalizeDoctorResult({ success: false, error: 'doctor crashed' }),
+            /doctor crashed/
+        );
+        assert.throws(
+            () => normalizePreflightResult({ success: false, error: 'missing prompt' }),
+            /missing prompt/
+        );
+        assert.throws(
+            () => normalizeAssignWorkResult({ success: false, error: 'session not found' }),
+            /session not found/
+        );
+
+        const pkgPath = path.resolve(__dirname, '../../package.json');
+        const pkgJson = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        const activationEvents: string[] = pkgJson.activationEvents ?? [];
+        assert.ok(activationEvents.includes('onCommand:ntm.runDoctor'));
+        assert.ok(activationEvents.includes('onCommand:ntm.preflightPrompt'));
+        assert.ok(activationEvents.includes('onCommand:ntm.assignWork'));
+        assert.ok(PALETTE_ACTION_OPTIONS.some(p => p.command === 'ntm.runDoctor'));
+        assert.ok(PALETTE_ACTION_OPTIONS.some(p => p.command === 'ntm.preflightPrompt'));
+        assert.ok(PALETTE_ACTION_OPTIONS.some(p => p.command === 'ntm.assignWork'));
+    });
+
+    it('executes ntm.runDoctor, ntm.preflightPrompt, and ntm.assignWork end-to-end with Web Cockpit routing', async () => {
+        mockState.binaryPath = '/opt/ntm/bin/ntm';
+        mockState.webPort = 7337;
+        const seenArgs: string[][] = [];
+
+        const client = new NtmClient({
+            execFile: async (_file, args) => {
+                seenArgs.push(args);
+                if (args.includes('--robot-doctor')) {
+                    return { stdout: JSON.stringify(REAL_DOCTOR_CONTENTION_PAYLOAD), stderr: '' };
+                }
+                if (args.some(a => a.startsWith('--robot-preflight'))) {
+                    const exitErr = Object.assign(new Error('exit 1'), {
+                        stdout: JSON.stringify(REAL_PREFLIGHT_BLOCKED_PAYLOAD),
+                        stderr: '',
+                    });
+                    throw exitErr;
+                }
+                if (args.some(a => a.startsWith('--robot-assign='))) {
+                    return { stdout: JSON.stringify(REAL_ASSIGN_PAYLOAD), stderr: '' };
+                }
+                return { stdout: JSON.stringify(REAL_SNAPSHOT_PAYLOAD), stderr: '' };
+            },
+        });
+
+        const subscriptions: Array<{ dispose(): void }> = [];
+        const context = {
+            subscriptions,
+            extensionUri: vscode.Uri.file('/ext'),
+        } as unknown as vscode.ExtensionContext;
+
+        activate(context, client);
+        try {
+            // 1. Run doctor + contention scan and route to Overview
+            mockState.quickPickQueue.push(
+                (items: Array<{ mode: string }>) => items.find(i => i.mode === 'contention')
+            );
+            mockState.infoMessageActionQueue.push('Open Overview in Web Cockpit');
+            await vscode.commands.executeCommand('ntm.runDoctor');
+            assert.ok(seenArgs.some(a => a.includes('--robot-doctor') && a.includes('--doctor-contention')));
+            assert.deepEqual(mockState.openedExternalUris, ['http://127.0.0.1:7337/']);
+
+            // 2. Run strict preflight on input prompt -> blocked warning toast
+            mockState.quickPickQueue.push(
+                (items: Array<{ mode: string }>) => items.find(i => i.mode === 'strict')
+            );
+            mockState.inputBoxQueue.push('Check destructive safety command');
+            await vscode.commands.executeCommand('ntm.preflightPrompt');
+            assert.ok(
+                mockState.warningMessages.some(m => m.includes('Prompt preflight BLOCKED'))
+            );
+
+            // 3. Plan Beads work assignments for wave12-swarm and route to /swarm
+            mockState.quickPickQueue.push(
+                (items: Array<{ strategy: string }>) => items.find(i => i.strategy === 'dependency')
+            );
+            mockState.inputBoxQueue.push('');
+            mockState.infoMessageActionQueue.push('Open /swarm in Web Cockpit');
+            await vscode.commands.executeCommand('ntm.assignWork', 'wave12-swarm');
+            assert.ok(
+                seenArgs.some(
+                    a => a.includes('--robot-assign=wave12-swarm') && a.includes('--strategy=dependency')
+                )
+            );
+            assert.deepEqual(mockState.openedExternalUris, [
+                'http://127.0.0.1:7337/',
+                'http://127.0.0.1:7337/swarm',
             ]);
         } finally {
             for (const sub of subscriptions) {

@@ -12,7 +12,7 @@
     "utility"
   ],
   "category_count": 10,
-  "schema_type_count": 146,
+  "schema_type_count": 148,
   "schema_types": [
     "account_status",
     "accounts_list",
@@ -53,6 +53,7 @@
     "digest",
     "dismiss_alert",
     "docs",
+    "doctor",
     "ensemble",
     "ensemble_modes",
     "ensemble_presets",
@@ -113,6 +114,7 @@
     "pane_address",
     "plan",
     "policy_decisions",
+    "preflight",
     "probe",
     "productivity",
     "proxy_status",
@@ -162,7 +164,7 @@
     "xf_status"
   ],
   "section_count": 13,
-  "surface_count": 158,
+  "surface_count": 160,
   "surfaces": [
     {
       "category": "state",
@@ -330,6 +332,21 @@
       "name": "diff",
       "schema_id": "ntm:robot:diff:v1",
       "schema_type": "diff"
+    },
+    {
+      "category": "state",
+      "flag": "--robot-doctor",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "doctor",
+      "schema_id": "ntm:robot:doctor:v1",
+      "schema_type": "doctor"
     },
     {
       "category": "state",
@@ -2141,6 +2158,21 @@
       "name": "policy-decisions",
       "schema_id": "ntm:robot:policy-decisions:v1",
       "schema_type": "policy_decisions"
+    },
+    {
+      "category": "utility",
+      "flag": "--robot-preflight",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "preflight",
+      "schema_id": "ntm:robot:preflight:v1",
+      "schema_type": "preflight"
     },
     {
       "category": "utility",

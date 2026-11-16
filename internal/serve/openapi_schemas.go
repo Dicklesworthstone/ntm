@@ -637,12 +637,18 @@ type DoctorGuardHookStatus struct {
 
 type ServerDoctorEnvelopeResponse struct {
 	APIResponse
-	Overall      string                   `json:"overall"`
-	Warnings     int                      `json:"warnings"`
-	Errors       int                      `json:"errors"`
-	Dependencies []DoctorDependencyStatus `json:"dependencies"`
-	Daemons      []DoctorDaemonStatus     `json:"daemons"`
-	GuardHook    DoctorGuardHookStatus    `json:"guard_hook"`
+	Overall        string                         `json:"overall"`
+	Warnings       int                            `json:"warnings"`
+	Errors         int                            `json:"errors"`
+	Dependencies   []DoctorDependencyStatus       `json:"dependencies"`
+	Daemons        []DoctorDaemonStatus           `json:"daemons"`
+	GuardHook      DoctorGuardHookStatus          `json:"guard_hook"`
+	Tools          []robot.DoctorToolCheck        `json:"tools,omitempty"`
+	Configuration  []robot.DoctorConfigCheck      `json:"configuration,omitempty"`
+	Invariants     []robot.DoctorInvariantCheck   `json:"invariants,omitempty"`
+	SafetyDefaults *robot.DoctorSafetyDefaults    `json:"safety_defaults,omitempty"`
+	Contention     []robot.DoctorContentionHolder `json:"contention,omitempty"`
+	AgentHints     *robot.AgentHints              `json:"_agent_hints,omitempty"`
 }
 
 type KernelCommandsEnvelopeResponse struct {
@@ -1003,8 +1009,15 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 	"handleCleanupPipelines":      {Response: PipelineCleanupEnvelopeResponse{}, Envelope: true, Request: PipelineCleanupRequest{}},
 
 	// System, Config, Deps, Doctor, Kernel
-	"handleDepsV1":         {ComponentName: "DepsEnvelopeResponse", Response: output.DepsResponse{}, Envelope: true},
-	"handleDoctorV1":       {Response: ServerDoctorEnvelopeResponse{}, Envelope: true},
+	"handleDepsV1": {ComponentName: "DepsEnvelopeResponse", Response: output.DepsResponse{}, Envelope: true},
+	"handleDoctorV1": {
+		Response: ServerDoctorEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "verbose", Type: "boolean", Description: "Include verbose version/detail probes for optional ecosystem tools."},
+			{Name: "contention", Type: "boolean", Description: "Inspect live processes holding SQLite/Beads or swarm resource locks."},
+		},
+	},
 	"handleGetConfigV1":    {Response: ServerConfigEnvelopeResponse{}, Envelope: true},
 	"handlePatchConfigV1":  {Response: ServerConfigPatchEnvelopeResponse{}, Envelope: true, Request: ServerConfigPatchRequest{}, RequestReq: true},
 	"handleKernelCommands": {Response: KernelCommandsEnvelopeResponse{}, Envelope: true},
@@ -1014,26 +1027,48 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 	"handleSessionV1":            {Response: SessionDetailEnvelopeResponse{}, Envelope: true},
 	"handleSessionEventsRouteV1": {Response: SessionEventsEnvelopeResponse{}, Envelope: true},
 	"handleCreateSessionV1":      {ComponentName: "CreateSessionEnvelopeResponse", Response: output.CreateResponse{}, Envelope: true, Request: CreateSessionRequest{}, RequestReq: true},
-	"handleSessionStatusV1":      {ComponentName: "SessionStatusEnvelopeResponse", Response: output.StatusResponse{}, Envelope: true},
-	"handleSessionAttachV1":      {ComponentName: "SessionAttachEnvelopeResponse", Response: output.SessionResponse{}, Envelope: true},
-	"handleSessionZoomV1":        {ComponentName: "SessionActionEnvelopeResponse", Response: output.SuccessResponse{}, Envelope: true, Request: SessionZoomRequest{}, RequestReq: true},
-	"handleSessionViewV1":        {ComponentName: "SessionActionEnvelopeResponse", Response: output.SuccessResponse{}, Envelope: true},
-	"handleListPanesV1":          {Response: PanesListEnvelopeResponse{}, Envelope: true},
-	"handleGetPaneV1":            {Response: PaneDetailEnvelopeResponse{}, Envelope: true},
-	"handlePaneInputV1":          {Response: PaneInputEnvelopeResponse{}, Envelope: true, Request: PaneInputRequest{}, RequestReq: true},
-	"handlePaneInterruptV1":      {Response: PaneInterruptEnvelopeResponse{}, Envelope: true},
-	"handlePaneOutputV1":         {Response: PaneOutputEnvelopeResponse{}, Envelope: true, QueryParams: []routeQueryParam{{Name: "lines", Type: "integer", Description: "Number of scrollback lines to capture (default 100)."}}},
-	"handleGetPaneTitleV1":       {Response: PaneTitleEnvelopeResponse{}, Envelope: true},
-	"handleSetPaneTitleV1":       {Response: PaneTitleEnvelopeResponse{}, Envelope: true, Request: PaneTitleRequest{}, RequestReq: true},
-	"handleStartPaneStreamV1":    {Response: PaneStreamEnvelopeResponse{}, Envelope: true},
-	"handleStopPaneStreamV1":     {Response: PaneStreamEnvelopeResponse{}, Envelope: true},
-	"handleStreamingStatsV1":     {Response: StreamingStatsEnvelopeResponse{}, Envelope: true},
-	"handleMetricsExportV1":      {Response: MetricsExportEnvelopeResponse{}, Envelope: true},
-	"handleListAgentsV1":         {Response: SessionAgentsEnvelopeResponse{}, Envelope: true},
-	"handleListJobs":             {Response: JobsListEnvelopeResponse{}, Envelope: true},
-	"handleCreateJob":            {Response: JobEnvelopeResponse{}, Envelope: true, Request: CreateJobRequest{}, RequestReq: true},
-	"handleGetJob":               {Response: JobEnvelopeResponse{}, Envelope: true},
-	"handleCancelJob":            {Response: JobEnvelopeResponse{}, Envelope: true},
+	"handleDeleteSessionV1": {
+		ComponentName: "DeleteSessionEnvelopeResponse",
+		Response:      output.KillResponse{},
+		Envelope:      true,
+		Request:       DeleteSessionRequest{},
+		QueryParams: []routeQueryParam{
+			{Name: "force", Type: "boolean", Description: "Force session termination without interactive confirmation."},
+			{Name: "no_hooks", Type: "boolean", Description: "Skip pre/post session teardown lifecycle hooks."},
+			{Name: "summarize", Type: "boolean", Description: "Generate a session summary prior to teardown."},
+		},
+	},
+	"handleSessionStatusV1": {ComponentName: "SessionStatusEnvelopeResponse", Response: output.StatusResponse{}, Envelope: true},
+	"handleSessionHealthV1": {
+		Response: SessionHealthEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "pane", Type: "string", Description: "Optional pane index or topology selector filter."},
+			{Name: "status", Type: "string", Description: "Optional agent health status filter (ok, warning, error)."},
+			{Name: "verbose", Type: "boolean", Description: "Include verbose diagnostic issue details."},
+		},
+	},
+	"handleSessionAttachV1":     {ComponentName: "SessionAttachEnvelopeResponse", Response: output.SessionResponse{}, Envelope: true},
+	"handleSessionZoomV1":       {ComponentName: "SessionActionEnvelopeResponse", Response: output.SuccessResponse{}, Envelope: true, Request: SessionZoomRequest{}, RequestReq: true},
+	"handleSessionViewV1":       {ComponentName: "SessionActionEnvelopeResponse", Response: output.SuccessResponse{}, Envelope: true},
+	"handleSessionInterruptV1":  {ComponentName: "SessionInterruptEnvelopeResponse", Response: output.InterruptResponse{}, Envelope: true, Request: SessionInterruptRequest{}},
+	"handleSessionControllerV1": {Response: SessionControllerEnvelopeResponse{}, Envelope: true, Request: SessionControllerRequest{}},
+	"handleListPanesV1":         {Response: PanesListEnvelopeResponse{}, Envelope: true},
+	"handleGetPaneV1":           {Response: PaneDetailEnvelopeResponse{}, Envelope: true},
+	"handlePaneInputV1":         {Response: PaneInputEnvelopeResponse{}, Envelope: true, Request: PaneInputRequest{}, RequestReq: true},
+	"handlePaneInterruptV1":     {Response: PaneInterruptEnvelopeResponse{}, Envelope: true},
+	"handlePaneOutputV1":        {Response: PaneOutputEnvelopeResponse{}, Envelope: true, QueryParams: []routeQueryParam{{Name: "lines", Type: "integer", Description: "Number of scrollback lines to capture (default 100)."}}},
+	"handleGetPaneTitleV1":      {Response: PaneTitleEnvelopeResponse{}, Envelope: true},
+	"handleSetPaneTitleV1":      {Response: PaneTitleEnvelopeResponse{}, Envelope: true, Request: PaneTitleRequest{}, RequestReq: true},
+	"handleStartPaneStreamV1":   {Response: PaneStreamEnvelopeResponse{}, Envelope: true},
+	"handleStopPaneStreamV1":    {Response: PaneStreamEnvelopeResponse{}, Envelope: true},
+	"handleStreamingStatsV1":    {Response: StreamingStatsEnvelopeResponse{}, Envelope: true},
+	"handleMetricsExportV1":     {Response: MetricsExportEnvelopeResponse{}, Envelope: true},
+	"handleListAgentsV1":        {Response: SessionAgentsEnvelopeResponse{}, Envelope: true},
+	"handleListJobs":            {Response: JobsListEnvelopeResponse{}, Envelope: true},
+	"handleCreateJob":           {Response: JobEnvelopeResponse{}, Envelope: true, Request: CreateJobRequest{}, RequestReq: true},
+	"handleGetJob":              {Response: JobEnvelopeResponse{}, Envelope: true},
+	"handleCancelJob":           {Response: JobEnvelopeResponse{}, Envelope: true},
 
 	// Request bodies for robot-joined mutation handlers
 	"handleAgentSpawnV1":     {Request: AgentSpawnRequest{}, RequestReq: true},
@@ -1291,6 +1326,33 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 		Response: SupportBundleEnvelopeResponse{},
 		Envelope: true,
 		Request:  CreateSupportBundleRequest{},
+	},
+
+	// Prompt Preflight, Task Assignment, Smart Routing & Provider Quota REST API
+	"handlePromptPreflightV1": {
+		Response:   PromptPreflightEnvelopeResponse{},
+		Envelope:   true,
+		Request:    PromptPreflightRequest{},
+		RequestReq: true,
+	},
+	"handleRecommendAssignV1": {
+		Response:   AssignPlanEnvelopeResponse{},
+		Envelope:   true,
+		Request:    RecommendAssignRequest{},
+		RequestReq: true,
+	},
+	"handleRecommendRouteV1": {
+		Response:   RoutePlanEnvelopeResponse{},
+		Envelope:   true,
+		Request:    RecommendRouteRequest{},
+		RequestReq: true,
+	},
+	"handleGetQuotaStatusV1": {
+		Response: QuotaStatusEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "provider", Type: "string", Description: "Optional provider filter (claude, openai/codex, gemini) for detailed seat quota."},
+		},
 	},
 }
 

@@ -212,7 +212,7 @@ func init() {
 		},
 		REST: &kernel.RESTBinding{
 			Method: "POST",
-			Path:   "/sessions/{session}/interrupt",
+			Path:   "/api/v1/sessions/{id}/interrupt",
 		},
 		Examples: []kernel.Example{
 			{
@@ -230,14 +230,9 @@ func init() {
 		Idempotent:  true,
 	})
 	kernel.MustRegisterHandler("sessions.interrupt", func(ctx context.Context, input any) (any, error) {
-		opts := SessionInterruptInput{}
-		switch value := input.(type) {
-		case SessionInterruptInput:
-			opts = value
-		case *SessionInterruptInput:
-			if value != nil {
-				opts = *value
-			}
+		opts, err := decodeKernelInput[SessionInterruptInput]("sessions.interrupt", input)
+		if err != nil {
+			return nil, err
 		}
 		if strings.TrimSpace(opts.Session) == "" {
 			return nil, fmt.Errorf("session is required")
@@ -260,7 +255,7 @@ func init() {
 		},
 		REST: &kernel.RESTBinding{
 			Method: "DELETE",
-			Path:   "/sessions/{session}",
+			Path:   "/api/v1/sessions/{id}",
 		},
 		Examples: []kernel.Example{
 			{
@@ -278,14 +273,9 @@ func init() {
 		Idempotent:  true,
 	})
 	kernel.MustRegisterHandler("sessions.kill", func(ctx context.Context, input any) (any, error) {
-		opts := SessionKillInput{}
-		switch value := input.(type) {
-		case SessionKillInput:
-			opts = value
-		case *SessionKillInput:
-			if value != nil {
-				opts = *value
-			}
+		opts, err := decodeKernelInput[SessionKillInput]("sessions.kill", input)
+		if err != nil {
+			return nil, err
 		}
 		if strings.TrimSpace(opts.Session) == "" {
 			return nil, fmt.Errorf("session is required")

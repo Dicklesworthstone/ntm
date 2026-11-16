@@ -199,7 +199,8 @@ func getCommandsContent() *DocsContent {
 --robot-handoff=SESSION: Inspect or create Goal/Now session continuity handoffs with quality scores (use SESSION or 'all')
 --robot-analytics: Aggregated multi-harness session, prompt, token, crash/restart, and error analytics (--analytics-days, --analytics-since, --analytics-sessions)
 --robot-audit[=SESSION]: Query, search, list, or verify tamper-evident audit logs and projection source health (--audit-search, --audit-verify, --audit-sources, --audit-limit, --audit-offset)
---robot-timeline[=SESSION]: List saved session timelines, inspect session state transitions (--timeline-events), or view aggregate storage stats (--timeline-stats)`,
+--robot-timeline[=SESSION]: List saved session timelines, inspect session state transitions (--timeline-events), or view aggregate storage stats (--timeline-stats)
+--robot-doctor: Validate ecosystem health, tools, dependencies, daemons, configuration, invariants, and optional contention (--doctor-contention, --doctor-verbose)`,
 			},
 			{
 				Heading: "Agent Control",
@@ -257,7 +258,8 @@ func getCommandsContent() *DocsContent {
 --robot-proxy-status: rust_proxy daemon/route status
 --robot-slb-pending: List SLB pending approvals
 --robot-slb-approve=ID: Approve SLB request
---robot-slb-deny=ID: Deny SLB request`,
+--robot-slb-deny=ID: Deny SLB request
+--robot-preflight[=PROMPT]: Lint and validate a prompt before sending (--preflight-strict, --preflight-file)`,
 			},
 		},
 	}
@@ -384,6 +386,18 @@ func getExamplesContent() *DocsContent {
 				Description: "Inspect persisted agent state transitions and breakdown stats for a session",
 				Command:     "ntm --robot-timeline=proj --timeline-events",
 				Notes:       "Omit =SESSION to list saved timelines, or pass --timeline-stats for aggregate storage statistics",
+			},
+			{
+				Name:        "ecosystem_doctor",
+				Description: "Validate NTM ecosystem health and scan for shared-resource contention",
+				Command:     "ntm --robot-doctor --doctor-contention",
+				Notes:       "Returns structured tools, dependencies, daemons, configuration, invariants, guard_hook, and contention holders",
+			},
+			{
+				Name:        "prompt_preflight",
+				Description: "Lint and validate a prompt before sending to agents",
+				Command:     "ntm --robot-preflight='fix the bug in auth.go' --preflight-strict",
+				Notes:       "Checks for secrets, destructive commands, PII, and oversize thresholds; pass --preflight-file=path to read from file",
 			},
 			{
 				Name:        "restart_with_bead",

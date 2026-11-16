@@ -1132,6 +1132,9 @@ func TestVSCodeExtensionManifestAndVSIXContract(t *testing.T) {
 		"ntm.showAnalytics",
 		"ntm.showAudit",
 		"ntm.generateSupportBundle",
+		"ntm.runDoctor",
+		"ntm.preflightPrompt",
+		"ntm.assignWork",
 		"ntm.openWebCockpit",
 		"ntm.showBackpressure",
 		"ntm.manageWorktrees",
@@ -1164,6 +1167,10 @@ func TestVSCodeExtensionManifestAndVSIXContract(t *testing.T) {
 		{"--robot-audit", "--audit-sources", "--robot-format=json"},
 		{"--robot-support-bundle=proj", "--bundle-format=zip", "--bundle-redact=redact", "--bundle-lines=500", "--robot-format=json"},
 		{"--robot-support-bundle", "--all", "--bundle-output=/tmp/debug.zip", "--bundle-format=tar.gz", "--bundle-redact=redact", "--robot-format=json"},
+		{"--robot-doctor", "--doctor-contention", "--doctor-verbose", "--robot-format=json"},
+		{"--robot-preflight=check prompt", "--preflight-strict", "--robot-format=json"},
+		{"--robot-preflight", "--preflight-file=/tmp/prompt.txt", "--robot-format=json"},
+		{"--robot-assign=proj", "--strategy=dependency", "--beads=bd-1", "--relax", "--robot-format=json"},
 		{"--robot-backpressure", "--session=proj", "--robot-format=json"},
 		{"worktrees", "list", "--session=proj", "--json"},
 		{"attention", "list", "--session=proj", "--limit=30", "--all", "--json"},
@@ -1206,6 +1213,7 @@ func TestVSCodeExtensionManifestAndVSIXContract(t *testing.T) {
 			"extension/package.json",
 			"extension/out/extension.js",
 			"extension/out/ntmClient.js",
+			"extension/out/orchestrationSupport.js",
 		} {
 			if !entries[wantEntry] {
 				t.Errorf("built VSIX %s missing required entry %q", vsixPath, wantEntry)

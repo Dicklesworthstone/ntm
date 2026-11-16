@@ -26,6 +26,9 @@
     "onCommand:ntm.showAnalytics",
     "onCommand:ntm.showAudit",
     "onCommand:ntm.generateSupportBundle",
+    "onCommand:ntm.runDoctor",
+    "onCommand:ntm.preflightPrompt",
+    "onCommand:ntm.assignWork",
     "onCommand:ntm.openWebCockpit",
     "onCommand:ntm.showBackpressure",
     "onCommand:ntm.manageWorktrees",
@@ -135,6 +138,21 @@
         "icon": "$(package)"
       },
       {
+        "command": "ntm.runDoctor",
+        "title": "NTM: Run Ecosystem Doctor",
+        "icon": "$(stethoscope)"
+      },
+      {
+        "command": "ntm.preflightPrompt",
+        "title": "NTM: Preflight Prompt / Selection",
+        "icon": "$(verified)"
+      },
+      {
+        "command": "ntm.assignWork",
+        "title": "NTM: Plan & Assign Beads Work",
+        "icon": "$(tasklist)"
+      },
+      {
         "command": "ntm.openWebCockpit",
         "title": "NTM: Open Web Cockpit (ntm web)",
         "icon": "$(globe)"
@@ -189,6 +207,11 @@
         },
         {
           "command": "ntm.handoffSession",
+          "when": "view == ntmSessions && viewItem == session",
+          "group": "navigation"
+        },
+        {
+          "command": "ntm.assignWork",
           "when": "view == ntmSessions && viewItem == session",
           "group": "navigation"
         },
