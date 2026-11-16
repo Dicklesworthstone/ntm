@@ -705,6 +705,7 @@ func registerRobotFlags() {
 
 	// Robot-support-bundle flags for diagnostic bundle generation
 	rootCmd.Flags().StringVar(&robotSupportBundle, "robot-support-bundle", "", "Generate support bundle with diagnostic info. Optional: SESSION. Example: ntm --robot-support-bundle=myproject")
+	rootCmd.Flags().Lookup("robot-support-bundle").NoOptDefVal = "__present__"
 	rootCmd.Flags().StringVar(&robotSupportBundleOutput, "bundle-output", "", "Output file path for bundle. Optional with --robot-support-bundle. Example: --bundle-output=/tmp/debug.zip")
 	rootCmd.Flags().StringVar(&robotSupportBundleFormat, "bundle-format", "zip", "Archive format: zip or tar.gz. Optional with --robot-support-bundle")
 	rootCmd.Flags().StringVar(&robotSupportBundleSince, "bundle-since", "", "Include content from duration ago. Optional with --robot-support-bundle. Example: --bundle-since=1h")

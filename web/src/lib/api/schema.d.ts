@@ -548,6 +548,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List audit records
+         * @description Served route `GET /api/v1/audit`. Handler: `handleListAuditRecordsV1`. Response shape reflected from Go type `HTTPAuditEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_audit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/audit/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get session audit
+         * @description Served route `GET /api/v1/audit/sessions`. Handler: `handleGetSessionAuditV1`. Response shape reflected from Go type `SessionAuditEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_audit_sessions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/audit/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify session audit
+         * @description Served route `POST /api/v1/audit/verify`. Handler: `handleVerifySessionAuditV1`. Response shape reflected from Go type `SessionAuditVerifyEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_audit_verify"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/ws-ticket": {
         parameters: {
             query?: never;
@@ -3692,6 +3752,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/support-bundle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create support bundle
+         * @description Served route `POST /api/v1/support-bundle`. Handler: `handleCreateSupportBundleV1`. Response shape reflected from Go type `SupportBundleEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_support_bundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/swarm/lab/run": {
         parameters: {
             query?: never;
@@ -3724,6 +3804,66 @@ export interface paths {
          * @description Served route `GET /api/v1/swarm/lab/scenarios`. Handler: `handleSwarmLabScenariosV1`. Response shape reflected from Go type `SwarmLabEnvelopeResponse`.
          */
         get: operations["get_api_v1_swarm_lab_scenarios"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/timelines": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List timelines
+         * @description Served route `GET /api/v1/timelines`. Handler: `handleListTimelinesV1`. Response shape reflected from Go type `TimelinesEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_timelines"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/timelines/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Timeline stats
+         * @description Served route `GET /api/v1/timelines/stats`. Handler: `handleTimelineStatsV1`. Response shape reflected from Go type `TimelinesEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_timelines_stats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/timelines/{sessionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get session timeline
+         * @description Served route `GET /api/v1/timelines/{sessionId}`. Handler: `handleGetSessionTimelineV1`. Response shape reflected from Go type `TimelinesEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_timelines_sessionId"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4249,6 +4389,21 @@ export interface components {
             started_at: string;
             status: string;
             step_id: string;
+        };
+        AgentEvent: {
+            agent_id: string;
+            agent_type: string;
+            details?: {
+                [key: string]: string;
+            };
+            /** Format: int64 */
+            duration?: number;
+            previous_state?: string;
+            session_id: string;
+            state: string;
+            /** Format: date-time */
+            timestamp: string;
+            trigger?: string;
         };
         AgentHealthInfo: {
             /** @description Issue */
@@ -4899,6 +5054,55 @@ export interface components {
             /** @description Reason */
             reason?: string;
         };
+        AuditEntry: {
+            actor: string;
+            checksum: string;
+            event_type: string;
+            metadata: {
+                [key: string]: unknown;
+            };
+            payload: {
+                [key: string]: unknown;
+            };
+            prev_hash?: string;
+            /** Format: int64 */
+            sequence_num: number;
+            session_id: string;
+            target: string;
+            /** Format: date-time */
+            timestamp: string;
+        };
+        AuditLogFileSummary: {
+            file: string;
+            modified_at: string;
+            session?: string;
+            /** Format: int64 */
+            size_bytes: number;
+        };
+        AuditRecord: {
+            action: string;
+            agent_id?: string;
+            approval_id?: string;
+            details?: string;
+            /** Format: int64 */
+            duration_ms: number;
+            /** Format: int64 */
+            id: number;
+            method: string;
+            pane_id?: string;
+            path: string;
+            remote_addr: string;
+            request_id: string;
+            resource: string;
+            resource_id?: string;
+            role: string;
+            session_id?: string;
+            status_code: number;
+            /** Format: date-time */
+            timestamp: string;
+            user_agent?: string;
+            user_id: string;
+        };
         AuditReport: {
             conflicts: components["schemas"]["DetailedConflict"][];
             evidence_needed?: components["schemas"]["EvidenceRequest"][];
@@ -4906,6 +5110,12 @@ export interface components {
                 [key: string]: string[];
             };
             resolution_suggestions?: string[];
+        };
+        AuditVerifyFileResult: {
+            error?: string;
+            file: string;
+            status: string;
+            verified: boolean;
         };
         AutoRotateConfigEnvelopeResponse: {
             config: components["schemas"]["AccountsConfig"];
@@ -5279,6 +5489,15 @@ export interface components {
             command: string;
             /** @description P i d */
             pid: number;
+        };
+        BundleRedactionSummary: {
+            category_counts?: {
+                [key: string]: number;
+            };
+            files_redacted: number;
+            files_scanned: number;
+            mode: string;
+            total_findings: number;
         };
         BvBeadInProgress: {
             assignee?: string;
@@ -5901,6 +6120,14 @@ export interface components {
         CreateSessionRequest: {
             panes?: number;
             session: string;
+        };
+        CreateSupportBundleRequest: {
+            format?: string;
+            lines?: number;
+            max_size_mb?: number;
+            redact_mode?: string;
+            session?: string;
+            since?: string;
         };
         CreateWorktreeRequest: {
             agent: string;
@@ -6953,6 +7180,19 @@ export interface components {
             keystone_score?: number;
             /** @description Summary */
             summary?: string;
+        };
+        HTTPAuditEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["PaginationAgentHints"];
+            count: number;
+            has_more: boolean;
+            limit: number;
+            offset: number;
+            pagination?: components["schemas"]["RobotPaginationInfo"];
+            records: components["schemas"]["AuditRecord"][];
+            request_id?: string;
+            success: boolean;
+            timestamp: string;
+            total_matches: number;
         };
         Handoff: {
             ActiveBeads: string[];
@@ -8178,6 +8418,10 @@ export interface components {
             schema_version: string;
             success: boolean;
             warnings: string[];
+        };
+        PaginationAgentHints: {
+            next_offset?: number;
+            pages_remaining?: number;
         };
         PaginationInfo: {
             /** @description Count */
@@ -9834,6 +10078,41 @@ export interface components {
              */
             timestamp: string;
         };
+        SessionAuditEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            action: string;
+            audit_dir?: string;
+            count: number;
+            /** Format: int64 */
+            duration_ms?: number;
+            entries: components["schemas"]["AuditEntry"][];
+            has_more: boolean;
+            logs: components["schemas"]["AuditLogFileSummary"][];
+            pagination?: components["schemas"]["RobotPaginationInfo"];
+            request_id?: string;
+            scan_capped?: boolean;
+            scanned: number;
+            schema_id: string;
+            schema_version: string;
+            session: string;
+            sources?: components["schemas"]["SourceHealth"][];
+            success: boolean;
+            timestamp: string;
+            total_matches: number;
+        };
+        SessionAuditVerifyEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            count: number;
+            files: components["schemas"]["AuditVerifyFileResult"][];
+            request_id?: string;
+            schema_id: string;
+            schema_version: string;
+            session: string;
+            success: boolean;
+            timestamp: string;
+            verified: boolean;
+            verify_error?: string;
+        };
         SessionDetailEnvelopeResponse: {
             request_id?: string;
             session: components["schemas"]["SessionSummaryRecord"];
@@ -10146,6 +10425,24 @@ export interface components {
             name: string;
             /** @description Services */
             services?: components["schemas"]["SnapshotService"][];
+        };
+        SourceHealth: {
+            available: boolean;
+            avg_latency_ms?: number;
+            consecutive_failures: number;
+            healthy: boolean;
+            /** Format: date-time */
+            last_check_at: string;
+            last_error?: string;
+            last_error_code?: string;
+            /** Format: date-time */
+            last_failure_at?: string;
+            /** Format: date-time */
+            last_success_at?: string;
+            latency_ms?: number;
+            reason?: string;
+            source_name: string;
+            version?: string;
         };
         SourceHealthEntry: {
             /** @description Collected at */
@@ -10726,6 +11023,23 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        SupportBundleEnvelopeResponse: {
+            content_suppressed: boolean;
+            content_type: string;
+            data: string;
+            file_count: number;
+            filename: string;
+            format: string;
+            privacy_mode: boolean;
+            privacy_sessions?: string[];
+            redaction_summary?: components["schemas"]["BundleRedactionSummary"];
+            request_id?: string;
+            /** Format: int64 */
+            size: number;
+            success: boolean;
+            timestamp: string;
+            warnings?: string[];
+        };
         SurfaceSnapshot: {
             /** Format: int64 */
             client_lag_ms?: number;
@@ -11211,6 +11525,49 @@ export interface components {
             elevated: number;
             high: number;
         };
+        TimelineAggregateStats: {
+            compressed_count: number;
+            newest_timeline?: string;
+            oldest_timeline?: string;
+            total_agents: number;
+            total_events: number;
+            /** Format: int64 */
+            total_size_bytes: number;
+            total_timelines: number;
+        };
+        TimelineEventStats: {
+            agent_breakdown: {
+                [key: string]: number;
+            };
+            /** Format: int64 */
+            duration: number;
+            /** Format: date-time */
+            first_event: string;
+            /** Format: date-time */
+            last_event: string;
+            state_breakdown: {
+                [key: string]: number;
+            };
+            total_events: number;
+            unique_agents: number;
+        };
+        TimelineInfo: {
+            agent_count: number;
+            compressed: boolean;
+            /** Format: date-time */
+            created_at: string;
+            event_count: number;
+            /** Format: date-time */
+            first_event?: string;
+            /** Format: date-time */
+            last_event?: string;
+            /** Format: date-time */
+            modified_at: string;
+            path: string;
+            session_id: string;
+            /** Format: int64 */
+            size_bytes: number;
+        };
         TimelineSession: {
             agent: string;
             /** Format: int64 */
@@ -11225,6 +11582,23 @@ export interface components {
             /** Format: int64 */
             started_at: number;
             title: string;
+        };
+        TimelinesEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            action: string;
+            aggregate_stats?: components["schemas"]["TimelineAggregateStats"];
+            events: components["schemas"]["AgentEvent"][];
+            info?: components["schemas"]["TimelineInfo"];
+            request_id?: string;
+            schema_id: string;
+            schema_version: string;
+            session: string;
+            session_stats?: components["schemas"]["TimelineEventStats"];
+            showing: number;
+            success: boolean;
+            timelines: components["schemas"]["TimelineInfo"][];
+            timestamp: string;
+            total_count: number;
         };
         ToolHealthOutput: {
             /** @description Error */
@@ -11404,6 +11778,9 @@ export interface components {
             timestamp: string;
             valid: boolean;
             warnings?: string[];
+        };
+        VerifySessionAuditRequest: {
+            session: string;
         };
         WSError: {
             code: string;
@@ -13271,6 +13648,193 @@ export interface operations {
                 };
                 content: {
                     "text/event-stream": components["schemas"]["SSEEventStream"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_audit: {
+        parameters: {
+            query?: {
+                /** @description Optional user ID filter (alias: ?user=). */
+                user_id?: string;
+                /** @description Optional audit action filter (create, update, delete, approve, deny, execute, login, logout, subscribe). */
+                action?: string;
+                /** @description Optional resource filter (e.g. sessions, panes, approvals, policy). */
+                resource?: string;
+                /** @description Optional session ID filter (alias: ?session=). */
+                session_id?: string;
+                /** @description Optional HTTP request ID filter. */
+                request_id?: string;
+                /** @description Optional SLB approval ID filter. */
+                approval_id?: string;
+                /** @description Lower time bound (RFC3339 or relative duration like '1h', '7d'). */
+                since?: string;
+                /** @description Upper time bound (RFC3339 or relative duration like '1h'). */
+                until?: string;
+                /** @description Maximum audit records per page (default 50, max 1000). */
+                limit?: number;
+                /** @description Pagination offset (default 0). */
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPAuditEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_audit_sessions: {
+        parameters: {
+            query?: {
+                /** @description Session name to inspect, or 'all' / omit for global list/search. */
+                session?: string;
+                /** @description Optional audit action: list, show, search, or sources (auto-inferred when omitted). */
+                action?: string;
+                /** @description Optional regex pattern to search across session JSONL audit logs. */
+                search?: string;
+                /** @description Optional comma-separated event type filter. */
+                type?: string;
+                /** @description Optional comma-separated actor filter. */
+                actor?: string;
+                /** @description Optional lower time bound (RFC3339 or relative duration). */
+                since?: string;
+                /** @description Optional upper time bound (RFC3339 or relative duration). */
+                until?: string;
+                /** @description Lookback window in days when searching without 'since' (default 30). */
+                days?: number;
+                /** @description Maximum entries or log files per page (default 50, max 1000). */
+                limit?: number;
+                /** @description Pagination offset (default 0). */
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionAuditEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_audit_verify: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VerifySessionAuditRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionAuditVerifyEnvelopeResponse"];
                 };
             };
             /** @description Bad request */
@@ -23147,6 +23711,57 @@ export interface operations {
             };
         };
     };
+    post_api_v1_support_bundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CreateSupportBundleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupportBundleEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     post_api_v1_swarm_lab_run: {
         parameters: {
             query?: never;
@@ -23232,6 +23847,165 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_timelines: {
+        parameters: {
+            query?: {
+                /** @description Maximum persisted session timelines to return (default 20, max 500). */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TimelinesEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_timelines_stats: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TimelinesEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_timelines_sessionId: {
+        parameters: {
+            query?: {
+                /** @description Include full agent state-transition event rows when true. */
+                events?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The sessionId identifier */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TimelinesEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

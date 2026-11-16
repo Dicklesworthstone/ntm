@@ -1313,7 +1313,11 @@ func dispatchRobotInspectionAndOps(cmd *cobra.Command, args []string) bool {
 		return true
 	}
 	if robotSupportBundle != "" || cmd.Flags().Changed("robot-support-bundle") {
-		session, err := resolveOptionalRobotLiveSession(cmd.Context(), robotSupportBundle)
+		rawBundleSession := robotSupportBundle
+		if rawBundleSession == "__present__" {
+			rawBundleSession = ""
+		}
+		session, err := resolveOptionalRobotLiveSession(cmd.Context(), rawBundleSession)
 		if err != nil {
 			failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-support-bundle")
 			return true

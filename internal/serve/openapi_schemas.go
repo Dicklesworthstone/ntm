@@ -1229,6 +1229,69 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 			{Name: "format", Type: "string", Description: "Response format: 'json' (default) or 'prometheus' (text/plain exposition)."},
 		},
 	},
+
+	// Audit, Timelines & Support Bundle REST API
+	"handleListAuditRecordsV1": {
+		Response: HTTPAuditEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "user_id", Type: "string", Description: "Optional user ID filter (alias: ?user=)."},
+			{Name: "action", Type: "string", Description: "Optional audit action filter (create, update, delete, approve, deny, execute, login, logout, subscribe)."},
+			{Name: "resource", Type: "string", Description: "Optional resource filter (e.g. sessions, panes, approvals, policy)."},
+			{Name: "session_id", Type: "string", Description: "Optional session ID filter (alias: ?session=)."},
+			{Name: "request_id", Type: "string", Description: "Optional HTTP request ID filter."},
+			{Name: "approval_id", Type: "string", Description: "Optional SLB approval ID filter."},
+			{Name: "since", Type: "string", Description: "Lower time bound (RFC3339 or relative duration like '1h', '7d')."},
+			{Name: "until", Type: "string", Description: "Upper time bound (RFC3339 or relative duration like '1h')."},
+			{Name: "limit", Type: "integer", Description: "Maximum audit records per page (default 50, max 1000)."},
+			{Name: "offset", Type: "integer", Description: "Pagination offset (default 0)."},
+		},
+	},
+	"handleGetSessionAuditV1": {
+		Response: SessionAuditEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "session", Type: "string", Description: "Session name to inspect, or 'all' / omit for global list/search."},
+			{Name: "action", Type: "string", Description: "Optional audit action: list, show, search, or sources (auto-inferred when omitted)."},
+			{Name: "search", Type: "string", Description: "Optional regex pattern to search across session JSONL audit logs."},
+			{Name: "type", Type: "string", Description: "Optional comma-separated event type filter."},
+			{Name: "actor", Type: "string", Description: "Optional comma-separated actor filter."},
+			{Name: "since", Type: "string", Description: "Optional lower time bound (RFC3339 or relative duration)."},
+			{Name: "until", Type: "string", Description: "Optional upper time bound (RFC3339 or relative duration)."},
+			{Name: "days", Type: "integer", Description: "Lookback window in days when searching without 'since' (default 30)."},
+			{Name: "limit", Type: "integer", Description: "Maximum entries or log files per page (default 50, max 1000)."},
+			{Name: "offset", Type: "integer", Description: "Pagination offset (default 0)."},
+		},
+	},
+	"handleVerifySessionAuditV1": {
+		Response:   SessionAuditVerifyEnvelopeResponse{},
+		Envelope:   true,
+		Request:    VerifySessionAuditRequest{},
+		RequestReq: true,
+	},
+	"handleListTimelinesV1": {
+		Response: TimelinesEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "limit", Type: "integer", Description: "Maximum persisted session timelines to return (default 20, max 500)."},
+		},
+	},
+	"handleTimelineStatsV1": {
+		Response: TimelinesEnvelopeResponse{},
+		Envelope: true,
+	},
+	"handleGetSessionTimelineV1": {
+		Response: TimelinesEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "events", Type: "boolean", Description: "Include full agent state-transition event rows when true."},
+		},
+	},
+	"handleCreateSupportBundleV1": {
+		Response: SupportBundleEnvelopeResponse{},
+		Envelope: true,
+		Request:  CreateSupportBundleRequest{},
+	},
 }
 
 func lookupServedRouteSchema(rt RouterRoute) (routeSchemaSpec, bool) {

@@ -1960,6 +1960,336 @@
         }
       }
     },
+    "/api/v1/audit": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "List audit records",
+        "description": "Served route `GET /api/v1/audit`. Handler: `handleListAuditRecordsV1`. Response shape reflected from Go type `HTTPAuditEnvelopeResponse`.",
+        "operationId": "get_api_v1_audit",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "Optional user ID filter (alias: ?user=).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "Optional audit action filter (create, update, delete, approve, deny, execute, login, logout, subscribe).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource",
+            "in": "query",
+            "description": "Optional resource filter (e.g. sessions, panes, approvals, policy).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Optional session ID filter (alias: ?session=).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Optional HTTP request ID filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "approval_id",
+            "in": "query",
+            "description": "Optional SLB approval ID filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Lower time bound (RFC3339 or relative duration like '1h', '7d').",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Upper time bound (RFC3339 or relative duration like '1h').",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum audit records per page (default 50, max 1000).",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Pagination offset (default 0).",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPAuditEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/audit/sessions": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "Get session audit",
+        "description": "Served route `GET /api/v1/audit/sessions`. Handler: `handleGetSessionAuditV1`. Response shape reflected from Go type `SessionAuditEnvelopeResponse`.",
+        "operationId": "get_api_v1_audit_sessions",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "Session name to inspect, or 'all' / omit for global list/search.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "Optional audit action: list, show, search, or sources (auto-inferred when omitted).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Optional regex pattern to search across session JSONL audit logs.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "description": "Optional comma-separated event type filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "actor",
+            "in": "query",
+            "description": "Optional comma-separated actor filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Optional lower time bound (RFC3339 or relative duration).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Optional upper time bound (RFC3339 or relative duration).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "description": "Lookback window in days when searching without 'since' (default 30).",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum entries or log files per page (default 50, max 1000).",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Pagination offset (default 0).",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionAuditEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/audit/verify": {
+      "post": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "Verify session audit",
+        "description": "Served route `POST /api/v1/audit/verify`. Handler: `handleVerifySessionAuditV1`. Response shape reflected from Go type `SessionAuditVerifyEnvelopeResponse`.",
+        "operationId": "post_api_v1_audit_verify",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifySessionAuditRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionAuditVerifyEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/ws-ticket": {
       "post": {
         "tags": [
@@ -14392,6 +14722,67 @@
         }
       }
     },
+    "/api/v1/support-bundle": {
+      "post": {
+        "tags": [
+          "support-bundle"
+        ],
+        "summary": "Create support bundle",
+        "description": "Served route `POST /api/v1/support-bundle`. Handler: `handleCreateSupportBundleV1`. Response shape reflected from Go type `SupportBundleEnvelopeResponse`.",
+        "operationId": "post_api_v1_support_bundle",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSupportBundleRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupportBundleEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/swarm/lab/run": {
       "post": {
         "tags": [
@@ -14502,6 +14893,201 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/timelines": {
+      "get": {
+        "tags": [
+          "timelines"
+        ],
+        "summary": "List timelines",
+        "description": "Served route `GET /api/v1/timelines`. Handler: `handleListTimelinesV1`. Response shape reflected from Go type `TimelinesEnvelopeResponse`.",
+        "operationId": "get_api_v1_timelines",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum persisted session timelines to return (default 20, max 500).",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimelinesEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/timelines/stats": {
+      "get": {
+        "tags": [
+          "timelines"
+        ],
+        "summary": "Timeline stats",
+        "description": "Served route `GET /api/v1/timelines/stats`. Handler: `handleTimelineStatsV1`. Response shape reflected from Go type `TimelinesEnvelopeResponse`.",
+        "operationId": "get_api_v1_timelines_stats",
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimelinesEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/timelines/{sessionId}": {
+      "get": {
+        "tags": [
+          "timelines"
+        ],
+        "summary": "Get session timeline",
+        "description": "Served route `GET /api/v1/timelines/{sessionId}`. Handler: `handleGetSessionTimelineV1`. Response shape reflected from Go type `TimelinesEnvelopeResponse`.",
+        "operationId": "get_api_v1_timelines_sessionId",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "description": "The sessionId identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "events",
+            "in": "query",
+            "description": "Include full agent state-transition event rows when true.",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimelinesEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -16097,6 +16683,50 @@
           "started_at",
           "status",
           "step_id"
+        ]
+      },
+      "AgentEvent": {
+        "type": "object",
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "agent_type": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "duration": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "previous_state": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "trigger": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id",
+          "agent_type",
+          "session_id",
+          "state",
+          "timestamp"
         ]
       },
       "AgentHealthInfo": {
@@ -17965,6 +18595,158 @@
           "entity_id"
         ]
       },
+      "AuditEntry": {
+        "type": "object",
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "checksum": {
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "prev_hash": {
+            "type": "string"
+          },
+          "sequence_num": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "actor",
+          "checksum",
+          "event_type",
+          "metadata",
+          "payload",
+          "sequence_num",
+          "session_id",
+          "target",
+          "timestamp"
+        ]
+      },
+      "AuditLogFileSummary": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "modified_at": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "required": [
+          "file",
+          "modified_at",
+          "size_bytes"
+        ]
+      },
+      "AuditRecord": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "agent_id": {
+            "type": "string"
+          },
+          "approval_id": {
+            "type": "string"
+          },
+          "details": {
+            "type": "string"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "method": {
+            "type": "string"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "remote_addr": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "resource": {
+            "type": "string"
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status_code": {
+            "type": "integer"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "user_agent": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "duration_ms",
+          "id",
+          "method",
+          "path",
+          "remote_addr",
+          "request_id",
+          "resource",
+          "role",
+          "status_code",
+          "timestamp",
+          "user_id"
+        ]
+      },
       "AuditReport": {
         "type": "object",
         "properties": {
@@ -17998,6 +18780,28 @@
         },
         "required": [
           "conflicts"
+        ]
+      },
+      "AuditVerifyFileResult": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "verified": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "file",
+          "status",
+          "verified"
         ]
       },
       "AutoRotateConfigEnvelopeResponse": {
@@ -19145,6 +19949,35 @@
         "required": [
           "pid",
           "command"
+        ]
+      },
+      "BundleRedactionSummary": {
+        "type": "object",
+        "properties": {
+          "category_counts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "files_redacted": {
+            "type": "integer"
+          },
+          "files_scanned": {
+            "type": "integer"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "total_findings": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "files_redacted",
+          "files_scanned",
+          "mode",
+          "total_findings"
         ]
       },
       "BvBeadInProgress": {
@@ -21097,6 +21930,29 @@
         "required": [
           "session"
         ]
+      },
+      "CreateSupportBundleRequest": {
+        "type": "object",
+        "properties": {
+          "format": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "integer"
+          },
+          "max_size_mb": {
+            "type": "integer"
+          },
+          "redact_mode": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "since": {
+            "type": "string"
+          }
+        }
       },
       "CreateWorktreeRequest": {
         "type": "object",
@@ -24260,6 +25116,57 @@
             "description": "Summary"
           }
         }
+      },
+      "HTTPAuditEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/PaginationAgentHints"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/RobotPaginationInfo"
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditRecord"
+            }
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "total_matches": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count",
+          "has_more",
+          "limit",
+          "offset",
+          "records",
+          "success",
+          "timestamp",
+          "total_matches"
+        ]
       },
       "Handoff": {
         "type": "object",
@@ -28215,6 +29122,17 @@
           "success",
           "warnings"
         ]
+      },
+      "PaginationAgentHints": {
+        "type": "object",
+        "properties": {
+          "next_offset": {
+            "type": "integer"
+          },
+          "pages_remaining": {
+            "type": "integer"
+          }
+        }
       },
       "PaginationInfo": {
         "type": "object",
@@ -33342,6 +34260,143 @@
           "timestamp"
         ]
       },
+      "SessionAuditEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "action": {
+            "type": "string"
+          },
+          "audit_dir": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditEntry"
+            }
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "logs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditLogFileSummary"
+            }
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/RobotPaginationInfo"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "scan_capped": {
+            "type": "boolean"
+          },
+          "scanned": {
+            "type": "integer"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SourceHealth"
+            }
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "total_matches": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action",
+          "count",
+          "entries",
+          "has_more",
+          "logs",
+          "scanned",
+          "schema_id",
+          "schema_version",
+          "session",
+          "success",
+          "timestamp",
+          "total_matches"
+        ]
+      },
+      "SessionAuditVerifyEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditVerifyFileResult"
+            }
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "verified": {
+            "type": "boolean"
+          },
+          "verify_error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "count",
+          "files",
+          "schema_id",
+          "schema_version",
+          "session",
+          "success",
+          "timestamp",
+          "verified"
+        ]
+      },
       "SessionDetailEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -34203,6 +35258,60 @@
           "name",
           "attached",
           "agents"
+        ]
+      },
+      "SourceHealth": {
+        "type": "object",
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "avg_latency_ms": {
+            "type": "integer"
+          },
+          "consecutive_failures": {
+            "type": "integer"
+          },
+          "healthy": {
+            "type": "boolean"
+          },
+          "last_check_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_error": {
+            "type": "string"
+          },
+          "last_error_code": {
+            "type": "string"
+          },
+          "last_failure_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_success_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "latency_ms": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "source_name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "available",
+          "consecutive_failures",
+          "healthy",
+          "last_check_at",
+          "source_name"
         ]
       },
       "SourceHealthEntry": {
@@ -35657,6 +36766,72 @@
           "success"
         ],
         "additionalProperties": true
+      },
+      "SupportBundleEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "content_suppressed": {
+            "type": "boolean"
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "data": {
+            "type": "string"
+          },
+          "file_count": {
+            "type": "integer"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string"
+          },
+          "privacy_mode": {
+            "type": "boolean"
+          },
+          "privacy_sessions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "redaction_summary": {
+            "$ref": "#/components/schemas/BundleRedactionSummary"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "content_suppressed",
+          "content_type",
+          "data",
+          "file_count",
+          "filename",
+          "format",
+          "privacy_mode",
+          "size",
+          "success",
+          "timestamp"
+        ]
       },
       "SurfaceSnapshot": {
         "type": "object",
@@ -37288,6 +38463,134 @@
           "high"
         ]
       },
+      "TimelineAggregateStats": {
+        "type": "object",
+        "properties": {
+          "compressed_count": {
+            "type": "integer"
+          },
+          "newest_timeline": {
+            "type": "string"
+          },
+          "oldest_timeline": {
+            "type": "string"
+          },
+          "total_agents": {
+            "type": "integer"
+          },
+          "total_events": {
+            "type": "integer"
+          },
+          "total_size_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total_timelines": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "compressed_count",
+          "total_agents",
+          "total_events",
+          "total_size_bytes",
+          "total_timelines"
+        ]
+      },
+      "TimelineEventStats": {
+        "type": "object",
+        "properties": {
+          "agent_breakdown": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "duration": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "first_event": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_event": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "state_breakdown": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "total_events": {
+            "type": "integer"
+          },
+          "unique_agents": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_breakdown",
+          "duration",
+          "first_event",
+          "last_event",
+          "state_breakdown",
+          "total_events",
+          "unique_agents"
+        ]
+      },
+      "TimelineInfo": {
+        "type": "object",
+        "properties": {
+          "agent_count": {
+            "type": "integer"
+          },
+          "compressed": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "event_count": {
+            "type": "integer"
+          },
+          "first_event": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_event": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "modified_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "path": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "required": [
+          "agent_count",
+          "compressed",
+          "created_at",
+          "event_count",
+          "modified_at",
+          "path",
+          "session_id",
+          "size_bytes"
+        ]
+      },
       "TimelineSession": {
         "type": "object",
         "properties": {
@@ -37331,6 +38634,74 @@
           "source_path",
           "started_at",
           "title"
+        ]
+      },
+      "TimelinesEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "action": {
+            "type": "string"
+          },
+          "aggregate_stats": {
+            "$ref": "#/components/schemas/TimelineAggregateStats"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentEvent"
+            }
+          },
+          "info": {
+            "$ref": "#/components/schemas/TimelineInfo"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "session_stats": {
+            "$ref": "#/components/schemas/TimelineEventStats"
+          },
+          "showing": {
+            "type": "integer"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timelines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TimelineInfo"
+            }
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "total_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action",
+          "events",
+          "schema_id",
+          "schema_version",
+          "session",
+          "showing",
+          "success",
+          "timelines",
+          "timestamp",
+          "total_count"
         ]
       },
       "ToolHealthOutput": {
@@ -37838,6 +39209,17 @@
           "success",
           "timestamp",
           "valid"
+        ]
+      },
+      "VerifySessionAuditRequest": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
         ]
       },
       "WSError": {
@@ -38935,6 +40317,10 @@
       "description": "Operations related to attention"
     },
     {
+      "name": "audit",
+      "description": "Operations related to audit"
+    },
+    {
       "name": "auth",
       "description": "Operations related to auth"
     },
@@ -39063,8 +40449,16 @@
       "description": "Operations related to streaming"
     },
     {
+      "name": "support-bundle",
+      "description": "Operations related to support-bundle"
+    },
+    {
       "name": "swarm",
       "description": "Operations related to swarm"
+    },
+    {
+      "name": "timelines",
+      "description": "Operations related to timelines"
     },
     {
       "name": "version",

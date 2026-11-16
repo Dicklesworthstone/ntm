@@ -1046,7 +1046,8 @@ func needsConfigLoading(cmdName string) bool {
 			robotInterrupt != "" || robotRestartPane != "" || robotExitCLI != "" || robotKillAgent != "" || robotKillPane != "" || robotDialogs != "" || robotAnswerDialog != "" || robotIncidentResolve != "" || robotProbe != "" || robotGraph || robotMail || robotHealth != "" ||
 			robotHealthOAuth != "" || robotHealthRestartStuck != "" || robotLogs != "" || robotDiagnose != "" || robotTerse || robotMarkdown || robotSave != "" || robotRestore != "" ||
 			robotContext != "" || robotEnsemble != "" || robotEnsembleSpawn != "" || robotEnsembleSuggest != "" || robotEnsembleSynthesize != "" || robotEnsembleStop != "" || robotAlerts || robotIsWorking != "" || robotAgentHealth != "" ||
-			robotSmartRestart != "" || robotMonitor != "" || robotEnv != "" || robotSupportBundle != "" ||
+			robotSmartRestart != "" || robotMonitor != "" || robotEnv != "" ||
+			robotSupportBundle != "" || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-support-bundle")) ||
 			robotActivity != "" || robotProductivity != "" || robotSendReceipt != "" || robotAnalytics ||
 			robotHandoff != "" || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-handoff")) ||
 			robotAudit != "" || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-audit")) ||

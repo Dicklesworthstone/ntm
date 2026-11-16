@@ -122,8 +122,10 @@ type Server struct {
 	pipelineScope *pipelineProjectScope
 	// auditStore persists REST/WS audit records. Nil when the store could not be
 	// opened, in which case the audit middleware is not installed.
-	auditStore *AuditStore
-	mu         sync.RWMutex
+	auditStore      *AuditStore
+	auditLogsDir    string
+	timelineBaseDir string
+	mu              sync.RWMutex
 
 	// Redaction configuration for REST API
 	redactionCfg *RedactionConfig
@@ -663,6 +665,9 @@ func (s *Server) buildRouter() chi.Router {
 
 		// Event Analytics & Multi-Harness Telemetry API (delegated via ADR ORI to robot.GetAnalytics)
 		s.registerAnalyticsRoutes(r)
+
+		// Audit, Timelines & Support Bundle API (delegated via ADR ORI to AuditStore / robot)
+		s.registerAuditAndTimelineRoutes(r)
 
 		// Attention Feed API - normalized event streaming for operator agents
 		r.Route("/attention", func(r chi.Router) {

@@ -926,4 +926,18 @@ func TestRobotAuditAndTimelineSubprocess(t *testing.T) {
 	if !tlStatsOut.Success || tlStatsOut.Action != "stats" || tlStatsOut.AggregateStats == nil || tlStatsOut.AggregateStats.TotalTimelines != 1 {
 		t.Fatalf("unexpected --robot-timeline stats output: %+v", tlStatsOut)
 	}
+
+	// 5. --robot-support-bundle --all --bundle-output=<tmp>/bundle.zip (optional session NoOptDefVal)
+	bundleOutPath := filepath.Join(tmpRoot, "bundle.zip")
+	bundleBytes, code := runRobot("--robot-support-bundle", "--all", "--bundle-output="+bundleOutPath, "--bundle-redact=redact")
+	if code != 0 {
+		t.Fatalf("--robot-support-bundle --all exit=%d, out=%s", code, string(bundleBytes))
+	}
+	var bundleOut robot.SupportBundleOutput
+	if err := json.Unmarshal(bundleBytes, &bundleOut); err != nil {
+		t.Fatalf("decode --robot-support-bundle: %v (raw=%s)", err, string(bundleBytes))
+	}
+	if !bundleOut.Success || bundleOut.Path != bundleOutPath || bundleOut.Format != "zip" {
+		t.Fatalf("unexpected --robot-support-bundle output: %+v", bundleOut)
+	}
 }

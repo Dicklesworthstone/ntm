@@ -1,6 +1,6 @@
 {
   "source": "chi-router-walk",
-  "count": 214,
+  "count": 221,
   "endpoints": [
     {
       "method": "GET",
@@ -141,6 +141,21 @@
       "method": "GET",
       "path": "/api/v1/attention/stream",
       "handler": "handleAttentionStreamV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/audit",
+      "handler": "handleListAuditRecordsV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/audit/sessions",
+      "handler": "handleGetSessionAuditV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/audit/verify",
+      "handler": "handleVerifySessionAuditV1"
     },
     {
       "method": "POST",
@@ -1035,6 +1050,11 @@
     },
     {
       "method": "POST",
+      "path": "/api/v1/support-bundle",
+      "handler": "handleCreateSupportBundleV1"
+    },
+    {
+      "method": "POST",
       "path": "/api/v1/swarm/lab/run",
       "handler": "handleSwarmLabRunV1"
     },
@@ -1042,6 +1062,21 @@
       "method": "GET",
       "path": "/api/v1/swarm/lab/scenarios",
       "handler": "handleSwarmLabScenariosV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/timelines",
+      "handler": "handleListTimelinesV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/timelines/stats",
+      "handler": "handleTimelineStatsV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/timelines/{sessionId}",
+      "handler": "handleGetSessionTimelineV1"
     },
     {
       "method": "GET",
