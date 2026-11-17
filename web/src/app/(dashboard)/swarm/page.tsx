@@ -13,6 +13,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { SwarmOrchestrationWorkbench } from "@/components/swarm/SwarmOrchestrationWorkbench";
+import { SwarmScaleRebalanceReviewPanel } from "@/components/swarm/SwarmScaleRebalanceReviewPanel";
 import {
   apiFetch,
   formatApiErrorMessage,
@@ -818,6 +819,8 @@ export default function SwarmPage() {
       </section>
 
       <SwarmOrchestrationWorkbench defaultSession={trimmedSession} />
+
+      <SwarmScaleRebalanceReviewPanel />
     </div>
   );
 }

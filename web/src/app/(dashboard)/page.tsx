@@ -9,6 +9,7 @@
  */
 
 import Link from "next/link";
+import { RequestLifecycleAndOutboxPanel } from "@/components/overview/RequestLifecycleAndOutboxPanel";
 import { SystemDiagnosticsToolbar } from "@/components/overview/SystemDiagnosticsToolbar";
 import { WorkspaceConfigPanel } from "@/components/overview/WorkspaceConfigPanel";
 import { useMemo, useState } from "react";
@@ -696,6 +697,8 @@ export default function SessionsPage() {
       </section>
 
       <WorkspaceConfigPanel />
+
+      <RequestLifecycleAndOutboxPanel />
 
       {isLoading && (
         <div className="flex items-center justify-center h-64">

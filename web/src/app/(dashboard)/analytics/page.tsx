@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api/client";
 import { EventAnalyticsPanel } from "@/components/analytics/EventAnalyticsPanel";
+import { MetricsExportAndStreamingPanel } from "@/components/analytics/MetricsExportAndStreamingPanel";
 
 // Types based on REST API
 interface SessionMetrics {
@@ -270,6 +271,9 @@ export default function AnalyticsPage() {
 
       {/* Historical Event Telemetry & Multi-Harness Breakdown */}
       <EventAnalyticsPanel />
+
+      {/* Session Metrics Exporter & Live Pane Streaming Telemetry */}
+      <MetricsExportAndStreamingPanel selectedSession={selectedSession} />
 
       {connectionError && (
         <div className="rounded-lg border border-red-800 bg-red-900/20 p-4">

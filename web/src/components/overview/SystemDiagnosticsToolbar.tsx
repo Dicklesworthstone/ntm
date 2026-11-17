@@ -49,6 +49,7 @@ export interface SupportBundleArchiveResponse extends ApiEnvelope {
 
 export function SystemDiagnosticsToolbar() {
   const [depsRequested, setDepsRequested] = useState(false);
+  const [runtimeRequested, setRuntimeRequested] = useState(false);
   const [bundleFormat, setBundleFormat] = useState<"zip" | "tar.gz">("zip");
   const [bundleReady, setBundleReady] =
     useState<SupportBundleArchiveResponse | null>(null);
@@ -58,6 +59,19 @@ export function SystemDiagnosticsToolbar() {
     queryKey: ["overview", "deps"],
     queryFn: () => apiFetch<DependenciesResponse>("/api/v1/deps"),
     enabled: depsRequested,
+    retry: false,
+  });
+
+  const runtimeQuery = useQuery({
+    queryKey: ["overview", "runtime-version-capabilities"],
+    queryFn: async () => {
+      const [ver, caps] = await Promise.all([
+        apiFetch<ApiEnvelope & { version?: string; commit?: string; go_version?: string }>("/api/v1/version"),
+        apiFetch<ApiEnvelope & { capabilities?: unknown; commands?: unknown[]; count?: number }>("/api/v1/capabilities"),
+      ]);
+      return { ver, caps };
+    },
+    enabled: runtimeRequested,
     retry: false,
   });
 
@@ -110,6 +124,32 @@ export function SystemDiagnosticsToolbar() {
                 ? "Refresh Tool Dependencies"
                 : "Check Tool Dependencies"}
           </button>
+
+          <button
+            type="button"
+            disabled={runtimeQuery.isFetching}
+            onClick={() => {
+              if (runtimeRequested) {
+                void runtimeQuery.refetch();
+              } else {
+                setRuntimeRequested(true);
+              }
+            }}
+            className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+          >
+            {runtimeQuery.isFetching
+              ? "Loading Runtime…"
+              : "Runtime & Capabilities"}
+          </button>
+
+          <a
+            href="/api/v1/openapi.json"
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2.5 py-1.5 text-xs font-mono text-blue-600 dark:text-blue-400 hover:underline"
+          >
+            OpenAPI 3.1 Spec ↗
+          </a>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -216,6 +256,28 @@ export function SystemDiagnosticsToolbar() {
               </div>
             </>
           )}
+        </div>
+      )}
+      {runtimeRequested && runtimeQuery.data && (
+        <div
+          data-testid="overview-runtime-capabilities"
+          className="rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-2.5 text-xs font-mono text-gray-800 dark:text-gray-200 flex flex-wrap items-center gap-3"
+        >
+          <span>
+            Version: <strong>{runtimeQuery.data.ver.version || "dev"}</strong>
+          </span>
+          {runtimeQuery.data.ver.go_version && (
+            <span>Go: {runtimeQuery.data.ver.go_version}</span>
+          )}
+          <span>
+            Robot Surfaces:{" "}
+            <strong>
+              {runtimeQuery.data.caps.count ??
+                (Array.isArray(runtimeQuery.data.caps.commands)
+                  ? runtimeQuery.data.caps.commands.length
+                  : "active")}
+            </strong>
+          </span>
         </div>
       )}
     </div>

@@ -256,9 +256,47 @@ export function AuditAndPolicyPanel({
     },
   });
 
-  // 3. Policy Decisions Ledger (GET /api/v1/policy/decisions) & Approval History (GET /api/v1/approvals/history)
+  // 3. Policy Decisions Ledger (GET /api/v1/policy/decisions), Approval History (GET /api/v1/approvals/history),
+  //    and Session JSONL Audit Logs (GET /api/v1/audit/sessions)
   const [decisionsRequested, setDecisionsRequested] = useState(false);
   const [historyRequested, setHistoryRequested] = useState(false);
+  const [sessionAuditQueryInput, setSessionAuditQueryInput] = useState("");
+  const [sessionAuditRegexInput, setSessionAuditRegexInput] = useState("");
+  const [sessionAuditRequested, setSessionAuditRequested] = useState(false);
+
+  const sessionAuditQuery = useQuery({
+    queryKey: [
+      "safety",
+      "session-audit-jsonl",
+      sessionAuditQueryInput.trim(),
+      sessionAuditRegexInput.trim(),
+    ],
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: "25" });
+      if (sessionAuditQueryInput.trim()) {
+        params.set("session", sessionAuditQueryInput.trim());
+      }
+      if (sessionAuditRegexInput.trim()) {
+        params.set("search", sessionAuditRegexInput.trim());
+      }
+      return apiFetch<
+        ApiEnvelope & {
+          action?: string;
+          count?: number;
+          entries?: Array<{
+            sequence_num: number;
+            event_type: string;
+            actor: string;
+            target: string;
+            timestamp?: string;
+          }>;
+          logs?: Array<{ file: string; session?: string; size_bytes: number }>;
+        }
+      >(`/api/v1/audit/sessions?${params.toString()}`);
+    },
+    enabled: sessionAuditRequested,
+    retry: false,
+  });
 
   const decisionsQuery = useQuery({
     queryKey: ["safety", "policy-decisions"],
@@ -791,6 +829,87 @@ export function AuditAndPolicyPanel({
             </div>
           )}
         </div>
+      </div>
+
+      {/* Session JSONL Audit Log Browser (/api/v1/audit/sessions) */}
+      <div
+        role="region"
+        aria-label="Session JSONL Audit Logs"
+        className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30 p-4 space-y-3"
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+              Session JSONL Audit Logs
+            </h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Browse or regex-search tamper-evident per-session JSONL audit
+              logs (<code className="font-mono">/api/v1/audit/sessions</code>).
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              aria-label="Session JSONL audit session"
+              value={sessionAuditQueryInput}
+              onChange={(e) => setSessionAuditQueryInput(e.target.value)}
+              placeholder="Session or all..."
+              className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2.5 py-1 text-xs text-gray-900 dark:text-white"
+            />
+            <input
+              aria-label="Session JSONL audit regex"
+              value={sessionAuditRegexInput}
+              onChange={(e) => setSessionAuditRegexInput(e.target.value)}
+              placeholder="Regex search..."
+              className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2.5 py-1 text-xs font-mono text-gray-900 dark:text-white"
+            />
+            <button
+              type="button"
+              disabled={sessionAuditQuery.isFetching}
+              onClick={() =>
+                sessionAuditRequested
+                  ? void sessionAuditQuery.refetch()
+                  : setSessionAuditRequested(true)
+              }
+              className="rounded bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {sessionAuditQuery.isFetching
+                ? "Searching…"
+                : "Query Session Audit"}
+            </button>
+          </div>
+        </div>
+
+        {sessionAuditRequested && sessionAuditQuery.data && (
+          <div
+            data-testid="session-jsonl-audit-results"
+            className="text-xs space-y-1.5"
+          >
+            <div className="font-mono text-gray-600 dark:text-gray-400">
+              Action: {sessionAuditQuery.data.action || "list"} · Returned:{" "}
+              {sessionAuditQuery.data.count ??
+                (sessionAuditQuery.data.entries?.length ||
+                  sessionAuditQuery.data.logs?.length ||
+                  0)}
+            </div>
+            {(sessionAuditQuery.data.entries ?? []).map((entry) => (
+              <div
+                key={`${entry.sequence_num}-${entry.timestamp}`}
+                className="font-mono text-gray-800 dark:text-gray-200"
+              >
+                #{entry.sequence_num} {entry.event_type} ({entry.actor} →{" "}
+                {entry.target})
+              </div>
+            ))}
+            {(sessionAuditQuery.data.logs ?? []).map((logFile) => (
+              <div
+                key={logFile.file}
+                className="font-mono text-gray-700 dark:text-gray-300"
+              >
+                {logFile.file} ({logFile.size_bytes} B)
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </section>
   );

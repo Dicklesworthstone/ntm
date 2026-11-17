@@ -29,6 +29,7 @@ import { SessionHandoffsPanel } from "@/components/sessions/SessionHandoffsPanel
 import { SessionRollbackAndArchivePanel } from "@/components/sessions/SessionRollbackAndArchivePanel";
 import { SessionTimelinePanel } from "@/components/sessions/SessionTimelinePanel";
 import { SessionLifecycleControls } from "@/components/sessions/SessionLifecycleControls";
+import { SessionSummaryAndEventsPanel } from "@/components/sessions/SessionSummaryAndEventsPanel";
 
 interface Session {
   name: string;
@@ -731,6 +732,8 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
         sessionId={sessionId}
         onNotice={setStatusNotice}
       />
+
+      <SessionSummaryAndEventsPanel sessionId={sessionId} />
 
       <SessionCheckpointsSection
         sessionId={sessionId}

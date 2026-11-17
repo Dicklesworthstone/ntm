@@ -101,8 +101,14 @@ export function MemoryWorkbenchPanel({
     useState<MemoryOutcomeResponse | null>(null);
   const [outcomeError, setOutcomeError] = useState<string | null>(null);
 
-  // 3. On-demand CASS Insights & CM Privacy triggers (never spawn subprocesses on mount)
+  // 3. On-demand CASS Insights, Capabilities, Timeline, Preview & CM Privacy triggers
   const [insightsRequested, setInsightsRequested] = useState(false);
+  const [cassCapsRequested, setCassCapsRequested] = useState(false);
+  const [cassTimelineSince, setCassTimelineSince] = useState("7d");
+  const [cassTimelineRequested, setCassTimelineRequested] = useState(false);
+  const [cassPreviewPath, setCassPreviewPath] = useState("");
+  const [cassPreviewData, setCassPreviewData] = useState<string | null>(null);
+  const [cassPreviewError, setCassPreviewError] = useState<string | null>(null);
   const [privacyRequested, setPrivacyRequested] = useState(false);
   const [privacyEnabled, setPrivacyEnabled] = useState(true);
   const [privacyAgentsInput, setPrivacyAgentsInput] = useState("");
@@ -116,6 +122,56 @@ export function MemoryWorkbenchPanel({
     queryFn: () => apiFetch<CASSInsightsResponse>("/api/v1/cass/insights"),
     enabled: insightsRequested,
     retry: false,
+  });
+
+  const cassCapsQuery = useQuery({
+    queryKey: ["memory", "cass-capabilities"],
+    queryFn: () =>
+      apiFetch<ApiEnvelope & Record<string, unknown>>(
+        "/api/v1/cass/capabilities"
+      ),
+    enabled: cassCapsRequested,
+    retry: false,
+  });
+
+  const cassTimelineQuery = useQuery({
+    queryKey: ["memory", "cass-timeline", cassTimelineSince.trim()],
+    queryFn: () =>
+      apiFetch<
+        ApiEnvelope & {
+          entries?: Array<{
+            timestamp?: string;
+            agent?: string;
+            workspace?: string;
+            summary?: string;
+            source_path?: string;
+          }>;
+          count?: number;
+        }
+      >(
+        `/api/v1/cass/timeline?since=${encodeURIComponent(
+          cassTimelineSince.trim() || "7d"
+        )}&limit=15`
+      ),
+    enabled: cassTimelineRequested,
+    retry: false,
+  });
+
+  const cassPreviewMutation = useMutation({
+    mutationFn: (docPath: string) =>
+      apiFetch<
+        ApiEnvelope & { path?: string; content?: string; preview?: string }
+      >(`/api/v1/cass/preview?path=${encodeURIComponent(docPath)}`),
+    onSuccess: (res) => {
+      setCassPreviewData(
+        res.content || res.preview || JSON.stringify(res, null, 2)
+      );
+      setCassPreviewError(null);
+    },
+    onError: (err) => {
+      setCassPreviewData(null);
+      setCassPreviewError(formatApiErrorMessage(err));
+    },
   });
 
   const privacyQuery = useQuery({
@@ -906,6 +962,127 @@ export function MemoryWorkbenchPanel({
           )}
         </section>
       </div>
+
+      {/* CASS Timeline, Transcript Preview & Capabilities */}
+      <section
+        aria-label="CASS Timeline, Preview & Capabilities"
+        className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 space-y-4"
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <h3 className="text-base font-semibold text-gray-900 dark:text-white">
+              CASS Session Timeline, Transcript Preview &amp; Capabilities
+            </h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Inspect cross-agent session history timeline, preview archived
+              JSONL transcripts, and query CASS adapter capabilities.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              aria-label="CASS timeline since"
+              value={cassTimelineSince}
+              onChange={(e) => setCassTimelineSince(e.target.value)}
+              placeholder="7d"
+              className="w-20 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2.5 py-1.5 text-xs font-mono text-gray-900 dark:text-white"
+            />
+            <button
+              type="button"
+              onClick={() =>
+                cassTimelineRequested
+                  ? void cassTimelineQuery.refetch()
+                  : setCassTimelineRequested(true)
+              }
+              className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+            >
+              Load CASS Timeline
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                cassCapsRequested
+                  ? void cassCapsQuery.refetch()
+                  : setCassCapsRequested(true)
+              }
+              className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
+            >
+              CASS Capabilities
+            </button>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            aria-label="CASS preview path"
+            value={cassPreviewPath}
+            onChange={(e) => setCassPreviewPath(e.target.value)}
+            placeholder="Transcript source path to preview (/path/to/session.jsonl)..."
+            className="flex-1 min-w-[220px] rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-xs font-mono text-gray-900 dark:text-white"
+          />
+          <button
+            type="button"
+            disabled={cassPreviewMutation.isPending}
+            onClick={() => {
+              if (!cassPreviewPath.trim()) {
+                setCassPreviewError("Enter a transcript source path first.");
+                return;
+              }
+              cassPreviewMutation.mutate(cassPreviewPath.trim());
+            }}
+            className="rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+          >
+            Preview Transcript
+          </button>
+        </div>
+
+        {cassPreviewError && (
+          <div className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
+            {cassPreviewError}
+          </div>
+        )}
+
+        {cassPreviewData && (
+          <pre
+            data-testid="cass-transcript-preview"
+            className="max-h-48 overflow-auto rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3 text-xs font-mono text-gray-800 dark:text-gray-200 whitespace-pre-wrap"
+          >
+            {cassPreviewData}
+          </pre>
+        )}
+
+        {cassTimelineRequested && cassTimelineQuery.data && (
+          <div
+            data-testid="cass-timeline-results"
+            className="rounded border border-gray-200 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-900/40 p-3 text-xs space-y-1.5"
+          >
+            <div className="font-semibold text-gray-900 dark:text-white">
+              CASS Timeline Entries (
+              {cassTimelineQuery.data.count ??
+                (cassTimelineQuery.data.entries?.length || 0)}
+              )
+            </div>
+            {(cassTimelineQuery.data.entries ?? []).map((item, idx) => (
+              <div
+                key={`${item.source_path || idx}`}
+                className="font-mono text-gray-700 dark:text-gray-300"
+              >
+                [{item.agent || "agent"}]{" "}
+                {item.summary || item.source_path || item.timestamp || "entry"}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {cassCapsRequested && cassCapsQuery.data && (
+          <div
+            data-testid="cass-capabilities-card"
+            className="rounded border border-gray-200 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-900/40 p-3 text-xs font-mono text-gray-800 dark:text-gray-200"
+          >
+            CASS Capabilities Loaded:{" "}
+            {Object.keys(cassCapsQuery.data).slice(0, 6).join(", ")}
+          </div>
+        )}
+      </section>
     </section>
   );
 }

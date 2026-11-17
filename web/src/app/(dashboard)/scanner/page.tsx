@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api/client';
+import { ScannerTargetedAndBugsPanel } from '@/components/scanner/ScannerTargetedAndBugsPanel';
 
 // Types based on scanner.go REST API
 interface ScanOptions {
@@ -512,6 +513,9 @@ export default function ScannerPage() {
           )}
         </div>
       </div>
+
+      {/* Targeted File Scan, Active Bugs Feed & Finding Inspector */}
+      <ScannerTargetedAndBugsPanel />
 
       {connectionError && (
         <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4">

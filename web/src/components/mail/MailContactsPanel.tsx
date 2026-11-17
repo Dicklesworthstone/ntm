@@ -98,6 +98,51 @@ export function MailContactsPanel({
   const [respondStatusMsg, setRespondStatusMsg] = useState<string | null>(null);
   const [respondError, setRespondError] = useState<string | null>(null);
 
+  // Agent Identity Detail & Thread Summary state
+  const [agentDetailRequested, setAgentDetailRequested] = useState(false);
+  const [threadIdInput, setThreadIdInput] = useState("");
+  const [threadSummaryResult, setThreadSummaryResult] = useState<
+    (ApiEnvelope & Record<string, unknown>) | null
+  >(null);
+  const [threadSummaryError, setThreadSummaryError] = useState<string | null>(
+    null
+  );
+
+  const agentDetailQuery = useQuery({
+    queryKey: ["mail", "agent-detail", selectedAgentName],
+    queryFn: () =>
+      apiFetch<
+        ApiEnvelope & {
+          agent?: {
+            name?: string;
+            program?: string;
+            model?: string;
+            task_description?: string;
+          };
+          name?: string;
+          program?: string;
+          model?: string;
+        }
+      >(`/api/v1/mail/agents/${encodeURIComponent(selectedAgentName)}`),
+    enabled: agentDetailRequested && Boolean(selectedAgentName),
+    retry: false,
+  });
+
+  const threadSummaryMutation = useMutation({
+    mutationFn: (threadId: string) =>
+      apiFetch<ApiEnvelope & Record<string, unknown>>(
+        `/api/v1/mail/threads/${encodeURIComponent(threadId)}/summary?include_examples=true`
+      ),
+    onSuccess: (res) => {
+      setThreadSummaryResult(res);
+      setThreadSummaryError(null);
+    },
+    onError: (err) => {
+      setThreadSummaryResult(null);
+      setThreadSummaryError(formatApiErrorMessage(err));
+    },
+  });
+
   const contactsQuery = useQuery({
     queryKey: ["mail", "contacts", selectedAgentName],
     queryFn: () =>
@@ -549,6 +594,92 @@ export function MailContactsPanel({
               className="text-xs text-emerald-700 dark:text-emerald-300"
             >
               {respondStatusMsg}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Agent Identity Detail & Thread Summary */}
+      <div className="grid gap-4 lg:grid-cols-2 pt-2 border-t border-gray-200 dark:border-gray-700">
+        <div className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30 p-4 space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-sm font-semibold text-gray-900 dark:text-white">
+              Agent Identity Profile
+            </div>
+            <button
+              type="button"
+              disabled={!selectedAgentName || agentDetailQuery.isFetching}
+              onClick={() =>
+                agentDetailRequested
+                  ? void agentDetailQuery.refetch()
+                  : setAgentDetailRequested(true)
+              }
+              className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2.5 py-1 text-xs font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+            >
+              Inspect Selected Agent
+            </button>
+          </div>
+          {agentDetailRequested && agentDetailQuery.data && (
+            <div
+              data-testid="mail-agent-identity-detail"
+              className="text-xs font-mono text-gray-800 dark:text-gray-200"
+            >
+              {agentDetailQuery.data.agent?.name ||
+                agentDetailQuery.data.name ||
+                selectedAgentName}{" "}
+              ·{" "}
+              {agentDetailQuery.data.agent?.program ||
+                agentDetailQuery.data.program ||
+                "agent"}{" "}
+              (
+              {agentDetailQuery.data.agent?.model ||
+                agentDetailQuery.data.model ||
+                "default"}
+              )
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30 p-4 space-y-2.5">
+          <div className="text-sm font-semibold text-gray-900 dark:text-white">
+            Thread Summary
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              aria-label="Mail thread ID to summarize"
+              value={threadIdInput}
+              onChange={(e) => setThreadIdInput(e.target.value)}
+              placeholder="Thread ID (e.g. bd-y5y8h)..."
+              className="flex-1 min-w-[160px] rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2.5 py-1 text-xs font-mono text-gray-900 dark:text-white"
+            />
+            <button
+              type="button"
+              disabled={threadSummaryMutation.isPending}
+              onClick={() => {
+                if (!threadIdInput.trim()) {
+                  setThreadSummaryError("Enter a thread ID to summarize.");
+                  return;
+                }
+                threadSummaryMutation.mutate(threadIdInput.trim());
+              }}
+              className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              Summarize Thread
+            </button>
+          </div>
+          {threadSummaryError && (
+            <div className="text-xs text-red-600 dark:text-red-400">
+              {threadSummaryError}
+            </div>
+          )}
+          {threadSummaryResult && (
+            <div
+              data-testid="mail-thread-summary-result"
+              className="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-2 text-xs font-mono text-gray-800 dark:text-gray-200"
+            >
+              {typeof threadSummaryResult.summary === "string"
+                ? threadSummaryResult.summary
+                : JSON.stringify(threadSummaryResult)}
             </div>
           )}
         </div>
