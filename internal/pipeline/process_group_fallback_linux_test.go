@@ -25,6 +25,7 @@ import (
 func TestCommandGroupFallbackKernelFailures(t *testing.T) {
 	for _, mode := range []string{"group-denied", "normal-signals-denied", "open-denied", "send-denied", "membership-denied", "unowned", "reaped", "wait-cancel", "wait-deadline", "wait-observe", "wait-observe-only", "wait-observe-pipes", "wait-ownership"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			exe, err := os.Executable()
 			if err != nil {
 				t.Fatal(err)
@@ -1620,6 +1621,7 @@ func TestCommandLeaderLostOwnershipCannotSignalOnCancellation(t *testing.T) {
 	for _, cause := range []error{syscall.ECHILD, syscall.ESRCH} {
 		for _, failAt := range []int{1, 2} {
 			t.Run(fmt.Sprintf("%v/probe_%d", cause, failAt), func(t *testing.T) {
+				t.Parallel()
 				dir := t.TempDir()
 				input, release, err := os.Pipe()
 				if err != nil {

@@ -526,6 +526,7 @@ func TestWaitNoneExplicitTimeoutWithUnknownSettlementRefusesReplay(t *testing.T)
 func TestControlledPipelinePersistentObservationCancellationPreservesUncertainty(t *testing.T) {
 	for _, background := range []bool{false, true} {
 		t.Run(fmt.Sprintf("background_%t", background), func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			work := Step{ID: "uncertain", Command: "printf 'once\\n' >> launches; printf captured",
 				OnError: ErrorActionRetry, RetryCount: 2, RetryDelay: Duration{Duration: time.Millisecond}}
@@ -1702,6 +1703,7 @@ func TestControlledPipelineNestedWaitNoneHonorsCancellationAndDeadlines(t *testi
 		{"parallel_timeout_after_container", "parallel", "group_timeout_completed", StatusFailed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			workflow := nestedWaitNoneWorkflow(t, root, tc.shape)
 			container := &workflow.Steps[1]
@@ -1784,6 +1786,7 @@ func TestControlledPipelineNestedWaitNoneHonorsCancellationAndDeadlines(t *testi
 func TestControlledPipelineNestedWaitNoneUncertaintyRefusesReplay(t *testing.T) {
 	for _, shape := range []string{"parallel", "foreach"} {
 		t.Run(shape, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			workflow := nestedWaitNoneWorkflow(t, root, shape)
 			workflow.Steps[2].Command = "printf ready > consumer-ready; while [ ! -f finish-release ]; do sleep 0.01; done"

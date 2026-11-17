@@ -566,6 +566,7 @@ func TestCommandReplayCannotEraseWorkBehindCompletedContainer(t *testing.T) {
 func TestCommandCleanupRunsForEveryResumedAttempt(t *testing.T) {
 	for _, kind := range []string{"direct", "parallel", "foreach_rounds", "success_foreach_rounds"} {
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
 			e := newCommandTestExecutor(t)
 			cleanup := Step{ID: "release", Command: `printf 'released\n' >> cleanups`}
 			perAttempt := 1
