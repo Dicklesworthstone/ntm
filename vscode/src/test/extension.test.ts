@@ -3015,3 +3015,5 @@ describe('Wave 12: VSCode ntm.runDoctor, ntm.preflightPrompt & ntm.assignWork', 
         }
     });
 });
+
+import './swarmOps.test';

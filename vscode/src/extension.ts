@@ -35,6 +35,17 @@ import {
     formatPreflightMarkdown,
     PREFLIGHT_MODE_OPTIONS,
 } from './orchestrationSupport';
+import {
+    formatRebalanceMarkdown,
+    formatReviewQueueMarkdown,
+    formatScaleMarkdown,
+    formatSummaryMarkdown,
+    parseScaleSpec,
+    REBALANCE_MODE_OPTIONS,
+    REVIEW_QUEUE_MODE_OPTIONS,
+    SCALE_MODE_OPTIONS,
+    SUMMARY_WINDOW_OPTIONS,
+} from './swarmOpsSupport';
 import { NtmDashboard } from './dashboard';
 import { normalizeWorkspaceRelativePath, registerFileDecorations } from './fileDecorations';
 import { NtmTreeItem, registerSessionTreeView } from './sessionTreeView';
@@ -47,9 +58,18 @@ export {
     formatAssignWorkMarkdown,
     formatDoctorMarkdown,
     formatPreflightMarkdown,
+    formatRebalanceMarkdown,
+    formatReviewQueueMarkdown,
+    formatScaleMarkdown,
+    formatSummaryMarkdown,
     normalizeWebPort,
+    parseScaleSpec,
     PREFLIGHT_MODE_OPTIONS,
+    REBALANCE_MODE_OPTIONS,
+    REVIEW_QUEUE_MODE_OPTIONS,
+    SCALE_MODE_OPTIONS,
     shellQuote,
+    SUMMARY_WINDOW_OPTIONS,
 };
 
 export const WEB_COCKPIT_TERMINAL_NAME = 'NTM Web Cockpit';
@@ -160,6 +180,10 @@ export interface PaletteActionQuickPickItem extends vscode.QuickPickItem {
         | 'runDoctor'
         | 'preflightPrompt'
         | 'assignWork'
+        | 'scaleSession'
+        | 'rebalanceSession'
+        | 'reviewQueue'
+        | 'showSummary'
         | 'openWebCockpit'
         | 'showBackpressure'
         | 'manageWorktrees'
@@ -252,6 +276,34 @@ export const PALETTE_ACTION_OPTIONS: readonly PaletteActionQuickPickItem[] = [
         detail: 'Score ready Beads issues against idle agents by strategy and optionally dispatch assignments',
         actionId: 'assignWork',
         command: 'ntm.assignWork',
+    },
+    {
+        label: '$(layers) Scale Session Agents (11 Harnesses)',
+        description: 'NTM: Scale Session Agents',
+        detail: 'Preview or execute multi-harness agent scaling across cc, cod, gmi, agy, ollama, cursor, windsurf, aider, grok, omp, and oc',
+        actionId: 'scaleSession',
+        command: 'ntm.scaleSession',
+    },
+    {
+        label: '$(sync) Rebalance Session Workload',
+        description: 'NTM: Rebalance Session Workload',
+        detail: 'Compute imbalance score and rebalance assigned Beads or pane geometry across agents',
+        actionId: 'rebalanceSession',
+        command: 'ntm.rebalanceSession',
+    },
+    {
+        label: '$(checklist) Peer Review Queue',
+        description: 'NTM: Peer Review Queue',
+        detail: 'Generate or dispatch cross-agent peer review prompts for idle session panes',
+        actionId: 'reviewQueue',
+        command: 'ntm.reviewQueue',
+    },
+    {
+        label: '$(output) Show Session Activity Summary',
+        description: 'NTM: Show Session Activity Summary',
+        detail: 'Summarize recent agent output, modified files, commands run, and detected file conflicts',
+        actionId: 'showSummary',
+        command: 'ntm.showSummary',
     },
     {
         label: '$(pulse) Show Swarm Backpressure',
@@ -1203,7 +1255,11 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
                         picked.actionId === 'handoffSession' ||
                         picked.actionId === 'showAudit' ||
                         picked.actionId === 'generateSupportBundle' ||
-                        picked.actionId === 'assignWork') &&
+                        picked.actionId === 'assignWork' ||
+                        picked.actionId === 'scaleSession' ||
+                        picked.actionId === 'rebalanceSession' ||
+                        picked.actionId === 'reviewQueue' ||
+                        picked.actionId === 'showSummary') &&
                     sessionArg
                 ) {
                     await vscode.commands.executeCommand(picked.command, sessionArg);
@@ -2350,6 +2406,209 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
         }
     );
 
+    const dispScaleSession = vscode.commands.registerCommand(
+        'ntm.scaleSession',
+        async (sessionArg?: string | NtmTreeItem) => {
+            try {
+                const modePick = await vscode.window.showQuickPick(SCALE_MODE_OPTIONS, {
+                    placeHolder: 'Select session scaling mode across all 11 harnesses',
+                });
+                if (!modePick) {
+                    return;
+                }
+                if (modePick.mode === 'openSwarmCockpit') {
+                    await openWebCockpitRoute('/swarm');
+                    return;
+                }
+
+                const targetSession = await resolveSessionInteractive(
+                    extractSessionName(sessionArg),
+                    'Session name to scale'
+                );
+                if (!targetSession) {
+                    return;
+                }
+
+                const rawSpec = await vscode.window.showInputBox({
+                    prompt: 'Enter target harness counts (comma/space separated across cc, cod, gmi, agy, ollama, cursor, windsurf, aider, grok, omp, oc)',
+                    value: 'cc=2,cod=1',
+                    placeHolder: 'e.g. cc=3,cod=2,cursor=1,ollama=1',
+                });
+                if (!rawSpec || !rawSpec.trim()) {
+                    return;
+                }
+
+                const targets = parseScaleSpec(rawSpec);
+                const res = await client.scaleSession({
+                    session: targetSession,
+                    targets,
+                    dryRun: modePick.mode === 'dryRun',
+                    force: modePick.mode === 'apply',
+                });
+                const doc = await vscode.workspace.openTextDocument({
+                    content: formatScaleMarkdown(res),
+                    language: 'markdown',
+                });
+                await vscode.window.showTextDocument(doc);
+
+                const nextBtn = await vscode.window.showInformationMessage(
+                    `${res.dry_run ? 'Scale plan' : 'Scaled'} "${res.session}": ${res.actions.length} action(s)`,
+                    'Open /swarm in Web Cockpit'
+                );
+                if (nextBtn === 'Open /swarm in Web Cockpit') {
+                    await openWebCockpitRoute('/swarm');
+                }
+            } catch (e) {
+                vscode.window.showErrorMessage(`Session scale failed: ${e}`);
+            }
+        }
+    );
+
+    const dispRebalanceSession = vscode.commands.registerCommand(
+        'ntm.rebalanceSession',
+        async (sessionArg?: string | NtmTreeItem) => {
+            try {
+                const modePick = await vscode.window.showQuickPick(REBALANCE_MODE_OPTIONS, {
+                    placeHolder: 'Select workload or geometry rebalance mode',
+                });
+                if (!modePick) {
+                    return;
+                }
+                if (modePick.mode === 'openSwarmCockpit') {
+                    await openWebCockpitRoute('/swarm');
+                    return;
+                }
+
+                const targetSession = await resolveSessionInteractive(
+                    extractSessionName(sessionArg),
+                    'Session name to rebalance'
+                );
+                if (!targetSession) {
+                    return;
+                }
+
+                const res = await client.rebalanceSession({
+                    session: targetSession,
+                    apply: modePick.mode === 'apply',
+                    dryRun: modePick.mode !== 'apply',
+                    geometry: modePick.mode === 'geometry',
+                });
+                const doc = await vscode.workspace.openTextDocument({
+                    content: formatRebalanceMarkdown(res),
+                    language: 'markdown',
+                });
+                await vscode.window.showTextDocument(doc);
+
+                const nextBtn = await vscode.window.showInformationMessage(
+                    `Rebalance "${res.session}": score=${res.imbalance_score.toFixed(2)} (${res.recommendation}, ${res.transfers.length} transfer(s))`,
+                    'Open /swarm in Web Cockpit'
+                );
+                if (nextBtn === 'Open /swarm in Web Cockpit') {
+                    await openWebCockpitRoute('/swarm');
+                }
+            } catch (e) {
+                vscode.window.showErrorMessage(`Session rebalance failed: ${e}`);
+            }
+        }
+    );
+
+    const dispReviewQueue = vscode.commands.registerCommand(
+        'ntm.reviewQueue',
+        async (sessionArg?: string | NtmTreeItem) => {
+            try {
+                const modePick = await vscode.window.showQuickPick(REVIEW_QUEUE_MODE_OPTIONS, {
+                    placeHolder: 'Select peer review queue mode',
+                });
+                if (!modePick) {
+                    return;
+                }
+                if (modePick.mode === 'openSwarmCockpit') {
+                    await openWebCockpitRoute('/swarm');
+                    return;
+                }
+
+                const targetSession = await resolveSessionInteractive(
+                    extractSessionName(sessionArg),
+                    'Session name for peer review queue'
+                );
+                if (!targetSession) {
+                    return;
+                }
+
+                const res = await client.getReviewQueue({
+                    session: targetSession,
+                    dispatch: modePick.mode === 'dispatch',
+                    projectDir: client.getWorkspaceCwd(),
+                });
+                const doc = await vscode.workspace.openTextDocument({
+                    content: formatReviewQueueMarkdown(res),
+                    language: 'markdown',
+                });
+                await vscode.window.showTextDocument(doc);
+
+                const nextBtn = await vscode.window.showInformationMessage(
+                    `Peer review queue for "${res.session}": ${res.suggestions.length} suggestion(s) across ${res.idle_count} idle agent(s)`,
+                    'Open /swarm in Web Cockpit'
+                );
+                if (nextBtn === 'Open /swarm in Web Cockpit') {
+                    await openWebCockpitRoute('/swarm');
+                }
+            } catch (e) {
+                vscode.window.showErrorMessage(`Peer review queue failed: ${e}`);
+            }
+        }
+    );
+
+    const dispShowSummary = vscode.commands.registerCommand(
+        'ntm.showSummary',
+        async (sessionArg?: string | NtmTreeItem) => {
+            try {
+                const modePick = await vscode.window.showQuickPick(SUMMARY_WINDOW_OPTIONS, {
+                    placeHolder: 'Select session activity summary window',
+                });
+                if (!modePick) {
+                    return;
+                }
+
+                const targetSession = await resolveSessionInteractive(
+                    extractSessionName(sessionArg),
+                    'Session name to summarize'
+                );
+                if (modePick.mode === 'openSessionsCockpit') {
+                    await openWebCockpitRoute(
+                        targetSession
+                            ? `/sessions?session=${encodeURIComponent(targetSession)}`
+                            : '/sessions'
+                    );
+                    return;
+                }
+                if (!targetSession) {
+                    return;
+                }
+
+                const res = await client.getSummary({
+                    session: targetSession,
+                    since: modePick.since ?? '30m',
+                });
+                const doc = await vscode.workspace.openTextDocument({
+                    content: formatSummaryMarkdown(res),
+                    language: 'markdown',
+                });
+                await vscode.window.showTextDocument(doc);
+
+                const nextBtn = await vscode.window.showInformationMessage(
+                    `Session summary "${res.session}": ${res.agents.length} agent(s), ${res.total_files} file(s) modified, ${res.conflicts.length} conflict(s)`,
+                    'Open /sessions in Web Cockpit'
+                );
+                if (nextBtn === 'Open /sessions in Web Cockpit') {
+                    await openWebCockpitRoute(`/sessions?session=${encodeURIComponent(res.session)}`);
+                }
+            } catch (e) {
+                vscode.window.showErrorMessage(`Session summary failed: ${e}`);
+            }
+        }
+    );
+
     context.subscriptions.push(
         dispStatus,
         dispSpawn,
@@ -2364,6 +2623,10 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
         dispRunDoctor,
         dispPreflightPrompt,
         dispAssignWork,
+        dispScaleSession,
+        dispRebalanceSession,
+        dispReviewQueue,
+        dispShowSummary,
         dispOpenWebCockpit,
         dispShowBackpressure,
         dispManageWorktrees,

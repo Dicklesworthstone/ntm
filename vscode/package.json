@@ -29,6 +29,10 @@
     "onCommand:ntm.runDoctor",
     "onCommand:ntm.preflightPrompt",
     "onCommand:ntm.assignWork",
+    "onCommand:ntm.scaleSession",
+    "onCommand:ntm.rebalanceSession",
+    "onCommand:ntm.reviewQueue",
+    "onCommand:ntm.showSummary",
     "onCommand:ntm.openWebCockpit",
     "onCommand:ntm.showBackpressure",
     "onCommand:ntm.manageWorktrees",
@@ -153,6 +157,26 @@
         "icon": "$(tasklist)"
       },
       {
+        "command": "ntm.scaleSession",
+        "title": "NTM: Scale Session Agents (11 Harnesses)",
+        "icon": "$(layers)"
+      },
+      {
+        "command": "ntm.rebalanceSession",
+        "title": "NTM: Rebalance Session Workload",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "ntm.reviewQueue",
+        "title": "NTM: Peer Review Queue",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "ntm.showSummary",
+        "title": "NTM: Show Session Activity Summary",
+        "icon": "$(output)"
+      },
+      {
         "command": "ntm.openWebCockpit",
         "title": "NTM: Open Web Cockpit (ntm web)",
         "icon": "$(globe)"
@@ -212,6 +236,26 @@
         },
         {
           "command": "ntm.assignWork",
+          "when": "view == ntmSessions && viewItem == session",
+          "group": "navigation"
+        },
+        {
+          "command": "ntm.scaleSession",
+          "when": "view == ntmSessions && viewItem == session",
+          "group": "navigation"
+        },
+        {
+          "command": "ntm.rebalanceSession",
+          "when": "view == ntmSessions && viewItem == session",
+          "group": "navigation"
+        },
+        {
+          "command": "ntm.reviewQueue",
+          "when": "view == ntmSessions && viewItem == session",
+          "group": "navigation"
+        },
+        {
+          "command": "ntm.showSummary",
           "when": "view == ntmSessions && viewItem == session",
           "group": "navigation"
         },

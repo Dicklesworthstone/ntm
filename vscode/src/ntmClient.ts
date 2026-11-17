@@ -19,6 +19,27 @@ import {
     PreflightResult,
     SUPPORTED_ASSIGN_STRATEGIES,
 } from './orchestrationSupport';
+import {
+    normalizeRebalanceResult,
+    normalizeReviewQueueResult,
+    normalizeScaleResult,
+    normalizeSummaryResult,
+    parseScaleSpec,
+    RebalanceSessionOptions,
+    RebalanceSessionResult,
+    RebalanceTransferItem,
+    ReviewQueueOptions,
+    ReviewQueueResult,
+    ReviewQueueSuggestionItem,
+    ScaleHarness,
+    ScalePlanAction,
+    ScaleSessionOptions,
+    ScaleSessionResult,
+    SessionSummaryOptions,
+    SessionSummaryResult,
+    SummaryAgentItem,
+    SUPPORTED_SCALE_HARNESSES,
+} from './swarmOpsSupport';
 
 export {
     AssignStrategy,
@@ -33,10 +54,29 @@ export {
     normalizeAssignWorkResult,
     normalizeDoctorResult,
     normalizePreflightResult,
+    normalizeRebalanceResult,
+    normalizeReviewQueueResult,
+    normalizeScaleResult,
+    normalizeSummaryResult,
+    parseScaleSpec,
     PreflightFinding,
     PreflightOptions,
     PreflightResult,
+    RebalanceSessionOptions,
+    RebalanceSessionResult,
+    RebalanceTransferItem,
+    ReviewQueueOptions,
+    ReviewQueueResult,
+    ReviewQueueSuggestionItem,
+    ScaleHarness,
+    ScalePlanAction,
+    ScaleSessionOptions,
+    ScaleSessionResult,
+    SessionSummaryOptions,
+    SessionSummaryResult,
+    SummaryAgentItem,
     SUPPORTED_ASSIGN_STRATEGIES,
+    SUPPORTED_SCALE_HARNESSES,
 };
 
 export const SUPPORTED_SPAWN_HARNESSES = [
@@ -2877,5 +2917,131 @@ export class NtmClient {
 
         const stdout = await this.run(args);
         return normalizeAssignWorkResult(JSON.parse(stdout));
+    }
+
+    /**
+     * Preview or execute multi-harness session scaling across all 11 supported harnesses via
+     * `ntm --robot-scale=<session> [--scale-<harness>=N ...] [--dry-run] [--force] --robot-format=json`.
+     */
+    async scaleSession(options: ScaleSessionOptions): Promise<ScaleSessionResult> {
+        const sess = (options?.session ?? '').trim();
+        if (!sess) {
+            throw new Error('Session name is required to scale agents');
+        }
+        const args: string[] = [`--robot-scale=${sess}`];
+        let targetCount = 0;
+        for (const harness of SUPPORTED_SCALE_HARNESSES) {
+            const count = options?.targets?.[harness];
+            if (count !== undefined) {
+                if (!Number.isInteger(count) || count < 0) {
+                    throw new Error(`Scale target count for ${harness} must be a non-negative integer`);
+                }
+                args.push(`--scale-${harness}=${count}`);
+                targetCount += 1;
+            }
+        }
+        if (targetCount === 0) {
+            throw new Error('At least one harness target count is required to scale a session');
+        }
+        if (options?.dryRun) {
+            args.push('--dry-run');
+        }
+        if (options?.force) {
+            args.push('--force');
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeScaleResult(JSON.parse(stdout));
+    }
+
+    /**
+     * Analyze or apply workload / geometry rebalancing across session panes via
+     * `ntm --robot-rebalance=<session> [--rebalance-apply] [--rebalance-threshold=...] [--rebalance-geometry] [--dry-run] --robot-format=json`.
+     */
+    async rebalanceSession(options: RebalanceSessionOptions): Promise<RebalanceSessionResult> {
+        const sess = (options?.session ?? '').trim();
+        if (!sess) {
+            throw new Error('Session name is required to rebalance workload');
+        }
+        const args: string[] = [`--robot-rebalance=${sess}`];
+        if (options?.apply) {
+            args.push('--rebalance-apply');
+        }
+        if (options?.threshold !== undefined) {
+            if (!Number.isFinite(options.threshold) || options.threshold < 0) {
+                throw new Error('Rebalance threshold must be a non-negative number');
+            }
+            args.push(`--rebalance-threshold=${options.threshold}`);
+        }
+        if (options?.geometry) {
+            args.push('--rebalance-geometry');
+        }
+        if (options?.geometryTolerance !== undefined) {
+            if (!Number.isFinite(options.geometryTolerance) || options.geometryTolerance <= 0) {
+                throw new Error('Rebalance geometry tolerance must be a positive number');
+            }
+            args.push(`--rebalance-geometry-tolerance=${options.geometryTolerance}`);
+        }
+        const filterType = (options?.filterType ?? '').trim();
+        if (filterType) {
+            args.push(`--type=${filterType}`);
+        }
+        if (options?.dryRun) {
+            args.push('--dry-run');
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeRebalanceResult(JSON.parse(stdout));
+    }
+
+    /**
+     * Generate or dispatch cross-agent peer review prompts for idle panes via
+     * `ntm --robot-review-queue=<session> [--review-dispatch] [--review-pane=N] [--review-project-dir=...] --robot-format=json`.
+     */
+    async getReviewQueue(options: ReviewQueueOptions): Promise<ReviewQueueResult> {
+        const sess = (options?.session ?? '').trim();
+        if (!sess) {
+            throw new Error('Session name is required to build a peer review queue');
+        }
+        const args: string[] = [`--robot-review-queue=${sess}`];
+        if (options?.dispatch) {
+            args.push('--review-dispatch');
+        }
+        if (options?.pane !== undefined) {
+            if (!Number.isInteger(options.pane) || options.pane < 0) {
+                throw new Error('Review target pane must be a non-negative integer');
+            }
+            args.push(`--review-pane=${options.pane}`);
+        }
+        const projectDir = (options?.projectDir ?? '').trim();
+        if (projectDir) {
+            args.push(`--review-project-dir=${projectDir}`);
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeReviewQueueResult(JSON.parse(stdout));
+    }
+
+    /**
+     * Summarize recent agent activity, modified files, commands run, and detected file conflicts via
+     * `ntm --robot-summary=<session> [--since=...] --robot-format=json`.
+     */
+    async getSummary(options: SessionSummaryOptions): Promise<SessionSummaryResult> {
+        const sess = (options?.session ?? '').trim();
+        if (!sess) {
+            throw new Error('Session name is required to summarize session activity');
+        }
+        const args: string[] = [`--robot-summary=${sess}`];
+        const since = (options?.since ?? '').trim();
+        if (since) {
+            args.push(`--since=${since}`);
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeSummaryResult(JSON.parse(stdout));
     }
 }
