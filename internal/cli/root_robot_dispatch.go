@@ -67,6 +67,9 @@ func runRootCommand(cmd *cobra.Command, args []string) {
 	if dispatchRobotSwarmOps(cmd, robotDryRunEffective) {
 		return
 	}
+	if dispatchRobotExtFlags(cmd, robotDryRunEffective) {
+		return
+	}
 	if dispatchRobotActionsAndParity(cmd, robotDryRunEffective) {
 		return
 	}

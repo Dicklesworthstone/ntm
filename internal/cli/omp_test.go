@@ -179,8 +179,8 @@ func TestOmpPaneCountsAndNames(t *testing.T) {
 	}
 
 	adopted := AdoptedAgentCounts{}
-	adopted.increment(agentpkg.AgentType(" OMP "))
-	if adopted.Omp != 1 || adopted.countFor(agentpkg.AgentType("oh_my_pi")) != 1 || adopted.Total() != 1 {
+	adopted.Increment(agentpkg.AgentType(" OMP "))
+	if adopted.Omp != 1 || adopted.CountFor(agentpkg.AgentType("oh_my_pi")) != 1 || adopted.Total() != 1 {
 		t.Fatalf("adopted counts = %+v", adopted)
 	}
 

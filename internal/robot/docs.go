@@ -223,10 +223,12 @@ func getCommandsContent() *DocsContent {
 			{
 				Heading: "Session Management",
 				Body: `--robot-spawn=SESSION: Create session with agents
+--robot-adopt=SESSION: Adopt an external tmux session across all 11 harnesses plus user panes (--adopt-cc..--adopt-user, --adopt-by-window, --adopt-auto-name)
 --robot-scale=SESSION: Scale agent counts per harness across all 11 built-in harnesses (--scale-cc, --scale-cod, --scale-gmi, --scale-agy, --scale-ollama, --scale-cursor, --scale-windsurf, --scale-aider, --scale-grok, --scale-omp, --scale-oc)
 --robot-ensemble-spawn=SESSION: Spawn reasoning ensemble
 --robot-ensemble-synthesize=SESSION: Synthesize ensemble reasoning outputs
---robot-recipes: List available spawn presets`,
+--robot-recipes: List available spawn presets
+--robot-personas: List built-in, user, and project personas and profile sets (--personas-agent, --personas-tag)`,
 			},
 			{
 				Heading: "Beads Management",
@@ -264,6 +266,8 @@ func getCommandsContent() *DocsContent {
 --robot-slb-approve=ID: Approve SLB request
 --robot-slb-deny=ID: Deny SLB request
 --robot-preflight[=PROMPT]: Lint and validate a prompt before sending (--preflight-strict, --preflight-file)
+--robot-redact[=TEXT]: Preview secret/PII redaction findings and safe-redacted output (--redact-file)
+--robot-hooks: Inspect installed repository git hooks or execute hook checks (--hooks-action, --hooks-type, --hooks-fail-on-warning)
 --robot-webhook-outbox: Inspect, retry, or archive durable project webhook outbox receipts (--outbox-action, --outbox-record, --outbox-revision)`,
 			},
 		},

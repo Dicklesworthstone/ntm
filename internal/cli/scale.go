@@ -538,9 +538,7 @@ func newScaleRobotErrorOutput(session string, dryRun bool, err error, code, hint
 }
 
 func executeScaleRobot(ctx context.Context, input robot.ScaleInput) (*robot.ScaleOutput, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx = withSuppressedCLIIdentityOutput(ctx)
 	if err := ctx.Err(); err != nil {
 		return newScaleRobotErrorOutput(input.Session, input.DryRun, fmt.Errorf("scale canceled: %w", err), robot.ErrCodeTimeout, "Retry --robot-scale with an active context"), nil
 	}

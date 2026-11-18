@@ -102,6 +102,8 @@ var robotHelpSections = []robotHelpSection{
 		Title: "Session Operations",
 		SurfaceNames: []string{
 			"spawn",
+			"adopt",
+			"personas",
 			"controller-spawn",
 			"agent-names",
 			"context-inject",
@@ -202,6 +204,8 @@ Use --all to include the user pane (index depends on tmux pane-base-index).
 			"tokens",
 			"history",
 			"preflight",
+			"redact",
+			"hooks",
 			"webhook-outbox",
 		},
 	},

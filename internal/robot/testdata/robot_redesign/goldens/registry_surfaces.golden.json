@@ -12,7 +12,7 @@
     "utility"
   ],
   "category_count": 10,
-  "schema_type_count": 153,
+  "schema_type_count": 157,
   "schema_types": [
     "account_status",
     "accounts_list",
@@ -20,6 +20,7 @@
     "ack",
     "action_status",
     "activity",
+    "adopt",
     "agent_health",
     "agent_names",
     "alerts",
@@ -77,6 +78,7 @@
     "health",
     "health_oauth",
     "history",
+    "hooks",
     "impact",
     "incident_resolve",
     "inspect",
@@ -113,6 +115,7 @@
     "overlay",
     "palette",
     "pane_address",
+    "personas",
     "plan",
     "policy_decisions",
     "preflight",
@@ -126,6 +129,7 @@
     "rch_workers",
     "rebalance",
     "recipes",
+    "redact",
     "replay",
     "restart_pane",
     "restore",
@@ -169,7 +173,7 @@
     "xf_status"
   ],
   "section_count": 13,
-  "surface_count": 165,
+  "surface_count": 169,
   "surfaces": [
     {
       "category": "state",
@@ -1296,6 +1300,21 @@
     },
     {
       "category": "spawn",
+      "flag": "--robot-adopt",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "adopt",
+      "schema_id": "ntm:robot:adopt:v1",
+      "schema_type": "adopt"
+    },
+    {
+      "category": "spawn",
       "flag": "--robot-controller-spawn",
       "has_action_handoff": false,
       "has_attention_ops": false,
@@ -1308,6 +1327,21 @@
       "name": "controller-spawn",
       "schema_id": "",
       "schema_type": ""
+    },
+    {
+      "category": "spawn",
+      "flag": "--robot-personas",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "personas",
+      "schema_id": "ntm:robot:personas:v1",
+      "schema_type": "personas"
     },
     {
       "category": "spawn",
@@ -1986,6 +2020,21 @@
     },
     {
       "category": "utility",
+      "flag": "--robot-hooks",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "hooks",
+      "schema_id": "ntm:robot:hooks:v1",
+      "schema_type": "hooks"
+    },
+    {
+      "category": "utility",
       "flag": "--robot-jfp-bundles",
       "has_action_handoff": false,
       "has_attention_ops": false,
@@ -2358,6 +2407,21 @@
       "name": "rch-workers",
       "schema_id": "ntm:robot:rch-workers:v1",
       "schema_type": "rch_workers"
+    },
+    {
+      "category": "utility",
+      "flag": "--robot-redact",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "redact",
+      "schema_id": "ntm:robot:redact:v1",
+      "schema_type": "redact"
     },
     {
       "category": "utility",

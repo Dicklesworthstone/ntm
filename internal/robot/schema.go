@@ -124,6 +124,10 @@ var SchemaCommand = map[string]interface{}{
 	"review_queue":     ReviewQueueOutput{},
 	"coordinator":      CoordinatorOutput{},
 	"webhook_outbox":   WebhookOutboxOutput{},
+	"adopt":            AdoptOutput{},
+	"redact":           RedactOutput{},
+	"hooks":            HooksOutput{},
+	"personas":         PersonasOutput{},
 
 	// Pane inspection
 	"inspect":              InspectPaneOutput{},

@@ -1061,6 +1061,7 @@ func needsConfigLoading(cmdName string) bool {
 			robotReviewQueue != "" || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-review-queue")) ||
 			robotCoordinator != "" || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-coordinator")) ||
 			robotWebhookOutbox ||
+			needsRobotExtConfigLoading() ||
 			robotActionStatus != "" || robotWaitRequest != "" || robotCancelRequest != "" {
 			return true
 		}

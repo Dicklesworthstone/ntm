@@ -271,6 +271,10 @@ ntm --robot-rebalance=myproject --rebalance-apply
 ntm --robot-review-queue=myproject --review-dispatch
 ntm --robot-coordinator=myproject --coordinator-action=status
 ntm --robot-webhook-outbox --outbox-action=list
+ntm --robot-adopt=external_proj --adopt-cc=0,1 --adopt-cod=2 --dry-run
+ntm --robot-personas --personas-agent=claude
+ntm --robot-hooks --hooks-action=status
+ntm --robot-redact="Authorization: Bearer sk-live-1234567890abcdef1234567890"
 ntm audit http --limit=20 --json
 ```
 

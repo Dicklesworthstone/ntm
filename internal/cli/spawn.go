@@ -4605,8 +4605,25 @@ func preflightOllamaSpawnContext(ctx context.Context, opts SpawnOptions) (string
 // registerSessionAgent registers the session-level identity `ntm lock` acts
 // as and returns its name ("" when disabled or failed). It logs but never
 // fails when Agent Mail is unavailable.
+type suppressCLIIdentityOutputKey struct{}
+
+func withSuppressedCLIIdentityOutput(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, suppressCLIIdentityOutputKey{}, true)
+}
+
+func isCLIIdentityOutputSuppressed(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	suppressed, _ := ctx.Value(suppressCLIIdentityOutputKey{}).(bool)
+	return suppressed
+}
+
 func registerSessionAgent(parentCtx context.Context, sessionName, workingDir string) string {
-	return spawnidentity.RegisterSession(parentCtx, workingDir, sessionName, spawnIdentityOptions())
+	return spawnidentity.RegisterSession(parentCtx, workingDir, sessionName, spawnIdentityOptionsForContext(parentCtx))
 }
 
 // The per-pane Agent Mail identity coordinator (gh#255, ntm#256, ntm#257,
@@ -4639,8 +4656,14 @@ func (cliIdentityReporter) Warnf(format string, args ...any) {
 // configuration (registration gate, endpoint, badges), human output, and the
 // cli's tmux ports.
 func spawnIdentityOptions() spawnidentity.Options {
+	return spawnIdentityOptionsForContext(nil)
+}
+
+func spawnIdentityOptionsForContext(ctx context.Context) spawnidentity.Options {
 	opts := spawnidentity.ConfigOptions(cfg)
-	opts.Reporter = cliIdentityReporter{}
+	if !isCLIIdentityOutputSuppressed(ctx) {
+		opts.Reporter = cliIdentityReporter{}
+	}
 	opts.ListPanes = spawnIdentityPaneProbe
 	opts.BadgeTmux = paneBadgeTmux
 	return opts
@@ -4661,7 +4684,7 @@ func newSpawnIdentityCoordinator(workingDir, sessionName string, preLaunch bool)
 // before launch instead (gh#255). Agent Mail unavailability never fails the
 // caller.
 func registerSpawnedAgents(parentCtx context.Context, workingDir, sessionName string, agents []spawnidentity.Agent) *spawnidentity.AgentMailSpawnStatus {
-	return spawnidentity.RegisterBatch(parentCtx, workingDir, sessionName, agents, spawnIdentityOptions())
+	return spawnidentity.RegisterBatch(parentCtx, workingDir, sessionName, agents, spawnIdentityOptionsForContext(parentCtx))
 }
 
 // Identity file path helpers moved to internal/agentmail/pane_identity.go so

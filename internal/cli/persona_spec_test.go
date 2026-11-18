@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tui/icons"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
@@ -213,8 +214,8 @@ func TestMatchesPersonaAgentFilter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := matchesPersonaAgentFilter(tt.agentType, tt.filter); got != tt.want {
-				t.Errorf("matchesPersonaAgentFilter(%q, %q) = %v, want %v", tt.agentType, tt.filter, got, tt.want)
+			if got := robot.MatchesPersonaAgentFilter(tt.agentType, tt.filter); got != tt.want {
+				t.Errorf("MatchesPersonaAgentFilter(%q, %q) = %v, want %v", tt.agentType, tt.filter, got, tt.want)
 			}
 		})
 	}

@@ -1139,6 +1139,9 @@ func TestVSCodeExtensionManifestAndVSIXContract(t *testing.T) {
 		"ntm.rebalanceSession",
 		"ntm.reviewQueue",
 		"ntm.showSummary",
+		"ntm.adoptSession",
+		"ntm.previewRedaction",
+		"ntm.showContext",
 		"ntm.openWebCockpit",
 		"ntm.showBackpressure",
 		"ntm.manageWorktrees",
@@ -1179,6 +1182,11 @@ func TestVSCodeExtensionManifestAndVSIXContract(t *testing.T) {
 		{"--robot-rebalance=proj", "--rebalance-apply", "--rebalance-threshold=0.7", "--rebalance-geometry", "--rebalance-geometry-tolerance=2", "--type=claude", "--robot-format=json"},
 		{"--robot-review-queue=proj", "--review-dispatch", "--review-idle-threshold=5m", "--review-commits=5", "--type=codex", "--project=/tmp/proj", "--robot-format=json"},
 		{"--robot-summary=proj", "--since=30m", "--robot-format=json"},
+		{"--robot-adopt=proj", "--adopt-cc=0,1", "--adopt-agy=2.0", "--adopt-grok=3", "--adopt-omp=4", "--adopt-oc=5", "--adopt-auto-name=false", "--dry-run", "--robot-format=json"},
+		{"--robot-adopt=proj", "--adopt-by-window=cc", "--robot-format=json"},
+		{"--robot-redact=Authorization: Bearer token", "--robot-format=json"},
+		{"--robot-redact", "--redact-file=/tmp/notes.txt", "--robot-format=json"},
+		{"--robot-context=proj", "--lines=200", "--robot-format=json"},
 		{"--robot-backpressure", "--session=proj", "--robot-format=json"},
 		{"worktrees", "list", "--session=proj", "--json"},
 		{"attention", "list", "--session=proj", "--limit=30", "--all", "--json"},
@@ -1223,6 +1231,7 @@ func TestVSCodeExtensionManifestAndVSIXContract(t *testing.T) {
 			"extension/out/ntmClient.js",
 			"extension/out/orchestrationSupport.js",
 			"extension/out/swarmOpsSupport.js",
+			"extension/out/sessionIntelSupport.js",
 		} {
 			if !entries[wantEntry] {
 				t.Errorf("built VSIX %s missing required entry %q", vsixPath, wantEntry)

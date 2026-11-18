@@ -1420,6 +1420,65 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 		Request:    WebhookOutboxMutationRequest{},
 		RequestReq: true,
 	},
+	"handleSessionAdoptV1": {
+		Response:   SessionAdoptEnvelopeResponse{},
+		Envelope:   true,
+		Request:    SessionAdoptRequest{},
+		RequestReq: true,
+	},
+	"handleSessionContextV1": {
+		Response: SessionContextEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "lines", Type: "integer", Description: "Scrollback lines to inspect per agent pane (1..10000, default 200)."},
+		},
+	},
+	"handleSessionDiffV1": {
+		Response: SessionDiffEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "since", Type: "string", Description: "Lookback duration (e.g. 15m, 1h) or RFC3339 timestamp."},
+		},
+	},
+	"handleSessionFilesV1": {
+		Response: SessionFilesEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "window", Type: "string", Description: "Time window: 5m, 15m (default), 1h, all, or positive Go duration."},
+			{Name: "limit", Type: "integer", Description: "Maximum file changes to return (1..1000, default 100)."},
+		},
+	},
+	"handlePersonasListV1": {
+		Response: PersonasEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "agent", Type: "string", Description: "Optional 11-harness alias filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama)."},
+			{Name: "tag", Type: "string", Description: "Optional persona tag filter."},
+			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
+		},
+	},
+	"handleRecipesListV1": {
+		Response: RecipesEnvelopeResponse{},
+		Envelope: true,
+	},
+	"handleHooksStatusV1": {
+		Response: HooksEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
+		},
+	},
+	"handleHooksRunV1": {
+		Response: HooksEnvelopeResponse{},
+		Envelope: true,
+		Request:  HooksRunRequest{},
+	},
+	"handleRedactPreviewV1": {
+		Response:   RedactPreviewEnvelopeResponse{},
+		Envelope:   true,
+		Request:    RedactPreviewRequest{},
+		RequestReq: true,
+	},
 }
 
 func lookupServedRouteSchema(rt RouterRoute) (routeSchemaSpec, bool) {

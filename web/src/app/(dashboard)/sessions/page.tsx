@@ -30,6 +30,7 @@ import { SessionRollbackAndArchivePanel } from "@/components/sessions/SessionRol
 import { SessionTimelinePanel } from "@/components/sessions/SessionTimelinePanel";
 import { SessionLifecycleControls } from "@/components/sessions/SessionLifecycleControls";
 import { SessionSummaryAndEventsPanel } from "@/components/sessions/SessionSummaryAndEventsPanel";
+import { SessionAdoptContextDiffPanel } from "@/components/sessions/SessionAdoptContextDiffPanel";
 
 interface Session {
   name: string;
@@ -197,6 +198,8 @@ function SessionSelectorOverview() {
           </div>
         )}
       </section>
+
+      <SessionAdoptContextDiffPanel sessionId="" />
 
       <SessionHandoffsPanel
         sessionId="all"
@@ -734,6 +737,8 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
       />
 
       <SessionSummaryAndEventsPanel sessionId={sessionId} />
+
+      <SessionAdoptContextDiffPanel sessionId={sessionId} />
 
       <SessionCheckpointsSection
         sessionId={sessionId}

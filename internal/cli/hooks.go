@@ -11,6 +11,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
@@ -215,43 +216,36 @@ func newHooksStatusCmd() *cobra.Command {
 func runHooksStatus() error {
 	t := theme.Current()
 
-	mgr, err := hooks.NewManager("")
+	robotOut, err := robot.GetHooks(context.Background(), robot.HooksOptions{Action: "status"})
 	if err != nil {
-		if jsonOutput {
-			return emitJSONFailureEnvelopeWithCause(map[string]interface{}{
-				"success": false,
-				"error":   err.Error(),
-			}, err)
-		}
 		return err
 	}
-
-	infos, err := mgr.ListAll()
-	if err != nil {
+	if !robotOut.Success {
+		cause := fmt.Errorf("%s", robotOut.Error)
 		if jsonOutput {
-			return emitJSONFailureEnvelopeWithCause(map[string]interface{}{
+			return emitJSONFailureEnvelopeWithCause(map[string]any{
 				"success": false,
-				"error":   err.Error(),
-			}, err)
+				"error":   robotOut.Error,
+			}, cause)
 		}
-		return err
+		return cause
 	}
 
 	if jsonOutput {
-		return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
-			"repo_root": mgr.RepoRoot(),
-			"hooks_dir": mgr.HooksDir(),
-			"hooks":     infos,
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"repo_root": robotOut.RepoRoot,
+			"hooks_dir": robotOut.HooksDir,
+			"hooks":     robotOut.Hooks,
 		})
 	}
 
 	fmt.Println()
 	fmt.Printf("\033[1mGit Hooks Status\033[0m\n")
 	fmt.Printf("\033[2m════════════════════════════════════════\033[0m\n\n")
-	fmt.Printf("  Repository: %s\n", mgr.RepoRoot())
-	fmt.Printf("  Hooks dir:  %s\n\n", mgr.HooksDir())
+	fmt.Printf("  Repository: %s\n", robotOut.RepoRoot)
+	fmt.Printf("  Hooks dir:  %s\n\n", robotOut.HooksDir)
 
-	for _, info := range infos {
+	for _, info := range robotOut.Hooks {
 		var status, statusColor string
 		if info.Installed {
 			if info.IsNTM {
@@ -327,52 +321,30 @@ func runHooksRun(hookType string, hookArgs []string, verbose, failOnWarning bool
 }
 
 func runManagedHook(hookType hooks.HookType, hookArgs []string, verbose bool, timeout int) error {
-	ctx := context.Background()
-	var dur time.Duration
-	if timeout > 0 {
-		dur = time.Duration(timeout) * time.Second
-	}
-
-	mgr, err := hooks.NewManager("")
+	robotOut, err := robot.GetHooks(context.Background(), robot.HooksOptions{
+		Action:     "run",
+		HookType:   string(hookType),
+		HookArgs:   hookArgs,
+		Verbose:    verbose,
+		TimeoutSec: timeout,
+	})
 	if err != nil {
+		return err
+	}
+	if robotOut.CheckResult == nil {
+		cause := fmt.Errorf("%s", robotOut.Error)
 		if jsonOutput {
-			return emitJSONFailureEnvelopeWithCause(map[string]interface{}{
+			return emitJSONFailureEnvelopeWithCause(map[string]any{
 				"success":   false,
 				"hook_type": string(hookType),
 				"passed":    false,
-				"error":     err.Error(),
-			}, err)
+				"error":     robotOut.Error,
+			}, cause)
 		}
-		return err
+		return cause
 	}
 
-	var result *hooks.HookCheckResult
-	switch hookType {
-	case hooks.HookPrePush:
-		result, err = hooks.RunPrePush(ctx, mgr.RepoRoot(), verbose, dur)
-	case hooks.HookCommitMsg:
-		msgFile := ""
-		if len(hookArgs) > 0 {
-			msgFile = hookArgs[0]
-		}
-		result, err = hooks.RunCommitMsg(ctx, mgr.RepoRoot(), msgFile)
-	case hooks.HookPostCommit:
-		result, err = hooks.RunPostCommit(ctx, mgr.RepoRoot())
-	case hooks.HookPostCheckout:
-		result, err = hooks.RunPostCheckout(ctx, mgr.RepoRoot())
-	}
-	if err != nil {
-		if jsonOutput {
-			return emitJSONFailureEnvelopeWithCause(map[string]interface{}{
-				"success":   false,
-				"hook_type": string(hookType),
-				"passed":    false,
-				"error":     err.Error(),
-			}, err)
-		}
-		return err
-	}
-
+	result := robotOut.CheckResult
 	if jsonOutput {
 		return outputHookCheckJSON(result)
 	}
@@ -387,7 +359,7 @@ func runManagedHook(hookType hooks.HookType, hookArgs []string, verbose bool, ti
 func outputHookCheckJSON(result *hooks.HookCheckResult) error {
 	if result == nil {
 		cause := fmt.Errorf("hook returned no result")
-		return emitJSONFailureEnvelopeWithCause(map[string]interface{}{
+		return emitJSONFailureEnvelopeWithCause(map[string]any{
 			"success": false,
 			"passed":  false,
 			"error":   cause.Error(),
@@ -412,42 +384,34 @@ func outputHookCheckJSON(result *hooks.HookCheckResult) error {
 }
 
 func runPreCommitHook(verbose, failOnWarning bool, timeout int) error {
-	ctx := context.Background()
-
-	config := hooks.DefaultPreCommitConfig()
-	config.Verbose = verbose
-	config.FailOnWarning = failOnWarning
+	timeoutSec := timeout
 	if timeout <= 0 {
-		config.Timeout = 0
-	} else {
-		config.Timeout = time.Duration(timeout) * time.Second
+		timeoutSec = -1
 	}
-
-	// Get repo root
-	mgr, err := hooks.NewManager("")
+	fow := failOnWarning
+	robotOut, err := robot.GetHooks(context.Background(), robot.HooksOptions{
+		Action:        "run",
+		HookType:      string(hooks.HookPreCommit),
+		Verbose:       verbose,
+		FailOnWarning: &fow,
+		TimeoutSec:    timeoutSec,
+	})
 	if err != nil {
-		if jsonOutput {
-			return emitJSONFailureEnvelopeWithCause(map[string]interface{}{
-				"success": false,
-				"passed":  false,
-				"error":   err.Error(),
-			}, err)
-		}
 		return err
 	}
-
-	result, err := hooks.RunPreCommit(ctx, mgr.RepoRoot(), config)
-	if err != nil {
+	if robotOut.PreCommitResult == nil {
+		cause := fmt.Errorf("%s", robotOut.Error)
 		if jsonOutput {
-			return emitJSONFailureEnvelopeWithCause(map[string]interface{}{
+			return emitJSONFailureEnvelopeWithCause(map[string]any{
 				"success": false,
 				"passed":  false,
-				"error":   err.Error(),
-			}, err)
+				"error":   robotOut.Error,
+			}, cause)
 		}
-		return err
+		return cause
 	}
 
+	result := robotOut.PreCommitResult
 	if jsonOutput {
 		return outputPreCommitHookJSON(result)
 	}

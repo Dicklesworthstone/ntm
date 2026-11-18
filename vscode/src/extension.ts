@@ -46,26 +46,44 @@ import {
     SCALE_MODE_OPTIONS,
     SUMMARY_WINDOW_OPTIONS,
 } from './swarmOpsSupport';
+import {
+    ADOPT_MODE_OPTIONS,
+    AdoptHarness,
+    CONTEXT_LINES_OPTIONS,
+    formatAdoptMarkdown,
+    formatContextMarkdown,
+    formatRedactPreviewMarkdown,
+    parseAdoptSpec,
+    REDACT_MODE_OPTIONS,
+    SUPPORTED_ADOPT_HARNESSES,
+} from './sessionIntelSupport';
 import { NtmDashboard } from './dashboard';
 import { normalizeWorkspaceRelativePath, registerFileDecorations } from './fileDecorations';
 import { NtmTreeItem, registerSessionTreeView } from './sessionTreeView';
 
 export {
+    ADOPT_MODE_OPTIONS,
     ASSIGN_STRATEGY_OPTIONS,
     buildNtmTerminalCommand,
     buildWebCockpitCommand,
+    CONTEXT_LINES_OPTIONS,
     DOCTOR_MODE_OPTIONS,
+    formatAdoptMarkdown,
     formatAssignWorkMarkdown,
+    formatContextMarkdown,
     formatDoctorMarkdown,
     formatPreflightMarkdown,
     formatRebalanceMarkdown,
+    formatRedactPreviewMarkdown,
     formatReviewQueueMarkdown,
     formatScaleMarkdown,
     formatSummaryMarkdown,
     normalizeWebPort,
+    parseAdoptSpec,
     parseScaleSpec,
     PREFLIGHT_MODE_OPTIONS,
     REBALANCE_MODE_OPTIONS,
+    REDACT_MODE_OPTIONS,
     REVIEW_QUEUE_MODE_OPTIONS,
     SCALE_MODE_OPTIONS,
     shellQuote,
@@ -184,6 +202,9 @@ export interface PaletteActionQuickPickItem extends vscode.QuickPickItem {
         | 'rebalanceSession'
         | 'reviewQueue'
         | 'showSummary'
+        | 'adoptSession'
+        | 'previewRedaction'
+        | 'showContext'
         | 'openWebCockpit'
         | 'showBackpressure'
         | 'manageWorktrees'
@@ -304,6 +325,27 @@ export const PALETTE_ACTION_OPTIONS: readonly PaletteActionQuickPickItem[] = [
         detail: 'Summarize recent agent output, modified files, commands run, and detected file conflicts',
         actionId: 'showSummary',
         command: 'ntm.showSummary',
+    },
+    {
+        label: '$(plug) Adopt External Tmux Session (12 Types)',
+        description: 'NTM: Adopt External Tmux Session',
+        detail: 'Adopt external tmux session panes across all 11 agent harnesses plus user shell panes',
+        actionId: 'adoptSession',
+        command: 'ntm.adoptSession',
+    },
+    {
+        label: '$(shield) Preview Secret & PII Redaction',
+        description: 'NTM: Preview Secret & PII Redaction',
+        detail: 'Scan selection, prompt text, or active file for secrets without exposing raw tokens',
+        actionId: 'previewRedaction',
+        command: 'ntm.previewRedaction',
+    },
+    {
+        label: '$(dashboard) Show Session Context Window Usage',
+        description: 'NTM: Show Session Context Window Usage',
+        detail: 'Inspect per-pane token estimates and context window fill percentages',
+        actionId: 'showContext',
+        command: 'ntm.showContext',
     },
     {
         label: '$(pulse) Show Swarm Backpressure',
@@ -1259,7 +1301,9 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
                         picked.actionId === 'scaleSession' ||
                         picked.actionId === 'rebalanceSession' ||
                         picked.actionId === 'reviewQueue' ||
-                        picked.actionId === 'showSummary') &&
+                        picked.actionId === 'showSummary' ||
+                        picked.actionId === 'adoptSession' ||
+                        picked.actionId === 'showContext') &&
                     sessionArg
                 ) {
                     await vscode.commands.executeCommand(picked.command, sessionArg);
@@ -2609,6 +2653,206 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
         }
     );
 
+    const dispAdoptSession = vscode.commands.registerCommand(
+        'ntm.adoptSession',
+        async (sessionArg?: NtmTreeItem | string) => {
+            try {
+                const modePick = await vscode.window.showQuickPick(ADOPT_MODE_OPTIONS, {
+                    placeHolder: 'Select external tmux session adoption mode',
+                });
+                if (!modePick) {
+                    return;
+                }
+
+                const explicitName = extractSessionName(sessionArg);
+                const targetSession = explicitName
+                    ? explicitName
+                    : await vscode.window.showInputBox({
+                          prompt: 'External tmux session name to adopt into NTM',
+                          placeHolder: 'external_proj',
+                      });
+                const cleanSession = (targetSession ?? '').trim();
+
+                if (modePick.mode === 'openSessionsCockpit') {
+                    await openWebCockpitRoute(
+                        cleanSession
+                            ? `/sessions?session=${encodeURIComponent(cleanSession)}`
+                            : '/sessions'
+                    );
+                    return;
+                }
+                if (!cleanSession) {
+                    return;
+                }
+
+                let res;
+                if (modePick.mode === 'byWindow') {
+                    const harnessItems = SUPPORTED_ADOPT_HARNESSES.map(h => ({
+                        label: h,
+                        description: `--adopt-by-window=${h}`,
+                    }));
+                    const pickedHarness = await vscode.window.showQuickPick(harnessItems, {
+                        placeHolder: 'Select harness type to assign to each window sole pane',
+                    });
+                    if (!pickedHarness) {
+                        return;
+                    }
+                    res = await client.adoptSession({
+                        session: cleanSession,
+                        byWindowHarness: pickedHarness.label as AdoptHarness,
+                        dryRun: false,
+                    });
+                } else {
+                    const rawSpec = await vscode.window.showInputBox({
+                        prompt: 'Enter space-separated harness=panes assignments (indices, ranges, or window.pane)',
+                        value: 'cc=0,1 cod=2',
+                        placeHolder: 'cc=0,1 agy=2.0,3.0 user=4',
+                    });
+                    if (!rawSpec) {
+                        return;
+                    }
+                    const panes = parseAdoptSpec(rawSpec);
+                    res = await client.adoptSession({
+                        session: cleanSession,
+                        panes,
+                        dryRun: modePick.mode === 'dryRun',
+                    });
+                }
+
+                treeProvider.refresh();
+                await updateStatus(client, statusBarItem);
+
+                const doc = await vscode.workspace.openTextDocument({
+                    content: formatAdoptMarkdown(res),
+                    language: 'markdown',
+                });
+                await vscode.window.showTextDocument(doc);
+
+                const nextBtn = await vscode.window.showInformationMessage(
+                    `${res.dry_run ? 'Adopt preview' : 'Adopted'} "${res.session}": ${res.adopted_panes.length}/${res.total_panes} pane(s)`,
+                    'Open /sessions in Web Cockpit'
+                );
+                if (nextBtn === 'Open /sessions in Web Cockpit') {
+                    await openWebCockpitRoute(`/sessions?session=${encodeURIComponent(res.session)}`);
+                }
+            } catch (e) {
+                vscode.window.showErrorMessage(`Session adopt failed: ${e}`);
+            }
+        }
+    );
+
+    const dispPreviewRedaction = vscode.commands.registerCommand(
+        'ntm.previewRedaction',
+        async () => {
+            try {
+                const modePick = await vscode.window.showQuickPick(REDACT_MODE_OPTIONS, {
+                    placeHolder: 'Select secret/PII redaction preview source',
+                });
+                if (!modePick) {
+                    return;
+                }
+                if (modePick.mode === 'openSafetyCockpit') {
+                    await openWebCockpitRoute('/safety');
+                    return;
+                }
+
+                const editor = vscode.window.activeTextEditor;
+                let res;
+                if (modePick.mode === 'currentFile') {
+                    const fsPath = editor?.document?.uri?.fsPath ?? '';
+                    if (!fsPath) {
+                        vscode.window.showWarningMessage('Open a saved file in the editor to scan with --redact-file.');
+                        return;
+                    }
+                    res = await client.previewRedaction({ filePath: fsPath });
+                } else {
+                    const selectedText =
+                        editor && !editor.selection.isEmpty
+                            ? editor.document.getText(editor.selection)
+                            : '';
+                    const textToScan = selectedText
+                        ? selectedText
+                        : await vscode.window.showInputBox({
+                              prompt: 'Enter prompt or log text to scan for secrets/PII',
+                              placeHolder: 'Authorization: Bearer ...',
+                          });
+                    if (!textToScan) {
+                        return;
+                    }
+                    res = await client.previewRedaction({ text: textToScan });
+                }
+
+                const doc = await vscode.workspace.openTextDocument({
+                    content: formatRedactPreviewMarkdown(res),
+                    language: 'markdown',
+                });
+                await vscode.window.showTextDocument(doc);
+
+                if (res.finding_count > 0) {
+                    vscode.window.showWarningMessage(
+                        `Redaction preview scrubbed ${res.finding_count} secret/PII finding(s) (${res.input_len} bytes).`
+                    );
+                } else {
+                    vscode.window.showInformationMessage(
+                        `Redaction preview clean: 0 findings across ${res.input_len} bytes.`
+                    );
+                }
+            } catch (e) {
+                vscode.window.showErrorMessage(`Redaction preview failed: ${e}`);
+            }
+        }
+    );
+
+    const dispShowContext = vscode.commands.registerCommand(
+        'ntm.showContext',
+        async (sessionArg?: NtmTreeItem | string) => {
+            try {
+                const modePick = await vscode.window.showQuickPick(CONTEXT_LINES_OPTIONS, {
+                    placeHolder: 'Select context window inspection depth',
+                });
+                if (!modePick) {
+                    return;
+                }
+
+                const targetSession = await resolveSessionInteractive(
+                    extractSessionName(sessionArg),
+                    'Select NTM session to inspect context window usage'
+                );
+                if (modePick.mode === 'openSessionsCockpit') {
+                    await openWebCockpitRoute(
+                        targetSession
+                            ? `/sessions?session=${encodeURIComponent(targetSession)}`
+                            : '/sessions'
+                    );
+                    return;
+                }
+                if (!targetSession) {
+                    return;
+                }
+
+                const res = await client.getContext({
+                    session: targetSession,
+                    lines: modePick.lines ?? 200,
+                });
+                const doc = await vscode.workspace.openTextDocument({
+                    content: formatContextMarkdown(res),
+                    language: 'markdown',
+                });
+                await vscode.window.showTextDocument(doc);
+
+                const nextBtn = await vscode.window.showInformationMessage(
+                    `Session "${res.session}" context: ${res.agents.length} agent(s), avg ${res.average_usage.toFixed(1)}% (${res.high_usage_count} >=80%)`,
+                    'Open /sessions in Web Cockpit'
+                );
+                if (nextBtn === 'Open /sessions in Web Cockpit') {
+                    await openWebCockpitRoute(`/sessions?session=${encodeURIComponent(res.session)}`);
+                }
+            } catch (e) {
+                vscode.window.showErrorMessage(`Session context check failed: ${e}`);
+            }
+        }
+    );
+
     context.subscriptions.push(
         dispStatus,
         dispSpawn,
@@ -2627,6 +2871,9 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
         dispRebalanceSession,
         dispReviewQueue,
         dispShowSummary,
+        dispAdoptSession,
+        dispPreviewRedaction,
+        dispShowContext,
         dispOpenWebCockpit,
         dispShowBackpressure,
         dispManageWorktrees,

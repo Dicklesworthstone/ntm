@@ -5630,6 +5630,129 @@
         }
       }
     },
+    "/api/v1/hooks": {
+      "get": {
+        "tags": [
+          "hooks"
+        ],
+        "summary": "Hooks status",
+        "description": "Served route `GET /api/v1/hooks`. Handler: `handleHooksStatusV1`. Response shape reflected from Go type `HooksEnvelopeResponse`.",
+        "operationId": "get_api_v1_hooks",
+        "parameters": [
+          {
+            "name": "project_dir",
+            "in": "query",
+            "description": "Optional existing absolute project directory override (alias: ?project=).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HooksEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/hooks/run": {
+      "post": {
+        "tags": [
+          "hooks"
+        ],
+        "summary": "Hooks run",
+        "description": "Served route `POST /api/v1/hooks/run`. Handler: `handleHooksRunV1`. Response shape reflected from Go type `HooksEnvelopeResponse`.",
+        "operationId": "post_api_v1_hooks_run",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HooksRunRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HooksEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/incidents": {
       "get": {
         "tags": [
@@ -8245,6 +8368,84 @@
         }
       }
     },
+    "/api/v1/personas": {
+      "get": {
+        "tags": [
+          "personas"
+        ],
+        "summary": "Personas list",
+        "description": "Served route `GET /api/v1/personas`. Handler: `handlePersonasListV1`. Response shape reflected from Go type `PersonasEnvelopeResponse`.",
+        "operationId": "get_api_v1_personas",
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "query",
+            "description": "Optional 11-harness alias filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "description": "Optional persona tag filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project_dir",
+            "in": "query",
+            "description": "Optional existing absolute project directory override (alias: ?project=).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonasEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/pipelines/": {
       "get": {
         "tags": [
@@ -9794,6 +9995,120 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/QuotaStatusEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/recipes": {
+      "get": {
+        "tags": [
+          "recipes"
+        ],
+        "summary": "Recipes list",
+        "description": "Served route `GET /api/v1/recipes`. Handler: `handleRecipesListV1`. Response shape reflected from Go type `RecipesEnvelopeResponse`.",
+        "operationId": "get_api_v1_recipes",
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecipesEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/redact/preview": {
+      "post": {
+        "tags": [
+          "redact"
+        ],
+        "summary": "Redact preview",
+        "description": "Served route `POST /api/v1/redact/preview`. Handler: `handleRedactPreviewV1`. Response shape reflected from Go type `RedactPreviewEnvelopeResponse`.",
+        "operationId": "post_api_v1_redact_preview",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedactPreviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RedactPreviewEnvelopeResponse"
                 }
               }
             }
@@ -12593,6 +12908,89 @@
         }
       }
     },
+    "/api/v1/sessions/{id}/adopt": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session adopt",
+        "description": "Served route `POST /api/v1/sessions/{id}/adopt`. Handler: `handleSessionAdoptV1`. Response shape reflected from Go type `SessionAdoptEnvelopeResponse`.",
+        "operationId": "post_api_v1_sessions_id_adopt",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionAdoptRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionAdoptEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/sessions/{id}/attach": {
       "post": {
         "tags": [
@@ -12629,6 +13027,87 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SessionAttachEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{id}/context": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session context",
+        "description": "Served route `GET /api/v1/sessions/{id}/context`. Handler: `handleSessionContextV1`. Response shape reflected from Go type `SessionContextEnvelopeResponse`.",
+        "operationId": "get_api_v1_sessions_id_context",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lines",
+            "in": "query",
+            "description": "Scrollback lines to inspect per agent pane (1..10000, default 200).",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionContextEnvelopeResponse"
                 }
               }
             }
@@ -12986,6 +13465,87 @@
         }
       }
     },
+    "/api/v1/sessions/{id}/diff": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session diff",
+        "description": "Served route `GET /api/v1/sessions/{id}/diff`. Handler: `handleSessionDiffV1`. Response shape reflected from Go type `SessionDiffEnvelopeResponse`.",
+        "operationId": "get_api_v1_sessions_id_diff",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Lookback duration (e.g. 15m, 1h) or RFC3339 timestamp.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDiffEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/sessions/{id}/events": {
       "get": {
         "tags": [
@@ -13012,6 +13572,95 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SessionEventsEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{id}/files": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session files",
+        "description": "Served route `GET /api/v1/sessions/{id}/files`. Handler: `handleSessionFilesV1`. Response shape reflected from Go type `SessionFilesEnvelopeResponse`.",
+        "operationId": "get_api_v1_sessions_id_files",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "description": "Time window: 5m, 15m (default), 1h, all, or positive Go duration.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum file changes to return (1..1000, default 100).",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionFilesEnvelopeResponse"
                 }
               }
             }
@@ -17886,6 +18535,95 @@
           "blocked_by"
         ]
       },
+      "AdoptedAgentCounts": {
+        "type": "object",
+        "properties": {
+          "agy": {
+            "type": "integer"
+          },
+          "aider": {
+            "type": "integer"
+          },
+          "cc": {
+            "type": "integer"
+          },
+          "cod": {
+            "type": "integer"
+          },
+          "cursor": {
+            "type": "integer"
+          },
+          "gmi": {
+            "type": "integer"
+          },
+          "grok": {
+            "type": "integer"
+          },
+          "oc": {
+            "type": "integer"
+          },
+          "ollama": {
+            "type": "integer"
+          },
+          "omp": {
+            "type": "integer"
+          },
+          "user": {
+            "type": "integer"
+          },
+          "windsurf": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agy",
+          "aider",
+          "cc",
+          "cod",
+          "cursor",
+          "gmi",
+          "grok",
+          "oc",
+          "ollama",
+          "omp",
+          "user",
+          "windsurf"
+        ]
+      },
+      "AdoptedPaneInfo": {
+        "type": "object",
+        "properties": {
+          "agent_type": {
+            "type": "string"
+          },
+          "new_title": {
+            "type": "string"
+          },
+          "ntm_index": {
+            "type": "integer"
+          },
+          "old_title": {
+            "type": "string"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "pane_index": {
+            "type": "integer"
+          },
+          "window_index": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_type",
+          "new_title",
+          "ntm_index",
+          "pane_id",
+          "pane_index",
+          "window_index"
+        ]
+      },
       "Agent": {
         "type": "object",
         "properties": {
@@ -18057,6 +18795,77 @@
           "codex_max",
           "gemini_current",
           "gemini_max"
+        ]
+      },
+      "AgentContextInfo": {
+        "type": "object",
+        "properties": {
+          "agent_type": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "string"
+          },
+          "context_limit": {
+            "type": "integer"
+          },
+          "estimated_tokens": {
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "pane_idx": {
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "transcript_model": {
+            "type": "string"
+          },
+          "transcript_path": {
+            "type": "string"
+          },
+          "transcript_tokens": {
+            "type": "integer"
+          },
+          "transcript_updated_at": {
+            "type": "string"
+          },
+          "usage_level": {
+            "type": "string"
+          },
+          "usage_percent": {
+            "type": "number"
+          },
+          "with_overhead": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_type",
+          "confidence",
+          "context_limit",
+          "estimated_tokens",
+          "model",
+          "pane",
+          "pane_id",
+          "pane_idx",
+          "source",
+          "state",
+          "usage_level",
+          "usage_percent",
+          "with_overhead"
         ]
       },
       "AgentCountsResponse": {
@@ -23437,6 +24246,82 @@
           "to_agent"
         ]
       },
+      "ContextAgentHints": {
+        "type": "object",
+        "properties": {
+          "high_usage_agents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "low_usage_agents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "suggestions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ContextPendingRotationInfo": {
+        "type": "object",
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "context_percent": {
+            "type": "number"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "session_name": {
+            "type": "string"
+          },
+          "timeout_at": {
+            "type": "string"
+          },
+          "work_dir": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id",
+          "context_percent",
+          "created_at",
+          "pane_id",
+          "session_name",
+          "timeout_at"
+        ]
+      },
+      "ContextSummary": {
+        "type": "object",
+        "properties": {
+          "avg_usage": {
+            "type": "number"
+          },
+          "high_usage_count": {
+            "type": "integer"
+          },
+          "total_agents": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "avg_usage",
+          "high_usage_count",
+          "total_agents"
+        ]
+      },
       "ContributionDiff": {
         "type": "object",
         "properties": {
@@ -24640,6 +25525,128 @@
           "positions",
           "severity",
           "topic"
+        ]
+      },
+      "DiffAgentHints": {
+        "type": "object",
+        "properties": {
+          "conflict_warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "suggested_actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "summary"
+        ]
+      },
+      "DiffAgentInfo": {
+        "type": "object",
+        "properties": {
+          "active_time": {
+            "type": "string"
+          },
+          "agent_type": {
+            "type": "string"
+          },
+          "output_lines": {
+            "type": "integer"
+          },
+          "pane": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_type",
+          "output_lines",
+          "pane",
+          "state"
+        ]
+      },
+      "DiffConflict": {
+        "type": "object",
+        "properties": {
+          "confidence": {
+            "type": "number"
+          },
+          "file": {
+            "type": "string"
+          },
+          "likely_modifiers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "confidence",
+          "file",
+          "likely_modifiers",
+          "reason"
+        ]
+      },
+      "DiffFiles": {
+        "type": "object",
+        "properties": {
+          "clean": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "modified": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "potential_conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiffConflict"
+            }
+          }
+        },
+        "required": [
+          "clean",
+          "modified",
+          "potential_conflicts"
+        ]
+      },
+      "DiffTimeframe": {
+        "type": "object",
+        "properties": {
+          "captured_at": {
+            "type": "string"
+          },
+          "since": {
+            "type": "string"
+          },
+          "since_ts": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "captured_at",
+          "since",
+          "since_ts"
         ]
       },
       "DigestOutput": {
@@ -26705,6 +27712,46 @@
           "at"
         ]
       },
+      "FileChangeRecord": {
+        "type": "object",
+        "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "lines_added": {
+            "type": "integer"
+          },
+          "lines_removed": {
+            "type": "integer"
+          },
+          "operation": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agents",
+          "operation",
+          "path",
+          "session",
+          "timestamp"
+        ]
+      },
       "FileChanges": {
         "type": "object",
         "properties": {
@@ -26731,6 +27778,44 @@
           "Created",
           "Deleted",
           "Modified"
+        ]
+      },
+      "FileChangesSummary": {
+        "type": "object",
+        "properties": {
+          "by_agent": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "by_operation": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FileConflict"
+            }
+          },
+          "most_active_agent": {
+            "type": "string"
+          },
+          "total_changes": {
+            "type": "integer"
+          },
+          "unique_files": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by_agent",
+          "by_operation",
+          "total_changes",
+          "unique_files"
         ]
       },
       "FileConflict": {
@@ -28433,6 +29518,142 @@
         "required": [
           "mode"
         ]
+      },
+      "HookCheckResult": {
+        "type": "object",
+        "properties": {
+          "block_reason": {
+            "type": "string"
+          },
+          "duration": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "hook_type": {
+            "type": "string"
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "duration",
+          "hook_type",
+          "passed"
+        ]
+      },
+      "HookInfo": {
+        "type": "object",
+        "properties": {
+          "has_backup": {
+            "type": "boolean"
+          },
+          "installed": {
+            "type": "boolean"
+          },
+          "is_ntm": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "has_backup",
+          "installed",
+          "is_ntm",
+          "path",
+          "type"
+        ]
+      },
+      "HooksEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "action": {
+            "type": "string"
+          },
+          "check_result": {
+            "$ref": "#/components/schemas/HookCheckResult"
+          },
+          "hook_type": {
+            "type": "string"
+          },
+          "hooks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HookInfo"
+            }
+          },
+          "hooks_dir": {
+            "type": "string"
+          },
+          "installed_count": {
+            "type": "integer"
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "pre_commit_result": {
+            "$ref": "#/components/schemas/PreCommitResult"
+          },
+          "repo_root": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "schema_id",
+          "schema_version",
+          "success",
+          "timestamp"
+        ]
+      },
+      "HooksRunRequest": {
+        "type": "object",
+        "properties": {
+          "fail_on_warning": {
+            "type": "boolean"
+          },
+          "hook_type": {
+            "type": "string"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "timeout_sec": {
+            "type": "integer"
+          },
+          "verbose": {
+            "type": "boolean"
+          }
+        }
       },
       "HostCapacityCalibrationReport": {
         "type": "object",
@@ -32546,6 +33767,88 @@
           "Tags"
         ]
       },
+      "PersonaSet": {
+        "type": "object",
+        "properties": {
+          "Description": {
+            "type": "string"
+          },
+          "Name": {
+            "type": "string"
+          },
+          "Personas": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "Description",
+          "Name",
+          "Personas"
+        ]
+      },
+      "PersonasEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "builtin_count": {
+            "type": "integer"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "filter_agent": {
+            "type": "string"
+          },
+          "filter_tag": {
+            "type": "string"
+          },
+          "personas": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Persona"
+            }
+          },
+          "profile_sets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PersonaSet"
+            }
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "builtin_count",
+          "count",
+          "personas",
+          "profile_sets",
+          "schema_id",
+          "schema_version",
+          "success",
+          "timestamp"
+        ]
+      },
       "PipelineCleanupEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -33488,6 +34791,39 @@
           "mode_id",
           "position",
           "strength"
+        ]
+      },
+      "PreCommitResult": {
+        "type": "object",
+        "properties": {
+          "block_reason": {
+            "type": "string"
+          },
+          "duration": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "scan_result": {
+            "$ref": "#/components/schemas/ScanResult"
+          },
+          "staged_files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "ubs_available": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "duration",
+          "passed",
+          "staged_files",
+          "ubs_available"
         ]
       },
       "PreflightFinding": {
@@ -34750,6 +36086,91 @@
           "source"
         ]
       },
+      "RecipeAgentInfo": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "persona": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "count",
+          "type"
+        ]
+      },
+      "RecipeInfo": {
+        "type": "object",
+        "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecipeAgentInfo"
+            }
+          },
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "total_agents": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agents",
+          "description",
+          "name",
+          "source",
+          "total_agents"
+        ]
+      },
+      "RecipesEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "recipes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecipeInfo"
+            }
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "count",
+          "generated_at",
+          "recipes",
+          "success",
+          "timestamp"
+        ]
+      },
       "RecipesResponse": {
         "type": "object",
         "properties": {
@@ -34972,6 +36393,97 @@
           "timestamp",
           "session",
           "change"
+        ]
+      },
+      "RedactPreviewEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "finding_count": {
+            "type": "integer"
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RedactPreviewFinding"
+            }
+          },
+          "input_len": {
+            "type": "integer"
+          },
+          "output": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "finding_count",
+          "findings",
+          "input_len",
+          "output",
+          "schema_id",
+          "schema_version",
+          "success",
+          "timestamp"
+        ]
+      },
+      "RedactPreviewFinding": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "column": {
+            "type": "integer"
+          },
+          "end": {
+            "type": "integer"
+          },
+          "line": {
+            "type": "integer"
+          },
+          "redacted": {
+            "type": "string"
+          },
+          "start": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "category",
+          "end",
+          "redacted",
+          "start"
+        ]
+      },
+      "RedactPreviewRequest": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
         ]
       },
       "RedactionSummary": {
@@ -37929,6 +39441,87 @@
           "timestamp"
         ]
       },
+      "SessionAdoptEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "adopted_panes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdoptedPaneInfo"
+            }
+          },
+          "agents": {
+            "$ref": "#/components/schemas/AdoptedAgentCounts"
+          },
+          "auto_name": {
+            "type": "boolean"
+          },
+          "by_window": {
+            "type": "boolean"
+          },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "total_panes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "adopted_panes",
+          "agents",
+          "auto_name",
+          "schema_id",
+          "schema_version",
+          "session",
+          "success",
+          "timestamp",
+          "total_panes"
+        ]
+      },
+      "SessionAdoptRequest": {
+        "type": "object",
+        "properties": {
+          "auto_name": {
+            "type": "boolean"
+          },
+          "by_window": {
+            "type": "boolean"
+          },
+          "by_window_type": {
+            "type": "string"
+          },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "panes": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "SessionAgentsEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -38139,6 +39732,53 @@
           "verified"
         ]
       },
+      "SessionContextEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/ContextAgentHints"
+          },
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentContextInfo"
+            }
+          },
+          "captured_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "pending_rotations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContextPendingRotationInfo"
+            }
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/ContextSummary"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agents",
+          "captured_at",
+          "session",
+          "success",
+          "summary",
+          "timestamp"
+        ]
+      },
       "SessionControllerEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -38297,6 +39937,46 @@
           "timestamp"
         ]
       },
+      "SessionDiffEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/DiffAgentHints"
+          },
+          "agent_activity": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiffAgentInfo"
+            }
+          },
+          "files": {
+            "$ref": "#/components/schemas/DiffFiles"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timeframe": {
+            "$ref": "#/components/schemas/DiffTimeframe"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_activity",
+          "files",
+          "session",
+          "success",
+          "timeframe",
+          "timestamp"
+        ]
+      },
       "SessionEventsEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -38328,6 +40008,49 @@
           "events",
           "session_id",
           "success",
+          "timestamp"
+        ]
+      },
+      "SessionFilesEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FileChangeRecord"
+            }
+          },
+          "count": {
+            "type": "integer"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/FileChangesSummary"
+          },
+          "time_window": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "changes",
+          "count",
+          "success",
+          "summary",
+          "time_window",
           "timestamp"
         ]
       },
@@ -44858,6 +46581,10 @@
       "description": "Operations related to health"
     },
     {
+      "name": "hooks",
+      "description": "Operations related to hooks"
+    },
+    {
       "name": "incidents",
       "description": "Operations related to incidents"
     },
@@ -44898,6 +46625,10 @@
       "description": "Operations related to openapi"
     },
     {
+      "name": "personas",
+      "description": "Operations related to personas"
+    },
+    {
       "name": "pipelines",
       "description": "Operations related to pipelines"
     },
@@ -44912,6 +46643,14 @@
     {
       "name": "quota",
       "description": "Operations related to quota"
+    },
+    {
+      "name": "recipes",
+      "description": "Operations related to recipes"
+    },
+    {
+      "name": "redact",
+      "description": "Operations related to redact"
     },
     {
       "name": "requests",

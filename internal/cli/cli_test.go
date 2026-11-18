@@ -497,7 +497,54 @@ func resetFlags() {
 			}
 		}
 	}
+	resetRobotExtFlags()
 	robotProcessExit = nil
+}
+
+func resetRobotExtFlags() {
+	robotAdopt = ""
+	robotAdoptCC = ""
+	robotAdoptCod = ""
+	robotAdoptGmi = ""
+	robotAdoptAgy = ""
+	robotAdoptGrok = ""
+	robotAdoptCursor = ""
+	robotAdoptWindsurf = ""
+	robotAdoptAider = ""
+	robotAdoptOc = ""
+	robotAdoptOmp = ""
+	robotAdoptOllama = ""
+	robotAdoptUser = ""
+	robotAdoptByWindow = ""
+	robotAdoptAutoName = true
+
+	robotRedact = ""
+	robotRedactFile = ""
+
+	robotHooks = false
+	robotHooksAction = "status"
+	robotHooksType = "pre-commit"
+	robotHooksFailOnWarning = true
+
+	robotPersonas = false
+	robotPersonasAgent = ""
+	robotPersonasTag = ""
+
+	if rootCmd != nil {
+		for _, flagName := range []string{
+			"robot-adopt", "adopt-cc", "adopt-cod", "adopt-gmi", "adopt-agy",
+			"adopt-grok", "adopt-cursor", "adopt-windsurf", "adopt-aider",
+			"adopt-oc", "adopt-omp", "adopt-ollama", "adopt-user",
+			"adopt-by-window", "adopt-auto-name",
+			"robot-redact", "redact-file",
+			"robot-hooks", "hooks-action", "hooks-type", "hooks-fail-on-warning",
+			"robot-personas", "personas-agent", "personas-tag",
+		} {
+			if f := rootCmd.Flags().Lookup(flagName); f != nil {
+				f.Changed = false
+			}
+		}
+	}
 }
 
 func TestRobotSpawnOptionsFromFlagsPreservesDurationAndCopiesInputs(t *testing.T) {

@@ -1,6 +1,6 @@
 {
   "source": "chi-router-walk",
-  "count": 240,
+  "count": 249,
   "endpoints": [
     {
       "method": "GET",
@@ -415,6 +415,16 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/hooks",
+      "handler": "handleHooksStatusV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/hooks/run",
+      "handler": "handleHooksRunV1"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/incidents",
       "handler": "handleListIncidentsV1"
     },
@@ -595,6 +605,11 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/personas",
+      "handler": "handlePersonasListV1"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/pipelines/",
       "handler": "handleListPipelines"
     },
@@ -698,6 +713,16 @@
       "method": "GET",
       "path": "/api/v1/quota",
       "handler": "handleGetQuotaStatusV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/recipes",
+      "handler": "handleRecipesListV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/redact/preview",
+      "handler": "handleRedactPreviewV1"
     },
     {
       "method": "GET",
@@ -921,8 +946,18 @@
     },
     {
       "method": "POST",
+      "path": "/api/v1/sessions/{id}/adopt",
+      "handler": "handleSessionAdoptV1"
+    },
+    {
+      "method": "POST",
       "path": "/api/v1/sessions/{id}/attach",
       "handler": "handleSessionAttachV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/sessions/{id}/context",
+      "handler": "handleSessionContextV1"
     },
     {
       "method": "POST",
@@ -946,8 +981,18 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/sessions/{id}/diff",
+      "handler": "handleSessionDiffV1"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/sessions/{id}/events",
       "handler": "handleSessionEventsRouteV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/sessions/{id}/files",
+      "handler": "handleSessionFilesV1"
     },
     {
       "method": "GET",

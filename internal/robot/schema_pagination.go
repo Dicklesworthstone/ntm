@@ -176,6 +176,10 @@ var SchemaPagination = map[string]SchemaPaginationFlag{
 	"review_queue":        {Reason: "bounded: idle panes and capped recent commit review suggestions for a single session"},
 	"coordinator":         {Reason: "bounded: per-pane coordinator state, digest summary, and active conflicts for a single session"},
 	"webhook_outbox":      {Reason: "bounded: retained durable project webhook outbox receipts"},
+	"adopt":               {Reason: "bounded: adopted pane descriptors for a single tmux session"},
+	"redact":              {Reason: "bounded: secret/PII findings within a single scanned text or file payload"},
+	"hooks":               {Reason: "bounded: 5 managed git hook slots or a single hook execution report"},
+	"personas":            {Reason: "bounded: configured built-in, user, and project persona catalog"},
 }
 
 // MustRegisterSchemaPagination declares the pagination flag for a schema type

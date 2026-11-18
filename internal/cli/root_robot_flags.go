@@ -1655,6 +1655,8 @@ func registerRobotFlags() {
 
 	// Bead prefixed flags → canonical forms (for filters on bead operations)
 	rootCmd.Flags().MarkDeprecated("bead-limit", "use --limit instead")
+
+	registerRobotExtFlags()
 }
 
 func registerConfiguredRobotPluginSpawnFlags() {

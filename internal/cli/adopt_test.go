@@ -37,13 +37,13 @@ func TestAdoptedAgentCountsSummary(t *testing.T) {
 
 func TestAdoptedAgentCountsCanonicalGrokProjection(t *testing.T) {
 	counts := AdoptedAgentCounts{}
-	counts.increment(agentpkg.AgentType(" XAI_GROK_BUILD "))
+	counts.Increment(agentpkg.AgentType(" XAI_GROK_BUILD "))
 
 	if counts.Grok != 1 {
 		t.Fatalf("Grok count = %d, want 1", counts.Grok)
 	}
-	if got := counts.countFor(agentpkg.AgentType("grok-build")); got != 1 {
-		t.Fatalf("countFor(grok-build) = %d, want 1", got)
+	if got := counts.CountFor(agentpkg.AgentType("grok-build")); got != 1 {
+		t.Fatalf("CountFor(grok-build) = %d, want 1", got)
 	}
 	if got := counts.Total(); got != 1 {
 		t.Fatalf("Total() = %d, want 1", got)

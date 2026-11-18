@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -10,11 +11,64 @@ import (
 	"github.com/spf13/cobra"
 
 	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/spawnidentity"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
+
+func init() {
+	kernel.MustRegister(kernel.Command{
+		Name:        "sessions.adopt",
+		Description: "Adopt an external tmux session into NTM management across all 11 agent harnesses plus user panes",
+		Category:    "sessions",
+		Input: &kernel.SchemaRef{
+			Name: "AdoptInput",
+			Ref:  "robot.AdoptInput",
+		},
+		Output: &kernel.SchemaRef{
+			Name: "AdoptOutput",
+			Ref:  "robot.AdoptOutput",
+		},
+		REST: &kernel.RESTBinding{
+			Method: "POST",
+			Path:   "/api/v1/sessions/{id}/adopt",
+		},
+		Examples: []kernel.Example{
+			{
+				Name:        "adopt-panes",
+				Description: "Adopt panes 0,1 as Claude and pane 2 as Codex",
+				Command:     "ntm adopt my_session --cc=0,1 --cod=2",
+			},
+			{
+				Name:        "adopt-robot",
+				Description: "Preview adopting an external session via robot mode",
+				Command:     "ntm --robot-adopt=my_session --adopt-cc=1.0,2.0 --dry-run",
+			},
+		},
+		SafetyLevel: kernel.SafetyCaution,
+		Idempotent:  true,
+	})
+	kernel.MustRegisterHandler("sessions.adopt", func(ctx context.Context, input any) (any, error) {
+		opts, err := decodeKernelInput[robot.AdoptInput]("sessions.adopt", input)
+		if err != nil {
+			return nil, fmt.Errorf("invalid sessions.adopt input: %w", err)
+		}
+		out, err := executeAdoptRobot(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		if !out.Success {
+			if strings.TrimSpace(out.Error) != "" {
+				return nil, errors.New(out.Error)
+			}
+			return nil, errors.New("sessions.adopt failed")
+		}
+		return out, nil
+	})
+}
 
 type adoptTypeSpec struct {
 	Flag        string
@@ -209,6 +263,10 @@ type AdoptOptions struct {
 	// window-per-agent layouts.
 	ByWindow     bool
 	ByWindowType agentpkg.AgentType
+
+	suppressOutput bool
+	resultOut      **AdoptResult
+	errorCodeOut   *string
 }
 
 // AdoptResult represents the result of an adopt operation
@@ -222,110 +280,11 @@ type AdoptResult struct {
 	Error        string             `json:"error,omitempty"`
 }
 
-// AdoptedPaneInfo describes a pane that was adopted
-type AdoptedPaneInfo struct {
-	PaneID      string `json:"pane_id"`
-	PaneIndex   int    `json:"pane_index"`
-	WindowIndex int    `json:"window_index"`
-	AgentType   string `json:"agent_type"`
-	OldTitle    string `json:"old_title,omitempty"`
-	NewTitle    string `json:"new_title"`
-	NTMIndex    int    `json:"ntm_index"`
-}
+// AdoptedPaneInfo describes a pane that was adopted.
+type AdoptedPaneInfo = robot.AdoptedPaneInfo
 
-// AdoptedAgentCounts tracks agent counts by type
-type AdoptedAgentCounts struct {
-	CC       int `json:"cc"`
-	Cod      int `json:"cod"`
-	Gmi      int `json:"gmi"`
-	Agy      int `json:"agy"`
-	Grok     int `json:"grok"`
-	Cursor   int `json:"cursor"`
-	Windsurf int `json:"windsurf"`
-	Aider    int `json:"aider"`
-	Opencode int `json:"oc"`
-	Omp      int `json:"omp"`
-	Ollama   int `json:"ollama"`
-	User     int `json:"user"`
-}
-
-func (a AdoptedAgentCounts) Total() int {
-	return a.CC + a.Cod + a.Gmi + a.Agy + a.Grok + a.Cursor + a.Windsurf + a.Aider + a.Opencode + a.Omp + a.Ollama + a.User
-}
-
-func (a AdoptedAgentCounts) Summary() string {
-	parts := make([]string, 0, len(supportedAdoptTypes))
-	for _, spec := range supportedAdoptTypes {
-		count := a.countFor(spec.AgentType)
-		if count > 0 {
-			parts = append(parts, fmt.Sprintf("%s:%d", spec.AgentType, count))
-		}
-	}
-	if len(parts) == 0 {
-		return "none"
-	}
-	return strings.Join(parts, ", ")
-}
-
-func (a *AdoptedAgentCounts) increment(agentType agentpkg.AgentType) {
-	switch agentType.Canonical() {
-	case agentpkg.AgentTypeClaudeCode:
-		a.CC++
-	case agentpkg.AgentTypeCodex:
-		a.Cod++
-	case agentpkg.AgentTypeGemini:
-		a.Gmi++
-	case agentpkg.AgentTypeAntigravity:
-		a.Agy++
-	case agentpkg.AgentTypeGrok:
-		a.Grok++
-	case agentpkg.AgentTypeCursor:
-		a.Cursor++
-	case agentpkg.AgentTypeWindsurf:
-		a.Windsurf++
-	case agentpkg.AgentTypeAider:
-		a.Aider++
-	case agentpkg.AgentTypeOpencode:
-		a.Opencode++
-	case agentpkg.AgentTypeOmp:
-		a.Omp++
-	case agentpkg.AgentTypeOllama:
-		a.Ollama++
-	case agentpkg.AgentTypeUser:
-		a.User++
-	}
-}
-
-func (a AdoptedAgentCounts) countFor(agentType agentpkg.AgentType) int {
-	switch agentType.Canonical() {
-	case agentpkg.AgentTypeClaudeCode:
-		return a.CC
-	case agentpkg.AgentTypeCodex:
-		return a.Cod
-	case agentpkg.AgentTypeGemini:
-		return a.Gmi
-	case agentpkg.AgentTypeAntigravity:
-		return a.Agy
-	case agentpkg.AgentTypeGrok:
-		return a.Grok
-	case agentpkg.AgentTypeCursor:
-		return a.Cursor
-	case agentpkg.AgentTypeWindsurf:
-		return a.Windsurf
-	case agentpkg.AgentTypeAider:
-		return a.Aider
-	case agentpkg.AgentTypeOpencode:
-		return a.Opencode
-	case agentpkg.AgentTypeOmp:
-		return a.Omp
-	case agentpkg.AgentTypeOllama:
-		return a.Ollama
-	case agentpkg.AgentTypeUser:
-		return a.User
-	default:
-		return 0
-	}
-}
+// AdoptedAgentCounts tracks agent counts by type.
+type AdoptedAgentCounts = robot.AdoptedAgentCounts
 
 func (r *AdoptResult) Text(w io.Writer) error {
 	t := theme.Current()
@@ -362,7 +321,7 @@ func (r *AdoptResult) Text(w io.Writer) error {
 	return nil
 }
 
-func (r *AdoptResult) JSON() interface{} {
+func (r *AdoptResult) JSON() any {
 	return r
 }
 
@@ -371,68 +330,60 @@ func runAdopt(opts AdoptOptions) error {
 	if adoptCtx == nil {
 		adoptCtx = context.Background()
 	}
-	// bd-usgfy: emitAdoptFailure writes the success:false JSON envelope and
-	// signals non-zero exit via errJSONFailure so automation scripts gating
-	// on `$?` don't treat the failure as success (parity with #125).
-	// bd-ixy2t: hoisted above the tmux.EnsureInstalled() check so the
-	// early-fail path also emits a parseable envelope when --json is set —
-	// previously a missing tmux binary surfaced as a raw stderr error and
-	// `ntm adopt --json | jq ...` parsed empty stdin.
-	emitAdoptFailure := func(result *AdoptResult) error {
-		if encErr := output.New(output.WithJSON(jsonOutput)).Output(result); encErr != nil {
+	quiet := jsonOutput || opts.suppressOutput
+
+	recordOutcome := func(res *AdoptResult, code string) {
+		if opts.resultOut != nil {
+			*opts.resultOut = res
+		}
+		if opts.errorCodeOut != nil {
+			*opts.errorCodeOut = code
+		}
+	}
+
+	failAdopt := func(err error, code string) error {
+		res := &AdoptResult{
+			Success:      false,
+			Session:      opts.Session,
+			AdoptedPanes: []AdoptedPaneInfo{},
+			Error:        err.Error(),
+		}
+		recordOutcome(res, code)
+		if opts.suppressOutput {
+			return err
+		}
+		if strings.EqualFold(code, robot.ErrCodeDependencyMissing) && !jsonOutput {
+			return err
+		}
+		if encErr := output.New(output.WithJSON(jsonOutput)).Output(res); encErr != nil {
 			return encErr
 		}
 		return jsonFailureExit()
 	}
 
 	if err := tmux.EnsureInstalled(); err != nil {
-		if jsonOutput {
-			return emitAdoptFailure(&AdoptResult{
-				Success: false,
-				Session: opts.Session,
-				Error:   err.Error(),
-			})
-		}
-		return err
+		return failAdopt(err, robot.ErrCodeDependencyMissing)
 	}
 
 	if !tmux.SessionExists(opts.Session) {
-		return emitAdoptFailure(&AdoptResult{
-			Success: false,
-			Session: opts.Session,
-			Error:   fmt.Sprintf("session '%s' not found", opts.Session),
-		})
+		return failAdopt(fmt.Errorf("session '%s' not found", opts.Session), robot.ErrCodeSessionNotFound)
 	}
 
 	panes, err := tmux.GetPanes(opts.Session)
 	if err != nil {
-		return emitAdoptFailure(&AdoptResult{
-			Success: false,
-			Session: opts.Session,
-			Error:   fmt.Sprintf("failed to get panes: %v", err),
-		})
+		return failAdopt(fmt.Errorf("failed to get panes: %v", err), robot.ErrCodeInternalError)
 	}
 
-	// --by-window expands to one paneSpec per window, each addressing that
-	// window's sole pane. Reject the layout when any window holds more than one
-	// pane: "the sole pane" is undefined there and silently picking one would
-	// reintroduce the drop-panes bug we are fixing.
 	if opts.ByWindow {
-		specs, err := byWindowAssignments(panes)
-		if err != nil {
-			return emitAdoptFailure(&AdoptResult{Success: false, Session: opts.Session, Error: err.Error()})
+		specs, winErr := byWindowAssignments(panes)
+		if winErr != nil {
+			return failAdopt(winErr, robot.ErrCodeInvalidFlag)
 		}
 		opts.PaneAssignments = map[agentpkg.AgentType][]paneSpec{
 			opts.ByWindowType.Canonical(): specs,
 		}
 	}
 
-	// Build a composite-keyed index. tmux pane IDs (%N) are globally unique and
-	// base-index-independent, so they are the canonical identity. We also build
-	// an index keyed by (WindowIndex, Index) for explicit window.pane requests,
-	// and a bare-index multimap so we can detect ambiguity (the #170
-	// correctness bug: a non-unique bare index used to silently collapse N
-	// panes to one map entry, last-write-wins).
 	paneByWinPane := make(map[paneSpec]*tmux.Pane, len(panes))
 	panesByBareIndex := make(map[int][]*tmux.Pane)
 	for i := range panes {
@@ -442,7 +393,7 @@ func runAdopt(opts AdoptOptions) error {
 	}
 
 	if err := validateAdoptAssignments(opts.PaneAssignments); err != nil {
-		return emitAdoptFailure(&AdoptResult{Success: false, Session: opts.Session, Error: err.Error()})
+		return failAdopt(err, robot.ErrCodeInvalidFlag)
 	}
 
 	adoptedPanes := []AdoptedPaneInfo{}
@@ -452,23 +403,17 @@ func runAdopt(opts AdoptOptions) error {
 		ntmIndex[spec.AgentType] = 1
 	}
 
-	// Guard against adopting the same physical pane twice. validateAdoptAssignments
-	// only dedups identical spec strings, so without this a single pane addressed
-	// two different ways (a bare index and its window.pane form, or the same pane
-	// under two agent-type flags) would be renamed and counted twice. Dedup by the
-	// resolved tmux pane ID (%N) restores the cross-type "a pane is adopted at most
-	// once" guarantee (#170).
 	adoptedByPaneID := make(map[string]agentpkg.AgentType)
 
-	adoptType := func(reqs []paneSpec, agentType agentpkg.AgentType) error {
+	adoptType := func(reqs []paneSpec, agentType agentpkg.AgentType) (string, error) {
 		canonicalType := agentType.Canonical()
 		for _, req := range reqs {
-			pane, err := resolveAdoptPane(req, paneByWinPane, panesByBareIndex)
-			if err != nil {
-				return err
+			pane, resolveErr := resolveAdoptPane(req, paneByWinPane, panesByBareIndex)
+			if resolveErr != nil {
+				return robot.ErrCodeInvalidFlag, resolveErr
 			}
 			if prev, dup := adoptedByPaneID[pane.ID]; dup {
-				return fmt.Errorf("pane %s (window %d index %d) is assigned more than once (%s and %s); each pane may be adopted only once",
+				return robot.ErrCodeInvalidFlag, fmt.Errorf("pane %s (window %d index %d) is assigned more than once (%s and %s); each pane may be adopted only once",
 					req, pane.WindowIndex, pane.Index, prev, canonicalType)
 			}
 			adoptedByPaneID[pane.ID] = canonicalType
@@ -485,36 +430,26 @@ func runAdopt(opts AdoptOptions) error {
 			}
 
 			if opts.AutoName && !opts.DryRun {
-				if err := tmux.SetPaneTitle(pane.ID, newTitle); err != nil {
-					return fmt.Errorf("failed to set title for pane %s: %v", req, err)
+				if titleErr := tmux.SetPaneTitle(pane.ID, newTitle); titleErr != nil {
+					return robot.ErrCodeInternalError, fmt.Errorf("failed to set title for pane %s: %v", req, titleErr)
 				}
 			}
-			// Record the type on the pane itself, independent of the title.
-			// Some agents (OpenCode) re-assert their own pane title
-			// continuously, so a title-only registration is undone within
-			// seconds and every type-filtered surface (activity, context,
-			// send --oc) stops seeing the pane (ntm#266). The pane option is
-			// consulted first by the pane parser and cannot be overwritten by
-			// the program in the pane. Best-effort: pane options need tmux
-			// 3.0+, and the title-based path still works where they are
-			// unavailable.
 			if !opts.DryRun {
-				if err := tmux.SetPaneAgentTypeContext(adoptCtx, pane.ID, canonicalType); err != nil && !jsonOutput {
-					output.PrintWarningf("Could not record agent type on pane %s (%v); type detection will rely on the pane title", req, err)
+				if optErr := tmux.SetPaneAgentTypeContext(adoptCtx, pane.ID, canonicalType); optErr != nil && !quiet {
+					output.PrintWarningf("Could not record agent type on pane %s (%v); type detection will rely on the pane title", req, optErr)
 				}
 			}
 
 			adoptedPanes = append(adoptedPanes, info)
 			ntmIndex[canonicalType]++
-			counts.increment(canonicalType)
+			counts.Increment(canonicalType)
 		}
-		return nil
+		return "", nil
 	}
 
 	for _, spec := range supportedAdoptTypes {
-		if err := adoptType(opts.PaneAssignments[spec.AgentType], spec.AgentType); err != nil {
-			result := &AdoptResult{Success: false, Session: opts.Session, Error: err.Error()}
-			return emitAdoptFailure(result)
+		if errCode, adoptErr := adoptType(opts.PaneAssignments[spec.AgentType], spec.AgentType); adoptErr != nil {
+			return failAdopt(adoptErr, errCode)
 		}
 	}
 
@@ -527,26 +462,163 @@ func runAdopt(opts AdoptOptions) error {
 		DryRun:       opts.DryRun,
 	}
 
-	// Keep adopted panes on the same Agent Mail identity path as panes created
-	// by spawn and add. Registration is deliberately best-effort: adopting a
-	// usable tmux session must not fail merely because Agent Mail is unavailable.
 	if !opts.DryRun && len(adoptedPanes) > 0 {
-		if projectDir, dirErr := resolveWorkspaceProjectDirForExplicitSession(context.Background(), opts.Session); dirErr != nil {
-			if !jsonOutput {
+		regCtx := adoptCtx
+		if quiet {
+			regCtx = withSuppressedCLIIdentityOutput(regCtx)
+		}
+		if projectDir, dirErr := resolveWorkspaceProjectDirForExplicitSession(regCtx, opts.Session); dirErr != nil {
+			if !quiet {
 				output.PrintWarningf("Agent Mail registration skipped for adopted panes: %v", dirErr)
 			}
 		} else {
-			// Adopted sessions were created outside ntm, so unlike add they have
-			// never had a session-level coordinator identity: register it first,
-			// mirroring spawn, so LoadBestSessionAgent-based flows (mail, git,
-			// handoff) resolve for adopted sessions too (bd-vb7s3). Both helpers
-			// are gated and best-effort.
-			registerSessionAgent(context.Background(), opts.Session, projectDir)
-			registerSpawnedAgents(context.Background(), projectDir, opts.Session, adoptedAgentMailRegistrations(adoptedPanes, opts.AutoName))
+			registerSessionAgent(regCtx, opts.Session, projectDir)
+			registerSpawnedAgents(regCtx, projectDir, opts.Session, adoptedAgentMailRegistrations(adoptedPanes, opts.AutoName))
 		}
 	}
 
+	recordOutcome(result, "")
+	if opts.suppressOutput {
+		return nil
+	}
 	return output.New(output.WithJSON(jsonOutput)).Output(result)
+}
+
+func executeAdoptRobot(ctx context.Context, input robot.AdoptInput) (*robot.AdoptOutput, error) {
+	sessionName := strings.TrimSpace(input.Session)
+	autoName := true
+	if input.AutoName != nil {
+		autoName = *input.AutoName
+	}
+
+	newErrOut := func(err error, code, hint string) *robot.AdoptOutput {
+		return &robot.AdoptOutput{
+			RobotResponse: robot.NewErrorResponse(err, code, hint),
+			SchemaID:      robot.AdoptSchemaID,
+			SchemaVersion: robot.AdoptSchemaVersion,
+			Session:       sessionName,
+			AdoptedPanes:  []AdoptedPaneInfo{},
+			AutoName:      autoName,
+			ByWindow:      input.ByWindow,
+			DryRun:        input.DryRun,
+		}
+	}
+
+	if strings.Compare(sessionName, "") == 0 {
+		return newErrOut(
+			errors.New("session name is required for adopt"),
+			robot.ErrCodeInvalidFlag,
+			"Pass --robot-adopt=<session> with at least one --adopt-<harness> flag or --adopt-by-window=<harness>",
+		), nil
+	}
+
+	opts := AdoptOptions{
+		Context:  ctx,
+		Session:  sessionName,
+		AutoName: autoName,
+		DryRun:   input.DryRun,
+	}
+
+	byWindowRaw := strings.TrimSpace(input.ByWindowType)
+	if input.ByWindow || strings.Compare(byWindowRaw, "") != 0 {
+		if len(input.Panes) > 0 {
+			return newErrOut(
+				errors.New("invalid adopt input: cannot combine by_window with explicit pane assignments"),
+				robot.ErrCodeInvalidFlag,
+				"Use either --adopt-by-window=<harness> or explicit --adopt-<harness>=<panes>",
+			), nil
+		}
+		if strings.Compare(byWindowRaw, "") == 0 {
+			return newErrOut(
+				errors.New("invalid adopt input: by_window_type is required when by_window is true"),
+				robot.ErrCodeInvalidFlag,
+				"Specify --adopt-by-window=<harness> (e.g. cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama, user)",
+			), nil
+		}
+		canon := agentpkg.AgentType(byWindowRaw).Canonical()
+		if !canon.IsValid() {
+			return newErrOut(
+				fmt.Errorf("invalid adopt input: unsupported harness type %q", byWindowRaw),
+				robot.ErrCodeInvalidFlag,
+				"Use one of: cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama, user",
+			), nil
+		}
+		opts.ByWindow = true
+		opts.ByWindowType = canon
+	} else {
+		assignments := make(map[agentpkg.AgentType][]paneSpec, len(supportedAdoptTypes))
+		for rawKey, rawSpec := range input.Panes {
+			if strings.Compare(strings.TrimSpace(rawSpec), "") == 0 {
+				continue
+			}
+			canon := agentpkg.AgentType(rawKey).Canonical()
+			if !canon.IsValid() {
+				return newErrOut(
+					fmt.Errorf("invalid adopt input: unsupported harness key %q", rawKey),
+					robot.ErrCodeInvalidFlag,
+					"Supported pane keys: cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama, user",
+				), nil
+			}
+			specs, parseErr := parsePaneSpecs(rawSpec)
+			if parseErr != nil {
+				return newErrOut(
+					fmt.Errorf("invalid adopt input for %s: %w", rawKey, parseErr),
+					robot.ErrCodeInvalidFlag,
+					"Use comma-separated pane indices, ranges (0-3), or window.pane coordinates (1.0,2.0)",
+				), nil
+			}
+			assignments[canon] = append(assignments[canon], specs...)
+		}
+		if err := validateAdoptAssignments(assignments); err != nil {
+			return newErrOut(
+				fmt.Errorf("invalid adopt input: %w", err),
+				robot.ErrCodeInvalidFlag,
+				"Specify non-overlapping pane indices across --adopt-<harness> flags",
+			), nil
+		}
+		opts.PaneAssignments = assignments
+	}
+
+	var (
+		result  *AdoptResult
+		errCode string
+	)
+	opts.suppressOutput = true
+	opts.resultOut = &result
+	opts.errorCodeOut = &errCode
+	execErr := runAdopt(opts)
+	if execErr != nil {
+		wrappedErr := execErr
+		if strings.EqualFold(errCode, robot.ErrCodeInvalidFlag) && !strings.Contains(strings.ToLower(execErr.Error()), "invalid") {
+			wrappedErr = fmt.Errorf("invalid adopt input: %w", execErr)
+		}
+		hint := "Verify the tmux session exists and pane indices match `tmux list-panes -s`"
+		if strings.EqualFold(errCode, robot.ErrCodeSessionNotFound) {
+			hint = "Check active tmux sessions with `ntm --robot-status`"
+		}
+		return newErrOut(wrappedErr, errCode, hint), nil
+	}
+
+	summary := fmt.Sprintf("Adopted %d/%d pane(s) in session %s (%s).", result.Agents.Total(), result.TotalPanes, result.Session, result.Agents.Summary())
+	if result.DryRun {
+		summary = fmt.Sprintf("Dry run: would adopt %d/%d pane(s) in session %s (%s).", result.Agents.Total(), result.TotalPanes, result.Session, result.Agents.Summary())
+	}
+
+	return &robot.AdoptOutput{
+		RobotResponse: robot.NewRobotResponse(true),
+		SchemaID:      robot.AdoptSchemaID,
+		SchemaVersion: robot.AdoptSchemaVersion,
+		Session:       result.Session,
+		AdoptedPanes:  result.AdoptedPanes,
+		TotalPanes:    result.TotalPanes,
+		Agents:        result.Agents,
+		AutoName:      autoName,
+		ByWindow:      opts.ByWindow,
+		DryRun:        result.DryRun,
+		AgentHints: &robot.AgentHints{
+			Summary: summary,
+		},
+	}, nil
 }
 
 // adoptedAgentMailRegistrations translates an adopted pane into the exact
@@ -556,7 +628,7 @@ func runAdopt(opts AdoptOptions) error {
 func adoptedAgentMailRegistrations(adopted []AdoptedPaneInfo, autoName bool) []spawnidentity.Agent {
 	registrations := make([]spawnidentity.Agent, 0, len(adopted))
 	for _, pane := range adopted {
-		if pane.AgentType == agentpkg.AgentTypeUser.String() {
+		if strings.EqualFold(pane.AgentType, agentpkg.AgentTypeUser.String()) {
 			continue
 		}
 		title := pane.OldTitle

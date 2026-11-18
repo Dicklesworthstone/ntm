@@ -40,24 +40,50 @@ import {
     SummaryAgentItem,
     SUPPORTED_SCALE_HARNESSES,
 } from './swarmOpsSupport';
+import {
+    AdoptedPaneItem,
+    AdoptHarness,
+    AdoptSessionOptions,
+    AdoptSessionResult,
+    ContextAgentItem,
+    normalizeAdoptResult,
+    normalizeContextResult,
+    normalizeRedactPreviewResult,
+    parseAdoptSpec,
+    RedactPreviewFindingItem,
+    RedactPreviewOptions,
+    RedactPreviewResult,
+    SessionContextOptions,
+    SessionContextResult,
+    SUPPORTED_ADOPT_HARNESSES,
+} from './sessionIntelSupport';
 
 export {
+    AdoptedPaneItem,
+    AdoptHarness,
+    AdoptSessionOptions,
+    AdoptSessionResult,
     AssignStrategy,
     AssignWorkOptions,
     AssignWorkRecommendation,
     AssignWorkResult,
     AssignWorkSummary,
+    ContextAgentItem,
     DoctorCheckItem,
     DoctorContentionHolder,
     DoctorOptions,
     DoctorResult,
+    normalizeAdoptResult,
     normalizeAssignWorkResult,
+    normalizeContextResult,
     normalizeDoctorResult,
     normalizePreflightResult,
     normalizeRebalanceResult,
+    normalizeRedactPreviewResult,
     normalizeReviewQueueResult,
     normalizeScaleResult,
     normalizeSummaryResult,
+    parseAdoptSpec,
     parseScaleSpec,
     PreflightFinding,
     PreflightOptions,
@@ -65,6 +91,9 @@ export {
     RebalanceSessionOptions,
     RebalanceSessionResult,
     RebalanceTransferItem,
+    RedactPreviewFindingItem,
+    RedactPreviewOptions,
+    RedactPreviewResult,
     ReviewQueueOptions,
     ReviewQueueResult,
     ReviewQueueSuggestionItem,
@@ -72,9 +101,12 @@ export {
     ScalePlanAction,
     ScaleSessionOptions,
     ScaleSessionResult,
+    SessionContextOptions,
+    SessionContextResult,
     SessionSummaryOptions,
     SessionSummaryResult,
     SummaryAgentItem,
+    SUPPORTED_ADOPT_HARNESSES,
     SUPPORTED_ASSIGN_STRATEGIES,
     SUPPORTED_SCALE_HARNESSES,
 };
@@ -3051,5 +3083,91 @@ export class NtmClient {
 
         const stdout = await this.run(args);
         return normalizeSummaryResult(JSON.parse(stdout));
+    }
+
+    /**
+     * Adopt an external tmux session into NTM management across all 12 pane types via
+     * `ntm --robot-adopt=<session> [--adopt-<harness>=<panes> | --adopt-by-window=<harness>] [--adopt-auto-name=false] [--dry-run] --robot-format=json`.
+     */
+    async adoptSession(options: AdoptSessionOptions): Promise<AdoptSessionResult> {
+        const sess = (options?.session ?? '').trim();
+        if (!sess) {
+            throw new Error('Session name is required to adopt a session');
+        }
+        const args: string[] = [`--robot-adopt=${sess}`];
+        const byWindow = (options?.byWindowHarness ?? '').trim().toLowerCase();
+        if (byWindow) {
+            if (!SUPPORTED_ADOPT_HARNESSES.includes(byWindow as AdoptHarness)) {
+                throw new Error(`Unsupported adopt harness "${byWindow}"`);
+            }
+            args.push(`--adopt-by-window=${byWindow}`);
+        } else {
+            const panes = options?.panes ?? {};
+            let added = 0;
+            for (const harness of SUPPORTED_ADOPT_HARNESSES) {
+                const rawSpec = (panes[harness] ?? '').trim();
+                if (!rawSpec) {
+                    continue;
+                }
+                args.push(`--adopt-${harness}=${rawSpec}`);
+                added++;
+            }
+            if (added === 0) {
+                throw new Error('At least one harness pane assignment or byWindowHarness is required');
+            }
+        }
+        if (options?.autoName === false) {
+            args.push('--adopt-auto-name=false');
+        }
+        if (options?.dryRun) {
+            args.push('--dry-run');
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeAdoptResult(JSON.parse(stdout));
+    }
+
+    /**
+     * Preview secret/PII redaction findings without emitting raw secret bytes via
+     * `ntm --robot-redact=<text> --robot-format=json` or `ntm --robot-redact --redact-file=<path> --robot-format=json`.
+     */
+    async previewRedaction(options: RedactPreviewOptions): Promise<RedactPreviewResult> {
+        const filePath = (options?.filePath ?? '').trim();
+        const text = options?.text ?? '';
+        if (filePath && text.length > 0) {
+            throw new Error('Specify either inline text or filePath for redaction preview, not both');
+        }
+        if (!filePath && text.length === 0) {
+            throw new Error('Text or filePath is required for redaction preview');
+        }
+        const args: string[] = filePath
+            ? ['--robot-redact', `--redact-file=${filePath}`, '--robot-format=json']
+            : [`--robot-redact=${text}`, '--robot-format=json'];
+
+        const stdout = await this.run(args);
+        return normalizeRedactPreviewResult(JSON.parse(stdout));
+    }
+
+    /**
+     * Inspect per-agent context window consumption via
+     * `ntm --robot-context=<session> [--lines=N] --robot-format=json`.
+     */
+    async getContext(options: SessionContextOptions): Promise<SessionContextResult> {
+        const sess = (options?.session ?? '').trim();
+        if (!sess) {
+            throw new Error('Session name is required to inspect context usage');
+        }
+        const args: string[] = [`--robot-context=${sess}`];
+        if (options?.lines !== undefined) {
+            if (!Number.isInteger(options.lines) || options.lines < 1) {
+                throw new Error('Context lines must be a positive integer');
+            }
+            args.push(`--lines=${options.lines}`);
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeContextResult(JSON.parse(stdout));
     }
 }

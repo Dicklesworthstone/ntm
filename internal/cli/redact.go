@@ -15,17 +15,11 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
-type RedactPreviewFinding struct {
-	Category redaction.Category `json:"category"`
-	Redacted string             `json:"redacted"`
-	Start    int                `json:"start"`
-	End      int                `json:"end"`
-	Line     int                `json:"line,omitempty"`
-	Column   int                `json:"column,omitempty"`
-}
+type RedactPreviewFinding = robot.RedactPreviewFinding
 
 type RedactPreviewResponse struct {
 	output.TimestampedResponse
@@ -178,10 +172,6 @@ func stashPreparedRedaction(raw, redactedBody string, findings []RedactPreviewFi
 		Findings:     findings,
 		CreatedAt:    time.Now(),
 	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("serialize prepared redaction: %w", err)
-	}
 
 	// O_EXCL ensures we never clobber an existing handle (handle is
 	// 16 random bytes so collision is negligible, but defend anyway).
@@ -190,10 +180,10 @@ func stashPreparedRedaction(raw, redactedBody string, findings []RedactPreviewFi
 	if err != nil {
 		return "", fmt.Errorf("create prepared-redaction handle: %w", err)
 	}
-	if _, writeErr := f.Write(data); writeErr != nil {
+	if encErr := json.NewEncoder(f).Encode(payload); encErr != nil {
 		_ = f.Close()
 		_ = os.Remove(path)
-		return "", fmt.Errorf("write prepared-redaction handle: %w", writeErr)
+		return "", fmt.Errorf("write prepared-redaction handle: %w", encErr)
 	}
 	if closeErr := f.Close(); closeErr != nil {
 		_ = os.Remove(path)
@@ -406,55 +396,31 @@ Examples:
 				return fmt.Errorf("flags --text and --file are mutually exclusive")
 			}
 
-			source := "text"
-			absPath := ""
-			input := currentText
-			if currentFile != "" {
-				source = "file"
-				p := util.ExpandPath(currentFile)
-				abs, err := filepath.Abs(p)
-				if err != nil {
-					return fmt.Errorf("resolve --file %q: %w", currentFile, err)
-				}
-				b, err := os.ReadFile(abs)
-				if err != nil {
-					return fmt.Errorf("read %q: %w", abs, err)
-				}
-				absPath = abs
-				input = string(b)
-			}
-
 			if cfg == nil {
 				cfg = config.Default()
 			}
-
-			// Always compute a safe-redacted output for preview. This prevents accidental leaks
-			// when the global config/flags are set to warn/off.
 			redactCfg := cfg.Redaction.ToRedactionLibConfig()
 			redactCfg.Mode = redaction.ModeRedact
 
-			res := redaction.ScanAndRedact(input, redactCfg)
-			redaction.AddLineInfo(input, res.Findings)
-
-			findings := make([]RedactPreviewFinding, 0, len(res.Findings))
-			for _, f := range res.Findings {
-				findings = append(findings, RedactPreviewFinding{
-					Category: f.Category,
-					Redacted: f.Redacted,
-					Start:    f.Start,
-					End:      f.End,
-					Line:     f.Line,
-					Column:   f.Column,
-				})
+			robotOut, err := robot.GetRedactPreview(robot.RedactOptions{
+				Text:      currentText,
+				File:      currentFile,
+				RedactCfg: &redactCfg,
+			})
+			if err != nil {
+				return err
+			}
+			if !robotOut.Success {
+				return fmt.Errorf("%s", robotOut.Error)
 			}
 
 			resp := RedactPreviewResponse{
 				TimestampedResponse: output.NewTimestamped(),
-				Source:              source,
-				Path:                absPath,
-				InputLen:            len(input),
-				Findings:            findings,
-				Output:              res.Output,
+				Source:              robotOut.Source,
+				Path:                robotOut.Path,
+				InputLen:            robotOut.InputLen,
+				Findings:            robotOut.Findings,
+				Output:              robotOut.Output,
 			}
 
 			if IsJSONOutput() {

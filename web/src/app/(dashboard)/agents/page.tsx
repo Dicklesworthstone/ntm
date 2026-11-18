@@ -17,6 +17,7 @@ import {
   type ApiEnvelope,
   type components,
 } from "@/lib/api/client";
+import { PersonasAndRecipesPanel } from "@/components/agents/PersonasAndRecipesPanel";
 
 type AgentSpawnRequest = components["schemas"]["AgentSpawnRequest"];
 type SpawnOutput = components["schemas"]["SpawnOutput"];
@@ -791,6 +792,10 @@ export default function AgentsPage() {
           </table>
         </div>
       )}
+
+      <PersonasAndRecipesPanel
+        onSelectRecipePreset={(recipeName) => setSpawnPreset(recipeName)}
+      />
     </div>
   );
 }

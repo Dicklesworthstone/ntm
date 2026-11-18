@@ -1167,6 +1167,58 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 				TruncationBehavior: "Bounded to retained durable webhook outbox receipt files in the project directory",
 			},
 		},
+		"adopt": {
+			SchemaID:   adoptSchemaID,
+			SchemaType: "adopt",
+			Sections:   []string{"sessions", "next_actions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Adopt an external tmux session into NTM management across all 11 agent harnesses plus user panes",
+				SummaryHint: "Read adopted_panes, total_panes, and agents; pass --dry-run first or --adopt-by-window for window-per-agent sessions",
+			},
+			Boundedness: &BoundednessInfo{
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded to panes in the target tmux session",
+			},
+		},
+		"redact": {
+			SchemaID:   redactSchemaID,
+			SchemaType: "redact",
+			Sections:   []string{"source_health"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Preview secret/PII detection findings and safe-redacted output without exposing raw matched secrets",
+				SummaryHint: "Read finding_count, findings (category, redacted token, line, column), and safe output",
+			},
+			Boundedness: &BoundednessInfo{
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded to findings detected within the single inline text or file input",
+			},
+		},
+		"hooks": {
+			SchemaID:   hooksSchemaID,
+			SchemaType: "hooks",
+			Sections:   []string{"source_health", "next_actions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Inspect installed repository git hooks or execute pre-commit, pre-push, commit-msg, post-commit, or post-checkout checks",
+				SummaryHint: "Read hooks and installed_count on status, or passed, pre_commit_result, and check_result on run",
+			},
+			Boundedness: &BoundednessInfo{
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded to the 5 managed git hook slots or a single hook execution report",
+			},
+		},
+		"personas": {
+			SchemaID:   personasSchemaID,
+			SchemaType: "personas",
+			Sections:   []string{"sessions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "List built-in, user, and project agent personas and profile sets with 11-harness alias and tag filtering",
+				SummaryHint: "Read personas, profile_sets, count, and builtin_count; filter with --personas-agent or --personas-tag",
+			},
+			Boundedness: &BoundednessInfo{
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded to configured built-in, user, and project persona definitions",
+			},
+		},
 	}
 }
 

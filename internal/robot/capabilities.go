@@ -2549,6 +2549,10 @@ func buildCommandRegistry() []RobotCommandInfo {
 		reviewQueueCapabilityCommand(),
 		coordinatorCapabilityCommand(),
 		webhookOutboxCapabilityCommand(),
+		adoptCapabilityCommand(),
+		redactCapabilityCommand(),
+		hooksCapabilityCommand(),
+		personasCapabilityCommand(),
 	})
 }
 
