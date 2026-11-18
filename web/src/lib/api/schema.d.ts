@@ -3356,6 +3356,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{id}/coordinator": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Session coordinator
+         * @description Served route `GET /api/v1/sessions/{id}/coordinator`. Handler: `handleSessionCoordinatorV1`. Response shape reflected from Go type `SessionCoordinatorEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_sessions_id_coordinator"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{id}/coordinator/conflicts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Session coordinator conflicts
+         * @description Served route `GET /api/v1/sessions/{id}/coordinator/conflicts`. Handler: `handleSessionCoordinatorConflictsV1`. Response shape reflected from Go type `SessionCoordinatorEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_sessions_id_coordinator_conflicts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{id}/coordinator/digest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Session coordinator digest
+         * @description Served route `POST /api/v1/sessions/{id}/coordinator/digest`. Handler: `handleSessionCoordinatorDigestV1`. Response shape reflected from Go type `SessionCoordinatorEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_sessions_id_coordinator_digest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{id}/events": {
         parameters: {
             query?: never;
@@ -3416,6 +3476,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{id}/rebalance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Session rebalance
+         * @description Served route `POST /api/v1/sessions/{id}/rebalance`. Handler: `handleSessionRebalanceV1`. Response shape reflected from Go type `SessionRebalanceEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_sessions_id_rebalance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{id}/review-queue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Session review queue
+         * @description Served route `POST /api/v1/sessions/{id}/review-queue`. Handler: `handleSessionReviewQueueV1`. Response shape reflected from Go type `SessionReviewQueueEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_sessions_id_review_queue"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{id}/scale": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Session scale
+         * @description Served route `POST /api/v1/sessions/{id}/scale`. Handler: `handleSessionScaleV1`. Response shape reflected from Go type `SessionScaleEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_sessions_id_scale"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{id}/status": {
         parameters: {
             query?: never;
@@ -3428,6 +3548,26 @@ export interface paths {
          * @description Served route `GET /api/v1/sessions/{id}/status`. Handler: `handleSessionStatusV1`. Response shape reflected from Go type `SessionStatusEnvelopeResponse`.
          */
         get: operations["get_api_v1_sessions_id_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{id}/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Session summary
+         * @description Served route `GET /api/v1/sessions/{id}/summary`. Handler: `handleSessionSummaryV1`. Response shape reflected from Go type `SessionSummaryEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_sessions_id_summary"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3896,6 +4036,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/summaries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List summaries
+         * @description Served route `GET /api/v1/summaries`. Handler: `handleListSummariesV1`. Response shape reflected from Go type `StoredSummariesEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_summaries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/support-bundle": {
         parameters: {
             query?: never;
@@ -4030,6 +4190,66 @@ export interface paths {
         get: operations["get_api_v1_version"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/webhooks/outbox": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Webhook outbox list
+         * @description Served route `GET /api/v1/webhooks/outbox`. Handler: `handleWebhookOutboxListV1`. Response shape reflected from Go type `WebhookOutboxEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_webhooks_outbox"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/webhooks/outbox/{record}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Webhook outbox archive
+         * @description Served route `POST /api/v1/webhooks/outbox/{record}/archive`. Handler: `handleWebhookOutboxArchiveV1`. Response shape reflected from Go type `WebhookOutboxEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_webhooks_outbox_record_archive"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/webhooks/outbox/{record}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Webhook outbox retry
+         * @description Served route `POST /api/v1/webhooks/outbox/{record}/retry`. Handler: `handleWebhookOutboxRetryV1`. Response shape reflected from Go type `WebhookOutboxEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_webhooks_outbox_record_retry"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4643,6 +4863,24 @@ export interface components {
             total_unread?: number;
             /** @description Urgent messages */
             urgent_messages?: number;
+        };
+        AgentOutputSummary: {
+            /** Format: int64 */
+            active_time: number;
+            agent_type: string;
+            code_blocks: number;
+            commands_run: number;
+            errors: number;
+            files_modified?: string[];
+            /** Format: int64 */
+            idle_time?: number;
+            key_actions?: string[];
+            output_chars: number;
+            output_lines: number;
+            pane_id: string;
+            pane_title?: string;
+            restarts: number;
+            state: string;
         };
         AgentSendRequest: {
             agent_types?: string[];
@@ -6267,6 +6505,120 @@ export interface components {
             score: number;
             unique_insights: number;
         };
+        CoordinatorAgentDigestStatus: {
+            agent_type: string;
+            context_usage: number;
+            idle_for?: string;
+            pane_id: string;
+            pane_index: number;
+            status: string;
+            task?: string;
+        };
+        CoordinatorAgentState: {
+            agent_mail_name?: string;
+            agent_type: string;
+            assignments: number;
+            context_usage: number;
+            current_task?: string;
+            healthy: boolean;
+            /** Format: date-time */
+            last_activity: string;
+            /** Format: date-time */
+            last_assigned_at?: string;
+            /** Format: date-time */
+            last_known_observed_at?: string;
+            last_known_status?: string;
+            observation_confidence: number;
+            observation_error?: string;
+            observation_freshness: string;
+            /** Format: date-time */
+            observed_at: string;
+            pane_id: string;
+            pane_index: number;
+            profile?: components["schemas"]["Persona"];
+            reservations?: string[];
+            safe_to_dispatch: boolean;
+            status: string;
+        };
+        CoordinatorConfigView: {
+            assign_only_idle: boolean;
+            auto_assign: boolean;
+            conflict_negotiate: boolean;
+            conflict_notify: boolean;
+            digest_interval: string;
+            human_agent: string;
+            idle_threshold: number;
+            poll_interval: string;
+            send_digests: boolean;
+        };
+        CoordinatorConflict: {
+            /** Format: date-time */
+            detected_at: string;
+            file_path: string;
+            holders: components["schemas"]["CoordinatorConflictHolder"][];
+            id: string;
+            pattern: string;
+            resolution?: string;
+            /** Format: date-time */
+            resolved_at?: string;
+        };
+        CoordinatorConflictHolder: {
+            agent_name: string;
+            /** Format: date-time */
+            expires_at: string;
+            pane_id?: string;
+            priority: number;
+            reason?: string;
+            /** Format: date-time */
+            reserved_at: string;
+        };
+        CoordinatorDeadlockCycle: {
+            /** Format: date-time */
+            oldest_since: string;
+            participants: string[];
+            reasons?: string[];
+            resources?: string[];
+            suggestion?: string;
+        };
+        CoordinatorDigestSummary: {
+            active_count: number;
+            agent_count: number;
+            agent_statuses: components["schemas"]["CoordinatorAgentDigestStatus"][];
+            alerts?: string[];
+            deadlocks?: components["schemas"]["CoordinatorDeadlockCycle"][];
+            error_count: number;
+            /** Format: date-time */
+            generated_at: string;
+            idle_count: number;
+            session: string;
+            work_summary: components["schemas"]["CoordinatorWorkDigestSummary"];
+        };
+        CoordinatorRuntimeView: {
+            config_path?: string;
+            error?: string;
+            features: string[];
+            healthy: boolean;
+            /** Format: date-time */
+            heartbeat_at?: string;
+            host: string;
+            /** Format: date-time */
+            last_maintenance_at?: string;
+            maintenance_error?: string;
+            mode?: string;
+            pid?: number;
+            state: string;
+            /** Format: date-time */
+            state_since?: string;
+            summary: string;
+        };
+        CoordinatorWorkDigestSummary: {
+            blocked_tasks: number;
+            completed_today: number;
+            in_progress_tasks: number;
+            pending_tasks: number;
+            status: string;
+            top_ready?: string[];
+        };
         CreateAgentRequest: {
             model: string;
             name?: string;
@@ -7152,6 +7504,13 @@ export interface components {
             Deleted: string[];
             Modified: string[];
         };
+        FileConflict: {
+            agents: string[];
+            first_edit: string;
+            last_edit: string;
+            path: string;
+            severity: string;
+        };
         FileReservation: {
             agent_name: string;
             /** Format: date-time */
@@ -7327,6 +7686,14 @@ export interface components {
             template_params?: {
                 [key: string]: unknown;
             };
+        };
+        GeometryResult: {
+            geometries: components["schemas"]["PaneGeometry"][];
+            is_uniform: boolean;
+            max_height_delta: number;
+            max_width_delta: number;
+            pane_count: number;
+            session_name: string;
         };
         GraphAgentAssignment: {
             /** @description Agent */
@@ -7728,6 +8095,13 @@ export interface components {
             jsonl_path?: string;
             jsonl_sha256?: string;
             project_dir?: string;
+        };
+        IdleAgent: {
+            agent_name?: string;
+            agent_type: string;
+            idle_duration?: string;
+            last_task?: string;
+            pane: number;
         };
         ImportCheckpointRequest: {
             allow_overwrite?: boolean;
@@ -8661,6 +9035,37 @@ export interface components {
             /** @description Rule */
             rule: string;
         };
+        OutboxArchive: {
+            /** Format: date-time */
+            archived_at: string;
+            delivery_id: string;
+            path: string;
+            record: string;
+            revision: string;
+        };
+        OutboxEntry: {
+            archive_allowed: boolean;
+            attempt: number;
+            blocked_by?: string;
+            delivery_id?: string;
+            event_type?: string;
+            last_status?: number;
+            /** Format: date-time */
+            next_retry?: string;
+            record: string;
+            recoveries: number;
+            retry_allowed: boolean;
+            revision?: string;
+            session?: string;
+            state: string;
+            webhook_id?: string;
+        };
+        OutboxSnapshot: {
+            directory?: string;
+            enabled: boolean;
+            entries: components["schemas"]["OutboxEntry"][];
+            limit: number;
+        };
         OutputDecl: {
             description?: string;
             name?: string;
@@ -8755,6 +9160,10 @@ export interface components {
             request_id?: string;
             success: boolean;
             timestamp: string;
+        };
+        PaneGeometry: {
+            height: number;
+            width: number;
         };
         PaneInputEnvelopeResponse: {
             pane: string;
@@ -8890,6 +9299,20 @@ export interface components {
             patch?: components["schemas"]["Operation"];
             post?: components["schemas"]["Operation"];
             put?: components["schemas"]["Operation"];
+        };
+        Persona: {
+            AgentType: string;
+            ContextFiles: string[];
+            Description: string;
+            Extends: string;
+            FocusPatterns: string[];
+            Model: string;
+            Name: string;
+            ReasoningEffort: string;
+            SystemPrompt: string;
+            SystemPromptAppend: string;
+            Tags: string[];
+            Temperature?: number;
         };
         PipelineCleanupEnvelopeResponse: {
             deleted: number;
@@ -9548,6 +9971,36 @@ export interface components {
             /** Format: date-time */
             time: string;
         };
+        RebalanceGeometryReport: {
+            average?: components["schemas"]["PaneGeometry"];
+            rebalanced?: boolean;
+            result?: components["schemas"]["GeometryResult"];
+        };
+        RebalanceTransferItem: {
+            bead_id: string;
+            bead_title: string;
+            from_agent: string;
+            from_pane: number;
+            from_pane_id: string;
+            from_target: string;
+            reason: string;
+            to_agent: string;
+            to_pane: number;
+            to_pane_id: string;
+            to_target: string;
+        };
+        RebalanceWorkload: {
+            agent_name?: string;
+            agent_type: string;
+            is_healthy: boolean;
+            is_idle: boolean;
+            pane: number;
+            pane_id: string;
+            pane_target: string;
+            status?: string;
+            task_count: number;
+            task_ids?: string[];
+        };
         Recipe: {
             description: string;
             name: string;
@@ -9819,6 +10272,14 @@ export interface components {
              */
             timestamp: string;
             warnings?: string[];
+        };
+        ReviewSuggestion: {
+            agent: string;
+            agent_type: string;
+            pane: number;
+            prompt: string;
+            source: string;
+            source_ref?: string;
         };
         Risk: {
             affected_areas?: string[];
@@ -10169,6 +10630,12 @@ export interface components {
              * @description RFC3339 response timestamp.
              */
             timestamp: string;
+        };
+        ScaleAction: {
+            agent_type: string;
+            agents: string[];
+            count: number;
+            type: string;
         };
         ScanOptionsRequest: {
             ci?: boolean;
@@ -10628,6 +11095,30 @@ export interface components {
             no_prompt?: boolean;
             prompt_file?: string;
         };
+        SessionCoordinatorDigestRequest: {
+            send_digest?: boolean;
+        };
+        SessionCoordinatorEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            action: string;
+            agent_count?: number;
+            agents?: {
+                [key: string]: components["schemas"]["CoordinatorAgentState"];
+            };
+            config?: components["schemas"]["CoordinatorConfigView"];
+            conflict_count?: number;
+            conflicts?: components["schemas"]["CoordinatorConflict"][];
+            digest?: components["schemas"]["CoordinatorDigestSummary"];
+            digest_sent?: boolean;
+            idle_count?: number;
+            request_id?: string;
+            runtime?: components["schemas"]["CoordinatorRuntimeView"];
+            schema_id: string;
+            schema_version: string;
+            session: string;
+            success: boolean;
+            timestamp: string;
+        };
         SessionDetailEnvelopeResponse: {
             request_id?: string;
             session: components["schemas"]["SessionSummaryRecord"];
@@ -10687,6 +11178,83 @@ export interface components {
         SessionInterruptRequest: {
             tags?: string[];
         };
+        SessionRebalanceEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            after: {
+                [key: string]: number;
+            };
+            applied?: boolean;
+            before: {
+                [key: string]: number;
+            };
+            dry_run?: boolean;
+            geometry?: components["schemas"]["RebalanceGeometryReport"];
+            imbalance_score: number;
+            recommendation: string;
+            request_id?: string;
+            schema_id: string;
+            schema_version: string;
+            session: string;
+            success: boolean;
+            timestamp: string;
+            transfers: components["schemas"]["RebalanceTransferItem"][];
+            workloads: components["schemas"]["RebalanceWorkload"][];
+        };
+        SessionRebalanceRequest: {
+            apply?: boolean;
+            check_geometry?: boolean;
+            dry_run?: boolean;
+            filter?: string;
+            geometry_tolerance?: number;
+            threshold?: number;
+        };
+        SessionReviewQueueEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            dispatched?: boolean;
+            idle_agents: components["schemas"]["IdleAgent"][];
+            project_dir?: string;
+            request_id?: string;
+            schema_id: string;
+            schema_version: string;
+            sent?: number;
+            session: string;
+            skipped?: number;
+            success: boolean;
+            suggestions: components["schemas"]["ReviewSuggestion"][];
+            timestamp: string;
+        };
+        SessionReviewQueueRequest: {
+            commits?: number;
+            dispatch?: boolean;
+            filter?: string;
+            idle_threshold?: string;
+            project_dir?: string;
+        };
+        SessionScaleEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            actions: components["schemas"]["ScaleAction"][];
+            after: {
+                [key: string]: number;
+            };
+            before: {
+                [key: string]: number;
+            };
+            dry_run?: boolean;
+            errors?: string[];
+            request_id?: string;
+            schema_id: string;
+            schema_version: string;
+            session: string;
+            success: boolean;
+            timestamp: string;
+        };
+        SessionScaleRequest: {
+            dry_run?: boolean;
+            force?: boolean;
+            targets: {
+                [key: string]: number;
+            };
+        };
         SessionStatusEnvelopeResponse: {
             agent_counts: components["schemas"]["AgentCountsResponse"];
             agent_mail?: components["schemas"]["AgentMailStatus"];
@@ -10711,6 +11279,22 @@ export interface components {
              */
             timestamp: string;
             working_directory: string;
+        };
+        SessionSummary: {
+            agents: components["schemas"]["AgentOutputSummary"][];
+            conflicts?: components["schemas"]["FileConflict"][];
+            session: string;
+            time_range: components["schemas"]["SummaryTimeRange"];
+            timestamp: string;
+            total_files: number;
+            total_output_lines: number;
+        };
+        SessionSummaryEnvelopeResponse: {
+            request_id?: string;
+            session: string;
+            success: boolean;
+            summary?: components["schemas"]["SessionSummary"];
+            timestamp: string;
         };
         SessionSummaryRecord: {
             attached?: boolean;
@@ -11538,6 +12122,20 @@ export interface components {
             /** Format: date-time */
             ts: string;
         };
+        StoredSummariesEnvelopeResponse: {
+            count: number;
+            project_dir?: string;
+            request_id?: string;
+            success: boolean;
+            summaries: components["schemas"]["StoredSummaryFile"][];
+            timestamp: string;
+        };
+        StoredSummaryFile: {
+            path: string;
+            session: string;
+            /** Format: date-time */
+            timestamp: string;
+        };
         StreamingStatsEnvelopeResponse: {
             active_streams?: number;
             active_targets: string[];
@@ -11569,6 +12167,14 @@ export interface components {
             timestamp?: string;
         } & {
             [key: string]: unknown;
+        };
+        SummaryTimeRange: {
+            /** Format: int64 */
+            duration: number;
+            /** Format: date-time */
+            end: string;
+            /** Format: date-time */
+            start: string;
         };
         SupportBundleEnvelopeResponse: {
             content_suppressed: boolean;
@@ -12478,6 +13084,24 @@ export interface components {
             trigger_count?: number;
             /** @description Trigger event */
             trigger_event?: components["schemas"]["AttentionEvent"];
+        };
+        WebhookOutboxEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            action: string;
+            archive?: components["schemas"]["OutboxArchive"];
+            authorized?: boolean;
+            entry?: components["schemas"]["OutboxEntry"];
+            project_dir: string;
+            request_id?: string;
+            schema_id: string;
+            schema_version: string;
+            snapshot?: components["schemas"]["OutboxSnapshot"];
+            success: boolean;
+            timestamp: string;
+        };
+        WebhookOutboxMutationRequest: {
+            project_dir?: string;
+            revision: string;
         };
         WorkGraph: {
             /** @description Cycle count */
@@ -22794,6 +23418,187 @@ export interface operations {
             };
         };
     };
+    get_api_v1_sessions_id_coordinator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The id identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionCoordinatorEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_sessions_id_coordinator_conflicts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The id identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionCoordinatorEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_sessions_id_coordinator_digest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The id identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SessionCoordinatorDigestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionCoordinatorEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     get_api_v1_sessions_id_events: {
         parameters: {
             query?: never;
@@ -22982,6 +23787,195 @@ export interface operations {
             };
         };
     };
+    post_api_v1_sessions_id_rebalance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The id identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SessionRebalanceRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionRebalanceEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_sessions_id_review_queue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The id identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SessionReviewQueueRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionReviewQueueEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_sessions_id_scale: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The id identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionScaleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionScaleEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     get_api_v1_sessions_id_status: {
         parameters: {
             query?: never;
@@ -23001,6 +23995,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SessionStatusEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_sessions_id_summary: {
+        parameters: {
+            query?: {
+                /** @description Lookback window duration (e.g. '30m', '2h') or RFC3339 timestamp (default '30m'). */
+                since?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The id identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionSummaryEnvelopeResponse"];
                 };
             };
             /** @description Bad request */
@@ -24733,6 +25789,60 @@ export interface operations {
             };
         };
     };
+    get_api_v1_summaries: {
+        parameters: {
+            query?: {
+                /** @description Optional session name filter (or 'all'). */
+                session?: string;
+                /** @description Maximum stored summaries to return (default 50, max 500). */
+                limit?: number;
+                /** @description Optional existing absolute project directory override (alias: ?project=). */
+                project_dir?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StoredSummariesEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     post_api_v1_support_bundle: {
         parameters: {
             query?: never;
@@ -25075,6 +26185,182 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_webhooks_outbox: {
+        parameters: {
+            query?: {
+                /** @description Optional existing absolute project directory override (alias: ?project=). */
+                project_dir?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookOutboxEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_webhooks_outbox_record_archive: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The record identifier */
+                record: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WebhookOutboxMutationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookOutboxEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_webhooks_outbox_record_retry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The record identifier */
+                record: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WebhookOutboxMutationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookOutboxEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

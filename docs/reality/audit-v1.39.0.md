@@ -1,6 +1,6 @@
 # Reality Audit — v1.39.0
 
-generated: 2026-11-16T07:04:02Z by scripts/reality_audit.sh
+generated: 2026-11-18T18:00:46Z by scripts/reality_audit.sh
 seed: 2553148806
 allowlist-lines: 86
 gates: yes
@@ -72,16 +72,16 @@ total-minutes: 3 (budget 90)
 ## Spot-probes (seeded from tag; exercise against the BUILT artifact, not the tree)
 | # | claim row | verdict (WORKS / PARTIAL / NO_SURFACE / NO_BEAD) | evidence |
 |---|-----------|--------------------------------------------------|----------|
-| 1 | README.md:368 2. Dispatch, Monitoring, and Recovery | WORKS | Executed built `/tmp/ntm_wave12_probe --robot-doctor --doctor-verbose --robot-format=json` (`"schema_id":"ntm:robot:doctor:v1","success":true`), `--robot-preflight="Verify Wave 12 ORI preflight surface" --robot-format=json` (`"schema_id":"ntm:robot:preflight:v1","preview_hash":"8ec2d127fab7b5a7","estimated_tokens":10,"dcg_available":true`), `--robot-audit --audit-limit=5 --robot-format=json`, and `--robot-timeline --timeline-stats --robot-format=json`. |
-| 2 | README.md:1991 FAQ | WORKS | Executed built `/tmp/ntm_wave12_probe --robot-status` (`"schema_id":"ntm:robot:status:v1","success":true`) and `hooks run post-checkout --json` (`"hook_type":"post-checkout","passed":true`). |
-| 3 | command_palette.md:164 `reread_agents_md \| Reread AGENTS.md` | WORKS | Executed `/tmp/ntm_wave12_probe --robot-palette` (`47` commands loaded from `command_palette.md`), returning `{"key":"reread_agents_md","label":"Reread AGENTS.md"}`. |
-| 4 | README.md:1941 `claude`, `codex`, `agy`, `grok`, or `gemini` not detected over SSH / tmux / non-login shells | WORKS | Executed `/tmp/ntm_wave12_probe deps -v --json` (`"all_installed":true`, verifying runtime `PATH` discovery across all dependency checks). |
-| 5 | docs/ORCHESTRATION_FEATURES.md:1266 Historical Proposal: Soft-Claim Files | WORKS | Executed `/tmp/ntm_wave12_probe claim list --json` (`{"success":true,"claims":[]}`) matching the documented distinction between authoritative Beads/ledger claims in `ntm assign` and optional advisory `ntm claim` helpers. |
-| 6 | README.md:1918 From Source | WORKS | Built `/tmp/ntm_wave12_probe` via `go build -o /tmp/ntm_wave12_probe ./cmd/ntm` and executed `version --json` (`"version":"dev","go_version":"go1.26.11","platform":"linux/amd64"`). |
-| 7 | docs/ORCHESTRATION_FEATURES.md:86 Feature 1: Agent Activity Detection | WORKS | Executed `/tmp/ntm_wave12_probe --robot-activity=jmev-css09-copyback02` against live tmux session (`"success":true,"session":"jmev-css09-copyback02"`). |
-| 8 | command_palette.md:29 `fresh_review \| Fresh Review` | WORKS | Executed `/tmp/ntm_wave12_probe --robot-palette`, returning `{"key":"fresh_review","label":"Fresh Review"}`. |
-| 9 | README.md:1503 REST, SSE, WebSocket, and OpenAPI | WORKS | Launched `/tmp/ntm_wave12_probe serve --port 17399`, verified `POST /api/v1/prompt/preflight` (`"allowed":true,"schema_id":"ntm:robot:preflight:v1","preview_hash":"fa5f93ec96755a9f"`), `GET /api/v1/doctor?verbose=true` (`"overall":"warning"` with unified ORI `configuration`, `tools`, `invariants`, `safety_defaults`, `contention`), `GET /api/v1/quota` (`"success":true`), and `GET /api/v1/openapi.json` (`OpenAPI 3.1.0`, `205` paths, `700` component schemas). |
-| 10 | docs/ORCHESTRATION_FEATURES.md:505 Solution Overview | WORKS | Executed `/tmp/ntm_wave12_probe --robot-route=jmev-css09-copyback02 --strategy=least-loaded` against live tmux session (`"success":true,"strategy":"least-loaded"`). |
+| 1 | README.md:368 2. Dispatch, Monitoring, and Recovery | WORKS | Executed built `/tmp/ntm_wave13_probe --robot-webhook-outbox --outbox-action=list --robot-format=json` (`"schema_id":"ntm:robot:webhook-outbox:v1","success":true`), `--robot-doctor --doctor-verbose --robot-format=json` (`"schema_id":"ntm:robot:doctor:v1","success":true`), and `--robot-preflight="Verify Wave 13 ORI preflight surface" --robot-format=json` (`"schema_id":"ntm:robot:preflight:v1","preview_hash":"6832a810217e1163"`). |
+| 2 | README.md:1991 FAQ | WORKS | Executed built `/tmp/ntm_wave13_probe --robot-status --robot-format=json` (`"schema_id":"ntm:robot:status:v1","success":true`) and `hooks run post-checkout --json` (`"hook_type":"post-checkout","passed":true`). |
+| 3 | command_palette.md:164 `reread_agents_md \| Reread AGENTS.md` | WORKS | Executed `/tmp/ntm_wave13_probe --robot-palette --robot-format=json`, returning `"key": "reread_agents_md"`. |
+| 4 | README.md:1941 `claude`, `codex`, `agy`, `grok`, or `gemini` not detected over SSH / tmux / non-login shells | WORKS | Executed `/tmp/ntm_wave13_probe deps -v --json` (`"all_installed": true`, verifying runtime `PATH` discovery across all dependency checks). |
+| 5 | docs/ORCHESTRATION_FEATURES.md:1266 Historical Proposal: Soft-Claim Files | WORKS | Executed `/tmp/ntm_wave13_probe claim list --json` (`{"success":true,"claims":[]}`), matching the documented distinction between authoritative Beads/ledger claims in `ntm assign` and optional advisory `ntm claim` helpers. |
+| 6 | README.md:1918 From Source | WORKS | Built `/tmp/ntm_wave13_probe` via `go build -o /tmp/ntm_wave13_probe ./cmd/ntm` and executed `version --json` (`"version":"dev","go_version":"go1.26.11","platform":"linux/amd64"`). |
+| 7 | docs/ORCHESTRATION_FEATURES.md:86 Feature 1: Agent Activity Detection | WORKS | Executed `/tmp/ntm_wave13_probe --robot-activity=wave13_spotprobe_2855591 --robot-format=json` plus `--robot-scale=wave13_spotprobe_2855591 --scale-cc=2 --scale-ollama=1 --scale-cursor=1 --dry-run`, `--robot-rebalance`, `--robot-review-queue`, and `--robot-coordinator` against a live isolated tmux session (`"success":true` across all 5 surfaces). |
+| 8 | command_palette.md:29 `fresh_review \| Fresh Review` | WORKS | Executed `/tmp/ntm_wave13_probe --robot-palette --robot-format=json`, returning `"key": "fresh_review"`. |
+| 9 | README.md:1503 REST, SSE, WebSocket, and OpenAPI | WORKS | Launched `/tmp/ntm_wave13_probe serve --port 17413`, verified `GET /api/v1/webhooks/outbox` (`"schema_id":"ntm:robot:webhook-outbox:v1","action":"list"`), `GET /api/v1/summaries` (`{"count":0,"success":true,"summaries":[]}`), `POST /api/v1/sessions/wave13_spotprobe_2855591/scale` (`2` planned spawn actions for `cc` and `ollama`), and `GET /api/v1/openapi.json` (`OpenAPI 3.1.0`, `216` paths, `738` component schemas). |
+| 10 | docs/ORCHESTRATION_FEATURES.md:505 Solution Overview | WORKS | Executed `/tmp/ntm_wave13_probe --robot-route=wave13_spotprobe_2855591 --strategy=least-loaded --robot-format=json` against live tmux session (`"success":true,"strategy":"least-loaded"`). |
 
 ## Ledger audit (10 seeded closed beads; Proof test must exist in go test -list)
 
@@ -106,7 +106,7 @@ scope: closed since previous audit (2026-08-20T01:17:47Z) — post-discipline er
 ```
 
 ## Findings
-- none (`0` scripted findings; `10/10` seeded spot-probes verified `WORKS` against built binary `/tmp/ntm_wave12_probe`; `10/10` seeded post-`v1.29.0` closed beads out of `124` candidates verified `OK` in `go test -list`; `allowlist-lines = 86 <= 216`).
+- none (`0` scripted findings; `10/10` seeded spot-probes verified `WORKS` against built binary `/tmp/ntm_wave13_probe`; `10/10` seeded post-`v1.29.0` closed beads out of `128` candidates verified `OK` in `go test -list`; `allowlist-lines = 86 <= 216`).
 
 ## Verdict
 - New `NO_BEAD` gaps found: `0`.

@@ -188,7 +188,7 @@ describe('Wave 13: VSCode ntm.scaleSession, ntm.rebalanceSession, ntm.reviewQueu
             apply: true,
             threshold: 0.75,
             geometry: true,
-            geometryTolerance: 0.2,
+            geometryTolerance: 2,
             filterType: 'claude',
         });
         assert.deepEqual(calls[1], [
@@ -196,7 +196,7 @@ describe('Wave 13: VSCode ntm.scaleSession, ntm.rebalanceSession, ntm.reviewQueu
             '--rebalance-apply',
             '--rebalance-threshold=0.75',
             '--rebalance-geometry',
-            '--rebalance-geometry-tolerance=0.2',
+            '--rebalance-geometry-tolerance=2',
             '--type=claude',
             '--robot-format=json',
         ]);
@@ -206,14 +206,18 @@ describe('Wave 13: VSCode ntm.scaleSession, ntm.rebalanceSession, ntm.reviewQueu
         const rqRes = await client.getReviewQueue({
             session: 'wave13-swarm',
             dispatch: true,
-            pane: 2,
+            idleThreshold: '5m',
+            commits: 5,
+            filterType: 'codex',
             projectDir: '/data/projects/ntm',
         });
         assert.deepEqual(calls[2], [
             '--robot-review-queue=wave13-swarm',
             '--review-dispatch',
-            '--review-pane=2',
-            '--review-project-dir=/data/projects/ntm',
+            '--review-idle-threshold=5m',
+            '--review-commits=5',
+            '--type=codex',
+            '--project=/data/projects/ntm',
             '--robot-format=json',
         ]);
         assert.equal(rqRes.dispatched, true);

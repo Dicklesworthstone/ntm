@@ -163,6 +163,15 @@ ntm --robot-doctor --doctor-contention --doctor-verbose
 ntm --robot-preflight="fix the bug in auth.go"
 ntm --robot-preflight="rm -rf /tmp/cache" --preflight-strict
 ntm --robot-preflight --preflight-file=prompt.txt
+
+# 11-harness scaling, workload rebalancing, review queue, coordinator, and webhook outbox
+ntm --robot-scale=myproject --scale-cc=4 --scale-cod=2 --dry-run
+ntm --robot-rebalance=myproject --rebalance-apply --rebalance-threshold=0.5
+ntm --robot-review-queue=myproject --review-dispatch --review-commits=5
+ntm --robot-coordinator=myproject --coordinator-action=status
+ntm --robot-coordinator=myproject --coordinator-action=digest
+ntm --robot-coordinator=myproject --coordinator-action=conflicts
+ntm --robot-webhook-outbox --outbox-action=list
 ```
 
 ## Reasoning Ensembles

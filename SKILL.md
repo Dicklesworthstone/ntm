@@ -266,6 +266,11 @@ ntm --robot-timeline=myproject --timeline-events
 ntm --robot-timeline --timeline-stats
 ntm --robot-doctor --doctor-contention
 ntm --robot-preflight="fix the bug in auth.go" --preflight-strict
+ntm --robot-scale=myproject --scale-cc=4 --scale-cod=2 --dry-run
+ntm --robot-rebalance=myproject --rebalance-apply
+ntm --robot-review-queue=myproject --review-dispatch
+ntm --robot-coordinator=myproject --coordinator-action=status
+ntm --robot-webhook-outbox --outbox-action=list
 ntm audit http --limit=20 --json
 ```
 

@@ -119,6 +119,11 @@ var SchemaCommand = map[string]interface{}{
 	"timeline":         TimelineOutput{},
 	"doctor":           DoctorOutput{},
 	"preflight":        PreflightOutput{},
+	"scale":            ScaleOutput{},
+	"rebalance":        RebalanceOutput{},
+	"review_queue":     ReviewQueueOutput{},
+	"coordinator":      CoordinatorOutput{},
+	"webhook_outbox":   WebhookOutboxOutput{},
 
 	// Pane inspection
 	"inspect":              InspectPaneOutput{},

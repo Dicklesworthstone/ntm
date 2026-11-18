@@ -171,6 +171,11 @@ var SchemaPagination = map[string]SchemaPaginationFlag{
 	"cancel_request":      {Reason: "bounded: cancellation echo and target admission rows for a single request ID"},
 	"watch_bead":          {Reason: "bounded: events for one watched bead window"},
 	"xf_search":           {Reason: "bounded: top-K transcript search hits"},
+	"scale":               {Reason: "bounded: one scale action row per harness for a single session"},
+	"rebalance":           {Reason: "bounded: per-pane workloads and suggested bead transfers for a single session"},
+	"review_queue":        {Reason: "bounded: idle panes and capped recent commit review suggestions for a single session"},
+	"coordinator":         {Reason: "bounded: per-pane coordinator state, digest summary, and active conflicts for a single session"},
+	"webhook_outbox":      {Reason: "bounded: retained durable project webhook outbox receipts"},
 }
 
 // MustRegisterSchemaPagination declares the pagination flag for a schema type

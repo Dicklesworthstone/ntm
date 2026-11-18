@@ -1135,6 +1135,10 @@ func TestVSCodeExtensionManifestAndVSIXContract(t *testing.T) {
 		"ntm.runDoctor",
 		"ntm.preflightPrompt",
 		"ntm.assignWork",
+		"ntm.scaleSession",
+		"ntm.rebalanceSession",
+		"ntm.reviewQueue",
+		"ntm.showSummary",
 		"ntm.openWebCockpit",
 		"ntm.showBackpressure",
 		"ntm.manageWorktrees",
@@ -1171,6 +1175,10 @@ func TestVSCodeExtensionManifestAndVSIXContract(t *testing.T) {
 		{"--robot-preflight=check prompt", "--preflight-strict", "--robot-format=json"},
 		{"--robot-preflight", "--preflight-file=/tmp/prompt.txt", "--robot-format=json"},
 		{"--robot-assign=proj", "--strategy=dependency", "--beads=bd-1", "--relax", "--robot-format=json"},
+		{"--robot-scale=proj", "--scale-cc=2", "--scale-cod=1", "--scale-ollama=1", "--scale-cursor=1", "--scale-windsurf=1", "--scale-aider=1", "--scale-grok=1", "--scale-omp=1", "--scale-oc=1", "--dry-run", "--robot-format=json"},
+		{"--robot-rebalance=proj", "--rebalance-apply", "--rebalance-threshold=0.7", "--rebalance-geometry", "--rebalance-geometry-tolerance=2", "--type=claude", "--robot-format=json"},
+		{"--robot-review-queue=proj", "--review-dispatch", "--review-idle-threshold=5m", "--review-commits=5", "--type=codex", "--project=/tmp/proj", "--robot-format=json"},
+		{"--robot-summary=proj", "--since=30m", "--robot-format=json"},
 		{"--robot-backpressure", "--session=proj", "--robot-format=json"},
 		{"worktrees", "list", "--session=proj", "--json"},
 		{"attention", "list", "--session=proj", "--limit=30", "--all", "--json"},
@@ -1214,6 +1222,7 @@ func TestVSCodeExtensionManifestAndVSIXContract(t *testing.T) {
 			"extension/out/extension.js",
 			"extension/out/ntmClient.js",
 			"extension/out/orchestrationSupport.js",
+			"extension/out/swarmOpsSupport.js",
 		} {
 			if !entries[wantEntry] {
 				t.Errorf("built VSIX %s missing required entry %q", vsixPath, wantEntry)

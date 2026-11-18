@@ -13,6 +13,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/pipeline"
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -61,6 +62,9 @@ func runRootCommand(cmd *cobra.Command, args []string) {
 	robotDryRunEffective := robotDryRun || robotRestoreDry
 
 	if dispatchRobotInspectionAndOps(cmd, args) {
+		return
+	}
+	if dispatchRobotSwarmOps(cmd, robotDryRunEffective) {
 		return
 	}
 	if dispatchRobotActionsAndParity(cmd, robotDryRunEffective) {
@@ -1412,6 +1416,124 @@ func dispatchRobotInspectionAndOps(cmd *cobra.Command, args []string) bool {
 			Action:   robotLabAction,
 			Scenario: robotLabScenario,
 			Gate:     robotLabGate,
+		}); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
+	return false
+}
+
+func dispatchRobotSwarmOps(cmd *cobra.Command, robotDryRunEffective bool) bool {
+	if robotScale != "" || cmd.Flags().Changed("robot-scale") {
+		targets := make(map[string]int)
+		scaleFlagSpecs := []struct {
+			flagName string
+			key      string
+			value    int
+		}{
+			{"scale-cc", "cc", robotScaleCC},
+			{"scale-cod", "cod", robotScaleCod},
+			{"scale-gmi", "gmi", robotScaleGmi},
+			{"scale-agy", "agy", robotScaleAgy},
+			{"scale-ollama", "ollama", robotScaleOllama},
+			{"scale-cursor", "cursor", robotScaleCursor},
+			{"scale-windsurf", "windsurf", robotScaleWindsurf},
+			{"scale-aider", "aider", robotScaleAider},
+			{"scale-grok", "grok", robotScaleGrok},
+			{"scale-omp", "omp", robotScaleOmp},
+			{"scale-oc", "oc", robotScaleOc},
+		}
+		for _, spec := range scaleFlagSpecs {
+			if cmd.Flags().Changed(spec.flagName) {
+				targets[spec.key] = spec.value
+			}
+		}
+		out, err := executeScaleRobot(cmd.Context(), robot.ScaleInput{
+			Session: robotScale,
+			Targets: targets,
+			DryRun:  robotDryRunEffective,
+			Force:   robotSmartRestartForce,
+		})
+		if err != nil {
+			recordRobotProcessExit(err)
+			return true
+		}
+		if err := robot.PrintScaleOutput(out); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
+	if robotRebalance != "" || cmd.Flags().Changed("robot-rebalance") {
+		out, err := executeRebalanceRobot(cmd.Context(), robot.RebalanceInput{
+			Session:              robotRebalance,
+			DryRun:               robotDryRunEffective,
+			Apply:                robotRebalanceApply,
+			Filter:               robotSendType,
+			Threshold:            robotRebalanceThreshold,
+			CheckGeometry:        robotRebalanceGeometry,
+			GeometryTolerance:    robotRebalanceGeometryTolerance,
+			GeometryToleranceSet: cmd.Flags().Changed("rebalance-geometry-tolerance"),
+		})
+		if err != nil {
+			recordRobotProcessExit(err)
+			return true
+		}
+		if err := robot.PrintRebalanceOutput(out); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
+	if robotReviewQueue != "" || cmd.Flags().Changed("robot-review-queue") {
+		projectDir := strings.TrimSpace(robotEnsembleProject)
+		if projectDir == "" && strings.TrimSpace(robotReviewQueue) != "" {
+			projectDir = strings.TrimSpace(resolveProjectDirForSession(strings.TrimSpace(robotReviewQueue), false))
+		}
+		if err := robot.PrintReviewQueue(cmd.Context(), robot.ReviewQueueOptions{
+			Session:          robotReviewQueue,
+			ProjectDir:       projectDir,
+			Filter:           robotSendType,
+			IdleThreshold:    robotReviewIdleThreshold,
+			IdleThresholdSet: cmd.Flags().Changed("review-idle-threshold"),
+			CommitLimit:      robotReviewCommits,
+			CommitLimitSet:   cmd.Flags().Changed("review-commits"),
+			Dispatch:         robotReviewDispatch,
+		}); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
+	if robotCoordinator != "" || cmd.Flags().Changed("robot-coordinator") {
+		out, err := executeCoordinatorRobot(cmd.Context(), robot.CoordinatorInput{
+			Session:    robotCoordinator,
+			Action:     robotCoordinatorAction,
+			SendDigest: robotCoordinatorSendDigest,
+		})
+		if err != nil {
+			recordRobotProcessExit(err)
+			return true
+		}
+		if err := robot.PrintCoordinatorOutput(out); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
+	if robotWebhookOutbox {
+		var redactCfg *redaction.Config
+		if cfg != nil {
+			value := cfg.Redaction.ToRedactionLibConfig()
+			redactCfg = &value
+		}
+		projectDir := strings.TrimSpace(robotEnsembleProject)
+		if projectDir == "" {
+			projectDir = "."
+		}
+		if err := robot.PrintWebhookOutbox(cmd.Context(), robot.WebhookOutboxOptions{
+			Action:     robotOutboxAction,
+			ProjectDir: projectDir,
+			Record:     robotOutboxRecord,
+			Revision:   robotOutboxRevision,
+			RedactCfg:  redactCfg,
 		}); err != nil {
 			recordRobotProcessExit(err)
 		}

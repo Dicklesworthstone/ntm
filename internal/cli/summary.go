@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/archive"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/summary"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/util"
@@ -74,13 +74,12 @@ Examples:
 	return cmd
 }
 
-type summaryFileInfo struct {
-	Session   string    `json:"session"`
-	Timestamp time.Time `json:"timestamp"`
-	Path      string    `json:"path"`
-}
+type summaryFileInfo = robot.StoredSummaryFile
 
-var summaryFilenameRegex = regexp.MustCompile(`^(?P<session>.+)-(?P<ts>\d{8}-\d{6})\.json$`)
+var (
+	listSummaryFiles     = robot.ListStoredSummaries
+	parseSummaryFilename = robot.ParseStoredSummaryFilename
+)
 
 func runSummary(ctx context.Context, args []string, sinceStr, format string, recent, regenerate, sinceSet bool) error {
 	sessionArg := ""
@@ -294,59 +293,6 @@ func resolveProjectDir(ctx context.Context, session, wd string, explicit bool) (
 	return wd, nil
 }
 
-func listSummaryFiles(projectDir string) ([]summaryFileInfo, error) {
-	summaryDir := filepath.Join(projectDir, ".ntm", "summaries")
-	entries, err := os.ReadDir(summaryDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	var files []summaryFileInfo
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		session, ts, ok := parseSummaryFilename(entry.Name())
-		if !ok {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		if ts.IsZero() {
-			ts = info.ModTime()
-		}
-		files = append(files, summaryFileInfo{
-			Session:   session,
-			Timestamp: ts,
-			Path:      filepath.Join(summaryDir, entry.Name()),
-		})
-	}
-
-	sort.Slice(files, func(i, j int) bool {
-		return files[i].Timestamp.After(files[j].Timestamp)
-	})
-
-	return files, nil
-}
-
-func parseSummaryFilename(name string) (string, time.Time, bool) {
-	matches := summaryFilenameRegex.FindStringSubmatch(name)
-	if len(matches) != 3 {
-		return "", time.Time{}, false
-	}
-	session := matches[1]
-	ts, err := time.Parse("20060102-150405", matches[2])
-	if err != nil {
-		return session, time.Time{}, true
-	}
-	return session, ts, true
-}
-
 func resolveSummarySessionName(input string, files []summaryFileInfo) (string, bool, error) {
 	if input == "" {
 		return "", false, nil
@@ -407,22 +353,16 @@ func latestSummaryForSession(files []summaryFileInfo, session string) (summaryFi
 }
 
 func outputSummaryFromFile(path string, format summary.SummaryFormat, jsonOut bool) error {
-	file, err := os.Open(path)
+	sum, err := robot.ReadStoredSummary(path)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-
-	var sum summary.SessionSummary
-	if err := json.NewDecoder(file).Decode(&sum); err != nil {
-		return fmt.Errorf("failed to parse summary %s: %w", path, err)
-	}
 
 	if jsonOut {
-		return output.PrintJSON(sum)
+		return output.PrintJSON(*sum)
 	}
 
-	text := summary.RenderSummary(&sum, format)
+	text := summary.RenderSummary(sum, format)
 	fmt.Println(text)
 	return nil
 }

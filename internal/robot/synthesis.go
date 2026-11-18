@@ -4,6 +4,8 @@ package robot
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -11,12 +13,14 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/summary"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -1213,7 +1217,19 @@ type SummaryOptions struct {
 // GetSummary generates an activity summary for a session and returns the result.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetSummary(opts SummaryOptions) (*SessionSummaryResponse, error) {
-	session := opts.Session
+	session := strings.TrimSpace(opts.Session)
+	if session == "" {
+		resp := &SessionSummaryResponse{
+			RobotResponse: NewErrorResponse(errors.New("session is required"), ErrCodeInvalidFlag, "Pass --robot-summary=SESSION"),
+		}
+		return resp, nil
+	}
+	if !tmux.SessionExists(session) {
+		resp := &SessionSummaryResponse{
+			RobotResponse: NewErrorResponse(fmt.Errorf("session '%s' not found", session), ErrCodeSessionNotFound, "Use 'ntm list' or 'ntm --robot-status' to see available sessions"),
+		}
+		return resp, nil
+	}
 	since := opts.Since
 	if since == 0 {
 		since = 30 * time.Minute
@@ -1264,6 +1280,85 @@ func GetSummary(opts SummaryOptions) (*SessionSummaryResponse, error) {
 
 	// Return the response
 	return NewSessionSummaryResponse(summary), nil
+}
+
+// StoredSummaryFile describes a persisted .ntm/summaries/<session>-<ts>.json artifact.
+type StoredSummaryFile struct {
+	Session   string    `json:"session"`
+	Timestamp time.Time `json:"timestamp"`
+	Path      string    `json:"path"`
+}
+
+var storedSummaryFilenameRegex = regexp.MustCompile(`^(?P<session>.+)-(?P<ts>\d{8}-\d{6})\.json$`)
+
+// ParseStoredSummaryFilename parses `<session>-YYYYMMDD-HHMMSS.json`.
+func ParseStoredSummaryFilename(name string) (string, time.Time, bool) {
+	matches := storedSummaryFilenameRegex.FindStringSubmatch(name)
+	if len(matches) != 3 {
+		return "", time.Time{}, false
+	}
+	session := matches[1]
+	ts, err := time.Parse("20060102-150405", matches[2])
+	if err != nil {
+		return session, time.Time{}, true
+	}
+	return session, ts, true
+}
+
+// ListStoredSummaries returns persisted session summary artifacts in reverse chronological order.
+func ListStoredSummaries(projectDir string) ([]StoredSummaryFile, error) {
+	summaryDir := filepath.Join(projectDir, ".ntm", "summaries")
+	entries, err := os.ReadDir(summaryDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var files []StoredSummaryFile
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		session, ts, ok := ParseStoredSummaryFilename(entry.Name())
+		if !ok {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if ts.IsZero() {
+			ts = info.ModTime()
+		}
+		files = append(files, StoredSummaryFile{
+			Session:   session,
+			Timestamp: ts,
+			Path:      filepath.Join(summaryDir, entry.Name()),
+		})
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].Timestamp.After(files[j].Timestamp)
+	})
+
+	return files, nil
+}
+
+// ReadStoredSummary loads and decodes a persisted session summary JSON file.
+func ReadStoredSummary(path string) (*summary.SessionSummary, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var sum summary.SessionSummary
+	if err := json.NewDecoder(file).Decode(&sum); err != nil {
+		return nil, fmt.Errorf("failed to parse summary %s: %w", path, err)
+	}
+	return &sum, nil
 }
 
 // PrintSummary handles the --robot-summary command.

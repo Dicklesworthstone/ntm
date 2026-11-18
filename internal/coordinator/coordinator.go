@@ -17,7 +17,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/events"
-	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -131,32 +130,7 @@ type SessionCoordinator struct {
 }
 
 // AgentState tracks the current state of an agent pane.
-type AgentState struct {
-	PaneID                string                      `json:"pane_id"`
-	PaneIndex             int                         `json:"pane_index"`
-	AgentType             string                      `json:"agent_type"` // cc, cod, gmi
-	AgentMailName         string                      `json:"agent_mail_name,omitempty"`
-	Status                robot.AgentState            `json:"status"`
-	LastKnownStatus       robot.AgentState            `json:"last_known_status,omitempty"`
-	ContextUsage          float64                     `json:"context_usage"`
-	LastActivity          time.Time                   `json:"last_activity"`
-	ObservedAt            time.Time                   `json:"observed_at"`
-	LastKnownObservedAt   time.Time                   `json:"last_known_observed_at,omitempty"`
-	ObservationFreshness  status.ObservationFreshness `json:"observation_freshness"`
-	ObservationConfidence float64                     `json:"observation_confidence"`
-	ObservationError      string                      `json:"observation_error,omitempty"`
-	SafeToDispatch        bool                        `json:"safe_to_dispatch"`
-	CurrentTask           string                      `json:"current_task,omitempty"`
-	Reservations          []string                    `json:"reservations,omitempty"`
-	Healthy               bool                        `json:"healthy"`
-	Profile               *persona.Persona            `json:"profile,omitempty"` // Agent's assigned profile for routing
-
-	// Assignment tracking (from bd-1g5t8)
-	// Assignments is the count of active assignments for this agent.
-	// A value of -1 indicates tracking data is unavailable (fallback mode).
-	Assignments    int       `json:"assignments"`
-	LastAssignedAt time.Time `json:"last_assigned_at,omitempty"` // When this agent was last assigned work
-}
+type AgentState = robot.CoordinatorAgentState
 
 // CoordinatorConfig holds configuration for the coordinator.
 type CoordinatorConfig struct {

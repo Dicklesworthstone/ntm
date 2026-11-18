@@ -118,6 +118,8 @@ var robotHelpSections = []robotHelpSection{
 			"is-working",
 			"restart-pane",
 			"smart-restart",
+			"scale",
+			"coordinator",
 			"wait",
 		},
 		Postlude: `                        Conditions: idle, complete, generating, healthy, stalled, rate_limited
@@ -135,6 +137,8 @@ Use --all to include the user pane (index depends on tmux pane-base-index).
 		SurfaceNames: []string{
 			"assign",
 			"bulk-assign",
+			"rebalance",
+			"review-queue",
 			"beads-list",
 			"bead-claim",
 			"bead-create",
@@ -198,6 +202,7 @@ Use --all to include the user pane (index depends on tmux pane-base-index).
 			"tokens",
 			"history",
 			"preflight",
+			"webhook-outbox",
 		},
 	},
 }

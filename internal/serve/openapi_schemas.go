@@ -1354,6 +1354,72 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 			{Name: "provider", Type: "string", Description: "Optional provider filter (claude, openai/codex, gemini) for detailed seat quota."},
 		},
 	},
+
+	// Swarm Scale, Rebalance, Review-Queue, Summary, Coordinator & Webhook Outbox REST API
+	"handleSessionScaleV1": {
+		Response:   SessionScaleEnvelopeResponse{},
+		Envelope:   true,
+		Request:    SessionScaleRequest{},
+		RequestReq: true,
+	},
+	"handleSessionRebalanceV1": {
+		Response: SessionRebalanceEnvelopeResponse{},
+		Envelope: true,
+		Request:  SessionRebalanceRequest{},
+	},
+	"handleSessionReviewQueueV1": {
+		Response: SessionReviewQueueEnvelopeResponse{},
+		Envelope: true,
+		Request:  SessionReviewQueueRequest{},
+	},
+	"handleSessionSummaryV1": {
+		Response: SessionSummaryEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "since", Type: "string", Description: "Lookback window duration (e.g. '30m', '2h') or RFC3339 timestamp (default '30m')."},
+		},
+	},
+	"handleListSummariesV1": {
+		Response: StoredSummariesEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "session", Type: "string", Description: "Optional session name filter (or 'all')."},
+			{Name: "limit", Type: "integer", Description: "Maximum stored summaries to return (default 50, max 500)."},
+			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
+		},
+	},
+	"handleSessionCoordinatorV1": {
+		Response: SessionCoordinatorEnvelopeResponse{},
+		Envelope: true,
+	},
+	"handleSessionCoordinatorDigestV1": {
+		Response: SessionCoordinatorEnvelopeResponse{},
+		Envelope: true,
+		Request:  SessionCoordinatorDigestRequest{},
+	},
+	"handleSessionCoordinatorConflictsV1": {
+		Response: SessionCoordinatorEnvelopeResponse{},
+		Envelope: true,
+	},
+	"handleWebhookOutboxListV1": {
+		Response: WebhookOutboxEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
+		},
+	},
+	"handleWebhookOutboxRetryV1": {
+		Response:   WebhookOutboxEnvelopeResponse{},
+		Envelope:   true,
+		Request:    WebhookOutboxMutationRequest{},
+		RequestReq: true,
+	},
+	"handleWebhookOutboxArchiveV1": {
+		Response:   WebhookOutboxEnvelopeResponse{},
+		Envelope:   true,
+		Request:    WebhookOutboxMutationRequest{},
+		RequestReq: true,
+	},
 }
 
 func lookupServedRouteSchema(rt RouterRoute) (routeSchemaSpec, bool) {

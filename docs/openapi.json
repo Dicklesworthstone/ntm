@@ -12758,6 +12758,234 @@
         }
       }
     },
+    "/api/v1/sessions/{id}/coordinator": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session coordinator",
+        "description": "Served route `GET /api/v1/sessions/{id}/coordinator`. Handler: `handleSessionCoordinatorV1`. Response shape reflected from Go type `SessionCoordinatorEnvelopeResponse`.",
+        "operationId": "get_api_v1_sessions_id_coordinator",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionCoordinatorEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{id}/coordinator/conflicts": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session coordinator conflicts",
+        "description": "Served route `GET /api/v1/sessions/{id}/coordinator/conflicts`. Handler: `handleSessionCoordinatorConflictsV1`. Response shape reflected from Go type `SessionCoordinatorEnvelopeResponse`.",
+        "operationId": "get_api_v1_sessions_id_coordinator_conflicts",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionCoordinatorEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{id}/coordinator/digest": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session coordinator digest",
+        "description": "Served route `POST /api/v1/sessions/{id}/coordinator/digest`. Handler: `handleSessionCoordinatorDigestV1`. Response shape reflected from Go type `SessionCoordinatorEnvelopeResponse`.",
+        "operationId": "post_api_v1_sessions_id_coordinator_digest",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionCoordinatorDigestRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionCoordinatorEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/sessions/{id}/events": {
       "get": {
         "tags": [
@@ -13010,6 +13238,253 @@
         }
       }
     },
+    "/api/v1/sessions/{id}/rebalance": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session rebalance",
+        "description": "Served route `POST /api/v1/sessions/{id}/rebalance`. Handler: `handleSessionRebalanceV1`. Response shape reflected from Go type `SessionRebalanceEnvelopeResponse`.",
+        "operationId": "post_api_v1_sessions_id_rebalance",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionRebalanceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionRebalanceEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{id}/review-queue": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session review queue",
+        "description": "Served route `POST /api/v1/sessions/{id}/review-queue`. Handler: `handleSessionReviewQueueV1`. Response shape reflected from Go type `SessionReviewQueueEnvelopeResponse`.",
+        "operationId": "post_api_v1_sessions_id_review_queue",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionReviewQueueRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionReviewQueueEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{id}/scale": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session scale",
+        "description": "Served route `POST /api/v1/sessions/{id}/scale`. Handler: `handleSessionScaleV1`. Response shape reflected from Go type `SessionScaleEnvelopeResponse`.",
+        "operationId": "post_api_v1_sessions_id_scale",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionScaleRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionScaleEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/sessions/{id}/status": {
       "get": {
         "tags": [
@@ -13036,6 +13511,87 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SessionStatusEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{id}/summary": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session summary",
+        "description": "Served route `GET /api/v1/sessions/{id}/summary`. Handler: `handleSessionSummaryV1`. Response shape reflected from Go type `SessionSummaryEnvelopeResponse`.",
+        "operationId": "get_api_v1_sessions_id_summary",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Lookback window duration (e.g. '30m', '2h') or RFC3339 timestamp (default '30m').",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionSummaryEnvelopeResponse"
                 }
               }
             }
@@ -15353,6 +15909,84 @@
         }
       }
     },
+    "/api/v1/summaries": {
+      "get": {
+        "tags": [
+          "summaries"
+        ],
+        "summary": "List summaries",
+        "description": "Served route `GET /api/v1/summaries`. Handler: `handleListSummariesV1`. Response shape reflected from Go type `StoredSummariesEnvelopeResponse`.",
+        "operationId": "get_api_v1_summaries",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "Optional session name filter (or 'all').",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum stored summaries to return (default 50, max 500).",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "project_dir",
+            "in": "query",
+            "description": "Optional existing absolute project directory override (alias: ?project=).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoredSummariesEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/support-bundle": {
       "post": {
         "tags": [
@@ -15771,6 +16405,234 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/outbox": {
+      "get": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "Webhook outbox list",
+        "description": "Served route `GET /api/v1/webhooks/outbox`. Handler: `handleWebhookOutboxListV1`. Response shape reflected from Go type `WebhookOutboxEnvelopeResponse`.",
+        "operationId": "get_api_v1_webhooks_outbox",
+        "parameters": [
+          {
+            "name": "project_dir",
+            "in": "query",
+            "description": "Optional existing absolute project directory override (alias: ?project=).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookOutboxEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/outbox/{record}/archive": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "Webhook outbox archive",
+        "description": "Served route `POST /api/v1/webhooks/outbox/{record}/archive`. Handler: `handleWebhookOutboxArchiveV1`. Response shape reflected from Go type `WebhookOutboxEnvelopeResponse`.",
+        "operationId": "post_api_v1_webhooks_outbox_record_archive",
+        "parameters": [
+          {
+            "name": "record",
+            "in": "path",
+            "description": "The record identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookOutboxMutationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookOutboxEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/outbox/{record}/retry": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "Webhook outbox retry",
+        "description": "Served route `POST /api/v1/webhooks/outbox/{record}/retry`. Handler: `handleWebhookOutboxRetryV1`. Response shape reflected from Go type `WebhookOutboxEnvelopeResponse`.",
+        "operationId": "post_api_v1_webhooks_outbox_record_retry",
+        "parameters": [
+          {
+            "name": "record",
+            "in": "path",
+            "description": "The record identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookOutboxMutationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookOutboxEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -17641,6 +18503,73 @@
         },
         "required": [
           "available"
+        ]
+      },
+      "AgentOutputSummary": {
+        "type": "object",
+        "properties": {
+          "active_time": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "agent_type": {
+            "type": "string"
+          },
+          "code_blocks": {
+            "type": "integer"
+          },
+          "commands_run": {
+            "type": "integer"
+          },
+          "errors": {
+            "type": "integer"
+          },
+          "files_modified": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "idle_time": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "key_actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "output_chars": {
+            "type": "integer"
+          },
+          "output_lines": {
+            "type": "integer"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "pane_title": {
+            "type": "string"
+          },
+          "restarts": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "active_time",
+          "agent_type",
+          "code_blocks",
+          "commands_run",
+          "errors",
+          "output_chars",
+          "output_lines",
+          "pane_id",
+          "restarts",
+          "state"
         ]
       },
       "AgentSendRequest": {
@@ -22630,6 +23559,416 @@
           "unique_insights"
         ]
       },
+      "CoordinatorAgentDigestStatus": {
+        "type": "object",
+        "properties": {
+          "agent_type": {
+            "type": "string"
+          },
+          "context_usage": {
+            "type": "number"
+          },
+          "idle_for": {
+            "type": "string"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "pane_index": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_type",
+          "context_usage",
+          "pane_id",
+          "pane_index",
+          "status"
+        ]
+      },
+      "CoordinatorAgentState": {
+        "type": "object",
+        "properties": {
+          "agent_mail_name": {
+            "type": "string"
+          },
+          "agent_type": {
+            "type": "string"
+          },
+          "assignments": {
+            "type": "integer"
+          },
+          "context_usage": {
+            "type": "number"
+          },
+          "current_task": {
+            "type": "string"
+          },
+          "healthy": {
+            "type": "boolean"
+          },
+          "last_activity": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_assigned_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_known_observed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_known_status": {
+            "type": "string"
+          },
+          "observation_confidence": {
+            "type": "number"
+          },
+          "observation_error": {
+            "type": "string"
+          },
+          "observation_freshness": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "pane_index": {
+            "type": "integer"
+          },
+          "profile": {
+            "$ref": "#/components/schemas/Persona"
+          },
+          "reservations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "safe_to_dispatch": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_type",
+          "assignments",
+          "context_usage",
+          "healthy",
+          "last_activity",
+          "observation_confidence",
+          "observation_freshness",
+          "observed_at",
+          "pane_id",
+          "pane_index",
+          "safe_to_dispatch",
+          "status"
+        ]
+      },
+      "CoordinatorConfigView": {
+        "type": "object",
+        "properties": {
+          "assign_only_idle": {
+            "type": "boolean"
+          },
+          "auto_assign": {
+            "type": "boolean"
+          },
+          "conflict_negotiate": {
+            "type": "boolean"
+          },
+          "conflict_notify": {
+            "type": "boolean"
+          },
+          "digest_interval": {
+            "type": "string"
+          },
+          "human_agent": {
+            "type": "string"
+          },
+          "idle_threshold": {
+            "type": "number"
+          },
+          "poll_interval": {
+            "type": "string"
+          },
+          "send_digests": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "assign_only_idle",
+          "auto_assign",
+          "conflict_negotiate",
+          "conflict_notify",
+          "digest_interval",
+          "human_agent",
+          "idle_threshold",
+          "poll_interval",
+          "send_digests"
+        ]
+      },
+      "CoordinatorConflict": {
+        "type": "object",
+        "properties": {
+          "detected_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "file_path": {
+            "type": "string"
+          },
+          "holders": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CoordinatorConflictHolder"
+            }
+          },
+          "id": {
+            "type": "string"
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "resolution": {
+            "type": "string"
+          },
+          "resolved_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "detected_at",
+          "file_path",
+          "holders",
+          "id",
+          "pattern"
+        ]
+      },
+      "CoordinatorConflictHolder": {
+        "type": "object",
+        "properties": {
+          "agent_name": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "reserved_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "agent_name",
+          "expires_at",
+          "priority",
+          "reserved_at"
+        ]
+      },
+      "CoordinatorDeadlockCycle": {
+        "type": "object",
+        "properties": {
+          "oldest_since": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "participants": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "suggestion": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "oldest_since",
+          "participants"
+        ]
+      },
+      "CoordinatorDigestSummary": {
+        "type": "object",
+        "properties": {
+          "active_count": {
+            "type": "integer"
+          },
+          "agent_count": {
+            "type": "integer"
+          },
+          "agent_statuses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CoordinatorAgentDigestStatus"
+            }
+          },
+          "alerts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "deadlocks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CoordinatorDeadlockCycle"
+            }
+          },
+          "error_count": {
+            "type": "integer"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "idle_count": {
+            "type": "integer"
+          },
+          "session": {
+            "type": "string"
+          },
+          "work_summary": {
+            "$ref": "#/components/schemas/CoordinatorWorkDigestSummary"
+          }
+        },
+        "required": [
+          "active_count",
+          "agent_count",
+          "agent_statuses",
+          "error_count",
+          "generated_at",
+          "idle_count",
+          "session",
+          "work_summary"
+        ]
+      },
+      "CoordinatorRuntimeView": {
+        "type": "object",
+        "properties": {
+          "config_path": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "features": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "healthy": {
+            "type": "boolean"
+          },
+          "heartbeat_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "host": {
+            "type": "string"
+          },
+          "last_maintenance_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "maintenance_error": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "pid": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "state_since": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "features",
+          "healthy",
+          "host",
+          "state",
+          "summary"
+        ]
+      },
+      "CoordinatorWorkDigestSummary": {
+        "type": "object",
+        "properties": {
+          "blocked_tasks": {
+            "type": "integer"
+          },
+          "completed_today": {
+            "type": "integer"
+          },
+          "in_progress_tasks": {
+            "type": "integer"
+          },
+          "pending_tasks": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "top_ready": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "blocked_tasks",
+          "completed_today",
+          "in_progress_tasks",
+          "pending_tasks",
+          "status"
+        ]
+      },
       "CreateAgentRequest": {
         "type": "object",
         "properties": {
@@ -25394,6 +26733,36 @@
           "Modified"
         ]
       },
+      "FileConflict": {
+        "type": "object",
+        "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "first_edit": {
+            "type": "string"
+          },
+          "last_edit": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agents",
+          "first_edit",
+          "last_edit",
+          "path",
+          "severity"
+        ]
+      },
       "FileReservation": {
         "type": "object",
         "properties": {
@@ -25944,6 +27313,40 @@
             "additionalProperties": true
           }
         }
+      },
+      "GeometryResult": {
+        "type": "object",
+        "properties": {
+          "geometries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PaneGeometry"
+            }
+          },
+          "is_uniform": {
+            "type": "boolean"
+          },
+          "max_height_delta": {
+            "type": "integer"
+          },
+          "max_width_delta": {
+            "type": "integer"
+          },
+          "pane_count": {
+            "type": "integer"
+          },
+          "session_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "geometries",
+          "is_uniform",
+          "max_height_delta",
+          "max_width_delta",
+          "pane_count",
+          "session_name"
+        ]
       },
       "GraphAgentAssignment": {
         "type": "object",
@@ -27125,6 +28528,30 @@
             "type": "string"
           }
         }
+      },
+      "IdleAgent": {
+        "type": "object",
+        "properties": {
+          "agent_name": {
+            "type": "string"
+          },
+          "agent_type": {
+            "type": "string"
+          },
+          "idle_duration": {
+            "type": "string"
+          },
+          "last_task": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_type",
+          "pane"
+        ]
       },
       "ImportCheckpointRequest": {
         "type": "object",
@@ -30126,6 +31553,115 @@
           "rule"
         ]
       },
+      "OutboxArchive": {
+        "type": "object",
+        "properties": {
+          "archived_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "delivery_id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "record": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "archived_at",
+          "delivery_id",
+          "path",
+          "record",
+          "revision"
+        ]
+      },
+      "OutboxEntry": {
+        "type": "object",
+        "properties": {
+          "archive_allowed": {
+            "type": "boolean"
+          },
+          "attempt": {
+            "type": "integer"
+          },
+          "blocked_by": {
+            "type": "string"
+          },
+          "delivery_id": {
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "last_status": {
+            "type": "integer"
+          },
+          "next_retry": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "record": {
+            "type": "string"
+          },
+          "recoveries": {
+            "type": "integer"
+          },
+          "retry_allowed": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "webhook_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "archive_allowed",
+          "attempt",
+          "record",
+          "recoveries",
+          "retry_allowed",
+          "state"
+        ]
+      },
+      "OutboxSnapshot": {
+        "type": "object",
+        "properties": {
+          "directory": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OutboxEntry"
+            }
+          },
+          "limit": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "entries",
+          "limit"
+        ]
+      },
       "OutputDecl": {
         "type": "object",
         "properties": {
@@ -30463,6 +31999,21 @@
           "pane",
           "success",
           "timestamp"
+        ]
+      },
+      "PaneGeometry": {
+        "type": "object",
+        "properties": {
+          "height": {
+            "type": "integer"
+          },
+          "width": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "height",
+          "width"
         ]
       },
       "PaneInputEnvelopeResponse": {
@@ -30931,6 +32482,69 @@
             "$ref": "#/components/schemas/Operation"
           }
         }
+      },
+      "Persona": {
+        "type": "object",
+        "properties": {
+          "AgentType": {
+            "type": "string"
+          },
+          "ContextFiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "Description": {
+            "type": "string"
+          },
+          "Extends": {
+            "type": "string"
+          },
+          "FocusPatterns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "Model": {
+            "type": "string"
+          },
+          "Name": {
+            "type": "string"
+          },
+          "ReasoningEffort": {
+            "type": "string"
+          },
+          "SystemPrompt": {
+            "type": "string"
+          },
+          "SystemPromptAppend": {
+            "type": "string"
+          },
+          "Tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "Temperature": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "AgentType",
+          "ContextFiles",
+          "Description",
+          "Extends",
+          "FocusPatterns",
+          "Model",
+          "Name",
+          "ReasoningEffort",
+          "SystemPrompt",
+          "SystemPromptAppend",
+          "Tags"
+        ]
       },
       "PipelineCleanupEnvelopeResponse": {
         "type": "object",
@@ -33005,6 +34619,118 @@
           "time"
         ]
       },
+      "RebalanceGeometryReport": {
+        "type": "object",
+        "properties": {
+          "average": {
+            "$ref": "#/components/schemas/PaneGeometry"
+          },
+          "rebalanced": {
+            "type": "boolean"
+          },
+          "result": {
+            "$ref": "#/components/schemas/GeometryResult"
+          }
+        }
+      },
+      "RebalanceTransferItem": {
+        "type": "object",
+        "properties": {
+          "bead_id": {
+            "type": "string"
+          },
+          "bead_title": {
+            "type": "string"
+          },
+          "from_agent": {
+            "type": "string"
+          },
+          "from_pane": {
+            "type": "integer"
+          },
+          "from_pane_id": {
+            "type": "string"
+          },
+          "from_target": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "to_agent": {
+            "type": "string"
+          },
+          "to_pane": {
+            "type": "integer"
+          },
+          "to_pane_id": {
+            "type": "string"
+          },
+          "to_target": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "bead_id",
+          "bead_title",
+          "from_agent",
+          "from_pane",
+          "from_pane_id",
+          "from_target",
+          "reason",
+          "to_agent",
+          "to_pane",
+          "to_pane_id",
+          "to_target"
+        ]
+      },
+      "RebalanceWorkload": {
+        "type": "object",
+        "properties": {
+          "agent_name": {
+            "type": "string"
+          },
+          "agent_type": {
+            "type": "string"
+          },
+          "is_healthy": {
+            "type": "boolean"
+          },
+          "is_idle": {
+            "type": "boolean"
+          },
+          "pane": {
+            "type": "integer"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "pane_target": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "task_count": {
+            "type": "integer"
+          },
+          "task_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "agent_type",
+          "is_healthy",
+          "is_idle",
+          "pane",
+          "pane_id",
+          "pane_target",
+          "task_count"
+        ]
+      },
       "Recipe": {
         "type": "object",
         "properties": {
@@ -33886,6 +35612,36 @@
           "stage",
           "success",
           "timestamp"
+        ]
+      },
+      "ReviewSuggestion": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "agent_type": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "integer"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "source_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "agent_type",
+          "pane",
+          "prompt",
+          "source"
         ]
       },
       "Risk": {
@@ -34950,6 +36706,32 @@
           "removed",
           "success",
           "timestamp"
+        ]
+      },
+      "ScaleAction": {
+        "type": "object",
+        "properties": {
+          "agent_type": {
+            "type": "string"
+          },
+          "agents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "count": {
+            "type": "integer"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_type",
+          "agents",
+          "count",
+          "type"
         ]
       },
       "ScanOptionsRequest": {
@@ -36415,6 +38197,84 @@
           }
         }
       },
+      "SessionCoordinatorDigestRequest": {
+        "type": "object",
+        "properties": {
+          "send_digest": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SessionCoordinatorEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "action": {
+            "type": "string"
+          },
+          "agent_count": {
+            "type": "integer"
+          },
+          "agents": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/CoordinatorAgentState"
+            }
+          },
+          "config": {
+            "$ref": "#/components/schemas/CoordinatorConfigView"
+          },
+          "conflict_count": {
+            "type": "integer"
+          },
+          "conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CoordinatorConflict"
+            }
+          },
+          "digest": {
+            "$ref": "#/components/schemas/CoordinatorDigestSummary"
+          },
+          "digest_sent": {
+            "type": "boolean"
+          },
+          "idle_count": {
+            "type": "integer"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/CoordinatorRuntimeView"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "schema_id",
+          "schema_version",
+          "session",
+          "success",
+          "timestamp"
+        ]
+      },
       "SessionDetailEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -36613,6 +38473,269 @@
           }
         }
       },
+      "SessionRebalanceEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "after": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "applied": {
+            "type": "boolean"
+          },
+          "before": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "geometry": {
+            "$ref": "#/components/schemas/RebalanceGeometryReport"
+          },
+          "imbalance_score": {
+            "type": "number"
+          },
+          "recommendation": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "transfers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RebalanceTransferItem"
+            }
+          },
+          "workloads": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RebalanceWorkload"
+            }
+          }
+        },
+        "required": [
+          "after",
+          "before",
+          "imbalance_score",
+          "recommendation",
+          "schema_id",
+          "schema_version",
+          "session",
+          "success",
+          "timestamp",
+          "transfers",
+          "workloads"
+        ]
+      },
+      "SessionRebalanceRequest": {
+        "type": "object",
+        "properties": {
+          "apply": {
+            "type": "boolean"
+          },
+          "check_geometry": {
+            "type": "boolean"
+          },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "filter": {
+            "type": "string"
+          },
+          "geometry_tolerance": {
+            "type": "integer"
+          },
+          "threshold": {
+            "type": "number"
+          }
+        }
+      },
+      "SessionReviewQueueEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "dispatched": {
+            "type": "boolean"
+          },
+          "idle_agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IdleAgent"
+            }
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "sent": {
+            "type": "integer"
+          },
+          "session": {
+            "type": "string"
+          },
+          "skipped": {
+            "type": "integer"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "suggestions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewSuggestion"
+            }
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "idle_agents",
+          "schema_id",
+          "schema_version",
+          "session",
+          "success",
+          "suggestions",
+          "timestamp"
+        ]
+      },
+      "SessionReviewQueueRequest": {
+        "type": "object",
+        "properties": {
+          "commits": {
+            "type": "integer"
+          },
+          "dispatch": {
+            "type": "boolean"
+          },
+          "filter": {
+            "type": "string"
+          },
+          "idle_threshold": {
+            "type": "string"
+          },
+          "project_dir": {
+            "type": "string"
+          }
+        }
+      },
+      "SessionScaleEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScaleAction"
+            }
+          },
+          "after": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "before": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "actions",
+          "after",
+          "before",
+          "schema_id",
+          "schema_version",
+          "session",
+          "success",
+          "timestamp"
+        ]
+      },
+      "SessionScaleRequest": {
+        "type": "object",
+        "properties": {
+          "dry_run": {
+            "type": "boolean"
+          },
+          "force": {
+            "type": "boolean"
+          },
+          "targets": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "targets"
+        ]
+      },
       "SessionStatusEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -36686,6 +38809,71 @@
           "success",
           "timestamp",
           "working_directory"
+        ]
+      },
+      "SessionSummary": {
+        "type": "object",
+        "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentOutputSummary"
+            }
+          },
+          "conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FileConflict"
+            }
+          },
+          "session": {
+            "type": "string"
+          },
+          "time_range": {
+            "$ref": "#/components/schemas/SummaryTimeRange"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "total_files": {
+            "type": "integer"
+          },
+          "total_output_lines": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agents",
+          "session",
+          "time_range",
+          "timestamp",
+          "total_files",
+          "total_output_lines"
+        ]
+      },
+      "SessionSummaryEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/SessionSummary"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "success",
+          "timestamp"
         ]
       },
       "SessionSummaryRecord": {
@@ -38819,6 +41007,58 @@
           "ts"
         ]
       },
+      "StoredSummariesEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "summaries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StoredSummaryFile"
+            }
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "count",
+          "success",
+          "summaries",
+          "timestamp"
+        ]
+      },
+      "StoredSummaryFile": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "path",
+          "session",
+          "timestamp"
+        ]
+      },
       "StreamingStatsEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -38903,6 +41143,28 @@
           "success"
         ],
         "additionalProperties": true
+      },
+      "SummaryTimeRange": {
+        "type": "object",
+        "properties": {
+          "duration": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "duration",
+          "end",
+          "start"
+        ]
       },
       "SupportBundleEnvelopeResponse": {
         "type": "object",
@@ -41782,6 +44044,69 @@
           "matched_condition"
         ]
       },
+      "WebhookOutboxEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "action": {
+            "type": "string"
+          },
+          "archive": {
+            "$ref": "#/components/schemas/OutboxArchive"
+          },
+          "authorized": {
+            "type": "boolean"
+          },
+          "entry": {
+            "$ref": "#/components/schemas/OutboxEntry"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/OutboxSnapshot"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "project_dir",
+          "schema_id",
+          "schema_version",
+          "success",
+          "timestamp"
+        ]
+      },
+      "WebhookOutboxMutationRequest": {
+        "type": "object",
+        "properties": {
+          "project_dir": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision"
+        ]
+      },
       "WorkGraph": {
         "type": "object",
         "properties": {
@@ -42621,6 +44946,10 @@
       "description": "Operations related to streaming"
     },
     {
+      "name": "summaries",
+      "description": "Operations related to summaries"
+    },
+    {
       "name": "support-bundle",
       "description": "Operations related to support-bundle"
     },
@@ -42635,6 +44964,10 @@
     {
       "name": "version",
       "description": "Operations related to version"
+    },
+    {
+      "name": "webhooks",
+      "description": "Operations related to webhooks"
     },
     {
       "name": "worktrees",

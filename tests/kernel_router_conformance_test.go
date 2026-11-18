@@ -50,20 +50,25 @@ func TestKernelRegisteredRESTBindingsMatchServedRouter(t *testing.T) {
 	}
 
 	explicitCLICommands := map[string]bool{
-		"core.version":        false,
-		"core.deps":           false,
-		"kernel.list":         false,
-		"sessions.create":     false,
-		"sessions.list":       false,
-		"sessions.status":     false,
-		"sessions.attach":     false,
-		"sessions.view":       false,
-		"sessions.zoom":       false,
-		"sessions.health":     false,
-		"sessions.controller": false,
-		"sessions.interrupt":  false,
-		"sessions.kill":       false,
-		"prompt.preflight":    false,
+		"core.version":                   false,
+		"core.deps":                      false,
+		"kernel.list":                    false,
+		"sessions.create":                false,
+		"sessions.list":                  false,
+		"sessions.status":                false,
+		"sessions.attach":                false,
+		"sessions.view":                  false,
+		"sessions.zoom":                  false,
+		"sessions.health":                false,
+		"sessions.controller":            false,
+		"sessions.interrupt":             false,
+		"sessions.kill":                  false,
+		"sessions.scale":                 false,
+		"sessions.rebalance":             false,
+		"sessions.coordinator":           false,
+		"sessions.coordinator_digest":    false,
+		"sessions.coordinator_conflicts": false,
+		"prompt.preflight":               false,
 	}
 
 	cancelledCtx, cancel := context.WithCancel(context.Background())
@@ -119,6 +124,11 @@ func TestKernelRegisteredRESTBindingsMatchServedRouter(t *testing.T) {
 		{method: http.MethodPost, path: "/api/v1/sessions/nonexistent_conformance_sess/interrupt", body: `{}`},
 		{method: http.MethodPost, path: "/api/v1/sessions/nonexistent_conformance_sess/controller", body: `{"agent_type":"cc","no_prompt":true}`},
 		{method: http.MethodDelete, path: "/api/v1/sessions/nonexistent_conformance_sess?force=true"},
+		{method: http.MethodPost, path: "/api/v1/sessions/nonexistent_conformance_sess/scale", body: `{"targets":{"cc":2,"ollama":1},"dry_run":true}`},
+		{method: http.MethodPost, path: "/api/v1/sessions/nonexistent_conformance_sess/rebalance", body: `{"dry_run":true}`},
+		{method: http.MethodGet, path: "/api/v1/sessions/nonexistent_conformance_sess/coordinator"},
+		{method: http.MethodPost, path: "/api/v1/sessions/nonexistent_conformance_sess/coordinator/digest", body: `{"send_digest":false}`},
+		{method: http.MethodGet, path: "/api/v1/sessions/nonexistent_conformance_sess/coordinator/conflicts"},
 	} {
 		req := httptest.NewRequest(probe.method, probe.path, strings.NewReader(probe.body))
 		if probe.body != "" {

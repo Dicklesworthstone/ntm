@@ -2544,6 +2544,11 @@ func buildCommandRegistry() []RobotCommandInfo {
 		},
 		backpressureCapabilityCommand(),
 		swarmLabCapabilityCommand(),
+		scaleCapabilityCommand(),
+		rebalanceCapabilityCommand(),
+		reviewQueueCapabilityCommand(),
+		coordinatorCapabilityCommand(),
+		webhookOutboxCapabilityCommand(),
 	})
 }
 

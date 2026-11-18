@@ -3,6 +3,8 @@ package coordinator
 import (
 	"sort"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
 
 // WaitEdge models a single "Waiter is waiting for Holder on Resource"
@@ -20,13 +22,7 @@ type WaitEdge struct {
 
 // DeadlockCycle is one detected cycle, in canonical (rotated) order
 // so two structurally identical cycles always render the same JSON.
-type DeadlockCycle struct {
-	Participants []string  `json:"participants"`
-	Resources    []string  `json:"resources,omitempty"`
-	Reasons      []string  `json:"reasons,omitempty"`
-	OldestSince  time.Time `json:"oldest_since"`
-	Suggestion   string    `json:"suggestion,omitempty"`
-}
+type DeadlockCycle = robot.CoordinatorDeadlockCycle
 
 // DeadlockReport is the stable robot-readable envelope produced by
 // DetectDeadlocks. It is safe to JSON-encode directly.

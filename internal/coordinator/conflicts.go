@@ -13,28 +13,14 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/reservationpath"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
 
 // Conflict represents a file reservation conflict between agents.
-type Conflict struct {
-	ID         string     `json:"id"`
-	FilePath   string     `json:"file_path"`
-	Pattern    string     `json:"pattern"`
-	Holders    []Holder   `json:"holders"`
-	DetectedAt time.Time  `json:"detected_at"`
-	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
-	Resolution string     `json:"resolution,omitempty"`
-}
+type Conflict = robot.CoordinatorConflict
 
 // Holder represents an agent holding a reservation.
-type Holder struct {
-	AgentName  string    `json:"agent_name"`
-	PaneID     string    `json:"pane_id,omitempty"`
-	ReservedAt time.Time `json:"reserved_at"`
-	ExpiresAt  time.Time `json:"expires_at"`
-	Reason     string    `json:"reason,omitempty"`
-	Priority   int       `json:"priority"` // Lower = higher priority
-}
+type Holder = robot.CoordinatorConflictHolder
 
 // ConflictDetector detects and tracks file reservation conflicts.
 type ConflictDetector struct {

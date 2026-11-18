@@ -676,6 +676,9 @@ func (s *Server) buildRouter() chi.Router {
 		// Prompt Preflight, Task Assignment, Smart Routing & Provider Quota API (ADR ORI)
 		s.registerOrchestrationRoutes(r)
 
+		// Swarm Scale, Rebalance, Review-Queue, Summary, Coordinator & Webhook Outbox API (ADR ORI)
+		s.registerSwarmOpsRoutes(r)
+
 		// Attention Feed API - normalized event streaming for operator agents
 		r.Route("/attention", func(r chi.Router) {
 			// SSE stream with cursor-based replay

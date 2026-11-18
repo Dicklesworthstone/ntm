@@ -2978,8 +2978,8 @@ export class NtmClient {
             args.push('--rebalance-geometry');
         }
         if (options?.geometryTolerance !== undefined) {
-            if (!Number.isFinite(options.geometryTolerance) || options.geometryTolerance <= 0) {
-                throw new Error('Rebalance geometry tolerance must be a positive number');
+            if (!Number.isInteger(options.geometryTolerance) || options.geometryTolerance < 0) {
+                throw new Error('Rebalance geometry tolerance must be a non-negative integer');
             }
             args.push(`--rebalance-geometry-tolerance=${options.geometryTolerance}`);
         }
@@ -2998,7 +2998,7 @@ export class NtmClient {
 
     /**
      * Generate or dispatch cross-agent peer review prompts for idle panes via
-     * `ntm --robot-review-queue=<session> [--review-dispatch] [--review-pane=N] [--review-project-dir=...] --robot-format=json`.
+     * `ntm --robot-review-queue=<session> [--review-dispatch] [--review-idle-threshold=...] [--review-commits=N] [--type=...] [--project=...] --robot-format=json`.
      */
     async getReviewQueue(options: ReviewQueueOptions): Promise<ReviewQueueResult> {
         const sess = (options?.session ?? '').trim();
@@ -3009,15 +3009,23 @@ export class NtmClient {
         if (options?.dispatch) {
             args.push('--review-dispatch');
         }
-        if (options?.pane !== undefined) {
-            if (!Number.isInteger(options.pane) || options.pane < 0) {
-                throw new Error('Review target pane must be a non-negative integer');
+        const idleThreshold = (options?.idleThreshold ?? '').trim();
+        if (idleThreshold) {
+            args.push(`--review-idle-threshold=${idleThreshold}`);
+        }
+        if (options?.commits !== undefined) {
+            if (!Number.isInteger(options.commits) || options.commits < 0) {
+                throw new Error('Review commit limit must be a non-negative integer');
             }
-            args.push(`--review-pane=${options.pane}`);
+            args.push(`--review-commits=${options.commits}`);
+        }
+        const filterType = (options?.filterType ?? '').trim();
+        if (filterType) {
+            args.push(`--type=${filterType}`);
         }
         const projectDir = (options?.projectDir ?? '').trim();
         if (projectDir) {
-            args.push(`--review-project-dir=${projectDir}`);
+            args.push(`--project=${projectDir}`);
         }
         args.push('--robot-format=json');
 

@@ -3,11 +3,11 @@ package cli
 import (
 	"encoding/json"
 	"errors"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/webhook"
 )
 
@@ -17,20 +17,12 @@ func init() {
 
 func newWebhookOutboxCmd() *cobra.Command {
 	var project string
-	manager := func(cmd *cobra.Command) (*webhook.WebhookManager, error) {
-		if err := cmd.Context().Err(); err != nil {
-			return nil, err
+	redactConfig := func() *redaction.Config {
+		if cfg == nil {
+			return nil
 		}
-		dir, err := filepath.Abs(project)
-		if err != nil {
-			return nil, err
-		}
-		var redactCfg *redaction.Config
-		if cfg != nil {
-			value := cfg.Redaction.ToRedactionLibConfig()
-			redactCfg = &value
-		}
-		return webhook.NewProjectWebhookManager(dir, redactCfg)
+		value := cfg.Redaction.ToRedactionLibConfig()
+		return &value
 	}
 	write := func(cmd *cobra.Command, value any) error {
 		encoder := json.NewEncoder(cmd.OutOrStdout())
@@ -38,15 +30,18 @@ func newWebhookOutboxCmd() *cobra.Command {
 		return encoder.Encode(value)
 	}
 	list := func(cmd *cobra.Command, args []string) error {
-		m, err := manager(cmd)
+		out, err := robot.GetWebhookOutbox(cmd.Context(), robot.WebhookOutboxOptions{
+			Action:     "list",
+			ProjectDir: project,
+			RedactCfg:  redactConfig(),
+		})
 		if err != nil {
 			return err
 		}
-		snapshot, err := m.ListOutbox()
-		if err != nil {
-			return err
+		if !out.Success {
+			return errors.New(out.Error)
 		}
-		return write(cmd, snapshot)
+		return write(cmd, out.Snapshot)
 	}
 	cmd := &cobra.Command{
 		Use: "webhook-outbox", Short: "Inspect and recover durable project webhook deliveries (JSON)",
@@ -71,18 +66,23 @@ does not start a sender. Receivers must deduplicate by X-NTM-Delivery-ID.`,
 			if revision == "" {
 				return errors.New("--revision from webhook-outbox list is required")
 			}
-			m, err := manager(cmd)
+			out, err := robot.GetWebhookOutbox(cmd.Context(), robot.WebhookOutboxOptions{
+				Action:     "retry",
+				ProjectDir: project,
+				Record:     args[0],
+				Revision:   revision,
+				RedactCfg:  redactConfig(),
+			})
 			if err != nil {
 				return err
 			}
-			entry, err := m.RetryOutbox(args[0], revision)
-			if err != nil {
-				return err
+			if !out.Success {
+				return errors.New(out.Error)
 			}
 			return write(cmd, struct {
 				Authorized bool                `json:"authorized"`
 				Entry      webhook.OutboxEntry `json:"entry"`
-			}{true, entry})
+			}{out.Authorized, *out.Entry})
 		},
 	}
 	retry.Flags().StringVar(&revision, "revision", "", "Revision of the inspected receipt; stale revisions are refused")
@@ -95,15 +95,20 @@ does not start a sender. Receivers must deduplicate by X-NTM-Delivery-ID.`,
 			if archiveRevision == "" {
 				return errors.New("--revision from webhook-outbox list is required")
 			}
-			m, err := manager(cmd)
+			out, err := robot.GetWebhookOutbox(cmd.Context(), robot.WebhookOutboxOptions{
+				Action:     "archive",
+				ProjectDir: project,
+				Record:     args[0],
+				Revision:   archiveRevision,
+				RedactCfg:  redactConfig(),
+			})
 			if err != nil {
 				return err
 			}
-			result, err := m.ArchiveOutbox(args[0], archiveRevision)
-			if err != nil {
-				return err
+			if !out.Success {
+				return errors.New(out.Error)
 			}
-			return write(cmd, result)
+			return write(cmd, out.Archive)
 		},
 	}
 	archive.Flags().StringVar(&archiveRevision, "revision", "", "Revision of the inspected failed receipt; pending work cannot be archived")

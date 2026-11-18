@@ -86,7 +86,9 @@ export interface RebalanceSessionResult {
 export interface ReviewQueueOptions {
     session: string;
     dispatch?: boolean;
-    pane?: number;
+    idleThreshold?: string;
+    commits?: number;
+    filterType?: string;
     projectDir?: string;
 }
 

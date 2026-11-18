@@ -1,46 +1,58 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
-	"os/exec"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
-	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
-// ReviewSuggestion represents a single review prompt suggestion for an idle agent
-type ReviewSuggestion struct {
-	Agent     string `json:"agent"`
-	Pane      int    `json:"pane"`
-	AgentType string `json:"agent_type"`
-	Prompt    string `json:"prompt"`
-	Source    string `json:"source"` // "agent_work", "git_commit", or "idle_available"
-	SourceRef string `json:"source_ref,omitempty"`
+// ReviewSuggestion represents a single review prompt suggestion for an idle agent.
+type ReviewSuggestion = robot.ReviewSuggestion
+
+// IdleAgent represents an agent detected as idle.
+type IdleAgent = robot.IdleAgent
+
+var (
+	detectIdleAgents             = robot.DetectIdleAgents
+	assignSuggestionsToAgents    = robot.AssignSuggestionsToAgents
+	agentLabel                   = robot.AgentLabel
+	matchesReviewQueueFilter     = robot.MatchesReviewQueueFilter
+	minInt                       = robot.MinInt
+	validateReviewPromptDelivery = robot.ValidateReviewPromptDelivery
+	sendReviewPrompts            = robot.SendReviewPrompts
+	sendReviewPromptsWithSender  = robot.SendReviewPromptsWithSender
+)
+
+type gitCommitInfo struct {
+	hash    string
+	subject string
 }
 
-// IdleAgent represents an agent detected as idle
-type IdleAgent struct {
-	Pane         int    `json:"pane"`
-	AgentType    string `json:"agent_type"`
-	AgentName    string `json:"agent_name,omitempty"`
-	IdleDuration string `json:"idle_duration,omitempty"`
-	LastTask     string `json:"last_task,omitempty"`
+func getRecentGitCommits(limit int) []gitCommitInfo {
+	raw := robot.GetRecentGitCommits("", limit)
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]gitCommitInfo, len(raw))
+	for i, c := range raw {
+		out[i] = gitCommitInfo{hash: c.Hash, subject: c.Subject}
+	}
+	return out
 }
 
-// ReviewQueueResponse is the JSON response for the review-queue command
+// ReviewQueueResponse is the JSON response for the review-queue command.
 type ReviewQueueResponse struct {
 	output.TimestampedResponse
 	Session     string             `json:"session"`
@@ -108,7 +120,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&filter, "filter", "", "Filter by agent type alias (claude|cc, codex|cod, gemini|gmi, cursor, windsurf|ws, aider, ollama)")
+	cmd.Flags().StringVar(&filter, "filter", "", "Filter by agent type alias (claude|cc, codex|cod, gemini|gmi, antigravity|agy, grok, omp, oc, cursor, windsurf|ws, aider, ollama)")
 	cmd.Flags().DurationVar(&idleThreshold, "idle-threshold", 2*time.Minute, "Minimum idle time to consider an agent idle")
 	cmd.Flags().BoolVar(&send, "send", false, "Prompt for confirmation then send review prompts")
 	cmd.Flags().StringVar(&formatOut, "format", "", "Output format: json for robot mode")
@@ -119,27 +131,21 @@ Examples:
 
 func runReviewQueue(session, filter string, idleThreshold time.Duration, send bool, formatOut string, commitLimit int) error {
 	// Honor both the command-local `--format json` and the global `--json`
-	// flag. Before this fix, `ntm review-queue --json` fell through to
-	// the human-readable report path, contaminating stdout with prose
-	// when downstream tools (flywheel L85) tried to `jq` the output.
+	// flag so stdout stays strictly parseable JSON.
 	isJSON := strings.EqualFold(strings.TrimSpace(formatOut), "json") || IsJSONOutput()
 	if isJSON && send {
 		return fmt.Errorf("invalid argument: --send cannot be combined with JSON output")
 	}
 
-	// In JSON mode, suppress slog telemetry for the duration of this
-	// call so consumers that capture `2>&1` get a clean parseable
-	// stream. Default slog writes to stderr — which doesn't pollute
-	// stdout — but downstream wrappers commonly merge stderr into the
-	// pipe they parse, and a single `[E2E-REVIEWQ] start` log line
-	// blocks every subsequent `jq` invocation against the output.
+	// In JSON mode, suppress slog telemetry for the duration of this call so
+	// consumers that capture `2>&1` get a clean parseable stream.
 	if isJSON {
 		prev := slog.Default()
 		slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 		defer slog.SetDefault(prev)
 	}
 
-	normalizedFilter, err := normalizeAgentTypeFilter(filter)
+	normalizedFilter, err := robot.NormalizeReviewQueueFilter(filter)
 	if err != nil {
 		if isJSON {
 			return outputReviewQueueError(session, err.Error())
@@ -149,7 +155,6 @@ func runReviewQueue(session, filter string, idleThreshold time.Duration, send bo
 
 	slog.Info("[E2E-REVIEWQ] start", "session", session, "filter", filter, "idle_threshold", idleThreshold)
 
-	// Load assignment store
 	store, err := assignment.LoadStore(session)
 	if err != nil {
 		if isJSON {
@@ -158,7 +163,6 @@ func runReviewQueue(session, filter string, idleThreshold time.Duration, send bo
 		return fmt.Errorf("failed to load assignment store: %w", err)
 	}
 
-	// Get pane information
 	panes, err := tmux.GetPanes(session)
 	if err != nil {
 		if isJSON {
@@ -174,11 +178,15 @@ func runReviewQueue(session, filter string, idleThreshold time.Duration, send bo
 		return fmt.Errorf("no panes found in session %s", session)
 	}
 
-	// Detect idle agents
 	idleAgents := detectIdleAgents(store, panes, normalizedFilter, idleThreshold)
 
-	// Generate review suggestions
-	suggestions := generateReviewSuggestions(store, idleAgents, commitLimit)
+	projectDir := strings.TrimSpace(resolveProjectDirForSession(session, false))
+	var suggestions []ReviewSuggestion
+	if projectDir != "" {
+		suggestions = robot.GenerateReviewSuggestions(store, idleAgents, projectDir, commitLimit)
+	} else {
+		suggestions = generateReviewSuggestions(store, idleAgents, commitLimit)
+	}
 	if idleAgents == nil {
 		idleAgents = []IdleAgent{}
 	}
@@ -202,10 +210,8 @@ func runReviewQueue(session, filter string, idleThreshold time.Duration, send bo
 		return outputReviewQueueJSON(resp)
 	}
 
-	// Human-readable output
 	printReviewQueueReport(resp)
 
-	// If --send, prompt for confirmation
 	if send && len(suggestions) > 0 {
 		if err := validateReviewPromptDelivery(suggestions); err != nil {
 			return err
@@ -232,221 +238,8 @@ func runReviewQueue(session, filter string, idleThreshold time.Duration, send bo
 	return nil
 }
 
-// detectIdleAgents finds agents with no active assignments.
-func detectIdleAgents(store *assignment.AssignmentStore, panes []tmux.Pane, filter string, idleThreshold time.Duration) []IdleAgent {
-	active := store.ListActive()
-
-	// Build set of busy panes
-	busyPanes := make(map[int]bool)
-	for _, a := range active {
-		busyPanes[a.Pane] = true
-	}
-
-	// Find most recent completed/failed assignment per pane for "last task"
-	allAssignments := store.GetAll()
-	lastTaskByPane := make(map[int]string)
-	lastTimeByPane := make(map[int]time.Time)
-	for _, a := range allAssignments {
-		if a.Status != assignment.StatusCompleted && a.Status != assignment.StatusFailed {
-			continue
-		}
-		var ts time.Time
-		if a.CompletedAt != nil {
-			ts = *a.CompletedAt
-		} else if a.FailedAt != nil {
-			ts = *a.FailedAt
-		}
-		if ts.After(lastTimeByPane[a.Pane]) {
-			lastTimeByPane[a.Pane] = ts
-			lastTaskByPane[a.Pane] = a.BeadTitle
-		}
-	}
-
-	var idle []IdleAgent
-	for _, pane := range panes {
-		if busyPanes[pane.Index] {
-			continue
-		}
-
-		agentType := agentTypeForPane(pane)
-		if pane.Type.Canonical() == tmux.AgentGrok {
-			agentType = tmux.AgentGrok.String()
-		}
-		if agentType == "user" || agentType == "unknown" {
-			continue
-		}
-
-		// Apply filter
-		if filter != "" && !matchesReviewQueueFilter(agentType, filter) {
-			continue
-		}
-
-		// Check idle threshold
-		idleDuration := ""
-		if lastTime, ok := lastTimeByPane[pane.Index]; ok {
-			dur := time.Since(lastTime)
-			if dur < idleThreshold {
-				continue
-			}
-			idleDuration = formatIdleDuration(dur)
-		}
-
-		idle = append(idle, IdleAgent{
-			Pane:         pane.Index,
-			AgentType:    agentType,
-			IdleDuration: idleDuration,
-			LastTask:     lastTaskByPane[pane.Index],
-		})
-	}
-
-	// Sort by pane index for deterministic output
-	sort.Slice(idle, func(i, j int) bool {
-		return idle[i].Pane < idle[j].Pane
-	})
-
-	return idle
-}
-
-// generateReviewSuggestions creates review prompts from completed work and git commits.
 func generateReviewSuggestions(store *assignment.AssignmentStore, idleAgents []IdleAgent, commitLimit int) []ReviewSuggestion {
-	if len(idleAgents) == 0 {
-		return nil
-	}
-
-	var suggestions []ReviewSuggestion
-
-	// Source 1: Completed work by other agents
-	completed := store.ListByStatus(assignment.StatusCompleted)
-	for _, a := range completed {
-		suggestions = append(suggestions, ReviewSuggestion{
-			Prompt:    fmt.Sprintf("Review the changes for bead %s: %q", a.BeadID, a.BeadTitle),
-			Source:    "agent_work",
-			SourceRef: a.BeadID,
-		})
-	}
-
-	// Source 2: Recent git commits
-	commits := getRecentGitCommits(commitLimit)
-	for _, c := range commits {
-		suggestions = append(suggestions, ReviewSuggestion{
-			Prompt:    fmt.Sprintf("Review commit %s: %q", c.hash[:minInt(8, len(c.hash))], c.subject),
-			Source:    "git_commit",
-			SourceRef: c.hash,
-		})
-	}
-
-	// Assign suggestions round-robin to idle agents
-	assigned := assignSuggestionsToAgents(suggestions, idleAgents)
-
-	return assigned
-}
-
-// assignSuggestionsToAgents distributes suggestions across idle agents round-robin.
-func assignSuggestionsToAgents(suggestions []ReviewSuggestion, idleAgents []IdleAgent) []ReviewSuggestion {
-	if len(suggestions) == 0 || len(idleAgents) == 0 {
-		return nil
-	}
-
-	var result []ReviewSuggestion
-	for i, s := range suggestions {
-		agent := idleAgents[i%len(idleAgents)]
-		s.Agent = agentLabel(agent)
-		s.Pane = agent.Pane
-		s.AgentType = agent.AgentType
-		result = append(result, s)
-	}
-
-	return result
-}
-
-func agentLabel(a IdleAgent) string {
-	if a.AgentName != "" {
-		return a.AgentName
-	}
-	return fmt.Sprintf("%s_%d", a.AgentType, a.Pane)
-}
-
-type gitCommitInfo struct {
-	hash    string
-	subject string
-}
-
-func getRecentGitCommits(limit int) []gitCommitInfo {
-	if limit <= 0 {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "log", fmt.Sprintf("-%d", limit), "--pretty=format:%H|%s")
-	cmd.WaitDelay = 2 * time.Second
-	out, err := cmd.Output()
-	if err != nil {
-		slog.Debug("review-queue: git log failed", "error", err)
-		return nil
-	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	var commits []gitCommitInfo
-	for _, line := range lines {
-		parts := strings.SplitN(line, "|", 2)
-		if len(parts) != 2 || parts[0] == "" {
-			continue
-		}
-		commits = append(commits, gitCommitInfo{hash: parts[0], subject: parts[1]})
-	}
-	return commits
-}
-
-func matchesReviewQueueFilter(agentType, filter string) bool {
-	return matchesRebalanceFilter(agentType, filter)
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-type reviewPromptSender func(target, prompt string, enter bool) error
-
-func validateReviewPromptDelivery(suggestions []ReviewSuggestion) error {
-	for _, suggestion := range suggestions {
-		if err := agentpkg.AgentType(suggestion.AgentType).ValidateAutomatedPromptDelivery(); err != nil {
-			return fmt.Errorf("review prompt for pane %d: %w", suggestion.Pane, err)
-		}
-	}
-	return nil
-}
-
-func sendReviewPrompts(session string, suggestions []ReviewSuggestion) (sent, skipped int, err error) {
-	return sendReviewPromptsWithSender(session, suggestions, tmux.SendKeys)
-}
-
-func sendReviewPromptsWithSender(session string, suggestions []ReviewSuggestion, sender reviewPromptSender) (sent, skipped int, err error) {
-	if err := validateReviewPromptDelivery(suggestions); err != nil {
-		return 0, 0, err
-	}
-	if sender == nil {
-		return 0, 0, fmt.Errorf("review prompt sender is required")
-	}
-	for _, s := range suggestions {
-		target := fmt.Sprintf("%s:.%d", session, s.Pane)
-		slog.Info("[E2E-REVIEWQ] send",
-			"session", session,
-			"agent", s.Agent,
-			"pane", s.Pane,
-			"source", s.Source)
-		if err := sender(target, s.Prompt, true); err != nil {
-			slog.Warn("[E2E-REVIEWQ] send_failed",
-				"session", session,
-				"pane", s.Pane,
-				"error", err)
-			skipped++
-		} else {
-			sent++
-		}
-	}
-	return sent, skipped, nil
+	return robot.GenerateReviewSuggestions(store, idleAgents, "", commitLimit)
 }
 
 func printReviewQueueReport(resp ReviewQueueResponse) {
@@ -455,7 +248,6 @@ func printReviewQueueReport(resp ReviewQueueResponse) {
 
 	fmt.Printf("\n%s Review Queue for '%s'\n\n", titleStyle.Render("📋"), resp.Session)
 
-	// Idle agents section
 	fmt.Printf("Idle Agents: %d\n", len(resp.IdleAgents))
 	if len(resp.IdleAgents) > 0 {
 		for _, a := range resp.IdleAgents {
@@ -473,7 +265,6 @@ func printReviewQueueReport(resp ReviewQueueResponse) {
 
 	fmt.Printf("Pending Reviews: %d\n", len(resp.Suggestions))
 
-	// Suggestions section
 	if len(resp.Suggestions) > 0 {
 		fmt.Printf("\n%s Suggested Assignments:\n\n", titleStyle.Render("🔄"))
 		for i, s := range resp.Suggestions {

@@ -18,11 +18,143 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/coordinator"
+	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
+
+func init() {
+	kernel.MustRegister(kernel.Command{
+		Name:        "sessions.coordinator",
+		Description: "Inspect coordinator agent states, runtime status, and active configuration for a session",
+		Category:    "sessions",
+		Input: &kernel.SchemaRef{
+			Name: "CoordinatorInput",
+			Ref:  "robot.CoordinatorInput",
+		},
+		Output: &kernel.SchemaRef{
+			Name: "CoordinatorOutput",
+			Ref:  "robot.CoordinatorOutput",
+		},
+		REST: &kernel.RESTBinding{
+			Method: "GET",
+			Path:   "/api/v1/sessions/{id}/coordinator",
+		},
+		Examples: []kernel.Example{
+			{
+				Name:        "coordinator-status",
+				Description: "Inspect coordinator status for myproject",
+				Command:     "ntm --robot-coordinator=myproject",
+			},
+		},
+		SafetyLevel: kernel.SafetySafe,
+		Idempotent:  true,
+	})
+	kernel.MustRegisterHandler("sessions.coordinator", func(ctx context.Context, input any) (any, error) {
+		opts, err := decodeKernelInput[robot.CoordinatorInput]("sessions.coordinator", input)
+		if err != nil {
+			return nil, fmt.Errorf("invalid sessions.coordinator input: %w", err)
+		}
+		if strings.TrimSpace(opts.Action) == "" {
+			opts.Action = "status"
+		}
+		out, err := executeCoordinatorRobot(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		if !out.Success {
+			return nil, errors.New(out.Error)
+		}
+		return out, nil
+	})
+
+	kernel.MustRegister(kernel.Command{
+		Name:        "sessions.coordinator_digest",
+		Description: "Generate a coordinator session digest and optionally dispatch it via Agent Mail",
+		Category:    "sessions",
+		Input: &kernel.SchemaRef{
+			Name: "CoordinatorInput",
+			Ref:  "robot.CoordinatorInput",
+		},
+		Output: &kernel.SchemaRef{
+			Name: "CoordinatorOutput",
+			Ref:  "robot.CoordinatorOutput",
+		},
+		REST: &kernel.RESTBinding{
+			Method: "POST",
+			Path:   "/api/v1/sessions/{id}/coordinator/digest",
+		},
+		Examples: []kernel.Example{
+			{
+				Name:        "coordinator-digest",
+				Description: "Generate a coordinator digest for myproject",
+				Command:     "ntm --robot-coordinator=myproject --coordinator-action=digest",
+			},
+		},
+		SafetyLevel: kernel.SafetySafe,
+		Idempotent:  false,
+	})
+	kernel.MustRegisterHandler("sessions.coordinator_digest", func(ctx context.Context, input any) (any, error) {
+		opts, err := decodeKernelInput[robot.CoordinatorInput]("sessions.coordinator_digest", input)
+		if err != nil {
+			return nil, fmt.Errorf("invalid sessions.coordinator_digest input: %w", err)
+		}
+		opts.Action = "digest"
+		out, err := executeCoordinatorRobot(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		if !out.Success {
+			return nil, errors.New(out.Error)
+		}
+		return out, nil
+	})
+
+	kernel.MustRegister(kernel.Command{
+		Name:        "sessions.coordinator_conflicts",
+		Description: "Detect active Agent Mail file reservation conflicts for a session",
+		Category:    "sessions",
+		Input: &kernel.SchemaRef{
+			Name: "CoordinatorInput",
+			Ref:  "robot.CoordinatorInput",
+		},
+		Output: &kernel.SchemaRef{
+			Name: "CoordinatorOutput",
+			Ref:  "robot.CoordinatorOutput",
+		},
+		REST: &kernel.RESTBinding{
+			Method: "GET",
+			Path:   "/api/v1/sessions/{id}/coordinator/conflicts",
+		},
+		Examples: []kernel.Example{
+			{
+				Name:        "coordinator-conflicts",
+				Description: "List active file reservation conflicts for myproject",
+				Command:     "ntm --robot-coordinator=myproject --coordinator-action=conflicts",
+			},
+		},
+		SafetyLevel: kernel.SafetySafe,
+		Idempotent:  true,
+	})
+	kernel.MustRegisterHandler("sessions.coordinator_conflicts", func(ctx context.Context, input any) (any, error) {
+		opts, err := decodeKernelInput[robot.CoordinatorInput]("sessions.coordinator_conflicts", input)
+		if err != nil {
+			return nil, fmt.Errorf("invalid sessions.coordinator_conflicts input: %w", err)
+		}
+		opts.Action = "conflicts"
+		opts.SendDigest = false
+		out, err := executeCoordinatorRobot(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		if !out.Success {
+			return nil, errors.New(out.Error)
+		}
+		return out, nil
+	})
+}
 
 // coordinatorFallbackName is the legacy hard-coded coordinator sender. It was
 // never a registered Agent Mail identity, so the server rejects mail and
@@ -180,20 +312,180 @@ func runCoordinatorStatus(cmd *cobra.Command, args []string) error {
 
 // coordinatorRuntimeView reports where, if anywhere, the session's
 // coordinator is running. Only a live session monitor publishes one.
-type coordinatorRuntimeView struct {
-	Host              string     `json:"host"`
-	State             string     `json:"state"`
-	Summary           string     `json:"summary"`
-	PID               int        `json:"pid,omitempty"`
-	Mode              string     `json:"mode,omitempty"`
-	Features          []string   `json:"features"`
-	ConfigPath        string     `json:"config_path,omitempty"`
-	Healthy           bool       `json:"healthy"`
-	StateSince        *time.Time `json:"state_since,omitempty"`
-	HeartbeatAt       *time.Time `json:"heartbeat_at,omitempty"`
-	LastMaintenanceAt *time.Time `json:"last_maintenance_at,omitempty"`
-	MaintenanceError  string     `json:"maintenance_error,omitempty"`
-	Error             string     `json:"error,omitempty"`
+type coordinatorRuntimeView = robot.CoordinatorRuntimeView
+
+func buildCoordinatorConfigView(coordCfg coordinator.CoordinatorConfig) robot.CoordinatorConfigView {
+	return robot.CoordinatorConfigView{
+		AutoAssign:        coordCfg.AutoAssign,
+		AssignOnlyIdle:    coordCfg.AssignOnlyIdle,
+		SendDigests:       coordCfg.SendDigests,
+		ConflictNotify:    coordCfg.ConflictNotify,
+		ConflictNegotiate: coordCfg.ConflictNegotiate,
+		PollInterval:      coordCfg.PollInterval.String(),
+		DigestInterval:    coordCfg.DigestInterval.String(),
+		IdleThreshold:     coordCfg.IdleThreshold,
+		HumanAgent:        coordCfg.HumanAgent,
+	}
+}
+
+func newCoordinatorRobotErrorOutput(session, action string, err error, code, hint string) *robot.CoordinatorOutput {
+	return &robot.CoordinatorOutput{
+		RobotResponse: robot.NewErrorResponse(err, code, hint),
+		SchemaID:      robot.CoordinatorSchemaID,
+		SchemaVersion: robot.CoordinatorSchemaVersion,
+		Session:       strings.TrimSpace(session),
+		Action:        action,
+	}
+}
+
+func executeCoordinatorRobot(ctx context.Context, input robot.CoordinatorInput) (*robot.CoordinatorOutput, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	action := strings.ToLower(strings.TrimSpace(input.Action))
+	if action == "" {
+		action = "status"
+	}
+	if err := ctx.Err(); err != nil {
+		return newCoordinatorRobotErrorOutput(input.Session, action, fmt.Errorf("coordinator canceled: %w", err), robot.ErrCodeTimeout, "Retry --robot-coordinator with an active context"), nil
+	}
+
+	switch action {
+	case "status", "digest", "conflicts":
+	default:
+		return newCoordinatorRobotErrorOutput(input.Session, action, fmt.Errorf("invalid coordinator action %q (expected status, digest, or conflicts)", input.Action), robot.ErrCodeInvalidFlag, "Use --coordinator-action=status, --coordinator-action=digest, or --coordinator-action=conflicts"), nil
+	}
+	if input.SendDigest && action != "digest" {
+		return newCoordinatorRobotErrorOutput(input.Session, action, errors.New("invalid coordinator option: --coordinator-send-digest requires --coordinator-action=digest"), robot.ErrCodeInvalidFlag, "Set --coordinator-action=digest when passing --coordinator-send-digest"), nil
+	}
+
+	session := strings.TrimSpace(input.Session)
+	if session == "" {
+		return newCoordinatorRobotErrorOutput("", action, errors.New("session is required"), robot.ErrCodeInvalidFlag, "Pass --robot-coordinator=SESSION"), nil
+	}
+	if err := tmux.ValidateSessionName(session); err != nil {
+		return newCoordinatorRobotErrorOutput(session, action, fmt.Errorf("invalid session name: %w", err), robot.ErrCodeInvalidFlag, "Provide a valid tmux session name"), nil
+	}
+
+	if !coordinatorSessionExists(session) {
+		return newCoordinatorRobotErrorOutput(session, action, fmt.Errorf("session '%s' does not exist", session), robot.ErrCodeSessionNotFound, "Use 'ntm --robot-status' to see active sessions"), nil
+	}
+
+	projectKey, err := resolveCoordinatorProjectKey(ctx, session, false)
+	if err != nil {
+		code := robot.ErrCodeInternalError
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			code = robot.ErrCodeTimeout
+		}
+		return newCoordinatorRobotErrorOutput(session, action, err, code, "Verify the session has a resolvable project directory"), nil
+	}
+	if projectKey == "" {
+		return newCoordinatorRobotErrorOutput(session, action, errors.New("getting project root failed"), robot.ErrCodeInternalError, "Verify the session has a resolvable project directory"), nil
+	}
+
+	out := &robot.CoordinatorOutput{
+		RobotResponse: robot.NewRobotResponse(true),
+		SchemaID:      robot.CoordinatorSchemaID,
+		SchemaVersion: robot.CoordinatorSchemaVersion,
+		Session:       session,
+		Action:        action,
+	}
+
+	switch action {
+	case "status":
+		coordConfig := loadCoordinatorRuntimeConfig()
+		mailClient := newAgentMailClient(projectKey)
+		coordName := resolveCoordinatorIdentity(ctx, nil, session, projectKey)
+		coord := coordinator.New(session, projectKey, mailClient, coordName).WithConfig(coordConfig)
+
+		obsCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if err := coord.Observe(obsCtx); err != nil {
+			code := robot.ErrCodeInternalError
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				code = robot.ErrCodeTimeout
+			}
+			return newCoordinatorRobotErrorOutput(session, action, fmt.Errorf("observing coordinator: %w", err), code, "Check tmux session health"), nil
+		}
+
+		agents := coord.GetAgents()
+		if agents == nil {
+			agents = map[string]*coordinator.AgentState{}
+		}
+		idleAgents := coord.GetIdleAgents()
+		runtimeView := readCoordinatorRuntime(session)
+		cfgView := buildCoordinatorConfigView(coordConfig)
+
+		out.AgentCount = len(agents)
+		out.IdleCount = len(idleAgents)
+		out.Agents = agents
+		out.Runtime = &runtimeView
+		out.Config = &cfgView
+		out.AgentHints = &robot.AgentHints{
+			Summary: fmt.Sprintf("Coordinator status for %s: %d agent(s) (%d idle), runtime=%s", session, out.AgentCount, out.IdleCount, runtimeView.State),
+		}
+
+	case "digest":
+		mailClient := newAgentMailClient(projectKey)
+		runtimeConfig := loadCoordinatorRuntimeConfig()
+		identityClient := mailClient
+		if !input.SendDigest {
+			identityClient = nil
+		}
+		coordName := resolveCoordinatorIdentity(ctx, identityClient, session, projectKey)
+		coord := coordinator.New(session, projectKey, mailClient, coordName).WithConfig(runtimeConfig)
+
+		obsCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if err := coord.Observe(obsCtx); err != nil {
+			code := robot.ErrCodeInternalError
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				code = robot.ErrCodeTimeout
+			}
+			return newCoordinatorRobotErrorOutput(session, action, fmt.Errorf("observing coordinator: %w", err), code, "Check tmux session health"), nil
+		}
+
+		digest := coord.GenerateDigest()
+		var warnings []string
+		if input.SendDigest {
+			if err := coord.SendDigest(obsCtx); err != nil {
+				warnings = append(warnings, fmt.Sprintf("failed to send digest via Agent Mail: %v", err))
+			} else {
+				out.DigestSent = true
+			}
+		}
+		out.AgentCount = digest.AgentCount
+		out.IdleCount = digest.IdleCount
+		out.Digest = &digest
+		out.AgentHints = &robot.AgentHints{
+			Summary:  fmt.Sprintf("Digest for %s: %d agent(s) (%d active, %d idle, %d error)", session, digest.AgentCount, digest.ActiveCount, digest.IdleCount, digest.ErrorCount),
+			Warnings: warnings,
+		}
+
+	case "conflicts":
+		mailClient := newAgentMailClient(projectKey)
+		detCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		detector := coordinator.NewConflictDetector(mailClient, projectKey)
+		conflicts, err := detector.DetectConflicts(detCtx)
+		if err != nil {
+			code := robot.ErrCodeInternalError
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				code = robot.ErrCodeTimeout
+			}
+			return newCoordinatorRobotErrorOutput(session, action, fmt.Errorf("detecting conflicts: %w", err), code, "Verify Agent Mail connectivity"), nil
+		}
+		if conflicts == nil {
+			conflicts = []coordinator.Conflict{}
+		}
+		out.Conflicts = conflicts
+		out.ConflictCount = len(conflicts)
+		out.AgentHints = &robot.AgentHints{
+			Summary: fmt.Sprintf("Coordinator conflict scan for %s: %d active conflict(s)", session, len(conflicts)),
+		}
+	}
+
+	return out, nil
 }
 
 const (
@@ -248,20 +540,8 @@ func outputCoordinatorStatusJSON(session string, agents map[string]*coordinator.
 		// Mirror every CoordinatorConfig field the user can set in
 		// ~/.config/ntm/config.toml so `coordinator status --json` can be
 		// used to confirm whether a TOML override actually took effect at
-		// runtime. Pre-fix this map omitted assign_only_idle and human_agent,
-		// which meant a user toggling those keys in config.toml had no way
-		// to verify the change was applied — the symptom #111 was filed for.
-		"config": map[string]interface{}{
-			"auto_assign":        coordCfg.AutoAssign,
-			"assign_only_idle":   coordCfg.AssignOnlyIdle,
-			"send_digests":       coordCfg.SendDigests,
-			"conflict_notify":    coordCfg.ConflictNotify,
-			"conflict_negotiate": coordCfg.ConflictNegotiate,
-			"poll_interval":      coordCfg.PollInterval.String(),
-			"digest_interval":    coordCfg.DigestInterval.String(),
-			"idle_threshold":     coordCfg.IdleThreshold,
-			"human_agent":        coordCfg.HumanAgent,
-		},
+		// runtime.
+		"config": buildCoordinatorConfigView(coordCfg),
 	}
 	return json.NewEncoder(os.Stdout).Encode(result)
 }

@@ -1,6 +1,6 @@
 {
   "source": "chi-router-walk",
-  "count": 229,
+  "count": 240,
   "endpoints": [
     {
       "method": "GET",
@@ -931,6 +931,21 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/sessions/{id}/coordinator",
+      "handler": "handleSessionCoordinatorV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/sessions/{id}/coordinator/conflicts",
+      "handler": "handleSessionCoordinatorConflictsV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/sessions/{id}/coordinator/digest",
+      "handler": "handleSessionCoordinatorDigestV1"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/sessions/{id}/events",
       "handler": "handleSessionEventsRouteV1"
     },
@@ -945,9 +960,29 @@
       "handler": "handleSessionInterruptV1"
     },
     {
+      "method": "POST",
+      "path": "/api/v1/sessions/{id}/rebalance",
+      "handler": "handleSessionRebalanceV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/sessions/{id}/review-queue",
+      "handler": "handleSessionReviewQueueV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/sessions/{id}/scale",
+      "handler": "handleSessionScaleV1"
+    },
+    {
       "method": "GET",
       "path": "/api/v1/sessions/{id}/status",
       "handler": "handleSessionStatusV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/sessions/{id}/summary",
+      "handler": "handleSessionSummaryV1"
     },
     {
       "method": "POST",
@@ -1089,6 +1124,11 @@
       "handler": "handleStreamingStatsV1"
     },
     {
+      "method": "GET",
+      "path": "/api/v1/summaries",
+      "handler": "handleListSummariesV1"
+    },
+    {
       "method": "POST",
       "path": "/api/v1/support-bundle",
       "handler": "handleCreateSupportBundleV1"
@@ -1122,6 +1162,21 @@
       "method": "GET",
       "path": "/api/v1/version",
       "handler": "handleVersionV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/webhooks/outbox",
+      "handler": "handleWebhookOutboxListV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/webhooks/outbox/{record}/archive",
+      "handler": "handleWebhookOutboxArchiveV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/webhooks/outbox/{record}/retry",
+      "handler": "handleWebhookOutboxRetryV1"
     },
     {
       "method": "GET",

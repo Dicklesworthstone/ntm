@@ -14,49 +14,13 @@ import (
 )
 
 // DigestSummary contains a summary of session activity.
-type DigestSummary struct {
-	Session       string              `json:"session"`
-	GeneratedAt   time.Time           `json:"generated_at"`
-	AgentCount    int                 `json:"agent_count"`
-	ActiveCount   int                 `json:"active_count"`
-	IdleCount     int                 `json:"idle_count"`
-	ErrorCount    int                 `json:"error_count"`
-	AgentStatuses []AgentDigestStatus `json:"agent_statuses"`
-	Alerts        []string            `json:"alerts,omitempty"`
-	WorkSummary   WorkDigestSummary   `json:"work_summary"`
-	// Deadlocks lists reservation wait-for cycles detected across the
-	// project's active file reservations (C7, bd-ws2-wire-or-delete-ykmcz.8).
-	// Empty/omitted when the graph is acyclic or Agent Mail is unreachable;
-	// the human-facing digest line is appended to Alerts alongside it.
-	Deadlocks []DeadlockCycle `json:"deadlocks,omitempty"`
-}
+type DigestSummary = robot.CoordinatorDigestSummary
 
 // AgentDigestStatus summarizes a single agent's status.
-type AgentDigestStatus struct {
-	PaneID       string  `json:"pane_id"`
-	PaneIndex    int     `json:"pane_index"`
-	AgentType    string  `json:"agent_type"`
-	Status       string  `json:"status"`
-	ContextUsage float64 `json:"context_usage"`
-	IdleFor      string  `json:"idle_for,omitempty"`
-	Task         string  `json:"task,omitempty"`
-}
+type AgentDigestStatus = robot.CoordinatorAgentDigestStatus
 
 // WorkDigestSummary summarizes work status.
-type WorkDigestSummary struct {
-	PendingTasks    int      `json:"pending_tasks"`
-	InProgressTasks int      `json:"in_progress_tasks"`
-	CompletedToday  int      `json:"completed_today"`
-	BlockedTasks    int      `json:"blocked_tasks"`
-	TopReady        []string `json:"top_ready,omitempty"`
-	// Status is the provenance of these numbers: "computed" when they came
-	// from a live bv triage, or "unavailable: <reason>" when the source
-	// failed. The digest historically emitted zero-valued counts as if they
-	// were facts — a coordination-truth surface must say when a source is
-	// down instead of returning empty-but-confident results (ntm-f7xz /
-	// OC-019).
-	Status string `json:"status"`
-}
+type WorkDigestSummary = robot.CoordinatorWorkDigestSummary
 
 // GenerateDigest creates a summary of the current session state.
 func (c *SessionCoordinator) GenerateDigest() DigestSummary {

@@ -1101,6 +1101,72 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 				TruncationBehavior: "Bounded to lint findings for one submitted prompt; preview truncated at 500 characters",
 			},
 		},
+		"scale": {
+			SchemaID:   scaleSchemaID,
+			SchemaType: "scale",
+			Sections:   []string{"sessions", "next_actions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Scale session agent counts up or down across all 11 built-in harnesses in one structured call",
+				SummaryHint: "Read before, after, actions, and errors; pass --dry-run to preview or --force when scaling down active panes",
+			},
+			Boundedness: &BoundednessInfo{
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded to one action row per scaled harness in the target session",
+			},
+		},
+		"rebalance": {
+			SchemaID:   rebalanceSchemaID,
+			SchemaType: "rebalance",
+			Sections:   []string{"sessions", "work", "next_actions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Analyze per-pane bead assignment imbalance, check tile geometry uniformity, and optionally apply rebalance transfers",
+				SummaryHint: "Read imbalance_score, recommendation, workloads, transfers, and geometry; pass --rebalance-apply to execute transfers",
+			},
+			Boundedness: &BoundednessInfo{
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded to panes and active bead assignments in the target session",
+			},
+		},
+		"review-queue": {
+			SchemaID:   reviewQueueSchemaID,
+			SchemaType: "review_queue",
+			Sections:   []string{"sessions", "work", "next_actions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Identify idle session agents and generate or dispatch peer-review prompts from completed beads and recent git commits",
+				SummaryHint: "Read idle_agents, suggestions, dispatched, sent, and skipped; pass --review-dispatch to deliver prompts automatically",
+			},
+			Boundedness: &BoundednessInfo{
+				DefaultLimit:       5,
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded to idle panes in the target session and recent git commits (--review-commits, default 5)",
+			},
+		},
+		"coordinator": {
+			SchemaID:   coordinatorSchemaID,
+			SchemaType: "coordinator",
+			Sections:   []string{"sessions", "coordination", "next_actions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Inspect session coordinator agent status, generate or send coordination digests, or list active file reservation conflicts",
+				SummaryHint: "Read agents/runtime/config for status, digest/digest_sent for digest, and conflicts/conflict_count for conflicts",
+			},
+			Boundedness: &BoundednessInfo{
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded to panes, digest summary, and active file reservation conflicts for one session",
+			},
+		},
+		"webhook-outbox": {
+			SchemaID:   webhookOutboxSchemaID,
+			SchemaType: "webhook_outbox",
+			Sections:   []string{"events", "source_health", "next_actions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Inspect, retry, or archive durable project webhook outbox receipts without starting background HTTP senders",
+				SummaryHint: "Read snapshot.entries and each entry revision on list; pass --outbox-record and --outbox-revision for retry or archive",
+			},
+			Boundedness: &BoundednessInfo{
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded to retained durable webhook outbox receipt files in the project directory",
+			},
+		},
 	}
 }
 

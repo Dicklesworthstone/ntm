@@ -453,6 +453,50 @@ func resetFlags() {
 	robotDoctor = false
 	robotDoctorContention = false
 	robotDoctorVerbose = false
+	robotScale = ""
+	robotScaleCC = 0
+	robotScaleCod = 0
+	robotScaleGmi = 0
+	robotScaleAgy = 0
+	robotScaleOllama = 0
+	robotScaleCursor = 0
+	robotScaleWindsurf = 0
+	robotScaleAider = 0
+	robotScaleGrok = 0
+	robotScaleOmp = 0
+	robotScaleOc = 0
+	robotRebalance = ""
+	robotRebalanceApply = false
+	robotRebalanceThreshold = 0.0
+	robotRebalanceGeometry = false
+	robotRebalanceGeometryTolerance = 2
+	robotReviewQueue = ""
+	robotReviewDispatch = false
+	robotReviewIdleThreshold = 2 * time.Minute
+	robotReviewCommits = 5
+	robotCoordinator = ""
+	robotCoordinatorAction = "status"
+	robotCoordinatorSendDigest = false
+	robotWebhookOutbox = false
+	robotOutboxAction = "list"
+	robotOutboxRecord = ""
+	robotOutboxRevision = ""
+	if rootCmd != nil {
+		for _, flagName := range []string{
+			"robot-scale", "scale-cc", "scale-cod", "scale-gmi", "scale-agy",
+			"scale-ollama", "scale-cursor", "scale-windsurf", "scale-aider",
+			"scale-grok", "scale-omp", "scale-oc",
+			"robot-rebalance", "rebalance-apply", "rebalance-threshold",
+			"rebalance-geometry", "rebalance-geometry-tolerance",
+			"robot-review-queue", "review-dispatch", "review-idle-threshold", "review-commits",
+			"robot-coordinator", "coordinator-action", "coordinator-send-digest",
+			"robot-webhook-outbox", "outbox-action", "outbox-record", "outbox-revision",
+		} {
+			if f := rootCmd.Flags().Lookup(flagName); f != nil {
+				f.Changed = false
+			}
+		}
+	}
 	robotProcessExit = nil
 }
 

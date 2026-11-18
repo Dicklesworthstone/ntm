@@ -1056,6 +1056,11 @@ func needsConfigLoading(cmdName string) bool {
 			robotAudit != "" || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-audit")) ||
 			robotTimeline != "" || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-timeline")) ||
 			robotDoctor || robotPreflight != "" || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-preflight")) ||
+			robotScale != "" || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-scale")) ||
+			robotRebalance != "" || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-rebalance")) ||
+			robotReviewQueue != "" || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-review-queue")) ||
+			robotCoordinator != "" || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-coordinator")) ||
+			robotWebhookOutbox ||
 			robotActionStatus != "" || robotWaitRequest != "" || robotCancelRequest != "" {
 			return true
 		}

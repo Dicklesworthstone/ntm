@@ -1,6 +1,6 @@
 # Vision Checklist — v1.39.0
 
-generated: 2026-11-16T07:01:31Z by scripts/reality_audit.sh (seed 2553148806)
+generated: 2026-11-18T17:58:20Z by scripts/reality_audit.sh (seed 2553148806)
 
 - README.md:29 TL;DR
 - README.md:31 The Problem
@@ -149,10 +149,10 @@ generated: 2026-11-16T07:01:31Z by scripts/reality_audit.sh (seed 2553148806)
 - SKILL.md:151 Coordination and Recovery
 - SKILL.md:198 Safety and Approvals
 - SKILL.md:221 Canonical Robot Mode
-- SKILL.md:289 Serve API and Pipeline Surfaces
-- SKILL.md:306 Project Resolution
-- SKILL.md:319 Reference Index
-- SKILL.md:330 Related Skills
+- SKILL.md:294 Serve API and Pipeline Surfaces
+- SKILL.md:311 Project Resolution
+- SKILL.md:324 Reference Index
+- SKILL.md:335 Related Skills
 - command_palette.md:27 Analysis & Review
 - command_palette.md:29 fresh_review | Fresh Review
 - command_palette.md:32 check_other_agents_work | Check Other Agents Work

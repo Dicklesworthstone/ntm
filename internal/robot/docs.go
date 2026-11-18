@@ -215,11 +215,15 @@ func getCommandsContent() *DocsContent {
 --robot-smart-restart=SESSION: Safety-checked restart with optional --hard-kill / --hard-kill-only fallback
 --robot-wait=SESSION: Wait for pane state, attention-feed, or evidence-backed convergence condition
 --robot-overlay: Open dashboard overlay for human handoff (--overlay-session optional inside tmux)
---robot-route=SESSION: Get routing recommendation`,
+--robot-route=SESSION: Get routing recommendation
+--robot-rebalance=SESSION: Analyze bead workload imbalance, check tile geometry, and optionally apply transfers (--rebalance-apply, --rebalance-threshold, --rebalance-geometry)
+--robot-review-queue=SESSION: Detect idle agents and generate or dispatch peer-review prompts (--review-dispatch, --review-idle-threshold, --review-commits)
+--robot-coordinator=SESSION: Inspect coordinator agent status, generate/send digests, or list reservation conflicts (--coordinator-action, --coordinator-send-digest)`,
 			},
 			{
 				Heading: "Session Management",
 				Body: `--robot-spawn=SESSION: Create session with agents
+--robot-scale=SESSION: Scale agent counts per harness across all 11 built-in harnesses (--scale-cc, --scale-cod, --scale-gmi, --scale-agy, --scale-ollama, --scale-cursor, --scale-windsurf, --scale-aider, --scale-grok, --scale-omp, --scale-oc)
 --robot-ensemble-spawn=SESSION: Spawn reasoning ensemble
 --robot-ensemble-synthesize=SESSION: Synthesize ensemble reasoning outputs
 --robot-recipes: List available spawn presets`,
@@ -259,7 +263,8 @@ func getCommandsContent() *DocsContent {
 --robot-slb-pending: List SLB pending approvals
 --robot-slb-approve=ID: Approve SLB request
 --robot-slb-deny=ID: Deny SLB request
---robot-preflight[=PROMPT]: Lint and validate a prompt before sending (--preflight-strict, --preflight-file)`,
+--robot-preflight[=PROMPT]: Lint and validate a prompt before sending (--preflight-strict, --preflight-file)
+--robot-webhook-outbox: Inspect, retry, or archive durable project webhook outbox receipts (--outbox-action, --outbox-record, --outbox-revision)`,
 			},
 		},
 	}
@@ -429,6 +434,24 @@ func getExamplesContent() *DocsContent {
 				Description: "Diagnose and auto-fix issues",
 				Command:     "ntm --robot-diagnose=proj --diagnose-fix",
 				Notes:       "Attempts automatic fixes for common issues",
+			},
+			{
+				Name:        "scale_session",
+				Description: "Scale harness counts up or down non-interactively",
+				Command:     "ntm --robot-scale=proj --scale-cc=4 --scale-cod=2 --dry-run",
+				Notes:       "Supports all 11 harnesses (--scale-cc, --scale-cod, --scale-gmi, --scale-agy, --scale-ollama, --scale-cursor, --scale-windsurf, --scale-aider, --scale-grok, --scale-omp, --scale-oc)",
+			},
+			{
+				Name:        "rebalance_session",
+				Description: "Inspect or apply bead workload rebalancing across panes",
+				Command:     "ntm --robot-rebalance=proj --rebalance-apply --rebalance-threshold=0.5",
+				Notes:       "Add --rebalance-geometry to verify tile uniformity",
+			},
+			{
+				Name:        "review_queue_dispatch",
+				Description: "Generate and dispatch peer-review prompts to idle agents",
+				Command:     "ntm --robot-review-queue=proj --review-dispatch --review-commits=5",
+				Notes:       "Combines completed bead work and recent git commits",
 			},
 		},
 	}

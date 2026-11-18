@@ -12,7 +12,7 @@
     "utility"
   ],
   "category_count": 10,
-  "schema_type_count": 148,
+  "schema_type_count": 153,
   "schema_types": [
     "account_status",
     "accounts_list",
@@ -44,6 +44,7 @@
     "cass_status",
     "causality",
     "context",
+    "coordinator",
     "dashboard",
     "dcg_check",
     "dcg_status",
@@ -123,14 +124,17 @@
     "rano_stats",
     "rch_status",
     "rch_workers",
+    "rebalance",
     "recipes",
     "replay",
     "restart_pane",
     "restore",
+    "review_queue",
     "route",
     "ru_sync",
     "safety_simulate",
     "save",
+    "scale",
     "schema",
     "search",
     "send",
@@ -160,11 +164,12 @@
     "wait_cancel",
     "wait_request",
     "watch_bead",
+    "webhook_outbox",
     "xf_search",
     "xf_status"
   ],
   "section_count": 13,
-  "surface_count": 160,
+  "surface_count": 165,
   "surfaces": [
     {
       "category": "state",
@@ -1051,6 +1056,21 @@
     },
     {
       "category": "control",
+      "flag": "--robot-coordinator",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "coordinator",
+      "schema_id": "ntm:robot:coordinator:v1",
+      "schema_type": "coordinator"
+    },
+    {
+      "category": "control",
       "flag": "--robot-exit-cli",
       "has_action_handoff": false,
       "has_attention_ops": false,
@@ -1126,6 +1146,21 @@
     },
     {
       "category": "control",
+      "flag": "--robot-rebalance",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "rebalance",
+      "schema_id": "ntm:robot:rebalance:v1",
+      "schema_type": "rebalance"
+    },
+    {
+      "category": "control",
       "flag": "--robot-restart-pane",
       "has_action_handoff": false,
       "has_attention_ops": false,
@@ -1138,6 +1173,21 @@
       "name": "restart-pane",
       "schema_id": "ntm:robot:restart-pane:v1",
       "schema_type": "restart_pane"
+    },
+    {
+      "category": "control",
+      "flag": "--robot-review-queue",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "review-queue",
+      "schema_id": "ntm:robot:review-queue:v1",
+      "schema_type": "review_queue"
     },
     {
       "category": "control",
@@ -1273,6 +1323,21 @@
       "name": "recipes",
       "schema_id": "ntm:robot:recipes:v1",
       "schema_type": "recipes"
+    },
+    {
+      "category": "spawn",
+      "flag": "--robot-scale",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "scale",
+      "schema_id": "ntm:robot:scale:v1",
+      "schema_type": "scale"
     },
     {
       "category": "spawn",
@@ -2549,6 +2614,21 @@
       "name": "version",
       "schema_id": "ntm:robot:version:v1",
       "schema_type": "version"
+    },
+    {
+      "category": "utility",
+      "flag": "--robot-webhook-outbox",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "webhook-outbox",
+      "schema_id": "ntm:robot:webhook-outbox:v1",
+      "schema_type": "webhook_outbox"
     },
     {
       "category": "utility",

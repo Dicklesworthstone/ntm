@@ -335,6 +335,44 @@ var (
 	robotDoctorContention bool // include shared-resource contention scan
 	robotDoctorVerbose    bool // include verbose adapter details
 
+	// Robot-scale flags for 11-harness session scaling
+	robotScale         string // session name for --robot-scale
+	robotScaleCC       int    // target Claude agent count
+	robotScaleCod      int    // target Codex agent count
+	robotScaleGmi      int    // target Gemini agent count
+	robotScaleAgy      int    // target Antigravity agent count
+	robotScaleOllama   int    // target Ollama agent count
+	robotScaleCursor   int    // target Cursor agent count
+	robotScaleWindsurf int    // target Windsurf agent count
+	robotScaleAider    int    // target Aider agent count
+	robotScaleGrok     int    // target Grok Build agent count
+	robotScaleOmp      int    // target Oh My Pi agent count
+	robotScaleOc       int    // target OpenCode agent count
+
+	// Robot-rebalance flags for workload analysis and transfer execution
+	robotRebalance                  string  // session name for --robot-rebalance
+	robotRebalanceApply             bool    // apply suggested transfers without interactive prompt
+	robotRebalanceThreshold         float64 // minimum imbalance score threshold
+	robotRebalanceGeometry          bool    // verify/rebalance pane geometry uniformity
+	robotRebalanceGeometryTolerance int     // max width/height cell delta for --rebalance-geometry
+
+	// Robot-review-queue flags for idle-agent review suggestions and dispatch
+	robotReviewQueue         string        // session name for --robot-review-queue
+	robotReviewDispatch      bool          // dispatch review prompts automatically to idle agents
+	robotReviewIdleThreshold time.Duration // minimum idle duration threshold
+	robotReviewCommits       int           // number of recent git commits to inspect
+
+	// Robot-coordinator flags for session coordinator inspection, digest, and conflicts
+	robotCoordinator           string // session name for --robot-coordinator
+	robotCoordinatorAction     string // status, digest, or conflicts
+	robotCoordinatorSendDigest bool   // send generated digest via Agent Mail
+
+	// Robot-webhook-outbox flags for durable project webhook receipt inspection/recovery
+	robotWebhookOutbox  bool   // inspect or mutate durable webhook outbox
+	robotOutboxAction   string // list, retry, or archive
+	robotOutboxRecord   string // outbox record filename
+	robotOutboxRevision string // 64-hex optimistic concurrency revision
+
 	// Robot-history flags for command history tracking
 	robotHistory      string // session name for history query
 	robotHistoryPane  string // filter by pane ID
@@ -1076,6 +1114,44 @@ func registerRobotFlags() {
 	rootCmd.Flags().BoolVar(&robotDoctor, "robot-doctor", false, "Validate NTM ecosystem health, tools, daemons, configuration, invariants, and optional contention (JSON)")
 	rootCmd.Flags().BoolVar(&robotDoctorContention, "doctor-contention", false, "Include shared-resource process contention scan in --robot-doctor")
 	rootCmd.Flags().BoolVar(&robotDoctorVerbose, "doctor-verbose", false, "Include verbose tool adapter diagnostics in --robot-doctor")
+
+	// Robot-scale flags for 11-harness session scaling
+	rootCmd.Flags().StringVar(&robotScale, "robot-scale", "", "Scale agents in a session to target harness counts (JSON). Required: SESSION and at least one --scale-<harness>=N flag. Example: ntm --robot-scale=myproject --scale-cc=4 --scale-cod=2")
+	rootCmd.Flags().IntVar(&robotScaleCC, "scale-cc", 0, "Target Claude (cc) agent count for --robot-scale (0 terminates all cc agents)")
+	rootCmd.Flags().IntVar(&robotScaleCod, "scale-cod", 0, "Target Codex (cod) agent count for --robot-scale (0 terminates all cod agents)")
+	rootCmd.Flags().IntVar(&robotScaleGmi, "scale-gmi", 0, "Target Gemini (gmi) agent count for --robot-scale")
+	rootCmd.Flags().IntVar(&robotScaleAgy, "scale-agy", 0, "Target Antigravity (agy) agent count for --robot-scale")
+	rootCmd.Flags().IntVar(&robotScaleOllama, "scale-ollama", 0, "Target Ollama agent count for --robot-scale")
+	rootCmd.Flags().IntVar(&robotScaleCursor, "scale-cursor", 0, "Target Cursor agent count for --robot-scale")
+	rootCmd.Flags().IntVar(&robotScaleWindsurf, "scale-windsurf", 0, "Target Windsurf agent count for --robot-scale")
+	rootCmd.Flags().IntVar(&robotScaleAider, "scale-aider", 0, "Target Aider agent count for --robot-scale")
+	rootCmd.Flags().IntVar(&robotScaleGrok, "scale-grok", 0, "Target Grok Build (grok) agent count for --robot-scale")
+	rootCmd.Flags().IntVar(&robotScaleOmp, "scale-omp", 0, "Target Oh My Pi (omp) agent count for --robot-scale")
+	rootCmd.Flags().IntVar(&robotScaleOc, "scale-oc", 0, "Target OpenCode (oc) agent count for --robot-scale")
+
+	// Robot-rebalance flags for workload analysis and transfer execution
+	rootCmd.Flags().StringVar(&robotRebalance, "robot-rebalance", "", "Analyze workload distribution and optionally apply bead transfers (JSON). Required: SESSION. Example: ntm --robot-rebalance=myproject --rebalance-apply")
+	rootCmd.Flags().BoolVar(&robotRebalanceApply, "rebalance-apply", false, "Apply suggested rebalance transfers non-interactively (use with --robot-rebalance)")
+	rootCmd.Flags().Float64Var(&robotRebalanceThreshold, "rebalance-threshold", 0.0, "Minimum imbalance score threshold before suggesting transfers (use with --robot-rebalance)")
+	rootCmd.Flags().BoolVar(&robotRebalanceGeometry, "rebalance-geometry", false, "Verify pane geometry uniformity and retile when --rebalance-apply is set (use with --robot-rebalance)")
+	rootCmd.Flags().IntVar(&robotRebalanceGeometryTolerance, "rebalance-geometry-tolerance", 2, "Maximum allowed width/height delta in cells for --rebalance-geometry (default 2)")
+
+	// Robot-review-queue flags for idle-agent review suggestions and dispatch
+	rootCmd.Flags().StringVar(&robotReviewQueue, "robot-review-queue", "", "Detect idle agents and generate or dispatch review prompts from completed beads and git commits (JSON). Required: SESSION. Example: ntm --robot-review-queue=myproject")
+	rootCmd.Flags().BoolVar(&robotReviewDispatch, "review-dispatch", false, "Automatically send generated review prompts to idle agents (use with --robot-review-queue)")
+	rootCmd.Flags().DurationVar(&robotReviewIdleThreshold, "review-idle-threshold", 2*time.Minute, "Minimum idle time to consider an agent idle (default 2m, use with --robot-review-queue)")
+	rootCmd.Flags().IntVar(&robotReviewCommits, "review-commits", 5, "Number of recent git commits to include as review sources (default 5, use with --robot-review-queue)")
+
+	// Robot-coordinator flags for session coordinator inspection, digest, and conflicts
+	rootCmd.Flags().StringVar(&robotCoordinator, "robot-coordinator", "", "Inspect session coordinator status, generate/send digest, or list reservation conflicts (JSON). Required: SESSION. Example: ntm --robot-coordinator=myproject")
+	rootCmd.Flags().StringVar(&robotCoordinatorAction, "coordinator-action", "status", "Coordinator action: status (default), digest, or conflicts (use with --robot-coordinator)")
+	rootCmd.Flags().BoolVar(&robotCoordinatorSendDigest, "coordinator-send-digest", false, "Send generated coordinator digest via Agent Mail (requires --coordinator-action=digest)")
+
+	// Robot-webhook-outbox flags for durable project webhook receipt inspection/recovery
+	rootCmd.Flags().BoolVar(&robotWebhookOutbox, "robot-webhook-outbox", false, "Inspect, retry, or archive durable project webhook outbox receipts without starting HTTP senders (JSON)")
+	rootCmd.Flags().StringVar(&robotOutboxAction, "outbox-action", "list", "Webhook outbox action: list (default), retry, or archive (use with --robot-webhook-outbox)")
+	rootCmd.Flags().StringVar(&robotOutboxRecord, "outbox-record", "", "Webhook outbox record filename for --outbox-action=retry|archive")
+	rootCmd.Flags().StringVar(&robotOutboxRevision, "outbox-revision", "", "64-hex optimistic concurrency revision from outbox list for --outbox-action=retry|archive")
 
 	// Robot-history flags for command history tracking
 	rootCmd.Flags().StringVar(&robotHistory, "robot-history", "", "Get command history for a session (JSON). Required: SESSION. Example: ntm --robot-history=myproject")
