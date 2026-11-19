@@ -19,6 +19,7 @@ import {
 } from "@/lib/api/client";
 import { PersonasAndRecipesPanel } from "@/components/agents/PersonasAndRecipesPanel";
 import { AgentMappingAndBadgesPanel } from "@/components/agents/AgentMappingAndBadgesPanel";
+import { PluginsAndLocalModelsPanel } from "@/components/agents/PluginsAndLocalModelsPanel";
 
 type AgentSpawnRequest = components["schemas"]["AgentSpawnRequest"];
 type SpawnOutput = components["schemas"]["SpawnOutput"];
@@ -801,6 +802,8 @@ export default function AgentsPage() {
       <PersonasAndRecipesPanel
         onSelectRecipePreset={(recipeName) => setSpawnPreset(recipeName)}
       />
+
+      <PluginsAndLocalModelsPanel />
     </div>
   );
 }

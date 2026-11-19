@@ -11,6 +11,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, type ApiEnvelope } from "@/lib/api/client";
 import { AuditAndPolicyPanel } from "@/components/safety/AuditAndPolicyPanel";
 import { GitHooksAndRedactionPanel } from "@/components/safety/GitHooksAndRedactionPanel";
+import { ConfigAndPolicyValidatorPanel } from "@/components/safety/ConfigAndPolicyValidatorPanel";
 
 interface SafetyStatus {
   installed: boolean;
@@ -1130,6 +1131,8 @@ export default function SafetyPage() {
       <AuditAndPolicyPanel initialAutomation={policyData?.automation} />
 
       <GitHooksAndRedactionPanel />
+
+      <ConfigAndPolicyValidatorPanel />
     </div>
   );
 }
