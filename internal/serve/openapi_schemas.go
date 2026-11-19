@@ -1561,6 +1561,84 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
 		},
 	},
+	"handleSessionGrepV1": {
+		Response: SessionGrepEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "pattern", Type: "string", Required: true, Description: "Go regular expression to search across captured pane scrollback."},
+			{Name: "type", Type: "string", Description: "Comma-separated 11-harness filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama)."},
+			{Name: "ignore_case", Type: "boolean", Description: "Case-insensitive regular expression matching."},
+			{Name: "invert", Type: "boolean", Description: "Invert matching to return non-matching lines."},
+			{Name: "context", Type: "integer", Description: "Symmetric context lines before and after each match."},
+			{Name: "before", Type: "integer", Description: "Context lines before each match."},
+			{Name: "after", Type: "integer", Description: "Context lines after each match."},
+			{Name: "lines", Type: "integer", Description: "Maximum scrollback lines captured per pane (default 1000)."},
+			{Name: "list_only", Type: "boolean", Description: "Return only matching session/pane identifiers without match bodies."},
+		},
+	},
+	"handleGlobalGrepV1": {
+		Response: SessionGrepEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "pattern", Type: "string", Required: true, Description: "Go regular expression to search across captured pane scrollback."},
+			{Name: "session", Type: "string", Description: "Optional target session name (defaults to searching all active sessions when omitted)."},
+			{Name: "all", Type: "boolean", Description: "Explicitly search across all active tmux sessions."},
+			{Name: "type", Type: "string", Description: "Comma-separated 11-harness filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama)."},
+			{Name: "ignore_case", Type: "boolean", Description: "Case-insensitive regular expression matching."},
+			{Name: "invert", Type: "boolean", Description: "Invert matching to return non-matching lines."},
+			{Name: "context", Type: "integer", Description: "Symmetric context lines before and after each match."},
+			{Name: "before", Type: "integer", Description: "Context lines before each match."},
+			{Name: "after", Type: "integer", Description: "Context lines after each match."},
+			{Name: "lines", Type: "integer", Description: "Maximum scrollback lines captured per pane (default 1000)."},
+			{Name: "list_only", Type: "boolean", Description: "Return only matching session/pane identifiers without match bodies."},
+		},
+	},
+	"handleSessionExtractV1": {
+		Response: SessionExtractEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "pane", Type: "string", Description: "Optional pane index, %pane_id, or pane title substring."},
+			{Name: "lang", Type: "string", Description: "Optional language filter (e.g. go, python, typescript, bash)."},
+			{Name: "last", Type: "boolean", Description: "Extract code blocks only from the currently active pane."},
+			{Name: "select", Type: "integer", Description: "Optional 1-based block index to select."},
+			{Name: "lines", Type: "integer", Description: "Number of scrollback lines captured per pane (default 500)."},
+		},
+	},
+	"handleSessionErrorsV1": {
+		Response: SessionErrorsEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "panes", Type: "string", Description: "Optional comma-separated N, W.P, or %N pane selectors."},
+			{Name: "agent_type", Type: "string", Description: "Optional 11-harness agent filter (alias: ?type=)."},
+			{Name: "lines", Type: "integer", Description: "Maximum scrollback lines captured per pane (default 1000)."},
+			{Name: "context", Type: "integer", Description: "Context lines before and after each error signature (default 2)."},
+		},
+	},
+	"handleConfigValidateGetV1": {
+		Response: ConfigValidateEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "all", Type: "boolean", Description: "Include absent optional user and project configuration locations."},
+			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
+		},
+	},
+	"handleConfigValidatePostV1": {
+		Response: ConfigValidateEnvelopeResponse{},
+		Envelope: true,
+		Request:  ConfigValidateRequest{},
+	},
+	"handlePluginsListV1": {
+		Response: PluginsEnvelopeResponse{},
+		Envelope: true,
+	},
+	"handleLocalModelsV1": {
+		Response: LocalModelsEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "action", Type: "string", Description: "Action: recommend (offline GPU VRAM advisor, default) or list (live Ollama inventory)."},
+			{Name: "host", Type: "string", Description: "Optional loopback Ollama daemon URL override (non-loopback hosts rejected unless matching configured OLLAMA_HOST)."},
+		},
+	},
 }
 
 func lookupServedRouteSchema(rt RouterRoute) (routeSchemaSpec, bool) {

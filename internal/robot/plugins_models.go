@@ -213,8 +213,9 @@ type LocalModelEntry struct {
 
 // LocalModelsOptions configures GetLocalModels.
 type LocalModelsOptions struct {
-	Action string // "recommend" (default) or "list"
-	Host   string // Optional Ollama host override
+	Action       string // "recommend" (default) or "list"
+	Host         string // Optional Ollama host override
+	SafeHostOnly bool   // When true, reject non-loopback host overrides unless matching configured OLLAMA_HOST
 }
 
 // LocalModelsOutput is the canonical robot envelope for --robot-models and GET /api/v1/models.
@@ -454,6 +455,17 @@ func GetLocalModels(ctx context.Context, opts LocalModelsOptions) (*LocalModelsO
 		DetectedVRAMGB:  vramGB,
 		VRAMSource:      source,
 		Recommendations: recs,
+	}
+
+	if opts.SafeHostOnly {
+		if err := ValidateSafeOllamaHostOverride(opts.Host); err != nil {
+			out.RobotResponse = NewErrorResponse(
+				err,
+				ErrCodeInvalidFlag,
+				"Pass a loopback Ollama host (localhost, 127.0.0.1, ::1) or omit host to use configured OLLAMA_HOST",
+			)
+			return out, nil
+		}
 	}
 
 	switch action {
