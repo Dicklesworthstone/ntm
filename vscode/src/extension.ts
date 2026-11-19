@@ -65,6 +65,15 @@ import {
     SAVED_SESSIONS_MODE_OPTIONS,
     WORKFLOWS_MODE_OPTIONS,
 } from './persistenceWorkflowSupport';
+import {
+    CONFIG_VALIDATE_MODE_OPTIONS,
+    formatConfigValidateMarkdown,
+    formatExtractCodeBlocksMarkdown,
+    formatGrepPanesMarkdown,
+    formatLocalModelsMarkdown,
+    formatPluginsMarkdown,
+    LOCAL_MODELS_MODE_OPTIONS,
+} from './outputEcosystemSupport';
 import { NtmDashboard } from './dashboard';
 import { normalizeWorkspaceRelativePath, registerFileDecorations } from './fileDecorations';
 import { NtmTreeItem, registerSessionTreeView } from './sessionTreeView';
@@ -3045,6 +3054,133 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
         }
     );
 
+    const dispGrepPanes = vscode.commands.registerCommand(
+        'ntm.grepPanes',
+        async (sessionArg?: NtmTreeItem | string) => {
+            try {
+                const pattern = await vscode.window.showInputBox({
+                    prompt: 'Enter Go regular expression to search across pane scrollback',
+                    placeHolder: 'panic:|FAIL|ERROR',
+                });
+                if (!pattern || !pattern.trim()) {
+                    return;
+                }
+                const explicitSess = extractSessionName(sessionArg);
+                const res = await client.grepPanes({
+                    pattern: pattern.trim(),
+                    session: explicitSess,
+                    allSessions: !explicitSess,
+                    contextLines: 2,
+                });
+                const doc = await vscode.workspace.openTextDocument({
+                    content: formatGrepPanesMarkdown(res),
+                    language: 'markdown',
+                });
+                await vscode.window.showTextDocument(doc);
+            } catch (e) {
+                vscode.window.showErrorMessage(`Pane grep failed: ${e}`);
+            }
+        }
+    );
+
+    const dispExtractCodeBlocks = vscode.commands.registerCommand(
+        'ntm.extractCodeBlocks',
+        async (sessionArg?: NtmTreeItem | string) => {
+            try {
+                const targetSession = await resolveSessionInteractive(
+                    extractSessionName(sessionArg),
+                    'Select session to extract fenced code blocks from'
+                );
+                if (!targetSession) {
+                    return;
+                }
+                const lang = await vscode.window.showInputBox({
+                    prompt: 'Optional language filter (leave blank for all fenced code blocks)',
+                    placeHolder: 'go, python, typescript, bash',
+                });
+                const res = await client.extractCodeBlocks({
+                    session: targetSession,
+                    language: lang?.trim() || undefined,
+                });
+                const doc = await vscode.workspace.openTextDocument({
+                    content: formatExtractCodeBlocksMarkdown(res),
+                    language: 'markdown',
+                });
+                await vscode.window.showTextDocument(doc);
+            } catch (e) {
+                vscode.window.showErrorMessage(`Code-block extraction failed: ${e}`);
+            }
+        }
+    );
+
+    const dispValidateConfig = vscode.commands.registerCommand(
+        'ntm.validateConfig',
+        async () => {
+            try {
+                const modePick = await vscode.window.showQuickPick(CONFIG_VALIDATE_MODE_OPTIONS, {
+                    placeHolder: 'Select configuration & policy validation action',
+                });
+                if (!modePick) {
+                    return;
+                }
+                if (modePick.mode === 'openSafetyCockpit') {
+                    await openWebCockpitRoute('/safety');
+                    return;
+                }
+                const workspaceDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                const res = await client.validateConfig({
+                    all: modePick.mode === 'validateAll' || modePick.mode === 'validateAndFix',
+                    fix: modePick.mode === 'validateAndFix',
+                    projectDir: workspaceDir,
+                });
+                const doc = await vscode.workspace.openTextDocument({
+                    content: formatConfigValidateMarkdown(res),
+                    language: 'markdown',
+                });
+                await vscode.window.showTextDocument(doc);
+            } catch (e) {
+                vscode.window.showErrorMessage(`Config validation failed: ${e}`);
+            }
+        }
+    );
+
+    const dispShowLocalModels = vscode.commands.registerCommand(
+        'ntm.showLocalModels',
+        async () => {
+            try {
+                const modePick = await vscode.window.showQuickPick(LOCAL_MODELS_MODE_OPTIONS, {
+                    placeHolder: 'Select plugins or local Ollama models action',
+                });
+                if (!modePick) {
+                    return;
+                }
+                if (modePick.mode === 'openAgentsCockpit') {
+                    await openWebCockpitRoute('/agents');
+                    return;
+                }
+                if (modePick.mode === 'listPlugins') {
+                    const plugRes = await client.getPlugins();
+                    const doc = await vscode.workspace.openTextDocument({
+                        content: formatPluginsMarkdown(plugRes),
+                        language: 'markdown',
+                    });
+                    await vscode.window.showTextDocument(doc);
+                    return;
+                }
+                const modRes = await client.getLocalModels({
+                    action: modePick.mode === 'listModels' ? 'list' : 'recommend',
+                });
+                const doc = await vscode.workspace.openTextDocument({
+                    content: formatLocalModelsMarkdown(modRes),
+                    language: 'markdown',
+                });
+                await vscode.window.showTextDocument(doc);
+            } catch (e) {
+                vscode.window.showErrorMessage(`Local models / plugins inspection failed: ${e}`);
+            }
+        }
+    );
+
     context.subscriptions.push(
         dispStatus,
         dispSpawn,
@@ -3069,6 +3205,10 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
         dispSavedSessions,
         dispShowAgentMapping,
         dispShowWorkflows,
+        dispGrepPanes,
+        dispExtractCodeBlocks,
+        dispValidateConfig,
+        dispShowLocalModels,
         dispOpenWebCockpit,
         dispShowBackpressure,
         dispManageWorktrees,

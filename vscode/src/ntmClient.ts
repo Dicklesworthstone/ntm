@@ -75,6 +75,22 @@ import {
     WorkflowsResult,
     WorkflowSummaryItem,
 } from './persistenceWorkflowSupport';
+import {
+    ConfigValidateOptions,
+    ConfigValidateResult,
+    ExtractCodeBlocksOptions,
+    ExtractCodeBlocksResult,
+    GrepPanesOptions,
+    GrepPanesResult,
+    LocalModelsOptions,
+    LocalModelsResult,
+    normalizeConfigValidateResult,
+    normalizeExtractCodeBlocksResult,
+    normalizeGrepPanesResult,
+    normalizeLocalModelsResult,
+    normalizePluginsResult,
+    PluginsListResult,
+} from './outputEcosystemSupport';
 
 export {
     AdoptedPaneItem,
@@ -3292,5 +3308,118 @@ export class NtmClient {
 
         const stdout = await this.run(args);
         return normalizeSessionTemplatesResult(JSON.parse(stdout));
+    }
+
+    /**
+     * Search pane scrollback with regular expressions via `ntm --robot-grep=<pattern> ...`.
+     */
+    async grepPanes(options: GrepPanesOptions): Promise<GrepPanesResult> {
+        const pat = (options?.pattern ?? '').trim();
+        if (!pat) {
+            throw new Error('Regex pattern is required for --robot-grep');
+        }
+        const args: string[] = [`--robot-grep=${pat}`];
+        const sess = (options.session ?? '').trim();
+        if (options.allSessions) {
+            args.push('--all');
+        } else if (sess) {
+            args.push(`--grep-session=${sess}`);
+        } else {
+            args.push('--all');
+        }
+        const agentType = (options.agentType ?? '').trim();
+        if (agentType) {
+            args.push(`--type=${agentType}`);
+        }
+        if (options.ignoreCase) {
+            args.push('--grep-ignore-case');
+        }
+        if (options.contextLines && options.contextLines > 0) {
+            args.push(`--grep-context=${options.contextLines}`);
+        }
+        if (options.lines && options.lines > 0) {
+            args.push(`--lines=${options.lines}`);
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeGrepPanesResult(JSON.parse(stdout));
+    }
+
+    /**
+     * Extract fenced code blocks from pane scrollback via `ntm --robot-extract=<session> ...`.
+     */
+    async extractCodeBlocks(options: ExtractCodeBlocksOptions): Promise<ExtractCodeBlocksResult> {
+        const sess = (options?.session ?? '').trim();
+        if (!sess) {
+            throw new Error('Session name is required for --robot-extract');
+        }
+        const args: string[] = [`--robot-extract=${sess}`];
+        const pane = (options.pane ?? '').trim();
+        if (pane) {
+            args.push(`--extract-pane=${pane}`);
+        }
+        const lang = (options.language ?? '').trim();
+        if (lang) {
+            args.push(`--extract-lang=${lang}`);
+        }
+        if (options.lastPane) {
+            args.push('--extract-last');
+        }
+        if (options.lines && options.lines > 0) {
+            args.push(`--lines=${options.lines}`);
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeExtractCodeBlocksResult(JSON.parse(stdout));
+    }
+
+    /**
+     * Validate NTM configuration, manifests, policy, and 11-harness executables via `ntm --robot-validate`.
+     */
+    async validateConfig(options: ConfigValidateOptions = {}): Promise<ConfigValidateResult> {
+        const args: string[] = ['--robot-validate'];
+        if (options.all) {
+            args.push('--validate-all');
+        }
+        if (options.fix) {
+            args.push('--validate-fix');
+        }
+        const projectDir = (options.projectDir ?? '').trim();
+        if (projectDir) {
+            args.push(`--project=${projectDir}`);
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeConfigValidateResult(JSON.parse(stdout));
+    }
+
+    /**
+     * List installed agent and command plugins via `ntm --robot-plugins`.
+     */
+    async getPlugins(): Promise<PluginsListResult> {
+        const stdout = await this.run(['--robot-plugins', '--robot-format=json']);
+        return normalizePluginsResult(JSON.parse(stdout));
+    }
+
+    /**
+     * Recommend local models from GPU VRAM or list installed Ollama models via `ntm --robot-models`.
+     */
+    async getLocalModels(options: LocalModelsOptions = {}): Promise<LocalModelsResult> {
+        const args: string[] = ['--robot-models'];
+        const action = options.action ?? 'recommend';
+        if (action !== 'recommend') {
+            args.push(`--models-action=${action}`);
+        }
+        const host = (options.host ?? '').trim();
+        if (host) {
+            args.push(`--models-host=${host}`);
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeLocalModelsResult(JSON.parse(stdout));
     }
 }

@@ -213,6 +213,26 @@
         "icon": "$(symbol-event)"
       },
       {
+        "command": "ntm.grepPanes",
+        "title": "NTM: Grep Pane Scrollback (11 Harnesses)",
+        "icon": "$(search)"
+      },
+      {
+        "command": "ntm.extractCodeBlocks",
+        "title": "NTM: Extract Code Blocks from Panes",
+        "icon": "$(code)"
+      },
+      {
+        "command": "ntm.validateConfig",
+        "title": "NTM: Validate Config, Policy & 11 Harnesses",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "ntm.showLocalModels",
+        "title": "NTM: Plugins & Local Ollama Models",
+        "icon": "$(extensions)"
+      },
+      {
         "command": "ntm.openWebCockpit",
         "title": "NTM: Open Web Cockpit (ntm web)",
         "icon": "$(globe)"
