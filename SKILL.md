@@ -279,6 +279,11 @@ ntm --robot-saved-sessions --saved-action=show --saved-name=myproject
 ntm --robot-mapping=myproject
 ntm --robot-workflows --workflows-name=red-green
 ntm --robot-session-templates --template-name=refactor
+ntm --robot-grep='panic:|FAIL' --grep-session=myproject
+ntm --robot-extract=myproject --extract-lang=go
+ntm --robot-validate --validate-all
+ntm --robot-plugins
+ntm --robot-models
 ntm audit http --limit=20 --json
 ```
 

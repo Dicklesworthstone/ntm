@@ -188,6 +188,13 @@ ntm --robot-saved-sessions --saved-action=save --saved-session=myproject --saved
 ntm --robot-mapping=myproject
 ntm --robot-workflows --workflows-name=red-green
 ntm --robot-session-templates --template-name=refactor
+
+# Pane grep, code-block extract, config/policy validation, plugins, and local models
+ntm --robot-grep='panic:|FAIL' --grep-session=myproject --type=cc,cod
+ntm --robot-extract=myproject --extract-lang=go --lines=1000
+ntm --robot-validate --validate-all
+ntm --robot-plugins
+ntm --robot-models --models-action=recommend
 ```
 
 ## Reasoning Ensembles
