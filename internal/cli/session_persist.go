@@ -15,6 +15,7 @@ import (
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
@@ -121,13 +122,11 @@ func (r *SessionsSaveResult) Text(w io.Writer) error {
 	fmt.Fprintf(w, "  Saved as: %s\n", r.SavedAs)
 	fmt.Fprintf(w, "  File: %s\n", r.FilePath)
 	if r.State != nil {
-		fmt.Fprintf(w, "  Agents: %d Claude, %d Codex, %d Gemini\n",
-			r.State.Agents.Claude, r.State.Agents.Codex, r.State.Agents.Gemini)
-		if r.State.Agents.Grok > 0 {
-			fmt.Fprintf(w, "  Grok: %d\n", r.State.Agents.Grok)
+		for _, line := range robot.FormatAgentConfigSummary(r.State.Agents) {
+			fmt.Fprintf(w, "  %s\n", line)
 		}
-		if r.State.Agents.Omp > 0 {
-			fmt.Fprintf(w, "  Oh My Pi: %d\n", r.State.Agents.Omp)
+		if resumable := robot.CountResumablePanes(r.State); resumable > 0 {
+			fmt.Fprintf(w, "  Resumable panes: %d\n", resumable)
 		}
 		if r.State.GitBranch != "" {
 			fmt.Fprintf(w, "  Git: %s\n", r.State.GitBranch)
@@ -287,27 +286,29 @@ func (r *SessionsListResult) JSON() interface{} {
 }
 
 func runSessionsList(archived bool) error {
-	listFn := session.List
-	if archived {
-		listFn = session.ListArchived
-	}
-	sessions, err := listFn()
-	if err != nil {
+	out, err := robot.GetSavedSessions(robot.SavedSessionsOptions{
+		Action:   "list",
+		Archived: archived,
+	})
+	if err != nil || !out.Success {
+		errMsg := ""
+		if err != nil {
+			errMsg = err.Error()
+		} else if out != nil {
+			errMsg = out.Error
+		}
 		if jsonOutput {
-			// bd-1yws7: route the read failure through a JSON envelope so
-			// `ntm sessions list --json | jq ...` automation sees a
-			// parseable error instead of stderr text + exit 0.
 			return emitJSONFailureEnvelope(map[string]interface{}{
 				"success": false,
-				"error":   err.Error(),
+				"error":   errMsg,
 			})
 		}
-		return err
+		return fmt.Errorf("%s", errMsg)
 	}
 
 	result := &SessionsListResult{
-		Sessions: sessions,
-		Count:    len(sessions),
+		Sessions: out.Sessions,
+		Count:    len(out.Sessions),
 		Archived: archived,
 	}
 
@@ -352,17 +353,11 @@ func (r *SessionsShowResult) Text(w io.Writer) error {
 	}
 
 	fmt.Fprintf(w, "\n%sAgents%s\n", colorize(t.Blue), colorize(t.Text))
-	fmt.Fprintf(w, "  Claude: %d\n", s.Agents.Claude)
-	fmt.Fprintf(w, "  Codex:  %d\n", s.Agents.Codex)
-	fmt.Fprintf(w, "  Gemini: %d\n", s.Agents.Gemini)
-	if s.Agents.Grok > 0 {
-		fmt.Fprintf(w, "  Grok:   %d\n", s.Agents.Grok)
+	for _, line := range robot.FormatAgentConfigSummary(s.Agents) {
+		fmt.Fprintf(w, "  %s\n", line)
 	}
-	if s.Agents.Omp > 0 {
-		fmt.Fprintf(w, "  Omp:    %d\n", s.Agents.Omp)
-	}
-	if s.Agents.User > 0 {
-		fmt.Fprintf(w, "  User:   %d\n", s.Agents.User)
+	if resumable := robot.CountResumablePanes(s); resumable > 0 {
+		fmt.Fprintf(w, "  Resumable: %d\n", resumable)
 	}
 
 	fmt.Fprintf(w, "\n%sPanes%s (%d)\n", colorize(t.Blue), colorize(t.Text), len(s.Panes))
@@ -386,22 +381,28 @@ func (r *SessionsShowResult) JSON() interface{} {
 }
 
 func runSessionsShow(name string) error {
-	state, err := session.Load(name)
-	if err != nil {
+	out, err := robot.GetSavedSessions(robot.SavedSessionsOptions{
+		Action: "show",
+		Name:   name,
+	})
+	if err != nil || !out.Success || out.State == nil {
+		errMsg := "failed to load saved session"
+		if err != nil {
+			errMsg = err.Error()
+		} else if out != nil && out.Error != "" {
+			errMsg = out.Error
+		}
 		if jsonOutput {
-			// bd-1yws7: same envelope routing as runSessionsList — a
-			// missing/corrupt saved-session file under --json should be
-			// parseable on stdout and signal non-zero exit.
 			return emitJSONFailureEnvelope(map[string]interface{}{
 				"success": false,
 				"session": name,
-				"error":   err.Error(),
+				"error":   errMsg,
 			})
 		}
-		return err
+		return fmt.Errorf("%s", errMsg)
 	}
 
-	result := &SessionsShowResult{State: state}
+	result := &SessionsShowResult{State: out.State}
 	return output.New(output.WithJSON(jsonOutput)).Output(result)
 }
 
@@ -1175,12 +1176,15 @@ func runSessionsArchive(name string) error {
 		return fmt.Errorf("%s", errMsg)
 	}
 
-	path, err := session.Archive(name)
+	out, err := robot.GetSavedSessions(robot.SavedSessionsOptions{Action: "archive", Name: name})
 	if err != nil {
 		return emitFailure(err.Error())
 	}
+	if !out.Success {
+		return emitFailure(out.Error)
+	}
 
-	result := &SessionsArchiveResult{Success: true, Session: name, Action: "archive", FilePath: path}
+	result := &SessionsArchiveResult{Success: true, Session: name, Action: "archive", FilePath: out.FilePath}
 	return output.New(output.WithJSON(jsonOutput)).Output(result)
 }
 
@@ -1213,11 +1217,14 @@ func runSessionsUnarchive(name string) error {
 		return fmt.Errorf("%s", errMsg)
 	}
 
-	path, err := session.Unarchive(name)
+	out, err := robot.GetSavedSessions(robot.SavedSessionsOptions{Action: "unarchive", Name: name})
 	if err != nil {
 		return emitFailure(err.Error())
 	}
+	if !out.Success {
+		return emitFailure(out.Error)
+	}
 
-	result := &SessionsArchiveResult{Success: true, Session: name, Action: "unarchive", FilePath: path}
+	result := &SessionsArchiveResult{Success: true, Session: name, Action: "unarchive", FilePath: out.FilePath}
 	return output.New(output.WithJSON(jsonOutput)).Output(result)
 }

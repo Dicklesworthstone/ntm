@@ -31,6 +31,7 @@ import { SessionTimelinePanel } from "@/components/sessions/SessionTimelinePanel
 import { SessionLifecycleControls } from "@/components/sessions/SessionLifecycleControls";
 import { SessionSummaryAndEventsPanel } from "@/components/sessions/SessionSummaryAndEventsPanel";
 import { SessionAdoptContextDiffPanel } from "@/components/sessions/SessionAdoptContextDiffPanel";
+import { SavedSessionsAndResumePanel } from "@/components/sessions/SavedSessionsAndResumePanel";
 
 interface Session {
   name: string;
@@ -200,6 +201,8 @@ function SessionSelectorOverview() {
       </section>
 
       <SessionAdoptContextDiffPanel sessionId="" />
+
+      <SavedSessionsAndResumePanel sessionId="" />
 
       <SessionHandoffsPanel
         sessionId="all"
@@ -739,6 +742,8 @@ function SessionDetailView({ sessionId }: { sessionId: string }) {
       <SessionSummaryAndEventsPanel sessionId={sessionId} />
 
       <SessionAdoptContextDiffPanel sessionId={sessionId} />
+
+      <SavedSessionsAndResumePanel sessionId={sessionId} />
 
       <SessionCheckpointsSection
         sessionId={sessionId}

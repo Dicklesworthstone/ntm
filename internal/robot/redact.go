@@ -178,6 +178,7 @@ func redactCapabilityCommand() RobotCommandInfo {
 		Name:        "redact",
 		Flag:        "--robot-redact",
 		Category:    "utility",
+		Summary:     "Preview secret and PII redaction.",
 		Description: "Scan text or a file for secrets/PII and return safe-redacted output with line/column finding metadata without ever emitting raw matched secrets.",
 		Parameters: []RobotParameter{
 			{Name: "text", Flag: "--robot-redact", Type: "string", Required: false, Description: "Inline text to scan and redact (or omit value and pass --redact-file)"},

@@ -1479,6 +1479,88 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 		Request:    RedactPreviewRequest{},
 		RequestReq: true,
 	},
+	"handleSavedSessionsListV1": {
+		Response: SavedSessionsEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "archived", Type: "boolean", Description: "When true, list archived saved session snapshots instead of active snapshots."},
+		},
+	},
+	"handleSavedSessionsSaveV1": {
+		Response:   SavedSessionsEnvelopeResponse{},
+		Envelope:   true,
+		Request:    SavedSessionSaveRequest{},
+		RequestReq: true,
+	},
+	"handleSavedSessionsShowV1": {
+		Response: SavedSessionsEnvelopeResponse{},
+		Envelope: true,
+	},
+	"handleSavedSessionsArchiveV1": {
+		Response: SavedSessionsEnvelopeResponse{},
+		Envelope: true,
+	},
+	"handleSavedSessionsUnarchiveV1": {
+		Response: SavedSessionsEnvelopeResponse{},
+		Envelope: true,
+	},
+	"handleSessionMappingV1": {
+		Response: SessionMappingEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
+		},
+	},
+	"handleWorkflowsListV1": {
+		Response: WorkflowsEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "role", Type: "string", Description: "Optional agent role filter."},
+			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
+		},
+	},
+	"handleWorkflowsShowV1": {
+		Response: WorkflowsEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "role", Type: "string", Description: "Optional agent role filter for displayed workflow agents."},
+			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
+		},
+	},
+	"handleSequencesCreateV1": {
+		Response:   SequenceEnvelopeResponse{},
+		Envelope:   true,
+		Request:    SequenceCreateRequest{},
+		RequestReq: true,
+	},
+	"handleSequencesNextV1": {
+		Response: SequenceEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "pane", Type: "string", Description: "Target tmux pane identifier (e.g. %1)."},
+			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
+		},
+	},
+	"handleSequencesAdvanceV1": {
+		Response:   SequenceEnvelopeResponse{},
+		Envelope:   true,
+		Request:    SequenceAdvanceRequest{},
+		RequestReq: true,
+	},
+	"handleSessionTemplatesListV1": {
+		Response: SessionTemplatesEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
+		},
+	},
+	"handleSessionTemplatesShowV1": {
+		Response: SessionTemplatesEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
+		},
+	},
 }
 
 func lookupServedRouteSchema(rt RouterRoute) (routeSchemaSpec, bool) {

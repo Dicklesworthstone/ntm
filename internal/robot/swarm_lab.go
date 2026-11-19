@@ -552,6 +552,7 @@ func swarmLabCapabilityCommand() RobotCommandInfo {
 		Name:        "swarm-lab",
 		Flag:        "--robot-swarm-lab",
 		Category:    "utility",
+		Summary:     "Run synthetic swarm scale scenarios.",
 		Description: "Run synthetic swarm scale scenarios, overload regression corpus checks, and host-capacity calibration.",
 		Parameters: []RobotParameter{
 			{Name: "lab-action", Flag: "--lab-action", Type: "string", Required: false, Default: "list", Description: "Lab action: list, run, corpus, calibrate"},

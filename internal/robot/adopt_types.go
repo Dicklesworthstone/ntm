@@ -179,6 +179,7 @@ func adoptCapabilityCommand() RobotCommandInfo {
 		Name:        "adopt",
 		Flag:        "--robot-adopt",
 		Category:    "spawn",
+		Summary:     "Adopt an external tmux session.",
 		Description: "Adopt an external tmux session into NTM management across all 11 agent harnesses plus user panes with 2D window.pane or --adopt-by-window addressing.",
 		Parameters: []RobotParameter{
 			{Name: "session", Flag: "--robot-adopt", Type: "string", Required: true, Description: "External tmux session name to adopt"},

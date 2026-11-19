@@ -228,7 +228,11 @@ func getCommandsContent() *DocsContent {
 --robot-ensemble-spawn=SESSION: Spawn reasoning ensemble
 --robot-ensemble-synthesize=SESSION: Synthesize ensemble reasoning outputs
 --robot-recipes: List available spawn presets
---robot-personas: List built-in, user, and project personas and profile sets (--personas-agent, --personas-tag)`,
+--robot-personas: List built-in, user, and project personas and profile sets (--personas-agent, --personas-tag)
+--robot-session-templates: List or inspect multi-agent session templates (--template-name)
+--robot-saved-sessions: List, inspect, capture, archive, or unarchive saved session snapshots (--saved-action, --saved-name, --saved-session, --saved-archived, --saved-overwrite)
+--robot-mapping=SESSION: Resolve Agent Mail names to live tmux panes and reconcile border badges
+--robot-workflows: List or inspect workflow coordination templates with trigger validation (--workflows-name, --workflows-role)`,
 			},
 			{
 				Heading: "Beads Management",

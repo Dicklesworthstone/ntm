@@ -193,6 +193,7 @@ func webhookOutboxCapabilityCommand() RobotCommandInfo {
 		Name:        "webhook-outbox",
 		Flag:        "--robot-webhook-outbox",
 		Category:    "utility",
+		Summary:     "Manage durable webhook outbox receipts.",
 		Description: "Inspect, retry, or archive durable project webhook outbox receipts without starting background HTTP senders.",
 		Parameters: []RobotParameter{
 			{Name: "outbox-action", Flag: "--outbox-action", Type: "string", Required: false, Default: "list", Description: "Outbox action: list, retry, archive"},

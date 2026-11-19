@@ -682,6 +682,9 @@ func (s *Server) buildRouter() chi.Router {
 		// Session Adopt, Context, Diff, Files, Personas, Recipes, Hooks & Redact Preview API (ADR ORI)
 		s.registerSessionIntelRoutes(r)
 
+		// Saved Sessions, Session Agent Mapping, Workflows, Sequences & Session Templates API (ADR ORI)
+		s.registerPersistenceWorkflowRoutes(r)
+
 		// Attention Feed API - normalized event streaming for operator agents
 		r.Route("/attention", func(r chi.Router) {
 			// SSE stream with cursor-based replay
@@ -1150,7 +1153,8 @@ func robotErrorHTTPStatus(code string) int {
 	switch code {
 	case robot.ErrCodeInvalidFlag, robot.ErrCodeInvalidArgs:
 		return http.StatusBadRequest
-	case robot.ErrCodeSessionNotFound, robot.ErrCodePaneNotFound, robot.ErrCodeNotFound, robot.ErrCodeEnsembleNotFound:
+	case robot.ErrCodeSessionNotFound, robot.ErrCodePaneNotFound, robot.ErrCodeNotFound, robot.ErrCodeEnsembleNotFound,
+		robot.ErrCodeWorkflowNotFound, robot.ErrCodeTemplateNotFound:
 		return http.StatusNotFound
 	case robot.ErrCodeSynthesisNotReady:
 		return http.StatusConflict

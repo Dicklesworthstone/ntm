@@ -308,6 +308,7 @@ func scaleCapabilityCommand() RobotCommandInfo {
 		Name:        "scale",
 		Flag:        "--robot-scale",
 		Category:    "spawn",
+		Summary:     "Scale session agent counts per harness.",
 		Description: "Scale agent counts per harness up or down across all 11 built-in harnesses without interactive prompts.",
 		Parameters: []RobotParameter{
 			{Name: "session", Flag: "--robot-scale", Type: "string", Required: true, Description: "Session name to scale"},
@@ -338,6 +339,7 @@ func rebalanceCapabilityCommand() RobotCommandInfo {
 		Name:        "rebalance",
 		Flag:        "--robot-rebalance",
 		Category:    "control",
+		Summary:     "Rebalance session workload and geometry.",
 		Description: "Analyze bead assignment imbalance across session panes, optionally check tile geometry, and apply suggested transfers.",
 		Parameters: []RobotParameter{
 			{Name: "session", Flag: "--robot-rebalance", Type: "string", Required: true, Description: "Session name to analyze or rebalance"},
@@ -361,6 +363,7 @@ func coordinatorCapabilityCommand() RobotCommandInfo {
 		Name:        "coordinator",
 		Flag:        "--robot-coordinator",
 		Category:    "control",
+		Summary:     "Inspect session coordinator and digests.",
 		Description: "Inspect session coordinator agent states, generate or send coordination digests, or detect active file reservation conflicts.",
 		Parameters: []RobotParameter{
 			{Name: "session", Flag: "--robot-coordinator", Type: "string", Required: true, Description: "Session name"},

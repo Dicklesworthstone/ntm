@@ -180,6 +180,10 @@ var SchemaPagination = map[string]SchemaPaginationFlag{
 	"redact":              {Reason: "bounded: secret/PII findings within a single scanned text or file payload"},
 	"hooks":               {Reason: "bounded: 5 managed git hook slots or a single hook execution report"},
 	"personas":            {Reason: "bounded: configured built-in, user, and project persona catalog"},
+	"saved_sessions":      {Reason: "bounded: saved session snapshots and per-session panes on local host"},
+	"mapping":             {Reason: "bounded: mapped panes and identity discrepancy records for a single session"},
+	"workflows":           {Reason: "bounded: configured built-in, user, and project workflow templates"},
+	"session_templates":   {Reason: "bounded: configured built-in, user, and project session templates"},
 }
 
 // MustRegisterSchemaPagination declares the pagination flag for a schema type

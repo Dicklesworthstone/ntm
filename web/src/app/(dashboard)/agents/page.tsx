@@ -18,6 +18,7 @@ import {
   type components,
 } from "@/lib/api/client";
 import { PersonasAndRecipesPanel } from "@/components/agents/PersonasAndRecipesPanel";
+import { AgentMappingAndBadgesPanel } from "@/components/agents/AgentMappingAndBadgesPanel";
 
 type AgentSpawnRequest = components["schemas"]["AgentSpawnRequest"];
 type SpawnOutput = components["schemas"]["SpawnOutput"];
@@ -792,6 +793,10 @@ export default function AgentsPage() {
           </table>
         </div>
       )}
+
+      <AgentMappingAndBadgesPanel
+        sessionOptions={(fleetData?.sessions ?? []).map((s) => s.name)}
+      />
 
       <PersonasAndRecipesPanel
         onSelectRecipePreset={(recipeName) => setSpawnPreset(recipeName)}

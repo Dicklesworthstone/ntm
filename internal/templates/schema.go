@@ -786,6 +786,18 @@ func NewSessionTemplateLoader() *SessionTemplateLoader {
 	}
 }
 
+// NewSessionTemplateLoaderForProject creates a loader rooted at projectRoot when non-empty.
+func NewSessionTemplateLoaderForProject(projectRoot string) *SessionTemplateLoader {
+	trimmed := strings.TrimSpace(projectRoot)
+	if strings.Compare(trimmed, "") == 0 {
+		return NewSessionTemplateLoader()
+	}
+	return &SessionTemplateLoader{
+		projectDir: filepath.Join(trimmed, ".ntm", "templates"),
+		userDir:    getDefaultSessionTemplateDir(),
+	}
+}
+
 func getDefaultSessionTemplateDir() string {
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 		return filepath.Join(xdg, "ntm", "templates")

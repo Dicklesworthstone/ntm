@@ -2,43 +2,26 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/templates"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
 // SessionTemplatesListResult is the JSON output for session-templates list command.
-type SessionTemplatesListResult struct {
-	Templates []SessionTemplateInfo `json:"templates"`
-	Total     int                   `json:"total"`
-}
+type SessionTemplatesListResult = robot.SessionTemplatesListResult
 
 // SessionTemplateInfo is a session template summary for JSON output.
-type SessionTemplateInfo struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Source      string   `json:"source"`
-	Tags        []string `json:"tags,omitempty"`
-	AgentCount  int      `json:"agent_count"`
-}
+type SessionTemplateInfo = robot.SessionTemplateInfo
 
 // SessionTemplateShowResult is the JSON output for session-templates show command.
-type SessionTemplateShowResult struct {
-	Name        string                        `json:"name"`
-	Description string                        `json:"description"`
-	Source      string                        `json:"source"`
-	Tags        []string                      `json:"tags,omitempty"`
-	Agents      *templates.AgentsSpec         `json:"agents"`
-	Prompts     *templates.PromptsSpec        `json:"prompts,omitempty"`
-	CASS        *templates.CASSSpec           `json:"cass,omitempty"`
-	Beads       *templates.BeadsSpec          `json:"beads,omitempty"`
-	Options     *templates.SessionOptionsSpec `json:"options,omitempty"`
-}
+type SessionTemplateShowResult = robot.SessionTemplateShowResult
 
 func newSessionTemplatesCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -92,30 +75,26 @@ Examples:
 }
 
 func runSessionTemplatesList() error {
+	if jsonOutput {
+		out, err := robot.GetSessionTemplates(robot.SessionTemplatesOptions{})
+		if err != nil {
+			return emitJSONFailureEnvelopeWithCause(sessionTemplateErrorResponse(err, ""), err)
+		}
+		if !out.Success {
+			cause := errors.New(out.Error)
+			return emitJSONFailureEnvelopeWithCause(sessionTemplateErrorResponse(cause, ""), cause)
+		}
+		result := SessionTemplatesListResult{
+			Templates: out.Templates,
+			Total:     len(out.Templates),
+		}
+		return json.NewEncoder(os.Stdout).Encode(result)
+	}
+
 	loader := templates.NewSessionTemplateLoader()
 	tmpls, err := loader.List()
 	if err != nil {
-		if jsonOutput {
-			return emitJSONFailureEnvelopeWithCause(sessionTemplateErrorResponse(err, ""), err)
-		}
 		return err
-	}
-
-	if jsonOutput {
-		result := SessionTemplatesListResult{
-			Templates: make([]SessionTemplateInfo, len(tmpls)),
-			Total:     len(tmpls),
-		}
-		for i, t := range tmpls {
-			result.Templates[i] = SessionTemplateInfo{
-				Name:        t.Metadata.Name,
-				Description: t.Metadata.Description,
-				Source:      t.Metadata.Source,
-				Tags:        t.Metadata.Tags,
-				AgentCount:  t.GetAgentCount(),
-			}
-		}
-		return json.NewEncoder(os.Stdout).Encode(result)
 	}
 
 	if len(tmpls) == 0 {
@@ -187,42 +166,25 @@ Examples:
 }
 
 func runSessionTemplatesShow(name string) error {
+	if jsonOutput {
+		out, err := robot.GetSessionTemplates(robot.SessionTemplatesOptions{Name: name})
+		if err != nil {
+			return emitJSONFailureEnvelopeWithCause(sessionTemplateErrorResponse(err, name), err)
+		}
+		if !out.Success || out.Template == nil {
+			cause := errors.New(out.Error)
+			return emitJSONFailureEnvelopeWithCause(sessionTemplateErrorResponse(cause, name), cause)
+		}
+		return json.NewEncoder(os.Stdout).Encode(out.Template)
+	}
+
 	loader := templates.NewSessionTemplateLoader()
 	tmpl, err := loader.Load(name)
 	if err != nil {
-		if jsonOutput {
-			return emitJSONFailureEnvelopeWithCause(sessionTemplateErrorResponse(err, name), err)
-		}
 		return err
 	}
 	if err := tmpl.Validate(); err != nil {
-		if jsonOutput {
-			return emitJSONFailureEnvelopeWithCause(sessionTemplateErrorResponse(err, name), err)
-		}
 		return err
-	}
-
-	if jsonOutput {
-		result := SessionTemplateShowResult{
-			Name:        tmpl.Metadata.Name,
-			Description: tmpl.Metadata.Description,
-			Source:      tmpl.Metadata.Source,
-			Tags:        tmpl.Metadata.Tags,
-			Agents:      &tmpl.Spec.Agents,
-		}
-		if tmpl.Spec.Prompts.Initial != "" || len(tmpl.Spec.Prompts.PerAgent) > 0 {
-			result.Prompts = &tmpl.Spec.Prompts
-		}
-		if tmpl.Spec.CASS.Enabled != nil && *tmpl.Spec.CASS.Enabled {
-			result.CASS = &tmpl.Spec.CASS
-		}
-		if tmpl.Spec.Beads.AutoAssign || tmpl.Spec.Beads.Filter != "" {
-			result.Beads = &tmpl.Spec.Beads
-		}
-		if tmpl.Spec.Options.Stagger != nil || tmpl.Spec.Options.Checkpoint != nil {
-			result.Options = &tmpl.Spec.Options
-		}
-		return json.NewEncoder(os.Stdout).Encode(result)
 	}
 
 	t := theme.Current()
@@ -360,39 +322,8 @@ func sessionTemplateErrorResponse(err error, name string) map[string]interface{}
 		"success": false,
 		"error":   err.Error(),
 	}
-	if suggestions := sessionTemplateSuggestions(err, name); len(suggestions) > 0 {
+	if suggestions := robot.SessionTemplateSuggestions(err, name); len(suggestions) > 0 {
 		resp["suggestions"] = suggestions
 	}
 	return resp
-}
-
-func sessionTemplateSuggestions(err error, name string) []string {
-	if err == nil {
-		return nil
-	}
-
-	errStr := err.Error()
-	var suggestions []string
-
-	if strings.Contains(errStr, "session template not found") {
-		suggestions = append(suggestions, "Run `ntm session-templates list` to see available templates")
-		suggestions = append(suggestions, "Check ~/.config/ntm/templates or .ntm/templates for custom templates")
-		if name != "" {
-			suggestions = append(suggestions, fmt.Sprintf("Check spelling for template name %q", name))
-		}
-	}
-
-	if strings.Contains(errStr, "validation failed") {
-		suggestions = append(suggestions, "Fix validation errors in the template YAML")
-		suggestions = append(suggestions, "Ensure metadata.name uses only letters, numbers, '-' or '_'")
-		if name != "" {
-			suggestions = append(suggestions, fmt.Sprintf("Rename metadata.name to a valid value like %q", name))
-		}
-	}
-
-	if len(suggestions) == 0 {
-		suggestions = append(suggestions, "Run `ntm session-templates list` to see available templates")
-	}
-
-	return suggestions
 }

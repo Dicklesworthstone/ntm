@@ -530,6 +530,22 @@ func resetRobotExtFlags() {
 	robotPersonasAgent = ""
 	robotPersonasTag = ""
 
+	robotSavedSessions = false
+	robotSavedAction = "list"
+	robotSavedName = ""
+	robotSavedSession = ""
+	robotSavedArchived = false
+	robotSavedOverwrite = false
+
+	robotMapping = ""
+
+	robotWorkflows = false
+	robotWorkflowsName = ""
+	robotWorkflowsRole = ""
+
+	robotSessionTemplates = false
+	robotTemplateName = ""
+
 	if rootCmd != nil {
 		for _, flagName := range []string{
 			"robot-adopt", "adopt-cc", "adopt-cod", "adopt-gmi", "adopt-agy",
@@ -539,6 +555,10 @@ func resetRobotExtFlags() {
 			"robot-redact", "redact-file",
 			"robot-hooks", "hooks-action", "hooks-type", "hooks-fail-on-warning",
 			"robot-personas", "personas-agent", "personas-tag",
+			"robot-saved-sessions", "saved-action", "saved-name", "saved-session", "saved-archived", "saved-overwrite",
+			"robot-mapping",
+			"robot-workflows", "workflows-name", "workflows-role",
+			"robot-session-templates", "template-name",
 		} {
 			if f := rootCmd.Flags().Lookup(flagName); f != nil {
 				f.Changed = false

@@ -12024,6 +12024,367 @@
         }
       }
     },
+    "/api/v1/saved-sessions": {
+      "get": {
+        "tags": [
+          "saved-sessions"
+        ],
+        "summary": "Saved sessions list",
+        "description": "Served route `GET /api/v1/saved-sessions`. Handler: `handleSavedSessionsListV1`. Response shape reflected from Go type `SavedSessionsEnvelopeResponse`.",
+        "operationId": "get_api_v1_saved_sessions",
+        "parameters": [
+          {
+            "name": "archived",
+            "in": "query",
+            "description": "When true, list archived saved session snapshots instead of active snapshots.",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedSessionsEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "saved-sessions"
+        ],
+        "summary": "Saved sessions save",
+        "description": "Served route `POST /api/v1/saved-sessions`. Handler: `handleSavedSessionsSaveV1`. Response shape reflected from Go type `SavedSessionsEnvelopeResponse`.",
+        "operationId": "post_api_v1_saved_sessions",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavedSessionSaveRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedSessionsEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/saved-sessions/{name}": {
+      "get": {
+        "tags": [
+          "saved-sessions"
+        ],
+        "summary": "Saved sessions show",
+        "description": "Served route `GET /api/v1/saved-sessions/{name}`. Handler: `handleSavedSessionsShowV1`. Response shape reflected from Go type `SavedSessionsEnvelopeResponse`.",
+        "operationId": "get_api_v1_saved_sessions_name",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedSessionsEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/saved-sessions/{name}/archive": {
+      "post": {
+        "tags": [
+          "saved-sessions"
+        ],
+        "summary": "Saved sessions archive",
+        "description": "Served route `POST /api/v1/saved-sessions/{name}/archive`. Handler: `handleSavedSessionsArchiveV1`. Response shape reflected from Go type `SavedSessionsEnvelopeResponse`.",
+        "operationId": "post_api_v1_saved_sessions_name_archive",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedSessionsEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/saved-sessions/{name}/unarchive": {
+      "post": {
+        "tags": [
+          "saved-sessions"
+        ],
+        "summary": "Saved sessions unarchive",
+        "description": "Served route `POST /api/v1/saved-sessions/{name}/unarchive`. Handler: `handleSavedSessionsUnarchiveV1`. Response shape reflected from Go type `SavedSessionsEnvelopeResponse`.",
+        "operationId": "post_api_v1_saved_sessions_name_unarchive",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedSessionsEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/scanner/findings": {
       "get": {
         "tags": [
@@ -12598,6 +12959,383 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sequences": {
+      "post": {
+        "tags": [
+          "sequences"
+        ],
+        "summary": "Sequences create",
+        "description": "Served route `POST /api/v1/sequences`. Handler: `handleSequencesCreateV1`. Response shape reflected from Go type `SequenceEnvelopeResponse`.",
+        "operationId": "post_api_v1_sequences",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SequenceCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SequenceEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sequences/{name}/advance": {
+      "post": {
+        "tags": [
+          "sequences"
+        ],
+        "summary": "Sequences advance",
+        "description": "Served route `POST /api/v1/sequences/{name}/advance`. Handler: `handleSequencesAdvanceV1`. Response shape reflected from Go type `SequenceEnvelopeResponse`.",
+        "operationId": "post_api_v1_sequences_name_advance",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SequenceAdvanceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SequenceEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sequences/{name}/next": {
+      "get": {
+        "tags": [
+          "sequences"
+        ],
+        "summary": "Sequences next",
+        "description": "Served route `GET /api/v1/sequences/{name}/next`. Handler: `handleSequencesNextV1`. Response shape reflected from Go type `SequenceEnvelopeResponse`.",
+        "operationId": "get_api_v1_sequences_name_next",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pane",
+            "in": "query",
+            "description": "Target tmux pane identifier (e.g. %1).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project_dir",
+            "in": "query",
+            "description": "Optional existing absolute project directory override (alias: ?project=).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SequenceEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/session-templates": {
+      "get": {
+        "tags": [
+          "session-templates"
+        ],
+        "summary": "Session templates list",
+        "description": "Served route `GET /api/v1/session-templates`. Handler: `handleSessionTemplatesListV1`. Response shape reflected from Go type `SessionTemplatesEnvelopeResponse`.",
+        "operationId": "get_api_v1_session_templates",
+        "parameters": [
+          {
+            "name": "project_dir",
+            "in": "query",
+            "description": "Optional existing absolute project directory override (alias: ?project=).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionTemplatesEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/session-templates/{name}": {
+      "get": {
+        "tags": [
+          "session-templates"
+        ],
+        "summary": "Session templates show",
+        "description": "Served route `GET /api/v1/session-templates/{name}`. Handler: `handleSessionTemplatesShowV1`. Response shape reflected from Go type `SessionTemplatesEnvelopeResponse`.",
+        "operationId": "get_api_v1_session_templates_name",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project_dir",
+            "in": "query",
+            "description": "Optional existing absolute project directory override (alias: ?project=).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionTemplatesEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -13840,6 +14578,87 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SessionInterruptEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{id}/mapping": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session mapping",
+        "description": "Served route `GET /api/v1/sessions/{id}/mapping`. Handler: `handleSessionMappingV1`. Response shape reflected from Go type `SessionMappingEnvelopeResponse`.",
+        "operationId": "get_api_v1_sessions_id_mapping",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project_dir",
+            "in": "query",
+            "description": "Optional existing absolute project directory override (alias: ?project=).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionMappingEnvelopeResponse"
                 }
               }
             }
@@ -17303,6 +18122,165 @@
         }
       }
     },
+    "/api/v1/workflows": {
+      "get": {
+        "tags": [
+          "workflows"
+        ],
+        "summary": "Workflows list",
+        "description": "Served route `GET /api/v1/workflows`. Handler: `handleWorkflowsListV1`. Response shape reflected from Go type `WorkflowsEnvelopeResponse`.",
+        "operationId": "get_api_v1_workflows",
+        "parameters": [
+          {
+            "name": "role",
+            "in": "query",
+            "description": "Optional agent role filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project_dir",
+            "in": "query",
+            "description": "Optional existing absolute project directory override (alias: ?project=).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowsEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workflows/{name}": {
+      "get": {
+        "tags": [
+          "workflows"
+        ],
+        "summary": "Workflows show",
+        "description": "Served route `GET /api/v1/workflows/{name}`. Handler: `handleWorkflowsShowV1`. Response shape reflected from Go type `WorkflowsEnvelopeResponse`.",
+        "operationId": "get_api_v1_workflows_name",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "role",
+            "in": "query",
+            "description": "Optional agent role filter for displayed workflow agents.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project_dir",
+            "in": "query",
+            "description": "Optional existing absolute project directory override (alias: ?project=).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowsEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/worktrees": {
       "get": {
         "tags": [
@@ -18797,6 +19775,58 @@
           "gemini_max"
         ]
       },
+      "AgentConfig": {
+        "type": "object",
+        "properties": {
+          "agy": {
+            "type": "integer"
+          },
+          "aider": {
+            "type": "integer"
+          },
+          "cc": {
+            "type": "integer"
+          },
+          "cod": {
+            "type": "integer"
+          },
+          "cursor": {
+            "type": "integer"
+          },
+          "gmi": {
+            "type": "integer"
+          },
+          "grok": {
+            "type": "integer"
+          },
+          "oc": {
+            "type": "integer"
+          },
+          "ollama": {
+            "type": "integer"
+          },
+          "omp": {
+            "type": "integer"
+          },
+          "user": {
+            "type": "integer"
+          },
+          "windsurf": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "aider",
+          "cc",
+          "cod",
+          "cursor",
+          "gmi",
+          "oc",
+          "ollama",
+          "user",
+          "windsurf"
+        ]
+      },
       "AgentContextInfo": {
         "type": "object",
         "properties": {
@@ -19207,6 +20237,61 @@
           }
         }
       },
+      "AgentLaunchSpec": {
+        "type": "object",
+        "properties": {
+          "agent_mail_project": {
+            "type": "string"
+          },
+          "agent_type": {
+            "type": "string"
+          },
+          "caam_profile": {
+            "type": "string"
+          },
+          "claude_isolate_credentials": {
+            "type": "boolean"
+          },
+          "claude_token_file": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "model_alias": {
+            "type": "string"
+          },
+          "omitted_env": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "persona": {
+            "type": "string"
+          },
+          "reasoning_effort": {
+            "type": "string"
+          },
+          "system_prompt_file": {
+            "type": "string"
+          },
+          "system_prompt_sha256": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_type",
+          "command",
+          "version"
+        ]
+      },
       "AgentMailSpawnStatus": {
         "type": "object",
         "properties": {
@@ -19312,6 +20397,79 @@
         },
         "required": [
           "available"
+        ]
+      },
+      "AgentMappingBadges": {
+        "type": "object",
+        "properties": {
+          "attempted_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "cleared": {
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "published": {
+            "type": "integer"
+          },
+          "tmux_error": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "windows_prepared": {
+            "type": "integer"
+          },
+          "windows_restored": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attempted_at",
+          "cleared",
+          "enabled",
+          "published",
+          "windows_prepared",
+          "windows_restored"
+        ]
+      },
+      "AgentMappingEntry": {
+        "type": "object",
+        "properties": {
+          "agent_type": {
+            "type": "string"
+          },
+          "identity": {
+            "$ref": "#/components/schemas/PaneBadgeRecord"
+          },
+          "name": {
+            "type": "string"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "pane_index": {
+            "type": "integer"
+          },
+          "pane_title": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "pane_id",
+          "pane_index",
+          "session"
         ]
       },
       "AgentOutputSummary": {
@@ -19442,6 +20600,43 @@
           }
         }
       },
+      "AgentTypeSpec": {
+        "type": "object",
+        "properties": {
+          "Count": {
+            "type": "integer"
+          },
+          "Model": {
+            "type": "string"
+          },
+          "Variants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentVariantSpec"
+            }
+          }
+        },
+        "required": [
+          "Count",
+          "Model",
+          "Variants"
+        ]
+      },
+      "AgentVariantSpec": {
+        "type": "object",
+        "properties": {
+          "Count": {
+            "type": "integer"
+          },
+          "Model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "Count",
+          "Model"
+        ]
+      },
       "AgentWaitRequest": {
         "type": "object",
         "properties": {
@@ -19472,6 +20667,50 @@
         },
         "required": [
           "condition"
+        ]
+      },
+      "AgentsSpec": {
+        "type": "object",
+        "properties": {
+          "Aider": {
+            "$ref": "#/components/schemas/AgentTypeSpec"
+          },
+          "Antigravity": {
+            "$ref": "#/components/schemas/AgentTypeSpec"
+          },
+          "Claude": {
+            "$ref": "#/components/schemas/AgentTypeSpec"
+          },
+          "Codex": {
+            "$ref": "#/components/schemas/AgentTypeSpec"
+          },
+          "Cursor": {
+            "$ref": "#/components/schemas/AgentTypeSpec"
+          },
+          "Gemini": {
+            "$ref": "#/components/schemas/AgentTypeSpec"
+          },
+          "Ollama": {
+            "$ref": "#/components/schemas/AgentTypeSpec"
+          },
+          "Personas": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PersonaSpec"
+            }
+          },
+          "Total": {
+            "type": "integer"
+          },
+          "UserPane": {
+            "type": "boolean"
+          },
+          "Windsurf": {
+            "$ref": "#/components/schemas/AgentTypeSpec"
+          }
+        },
+        "required": [
+          "Personas"
         ]
       },
       "AggregationBucket": {
@@ -22118,6 +23357,25 @@
           "timestamp"
         ]
       },
+      "BeadsSpec": {
+        "type": "object",
+        "properties": {
+          "AutoAssign": {
+            "type": "boolean"
+          },
+          "Filter": {
+            "type": "string"
+          },
+          "Recipe": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "AutoAssign",
+          "Filter",
+          "Recipe"
+        ]
+      },
       "BeadsStatsEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -23061,6 +24319,24 @@
           "age_days"
         ]
       },
+      "CASSSpec": {
+        "type": "object",
+        "properties": {
+          "Enabled": {
+            "type": "boolean"
+          },
+          "MaxSessions": {
+            "type": "integer"
+          },
+          "Query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "MaxSessions",
+          "Query"
+        ]
+      },
       "CASSStatusResponse": {
         "type": "object",
         "properties": {
@@ -23667,6 +24943,21 @@
           "pane_count"
         ]
       },
+      "CheckpointSpec": {
+        "type": "object",
+        "properties": {
+          "Enabled": {
+            "type": "boolean"
+          },
+          "Interval": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "Enabled",
+          "Interval"
+        ]
+      },
       "CheckpointsListEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -24036,6 +25327,41 @@
           "text",
           "type"
         ]
+      },
+      "ConfigSnapshot": {
+        "type": "object",
+        "properties": {
+          "aider_cmd": {
+            "type": "string"
+          },
+          "antigravity_cmd": {
+            "type": "string"
+          },
+          "claude_cmd": {
+            "type": "string"
+          },
+          "codex_cmd": {
+            "type": "string"
+          },
+          "cursor_cmd": {
+            "type": "string"
+          },
+          "gemini_cmd": {
+            "type": "string"
+          },
+          "ollama_cmd": {
+            "type": "string"
+          },
+          "omp_cmd": {
+            "type": "string"
+          },
+          "opencode_cmd": {
+            "type": "string"
+          },
+          "windsurf_cmd": {
+            "type": "string"
+          }
+        }
       },
       "Conflict": {
         "type": "object",
@@ -27298,6 +28624,33 @@
           }
         }
       },
+      "ErrorConfig": {
+        "type": "object",
+        "properties": {
+          "MaxRetriesPerStage": {
+            "type": "integer"
+          },
+          "OnAgentCrash": {
+            "type": "string"
+          },
+          "OnAgentError": {
+            "type": "string"
+          },
+          "OnTimeout": {
+            "type": "string"
+          },
+          "StageTimeoutMinutes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "MaxRetriesPerStage",
+          "OnAgentCrash",
+          "OnAgentError",
+          "OnTimeout",
+          "StageTimeoutMinutes"
+        ]
+      },
       "ErrorDetails": {
         "type": "object",
         "properties": {
@@ -28253,6 +29606,47 @@
           "missing_count",
           "new_count",
           "unchanged_count"
+        ]
+      },
+      "FlowConfig": {
+        "type": "object",
+        "properties": {
+          "ApprovalMode": {
+            "type": "string"
+          },
+          "Initial": {
+            "type": "string"
+          },
+          "ParallelWithinStage": {
+            "type": "boolean"
+          },
+          "Quorum": {
+            "type": "integer"
+          },
+          "RequireApproval": {
+            "type": "boolean"
+          },
+          "Stages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "Transitions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Transition"
+            }
+          }
+        },
+        "required": [
+          "ApprovalMode",
+          "Initial",
+          "ParallelWithinStage",
+          "Quorum",
+          "RequireApproval",
+          "Stages",
+          "Transitions"
         ]
       },
       "FollowUpInfo": {
@@ -33200,6 +34594,89 @@
           "unique_to_b"
         ]
       },
+      "PaneBadgeRecord": {
+        "type": "object",
+        "properties": {
+          "assigned_name": {
+            "type": "string"
+          },
+          "assignment_state": {
+            "type": "string"
+          },
+          "binding_verified": {
+            "type": "boolean"
+          },
+          "cached": {
+            "type": "boolean"
+          },
+          "label": {
+            "type": "string"
+          },
+          "last_attempt_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_success_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lifecycle": {
+            "type": "string"
+          },
+          "observation_state": {
+            "type": "string"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "pane_index": {
+            "type": "integer"
+          },
+          "pane_pid": {
+            "type": "integer"
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "publish_error": {
+            "type": "string"
+          },
+          "published": {
+            "type": "boolean"
+          },
+          "recorded_pid": {
+            "type": "integer"
+          },
+          "resolved_name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "window_index": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "assignment_state",
+          "binding_verified",
+          "cached",
+          "last_attempt_at",
+          "lifecycle",
+          "observation_state",
+          "pane_id",
+          "pane_index",
+          "published",
+          "state",
+          "window_index"
+        ]
+      },
       "PaneDetailEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -33414,6 +34891,71 @@
           "window_index"
         ]
       },
+      "PaneSequence": {
+        "type": "object",
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "name": {
+            "type": "string"
+          },
+          "positions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "created_at",
+          "name",
+          "positions",
+          "steps",
+          "updated_at"
+        ]
+      },
+      "PaneSequencePosition": {
+        "type": "object",
+        "properties": {
+          "advanced": {
+            "type": "boolean"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "pane": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "sequence": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "advanced",
+          "complete",
+          "pane",
+          "position",
+          "sequence"
+        ]
+      },
       "PaneSpec": {
         "type": "object",
         "properties": {
@@ -33432,42 +34974,75 @@
       "PaneState": {
         "type": "object",
         "properties": {
+          "active": {
+            "type": "boolean"
+          },
           "agent_type": {
-            "type": "string",
-            "description": "Agent type"
+            "type": "string"
           },
-          "last_output": {
-            "type": "string",
-            "description": "Last output"
+          "command": {
+            "type": "string"
           },
-          "observation_confidence": {
-            "type": "number",
-            "description": "Observation confidence"
+          "cwd": {
+            "type": "string"
           },
-          "observation_error": {
-            "type": "string",
-            "description": "Observation error"
+          "height": {
+            "type": "integer"
           },
-          "observation_freshness": {
-            "type": "string",
-            "description": "Observation freshness"
+          "index": {
+            "type": "integer"
           },
-          "observed_at": {
-            "type": "string",
-            "description": "Observed at"
+          "launch_spec": {
+            "$ref": "#/components/schemas/AgentLaunchSpec"
           },
-          "state": {
+          "model": {
+            "type": "string"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "session_confidence": {
+            "type": "number"
+          },
+          "session_failure_code": {
+            "type": "string"
+          },
+          "session_freshness": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "session_observed_at": {
             "type": "string",
-            "description": "State"
+            "format": "date-time"
+          },
+          "session_provider": {
+            "type": "string"
+          },
+          "session_source": {
+            "type": "string"
+          },
+          "session_source_updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "title": {
+            "type": "string"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "window_index": {
+            "type": "integer"
           }
         },
         "required": [
-          "state",
-          "last_output",
+          "active",
           "agent_type",
-          "observation_freshness",
-          "observation_confidence",
-          "observed_at"
+          "index",
+          "title",
+          "window_index"
         ]
       },
       "PaneStreamEnvelopeResponse": {
@@ -33787,6 +35362,21 @@
           "Description",
           "Name",
           "Personas"
+        ]
+      },
+      "PersonaSpec": {
+        "type": "object",
+        "properties": {
+          "Count": {
+            "type": "integer"
+          },
+          "Name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "Count",
+          "Name"
         ]
       },
       "PersonasEnvelopeResponse": {
@@ -35349,6 +36939,39 @@
         },
         "required": [
           "prompt"
+        ]
+      },
+      "PromptsSpec": {
+        "type": "object",
+        "properties": {
+          "Delay": {
+            "type": "string"
+          },
+          "Initial": {
+            "type": "string"
+          },
+          "PerAgent": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "Template": {
+            "type": "string"
+          },
+          "Variables": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "Delay",
+          "Initial",
+          "PerAgent",
+          "Template",
+          "Variables"
         ]
       },
       "ProvenanceChain": {
@@ -38220,6 +39843,119 @@
           "timestamp"
         ]
       },
+      "SavedSession": {
+        "type": "object",
+        "properties": {
+          "agents": {
+            "type": "integer"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "file_path": {
+            "type": "string"
+          },
+          "file_size": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "git_branch": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "saved_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "agents",
+          "cwd",
+          "file_path",
+          "file_size",
+          "name",
+          "saved_at"
+        ]
+      },
+      "SavedSessionSaveRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "overwrite": {
+            "type": "boolean"
+          },
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      },
+      "SavedSessionsEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "action": {
+            "type": "string"
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "file_path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "resumable_panes": {
+            "type": "integer"
+          },
+          "saved_as": {
+            "type": "string"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SavedSession"
+            }
+          },
+          "state": {
+            "$ref": "#/components/schemas/SessionState"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "schema_id",
+          "schema_version",
+          "success",
+          "timestamp"
+        ]
+      },
       "ScaleAction": {
         "type": "object",
         "properties": {
@@ -39243,6 +40979,72 @@
           "render_changed"
         ]
       },
+      "SequenceAdvanceRequest": {
+        "type": "object",
+        "properties": {
+          "expected_position": {
+            "type": "integer"
+          },
+          "pane": {
+            "type": "string"
+          },
+          "project_dir": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane"
+        ]
+      },
+      "SequenceCreateRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "steps"
+        ]
+      },
+      "SequenceEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "pane": {
+            "$ref": "#/components/schemas/PaneSequencePosition"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "sequence": {
+            "$ref": "#/components/schemas/PaneSequence"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "success",
+          "timestamp"
+        ]
+      },
       "ServerConfigEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -40196,6 +41998,80 @@
           }
         }
       },
+      "SessionMappingEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "badges": {
+            "$ref": "#/components/schemas/AgentMappingBadges"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "discrepancies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PaneBadgeRecord"
+            }
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentMappingEntry"
+            }
+          },
+          "reconcile_error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "count",
+          "discrepancies",
+          "entries",
+          "schema_id",
+          "schema_version",
+          "session",
+          "success",
+          "timestamp"
+        ]
+      },
+      "SessionOptionsSpec": {
+        "type": "object",
+        "properties": {
+          "AutoRestart": {
+            "type": "boolean"
+          },
+          "Checkpoint": {
+            "$ref": "#/components/schemas/CheckpointSpec"
+          },
+          "Stagger": {
+            "$ref": "#/components/schemas/StaggerSpec"
+          }
+        },
+        "required": [
+          "AutoRestart"
+        ]
+      },
       "SessionRebalanceEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -40459,6 +42335,70 @@
           "targets"
         ]
       },
+      "SessionState": {
+        "type": "object",
+        "properties": {
+          "agents": {
+            "$ref": "#/components/schemas/AgentConfig"
+          },
+          "config": {
+            "$ref": "#/components/schemas/ConfigSnapshot"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "git_branch": {
+            "type": "string"
+          },
+          "git_commit": {
+            "type": "string"
+          },
+          "git_remote": {
+            "type": "string"
+          },
+          "layout": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "panes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PaneState"
+            }
+          },
+          "remote_host": {
+            "type": "string"
+          },
+          "saved_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "windows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WindowState"
+            }
+          }
+        },
+        "required": [
+          "agents",
+          "cwd",
+          "layout",
+          "name",
+          "panes",
+          "saved_at",
+          "version"
+        ]
+      },
       "SessionStatusEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -40635,6 +42575,129 @@
           "name"
         ]
       },
+      "SessionTemplateInfo": {
+        "type": "object",
+        "properties": {
+          "agent_count": {
+            "type": "integer"
+          },
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "agent_count",
+          "description",
+          "name",
+          "source"
+        ]
+      },
+      "SessionTemplateShowResult": {
+        "type": "object",
+        "properties": {
+          "agents": {
+            "$ref": "#/components/schemas/AgentsSpec"
+          },
+          "beads": {
+            "$ref": "#/components/schemas/BeadsSpec"
+          },
+          "cass": {
+            "$ref": "#/components/schemas/CASSSpec"
+          },
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "options": {
+            "$ref": "#/components/schemas/SessionOptionsSpec"
+          },
+          "prompts": {
+            "$ref": "#/components/schemas/PromptsSpec"
+          },
+          "source": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "description",
+          "name",
+          "source"
+        ]
+      },
+      "SessionTemplatesEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "action": {
+            "type": "string"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "suggestions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "template": {
+            "$ref": "#/components/schemas/SessionTemplateShowResult"
+          },
+          "templates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionTemplateInfo"
+            }
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action",
+          "schema_id",
+          "schema_version",
+          "success",
+          "timestamp"
+        ]
+      },
       "SessionZoomRequest": {
         "type": "object",
         "properties": {
@@ -40688,6 +42751,33 @@
         "required": [
           "agent_name",
           "policy"
+        ]
+      },
+      "SetupPrompt": {
+        "type": "object",
+        "properties": {
+          "Default": {
+            "type": "string"
+          },
+          "Key": {
+            "type": "string"
+          },
+          "Question": {
+            "type": "string"
+          },
+          "Required": {
+            "type": "boolean"
+          },
+          "Validation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "Default",
+          "Key",
+          "Question",
+          "Required",
+          "Validation"
         ]
       },
       "SnapshotAgent": {
@@ -42120,6 +44210,21 @@
           "title",
           "ready",
           "startup_ms"
+        ]
+      },
+      "StaggerSpec": {
+        "type": "object",
+        "properties": {
+          "Enabled": {
+            "type": "boolean"
+          },
+          "Interval": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "Enabled",
+          "Interval"
         ]
       },
       "StaleError": {
@@ -44923,6 +47028,25 @@
           "track_id"
         ]
       },
+      "Transition": {
+        "type": "object",
+        "properties": {
+          "From": {
+            "type": "string"
+          },
+          "To": {
+            "type": "string"
+          },
+          "Trigger": {
+            "$ref": "#/components/schemas/Trigger"
+          }
+        },
+        "required": [
+          "From",
+          "To",
+          "Trigger"
+        ]
+      },
       "TriageCacheInfo": {
         "type": "object",
         "properties": {
@@ -45176,6 +47300,41 @@
           "score",
           "reasons",
           "unblocks"
+        ]
+      },
+      "Trigger": {
+        "type": "object",
+        "properties": {
+          "Command": {
+            "type": "string"
+          },
+          "IdleMinutes": {
+            "type": "integer"
+          },
+          "Label": {
+            "type": "string"
+          },
+          "Minutes": {
+            "type": "integer"
+          },
+          "Pattern": {
+            "type": "string"
+          },
+          "Role": {
+            "type": "string"
+          },
+          "Type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "Command",
+          "IdleMinutes",
+          "Label",
+          "Minutes",
+          "Pattern",
+          "Role",
+          "Type"
         ]
       },
       "UnassignableBead": {
@@ -45830,6 +47989,29 @@
           "revision"
         ]
       },
+      "WindowState": {
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "index": {
+            "type": "integer"
+          },
+          "layout": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "zoomed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "index"
+        ]
+      },
       "WorkGraph": {
         "type": "object",
         "properties": {
@@ -46267,6 +48449,62 @@
           "steps"
         ]
       },
+      "WorkflowAgent": {
+        "type": "object",
+        "properties": {
+          "Count": {
+            "type": "integer"
+          },
+          "Description": {
+            "type": "string"
+          },
+          "Profile": {
+            "type": "string"
+          },
+          "Role": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "Count",
+          "Description",
+          "Profile",
+          "Role"
+        ]
+      },
+      "WorkflowInfo": {
+        "type": "object",
+        "properties": {
+          "agent_count": {
+            "type": "integer"
+          },
+          "coordination": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_count",
+          "coordination",
+          "description",
+          "name",
+          "source"
+        ]
+      },
       "WorkflowSettings": {
         "type": "object",
         "properties": {
@@ -46310,6 +48548,150 @@
             "type": "string"
           }
         }
+      },
+      "WorkflowShowResult": {
+        "type": "object",
+        "properties": {
+          "agent_count": {
+            "type": "integer"
+          },
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowAgent"
+            }
+          },
+          "coordination": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "error_handling": {
+            "$ref": "#/components/schemas/ErrorConfig"
+          },
+          "flow": {
+            "$ref": "#/components/schemas/FlowConfig"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prompts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SetupPrompt"
+            }
+          },
+          "role_agents": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/WorkflowAgent"
+              }
+            }
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "source": {
+            "type": "string"
+          },
+          "validated_triggers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowTransitionDiagnostic"
+            }
+          }
+        },
+        "required": [
+          "agent_count",
+          "agents",
+          "coordination",
+          "description",
+          "name",
+          "source"
+        ]
+      },
+      "WorkflowTransitionDiagnostic": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "runtime_type": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "valid": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "from",
+          "runtime_type",
+          "to",
+          "valid"
+        ]
+      },
+      "WorkflowsEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "_agent_hints": {
+            "$ref": "#/components/schemas/RobotAgentHints"
+          },
+          "action": {
+            "type": "string"
+          },
+          "filter_role": {
+            "type": "string"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/WorkflowShowResult"
+          },
+          "workflows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowInfo"
+            }
+          }
+        },
+        "required": [
+          "action",
+          "schema_id",
+          "schema_version",
+          "success",
+          "timestamp"
+        ]
       },
       "WorktreeCreateEnvelopeResponse": {
         "type": "object",
@@ -46673,8 +49055,20 @@
       "description": "Operations related to safety"
     },
     {
+      "name": "saved-sessions",
+      "description": "Operations related to saved-sessions"
+    },
+    {
       "name": "scanner",
       "description": "Operations related to scanner"
+    },
+    {
+      "name": "sequences",
+      "description": "Operations related to sequences"
+    },
+    {
+      "name": "session-templates",
+      "description": "Operations related to session-templates"
     },
     {
       "name": "sessions",
@@ -46707,6 +49101,10 @@
     {
       "name": "webhooks",
       "description": "Operations related to webhooks"
+    },
+    {
+      "name": "workflows",
+      "description": "Operations related to workflows"
     },
     {
       "name": "worktrees",

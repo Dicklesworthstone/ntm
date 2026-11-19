@@ -367,7 +367,7 @@ func buildRobotRegistry() *RobotRegistry {
 			Name:                    command.Name,
 			Flag:                    command.Flag,
 			Category:                command.Category,
-			Summary:                 summarizeDescription(command.Description),
+			Summary:                 firstNonEmptyString(strings.TrimSpace(command.Summary), summarizeDescription(command.Description)),
 			Description:             command.Description,
 			Note:                    command.Note,
 			Unavailable:             command.Unavailable,
@@ -1217,6 +1217,58 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 			Boundedness: &BoundednessInfo{
 				SupportsPagination: false,
 				TruncationBehavior: "Bounded to configured built-in, user, and project persona definitions",
+			},
+		},
+		"saved-sessions": {
+			SchemaID:   savedSessionsSchemaID,
+			SchemaType: "saved_sessions",
+			Sections:   []string{"sessions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "List, inspect (with 11-harness counts and casr/native resume readiness), capture, archive, or unarchive saved session snapshots",
+				SummaryHint: "Read sessions and count on list, or state and resumable_panes on show/save",
+			},
+			Boundedness: &BoundednessInfo{
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded to saved session snapshot files stored under ~/.ntm/sessions",
+			},
+		},
+		"mapping": {
+			SchemaID:   mappingSchemaID,
+			SchemaType: "mapping",
+			Sections:   []string{"sessions", "source_health"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Resolve Agent Mail names to live tmux panes, reconcile canonical identity files, publish/withdraw border badges, and surface drift",
+				SummaryHint: "Read entries, count, discrepancies, and badges for the target session",
+			},
+			Boundedness: &BoundednessInfo{
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded to mapped panes and discrepancy records in the target tmux session",
+			},
+		},
+		"workflows": {
+			SchemaID:   workflowsSchemaID,
+			SchemaType: "workflows",
+			Sections:   []string{"sessions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "List workflow coordination templates (ping-pong, pipeline, parallel, review-gate) or inspect one template with trigger validation",
+				SummaryHint: "Read workflows and total on list, or workflow and validated_triggers when --workflows-name is set",
+			},
+			Boundedness: &BoundednessInfo{
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded to built-in, user, and project workflow template definitions",
+			},
+		},
+		"session-templates": {
+			SchemaID:   sessionTemplatesSchemaID,
+			SchemaType: "session_templates",
+			Sections:   []string{"sessions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "List built-in, user, and project multi-agent session templates or inspect a template specification by name",
+				SummaryHint: "Read templates and total on list, or template when --template-name is set",
+			},
+			Boundedness: &BoundednessInfo{
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded to built-in, user, and project session template definitions",
 			},
 		},
 	}

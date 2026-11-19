@@ -57,6 +57,14 @@ import {
     REDACT_MODE_OPTIONS,
     SUPPORTED_ADOPT_HARNESSES,
 } from './sessionIntelSupport';
+import {
+    formatAgentMappingMarkdown,
+    formatSavedSessionsMarkdown,
+    formatSessionTemplatesMarkdown,
+    formatWorkflowsMarkdown,
+    SAVED_SESSIONS_MODE_OPTIONS,
+    WORKFLOWS_MODE_OPTIONS,
+} from './persistenceWorkflowSupport';
 import { NtmDashboard } from './dashboard';
 import { normalizeWorkspaceRelativePath, registerFileDecorations } from './fileDecorations';
 import { NtmTreeItem, registerSessionTreeView } from './sessionTreeView';
@@ -69,6 +77,7 @@ export {
     CONTEXT_LINES_OPTIONS,
     DOCTOR_MODE_OPTIONS,
     formatAdoptMarkdown,
+    formatAgentMappingMarkdown,
     formatAssignWorkMarkdown,
     formatContextMarkdown,
     formatDoctorMarkdown,
@@ -76,8 +85,11 @@ export {
     formatRebalanceMarkdown,
     formatRedactPreviewMarkdown,
     formatReviewQueueMarkdown,
+    formatSavedSessionsMarkdown,
     formatScaleMarkdown,
+    formatSessionTemplatesMarkdown,
     formatSummaryMarkdown,
+    formatWorkflowsMarkdown,
     normalizeWebPort,
     parseAdoptSpec,
     parseScaleSpec,
@@ -85,9 +97,11 @@ export {
     REBALANCE_MODE_OPTIONS,
     REDACT_MODE_OPTIONS,
     REVIEW_QUEUE_MODE_OPTIONS,
+    SAVED_SESSIONS_MODE_OPTIONS,
     SCALE_MODE_OPTIONS,
     shellQuote,
     SUMMARY_WINDOW_OPTIONS,
+    WORKFLOWS_MODE_OPTIONS,
 };
 
 export const WEB_COCKPIT_TERMINAL_NAME = 'NTM Web Cockpit';
@@ -205,6 +219,9 @@ export interface PaletteActionQuickPickItem extends vscode.QuickPickItem {
         | 'adoptSession'
         | 'previewRedaction'
         | 'showContext'
+        | 'savedSessions'
+        | 'showAgentMapping'
+        | 'showWorkflows'
         | 'openWebCockpit'
         | 'showBackpressure'
         | 'manageWorktrees'
@@ -360,6 +377,27 @@ export const PALETTE_ACTION_OPTIONS: readonly PaletteActionQuickPickItem[] = [
         detail: 'Inspect isolated agent worktrees, create new checkouts, or merge back',
         actionId: 'manageWorktrees',
         command: 'ntm.manageWorktrees',
+    },
+    {
+        label: '$(archive) Saved Sessions & Resume Readiness',
+        description: 'NTM: Saved Sessions & casr Resume',
+        detail: 'List, capture, or inspect saved session snapshots and casr/native resume bindings',
+        actionId: 'savedSessions',
+        command: 'ntm.savedSessions',
+    },
+    {
+        label: '$(organization) Agent Mail <-> Tmux Pane Mapping',
+        description: 'NTM: Show Agent Mail <-> Pane Mapping',
+        detail: 'Reconcile Agent Mail names, tmux border badges, and identity drift',
+        actionId: 'showAgentMapping',
+        command: 'ntm.showAgentMapping',
+    },
+    {
+        label: '$(symbol-event) Workflows & Session Templates',
+        description: 'NTM: Browse Workflows & Session Templates',
+        detail: 'Inspect multi-agent workflow patterns, trigger validation, and session templates',
+        actionId: 'showWorkflows',
+        command: 'ntm.showWorkflows',
     },
     {
         label: '$(globe) Open Web Cockpit (ntm web)',
@@ -2853,6 +2891,160 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
         }
     );
 
+    const dispSavedSessions = vscode.commands.registerCommand(
+        'ntm.savedSessions',
+        async (sessionArg?: NtmTreeItem | string) => {
+            try {
+                const modePick = await vscode.window.showQuickPick(SAVED_SESSIONS_MODE_OPTIONS, {
+                    placeHolder: 'Select saved-session action',
+                });
+                if (!modePick) {
+                    return;
+                }
+                if (modePick.mode === 'openSessionsCockpit') {
+                    await openWebCockpitRoute('/sessions');
+                    return;
+                }
+
+                let res;
+                if (modePick.mode === 'listActive') {
+                    res = await client.manageSavedSessions({ action: 'list', archived: false });
+                } else if (modePick.mode === 'listArchived') {
+                    res = await client.manageSavedSessions({ action: 'list', archived: true });
+                } else if (modePick.mode === 'saveCurrent') {
+                    const targetSession = await resolveSessionInteractive(
+                        extractSessionName(sessionArg),
+                        'Select live tmux session to snapshot'
+                    );
+                    if (!targetSession) {
+                        return;
+                    }
+                    const customName = await vscode.window.showInputBox({
+                        prompt: `Optional snapshot name (leave blank to save as "${targetSession}")`,
+                        placeHolder: targetSession,
+                    });
+                    if (customName === undefined) {
+                        return;
+                    }
+                    res = await client.manageSavedSessions({
+                        action: 'save',
+                        session: targetSession,
+                        name: customName.trim() || undefined,
+                        overwrite: true,
+                    });
+                } else {
+                    const snapName = await vscode.window.showInputBox({
+                        prompt: 'Enter saved snapshot name to inspect',
+                        placeHolder: 'myproject',
+                    });
+                    if (!snapName || !snapName.trim()) {
+                        return;
+                    }
+                    res = await client.manageSavedSessions({
+                        action: 'show',
+                        name: snapName.trim(),
+                    });
+                }
+
+                const doc = await vscode.workspace.openTextDocument({
+                    content: formatSavedSessionsMarkdown(res),
+                    language: 'markdown',
+                });
+                await vscode.window.showTextDocument(doc);
+            } catch (e) {
+                vscode.window.showErrorMessage(`Saved sessions operation failed: ${e}`);
+            }
+        }
+    );
+
+    const dispShowAgentMapping = vscode.commands.registerCommand(
+        'ntm.showAgentMapping',
+        async (sessionArg?: NtmTreeItem | string) => {
+            try {
+                const targetSession = await resolveSessionInteractive(
+                    extractSessionName(sessionArg),
+                    'Select session to inspect Agent Mail <-> tmux pane mapping'
+                );
+                if (!targetSession) {
+                    return;
+                }
+                const workspaceDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                const res = await client.getAgentMapping({
+                    session: targetSession,
+                    projectDir: workspaceDir,
+                });
+                const doc = await vscode.workspace.openTextDocument({
+                    content: formatAgentMappingMarkdown(res),
+                    language: 'markdown',
+                });
+                await vscode.window.showTextDocument(doc);
+
+                const nextBtn = await vscode.window.showInformationMessage(
+                    `Session "${res.session}": ${res.count} mapped pane(s), ${res.discrepancy_count} discrepancy(ies)`,
+                    'Open /agents in Web Cockpit'
+                );
+                if (nextBtn === 'Open /agents in Web Cockpit') {
+                    await openWebCockpitRoute('/agents');
+                }
+            } catch (e) {
+                vscode.window.showErrorMessage(`Agent mapping inspection failed: ${e}`);
+            }
+        }
+    );
+
+    const dispShowWorkflows = vscode.commands.registerCommand(
+        'ntm.showWorkflows',
+        async () => {
+            try {
+                const modePick = await vscode.window.showQuickPick(WORKFLOWS_MODE_OPTIONS, {
+                    placeHolder: 'Select workflows or session-templates action',
+                });
+                if (!modePick) {
+                    return;
+                }
+                if (modePick.mode === 'openPipelinesCockpit') {
+                    await openWebCockpitRoute('/pipelines');
+                    return;
+                }
+
+                const workspaceDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                if (modePick.mode === 'listSessionTemplates') {
+                    const tmplRes = await client.getSessionTemplates(workspaceDir);
+                    const doc = await vscode.workspace.openTextDocument({
+                        content: formatSessionTemplatesMarkdown(tmplRes),
+                        language: 'markdown',
+                    });
+                    await vscode.window.showTextDocument(doc);
+                    return;
+                }
+
+                let nameFilter: string | undefined;
+                if (modePick.mode === 'inspectWorkflow') {
+                    const wfName = await vscode.window.showInputBox({
+                        prompt: 'Enter workflow template name (e.g. red-green, review-pipeline)',
+                        placeHolder: 'red-green',
+                    });
+                    if (!wfName || !wfName.trim()) {
+                        return;
+                    }
+                    nameFilter = wfName.trim();
+                }
+
+                const wfRes = await client.getWorkflows({
+                    name: nameFilter,
+                    projectDir: workspaceDir,
+                });
+                const doc = await vscode.workspace.openTextDocument({
+                    content: formatWorkflowsMarkdown(wfRes),
+                    language: 'markdown',
+                });
+                await vscode.window.showTextDocument(doc);
+            } catch (e) {
+                vscode.window.showErrorMessage(`Workflows inspection failed: ${e}`);
+            }
+        }
+    );
+
     context.subscriptions.push(
         dispStatus,
         dispSpawn,
@@ -2874,6 +3066,9 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
         dispAdoptSession,
         dispPreviewRedaction,
         dispShowContext,
+        dispSavedSessions,
+        dispShowAgentMapping,
+        dispShowWorkflows,
         dispOpenWebCockpit,
         dispShowBackpressure,
         dispManageWorktrees,

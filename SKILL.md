@@ -275,6 +275,10 @@ ntm --robot-adopt=external_proj --adopt-cc=0,1 --adopt-cod=2 --dry-run
 ntm --robot-personas --personas-agent=claude
 ntm --robot-hooks --hooks-action=status
 ntm --robot-redact="Authorization: Bearer sk-live-1234567890abcdef1234567890"
+ntm --robot-saved-sessions --saved-action=show --saved-name=myproject
+ntm --robot-mapping=myproject
+ntm --robot-workflows --workflows-name=red-green
+ntm --robot-session-templates --template-name=refactor
 ntm audit http --limit=20 --json
 ```
 

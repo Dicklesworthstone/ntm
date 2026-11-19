@@ -180,6 +180,14 @@ ntm --robot-personas --personas-agent=claude
 ntm --robot-hooks --hooks-action=status
 ntm --robot-hooks --hooks-action=run --hooks-type=pre-commit
 ntm --robot-redact="Authorization: Bearer sk-live-1234567890abcdef1234567890"
+
+# Saved sessions, casr resume readiness, Agent Mail <-> pane mapping, workflows, and session templates
+ntm --robot-saved-sessions
+ntm --robot-saved-sessions --saved-action=show --saved-name=myproject
+ntm --robot-saved-sessions --saved-action=save --saved-session=myproject --saved-overwrite
+ntm --robot-mapping=myproject
+ntm --robot-workflows --workflows-name=red-green
+ntm --robot-session-templates --template-name=refactor
 ```
 
 ## Reasoning Ensembles

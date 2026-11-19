@@ -3208,6 +3208,90 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/saved-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Saved sessions list
+         * @description Served route `GET /api/v1/saved-sessions`. Handler: `handleSavedSessionsListV1`. Response shape reflected from Go type `SavedSessionsEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_saved_sessions"];
+        put?: never;
+        /**
+         * Saved sessions save
+         * @description Served route `POST /api/v1/saved-sessions`. Handler: `handleSavedSessionsSaveV1`. Response shape reflected from Go type `SavedSessionsEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_saved_sessions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/saved-sessions/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Saved sessions show
+         * @description Served route `GET /api/v1/saved-sessions/{name}`. Handler: `handleSavedSessionsShowV1`. Response shape reflected from Go type `SavedSessionsEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_saved_sessions_name"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/saved-sessions/{name}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Saved sessions archive
+         * @description Served route `POST /api/v1/saved-sessions/{name}/archive`. Handler: `handleSavedSessionsArchiveV1`. Response shape reflected from Go type `SavedSessionsEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_saved_sessions_name_archive"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/saved-sessions/{name}/unarchive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Saved sessions unarchive
+         * @description Served route `POST /api/v1/saved-sessions/{name}/unarchive`. Handler: `handleSavedSessionsUnarchiveV1`. Response shape reflected from Go type `SavedSessionsEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_saved_sessions_name_unarchive"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/scanner/findings": {
         parameters: {
             query?: never;
@@ -3360,6 +3444,106 @@ export interface paths {
          * @description Served route `GET /api/v1/scanner/status`. Handler: `handleScannerStatus`. Response shape reflected from Go type `ScanStatusResponse`.
          */
         get: operations["get_api_v1_scanner_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sequences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sequences create
+         * @description Served route `POST /api/v1/sequences`. Handler: `handleSequencesCreateV1`. Response shape reflected from Go type `SequenceEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_sequences"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sequences/{name}/advance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sequences advance
+         * @description Served route `POST /api/v1/sequences/{name}/advance`. Handler: `handleSequencesAdvanceV1`. Response shape reflected from Go type `SequenceEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_sequences_name_advance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sequences/{name}/next": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Sequences next
+         * @description Served route `GET /api/v1/sequences/{name}/next`. Handler: `handleSequencesNextV1`. Response shape reflected from Go type `SequenceEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_sequences_name_next"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/session-templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Session templates list
+         * @description Served route `GET /api/v1/session-templates`. Handler: `handleSessionTemplatesListV1`. Response shape reflected from Go type `SessionTemplatesEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_session_templates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/session-templates/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Session templates show
+         * @description Served route `GET /api/v1/session-templates/{name}`. Handler: `handleSessionTemplatesShowV1`. Response shape reflected from Go type `SessionTemplatesEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_session_templates_name"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3650,6 +3834,26 @@ export interface paths {
          * @description Served route `POST /api/v1/sessions/{id}/interrupt`. Handler: `handleSessionInterruptV1`. Response shape reflected from Go type `SessionInterruptEnvelopeResponse`.
          */
         post: operations["post_api_v1_sessions_id_interrupt"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{id}/mapping": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Session mapping
+         * @description Served route `GET /api/v1/sessions/{id}/mapping`. Handler: `handleSessionMappingV1`. Response shape reflected from Go type `SessionMappingEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_sessions_id_mapping"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -4436,6 +4640,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workflows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Workflows list
+         * @description Served route `GET /api/v1/workflows`. Handler: `handleWorkflowsListV1`. Response shape reflected from Go type `WorkflowsEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_workflows"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workflows/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Workflows show
+         * @description Served route `GET /api/v1/workflows/{name}`. Handler: `handleWorkflowsShowV1`. Response shape reflected from Go type `WorkflowsEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_workflows_name"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/worktrees": {
         parameters: {
             query?: never;
@@ -4924,6 +5168,20 @@ export interface components {
             /** @description Gemini max */
             gemini_max: number;
         };
+        AgentConfig: {
+            agy?: number;
+            aider: number;
+            cc: number;
+            cod: number;
+            cursor: number;
+            gmi: number;
+            grok?: number;
+            oc: number;
+            ollama: number;
+            omp?: number;
+            user: number;
+            windsurf: number;
+        };
         AgentContextInfo: {
             agent_type: string;
             confidence: string;
@@ -5045,6 +5303,22 @@ export interface components {
             no_wait?: boolean;
             panes?: string[];
         };
+        AgentLaunchSpec: {
+            agent_mail_project?: string;
+            agent_type: string;
+            caam_profile?: string;
+            claude_isolate_credentials?: boolean;
+            claude_token_file?: string;
+            command: string;
+            model?: string;
+            model_alias?: string;
+            omitted_env?: string[];
+            persona?: string;
+            reasoning_effort?: string;
+            system_prompt_file?: string;
+            system_prompt_sha256?: string;
+            version: number;
+        };
         AgentMailSpawnStatus: {
             /** @description Agent map */
             agent_map?: {
@@ -5086,6 +5360,26 @@ export interface components {
             /** @description Urgent messages */
             urgent_messages?: number;
         };
+        AgentMappingBadges: {
+            /** Format: date-time */
+            attempted_at: string;
+            cleared: number;
+            enabled: boolean;
+            published: number;
+            tmux_error?: string;
+            warnings?: string[];
+            windows_prepared: number;
+            windows_restored: number;
+        };
+        AgentMappingEntry: {
+            agent_type?: string;
+            identity?: components["schemas"]["PaneBadgeRecord"];
+            name: string;
+            pane_id: string;
+            pane_index: number;
+            pane_title?: string;
+            session: string;
+        };
         AgentOutputSummary: {
             /** Format: int64 */
             active_time: number;
@@ -5122,6 +5416,15 @@ export interface components {
             preset?: string;
             wait_ready?: boolean;
         };
+        AgentTypeSpec: {
+            Count: number;
+            Model: string;
+            Variants: components["schemas"]["AgentVariantSpec"][];
+        };
+        AgentVariantSpec: {
+            Count: number;
+            Model: string;
+        };
         AgentWaitRequest: {
             agent_type?: string;
             condition: string;
@@ -5130,6 +5433,19 @@ export interface components {
             poll_ms?: number;
             timeout_ms?: number;
             wait_for_any?: boolean;
+        };
+        AgentsSpec: {
+            Aider?: components["schemas"]["AgentTypeSpec"];
+            Antigravity?: components["schemas"]["AgentTypeSpec"];
+            Claude?: components["schemas"]["AgentTypeSpec"];
+            Codex?: components["schemas"]["AgentTypeSpec"];
+            Cursor?: components["schemas"]["AgentTypeSpec"];
+            Gemini?: components["schemas"]["AgentTypeSpec"];
+            Ollama?: components["schemas"]["AgentTypeSpec"];
+            Personas: components["schemas"]["PersonaSpec"][];
+            Total?: number;
+            UserPane?: boolean;
+            Windsurf?: components["schemas"]["AgentTypeSpec"];
         };
         AggregationBucket: {
             count: number;
@@ -6005,6 +6321,11 @@ export interface components {
             success: boolean;
             timestamp: string;
         };
+        BeadsSpec: {
+            AutoAssign: boolean;
+            Filter: string;
+            Recipe: string;
+        };
         BeadsStatsEnvelopeResponse: {
             request_id?: string;
             stats: components["schemas"]["BvBeadsSummary"];
@@ -6304,6 +6625,11 @@ export interface components {
             /** @description Session */
             session: string;
         };
+        CASSSpec: {
+            Enabled?: boolean;
+            MaxSessions: number;
+            Query: string;
+        };
         CASSStatusResponse: {
             /** Format: int64 */
             database_size?: number;
@@ -6521,6 +6847,10 @@ export interface components {
             layout?: string;
             pane_count: number;
         };
+        CheckpointSpec: {
+            Enabled: boolean;
+            Interval: string;
+        };
         CheckpointsListEnvelopeResponse: {
             checkpoints: components["schemas"]["CheckpointResponse"][];
             count: number;
@@ -6624,6 +6954,18 @@ export interface components {
             supporting_evidence?: string[];
             text: string;
             type: string;
+        };
+        ConfigSnapshot: {
+            aider_cmd?: string;
+            antigravity_cmd?: string;
+            claude_cmd?: string;
+            codex_cmd?: string;
+            cursor_cmd?: string;
+            gemini_cmd?: string;
+            ollama_cmd?: string;
+            omp_cmd?: string;
+            opencode_cmd?: string;
+            windsurf_cmd?: string;
         };
         Conflict: {
             /** @description Agents */
@@ -7603,6 +7945,13 @@ export interface components {
             output_format?: string;
             strategy?: string;
         };
+        ErrorConfig: {
+            MaxRetriesPerStage: number;
+            OnAgentCrash: string;
+            OnAgentError: string;
+            OnTimeout: string;
+            StageTimeoutMinutes: number;
+        };
         ErrorDetails: {
             /** @description Actual output */
             actual_output?: string;
@@ -7926,6 +8275,15 @@ export interface components {
             new_count: number;
             unchanged?: components["schemas"]["FindingDiffEntry"][];
             unchanged_count: number;
+        };
+        FlowConfig: {
+            ApprovalMode: string;
+            Initial: string;
+            ParallelWithinStage: boolean;
+            Quorum: number;
+            RequireApproval: boolean;
+            Stages: string[];
+            Transitions: components["schemas"]["Transition"][];
         };
         FollowUpInfo: {
             /** @description Drill down pattern */
@@ -9486,6 +9844,30 @@ export interface components {
             unique_to_a: number;
             unique_to_b: number;
         };
+        PaneBadgeRecord: {
+            assigned_name?: string;
+            assignment_state: string;
+            binding_verified: boolean;
+            cached: boolean;
+            label?: string;
+            /** Format: date-time */
+            last_attempt_at: string;
+            /** Format: date-time */
+            last_success_at?: string;
+            lifecycle: string;
+            observation_state: string;
+            pane_id: string;
+            pane_index: number;
+            pane_pid?: number;
+            problems?: string[];
+            publish_error?: string;
+            published: boolean;
+            recorded_pid?: number;
+            resolved_name?: string;
+            source?: string;
+            state: string;
+            window_index: number;
+        };
         PaneDetailEnvelopeResponse: {
             pane: components["schemas"]["PaneSummaryRecord"];
             request_id?: string;
@@ -9547,25 +9929,52 @@ export interface components {
             width?: number;
             window_index: number;
         };
+        PaneSequence: {
+            /** Format: date-time */
+            created_at: string;
+            name: string;
+            positions: {
+                [key: string]: number;
+            };
+            steps: string[];
+            /** Format: date-time */
+            updated_at: string;
+        };
+        PaneSequencePosition: {
+            advanced: boolean;
+            complete: boolean;
+            pane: string;
+            position: number;
+            prompt?: string;
+            sequence: string;
+        };
         PaneSpec: {
             Expr: string;
             Index: number;
         };
         PaneState: {
-            /** @description Agent type */
+            active: boolean;
             agent_type: string;
-            /** @description Last output */
-            last_output: string;
-            /** @description Observation confidence */
-            observation_confidence: number;
-            /** @description Observation error */
-            observation_error?: string;
-            /** @description Observation freshness */
-            observation_freshness: string;
-            /** @description Observed at */
-            observed_at: string;
-            /** @description State */
-            state: string;
+            command?: string;
+            cwd?: string;
+            height?: number;
+            index: number;
+            launch_spec?: components["schemas"]["AgentLaunchSpec"];
+            model?: string;
+            pane_id?: string;
+            session_confidence?: number;
+            session_failure_code?: string;
+            session_freshness?: string;
+            session_id?: string;
+            /** Format: date-time */
+            session_observed_at?: string;
+            session_provider?: string;
+            session_source?: string;
+            /** Format: date-time */
+            session_source_updated_at?: string;
+            title: string;
+            width?: number;
+            window_index: number;
         };
         PaneStreamEnvelopeResponse: {
             message: string;
@@ -9649,6 +10058,10 @@ export interface components {
             Description: string;
             Name: string;
             Personas: string[];
+        };
+        PersonaSpec: {
+            Count: number;
+            Name: string;
         };
         PersonasEnvelopeResponse: {
             _agent_hints?: components["schemas"]["RobotAgentHints"];
@@ -10151,6 +10564,17 @@ export interface components {
         PromptPreflightRequest: {
             prompt: string;
             strict?: boolean;
+        };
+        PromptsSpec: {
+            Delay: string;
+            Initial: string;
+            PerAgent: {
+                [key: string]: string;
+            };
+            Template: string;
+            Variables: {
+                [key: string]: string;
+            };
         };
         ProvenanceChain: {
             confidence: number;
@@ -11037,6 +11461,39 @@ export interface components {
              */
             timestamp: string;
         };
+        SavedSession: {
+            agents: number;
+            cwd: string;
+            file_path: string;
+            /** Format: int64 */
+            file_size: number;
+            git_branch?: string;
+            name: string;
+            /** Format: date-time */
+            saved_at: string;
+        };
+        SavedSessionSaveRequest: {
+            name?: string;
+            overwrite?: boolean;
+            session: string;
+        };
+        SavedSessionsEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            action: string;
+            archived?: boolean;
+            count?: number;
+            file_path?: string;
+            request_id?: string;
+            resumable_panes?: number;
+            saved_as?: string;
+            schema_id: string;
+            schema_version: string;
+            session?: string;
+            sessions?: components["schemas"]["SavedSession"][];
+            state?: components["schemas"]["SessionState"];
+            success: boolean;
+            timestamp: string;
+        };
         ScaleAction: {
             agent_type: string;
             agents: string[];
@@ -11369,6 +11826,24 @@ export interface components {
             /** @description Render changed */
             render_changed: boolean;
         };
+        SequenceAdvanceRequest: {
+            expected_position?: number;
+            pane: string;
+            project_dir?: string;
+        };
+        SequenceCreateRequest: {
+            name: string;
+            project_dir?: string;
+            steps: string[];
+        };
+        SequenceEnvelopeResponse: {
+            action: string;
+            pane?: components["schemas"]["PaneSequencePosition"];
+            request_id?: string;
+            sequence?: components["schemas"]["PaneSequence"];
+            success: boolean;
+            timestamp: string;
+        };
         ServerConfigEnvelopeResponse: {
             allowed_origins: string[];
             auth_mode: string;
@@ -11641,6 +12116,25 @@ export interface components {
         SessionInterruptRequest: {
             tags?: string[];
         };
+        SessionMappingEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            badges?: components["schemas"]["AgentMappingBadges"];
+            count: number;
+            discrepancies: components["schemas"]["PaneBadgeRecord"][];
+            entries: components["schemas"]["AgentMappingEntry"][];
+            reconcile_error?: string;
+            request_id?: string;
+            schema_id: string;
+            schema_version: string;
+            session: string;
+            success: boolean;
+            timestamp: string;
+        };
+        SessionOptionsSpec: {
+            AutoRestart: boolean;
+            Checkpoint?: components["schemas"]["CheckpointSpec"];
+            Stagger?: components["schemas"]["StaggerSpec"];
+        };
         SessionRebalanceEnvelopeResponse: {
             _agent_hints?: components["schemas"]["RobotAgentHints"];
             after: {
@@ -11718,6 +12212,24 @@ export interface components {
                 [key: string]: number;
             };
         };
+        SessionState: {
+            agents: components["schemas"]["AgentConfig"];
+            config?: components["schemas"]["ConfigSnapshot"];
+            /** Format: date-time */
+            created_at?: string;
+            cwd: string;
+            git_branch?: string;
+            git_commit?: string;
+            git_remote?: string;
+            layout: string;
+            name: string;
+            panes: components["schemas"]["PaneState"][];
+            remote_host?: string;
+            /** Format: date-time */
+            saved_at: string;
+            version: number;
+            windows?: components["schemas"]["WindowState"][];
+        };
         SessionStatusEnvelopeResponse: {
             agent_counts: components["schemas"]["AgentCountsResponse"];
             agent_mail?: components["schemas"]["AgentMailStatus"];
@@ -11770,6 +12282,38 @@ export interface components {
             updated_at?: string;
             windows?: number;
         };
+        SessionTemplateInfo: {
+            agent_count: number;
+            description: string;
+            name: string;
+            source: string;
+            tags?: string[];
+        };
+        SessionTemplateShowResult: {
+            agents?: components["schemas"]["AgentsSpec"];
+            beads?: components["schemas"]["BeadsSpec"];
+            cass?: components["schemas"]["CASSSpec"];
+            description: string;
+            name: string;
+            options?: components["schemas"]["SessionOptionsSpec"];
+            prompts?: components["schemas"]["PromptsSpec"];
+            source: string;
+            tags?: string[];
+        };
+        SessionTemplatesEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            action: string;
+            project_dir?: string;
+            request_id?: string;
+            schema_id: string;
+            schema_version: string;
+            success: boolean;
+            suggestions?: string[];
+            template?: components["schemas"]["SessionTemplateShowResult"];
+            templates?: components["schemas"]["SessionTemplateInfo"][];
+            timestamp: string;
+            total?: number;
+        };
         SessionZoomRequest: {
             pane: number;
         };
@@ -11783,6 +12327,13 @@ export interface components {
         SetContactPolicyRequest: {
             agent_name: string;
             policy: string;
+        };
+        SetupPrompt: {
+            Default: string;
+            Key: string;
+            Question: string;
+            Required: boolean;
+            Validation: string;
         };
         SnapshotAgent: {
             /** @description Context percent */
@@ -12349,6 +12900,10 @@ export interface components {
             type: string;
             /** @description Variant */
             variant?: string;
+        };
+        StaggerSpec: {
+            Enabled: boolean;
+            Interval: string;
         };
         StaleError: {
             expected?: components["schemas"]["Identity"];
@@ -13251,6 +13806,11 @@ export interface components {
             reason: string;
             track_id: string;
         };
+        Transition: {
+            From: string;
+            To: string;
+            Trigger: components["schemas"]["Trigger"];
+        };
         TriageCacheInfo: {
             /** @description Age ms */
             age_ms?: number;
@@ -13342,6 +13902,15 @@ export interface components {
             title: string;
             /** @description Unblocks */
             unblocks: number;
+        };
+        Trigger: {
+            Command: string;
+            IdleMinutes: number;
+            Label: string;
+            Minutes: number;
+            Pattern: string;
+            Role: string;
+            Type: string;
         };
         UnassignableBead: {
             id: string;
@@ -13566,6 +14135,13 @@ export interface components {
             project_dir?: string;
             revision: string;
         };
+        WindowState: {
+            active?: boolean;
+            index: number;
+            layout?: string;
+            name?: string;
+            zoomed?: boolean;
+        };
         WorkGraph: {
             /** @description Cycle count */
             cycle_count: number;
@@ -13732,6 +14308,20 @@ export interface components {
             };
             version?: string;
         };
+        WorkflowAgent: {
+            Count: number;
+            Description: string;
+            Profile: string;
+            Role: string;
+        };
+        WorkflowInfo: {
+            agent_count: number;
+            coordination: string;
+            description: string;
+            name: string;
+            roles?: string[];
+            source: string;
+        };
         WorkflowSettings: {
             limits?: components["schemas"]["LimitsConfig"];
             log_dispatch?: boolean;
@@ -13744,6 +14334,43 @@ export interface components {
             on_error?: string;
             timeout?: components["schemas"]["Duration"];
             webhook_url?: string;
+        };
+        WorkflowShowResult: {
+            agent_count: number;
+            agents: components["schemas"]["WorkflowAgent"][];
+            coordination: string;
+            description: string;
+            error_handling?: components["schemas"]["ErrorConfig"];
+            flow?: components["schemas"]["FlowConfig"];
+            name: string;
+            prompts?: components["schemas"]["SetupPrompt"][];
+            role_agents?: {
+                [key: string]: components["schemas"]["WorkflowAgent"][];
+            };
+            roles?: string[];
+            source: string;
+            validated_triggers?: components["schemas"]["WorkflowTransitionDiagnostic"][];
+        };
+        WorkflowTransitionDiagnostic: {
+            error?: string;
+            from: string;
+            runtime_type: string;
+            to: string;
+            valid: boolean;
+        };
+        WorkflowsEnvelopeResponse: {
+            _agent_hints?: components["schemas"]["RobotAgentHints"];
+            action: string;
+            filter_role?: string;
+            project_dir?: string;
+            request_id?: string;
+            schema_id: string;
+            schema_version: string;
+            success: boolean;
+            timestamp: string;
+            total?: number;
+            workflow?: components["schemas"]["WorkflowShowResult"];
+            workflows?: components["schemas"]["WorkflowInfo"][];
         };
         WorktreeCreateEnvelopeResponse: {
             project_dir: string;
@@ -23317,6 +23944,296 @@ export interface operations {
             };
         };
     };
+    get_api_v1_saved_sessions: {
+        parameters: {
+            query?: {
+                /** @description When true, list archived saved session snapshots instead of active snapshots. */
+                archived?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedSessionsEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_saved_sessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SavedSessionSaveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedSessionsEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_saved_sessions_name: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The name identifier */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedSessionsEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_saved_sessions_name_archive: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The name identifier */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedSessionsEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_saved_sessions_name_unarchive: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The name identifier */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedSessionsEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     get_api_v1_scanner_findings: {
         parameters: {
             query?: {
@@ -23761,6 +24678,296 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_sequences: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SequenceCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SequenceEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_sequences_name_advance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The name identifier */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SequenceAdvanceRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SequenceEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_sequences_name_next: {
+        parameters: {
+            query?: {
+                /** @description Target tmux pane identifier (e.g. %1). */
+                pane?: string;
+                /** @description Optional existing absolute project directory override (alias: ?project=). */
+                project_dir?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The name identifier */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SequenceEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_session_templates: {
+        parameters: {
+            query?: {
+                /** @description Optional existing absolute project directory override (alias: ?project=). */
+                project_dir?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionTemplatesEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_session_templates_name: {
+        parameters: {
+            query?: {
+                /** @description Optional existing absolute project directory override (alias: ?project=). */
+                project_dir?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The name identifier */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionTemplatesEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -24714,6 +25921,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SessionInterruptEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_sessions_id_mapping: {
+        parameters: {
+            query?: {
+                /** @description Optional existing absolute project directory override (alias: ?project=). */
+                project_dir?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The id identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionMappingEnvelopeResponse"];
                 };
             };
             /** @description Bad request */
@@ -27306,6 +28575,122 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WebhookOutboxEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_workflows: {
+        parameters: {
+            query?: {
+                /** @description Optional agent role filter. */
+                role?: string;
+                /** @description Optional existing absolute project directory override (alias: ?project=). */
+                project_dir?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowsEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_workflows_name: {
+        parameters: {
+            query?: {
+                /** @description Optional agent role filter for displayed workflow agents. */
+                role?: string;
+                /** @description Optional existing absolute project directory override (alias: ?project=). */
+                project_dir?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The name identifier */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowsEnvelopeResponse"];
                 };
             };
             /** @description Bad request */

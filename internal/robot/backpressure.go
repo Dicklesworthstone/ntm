@@ -253,6 +253,7 @@ func backpressureCapabilityCommand() RobotCommandInfo {
 		Name:        "backpressure",
 		Flag:        "--robot-backpressure",
 		Category:    "state",
+		Summary:     "Evaluate live subsystem backpressure.",
 		Description: "Evaluate live subsystem backpressure, dashboard summary, operator heatmap, and load-shedding contract.",
 		Parameters: []RobotParameter{
 			{Name: "session", Flag: "--session", Type: "string", Required: false, Description: "Filter live backpressure inspection to a specific tmux session"},

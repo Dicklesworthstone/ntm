@@ -36,6 +36,9 @@
     "onCommand:ntm.adoptSession",
     "onCommand:ntm.previewRedaction",
     "onCommand:ntm.showContext",
+    "onCommand:ntm.savedSessions",
+    "onCommand:ntm.showAgentMapping",
+    "onCommand:ntm.showWorkflows",
     "onCommand:ntm.openWebCockpit",
     "onCommand:ntm.showBackpressure",
     "onCommand:ntm.manageWorktrees",
@@ -193,6 +196,21 @@
         "command": "ntm.showContext",
         "title": "NTM: Show Session Context Window Usage",
         "icon": "$(dashboard)"
+      },
+      {
+        "command": "ntm.savedSessions",
+        "title": "NTM: Saved Sessions & casr Resume Readiness",
+        "icon": "$(archive)"
+      },
+      {
+        "command": "ntm.showAgentMapping",
+        "title": "NTM: Show Agent Mail <-> Pane Mapping",
+        "icon": "$(organization)"
+      },
+      {
+        "command": "ntm.showWorkflows",
+        "title": "NTM: Browse Workflows & Session Templates",
+        "icon": "$(symbol-event)"
       },
       {
         "command": "ntm.openWebCockpit",

@@ -510,6 +510,7 @@ func reviewQueueCapabilityCommand() RobotCommandInfo {
 		Name:        "review-queue",
 		Flag:        "--robot-review-queue",
 		Category:    "control",
+		Summary:     "Generate or dispatch peer review queue.",
 		Description: "Detect idle agents in a session, generate peer-review prompts from completed beads and recent git commits, and optionally dispatch them.",
 		Parameters: []RobotParameter{
 			{Name: "session", Flag: "--robot-review-queue", Type: "string", Required: true, Description: "Session name"},

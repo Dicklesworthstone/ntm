@@ -41,6 +41,26 @@ var (
 	robotPersonas      bool
 	robotPersonasAgent string
 	robotPersonasTag   string
+
+	// --robot-saved-sessions flags
+	robotSavedSessions  bool
+	robotSavedAction    string
+	robotSavedName      string
+	robotSavedSession   string
+	robotSavedArchived  bool
+	robotSavedOverwrite bool
+
+	// --robot-mapping flag
+	robotMapping string
+
+	// --robot-workflows flags
+	robotWorkflows     bool
+	robotWorkflowsName string
+	robotWorkflowsRole string
+
+	// --robot-session-templates flags
+	robotSessionTemplates bool
+	robotTemplateName     string
 )
 
 func registerRobotExtFlags() {
@@ -76,13 +96,37 @@ func registerRobotExtFlags() {
 	rootCmd.Flags().BoolVar(&robotPersonas, "robot-personas", false, "List built-in, user, and project agent personas and profile sets with 11-harness filtering (JSON)")
 	rootCmd.Flags().StringVar(&robotPersonasAgent, "personas-agent", "", "Filter personas by harness alias (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama)")
 	rootCmd.Flags().StringVar(&robotPersonasTag, "personas-tag", "", "Filter personas by tag (use with --robot-personas)")
+
+	// Robot-saved-sessions flags for saved session inspection, capture, archive, and unarchive
+	rootCmd.Flags().BoolVar(&robotSavedSessions, "robot-saved-sessions", false, "List, inspect (with 11-harness counts and casr/native resume readiness), save, archive, or unarchive saved sessions (JSON)")
+	rootCmd.Flags().StringVar(&robotSavedAction, "saved-action", "list", "Saved-session action: list (default), show, save, archive, or unarchive (use with --robot-saved-sessions)")
+	rootCmd.Flags().StringVar(&robotSavedName, "saved-name", "", "Saved snapshot name for show/archive/unarchive, or custom save name (use with --robot-saved-sessions)")
+	rootCmd.Flags().StringVar(&robotSavedSession, "saved-session", "", "Live tmux session name to capture when --saved-action=save (use with --robot-saved-sessions)")
+	rootCmd.Flags().BoolVar(&robotSavedArchived, "saved-archived", false, "List archived saved sessions when --saved-action=list (use with --robot-saved-sessions)")
+	rootCmd.Flags().BoolVar(&robotSavedOverwrite, "saved-overwrite", false, "Overwrite existing saved snapshot when --saved-action=save (use with --robot-saved-sessions)")
+
+	// Robot-mapping flag for Agent Mail <-> tmux pane mapping & border badge reconciliation
+	rootCmd.Flags().StringVar(&robotMapping, "robot-mapping", "", "Resolve Agent Mail names to live tmux panes, reconcile identity files, and publish/withdraw border badges (JSON). Required: SESSION")
+
+	// Robot-workflows flags for workflow coordination templates and trigger validation
+	rootCmd.Flags().BoolVar(&robotWorkflows, "robot-workflows", false, "List built-in, user, and project workflow coordination templates or inspect one with trigger validation (JSON)")
+	rootCmd.Flags().StringVar(&robotWorkflowsName, "workflows-name", "", "Workflow template name to inspect in detail (use with --robot-workflows)")
+	rootCmd.Flags().StringVar(&robotWorkflowsRole, "workflows-role", "", "Filter workflows or displayed agents by declared role (use with --robot-workflows)")
+
+	// Robot-session-templates flags for multi-agent session templates
+	rootCmd.Flags().BoolVar(&robotSessionTemplates, "robot-session-templates", false, "List built-in, user, and project session templates or inspect a template by name (JSON)")
+	rootCmd.Flags().StringVar(&robotTemplateName, "template-name", "", "Session template name to inspect in detail (use with --robot-session-templates)")
 }
 
 func needsRobotExtConfigLoading() bool {
 	return strings.Compare(robotAdopt, "") != 0 || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-adopt")) ||
 		strings.Compare(robotRedact, "") != 0 || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-redact")) ||
+		strings.Compare(robotMapping, "") != 0 || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-mapping")) ||
 		robotHooks ||
-		robotPersonas
+		robotPersonas ||
+		robotSavedSessions ||
+		robotWorkflows ||
+		robotSessionTemplates
 }
 
 func dispatchRobotExtFlags(cmd *cobra.Command, robotDryRunEffective bool) bool {
@@ -171,6 +215,54 @@ func dispatchRobotExtFlags(cmd *cobra.Command, robotDryRunEffective bool) bool {
 			ProjectDir: robotEnsembleProject,
 			Agent:      robotPersonasAgent,
 			Tag:        robotPersonasTag,
+		}); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
+
+	if robotSavedSessions {
+		if err := robot.PrintSavedSessions(robot.SavedSessionsOptions{
+			Action:    robotSavedAction,
+			Name:      robotSavedName,
+			Session:   robotSavedSession,
+			Archived:  robotSavedArchived,
+			Overwrite: robotSavedOverwrite,
+		}); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
+
+	if strings.Compare(robotMapping, "") != 0 || cmd.Flags().Changed("robot-mapping") {
+		if err := robot.PrintAgentMapping(cmd.Context(), robot.AgentMappingOptions{
+			Session:        robotMapping,
+			ProjectDir:     robotEnsembleProject,
+			Config:         cfg,
+			BadgeTmux:      paneBadgeTmux,
+			ReconcileFn:    reconcileSessionBadges,
+			RequireSession: true,
+		}); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
+
+	if robotWorkflows {
+		if err := robot.PrintWorkflows(robot.WorkflowsOptions{
+			ProjectDir: robotEnsembleProject,
+			Name:       robotWorkflowsName,
+			Role:       robotWorkflowsRole,
+		}); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
+
+	if robotSessionTemplates {
+		if err := robot.PrintSessionTemplates(robot.SessionTemplatesOptions{
+			ProjectDir: robotEnsembleProject,
+			Name:       robotTemplateName,
 		}); err != nil {
 			recordRobotProcessExit(err)
 		}

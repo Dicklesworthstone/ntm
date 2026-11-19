@@ -1,6 +1,6 @@
 {
   "source": "chi-router-walk",
-  "count": 249,
+  "count": 262,
   "endpoints": [
     {
       "method": "GET",
@@ -886,6 +886,31 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/saved-sessions",
+      "handler": "handleSavedSessionsListV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/saved-sessions",
+      "handler": "handleSavedSessionsSaveV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/saved-sessions/{name}",
+      "handler": "handleSavedSessionsShowV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/saved-sessions/{name}/archive",
+      "handler": "handleSavedSessionsArchiveV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/saved-sessions/{name}/unarchive",
+      "handler": "handleSavedSessionsUnarchiveV1"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/scanner/findings",
       "handler": "handleListFindings"
     },
@@ -923,6 +948,31 @@
       "method": "GET",
       "path": "/api/v1/scanner/status",
       "handler": "handleScannerStatus"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/sequences",
+      "handler": "handleSequencesCreateV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/sequences/{name}/advance",
+      "handler": "handleSequencesAdvanceV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/sequences/{name}/next",
+      "handler": "handleSequencesNextV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/session-templates",
+      "handler": "handleSessionTemplatesListV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/session-templates/{name}",
+      "handler": "handleSessionTemplatesShowV1"
     },
     {
       "method": "GET",
@@ -1003,6 +1053,11 @@
       "method": "POST",
       "path": "/api/v1/sessions/{id}/interrupt",
       "handler": "handleSessionInterruptV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/sessions/{id}/mapping",
+      "handler": "handleSessionMappingV1"
     },
     {
       "method": "POST",
@@ -1222,6 +1277,16 @@
       "method": "POST",
       "path": "/api/v1/webhooks/outbox/{record}/retry",
       "handler": "handleWebhookOutboxRetryV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/workflows",
+      "handler": "handleWorkflowsListV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/workflows/{name}",
+      "handler": "handleWorkflowsShowV1"
     },
     {
       "method": "GET",

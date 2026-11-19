@@ -1142,6 +1142,9 @@ func TestVSCodeExtensionManifestAndVSIXContract(t *testing.T) {
 		"ntm.adoptSession",
 		"ntm.previewRedaction",
 		"ntm.showContext",
+		"ntm.savedSessions",
+		"ntm.showAgentMapping",
+		"ntm.showWorkflows",
 		"ntm.openWebCockpit",
 		"ntm.showBackpressure",
 		"ntm.manageWorktrees",
@@ -1187,6 +1190,11 @@ func TestVSCodeExtensionManifestAndVSIXContract(t *testing.T) {
 		{"--robot-redact=Authorization: Bearer token", "--robot-format=json"},
 		{"--robot-redact", "--redact-file=/tmp/notes.txt", "--robot-format=json"},
 		{"--robot-context=proj", "--lines=200", "--robot-format=json"},
+		{"--robot-saved-sessions", "--saved-action=save", "--saved-session=proj", "--saved-name=snap", "--saved-overwrite", "--robot-format=json"},
+		{"--robot-saved-sessions", "--saved-archived", "--robot-format=json"},
+		{"--robot-mapping=proj", "--project=/tmp/proj", "--robot-format=json"},
+		{"--robot-workflows", "--workflows-name=red-green", "--workflows-role=red", "--project=/tmp/proj", "--robot-format=json"},
+		{"--robot-session-templates", "--template-name=refactor", "--project=/tmp/proj", "--robot-format=json"},
 		{"--robot-backpressure", "--session=proj", "--robot-format=json"},
 		{"worktrees", "list", "--session=proj", "--json"},
 		{"attention", "list", "--session=proj", "--limit=30", "--all", "--json"},
@@ -1232,6 +1240,7 @@ func TestVSCodeExtensionManifestAndVSIXContract(t *testing.T) {
 			"extension/out/orchestrationSupport.js",
 			"extension/out/swarmOpsSupport.js",
 			"extension/out/sessionIntelSupport.js",
+			"extension/out/persistenceWorkflowSupport.js",
 		} {
 			if !entries[wantEntry] {
 				t.Errorf("built VSIX %s missing required entry %q", vsixPath, wantEntry)

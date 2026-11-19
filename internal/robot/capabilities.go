@@ -2553,6 +2553,10 @@ func buildCommandRegistry() []RobotCommandInfo {
 		redactCapabilityCommand(),
 		hooksCapabilityCommand(),
 		personasCapabilityCommand(),
+		savedSessionsCapabilityCommand(),
+		mappingCapabilityCommand(),
+		workflowsCapabilityCommand(),
+		sessionTemplatesCapabilityCommand(),
 	})
 }
 

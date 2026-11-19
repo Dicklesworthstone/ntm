@@ -271,6 +271,7 @@ func hooksCapabilityCommand() RobotCommandInfo {
 		Name:        "hooks",
 		Flag:        "--robot-hooks",
 		Category:    "utility",
+		Summary:     "Inspect or run repository git hooks.",
 		Description: "Inspect installed repository git hooks or execute pre-commit, pre-push, commit-msg, post-commit, or post-checkout checks.",
 		Parameters: []RobotParameter{
 			{Name: "hooks-action", Flag: "--hooks-action", Type: "string", Required: false, Default: "status", Description: "Hooks action: status (default) or run"},

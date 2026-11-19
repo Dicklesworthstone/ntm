@@ -57,12 +57,33 @@ import {
     SessionContextResult,
     SUPPORTED_ADOPT_HARNESSES,
 } from './sessionIntelSupport';
+import {
+    AgentMappingEntryItem,
+    AgentMappingOptions,
+    AgentMappingResult,
+    normalizeAgentMappingResult,
+    normalizeSavedSessionsResult,
+    normalizeSessionTemplatesResult,
+    normalizeWorkflowsResult,
+    SavedSessionDetailPane,
+    SavedSessionEntry,
+    SavedSessionsAction,
+    SavedSessionsOptions,
+    SavedSessionsResult,
+    SessionTemplatesResult,
+    WorkflowsOptions,
+    WorkflowsResult,
+    WorkflowSummaryItem,
+} from './persistenceWorkflowSupport';
 
 export {
     AdoptedPaneItem,
     AdoptHarness,
     AdoptSessionOptions,
     AdoptSessionResult,
+    AgentMappingEntryItem,
+    AgentMappingOptions,
+    AgentMappingResult,
     AssignStrategy,
     AssignWorkOptions,
     AssignWorkRecommendation,
@@ -74,12 +95,25 @@ export {
     DoctorOptions,
     DoctorResult,
     normalizeAdoptResult,
+    normalizeAgentMappingResult,
     normalizeAssignWorkResult,
     normalizeContextResult,
     normalizeDoctorResult,
     normalizePreflightResult,
     normalizeRebalanceResult,
     normalizeRedactPreviewResult,
+    normalizeSavedSessionsResult,
+    normalizeSessionTemplatesResult,
+    normalizeWorkflowsResult,
+    SavedSessionDetailPane,
+    SavedSessionEntry,
+    SavedSessionsAction,
+    SavedSessionsOptions,
+    SavedSessionsResult,
+    SessionTemplatesResult,
+    WorkflowsOptions,
+    WorkflowsResult,
+    WorkflowSummaryItem,
     normalizeReviewQueueResult,
     normalizeScaleResult,
     normalizeSummaryResult,
@@ -3169,5 +3203,94 @@ export class NtmClient {
 
         const stdout = await this.run(args);
         return normalizeContextResult(JSON.parse(stdout));
+    }
+
+    /**
+     * List, inspect, capture, archive, or unarchive saved session snapshots via
+     * `ntm --robot-saved-sessions ... --robot-format=json`.
+     */
+    async manageSavedSessions(options: SavedSessionsOptions = {}): Promise<SavedSessionsResult> {
+        const action = options.action ?? 'list';
+        const args: string[] = ['--robot-saved-sessions'];
+        if (action !== 'list') {
+            args.push(`--saved-action=${action}`);
+        }
+        const name = (options.name ?? '').trim();
+        if (name) {
+            args.push(`--saved-name=${name}`);
+        }
+        const sess = (options.session ?? '').trim();
+        if (sess) {
+            args.push(`--saved-session=${sess}`);
+        }
+        if (options.archived) {
+            args.push('--saved-archived');
+        }
+        if (options.overwrite) {
+            args.push('--saved-overwrite');
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeSavedSessionsResult(JSON.parse(stdout));
+    }
+
+    /**
+     * Resolve Agent Mail names to live tmux panes and reconcile border badges via
+     * `ntm --robot-mapping=<session> --robot-format=json`.
+     */
+    async getAgentMapping(options: AgentMappingOptions): Promise<AgentMappingResult> {
+        const sess = (options?.session ?? '').trim();
+        if (!sess) {
+            throw new Error('Session name is required to inspect Agent Mail mapping');
+        }
+        const args: string[] = [`--robot-mapping=${sess}`];
+        const projectDir = (options?.projectDir ?? '').trim();
+        if (projectDir) {
+            args.push(`--project=${projectDir}`);
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeAgentMappingResult(JSON.parse(stdout));
+    }
+
+    /**
+     * List or inspect workflow coordination templates via
+     * `ntm --robot-workflows [--workflows-name=...] [--workflows-role=...] --robot-format=json`.
+     */
+    async getWorkflows(options: WorkflowsOptions = {}): Promise<WorkflowsResult> {
+        const args: string[] = ['--robot-workflows'];
+        const name = (options.name ?? '').trim();
+        if (name) {
+            args.push(`--workflows-name=${name}`);
+        }
+        const role = (options.role ?? '').trim();
+        if (role) {
+            args.push(`--workflows-role=${role}`);
+        }
+        const projectDir = (options.projectDir ?? '').trim();
+        if (projectDir) {
+            args.push(`--project=${projectDir}`);
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeWorkflowsResult(JSON.parse(stdout));
+    }
+
+    /**
+     * List multi-agent session templates via `ntm --robot-session-templates --robot-format=json`.
+     */
+    async getSessionTemplates(projectDir?: string): Promise<SessionTemplatesResult> {
+        const args: string[] = ['--robot-session-templates'];
+        const trimmed = (projectDir ?? '').trim();
+        if (trimmed) {
+            args.push(`--project=${trimmed}`);
+        }
+        args.push('--robot-format=json');
+
+        const stdout = await this.run(args);
+        return normalizeSessionTemplatesResult(JSON.parse(stdout));
     }
 }

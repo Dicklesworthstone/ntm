@@ -12,7 +12,7 @@
     "utility"
   ],
   "category_count": 10,
-  "schema_type_count": 157,
+  "schema_type_count": 161,
   "schema_types": [
     "account_status",
     "accounts_list",
@@ -108,6 +108,7 @@
     "logs",
     "mail",
     "mail_check",
+    "mapping",
     "metrics",
     "monitor",
     "ms_search",
@@ -138,11 +139,13 @@
     "ru_sync",
     "safety_simulate",
     "save",
+    "saved_sessions",
     "scale",
     "schema",
     "search",
     "send",
     "send_receipt",
+    "session_templates",
     "setup_status",
     "slb_approve",
     "slb_deny",
@@ -169,11 +172,12 @@
     "wait_request",
     "watch_bead",
     "webhook_outbox",
+    "workflows",
     "xf_search",
     "xf_status"
   ],
   "section_count": 13,
-  "surface_count": 169,
+  "surface_count": 173,
   "surfaces": [
     {
       "category": "state",
@@ -602,6 +606,21 @@
     },
     {
       "category": "state",
+      "flag": "--robot-mapping",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "mapping",
+      "schema_id": "ntm:robot:mapping:v1",
+      "schema_type": "mapping"
+    },
+    {
+      "category": "state",
       "flag": "--robot-markdown",
       "has_action_handoff": false,
       "has_attention_ops": false,
@@ -690,6 +709,21 @@
       "name": "productivity",
       "schema_id": "ntm:robot:productivity:v1",
       "schema_type": "productivity"
+    },
+    {
+      "category": "state",
+      "flag": "--robot-saved-sessions",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "saved-sessions",
+      "schema_id": "ntm:robot:saved-sessions:v1",
+      "schema_type": "saved_sessions"
     },
     {
       "category": "state",
@@ -1375,6 +1409,21 @@
     },
     {
       "category": "spawn",
+      "flag": "--robot-session-templates",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "session-templates",
+      "schema_id": "ntm:robot:session-templates:v1",
+      "schema_type": "session_templates"
+    },
+    {
+      "category": "spawn",
       "flag": "--robot-spawn",
       "has_action_handoff": false,
       "has_attention_ops": false,
@@ -1792,6 +1841,21 @@
       "name": "sequence",
       "schema_id": "",
       "schema_type": ""
+    },
+    {
+      "category": "pipeline",
+      "flag": "--robot-workflows",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "workflows",
+      "schema_id": "ntm:robot:workflows:v1",
+      "schema_type": "workflows"
     },
     {
       "category": "utility",

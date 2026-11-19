@@ -144,6 +144,7 @@ func personasCapabilityCommand() RobotCommandInfo {
 		Name:        "personas",
 		Flag:        "--robot-personas",
 		Category:    "spawn",
+		Summary:     "List agent personas and profile sets.",
 		Description: "List built-in, user, and project agent personas and profile sets with 11-harness alias and tag filtering.",
 		Parameters: []RobotParameter{
 			{Name: "personas-agent", Flag: "--personas-agent", Type: "string", Required: false, Description: "Filter personas by harness alias (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama)"},
