@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"regexp"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -18,34 +16,16 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agent/ollama"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 const (
 	defaultModelsPullTimeout = 30 * time.Minute
-	modelDiskLowThreshold    = int64(5 * 1024 * 1024 * 1024) // 5GB
+	modelDiskLowThreshold    = robot.ModelDiskLowThreshold
 )
 
-type modelRecommendationBand struct {
-	minGB  float64
-	maxGB  float64
-	models []string
-}
-
-var modelRecommendationBands = []modelRecommendationBand{
-	{minGB: 0, maxGB: 4, models: []string{"codellama:7b-instruct", "deepseek-coder:6.7b"}},
-	{minGB: 4, maxGB: 8, models: []string{"codellama:13b", "deepseek-coder:6.7b-instruct"}},
-	{minGB: 8, maxGB: 16, models: []string{"codellama:34b", "deepseek-coder:33b"}},
-	{minGB: 16, maxGB: -1, models: []string{"mixtral:8x7b", "codellama:70b"}},
-}
-
-type modelsListEntry struct {
-	Name       string    `json:"name"`
-	SizeBytes  int64     `json:"size_bytes"`
-	ModifiedAt time.Time `json:"modified_at"`
-	Family     string    `json:"family,omitempty"`
-	Parameters string    `json:"parameters,omitempty"`
-}
+type modelsListEntry = robot.LocalModelEntry
 
 type modelsListOutput struct {
 	Host               string            `json:"host"`
@@ -138,14 +118,13 @@ func newModelsRemoveCmd() *cobra.Command {
 }
 
 func newModelsRecommendCmd() *cobra.Command {
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "recommend",
 		Short: "Recommend local models based on detected VRAM",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runModelsRecommend()
 		},
 	}
-	return cmd
 }
 
 func runModelsList(hostOverride string) error {
@@ -162,26 +141,7 @@ func runModelsList(hostOverride string) error {
 		return err
 	}
 
-	sort.Slice(models, func(i, j int) bool {
-		if models[i].Size == models[j].Size {
-			return models[i].Name < models[j].Name
-		}
-		return models[i].Size > models[j].Size
-	})
-
-	var totalSize int64
-	entries := make([]modelsListEntry, 0, len(models))
-	for _, m := range models {
-		totalSize += m.Size
-		entries = append(entries, modelsListEntry{
-			Name:       m.Name,
-			SizeBytes:  m.Size,
-			ModifiedAt: m.ModifiedAt,
-			Family:     m.Details.Family,
-			Parameters: m.Details.ParameterSize,
-		})
-	}
-
+	entries, totalSize := robot.BuildLocalModelEntries(models)
 	diskFreeBytes, diskErr := detectDiskFreeBytes(".")
 	diskLow := diskErr == nil && diskFreeBytes > 0 && diskFreeBytes < modelDiskLowThreshold
 	cleanupSuggestions := suggestModelCleanup(models, 3)
@@ -349,31 +309,11 @@ func connectOllamaAdapter(hostOverride string) (*ollama.Adapter, error) {
 }
 
 func resolveOllamaHost(hostOverride string) string {
-	host := strings.TrimSpace(hostOverride)
-	if host != "" {
-		return host
-	}
-	host = strings.TrimSpace(os.Getenv("NTM_OLLAMA_HOST"))
-	if host != "" {
-		return host
-	}
-	host = strings.TrimSpace(os.Getenv("OLLAMA_HOST"))
-	if host != "" {
-		return host
-	}
-	return ollama.DefaultHost
+	return robot.ResolveOllamaHost(hostOverride)
 }
 
 func recommendationsForVRAM(vramGB float64) []string {
-	for _, band := range modelRecommendationBands {
-		if vramGB < band.minGB {
-			continue
-		}
-		if band.maxGB < 0 || vramGB < band.maxGB {
-			return append([]string(nil), band.models...)
-		}
-	}
-	return append([]string(nil), modelRecommendationBands[len(modelRecommendationBands)-1].models...)
+	return robot.RecommendationsForVRAM(vramGB)
 }
 
 func detectVRAMGB() (float64, string) {
@@ -401,93 +341,20 @@ func detectVRAMGB() (float64, string) {
 }
 
 func parseNvidiaSMIMemoryMB(raw string) float64 {
-	var maxMB float64
-	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		v, err := strconv.ParseFloat(line, 64)
-		if err != nil {
-			continue
-		}
-		if v > maxMB {
-			maxMB = v
-		}
-	}
-	return maxMB
+	return robot.ParseNvidiaSMIMemoryMB(raw)
 }
 
-var darwinVRAMGBRegex = regexp.MustCompile(`(?i)VRAM[^:]*:\s*([0-9]+(?:\.[0-9]+)?)\s*(GB|MB)`)
-
 func parseDarwinVRAMGB(raw string) float64 {
-	matches := darwinVRAMGBRegex.FindAllStringSubmatch(raw, -1)
-	var maxGB float64
-	for _, m := range matches {
-		if len(m) < 3 {
-			continue
-		}
-		n, err := strconv.ParseFloat(m[1], 64)
-		if err != nil {
-			continue
-		}
-		unit := strings.ToUpper(m[2])
-		if unit == "MB" {
-			n = n / 1024.0
-		}
-		if n > maxGB {
-			maxGB = n
-		}
-	}
-	return maxGB
+	return robot.ParseDarwinVRAMGB(raw)
 }
 
 func detectDiskFreeBytes(path string) (int64, error) {
-	if path == "" {
-		path = "."
-	}
-	if runtime.GOOS == "windows" {
-		return 0, errors.New("disk free check not supported on windows")
-	}
-	out, err := exec.Command("df", "-k", path).Output()
-	if err != nil {
-		return 0, err
-	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) < 2 {
-		return 0, fmt.Errorf("unexpected df output")
-	}
-	fields := strings.Fields(lines[len(lines)-1])
-	if len(fields) < 4 {
-		return 0, fmt.Errorf("unexpected df output")
-	}
-	availKB, err := strconv.ParseInt(fields[3], 10, 64)
-	if err != nil {
-		return 0, err
-	}
-	return availKB * 1024, nil
+	freeBytes, _, err := robot.CheckModelDiskSpace(path)
+	return freeBytes, err
 }
 
 func suggestModelCleanup(models []ollama.Model, limit int) []string {
-	if limit <= 0 || len(models) == 0 {
-		return nil
-	}
-	candidates := append([]ollama.Model(nil), models...)
-	sort.Slice(candidates, func(i, j int) bool {
-		// Oldest first for LRU-style hint.
-		if candidates[i].ModifiedAt.Equal(candidates[j].ModifiedAt) {
-			return candidates[i].Size > candidates[j].Size
-		}
-		return candidates[i].ModifiedAt.Before(candidates[j].ModifiedAt)
-	})
-	if len(candidates) > limit {
-		candidates = candidates[:limit]
-	}
-	out := make([]string, 0, len(candidates))
-	for _, c := range candidates {
-		out = append(out, c.Name)
-	}
-	return out
+	return robot.SuggestModelCleanup(models, limit)
 }
 
 func blankDash(v string) string {

@@ -232,7 +232,12 @@ func getCommandsContent() *DocsContent {
 --robot-session-templates: List or inspect multi-agent session templates (--template-name)
 --robot-saved-sessions: List, inspect, capture, archive, or unarchive saved session snapshots (--saved-action, --saved-name, --saved-session, --saved-archived, --saved-overwrite)
 --robot-mapping=SESSION: Resolve Agent Mail names to live tmux panes and reconcile border badges
---robot-workflows: List or inspect workflow coordination templates with trigger validation (--workflows-name, --workflows-role)`,
+--robot-workflows: List or inspect workflow coordination templates with trigger validation (--workflows-name, --workflows-role)
+--robot-grep=PATTERN: Search pane scrollback with regex across 11 harnesses (--grep-session, --all, --type, --grep-ignore-case, --grep-context)
+--robot-extract=SESSION: Extract fenced code blocks and file hints from pane scrollback (--extract-pane, --extract-lang, --extract-last, --lines)
+--robot-validate: Validate user/project config, recipes, personas, policy, and 11-harness executables (--validate-all, --validate-fix, --project)
+--robot-plugins: List installed agent and command plugins
+--robot-models: Recommend local models from GPU VRAM or list installed Ollama models (--models-action, --models-host)`,
 			},
 			{
 				Heading: "Beads Management",

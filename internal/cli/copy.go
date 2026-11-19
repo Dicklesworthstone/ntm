@@ -24,13 +24,7 @@ func newCopyCmd() *cobra.Command {
 		last      int
 		pattern   string
 		allFlag   bool
-		ccFlag    bool
-		codFlag   bool
-		gmiFlag   bool
-		agyFlag   bool
-		grokFlag  bool
-		ompFlag   bool
-		ocFlag    bool
+		filter    AgentFilter
 		codeFlag  bool
 		pasteFlag bool
 		headers   bool
@@ -72,16 +66,8 @@ Examples:
 				}
 			}
 
-			filter := AgentFilter{
-				All:         allFlag,
-				Claude:      ccFlag,
-				Codex:       codFlag,
-				Gemini:      gmiFlag,
-				Antigravity: agyFlag,
-				Grok:        grokFlag,
-				Omp:         ompFlag,
-				Opencode:    ocFlag,
-			}
+			runFilter := filter
+			runFilter.All = allFlag
 
 			options := CopyOptions{
 				Last:     last,
@@ -101,7 +87,7 @@ Examples:
 				return runPaste(cmd.OutOrStdout(), options)
 			}
 
-			return runCopy(cmd.OutOrStdout(), session, filter, options)
+			return runCopy(cmd.OutOrStdout(), session, runFilter, options)
 		},
 	}
 
@@ -111,13 +97,7 @@ Examples:
 	cmd.Flags().BoolVar(&pasteFlag, "paste", false, "Read from system clipboard instead of tmux panes")
 	cmd.Flags().BoolVar(&headers, "headers", false, "Include pane headers (defaults off when --code is set)")
 	cmd.Flags().BoolVar(&allFlag, "all", false, "Copy from all panes")
-	cmd.Flags().BoolVar(&ccFlag, "cc", false, "Copy from Claude panes")
-	cmd.Flags().BoolVar(&codFlag, "cod", false, "Copy from Codex panes")
-	cmd.Flags().BoolVar(&gmiFlag, "gmi", false, "Copy from Gemini panes")
-	cmd.Flags().BoolVar(&agyFlag, "agy", false, "Copy from Antigravity panes")
-	cmd.Flags().BoolVar(&grokFlag, "grok", false, "Copy from Grok Build panes")
-	cmd.Flags().BoolVar(&ompFlag, "omp", false, "Copy from Oh My Pi (omp) panes")
-	cmd.Flags().BoolVar(&ocFlag, "oc", false, "Copy from OpenCode (oc) panes")
+	bindAgentFilterFlags(cmd, &filter, "Copy from %s panes")
 	cmd.Flags().StringVarP(&outFile, "output", "o", "", "Write output to file instead of clipboard")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "Suppress confirmation output")
 	cmd.ValidArgsFunction = completeSessionColonPane
@@ -125,7 +105,7 @@ Examples:
 	return cmd
 }
 
-// AgentFilter specifies which agent types to target
+// AgentFilter specifies which agent types to target across all 11 built-in harnesses.
 type AgentFilter struct {
 	All         bool
 	Claude      bool
@@ -133,12 +113,69 @@ type AgentFilter struct {
 	Gemini      bool
 	Antigravity bool
 	Grok        bool
+	Cursor      bool
+	Windsurf    bool
+	Aider       bool
 	Omp         bool
 	Opencode    bool
+	Ollama      bool
+}
+
+func bindAgentFilterFlags(cmd *cobra.Command, filter *AgentFilter, descFmt string) {
+	cmd.Flags().BoolVar(&filter.Claude, "cc", false, fmt.Sprintf(descFmt, "Claude"))
+	cmd.Flags().BoolVar(&filter.Codex, "cod", false, fmt.Sprintf(descFmt, "Codex"))
+	cmd.Flags().BoolVar(&filter.Gemini, "gmi", false, fmt.Sprintf(descFmt, "Gemini"))
+	cmd.Flags().BoolVar(&filter.Antigravity, "agy", false, fmt.Sprintf(descFmt, "Antigravity"))
+	cmd.Flags().BoolVar(&filter.Grok, "grok", false, fmt.Sprintf(descFmt, "Grok Build"))
+	cmd.Flags().BoolVar(&filter.Cursor, "cursor", false, fmt.Sprintf(descFmt, "Cursor"))
+	cmd.Flags().BoolVar(&filter.Windsurf, "windsurf", false, fmt.Sprintf(descFmt, "Windsurf"))
+	cmd.Flags().BoolVar(&filter.Aider, "aider", false, fmt.Sprintf(descFmt, "Aider"))
+	cmd.Flags().BoolVar(&filter.Opencode, "oc", false, fmt.Sprintf(descFmt, "OpenCode (oc)"))
+	cmd.Flags().BoolVar(&filter.Omp, "omp", false, fmt.Sprintf(descFmt, "Oh My Pi (omp)"))
+	cmd.Flags().BoolVar(&filter.Ollama, "ollama", false, fmt.Sprintf(descFmt, "Ollama"))
 }
 
 func (f AgentFilter) IsEmpty() bool {
-	return !f.All && !f.Claude && !f.Codex && !f.Gemini && !f.Antigravity && !f.Grok && !f.Omp && !f.Opencode
+	return !f.All && !f.Claude && !f.Codex && !f.Gemini && !f.Antigravity &&
+		!f.Grok && !f.Cursor && !f.Windsurf && !f.Aider && !f.Omp && !f.Opencode && !f.Ollama
+}
+
+func (f AgentFilter) SelectedTypes() []string {
+	var types []string
+	if f.Claude {
+		types = append(types, "cc")
+	}
+	if f.Codex {
+		types = append(types, "cod")
+	}
+	if f.Gemini {
+		types = append(types, "gmi")
+	}
+	if f.Antigravity {
+		types = append(types, "agy")
+	}
+	if f.Grok {
+		types = append(types, "grok")
+	}
+	if f.Cursor {
+		types = append(types, "cursor")
+	}
+	if f.Windsurf {
+		types = append(types, "windsurf")
+	}
+	if f.Aider {
+		types = append(types, "aider")
+	}
+	if f.Opencode {
+		types = append(types, "oc")
+	}
+	if f.Omp {
+		types = append(types, "omp")
+	}
+	if f.Ollama {
+		types = append(types, "ollama")
+	}
+	return types
 }
 
 func (f AgentFilter) Matches(agentType tmux.AgentType) bool {
@@ -156,10 +193,18 @@ func (f AgentFilter) Matches(agentType tmux.AgentType) bool {
 		return f.Antigravity
 	case tmux.AgentGrok:
 		return f.Grok
+	case tmux.AgentCursor:
+		return f.Cursor
+	case tmux.AgentWindsurf:
+		return f.Windsurf
+	case tmux.AgentAider:
+		return f.Aider
 	case tmux.AgentOmp:
 		return f.Omp
 	case tmux.AgentOpencode:
 		return f.Opencode
+	case tmux.AgentOllama:
+		return f.Ollama
 	default:
 		return false
 	}

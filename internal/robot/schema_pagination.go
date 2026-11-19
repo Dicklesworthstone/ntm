@@ -184,6 +184,11 @@ var SchemaPagination = map[string]SchemaPaginationFlag{
 	"mapping":             {Reason: "bounded: mapped panes and identity discrepancy records for a single session"},
 	"workflows":           {Reason: "bounded: configured built-in, user, and project workflow templates"},
 	"session_templates":   {Reason: "bounded: configured built-in, user, and project session templates"},
+	"grep":                {Reason: "bounded: regex matches across bounded per-pane scrollback (--lines)"},
+	"extract":             {Reason: "bounded: fenced code blocks parsed from bounded per-pane scrollback (--lines)"},
+	"validate":            {Reason: "bounded: active user and project configuration files"},
+	"plugins":             {Reason: "bounded: installed TOML agent plugins and executable command plugins"},
+	"models":              {Reason: "bounded: locally installed Ollama models and VRAM recommendation bands"},
 }
 
 // MustRegisterSchemaPagination declares the pagination flag for a schema type

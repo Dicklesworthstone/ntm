@@ -546,6 +546,31 @@ func resetRobotExtFlags() {
 	robotSessionTemplates = false
 	robotTemplateName = ""
 
+	robotGrep = ""
+	robotGrepSession = ""
+	robotGrepIgnoreCase = false
+	robotGrepInvert = false
+	robotGrepContext = 0
+	robotGrepBefore = 0
+	robotGrepAfter = 0
+	robotGrepListOnly = false
+
+	robotExtract = ""
+	robotExtractPane = ""
+	robotExtractLang = ""
+	robotExtractLast = false
+	robotExtractSelect = 0
+
+	robotValidate = false
+	robotValidateAll = false
+	robotValidateFix = false
+
+	robotPlugins = false
+
+	robotModels = false
+	robotModelsAction = "recommend"
+	robotModelsHost = ""
+
 	if rootCmd != nil {
 		for _, flagName := range []string{
 			"robot-adopt", "adopt-cc", "adopt-cod", "adopt-gmi", "adopt-agy",
@@ -559,6 +584,11 @@ func resetRobotExtFlags() {
 			"robot-mapping",
 			"robot-workflows", "workflows-name", "workflows-role",
 			"robot-session-templates", "template-name",
+			"robot-grep", "grep-session", "grep-ignore-case", "grep-invert", "grep-context", "grep-before", "grep-after", "grep-list-only",
+			"robot-extract", "extract-pane", "extract-lang", "extract-last", "extract-select",
+			"robot-validate", "validate-all", "validate-fix",
+			"robot-plugins",
+			"robot-models", "models-action", "models-host",
 		} {
 			if f := rootCmd.Flags().Lookup(flagName); f != nil {
 				f.Changed = false

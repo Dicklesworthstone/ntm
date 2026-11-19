@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -61,6 +62,36 @@ var (
 	// --robot-session-templates flags
 	robotSessionTemplates bool
 	robotTemplateName     string
+
+	// --robot-grep flags
+	robotGrep           string
+	robotGrepSession    string
+	robotGrepIgnoreCase bool
+	robotGrepInvert     bool
+	robotGrepContext    int
+	robotGrepBefore     int
+	robotGrepAfter      int
+	robotGrepListOnly   bool
+
+	// --robot-extract flags
+	robotExtract       string
+	robotExtractPane   string
+	robotExtractLang   string
+	robotExtractLast   bool
+	robotExtractSelect int
+
+	// --robot-validate flags
+	robotValidate    bool
+	robotValidateAll bool
+	robotValidateFix bool
+
+	// --robot-plugins flag
+	robotPlugins bool
+
+	// --robot-models flags
+	robotModels       bool
+	robotModelsAction string
+	robotModelsHost   string
 )
 
 func registerRobotExtFlags() {
@@ -116,17 +147,52 @@ func registerRobotExtFlags() {
 	// Robot-session-templates flags for multi-agent session templates
 	rootCmd.Flags().BoolVar(&robotSessionTemplates, "robot-session-templates", false, "List built-in, user, and project session templates or inspect a template by name (JSON)")
 	rootCmd.Flags().StringVar(&robotTemplateName, "template-name", "", "Session template name to inspect in detail (use with --robot-session-templates)")
+
+	// Robot-grep flags for regex search across pane scrollback with 11-harness filtering
+	rootCmd.Flags().StringVar(&robotGrep, "robot-grep", "", "Search pane scrollback with Go regular expressions across one or all sessions and all 11 agent harnesses (JSON). Required: PATTERN")
+	rootCmd.Flags().StringVar(&robotGrepSession, "grep-session", "", "Target session name for --robot-grep (or pass --all for all sessions)")
+	rootCmd.Flags().BoolVar(&robotGrepIgnoreCase, "grep-ignore-case", false, "Case-insensitive regex search (use with --robot-grep)")
+	rootCmd.Flags().BoolVar(&robotGrepInvert, "grep-invert", false, "Invert regex matching (use with --robot-grep)")
+	rootCmd.Flags().IntVar(&robotGrepContext, "grep-context", 0, "Symmetric context lines before and after each match (use with --robot-grep)")
+	rootCmd.Flags().IntVar(&robotGrepBefore, "grep-before", 0, "Context lines before each match (use with --robot-grep)")
+	rootCmd.Flags().IntVar(&robotGrepAfter, "grep-after", 0, "Context lines after each match (use with --robot-grep)")
+	rootCmd.Flags().BoolVar(&robotGrepListOnly, "grep-list-only", false, "Return only matching session/pane identifiers (use with --robot-grep)")
+
+	// Robot-extract flags for fenced code-block extraction from pane scrollback
+	rootCmd.Flags().StringVar(&robotExtract, "robot-extract", "", "Extract fenced Markdown code blocks and target file hints from session pane scrollback (JSON). Required: SESSION")
+	rootCmd.Flags().StringVar(&robotExtractPane, "extract-pane", "", "Filter code-block extraction to a pane index, %pane_id, or title substring (use with --robot-extract)")
+	rootCmd.Flags().StringVar(&robotExtractLang, "extract-lang", "", "Filter extracted code blocks by language (use with --robot-extract)")
+	rootCmd.Flags().BoolVar(&robotExtractLast, "extract-last", false, "Extract code blocks only from the active pane (use with --robot-extract)")
+	rootCmd.Flags().IntVar(&robotExtractSelect, "extract-select", 0, "Select a single extracted block by 1-based index (use with --robot-extract)")
+
+	// Robot-validate flags for config/recipes/personas/policy validation
+	rootCmd.Flags().BoolVar(&robotValidate, "robot-validate", false, "Validate user and project NTM config, recipes, personas, policy, and 11-harness executables (JSON)")
+	rootCmd.Flags().BoolVar(&robotValidateAll, "validate-all", false, "Include absent optional config locations when running --robot-validate")
+	rootCmd.Flags().BoolVar(&robotValidateFix, "validate-fix", false, "Auto-create missing fixable directories when running --robot-validate")
+
+	// Robot-plugins flag for installed agent and command plugins
+	rootCmd.Flags().BoolVar(&robotPlugins, "robot-plugins", false, "List installed TOML agent plugins and executable command plugins (JSON)")
+
+	// Robot-models flags for local Ollama models and VRAM recommendations
+	rootCmd.Flags().BoolVar(&robotModels, "robot-models", false, "Recommend local coding models from detected GPU VRAM or list installed Ollama models (JSON)")
+	rootCmd.Flags().StringVar(&robotModelsAction, "models-action", "recommend", "Models action: recommend (default) or list (use with --robot-models)")
+	rootCmd.Flags().StringVar(&robotModelsHost, "models-host", "", "Optional Ollama daemon URL override (use with --robot-models)")
 }
 
 func needsRobotExtConfigLoading() bool {
 	return strings.Compare(robotAdopt, "") != 0 || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-adopt")) ||
 		strings.Compare(robotRedact, "") != 0 || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-redact")) ||
 		strings.Compare(robotMapping, "") != 0 || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-mapping")) ||
+		strings.Compare(robotGrep, "") != 0 || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-grep")) ||
+		strings.Compare(robotExtract, "") != 0 || (jsonArgumentRoot != nil && jsonArgumentRoot.Flags().Changed("robot-extract")) ||
 		robotHooks ||
 		robotPersonas ||
 		robotSavedSessions ||
 		robotWorkflows ||
-		robotSessionTemplates
+		robotSessionTemplates ||
+		robotValidate ||
+		robotPlugins ||
+		robotModels
 }
 
 func dispatchRobotExtFlags(cmd *cobra.Command, robotDryRunEffective bool) bool {
@@ -263,6 +329,86 @@ func dispatchRobotExtFlags(cmd *cobra.Command, robotDryRunEffective bool) bool {
 		if err := robot.PrintSessionTemplates(robot.SessionTemplatesOptions{
 			ProjectDir: robotEnsembleProject,
 			Name:       robotTemplateName,
+		}); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
+
+	if strings.Compare(robotGrep, "") != 0 || cmd.Flags().Changed("robot-grep") {
+		maxLines := 1000
+		if cmd.Flags().Changed("lines") {
+			maxLines = robotLines
+		}
+		var agentTypes []string
+		if strings.Compare(strings.TrimSpace(robotSendType), "") != 0 {
+			for _, part := range strings.Split(robotSendType, ",") {
+				if trimmed := strings.TrimSpace(part); strings.Compare(trimmed, "") != 0 {
+					agentTypes = append(agentTypes, trimmed)
+				}
+			}
+		}
+		if err := robot.PrintGrep(robot.GrepOptions{
+			Pattern:         robotGrep,
+			Session:         robotGrepSession,
+			AllSessions:     robotSendAll,
+			AgentTypes:      agentTypes,
+			CaseInsensitive: robotGrepIgnoreCase,
+			InvertMatch:     robotGrepInvert,
+			ContextLines:    robotGrepContext,
+			BeforeLines:     robotGrepBefore,
+			AfterLines:      robotGrepAfter,
+			MaxLines:        maxLines,
+			ListOnly:        robotGrepListOnly,
+		}); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
+
+	if strings.Compare(robotExtract, "") != 0 || cmd.Flags().Changed("robot-extract") {
+		lines := 500
+		if cmd.Flags().Changed("lines") {
+			lines = robotLines
+		}
+		if err := robot.PrintExtract(robot.ExtractOptions{
+			Session:     robotExtract,
+			Pane:        robotExtractPane,
+			Language:    robotExtractLang,
+			LastPane:    robotExtractLast,
+			Lines:       lines,
+			SelectBlock: robotExtractSelect,
+		}); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
+
+	if robotValidate {
+		if err := robot.PrintValidation(robot.ValidationOptions{
+			MainConfigPath: selectedConfigPath(),
+			ProjectDir:     robotEnsembleProject,
+			All:            robotValidateAll,
+			Fix:            robotValidateFix,
+		}); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
+
+	if robotPlugins {
+		if err := robot.PrintPlugins(robot.PluginsOptions{
+			ConfigDir: filepath.Dir(selectedConfigPath()),
+		}); err != nil {
+			recordRobotProcessExit(err)
+		}
+		return true
+	}
+
+	if robotModels {
+		if err := robot.PrintLocalModels(cmd.Context(), robot.LocalModelsOptions{
+			Action: robotModelsAction,
+			Host:   robotModelsHost,
 		}); err != nil {
 			recordRobotProcessExit(err)
 		}

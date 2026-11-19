@@ -132,6 +132,11 @@ var SchemaCommand = map[string]interface{}{
 	"mapping":           AgentMappingOutput{},
 	"workflows":         WorkflowsOutput{},
 	"session_templates": SessionTemplatesOutput{},
+	"grep":              GrepOutput{},
+	"extract":           ExtractOutput{},
+	"validate":          ValidationOutput{},
+	"plugins":           PluginsOutput{},
+	"models":            LocalModelsOutput{},
 
 	// Pane inspection
 	"inspect":              InspectPaneOutput{},

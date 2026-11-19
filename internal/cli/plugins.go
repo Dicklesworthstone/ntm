@@ -8,7 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Dicklesworthstone/ntm/internal/plugins"
+	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
 
 func newPluginsCmd() *cobra.Command {
@@ -36,32 +37,33 @@ func newPluginsListCmd() *cobra.Command {
 		Short: "List installed agent and command plugins",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			configDir := filepath.Dir(selectedConfigPath())
-
-			// Load Agent Plugins
-			agentsDir := filepath.Join(configDir, "agents")
-			agentPlugins, err := plugins.LoadAgentPlugins(agentsDir)
+			out, err := robot.GetPlugins(robot.PluginsOptions{ConfigDir: configDir})
 			if err != nil {
-				return fmt.Errorf("load agent plugins from %s: %w", agentsDir, err)
+				return err
+			}
+			if !out.Success {
+				cause := fmt.Errorf("%s", out.Error)
+				if IsJSONOutput() {
+					return emitJSONFailureEnvelopeWithCause(output.NewErrorWithCode(out.ErrorCode, out.Error), cause)
+				}
+				return cause
 			}
 
-			// Load Command Plugins
-			cmdDir := filepath.Join(configDir, "commands")
-			commandPlugins, err := plugins.LoadCommandPlugins(cmdDir)
-			if err != nil {
-				return fmt.Errorf("load command plugins from %s: %w", cmdDir, err)
+			if IsJSONOutput() {
+				return output.PrintJSON(out)
 			}
 
-			if len(agentPlugins) == 0 && len(commandPlugins) == 0 {
+			if len(out.AgentPlugins) == 0 && len(out.CommandPlugins) == 0 {
 				fmt.Println("No plugins installed.")
 				return nil
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 
-			if len(agentPlugins) > 0 {
+			if len(out.AgentPlugins) > 0 {
 				fmt.Println("Agent Plugins:")
 				fmt.Fprintln(w, "NAME\tALIAS\tDESCRIPTION")
-				for _, p := range agentPlugins {
+				for _, p := range out.AgentPlugins {
 					alias := p.Alias
 					if alias == "" {
 						alias = "-"
@@ -72,10 +74,10 @@ func newPluginsListCmd() *cobra.Command {
 				fmt.Println()
 			}
 
-			if len(commandPlugins) > 0 {
+			if len(out.CommandPlugins) > 0 {
 				fmt.Println("Command Plugins:")
 				fmt.Fprintln(w, "NAME\tUSAGE\tDESCRIPTION")
-				for _, p := range commandPlugins {
+				for _, p := range out.CommandPlugins {
 					fmt.Fprintf(w, "%s\t%s\t%s\n", p.Name, p.Usage, p.Description)
 				}
 				w.Flush()

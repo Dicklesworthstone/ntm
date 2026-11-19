@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
@@ -99,68 +99,9 @@ func (r *ErrorsResult) JSON() interface{} {
 	return r
 }
 
-// Error pattern matchers for the errors command
-var errorsCommandPatterns = []struct {
-	Pattern   *regexp.Regexp
-	MatchType string
-}{
-	// Python errors
-	{regexp.MustCompile(`(?i)^Traceback \(most recent call last\)`), "traceback"},
-	{regexp.MustCompile(`(?i)^\s*(FileNotFoundError|ImportError|ModuleNotFoundError|AttributeError|TypeError|ValueError|KeyError|IndexError|RuntimeError|NameError|SyntaxError|IndentationError|ZeroDivisionError|AssertionError|OSError|PermissionError|ConnectionError|TimeoutError):`), "exception"},
-
-	// Go errors
-	{regexp.MustCompile(`(?i)^panic:`), "panic"},
-	{regexp.MustCompile(`(?i)^goroutine \d+ \[running\]:`), "panic"},
-	{regexp.MustCompile(`(?i)fatal error:`), "fatal"},
-
-	// JavaScript/Node errors
-	{regexp.MustCompile(`(?i)^(TypeError|ReferenceError|SyntaxError|RangeError|EvalError|URIError):`), "exception"},
-	{regexp.MustCompile(`(?i)Error: ENOENT|EACCES|EEXIST|ENOTDIR|EISDIR|EMFILE|EPERM`), "error"},
-
-	// Rust errors
-	{regexp.MustCompile(`(?i)^thread '.+' panicked at`), "panic"},
-	{regexp.MustCompile(`(?i)^error\[E\d+\]:`), "error"},
-
-	// Generic error patterns
-	{regexp.MustCompile(`(?i)^error:`), "error"},
-	{regexp.MustCompile(`(?i)^Error:`), "error"},
-	{regexp.MustCompile(`(?i)^ERROR[:\s]`), "error"},
-	{regexp.MustCompile(`(?i)^FATAL[:\s]`), "fatal"},
-	{regexp.MustCompile(`(?i)^CRITICAL[:\s]`), "critical"},
-
-	// Build/test failures
-	{regexp.MustCompile(`(?i)\bfailed\b.*:|\bFAILED\b`), "failed"},
-	{regexp.MustCompile(`(?i)^FAIL\s+`), "failed"},
-	{regexp.MustCompile(`(?i)^--- FAIL:`), "failed"},
-	{regexp.MustCompile(`(?i)build failed`), "failed"},
-	{regexp.MustCompile(`(?i)compilation failed`), "failed"},
-
-	// Exit codes
-	{regexp.MustCompile(`(?i)exit(?:ed)?\s+(?:with\s+)?(?:code|status)\s+[1-9]\d*`), "exit"},
-	{regexp.MustCompile(`(?i)Process exited with code [1-9]\d*`), "exit"},
-
-	// Stack traces
-	{regexp.MustCompile(`^at\s+.+\(.+:\d+:\d+\)`), "stacktrace"},
-
-	// Agent-specific errors
-	{regexp.MustCompile(`(?i)^claude.*error`), "agent_error"},
-	{regexp.MustCompile(`(?i)rate limit|too many requests|429`), "rate_limit"},
-	{regexp.MustCompile(`(?i)context.*(?:exceeded|limit|full|window)`), "context_limit"},
-}
-
-// isErrorLine checks if a line matches any error pattern and returns the match type
+// isErrorLine checks if a line matches any canonical error pattern and returns the match type.
 func isErrorLine(line string) (bool, string) {
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return false, ""
-	}
-
-	for _, p := range errorsCommandPatterns {
-		if p.Pattern.MatchString(line) {
-			return true, p.MatchType
-		}
-	}
-	return false, ""
+	return robot.MatchErrorLineWithOptions(line, true)
 }
 
 // ErrorsOptions contains options for the errors operation
@@ -176,10 +117,7 @@ func newErrorsCmd() *cobra.Command {
 		panes        string
 		contextLines int
 		maxLines     int
-		ccFlag       bool
-		codFlag      bool
-		gmiFlag      bool
-		agyFlag      bool
+		filter       AgentFilter
 	)
 
 	cmd := &cobra.Command{
@@ -222,13 +160,6 @@ Examples:
 				}
 			}
 
-			filter := AgentFilter{
-				Claude:      ccFlag,
-				Codex:       codFlag,
-				Gemini:      gmiFlag,
-				Antigravity: agyFlag,
-			}
-
 			opts := ErrorsOptions{
 				Panes:        paneIndices,
 				ContextLines: contextLines,
@@ -243,10 +174,7 @@ Examples:
 	cmd.Flags().StringVar(&panes, "panes", "", "Comma-separated pane indices to filter")
 	cmd.Flags().IntVarP(&contextLines, "context", "C", 2, "Lines of context before and after each error")
 	cmd.Flags().IntVarP(&maxLines, "max-lines", "n", 1000, "Search last N lines per pane")
-	cmd.Flags().BoolVar(&ccFlag, "cc", false, "Show Claude pane errors only")
-	cmd.Flags().BoolVar(&codFlag, "cod", false, "Show Codex pane errors only")
-	cmd.Flags().BoolVar(&gmiFlag, "gmi", false, "Show Gemini pane errors only")
-	cmd.Flags().BoolVar(&agyFlag, "agy", false, "Show Antigravity pane errors only")
+	bindAgentFilterFlags(cmd, &filter, "Show %s pane errors only")
 
 	return cmd
 }

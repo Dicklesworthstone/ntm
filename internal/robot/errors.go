@@ -22,7 +22,7 @@ type ErrorsOptions struct {
 	Session   string   // Session name (required)
 	Panes     []string // N, W.P, or %N pane selectors to check (empty = all agent panes)
 	Lines     int      // Lines to capture per pane (default: 1000)
-	AgentType string   // Filter by agent type (claude, codex, gemini)
+	AgentType string   // Filter by agent type alias across all 11 harnesses (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama)
 	Context   int      // Context lines before/after error (default: 2)
 }
 
@@ -105,8 +105,15 @@ var robotErrorPatterns = []struct {
 	{regexp.MustCompile(`(?i)context.*(?:exceeded|limit|full|window)`), "context_limit"},
 }
 
-// isRobotErrorLine checks if a line matches any error pattern.
-func isRobotErrorLine(line string) (bool, string) {
+var robotTrimmedStackFramePattern = regexp.MustCompile(`^at\s+.+\(.+:\d+:\d+\)`)
+
+// MatchErrorLine checks if a line matches any canonical error pattern (excluding standalone stack frames).
+func MatchErrorLine(line string) (bool, string) {
+	return MatchErrorLineWithOptions(line, false)
+}
+
+// MatchErrorLineWithOptions checks if a line matches any canonical error pattern, optionally matching trimmed JS/Node stack frames.
+func MatchErrorLineWithOptions(line string, includeStackFrames bool) (bool, string) {
 	line = strings.TrimSpace(line)
 	if line == "" {
 		return false, ""
@@ -117,7 +124,15 @@ func isRobotErrorLine(line string) (bool, string) {
 			return true, p.MatchType
 		}
 	}
+	if includeStackFrames && robotTrimmedStackFramePattern.MatchString(line) {
+		return true, "stacktrace"
+	}
 	return false, ""
+}
+
+// isRobotErrorLine checks if a line matches any error pattern.
+func isRobotErrorLine(line string) (bool, string) {
+	return MatchErrorLineWithOptions(line, false)
 }
 
 func detectErrorsPaneAgentType(pane tmux.Pane, paneOutput string) string {

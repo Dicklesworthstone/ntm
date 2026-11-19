@@ -19,10 +19,7 @@ func newSaveCmd() *cobra.Command {
 		outputDir string
 		lines     int
 		allFlag   bool
-		ccFlag    bool
-		codFlag   bool
-		gmiFlag   bool
-		agyFlag   bool
+		filter    AgentFilter
 	)
 
 	cmd := &cobra.Command{
@@ -46,30 +43,22 @@ Examples:
 				session = args[0]
 			}
 
-			filter := AgentFilter{
-				All:         allFlag,
-				Claude:      ccFlag,
-				Codex:       codFlag,
-				Gemini:      gmiFlag,
-				Antigravity: agyFlag,
-			}
+			runFilter := filter
+			runFilter.All = allFlag
 
 			// Default to all if no filter specified
-			if filter.IsEmpty() {
-				filter.All = true
+			if runFilter.IsEmpty() {
+				runFilter.All = true
 			}
 
-			return runSave(cmd.OutOrStdout(), session, outputDir, lines, filter)
+			return runSave(cmd.OutOrStdout(), session, outputDir, lines, runFilter)
 		},
 	}
 
 	cmd.Flags().StringVarP(&outputDir, "output", "o", "./outputs", "Output directory")
 	cmd.Flags().IntVarP(&lines, "lines", "l", 2000, "Number of lines to capture")
 	cmd.Flags().BoolVar(&allFlag, "all", false, "Save from all panes")
-	cmd.Flags().BoolVar(&ccFlag, "cc", false, "Save from Claude panes")
-	cmd.Flags().BoolVar(&codFlag, "cod", false, "Save from Codex panes")
-	cmd.Flags().BoolVar(&gmiFlag, "gmi", false, "Save from Gemini panes")
-	cmd.Flags().BoolVar(&agyFlag, "agy", false, "Save from Antigravity panes")
+	bindAgentFilterFlags(cmd, &filter, "Save from %s panes")
 	cmd.ValidArgsFunction = completeSessionArgs
 
 	return cmd

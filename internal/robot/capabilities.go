@@ -783,6 +783,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Name:        "productivity",
 			Flag:        "--robot-productivity",
 			Category:    "state",
+			Summary:     "Check swarm commit/Beads/test convergence.",
 			Description: "Return attributable commit, Beads, and live build/test evidence for whether a swarm should continue or has converged.",
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-productivity", Type: "string", Required: true, Description: "Session name"},
@@ -863,6 +864,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Name:        "pane-address",
 			Flag:        "--robot-pane-address",
 			Category:    "state",
+			Summary:     "Resolve canonical and stable pane selectors.",
 			Description: "Per-pane addressing cards: the canonical selector send/tail accept, the stable tmux %pane_id (immune to base-index and renumbering), physical topology, and a ready-to-paste tmux target.",
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-pane-address", Type: "string", Required: true, Description: "Session name"},
@@ -921,6 +923,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Name:        "handoff",
 			Flag:        "--robot-handoff",
 			Category:    "state",
+			Summary:     "Inspect or create session continuity handoffs.",
 			Description: "Inspect or create session Goal/Now continuity handoffs with deterministic 4-dimension quality scores and ledger metadata.",
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-handoff", Type: "string", Required: true, Description: "Session name, or 'all' / '*' to list recent handoffs across sessions"},
@@ -943,6 +946,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Name:        "analytics",
 			Flag:        "--robot-analytics",
 			Category:    "state",
+			Summary:     "Get session, harness, and error analytics.",
 			Description: "Get aggregated session, harness, prompt, token, and error analytics.",
 			Parameters: []RobotParameter{
 				{Name: "analytics-days", Flag: "--analytics-days", Type: "int", Required: false, Default: "30", Description: "Number of days of event history for --robot-analytics"},
@@ -959,6 +963,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Name:        "audit",
 			Flag:        "--robot-audit",
 			Category:    "state",
+			Summary:     "Query and verify tamper-evident audit logs.",
 			Description: "Query, search, list, verify, or inspect projection source health for tamper-evident audit logs.",
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-audit", Type: "string", Required: false, Default: "all", Description: "Session name to inspect or verify, or 'all' / omit for global list/search"},
@@ -985,6 +990,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Name:        "timeline",
 			Flag:        "--robot-timeline",
 			Category:    "state",
+			Summary:     "Inspect persisted session timelines and stats.",
 			Description: "List persisted session timelines, inspect a session timeline with transition stats, or compute aggregate storage statistics.",
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-timeline", Type: "string", Required: false, Default: "all", Description: "Session ID to inspect, or 'all' / 'list' / 'stats' / omit"},
@@ -1003,6 +1009,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Name:        "doctor",
 			Flag:        "--robot-doctor",
 			Category:    "state",
+			Summary:     "Run ecosystem and invariant health checks.",
 			Description: "Validate NTM ecosystem health, tools, dependencies, daemons, configuration, invariants, and optional shared-resource contention.",
 			Parameters: []RobotParameter{
 				{Name: "doctor-contention", Flag: "--doctor-contention", Type: "bool", Required: false, Default: "false", Description: "Include shared-resource process contention scan"},
@@ -1115,6 +1122,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Name:        "send-receipt",
 			Flag:        "--robot-send-receipt",
 			Category:    "control",
+			Summary:     "Query durable idempotent send/interrupt receipt.",
 			Description: "Query the durable receipt of an idempotent --robot-send or --robot-interrupt by operation ID: operation kind, payload digest, byte count, per-target admission states, and the recorded outcome (outcome for sends, interrupt_outcome for interrupts). Receipts survive caller timeouts and crashes.",
 			Parameters: []RobotParameter{
 				{Name: "operation-id", Flag: "--robot-send-receipt", Type: "string", Required: true, Description: "Operation ID supplied via --op-id to --robot-send or --robot-interrupt (or a REST Idempotency-Key)"},
@@ -1127,6 +1135,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Name:        "action-status",
 			Flag:        "--robot-action-status",
 			Category:    "control",
+			Summary:     "Inspect durable robot operation or wait state.",
 			Description: "Inspect the current lifecycle state of any durable robot operation (--op-id / Idempotency-Key) or active --robot-wait handle by request ID: source, kind, status, terminal/cancellable flags, timestamps, and recorded outcome.",
 			Parameters: []RobotParameter{
 				{Name: "request-id", Flag: "--robot-action-status", Type: "string", Required: false, Description: "Request/operation ID (or pass via --request-id)"},
@@ -1141,6 +1150,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Name:        "wait-request",
 			Flag:        "--robot-wait-request",
 			Category:    "control",
+			Summary:     "Wait for a durable robot operation to finish.",
 			Description: "Block until a durable robot operation or wait handle reaches a terminal state (completed or canceled), or return TIMEOUT when --timeout elapses.",
 			Parameters: []RobotParameter{
 				{Name: "request-id", Flag: "--robot-wait-request", Type: "string", Required: false, Description: "Request/operation ID (or pass via --request-id)"},
@@ -1295,6 +1305,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Name:        "dialogs",
 			Flag:        "--robot-dialogs",
 			Category:    "state",
+			Summary:     "Classify interactive prompts and dialogs in panes.",
 			Description: "Classify in-pane interactive dialogs per pane (trust_prompt, rate_limit_options, usage_overlay, paste_limbo, destructive_confirm, unknown_dialog) with the extracted option list.",
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-dialogs", Type: "string", Required: true, Description: "Session name"},
@@ -2444,6 +2455,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Name:        "causality",
 			Flag:        "--robot-causality",
 			Category:    "utility",
+			Summary:     "Get unified causality timeline for a session.",
 			Description: "Get unified causality timeline across audit, Agent Mail, and pipeline/session state. Count semantics: total=post-dedupe pre-filter events, available=post-filter pre-limit events, filtered=returned events.",
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-causality", Type: "string", Required: true, Description: "Session name"},
@@ -2522,6 +2534,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Name:        "ubs-scan",
 			Flag:        "--robot-ubs-scan",
 			Category:    "utility",
+			Summary:     "Run UBS static bug analysis.",
 			Description: "Run UBS static bug analysis across a directory, single file, git-staged files, or working-tree diff.",
 			Parameters: []RobotParameter{
 				{Name: "path", Flag: "--robot-ubs-scan", Type: "string", Required: false, Description: "Optional directory path to scan (or pass --scan-path)"},
@@ -2557,6 +2570,11 @@ func buildCommandRegistry() []RobotCommandInfo {
 		mappingCapabilityCommand(),
 		workflowsCapabilityCommand(),
 		sessionTemplatesCapabilityCommand(),
+		grepCapabilityCommand(),
+		extractCapabilityCommand(),
+		validateCapabilityCommand(),
+		pluginsCapabilityCommand(),
+		modelsCapabilityCommand(),
 	})
 }
 

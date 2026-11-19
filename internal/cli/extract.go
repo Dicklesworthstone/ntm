@@ -11,7 +11,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/clipboard"
 	"github.com/Dicklesworthstone/ntm/internal/codeblock"
 	"github.com/Dicklesworthstone/ntm/internal/output"
-	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
 
 // ExtractResponse is the JSON output format for extract command.
@@ -96,128 +96,38 @@ func runExtract(sessionName, paneIndex, language string, lastPane bool, lines in
 		)
 	}
 
-	sessionName = strings.TrimSpace(sessionName)
-	if err := tmux.ValidateSessionName(sessionName); err != nil {
-		cause := fmt.Errorf("invalid session name: %w", err)
-		if IsJSONOutput() {
-			return emitJSONFailureEnvelopeWithCause(output.NewError(cause.Error()), cause)
-		}
-		return cause
-	}
-
-	// Check session exists
-	if !tmux.SessionExists(sessionName) {
-		cause := fmt.Errorf("session '%s' does not exist", sessionName)
-		if IsJSONOutput() {
-			return emitJSONFailureEnvelopeWithCause(
-				output.NewErrorWithCode("SESSION_NOT_FOUND", cause.Error()),
-				cause,
-			)
-		}
-		return cause
-	}
-
-	// Get panes
-	panes, err := tmux.GetPanes(sessionName)
+	out, err := robot.GetExtract(robot.ExtractOptions{
+		Session:     sessionName,
+		Pane:        paneIndex,
+		Language:    language,
+		LastPane:    lastPane,
+		Lines:       lines,
+		SelectBlock: selectBlock,
+	})
 	if err != nil {
-		cause := fmt.Errorf("failed to get panes: %w", err)
+		return err
+	}
+	if !out.Success {
+		cause := fmt.Errorf("%s", out.Error)
 		if IsJSONOutput() {
-			return emitJSONFailureEnvelopeWithCause(
-				output.NewErrorWithDetails("failed to get panes", err.Error()),
-				cause,
-			)
+			switch out.ErrorCode {
+			case robot.ErrCodeSessionNotFound, robot.ErrCodePaneNotFound, "INVALID_SELECTION":
+				return emitJSONFailureEnvelopeWithCause(output.NewErrorWithCode(out.ErrorCode, out.Error), cause)
+			default:
+				return emitJSONFailureEnvelopeWithCause(output.NewError(out.Error), cause)
+			}
 		}
 		return cause
 	}
 
-	// Filter panes
-	var targetPanes []tmux.Pane
-	if lastPane {
-		// Find most recently active pane
-		for _, p := range panes {
-			if p.Active {
-				targetPanes = []tmux.Pane{p}
-				break
-			}
-		}
-		if len(targetPanes) == 0 && len(panes) > 0 {
-			targetPanes = []tmux.Pane{panes[len(panes)-1]}
-		}
-	} else if paneIndex != "" {
-		// Find specific pane by index or title
-		for _, p := range panes {
-			paneIdxStr := fmt.Sprintf("%d", p.Index)
-			if paneIdxStr == paneIndex || p.Title == paneIndex || strings.Contains(p.Title, paneIndex) {
-				targetPanes = []tmux.Pane{p}
-				break
-			}
-		}
-		if len(targetPanes) == 0 {
-			cause := fmt.Errorf("pane '%s' not found in session '%s'", paneIndex, sessionName)
-			if IsJSONOutput() {
-				return emitJSONFailureEnvelopeWithCause(
-					output.NewErrorWithCode("PANE_NOT_FOUND", fmt.Sprintf("pane '%s' not found", paneIndex)),
-					cause,
-				)
-			}
-			return cause
-		}
-	} else {
-		// All panes
-		targetPanes = panes
-	}
-
-	// Create parser with optional language filter
-	parser := codeblock.NewParser()
-	if language != "" {
-		parser = parser.WithLanguageFilter([]string{language})
-	}
-
-	// Extract from all target panes
-	var allBlocks []codeblock.CodeBlock
-	source := sessionName
-	if paneIndex != "" {
-		source = fmt.Sprintf("%s:%s", sessionName, paneIndex)
-	}
-
-	for _, pane := range targetPanes {
-		// Capture pane output
-		captured, err := tmux.CapturePaneOutput(pane.ID, lines)
-		if err != nil {
-			continue // Skip panes that fail
-		}
-
-		// Parse code blocks
-		blocks := parser.Parse(captured)
-
-		// Add source pane info
-		for i := range blocks {
-			blocks[i].SourcePane = fmt.Sprintf("%s:.%d", sessionName, pane.Index)
-		}
-
-		allBlocks = append(allBlocks, blocks...)
-	}
-
-	// Filter by selection if specified
-	if selectBlock > 0 {
-		if selectBlock > len(allBlocks) {
-			cause := fmt.Errorf("block %d does not exist (found %d blocks)", selectBlock, len(allBlocks))
-			if IsJSONOutput() {
-				return emitJSONFailureEnvelopeWithCause(
-					output.NewErrorWithCode("INVALID_SELECTION", cause.Error()),
-					cause,
-				)
-			}
-			return cause
-		}
-		allBlocks = []codeblock.CodeBlock{allBlocks[selectBlock-1]}
-	}
+	allBlocks := out.Blocks
+	source := out.Source
 
 	// Output
 	if IsJSONOutput() {
 		response := ExtractResponse{
 			TimestampedResponse: output.NewTimestamped(),
-			Session:             sessionName,
+			Session:             out.Session,
 			Source:              source,
 			Blocks:              allBlocks,
 			TotalFound:          len(allBlocks),

@@ -12,7 +12,7 @@
     "utility"
   ],
   "category_count": 10,
-  "schema_type_count": 161,
+  "schema_type_count": 166,
   "schema_types": [
     "account_status",
     "accounts_list",
@@ -67,6 +67,7 @@
     "errors",
     "events",
     "exit_cli",
+    "extract",
     "file_beads",
     "file_hotspots",
     "file_relations",
@@ -74,6 +75,7 @@
     "forecast",
     "giil_fetch",
     "graph",
+    "grep",
     "handoff",
     "health",
     "health_oauth",
@@ -110,6 +112,7 @@
     "mail_check",
     "mapping",
     "metrics",
+    "models",
     "monitor",
     "ms_search",
     "ms_show",
@@ -118,6 +121,7 @@
     "pane_address",
     "personas",
     "plan",
+    "plugins",
     "policy_decisions",
     "preflight",
     "probe",
@@ -166,6 +170,7 @@
     "tools",
     "triage",
     "ubs_scan",
+    "validate",
     "version",
     "wait",
     "wait_cancel",
@@ -177,7 +182,7 @@
     "xf_status"
   ],
   "section_count": 13,
-  "surface_count": 173,
+  "surface_count": 178,
   "surfaces": [
     {
       "category": "state",
@@ -378,6 +383,21 @@
     },
     {
       "category": "state",
+      "flag": "--robot-extract",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "extract",
+      "schema_id": "ntm:robot:extract:v1",
+      "schema_type": "extract"
+    },
+    {
+      "category": "state",
       "flag": "--robot-files",
       "has_action_handoff": false,
       "has_attention_ops": false,
@@ -390,6 +410,21 @@
       "name": "files",
       "schema_id": "ntm:robot:files:v1",
       "schema_type": "files"
+    },
+    {
+      "category": "state",
+      "flag": "--robot-grep",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "grep",
+      "schema_id": "ntm:robot:grep:v1",
+      "schema_type": "grep"
     },
     {
       "category": "state",
@@ -2279,6 +2314,21 @@
     },
     {
       "category": "utility",
+      "flag": "--robot-models",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "models",
+      "schema_id": "ntm:robot:models:v1",
+      "schema_type": "models"
+    },
+    {
+      "category": "utility",
       "flag": "--robot-ms-search",
       "has_action_handoff": false,
       "has_attention_ops": false,
@@ -2321,6 +2371,21 @@
       "name": "palette",
       "schema_id": "ntm:robot:palette:v1",
       "schema_type": "palette"
+    },
+    {
+      "category": "utility",
+      "flag": "--robot-plugins",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "plugins",
+      "schema_id": "ntm:robot:plugins:v1",
+      "schema_type": "plugins"
     },
     {
       "category": "utility",
@@ -2727,6 +2792,21 @@
       "name": "ubs-scan",
       "schema_id": "ntm:robot:ubs-scan:v1",
       "schema_type": "ubs_scan"
+    },
+    {
+      "category": "utility",
+      "flag": "--robot-validate",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": true,
+      "has_consumer_guidance": true,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "validate",
+      "schema_id": "ntm:robot:validate:v1",
+      "schema_type": "validate"
     },
     {
       "category": "utility",

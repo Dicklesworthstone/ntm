@@ -1271,6 +1271,71 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 				TruncationBehavior: "Bounded to built-in, user, and project session template definitions",
 			},
 		},
+		"grep": {
+			SchemaID:   grepSchemaID,
+			SchemaType: "grep",
+			Sections:   []string{"sessions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Search captured tmux pane scrollback with regular expressions across one or all sessions and all 11 agent harnesses",
+				SummaryHint: "Read matches, matching_panes, match_count, and panes_searched",
+			},
+			Boundedness: &BoundednessInfo{
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded per pane by --lines (default 1000)",
+			},
+		},
+		"extract": {
+			SchemaID:   extractSchemaID,
+			SchemaType: "extract",
+			Sections:   []string{"sessions"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Extract fenced Markdown code blocks, language tags, and inferred target file paths from captured session pane scrollback",
+				SummaryHint: "Read blocks, total_found, and panes_scanned",
+			},
+			Boundedness: &BoundednessInfo{
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded per pane by --lines (default 500)",
+			},
+		},
+		"validate": {
+			SchemaID:   validateSchemaID,
+			SchemaType: "validate",
+			Sections:   []string{"summary"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Validate main config.toml, project .ntm/config.toml, recipes.toml, personas.toml, policy.yaml, and 11-harness executables",
+				SummaryHint: "Read valid, summary, and results[].errors / results[].warnings",
+			},
+			Boundedness: &BoundednessInfo{
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded to active user and project configuration files",
+			},
+		},
+		"plugins": {
+			SchemaID:   pluginsSchemaID,
+			SchemaType: "plugins",
+			Sections:   []string{"summary"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Inspect installed TOML agent plugins and executable command plugins from the active NTM config directory",
+				SummaryHint: "Read agent_plugins, command_plugins, and total_count",
+			},
+			Boundedness: &BoundednessInfo{
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded to installed files in agents/ and commands/ plugin directories",
+			},
+		},
+		"models": {
+			SchemaID:   modelsSchemaID,
+			SchemaType: "models",
+			Sections:   []string{"summary"},
+			ConsumerGuidance: &ConsumerGuidance{
+				IntendedUse: "Recommend local coding models from detected GPU VRAM or list installed Ollama models and storage usage",
+				SummaryHint: "Read detected_vram_gb and recommendations on recommend, or models and disk_low on list",
+			},
+			Boundedness: &BoundednessInfo{
+				SupportsPagination: false,
+				TruncationBehavior: "Bounded to installed local Ollama models and 4 VRAM recommendation tiers",
+			},
+		},
 	}
 }
 

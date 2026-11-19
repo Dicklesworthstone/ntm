@@ -6,28 +6,17 @@ import (
 	"os"
 	"regexp"
 	"sort"
-	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
-// GrepMatch represents a single search match in pane output
-type GrepMatch struct {
-	Session string   `json:"session"`
-	Pane    string   `json:"pane"`
-	PaneID  string   `json:"pane_id"`
-	Line    int      `json:"line"`
-	Content string   `json:"content"`
-	Context []string `json:"context,omitempty"`
-	// ContextBefore/After track how many lines in Context are before/after the match.
-	// This avoids assuming a symmetric split when only -A or -B is provided.
-	ContextBefore int `json:"context_before,omitempty"`
-	ContextAfter  int `json:"context_after,omitempty"`
-}
+// GrepMatch aliases the canonical ORI grep match shape in internal/robot.
+type GrepMatch = robot.GrepMatch
 
 // GrepResult contains all matches from a grep operation
 type GrepResult struct {
@@ -119,10 +108,7 @@ func newGrepCmd() *cobra.Command {
 		maxLines        int
 		listOnly        bool
 		allFlag         bool
-		ccFlag          bool
-		codFlag         bool
-		gmiFlag         bool
-		agyFlag         bool
+		filter          AgentFilter
 	)
 
 	cmd := &cobra.Command{
@@ -148,18 +134,9 @@ Examples:
 				session = args[1]
 			}
 
-			// Determine context
 			context := contextLines
 			if afterLines > 0 || beforeLines > 0 {
-				// Use specific before/after if set
 				context = 0
-			}
-
-			filter := AgentFilter{
-				Claude:      ccFlag,
-				Codex:       codFlag,
-				Gemini:      gmiFlag,
-				Antigravity: agyFlag,
 			}
 
 			opts := GrepOptions{
@@ -186,10 +163,7 @@ Examples:
 	cmd.Flags().IntVarP(&maxLines, "max-lines", "n", 1000, "Search last N lines per pane")
 	cmd.Flags().BoolVarP(&listOnly, "files-with-matches", "l", false, "List matching panes only")
 	cmd.Flags().BoolVar(&allFlag, "all", false, "Search all sessions")
-	cmd.Flags().BoolVar(&ccFlag, "cc", false, "Search Claude panes only")
-	cmd.Flags().BoolVar(&codFlag, "cod", false, "Search Codex panes only")
-	cmd.Flags().BoolVar(&gmiFlag, "gmi", false, "Search Gemini panes only")
-	cmd.Flags().BoolVar(&agyFlag, "agy", false, "Search Antigravity panes only")
+	bindAgentFilterFlags(cmd, &filter, "Search %s panes only")
 	cmd.ValidArgsFunction = completeSessionSecondArg
 
 	return cmd
@@ -212,31 +186,11 @@ func runGrep(pattern, session string, opts GrepOptions) error {
 	if err := tmux.EnsureInstalled(); err != nil {
 		return err
 	}
-
-	// Compile regex
-	rePattern := pattern
-	if opts.CaseInsensitive {
-		rePattern = "(?i)" + pattern
-	}
-	re, err := regexp.Compile(rePattern)
-	if err != nil {
-		return fmt.Errorf("invalid pattern: %w", err)
+	if _, err := robot.CompileGrepRegex(pattern, opts.CaseInsensitive); err != nil {
+		return err
 	}
 
-	// Determine target session(s)
-	var sessions []string
-	if opts.AllSessions {
-		sessionList, err := tmux.ListSessions()
-		if err != nil {
-			return err
-		}
-		if len(sessionList) == 0 {
-			return fmt.Errorf("no tmux sessions found")
-		}
-		for _, s := range sessionList {
-			sessions = append(sessions, s.Name)
-		}
-	} else {
+	if !opts.AllSessions {
 		res, err := ResolveSession(session, os.Stdout)
 		if err != nil {
 			return err
@@ -246,116 +200,60 @@ func runGrep(pattern, session string, opts GrepOptions) error {
 		}
 		res.ExplainIfInferred(os.Stderr)
 		session = res.Session
-
 		if !tmux.SessionExists(session) {
 			return fmt.Errorf("session '%s' not found", session)
 		}
-		sessions = []string{session}
-	}
-
-	// Search across sessions
-	var allMatches []GrepMatch
-	totalLines := 0
-	panesSearched := 0
-	matchingPanes := make(map[string]bool)
-
-	for _, sess := range sessions {
-		panes, err := tmux.GetPanes(sess)
+	} else {
+		sessionList, err := tmux.ListSessions()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to get panes for %s: %v\n", sess, err)
-			continue
+			return err
 		}
-
-		for _, pane := range panes {
-			// Apply agent filter
-			if opts.Filter.IsEmpty() {
-				if pane.Type == tmux.AgentUser {
-					continue
-				}
-			} else if !opts.Filter.Matches(pane.Type) {
-				continue
-			}
-
-			output, err := tmux.CapturePaneOutput(pane.ID, opts.MaxLines)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to capture pane %s: %v\n", pane.Title, err)
-				continue
-			}
-
-			lines := strings.Split(output, "\n")
-			totalLines += len(lines)
-			panesSearched++
-
-			// Search lines
-			for i, line := range lines {
-				matches := re.MatchString(line)
-				if opts.InvertMatch {
-					matches = !matches
-				}
-
-				if matches {
-					matchingPanes[sess+"/"+pane.Title] = true
-
-					if !opts.ListOnly {
-						// Build context
-						var context []string
-						actualBefore := 0
-						actualAfter := 0
-						beforeCount := opts.BeforeLines
-						afterCount := opts.AfterLines
-						if opts.ContextLines > 0 {
-							beforeCount = opts.ContextLines
-							afterCount = opts.ContextLines
-						}
-
-						// Get lines before
-						for j := i - beforeCount; j < i && j >= 0; j++ {
-							context = append(context, lines[j])
-							actualBefore++
-						}
-						// Get lines after
-						for j := i + 1; j <= i+afterCount && j < len(lines); j++ {
-							context = append(context, lines[j])
-							actualAfter++
-						}
-
-						allMatches = append(allMatches, GrepMatch{
-							Session:       sess,
-							Pane:          pane.Title,
-							PaneID:        pane.ID,
-							Line:          i + 1, // 1-indexed
-							Content:       line,
-							Context:       context,
-							ContextBefore: actualBefore,
-							ContextAfter:  actualAfter,
-						})
-					}
-				}
-			}
+		if len(sessionList) == 0 {
+			return fmt.Errorf("no tmux sessions found")
 		}
 	}
 
-	// Build result
-	result := &GrepResult{
+	out, err := robot.GetGrep(robot.GrepOptions{
 		Pattern:         pattern,
 		Session:         session,
-		Matches:         allMatches,
-		TotalLines:      totalLines,
-		MatchCount:      len(allMatches),
-		PaneCount:       panesSearched,
+		AllSessions:     opts.AllSessions,
+		AgentTypes:      opts.Filter.SelectedTypes(),
+		IncludeAllPanes: opts.Filter.All,
 		CaseInsensitive: opts.CaseInsensitive,
+		InvertMatch:     opts.InvertMatch,
+		ContextLines:    opts.ContextLines,
+		BeforeLines:     opts.BeforeLines,
+		AfterLines:      opts.AfterLines,
+		MaxLines:        opts.MaxLines,
+		ListOnly:        opts.ListOnly,
+	})
+	if err != nil {
+		return err
 	}
-	if opts.AllSessions {
-		result.Session = "<all>"
+	if !out.Success {
+		return fmt.Errorf("%s", out.Error)
+	}
+	for _, warn := range out.Warnings {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", warn)
 	}
 
-	// Handle list-only mode
 	if opts.ListOnly {
-		result.MatchCount = len(matchingPanes)
+		matchingPanes := make(map[string]bool, len(out.MatchingPanes))
+		for _, p := range out.MatchingPanes {
+			matchingPanes[p] = true
+		}
 		return outputMatchingPanes(matchingPanes)
 	}
 
-	// Output result
+	result := &GrepResult{
+		Pattern:         out.Pattern,
+		Session:         out.Session,
+		Matches:         out.Matches,
+		TotalLines:      out.TotalLines,
+		MatchCount:      out.MatchCount,
+		PaneCount:       out.PaneCount,
+		CaseInsensitive: out.CaseInsensitive,
+	}
 	formatter := output.New(output.WithJSON(jsonOutput))
 	return formatter.Output(result)
 }
