@@ -1204,6 +1204,30 @@ export interface paths {
         patch: operations["patch_api_v1_config"];
         trace?: never;
     };
+    "/api/v1/config/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Config validate get
+         * @description Served route `GET /api/v1/config/validate`. Handler: `handleConfigValidateGetV1`. Response shape reflected from Go type `ConfigValidateEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_config_validate"];
+        put?: never;
+        /**
+         * Config validate post
+         * @description Served route `POST /api/v1/config/validate`. Handler: `handleConfigValidatePostV1`. Response shape reflected from Go type `ConfigValidateEnvelopeResponse`.
+         */
+        post: operations["post_api_v1_config_validate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/deps": {
         parameters: {
             query?: never;
@@ -1458,6 +1482,26 @@ export interface paths {
          * @description Served route `POST /api/v1/ensemble/suggest`. Handler: `handleEnsembleSuggestV1`. Response shape reflected from Go type `EnsembleSuggestEnvelopeResponse`.
          */
         post: operations["post_api_v1_ensemble_suggest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/grep": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Global grep
+         * @description Served route `GET /api/v1/grep`. Handler: `handleGlobalGrepV1`. Response shape reflected from Go type `SessionGrepEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_grep"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2224,6 +2268,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Local models
+         * @description Served route `GET /api/v1/models`. Handler: `handleLocalModelsV1`. Response shape reflected from Go type `LocalModelsEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_models"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/openapi.json": {
         parameters: {
             query?: never;
@@ -2466,6 +2530,26 @@ export interface paths {
          * @description Served route `POST /api/v1/pipelines/{id}/resume`. Handler: `handleResumePipeline`. Response shape reflected from Go type `PipelineExecutionEnvelopeResponse`. By default this request waits for the resumed workflow and remains tied to the HTTP connection. Set background=true to continue the saved run in a detached worker that survives client disconnection and server exit. A 202 response acknowledges worker startup, not workflow completion; poll the existing run ID for status and use its cancel endpoint to stop it. Detached resume uses saved variables and rejects nonempty variable overrides. An omitted session is resolved from the checkpoint by the worker after it acquires run ownership.
          */
         post: operations["post_api_v1_pipelines_id_resume"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/plugins": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Plugins list
+         * @description Served route `GET /api/v1/plugins`. Handler: `handlePluginsListV1`. Response shape reflected from Go type `PluginsEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_plugins"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3760,6 +3844,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{id}/errors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Session errors
+         * @description Served route `GET /api/v1/sessions/{id}/errors`. Handler: `handleSessionErrorsV1`. Response shape reflected from Go type `SessionErrorsEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_sessions_id_errors"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{id}/events": {
         parameters: {
             query?: never;
@@ -3780,6 +3884,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{id}/extract": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Session extract
+         * @description Served route `GET /api/v1/sessions/{id}/extract`. Handler: `handleSessionExtractV1`. Response shape reflected from Go type `SessionExtractEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_sessions_id_extract"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{id}/files": {
         parameters: {
             query?: never;
@@ -3792,6 +3916,26 @@ export interface paths {
          * @description Served route `GET /api/v1/sessions/{id}/files`. Handler: `handleSessionFilesV1`. Response shape reflected from Go type `SessionFilesEnvelopeResponse`.
          */
         get: operations["get_api_v1_sessions_id_files"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{id}/grep": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Session grep
+         * @description Served route `GET /api/v1/sessions/{id}/grep`. Handler: `handleSessionGrepV1`. Response shape reflected from Go type `SessionGrepEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_sessions_id_grep"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5398,6 +5542,17 @@ export interface components {
             restarts: number;
             state: string;
         };
+        AgentPluginEntry: {
+            alias?: string;
+            command: string;
+            default_model?: string;
+            description?: string;
+            env_keys?: string[];
+            has_readiness: boolean;
+            name: string;
+            probe_command?: string;
+            tags?: string[];
+        };
         AgentSendRequest: {
             agent_types?: string[];
             all?: boolean;
@@ -6874,6 +7029,15 @@ export interface components {
             suggested_interval_ms?: number;
             surface: string;
         };
+        CodeBlock: {
+            content: string;
+            end_line: number;
+            file_path?: string;
+            is_new?: boolean;
+            language: string;
+            source_pane?: string;
+            start_line: number;
+        };
         Command: {
             category?: string;
             description: string;
@@ -6926,6 +7090,12 @@ export interface components {
             status: string;
             step_id: string;
         };
+        CommandPluginEntry: {
+            description?: string;
+            name: string;
+            path: string;
+            usage?: string;
+        };
         ComparisonResult: {
             conclusion_diff: components["schemas"]["ConclusionDiff"];
             contribution_diff: components["schemas"]["ContributionDiff"];
@@ -6966,6 +7136,24 @@ export interface components {
             omp_cmd?: string;
             opencode_cmd?: string;
             windsurf_cmd?: string;
+        };
+        ConfigValidateEnvelopeResponse: {
+            all?: boolean;
+            fix_applied?: boolean;
+            request_id?: string;
+            results: components["schemas"]["ValidationResult"][];
+            schema_id: string;
+            schema_version: string;
+            success: boolean;
+            summary: components["schemas"]["ValidationSummary"];
+            timestamp: string;
+            valid: boolean;
+            validation_error?: string;
+        };
+        ConfigValidateRequest: {
+            all?: boolean;
+            fix?: boolean;
+            project_dir?: string;
         };
         Conflict: {
             /** @description Agents */
@@ -7976,6 +8164,18 @@ export interface components {
             /** @description Process state */
             process_state?: string;
         };
+        ErrorEntry: {
+            agent_type: string;
+            content: string;
+            context?: string[];
+            line_number: number;
+            match_type: string;
+            pane_id: string;
+            pane_index: number;
+            pane_name: string;
+            /** Format: date-time */
+            timestamp: string;
+        };
         ErrorResponse: {
             details?: {
                 [key: string]: unknown;
@@ -7987,6 +8187,17 @@ export interface components {
             success: boolean;
             /** Format: date-time */
             timestamp: string;
+        };
+        ErrorsSummary: {
+            by_agent: {
+                [key: string]: number;
+            };
+            by_type: {
+                [key: string]: number;
+            };
+            panes_searched: number;
+            total_errors: number;
+            total_lines_searched: number;
         };
         EvidenceLedger: {
             /** @description Action */
@@ -8482,6 +8693,18 @@ export interface components {
             keystone_score?: number;
             /** @description Summary */
             summary?: string;
+        };
+        GrepMatch: {
+            agent_type?: string;
+            content: string;
+            context?: string[];
+            context_after?: number;
+            context_before?: number;
+            line: number;
+            pane: string;
+            pane_id: string;
+            pane_index: number;
+            session: string;
         };
         HTTPAuditEnvelopeResponse: {
             _agent_hints?: components["schemas"]["PaginationAgentHints"];
@@ -9121,6 +9344,35 @@ export interface components {
             /** Format: int64 */
             retry_after_ms?: number;
             schema_version: string;
+        };
+        LocalModelEntry: {
+            family?: string;
+            /** Format: date-time */
+            modified_at: string;
+            name: string;
+            parameters?: string;
+            /** Format: int64 */
+            size_bytes: number;
+        };
+        LocalModelsEnvelopeResponse: {
+            action: string;
+            cleanup_suggestions?: string[];
+            detected_vram_gb?: number;
+            /** Format: int64 */
+            disk_free_bytes?: number;
+            disk_low?: boolean;
+            host?: string;
+            model_count?: number;
+            models: components["schemas"]["LocalModelEntry"][];
+            recommendations: string[];
+            request_id?: string;
+            schema_id: string;
+            schema_version: string;
+            success: boolean;
+            timestamp: string;
+            /** Format: int64 */
+            total_size_bytes?: number;
+            vram_source?: string;
         };
         LogRow: {
             decision: string;
@@ -10198,11 +10450,16 @@ export interface components {
             success: boolean;
             timestamp: string;
             valid: boolean;
-            validation: components["schemas"]["ValidationResult"];
+            validation: components["schemas"]["PipelineValidationResult"];
         };
         PipelineValidateRequest: {
             workflow_content?: string;
             workflow_file?: string;
+        };
+        PipelineValidationResult: {
+            errors?: components["schemas"]["ParseError"][];
+            valid: boolean;
+            warnings?: components["schemas"]["ParseError"][];
         };
         PipelinesListEnvelopeResponse: {
             count: number;
@@ -10269,6 +10526,19 @@ export interface components {
             /** Format: date-time */
             generated_at: string;
             plan: components["schemas"]["Plan"];
+        };
+        PluginsEnvelopeResponse: {
+            agent_plugins: components["schemas"]["AgentPluginEntry"][];
+            agents_dir: string;
+            command_plugins: components["schemas"]["CommandPluginEntry"][];
+            commands_dir: string;
+            config_dir: string;
+            request_id?: string;
+            schema_id: string;
+            schema_version: string;
+            success: boolean;
+            timestamp: string;
+            total_count: number;
         };
         /** @description List durable policy and operator audit decisions from the runtime state store. */
         PolicyDecisionsOutput: {
@@ -12052,6 +12322,14 @@ export interface components {
             timeframe: components["schemas"]["DiffTimeframe"];
             timestamp: string;
         };
+        SessionErrorsEnvelopeResponse: {
+            errors: components["schemas"]["ErrorEntry"][];
+            request_id?: string;
+            session: string;
+            success: boolean;
+            summary: components["schemas"]["ErrorsSummary"];
+            timestamp: string;
+        };
         SessionEventsEnvelopeResponse: {
             count: number;
             events: {
@@ -12061,6 +12339,19 @@ export interface components {
             session_id: string;
             success: boolean;
             timestamp: string;
+        };
+        SessionExtractEnvelopeResponse: {
+            blocks: components["schemas"]["CodeBlock"][];
+            language?: string;
+            panes_scanned: number;
+            request_id?: string;
+            schema_id: string;
+            schema_version: string;
+            session: string;
+            source: string;
+            success: boolean;
+            timestamp: string;
+            total_found: number;
         };
         SessionFilesEnvelopeResponse: {
             _agent_hints?: components["schemas"]["RobotAgentHints"];
@@ -12072,6 +12363,24 @@ export interface components {
             summary: components["schemas"]["FileChangesSummary"];
             time_window: string;
             timestamp: string;
+        };
+        SessionGrepEnvelopeResponse: {
+            case_insensitive?: boolean;
+            invert_match?: boolean;
+            list_only?: boolean;
+            match_count: number;
+            matches: components["schemas"]["GrepMatch"][];
+            matching_panes: string[];
+            panes_searched: number;
+            pattern: string;
+            request_id?: string;
+            schema_id: string;
+            schema_version: string;
+            session: string;
+            success: boolean;
+            timestamp: string;
+            total_lines_searched: number;
+            warnings?: string[];
         };
         SessionHealthEnvelopeResponse: {
             agents: components["schemas"]["AgentHealth"][];
@@ -13936,10 +14245,24 @@ export interface components {
             priority?: string;
             title?: string;
         };
+        ValidationIssue: {
+            field?: string;
+            fixable?: boolean;
+            message: string;
+        };
         ValidationResult: {
-            errors?: components["schemas"]["ParseError"][];
+            errors?: components["schemas"]["ValidationIssue"][];
+            info?: string[];
+            path: string;
+            type: string;
             valid: boolean;
-            warnings?: components["schemas"]["ParseError"][];
+            warnings?: components["schemas"]["ValidationIssue"][];
+        };
+        ValidationSummary: {
+            error_count: number;
+            files_checked: number;
+            fixable_count: number;
+            warning_count: number;
         };
         VarDef: {
             default?: {
@@ -17864,6 +18187,109 @@ export interface operations {
             };
         };
     };
+    get_api_v1_config_validate: {
+        parameters: {
+            query?: {
+                /** @description Include absent optional user and project configuration locations. */
+                all?: boolean;
+                /** @description Optional existing absolute project directory override (alias: ?project=). */
+                project_dir?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigValidateEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_api_v1_config_validate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ConfigValidateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigValidateEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     get_api_v1_deps: {
         parameters: {
             query?: never;
@@ -18540,6 +18966,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EnsembleSuggestEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_grep: {
+        parameters: {
+            query: {
+                /** @description Go regular expression to search across captured pane scrollback. */
+                pattern: string;
+                /** @description Optional target session name (defaults to searching all active sessions when omitted). */
+                session?: string;
+                /** @description Explicitly search across all active tmux sessions. */
+                all?: boolean;
+                /** @description Comma-separated 11-harness filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama). */
+                type?: string;
+                /** @description Case-insensitive regular expression matching. */
+                ignore_case?: boolean;
+                /** @description Invert matching to return non-matching lines. */
+                invert?: boolean;
+                /** @description Symmetric context lines before and after each match. */
+                context?: number;
+                /** @description Context lines before each match. */
+                before?: number;
+                /** @description Context lines after each match. */
+                after?: number;
+                /** @description Maximum scrollback lines captured per pane (default 1000). */
+                lines?: number;
+                /** @description Return only matching session/pane identifiers without match bodies. */
+                list_only?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionGrepEnvelopeResponse"];
                 };
             };
             /** @description Bad request */
@@ -20908,6 +21404,58 @@ export interface operations {
             };
         };
     };
+    get_api_v1_models: {
+        parameters: {
+            query?: {
+                /** @description Action: recommend (offline GPU VRAM advisor, default) or list (live Ollama inventory). */
+                action?: string;
+                /** @description Optional loopback Ollama daemon URL override (non-loopback hosts rejected unless matching configured OLLAMA_HOST). */
+                host?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocalModelsEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     get_api_v1_openapi_json: {
         parameters: {
             query?: never;
@@ -21849,6 +22397,53 @@ export interface operations {
             };
             /** @description Detached startup canceled or timed out before authorization */
             504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_plugins: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginsEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -25709,6 +26304,74 @@ export interface operations {
             };
         };
     };
+    get_api_v1_sessions_id_errors: {
+        parameters: {
+            query?: {
+                /** @description Optional comma-separated N, W.P, or %N pane selectors. */
+                panes?: string;
+                /** @description Optional 11-harness agent filter (alias: ?type=). */
+                agent_type?: string;
+                /** @description Maximum scrollback lines captured per pane (default 1000). */
+                lines?: number;
+                /** @description Context lines before and after each error signature (default 2). */
+                context?: number;
+            };
+            header?: never;
+            path: {
+                /** @description The id identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionErrorsEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     get_api_v1_sessions_id_events: {
         parameters: {
             query?: never;
@@ -25728,6 +26391,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SessionEventsEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_sessions_id_extract: {
+        parameters: {
+            query?: {
+                /** @description Optional pane index, %pane_id, or pane title substring. */
+                pane?: string;
+                /** @description Optional language filter (e.g. go, python, typescript, bash). */
+                lang?: string;
+                /** @description Extract code blocks only from the currently active pane. */
+                last?: boolean;
+                /** @description Optional 1-based block index to select. */
+                select?: number;
+                /** @description Number of scrollback lines captured per pane (default 500). */
+                lines?: number;
+            };
+            header?: never;
+            path: {
+                /** @description The id identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionExtractEnvelopeResponse"];
                 };
             };
             /** @description Bad request */
@@ -25792,6 +26525,84 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SessionFilesEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_sessions_id_grep: {
+        parameters: {
+            query: {
+                /** @description Go regular expression to search across captured pane scrollback. */
+                pattern: string;
+                /** @description Comma-separated 11-harness filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama). */
+                type?: string;
+                /** @description Case-insensitive regular expression matching. */
+                ignore_case?: boolean;
+                /** @description Invert matching to return non-matching lines. */
+                invert?: boolean;
+                /** @description Symmetric context lines before and after each match. */
+                context?: number;
+                /** @description Context lines before each match. */
+                before?: number;
+                /** @description Context lines after each match. */
+                after?: number;
+                /** @description Maximum scrollback lines captured per pane (default 1000). */
+                lines?: number;
+                /** @description Return only matching session/pane identifiers without match bodies. */
+                list_only?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The id identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionGrepEnvelopeResponse"];
                 };
             };
             /** @description Bad request */

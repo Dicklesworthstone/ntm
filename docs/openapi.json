@@ -4404,6 +4404,135 @@
         }
       }
     },
+    "/api/v1/config/validate": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Config validate get",
+        "description": "Served route `GET /api/v1/config/validate`. Handler: `handleConfigValidateGetV1`. Response shape reflected from Go type `ConfigValidateEnvelopeResponse`.",
+        "operationId": "get_api_v1_config_validate",
+        "parameters": [
+          {
+            "name": "all",
+            "in": "query",
+            "description": "Include absent optional user and project configuration locations.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "project_dir",
+            "in": "query",
+            "description": "Optional existing absolute project directory override (alias: ?project=).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigValidateEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Config validate post",
+        "description": "Served route `POST /api/v1/config/validate`. Handler: `handleConfigValidatePostV1`. Response shape reflected from Go type `ConfigValidateEnvelopeResponse`.",
+        "operationId": "post_api_v1_config_validate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigValidateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigValidateEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/deps": {
       "get": {
         "tags": [
@@ -5271,6 +5400,149 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EnsembleSuggestEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/grep": {
+      "get": {
+        "tags": [
+          "grep"
+        ],
+        "summary": "Global grep",
+        "description": "Served route `GET /api/v1/grep`. Handler: `handleGlobalGrepV1`. Response shape reflected from Go type `SessionGrepEnvelopeResponse`.",
+        "operationId": "get_api_v1_grep",
+        "parameters": [
+          {
+            "name": "pattern",
+            "in": "query",
+            "description": "Go regular expression to search across captured pane scrollback.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "Optional target session name (defaults to searching all active sessions when omitted).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "all",
+            "in": "query",
+            "description": "Explicitly search across all active tmux sessions.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "description": "Comma-separated 11-harness filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ignore_case",
+            "in": "query",
+            "description": "Case-insensitive regular expression matching.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "invert",
+            "in": "query",
+            "description": "Invert matching to return non-matching lines.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "context",
+            "in": "query",
+            "description": "Symmetric context lines before and after each match.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Context lines before each match.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Context lines after each match.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "lines",
+            "in": "query",
+            "description": "Maximum scrollback lines captured per pane (default 1000).",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "list_only",
+            "in": "query",
+            "description": "Return only matching session/pane identifiers without match bodies.",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionGrepEnvelopeResponse"
                 }
               }
             }
@@ -8316,6 +8588,76 @@
         }
       }
     },
+    "/api/v1/models": {
+      "get": {
+        "tags": [
+          "models"
+        ],
+        "summary": "Local models",
+        "description": "Served route `GET /api/v1/models`. Handler: `handleLocalModelsV1`. Response shape reflected from Go type `LocalModelsEnvelopeResponse`.",
+        "operationId": "get_api_v1_models",
+        "parameters": [
+          {
+            "name": "action",
+            "in": "query",
+            "description": "Action: recommend (offline GPU VRAM advisor, default) or list (live Ollama inventory).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "host",
+            "in": "query",
+            "description": "Optional loopback Ollama daemon URL override (non-loopback hosts rejected unless matching configured OLLAMA_HOST).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocalModelsEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/openapi.json": {
       "get": {
         "tags": [
@@ -9480,6 +9822,58 @@
           },
           "504": {
             "description": "Detached startup canceled or timed out before authorization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/plugins": {
+      "get": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "Plugins list",
+        "description": "Served route `GET /api/v1/plugins`. Handler: `handlePluginsListV1`. Response shape reflected from Go type `PluginsEnvelopeResponse`.",
+        "operationId": "get_api_v1_plugins",
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginsEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
             "content": {
               "application/json": {
                 "schema": {
@@ -14284,6 +14678,111 @@
         }
       }
     },
+    "/api/v1/sessions/{id}/errors": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session errors",
+        "description": "Served route `GET /api/v1/sessions/{id}/errors`. Handler: `handleSessionErrorsV1`. Response shape reflected from Go type `SessionErrorsEnvelopeResponse`.",
+        "operationId": "get_api_v1_sessions_id_errors",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "panes",
+            "in": "query",
+            "description": "Optional comma-separated N, W.P, or %N pane selectors.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agent_type",
+            "in": "query",
+            "description": "Optional 11-harness agent filter (alias: ?type=).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lines",
+            "in": "query",
+            "description": "Maximum scrollback lines captured per pane (default 1000).",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "context",
+            "in": "query",
+            "description": "Context lines before and after each error signature (default 2).",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionErrorsEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/sessions/{id}/events": {
       "get": {
         "tags": [
@@ -14310,6 +14809,119 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SessionEventsEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{id}/extract": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session extract",
+        "description": "Served route `GET /api/v1/sessions/{id}/extract`. Handler: `handleSessionExtractV1`. Response shape reflected from Go type `SessionExtractEnvelopeResponse`.",
+        "operationId": "get_api_v1_sessions_id_extract",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pane",
+            "in": "query",
+            "description": "Optional pane index, %pane_id, or pane title substring.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lang",
+            "in": "query",
+            "description": "Optional language filter (e.g. go, python, typescript, bash).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "last",
+            "in": "query",
+            "description": "Extract code blocks only from the currently active pane.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "select",
+            "in": "query",
+            "description": "Optional 1-based block index to select.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "lines",
+            "in": "query",
+            "description": "Number of scrollback lines captured per pane (default 500).",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionExtractEnvelopeResponse"
                 }
               }
             }
@@ -14399,6 +15011,152 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SessionFilesEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{id}/grep": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session grep",
+        "description": "Served route `GET /api/v1/sessions/{id}/grep`. Handler: `handleSessionGrepV1`. Response shape reflected from Go type `SessionGrepEnvelopeResponse`.",
+        "operationId": "get_api_v1_sessions_id_grep",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pattern",
+            "in": "query",
+            "description": "Go regular expression to search across captured pane scrollback.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "description": "Comma-separated 11-harness filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ignore_case",
+            "in": "query",
+            "description": "Case-insensitive regular expression matching.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "invert",
+            "in": "query",
+            "description": "Invert matching to return non-matching lines.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "context",
+            "in": "query",
+            "description": "Symmetric context lines before and after each match.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Context lines before each match.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Context lines after each match.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "lines",
+            "in": "query",
+            "description": "Maximum scrollback lines captured per pane (default 1000).",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "list_only",
+            "in": "query",
+            "description": "Return only matching session/pane identifiers without match bodies.",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionGrepEnvelopeResponse"
                 }
               }
             }
@@ -20539,6 +21297,49 @@
           "state"
         ]
       },
+      "AgentPluginEntry": {
+        "type": "object",
+        "properties": {
+          "alias": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "default_model": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "env_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "has_readiness": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "probe_command": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "command",
+          "has_readiness",
+          "name"
+        ]
+      },
       "AgentSendRequest": {
         "type": "object",
         "properties": {
@@ -25045,6 +25846,38 @@
           "surface"
         ]
       },
+      "CodeBlock": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "end_line": {
+            "type": "integer"
+          },
+          "file_path": {
+            "type": "string"
+          },
+          "is_new": {
+            "type": "boolean"
+          },
+          "language": {
+            "type": "string"
+          },
+          "source_pane": {
+            "type": "string"
+          },
+          "start_line": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "content",
+          "end_line",
+          "language",
+          "start_line"
+        ]
+      },
       "Command": {
         "type": "object",
         "properties": {
@@ -25211,6 +26044,27 @@
           "step_id"
         ]
       },
+      "CommandPluginEntry": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "usage": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "path"
+        ]
+      },
       "ComparisonResult": {
         "type": "object",
         "properties": {
@@ -25359,6 +26213,70 @@
             "type": "string"
           },
           "windsurf_cmd": {
+            "type": "string"
+          }
+        }
+      },
+      "ConfigValidateEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "all": {
+            "type": "boolean"
+          },
+          "fix_applied": {
+            "type": "boolean"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValidationResult"
+            }
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/ValidationSummary"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "valid": {
+            "type": "boolean"
+          },
+          "validation_error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "results",
+          "schema_id",
+          "schema_version",
+          "success",
+          "summary",
+          "timestamp",
+          "valid"
+        ]
+      },
+      "ConfigValidateRequest": {
+        "type": "object",
+        "properties": {
+          "all": {
+            "type": "boolean"
+          },
+          "fix": {
+            "type": "boolean"
+          },
+          "project_dir": {
             "type": "string"
           }
         }
@@ -28700,6 +29618,52 @@
           }
         }
       },
+      "ErrorEntry": {
+        "type": "object",
+        "properties": {
+          "agent_type": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "context": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "line_number": {
+            "type": "integer"
+          },
+          "match_type": {
+            "type": "string"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "pane_index": {
+            "type": "integer"
+          },
+          "pane_name": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "agent_type",
+          "content",
+          "line_number",
+          "match_type",
+          "pane_id",
+          "pane_index",
+          "pane_name",
+          "timestamp"
+        ]
+      },
       "ErrorResponse": {
         "type": "object",
         "properties": {
@@ -28732,6 +29696,39 @@
           "error",
           "error_code",
           "timestamp"
+        ]
+      },
+      "ErrorsSummary": {
+        "type": "object",
+        "properties": {
+          "by_agent": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "by_type": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "panes_searched": {
+            "type": "integer"
+          },
+          "total_errors": {
+            "type": "integer"
+          },
+          "total_lines_searched": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by_agent",
+          "by_type",
+          "panes_searched",
+          "total_errors",
+          "total_lines_searched"
         ]
       },
       "EvidenceLedger": {
@@ -30154,6 +31151,52 @@
             "description": "Summary"
           }
         }
+      },
+      "GrepMatch": {
+        "type": "object",
+        "properties": {
+          "agent_type": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "context": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "context_after": {
+            "type": "integer"
+          },
+          "context_before": {
+            "type": "integer"
+          },
+          "line": {
+            "type": "integer"
+          },
+          "pane": {
+            "type": "string"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "pane_index": {
+            "type": "integer"
+          },
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "content",
+          "line",
+          "pane",
+          "pane_id",
+          "pane_index",
+          "session"
+        ]
       },
       "HTTPAuditEnvelopeResponse": {
         "type": "object",
@@ -32179,6 +33222,106 @@
           "reason_codes",
           "recommended_action",
           "schema_version"
+        ]
+      },
+      "LocalModelEntry": {
+        "type": "object",
+        "properties": {
+          "family": {
+            "type": "string"
+          },
+          "modified_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parameters": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "required": [
+          "modified_at",
+          "name",
+          "size_bytes"
+        ]
+      },
+      "LocalModelsEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "cleanup_suggestions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "detected_vram_gb": {
+            "type": "number"
+          },
+          "disk_free_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "disk_low": {
+            "type": "boolean"
+          },
+          "host": {
+            "type": "string"
+          },
+          "model_count": {
+            "type": "integer"
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LocalModelEntry"
+            }
+          },
+          "recommendations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "total_size_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "vram_source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "models",
+          "recommendations",
+          "schema_id",
+          "schema_version",
+          "success",
+          "timestamp"
         ]
       },
       "LogRow": {
@@ -35844,7 +36987,7 @@
             "type": "boolean"
           },
           "validation": {
-            "$ref": "#/components/schemas/ValidationResult"
+            "$ref": "#/components/schemas/PipelineValidationResult"
           }
         },
         "required": [
@@ -35864,6 +37007,29 @@
             "type": "string"
           }
         }
+      },
+      "PipelineValidationResult": {
+        "type": "object",
+        "properties": {
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ParseError"
+            }
+          },
+          "valid": {
+            "type": "boolean"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ParseError"
+            }
+          }
+        },
+        "required": [
+          "valid"
+        ]
       },
       "PipelinesListEnvelopeResponse": {
         "type": "object",
@@ -36060,6 +37226,62 @@
         "required": [
           "generated_at",
           "plan"
+        ]
+      },
+      "PluginsEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "agent_plugins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentPluginEntry"
+            }
+          },
+          "agents_dir": {
+            "type": "string"
+          },
+          "command_plugins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommandPluginEntry"
+            }
+          },
+          "commands_dir": {
+            "type": "string"
+          },
+          "config_dir": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "total_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_plugins",
+          "agents_dir",
+          "command_plugins",
+          "commands_dir",
+          "config_dir",
+          "schema_id",
+          "schema_version",
+          "success",
+          "timestamp",
+          "total_count"
         ]
       },
       "PolicyDecisionsOutput": {
@@ -41779,6 +43001,39 @@
           "timestamp"
         ]
       },
+      "SessionErrorsEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ErrorEntry"
+            }
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/ErrorsSummary"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "errors",
+          "session",
+          "success",
+          "summary",
+          "timestamp"
+        ]
+      },
       "SessionEventsEnvelopeResponse": {
         "type": "object",
         "properties": {
@@ -41811,6 +43066,58 @@
           "session_id",
           "success",
           "timestamp"
+        ]
+      },
+      "SessionExtractEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "blocks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CodeBlock"
+            }
+          },
+          "language": {
+            "type": "string"
+          },
+          "panes_scanned": {
+            "type": "integer"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "total_found": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "blocks",
+          "panes_scanned",
+          "schema_id",
+          "schema_version",
+          "session",
+          "source",
+          "success",
+          "timestamp",
+          "total_found"
         ]
       },
       "SessionFilesEnvelopeResponse": {
@@ -41854,6 +43161,81 @@
           "summary",
           "time_window",
           "timestamp"
+        ]
+      },
+      "SessionGrepEnvelopeResponse": {
+        "type": "object",
+        "properties": {
+          "case_insensitive": {
+            "type": "boolean"
+          },
+          "invert_match": {
+            "type": "boolean"
+          },
+          "list_only": {
+            "type": "boolean"
+          },
+          "match_count": {
+            "type": "integer"
+          },
+          "matches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GrepMatch"
+            }
+          },
+          "matching_panes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "panes_searched": {
+            "type": "integer"
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "schema_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "total_lines_searched": {
+            "type": "integer"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "match_count",
+          "matches",
+          "matching_panes",
+          "panes_searched",
+          "pattern",
+          "schema_id",
+          "schema_version",
+          "session",
+          "success",
+          "timestamp",
+          "total_lines_searched"
         ]
       },
       "SessionHealthEnvelopeResponse": {
@@ -47414,14 +48796,43 @@
           }
         }
       },
+      "ValidationIssue": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "type": "string"
+          },
+          "fixable": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ]
+      },
       "ValidationResult": {
         "type": "object",
         "properties": {
           "errors": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ParseError"
+              "$ref": "#/components/schemas/ValidationIssue"
             }
+          },
+          "info": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "path": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
           },
           "valid": {
             "type": "boolean"
@@ -47429,12 +48840,37 @@
           "warnings": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ParseError"
+              "$ref": "#/components/schemas/ValidationIssue"
             }
           }
         },
         "required": [
+          "path",
+          "type",
           "valid"
+        ]
+      },
+      "ValidationSummary": {
+        "type": "object",
+        "properties": {
+          "error_count": {
+            "type": "integer"
+          },
+          "files_checked": {
+            "type": "integer"
+          },
+          "fixable_count": {
+            "type": "integer"
+          },
+          "warning_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "error_count",
+          "files_checked",
+          "fixable_count",
+          "warning_count"
         ]
       },
       "VarDef": {
@@ -48955,6 +50391,10 @@
       "description": "Operations related to events"
     },
     {
+      "name": "grep",
+      "description": "Operations related to grep"
+    },
+    {
       "name": "handoffs",
       "description": "Operations related to handoffs"
     },
@@ -49003,6 +50443,10 @@
       "description": "Operations related to metrics"
     },
     {
+      "name": "models",
+      "description": "Operations related to models"
+    },
+    {
       "name": "openapi",
       "description": "Operations related to openapi"
     },
@@ -49013,6 +50457,10 @@
     {
       "name": "pipelines",
       "description": "Operations related to pipelines"
+    },
+    {
+      "name": "plugins",
+      "description": "Operations related to plugins"
     },
     {
       "name": "policy",

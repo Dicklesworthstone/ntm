@@ -1,6 +1,6 @@
 {
   "source": "chi-router-walk",
-  "count": 262,
+  "count": 270,
   "endpoints": [
     {
       "method": "GET",
@@ -325,6 +325,16 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/config/validate",
+      "handler": "handleConfigValidateGetV1"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/config/validate",
+      "handler": "handleConfigValidatePostV1"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/deps",
       "handler": "handleDepsV1"
     },
@@ -387,6 +397,11 @@
       "method": "POST",
       "path": "/api/v1/ensemble/suggest",
       "handler": "handleEnsembleSuggestV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/grep",
+      "handler": "handleGlobalGrepV1"
     },
     {
       "method": "GET",
@@ -600,6 +615,11 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/models",
+      "handler": "handleLocalModelsV1"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/openapi.json",
       "handler": "handleOpenAPISpec"
     },
@@ -667,6 +687,11 @@
       "method": "POST",
       "path": "/api/v1/pipelines/{id}/resume",
       "handler": "handleResumePipeline"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/plugins",
+      "handler": "handlePluginsListV1"
     },
     {
       "method": "GET",
@@ -1036,13 +1061,28 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/sessions/{id}/errors",
+      "handler": "handleSessionErrorsV1"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/sessions/{id}/events",
       "handler": "handleSessionEventsRouteV1"
     },
     {
       "method": "GET",
+      "path": "/api/v1/sessions/{id}/extract",
+      "handler": "handleSessionExtractV1"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/sessions/{id}/files",
       "handler": "handleSessionFilesV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/sessions/{id}/grep",
+      "handler": "handleSessionGrepV1"
     },
     {
       "method": "GET",
