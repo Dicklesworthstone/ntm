@@ -113,6 +113,8 @@ func runExtract(sessionName, paneIndex, language string, lastPane bool, lines in
 			switch out.ErrorCode {
 			case robot.ErrCodeSessionNotFound, robot.ErrCodePaneNotFound, "INVALID_SELECTION":
 				return emitJSONFailureEnvelopeWithCause(output.NewErrorWithCode(out.ErrorCode, out.Error), cause)
+			case robot.ErrCodeInternalError:
+				return emitJSONFailureEnvelopeWithCause(output.NewErrorWithDetails("failed to extract code blocks", out.Error), cause)
 			default:
 				return emitJSONFailureEnvelopeWithCause(output.NewError(out.Error), cause)
 			}
