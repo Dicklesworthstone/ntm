@@ -145,7 +145,7 @@ func MatchErrorLineWithOptions(line string, includeStackFrames bool) (bool, stri
 
 // isRobotErrorLine checks if a line matches any error pattern.
 func isRobotErrorLine(line string) (bool, string) {
-	return MatchErrorLineWithOptions(line, false)
+	return MatchErrorLine(line)
 }
 
 func detectErrorsPaneAgentType(pane tmux.Pane, paneOutput string) string {
