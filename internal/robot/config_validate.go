@@ -139,6 +139,9 @@ func DiscoverConfigs(opts ValidationOptions) []ConfigLocation {
 	}
 	if searchRoot != "" {
 		projectDir, _, _ := config.FindProjectConfig(searchRoot)
+		if projectDir == "" && DirExists(filepath.Join(searchRoot, ".ntm")) {
+			projectDir = searchRoot
+		}
 		if projectDir != "" {
 			ntmDir := filepath.Join(projectDir, ".ntm")
 			for _, f := range []struct {
