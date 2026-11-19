@@ -99,9 +99,20 @@ func (r *ErrorsResult) JSON() interface{} {
 	return r
 }
 
+var errorsCommandPatterns = robot.ErrorPatternMatchers(true)
+
 // isErrorLine checks if a line matches any canonical error pattern and returns the match type.
 func isErrorLine(line string) (bool, string) {
-	return robot.MatchErrorLineWithOptions(line, true)
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false, ""
+	}
+	for _, p := range errorsCommandPatterns {
+		if p.Pattern.MatchString(line) {
+			return true, p.MatchType
+		}
+	}
+	return false, ""
 }
 
 // ErrorsOptions contains options for the errors operation

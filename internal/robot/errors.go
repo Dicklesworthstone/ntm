@@ -56,11 +56,14 @@ type ErrorsOutput struct {
 	Summary ErrorsSummary `json:"summary"`
 }
 
-// Error pattern matchers for robot errors command
-var robotErrorPatterns = []struct {
+// ErrorPatternMatcher defines a compiled error regex and its normalized category.
+type ErrorPatternMatcher struct {
 	Pattern   *regexp.Regexp
 	MatchType string
-}{
+}
+
+// Error pattern matchers for robot errors command
+var robotErrorPatterns = []ErrorPatternMatcher{
 	// Python errors
 	{regexp.MustCompile(`(?i)^Traceback \(most recent call last\)`), "traceback"},
 	{regexp.MustCompile(`(?i)^\s*(FileNotFoundError|ImportError|ModuleNotFoundError|AttributeError|TypeError|ValueError|KeyError|IndexError|RuntimeError|NameError|SyntaxError|IndentationError|ZeroDivisionError|AssertionError|OSError|PermissionError|ConnectionError|TimeoutError):`), "exception"},
@@ -106,6 +109,16 @@ var robotErrorPatterns = []struct {
 }
 
 var robotTrimmedStackFramePattern = regexp.MustCompile(`^at\s+.+\(.+:\d+:\d+\)`)
+
+// ErrorPatternMatchers returns a copy of the canonical error pattern table.
+func ErrorPatternMatchers(includeStackFrames bool) []ErrorPatternMatcher {
+	out := make([]ErrorPatternMatcher, 0, len(robotErrorPatterns)+1)
+	out = append(out, robotErrorPatterns...)
+	if includeStackFrames {
+		out = append(out, ErrorPatternMatcher{Pattern: robotTrimmedStackFramePattern, MatchType: "stacktrace"})
+	}
+	return out
+}
 
 // MatchErrorLine checks if a line matches any canonical error pattern (excluding standalone stack frames).
 func MatchErrorLine(line string) (bool, string) {
