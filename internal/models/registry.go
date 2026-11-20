@@ -80,7 +80,10 @@ var ContextLimits = map[string]int{
 	// Gemini 4 Argon: 1M per Artificial Analysis; Google had not published
 	// the input limit when agy was pinned to it (2026-10-13).
 	"gemini-4-argon": 1000000,
-	"gemini-pro":     32000,
+	// Gemini 4 Neon: agy pin since 2026-11-19. Google has not published the
+	// input limit; 1M keeps agy's budget unchanged from the Argon pin.
+	"gemini-4-neon": 1000000,
+	"gemini-pro":    32000,
 }
 
 // Aliases maps short names and common variants to canonical model names.
@@ -120,6 +123,10 @@ var Aliases = map[string]string{
 	"ultra":        "gemini-2.0-flash",
 	"gemini-flash": "gemini-2.0-flash",
 	"gemini-ultra": "gemini-2.0-flash",
+
+	// Antigravity (agy) pin: display name and model id
+	"gemini 4 neon (xhigh)": "gemini-4-neon",
+	"gemini-4-neon-xhigh":   "gemini-4-neon",
 }
 
 var (
@@ -385,7 +392,7 @@ var agentTypeDefaultModels = map[string]string{
 	"cc":       "claude-opus-4",
 	"cod":      "gpt-5-codex",
 	"gmi":      "gemini-2.0-flash",
-	"agy":      "gemini-4-argon", // Antigravity pins Gemini 4 Argon (High)
+	"agy":      "gemini-4-neon", // Antigravity pins Gemini 4 Neon (XHigh)
 	"cursor":   "claude-3.5-sonnet",
 	"windsurf": "claude-3.5-sonnet",
 	"aider":    "claude-3.5-sonnet",

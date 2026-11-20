@@ -672,7 +672,7 @@ func DefaultAgentTemplates() AgentConfig {
 		// REPLACE the core system prompt (getCoreSystemPrompt resolves it via
 		// resolvePathFromEnv). Same env-prefix shape as the Codex template.
 		Gemini: `{{if .SystemPromptFile}}GEMINI_SYSTEM_MD={{shellQuote .SystemPromptFile}} {{end}}gemini{{if .Model}} --model {{shellQuote .Model}}{{end}} --yolo`,
-		// Antigravity (agy): the model is hard-pinned to "Gemini 4 Argon (High)"
+		// Antigravity (agy): the model is hard-pinned to "Gemini 4 Neon (XHigh)"
 		// by ResolveModel, so --model is always injected. --dangerously-skip-permissions
 		// is agy's autonomous (auto-approve) flag — the equivalent of gemini's --yolo —
 		// which the dcg agy guard (F5) backstops. {{agyBinary}} resolves the real

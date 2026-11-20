@@ -96,11 +96,11 @@ const PricingTableVintage = "May 2025"
 // GetModelPricingInfo returns the pricing for a model and how it was resolved.
 //
 // Anything other than PricingExact means the caller is holding a rate that was
-// never verified for this model: gpt-6-astra and gemini-3.1-pro-preview fall to
-// the default row (which overstates Gemini severalfold), and claude-opus-5 is
-// priced from the claude-opus family entry. Callers that show money must
-// surface the difference rather than presenting any of it as this model's
-// price.
+// never verified for this model: gpt-6.2-sol (the Codex default), gpt-6-astra
+// and gemini-3.1-pro-preview fall to the default row (which overstates Gemini
+// severalfold), and claude-opus-5 is priced from the claude-opus family entry.
+// Callers that show money must surface the difference rather than presenting
+// any of it as this model's price.
 func GetModelPricingInfo(model string) (ModelPricing, PricingMatch) {
 	if pricing, ok := modelPricing[model]; ok && model != "default" {
 		return pricing, PricingExact

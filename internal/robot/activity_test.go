@@ -828,7 +828,7 @@ func TestStateClassifier_AntigravityLiveFrames(t *testing.T) {
   >
 
   ? for shortcuts
-  Gemini 4 Argon (High)`
+  Gemini 4 Neon (XHigh)`
 	idleClassifier := NewStateClassifier("agy-idle", &ClassifierConfig{AgentType: "agy"})
 	idle, err := idleClassifier.ClassifyWithOutput(idleOutput)
 	if err != nil {
@@ -845,7 +845,7 @@ func TestStateClassifier_AntigravityLiveFrames(t *testing.T) {
 	}
 	workingOutput.WriteString("⠹ Analyzing repository\n")
 	workingOutput.WriteString("esc to cancel\n")
-	workingOutput.WriteString("Gemini 4 Argon (High)\n")
+	workingOutput.WriteString("Gemini 4 Neon (XHigh)\n")
 	workingClassifier := NewStateClassifier("agy-working", &ClassifierConfig{AgentType: "agy"})
 	working, err := workingClassifier.ClassifyWithOutput(workingOutput.String())
 	if err != nil {

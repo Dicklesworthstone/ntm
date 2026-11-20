@@ -9,11 +9,11 @@ import (
 )
 
 // TestAntigravityModelPin is the model-guard safety test (bd-47kjh.1.7): agy is
-// HARD-pinned to "Gemini 4 Argon (High)" no matter what model/alias is requested,
+// HARD-pinned to "Gemini 4 Neon (XHigh)" no matter what model/alias is requested,
 // and the pin must not leak into the legacy gemini provider.
 func TestAntigravityModelPin(t *testing.T) {
-	if AntigravityRequiredModel != "Gemini 4 Argon (High)" {
-		t.Fatalf("AntigravityRequiredModel = %q, want \"Gemini 4 Argon (High)\"", AntigravityRequiredModel)
+	if AntigravityRequiredModel != "Gemini 4 Neon (XHigh)" {
+		t.Fatalf("AntigravityRequiredModel = %q, want \"Gemini 4 Neon (XHigh)\"", AntigravityRequiredModel)
 	}
 
 	m := &ModelsConfig{DefaultGemini: "gemini-3-pro-preview"}
@@ -112,7 +112,7 @@ func TestAntigravityTemplateRendersLockedBinaryAndQuotedModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateAgentCommand: %v", err)
 	}
-	want := "agy-locked --model 'Gemini 4 Argon (High)' --dangerously-skip-permissions"
+	want := "agy-locked --model 'Gemini 4 Neon (XHigh)' --dangerously-skip-permissions"
 	if cmd != want {
 		t.Errorf("rendered agy command = %q, want %q", cmd, want)
 	}

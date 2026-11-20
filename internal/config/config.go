@@ -29,7 +29,7 @@ import (
 const (
 	// DefaultCodexModel is the model NTM uses when the operator requests a
 	// Codex pane without specifying a model.
-	DefaultCodexModel = "gpt-6-astra"
+	DefaultCodexModel = "gpt-6.2-sol"
 	// DefaultCodexReasoningEffort is the Codex reasoning budget used when no
 	// persona or agent spec provides one.
 	DefaultCodexReasoningEffort = "xhigh"
@@ -1829,7 +1829,7 @@ func canonicalModelLookupAgentType(agentType string) string {
 // AntigravityRequiredModel is the ONLY model agy (Antigravity CLI) may run on.
 // agy is hard-pinned to it everywhere (never an Anthropic/other tier) per
 // the model guard (bd-47kjh.1.7); it is intentionally NOT user-configurable.
-const AntigravityRequiredModel = "Gemini 4 Argon (High)"
+const AntigravityRequiredModel = "Gemini 4 Neon (XHigh)"
 
 // GetModelName resolves a model alias to its full model name.
 // Returns the alias itself if no mapping is found.
