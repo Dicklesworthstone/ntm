@@ -845,3 +845,56 @@ func TestNotifyMacOS_BoundedByContextTimeout(t *testing.T) {
 		t.Fatalf("notifyMacOS elapsed = %v, want <= 5s (2s ceiling + slack); osascript stub blocks pipeline thread", elapsed)
 	}
 }
+
+func TestNotifyWebhook_SecurityAndHMACAndShouldNotify(t *testing.T) {
+	t.Run("ShouldNotify honors NotifyOnStart and NotifyOnCancel", func(t *testing.T) {
+		if !ShouldNotify(WorkflowSettings{NotifyOnStart: true}, NotifyStarted) {
+			t.Fatal("expected ShouldNotify=true when NotifyOnStart=true")
+		}
+		if !ShouldNotify(WorkflowSettings{NotifyOnCancel: true}, NotifyCancelled) {
+			t.Fatal("expected ShouldNotify=true when NotifyOnCancel=true")
+		}
+	})
+
+	t.Run("blocks cloud metadata SSRF and file scheme", func(t *testing.T) {
+		for _, badURL := range []string{
+			"http://169.254.169.254/latest/meta-data/",
+			"http://metadata.google.internal/computeMetadata/v1/",
+			"file:///etc/passwd",
+		} {
+			n := NewNotifier(NotifierConfig{Channels: []string{"webhook"}, WebhookURL: badURL})
+			if err := n.Notify(context.Background(), NotificationPayload{Event: NotifyFailed, WorkflowName: "wf"}); err == nil {
+				t.Fatalf("expected SSRF/scheme rejection for %q, got nil", badURL)
+			}
+		}
+	})
+
+	t.Run("blocks HTTP redirects and signs HMAC X-NTM-Signature", func(t *testing.T) {
+		redirectSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "http://169.254.169.254/latest/meta-data/", http.StatusFound)
+		}))
+		defer redirectSrv.Close()
+		nRedir := NewNotifier(NotifierConfig{Channels: []string{"webhook"}, WebhookURL: redirectSrv.URL})
+		if err := nRedir.Notify(context.Background(), NotificationPayload{Event: NotifyCompleted, WorkflowName: "wf"}); err == nil {
+			t.Fatal("expected redirect webhook response to fail closed, got nil")
+		}
+
+		var gotSig string
+		signedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotSig = r.Header.Get("X-NTM-Signature")
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer signedSrv.Close()
+		nSigned := NewNotifier(NotifierConfig{
+			Channels:      []string{"webhook"},
+			WebhookURL:    signedSrv.URL,
+			WebhookSecret: "top-secret-key",
+		})
+		if err := nSigned.Notify(context.Background(), NotificationPayload{Event: NotifyCompleted, WorkflowName: "wf", RunID: "r1"}); err != nil {
+			t.Fatalf("signed webhook error = %v", err)
+		}
+		if !strings.HasPrefix(gotSig, "sha256=") || len(gotSig) != len("sha256=")+64 {
+			t.Fatalf("X-NTM-Signature = %q, want valid sha256=<64-hex>", gotSig)
+		}
+	})
+}

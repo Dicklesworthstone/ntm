@@ -1175,3 +1175,124 @@ func TestComputeForeachItemsFingerprint_StableAndDivergent(t *testing.T) {
 		t.Fatalf("nil and empty-slice fingerprints differ: %s vs %s", emptyA, emptyB)
 	}
 }
+
+func TestLoopExecutor_UntilAndResumeCheckpoints(t *testing.T) {
+	newTestExec := func(runID, wfID string) *Executor {
+		cfg := DefaultExecutorConfig("test")
+		executor := NewExecutor(cfg)
+		executor.state = &ExecutionState{
+			RunID:      runID,
+			WorkflowID: wfID,
+			Session:    "test",
+			Status:     StatusRunning,
+			Variables:  map[string]interface{}{},
+			Steps:      map[string]StepResult{},
+		}
+		return executor
+	}
+
+	t.Run("until executes body until predicate exits 0", func(t *testing.T) {
+		tmp := t.TempDir()
+		counterFile := tmp + "/count.txt"
+		executor := newTestExec("run-until-1", "wf-until")
+		workflow := &Workflow{
+			SchemaVersion: SchemaVersion,
+			Name:          "wf-until",
+			Settings:      DefaultWorkflowSettings(),
+			Steps: []Step{
+				{
+					ID: "poll",
+					Loop: &LoopConfig{
+						Until:         `[ "$(wc -l < '` + counterFile + `')" -ge 3 ]`,
+						MaxIterations: IntOrExpr{Value: 10},
+						Collect:       "poll_outputs",
+						Steps: []Step{
+							{ID: "tick", Command: `echo "tick-${loop.index}" >> '` + counterFile + `' && echo "tick-${loop.index}"`},
+						},
+					},
+				},
+			},
+		}
+		executor.graph = NewDependencyGraph(workflow)
+		res := executor.loopExec.ExecuteLoop(context.Background(), &workflow.Steps[0], workflow)
+		if res.Status != StatusCompleted {
+			t.Fatalf("until loop status = %s (err=%+v), want completed", res.Status, res.Error)
+		}
+		if res.Iterations != 3 {
+			t.Fatalf("until loop iterations = %d, want 3", res.Iterations)
+		}
+		if len(res.Collected) != 3 {
+			t.Fatalf("until loop collected = %v, want 3 entries", res.Collected)
+		}
+	})
+
+	t.Run("until fails explicitly when max_iterations reached without exit 0", func(t *testing.T) {
+		executor := newTestExec("run-until-max", "wf-until-max")
+		workflow := &Workflow{
+			SchemaVersion: SchemaVersion,
+			Name:          "wf-until-max",
+			Settings:      DefaultWorkflowSettings(),
+			Steps: []Step{
+				{
+					ID: "never",
+					Loop: &LoopConfig{
+						Until:         "false",
+						MaxIterations: IntOrExpr{Value: 2},
+						Steps: []Step{
+							{ID: "noop", Command: "echo ok"},
+						},
+					},
+				},
+			},
+		}
+		executor.graph = NewDependencyGraph(workflow)
+		res := executor.loopExec.ExecuteLoop(context.Background(), &workflow.Steps[0], workflow)
+		if res.Status != StatusFailed || res.Error == nil || !strings.Contains(res.Error.Message, "max_iterations") {
+			t.Fatalf("expected max_iterations failure, got status=%s err=%+v", res.Status, res.Error)
+		}
+		if res.Iterations != 2 {
+			t.Fatalf("iterations = %d, want 2", res.Iterations)
+		}
+	})
+
+	t.Run("times loop resumes from persisted checkpoint skipping completed iterations", func(t *testing.T) {
+		tmp := t.TempDir()
+		logFile := tmp + "/iters.log"
+		executor := newTestExec("run-times-resume", "wf-times")
+		// Simulate prior run completing iterations 0 and 1 before crashing.
+		executor.beginForeachState("repeat", 4)
+		executor.markForeachIterationCompleted("repeat", 0, 4)
+		executor.appendForeachCollectedOutput("repeat", "iter-0")
+		executor.markForeachIterationCompleted("repeat", 1, 4)
+		executor.appendForeachCollectedOutput("repeat", "iter-1")
+
+		workflow := &Workflow{
+			SchemaVersion: SchemaVersion,
+			Name:          "wf-times",
+			Settings:      DefaultWorkflowSettings(),
+			Steps: []Step{
+				{
+					ID: "repeat",
+					Loop: &LoopConfig{
+						Times:   4,
+						Collect: "all_iters",
+						Steps: []Step{
+							{ID: "run", Command: `echo "iter-${loop.index}" >> '` + logFile + `' && echo "iter-${loop.index}"`},
+						},
+					},
+				},
+			},
+		}
+		executor.graph = NewDependencyGraph(workflow)
+		res := executor.loopExec.ExecuteLoop(context.Background(), &workflow.Steps[0], workflow)
+		if res.Status != StatusCompleted {
+			t.Fatalf("resumed times loop status = %s (err=%+v), want completed", res.Status, res.Error)
+		}
+		if res.Iterations != 2 {
+			t.Fatalf("resumed times loop ran %d iterations, want 2 (skipping 0 and 1)", res.Iterations)
+		}
+		if len(res.Collected) != 4 {
+			t.Fatalf("resumed collected = %v, want 4 total (2 restored + 2 new)", res.Collected)
+		}
+	})
+}

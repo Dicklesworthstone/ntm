@@ -383,24 +383,47 @@ func TestParseNumericPair(t *testing.T) {
 	}
 }
 
-func TestFindLogicalOp(t *testing.T) {
-	tests := []struct {
-		expr string
-		op   string
-		want int
-	}{
-		{"a AND b", " AND ", 1},
-		{"a OR b", " OR ", 1},
-		{`"a AND b" OR c`, " OR ", 9}, // AND inside quotes should be ignored, " OR " starts at 9
-		{"(a AND b) OR c", " OR ", 9}, // AND inside parens should be ignored, " OR " starts at 9
-		{"no operators", " AND ", -1},
+func TestConditionEvaluator_ASTInjectionDefense(t *testing.T) {
+	state := &ExecutionState{
+		Variables: map[string]interface{}{
+			"evil_or":     `nope" OR 1 == 1`,
+			"evil_bare":   `false OR true`,
+			"evil_cmp":    `0 >= 0`,
+			"evil_parens": `foo) OR (1 == 1`,
+			"msg":         `say "hi AND bye"`,
+			"quoted_op":   `a >= b`,
+		},
 	}
+	sub := NewSubstitutor(state, "test-session", "test-workflow")
+	evaluator := NewConditionEvaluator(sub)
 
+	tests := []struct {
+		name      string
+		condition string
+		wantValue bool
+		wantErr   bool
+	}{
+		{"variable containing OR 1 == 1 cannot hijack ==", `${vars.evil_or} == "expected"`, false, false},
+		{"variable containing false OR true cannot hijack ==", `${vars.evil_bare} == "ok"`, false, false},
+		{"variable containing >= cannot hijack comparison", `${vars.evil_cmp} == "ok"`, false, false},
+		{"variable containing parens and OR cannot break AST", `(${vars.evil_parens} == "ok")`, false, false},
+		{"quoted operator inside literal is data not operator", `"a >= b" == ${vars.quoted_op}`, true, false},
+		{"case-insensitive lowercase logical ops", `false or (true and not false)`, true, false},
+		{"C-style && || ! logical ops", `!(false || false) && true`, true, false},
+		{"case-insensitive CONTAINS", `${vars.msg} CONTAINS "AND"`, true, false},
+		{"unterminated string literal returns syntax error", `${vars.msg} == "unterminated`, false, true},
+		{"unbalanced parenthesis returns syntax error", `(${vars.msg} == "x"`, false, true},
+	}
 	for _, tt := range tests {
-		got := findLogicalOp(tt.expr, tt.op)
-		if got != tt.want {
-			t.Errorf("findLogicalOp(%q, %q) = %d, want %d", tt.expr, tt.op, got, tt.want)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := evaluator.Evaluate(tt.condition)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Evaluate(%q) err = %v, wantErr=%v", tt.condition, err, tt.wantErr)
+			}
+			if !tt.wantErr && res.Value != tt.wantValue {
+				t.Fatalf("Evaluate(%q) = %v, want %v", tt.condition, res.Value, tt.wantValue)
+			}
+		})
 	}
 }
 
@@ -443,59 +466,34 @@ func TestConditionEvaluator_WithStepOutputs(t *testing.T) {
 	}
 }
 
-func TestFindLogicalOpFlexible(t *testing.T) {
-
-	tests := []struct {
-		name  string
-		expr  string
-		op    string
-		wantN int // -1 for not found
-	}{
-		{"AND with spaces", "a AND b", "AND", 1},
-		{"OR with spaces", "x OR y", "OR", 1},
-		{"AND at end", "x AND", "AND", 1},
-		{"OR at end", "y OR", "OR", 1},
-		{"AND in parens", "(a AND b) OR c", "AND", -1}, // inside parens, outer scan
-		{"not found", "abc def", "AND", -1},
-		{"no spaces", "aANDb", "AND", -1}, // no spaces around
+func TestLexCondition_QuotedAndNestedParens(t *testing.T) {
+	state := &ExecutionState{
+		Variables: map[string]interface{}{
+			"x": "hello AND world",
+			"y": "hello OR world",
+		},
 	}
+	sub := NewSubstitutor(state, "test-session", "test-workflow")
+	evaluator := NewConditionEvaluator(sub)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := findLogicalOpFlexible(tt.expr, tt.op)
-			if tt.wantN < 0 && got >= 0 {
-				t.Errorf("findLogicalOpFlexible(%q, %q) = %d, want not found", tt.expr, tt.op, got)
-			} else if tt.wantN >= 0 && got < 0 {
-				t.Errorf("findLogicalOpFlexible(%q, %q) = %d, want found", tt.expr, tt.op, got)
-			}
-		})
-	}
-}
-
-func TestFindLogicalOp_EdgeCases(t *testing.T) {
-
-	tests := []struct {
-		name string
+	cases := []struct {
 		expr string
-		op   string
-		want int
+		want bool
 	}{
-		{"in double quoted string", `"hello AND world" == x`, " AND ", -1},
-		{"in single quoted string", `'hello OR world' != x`, " OR ", -1},
-		{"escaped quote in string", `"say \"hi AND bye\"" AND x`, " AND ", 20},
-		{"nested parens", "((a)) AND b", " AND ", 5},
-		{"complex nesting", "(a OR (b AND c)) AND d", " AND ", 16},
-		{"at end no trailing space", "x AND", " AND", 1},
-		{"operator at start", " AND x", " AND ", 0},
+		{`"hello AND world" == ${vars.x}`, true},
+		{`'hello OR world' != ${vars.y}`, false},
+		{`"say \"hi AND bye\"" == "say \"hi AND bye\"" AND true`, true},
+		{`((true)) AND true`, true},
+		{`(false OR (true AND true)) AND true`, true},
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := findLogicalOp(tt.expr, tt.op)
-			if got != tt.want {
-				t.Errorf("findLogicalOp(%q, %q) = %d, want %d", tt.expr, tt.op, got, tt.want)
-			}
-		})
+	for _, tc := range cases {
+		res, err := evaluator.Evaluate(tc.expr)
+		if err != nil {
+			t.Fatalf("Evaluate(%q) error = %v", tc.expr, err)
+		}
+		if res.Value != tc.want {
+			t.Fatalf("Evaluate(%q) = %v, want %v", tc.expr, res.Value, tc.want)
+		}
 	}
 }
 
