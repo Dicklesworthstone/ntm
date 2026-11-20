@@ -145,8 +145,8 @@ func TestResumeCommandNative(t *testing.T) {
 		{"claude", "abc-123", true, "claude --resume 'abc-123'"},
 		{"codex", "r1", false, "codex resume 'r1'"},
 		{"gemini", "g9", true, "gemini --resume 'g9'"},
-		{"antigravity", "uuid-9", false, "agy --conversation 'uuid-9' --model 'Gemini 4 Argon (High)'"},
-		{"antigravity", "uuid-9", true, "agy --conversation 'uuid-9' --model 'Gemini 4 Argon (High)'"},
+		{"antigravity", "uuid-9", false, "agy --conversation 'uuid-9' --model 'Gemini 4 Neon (XHigh)'"},
+		{"antigravity", "uuid-9", true, "agy --conversation 'uuid-9' --model 'Gemini 4 Neon (XHigh)'"},
 		{"claude", "", true, ""},
 		{"unknown", "x", true, ""},
 	}
@@ -178,7 +178,7 @@ func TestResumeCommandCASR(t *testing.T) {
 		{"gemini", "g9", "casr -gmi 'g9'"},
 		// Antigravity has no casr short-flag; even with preferCASR=true and
 		// casr available it must fall through to its native agy command.
-		{"antigravity", "uuid-9", "agy --conversation 'uuid-9' --model 'Gemini 4 Argon (High)'"},
+		{"antigravity", "uuid-9", "agy --conversation 'uuid-9' --model 'Gemini 4 Neon (XHigh)'"},
 	}
 	for _, c := range cases {
 		if got := ResumeCommand(c.provider, c.id, true); got != c.want {
@@ -205,8 +205,8 @@ func TestResumeLaunchCommandPreservesSettingsAndReplacesSelector(t *testing.T) {
 		{"codex existing options before ID", "codex", `codex resume --model custom old-id --search`, `codex resume --model custom 'new-id' --search`},
 		{"gemini persona", "gemini", `GEMINI_SYSTEM_MD='/work/persona.md' gemini --model custom --yolo`, `GEMINI_SYSTEM_MD='/work/persona.md' gemini --model custom --yolo --resume 'new-id'`},
 		{"gemini inline", "gemini", `gemini --resume=old-id --model custom`, `gemini --resume 'new-id' --model custom`},
-		{"antigravity locked", "antigravity", `/opt/agy-locked --model 'Gemini 4 Argon (High)' --dangerously-skip-permissions`, `/opt/agy-locked --model 'Gemini 4 Argon (High)' --dangerously-skip-permissions --conversation 'new-id'`},
-		{"antigravity existing", "antigravity", `agy --conversation=old-id --model 'Gemini 4 Argon (High)'`, `agy --conversation 'new-id' --model 'Gemini 4 Argon (High)'`},
+		{"antigravity locked", "antigravity", `/opt/agy-locked --model 'Gemini 4 Neon (XHigh)' --dangerously-skip-permissions`, `/opt/agy-locked --model 'Gemini 4 Neon (XHigh)' --dangerously-skip-permissions --conversation 'new-id'`},
+		{"antigravity existing", "antigravity", `agy --conversation=old-id --model 'Gemini 4 Neon (XHigh)'`, `agy --conversation 'new-id' --model 'Gemini 4 Neon (XHigh)'`},
 		{"omp settings", "omp", `omp --auto-approve --model 'provider/custom' --thinking high --append-system-prompt '/work/persona.md'`, `omp --auto-approve --model 'provider/custom' --thinking high --append-system-prompt '/work/persona.md' --resume 'new-id'`},
 		{"omp existing", "omp", `omp --auto-approve --resume=old-id --thinking high`, `omp --auto-approve --resume 'new-id' --thinking high`},
 		{"ntm memory wrapper", "claude", `systemd-run --user --scope -q -p MemoryMax=8192M claude --model custom --effort high`, `systemd-run --user --scope -q -p MemoryMax=8192M claude --model custom --effort high --resume 'new-id'`},

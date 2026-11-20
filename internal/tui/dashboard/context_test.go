@@ -304,7 +304,7 @@ func TestResolveCostAndContextModelForPane_MultiHarness(t *testing.T) {
 					DefaultClaude:      "claude-opus-4-6",
 					DefaultCodex:       "gpt-5-codex",
 					DefaultGemini:      "gemini-3-pro-preview",
-					DefaultAntigravity: "gemini-4-argon",
+					DefaultAntigravity: "gemini-4-neon",
 					DefaultGrok:        "grok-4",
 					DefaultOmp:         "openrouter/stealth/union-alpha",
 					DefaultOpencode:    "anthropic/claude-sonnet-4",
@@ -320,8 +320,8 @@ func TestResolveCostAndContextModelForPane_MultiHarness(t *testing.T) {
 			{tmux.AgentClaude, "claude-opus-4-6"},
 			{tmux.AgentCodex, "gpt-5-codex"},
 			{tmux.AgentGemini, "gemini-3-pro-preview"},
-			{tmux.AgentAntigravity, "gemini-4-argon"},
-			{tmux.AgentType("antigravity"), "gemini-4-argon"},
+			{tmux.AgentAntigravity, "gemini-4-neon"},
+			{tmux.AgentType("antigravity"), "gemini-4-neon"},
 			{tmux.AgentGrok, "grok-4"},
 			{tmux.AgentType("grok-build"), "grok-4"},
 			{tmux.AgentOmp, "openrouter/stealth/union-alpha"},
@@ -367,7 +367,7 @@ func TestSessionDataWithOutputMultiHarnessContextAndCostModels(t *testing.T) {
 	m.startupWarmupDone = true
 	m.cfg = &config.Config{
 		Models: config.ModelsConfig{
-			DefaultAntigravity: "Gemini 4 Argon (High)",
+			DefaultAntigravity: "Gemini 4 Neon (XHigh)",
 			DefaultGrok:        "grok-4",
 			DefaultOmp:         "claude-sonnet-4",
 			DefaultOpencode:    "gpt-4o",
@@ -413,7 +413,7 @@ func TestSessionDataWithOutputMultiHarnessContextAndCostModels(t *testing.T) {
 	m = updated.(Model)
 
 	wantModels := map[string]string{
-		"%1": "Gemini 4 Argon (High)",
+		"%1": "Gemini 4 Neon (XHigh)",
 		"%2": "grok-4",
 		"%3": "claude-sonnet-4",
 		"%4": "gpt-4o",

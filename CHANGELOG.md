@@ -29,6 +29,23 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 - **JSON output confidentiality in `ntm serve`**: `block` mode now protects response credentials as well as refusing sensitive requests. Response filtering preserves meaningful non-secret diagnostics and the handler's HTTP status. Unsafe custom-pattern rewrites produce a valid, explicit `RESPONSE_REDACTION_FAILED` envelope that warns the operation may already have completed, instead of leaking credentials, emitting malformed JSON, or implying the request was rolled back. JSON `Flush` calls can no longer release unredacted fragments.
 - **JSON request integrity in `ntm serve`** (GH #378): enabled `redact` and `block` modes now refuse detected secrets with `422 SECRETS_DETECTED` before handlers or idempotency replay, instead of replacing credentials with malformed JSON or executable/storable placeholders. Accepted requests retain their original bytes. Errors identify categories and byte locations without echoing credential contents or field names. The policy covers `/api/v1` bodies even with a missing or mislabeled `Content-Type`; malformed and oversized bodies are explicitly rejected rather than forwarded or truncated. Response redaction and the pipeline recovery receipt exception are preserved. See [REST request integrity](docs/robot-sensitivity-redaction.md#rest-request-integrity).
 
+## [v1.38.1] -- 2026-11-20 [GitHub Release]
+
+**Antigravity (agy) agents now run Gemini 4 Neon (XHigh), and Codex panes default to `gpt-6.2-sol`.** Otherwise identical to v1.38.0: same source, Go 1.26.10 and `golang.org/x/net` v0.62.0.
+
+### Changed
+
+- **Antigravity default model is Gemini 4 Neon (XHigh)** (`gemini-4-neon`), replacing Gemini 4 Argon (High). XHigh is Neon's top tier. The required-model pin, the session-resume command, the model registry (1M-token context, so agy's budget is unchanged), the flag help and both spawn wizards move together, matching ACFS's `agy-locked` launcher. agy rejects `--effort` for this model, so the pin names the model only. The `gemini-4-argon` registry entry stays, so panes still running Argon keep resolving.
+- **Codex default model is `gpt-6.2-sol`** (was `gpt-6-astra`), still at `xhigh` reasoning effort. It applies when a Codex pane is requested without a model; a `codex` template in your own config still wins. Agent-type normalization recognizes `gpt-6.1-sol` and `gpt-6.2-sol`.
+
+### Not in this release
+
+The work on `main` since v1.38.0 is not included. It ships in the next minor release once it is qualified.
+
+### Known issue
+
+- **GO-2026-6859 (Go standard library, `net/http`)**: `govulncheck -mode=binary` reports an HTTP/1 server crash on a `MaxBytesReader` header race, fixed in Go 1.26.11. v1.38.0's binary reports the same finding. In ntm it concerns `ntm serve`, which binds 127.0.0.1 unless `--host` is given.
+
 ## [v1.38.0] -- 2026-10-31 [GitHub Release]
 
 **This is the first release to carry the work on `main` that v1.37.1 and v1.37.2 held back: pipeline branch checkpoints, webhook outbox persistence, checkpoint binary and untracked capture, the reservation watcher, and Gemini readiness and context metrics. It also adds reviewed `ntm worktrees` merges, operator recovery for uncertain pipeline deliveries, pipeline commands and context rotations, per-request project selection on the REST mail and reservation routes, and pi agent support. Go moves to 1.26.10 for GO-2026-6809.** Many recovery and delivery paths now stop for an operator decision where they used to repeat work or carry on, so commands that used to proceed can now refuse. Read the Upgrade notes first, and finish or inspect in-flight pipeline runs before upgrading.

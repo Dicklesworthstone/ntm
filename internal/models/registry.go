@@ -19,8 +19,9 @@ import (
 const DefaultContextLimit = 128000
 
 // DefaultAntigravityModel is the default display model identifier for the
-// Antigravity CLI (agy).
-const DefaultAntigravityModel = "Gemini 4 Argon (High)"
+// Antigravity CLI (agy). XHigh is Neon's top tier; agy rejects --effort for
+// it, so the tier lives in the model name.
+const DefaultAntigravityModel = "Gemini 4 Neon (XHigh)"
 
 // dateSuffixRe strips date suffixes like -20260101 from model names.
 var dateSuffixRe = regexp.MustCompile(`-\d{8}$`)
@@ -85,7 +86,10 @@ var ContextLimits = map[string]int{
 	// Gemini 4 Argon: 1M per Artificial Analysis; Google had not published
 	// the input limit when agy was pinned to it (2026-10-13).
 	"gemini-4-argon": 1000000,
-	"gemini-pro":     32000,
+	// Gemini 4 Neon: agy pin since 2026-11-19. Google has not published the
+	// input limit; 1M keeps agy's budget unchanged from the Argon pin.
+	"gemini-4-neon": 1000000,
+	"gemini-pro":    32000,
 
 	// xAI Grok models
 	"grok-4":      256000,
@@ -140,6 +144,8 @@ var Aliases = map[string]string{
 	"gemini-ultra":          "gemini-2.0-flash",
 	"gemini 4 argon (high)": "gemini-4-argon",
 	"gemini-4-argon-high":   "gemini-4-argon",
+	"gemini 4 neon (xhigh)": "gemini-4-neon",
+	"gemini-4-neon-xhigh":   "gemini-4-neon",
 
 	// Grok aliases
 	"grok": "grok-4",
@@ -427,7 +433,7 @@ var agentTypeDefaultModels = map[string]string{
 	"cc":       "claude-opus-4",
 	"cod":      "gpt-5-codex",
 	"gmi":      "gemini-2.0-flash",
-	"agy":      "gemini-4-argon", // Antigravity default: Gemini 4 Argon (High)
+	"agy":      "gemini-4-neon", // Antigravity default: Gemini 4 Neon (XHigh)
 	"grok":     "grok-4",
 	"oc":       "claude-sonnet-4",
 	"omp":      "claude-sonnet-4",

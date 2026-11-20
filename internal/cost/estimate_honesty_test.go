@@ -24,6 +24,7 @@ func TestGetModelPricingInfoClassifiesTheMatch(t *testing.T) {
 		"gpt-4o-20240513": PricingExact, // 8-digit date suffix stripped, then exact
 		"claude-haiku-99": PricingFamily,
 		// Nothing matched: the default row.
+		"gpt-6.2-sol":             PricingUnknown,
 		"gpt-6-astra":             PricingUnknown,
 		"gemini-3.1-pro-preview":  PricingUnknown,
 		"some-model-nobody-ships": PricingUnknown,

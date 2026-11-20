@@ -193,7 +193,7 @@ func TestInterruptKeyForAgent_OpencodeUsesEscape(t *testing.T) {
 }
 
 func TestInspectComposerAndVisibleForDelivery_AntigravityAndOpencode(t *testing.T) {
-	agyIdle := "Antigravity\n\n  >\n\n  ? for shortcuts\n  Gemini 4 Argon (High)\n"
+	agyIdle := "Antigravity\n\n  >\n\n  ? for shortcuts\n  Gemini 4 Neon (XHigh)\n"
 	if !AntigravityComposerVisible(agyIdle) || !ComposerVisibleForDelivery(agyIdle, AgentAntigravity) {
 		t.Fatal("expected Antigravity idle composer to be visible")
 	}
@@ -201,7 +201,7 @@ func TestInspectComposerAndVisibleForDelivery_AntigravityAndOpencode(t *testing.
 		t.Fatalf("InspectComposer(agyIdle) = %+v, want MarkerVisible=true HoldsText=false", st)
 	}
 
-	agyDraft := "Antigravity\n\n  > fix the race condition\n\n  ? for shortcuts\n  Gemini 4 Argon (High)\n"
+	agyDraft := "Antigravity\n\n  > fix the race condition\n\n  ? for shortcuts\n  Gemini 4 Neon (XHigh)\n"
 	if st := InspectComposer(agyDraft, AgentAntigravity); !st.MarkerVisible || !st.HoldsText {
 		t.Fatalf("InspectComposer(agyDraft) = %+v, want MarkerVisible=true HoldsText=true", st)
 	}
