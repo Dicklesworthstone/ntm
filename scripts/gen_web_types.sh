@@ -9,7 +9,8 @@ cd "$REPO_ROOT"
 BIN_TMP="$(mktemp -t ntm-openapi-XXXXXX)"
 trap 'rm -f "$BIN_TMP"' EXIT
 
-go build -o "$BIN_TMP" ./cmd/ntm
+REPO_VERSION="$(tr -d '[:space:]' < VERSION)"
+go build -ldflags "-X github.com/Dicklesworthstone/ntm/internal/cli.Version=${REPO_VERSION}" -o "$BIN_TMP" ./cmd/ntm
 "$BIN_TMP" openapi generate --output docs/openapi.json --parity-matrix docs/parity_matrix.json
 
 (
