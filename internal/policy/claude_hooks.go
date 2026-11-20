@@ -157,18 +157,24 @@ func ClaudeAgentLaunchSettings(cfg *config.Config) ClaudeAgentLaunch {
 	}
 
 	if cfg.Integrations.DCG.Enabled && dcg.ShouldConfigureHooks(cfg.Integrations.DCG.Enabled, cfg.Integrations.DCG.BinaryPath) {
+		// Modern dcg runs in Claude PreToolUse hook mode using its own native
+		// config/packs/allowlists; passing NTM's send-side audit_log or custom
+		// lists into GenerateHookConfig previously errored and silently omitted
+		// the Claude PreToolUse dcg hook on every spawn. Always install the base
+		// dcg hook when enabled+available and emit advisory warnings for custom
+		// list scoping only.
 		dcgConfig, err := dcg.GenerateHookConfig(dcg.DCGHookOptions{
-			BinaryPath:      cfg.Integrations.DCG.BinaryPath,
-			AuditLog:        cfg.Integrations.DCG.AuditLog,
-			Timeout:         5,
-			CustomBlocklist: cfg.Integrations.DCG.CustomBlocklist,
-			CustomWhitelist: cfg.Integrations.DCG.CustomWhitelist,
+			BinaryPath: cfg.Integrations.DCG.BinaryPath,
+			Timeout:    5,
 		})
 		if err != nil {
 			launch.Warnings = append(launch.Warnings, fmt.Sprintf("dcg hook not configured: %v", err))
 		} else {
 			entries = append(entries, dcgConfig.Hooks.PreToolUse...)
 			launch.Sources = append(launch.Sources, "dcg")
+			if len(cfg.Integrations.DCG.CustomBlocklist) > 0 || len(cfg.Integrations.DCG.CustomWhitelist) > 0 {
+				launch.Warnings = append(launch.Warnings, "integrations.dcg custom_blocklist/custom_whitelist apply to NTM send-side checks; configure dcg packs/allowlists directly for Claude PreToolUse hook rules")
+			}
 		}
 	}
 

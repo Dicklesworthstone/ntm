@@ -3890,7 +3890,25 @@ func maybeBlockSendWithDCG(ctx context.Context, prompt, session string, panes []
 		return ctx.Err()
 	}
 
+	dcgCfg := cfg.Integrations.DCG
 	for _, command := range commands {
+		verdict := dcg.EvaluateCustomRules(command, dcgCfg.CustomBlocklist, dcgCfg.CustomWhitelist, dcgCfg.AllowOverride)
+		if verdict.Whitelisted {
+			continue
+		}
+		if verdict.Blocked {
+			reason := fmt.Sprintf("blocked by integrations.dcg.custom_blocklist rule %q", verdict.MatchedRule)
+			if verdict.OverrideDenied {
+				reason += " (custom_whitelist override denied because integrations.dcg.allow_override=false)"
+			}
+			blocked := &tools.BlockedCommand{
+				Command: command,
+				Reason:  reason,
+			}
+			logDCGBlocked(command, session, panes, blocked)
+			recordBlockedCommandMetric(session, command, reason, panes)
+			return fmt.Errorf("%w: %s", robot.ErrSendCommandBlocked, reason)
+		}
 		blocked, err := adapter.CheckCommand(ctx, command)
 		if err != nil {
 			return err
@@ -3900,6 +3918,9 @@ func maybeBlockSendWithDCG(ctx context.Context, prompt, session string, panes []
 			reason := strings.TrimSpace(blocked.Reason)
 			if reason == "" {
 				reason = "blocked by dcg"
+			}
+			if verdict.OverrideDenied {
+				reason += " (custom_whitelist override denied because integrations.dcg.allow_override=false)"
 			}
 			recordBlockedCommandMetric(session, command, reason, panes)
 			return fmt.Errorf("%w: %s", robot.ErrSendCommandBlocked, reason)

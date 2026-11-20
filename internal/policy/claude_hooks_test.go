@@ -328,3 +328,38 @@ func TestClaudeAgentLaunchSettingsRCHHook(t *testing.T) {
 		t.Fatalf("rch hook command = %v", cmd)
 	}
 }
+
+func TestClaudeAgentLaunchSettingsKeepsDCGHookWithAuditLogAndCustomLists(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// Create a real executable stub so dcg.ShouldConfigureHooks finds it.
+	fakeDir := t.TempDir()
+	fakeDCG := filepath.Join(fakeDir, "dcg")
+	if err := os.WriteFile(fakeDCG, []byte("#!/bin/sh\necho 'dcg 1.0.0'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.Safety.ClaudePolicyHook = false
+	cfg.Integrations.RCH.Enabled = false
+	cfg.Integrations.DCG.Enabled = true
+	cfg.Integrations.DCG.BinaryPath = fakeDCG
+	cfg.Integrations.DCG.AuditLog = filepath.Join(fakeDir, "dcg-audit.jsonl")
+	cfg.Integrations.DCG.CustomBlocklist = []string{"DROP DATABASE"}
+	cfg.Integrations.DCG.CustomWhitelist = []string{"git status"}
+
+	launch := ClaudeAgentLaunchSettings(cfg)
+	if len(launch.Sources) != 1 || launch.Sources[0] != "dcg" {
+		t.Fatalf("sources = %v (warnings=%v), want [dcg] — configuring audit_log/custom lists must NOT drop Claude DCG hook", launch.Sources, launch.Warnings)
+	}
+	groups := decodeLaunchSettings(t, launch.Settings)
+	if len(groups) != 1 || groups[0]["matcher"] != "Bash" {
+		t.Fatalf("unexpected DCG launch groups: %+v", groups)
+	}
+	cmd := groups[0]["hooks"].([]any)[0].(map[string]any)["command"].(string)
+	if !strings.Contains(cmd, fakeDCG) {
+		t.Fatalf("DCG hook command = %q, want to reference %q", cmd, fakeDCG)
+	}
+	if len(launch.Warnings) == 0 {
+		t.Fatalf("expected non-dropping advisory warning about custom_blocklist/custom_whitelist scoping")
+	}
+}

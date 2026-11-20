@@ -3,6 +3,7 @@ package dcg
 import (
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -180,4 +181,76 @@ func ShouldConfigureHooks(dcgEnabled bool, binaryPath string) bool {
 
 	availability := CheckDCGAvailable(binaryPath)
 	return availability.Available
+}
+
+// CustomRuleVerdict reports the outcome of evaluating NTM's configured
+// [integrations.dcg] custom_blocklist, custom_whitelist, and allow_override
+// rules against a shell command.
+type CustomRuleVerdict struct {
+	Blocked        bool
+	Whitelisted    bool
+	OverrideDenied bool
+	MatchedRule    string
+}
+
+// EvaluateCustomRules evaluates [integrations.dcg] custom_blocklist,
+// custom_whitelist, and allow_override rules for a command.
+//
+// Whitelist overrides take effect ONLY when allowOverride is true (standard/
+// custom profiles). In safe/paranoid profiles (allow_override = false), a
+// matching whitelist entry is NOT honored and OverrideDenied is recorded so
+// callers can surface a clear policy diagnostic rather than silently bypassing
+// DCG. Blocklist rules fail closed regardless of allowOverride.
+func EvaluateCustomRules(command string, blocklist, whitelist []string, allowOverride bool) CustomRuleVerdict {
+	cmd := strings.TrimSpace(command)
+	if cmd == "" {
+		return CustomRuleVerdict{}
+	}
+
+	if matched, rule := matchAnyDCGRule(cmd, whitelist); matched {
+		if allowOverride {
+			return CustomRuleVerdict{
+				Whitelisted: true,
+				MatchedRule: rule,
+			}
+		}
+		// Override forbidden by safety policy: still evaluate custom_blocklist
+		// and preserve OverrideDenied for downstream diagnostics.
+		if blocked, bRule := matchAnyDCGRule(cmd, blocklist); blocked {
+			return CustomRuleVerdict{
+				Blocked:        true,
+				OverrideDenied: true,
+				MatchedRule:    bRule,
+			}
+		}
+		return CustomRuleVerdict{
+			OverrideDenied: true,
+			MatchedRule:    rule,
+		}
+	}
+
+	if blocked, rule := matchAnyDCGRule(cmd, blocklist); blocked {
+		return CustomRuleVerdict{
+			Blocked:     true,
+			MatchedRule: rule,
+		}
+	}
+	return CustomRuleVerdict{}
+}
+
+func matchAnyDCGRule(command string, rules []string) (bool, string) {
+	lowerCmd := strings.ToLower(command)
+	for _, raw := range rules {
+		rule := strings.TrimSpace(raw)
+		if rule == "" {
+			continue
+		}
+		if strings.Contains(lowerCmd, strings.ToLower(rule)) {
+			return true, rule
+		}
+		if re, err := regexp.Compile(rule); err == nil && re.MatchString(command) {
+			return true, rule
+		}
+	}
+	return false, ""
 }

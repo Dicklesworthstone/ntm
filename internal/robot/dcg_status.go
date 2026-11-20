@@ -239,6 +239,32 @@ func GetDCGCheckWithOptions(opts DCGCheckOptions) (*DCGCheckOutput, error) {
 		output.DCGVersion = availability.Version.String()
 	}
 
+	// Enforce [integrations.dcg] custom_blocklist / custom_whitelist / allow_override
+	// identically to ntm send / --robot-send before delegating to the dcg binary.
+	dcgCfg, _ := resolveDCGSettings()
+	customVerdict := dcg.EvaluateCustomRules(command, dcgCfg.CustomBlocklist, dcgCfg.CustomWhitelist, dcgCfg.AllowOverride)
+	if customVerdict.Whitelisted {
+		output.Allowed = true
+		output.RuleMatched = "custom_whitelist:" + customVerdict.MatchedRule
+		output.Rationale = fmt.Sprintf("Command allowed by integrations.dcg.custom_whitelist rule %q (allow_override=true)", customVerdict.MatchedRule)
+		output.Reason = output.Rationale
+		logDCGCheckAudit(command, &tools.ExtendedCheckResult{Blocked: false, RuleMatched: output.RuleMatched, Reason: output.Rationale})
+		return output, nil
+	}
+	if customVerdict.Blocked {
+		output.Allowed = false
+		output.Severity = "high"
+		output.RuleMatched = "custom_blocklist:" + customVerdict.MatchedRule
+		output.Rationale = fmt.Sprintf("Blocked by integrations.dcg.custom_blocklist rule %q", customVerdict.MatchedRule)
+		if customVerdict.OverrideDenied {
+			output.Rationale += " (custom_whitelist override denied because integrations.dcg.allow_override=false)"
+		}
+		output.Reason = output.Rationale
+		output.AgentHints = &DCGAgentHints{RequiresConfirmation: true}
+		logDCGCheckAudit(command, &tools.ExtendedCheckResult{Blocked: true, RuleMatched: output.RuleMatched, Reason: output.Rationale, Severity: "high"})
+		return output, nil
+	}
+
 	// Use extended check if context or cwd is provided
 	checkResult, err := adapter.CheckCommandExtended(ctx, command, opts.Context, cwd)
 	if err != nil {

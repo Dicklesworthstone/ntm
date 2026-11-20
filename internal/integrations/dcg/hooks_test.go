@@ -246,3 +246,39 @@ func invalidateDCGCacheForTest() {
 	dcgAvailabilityCache = DCGAvailability{}
 	dcgAvailabilityMutex.Unlock()
 }
+
+func TestEvaluateCustomRules_BlocklistWhitelistAndAllowOverride(t *testing.T) {
+	blocklist := []string{"DROP DATABASE", `^rm\s+-rf\s+/srv/`}
+	whitelist := []string{"rm -rf /srv/tmp-cache", "git status"}
+
+	// Blocklist blocks matching command.
+	v := EvaluateCustomRules("psql -c 'DROP DATABASE prod'", blocklist, whitelist, true)
+	if !v.Blocked || v.Whitelisted || v.MatchedRule != "DROP DATABASE" {
+		t.Fatalf("blocklist verdict = %+v, want blocked by DROP DATABASE", v)
+	}
+
+	// Whitelist allows override ONLY when allowOverride=true (standard/custom profiles).
+	v = EvaluateCustomRules("rm -rf /srv/tmp-cache", blocklist, whitelist, true)
+	if v.Blocked || !v.Whitelisted || v.OverrideDenied {
+		t.Fatalf("whitelist allowOverride=true verdict = %+v, want whitelisted", v)
+	}
+
+	// Safe/paranoid profiles (allowOverride=false) DENY whitelist override and still enforce blocklist!
+	v = EvaluateCustomRules("rm -rf /srv/tmp-cache", blocklist, whitelist, false)
+	if !v.Blocked || v.Whitelisted || !v.OverrideDenied {
+		t.Fatalf("whitelist allowOverride=false verdict = %+v, want blocked + overrideDenied", v)
+	}
+
+	// Whitelisted command not on custom_blocklist still records OverrideDenied when allowOverride=false
+	// so downstream dcg binary check is NOT bypassed.
+	v = EvaluateCustomRules("git status", blocklist, whitelist, false)
+	if v.Blocked || v.Whitelisted || !v.OverrideDenied {
+		t.Fatalf("non-blocked whitelist allowOverride=false verdict = %+v, want !whitelisted + overrideDenied", v)
+	}
+
+	// Benign unmatched command passes cleanly.
+	v = EvaluateCustomRules("go test ./...", blocklist, whitelist, false)
+	if v.Blocked || v.Whitelisted || v.OverrideDenied {
+		t.Fatalf("benign command verdict = %+v, want zero verdict", v)
+	}
+}
