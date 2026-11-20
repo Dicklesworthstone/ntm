@@ -2,11 +2,93 @@ package serve
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/go-chi/chi/v5"
 )
+
+// Exercise the permission middleware actually mounted on each legacy route.
+// Authentication's role extraction is tested separately: injecting a context at
+// that boundary lets this test prove that a missing or unprivileged identity
+// cannot reach a handler, without mutating the process-wide role permissions.
+func TestLegacyRoutesEnforcePermissions(t *testing.T) {
+	srv := New(Config{})
+	t.Cleanup(srv.Stop)
+	want := map[string]Permission{
+		"/events":                   PermReadEvents,
+		"/api/sessions":             PermReadSessions,
+		"/api/sessions/{id}":        PermReadSessions,
+		"/api/sessions/{id}/agents": PermReadAgents,
+		"/api/sessions/{id}/events": PermReadEvents,
+		"/api/robot/status":         PermReadHealth,
+		"/api/robot/health":         PermReadHealth,
+	}
+	seen := make(map[string]bool)
+	globalMiddlewareCount := len(srv.Router().Middlewares())
+	err := chi.Walk(srv.Router(), func(method, path string, _ http.Handler, middlewares ...func(http.Handler) http.Handler) error {
+		permission, ok := want[path]
+		if !ok || method != http.MethodGet {
+			return nil
+		}
+		seen[path] = true
+		t.Run(path, func(t *testing.T) {
+			for _, tc := range []struct {
+				name string
+				role *RoleContext
+				code int
+			}{
+				{"missing identity", nil, http.StatusForbidden},
+				{"unprivileged identity", &RoleContext{Role: Role("unprivileged"), UserID: "test-user"}, http.StatusForbidden},
+				{"viewer", &RoleContext{Role: RoleViewer, UserID: "test-user"}, http.StatusOK},
+				{"operator", &RoleContext{Role: RoleOperator, UserID: "test-user"}, http.StatusOK},
+				{"admin", &RoleContext{Role: RoleAdmin, UserID: "test-user"}, http.StatusOK},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					called := false
+					handler := chi.Chain(middlewares[globalMiddlewareCount:]...).HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						called = true
+						w.WriteHeader(http.StatusOK)
+					})
+					req := httptest.NewRequest(http.MethodGet, strings.ReplaceAll(path, "{id}", "test-session"), nil)
+					if tc.role != nil {
+						req = req.WithContext(withRoleContext(req.Context(), tc.role))
+					}
+					rr := httptest.NewRecorder()
+					handler.ServeHTTP(rr, req)
+					t.Logf("request=%s status=%d body=%s", req.URL.Path, rr.Code, rr.Body.String())
+					if rr.Code != tc.code || called != (tc.code == http.StatusOK) {
+						t.Fatalf("status=%d called=%t, want status=%d: %s", rr.Code, called, tc.code, rr.Body.String())
+					}
+					if tc.code == http.StatusForbidden {
+						var response APIError
+						if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+							t.Fatalf("decode error envelope: %v", err)
+						}
+						if response.Success || response.ErrorCode != ErrCodeForbidden {
+							t.Fatalf("unexpected denial envelope: %+v", response)
+						}
+						if tc.role != nil && !strings.Contains(response.Error, string(permission)) {
+							t.Errorf("route requires wrong permission: %s, want %s", response.Error, permission)
+						}
+					}
+				})
+			}
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path := range want {
+		if !seen[path] {
+			t.Errorf("legacy route missing from served router: %s", path)
+		}
+	}
+}
 
 func TestParseRole(t *testing.T) {
 	tests := []struct {
@@ -162,6 +244,7 @@ func TestServerExtractRoleFromClaims(t *testing.T) {
 	tests := []struct {
 		name     string
 		authMode AuthMode
+		role     Role
 		claims   map[string]interface{}
 		want     Role
 	}{
@@ -205,11 +288,32 @@ func TestServerExtractRoleFromClaims(t *testing.T) {
 			claims:   map[string]interface{}{"sub": "user-123"},
 			want:     RoleViewer,
 		},
+		{
+			name:     "explicit unknown API key role remains unprivileged",
+			authMode: AuthModeAPIKey,
+			role:     Role("none"),
+			claims:   map[string]interface{}{"role": "none"},
+			want:     Role("none"),
+		},
+		{
+			name:     "explicit unknown mTLS role remains unprivileged",
+			authMode: AuthModeMTLS,
+			role:     Role("none"),
+			claims:   map[string]interface{}{"role": "admin"},
+			want:     Role("none"),
+		},
+		{
+			name:     "configured credential role controls access",
+			authMode: AuthModeAPIKey,
+			role:     RoleViewer,
+			claims:   map[string]interface{}{"role": "admin"},
+			want:     RoleViewer,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			s := &Server{auth: AuthConfig{Mode: tc.authMode}}
+			s := &Server{auth: AuthConfig{Mode: tc.authMode, Role: tc.role}}
 			result := s.extractRoleFromClaims(tc.claims)
 			if result != tc.want {
 				t.Errorf("extractRoleFromClaims() = %q, want %q", result, tc.want)

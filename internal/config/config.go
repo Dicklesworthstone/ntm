@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -125,9 +127,62 @@ type Config struct {
 	Retry           RetryConfig           `toml:"retry"`            // Unified retry policy configuration
 	Routing         RoutingConfig         `toml:"routing"`          // Agent routing/scoring weights
 	Coordinator     CoordinatorConfig     `toml:"coordinator"`      // Session coordinator (digests, auto-assign, conflict handling)
+	Serve           ServeConfig           `toml:"serve"`            // HTTP server admission controls
 
 	// Runtime-only fields (populated by project config merging)
 	ProjectDefaults map[string]int `toml:"-"`
+}
+
+// ServeConfig configures the shared HTTP server used by ntm serve and ntm web.
+type ServeConfig struct {
+	RateLimit ServeRateLimitConfig `toml:"rate_limit"`
+}
+
+// ServeRateLimitConfig bounds HTTP admission by both client IP and authenticated
+// principal. Zero numeric values select server defaults. Enabled=nil enables
+// limits for authenticated modes and exempts local loopback traffic unless the
+// operator explicitly sets requests_per_second or burst. HTTP requests and
+// WebSocket handshakes have independent budgets; frames are not HTTP requests.
+type ServeRateLimitConfig struct {
+	Enabled           *bool         `toml:"enabled"`
+	RequestsPerSecond float64       `toml:"requests_per_second"`
+	Burst             int           `toml:"burst"`
+	MaxEntries        int           `toml:"max_entries"`
+	IdleTTL           time.Duration `toml:"idle_ttl"`
+	TrustedProxyCIDRs []string      `toml:"trusted_proxy_cidrs"`
+}
+
+// ValidateServeRateLimitConfig rejects invalid controls before the listener is
+// opened. A finite rate is essential: NaN would otherwise bypass comparisons in
+// the token bucket, and unbounded cardinality would defeat its memory ceiling.
+func ValidateServeRateLimitConfig(cfg *ServeRateLimitConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	if math.IsNaN(cfg.RequestsPerSecond) || math.IsInf(cfg.RequestsPerSecond, 0) ||
+		cfg.RequestsPerSecond < 0 || (cfg.RequestsPerSecond > 0 && cfg.RequestsPerSecond < 0.001) ||
+		cfg.RequestsPerSecond > 1_000_000 {
+		return fmt.Errorf("serve.rate_limit.requests_per_second must be zero (default) or between 0.001 and 1000000")
+	}
+	if cfg.Burst < 0 || cfg.Burst > 1_000_000 {
+		return fmt.Errorf("serve.rate_limit.burst must be between 0 and 1000000 (zero selects the default)")
+	}
+	if cfg.MaxEntries < 0 || (cfg.MaxEntries > 0 && cfg.MaxEntries < 64) || cfg.MaxEntries > 1_048_576 {
+		return fmt.Errorf("serve.rate_limit.max_entries must be zero (default) or between 64 and 1048576")
+	}
+	if cfg.IdleTTL < 0 {
+		return fmt.Errorf("serve.rate_limit.idle_ttl cannot be negative")
+	}
+	for _, cidr := range cfg.TrustedProxyCIDRs {
+		prefix, err := netip.ParsePrefix(cidr)
+		if err != nil {
+			return fmt.Errorf("serve.rate_limit.trusted_proxy_cidrs: invalid CIDR %q: %w", cidr, err)
+		}
+		if prefix.Addr().Is4In6() && prefix.Bits() < 96 {
+			return fmt.Errorf("serve.rate_limit.trusted_proxy_cidrs: IPv4-mapped CIDR %q must have a prefix length of at least 96", cidr)
+		}
+	}
+	return nil
 }
 
 // CoordinatorConfig holds session coordinator settings.
@@ -4540,6 +4595,28 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "nudge_message = %q  # Optional override for the nudge prompt (empty = built-in)\n", cfg.Coordinator.NudgeMessage)
 	fmt.Fprintln(w)
 
+	fmt.Fprintln(w, "# HTTP admission for ntm serve and ntm web")
+	fmt.Fprintln(w, "# Automatic: authenticated servers limited; local loopback exempt unless rate/burst is set.")
+	fmt.Fprintln(w, "[serve.rate_limit]")
+	if cfg.Serve.RateLimit.Enabled != nil {
+		fmt.Fprintf(w, "enabled = %t\n", *cfg.Serve.RateLimit.Enabled)
+	} else {
+		fmt.Fprintln(w, "# enabled = true  # Set explicitly to limit local loopback, or false to disable.")
+	}
+	fmt.Fprintf(w, "requests_per_second = %g  # 0 selects 100 requests/sec per IP and authenticated principal\n", cfg.Serve.RateLimit.RequestsPerSecond)
+	fmt.Fprintf(w, "burst = %d  # 0 selects 200; HTTP and WebSocket handshakes have separate budgets\n", cfg.Serve.RateLimit.Burst)
+	fmt.Fprintf(w, "max_entries = %d  # 0 selects 8192 total tracked buckets; hard memory bound\n", cfg.Serve.RateLimit.MaxEntries)
+	fmt.Fprintf(w, "idle_ttl = %q  # 0s selects 5m; active quotas are never evicted to admit new identities\n", cfg.Serve.RateLimit.IdleTTL.String())
+	fmt.Fprint(w, "trusted_proxy_cidrs = [")
+	for i, cidr := range cfg.Serve.RateLimit.TrustedProxyCIDRs {
+		if i > 0 {
+			fmt.Fprint(w, ", ")
+		}
+		fmt.Fprintf(w, "%q", cidr)
+	}
+	fmt.Fprintln(w, "]  # X-Forwarded-For is ignored unless the socket peer is trusted")
+	fmt.Fprintln(w)
+
 	fmt.Fprintln(w, "# Command Palette entries")
 	fmt.Fprintln(w, "# Add your own prompts here")
 	fmt.Fprintln(w)
@@ -6113,6 +6190,10 @@ func Validate(cfg *Config) []error {
 	}
 
 	var errs []error
+
+	if err := ValidateServeRateLimitConfig(&cfg.Serve.RateLimit); err != nil {
+		errs = append(errs, err)
+	}
 
 	// Validate context rotation
 	if err := ValidateContextRotationConfig(&cfg.ContextRotation); err != nil {

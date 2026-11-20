@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -2451,11 +2452,89 @@ func TestPrintIncludesRemainingLiveConfigSections(t *testing.T) {
 		"[send]",
 		"[prompts]",
 		"[gemini_setup]",
+		"[serve.rate_limit]",
 	}
 	for _, want := range wantSections {
 		if !strings.Contains(output, want) {
 			t.Errorf("Print output missing %q", want)
 		}
+	}
+}
+
+func TestServeRateLimitConfigLoadPrintRoundTrip(t *testing.T) {
+	const input = `[serve.rate_limit]
+enabled = true
+requests_per_second = 2.5
+burst = 3
+max_entries = 96
+idle_ttl = "2m"
+trusted_proxy_cidrs = ["10.0.0.0/8", "2001:db8::/32"]
+`
+	loaded, err := Load(createTempConfig(t, input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rate := loaded.Serve.RateLimit
+	if rate.Enabled == nil || !*rate.Enabled || rate.RequestsPerSecond != 2.5 || rate.Burst != 3 ||
+		rate.MaxEntries != 96 || rate.IdleTTL != 2*time.Minute || len(rate.TrustedProxyCIDRs) != 2 {
+		t.Fatalf("rate limit settings were not loaded: %+v", rate)
+	}
+	var printed bytes.Buffer
+	if err := Print(loaded, &printed); err != nil {
+		t.Fatal(err)
+	}
+	roundTrip, err := Load(createTempConfig(t, printed.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(roundTrip.Serve.RateLimit, rate) {
+		t.Fatalf("round trip changed admission policy: got=%+v want=%+v", roundTrip.Serve.RateLimit, rate)
+	}
+	// Printing defaults must preserve the automatic local exemption instead
+	// of materializing enabled=true or nonzero rate/burst as an explicit opt-in.
+	printed.Reset()
+	if err := Print(Default(), &printed); err != nil {
+		t.Fatal(err)
+	}
+	defaults, err := Load(createTempConfig(t, printed.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaults.Serve.RateLimit.Enabled != nil || defaults.Serve.RateLimit.Burst != 0 || defaults.Serve.RateLimit.RequestsPerSecond != 0 {
+		t.Fatalf("printing defaults opted local traffic into limits: %+v", defaults.Serve.RateLimit)
+	}
+}
+
+func TestValidateServeRateLimitConfig(t *testing.T) {
+	for name, value := range map[string]ServeRateLimitConfig{
+		"negative rate":          {RequestsPerSecond: -1},
+		"NaN rate":               {RequestsPerSecond: math.NaN()},
+		"infinite rate":          {RequestsPerSecond: math.Inf(1)},
+		"vanishing rate":         {RequestsPerSecond: 0.00001},
+		"negative burst":         {Burst: -1},
+		"unbounded entries":      {MaxEntries: 1_048_577},
+		"undersized cache":       {MaxEntries: 1},
+		"negative ttl":           {IdleTTL: -time.Second},
+		"invalid trusted proxy":  {TrustedProxyCIDRs: []string{"10.0.0.1"}},
+		"ambiguous mapped proxy": {TrustedProxyCIDRs: []string{"::ffff:127.0.0.0/80"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateServeRateLimitConfig(&value); err == nil {
+				t.Fatalf("accepted malformed admission controls: %+v", value)
+			}
+			cfg := Default()
+			cfg.Serve.RateLimit = value
+			found := false
+			for _, err := range Validate(cfg) {
+				found = found || strings.Contains(err.Error(), "serve.rate_limit")
+			}
+			if !found {
+				t.Fatal("top-level validation did not report invalid serve.rate_limit")
+			}
+		})
+	}
+	if err := ValidateServeRateLimitConfig(&ServeRateLimitConfig{}); err != nil {
+		t.Fatalf("default admission policy invalid: %v", err)
 	}
 }
 

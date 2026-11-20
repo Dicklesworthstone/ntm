@@ -21,12 +21,12 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"math"
 	"math/big"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -62,205 +62,6 @@ func (a AuthConfig) sharedCredentialRole() Role {
 		return RoleAdmin
 	}
 	return a.Role
-}
-
-// RateLimitConfig configures the bounded-memory per-client HTTP rate limiter
-// (bd-rc2-track-4-serve-crypto-6en5y.1).
-type RateLimitConfig struct {
-	// Enabled explicitly enables HTTP rate limiting (defaults to true in
-	// non-local auth modes; loopback AuthModeLocal requests remain exempt
-	// unless Enabled is explicitly set to true).
-	Enabled bool
-	// RequestsPerSecond is the token refill rate per client key (default: 60).
-	RequestsPerSecond float64
-	// Burst is the maximum burst size per client key (default: 120).
-	Burst int
-	// MaxTrackedClients bounds the in-memory client map to prevent memory DoS
-	// from spoofed client keys (default: 4096).
-	MaxTrackedClients int
-}
-
-type rateLimitBucket struct {
-	tokens     float64
-	lastRefill time.Time
-	lastSeen   time.Time
-}
-
-type httpRateLimiter struct {
-	mu                sync.Mutex
-	enabled           bool
-	exemptLoopback    bool
-	requestsPerSecond float64
-	burst             float64
-	maxClients        int
-	buckets           map[string]*rateLimitBucket
-}
-
-func newHTTPRateLimiter(cfg RateLimitConfig, authMode AuthMode) *httpRateLimiter {
-	rps := cfg.RequestsPerSecond
-	if rps <= 0 {
-		rps = 60
-	}
-	burst := cfg.Burst
-	if burst <= 0 {
-		burst = 120
-	}
-	maxClients := cfg.MaxTrackedClients
-	if maxClients <= 0 {
-		maxClients = 4096
-	}
-	// Enable automatically for authenticated modes; in AuthModeLocal keep
-	// loopback exempt unless explicitly configured so local dashboards and
-	// test suites never flake with spurious 429s.
-	enabled := cfg.Enabled || authMode != AuthModeLocal
-	exemptLoopback := authMode == AuthModeLocal && !cfg.Enabled
-	return &httpRateLimiter{
-		enabled:           enabled,
-		exemptLoopback:    exemptLoopback,
-		requestsPerSecond: rps,
-		burst:             float64(burst),
-		maxClients:        maxClients,
-		buckets:           make(map[string]*rateLimitBucket),
-	}
-}
-
-func (l *httpRateLimiter) allow(clientKey string, now time.Time) (bool, time.Duration) {
-	if l == nil || !l.enabled {
-		return true, 0
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	b, ok := l.buckets[clientKey]
-	if !ok {
-		if len(l.buckets) >= l.maxClients {
-			l.evictLocked(now)
-		}
-		b = &rateLimitBucket{
-			tokens:     l.burst,
-			lastRefill: now,
-			lastSeen:   now,
-		}
-		l.buckets[clientKey] = b
-	}
-
-	elapsed := now.Sub(b.lastRefill).Seconds()
-	if elapsed > 0 {
-		b.tokens += elapsed * l.requestsPerSecond
-		if b.tokens > l.burst {
-			b.tokens = l.burst
-		}
-		b.lastRefill = now
-	}
-	b.lastSeen = now
-
-	if b.tokens >= 1.0 {
-		b.tokens -= 1.0
-		return true, 0
-	}
-	deficit := 1.0 - b.tokens
-	retryAfter := time.Duration((deficit / l.requestsPerSecond) * float64(time.Second))
-	if retryAfter < time.Second {
-		retryAfter = time.Second
-	}
-	return false, retryAfter
-}
-
-// evictLocked drops expired idle buckets first; if the map is still full, it
-// evicts the oldest-seen bucket so memory stays strictly bounded <= maxClients.
-func (l *httpRateLimiter) evictLocked(now time.Time) {
-	idleCutoff := now.Add(-5 * time.Minute)
-	for k, b := range l.buckets {
-		if b.lastSeen.Before(idleCutoff) {
-			delete(l.buckets, k)
-		}
-	}
-	if len(l.buckets) < l.maxClients {
-		return
-	}
-	var oldestKey string
-	var oldestTime time.Time
-	first := true
-	for k, b := range l.buckets {
-		if first || b.lastSeen.Before(oldestTime) {
-			oldestKey = k
-			oldestTime = b.lastSeen
-			first = false
-		}
-	}
-	if oldestKey != "" {
-		delete(l.buckets, oldestKey)
-	}
-}
-
-func (l *httpRateLimiter) trackedClients() int {
-	if l == nil {
-		return 0
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return len(l.buckets)
-}
-
-func isRateLimitExemptPath(path string) bool {
-	if path == "/health" || path == "/api/v1/health" || path == "/docs" || path == "/docs/" {
-		return true
-	}
-	// Static embedded Web UI assets & HTML routes are not API endpoints.
-	if !strings.HasPrefix(path, "/api/") && path != "/api" && path != "/events" {
-		return true
-	}
-	return false
-}
-
-func rateLimitClientKey(r *http.Request) string {
-	if rc := RoleFromContext(r.Context()); rc != nil && rc.UserID != "" {
-		return "user:" + rc.UserID
-	}
-	host := r.RemoteAddr
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	if host == "" {
-		host = "unknown"
-	}
-	return "ip:" + host
-}
-
-func (s *Server) rateLimitMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.rateLimiter == nil || !s.rateLimiter.enabled || isRateLimitExemptPath(r.URL.Path) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		if s.rateLimiter.exemptLoopback && isLoopbackRemoteAddr(r.RemoteAddr) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		key := rateLimitClientKey(r)
-		allowed, retryAfter := s.rateLimiter.allow(key, time.Now())
-		if !allowed {
-			secs := int(retryAfter.Seconds())
-			if secs < 1 {
-				secs = 1
-			}
-			w.Header().Set("Retry-After", strconv.Itoa(secs))
-			writeErrorResponse(w, http.StatusTooManyRequests, "RATE_LIMITED",
-				"rate limit exceeded; retry later", map[string]interface{}{
-					"retry_after_seconds": secs,
-				}, requestIDFromContext(r.Context()))
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func isLoopbackRemoteAddr(remoteAddr string) bool {
-	host := remoteAddr
-	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
-		host = h
-	}
-	return isLoopbackHost(host)
 }
 
 // OIDCConfig configures OIDC/JWT verification for API access.
@@ -350,6 +151,7 @@ func (s *Server) corsMiddlewareFunc(next http.Handler) http.Handler {
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, Idempotency-Key, "+requestIDHeader)
+			w.Header().Set("Access-Control-Expose-Headers", "Retry-After, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, "+requestIDHeader)
 		}
 
 		if (s.auth.Mode == AuthModeLocal || s.auth.Mode == "") &&
@@ -708,15 +510,6 @@ func isLoopbackHost(host string) bool {
 	return ip.IsLoopback()
 }
 
-func isSupportedOIDCAlg(alg string) bool {
-	switch alg {
-	case "RS256", "PS256", "ES256", "ES384", "EdDSA":
-		return true
-	default:
-		return false
-	}
-}
-
 func (s *Server) validateOIDCToken(ctx context.Context, token string) (map[string]interface{}, error) {
 	if s.auth.OIDC.JWKSURL == "" || s.auth.OIDC.Issuer == "" {
 		return nil, errors.New("oidc config incomplete")
@@ -725,8 +518,13 @@ func (s *Server) validateOIDCToken(ctx context.Context, token string) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	if !isSupportedOIDCAlg(header.Alg) {
+	switch header.Alg {
+	case "RS256", "PS256", "ES256", "ES384", "EdDSA":
+	default:
 		return nil, fmt.Errorf("unsupported jwt alg %q", header.Alg)
+	}
+	if len(header.Crit) != 0 || (header.B64 != nil && !*header.B64) {
+		return nil, errors.New("unsupported jwt header extension")
 	}
 	if iss, ok := claimString(claims, "iss"); !ok || iss != s.auth.OIDC.Issuer {
 		return nil, fmt.Errorf("invalid issuer")
@@ -734,125 +532,56 @@ func (s *Server) validateOIDCToken(ctx context.Context, token string) (map[strin
 	if s.auth.OIDC.Audience != "" && !claimAudienceContains(claims, s.auth.OIDC.Audience) {
 		return nil, fmt.Errorf("invalid audience")
 	}
-	// exp is mandatory and must be fail-CLOSED.
+	// exp is mandatory and must be fail-CLOSED. Treating it as optional made a
+	// token with no exp claim — or one whose exp an IdP serialized as a JSON
+	// string rather than a number, which claimInt64 reports identically to
+	// "absent" — authenticate forever. Only JWKS keys are re-fetched, so
+	// revocation at the IdP never reaches such a token: it stays a permanent
+	// credential for every write route on this server.
 	exp, ok := claimInt64(claims, "exp")
 	if !ok {
 		return nil, fmt.Errorf("token has no usable exp claim")
 	}
-	if time.Now().After(time.Unix(exp, 0).Add(30 * time.Second)) {
+	// Compare Unix seconds directly. Converting an arbitrary NumericDate
+	// through time.Unix can overflow Time's internal epoch for large values.
+	now := time.Now()
+	if exp <= now.Add(-30*time.Second).Unix() {
 		return nil, fmt.Errorf("token expired")
 	}
-	// nbf is optional, but a present-and-unparseable nbf is a malformed token.
+	// nbf is optional, but a present-and-unparseable nbf is a malformed token,
+	// not an absent claim; do not silently skip the check for it.
 	if raw, present := claims["nbf"]; present {
 		nbf, ok := claimInt64(claims, "nbf")
 		if !ok {
 			return nil, fmt.Errorf("token has an unusable nbf claim of type %T", raw)
 		}
-		if time.Now().Before(time.Unix(nbf, 0).Add(-30 * time.Second)) {
+		if nbf > now.Add(30*time.Second).Unix() {
 			return nil, fmt.Errorf("token not yet valid")
 		}
 	}
+	// iat is optional, but when supplied it must be a NumericDate just like
+	// exp and nbf. Preserve the provider's issuance time without accepting
+	// malformed claim types as though the claim were absent.
 	if raw, present := claims["iat"]; present {
 		if _, ok := claimInt64(claims, "iat"); !ok {
 			return nil, fmt.Errorf("token has an unusable iat claim of type %T", raw)
 		}
 	}
-	entry, err := s.jwksCache.getKey(ctx, s.auth.OIDC.JWKSURL, header.Kid)
+	key, err := s.jwksCache.getKey(ctx, s.auth.OIDC.JWKSURL, header.Kid)
 	if err != nil {
 		return nil, err
 	}
-	if err := verifyJWTSignature(header.Alg, entry, signingInput, signature); err != nil {
-		return nil, err
+	if err := key.verify(header.Alg, []byte(signingInput), signature); err != nil {
+		return nil, fmt.Errorf("invalid token signature")
 	}
 	return claims, nil
 }
 
-// verifyJWTSignature enforces strict JWK pinning (use, alg, key type, curve,
-// minimum RSA key size >= 2048) before verifying the cryptographic signature.
-func verifyJWTSignature(alg string, entry *jwksEntry, signingInput string, signature []byte) error {
-	if entry == nil {
-		return fmt.Errorf("jwt signing key missing")
-	}
-	if entry.Use != "" && entry.Use != "sig" {
-		return fmt.Errorf("jwk use %q not permitted for signature verification", entry.Use)
-	}
-	if entry.Alg != "" && entry.Alg != alg {
-		return fmt.Errorf("jwt alg %q does not match pinned jwk alg %q", alg, entry.Alg)
-	}
-	switch alg {
-	case "RS256":
-		rsaKey, ok := entry.Key.(*rsa.PublicKey)
-		if !ok || entry.Kty != "RSA" {
-			return fmt.Errorf("jwt alg RS256 requires RSA key, got %s", entry.Kty)
-		}
-		if rsaKey.N.BitLen() < 2048 {
-			return fmt.Errorf("rsa key size %d bits below minimum 2048", rsaKey.N.BitLen())
-		}
-		hash := sha256.Sum256([]byte(signingInput))
-		if err := rsa.VerifyPKCS1v15(rsaKey, crypto.SHA256, hash[:], signature); err != nil {
-			return fmt.Errorf("invalid token signature")
-		}
-		return nil
-	case "PS256":
-		rsaKey, ok := entry.Key.(*rsa.PublicKey)
-		if !ok || entry.Kty != "RSA" {
-			return fmt.Errorf("jwt alg PS256 requires RSA key, got %s", entry.Kty)
-		}
-		if rsaKey.N.BitLen() < 2048 {
-			return fmt.Errorf("rsa key size %d bits below minimum 2048", rsaKey.N.BitLen())
-		}
-		hash := sha256.Sum256([]byte(signingInput))
-		if err := rsa.VerifyPSS(rsaKey, crypto.SHA256, hash[:], signature, &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash}); err != nil {
-			return fmt.Errorf("invalid token signature")
-		}
-		return nil
-	case "ES256":
-		ecKey, ok := entry.Key.(*ecdsa.PublicKey)
-		if !ok || entry.Kty != "EC" || ecKey.Curve != elliptic.P256() {
-			return fmt.Errorf("jwt alg ES256 requires EC P-256 key")
-		}
-		if len(signature) != 64 {
-			return fmt.Errorf("invalid token signature")
-		}
-		hash := sha256.Sum256([]byte(signingInput))
-		r := new(big.Int).SetBytes(signature[:32])
-		s := new(big.Int).SetBytes(signature[32:])
-		if !ecdsa.Verify(ecKey, hash[:], r, s) {
-			return fmt.Errorf("invalid token signature")
-		}
-		return nil
-	case "ES384":
-		ecKey, ok := entry.Key.(*ecdsa.PublicKey)
-		if !ok || entry.Kty != "EC" || ecKey.Curve != elliptic.P384() {
-			return fmt.Errorf("jwt alg ES384 requires EC P-384 key")
-		}
-		if len(signature) != 96 {
-			return fmt.Errorf("invalid token signature")
-		}
-		hash := sha512.Sum384([]byte(signingInput))
-		r := new(big.Int).SetBytes(signature[:48])
-		s := new(big.Int).SetBytes(signature[48:])
-		if !ecdsa.Verify(ecKey, hash[:], r, s) {
-			return fmt.Errorf("invalid token signature")
-		}
-		return nil
-	case "EdDSA":
-		edKey, ok := entry.Key.(ed25519.PublicKey)
-		if !ok || entry.Kty != "OKP" || entry.Crv != "Ed25519" {
-			return fmt.Errorf("jwt alg EdDSA requires OKP Ed25519 key")
-		}
-		if len(signature) != ed25519.SignatureSize || !ed25519.Verify(edKey, []byte(signingInput), signature) {
-			return fmt.Errorf("invalid token signature")
-		}
-		return nil
-	default:
-		return fmt.Errorf("unsupported jwt alg %q", alg)
-	}
-}
-
 type jwtHeader struct {
-	Alg string `json:"alg"`
-	Kid string `json:"kid"`
+	Alg  string   `json:"alg"`
+	Kid  string   `json:"kid"`
+	Crit []string `json:"crit"`
+	B64  *bool    `json:"b64"`
 }
 
 func parseJWT(token string) (jwtHeader, map[string]interface{}, string, []byte, error) {
@@ -897,18 +626,31 @@ func claimInt64(claims map[string]interface{}, key string) (int64, bool) {
 	if !ok {
 		return 0, false
 	}
+	var number float64
 	switch v := raw.(type) {
 	case float64:
-		return int64(v), true
+		number = v
 	case json.Number:
-		val, err := v.Int64()
+		if val, err := v.Int64(); err == nil {
+			return val, true
+		}
+		// NumericDate permits fractional seconds. Accept those without an
+		// unchecked float-to-int conversion, including if decoding uses
+		// json.Decoder.UseNumber in the future.
+		var err error
+		number, err = v.Float64()
 		if err != nil {
 			return 0, false
 		}
-		return val, true
 	default:
 		return 0, false
 	}
+	// The upper bound is exclusive: float64 rounds MaxInt64 up to 2^63.
+	// Both infinities are rejected by these bounds; NaN needs its own check.
+	if math.IsNaN(number) || number < -0x1p63 || number >= 0x1p63 {
+		return 0, false
+	}
+	return int64(number), true
 }
 
 func claimAudienceContains(claims map[string]interface{}, expected string) bool {
@@ -929,19 +671,81 @@ func claimAudienceContains(claims map[string]interface{}, expected string) bool 
 	return false
 }
 
-type jwksEntry struct {
-	Key crypto.PublicKey
-	Kty string
-	Alg string
-	Use string
-	Crv string
+// jwksKey keeps the provider's algorithm restriction alongside the key. The
+// token's untrusted alg header can select only an algorithm allowed by BOTH the
+// JWK metadata and the public key's concrete type/curve.
+type jwksKey struct {
+	publicKey crypto.PublicKey
+	alg       string
+}
+
+func (k *jwksKey) verify(alg string, message, signature []byte) error {
+	if k == nil || k.alg != alg {
+		return errors.New("jwt algorithm does not match jwk")
+	}
+	switch alg {
+	case "RS256", "PS256":
+		key, ok := k.publicKey.(*rsa.PublicKey)
+		if !ok {
+			return errors.New("jwt requires an RSA key")
+		}
+		digest := sha256.Sum256(message)
+		if alg == "PS256" {
+			// JOSE requires a salt exactly as long as the hash (RFC 7518 3.5),
+			// whereas Go's default verifier accepts arbitrary salt lengths.
+			return rsa.VerifyPSS(key, crypto.SHA256, digest[:], signature, &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash})
+		}
+		return rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], signature)
+	case "ES256", "ES384":
+		key, ok := k.publicKey.(*ecdsa.PublicKey)
+		if !ok {
+			return errors.New("jwt requires an EC key")
+		}
+		var digest []byte
+		var size int
+		if alg == "ES256" && key.Curve == elliptic.P256() {
+			hash := sha256.Sum256(message)
+			digest, size = hash[:], 32
+		} else if alg == "ES384" && key.Curve == elliptic.P384() {
+			hash := sha512.Sum384(message)
+			digest, size = hash[:], 48
+		} else {
+			return errors.New("jwt algorithm does not match EC curve")
+		}
+		// JWS uses fixed-width R || S, not the ASN.1 encoding used by TLS.
+		if len(signature) != 2*size {
+			return errors.New("invalid ECDSA signature size")
+		}
+		r := new(big.Int).SetBytes(signature[:size])
+		s := new(big.Int).SetBytes(signature[size:])
+		if !ecdsa.Verify(key, digest, r, s) {
+			return errors.New("invalid ECDSA signature")
+		}
+		return nil
+	case "EdDSA":
+		key, ok := k.publicKey.(ed25519.PublicKey)
+		if !ok || len(key) != ed25519.PublicKeySize {
+			return errors.New("jwt requires an Ed25519 key")
+		}
+		if !ed25519.Verify(key, message, signature) {
+			return errors.New("invalid Ed25519 signature")
+		}
+		return nil
+	default:
+		return errors.New("unsupported jwt algorithm")
+	}
 }
 
 type jwksCache struct {
-	mu        sync.Mutex
-	keys      map[string]*jwksEntry
-	fetchedAt time.Time
-	ttl       time.Duration
+	mu          sync.Mutex
+	keys        map[string]*jwksKey
+	sourceURL   string
+	fetchedAt   time.Time
+	ttl         time.Duration
+	refreshDone chan struct{}
+	attemptURL  string
+	lastAttempt time.Time
+	lastError   error
 }
 
 func newJWKSCache(ttl time.Duration) *jwksCache {
@@ -949,45 +753,82 @@ func newJWKSCache(ttl time.Duration) *jwksCache {
 		ttl = defaultJWKSCacheTTL
 	}
 	return &jwksCache{
-		keys: make(map[string]*jwksEntry),
+		keys: make(map[string]*jwksKey),
 		ttl:  ttl,
 	}
 }
 
-func (c *jwksCache) getKey(ctx context.Context, jwksURL, kid string) (*jwksEntry, error) {
-	c.mu.Lock()
-	if time.Since(c.fetchedAt) < c.ttl && len(c.keys) > 0 {
-		if kid == "" && len(c.keys) == 1 {
-			for _, key := range c.keys {
+func (c *jwksCache) getKey(ctx context.Context, jwksURL, kid string) (*jwksKey, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		c.mu.Lock()
+		fresh := c.sourceURL == jwksURL && time.Since(c.fetchedAt) < c.ttl
+		if fresh {
+			if key, err := selectJWKSKey(c.keys, kid); err == nil {
 				c.mu.Unlock()
 				return key, nil
 			}
 		}
-		if key, ok := c.keys[kid]; ok {
+		if done := c.refreshDone; done != nil {
 			c.mu.Unlock()
-			return key, nil
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
+		// Unknown kids must not turn arbitrary tokens into an unbounded stream
+		// of requests to the identity provider. A short refresh cooldown still
+		// permits key rotation without waiting for the full cache TTL.
+		if c.attemptURL == jwksURL && (fresh || c.lastError != nil) && time.Since(c.lastAttempt) < min(5*time.Second, c.ttl) {
+			err := c.lastError
+			if err == nil {
+				_, err = selectJWKSKey(c.keys, kid)
+			}
+			c.mu.Unlock()
+			return nil, err
+		}
+		done := make(chan struct{})
+		c.refreshDone = done
+		c.mu.Unlock()
+
+		keys, err := fetchJWKSKeys(ctx, jwksURL)
+		c.mu.Lock()
+		if ctx.Err() == nil {
+			c.attemptURL = jwksURL
+			c.lastAttempt = time.Now()
+			c.lastError = err
+		}
+		if err == nil {
+			c.keys = keys
+			c.sourceURL = jwksURL
+			c.fetchedAt = time.Now()
+		}
+		c.refreshDone = nil
+		close(done)
+		c.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		return selectJWKSKey(keys, kid)
 	}
-	c.mu.Unlock()
+}
 
-	keys, err := fetchJWKSKeys(ctx, jwksURL)
-	if err != nil {
-		return nil, err
-	}
-
-	c.mu.Lock()
-	c.keys = keys
-	c.fetchedAt = time.Now()
-	c.mu.Unlock()
-
-	if kid == "" && len(keys) == 1 {
+func selectJWKSKey(keys map[string]*jwksKey, kid string) (*jwksKey, error) {
+	if kid == "" {
+		if len(keys) != 1 {
+			return nil, errors.New("jwt kid required for ambiguous jwks")
+		}
 		for _, key := range keys {
 			return key, nil
 		}
 	}
 	key, ok := keys[kid]
 	if !ok {
-		return nil, fmt.Errorf("jwt kid not found in jwks")
+		return nil, errors.New("jwt kid not found in jwks")
 	}
 	return key, nil
 }
@@ -997,18 +838,19 @@ type jwksPayload struct {
 }
 
 type jwk struct {
-	Kty string `json:"kty"`
-	Kid string `json:"kid"`
-	Alg string `json:"alg"`
-	Use string `json:"use"`
-	Crv string `json:"crv"`
-	N   string `json:"n"`
-	E   string `json:"e"`
-	X   string `json:"x"`
-	Y   string `json:"y"`
+	Kty    string   `json:"kty"`
+	Kid    string   `json:"kid"`
+	Alg    string   `json:"alg"`
+	Use    string   `json:"use"`
+	KeyOps []string `json:"key_ops"`
+	Crv    string   `json:"crv"`
+	N      string   `json:"n"`
+	E      string   `json:"e"`
+	X      string   `json:"x"`
+	Y      string   `json:"y"`
 }
 
-func fetchJWKSKeys(ctx context.Context, jwksURL string) (map[string]*jwksEntry, error) {
+func fetchJWKSKeys(ctx context.Context, jwksURL string) (map[string]*jwksKey, error) {
 	if jwksURL == "" {
 		return nil, fmt.Errorf("jwks url missing")
 	}
@@ -1027,98 +869,118 @@ func fetchJWKSKeys(ctx context.Context, jwksURL string) (map[string]*jwksEntry, 
 		return nil, fmt.Errorf("fetch jwks: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	// Limit JWKS to 1MB to prevent memory exhaustion DoS
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024+1))
 	if err != nil {
 		return nil, fmt.Errorf("read jwks: %w", err)
+	}
+	if len(body) > 1024*1024 {
+		return nil, errors.New("jwks exceeds maximum size")
 	}
 	var payload jwksPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("parse jwks: %w", err)
 	}
-	keys := make(map[string]*jwksEntry)
+	keys := make(map[string]*jwksKey)
 	for _, key := range payload.Keys {
-		var pub crypto.PublicKey
-		switch key.Kty {
-		case "RSA":
-			if key.N == "" || key.E == "" {
-				continue
-			}
-			rsaPub, err := parseRSAPublicKey(key.N, key.E)
-			if err != nil {
-				continue
-			}
-			pub = rsaPub
-		case "EC":
-			ecPub, err := parseECPublicKey(key.Crv, key.X, key.Y)
-			if err != nil {
-				continue
-			}
-			pub = ecPub
-		case "OKP":
-			edPub, err := parseOKPPublicKey(key.Crv, key.X)
-			if err != nil {
-				continue
-			}
-			pub = edPub
-		default:
+		pub, err := parseSigningJWK(key)
+		if err != nil {
 			continue
 		}
-		kid := key.Kid
-		if kid == "" {
-			kid = "default"
+		if _, duplicate := keys[key.Kid]; duplicate {
+			return nil, errors.New("ambiguous duplicate kid in jwks")
 		}
-		keys[kid] = &jwksEntry{
-			Key: pub,
-			Kty: key.Kty,
-			Alg: key.Alg,
-			Use: key.Use,
-			Crv: key.Crv,
-		}
+		keys[key.Kid] = pub
 	}
 	if len(keys) == 0 {
-		return nil, fmt.Errorf("no valid signing keys in jwks")
+		return nil, errors.New("no valid signing keys in jwks")
 	}
 	return keys, nil
 }
 
-func parseECPublicKey(crv, xStr, yStr string) (*ecdsa.PublicKey, error) {
-	var curve elliptic.Curve
-	var coordLen int
-	switch crv {
-	case "P-256":
-		curve = elliptic.P256()
-		coordLen = 32
-	case "P-384":
-		curve = elliptic.P384()
-		coordLen = 48
+func parseSigningJWK(key jwk) (*jwksKey, error) {
+	if key.Use != "" && key.Use != "sig" {
+		return nil, errors.New("jwk is not a signing key")
+	}
+	if key.KeyOps != nil {
+		canVerify, canSign := false, false
+		for _, op := range key.KeyOps {
+			switch op {
+			case "verify":
+				if canVerify {
+					return nil, errors.New("duplicate jwk key operation")
+				}
+				canVerify = true
+			case "sign":
+				if canSign {
+					return nil, errors.New("duplicate jwk key operation")
+				}
+				canSign = true
+			default:
+				return nil, errors.New("jwk key operation is not for signing")
+			}
+		}
+		if !canVerify {
+			return nil, errors.New("jwk does not allow verification")
+		}
+	}
+	var publicKey crypto.PublicKey
+	alg := key.Alg
+	switch key.Kty {
+	case "RSA":
+		if key.Alg != "" && key.Alg != "RS256" && key.Alg != "PS256" {
+			return nil, errors.New("jwk algorithm does not match RSA key")
+		}
+		// Bind even unannotated keys to one algorithm (RFC 8725 3.1).
+		// RS256 is the established OIDC default here; a provider using PSS
+		// must publish alg=PS256 so the token cannot choose the key's mode.
+		if alg == "" {
+			alg = "RS256"
+		}
+		pub, err := parseRSAPublicKey(key.N, key.E)
+		if err != nil {
+			return nil, err
+		}
+		publicKey = pub
+	case "EC":
+		var curve elliptic.Curve
+		var curveAlg string
+		switch key.Crv {
+		case "P-256":
+			curve, curveAlg = elliptic.P256(), "ES256"
+		case "P-384":
+			curve, curveAlg = elliptic.P384(), "ES384"
+		default:
+			return nil, errors.New("unsupported jwk curve")
+		}
+		if alg != "" && alg != curveAlg {
+			return nil, errors.New("jwk algorithm does not match EC curve")
+		}
+		alg = curveAlg
+		x, errX := base64.RawURLEncoding.DecodeString(key.X)
+		y, errY := base64.RawURLEncoding.DecodeString(key.Y)
+		size := (curve.Params().BitSize + 7) / 8
+		if errX != nil || errY != nil || len(x) != size || len(y) != size {
+			return nil, errors.New("invalid jwk EC coordinates")
+		}
+		pub := &ecdsa.PublicKey{Curve: curve, X: new(big.Int).SetBytes(x), Y: new(big.Int).SetBytes(y)}
+		if !curve.IsOnCurve(pub.X, pub.Y) {
+			return nil, errors.New("jwk EC point is not on curve")
+		}
+		publicKey = pub
+	case "OKP":
+		if key.Crv != "Ed25519" || (key.Alg != "" && key.Alg != "EdDSA") {
+			return nil, errors.New("unsupported jwk OKP curve or algorithm")
+		}
+		alg = "EdDSA"
+		x, err := base64.RawURLEncoding.DecodeString(key.X)
+		if err != nil || len(x) != ed25519.PublicKeySize {
+			return nil, errors.New("invalid jwk Ed25519 public key")
+		}
+		publicKey = ed25519.PublicKey(x)
 	default:
-		return nil, fmt.Errorf("unsupported ec curve %q", crv)
+		return nil, errors.New("unsupported jwk key type")
 	}
-	xBytes, err := base64.RawURLEncoding.DecodeString(xStr)
-	if err != nil || len(xBytes) == 0 || len(xBytes) > coordLen {
-		return nil, fmt.Errorf("invalid ec jwk x coordinate")
-	}
-	yBytes, err := base64.RawURLEncoding.DecodeString(yStr)
-	if err != nil || len(yBytes) == 0 || len(yBytes) > coordLen {
-		return nil, fmt.Errorf("invalid ec jwk y coordinate")
-	}
-	x := new(big.Int).SetBytes(xBytes)
-	y := new(big.Int).SetBytes(yBytes)
-	if !curve.IsOnCurve(x, y) {
-		return nil, fmt.Errorf("ec jwk point is not on curve %s", crv)
-	}
-	return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
-}
-
-func parseOKPPublicKey(crv, xStr string) (ed25519.PublicKey, error) {
-	if crv != "Ed25519" {
-		return nil, fmt.Errorf("unsupported okp curve %q", crv)
-	}
-	xBytes, err := base64.RawURLEncoding.DecodeString(xStr)
-	if err != nil || len(xBytes) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("invalid ed25519 jwk public key")
-	}
-	return ed25519.PublicKey(xBytes), nil
+	return &jwksKey{publicKey: publicKey, alg: alg}, nil
 }
 
 func parseRSAPublicKey(nStr, eStr string) (*rsa.PublicKey, error) {
@@ -1132,8 +994,11 @@ func parseRSAPublicKey(nStr, eStr string) (*rsa.PublicKey, error) {
 	}
 	n := new(big.Int).SetBytes(nBytes)
 	e := new(big.Int).SetBytes(eBytes)
-	if e.Sign() <= 0 {
+	if len(eBytes) == 0 || eBytes[0] == 0 || !e.IsInt64() || e.Int64() < 3 || e.Int64() > 1<<31-1 || e.Bit(0) == 0 {
 		return nil, fmt.Errorf("invalid jwk exponent")
+	}
+	if len(nBytes) == 0 || nBytes[0] == 0 || n.BitLen() < 2048 || n.Bit(0) == 0 {
+		return nil, errors.New("invalid jwk RSA modulus (at least 2048 bits required)")
 	}
 	return &rsa.PublicKey{
 		N: n,

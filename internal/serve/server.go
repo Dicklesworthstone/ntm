@@ -29,6 +29,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	approvalpkg "github.com/Dicklesworthstone/ntm/internal/approval"
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/state"
@@ -61,6 +62,7 @@ type Server struct {
 
 	corsAllowedOrigins []string
 	jwksCache          *jwksCache
+	rateLimiter        *httpRateLimiter
 
 	// Idempotency support
 	idempotencyStore *IdempotencyStore
@@ -142,9 +144,6 @@ type Server struct {
 	// performing its initial asynchronous refresh ("warming_up"), up to date
 	// ("ready"), or degraded ("degraded"). Guarded by mu.
 	projectionState string
-
-	// rateLimiter enforces bounded-memory per-client HTTP rate limiting.
-	rateLimiter *httpRateLimiter
 }
 
 // Config holds server configuration.
@@ -165,6 +164,10 @@ type Config struct {
 	Auth       AuthConfig
 	// AllowedOrigins controls CORS origin allowlist. Empty means default localhost only.
 	AllowedOrigins []string
+	// RateLimit controls bounded per-IP and per-principal HTTP admission.
+	// The zero value enables limits for authenticated servers and exempts
+	// local loopback use. Explicit limits also apply to local mode.
+	RateLimit config.ServeRateLimitConfig
 	// Version is the build version string (set via ldflags). Used by /api/v1/version.
 	Version string
 	// AuditStore records mutating REST/WS actions. Nil disables auditing.
@@ -192,9 +195,6 @@ type Config struct {
 	// These limits are fixed for the server lifetime, including after Stop.
 	JobConcurrency   int
 	JobQueueCapacity int
-
-	// RateLimit configures the bounded-memory per-client HTTP rate limiter.
-	RateLimit RateLimitConfig
 }
 
 const (
@@ -307,6 +307,9 @@ func ResolveProjectDir(projectDir string) (string, error) {
 func ValidateConfig(cfg Config) error {
 	applyDefaults(&cfg)
 	if err := validateJobLimits(cfg.JobConcurrency, cfg.JobQueueCapacity); err != nil {
+		return err
+	}
+	if err := config.ValidateServeRateLimitConfig(&cfg.RateLimit); err != nil {
 		return err
 	}
 	if _, err := ResolveProjectDir(cfg.ProjectDir); err != nil {
@@ -479,9 +482,10 @@ func (s *Server) buildRouter() chi.Router {
 	r.Use(s.recovererMiddleware)
 	r.Use(s.loggingMiddlewareFunc)
 	r.Use(s.corsMiddlewareFunc)
+	r.Use(s.ipRateLimitMiddleware)
 	r.Use(s.authMiddlewareFunc)
 	r.Use(s.rbacMiddleware) // Extract role from auth claims
-	r.Use(s.rateLimitMiddleware)
+	r.Use(s.principalRateLimitMiddleware)
 	// Record every mutating request. This must run after rbacMiddleware so the
 	// record carries the authenticated principal. Without it, AuditMiddleware had
 	// no callers outside tests, so no audit record was ever written even though
@@ -524,14 +528,13 @@ func (s *Server) buildRouter() chi.Router {
 	// Health check (no versioning)
 	r.Get("/health", s.handleHealth)
 
-	// SSE event stream (no versioning) — RBAC parity with /api/v1/attention/stream
+	// SSE event stream (no versioning)
 	r.With(s.RequirePermission(PermReadEvents)).Get("/events", s.handleEventStream)
 
 	// Kernel registry introspection (legacy path used by the web dashboard palette)
 	r.With(s.RequirePermission(PermReadHealth)).Get("/api/kernel/commands", s.handleKernelCommands)
 
-	// Legacy /api/* routes (maintained for backward compatibility during migration;
-	// RBAC permissions mirror their canonical /api/v1/* counterparts)
+	// Legacy /api/* routes (maintained for backward compatibility during migration)
 	r.Route("/api", func(r chi.Router) {
 		r.With(s.RequirePermission(PermReadSessions)).Get("/sessions", s.handleSessions)
 		r.With(s.RequirePermission(PermReadSessions)).Get("/sessions/{id}", s.handleSession)
@@ -911,6 +914,7 @@ func (s *Server) validate() error {
 		StateStore:     s.stateStore,
 		Auth:           s.auth,
 		AllowedOrigins: s.corsAllowedOrigins,
+		RateLimit:      s.rateLimiter.configuration(),
 	}
 	applyDefaults(&cfg)
 	mode, err := ParseAuthMode(string(cfg.Auth.Mode))

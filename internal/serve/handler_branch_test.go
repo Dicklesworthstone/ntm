@@ -4959,7 +4959,7 @@ func TestFetchJWKSKeys_InvalidJSON(t *testing.T) {
 
 func TestFetchJWKSKeys_NoValidKeys(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Return JWKS with non-RSA key type
+		// Return a key with no usable public material.
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"keys": []map[string]string{
 				{"kty": "EC", "kid": "k1", "n": "", "e": ""},
@@ -4969,8 +4969,8 @@ func TestFetchJWKSKeys_NoValidKeys(t *testing.T) {
 	defer srv.Close()
 
 	_, err := fetchJWKSKeys(context.Background(), srv.URL)
-	if err == nil || !strings.Contains(err.Error(), "no valid RSA keys") {
-		t.Fatalf("expected 'no valid RSA keys' error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "no valid signing keys") {
+		t.Fatalf("expected 'no valid signing keys' error, got: %v", err)
 	}
 }
 
@@ -5161,9 +5161,9 @@ func TestParseRSAPublicKey_BadE_Branch(t *testing.T) {
 	}
 }
 
-// --- JWKS key with no kid → default kid ---
+// --- Anonymous JWKS keys retain their identity (no invented "default" kid). ---
 
-func TestFetchJWKSKeys_DefaultKid(t *testing.T) {
+func TestFetchJWKSKeys_AnonymousKey(t *testing.T) {
 	privKey, _ := rsa.GenerateKey(rand.Reader, 2048)
 	nB64 := base64.RawURLEncoding.EncodeToString(privKey.N.Bytes())
 	eB64 := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privKey.E)).Bytes())
@@ -5181,8 +5181,11 @@ func TestFetchJWKSKeys_DefaultKid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetchJWKSKeys: %v", err)
 	}
-	if _, ok := keys["default"]; !ok {
-		t.Error("expected key with kid 'default' for empty kid")
+	if _, ok := keys[""]; !ok {
+		t.Error("expected the anonymous key to retain an empty kid")
+	}
+	if _, ok := keys["default"]; ok {
+		t.Error("must not invent a key id that could collide with a real key")
 	}
 }
 

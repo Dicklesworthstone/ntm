@@ -221,6 +221,12 @@ func (s *Server) extractRoleFromClaims(claims map[string]interface{}) Role {
 	if s.auth.Mode == AuthModeLocal || s.auth.Mode == "" {
 		return RoleAdmin
 	}
+	// Shared credentials have an operator-configured role. Preserve an
+	// explicit unknown role as unprivileged instead of ParseRole promoting it
+	// to viewer, which would silently grant read access on a misconfiguration.
+	if (s.auth.Mode == AuthModeAPIKey || s.auth.Mode == AuthModeMTLS) && s.auth.Role != "" {
+		return s.auth.Role
+	}
 
 	// Check standard claim locations for role
 	// 1. "role" claim (direct)

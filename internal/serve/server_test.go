@@ -4,9 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -15,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"math/big"
 	"net"
 	"net/http"
@@ -25,6 +31,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -4805,6 +4812,549 @@ func signJWT(t *testing.T, key *rsa.PrivateKey, kid, issuer, audience string, ex
 	return signingInput + "." + sigEnc
 }
 
+type oidcTestSigner struct {
+	alg string
+	key crypto.Signer
+	jwk jwk
+}
+
+func oidcTestSigners(t *testing.T) []oidcTestSigner {
+	t.Helper()
+	rsaKey := mustGenerateKey(t)
+	p256, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p384, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, edKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signers := []oidcTestSigner{
+		{alg: "RS256", key: rsaKey},
+		{alg: "PS256", key: mustGenerateKey(t)},
+		{alg: "ES256", key: p256},
+		{alg: "ES384", key: p384},
+		{alg: "EdDSA", key: edKey},
+	}
+	for i := range signers {
+		signer := &signers[i]
+		signer.jwk = jwk{Kid: signer.alg + "-key", Alg: signer.alg, Use: "sig", KeyOps: []string{"verify"}}
+		switch key := signer.key.Public().(type) {
+		case *rsa.PublicKey:
+			signer.jwk.Kty = "RSA"
+			signer.jwk.N = base64.RawURLEncoding.EncodeToString(key.N.Bytes())
+			signer.jwk.E = base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes())
+		case *ecdsa.PublicKey:
+			size := (key.Curve.Params().BitSize + 7) / 8
+			signer.jwk.Kty, signer.jwk.Crv = "EC", key.Curve.Params().Name
+			signer.jwk.X = base64.RawURLEncoding.EncodeToString(key.X.FillBytes(make([]byte, size)))
+			signer.jwk.Y = base64.RawURLEncoding.EncodeToString(key.Y.FillBytes(make([]byte, size)))
+		case ed25519.PublicKey:
+			signer.jwk.Kty, signer.jwk.Crv = "OKP", "Ed25519"
+			signer.jwk.X = base64.RawURLEncoding.EncodeToString(key)
+		}
+	}
+	return signers
+}
+
+// The signer deliberately receives signingAlg separately from the JOSE header
+// so adversarial tests can sign genuinely well-formed tokens with false metadata.
+func signOIDCTestJWT(t *testing.T, key crypto.Signer, signingAlg string, header, claims map[string]interface{}) string {
+	t.Helper()
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloadJSON, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := base64.RawURLEncoding.EncodeToString(headerJSON) + "." + base64.RawURLEncoding.EncodeToString(payloadJSON)
+	var sig []byte
+	switch signingAlg {
+	case "RS256", "PS256":
+		digest := sha256.Sum256([]byte(input))
+		if signingAlg == "RS256" {
+			sig, err = rsa.SignPKCS1v15(rand.Reader, key.(*rsa.PrivateKey), crypto.SHA256, digest[:])
+		} else {
+			sig, err = rsa.SignPSS(rand.Reader, key.(*rsa.PrivateKey), crypto.SHA256, digest[:], &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash})
+		}
+	case "ES256", "ES384":
+		var digest []byte
+		if signingAlg == "ES256" {
+			hash := sha256.Sum256([]byte(input))
+			digest = hash[:]
+		} else {
+			hash := sha512.Sum384([]byte(input))
+			digest = hash[:]
+		}
+		ecKey := key.(*ecdsa.PrivateKey)
+		var r, s *big.Int
+		r, s, err = ecdsa.Sign(rand.Reader, ecKey, digest)
+		if err == nil {
+			size := (ecKey.Curve.Params().BitSize + 7) / 8
+			sig = make([]byte, size*2)
+			r.FillBytes(sig[:size])
+			s.FillBytes(sig[size:])
+		}
+	case "EdDSA":
+		sig = ed25519.Sign(key.(ed25519.PrivateKey), []byte(input))
+	case "HS256":
+		// A real RSA-public-key-as-HMAC-secret confusion attempt.
+		var publicDER []byte
+		publicDER, err = x509.MarshalPKIXPublicKey(key.Public())
+		if err == nil {
+			mac := hmac.New(sha256.New, publicDER)
+			_, _ = mac.Write([]byte(input))
+			sig = mac.Sum(nil)
+		}
+	case "none":
+	default:
+		t.Fatalf("unsupported test algorithm %q", signingAlg)
+	}
+	if err != nil {
+		t.Fatalf("sign %s JWT: %v", signingAlg, err)
+	}
+	return input + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+func oidcTestClaims() map[string]interface{} {
+	return map[string]interface{}{
+		"iss": "https://identity.example.test",
+		"aud": "ntm",
+		"sub": "test-operator",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	}
+}
+
+func serveOIDCTestToken(t *testing.T, srv *Server, token string, wantStatus int) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	t.Logf(`{"method":"GET","path":"/api/v1/health","status":%d,"response":%s}`, rec.Code, strings.TrimSpace(rec.Body.String()))
+	if rec.Code != wantStatus {
+		t.Fatalf("OIDC status = %d, want %d; response: %s", rec.Code, wantStatus, rec.Body.String())
+	}
+	var envelope APIError
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if wantStatus == http.StatusOK && !envelope.Success {
+		t.Fatalf("authenticated request did not succeed: %s", rec.Body.String())
+	}
+	if wantStatus == http.StatusUnauthorized && (envelope.Success || envelope.ErrorCode != ErrCodeUnauthorized) {
+		t.Fatalf("missing UNAUTHORIZED error envelope: %s", rec.Body.String())
+	}
+}
+
+func newOIDCTestServer(jwksURL string) *Server {
+	return New(Config{Auth: AuthConfig{Mode: AuthModeOIDC, OIDC: OIDCConfig{
+		Issuer: "https://identity.example.test", Audience: "ntm", JWKSURL: jwksURL,
+	}}})
+}
+
+func TestOIDCAlgorithmMatrixThroughRouter(t *testing.T) {
+	signers := oidcTestSigners(t)
+	var keys []jwk
+	for _, signer := range signers {
+		keys = append(keys, signer.jwk)
+	}
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(jwksPayload{Keys: keys})
+	}))
+	defer jwksServer.Close()
+
+	for _, signer := range signers {
+		t.Run(signer.alg, func(t *testing.T) {
+			srv := newOIDCTestServer(jwksServer.URL)
+			for _, scenario := range []string{"valid", "valid_iat", "fractional_dates", "expired", "wrong_issuer", "wrong_audience", "missing_exp", "future_nbf", "extreme_future_nbf", "overflow_exp", "overflow_nbf", "overflow_iat", "underflow_iat", "string_iat", "null_iat", "object_iat", "bad_signature", "truncated_signature"} {
+				t.Run(scenario, func(t *testing.T) {
+					claims := oidcTestClaims()
+					header := map[string]interface{}{"alg": signer.alg, "kid": signer.jwk.Kid}
+					want := http.StatusUnauthorized
+					switch scenario {
+					case "valid":
+						want = http.StatusOK
+					case "valid_iat":
+						claims["iat"] = time.Now().Unix()
+						want = http.StatusOK
+					case "fractional_dates":
+						claims["exp"] = float64(time.Now().Add(time.Hour).Unix()) + 0.5
+						claims["nbf"] = float64(time.Now().Add(-time.Minute).Unix()) + 0.5
+						claims["iat"] = float64(time.Now().Unix()) + 0.5
+						want = http.StatusOK
+					case "expired":
+						claims["exp"] = time.Now().Add(-time.Hour).Unix()
+					case "wrong_issuer":
+						claims["iss"] = "https://wrong.example.test"
+					case "wrong_audience":
+						claims["aud"] = "other-service"
+					case "missing_exp":
+						delete(claims, "exp")
+					case "future_nbf":
+						claims["nbf"] = time.Now().Add(time.Hour).Unix()
+					case "extreme_future_nbf":
+						claims["nbf"] = math.Nextafter(0x1p63, 0)
+					case "overflow_exp":
+						claims["exp"] = 1e100
+					case "overflow_nbf":
+						claims["nbf"] = 1e100
+					case "overflow_iat":
+						claims["iat"] = 1e100
+					case "underflow_iat":
+						claims["iat"] = -1e100
+					case "string_iat":
+						claims["iat"] = "not-a-timestamp"
+					case "null_iat":
+						claims["iat"] = nil
+					case "object_iat":
+						claims["iat"] = map[string]interface{}{"time": time.Now().Unix()}
+					}
+					token := signOIDCTestJWT(t, signer.key, signer.alg, header, claims)
+					if scenario == "bad_signature" || scenario == "truncated_signature" {
+						parts := strings.Split(token, ".")
+						sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+						if err != nil {
+							t.Fatal(err)
+						}
+						if scenario == "bad_signature" {
+							sig[0] ^= 1
+						} else {
+							sig = sig[:len(sig)-1]
+						}
+						parts[2] = base64.RawURLEncoding.EncodeToString(sig)
+						token = strings.Join(parts, ".")
+					}
+					serveOIDCTestToken(t, srv, token, want)
+				})
+			}
+		})
+	}
+}
+
+func TestOIDCJWKPinningThroughRouter(t *testing.T) {
+	for _, signer := range oidcTestSigners(t) {
+		t.Run(signer.alg, func(t *testing.T) {
+			for _, scenario := range []string{"optional_metadata", "sign_and_verify", "encryption_key", "sign_only", "empty_key_ops", "mixed_key_ops", "duplicate_key_ops", "wrong_alg", "wrong_key_type", "wrong_curve"} {
+				t.Run(scenario, func(t *testing.T) {
+					key := signer.jwk
+					want := http.StatusUnauthorized
+					switch scenario {
+					case "optional_metadata":
+						key.Alg, key.Use, key.KeyOps = "", "", nil
+						// Unannotated RSA keys retain the existing RS256 binding;
+						// using PSS requires the provider to explicitly select it.
+						if signer.alg != "PS256" {
+							want = http.StatusOK
+						}
+					case "sign_and_verify":
+						key.KeyOps = []string{"sign", "verify"}
+						want = http.StatusOK
+					case "encryption_key":
+						key.Use = "enc"
+					case "sign_only":
+						key.KeyOps = []string{"sign"}
+					case "empty_key_ops":
+						key.KeyOps = []string{}
+					case "mixed_key_ops":
+						key.KeyOps = []string{"verify", "decrypt"}
+					case "duplicate_key_ops":
+						key.KeyOps = []string{"verify", "verify"}
+					case "wrong_alg":
+						key.Alg = "HS256"
+						if signer.alg == "RS256" {
+							key.Alg = "PS256" // same kty, wrong declared algorithm
+						} else if signer.alg == "PS256" {
+							key.Alg = "RS256"
+						}
+					case "wrong_key_type":
+						key.Kty = "oct"
+					case "wrong_curve":
+						if signer.alg == "RS256" || signer.alg == "PS256" {
+							// A correct RSA signature may not authenticate as EC.
+							key.Kty, key.Crv, key.Alg = "EC", "P-256", "ES256"
+						} else {
+							key.Crv = "X25519"
+						}
+					}
+					jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						_ = json.NewEncoder(w).Encode(jwksPayload{Keys: []jwk{key}})
+					}))
+					defer jwksServer.Close()
+					srv := newOIDCTestServer(jwksServer.URL)
+					token := signOIDCTestJWT(t, signer.key, signer.alg, map[string]interface{}{"alg": signer.alg, "kid": key.Kid}, oidcTestClaims())
+					serveOIDCTestToken(t, srv, token, want)
+				})
+			}
+		})
+	}
+}
+
+func TestOIDCRejectsAlgorithmConfusionAndCriticalHeaders(t *testing.T) {
+	signer := oidcTestSigners(t)[0]
+	signer.jwk.Alg = "" // key-type pinning must hold even without optional alg metadata
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(jwksPayload{Keys: []jwk{signer.jwk}})
+	}))
+	defer jwksServer.Close()
+	srv := newOIDCTestServer(jwksServer.URL)
+	for _, scenario := range []string{"none", "HS256", "RSA_as_EC", "RSA_as_EdDSA", "critical_extension", "unencoded_payload"} {
+		t.Run(scenario, func(t *testing.T) {
+			header := map[string]interface{}{"alg": "RS256", "kid": signer.jwk.Kid}
+			signingAlg := "RS256"
+			switch scenario {
+			case "none", "HS256":
+				header["alg"], signingAlg = scenario, scenario
+			case "RSA_as_EC":
+				header["alg"] = "ES256"
+			case "RSA_as_EdDSA":
+				header["alg"] = "EdDSA"
+			case "critical_extension":
+				header["crit"] = []string{"custom"}
+				header["custom"] = true
+			case "unencoded_payload":
+				header["b64"] = false
+			}
+			token := signOIDCTestJWT(t, signer.key, signingAlg, header, oidcTestClaims())
+			serveOIDCTestToken(t, srv, token, http.StatusUnauthorized)
+		})
+	}
+}
+
+func TestOIDCRejectsAmbiguousKeyIDs(t *testing.T) {
+	signers := oidcTestSigners(t)
+	for _, scenario := range []string{"missing_kid_multiple_keys", "duplicate_kid", "duplicate_anonymous", "anonymous_and_named", "anonymous_does_not_alias_default"} {
+		t.Run(scenario, func(t *testing.T) {
+			keys := []jwk{signers[0].jwk, signers[2].jwk}
+			kid := ""
+			want := http.StatusUnauthorized
+			switch scenario {
+			case "duplicate_kid":
+				keys[1].Kid = keys[0].Kid
+				kid = keys[0].Kid
+			case "duplicate_anonymous":
+				keys[0].Kid, keys[1].Kid = "", ""
+			case "anonymous_and_named":
+				keys[0].Kid, keys[1].Kid = "", "default"
+			case "anonymous_does_not_alias_default":
+				keys = keys[:1]
+				keys[0].Kid = ""
+				kid = "default"
+			}
+			jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(jwksPayload{Keys: keys})
+			}))
+			defer jwksServer.Close()
+			srv := newOIDCTestServer(jwksServer.URL)
+			token := signOIDCTestJWT(t, signers[0].key, "RS256", map[string]interface{}{"alg": "RS256", "kid": kid}, oidcTestClaims())
+			serveOIDCTestToken(t, srv, token, want)
+		})
+	}
+}
+
+func TestOIDCRejectsInvalidSignatureEncodings(t *testing.T) {
+	signers := oidcTestSigners(t)
+	for _, index := range []int{1, 2, 3} {
+		signer := signers[index]
+		t.Run(signer.alg, func(t *testing.T) {
+			jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(jwksPayload{Keys: []jwk{signer.jwk}})
+			}))
+			defer jwksServer.Close()
+			token := signOIDCTestJWT(t, signer.key, signer.alg, map[string]interface{}{"alg": signer.alg, "kid": signer.jwk.Kid}, oidcTestClaims())
+			parts := strings.Split(token, ".")
+			input := []byte(parts[0] + "." + parts[1])
+			var sig []byte
+			var err error
+			if signer.alg == "PS256" {
+				hash := sha256.Sum256(input)
+				sig, err = rsa.SignPSS(rand.Reader, signer.key.(*rsa.PrivateKey), crypto.SHA256, hash[:], &rsa.PSSOptions{SaltLength: 20})
+			} else if signer.alg == "ES256" {
+				hash := sha256.Sum256(input)
+				sig, err = ecdsa.SignASN1(rand.Reader, signer.key.(*ecdsa.PrivateKey), hash[:])
+			} else {
+				hash := sha512.Sum384(input)
+				sig, err = ecdsa.SignASN1(rand.Reader, signer.key.(*ecdsa.PrivateKey), hash[:])
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			parts[2] = base64.RawURLEncoding.EncodeToString(sig)
+			serveOIDCTestToken(t, newOIDCTestServer(jwksServer.URL), strings.Join(parts, "."), http.StatusUnauthorized)
+		})
+	}
+}
+
+func TestJWKSCacheConcurrentMissesAndRotation(t *testing.T) {
+	signer := oidcTestSigners(t)[4]
+	var response atomic.Value
+	response.Store(jwksPayload{Keys: []jwk{signer.jwk}})
+	var fetches atomic.Int64
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
+		_ = json.NewEncoder(w).Encode(response.Load())
+	}))
+	defer jwksServer.Close()
+	cache := newJWKSCache(time.Hour)
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, err := cache.getKey(context.Background(), jwksServer.URL, fmt.Sprintf("unknown-%d", i)); err == nil {
+				t.Errorf("unknown kid %d authenticated", i)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if got := fetches.Load(); got != 1 {
+		t.Fatalf("concurrent unknown kids fetched JWKS %d times, want 1", got)
+	}
+	if _, err := cache.getKey(context.Background(), jwksServer.URL, signer.jwk.Kid); err != nil {
+		t.Fatalf("unknown kids poisoned existing key: %v", err)
+	}
+	rotated := signer.jwk
+	rotated.Kid = "rotated-key"
+	response.Store(jwksPayload{Keys: []jwk{rotated}})
+	cache.mu.Lock()
+	cache.lastAttempt = time.Now().Add(-6 * time.Second)
+	cache.mu.Unlock()
+	if _, err := cache.getKey(context.Background(), jwksServer.URL, rotated.Kid); err != nil {
+		t.Fatalf("key rotation did not refresh before TTL: %v", err)
+	}
+	if got := fetches.Load(); got != 2 {
+		t.Fatalf("rotation fetches = %d, want 2", got)
+	}
+	if _, err := cache.getKey(context.Background(), jwksServer.URL, signer.jwk.Kid); err == nil {
+		t.Fatal("removed key remained usable after refresh")
+	}
+}
+
+func TestJWKSCacheDoesNotReuseKeysAcrossURLs(t *testing.T) {
+	signer := oidcTestSigners(t)[4]
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(jwksPayload{Keys: []jwk{signer.jwk}})
+	}))
+	defer good.Close()
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer bad.Close()
+	cache := newJWKSCache(time.Hour)
+	if _, err := cache.getKey(context.Background(), good.URL, signer.jwk.Kid); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := cache.getKey(context.Background(), bad.URL, signer.jwk.Kid); err == nil {
+			t.Fatal("failed JWKS source reused another source's key")
+		}
+	}
+}
+
+func TestJWKSRejectsMalformedPublicKeys(t *testing.T) {
+	signers := oidcTestSigners(t)
+	for _, scenario := range []struct {
+		name   string
+		signer int
+		mutate func(*jwk)
+	}{
+		{"rsa_empty_modulus", 0, func(k *jwk) { k.N = "" }},
+		{"rsa_small_modulus", 0, func(k *jwk) { k.N = "AQ" }},
+		{"rsa_huge_exponent", 0, func(k *jwk) { k.E = base64.RawURLEncoding.EncodeToString([]byte{1, 0, 0, 0, 0, 0, 0, 0, 1}) }},
+		{"rsa_even_exponent", 0, func(k *jwk) { k.E = "Ag" }},
+		{"rsa_zero_exponent", 0, func(k *jwk) { k.E = "AA" }},
+		{"rsa_padded_exponent", 0, func(k *jwk) { k.E = "AAEAAQ" }},
+		{"ec_missing_x", 2, func(k *jwk) { k.X = "" }},
+		{"ec_bad_base64", 2, func(k *jwk) { k.Y = "!" }},
+		{"ec_off_curve", 2, func(k *jwk) { k.X = base64.RawURLEncoding.EncodeToString(make([]byte, 32)); k.Y = k.X }},
+		{"ec_curve_alg_mismatch", 2, func(k *jwk) { k.Alg = "ES384" }},
+		{"ec_coordinate_width", 3, func(k *jwk) { k.X = base64.RawURLEncoding.EncodeToString(make([]byte, 32)) }},
+		{"ed_short_key", 4, func(k *jwk) { k.X = base64.RawURLEncoding.EncodeToString(make([]byte, 31)) }},
+		{"ed_wrong_curve", 4, func(k *jwk) { k.Crv = "X25519" }},
+		{"ed_bad_base64", 4, func(k *jwk) { k.X = "!" }},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			key := signers[scenario.signer].jwk
+			scenario.mutate(&key)
+			if _, err := parseSigningJWK(key); err == nil {
+				t.Fatalf("malformed public key was accepted: %+v", key)
+			}
+		})
+	}
+}
+
+func TestJWKSCacheExpiredKeysFailClosed(t *testing.T) {
+	signer := oidcTestSigners(t)[4]
+	var unavailable atomic.Bool
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if unavailable.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(jwksPayload{Keys: []jwk{signer.jwk}})
+	}))
+	defer jwksServer.Close()
+	cache := newJWKSCache(time.Hour)
+	if _, err := cache.getKey(context.Background(), jwksServer.URL, signer.jwk.Kid); err != nil {
+		t.Fatal(err)
+	}
+	unavailable.Store(true)
+	cache.mu.Lock()
+	cache.fetchedAt = time.Now().Add(-2 * time.Hour)
+	cache.lastAttempt = time.Now().Add(-6 * time.Second)
+	cache.mu.Unlock()
+	for i := 0; i < 2; i++ {
+		if _, err := cache.getKey(context.Background(), jwksServer.URL, signer.jwk.Kid); err == nil {
+			t.Fatal("expired key authenticated after refresh failed")
+		}
+	}
+}
+
+func TestJWKSCacheWaitRespectsCancellation(t *testing.T) {
+	signer := oidcTestSigners(t)[4]
+	started, release := make(chan struct{}), make(chan struct{})
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-release
+		_ = json.NewEncoder(w).Encode(jwksPayload{Keys: []jwk{signer.jwk}})
+	}))
+	defer jwksServer.Close()
+	defer close(release)
+	cache := newJWKSCache(time.Hour)
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := cache.getKey(context.Background(), jwksServer.URL, signer.jwk.Kid)
+		leaderDone <- err
+	}()
+	<-started
+	ctx, cancel := context.WithCancel(context.Background())
+	waiterDone := make(chan error, 1)
+	go func() {
+		_, err := cache.getKey(ctx, jwksServer.URL, signer.jwk.Kid)
+		waiterDone <- err
+	}()
+	cancel()
+	select {
+	case err := <-waiterDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled cache waiter: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled cache waiter blocked behind a network refresh")
+	}
+	// Release the first request before cleanup, without closing the channel twice.
+	release <- struct{}{}
+	if err := <-leaderDone; err != nil {
+		t.Fatalf("one waiter's cancellation aborted the shared refresh: %v", err)
+	}
+}
+
 // =============================================================================
 // API v1 Tests
 // =============================================================================
@@ -6234,9 +6784,17 @@ func TestClaimString(t *testing.T) {
 func TestClaimInt64(t *testing.T) {
 
 	claims := map[string]interface{}{
-		"exp":    float64(1700000000),
-		"string": "not a number",
-		"number": json.Number("42"),
+		"exp":             float64(1700000000),
+		"string":          "not a number",
+		"number":          json.Number("42"),
+		"fractional":      float64(1700000000.5),
+		"number_fraction": json.Number("42.5"),
+		"nan":             math.NaN(),
+		"positive_inf":    math.Inf(1),
+		"negative_inf":    math.Inf(-1),
+		"overflow":        float64(0x1p63),
+		"underflow":       math.Nextafter(-0x1p63, math.Inf(-1)),
+		"number_overflow": json.Number("9223372036854775808"),
 	}
 
 	tests := []struct {
@@ -6247,6 +6805,14 @@ func TestClaimInt64(t *testing.T) {
 	}{
 		{"float64 value", "exp", 1700000000, true},
 		{"json.Number value", "number", 42, true},
+		{"fractional value", "fractional", 1700000000, true},
+		{"fractional json.Number", "number_fraction", 42, true},
+		{"NaN", "nan", 0, false},
+		{"positive infinity", "positive_inf", 0, false},
+		{"negative infinity", "negative_inf", 0, false},
+		{"overflow", "overflow", 0, false},
+		{"underflow", "underflow", 0, false},
+		{"json.Number overflow", "number_overflow", 0, false},
 		{"string value", "string", 0, false},
 		{"missing key", "nbf", 0, false},
 	}

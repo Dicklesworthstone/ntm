@@ -19,6 +19,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/config"
 )
 
 func b64url(b []byte) string {
@@ -261,19 +263,20 @@ func TestLegacyRoutes_RBACEnforced(t *testing.T) {
 func TestHTTPRateLimiter_Enforces429AndBoundsMemory(t *testing.T) {
 	t.Parallel()
 
-	srv := New(Config{
+	const maxEntries = 64
+	enabled := true
+	srv, _ := rateLimitServer(t, Config{
 		Auth: AuthConfig{
 			Mode:   AuthModeAPIKey,
 			APIKey: "rl-key",
 		},
-		RateLimit: RateLimitConfig{
-			Enabled:           true,
+		RateLimit: config.ServeRateLimitConfig{
+			Enabled:           &enabled,
 			RequestsPerSecond: 1,
 			Burst:             2,
-			MaxTrackedClients: 16,
+			MaxEntries:        maxEntries,
 		},
 	})
-	defer srv.Stop()
 
 	// First 2 requests within burst succeed; 3rd returns 429 + Retry-After + RATE_LIMITED.
 	for i := 0; i < 2; i++ {
@@ -314,13 +317,27 @@ func TestHTTPRateLimiter_Enforces429AndBoundsMemory(t *testing.T) {
 		}
 	}
 
-	// Memory DoS test: 200 distinct client keys must never exceed MaxTrackedClients (16).
-	now := time.Now()
+	// Memory DoS test: public requests from 200 distinct clients must never
+	// exceed the configured total capacity across IP and principal buckets.
 	for i := 0; i < 200; i++ {
-		srv.rateLimiter.allow(fmt.Sprintf("ip:198.51.100.%d", i), now.Add(time.Duration(i)*time.Millisecond))
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/version", nil)
+		request.RemoteAddr = fmt.Sprintf("198.51.100.%d:12345", i+1)
+		request.Header.Set("Authorization", "Bearer rl-key")
+		response := httptest.NewRecorder()
+		srv.Router().ServeHTTP(response, request)
+		if response.Code != http.StatusTooManyRequests {
+			t.Fatalf("client churn request %d = %d, want 429 from exhausted shared principal", i, response.Code)
+		}
 	}
-	if got := srv.rateLimiter.trackedClients(); got > 16 {
-		t.Fatalf("rateLimiter tracked %d clients, exceeds MaxTrackedClients=16", got)
+	tracked := 0
+	for i := range srv.rateLimiter.shards {
+		shard := &srv.rateLimiter.shards[i]
+		shard.mu.Lock()
+		tracked += len(shard.entries)
+		shard.mu.Unlock()
+	}
+	if tracked > maxEntries {
+		t.Fatalf("rateLimiter tracked %d buckets, exceeds MaxEntries=%d", tracked, maxEntries)
 	}
 
 	// AuthModeLocal default keeps loopback exempt so local tools/tests never flake.

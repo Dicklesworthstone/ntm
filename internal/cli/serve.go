@@ -234,6 +234,14 @@ func startServeProcessTriage(cfg *config.Config, feed *robot.AttentionFeed) func
 }
 
 func runServe(opts serveOptions) error {
+	var rateLimit config.ServeRateLimitConfig
+	if cfg != nil {
+		rateLimit = cfg.Serve.RateLimit
+	}
+	// Reject malformed admission controls before opening persistent state.
+	if err := config.ValidateServeRateLimitConfig(&rateLimit); err != nil {
+		return err
+	}
 	// Reject an unusable project before opening state or starting background
 	// monitors, and pass one canonical identity to every project-scoped route.
 	projectDir, err := serve.ResolveProjectDir(opts.ProjectDir)
@@ -307,6 +315,7 @@ func runServe(opts serveOptions) error {
 	serverCfg := serve.Config{
 		JobConcurrency:   opts.JobConcurrency,
 		JobQueueCapacity: opts.JobQueueCapacity,
+		RateLimit:        rateLimit,
 
 		Host:           opts.Host,
 		Port:           opts.Port,
