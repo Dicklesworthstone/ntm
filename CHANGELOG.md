@@ -11,6 +11,19 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ---
 
+## [v1.38.1] -- 2026-11-20 [GitHub Release]
+
+**Antigravity (agy) agents now run Gemini 4 Neon (XHigh), and Codex panes default to `gpt-6.2-sol`.** Otherwise identical to v1.38.0: same source, Go 1.26.10 and `golang.org/x/net` v0.62.0.
+
+### Changed
+
+- **Antigravity default model is Gemini 4 Neon (XHigh)** (`gemini-4-neon`), replacing Gemini 4 Argon (High). XHigh is Neon's top tier. The required-model pin, the session-resume command, the model registry (1M-token context, so agy's budget is unchanged), the flag help and both spawn wizards move together, matching ACFS's `agy-locked` launcher. agy rejects `--effort` for this model, so the pin names the model only. The `gemini-4-argon` registry entry stays, so panes still running Argon keep resolving.
+- **Codex default model is `gpt-6.2-sol`** (was `gpt-6-astra`), still at `xhigh` reasoning effort. It applies when a Codex pane is requested without a model; a `codex` template in your own config still wins. Agent-type normalization recognizes `gpt-6.1-sol` and `gpt-6.2-sol`.
+
+### Not in this release
+
+The work on `main` since v1.38.0 is not included. It ships in the next minor release once it is qualified.
+
 ## [v1.38.0] -- 2026-10-31 [GitHub Release]
 
 **This is the first release to carry the work on `main` that v1.37.1 and v1.37.2 held back: pipeline branch checkpoints, webhook outbox persistence, checkpoint binary and untracked capture, the reservation watcher, and Gemini readiness and context metrics. It also adds reviewed `ntm worktrees` merges, operator recovery for uncertain pipeline deliveries, pipeline commands and context rotations, per-request project selection on the REST mail and reservation routes, and pi agent support. Go moves to 1.26.10 for GO-2026-6809.** Many recovery and delivery paths now stop for an operator decision where they used to repeat work or carry on, so commands that used to proceed can now refuse. Read the Upgrade notes first, and finish or inspect in-flight pipeline runs before upgrading.
