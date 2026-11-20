@@ -881,6 +881,7 @@ func buildAgentCommands(state *session.SessionState) session.AgentCommands {
 		Codex:       render(cfg.Agents.Codex, "cod"),
 		Gemini:      render(cfg.Agents.Gemini, "gmi"),
 		Antigravity: render(cfg.Agents.Antigravity, "agy"),
+		Grok:        render(cfg.Agents.Grok, "grok"),
 		Cursor:      render(cfg.Agents.Cursor, "cursor"),
 		Windsurf:    render(cfg.Agents.Windsurf, "windsurf"),
 		Aider:       render(cfg.Agents.Aider, "aider"),

@@ -88,50 +88,15 @@ type AgentCapabilities struct {
 	HistoryClearCommand    string // e.g., "/clear"
 }
 
-// GetAgentCapabilities returns the compaction capabilities for an agent type.
+// GetAgentCapabilities returns the compaction capabilities for an agent type
+// from the single declarative harness capability registry.
 func GetAgentCapabilities(agentType string) AgentCapabilities {
-	switch agent.AgentType(agentType).Canonical() {
-	case agent.AgentTypeClaudeCode:
-		return AgentCapabilities{
-			SupportsBuiltinCompact: true,
-			SupportsHistoryClear:   true,
-			BuiltinCompactCommand:  "/compact",
-			HistoryClearCommand:    "/clear",
-		}
-	case agent.AgentTypeCodex:
-		return AgentCapabilities{
-			SupportsBuiltinCompact: false, // Codex doesn't have /compact
-			SupportsHistoryClear:   false,
-			BuiltinCompactCommand:  "",
-			HistoryClearCommand:    "",
-		}
-	case agent.AgentTypeGemini, agent.AgentTypeAntigravity:
-		return AgentCapabilities{
-			SupportsBuiltinCompact: false, // Gemini/Antigravity CLI doesn't have /compact
-			SupportsHistoryClear:   true,
-			BuiltinCompactCommand:  "",
-			HistoryClearCommand:    "/clear",
-		}
-	case agent.AgentTypeOmp:
-		// omp ships both as slash commands (omp v18.2.3): "/compact"
-		// ("Compact: context N% used") and "/clear" ("drop context, keep
-		// session").
-		return AgentCapabilities{
-			SupportsBuiltinCompact: true,
-			SupportsHistoryClear:   true,
-			BuiltinCompactCommand:  "/compact",
-			HistoryClearCommand:    "/clear",
-		}
-	case agent.AgentTypeGrok, agent.AgentTypeCursor, agent.AgentTypeWindsurf, agent.AgentTypeAider, agent.AgentTypeOpencode, agent.AgentTypeOllama:
-		// These IDE-based agents typically manage their own context or don't support explicit compaction commands yet
-		return AgentCapabilities{
-			SupportsBuiltinCompact: false,
-			SupportsHistoryClear:   false,
-			BuiltinCompactCommand:  "",
-			HistoryClearCommand:    "",
-		}
-	default:
-		return AgentCapabilities{}
+	cap := agent.CapabilitiesFor(agent.AgentType(agentType))
+	return AgentCapabilities{
+		SupportsBuiltinCompact: cap.SupportsBuiltinCompact,
+		SupportsHistoryClear:   cap.SupportsHistoryClear,
+		BuiltinCompactCommand:  cap.BuiltinCompactCommand,
+		HistoryClearCommand:    cap.HistoryClearCommand,
 	}
 }
 

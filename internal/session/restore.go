@@ -412,7 +412,7 @@ func getAgentCommand(agentType string, cmds AgentCommands) string {
 	case tmux.AgentAntigravity:
 		return cmds.Antigravity
 	case tmux.AgentGrok:
-		return ""
+		return cmds.Grok
 	case tmux.AgentCursor:
 		return cmds.Cursor
 	case tmux.AgentWindsurf:

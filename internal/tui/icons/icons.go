@@ -437,6 +437,8 @@ func (i IconSet) AgentIcon(agentType string) string {
 		return i.Gemini
 	case agent.AgentTypeAntigravity:
 		return i.Gemini
+	case agent.AgentTypeGrok, agent.AgentTypeOpencode, agent.AgentTypeOmp, agent.AgentTypePi:
+		return i.Robot
 	case agent.AgentTypeCursor:
 		return i.Cursor
 	case agent.AgentTypeWindsurf:

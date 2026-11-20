@@ -763,7 +763,7 @@ func rotationPromptReady(captured string, pane tmux.Pane) (bool, string) {
 	composer := tmux.InspectComposer(captured, pane.Type)
 	observed := parser.DetectAgentType(captured)
 	switch canonicalType {
-	case agent.AgentTypeClaudeCode, agent.AgentTypeCodex, agent.AgentTypeGrok, agent.AgentTypeOmp, agent.AgentTypeOpencode, agent.AgentTypeAntigravity, agent.AgentType("pi"):
+	case agent.AgentTypeClaudeCode, agent.AgentTypeCodex, agent.AgentTypeGrok, agent.AgentTypeOmp, agent.AgentTypeOpencode, agent.AgentTypeAntigravity, agent.AgentTypePi:
 		// For harnesses with a structural composer parser, the declared pane
 		// type + visible composer (already checked against pane.Command above)
 		// is authoritative. Stray text in a CWD or transcript mentioning another

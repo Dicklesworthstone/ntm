@@ -17,14 +17,15 @@ const (
 	gracefulExitSingleInterrupt
 )
 
-// gracefulExitMethodForAgent returns the graceful-exit key sequence for an agent type.
+// gracefulExitMethodForAgent returns the graceful-exit key sequence for an agent type
+// from the declarative 12-harness capability registry.
 func gracefulExitMethodForAgent(agentType string) gracefulExitMethod {
-	switch normalizeSwarmAgentType(agentType) {
-	case "cod":
+	switch agent.CapabilitiesFor(agent.AgentType(normalizeSwarmAgentType(agentType))).GracefulExit {
+	case agent.GracefulExitSlashExit:
 		return gracefulExitSlashExit
-	case "gmi":
+	case agent.GracefulExitEscapeInterrupt:
 		return gracefulExitEscapeInterrupt
-	case "cursor", "windsurf", "aider", "ollama":
+	case agent.GracefulExitSingleInterrupt:
 		return gracefulExitSingleInterrupt
 	default:
 		return gracefulExitDoubleInterrupt

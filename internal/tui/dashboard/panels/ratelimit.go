@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tui/layout"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
@@ -207,21 +208,17 @@ func (m *RateLimitPanel) formatAgentRow(agent robot.AgentOAuthHealth, width int,
 	return layout.TruncateWidthDefault(sb.String(), max(1, width-2))
 }
 
-// shortAgentType returns a short agent type identifier
+// shortAgentType returns a short agent type identifier from the declarative
+// harness capability registry.
 func (m *RateLimitPanel) shortAgentType(agentType string) string {
-	switch robot.ResolveAgentType(agentType) {
-	case "claude":
-		return "cc"
-	case "codex":
-		return "cod"
-	case "gemini":
-		return "gmi"
-	case "antigravity":
-		return "agy"
-	default:
-		agentType = robot.ResolveAgentType(agentType)
-		return agentType[:min(3, len(agentType))]
+	if cap, ok := agent.LookupHarness(agent.AgentType(agentType)); ok && cap.ShortBadge != "" {
+		return cap.ShortBadge
 	}
+	resolved := robot.ResolveAgentType(agentType)
+	if cap, ok := agent.LookupHarness(agent.AgentType(resolved)); ok && cap.ShortBadge != "" {
+		return cap.ShortBadge
+	}
+	return resolved[:min(3, len(resolved))]
 }
 
 // getOAuthStyle returns the style for OAuth status

@@ -52,6 +52,7 @@ const (
 	AgentAider       = agent.AgentTypeAider
 	AgentOpencode    = agent.AgentTypeOpencode
 	AgentOmp         = agent.AgentTypeOmp
+	AgentPi          = agent.AgentTypePi
 	AgentOllama      = agent.AgentTypeOllama
 	AgentUser        = agent.AgentTypeUser
 	AgentUnknown     = agent.AgentTypeUnknown
@@ -2894,7 +2895,7 @@ var queuedMessagesMarkers = []string{
 const queuedMarkerTailLines = 10
 
 func isPiAgentType(agentType AgentType) bool {
-	return strings.EqualFold(strings.TrimSpace(string(agentType)), "pi")
+	return agentType.Canonical() == AgentPi
 }
 
 // InspectComposer derives the message-independent composer state from a
@@ -2994,6 +2995,36 @@ func (c *Client) ComposerReadyForDelivery(ctx context.Context, target string, ag
 	}
 	if canonical == AgentAntigravity {
 		return c.antigravityComposerReadyForDelivery(ctx, target, paneWidth)
+	}
+	if canonical == AgentOpencode {
+		capture, err := c.CapturePaneVisibleContext(ctx, target)
+		if err != nil || strings.TrimSpace(capture) == "" {
+			return true, ""
+		}
+		if _, found := opencodeComposerDraft(capture); found {
+			return true, ""
+		}
+		if agent.OpencodeActivelyWorking(capture, paneWidth) {
+			return true, ""
+		}
+		return false, "oc composer not visible: pane appears to be initializing or showing a dialog; a typed prompt would be swallowed"
+	}
+	if canonical == AgentPi {
+		capture, err := c.CapturePaneVisibleContext(ctx, target)
+		if err != nil || strings.TrimSpace(capture) == "" {
+			return true, ""
+		}
+		if agent.TrustDialogVisible(capture) || agent.HasTrailingShellExitPrompt(capture) {
+			return false, "pi composer not visible: pane is showing a trust dialog or exited to shell"
+		}
+		if gate, gated := agent.DetectInteractiveGate(capture, paneWidth); gated {
+			return false, fmt.Sprintf("pi interactive gate active (%s): a typed prompt would be swallowed", gate)
+		}
+		composer := agent.ParsePiComposer(capture)
+		if composer.Found {
+			return true, ""
+		}
+		return false, "pi composer not visible: pane appears to be initializing or showing a dialog; a typed prompt would be swallowed"
 	}
 	markers := composerMarkersForAgent(canonical)
 	if len(markers) == 0 {

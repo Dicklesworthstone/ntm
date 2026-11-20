@@ -452,19 +452,13 @@ func FormatDelay(d time.Duration) string {
 	return fmt.Sprintf("%.1fm", d.Minutes())
 }
 
-// NormalizeProvider normalizes provider names to canonical forms.
+// NormalizeProvider normalizes provider names and agent types to canonical
+// provider forms using the declarative harness capability registry.
 func NormalizeProvider(provider string) string {
 	normalized := strings.ToLower(strings.TrimSpace(provider))
 
-	switch agent.AgentType(normalized).Canonical() {
-	case agent.AgentTypeClaudeCode:
-		return "anthropic"
-	case agent.AgentTypeCodex:
-		return "openai"
-	case agent.AgentTypeGemini, agent.AgentTypeAntigravity:
-		return "google"
-	case agent.AgentTypeOllama:
-		return "ollama"
+	if cap, ok := agent.LookupHarness(agent.AgentType(normalized)); ok && cap.Provider != "" {
+		return cap.Provider
 	}
 
 	switch normalized {
@@ -474,6 +468,8 @@ func NormalizeProvider(provider string) string {
 		return "openai"
 	case "google":
 		return "google"
+	case "xai":
+		return "xai"
 	case "ollama":
 		return "ollama"
 	default:

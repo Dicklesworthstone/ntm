@@ -167,6 +167,7 @@ type AgentCommands struct {
 	Codex       string
 	Gemini      string
 	Antigravity string
+	Grok        string
 	Cursor      string
 	Windsurf    string
 	Aider       string

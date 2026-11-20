@@ -336,19 +336,18 @@ func ntmProviderName(tool string) string {
 // caamToolName on the result before passing it to the caam CLI.
 func normalizeProvider(agentType string) string {
 	trimmed := strings.TrimSpace(agentType)
-	switch agent.AgentType(trimmed).Canonical() {
-	case agent.AgentTypeClaudeCode:
-		return "claude"
-	case agent.AgentTypeCodex:
-		return "openai"
-	case agent.AgentTypeGemini, agent.AgentTypeAntigravity:
-		return "google"
-	default:
-		if strings.EqualFold(trimmed, "anthropic") {
+	if cap, ok := agent.LookupHarness(agent.AgentType(trimmed)); ok {
+		if cap.Type == agent.AgentTypeClaudeCode {
 			return "claude"
 		}
-		return trimmed
+		if cap.Provider != "" {
+			return cap.Provider
+		}
 	}
+	if strings.EqualFold(trimmed, "anthropic") {
+		return "claude"
+	}
+	return trimmed
 }
 
 // IsAvailable checks if caam CLI is installed and working.
