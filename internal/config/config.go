@@ -29,7 +29,7 @@ import (
 const (
 	// DefaultCodexModel is the model NTM uses when the operator requests a
 	// Codex pane without specifying a model.
-	DefaultCodexModel = "gpt-6-astra"
+	DefaultCodexModel = "gpt-6.2-sol"
 	// DefaultCodexReasoningEffort is the Codex reasoning budget used when no
 	// persona or agent spec provides one.
 	DefaultCodexReasoningEffort = "xhigh"

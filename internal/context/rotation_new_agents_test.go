@@ -749,11 +749,11 @@ func TestRotationPromptReady_AntigravityAndOpencode(t *testing.T) {
 	t.Parallel()
 
 	agyPane := tmux.Pane{ID: "%10", Type: tmux.AgentAntigravity, Command: "agy-locked", Width: 120}
-	agyIdle := "Antigravity\n\n  >\n\n  ? for shortcuts\n  Gemini 4 Argon (High)\n"
+	agyIdle := "Antigravity\n\n  >\n\n  ? for shortcuts\n  Gemini 4 Neon (XHigh)\n"
 	if ready, reason := rotationPromptReady(agyIdle, agyPane); !ready {
 		t.Fatalf("rotationPromptReady(agyIdle) = false (%q), want true", reason)
 	}
-	agyDraft := "Antigravity\n\n  > unsubmitted draft\n\n  ? for shortcuts\n  Gemini 4 Argon (High)\n"
+	agyDraft := "Antigravity\n\n  > unsubmitted draft\n\n  ? for shortcuts\n  Gemini 4 Neon (XHigh)\n"
 	if ready, _ := rotationPromptReady(agyDraft, agyPane); ready {
 		t.Fatal("rotationPromptReady(agyDraft) = true, want false for unsubmitted draft")
 	}

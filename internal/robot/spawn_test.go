@@ -3247,7 +3247,7 @@ func TestIsAgentReadyAntigravityWaitsForComposer(t *testing.T) {
 		"  >",
 		"",
 		"  ? for shortcuts",
-		"  Gemini 4 Argon (High)",
+		"  Gemini 4 Neon (XHigh)",
 	}, "\n")
 	if !isAgentReady(composer, "agy") {
 		t.Fatal("Antigravity composer not recognized as ready")

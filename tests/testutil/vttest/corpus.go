@@ -631,7 +631,7 @@ func emitAntigravityStream(b *strings.Builder, spec FrameSpec) {
 		b.WriteString(cup(rows-4, 1) + "\x1b[1;36m>\x1b[0m")
 		b.WriteString(cup(rows-3, 1) + "\x1b[2m" + rule + "\x1b[0m")
 		b.WriteString(cup(rows-2, 1) + "? for shortcuts")
-		b.WriteString(cup(rows-1, 1) + fitRunes("Gemini 4 Argon (High) /model | 342.5 MB", cols-1))
+		b.WriteString(cup(rows-1, 1) + fitRunes("Gemini 4 Neon (XHigh) /model | 342.5 MB", cols-1))
 	case StateIdleDraft:
 		b.WriteString("\x1b[2J")
 		_ = writeTranscriptPrefix(b, spec.TranscriptLines, cols, rows-12)
@@ -650,7 +650,7 @@ func emitAntigravityStream(b *strings.Builder, spec FrameSpec) {
 		}
 		b.WriteString(cup(topRow+1+len(wrapped), 1) + "\x1b[2m" + rule + "\x1b[0m")
 		b.WriteString(cup(rows-2, 1) + "? for shortcuts")
-		b.WriteString(cup(rows-1, 1) + fitRunes("Gemini 4 Argon (High) /model | 342.5 MB", cols-1))
+		b.WriteString(cup(rows-1, 1) + fitRunes("Gemini 4 Neon (XHigh) /model | 342.5 MB", cols-1))
 	case StateModalTrap:
 		b.WriteString("\x1b[2J")
 		b.WriteString(cup(rows-6, 1) + "Antigravity Workspace Security")

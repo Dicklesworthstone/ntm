@@ -118,7 +118,7 @@ const REAL_SNAPSHOT_PAYLOAD = {
                 {
                     pane: '1.2',
                     type: 'antigravity',
-                    variant: 'gemini-4-argon',
+                    variant: 'gemini-4-neon',
                     type_confidence: 0.9,
                     type_method: 'title',
                     state: 'idle',
