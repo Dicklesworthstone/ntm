@@ -477,6 +477,8 @@ verify_downloaded_asset() {
             {
                 filename = $NF
                 sub(/\r$/, "", filename)
+                sub(/^\*/, "", filename)
+                sub(/^\.\//, "", filename)
                 if (filename == name) {
                     print $1
                     exit
@@ -569,6 +571,11 @@ extract_downloaded_asset() {
             fi
             ;;
         *)
+            # Raw binary fallback (e.g. ntm_linux_amd64 / ntm_darwin_arm64):
+            # stage it at ${tmp_dir}/${BIN_NAME} so downstream verification finds it.
+            if [ "$downloaded_path" != "${tmp_dir}/${BIN_NAME}" ] && [ "$downloaded_path" != "${tmp_dir}/${BIN_NAME}.exe" ]; then
+                cp "$downloaded_path" "${tmp_dir}/${BIN_NAME}"
+            fi
             return 0
             ;;
     esac
@@ -777,22 +784,26 @@ install_ntm() {
 
     print_success "Installed ${BIN_NAME} ${version} to ${dest_path}"
 
-    # Check PATH
-    if ! echo "$PATH" | grep -q "$install_dir"; then
-        if [ "$EASY_MODE" = true ]; then
-            easy_mode_path_setup "$install_dir"
-        else
-            print_warn "${install_dir} is not in your PATH"
-            echo ""
-            echo "Add to your shell rc file:"
-            echo "  export PATH=\"\$PATH:${install_dir}\""
-            echo ""
-        fi
-    fi
+    # Check PATH using exact colon-delimited boundaries (avoids substring/regex false positives)
+    case ":${PATH}:" in
+        *":${install_dir}:"*)
+            ;;
+        *)
+            if [ "$EASY_MODE" = true ]; then
+                easy_mode_path_setup "$install_dir"
+            else
+                print_warn "${install_dir} is not in your PATH"
+                echo ""
+                echo "Add to your shell rc file:"
+                echo "  export PATH=\"\$PATH:${install_dir}\""
+                echo ""
+            fi
+            ;;
+    esac
 
     # Shell integration
     if [ "$NO_SHELL" != true ]; then
-        setup_shell_integration
+        setup_shell_integration "$version"
     fi
 
     echo ""
@@ -886,6 +897,7 @@ upgrade_shell_integration() {
 
 # Setup shell integration
 setup_shell_integration() {
+    local installed_version="${1:-$VERSION}"
     local shell_name rc_file init_cmd
 
     # Detect shell
@@ -907,7 +919,7 @@ setup_shell_integration() {
     esac
 
     # Get the appropriate shell command for the installed version
-    init_cmd=$(get_shell_cmd "$shell_name" "$VERSION")
+    init_cmd=$(get_shell_cmd "$shell_name" "$installed_version")
 
     # Check if already configured with current "ntm shell" command
     if [ -f "$rc_file" ] && grep -q "ntm shell" "$rc_file"; then

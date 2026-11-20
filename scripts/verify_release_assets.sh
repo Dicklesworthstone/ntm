@@ -49,7 +49,7 @@ verify_staged_bundle() {
       local base actual expected
       base="$(basename "$found_archive")"
       actual="$(sha256sum "$found_archive" | awk '{print $1}')"
-      expected="$(awk -v b="$base" '$2==b || $2=="*"b {print $1; exit}' "$sums")"
+      expected="$(awk -v b="$base" '{f=$2; sub(/^\*/, "", f); sub(/^\.\//, "", f); if (f==b) {print $1; exit}}' "$sums")"
       if [ -z "$expected" ]; then
         flunk "SHA256SUMS missing digest entry for $base"
       elif [ "$actual" != "$expected" ]; then
@@ -61,6 +61,16 @@ verify_staged_bundle() {
   local vsix="$dir/ntm-vscode-${ver}.vsix"
   if [ ! -f "$vsix" ] || [ ! -s "$vsix" ]; then
     flunk "missing or empty VSCode extension asset ntm-vscode-${ver}.vsix (AGENTS.md F2 requirement)"
+  else
+    local vsix_base vsix_actual vsix_expected
+    vsix_base="$(basename "$vsix")"
+    vsix_actual="$(sha256sum "$vsix" | awk '{print $1}')"
+    vsix_expected="$(awk -v b="$vsix_base" '{f=$2; sub(/^\*/, "", f); sub(/^\.\//, "", f); if (f==b) {print $1; exit}}' "$sums")"
+    if [ -z "$vsix_expected" ]; then
+      flunk "SHA256SUMS missing digest entry for $vsix_base"
+    elif [ "$vsix_actual" != "$vsix_expected" ]; then
+      flunk "SHA256 mismatch for $vsix_base: got $vsix_actual, SHA256SUMS says $vsix_expected"
+    fi
   fi
 
   if [ -n "$cask" ]; then
@@ -127,7 +137,17 @@ self_test() {
   fi
   fail_count=$pre
 
-  say "--self-test OK (valid bundle passed; missing-.vsix and stale-cask canaries fired)"
+  # Canary C: tampered .vsix digest must fail closed.
+  cp -R "$tmp/good" "$tmp/bad_vsix"
+  printf 'tampered-vsix-bytes\n' > "$tmp/bad_vsix/ntm-vscode-${ver}.vsix"
+  pre=$fail_count
+  if verify_staged_bundle "$ver" "$tmp/bad_vsix" "$tmp/ntm.rb" >/dev/null 2>&1; then
+    echo "verify_release_assets: CANARY FAILURE — tampered .vsix digest PASSED" >&2
+    exit 1
+  fi
+  fail_count=$pre
+
+  say "--self-test OK (valid bundle passed; missing-.vsix, tampered-.vsix-sha256, and stale-cask canaries fired)"
   exit 0
 }
 
@@ -137,7 +157,7 @@ fi
 
 TAG="${1:-}"
 if [ -z "$TAG" ]; then
-  echo "usage: bash scripts/verify_release_assets.sh --self-test | <vX.Y.Z> [--assets-dir <dir>] [--cask-file <path>]" >&2
+  echo "usage: bash scripts/verify_release_assets.sh --self-test | <vX.Y.Z> [--assets-dir <dir>] [--cask-file <path>] [--skip-ghcr]" >&2
   exit 2
 fi
 shift
@@ -145,11 +165,13 @@ VER="${TAG#v}"
 NORM_TAG="v${VER}"
 ASSETS_DIR=""
 CASK_FILE=""
+SKIP_GHCR=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --assets-dir) ASSETS_DIR="${2:-}"; shift 2 ;;
     --cask-file) CASK_FILE="${2:-}"; shift 2 ;;
+    --skip-ghcr) SKIP_GHCR=1; shift ;;
     *) echo "verify_release_assets: unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -179,11 +201,15 @@ fi
 
 verify_staged_bundle "$VER" "$ASSETS_DIR" "$CASK_FILE" || true
 
-if command -v docker >/dev/null 2>&1; then
+if [ "$SKIP_GHCR" -eq 0 ] && [ -z "$TMP_DL" ] && [ -n "$ASSETS_DIR" ]; then
+  # Staged local bundle check: inspect GHCR if docker is available unless --skip-ghcr is passed.
+  :
+fi
+if [ "$SKIP_GHCR" -eq 0 ] && command -v docker >/dev/null 2>&1; then
   if docker buildx imagetools inspect "ghcr.io/dicklesworthstone/ntm:${VER}" >/dev/null 2>&1; then
     say "GHCR manifest ghcr.io/dicklesworthstone/ntm:${VER} verified"
   else
-    say "note: docker imagetools could not inspect ghcr.io/dicklesworthstone/ntm:${VER} (offline or unpublished tag)"
+    flunk "GHCR manifest ghcr.io/dicklesworthstone/ntm:${VER} not found or unreachable (pass --skip-ghcr only for offline dry-runs)"
   fi
 fi
 
