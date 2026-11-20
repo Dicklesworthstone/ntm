@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -754,22 +755,34 @@ func rotationPromptReady(captured string, pane tmux.Pane) (bool, string) {
 		return false, "agent is still processing a turn"
 	}
 	parser := agent.NewParser()
-	observed := parser.DetectAgentType(captured)
-	if observed.IsValid() && observed != agent.AgentTypeUser && observed.Canonical() != pane.Type.Canonical() {
-		return false, fmt.Sprintf("visible output belongs to %s, expected %s", observed, pane.Type.Canonical())
+	canonicalType := pane.Type.Canonical()
+	commandType := agent.AgentType(filepath.Base(strings.TrimSpace(pane.Command))).Canonical()
+	if commandType.IsValid() && commandType != agent.AgentTypeUser && commandType != canonicalType {
+		return false, fmt.Sprintf("foreground command %q belongs to %s, expected %s", pane.Command, commandType, canonicalType)
 	}
 	composer := tmux.InspectComposer(captured, pane.Type)
-	switch pane.Type.Canonical() {
-	case agent.AgentTypeClaudeCode, agent.AgentTypeCodex, agent.AgentTypeGrok, agent.AgentTypeOmp, agent.AgentTypeOpencode, agent.AgentTypeAntigravity:
+	observed := parser.DetectAgentType(captured)
+	switch canonicalType {
+	case agent.AgentTypeClaudeCode, agent.AgentTypeCodex, agent.AgentTypeGrok, agent.AgentTypeOmp, agent.AgentTypeOpencode, agent.AgentTypeAntigravity, agent.AgentType("pi"):
+		// For harnesses with a structural composer parser, the declared pane
+		// type + visible composer (already checked against pane.Command above)
+		// is authoritative. Stray text in a CWD or transcript mentioning another
+		// harness (e.g. "/tmp/claude-501" inside a Codex pane, GH #381) must
+		// never override the live structural composer.
 		if !composer.MarkerVisible {
+			if observed.IsValid() && observed != agent.AgentTypeUser && observed.Canonical() != canonicalType {
+				return false, fmt.Sprintf("visible output belongs to %s, expected %s", observed, canonicalType)
+			}
 			return false, "agent composer is not visible"
 		}
 	default:
 		// For providers without a structural composer parser, corroborate
 		// their prompt with an independently recognized banner or executable.
 		// A node/python REPL's generic '>' is not an agent-ready signal.
-		commandType := agent.AgentType(filepath.Base(strings.TrimSpace(pane.Command))).Canonical()
-		if commandType != pane.Type.Canonical() && observed.Canonical() != pane.Type.Canonical() {
+		if observed.IsValid() && observed != agent.AgentTypeUser && observed.Canonical() != canonicalType && commandType != canonicalType {
+			return false, fmt.Sprintf("visible output belongs to %s, expected %s", observed, canonicalType)
+		}
+		if commandType != canonicalType && observed.Canonical() != canonicalType {
 			return false, "input prompt has no recognizable agent identity"
 		}
 	}
@@ -859,11 +872,31 @@ func rotationSummaryRequest(summary *SummaryGenerator) (prompt, startMarker, end
 	return prompt, startMarker, endMarker
 }
 
+var rotationANSIRe = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\a\x1b]*(?:\a|\x1b\\)`)
+
+// normalizeRotationMarkerLine strips ANSI escapes, trims surrounding spaces,
+// and strips a single recognized agent response-chrome bullet prefix
+// (e.g. Codex CLI 0.170.0 renders assistant messages starting with "• ", GH #380).
+// Inline prose echoes of the instructions never collapse to the bare marker.
+func normalizeRotationMarkerLine(line string) string {
+	clean := strings.TrimSpace(rotationANSIRe.ReplaceAllString(line, ""))
+	for _, bullet := range []string{"•", "●", "⏺", "▸", "▪", "◦", "◆"} {
+		if strings.HasPrefix(clean, bullet) {
+			rest := clean[len(bullet):]
+			if len(rest) > 0 && (rest[0] == ' ' || rest[0] == '\t') {
+				return strings.TrimSpace(rest)
+			}
+		}
+	}
+	return clean
+}
+
 func completedRotationSummary(captured, startMarker, endMarker string) string {
-	lines := strings.Split(captured, "\n")
+	cleanCaptured := strings.ReplaceAll(rotationANSIRe.ReplaceAllString(captured, ""), "\r\n", "\n")
+	lines := strings.Split(cleanCaptured, "\n")
 	start := -1
 	for i, line := range lines {
-		switch strings.TrimSpace(line) {
+		switch normalizeRotationMarkerLine(line) {
 		case startMarker:
 			start = i + 1
 		case endMarker:

@@ -764,3 +764,69 @@ func TestRotationPromptReady_AntigravityAndOpencode(t *testing.T) {
 		t.Fatalf("rotationPromptReady(ocIdle) = false (%q), want true", reason)
 	}
 }
+
+func TestRotationPromptReady_CodexPathContainingClaude_GH381(t *testing.T) {
+	t.Parallel()
+
+	// Exact capture from GH #381: Codex pane whose CWD contains "claude-501".
+	codexPane := tmux.Pane{ID: "%4", Type: tmux.AgentCodex, Command: "codex", Width: 120}
+	codexWithClaudePath := "  • spawn-proof-7731\n" +
+		"    Worked for 4s • 13:39\n" +
+		"  › Ask Codex to do anything\n" +
+		"    GPT-6-Astra xhigh · /private/tmp/claude-501/ntm-trial/work/lane1 · Reply with spawn-proof-7731\n"
+	if ready, reason := rotationPromptReady(codexWithClaudePath, codexPane); !ready {
+		t.Fatalf("GH #381: rotationPromptReady rejected Codex pane with 'claude' in CWD: %q", reason)
+	}
+
+	// Negative 1: actual foreground process swap to claude MUST still be rejected.
+	swappedPane := tmux.Pane{ID: "%4", Type: tmux.AgentCodex, Command: "claude", Width: 120}
+	if ready, reason := rotationPromptReady(codexWithClaudePath, swappedPane); ready || !strings.Contains(reason, "foreground command") {
+		t.Fatalf("expected foreground command mismatch rejection, got ready=%v reason=%q", ready, reason)
+	}
+
+	// Negative 2: Codex pane whose Codex composer disappeared and now shows Claude's composer MUST still be rejected.
+	claudeCapture := "Claude Code v2.1\n\n❯ \n  ? for shortcuts\n"
+	if ready, reason := rotationPromptReady(claudeCapture, codexPane); ready {
+		t.Fatalf("expected rejection when Codex composer is absent and Claude UI is visible, got ready=true reason=%q", reason)
+	}
+}
+
+func TestCompletedRotationSummary_CodexBulletPrefix_GH380(t *testing.T) {
+	t.Parallel()
+
+	start := "NTM_START_N5XLID4TISOEO5GU"
+	end := "NTM_END_N5XLID4TISOEO5GU"
+
+	// Exact capture from GH #380 (Codex CLI 0.170.0 prefixes first response line with "• ").
+	codexCapture := "Begin your completed response with `" + start + "` on its own line and end it with `" + end + "` on its own line.\n\n" +
+		"  • " + start + "\n" +
+		"    ## CURRENT TASK\n" +
+		"    Provide this handoff summary. There is no unfinished task.\n" +
+		"    ## PROGRESS\n" +
+		"    Completed audit of rotation markers.\n" +
+		"    ## BLOCKERS\n" +
+		"    None.\n" +
+		"    " + end + "\n" +
+		"    Worked for 9s • 13:40\n" +
+		"  › Ask Codex to do anything\n"
+
+	body := completedRotationSummary(codexCapture, start, end)
+	if body == "" {
+		t.Fatal("GH #380: completedRotationSummary returned empty for Codex '• NTM_START_...' capture")
+	}
+	if !strings.Contains(body, "## CURRENT TASK") || !strings.Contains(body, "## PROGRESS") {
+		t.Fatalf("extracted body missing expected sections:\n%s", body)
+	}
+
+	// ANSI-colored & alternative bullet prefixes (● , ⏺ , ▸ ) also parse cleanly.
+	ansiCapture := "\x1b[1m  ⏺ " + start + "\x1b[0m\n## CURRENT TASK\nShip fix\n## PROGRESS\nDone\n\x1b[2m  • " + end + "\x1b[0m\n"
+	if got := completedRotationSummary(ansiCapture, start, end); !strings.Contains(got, "Ship fix") {
+		t.Fatalf("ANSI/bullet capture failed to extract summary: %q", got)
+	}
+
+	// Negative: echoed prompt instructions alone MUST NOT match.
+	echoOnly := "HANDOFF SUMMARY REQUIRED\nBegin your completed response with `" + start + "` on its own line and end it with `" + end + "` on its own line.\n"
+	if got := completedRotationSummary(echoOnly, start, end); got != "" {
+		t.Fatalf("echoed instructions falsely matched as completed summary: %q", got)
+	}
+}
