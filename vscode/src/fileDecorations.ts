@@ -134,10 +134,21 @@ export function registerFileDecorations(
 
     const disposable = vscode.window.registerFileDecorationProvider(provider);
 
+    let disposed = false;
     provider.refresh();
 
-    const interval = setInterval(() => provider.refresh(), 10000);
-    context.subscriptions.push({ dispose: () => clearInterval(interval) });
+    const interval = setInterval(() => {
+        if (!disposed) {
+            provider.refresh();
+        }
+    }, 10000);
+    context.subscriptions.push({
+        dispose: () => {
+            disposed = true;
+            clearInterval(interval);
+            provider.dispose();
+        },
+    });
 
     return { provider, disposable };
 }

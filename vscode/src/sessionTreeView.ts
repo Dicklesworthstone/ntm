@@ -130,16 +130,26 @@ export function registerSessionTreeView(
         }
     });
 
+    let disposed = false;
     provider.refresh();
 
-    const interval = setInterval(() => provider.refresh(), 10000);
+    const interval = setInterval(() => {
+        if (!disposed) {
+            provider.refresh();
+        }
+    }, 10000);
 
     context.subscriptions.push(
         view,
         refreshCmd,
         attachCmd,
-        { dispose: () => clearInterval(interval) },
-        { dispose: () => provider.dispose() }
+        {
+            dispose: () => {
+                disposed = true;
+                clearInterval(interval);
+                provider.dispose();
+            },
+        }
     );
 
     return { provider, view };

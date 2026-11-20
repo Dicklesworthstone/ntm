@@ -162,11 +162,17 @@ describe('Wave 16 VS Code Output, Validation, Plugins & Local Models Support', (
         assert.match(formatLocalModelsMarkdown(modRes), /mixtral:8x7b/);
     });
 
-    it('executes ntm.validateConfig and ntm.showLocalModels commands end-to-end', async () => {
-        const { activate } = await import('../extension');
+    it('executes ntm.validateConfig and ntm.showLocalModels commands end-to-end without leaking timers', async () => {
+        const { activate, deactivate } = await import('../extension');
         const subscriptions: vscode.Disposable[] = [];
         const ctx = { subscriptions } as unknown as vscode.ExtensionContext;
-        activate(ctx);
+        const mockClient = new NtmClient({
+            execFile: async () => ({
+                stdout: JSON.stringify({ success: true, sessions: [], summary: { total_sessions: 0, total_agents: 0 } }),
+                stderr: '',
+            }),
+        });
+        activate(ctx, mockClient);
 
         try {
             mockState.quickPickQueue.push({ label: 'Safety Cockpit', mode: 'openSafetyCockpit' });
@@ -180,6 +186,55 @@ describe('Wave 16 VS Code Output, Validation, Plugins & Local Models Support', (
             for (const sub of subscriptions) {
                 sub.dispose();
             }
+            deactivate();
         }
+    });
+
+    it('does not leak status poll setInterval when checkAvailable resolves after disposal', async () => {
+        const { activate, deactivate } = await import('../extension');
+        const subscriptions: vscode.Disposable[] = [];
+        const ctx = { subscriptions } as unknown as vscode.ExtensionContext;
+        let resolveCheck!: (val: boolean) => void;
+        let getStatusCalls = 0;
+
+        const deferredClient = new NtmClient({
+            execFile: async () => ({
+                stdout: JSON.stringify({ success: true, sessions: [], file_reservations: [] }),
+                stderr: '',
+            }),
+        });
+        deferredClient.checkAvailable = () => new Promise<boolean>(resolve => {
+            resolveCheck = resolve;
+        });
+        deferredClient.getStatus = async () => {
+            getStatusCalls++;
+            return {
+                generated_at: new Date().toISOString(),
+                system: {
+                    version: '1.38.0',
+                    commit: 'test',
+                    build_date: '2026-11-20',
+                    go_version: 'go1.26.10',
+                    os: 'linux',
+                    arch: 'amd64',
+                    tmux_available: true,
+                },
+                sessions: [],
+                summary: { total_sessions: 0, total_agents: 0, attached_count: 0, claude_count: 0, codex_count: 0, gemini_count: 0 },
+            };
+        };
+
+        activate(ctx, deferredClient);
+        for (const sub of subscriptions) {
+            sub.dispose();
+        }
+        deactivate();
+
+        // Reset after initial activation refresh from SessionTreeView; resolving
+        // checkAvailable AFTER disposal must NOT trigger updateStatus or start polling.
+        getStatusCalls = 0;
+        resolveCheck(true);
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(getStatusCalls, 0);
     });
 });

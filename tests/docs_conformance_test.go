@@ -1199,6 +1199,11 @@ func TestVSCodeExtensionManifestAndVSIXContract(t *testing.T) {
 		{"--robot-mapping=proj", "--project=/tmp/proj", "--robot-format=json"},
 		{"--robot-workflows", "--workflows-name=red-green", "--workflows-role=red", "--project=/tmp/proj", "--robot-format=json"},
 		{"--robot-session-templates", "--template-name=refactor", "--project=/tmp/proj", "--robot-format=json"},
+		{"--robot-grep=panic:", "--grep-session=proj", "--type=agy", "--grep-ignore-case", "--grep-context=2", "--robot-format=json"},
+		{"--robot-extract=proj", "--extract-lang=go", "--lines=250", "--robot-format=json"},
+		{"--robot-validate", "--validate-all", "--validate-fix", "--project=/tmp/proj", "--robot-format=json"},
+		{"--robot-plugins", "--robot-format=json"},
+		{"--robot-models", "--models-action=recommend", "--robot-format=json"},
 		{"--robot-backpressure", "--session=proj", "--robot-format=json"},
 		{"worktrees", "list", "--session=proj", "--json"},
 		{"attention", "list", "--session=proj", "--limit=30", "--all", "--json"},
@@ -1245,6 +1250,7 @@ func TestVSCodeExtensionManifestAndVSIXContract(t *testing.T) {
 			"extension/out/swarmOpsSupport.js",
 			"extension/out/sessionIntelSupport.js",
 			"extension/out/persistenceWorkflowSupport.js",
+			"extension/out/outputEcosystemSupport.js",
 		} {
 			if !entries[wantEntry] {
 				t.Errorf("built VSIX %s missing required entry %q", vsixPath, wantEntry)

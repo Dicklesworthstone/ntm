@@ -665,7 +665,13 @@ describe('POSIX shellQuote, Custom binaryPath & Multi-Harness Commands', () => {
             extensionUri: vscode.Uri.file('/ext'),
         } as unknown as vscode.ExtensionContext;
 
-        activate(context);
+        const mockClient = new NtmClient({
+            execFile: async () => ({
+                stdout: JSON.stringify({ success: true, sessions: [], file_reservations: [] }),
+                stderr: '',
+            }),
+        });
+        activate(context, mockClient);
         try {
             const trickySession = "my proj $(id) '1'";
             await vscode.commands.executeCommand('ntm.openTerminal', trickySession);

@@ -1253,11 +1253,29 @@ function extractSessionName(arg?: string | NtmTreeItem): string | undefined {
     return undefined;
 }
 
+const activeExtensionCleanups = new Set<() => void>();
+
 export function activate(context: vscode.ExtensionContext, clientOverride?: NtmClient) {
     const client = clientOverride ?? new NtmClient();
     const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     statusBarItem.command = 'ntm.openPalette';
     context.subscriptions.push(statusBarItem);
+
+    let disposed = false;
+    let statusPollInterval: NodeJS.Timeout | undefined;
+    const cleanupActivation = () => {
+        if (disposed) {
+            return;
+        }
+        disposed = true;
+        if (statusPollInterval !== undefined) {
+            clearInterval(statusPollInterval);
+            statusPollInterval = undefined;
+        }
+        activeExtensionCleanups.delete(cleanupActivation);
+    };
+    activeExtensionCleanups.add(cleanupActivation);
+    context.subscriptions.push({ dispose: cleanupActivation });
 
     let currentSession: string | undefined;
 
@@ -1267,16 +1285,25 @@ export function activate(context: vscode.ExtensionContext, clientOverride?: NtmC
     const { provider: treeProvider } = registerSessionTreeView(context, client);
 
     client.checkAvailable().then(available => {
+        if (disposed) {
+            return;
+        }
         if (available) {
             updateStatus(client, statusBarItem).then(name => {
-                currentSession = name ?? currentSession;
-            }).catch(() => undefined);
-            const interval = setInterval(() => {
-                updateStatus(client, statusBarItem).then(name => {
+                if (!disposed) {
                     currentSession = name ?? currentSession;
+                }
+            }).catch(() => undefined);
+            statusPollInterval = setInterval(() => {
+                if (disposed) {
+                    return;
+                }
+                updateStatus(client, statusBarItem).then(name => {
+                    if (!disposed) {
+                        currentSession = name ?? currentSession;
+                    }
                 }).catch(() => undefined);
             }, 5000);
-            context.subscriptions.push({ dispose: () => clearInterval(interval) });
         } else {
             statusBarItem.text = '$(error) NTM missing';
             statusBarItem.color = new vscode.ThemeColor('statusBarItem.errorForeground');
@@ -3273,4 +3300,9 @@ async function updateStatus(client: NtmClient, item: vscode.StatusBarItem): Prom
     return undefined;
 }
 
-export function deactivate() {}
+export function deactivate() {
+    for (const cleanup of Array.from(activeExtensionCleanups)) {
+        cleanup();
+    }
+    activeExtensionCleanups.clear();
+}
