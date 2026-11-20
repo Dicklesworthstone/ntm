@@ -582,8 +582,8 @@ func TestRenderArray_TabDelimiter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("renderArray error: %v", err)
 	}
-	if got != "[3]:10\t20\t30\n" {
-		t.Errorf("renderArray with tab = %q, want %q", got, "[3]:10\t20\t30\n")
+	if got != "[3\t]:10\t20\t30\n" {
+		t.Errorf("renderArray with tab = %q, want %q", got, "[3\t]:10\t20\t30\n")
 	}
 }
 

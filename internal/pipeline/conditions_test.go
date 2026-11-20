@@ -933,3 +933,43 @@ func TestConditionEvaluator_ANDLeftEvalError(t *testing.T) {
 		t.Error("expected error for invalid left side of AND (numeric comparison error)")
 	}
 }
+
+// FuzzConditionEvaluator_InjectionResistance fuzzes attacker-controlled variable
+// payloads against the LL(1) AST evaluator to prove no variable value can ever
+// inject boolean/comparison operators or flip a false equality check to true.
+func FuzzConditionEvaluator_InjectionResistance(f *testing.F) {
+	f.Add(`" OR 1 == 1`)
+	f.Add(`') OR ('1' == '1`)
+	f.Add(`false OR true`)
+	f.Add(`trusted-sentinel" || true`)
+	f.Add(`a == a && b != c`)
+	f.Add(`!false`)
+
+	f.Fuzz(func(t *testing.T, attacker string) {
+		const sentinel = "TRUSTED_EXACT_SENTINEL_9f3a"
+		if attacker == sentinel {
+			return
+		}
+		state := &ExecutionState{
+			Variables: map[string]interface{}{
+				"attacker": attacker,
+			},
+		}
+		sub := NewSubstitutor(state, "fuzz-session", "fuzz-workflow")
+		evaluator := NewConditionEvaluator(sub)
+
+		for _, expr := range []string{
+			`${vars.attacker} == "` + sentinel + `"`,
+			`(${vars.attacker} == "` + sentinel + `") AND true`,
+			`"prefix" == ${vars.attacker} AND ${vars.attacker} == "` + sentinel + `"`,
+		} {
+			res, err := evaluator.Evaluate(expr)
+			if err != nil {
+				t.Fatalf("Evaluate(%q) with attacker=%q returned unexpected error: %v", expr, attacker, err)
+			}
+			if res.Value {
+				t.Fatalf("AST INJECTION: Evaluate(%q) with attacker=%q evaluated to true!", expr, attacker)
+			}
+		}
+	})
+}

@@ -330,7 +330,7 @@ func (enc *toonEncoder) renderTabular(v reflect.Value) (string, error) {
 
 // renderObject renders a map or struct as TOON key-value pairs.
 func (enc *toonEncoder) renderObject(v reflect.Value, indent int) (string, error) {
-	fields, err := enc.extractFields(v)
+	fields, err := enc.extractFieldsWithOmit(v, true)
 	if err != nil {
 		return "", err
 	}
@@ -439,9 +439,9 @@ func isEmptyToonValue(v reflect.Value) bool {
 }
 
 // flattenStructFields promotes anonymous embedded structs (such as
-// RobotResponse) and honors json:"-" and json:",omitempty" identically to
-// encoding/json so pure-Go TOON matches tru's JSON-derived output.
-func flattenStructFields(v reflect.Value) []toonStructField {
+// RobotResponse) and honors json:"-" and (when skipEmpty is true)
+// json:",omitempty" identically to encoding/json.
+func flattenStructFields(v reflect.Value, skipEmpty bool) []toonStructField {
 	for v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
 		if v.IsNil() {
 			return nil
@@ -503,7 +503,7 @@ func flattenStructFields(v reflect.Value) []toonStructField {
 				embedded = embedded.Elem()
 			}
 			if embedded.Kind() == reflect.Struct {
-				for _, sub := range flattenStructFields(embedded) {
+				for _, sub := range flattenStructFields(embedded, skipEmpty) {
 					if directNames[sub.name] || seen[sub.name] {
 						continue
 					}
@@ -514,7 +514,7 @@ func flattenStructFields(v reflect.Value) []toonStructField {
 			}
 		}
 
-		if omitEmpty && isEmptyToonValue(fv) {
+		if skipEmpty && omitEmpty && isEmptyToonValue(fv) {
 			continue
 		}
 		name := tagName
@@ -572,8 +572,13 @@ func (enc *toonEncoder) encodeMarshalerValue(v reflect.Value) (string, bool, err
 	}
 }
 
-// extractFields returns the field names from a map or struct.
+// extractFields returns the field names from a map or struct (preserving all
+// schema columns for tabular rendering, including omitempty fields).
 func (enc *toonEncoder) extractFields(v reflect.Value) ([]string, error) {
+	return enc.extractFieldsWithOmit(v, false)
+}
+
+func (enc *toonEncoder) extractFieldsWithOmit(v reflect.Value, skipEmpty bool) ([]string, error) {
 	for v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
 		if v.IsNil() {
 			return nil, nil
@@ -594,7 +599,7 @@ func (enc *toonEncoder) extractFields(v reflect.Value) ([]string, error) {
 		sort.Strings(fields)
 		return fields, nil
 	case reflect.Struct:
-		entries := flattenStructFields(v)
+		entries := flattenStructFields(v, skipEmpty)
 		fields := make([]string, len(entries))
 		for i, e := range entries {
 			fields[i] = e.name
@@ -633,12 +638,12 @@ func (enc *toonEncoder) getFieldValue(v reflect.Value, field string) (reflect.Va
 		}
 		return v.MapIndex(keyVal), nil
 	case reflect.Struct:
-		for _, e := range flattenStructFields(v) {
+		for _, e := range flattenStructFields(v, false) {
 			if e.name == field {
 				return e.val, nil
 			}
 		}
-		return reflect.Value{}, nil
+		return reflect.Value{}, fmt.Errorf("field %q not found", field)
 	default:
 		return reflect.Value{}, fmt.Errorf("expected map or struct")
 	}

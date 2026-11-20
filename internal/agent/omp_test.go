@@ -568,3 +568,65 @@ func TestParseOmpComposer_BandShape_GH342(t *testing.T) {
 		})
 	}
 }
+
+// TestMR2_ParseOmpComposer_WidthAndANSIInvariance is a metamorphic proof (MR-2)
+// that varying terminal rule width (20..220 cols) and wrapping lines in ANSI SGR
+// color escapes never breaks omp band-shape composer recognition or alters
+// Found/Busy/Draft semantics.
+func TestMR2_ParseOmpComposer_WidthAndANSIInvariance(t *testing.T) {
+	t.Parallel()
+
+	for _, width := range []int{20, 48, 80, 120, 180, 220} {
+		rule := strings.Repeat("─", width)
+		for _, tc := range []struct {
+			name     string
+			prefix   string
+			draft    string
+			wantBusy bool
+		}{
+			{"idle_empty", "   π > ◒ GLM-5.3 > 📁 /repo ▶" + rule + "12%───", "", false},
+			{"idle_draft", "   π > ◒ GLM-5.3 > 📁 /repo ▶" + rule + "12%───", "ship metamorphic tests", false},
+			{"busy_spinner", "   ⠸ 19s > ◒ GLM-5.3 > 📁 /repo ▶" + rule + "18%───", "", true},
+		} {
+			plain := tc.prefix + "\n" +
+				"  ╰─ " + tc.draft + "\n" +
+				"      tab cycle thinking · shift+tab plan mode\n"
+			ansi := "\x1b[38;5;244m" + tc.prefix + "\x1b[0m\n" +
+				"\x1b[1m  ╰─ \x1b[0m" + tc.draft + "\n" +
+				"\x1b[2m      tab cycle thinking · shift+tab plan mode\x1b[0m\n"
+
+			gotPlain := ParseOmpComposer(plain)
+			gotANSI := ParseOmpComposer(ansi)
+			if !gotPlain.Found || gotPlain.Busy != tc.wantBusy || gotPlain.Draft != tc.draft {
+				t.Fatalf("width=%d %s plain=%+v, want found=true busy=%v draft=%q",
+					width, tc.name, gotPlain, tc.wantBusy, tc.draft)
+			}
+			if gotPlain != gotANSI {
+				t.Fatalf("MR-2 ANSI invariance failed at width=%d %s: plain=%+v ansi=%+v",
+					width, tc.name, gotPlain, gotANSI)
+			}
+		}
+	}
+}
+
+// FuzzParseOmpComposer fuzzes ParseOmpComposer on arbitrary terminal buffers to
+// prove panic-freedom and consistency with OmpIdlePromptShowing/OmpActivelyWorking.
+func FuzzParseOmpComposer(f *testing.F) {
+	f.Add("   π > ◒ GLM-5.3 > 📁 /repo ▶───1%───\n  ╰─ \n")
+	f.Add("╭── π > ◒ Claude ──╮\n│ hello │\n╰──────────────────╯\n")
+	f.Add("╭─── Tool Output ───╮\n│ ok │\n╰─── Tool Output ───╯\n")
+	f.Add("\x1b[31m   ⠸ 5s > ◒ GPT ▶───20%───\x1b[0m\n  ╰─ draft\n")
+
+	f.Fuzz(func(t *testing.T, capture string) {
+		c := ParseOmpComposer(capture)
+		idle := OmpIdlePromptShowing(capture)
+		working := OmpActivelyWorking(capture, 120)
+		// Fundamental invariant: a pane cannot simultaneously be idle-ready and actively working.
+		if idle && working {
+			t.Fatalf("contradictory omp state: both idle and actively working for capture=%q (composer=%+v)", capture, c)
+		}
+		if idle && !c.Found {
+			t.Fatalf("OmpIdlePromptShowing=true despite composer.Found=false for capture=%q", capture)
+		}
+	})
+}

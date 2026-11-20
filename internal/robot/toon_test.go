@@ -352,3 +352,77 @@ func TestToonEncodePureGo_DelimitersAndEmbeddedFlattening(t *testing.T) {
 		}
 	})
 }
+
+// TestMR3_ToonEncodePureGo_MetamorphicInvariants proves delimiter-keyword
+// equivalence ("tab" == "\t", "comma" == ",", "pipe" == "|"), embedded
+// RobotResponse flattening, and absence of literal keyword delimiter corruption.
+func TestMR3_ToonEncodePureGo_MetamorphicInvariants(t *testing.T) {
+	t.Parallel()
+
+	type item struct {
+		ID    int    `json:"id"`
+		Label string `json:"label"`
+	}
+	payload := struct {
+		RobotResponse
+		Items []item   `json:"items"`
+		Tags  []string `json:"tags"`
+	}{
+		RobotResponse: NewRobotResponse(true),
+		Items:         []item{{ID: 1, Label: "alpha"}, {ID: 2, Label: "beta:v2"}},
+		Tags:          []string{"x:1", "y:2", "z"},
+	}
+
+	pairs := [][2]string{
+		{"tab", "\t"},
+		{"comma", ","},
+		{"pipe", "|"},
+	}
+	for _, p := range pairs {
+		outA, err := toonEncodePureGo(payload, p[0])
+		if err != nil {
+			t.Fatalf("toonEncodePureGo(%q) error: %v", p[0], err)
+		}
+		outB, err := toonEncodePureGo(payload, p[1])
+		if err != nil {
+			t.Fatalf("toonEncodePureGo(%q) error: %v", p[1], err)
+		}
+		if outA != outB {
+			t.Fatalf("MR-3 keyword equivalence failed (%q vs %q):\n--- %s ---\n%s\n--- %s ---\n%s", p[0], p[1], p[0], outA, p[1], outB)
+		}
+		if strings.Contains(outA, "RobotResponse:") {
+			t.Fatalf("MR-3 flattening failed for %q:\n%s", p[0], outA)
+		}
+		if p[0] == "tab" && strings.Contains(outA, `"x:1"tab"y:2"`) {
+			t.Fatalf("MR-3 literal tab-word corruption:\n%s", outA)
+		}
+	}
+}
+
+// FuzzToonEncodePureGo fuzzes pure-Go TOON encoding over arbitrary keys,
+// values, and delimiters to prove panic-freedom and delimiter hygiene.
+func FuzzToonEncodePureGo(f *testing.F) {
+	f.Add("alpha", "beta:1", "tab")
+	f.Add("has\ttab", "has,comma", "\t")
+	f.Add("pipe|val", "quote\"val", "pipe")
+	f.Add("", "line1\nline2", ",")
+
+	f.Fuzz(func(t *testing.T, a, b, delim string) {
+		payload := struct {
+			RobotResponse
+			Values []string          `json:"values"`
+			Meta   map[string]string `json:"meta"`
+		}{
+			RobotResponse: NewRobotResponse(true),
+			Values:        []string{a, b},
+			Meta:          map[string]string{"a": a, "b": b},
+		}
+		out, err := toonEncodePureGo(payload, delim)
+		if err != nil {
+			t.Fatalf("toonEncodePureGo unexpected error: %v", err)
+		}
+		if strings.Contains(out, "RobotResponse:") {
+			t.Fatalf("embedded RobotResponse leaked into output:\n%s", out)
+		}
+	})
+}

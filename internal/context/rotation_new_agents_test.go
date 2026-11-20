@@ -830,3 +830,99 @@ func TestCompletedRotationSummary_CodexBulletPrefix_GH380(t *testing.T) {
 		t.Fatalf("echoed instructions falsely matched as completed summary: %q", got)
 	}
 }
+
+// TestMR1_RotationPromptReady_PathInvariance is a metamorphic proof (MR-1) that
+// injecting arbitrary foreign-agent keyword tokens into pane paths or scrollback
+// never causes rotationPromptReady to misidentify an authenticated pane whose
+// declared pane.Type, foreground pane.Command, and structural composer agree.
+func TestMR1_RotationPromptReady_PathInvariance(t *testing.T) {
+	t.Parallel()
+
+	poisonTokens := []string{
+		"/private/tmp/claude-501/work",
+		"/Users/dev/codex-cli/repo",
+		"/srv/gemini-2.5-pro/logs",
+		"/opt/antigravity/agy/cache",
+		"/home/ci/opencode-build",
+		"/tmp/oh-my-pi/omp-session",
+		"/var/tmp/cursor-agent/run",
+		"/tmp/windsurf/aider/ollama/grok",
+	}
+
+	fixtures := []struct {
+		name  string
+		pane  tmux.Pane
+		frame func(poisonPath string) string
+	}{
+		{
+			name: "codex",
+			pane: tmux.Pane{ID: "%4", Type: tmux.AgentCodex, Command: "codex", Width: 140},
+			frame: func(poison string) string {
+				return "  • done\n  › Ask Codex to do anything\n    GPT-6 xhigh · " + poison + " · 85% left\n"
+			},
+		},
+		{
+			name: "claude",
+			pane: tmux.Pane{ID: "%5", Type: tmux.AgentClaude, Command: "claude", Width: 140},
+			frame: func(poison string) string {
+				return "Working in " + poison + "\n\n❯ \n  ? for shortcuts\n"
+			},
+		},
+		{
+			name: "antigravity",
+			pane: tmux.Pane{ID: "%10", Type: tmux.AgentAntigravity, Command: "agy-locked", Width: 140},
+			frame: func(poison string) string {
+				return "Antigravity cwd=" + poison + "\n\n  >\n\n  ? for shortcuts\n  Gemini 4 Neon\n"
+			},
+		},
+		{
+			name: "opencode",
+			pane: tmux.Pane{ID: "%11", Type: tmux.AgentOpencode, Command: "opencode", Width: 140},
+			frame: func(poison string) string {
+				return "cwd: " + poison + "\n  ┃\n  ┃  Ask anything…\n  ┃\n  ┃  Build · Big Pickle\n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n"
+			},
+		},
+	}
+
+	for _, fx := range fixtures {
+		for _, poison := range poisonTokens {
+			capture := fx.frame(poison)
+			if ready, reason := rotationPromptReady(capture, fx.pane); !ready {
+				t.Errorf("MR-1 violation (%s with poison %q): rotationPromptReady = false (%q), want true", fx.name, poison, reason)
+			}
+		}
+	}
+}
+
+// FuzzCompletedRotationSummary_BulletAndANSIInvariance fuzzes rotation summary
+// extraction across arbitrary ANSI escapes, response bullet prefixes, and noise.
+func FuzzCompletedRotationSummary_BulletAndANSIInvariance(f *testing.F) {
+	f.Add("• ", "\x1b[1m", "## CURRENT TASK\nFinish audit\n## PROGRESS\nDone", "  ")
+	f.Add("⏺ ", "\x1b[38;5;245m", "## CURRENT TASK\nFix bug", "\t")
+	f.Add("", "", "plain summary body", "")
+
+	f.Fuzz(func(t *testing.T, bullet, ansiPrefix, body, indent string) {
+		const start = "NTM_START_FUZZTOKEN1234"
+		const end = "NTM_END_FUZZTOKEN1234"
+		// Ensure the fuzzed body itself does not accidentally contain markers.
+		cleanBody := strings.ReplaceAll(strings.ReplaceAll(body, start, ""), end, "")
+		capture := "Instructions: wrap with `" + start + "` and `" + end + "`\n" +
+			indent + ansiPrefix + bullet + start + "\x1b[0m\n" +
+			cleanBody + "\n" +
+			indent + end + "\n"
+		// Must never panic on arbitrary inputs.
+		_ = completedRotationSummary(capture, start, end)
+
+		// MR-2 invariant: for recognized agent bullets and non-empty body,
+		// wrapping with ANSI SGR must preserve extraction.
+		allowedBullets := map[string]bool{"": true, "• ": true, "● ": true, "⏺ ": true, "▸ ": true, "▪ ": true, "◦ ": true, "◆ ": true}
+		if allowedBullets[bullet] && strings.TrimSpace(cleanBody) != "" &&
+			!strings.ContainsAny(indent, "\r\n") && strings.TrimSpace(indent) == "" {
+			plainCap := "Prompt\n" + indent + bullet + start + "\n" + cleanBody + "\n" + indent + end + "\n"
+			sgrCap := "Prompt\n" + indent + "\x1b[1;36m" + bullet + start + "\x1b[0m\n" + cleanBody + "\n" + indent + "\x1b[2m" + end + "\x1b[0m\n"
+			if gotPlain, gotSGR := completedRotationSummary(plainCap, start, end), completedRotationSummary(sgrCap, start, end); gotPlain != gotSGR {
+				t.Fatalf("MR-2 ANSI invariance failed: plain=%q sgr=%q", gotPlain, gotSGR)
+			}
+		}
+	})
+}
