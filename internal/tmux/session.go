@@ -3047,7 +3047,7 @@ func (c *Client) ompComposerReadyForDelivery(ctx context.Context, target string)
 	case composer.Found:
 		return false, "omp composer has a completion list open below it; Enter would select an entry instead of submitting (clear the draft first)"
 	default:
-		return false, "omp composer not visible: pane appears to be initializing or showing a selector/dialog; a typed prompt would be swallowed"
+		return false, "omp composer not visible (if using a non-default omp composer.shape, set composer.shape to band or box; otherwise pane appears to be initializing or showing a selector/dialog; a typed prompt would be swallowed)"
 	}
 }
 

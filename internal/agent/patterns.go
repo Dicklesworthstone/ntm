@@ -816,18 +816,35 @@ var (
 	// ("╭─── omp v18.2.3 ───" / "+--- omp v18.2.3 ---").
 	ompHeaderPattern = regexp.MustCompile(`(?m)^\s*(?:╭─+|\+-+)\s+omp\s+v\d+\.\d+`)
 
-	// ompComposerTopRe matches the composer's top border: exactly two rule
+	// ompComposerTopRe matches the box composer's top border: exactly two rule
 	// glyphs after the corner, whitespace, then the status line. Tool-output
 	// boxes ("╭────╮"), the banner ("╭─── omp v…") and the model selector
 	// ("╭─ Models ─") never have that shape.
 	ompComposerTopRe = regexp.MustCompile(`^\s*(?:╭──|\+--)\s+(\S.*)$`)
-	// ompComposerBottomRe matches the composer's bottom border, which is also
+	// ompComposerBottomRe matches the box composer's bottom border, which is also
 	// the draft's last input row.
 	ompComposerBottomRe = regexp.MustCompile(`^\s*(?:╰─|\+-)(.*?)(?:─╯|-\+)\s*$`)
+	// ompComposerBandBottomRe matches the default omp 18.22+ `composer.shape: band`
+	// prompt row ("  ╰─ ..." or "  +- ...") which has no closing right border.
+	// Requiring whitespace or EOL immediately after `╰─`/`+-` rejects tool-output
+	// box footers (`╰─── Service: … ─╯`) and paste-preview footers (`╰ +3 lines ─`).
+	ompComposerBandBottomRe = regexp.MustCompile(`^\s*(?:╰─|\+-)([ \t].*)?$`)
+	// ompComposerBandTopRe matches the borderless status band rendered directly
+	// above the curved prompt in `composer.shape: band` ("π > model > dir ▶─1%─",
+	// "⠏ 18m > model > dir ▶─14%─", plus Nerd/ASCII presets).
+	ompComposerBandTopRe = regexp.MustCompile(`^\s*((?:(?:π|󰵗|omp|pi)|\S\s+\d+[smh])\s*(?:>|❯|›)\s+\S.*)$`)
+	// ompComposerBandWrapRe matches a wrapped continuation of a long `band` status
+	// line on narrow panes (e.g. "▶─1%───┃───1M─" or "?6 > $0.06 ▶───14%──").
+	ompComposerBandWrapRe = regexp.MustCompile(`^\s*(?:▶[─\-]|─{3,}|-{3,}|.*\s(?:>|❯|›)\s+\S.*▶|.*▶[─\-]*\d{1,3}(?:\.\d+)?%)`)
 	// Empty omp composers can show right-aligned shortcut hints in the bottom
-	// border (GH#342). Match the shipped symbol presets and known labels only;
-	// left-aligned text and continuation rows remain real draft input.
+	// border (GH#342) — both in `box` and `band` shapes. Match the shipped symbol
+	// presets and known labels only; left-aligned text and continuation rows
+	// remain real draft input.
 	ompComposerBottomHintRe = regexp.MustCompile(`[ \t]{2,}(?:(?:󰘶[ \t]+󰌒|⇧⇥|Shift\+Tab)[ \t]+to change thinking effort|(?:←[ \t]*←|Left[ \t]+Left)[ \t]+to see [1-9][0-9]* running agents?)[ \t]*$`)
+	// ompComposerStandaloneHintRe matches a right-aligned omp key hint that
+	// wrapped onto the visual line directly below an empty `band` prompt row on
+	// narrow panes.
+	ompComposerStandaloneHintRe = regexp.MustCompile(`^\s*(?:(?:󰘶[ \t]+󰌒|⇧⇥|Shift\+Tab)[ \t]+to change thinking effort|(?:←[ \t]*←|Left[ \t]+Left)[ \t]+to see [1-9][0-9]* running agents?)\s*$`)
 	// ompComposerRowRe matches a bordered continuation row of the draft.
 	ompComposerRowRe = regexp.MustCompile(`^\s*(?:│|\|)(.*?)(?:│|\|)\s*$`)
 	// ompBusyStatusRe matches the in-flight status segment: one spinner frame
@@ -935,33 +952,40 @@ func (c OmpComposer) Working() bool {
 	return c.Found && (c.Busy || c.EscHint || c.Steering > 0 || c.Subagents > 0)
 }
 
-// ParseOmpComposer locates and parses the bottom-most omp composer box.
+// ParseOmpComposer locates and parses the bottom-most omp composer (`box` or
+// default 18.22+ `band` shape).
 func ParseOmpComposer(output string) OmpComposer {
 	lines := strings.Split(stripANSICodes(output), "\n")
 	nonBlankSeen := 0
 	rowsBelow := 0
+	var trailingNonBlank []string
 	for i := len(lines) - 1; i >= 0 && nonBlankSeen < ompComposerScanLines; i-- {
 		if strings.TrimSpace(lines[i]) == "" {
 			continue
 		}
 		nonBlankSeen++
-		bottom := ompComposerBottomRe.FindStringSubmatch(lines[i])
-		if bottom == nil {
-			rowsBelow++
-			continue
+		if bottom := ompComposerBottomRe.FindStringSubmatch(lines[i]); bottom != nil {
+			if composer, ok := parseOmpComposerAt(lines, i, bottom[1]); ok {
+				composer.RowsBelow = rowsBelow
+				return composer
+			}
+		} else if bandBottom := ompComposerBandBottomRe.FindStringSubmatch(lines[i]); bandBottom != nil {
+			if composer, ok := parseOmpBandComposerAt(lines, i, bandBottom[1]); ok {
+				effectiveRowsBelow := rowsBelow
+				if effectiveRowsBelow == 1 && len(trailingNonBlank) == 1 && ompComposerStandaloneHintRe.MatchString(trailingNonBlank[0]) {
+					effectiveRowsBelow = 0
+				}
+				composer.RowsBelow = effectiveRowsBelow
+				return composer
+			}
 		}
-		composer, ok := parseOmpComposerAt(lines, i, bottom[1])
-		if !ok {
-			rowsBelow++
-			continue
-		}
-		composer.RowsBelow = rowsBelow
-		return composer
+		rowsBelow++
+		trailingNonBlank = append(trailingNonBlank, lines[i])
 	}
 	return OmpComposer{}
 }
 
-// parseOmpComposerAt validates a candidate bottom border at lines[bottomIdx]
+// parseOmpComposerAt validates a candidate box bottom border at lines[bottomIdx]
 // by walking up through bordered rows to a status-line top border.
 func parseOmpComposerAt(lines []string, bottomIdx int, bottomText string) (OmpComposer, bool) {
 	bottomText = ompComposerBottomHintRe.ReplaceAllString(bottomText, "")
@@ -969,58 +993,7 @@ func parseOmpComposerAt(lines []string, bottomIdx int, bottomText string) (OmpCo
 	for j := bottomIdx - 1; j >= 0 && bottomIdx-j <= ompComposerMaxRows+1; j-- {
 		line := lines[j]
 		if top := ompComposerTopRe.FindStringSubmatch(line); top != nil {
-			status := strings.TrimSpace(top[1])
-			composer := OmpComposer{
-				Found:        true,
-				Busy:         ompBusyStatusRe.MatchString(status),
-				StatusLine:   status,
-				TopLine:      j,
-				ActivityLine: -1,
-			}
-			// Rows were collected bottom-up; restore reading order and drop
-			// blank leading/trailing rows so an empty box reads as "".
-			for l, r := 0, len(draftRows)-1; l < r; l, r = l+1, r-1 {
-				draftRows[l], draftRows[r] = draftRows[r], draftRows[l]
-			}
-			composer.Draft = strings.TrimSpace(strings.Join(draftRows, "\n"))
-			for k := j - 1; k >= 0 && j-k <= 2; k-- {
-				above := lines[k]
-				if strings.TrimSpace(above) == "" {
-					continue
-				}
-				if ompEscHintRe.MatchString(above) {
-					composer.EscHint = true
-					composer.ActivityLine = k
-				}
-				break
-			}
-			for k := j - 1; k >= 0 && j-k <= ompSteeringScanLines; k-- {
-				if m := ompSteeringHeaderRe.FindStringSubmatch(lines[k]); m != nil {
-					if n, err := strconv.Atoi(m[1]); err == nil {
-						composer.Steering = n
-					}
-					break
-				}
-			}
-			for k := j - 1; k >= 0 && j-k <= ompSubagentsScanLines; k-- {
-				if !ompSubagentsHeaderRe.MatchString(lines[k]) {
-					continue
-				}
-				for r := k + 1; r < j && ompSubagentRowRe.MatchString(lines[r]); r++ {
-					composer.Subagents++
-				}
-				break
-			}
-			composer.ProviderError = ompProviderErrorAbove(lines, j)
-			if composer.Draft != "" && ompPasteTokenRe.MatchString(composer.Draft) {
-				for k := j - 1; k >= 0 && j-k <= 2; k-- {
-					if ompPastePreviewFooterRe.MatchString(lines[k]) {
-						composer.PasteToken = true
-						break
-					}
-				}
-			}
-			return composer, true
+			return finishOmpComposer(lines, j, strings.TrimSpace(top[1]), draftRows), true
 		}
 		row := ompComposerRowRe.FindStringSubmatch(line)
 		if row == nil {
@@ -1029,6 +1002,121 @@ func parseOmpComposerAt(lines []string, bottomIdx int, bottomText string) (OmpCo
 		draftRows = append(draftRows, strings.TrimSpace(row[1]))
 	}
 	return OmpComposer{}, false
+}
+
+// isOmpBandStatus reports whether status text carries structural omp band
+// markers beyond a bare "π > ..." prefix (context gauge, bar fill, or multi-
+// segment " > " separator chain), preventing ordinary prose from matching.
+func isOmpBandStatus(status string) bool {
+	if ompContextGaugeRe.MatchString(status) {
+		return true
+	}
+	if strings.Contains(status, "▶") || strings.Contains(status, "───") || strings.Contains(status, "---") {
+		return true
+	}
+	return strings.Count(status, " > ")+strings.Count(status, " ❯ ")+strings.Count(status, " › ") >= 2
+}
+
+// parseOmpBandComposerAt validates a candidate omp 18.22+ `composer.shape: band`
+// prompt row at lines[bottomIdx] by walking upward to the flush borderless
+// status band directly above it (supporting wrapped band headers and multi-line
+// unbordered drafts while stopping cleanly at blank/rule/box boundaries).
+func parseOmpBandComposerAt(lines []string, bottomIdx int, bottomText string) (OmpComposer, bool) {
+	bottomText = ompComposerBottomHintRe.ReplaceAllString(bottomText, "")
+	// Track rows above bottomIdx in bottom-up order; wrapped continuations of
+	// the status band immediately below the band header are peeled off into the
+	// combined StatusLine rather than treated as draft text.
+	aboveRows := make([]string, 0, 4)
+	for j := bottomIdx - 1; j >= 0 && bottomIdx-j <= ompComposerMaxRows+3; j-- {
+		line := lines[j]
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || ompRuleRe.MatchString(line) || ompComposerTopRe.MatchString(line) || ompComposerBottomRe.MatchString(line) {
+			return OmpComposer{}, false
+		}
+		if top := ompComposerBandTopRe.FindStringSubmatch(line); top != nil {
+			// Restore top-down order of rows sitting between lines[j] and bottomIdx.
+			between := make([]string, len(aboveRows))
+			for idx := range aboveRows {
+				between[idx] = aboveRows[len(aboveRows)-1-idx]
+			}
+			// Absorb up to 2 wrapped continuation lines of the status band itself.
+			statusParts := []string{strings.TrimSpace(top[1])}
+			consumed := 0
+			for consumed < len(between) && consumed < 2 && ompComposerBandWrapRe.MatchString(between[consumed]) {
+				statusParts = append(statusParts, strings.TrimSpace(between[consumed]))
+				consumed++
+			}
+			combinedStatus := strings.Join(statusParts, " ")
+			if !isOmpBandStatus(combinedStatus) {
+				return OmpComposer{}, false
+			}
+			// Remaining rows between the status band and bottomIdx are draft rows
+			// (stored bottom-up to match finishOmpComposer's convention).
+			draftRows := []string{strings.TrimSpace(bottomText)}
+			for idx := len(between) - 1; idx >= consumed; idx-- {
+				draftRows = append(draftRows, strings.TrimSpace(between[idx]))
+			}
+			return finishOmpComposer(lines, j, combinedStatus, draftRows), true
+		}
+		aboveRows = append(aboveRows, line)
+	}
+	return OmpComposer{}, false
+}
+
+// finishOmpComposer builds the OmpComposer summary shared by both `box` and
+// `band` layouts once TopLine, StatusLine, and bottom-up draftRows are parsed.
+func finishOmpComposer(lines []string, topIdx int, status string, draftRows []string) OmpComposer {
+	composer := OmpComposer{
+		Found:        true,
+		Busy:         ompBusyStatusRe.MatchString(status),
+		StatusLine:   status,
+		TopLine:      topIdx,
+		ActivityLine: -1,
+	}
+	// Rows were collected bottom-up; restore reading order and drop
+	// blank leading/trailing rows so an empty composer reads as "".
+	for l, r := 0, len(draftRows)-1; l < r; l, r = l+1, r-1 {
+		draftRows[l], draftRows[r] = draftRows[r], draftRows[l]
+	}
+	composer.Draft = strings.TrimSpace(strings.Join(draftRows, "\n"))
+	for k := topIdx - 1; k >= 0 && topIdx-k <= 2; k-- {
+		above := lines[k]
+		if strings.TrimSpace(above) == "" {
+			continue
+		}
+		if ompEscHintRe.MatchString(above) {
+			composer.EscHint = true
+			composer.ActivityLine = k
+		}
+		break
+	}
+	for k := topIdx - 1; k >= 0 && topIdx-k <= ompSteeringScanLines; k-- {
+		if m := ompSteeringHeaderRe.FindStringSubmatch(lines[k]); m != nil {
+			if n, err := strconv.Atoi(m[1]); err == nil {
+				composer.Steering = n
+			}
+			break
+		}
+	}
+	for k := topIdx - 1; k >= 0 && topIdx-k <= ompSubagentsScanLines; k-- {
+		if !ompSubagentsHeaderRe.MatchString(lines[k]) {
+			continue
+		}
+		for r := k + 1; r < topIdx && ompSubagentRowRe.MatchString(lines[r]); r++ {
+			composer.Subagents++
+		}
+		break
+	}
+	composer.ProviderError = ompProviderErrorAbove(lines, topIdx)
+	if composer.Draft != "" && ompPasteTokenRe.MatchString(composer.Draft) {
+		for k := topIdx - 1; k >= 0 && topIdx-k <= 2; k-- {
+			if ompPastePreviewFooterRe.MatchString(lines[k]) {
+				composer.PasteToken = true
+				break
+			}
+		}
+	}
+	return composer
 }
 
 // ompProviderErrorAbove returns the summary line of a provider-error block

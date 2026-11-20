@@ -460,3 +460,111 @@ func TestOmpComposerBottomBorderHint(t *testing.T) {
 		})
 	}
 }
+
+func TestParseOmpComposer_BandShape_GH342(t *testing.T) {
+	// Exact captures reported in GH #342 (Nov 18 comment, omp 18.22.2 default composer.shape: band).
+	const freshSingleLine = "   π > ◒ DeepSeek V4.1 Flash 1017 > 📁 /path/to/project > ⑂ main ?3 ▶─1%────────────────────────────────┃──────1M─\n" +
+		"  ╰─                                                               ⇧⇥ to change thinking effort\n"
+	const freshWrapped = "   π > ◒ DeepSeek V4.1 Flash 1017 > 📁 /path/to/project > ⑂ main ?3\n" +
+		"▶─1%────────────────────────────────┃──────1M─\n" +
+		"  ╰─                                                                        \n" +
+		"⇧⇥ to change thinking effort\n"
+	const idleAfterTurn = "Done implementing parser.\n\n" +
+		"   π > ◒ GLM-5.3 > 📁 /path/to/project > ⑂ main *10 ?6 > $1.16 ▶──────────────────────────11%──────────────────\n" +
+		"  ╰─\n"
+	const idleWrapped = "   π > ◒ GLM-5.3 > 📁 /path/to/project > ⑂ main *10 ?6 > $1.16\n" +
+		"▶──────────────────────────11%──────────────────\n" +
+		"  ╰─\n"
+	const workingBand = "   ⠏ 18m > ◒ DeepSeek V4.1 Flash 1017 > 📁 /path/to/project > ⑂ main *10 ?6 > $0.06 ▶─────────14%─────\n" +
+		"  ╰─\n"
+	const workingWrapped = "   ⠏ 18m > ◒ DeepSeek V4.1 Flash 1017 > 📁 /path/to/project > ⑂ main *10\n" +
+		"?6 > $0.06 ▶─────────14%─────\n" +
+		"  ╰─\n"
+	const bandWithDraftAndHint = "   π > ◒ GLM-5.3 > 📁 /path/to/project > ⑂ main ▶───5%───262K─\n" +
+		"  ╰─ fix context rotation           ⇧⇥ to change thinking effort\n"
+	const bandWithMultilineDraft = "   π > ◒ GLM-5.3 > 📁 /path/to/project > ⑂ main ▶───5%───262K─\n" +
+		"  first line of draft\n" +
+		"  ╰─ second line of draft\n"
+	const bandWithToolBoxScrollback = "╭─── Service: API ───╮\n" +
+		"│ status: ok         │\n" +
+		"╰─── Service: API ───╯\n\n" +
+		"   π > ◒ GLM-5.3 > 📁 /path/to/project > ⑂ main ▶───12%───1M─\n" +
+		"  ╰─\n"
+	const bandWithCompletionMenu = "   π > ◒ GLM-5.3 > 📁 /path/to/project > ⑂ main ▶───12%───1M─\n" +
+		"  ╰─ /mod\n" +
+		"  /model  Switch active model\n" +
+		"  /mode   Change reasoning mode\n"
+	const bandANSI = "\x1b[38;5;39m   π > ◒ GLM-5.3 > 📁 /path/to/project > ⑂ main ▶───22%───262K─\x1b[0m\n" +
+		"\x1b[2m  ╰─\x1b[0m\n"
+	const asciiBand = "  omp > model-x > /repo > main ---7%---262K---\n" +
+		"  +-          Shift+Tab to change thinking effort\n"
+
+	cases := []struct {
+		name      string
+		capture   string
+		wantFound bool
+		wantBusy  bool
+		wantIdle  bool
+		wantDraft string
+		wantBelow int
+		wantPct   float64
+		wantWin   int64
+		wantGauge bool
+	}{
+		{"fresh single-line band with hint", freshSingleLine, true, false, true, "", 0, 1, 1000000, true},
+		{"fresh wrapped band with wrapped hint", freshWrapped, true, false, true, "", 0, 1, 1000000, true},
+		{"idle after turn", idleAfterTurn, true, false, true, "", 0, 11, 0, true},
+		{"idle wrapped", idleWrapped, true, false, true, "", 0, 11, 0, true},
+		{"working band", workingBand, true, true, false, "", 0, 14, 0, true},
+		{"working wrapped band", workingWrapped, true, true, false, "", 0, 14, 0, true},
+		{"band with draft and right-aligned hint", bandWithDraftAndHint, true, false, true, "fix context rotation", 0, 5, 262000, true},
+		{"band with multiline draft", bandWithMultilineDraft, true, false, true, "first line of draft\nsecond line of draft", 0, 5, 262000, true},
+		{"band below scrollback tool-output box", bandWithToolBoxScrollback, true, false, true, "", 0, 12, 1000000, true},
+		{"band with open completion list blocks ready", bandWithCompletionMenu, true, false, false, "/mod", 2, 12, 1000000, true},
+		{"band with ANSI escapes", bandANSI, true, false, true, "", 0, 22, 262000, true},
+		{"ASCII band with Shift+Tab hint", asciiBand, true, false, true, "", 0, 7, 262000, true},
+	}
+
+	parser := NewParser()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseOmpComposer(tc.capture)
+			if got.Found != tc.wantFound || got.Busy != tc.wantBusy || got.Draft != tc.wantDraft || got.RowsBelow != tc.wantBelow {
+				t.Fatalf("ParseOmpComposer = %+v, want found=%v busy=%v draft=%q rowsBelow=%d",
+					got, tc.wantFound, tc.wantBusy, tc.wantDraft, tc.wantBelow)
+			}
+			if gotIdle := OmpIdlePromptShowing(tc.capture); gotIdle != tc.wantIdle {
+				t.Errorf("OmpIdlePromptShowing = %v, want %v", gotIdle, tc.wantIdle)
+			}
+			if gotWorking := OmpActivelyWorking(tc.capture, 160); gotWorking != tc.wantBusy {
+				t.Errorf("OmpActivelyWorking = %v, want %v", gotWorking, tc.wantBusy)
+			}
+			if gotType := parser.DetectAgentType(tc.capture); gotType != AgentTypeOmp {
+				t.Errorf("DetectAgentType = %q, want %q", gotType, AgentTypeOmp)
+			}
+			pct, win, ok := OmpContextUsage(tc.capture)
+			if ok != tc.wantGauge || pct != tc.wantPct || win != tc.wantWin {
+				t.Errorf("OmpContextUsage = (%v, %v, %v), want (%v, %v, %v)", pct, win, ok, tc.wantPct, tc.wantWin, tc.wantGauge)
+			}
+		})
+	}
+
+	// Negative / anti-false-positive checks: scrollback-only tool footers,
+	// blank-separated prose, and non-omp dialogs must NOT match as a band composer.
+	negatives := []struct {
+		name    string
+		capture string
+	}{
+		{"tool output box only", "╭─── Service: API ───╮\n│ ok │\n╰─── Service: API ───╯\n"},
+		{"blank line separates scrollback band from stray curved prefix", "   π > ◒ GLM-5.3 > 📁 /repo ▶───10%───\n\n  ╰─ stray tree branch\n"},
+		{"ordinary prose with π > and no status markers", "note: π > 3.14\n  ╰─ tree leaf\n"},
+		{"setup prompt without composer", "Keep omp up to date?\n  > Yes (recommended)\n    No\n"},
+	}
+	for _, tc := range negatives {
+		t.Run("negative_"+tc.name, func(t *testing.T) {
+			if got := ParseOmpComposer(tc.capture); got.Found {
+				t.Fatalf("expected Found=false for %s, got %+v", tc.name, got)
+			}
+		})
+	}
+}
