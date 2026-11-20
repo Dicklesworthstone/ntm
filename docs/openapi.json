@@ -51,6 +51,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -95,6 +105,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -155,6 +175,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -199,6 +229,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -280,6 +320,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -345,6 +395,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -426,6 +486,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -470,6 +540,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -530,6 +610,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -574,6 +664,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -633,6 +733,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -703,6 +813,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -747,6 +867,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -817,6 +947,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -861,6 +1001,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -934,6 +1084,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1016,6 +1176,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1110,6 +1280,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -1164,6 +1344,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1234,6 +1424,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -1288,6 +1488,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1361,6 +1571,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1452,6 +1672,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -1534,6 +1764,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -1588,6 +1828,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1698,6 +1948,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1832,6 +2092,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -1907,6 +2177,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2001,6 +2281,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2143,6 +2433,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -2277,6 +2577,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -2339,6 +2649,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -2393,6 +2713,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2479,6 +2809,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -2539,6 +2879,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -2583,6 +2933,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2643,6 +3003,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -2687,6 +3057,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2747,6 +3127,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -2791,6 +3181,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2851,6 +3251,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -2903,6 +3313,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -2947,6 +3367,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3017,6 +3447,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -3071,6 +3511,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3144,6 +3594,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3232,6 +3692,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -3307,6 +3777,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3416,6 +3896,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -3481,6 +3971,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3570,6 +4070,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -3644,6 +4154,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3746,6 +4266,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -3808,6 +4338,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -3852,6 +4392,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3912,6 +4462,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -3964,6 +4524,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -4008,6 +4578,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4079,6 +4659,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -4141,6 +4731,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -4185,6 +4785,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4279,6 +4889,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -4323,6 +4943,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4383,6 +5013,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4461,6 +5101,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -4520,6 +5170,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -4564,6 +5224,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4642,6 +5312,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -4704,6 +5384,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -4758,6 +5448,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4860,6 +5560,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -4904,6 +5614,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4966,6 +5686,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5039,6 +5769,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5136,6 +5876,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -5210,6 +5960,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5300,6 +6060,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -5362,6 +6132,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -5416,6 +6196,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5567,6 +6357,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -5645,6 +6445,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -5697,6 +6507,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5775,6 +6595,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -5819,6 +6649,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5889,6 +6729,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -5951,6 +6801,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -6004,6 +6864,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6082,6 +6952,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6171,6 +7051,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -6245,6 +7135,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6336,6 +7236,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -6380,6 +7290,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6440,6 +7360,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6541,6 +7471,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -6622,6 +7562,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -6676,6 +7626,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6746,6 +7706,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -6808,6 +7778,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6897,6 +7877,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -6959,6 +7949,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7039,6 +8039,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -7103,6 +8113,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7183,6 +8203,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -7227,6 +8257,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7337,6 +8377,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -7401,6 +8451,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7482,6 +8542,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7589,6 +8659,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -7688,6 +8768,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -7779,6 +8869,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -7833,6 +8933,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7912,6 +9022,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8017,6 +9137,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -8071,6 +9201,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8150,6 +9290,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -8194,6 +9344,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8264,6 +9424,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -8326,6 +9496,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -8370,6 +9550,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8438,6 +9628,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -8482,6 +9682,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8575,6 +9785,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -8645,6 +9865,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -8689,6 +9919,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8775,6 +10015,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -8819,6 +10069,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8880,6 +10140,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8950,6 +10220,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -9012,6 +10292,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -9056,6 +10346,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9118,6 +10418,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9199,6 +10509,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -9272,6 +10592,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9373,6 +10703,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -9458,6 +10798,16 @@
           },
           "409": {
             "description": "Run is owned, receipt is stale, or the recovery decision conflicts with saved state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9648,6 +10998,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -9810,6 +11170,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -9864,6 +11234,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9942,6 +11322,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -10002,6 +11392,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -10046,6 +11446,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10114,6 +11524,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -10158,6 +11578,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10228,6 +11658,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -10281,6 +11721,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10351,6 +11801,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -10413,6 +11873,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -10457,6 +11927,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10519,6 +11999,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10592,6 +12082,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10675,6 +12175,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10781,6 +12291,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -10843,6 +12363,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10921,6 +12451,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -10990,6 +12530,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -11044,6 +12594,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11125,6 +12685,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11215,6 +12785,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11322,6 +12902,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -11412,6 +13002,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -11456,6 +13056,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11516,6 +13126,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -11560,6 +13180,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11620,6 +13250,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -11664,6 +13304,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11724,6 +13374,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -11768,6 +13428,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11828,6 +13498,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -11872,6 +13552,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11932,6 +13622,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -11984,6 +13684,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -12028,6 +13738,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12090,6 +13810,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12168,6 +13898,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -12222,6 +13962,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12291,6 +14041,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -12335,6 +14095,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12405,6 +14175,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -12467,6 +14247,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -12519,6 +14309,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12592,6 +14392,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12683,6 +14493,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -12758,6 +14578,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12860,6 +14690,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -12925,6 +14765,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13015,6 +14865,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -13097,6 +14957,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -13159,6 +15029,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13238,6 +15118,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -13309,6 +15199,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -13353,6 +15253,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13415,6 +15325,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13498,6 +15418,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13595,6 +15525,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -13649,6 +15589,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13738,6 +15688,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -13782,6 +15742,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13842,6 +15812,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13915,6 +15895,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14027,6 +16017,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -14102,6 +16102,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14193,6 +16203,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -14266,6 +16286,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14356,6 +16386,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -14429,6 +16469,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -14494,6 +16544,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14584,6 +16644,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -14657,6 +16727,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14770,6 +16850,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -14835,6 +16925,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14956,6 +17056,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -15037,6 +17147,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15191,6 +17311,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -15288,6 +17418,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -15370,6 +17510,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -15443,6 +17593,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15533,6 +17693,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -15607,6 +17777,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15698,6 +17878,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -15763,6 +17953,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15844,6 +18044,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15935,6 +18145,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -16018,6 +18238,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -16083,6 +18313,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16165,6 +18405,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16256,6 +18506,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -16331,6 +18591,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16421,6 +18691,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -16486,6 +18766,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16568,6 +18858,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16668,6 +18968,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -16760,6 +19070,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -16842,6 +19162,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16942,6 +19272,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -17014,6 +19354,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17096,6 +19446,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17194,6 +19554,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -17275,6 +19645,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -17347,6 +19727,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17438,6 +19828,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -17520,6 +19920,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -17592,6 +20002,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17726,6 +20146,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -17807,6 +20237,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17906,6 +20346,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -17980,6 +20430,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -18070,6 +20530,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -18114,6 +20584,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -18200,6 +20680,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -18261,6 +20751,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -18314,6 +20814,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -18392,6 +20902,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -18454,6 +20974,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -18498,6 +21028,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -18587,6 +21127,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -18631,6 +21181,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -18693,6 +21253,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -18784,6 +21354,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -18867,6 +21447,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -18929,6 +21519,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -19026,6 +21626,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -19096,6 +21706,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -19148,6 +21768,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -19253,6 +21883,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -19335,6 +21975,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -19389,6 +22039,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {
@@ -19545,6 +22205,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
             "content": {
               "application/json": {
                 "schema": {

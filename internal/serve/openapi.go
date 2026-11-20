@@ -2,11 +2,26 @@
 package serve
 
 import (
+	"bytes"
+	"crypto/rand"
+	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 )
+
+// These pinned Swagger UI assets are shipped with the binary so documentation
+// works without internet access. Licenses and source hashes live beside them.
+//
+//go:embed swagger/swagger-ui.css swagger/swagger-ui-bundle.js swagger/swagger-ui-standalone-preset.js
+var swaggerAssets embed.FS
+
+const swaggerVersion = "5.35.1"
 
 // OpenAPISpec represents an OpenAPI 3.1 specification.
 type OpenAPISpec struct {
@@ -151,7 +166,7 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 		defer hermetic.Stop()
 		router = hermetic.Router()
 	}
-	spec, err := buildRouterOpenAPISpec(router, s.version, s.documentationBaseURL(r))
+	spec, err := buildRouterOpenAPISpec(router, s.version, s.documentationBaseURL())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -163,170 +178,173 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// CORS is governed by corsMiddlewareFunc (allowlisted origins only — no wildcard "*").
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(specBytes)
 }
 
-// handleSwaggerUI serves an airgapped, zero-CDN interactive OpenAPI explorer page.
-// It makes zero third-party network requests so /docs works identically in
-// offline/airgapped deployments without unpinned external CDN scripts.
+// handleSwaggerUI serves the offline Swagger UI and its three embedded assets.
+// Asset requests use the existing public /docs route, with an exact allowlist;
+// they cannot expose other embedded files or filesystem paths.
 func (s *Server) handleSwaggerUI(w http.ResponseWriter, r *http.Request) {
-	specURL := s.documentationBaseURL(r) + "/api/v1/openapi.json"
+	if asset := r.URL.Query().Get("asset"); asset != "" {
+		switch asset {
+		case "swagger-ui.css":
+			w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		case "swagger-ui-bundle.js", "swagger-ui-standalone-preset.js":
+			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		data, err := swaggerAssets.ReadFile("swagger/" + asset)
+		if err != nil {
+			http.Error(w, "documentation asset unavailable", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.Header().Set("ETag", fmt.Sprintf("\"swagger-%s-%s\"", swaggerVersion, asset))
+		http.ServeContent(w, r, asset, time.Time{}, bytes.NewReader(data))
+		return
+	}
 
-	html := fmt.Sprintf(`<!DOCTYPE html>
+	var random [18]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		http.Error(w, "documentation unavailable", http.StatusInternalServerError)
+		return
+	}
+	// The URL-safe alphabet is also valid in CSP nonces and needs no HTML
+	// character escaping when the same nonce is rendered into script attributes.
+	nonce := base64.RawURLEncoding.EncodeToString(random[:])
+	baseURL := strings.TrimRight(s.documentationBaseURL(), "/")
+	data := struct {
+		SpecURL   string
+		AssetsURL string
+		Nonce     string
+		Version   string
+	}{baseURL + "/api/v1/openapi.json", baseURL + "/docs", nonce, swaggerVersion}
+
+	// Buffer rendering so a template failure cannot return a partial 200 page.
+	var html bytes.Buffer
+	if err := swaggerPage.Execute(&html, data); err != nil {
+		http.Error(w, "documentation unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	assetSources := "'self'"
+	if publicURL, err := url.Parse(s.publicBaseURL); err == nil && (publicURL.Scheme == "http" || publicURL.Scheme == "https") && publicURL.Host != "" {
+		// Public URLs may point at a reverse proxy. Permit only that configured
+		// origin, never request-supplied hosts or arbitrary CSP source syntax.
+		invalidHost := strings.IndexFunc(publicURL.Host, func(c rune) bool {
+			return !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune(".-:[]", c))
+		}) >= 0
+		if !invalidHost {
+			assetSources += " " + publicURL.Scheme + "://" + publicURL.Host
+		}
+	}
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'nonce-"+nonce+"'; style-src "+assetSources+" 'unsafe-inline'; connect-src "+assetSources+"; img-src "+assetSources+" data:; font-src 'self' data:")
+	w.Write(html.Bytes())
+}
+
+var swaggerPage = template.Must(template.New("swagger").Parse(`<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NTM API Documentation</title>
+    <link rel="stylesheet" type="text/css" href="{{.AssetsURL}}?asset=swagger-ui.css&amp;v={{.Version}}">
     <style>
-        :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
-        body { margin: 0; padding: 1.5rem; background: #0f172a; color: #e2e8f0; }
-        .wrap { max-width: 1080px; margin: 0 auto; }
-        header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid #334155; padding-bottom: 1rem; margin-bottom: 1rem; }
-        h1 { margin: 0; font-size: 1.35rem; }
-        .meta { color: #94a3b8; font-size: 0.85rem; }
-        .controls { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
-        input, button { padding: 0.45rem 0.7rem; border-radius: 0.375rem; border: 1px solid #475569; background: #1e293b; color: #f8fafc; font-size: 0.85rem; }
-        input { flex: 1; min-width: 220px; }
-        button { cursor: pointer; background: #2563eb; border-color: #2563eb; font-weight: 600; }
-        button:hover { background: #1d4ed8; }
-        .ep { border: 1px solid #334155; border-radius: 0.5rem; margin-bottom: 0.5rem; background: #1e293b; overflow: hidden; }
-        .ep summary { cursor: pointer; padding: 0.65rem 0.85rem; display: flex; align-items: center; gap: 0.6rem; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.85rem; }
-        .badge { padding: 0.15rem 0.45rem; border-radius: 0.25rem; font-weight: 700; font-size: 0.72rem; text-transform: uppercase; }
-        .GET { background: #0369a1; color: #e0f2fe; }
-        .POST { background: #15803d; color: #dcfce7; }
-        .PUT, .PATCH { background: #b45309; color: #fef3c7; }
-        .DELETE { background: #b91c1c; color: #fee2e2; }
-        .ep-body { padding: 0.75rem 0.85rem; border-top: 1px solid #334155; font-size: 0.82rem; color: #cbd5e1; }
-        pre { background: #020617; padding: 0.65rem; border-radius: 0.375rem; overflow-x: auto; font-size: 0.78rem; }
-        .err { padding: 0.75rem; border-radius: 0.5rem; background: #450a0a; border: 1px solid #991b1b; color: #fecaca; }
+        html { box-sizing: border-box; overflow-y: scroll; }
+        *, *:before, *:after { box-sizing: inherit; }
+        body { margin: 0; background: #fafafa; }
+        .topbar { display: none; }
+        #docs-auth { padding: 16px; font-family: sans-serif; background: #fff; border-bottom: 1px solid #ddd; }
+        #docs-auth input, #docs-auth select, #docs-auth button { margin: 4px; padding: 8px; }
+        #docs-status { display: block; margin: 8px 4px; }
     </style>
 </head>
 <body>
-    <div id="swagger-ui" class="wrap" data-spec-url=%q>
-        <header>
-            <div>
-                <h1>NTM API Documentation</h1>
-                <div id="spec-meta" class="meta">Airgapped OpenAPI 3.1 Explorer · zero external CDN dependencies</div>
-            </div>
-            <a id="raw-spec-link" href=%q style="color:#60a5fa;font-family:monospace;font-size:0.85rem;">openapi.json</a>
-        </header>
-        <div class="controls">
-            <input id="filter-input" type="search" placeholder="Filter endpoints by path, method, or tag..." aria-label="Filter endpoints" />
-            <input id="bearer-input" type="password" placeholder="Optional Bearer token / API key" aria-label="Bearer token" />
-            <button id="reload-btn" type="button">Load Spec</button>
-        </div>
-        <div id="endpoint-list">Loading OpenAPI specification...</div>
-    </div>
-    <script>
-        (function() {
-            const specUrl = %q;
-            const listEl = document.getElementById('endpoint-list');
-            const metaEl = document.getElementById('spec-meta');
-            const filterEl = document.getElementById('filter-input');
-            const tokenEl = document.getElementById('bearer-input');
-            const reloadBtn = document.getElementById('reload-btn');
-            let cachedOps = [];
-
-            function escapeHtml(s) {
-                return String(s == null ? '' : s)
-                    .replace(/&/g, '&amp;')
-                    .replace(/</g, '&lt;')
-                    .replace(/>/g, '&gt;')
-                    .replace(/"/g, '&quot;');
+    <form id="docs-auth">
+        <label>Authentication <select id="docs-auth-mode"><option value="none">Local / client certificate</option><option value="bearer">Bearer token</option><option value="api_key">API key</option></select></label>
+        <label>Credential <input id="docs-credential" type="password" autocomplete="off" spellcheck="false"></label>
+        <button type="submit">Load API documentation</button>
+        <span id="docs-status" role="status">Credentials stay in this page and are sent only to this API.</span>
+    </form>
+    <div id="swagger-ui"></div>
+    <script nonce="{{.Nonce}}" src="{{.AssetsURL}}?asset=swagger-ui-bundle.js&amp;v={{.Version}}"></script>
+    <script nonce="{{.Nonce}}" src="{{.AssetsURL}}?asset=swagger-ui-standalone-preset.js&amp;v={{.Version}}"></script>
+    <script nonce="{{.Nonce}}">
+        const specURL = new URL({{.SpecURL}}, location.href);
+        const apiBase = new URL(specURL.href);
+        apiBase.pathname = apiBase.pathname.slice(0, -'/api/v1/openapi.json'.length) || '/';
+        let credentials = {};
+        function authorize(request) {
+            const target = new URL(request.url, location.href);
+            // Never attach credentials to external references or a sibling API
+            // outside a configured reverse-proxy path prefix.
+            if (target.origin === apiBase.origin && target.pathname.startsWith(apiBase.pathname.replace(/\/$/, '') + '/')) {
+                request.headers = Object.assign({}, request.headers, credentials);
+                // A redirect could forward an API key to a sibling service
+                // outside this prefix. Swagger passes this option to fetch.
+                request.redirect = 'error';
             }
-
-            function render() {
-                const q = (filterEl.value || '').trim().toLowerCase();
-                const items = cachedOps.filter(function(op) {
-                    if (!q) return true;
-                    return op.path.toLowerCase().includes(q) ||
-                        op.method.toLowerCase().includes(q) ||
-                        (op.summary || '').toLowerCase().includes(q) ||
-                        (op.tags || []).join(' ').toLowerCase().includes(q);
+            return request;
+        }
+        async function loadDocumentation(event) {
+            if (event) event.preventDefault();
+            const mode = document.getElementById('docs-auth-mode').value;
+            const credential = document.getElementById('docs-credential').value.trim();
+            credentials = mode === 'bearer' ? {Authorization: 'Bearer ' + credential} : mode === 'api_key' ? {'X-API-Key': credential} : {};
+            const status = document.getElementById('docs-status');
+            status.textContent = 'Loading API documentation…';
+            try {
+                const response = await fetch(specURL, {headers: credentials, cache: 'no-store', redirect: 'error'});
+                if (!response.ok) throw new Error('HTTP ' + response.status + ': enter an authorized API credential and load again.');
+                const spec = await response.json();
+                window.ui = SwaggerUIBundle({
+                spec: spec,
+                dom_id: '#swagger-ui',
+                deepLinking: true,
+                validatorUrl: null,
+                requestInterceptor: authorize,
+                persistAuthorization: false,
+                presets: [
+                    SwaggerUIBundle.presets.apis,
+                    SwaggerUIStandalonePreset
+                ],
+                plugins: [
+                    SwaggerUIBundle.plugins.DownloadUrl
+                ],
+                layout: "StandaloneLayout",
+                defaultModelsExpandDepth: 1,
+                defaultModelExpandDepth: 1,
+                docExpansion: "list",
+                filter: true,
+                showExtensions: true,
+                showCommonExtensions: true
                 });
-                if (!items.length) {
-                    listEl.innerHTML = '<div class="meta">No endpoints match filter.</div>';
-                    return;
-                }
-                listEl.innerHTML = items.map(function(op) {
-                    const details = JSON.stringify({
-                        operationId: op.operationId,
-                        tags: op.tags,
-                        parameters: op.parameters,
-                        responses: op.responses
-                    }, null, 2);
-                    return '<details class="ep"><summary>' +
-                        '<span class="badge ' + escapeHtml(op.method) + '">' + escapeHtml(op.method) + '</span>' +
-                        '<span>' + escapeHtml(op.path) + '</span>' +
-                        '<span class="meta">' + escapeHtml(op.summary || '') + '</span>' +
-                        '</summary><div class="ep-body"><pre>' + escapeHtml(details) + '</pre></div></details>';
-                }).join('');
+                status.textContent = 'Loaded ' + Object.keys(spec.paths || {}).length + ' API paths. Credentials are not saved.';
+            } catch (error) {
+                document.getElementById('swagger-ui').replaceChildren();
+                status.textContent = error.message;
             }
-
-            async function loadSpec() {
-                listEl.textContent = 'Loading OpenAPI specification...';
-                try {
-                    const headers = {};
-                    const tok = (tokenEl.value || '').trim();
-                    if (tok) headers['Authorization'] = 'Bearer ' + tok;
-                    const res = await fetch(specUrl, { headers: headers });
-                    if (!res.ok) throw new Error('HTTP ' + res.status + ' loading ' + specUrl);
-                    const spec = await res.json();
-                    const ops = [];
-                    const paths = spec.paths || {};
-                    Object.keys(paths).sort().forEach(function(p) {
-                        const item = paths[p] || {};
-                        ['get','post','put','patch','delete'].forEach(function(m) {
-                            if (item[m]) {
-                                ops.push({
-                                    method: m.toUpperCase(),
-                                    path: p,
-                                    summary: item[m].summary || item[m].description || '',
-                                    operationId: item[m].operationId || '',
-                                    tags: item[m].tags || [],
-                                    parameters: item[m].parameters || [],
-                                    responses: item[m].responses || {}
-                                });
-                            }
-                        });
-                    });
-                    cachedOps = ops;
-                    metaEl.textContent = (spec.info && spec.info.title ? spec.info.title : 'NTM API') +
-                        ' v' + (spec.info && spec.info.version ? spec.info.version : 'unknown') +
-                        ' · ' + ops.length + ' endpoints · airgapped (zero CDN)';
-                    render();
-                } catch (err) {
-                    listEl.innerHTML = '<div class="err">' + escapeHtml(err && err.message ? err.message : err) + '</div>';
-                }
-            }
-
-            filterEl.addEventListener('input', render);
-            reloadBtn.addEventListener('click', loadSpec);
-            loadSpec();
-        })();
+        }
+        document.getElementById('docs-auth').addEventListener('submit', loadDocumentation);
+        loadDocumentation();
     </script>
 </body>
-</html>`, specURL, specURL, specURL)
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:")
-	w.Write([]byte(html))
-}
+</html>`))
 
 // documentationBaseURL returns the API base URL embedded in generated docs.
-// A configured public base URL takes precedence because the listener host and
-// port are often private when the server is deployed behind a reverse proxy.
-func (s *Server) documentationBaseURL(r *http.Request) string {
+// A configured public base URL includes any reverse-proxy path prefix. By
+// default, origin-relative URLs keep assets and authenticated API calls on the
+// browser's origin, regardless of the listener's wildcard address, port, or TLS
+// termination. No request Host or forwarded header is trusted as configuration.
+func (s *Server) documentationBaseURL() string {
 	if s.publicBaseURL != "" {
 		return strings.TrimRight(s.publicBaseURL, "/")
 	}
-
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	return fmt.Sprintf("%s://%s:%d", scheme, s.host, s.port)
+	return "/"
 }

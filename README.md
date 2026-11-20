@@ -1591,6 +1591,44 @@ When `--auth-mode` is set to `api_key`, `oidc`, or `mtls`:
 - Every `/api/*`, `/ws/*`, and `/events` endpoint enforces authentication and RBAC.
 - Real-time WebSocket connections exchange the credential via `POST /api/v1/auth/ws-ticket` for a 30-second single-use upgrade ticket (`GET /api/v1/ws?ticket=...`) so bearer tokens and API keys never appear in URLs or request logs.
 
+OIDC accepts `RS256`, `PS256`, `ES256` (P-256), `ES384` (P-384), and
+`EdDSA` (Ed25519). The signing key's type, curve, algorithm, and signing-use
+metadata must agree with the token. RSA keys without an `alg` attribute retain
+the `RS256` default; a provider using PSS must publish `alg: "PS256"`. JWTs still
+require the configured issuer, audience when specified, and a valid expiry.
+
+Authenticated servers enforce per-IP and per-principal token buckets by default
+(100 requests/second, burst 200), with a hard limit of 8,192 tracked buckets.
+Ordinary HTTP requests, WebSocket ticket issuance, and upgrade handshakes have
+separate budgets; established WebSocket frames are unaffected. Exhaustion returns
+HTTP `429`, a JSON `RATE_LIMITED` error, `Retry-After`, and `X-RateLimit-*` headers.
+The default local loopback mode, `/health`, documentation assets, and static
+dashboard files are exempt. Configure limits in the user TOML file:
+
+```toml
+[serve.rate_limit]
+enabled = true                 # Also apply limits in local mode; false disables them
+requests_per_second = 100
+burst = 200
+max_entries = 8192              # Total hard cap across all bucket classes
+idle_ttl = "5m"
+trusted_proxy_cidrs = []        # Only explicitly trusted peers may supply X-Forwarded-For
+```
+
+Omitting `enabled` preserves automatic defaults; explicitly setting a rate or
+burst also opts local traffic into limiting. When capacity is exhausted, new
+identities receive `429` until a fully replenished bucket can be reclaimed, so
+changing identities cannot erase an active quota. Configure trusted proxy CIDRs
+only for proxies you control; the rightmost untrusted forwarded hop identifies
+the client, and the original socket address remains available for audit logs.
+
+API documentation at `/docs` ships with pinned Swagger UI assets inside the NTM
+binary and works without an internet connection. For authenticated servers,
+select **Bearer token** or **API key**, enter the credential, and choose **Load
+API documentation**. The page uses that credential for schema loading and API
+requests without persisting it. The OpenAPI endpoint uses the server's configured
+CORS allowlist.
+
 ## Command Map
 
 | Command group | Commands | What it covers |

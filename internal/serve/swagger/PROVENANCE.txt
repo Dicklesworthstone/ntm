@@ -1,0 +1,16 @@
+Swagger UI v5.35.1
+Release: https://github.com/swagger-api/swagger-ui/releases/tag/v5.35.1
+Published: 2026-11-19T09:10:21Z
+Tag points directly to commit: 8fd7a7d57514e63e3601b4c61f3cdbafe605af02
+Source base: https://raw.githubusercontent.com/swagger-api/swagger-ui/8fd7a7d57514e63e3601b4c61f3cdbafe605af02
+License: Apache-2.0 (upstream LICENSE retained)
+
+SHA-256                                                          Bytes   Upstream path
+5ed08757e53da3e026d6cbecc61fe5d43585c9560b302d534ad56692519a273d   187956 dist/swagger-ui.css
+d0e0bee93732408c91fbad05cb0c2812e9ad37e94d12799c5503a9fe7afa2b82  1732839 dist/swagger-ui-bundle.js
+5243d492e14505e0cab87ac8b0195d0e615943e651743b2b698450a46eb470be   267767 dist/swagger-ui-standalone-preset.js
+cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30    11358 LICENSE
+37eb6e7e59aed57b2c1acf076574b818ea07b74265717e0bd67b59e0baf9abbb     4606 dist/swagger-ui-bundle.js.LICENSE.txt
+000580e4e2255ea6ccde0c47f6d75e2f703a1931298fde58756793b67c0daed9     1732 dist/swagger-ui-standalone-preset.js.LICENSE.txt
+
+Fetched directly from the pinned commit using project-identifying User-Agent.

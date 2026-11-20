@@ -361,6 +361,9 @@ func buildRouterOperation(rt RouterRoute, components *OpenAPIComponents, reflect
 			"500": errorResponse("Internal server error"),
 		},
 	}
+	if rt.Pattern != "/health" && rt.Pattern != "/docs" && rt.Pattern != "/docs/" && !strings.Contains(rt.Pattern, "*") {
+		op.Responses["429"] = errorResponse("Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.")
+	}
 	if isAgentMailProjectRoute(rt.Pattern) {
 		op.Parameters = append(op.Parameters, Parameter{
 			Name:        "project",

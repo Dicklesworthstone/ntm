@@ -11,14 +11,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/serve"
+	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
+	"github.com/chromedp/chromedp/kb"
 )
 
 // WebUITestSuite manages Web UI E2E tests with browser automation.
@@ -446,6 +452,206 @@ func (s *WebUITestSuite) LogConsoleMessages() {
 			s.logger.Log("[E2E-CONSOLE] [%s] %s", msg.Type, strings.Join(args, " "))
 		}
 	})
+}
+
+// TestE2E_OfflineSwagger exercises the documentation shipped by the real API
+// router. It needs Chrome, but no separately deployed web UI, tmux server, or
+// internet connection. Run with go test -tags=e2e ./e2e -run TestE2E_OfflineSwagger.
+func TestE2E_OfflineSwagger(t *testing.T) {
+	if testing.Short() {
+		t.Skip("offline documentation browser test requires Chrome")
+	}
+	logger := NewTestLogger(t, "offline-swagger")
+	defer logger.Close()
+
+	// Deliberately mismatch the configured wildcard listener and the browser's
+	// loopback origin. Documentation must use the actual browser origin, even
+	// when a deployment listens on a wildcard or is reached through an alias.
+	ts := httptest.NewUnstartedServer(nil)
+	defer ts.Close()
+	const apiKey = "ntm-offline-docs-browser-test-key"
+	srv := serve.New(serve.Config{
+		Host: "0.0.0.0",
+		Port: 7337,
+		Auth: serve.AuthConfig{Mode: serve.AuthModeAPIKey, APIKey: apiKey},
+	})
+	defer srv.Stop()
+	ts.Config.Handler = srv.Router()
+	ts.Start()
+	apiOrigin, err := url.Parse(ts.URL)
+	if err != nil {
+		t.Fatalf("parse API origin: %v", err)
+	}
+	logger.Log("[E2E-DOCS] Serving actual API router at %s", ts.URL)
+
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", true),
+		chromedp.DisableGPU,
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.WindowSize(1440, 1000),
+	)
+	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
+	defer allocCancel()
+	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+	defer browserCancel()
+	ctx, cancel := context.WithTimeout(browserCtx, 90*time.Second)
+	defer cancel()
+
+	type requestRecord struct {
+		URL           string `json:"url"`
+		Authenticated bool   `json:"authenticated"`
+	}
+	type responseRecord struct {
+		URL    string `json:"url"`
+		Status int    `json:"status"`
+	}
+	var traceMu sync.Mutex
+	var requests []requestRecord
+	var responses []responseRecord
+	chromedp.ListenTarget(ctx, func(event interface{}) {
+		traceMu.Lock()
+		defer traceMu.Unlock()
+		switch event := event.(type) {
+		case *network.EventRequestWillBeSent:
+			authenticated := false
+			for name, value := range event.Request.Headers {
+				if strings.EqualFold(name, "X-API-Key") && value == apiKey {
+					authenticated = true
+				}
+			}
+			requests = append(requests, requestRecord{event.Request.URL, authenticated})
+		case *network.EventResponseReceived:
+			responses = append(responses, responseRecord{event.Response.URL, int(event.Response.Status)})
+		}
+	})
+	defer func() {
+		traceMu.Lock()
+		requestSnapshot := append([]requestRecord(nil), requests...)
+		responseSnapshot := append([]responseRecord(nil), responses...)
+		traceMu.Unlock()
+		// Record whether authentication was sent, never the credential itself.
+		logger.LogJSON("documentation_requests", requestSnapshot)
+		logger.LogJSON("documentation_responses", responseSnapshot)
+	}()
+
+	if err := chromedp.Run(ctx,
+		network.Enable(),
+		chromedp.Navigate(ts.URL+"/docs"),
+		chromedp.WaitVisible("#docs-auth", chromedp.ByQuery),
+		chromedp.Poll(`document.querySelector('#docs-status').textContent.includes('HTTP 401')`, nil),
+	); err != nil {
+		t.Fatalf("load documentation and reject unauthenticated spec (requires a working sandboxed Chrome): %v", err)
+	}
+	logger.Log("[E2E-DOCS] Public documentation loaded; protected specification rejected missing credentials")
+
+	var operationCount int
+	if err := chromedp.Run(ctx,
+		chromedp.SetValue("#docs-auth-mode", "api_key", chromedp.ByQuery),
+		chromedp.SendKeys("#docs-credential", apiKey, chromedp.ByQuery),
+		chromedp.Click("#docs-auth button[type=submit]", chromedp.ByQuery),
+		chromedp.WaitVisible("#swagger-ui .opblock", chromedp.ByQuery),
+		chromedp.Evaluate(`document.querySelectorAll('#swagger-ui .opblock').length`, &operationCount),
+	); err != nil {
+		t.Fatalf("authenticate and render API operations: %v", err)
+	}
+	if operationCount < 2 {
+		t.Fatalf("rendered %d operations, want the real API route catalog", operationCount)
+	}
+	logger.LogJSON("rendered_operation_count", operationCount)
+
+	// Exercise the actual Swagger filter and restore the full operation list.
+	const filterSelector = "#swagger-ui .operation-filter-input"
+	const unmatchedFilter = "ntm-e2e-no-such-api-tag"
+	if err := chromedp.Run(ctx,
+		chromedp.SendKeys(filterSelector, unmatchedFilter, chromedp.ByQuery),
+		chromedp.Poll(`document.querySelectorAll('#swagger-ui .opblock').length === 0`, nil),
+		chromedp.Focus(filterSelector, chromedp.ByQuery),
+		chromedp.KeyEvent(strings.Repeat(kb.Backspace, len(unmatchedFilter))),
+		chromedp.Poll(fmt.Sprintf(`document.querySelectorAll('#swagger-ui .opblock').length === %d`, operationCount), nil),
+	); err != nil {
+		t.Fatalf("filter rendered operations and restore catalog: %v", err)
+	}
+
+	// Execute a read-only, protected operation through Swagger's own controls.
+	// A rendered 200 response and its actual outgoing header prove that the
+	// credential is used by Try it out, beyond just loading the specification.
+	const healthOperation = `#swagger-ui .opblock-get:has(.opblock-summary-path[data-path="/api/v1/health"])`
+	var localStorageJSON string
+	if err := chromedp.Run(ctx,
+		chromedp.Click(healthOperation+" .opblock-summary-control", chromedp.ByQuery),
+		chromedp.Click(healthOperation+" .try-out__btn", chromedp.ByQuery),
+		chromedp.Click(healthOperation+" .execute", chromedp.ByQuery),
+		chromedp.Poll(fmt.Sprintf(`(() => {
+			const response = document.querySelector(%q);
+			return response && response.querySelector('tbody .response-col_status')?.textContent.trim() === '200'
+				&& response.textContent.includes('healthy');
+		})()`, healthOperation+" .live-responses-table"), nil),
+		chromedp.Evaluate(`JSON.stringify(window.localStorage)`, &localStorageJSON),
+	); err != nil {
+		t.Fatalf("execute authorized health operation from documentation: %v", err)
+	}
+	if strings.Contains(localStorageJSON, apiKey) {
+		t.Error("documentation persisted the API credential in localStorage")
+	}
+
+	traceMu.Lock()
+	requestSnapshot := append([]requestRecord(nil), requests...)
+	responseSnapshot := append([]responseRecord(nil), responses...)
+	traceMu.Unlock()
+	seenAuthorizedHealth := false
+	for _, request := range requestSnapshot {
+		target, err := url.Parse(request.URL)
+		if err != nil {
+			t.Errorf("invalid browser request URL: %v", err)
+			continue
+		}
+		if target.Scheme != "http" && target.Scheme != "https" {
+			continue // Inline data images do not make network requests.
+		}
+		if target.Scheme != apiOrigin.Scheme || target.Host != apiOrigin.Host {
+			t.Errorf("offline documentation attempted an external request: %s", request.URL)
+		}
+		if target.Path == "/api/v1/health" && request.Authenticated {
+			seenAuthorizedHealth = true
+		}
+	}
+	if !seenAuthorizedHealth {
+		t.Error("Try it out did not send the API credential to the health endpoint")
+	}
+	assets := map[string]bool{
+		"swagger-ui.css":                  false,
+		"swagger-ui-bundle.js":            false,
+		"swagger-ui-standalone-preset.js": false,
+	}
+	seenUnauthorizedSpec, seenAuthorizedSpec, seenHealth := false, false, false
+	for _, response := range responseSnapshot {
+		target, err := url.Parse(response.URL)
+		if err != nil {
+			t.Errorf("invalid browser response URL: %v", err)
+			continue
+		}
+		if asset := target.Query().Get("asset"); target.Path == "/docs" && asset != "" {
+			if _, expected := assets[asset]; expected && response.Status == http.StatusOK {
+				assets[asset] = true
+			}
+		}
+		if target.Path == "/api/v1/openapi.json" {
+			seenUnauthorizedSpec = seenUnauthorizedSpec || response.Status == http.StatusUnauthorized
+			seenAuthorizedSpec = seenAuthorizedSpec || response.Status == http.StatusOK
+		}
+		seenHealth = seenHealth || target.Path == "/api/v1/health" && response.Status == http.StatusOK
+	}
+	for asset, loaded := range assets {
+		if !loaded {
+			t.Errorf("browser did not load embedded %s with HTTP 200", asset)
+		}
+	}
+	if !seenUnauthorizedSpec || !seenAuthorizedSpec || !seenHealth {
+		t.Errorf("missing browser HTTP evidence: spec_401=%v spec_200=%v health_200=%v", seenUnauthorizedSpec, seenAuthorizedSpec, seenHealth)
+	}
+	if !t.Failed() {
+		logger.Log("[E2E-DOCS] Verified offline assets, authentication, filtering, Try it out, and no stored credential")
+	}
 }
 
 // ============================================================================

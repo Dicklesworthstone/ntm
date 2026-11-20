@@ -12355,13 +12355,13 @@ func TestAuditStore_CloseWithErrors(t *testing.T) {
 	}
 }
 
-// TestHandleOpenAPISpec_TLS exercises the HTTPS branch in handleOpenAPISpec
-// (line 386 of openapi.go) when r.TLS is non-nil.
+// TestHandleOpenAPISpec_TLS verifies that TLS documentation inherits the
+// browser's origin instead of advertising the listener's private address.
 func TestHandleOpenAPISpec_TLS(t *testing.T) {
 	s := &Server{host: "localhost", port: 8080}
 
 	req := httptest.NewRequest("GET", "/api/v1/openapi.json", nil)
-	req.TLS = &tls.ConnectionState{} // non-nil → HTTPS branch
+	req.TLS = &tls.ConnectionState{}
 	rec := httptest.NewRecorder()
 
 	s.handleOpenAPISpec(rec, req)
@@ -12369,14 +12369,17 @@ func TestHandleOpenAPISpec_TLS(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "https://localhost:8080") {
-		t.Errorf("expected https server URL in spec, got: %s", body[:min(200, len(body))])
+	var spec OpenAPISpec
+	if err := json.Unmarshal(rec.Body.Bytes(), &spec); err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.Servers) != 1 || spec.Servers[0].URL != "/" {
+		t.Errorf("expected origin-relative server URL over TLS, got: %#v", spec.Servers)
 	}
 }
 
-// TestHandleSwaggerUI_TLS exercises the HTTPS branch in handleSwaggerUI
-// (line 402 of openapi.go) when r.TLS is non-nil.
+// TestHandleSwaggerUI_TLS verifies that assets and the specification inherit
+// the browser's HTTPS origin without exposing the configured listener address.
 func TestHandleSwaggerUI_TLS(t *testing.T) {
 	s := &Server{host: "localhost", port: 8080}
 
@@ -12390,8 +12393,11 @@ func TestHandleSwaggerUI_TLS(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "https://localhost:8080") {
-		t.Errorf("expected https URL in swagger HTML, got snippet: %s", body[:min(200, len(body))])
+	if !strings.Contains(body, `new URL("/api/v1/openapi.json", location.href)`) || !strings.Contains(body, `src="/docs?asset=swagger-ui-bundle.js`) {
+		t.Error("expected origin-relative specification and script URLs over TLS")
+	}
+	if strings.Contains(body, "localhost:8080") {
+		t.Error("Swagger UI must not advertise its private listener address")
 	}
 }
 

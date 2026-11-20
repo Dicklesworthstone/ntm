@@ -447,7 +447,18 @@ func TestRouterSpecOperationBasics(t *testing.T) {
 // docs/parity_matrix.json, and complete path coverage in web/src/lib/api/schema.d.ts
 // (bd-rc-track-e-uplift-xkt68.1).
 func TestRouterSpecCompletenessAndArtifactFreshness(t *testing.T) {
-	spec, err := GenerateOpenAPISpecFromRouter("dev", DefaultOpenAPIServerURL)
+	// The generation CLI stamps VERSION into checked-in artifacts. Compare
+	// against that same release version so this gate rejects stale metadata
+	// without requiring correctly stamped artifacts to advertise "dev".
+	versionBytes, err := os.ReadFile(filepath.Join("..", "..", "VERSION"))
+	if err != nil {
+		t.Fatalf("read repository VERSION: %v", err)
+	}
+	version := strings.TrimSpace(string(versionBytes))
+	if version == "" || version == "dev" {
+		t.Fatalf("repository VERSION must contain a release version, got %q", version)
+	}
+	spec, err := GenerateOpenAPISpecFromRouter(version, DefaultOpenAPIServerURL)
 	if err != nil {
 		t.Fatalf("GenerateOpenAPISpecFromRouter: %v", err)
 	}
@@ -537,7 +548,7 @@ func TestRouterSpecCompletenessAndArtifactFreshness(t *testing.T) {
 		t.Fatal("docs/openapi.json is stale vs served router; run `bash scripts/gen_web_types.sh`")
 	}
 
-	matrix, err := GenerateParityMatrixFromRouter("dev")
+	matrix, err := GenerateParityMatrixFromRouter(version)
 	if err != nil {
 		t.Fatalf("GenerateParityMatrixFromRouter: %v", err)
 	}
