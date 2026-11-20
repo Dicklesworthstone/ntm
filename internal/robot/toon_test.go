@@ -1,6 +1,7 @@
 package robot
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -246,4 +247,108 @@ func TestToonDelimiterArg(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestToonDelimiterChar(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"", ","},
+		{",", ","},
+		{"comma", ","},
+		{"\t", "\t"},
+		{"tab", "\t"},
+		{"|", "|"},
+		{"pipe", "|"},
+	}
+	for _, tt := range tests {
+		if got := toonDelimiterChar(tt.input); got != tt.want {
+			t.Errorf("toonDelimiterChar(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestToonEncodePureGo_DelimitersAndEmbeddedFlattening(t *testing.T) {
+	t.Run("tab delimiter emits real tab not literal word tab", func(t *testing.T) {
+		payload := struct {
+			RobotResponse
+			Recommendations []string `json:"recommendations"`
+			EmptyOptional   string   `json:"empty_optional,omitempty"`
+		}{
+			RobotResponse:   NewRobotResponse(true),
+			Recommendations: []string{"codellama:13b", "deepseek-coder:6.7b-instruct"},
+		}
+		for _, delim := range []string{"\t", "tab"} {
+			out, err := toonEncodePureGo(payload, delim)
+			if err != nil {
+				t.Fatalf("toonEncodePureGo(%q) error = %v", delim, err)
+			}
+			if strings.Contains(out, `"tab"`) || strings.Contains(out, `13b"tab"`) {
+				t.Fatalf("corrupted literal 'tab' delimiter in pure-Go TOON output:\n%s", out)
+			}
+			if strings.Contains(out, "RobotResponse:") {
+				t.Fatalf("embedded RobotResponse was not flattened:\n%s", out)
+			}
+			if strings.Contains(out, "empty_optional") || strings.Contains(out, "error:") {
+				t.Fatalf("omitempty zero fields were not skipped:\n%s", out)
+			}
+			wantLine := "recommendations[2\t]:\"codellama:13b\"\t\"deepseek-coder:6.7b-instruct\""
+			if !strings.Contains(out, wantLine) {
+				t.Fatalf("missing expected tab-delimited line %q in output:\n%s", wantLine, out)
+			}
+			if !strings.Contains(out, "success: true\n") {
+				t.Fatalf("missing flattened success: true in output:\n%s", out)
+			}
+		}
+	})
+
+	t.Run("comma and pipe delimiters in tabular structs", func(t *testing.T) {
+		type Row struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
+		}
+		rows := []Row{{ID: 1, Name: "Alice"}, {ID: 2, Name: "Bob"}}
+
+		pipeOut, err := toonEncodePureGo(rows, "pipe")
+		if err != nil {
+			t.Fatalf("pipe encode error = %v", err)
+		}
+		if !strings.Contains(pipeOut, "[2|]{id|name}:\n 1|Alice\n 2|Bob\n") {
+			t.Fatalf("unexpected pipe tabular output:\n%s", pipeOut)
+		}
+
+		commaOut, err := toonEncodePureGo(rows, "comma")
+		if err != nil {
+			t.Fatalf("comma encode error = %v", err)
+		}
+		if !strings.Contains(commaOut, "[2]{id,name}:\n 1,Alice\n 2,Bob\n") {
+			t.Fatalf("unexpected comma tabular output:\n%s", commaOut)
+		}
+	})
+
+	t.Run("time.Time encodes as RFC3339 string not empty struct", func(t *testing.T) {
+		ts := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+		out, err := toonEncodePureGo(ts, "\t")
+		if err != nil {
+			t.Fatalf("time encode error = %v", err)
+		}
+		if !strings.Contains(out, "2026-11-20T12:00:00Z") {
+			t.Fatalf("expected RFC3339 timestamp, got:\n%s", out)
+		}
+	})
+
+	t.Run("tab fallback to comma when value contains literal tab", func(t *testing.T) {
+		rows := []map[string]string{
+			{"desc": "has\ttab", "name": "Alice"},
+			{"desc": "clean", "name": "Bob"},
+		}
+		out, err := toonEncodePureGo(rows, "\t")
+		if err != nil {
+			t.Fatalf("encode error = %v", err)
+		}
+		if !strings.Contains(out, "[2]{desc,name}:\n") {
+			t.Fatalf("expected tab-unsafe tabular array to fall back to comma header, got:\n%s", out)
+		}
+	})
 }

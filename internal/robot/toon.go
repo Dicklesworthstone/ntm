@@ -16,6 +16,7 @@ package robot
 
 import (
 	"bytes"
+	"encoding"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -66,7 +67,7 @@ func toonEncode(payload any, delimiter string) (string, error) {
 
 // toonEncodePureGo encodes a payload as TOON using the pure Go implementation.
 func toonEncodePureGo(payload any, delimiter string) (string, error) {
-	enc := &toonEncoder{delimiter: toonDelimiterArg(delimiter)}
+	enc := &toonEncoder{delimiter: toonDelimiterChar(delimiter)}
 	v := reflect.ValueOf(payload)
 
 	for v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
@@ -78,6 +79,12 @@ func toonEncodePureGo(payload any, delimiter string) (string, error) {
 
 	if !v.IsValid() {
 		return "null\n", nil
+	}
+
+	if scalar, ok, err := enc.encodeMarshalerValue(v); err != nil {
+		return "", err
+	} else if ok {
+		return scalar + "\n", nil
 	}
 
 	switch v.Kind() {
@@ -192,6 +199,34 @@ func toonDelimiterArg(delimiter string) string {
 	}
 }
 
+// toonDelimiterChar resolves delimiter names ("tab", "comma", "pipe") and
+// literal separator characters ("\t", ",", "|") to the actual 1-character
+// delimiter emitted inside TOON rows and inline arrays.
+func toonDelimiterChar(delimiter string) string {
+	if delimiter == "\t" {
+		return "\t"
+	}
+	switch strings.ToLower(strings.TrimSpace(delimiter)) {
+	case "", ",", "comma":
+		return ","
+	case "tab":
+		return "\t"
+	case "|", "pipe":
+		return "|"
+	default:
+		return strings.TrimSpace(delimiter)
+	}
+}
+
+// toonHeaderDelim returns the TOON spec delimiter suffix placed inside array
+// length brackets ("[N\t]", "[N|]", or "[N]" for the default comma delimiter).
+func toonHeaderDelim(delim string) string {
+	if delim == "\t" || delim == "|" {
+		return delim
+	}
+	return ""
+}
+
 // toonEncoder holds encoding state.
 type toonEncoder struct {
 	delimiter string
@@ -219,7 +254,7 @@ func (enc *toonEncoder) renderArray(v reflect.Value) (string, error) {
 
 	// Primitive array: inline format
 	var buf strings.Builder
-	buf.WriteString(fmt.Sprintf("[%d]:", length))
+	buf.WriteString(fmt.Sprintf("[%d%s]:", length, toonHeaderDelim(enc.delimiter)))
 	for i := 0; i < length; i++ {
 		elem := v.Index(i)
 		encoded, err := enc.encodeValue(elem)
@@ -259,8 +294,8 @@ func (enc *toonEncoder) renderTabular(v reflect.Value) (string, error) {
 
 	var buf strings.Builder
 
-	// Header: key[count]{field1,field2,...}:
-	buf.WriteString(fmt.Sprintf("[%d]{%s}:\n", length, strings.Join(fields, ",")))
+	// Header: [count<delim>]{field1<delim>field2,...}:
+	buf.WriteString(fmt.Sprintf("[%d%s]{%s}:\n", length, toonHeaderDelim(safeDelim), strings.Join(fields, safeDelim)))
 
 	// Rows
 	for i := 0; i < length; i++ {
@@ -332,7 +367,11 @@ func (enc *toonEncoder) renderObject(v reflect.Value, indent int) (string, error
 		}
 
 		// Check if value is complex (needs nested rendering)
-		if val.Kind() == reflect.Slice || val.Kind() == reflect.Array {
+		if scalar, ok, err := enc.encodeMarshalerValue(val); err != nil {
+			return "", err
+		} else if ok {
+			buf.WriteString(indentStr + field + ": " + scalar + "\n")
+		} else if val.Kind() == reflect.Slice || val.Kind() == reflect.Array {
 			nested, err := enc.renderArray(val)
 			if err != nil {
 				return "", err
@@ -357,6 +396,182 @@ func (enc *toonEncoder) renderObject(v reflect.Value, indent int) (string, error
 	return buf.String(), nil
 }
 
+type toonStructField struct {
+	name string
+	val  reflect.Value
+}
+
+func parseToonJSONTag(tag string) (name string, omitEmpty bool, skip bool) {
+	if tag == "-" {
+		return "", false, true
+	}
+	parts := strings.Split(tag, ",")
+	name = parts[0]
+	for _, opt := range parts[1:] {
+		if opt == "omitempty" {
+			omitEmpty = true
+		}
+	}
+	return name, omitEmpty, false
+}
+
+func isEmptyToonValue(v reflect.Value) bool {
+	if !v.IsValid() {
+		return true
+	}
+	switch v.Kind() {
+	case reflect.Array, reflect.Map, reflect.Slice, reflect.String:
+		return v.Len() == 0
+	case reflect.Bool:
+		return !v.Bool()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return v.Int() == 0
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return v.Uint() == 0
+	case reflect.Float32, reflect.Float64:
+		return v.Float() == 0
+	case reflect.Interface, reflect.Ptr:
+		return v.IsNil()
+	case reflect.Struct:
+		return v.IsZero()
+	}
+	return false
+}
+
+// flattenStructFields promotes anonymous embedded structs (such as
+// RobotResponse) and honors json:"-" and json:",omitempty" identically to
+// encoding/json so pure-Go TOON matches tru's JSON-derived output.
+func flattenStructFields(v reflect.Value) []toonStructField {
+	for v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return nil
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return nil
+	}
+
+	t := v.Type()
+	// First record explicit direct field names so outer fields shadow embedded ones.
+	directNames := make(map[string]bool, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		tagName, _, skip := parseToonJSONTag(f.Tag.Get("json"))
+		if skip {
+			continue
+		}
+		if f.Anonymous && tagName == "" {
+			ft := f.Type
+			if ft.Kind() == reflect.Ptr {
+				ft = ft.Elem()
+			}
+			if ft.Kind() == reflect.Struct {
+				continue
+			}
+		}
+		name := tagName
+		if name == "" {
+			name = f.Name
+		}
+		directNames[name] = true
+	}
+
+	out := make([]toonStructField, 0, t.NumField())
+	seen := make(map[string]bool, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		tagName, omitEmpty, skip := parseToonJSONTag(f.Tag.Get("json"))
+		if skip {
+			continue
+		}
+		fv := v.Field(i)
+
+		// Promote anonymous embedded struct fields when no explicit JSON name overrides them.
+		if f.Anonymous && tagName == "" {
+			embedded := fv
+			if embedded.Kind() == reflect.Ptr {
+				if embedded.IsNil() {
+					continue
+				}
+				embedded = embedded.Elem()
+			}
+			if embedded.Kind() == reflect.Struct {
+				for _, sub := range flattenStructFields(embedded) {
+					if directNames[sub.name] || seen[sub.name] {
+						continue
+					}
+					seen[sub.name] = true
+					out = append(out, sub)
+				}
+				continue
+			}
+		}
+
+		if omitEmpty && isEmptyToonValue(fv) {
+			continue
+		}
+		name := tagName
+		if name == "" {
+			name = f.Name
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, toonStructField{name: name, val: fv})
+	}
+	return out
+}
+
+// encodeMarshalerValue encodes scalar-like json.Marshaler / encoding.TextMarshaler
+// structs (such as time.Time) via their JSON scalar representation so they do
+// not collapse into empty "{}" objects.
+func (enc *toonEncoder) encodeMarshalerValue(v reflect.Value) (string, bool, error) {
+	if !v.IsValid() || !v.CanInterface() {
+		return "", false, nil
+	}
+	if v.Kind() != reflect.Struct {
+		return "", false, nil
+	}
+	val := v.Interface()
+	_, isJSON := val.(json.Marshaler)
+	_, isText := val.(encoding.TextMarshaler)
+	if !isJSON && !isText {
+		return "", false, nil
+	}
+	raw, err := json.Marshal(val)
+	if err != nil {
+		return "", false, err
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return "", false, err
+	}
+	switch d := decoded.(type) {
+	case nil:
+		return "null", true, nil
+	case string:
+		return enc.encodeString(d), true, nil
+	case bool:
+		if d {
+			return "true", true, nil
+		}
+		return "false", true, nil
+	case float64:
+		return enc.formatFloat(d), true, nil
+	default:
+		// Object or array marshaler: let normal object/array rendering handle it.
+		return "", false, nil
+	}
+}
+
 // extractFields returns the field names from a map or struct.
 func (enc *toonEncoder) extractFields(v reflect.Value) ([]string, error) {
 	for v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
@@ -379,24 +594,10 @@ func (enc *toonEncoder) extractFields(v reflect.Value) ([]string, error) {
 		sort.Strings(fields)
 		return fields, nil
 	case reflect.Struct:
-		t := v.Type()
-		fields := make([]string, 0, t.NumField())
-		for i := 0; i < t.NumField(); i++ {
-			f := t.Field(i)
-			if !f.IsExported() {
-				continue
-			}
-			name := f.Tag.Get("json")
-			if name == "-" {
-				continue
-			}
-			if idx := strings.Index(name, ","); idx != -1 {
-				name = name[:idx]
-			}
-			if name == "" {
-				name = f.Name
-			}
-			fields = append(fields, name)
+		entries := flattenStructFields(v)
+		fields := make([]string, len(entries))
+		for i, e := range entries {
+			fields[i] = e.name
 		}
 		return fields, nil
 	default:
@@ -432,22 +633,12 @@ func (enc *toonEncoder) getFieldValue(v reflect.Value, field string) (reflect.Va
 		}
 		return v.MapIndex(keyVal), nil
 	case reflect.Struct:
-		// First try JSON tag
-		t := v.Type()
-		for i := 0; i < t.NumField(); i++ {
-			f := t.Field(i)
-			name := f.Tag.Get("json")
-			if idx := strings.Index(name, ","); idx != -1 {
-				name = name[:idx]
-			}
-			if name == "" {
-				name = f.Name
-			}
-			if name == field {
-				return v.Field(i), nil
+		for _, e := range flattenStructFields(v) {
+			if e.name == field {
+				return e.val, nil
 			}
 		}
-		return reflect.Value{}, fmt.Errorf("field %q not found", field)
+		return reflect.Value{}, nil
 	default:
 		return reflect.Value{}, fmt.Errorf("expected map or struct")
 	}
@@ -481,6 +672,11 @@ func (enc *toonEncoder) encodeValue(v reflect.Value) (string, error) {
 	case reflect.Float32, reflect.Float64:
 		return enc.formatFloat(v.Float()), nil
 	case reflect.Map, reflect.Struct, reflect.Slice, reflect.Array:
+		if scalar, ok, err := enc.encodeMarshalerValue(v); err != nil {
+			return "", err
+		} else if ok {
+			return scalar, nil
+		}
 		// Nested complex types in tabular rows: fall back to JSON inline
 		var buf bytes.Buffer
 		encoder := json.NewEncoder(&buf)
@@ -569,9 +765,13 @@ func (enc *toonEncoder) isTabSafe(v reflect.Value, fields []string) bool {
 		elem := v.Index(i)
 		for elem.Kind() == reflect.Ptr || elem.Kind() == reflect.Interface {
 			if elem.IsNil() {
-				continue
+				elem = reflect.Value{}
+				break
 			}
 			elem = elem.Elem()
+		}
+		if !elem.IsValid() {
+			continue
 		}
 		for _, field := range fields {
 			val, err := enc.getFieldValue(elem, field)
