@@ -58,15 +58,28 @@ updates:
     commit-message:
       prefix: "docker"
 
-  # npm/Bun dependencies (for OpenAPI tooling)
+  # npm dependencies for the embedded Web Cockpit (/web)
   - package-ecosystem: "npm"
-    directory: "/"
+    directory: "/web"
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 5
     labels:
       - "dependencies"
-      - "npm"
+      - "web"
     commit-message:
-      prefix: "deps"
+      prefix: "deps(web)"
+
+  # npm dependencies for the VS Code extension (/vscode)
+  - package-ecosystem: "npm"
+    directory: "/vscode"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "vscode"
+    commit-message:
+      prefix: "deps(vscode)"

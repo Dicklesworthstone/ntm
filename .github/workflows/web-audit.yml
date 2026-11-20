@@ -48,6 +48,14 @@ jobs:
       - name: Audit production dependencies
         run: npm audit --omit=dev
 
+      - name: Typecheck & lint
+        run: |
+          npm run typecheck
+          npm run lint
+
+      - name: Run Vitest unit & surface suite
+        run: npm run test:run
+
       - name: Build static export
         run: npm run build
 

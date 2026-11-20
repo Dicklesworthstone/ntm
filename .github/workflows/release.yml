@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: "1.26.3"
+  GO_VERSION: "1.26.10"
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
@@ -62,17 +62,15 @@ jobs:
         with:
           syft-version: "v1.46.0"
 
-      - name: Run GoReleaser
-        id: goreleaser
-        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
-        with:
-          distribution: goreleaser
-          version: "v2.17.0"
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
-          SCOOP_GITHUB_TOKEN: ${{ secrets.SCOOP_GITHUB_TOKEN }}
+      - name: Run DSR release pre-flight and cross-platform build
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          bash scripts/release_preflight.sh "$TAG"
+          make build-all VERSION="${{ steps.version.outputs.version }}"
+          bash scripts/build_vsix.sh
+          mkdir -p dist
+          cp vscode/dist/ntm-vscode-*.vsix dist/
+          (cd dist && sha256sum * > SHA256SUMS)
 
       # ----------------------------------------------------------------
       # Verify Homebrew cask caveats use heredoc syntax.

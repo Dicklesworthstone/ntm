@@ -92,7 +92,7 @@ Warning: Advanced modes increase token spend. If approved, run `ntm modes list -
 Now I need you to look through the existing documentation in our docusaurus site here and look for the (many, many) instances of functionality in our project that are not described or explained at all yet (or explained inadequately) in the docusaurus site, and then create and expand the documentation in the site to cover these in an exhaustive, intuitive, helpful, useful, pragmatic way. Don't just make a dump of methods, parameters, etc. Add actually well-written narrative explaining what the stuff does, how it is organized, etc. to help another developer understand how it all works so that they can usefully contribute to the system. 
 
 ### improve_readme | Improve README
-Be sure to check your agent mail and to promptly respond if needed to any messages, and also acknowledge any contact requests; make sure you know the names of all active agents using the MCP Agent Mail system. 
+Audit README.md end-to-end against the current codebase and CLI flags: remove outdated claims, clarify installation and quick-start steps, ensure every showcased workflow matches live behavior, and tighten unclear sections while keeping the voice crisp and authentic.
 
 ### revise_readme | Revise README
 We need to revise the README too for these changes (don't write about these as "changes" however, make it read like it was always like that, we don't have any users yet!) 

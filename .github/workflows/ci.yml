@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: "1.26.3"
+  GO_VERSION: "1.26.10"
 
 jobs:
   # ============================================================================
@@ -122,15 +122,62 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 
       - name: Typecheck (tsc --noEmit)
         run: npx tsc -p . --noEmit
 
+      - name: Run VSCode extension tests (30s bounded)
+        run: timeout 30s npm test
+
       - name: Package .vsix (build check, version lockstep vs VERSION)
         working-directory: .
         run: bash scripts/build_vsix.sh
+
+  # ============================================================================
+  # WEB COCKPIT - CVE audit, typecheck, lint, Vitest, and static export build
+  # ============================================================================
+  web-cockpit:
+    name: Web Cockpit (audit + lint + test + build)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev
+
+      - name: Typecheck & lint
+        run: |
+          npm run typecheck
+          npm run lint
+
+      - name: Run Vitest unit & surface suite
+        run: npm run test:run
+
+      - name: Build static export
+        run: npm run build
 
   # ============================================================================
   # LINT - Static analysis and code quality
@@ -195,8 +242,9 @@ jobs:
 
       - name: Regenerate OpenAPI spec + parity matrix from the served router
         run: |
-          go build -o ntm ./cmd/ntm
-          ./ntm openapi generate --parity-matrix docs/parity_matrix.json
+          REPO_VERSION="$(tr -d '[:space:]' < VERSION)"
+          go build -ldflags "-X github.com/Dicklesworthstone/ntm/internal/cli.Version=${REPO_VERSION}" -o ntm ./cmd/ntm
+          ./ntm openapi generate --version "${REPO_VERSION}" --parity-matrix docs/parity_matrix.json
 
       - name: Fail on drift against committed artifacts
         run: |
@@ -461,10 +509,10 @@ jobs:
           sarif_file: results.sarif
 
   # ============================================================================
-  # GORELEASER - Verify release configuration
+  # DSR RELEASE PREFLIGHT & ASSET VERIFIER SELF-TEST (replaces retired GoReleaser)
   # ============================================================================
-  goreleaser-check:
-    name: GoReleaser Check
+  dsr-preflight-check:
+    name: DSR Preflight & Verifier Self-Test
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -479,22 +527,11 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Check GoReleaser config
-        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
-        with:
-          distribution: goreleaser
-          version: "v2.17.0"
-          args: check
+      - name: Verify DSR release asset verifier canaries
+        run: bash scripts/verify_release_assets.sh --self-test
 
-      - name: GoReleaser Dry Run
-        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
-        with:
-          distribution: goreleaser
-          version: "v2.17.0"
-          # Skip SBOM and signing in dry run (they require external tools)
-          args: release --snapshot --skip=publish,sbom,sign --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify install.sh hermetic regression suite
+        run: go test -count=1 ./tests -run TestInstallSh
 
   # ============================================================================
   # DEPENDENCY - Check for dependency issues
@@ -613,23 +650,25 @@ jobs:
     name: CI Success
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [reality-guards, reality-guards-go, lint, openapi-drift, test, coverage, build, security, goreleaser-check, integration, upgrade-check, vscode-extension]
+    needs: [reality-guards, reality-guards-go, release-preflight, lint, openapi-drift, test, coverage, build, security, dsr-preflight-check, integration, upgrade-check, vscode-extension, web-cockpit]
     if: always()
     steps:
       - name: Check all jobs passed
         run: |
           if [ "${{ needs.reality-guards.result }}" != "success" ] || \
              [ "${{ needs.reality-guards-go.result }}" != "success" ] || \
+             [ "${{ needs.release-preflight.result }}" != "success" ] || \
              [ "${{ needs.lint.result }}" != "success" ] || \
              [ "${{ needs.openapi-drift.result }}" != "success" ] || \
              [ "${{ needs.test.result }}" != "success" ] || \
              [ "${{ needs.coverage.result }}" != "success" ] || \
              [ "${{ needs.build.result }}" != "success" ] || \
              [ "${{ needs.security.result }}" != "success" ] || \
-             [ "${{ needs.goreleaser-check.result }}" != "success" ] || \
+             [ "${{ needs.dsr-preflight-check.result }}" != "success" ] || \
              [ "${{ needs.integration.result }}" != "success" ] || \
              [ "${{ needs.upgrade-check.result }}" != "success" ] || \
-             [ "${{ needs.vscode-extension.result }}" != "success" ]; then
+             [ "${{ needs.vscode-extension.result }}" != "success" ] || \
+             [ "${{ needs.web-cockpit.result }}" != "success" ]; then
             echo "One or more jobs failed"
             exit 1
           fi

@@ -1,0 +1,25 @@
+# webui_dist.txt — WS0-G8 embedded Web UI & surface lockstep allowlist (bd-rc2-track-5-release-dsr-00tdd.2).
+#
+# Format: <entry>\t<bead-id>\t<reason>
+# Stale historical Next.js buildId directories in internal/webui/dist/_next/static/
+# remain tracked pending explicit written Rule-1 authorization to delete them
+# (tracked by bd-rc-track-d-release-docs-3ho85.2). Any NEW stale buildId or any
+# surface lockstep violation fails WS0-G8 immediately.
+stale_build_id:1TOLzMgBho8FZAMr1TG_j	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
+stale_build_id:6IM2DzxGcoP8MKgZlwN59	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
+stale_build_id:CznI_AsmHT0HCxoSgUhdv	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
+stale_build_id:DNVcj87kQT1H-AuFxUddW	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
+stale_build_id:DRBdGUAxIrgjoRoP02Nfk	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
+stale_build_id:GjCb78KGYKdLSuos4iHwo	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
+stale_build_id:IqvknxVPy0q1wyP0qNcAy	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
+stale_build_id:LfqE_Vtb3rv-Xc-YlxjH8	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
+stale_build_id:Ng79ftHxRLmT0FGKkoBwa	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
+stale_build_id:WxWDwrFtWG_o82E2hSk6e	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
+stale_build_id:Ylb_U7VcoWSRthfE3GYow	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
+stale_build_id:h0fJyJ4f58MRvjI8qsbOZ	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
+stale_build_id:kZAF_L1Cb6DQITxWZex_9	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
+stale_build_id:pnGzXXiz0mlbT7ByuXpDW	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
+stale_build_id:uy2_agRC8kwpPHVTXZBeG	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
+stale_build_id:w_KA_1aXO9NfSiWMunVno	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
+stale_build_id:xc14wNR1hvJwmP6bar1Qa	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
+stale_build_id:yWtOeta8MOs_3U4nhjdhn	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval

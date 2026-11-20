@@ -2,6 +2,8 @@ module github.com/Dicklesworthstone/ntm
 
 go 1.26.10
 
+ignore ./web/node_modules
+
 replace github.com/charmbracelet/bubbletea => ./third_party/bubbletea
 
 require (
