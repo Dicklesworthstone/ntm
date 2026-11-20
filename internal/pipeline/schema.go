@@ -215,10 +215,13 @@ type WorkflowSettings struct {
 	OnCancelTimeout  Duration     `yaml:"on_cancel_timeout,omitempty" toml:"on_cancel_timeout,omitempty" json:"on_cancel_timeout,omitempty"`
 	Limits           LimitsConfig `yaml:"limits,omitempty" toml:"limits,omitempty" json:"limits,omitempty"`
 	LogDispatch      *bool        `yaml:"log_dispatch,omitempty" toml:"log_dispatch,omitempty" json:"log_dispatch,omitempty"`
+	NotifyOnStart    bool         `yaml:"notify_on_start,omitempty" toml:"notify_on_start,omitempty" json:"notify_on_start,omitempty"`
 	NotifyOnComplete bool         `yaml:"notify_on_complete,omitempty" toml:"notify_on_complete,omitempty" json:"notify_on_complete,omitempty"`
 	NotifyOnError    bool         `yaml:"notify_on_error,omitempty" toml:"notify_on_error,omitempty" json:"notify_on_error,omitempty"`
+	NotifyOnCancel   bool         `yaml:"notify_on_cancel,omitempty" toml:"notify_on_cancel,omitempty" json:"notify_on_cancel,omitempty"`
 	NotifyChannels   []string     `yaml:"notify_channels,omitempty" toml:"notify_channels,omitempty" json:"notify_channels,omitempty"` // desktop, webhook, mail
 	WebhookURL       string       `yaml:"webhook_url,omitempty" toml:"webhook_url,omitempty" json:"webhook_url,omitempty"`
+	WebhookSecret    string       `yaml:"webhook_secret,omitempty" toml:"webhook_secret,omitempty" json:"webhook_secret,omitempty"`
 	MailRecipient    string       `yaml:"mail_recipient,omitempty" toml:"mail_recipient,omitempty" json:"mail_recipient,omitempty"`
 }
 

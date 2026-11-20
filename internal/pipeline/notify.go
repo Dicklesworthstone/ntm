@@ -3,7 +3,6 @@
 package pipeline
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/webhook"
 )
 
 // NotificationEvent represents a pipeline event to notify about.
@@ -56,6 +56,7 @@ const (
 type Notifier struct {
 	channels      []NotificationChannel
 	webhookURL    string
+	webhookSecret string
 	mailRecipient string
 	mailClient    *agentmail.Client
 	projectKey    string
@@ -71,6 +72,7 @@ const notifierSenderName = "ntm-pipeline"
 type NotifierConfig struct {
 	Channels      []string
 	WebhookURL    string
+	WebhookSecret string
 	MailRecipient string
 	MailClient    *agentmail.Client
 	ProjectKey    string
@@ -102,6 +104,7 @@ func NewNotifier(cfg NotifierConfig) *Notifier {
 	return &Notifier{
 		channels:      channels,
 		webhookURL:    cfg.WebhookURL,
+		webhookSecret: cfg.WebhookSecret,
 		mailRecipient: cfg.MailRecipient,
 		mailClient:    cfg.MailClient,
 		projectKey:    cfg.ProjectKey,
@@ -150,13 +153,14 @@ func (n *Notifier) Notify(ctx context.Context, payload NotificationPayload) erro
 // ShouldNotify checks if a notification should be sent for the given event.
 func ShouldNotify(settings WorkflowSettings, event NotificationEvent) bool {
 	switch event {
+	case NotifyStarted:
+		return settings.NotifyOnStart
 	case NotifyCompleted:
 		return settings.NotifyOnComplete
 	case NotifyFailed, NotifyStepError:
 		return settings.NotifyOnError
-	case NotifyStarted, NotifyCancelled:
-		// Could add settings.NotifyOnStart, settings.NotifyOnCancel
-		return false
+	case NotifyCancelled:
+		return settings.NotifyOnCancel
 	}
 	return false
 }
@@ -233,7 +237,8 @@ func formatDesktopBody(p NotificationPayload) string {
 	return ""
 }
 
-// notifyWebhook sends a notification via HTTP webhook.
+// notifyWebhook sends a notification via internal/webhook's SSRF-validated,
+// redirect-blocking, HMAC-capable HTTP delivery layer.
 func (n *Notifier) notifyWebhook(ctx context.Context, payload NotificationPayload) error {
 	if n.webhookURL == "" {
 		return nil
@@ -244,24 +249,16 @@ func (n *Notifier) notifyWebhook(ctx context.Context, payload NotificationPayloa
 		return fmt.Errorf("marshaling payload: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.webhookURL, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("creating request: %w", err)
+	headers := map[string]string{
+		"User-Agent":        "ntm-pipeline/1.0",
+		"X-NTM-Event-Type":  string(payload.Event),
+		"X-NTM-Workflow":    payload.WorkflowName,
+		"X-NTM-Run-ID":      payload.RunID,
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "ntm-pipeline/1.0")
-
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
+	if _, err := webhook.DeliverJSON(ctx, client, n.webhookURL, n.webhookSecret, body, headers); err != nil {
 		return fmt.Errorf("sending webhook: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("webhook returned status %d", resp.StatusCode)
-	}
-
 	return nil
 }
 

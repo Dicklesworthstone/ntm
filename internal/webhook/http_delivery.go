@@ -1,11 +1,17 @@
 package webhook
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -94,4 +100,103 @@ func webhookRetryDeadline(err error, backoff time.Time) time.Time {
 		return responseErr.retryAfter
 	}
 	return backoff
+}
+
+// ValidateWebhookTargetURL enforces safe webhook destination URL rules:
+// only http/https schemes are accepted, and link-local / cloud-metadata /
+// unspecified addresses (e.g. 169.254.169.254, fe80::, 0.0.0.0, ::) are
+// rejected to prevent SSRF metadata theft. When allowLoopback is false,
+// loopback targets (127.0.0.0/8, ::1, localhost) are also rejected.
+func ValidateWebhookTargetURL(rawURL string, allowLoopback bool) error {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("invalid webhook URL: %w", err)
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("unsupported webhook URL scheme %q (only http and https are allowed)", parsed.Scheme)
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		return errors.New("webhook URL missing host")
+	}
+	lowerHost := strings.ToLower(host)
+	if lowerHost == "metadata.google.internal" || lowerHost == "metadata.goog" {
+		return fmt.Errorf("webhook target %q blocked by SSRF policy", host)
+	}
+	if !allowLoopback && (lowerHost == "localhost" || strings.HasSuffix(lowerHost, ".localhost")) {
+		return fmt.Errorf("webhook loopback target %q blocked by SSRF policy", host)
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if err := validateWebhookIP(ip, allowLoopback); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateWebhookIP(ip net.IP, allowLoopback bool) error {
+	if ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
+		return fmt.Errorf("webhook target IP %s blocked by SSRF policy", ip.String())
+	}
+	if !allowLoopback && ip.IsLoopback() {
+		return fmt.Errorf("webhook loopback IP %s blocked by SSRF policy", ip.String())
+	}
+	return nil
+}
+
+// DeliverJSON delivers a JSON webhook payload through internal/webhook's
+// redirect-blocking, SSRF-validated HTTP transport with optional HMAC-SHA256
+// signing (X-NTM-Signature: sha256=...) and bounded response reading.
+func DeliverJSON(ctx context.Context, client *http.Client, targetURL, secret string, payload []byte, headers map[string]string) (int, error) {
+	if err := ValidateWebhookTargetURL(targetURL, true); err != nil {
+		return 0, err
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	// Resolve DNS safely before dialing so a public hostname cannot resolve
+	// into cloud metadata / link-local / unspecified space (DNS rebinding guard).
+	baseTransport := client.Transport
+	if baseTransport == nil {
+		baseTransport = http.DefaultTransport
+	}
+	safeClient := *client
+	if tr, ok := baseTransport.(*http.Transport); ok {
+		trCopy := tr.Clone()
+		dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
+		trCopy.DialContext = func(dctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := net.DefaultResolver.LookupIPAddr(dctx, host)
+			if err != nil {
+				return nil, err
+			}
+			for _, ipAddr := range ips {
+				if err := validateWebhookIP(ipAddr.IP, true); err != nil {
+					return nil, err
+				}
+			}
+			return dialer.DialContext(dctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+		}
+		safeClient.Transport = trCopy
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(payload))
+	if err != nil {
+		return 0, fmt.Errorf("creating webhook request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "ntm-webhook/1.0")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	if secret != "" {
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write(payload)
+		req.Header.Set("X-NTM-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	}
+	return sendWebhookRequest(&safeClient, req)
 }

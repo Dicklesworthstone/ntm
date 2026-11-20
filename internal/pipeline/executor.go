@@ -3470,7 +3470,7 @@ func (e *Executor) substituteVariables(s string) string {
 
 // substituteVariablesRetainingSeals is like substituteVariables but does not unseal terminal namespaces.
 func (e *Executor) substituteVariablesRetainingSeals(s string) string {
-	result, _ := e.substituteVariablesRetainingSealsCtx(context.TODO(), s)
+	result, _ := e.substituteVariablesRetainingSealsCtx(context.Background(), s)
 	return result
 }
 
@@ -3496,7 +3496,7 @@ func (e *Executor) substituteVariablesCtx(ctx context.Context, s string) string 
 // surfaces on the StepResult instead of leaking unresolved placeholders into
 // shell exec or agent prompts.
 func (e *Executor) substituteVariablesStrict(s string) (string, error) {
-	return e.substituteVariablesStrictCtx(context.TODO(), s)
+	return e.substituteVariablesStrictCtx(context.Background(), s)
 }
 
 // substituteVariablesStrictCtx is the ctx-aware form of substituteVariablesStrict.
@@ -3848,8 +3848,17 @@ func (e *Executor) deliverNotification(pending *pendingNotification) {
 	}
 	notifyCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	// Ignore errors - notifications are best-effort
-	_ = pending.notifier.Notify(notifyCtx, pending.payload)
+	if err := pending.notifier.Notify(notifyCtx, pending.payload); err != nil {
+		slog.Warn("pipeline notification delivery failed",
+			"run_id", pending.payload.RunID,
+			"workflow", pending.payload.WorkflowName,
+			"event", string(pending.payload.Event),
+			"error", err,
+		)
+		e.emitProgress("notification_error", "",
+			fmt.Sprintf("Notification delivery failed for %s: %v", pending.payload.Event, err),
+			e.calculateProgress())
+	}
 }
 
 // notifierForSettings builds the notifier a workflow's settings describe, or nil
@@ -3868,6 +3877,7 @@ func (e *Executor) notifierForSettings(settings WorkflowSettings) *Notifier {
 	notifier := NewNotifier(NotifierConfig{
 		Channels:      settings.NotifyChannels,
 		WebhookURL:    settings.WebhookURL,
+		WebhookSecret: settings.WebhookSecret,
 		MailRecipient: settings.MailRecipient,
 		AgentName:     notifierSenderName,
 	})
