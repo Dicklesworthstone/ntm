@@ -280,6 +280,8 @@ esac
 		{name: "mismatched checksum blocks install", json: compact, checksum: "mismatch", wantErr: "Checksum mismatch"},
 		{name: "missing checksum entry blocks install", json: compact, checksum: "wrong asset", wantErr: "No SHA256 checksum found"},
 		{name: "missing checksums block install", json: compact, checksum: "missing", wantErr: "Could not download release checksums"},
+		{name: "gnu star-prefixed checksum accepted", json: compact, checksum: "gnu-star"},
+		{name: "dot-slash-prefixed CRLF checksum accepted", json: compact, checksum: "dot-slash-crlf"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -306,6 +308,10 @@ esac
 				checksum = digest + "  another-asset.tar.gz\n"
 			case "missing":
 				checksumPath = "missing"
+			case "gnu-star":
+				checksum = digest + " *" + asset + "\n"
+			case "dot-slash-crlf":
+				checksum = digest + "  ./" + asset + "\r\n"
 			}
 			if checksumPath != "missing" {
 				if err := os.WriteFile(checksumPath, []byte(checksum), 0o644); err != nil {
@@ -378,5 +384,150 @@ esac
 				}
 			}
 		})
+	}
+}
+
+// TestInstallShRawBinaryPathBoundaryAndResolvedShellVersion verifies the four
+// install.sh hardening fixes from bd-rc2-track-5-release-dsr-00tdd.1:
+//  1. Raw binary release assets (no .tar.gz/.zip) are staged at ${tmp_dir}/ntm.
+//  2. SHA256SUMS verification accepts GNU "*" and "./" prefixes and rejects tampering.
+//  3. Exact colon-delimited PATH checks prevent prefix-collision false positives
+//     (e.g. /tmp/ntmbin vs /tmp/ntmbin2).
+//  4. setup_shell_integration receives the resolved release version (not empty $VERSION).
+func TestInstallShRawBinaryPathBoundaryAndResolvedShellVersion(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("installer fixtures exercise supported Unix platforms")
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+	binDir := t.TempDir()
+	for _, tool := range []string{"awk", "basename", "cat", "chmod", "cp", "cut", "grep", "head", "mkdir", "mktemp", "mv", "rm", "sed", "tr", "uname"} {
+		src, err := exec.LookPath(tool)
+		if err != nil {
+			t.Skipf("%s not available", tool)
+		}
+		if err := os.Symlink(src, filepath.Join(binDir, tool)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	checksumTool := "sha256sum"
+	checksumExecutable, err := exec.LookPath(checksumTool)
+	if err != nil {
+		checksumTool = "shasum"
+		checksumExecutable, err = exec.LookPath(checksumTool)
+		if err != nil {
+			t.Skip("SHA256 command not available")
+		}
+	}
+	if err := os.Symlink(checksumExecutable, filepath.Join(binDir, checksumTool)); err != nil {
+		t.Fatal(err)
+	}
+	curl := `#!/bin/sh
+set -eu
+out=
+url=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -o) out="$2"; shift 2 ;;
+        -w) shift 2 ;;
+        -*) shift ;;
+        *) url="$1"; shift ;;
+    esac
+done
+repo=https://github.com/Dicklesworthstone/ntm
+api=https://api.github.com/repos/Dicklesworthstone/ntm
+case "$url" in
+    "$repo/releases/latest")
+        printf '%s/releases/tag/%s' "$repo" "$NTM_TEST_TAG"
+        ;;
+    "$api/releases/latest"|"$api/releases/tags/$NTM_TEST_TAG")
+        cat "$NTM_TEST_JSON"
+        ;;
+    "$repo/releases/download/$NTM_TEST_TAG/$NTM_TEST_ASSET")
+        [ "$out" = /dev/null ] || cp "$NTM_TEST_PAYLOAD" "$out"
+        ;;
+    "$repo/releases/download/$NTM_TEST_TAG/SHA256SUMS")
+        cp "$NTM_TEST_CHECKSUM" "$out"
+        ;;
+    *) exit 22 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(binDir, "curl"), []byte(curl), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	rawAsset := "ntm_" + runtime.GOOS + "_" + runtime.GOARCH
+	binary := []byte("#!/bin/sh\n[ \"$1\" = version ] || exit 1\nprintf '%s\\n' 'ntm version v1.5.0'\n")
+	payloadPath := filepath.Join(t.TempDir(), rawAsset)
+	if err := os.WriteFile(payloadPath, binary, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(binary))
+
+	workDir := t.TempDir()
+	// Deliberately place a prefix-colliding directory ("ntmbin2") on PATH while
+	// installing into "ntmbin" — exact :PATH: matching must warn that "ntmbin"
+	// is NOT on PATH instead of falsely matching "ntmbin2".
+	installDir := filepath.Join(workDir, "ntmbin")
+	collidingDir := filepath.Join(workDir, "ntmbin2")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(collidingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bashrc := filepath.Join(workDir, ".bashrc")
+	if err := os.WriteFile(bashrc, []byte("# test bashrc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	jsonPath := filepath.Join(workDir, "release.json")
+	releaseJSON := fmt.Sprintf(`{"tag_name":"v1.5.0","assets":[{"name":"%s"}]}`, rawAsset)
+	if err := os.WriteFile(jsonPath, []byte(releaseJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	checksumPath := filepath.Join(workDir, "SHA256SUMS")
+	if err := os.WriteFile(checksumPath, []byte(digest+" *./"+rawAsset+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run WITHOUT --version and WITHOUT --no-shell, WITH --easy-mode, so the
+	// resolved v1.5.0 tag (from redirect) flows into setup_shell_integration "$version".
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bash, filepath.Join(docsRepoRoot(t), "install.sh"), "--dir="+installDir, "--easy-mode")
+	cmd.Env = []string{
+		"HOME=" + workDir,
+		"SHELL=/bin/bash",
+		"PATH=" + collidingDir + ":" + binDir,
+		"TMPDIR=" + workDir,
+		"NTM_TEST_TAG=v1.5.0",
+		"NTM_TEST_ASSET=" + rawAsset,
+		"NTM_TEST_PAYLOAD=" + payloadPath,
+		"NTM_TEST_JSON=" + jsonPath,
+		"NTM_TEST_CHECKSUM=" + checksumPath,
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("raw-binary install failed: %v\n%s", err, out)
+	}
+	installed, err := os.ReadFile(filepath.Join(installDir, "ntm"))
+	if err != nil {
+		t.Fatalf("raw binary was not installed to %s/ntm: %v", installDir, err)
+	}
+	if !bytes.Equal(installed, binary) {
+		t.Fatal("installed raw binary bytes do not match verified payload")
+	}
+	rcBytes, err := os.ReadFile(bashrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc := string(rcBytes)
+	if !strings.Contains(rc, `export PATH="$PATH:`+installDir+`"`) {
+		t.Errorf("exact PATH boundary failed: prefix-colliding %s suppressed PATH export for %s\n.bashrc:\n%s\noutput:\n%s", collidingDir, installDir, rc, out)
+	}
+	if !strings.Contains(rc, `eval "$(ntm init bash)"`) {
+		t.Errorf("setup_shell_integration did not receive resolved v1.5.0 version (expected 'ntm init bash')\n.bashrc:\n%s\noutput:\n%s", rc, out)
 	}
 }
