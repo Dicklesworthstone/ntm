@@ -96,7 +96,11 @@ func handleOpenAPIGenerate(ctx context.Context, input any) (any, error) {
 		params.Output = "docs/openapi.json"
 	}
 	if params.Version == "" {
-		params.Version = "dev"
+		if Version != "" {
+			params.Version = Version
+		} else {
+			params.Version = "dev"
+		}
 	}
 	if params.ServerURL == "" {
 		params.ServerURL = serve.DefaultOpenAPIServerURL
@@ -230,8 +234,12 @@ Examples:
 		},
 	}
 
+	defaultVersion := Version
+	if defaultVersion == "" {
+		defaultVersion = "dev"
+	}
 	cmd.Flags().StringVarP(&output, "output", "o", "docs/openapi.json", "Output file path")
-	cmd.Flags().StringVar(&version, "version", "dev", "API version for the spec")
+	cmd.Flags().StringVar(&version, "version", defaultVersion, "API version for the spec")
 	cmd.Flags().StringVar(&serverURL, "server-url", serve.DefaultOpenAPIServerURL, "Server URL for the spec")
 	cmd.Flags().BoolVar(&stdout, "stdout", false, "Print to stdout instead of file")
 	cmd.Flags().StringVar(&parityMatrix, "parity-matrix", "", "Also write the generated parity matrix to this path (e.g. docs/parity_matrix.json)")

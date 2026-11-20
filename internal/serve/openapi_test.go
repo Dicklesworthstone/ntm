@@ -52,8 +52,8 @@ func TestHandleOpenAPISpec_Handler(t *testing.T) {
 	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
-	if cors := rr.Header().Get("Access-Control-Allow-Origin"); cors != "*" {
-		t.Errorf("CORS header = %q, want *", cors)
+	if cors := rr.Header().Get("Access-Control-Allow-Origin"); cors == "*" {
+		t.Errorf("CORS header must not be unconditional wildcard *, got %q", cors)
 	}
 
 	// Verify valid JSON
@@ -88,6 +88,12 @@ func TestHandleSwaggerUI_Handler(t *testing.T) {
 	}
 	if !strings.Contains(body, "swagger-ui") {
 		t.Error("expected swagger-ui reference in HTML")
+	}
+	if strings.Contains(body, "unpkg.com") || strings.Contains(body, "https://") {
+		t.Errorf("airgapped /docs must not reference external CDN scripts/CSS: %s", body)
+	}
+	if csp := rr.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") {
+		t.Errorf("expected strict airgapped CSP on /docs, got %q", csp)
 	}
 }
 

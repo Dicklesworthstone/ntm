@@ -14650,12 +14650,15 @@ export interface components {
             log_dispatch?: boolean;
             mail_recipient?: string;
             notify_channels?: string[];
+            notify_on_cancel?: boolean;
             notify_on_complete?: boolean;
             notify_on_error?: boolean;
+            notify_on_start?: boolean;
             on_cancel?: components["schemas"]["Step"][];
             on_cancel_timeout?: components["schemas"]["Duration"];
             on_error?: string;
             timeout?: components["schemas"]["Duration"];
+            webhook_secret?: string;
             webhook_url?: string;
         };
         WorkflowShowResult: {

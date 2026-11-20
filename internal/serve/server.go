@@ -142,6 +142,9 @@ type Server struct {
 	// performing its initial asynchronous refresh ("warming_up"), up to date
 	// ("ready"), or degraded ("degraded"). Guarded by mu.
 	projectionState string
+
+	// rateLimiter enforces bounded-memory per-client HTTP rate limiting.
+	rateLimiter *httpRateLimiter
 }
 
 // Config holds server configuration.
@@ -189,6 +192,9 @@ type Config struct {
 	// These limits are fixed for the server lifetime, including after Stop.
 	JobConcurrency   int
 	JobQueueCapacity int
+
+	// RateLimit configures the bounded-memory per-client HTTP rate limiter.
+	RateLimit RateLimitConfig
 }
 
 const (
@@ -371,6 +377,7 @@ func New(cfg Config) *Server {
 		sseClients:         make(map[chan events.BusEvent]struct{}),
 		corsAllowedOrigins: cfg.AllowedOrigins,
 		jwksCache:          newJWKSCache(cfg.Auth.OIDC.CacheTTL),
+		rateLimiter:        newHTTPRateLimiter(cfg.RateLimit, cfg.Auth.Mode),
 		idempotencyStore:   NewIdempotencyStore(24 * time.Hour),
 		jobStore:           NewJobStore(),
 		jobExecutor:        jobExecutor{maxConcurrent: cfg.JobConcurrency, maxQueued: cfg.JobQueueCapacity},
@@ -474,6 +481,7 @@ func (s *Server) buildRouter() chi.Router {
 	r.Use(s.corsMiddlewareFunc)
 	r.Use(s.authMiddlewareFunc)
 	r.Use(s.rbacMiddleware) // Extract role from auth claims
+	r.Use(s.rateLimitMiddleware)
 	// Record every mutating request. This must run after rbacMiddleware so the
 	// record carries the authenticated principal. Without it, AuditMiddleware had
 	// no callers outside tests, so no audit record was ever written even though
@@ -516,24 +524,25 @@ func (s *Server) buildRouter() chi.Router {
 	// Health check (no versioning)
 	r.Get("/health", s.handleHealth)
 
-	// SSE event stream (no versioning)
-	r.Get("/events", s.handleEventStream)
+	// SSE event stream (no versioning) — RBAC parity with /api/v1/attention/stream
+	r.With(s.RequirePermission(PermReadEvents)).Get("/events", s.handleEventStream)
 
 	// Kernel registry introspection (legacy path used by the web dashboard palette)
 	r.With(s.RequirePermission(PermReadHealth)).Get("/api/kernel/commands", s.handleKernelCommands)
 
-	// Legacy /api/* routes (maintained for backward compatibility during migration)
+	// Legacy /api/* routes (maintained for backward compatibility during migration;
+	// RBAC permissions mirror their canonical /api/v1/* counterparts)
 	r.Route("/api", func(r chi.Router) {
-		r.Get("/sessions", s.handleSessions)
-		r.Get("/sessions/{id}", s.handleSession)
-		r.Get("/sessions/{id}/agents", func(w http.ResponseWriter, req *http.Request) {
+		r.With(s.RequirePermission(PermReadSessions)).Get("/sessions", s.handleSessions)
+		r.With(s.RequirePermission(PermReadSessions)).Get("/sessions/{id}", s.handleSession)
+		r.With(s.RequirePermission(PermReadAgents)).Get("/sessions/{id}/agents", func(w http.ResponseWriter, req *http.Request) {
 			s.handleSessionAgents(w, req, chi.URLParam(req, "id"))
 		})
-		r.Get("/sessions/{id}/events", func(w http.ResponseWriter, req *http.Request) {
+		r.With(s.RequirePermission(PermReadEvents)).Get("/sessions/{id}/events", func(w http.ResponseWriter, req *http.Request) {
 			s.handleSessionEvents(w, req, chi.URLParam(req, "id"))
 		})
-		r.Get("/robot/status", s.handleRobotStatus)
-		r.Get("/robot/health", s.handleRobotHealth)
+		r.With(s.RequirePermission(PermReadHealth)).Get("/robot/status", s.handleRobotStatus)
+		r.With(s.RequirePermission(PermReadHealth)).Get("/robot/health", s.handleRobotHealth)
 	})
 
 	// /api/v1 routes (canonical)

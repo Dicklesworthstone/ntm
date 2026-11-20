@@ -163,12 +163,14 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// CORS is governed by corsMiddlewareFunc (allowlisted origins only — no wildcard "*").
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Write(specBytes)
 }
 
-// handleSwaggerUI serves the Swagger UI HTML page.
+// handleSwaggerUI serves an airgapped, zero-CDN interactive OpenAPI explorer page.
+// It makes zero third-party network requests so /docs works identically in
+// offline/airgapped deployments without unpinned external CDN scripts.
 func (s *Server) handleSwaggerUI(w http.ResponseWriter, r *http.Request) {
 	specURL := s.documentationBaseURL(r) + "/api/v1/openapi.json"
 
@@ -178,45 +180,139 @@ func (s *Server) handleSwaggerUI(w http.ResponseWriter, r *http.Request) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NTM API Documentation</title>
-    <link rel="stylesheet" type="text/css" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
     <style>
-        html { box-sizing: border-box; overflow-y: scroll; }
-        *, *:before, *:after { box-sizing: inherit; }
-        body { margin: 0; background: #fafafa; }
-        .topbar { display: none; }
+        :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
+        body { margin: 0; padding: 1.5rem; background: #0f172a; color: #e2e8f0; }
+        .wrap { max-width: 1080px; margin: 0 auto; }
+        header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid #334155; padding-bottom: 1rem; margin-bottom: 1rem; }
+        h1 { margin: 0; font-size: 1.35rem; }
+        .meta { color: #94a3b8; font-size: 0.85rem; }
+        .controls { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+        input, button { padding: 0.45rem 0.7rem; border-radius: 0.375rem; border: 1px solid #475569; background: #1e293b; color: #f8fafc; font-size: 0.85rem; }
+        input { flex: 1; min-width: 220px; }
+        button { cursor: pointer; background: #2563eb; border-color: #2563eb; font-weight: 600; }
+        button:hover { background: #1d4ed8; }
+        .ep { border: 1px solid #334155; border-radius: 0.5rem; margin-bottom: 0.5rem; background: #1e293b; overflow: hidden; }
+        .ep summary { cursor: pointer; padding: 0.65rem 0.85rem; display: flex; align-items: center; gap: 0.6rem; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.85rem; }
+        .badge { padding: 0.15rem 0.45rem; border-radius: 0.25rem; font-weight: 700; font-size: 0.72rem; text-transform: uppercase; }
+        .GET { background: #0369a1; color: #e0f2fe; }
+        .POST { background: #15803d; color: #dcfce7; }
+        .PUT, .PATCH { background: #b45309; color: #fef3c7; }
+        .DELETE { background: #b91c1c; color: #fee2e2; }
+        .ep-body { padding: 0.75rem 0.85rem; border-top: 1px solid #334155; font-size: 0.82rem; color: #cbd5e1; }
+        pre { background: #020617; padding: 0.65rem; border-radius: 0.375rem; overflow-x: auto; font-size: 0.78rem; }
+        .err { padding: 0.75rem; border-radius: 0.5rem; background: #450a0a; border: 1px solid #991b1b; color: #fecaca; }
     </style>
 </head>
 <body>
-    <div id="swagger-ui"></div>
-    <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
-    <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-standalone-preset.js"></script>
+    <div id="swagger-ui" class="wrap" data-spec-url=%q>
+        <header>
+            <div>
+                <h1>NTM API Documentation</h1>
+                <div id="spec-meta" class="meta">Airgapped OpenAPI 3.1 Explorer · zero external CDN dependencies</div>
+            </div>
+            <a id="raw-spec-link" href=%q style="color:#60a5fa;font-family:monospace;font-size:0.85rem;">openapi.json</a>
+        </header>
+        <div class="controls">
+            <input id="filter-input" type="search" placeholder="Filter endpoints by path, method, or tag..." aria-label="Filter endpoints" />
+            <input id="bearer-input" type="password" placeholder="Optional Bearer token / API key" aria-label="Bearer token" />
+            <button id="reload-btn" type="button">Load Spec</button>
+        </div>
+        <div id="endpoint-list">Loading OpenAPI specification...</div>
+    </div>
     <script>
-        window.onload = function() {
-            window.ui = SwaggerUIBundle({
-                url: %q,
-                dom_id: '#swagger-ui',
-                deepLinking: true,
-                presets: [
-                    SwaggerUIBundle.presets.apis,
-                    SwaggerUIStandalonePreset
-                ],
-                plugins: [
-                    SwaggerUIBundle.plugins.DownloadUrl
-                ],
-                layout: "StandaloneLayout",
-                defaultModelsExpandDepth: 1,
-                defaultModelExpandDepth: 1,
-                docExpansion: "list",
-                filter: true,
-                showExtensions: true,
-                showCommonExtensions: true
-            });
-        };
+        (function() {
+            const specUrl = %q;
+            const listEl = document.getElementById('endpoint-list');
+            const metaEl = document.getElementById('spec-meta');
+            const filterEl = document.getElementById('filter-input');
+            const tokenEl = document.getElementById('bearer-input');
+            const reloadBtn = document.getElementById('reload-btn');
+            let cachedOps = [];
+
+            function escapeHtml(s) {
+                return String(s == null ? '' : s)
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;');
+            }
+
+            function render() {
+                const q = (filterEl.value || '').trim().toLowerCase();
+                const items = cachedOps.filter(function(op) {
+                    if (!q) return true;
+                    return op.path.toLowerCase().includes(q) ||
+                        op.method.toLowerCase().includes(q) ||
+                        (op.summary || '').toLowerCase().includes(q) ||
+                        (op.tags || []).join(' ').toLowerCase().includes(q);
+                });
+                if (!items.length) {
+                    listEl.innerHTML = '<div class="meta">No endpoints match filter.</div>';
+                    return;
+                }
+                listEl.innerHTML = items.map(function(op) {
+                    const details = JSON.stringify({
+                        operationId: op.operationId,
+                        tags: op.tags,
+                        parameters: op.parameters,
+                        responses: op.responses
+                    }, null, 2);
+                    return '<details class="ep"><summary>' +
+                        '<span class="badge ' + escapeHtml(op.method) + '">' + escapeHtml(op.method) + '</span>' +
+                        '<span>' + escapeHtml(op.path) + '</span>' +
+                        '<span class="meta">' + escapeHtml(op.summary || '') + '</span>' +
+                        '</summary><div class="ep-body"><pre>' + escapeHtml(details) + '</pre></div></details>';
+                }).join('');
+            }
+
+            async function loadSpec() {
+                listEl.textContent = 'Loading OpenAPI specification...';
+                try {
+                    const headers = {};
+                    const tok = (tokenEl.value || '').trim();
+                    if (tok) headers['Authorization'] = 'Bearer ' + tok;
+                    const res = await fetch(specUrl, { headers: headers });
+                    if (!res.ok) throw new Error('HTTP ' + res.status + ' loading ' + specUrl);
+                    const spec = await res.json();
+                    const ops = [];
+                    const paths = spec.paths || {};
+                    Object.keys(paths).sort().forEach(function(p) {
+                        const item = paths[p] || {};
+                        ['get','post','put','patch','delete'].forEach(function(m) {
+                            if (item[m]) {
+                                ops.push({
+                                    method: m.toUpperCase(),
+                                    path: p,
+                                    summary: item[m].summary || item[m].description || '',
+                                    operationId: item[m].operationId || '',
+                                    tags: item[m].tags || [],
+                                    parameters: item[m].parameters || [],
+                                    responses: item[m].responses || {}
+                                });
+                            }
+                        });
+                    });
+                    cachedOps = ops;
+                    metaEl.textContent = (spec.info && spec.info.title ? spec.info.title : 'NTM API') +
+                        ' v' + (spec.info && spec.info.version ? spec.info.version : 'unknown') +
+                        ' · ' + ops.length + ' endpoints · airgapped (zero CDN)';
+                    render();
+                } catch (err) {
+                    listEl.innerHTML = '<div class="err">' + escapeHtml(err && err.message ? err.message : err) + '</div>';
+                }
+            }
+
+            filterEl.addEventListener('input', render);
+            reloadBtn.addEventListener('click', loadSpec);
+            loadSpec();
+        })();
     </script>
 </body>
-</html>`, specURL)
+</html>`, specURL, specURL, specURL)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:")
 	w.Write([]byte(html))
 }
 

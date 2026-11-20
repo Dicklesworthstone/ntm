@@ -990,8 +990,8 @@ func isValidTopic(topic string) bool {
 	if strings.HasPrefix(topic, "panes:") {
 		return true
 	}
-	// agent:{type}
-	if strings.HasPrefix(topic, "agent:") {
+	// agent:{type} or agents:{type} (accept both singular and plural forms)
+	if topic == "agent" || topic == "agents" || strings.HasPrefix(topic, "agent:") || strings.HasPrefix(topic, "agents:") {
 		return true
 	}
 	// tool systems
