@@ -83,13 +83,35 @@ export function getConnectionConfig(): ConnectionConfig | null {
 }
 
 /**
- * Resolve the active API base URL from saved config or environment.
+ * Return the live browser origin when hosted over http(s) so embedded `ntm serve --web`
+ * on non-default ports (e.g. :8443) connects to itself without manual URL editing.
+ */
+export function getBrowserOriginBaseUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  const origin = window.location?.origin;
+  if (!origin || origin === "null" || !/^https?:\/\//i.test(origin)) {
+    return null;
+  }
+  return origin.replace(/\/+$/, "");
+}
+
+/**
+ * Resolve the active API base URL from saved config, env override, live browser
+ * origin (when hosted over http/https), or the default localhost:7337 fallback.
  */
 export function getBaseUrl(): string {
   const config = getConnectionConfig();
-  return normalizeBaseUrl(
-    config?.baseUrl || process.env.NEXT_PUBLIC_NTM_URL || DEFAULT_NTM_BASE_URL
-  );
+  if (config?.baseUrl) {
+    return normalizeBaseUrl(config.baseUrl);
+  }
+  if (process.env.NEXT_PUBLIC_NTM_URL) {
+    return normalizeBaseUrl(process.env.NEXT_PUBLIC_NTM_URL);
+  }
+  const browserOrigin = getBrowserOriginBaseUrl();
+  if (browserOrigin) {
+    return browserOrigin;
+  }
+  return DEFAULT_NTM_BASE_URL;
 }
 
 /**
@@ -248,6 +270,53 @@ export async function apiFetch<T>(
   }
 
   return data as T;
+}
+
+/**
+ * Shared plain-text fetch helper (for CSV/Markdown/Prometheus/raw exports) with
+ * Bearer auth, timeout signal, and loop-safe /connect redirect on 401.
+ */
+export async function apiFetchText(
+  path: string,
+  options: RequestInit = {}
+): Promise<string> {
+  const baseUrl = getBaseUrl();
+  const headers: HeadersInit = {
+    ...getAuthHeaders(),
+    ...(options.headers || {}),
+  };
+
+  const response = await fetch(`${baseUrl}${path}`, {
+    ...options,
+    signal: options.signal ?? apiRequestSignal(),
+    headers,
+  });
+
+  if (response.status === 401) {
+    handleUnauthorizedRedirect();
+  }
+
+  const text = await response.text();
+  if (!response.ok) {
+    let message = text.trim() || `Request failed (${response.status})`;
+    let code = `HTTP_${response.status}`;
+    let parsed: unknown = undefined;
+    try {
+      const json = JSON.parse(text) as ApiEnvelope;
+      parsed = json;
+      if (json?.error || json?.message) {
+        message = json.error || json.message || message;
+      }
+      if (json?.error_code) {
+        code = json.error_code;
+      }
+    } catch {
+      // Non-JSON error body; keep plain text message.
+    }
+    throw new ApiError(response.status, code, message, parsed);
+  }
+
+  return text;
 }
 
 /**

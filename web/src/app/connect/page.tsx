@@ -9,10 +9,11 @@
  * - Test connection before proceeding
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   DEFAULT_NTM_BASE_URL,
+  getBrowserOriginBaseUrl,
   saveConnectionConfig,
   getConnectionConfig,
   checkConnection,
@@ -23,14 +24,27 @@ import { resetQueryClient } from "@/lib/hooks/use-query";
 
 export default function ConnectPage() {
   const router = useRouter();
-  const existingConfig = getConnectionConfig();
 
-  const [baseUrl, setBaseUrl] = useState(
-    existingConfig?.baseUrl || DEFAULT_NTM_BASE_URL
-  );
-  const [authToken, setAuthToken] = useState(existingConfig?.authToken || "");
+  // Keep initial render deterministic across SSR and hydration; hydrate saved
+  // config or live window.location.origin post-mount so embedded `ntm serve --web`
+  // on custom ports auto-fills its own origin without hydration warnings.
+  const [baseUrl, setBaseUrl] = useState(DEFAULT_NTM_BASE_URL);
+  const [authToken, setAuthToken] = useState("");
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const existingConfig = getConnectionConfig();
+    if (existingConfig?.baseUrl) {
+      setBaseUrl(existingConfig.baseUrl);
+      setAuthToken(existingConfig.authToken || "");
+      return;
+    }
+    const browserOrigin = getBrowserOriginBaseUrl();
+    if (browserOrigin) {
+      setBaseUrl(browserOrigin);
+    }
+  }, []);
 
   const handleConnect = async (e: React.FormEvent) => {
     e.preventDefault();

@@ -12,9 +12,8 @@ import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   apiFetch,
+  apiFetchText,
   formatApiErrorMessage,
-  getAuthHeaders,
-  getBaseUrl,
   type ApiEnvelope,
 } from "@/lib/api/client";
 
@@ -60,14 +59,7 @@ export function MetricsExportAndStreamingPanel({
         const jsonRes = await apiFetch<Record<string, unknown>>(path);
         return JSON.stringify(jsonRes, null, 2);
       }
-      const resp = await fetch(`${getBaseUrl()}${path}`, {
-        headers: getAuthHeaders(),
-      });
-      const text = await resp.text();
-      if (!resp.ok) {
-        throw new Error(text || `HTTP ${resp.status}`);
-      }
-      return text;
+      return apiFetchText(path);
     },
     onSuccess: (body) => {
       setExportOutput(body);

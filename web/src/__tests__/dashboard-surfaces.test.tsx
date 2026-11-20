@@ -276,6 +276,78 @@ describe("Ctrl+K Command Palette (/api/v1 resolution & {param} prompts)", () => 
       expect(requestedPaths).toContain("/api/v1/sessions/my%2Fproj%231/events");
     });
     expect(await within(dialog).findByText(/session\.created/)).toBeInTheDocument();
+
+    // 3. Pressing Ctrl+K a second time closes the palette cleanly (regression for double-listener bug)
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Command Palette" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("gates mutating POST commands behind explicit confirmation and sends JSON payload", async () => {
+    const postCalls: Array<{ path: string; method: string; body?: string }> = [];
+    const transport = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const method = (init?.method || "GET").toUpperCase();
+      if (method !== "GET") {
+        postCalls.push({
+          path: url.pathname,
+          method,
+          body: typeof init?.body === "string" ? init.body : undefined,
+        });
+      }
+      const reply = (body: object) =>
+        new Response(JSON.stringify({ success: true, ...body }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      if (url.pathname === "/api/v1/kernel/commands") {
+        return reply({
+          commands: [
+            {
+              name: "beads.sync",
+              description: "Flush beads JSONL",
+              category: "beads",
+              safety_level: "mutating",
+              rest: { method: "POST", path: "/beads/sync" },
+            },
+          ],
+        });
+      }
+      if (url.pathname === "/api/v1/beads/sync" && method === "POST") {
+        return reply({ synced: true });
+      }
+      throw new Error(`Unexpected request: ${method} ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", transport);
+
+    render(
+      <DashboardLayout>
+        <div>Dashboard Child</div>
+      </DashboardLayout>
+    );
+
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    const dialog = await screen.findByRole("dialog", { name: "Command Palette" });
+    fireEvent.click(await within(dialog).findByText("beads.sync"));
+
+    const executeBtn = await within(dialog).findByRole("button", { name: "Execute POST" });
+    expect(executeBtn).toBeDisabled();
+    expect(postCalls).toHaveLength(0);
+
+    fireEvent.click(within(dialog).getByRole("checkbox"));
+    expect(executeBtn).not.toBeDisabled();
+    fireEvent.click(executeBtn);
+
+    await waitFor(() => {
+      expect(postCalls).toHaveLength(1);
+    });
+    expect(postCalls[0]).toEqual({
+      path: "/api/v1/beads/sync",
+      method: "POST",
+      body: "{}",
+    });
+    expect(await within(dialog).findByText(/"synced": true/)).toBeInTheDocument();
   });
 });
 

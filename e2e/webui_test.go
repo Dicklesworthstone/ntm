@@ -289,19 +289,69 @@ func (s *WebUITestSuite) AssertText(selector, expected string) error {
 	return nil
 }
 
-// AssertElementExists checks that an element exists on the page.
+// AssertElementExists checks that at least one element matches the selector.
 func (s *WebUITestSuite) AssertElementExists(selector string) error {
 	s.logger.Log("[E2E-WEBUI-ASSERT] Checking element exists: %s", selector)
 
-	var nodes []*runtime.RemoteObject
-	err := chromedp.Run(s.ctx,
-		chromedp.Evaluate(fmt.Sprintf(`document.querySelectorAll('%s').length`, selector), &nodes),
-	)
+	count, err := s.GetElementCount(selector)
 	if err != nil {
 		return err
 	}
+	if count == 0 {
+		return fmt.Errorf("no element matching selector %q", selector)
+	}
 
-	s.logger.Log("[E2E-WEBUI-ASSERT] PASS - element exists: %s", selector)
+	s.logger.Log("[E2E-WEBUI-ASSERT] PASS - element exists (%d): %s", count, selector)
+	return nil
+}
+
+// WaitForTextInTag waits for a visible element matching tagSelector whose trimmed
+// text contains substr (replaces invalid Playwright `:has-text(...)` CSS selectors).
+func (s *WebUITestSuite) WaitForTextInTag(tagSelector, substr string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	expr := fmt.Sprintf(`(() => {
+		const nodes = Array.from(document.querySelectorAll(%q));
+		return nodes.some((el) => (el.textContent || "").toLowerCase().includes(%q));
+	})()`, tagSelector, strings.ToLower(substr))
+	for {
+		var found bool
+		err := chromedp.Run(s.ctx, chromedp.Evaluate(expr, &found))
+		if err == nil && found {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for %s containing %q (last err: %v)", tagSelector, substr, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// ClickElementByText clicks the first enabled element matching tagSelector whose
+// text contains any of labels (replaces invalid Playwright `:has-text(...)` CSS).
+func (s *WebUITestSuite) ClickElementByText(tagSelector string, labels ...string) error {
+	labelsJSON, err := json.Marshal(labels)
+	if err != nil {
+		return err
+	}
+	expr := fmt.Sprintf(`(() => {
+		const labels = %s.map((l) => l.toLowerCase());
+		const nodes = Array.from(document.querySelectorAll(%q));
+		const match = nodes.find((el) => {
+			if (el.disabled) return false;
+			const txt = (el.textContent || "").toLowerCase();
+			return labels.some((l) => txt.includes(l));
+		});
+		if (!match) return false;
+		match.click();
+		return true;
+	})()`, string(labelsJSON), tagSelector)
+	var clicked bool
+	if err := chromedp.Run(s.ctx, chromedp.Evaluate(expr, &clicked)); err != nil {
+		return err
+	}
+	if !clicked {
+		return fmt.Errorf("no enabled %s matching labels %v", tagSelector, labels)
+	}
 	return nil
 }
 
@@ -498,8 +548,8 @@ func TestE2E_WebUI_SessionsFlow(t *testing.T) {
 					suite.CaptureScreenshot("step8-prompt-entered")
 
 					// Click send button
-					if err := suite.Click("button:has-text('Send'), button[type='submit']"); err != nil {
-						suite.logger.Log("[E2E-WEBUI] Could not click send: %v", err)
+					if err := suite.ClickElementByText("button", "Send"); err != nil {
+						t.Errorf("could not click Send button: %v", err)
 					}
 				}
 			}
@@ -569,11 +619,11 @@ func TestE2E_WebUI_BeadsFlow(t *testing.T) {
 	suite.logger.Log("[E2E-WEBUI-STEP] Step 3: Verify Kanban columns")
 	time.Sleep(2 * time.Second)
 
-	// Check for column headers
+	// Check for column headers using real DOM text matching (no invalid :has-text CSS)
 	columns := []string{"Open", "In Progress", "Closed"}
 	for _, col := range columns {
-		if err := suite.WaitForElement(fmt.Sprintf("h3:has-text('%s'), [data-column='%s']", col, strings.ToLower(col)), 5*time.Second); err != nil {
-			suite.logger.Log("[E2E-WEBUI] Column '%s' not found: %v", col, err)
+		if err := suite.WaitForTextInTag("h2, h3, [data-column]", col, 5*time.Second); err != nil {
+			t.Errorf("Kanban column %q not found on /beads: %v", col, err)
 		} else {
 			suite.logger.Log("[E2E-WEBUI-ASSERT] Found column: %s", col)
 		}
@@ -607,8 +657,8 @@ func TestE2E_WebUI_BeadsFlow(t *testing.T) {
 
 		// Try to drag first bead to "In Progress" column
 		if err := suite.DragAndDrop(
-			"[draggable='true']:first-child, [data-bead-id]:first-child",
-			"[data-column='in_progress'], div:has(h3:has-text('In Progress'))",
+			"[draggable='true'], [data-bead-id]",
+			"[data-column='in_progress']",
 		); err != nil {
 			suite.logger.Log("[E2E-WEBUI] Drag and drop failed: %v", err)
 		}
@@ -628,16 +678,16 @@ func TestE2E_WebUI_BeadsFlow(t *testing.T) {
 
 	// Step 8: Verify triage recommendations section
 	suite.logger.Log("[E2E-WEBUI-STEP] Step 8: Verify triage recommendations")
-	if err := suite.WaitForElement("h2:has-text('Triage'), [data-testid='triage-section']", 5*time.Second); err != nil {
-		suite.logger.Log("[E2E-WEBUI] Triage section not found: %v", err)
+	if err := suite.WaitForTextInTag("h2, h3, [data-testid='triage-section']", "Triage", 5*time.Second); err != nil {
+		t.Errorf("Triage section not found on /beads: %v", err)
 	} else {
 		suite.logger.Log("[E2E-WEBUI-ASSERT] Triage section found")
 	}
 
-	// Step 9: Verify galaxy view section
+	// Step 9: Verify galaxy / graph section
 	suite.logger.Log("[E2E-WEBUI-STEP] Step 9: Verify galaxy view")
-	if err := suite.WaitForElement("h2:has-text('Galaxy'), svg, [data-testid='galaxy-view']", 5*time.Second); err != nil {
-		suite.logger.Log("[E2E-WEBUI] Galaxy view not found: %v", err)
+	if err := suite.WaitForElement("svg, [data-testid='galaxy-view']", 5*time.Second); err != nil {
+		t.Errorf("Galaxy/graph SVG not found on /beads: %v", err)
 	} else {
 		suite.logger.Log("[E2E-WEBUI-ASSERT] Galaxy view found")
 	}
@@ -700,8 +750,8 @@ func TestE2E_WebUI_MailFlow(t *testing.T) {
 
 	// Step 4: Verify inbox section
 	suite.logger.Log("[E2E-WEBUI-STEP] Step 4: Verify inbox section")
-	if err := suite.WaitForElement("h2:has-text('Inbox'), [data-testid='inbox-section']", 10*time.Second); err != nil {
-		suite.logger.Log("[E2E-WEBUI] Inbox section not found: %v", err)
+	if err := suite.WaitForTextInTag("h2, h3, [data-testid='inbox-section']", "Inbox", 10*time.Second); err != nil {
+		t.Errorf("Inbox section not found on /mail: %v", err)
 	} else {
 		suite.logger.Log("[E2E-WEBUI-ASSERT] Inbox section found")
 	}
@@ -710,38 +760,38 @@ func TestE2E_WebUI_MailFlow(t *testing.T) {
 	suite.logger.Log("[E2E-WEBUI-STEP] Step 5: Check for messages")
 	messageCount, err := suite.GetElementCount("button[class*='text-left'], [data-message-id]")
 	if err != nil {
-		suite.logger.Log("[E2E-WEBUI] Could not count messages: %v", err)
+		t.Errorf("could not count messages on /mail: %v", err)
 	}
 	suite.logger.Log("[E2E-WEBUI-ASSERT] Found %d messages", messageCount)
 
 	if messageCount > 0 {
 		// Step 6: Click on first message
 		suite.logger.Log("[E2E-WEBUI-STEP] Step 6: Click on first message")
-		if err := suite.Click("button[class*='text-left']:first-child, [data-message-id]:first-child"); err != nil {
-			suite.logger.Log("[E2E-WEBUI] Could not click message: %v", err)
+		if err := suite.Click("button[class*='text-left'], [data-message-id]"); err != nil {
+			t.Errorf("could not click first message: %v", err)
 		}
 		time.Sleep(2 * time.Second)
 		suite.CaptureScreenshot("step6-message-opened")
 
 		// Step 7: Verify thread view
 		suite.logger.Log("[E2E-WEBUI-STEP] Step 7: Verify thread view")
-		if err := suite.WaitForElement("h2:has-text('Thread'), [data-testid='thread-view']", 5*time.Second); err != nil {
-			suite.logger.Log("[E2E-WEBUI] Thread view not found: %v", err)
+		if err := suite.WaitForTextInTag("h2, h3, [data-testid='thread-view']", "Thread", 5*time.Second); err != nil {
+			t.Errorf("Thread view not found on /mail: %v", err)
 		} else {
 			suite.logger.Log("[E2E-WEBUI-ASSERT] Thread view found")
 		}
 
 		// Step 8: Click Mark Read button
 		suite.logger.Log("[E2E-WEBUI-STEP] Step 8: Click Mark Read button")
-		if err := suite.Click("button:has-text('Mark read'), button:has-text('Read')"); err != nil {
-			suite.logger.Log("[E2E-WEBUI] Mark Read button not found: %v", err)
+		if err := suite.ClickElementByText("button", "Mark read", "Read"); err != nil {
+			t.Errorf("Mark Read button not found or disabled: %v", err)
 		} else {
 			time.Sleep(1 * time.Second)
 			suite.CaptureScreenshot("step8-marked-read")
 
 			// Check for success notice
 			if err := suite.WaitForElement("[class*='success'], [class*='green']", 3*time.Second); err != nil {
-				suite.logger.Log("[E2E-WEBUI] Success notice not found after mark read")
+				t.Errorf("Success notice not found after mark read: %v", err)
 			} else {
 				suite.logger.Log("[E2E-WEBUI-ASSERT] Mark read success")
 			}
@@ -749,8 +799,8 @@ func TestE2E_WebUI_MailFlow(t *testing.T) {
 
 		// Step 9: Click Acknowledge button (if ack required)
 		suite.logger.Log("[E2E-WEBUI-STEP] Step 9: Click Acknowledge button")
-		if err := suite.Click("button:has-text('Acknowledge'), button:has-text('Ack')"); err != nil {
-			suite.logger.Log("[E2E-WEBUI] Acknowledge button not found or disabled: %v", err)
+		if err := suite.ClickElementByText("button", "Acknowledge", "Ack"); err != nil {
+			suite.logger.Log("[E2E-WEBUI] Acknowledge button not enabled for this message: %v", err)
 		} else {
 			time.Sleep(1 * time.Second)
 			suite.CaptureScreenshot("step9-acknowledged")
@@ -759,25 +809,25 @@ func TestE2E_WebUI_MailFlow(t *testing.T) {
 		// Step 10: Type a reply
 		suite.logger.Log("[E2E-WEBUI-STEP] Step 10: Type a reply")
 		if err := suite.WaitForElement("textarea[placeholder*='reply'], textarea", 5*time.Second); err != nil {
-			suite.logger.Log("[E2E-WEBUI] Reply textarea not found: %v", err)
+			t.Errorf("Reply textarea not found: %v", err)
 		} else {
 			testReply := "This is an E2E test reply message."
 			if err := suite.TypeText("textarea[placeholder*='reply'], textarea", testReply); err != nil {
-				suite.logger.Log("[E2E-WEBUI] Could not type reply: %v", err)
+				t.Errorf("could not type reply: %v", err)
 			} else {
 				suite.CaptureScreenshot("step10-reply-typed")
 
 				// Step 11: Click Send Reply button
 				suite.logger.Log("[E2E-WEBUI-STEP] Step 11: Click Send Reply button")
-				if err := suite.Click("button:has-text('Send Reply'), button:has-text('Send')"); err != nil {
-					suite.logger.Log("[E2E-WEBUI] Send Reply button not found: %v", err)
+				if err := suite.ClickElementByText("button", "Send Reply", "Send"); err != nil {
+					t.Errorf("Send Reply button not found or disabled: %v", err)
 				} else {
 					time.Sleep(2 * time.Second)
 					suite.CaptureScreenshot("step11-reply-sent")
 
 					// Check for success notice
-					if err := suite.WaitForElement("[class*='success']", 3*time.Second); err != nil {
-						suite.logger.Log("[E2E-WEBUI] Success notice not found after send reply")
+					if err := suite.WaitForElement("[class*='success'], [class*='green']", 3*time.Second); err != nil {
+						t.Errorf("Success notice not found after send reply: %v", err)
 					} else {
 						suite.logger.Log("[E2E-WEBUI-ASSERT] Reply sent successfully")
 					}
@@ -790,8 +840,8 @@ func TestE2E_WebUI_MailFlow(t *testing.T) {
 
 	// Step 12: Verify reservation map section
 	suite.logger.Log("[E2E-WEBUI-STEP] Step 12: Verify reservation map")
-	if err := suite.WaitForElement("h2:has-text('Reservation'), [data-testid='reservation-map']", 5*time.Second); err != nil {
-		suite.logger.Log("[E2E-WEBUI] Reservation map not found: %v", err)
+	if err := suite.WaitForTextInTag("h2, h3, [data-testid='reservation-map']", "Reservation", 5*time.Second); err != nil {
+		t.Errorf("Reservation map not found on /mail: %v", err)
 	} else {
 		suite.logger.Log("[E2E-WEBUI-ASSERT] Reservation map found")
 	}
@@ -823,24 +873,33 @@ func TestE2E_WebUI_SmokeTest(t *testing.T) {
 		selector string
 	}{
 		{"/", "Sessions", "h1"},
-		{"/beads", "Beads", "h1"},
-		{"/mail", "Mail", "h1"},
+		{"/accounts", "Accounts", "h1"},
 		{"/agents", "Agents", "h1"},
+		{"/analytics", "Analytics", "h1"},
+		{"/attention", "Attention", "h1"},
+		{"/beads", "Beads", "h1"},
 		{"/connect", "Connect", "h1, input"},
+		{"/ensemble", "Ensemble", "h1"},
+		{"/mail", "Mail", "h1"},
+		{"/memory", "Memory", "h1"},
+		{"/pipelines", "Pipelines", "h1"},
+		{"/safety", "Safety", "h1"},
+		{"/scanner", "Scanner", "h1"},
+		{"/sessions", "Session Detail", "h1"},
+		{"/swarm", "Swarm", "h1"},
+		{"/worktrees", "Worktrees", "h1"},
 	}
 
 	for _, page := range pages {
 		suite.logger.Log("[E2E-WEBUI-SMOKE] Testing page: %s", page.path)
 
 		if err := suite.Navigate(page.path); err != nil {
-			suite.logger.Log("[E2E-WEBUI-SMOKE] FAIL - could not navigate to %s: %v", page.path, err)
+			t.Errorf("could not navigate to %s: %v", page.path, err)
 			continue
 		}
 
-		time.Sleep(2 * time.Second)
-
 		if err := suite.WaitForElement(page.selector, 10*time.Second); err != nil {
-			suite.logger.Log("[E2E-WEBUI-SMOKE] FAIL - page %s did not load properly: %v", page.path, err)
+			t.Errorf("page %s did not load selector %q: %v", page.path, page.selector, err)
 			suite.CaptureScreenshot(fmt.Sprintf("smoke-fail-%s", strings.ReplaceAll(page.path, "/", "-")))
 		} else {
 			suite.logger.Log("[E2E-WEBUI-SMOKE] PASS - page %s loaded", page.path)

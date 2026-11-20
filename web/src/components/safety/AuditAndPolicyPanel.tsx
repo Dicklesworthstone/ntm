@@ -135,21 +135,21 @@ export function AuditAndPolicyPanel({
   const [automationError, setAutomationError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!initialAutomation) {
-      return;
+    const autoCommitVal = initialAutomation?.auto_commit;
+    const autoPushVal = initialAutomation?.auto_push;
+    const forceReleaseVal = initialAutomation?.force_release;
+    if (typeof autoCommitVal === "boolean") {
+      setAutoCommit(autoCommitVal);
     }
-    if (typeof initialAutomation.auto_commit === "boolean") {
-      setAutoCommit(initialAutomation.auto_commit);
-    }
-    if (typeof initialAutomation.auto_push === "boolean") {
-      setAutoPush(initialAutomation.auto_push);
+    if (typeof autoPushVal === "boolean") {
+      setAutoPush(autoPushVal);
     }
     if (
-      initialAutomation.force_release === "never" ||
-      initialAutomation.force_release === "approval" ||
-      initialAutomation.force_release === "auto"
+      forceReleaseVal === "never" ||
+      forceReleaseVal === "approval" ||
+      forceReleaseVal === "auto"
     ) {
-      setForceRelease(initialAutomation.force_release);
+      setForceRelease(forceReleaseVal);
     }
   }, [
     initialAutomation?.auto_commit,

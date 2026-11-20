@@ -343,6 +343,24 @@ describe("Wave 12 Web Cockpit Surfaces", () => {
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
       }
+      if (url.pathname === "/api/v1/beads/recipes" && method === "GET") {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            timestamp: "2026-11-16T05:00:00Z",
+            recipes: {
+              recipes: [
+                {
+                  name: "actionable",
+                  description: "Ready-to-work open issues",
+                  source: "builtin",
+                },
+              ],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
       if (url.pathname === "/api/v1/sessions/wave12-sess/controller" && method === "POST") {
         return new Response(
           JSON.stringify({
@@ -393,6 +411,12 @@ describe("Wave 12 Web Cockpit Surfaces", () => {
     await waitFor(() => {
       expect(screen.getByText("Fix kernel MustRegister bindings")).toBeTruthy();
     });
+
+    fireEvent.click(screen.getByRole("button", { name: /Load Recipes/i }));
+    await waitFor(() => {
+      expect(screen.getByTestId("beads-recipes-list").textContent).toContain("actionable");
+    });
+    expect(seenRequests).toContain("GET /api/v1/beads/recipes");
 
     fireEvent.change(screen.getByLabelText("Target Bead ID"), {
       target: { value: "bd-n5y0l.2" },

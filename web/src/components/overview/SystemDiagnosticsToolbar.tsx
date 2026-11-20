@@ -12,7 +12,10 @@ import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   apiFetch,
+  apiFetchText,
   formatApiErrorMessage,
+  getBaseUrl,
+  getConnectionConfig,
   type ApiEnvelope,
 } from "@/lib/api/client";
 
@@ -54,6 +57,30 @@ export function SystemDiagnosticsToolbar() {
   const [bundleReady, setBundleReady] =
     useState<SupportBundleArchiveResponse | null>(null);
   const [bundleError, setBundleError] = useState<string | null>(null);
+  const [openApiBusy, setOpenApiBusy] = useState(false);
+  const [openApiError, setOpenApiError] = useState<string | null>(null);
+
+  const handleOpenAPISpec = async () => {
+    setOpenApiError(null);
+    const config = getConnectionConfig();
+    const specUrl = `${getBaseUrl()}/api/v1/openapi.json`;
+    if (!config?.authToken) {
+      window.open(specUrl, "_blank", "noopener,noreferrer");
+      return;
+    }
+    setOpenApiBusy(true);
+    try {
+      const specText = await apiFetchText("/api/v1/openapi.json");
+      const blob = new Blob([specText], { type: "application/json" });
+      const blobUrl = URL.createObjectURL(blob);
+      window.open(blobUrl, "_blank", "noopener,noreferrer");
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+    } catch (err) {
+      setOpenApiError(formatApiErrorMessage(err));
+    } finally {
+      setOpenApiBusy(false);
+    }
+  };
 
   const depsQuery = useQuery({
     queryKey: ["overview", "deps"],
@@ -142,14 +169,19 @@ export function SystemDiagnosticsToolbar() {
               : "Runtime & Capabilities"}
           </button>
 
-          <a
-            href="/api/v1/openapi.json"
-            target="_blank"
-            rel="noreferrer"
-            className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2.5 py-1.5 text-xs font-mono text-blue-600 dark:text-blue-400 hover:underline"
+          <button
+            type="button"
+            disabled={openApiBusy}
+            onClick={() => void handleOpenAPISpec()}
+            className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2.5 py-1.5 text-xs font-mono text-blue-600 dark:text-blue-400 hover:underline disabled:opacity-50"
           >
-            OpenAPI 3.1 Spec ↗
-          </a>
+            {openApiBusy ? "Loading OpenAPI…" : "OpenAPI 3.1 Spec ↗"}
+          </button>
+          {openApiError && (
+            <span className="text-xs text-red-600 dark:text-red-400">
+              {openApiError}
+            </span>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">

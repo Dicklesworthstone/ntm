@@ -150,7 +150,22 @@ export default function MailPage() {
     ack: false,
     read: false,
     reply: false,
+    compose: false,
+    reserve: false,
   });
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [composeTo, setComposeTo] = useState("");
+  const [composeSubject, setComposeSubject] = useState("");
+  const [composeBody, setComposeBody] = useState("");
+  const [composeImportance, setComposeImportance] = useState<"normal" | "high" | "urgent">("normal");
+  const [composeAckRequired, setComposeAckRequired] = useState(false);
+  const [composeThreadId, setComposeThreadId] = useState("");
+
+  const [reserveOpen, setReserveOpen] = useState(false);
+  const [reservePaths, setReservePaths] = useState("");
+  const [reserveTTL, setReserveTTL] = useState("3600");
+  const [reserveExclusive, setReserveExclusive] = useState(true);
+  const [reserveReason, setReserveReason] = useState("");
 
   useEffect(() => {
     return () => {
@@ -518,6 +533,113 @@ export default function MailPage() {
     [agentName, queryClient, setStatusNotice]
   );
 
+  const handleComposeSubmit = useCallback(
+    async (event: React.FormEvent) => {
+      event.preventDefault();
+      const sender = agentName.trim();
+      const recipients = composeTo
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const subject = composeSubject.trim();
+      const body = composeBody.trim();
+      if (!sender || recipients.length === 0 || !subject || !body) {
+        setStatusNotice({
+          type: "error",
+          message: "Sender agent, at least one recipient, subject, and body are required.",
+        });
+        return;
+      }
+      setActionBusy((prev) => ({ ...prev, compose: true }));
+      try {
+        await apiFetch<ApiEnvelope>("/api/v1/mail/messages", {
+          method: "POST",
+          body: JSON.stringify({
+            sender_name: sender,
+            to: recipients,
+            subject,
+            body_md: body,
+            importance: composeImportance,
+            ack_required: composeAckRequired,
+            ...(composeThreadId.trim() ? { thread_id: composeThreadId.trim() } : {}),
+          }),
+        });
+        setComposeTo("");
+        setComposeSubject("");
+        setComposeBody("");
+        setComposeThreadId("");
+        setComposeImportance("normal");
+        setComposeAckRequired(false);
+        setComposeOpen(false);
+        void queryClient.invalidateQueries({ queryKey: ["mail"] });
+        setStatusNotice({
+          type: "success",
+          message: `Sent message "${subject}" to ${recipients.join(", ")}.`,
+        });
+      } catch (error) {
+        setStatusNotice({ type: "error", message: getErrorMessage(error) });
+      } finally {
+        setActionBusy((prev) => ({ ...prev, compose: false }));
+      }
+    },
+    [
+      agentName,
+      composeAckRequired,
+      composeBody,
+      composeImportance,
+      composeSubject,
+      composeThreadId,
+      composeTo,
+      queryClient,
+      setStatusNotice,
+    ]
+  );
+
+  const handleAcquireReservationSubmit = useCallback(
+    async (event: React.FormEvent) => {
+      event.preventDefault();
+      const holder = agentName.trim();
+      const paths = reservePaths
+        .split(/[\n,]/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const ttl = parseInt(reserveTTL, 10);
+      if (!holder || paths.length === 0) {
+        setStatusNotice({
+          type: "error",
+          message: "Active agent and at least one file path/glob are required.",
+        });
+        return;
+      }
+      setActionBusy((prev) => ({ ...prev, reserve: true }));
+      try {
+        await apiFetch<ApiEnvelope>("/api/v1/reservations", {
+          method: "POST",
+          body: JSON.stringify({
+            agent_name: holder,
+            paths,
+            ttl_seconds: Number.isFinite(ttl) && ttl > 0 ? ttl : 3600,
+            exclusive: reserveExclusive,
+            ...(reserveReason.trim() ? { reason: reserveReason.trim() } : {}),
+          }),
+        });
+        setReservePaths("");
+        setReserveReason("");
+        setReserveOpen(false);
+        void queryClient.invalidateQueries({ queryKey: ["reservations"] });
+        setStatusNotice({
+          type: "success",
+          message: `Reserved ${paths.length} path${paths.length === 1 ? "" : "s"} for ${holder}.`,
+        });
+      } catch (error) {
+        setStatusNotice({ type: "error", message: getErrorMessage(error) });
+      } finally {
+        setActionBusy((prev) => ({ ...prev, reserve: false }));
+      }
+    },
+    [agentName, queryClient, reserveExclusive, reservePaths, reserveReason, reserveTTL, setStatusNotice]
+  );
+
   const connectionError =
     agentsQuery.error ??
     inboxQuery.error ??
@@ -560,8 +682,248 @@ export default function MailPage() {
             </div>
             <div>{ackRequiredCount} require ack</div>
           </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setComposeOpen((prev) => !prev)}
+              className="px-3 py-2 rounded-md text-xs font-medium bg-blue-600 text-white hover:bg-blue-700"
+            >
+              {composeOpen ? "Close Compose" : "Compose Message"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setReserveOpen((prev) => !prev)}
+              className="px-3 py-2 rounded-md text-xs font-medium border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700"
+            >
+              {reserveOpen ? "Close Reserve" : "Acquire Reservation"}
+            </button>
+          </div>
         </div>
       </div>
+
+      {composeOpen && (
+        <section
+          aria-label="Compose Agent Mail Message"
+          className="rounded-md border border-blue-200 dark:border-blue-800 bg-white dark:bg-gray-800 p-4 space-y-3"
+        >
+          <div className="flex items-center justify-between">
+            <h2 className="text-base font-semibold text-gray-900 dark:text-white">
+              Compose Message
+            </h2>
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              POST <code className="font-mono">/api/v1/mail/messages</code>
+            </span>
+          </div>
+          <form onSubmit={handleComposeSubmit} className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label
+                  htmlFor="compose-to"
+                  className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1"
+                >
+                  Recipients (comma-separated)
+                </label>
+                <input
+                  id="compose-to"
+                  value={composeTo}
+                  onChange={(event) => setComposeTo(event.target.value)}
+                  placeholder="GreenCastle, BlueLake"
+                  className="w-full rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-white"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="compose-thread"
+                  className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1"
+                >
+                  Thread ID (optional)
+                </label>
+                <input
+                  id="compose-thread"
+                  value={composeThreadId}
+                  onChange={(event) => setComposeThreadId(event.target.value)}
+                  placeholder="bd-123"
+                  className="w-full rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-white"
+                />
+              </div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="sm:col-span-2">
+                <label
+                  htmlFor="compose-subject"
+                  className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1"
+                >
+                  Subject
+                </label>
+                <input
+                  id="compose-subject"
+                  value={composeSubject}
+                  onChange={(event) => setComposeSubject(event.target.value)}
+                  placeholder="Coordinate file edits"
+                  className="w-full rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-white"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="compose-importance"
+                  className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1"
+                >
+                  Importance
+                </label>
+                <select
+                  id="compose-importance"
+                  value={composeImportance}
+                  onChange={(event) =>
+                    setComposeImportance(
+                      event.target.value as "normal" | "high" | "urgent"
+                    )
+                  }
+                  className="w-full rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-white"
+                >
+                  <option value="normal">normal</option>
+                  <option value="high">high</option>
+                  <option value="urgent">urgent</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label
+                htmlFor="compose-body"
+                className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1"
+              >
+                Body (Markdown)
+              </label>
+              <textarea
+                id="compose-body"
+                rows={3}
+                value={composeBody}
+                onChange={(event) => setComposeBody(event.target.value)}
+                placeholder="Write message body..."
+                className="w-full rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-white"
+              />
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={composeAckRequired}
+                  onChange={(event) => setComposeAckRequired(event.target.checked)}
+                />
+                <span>Require acknowledgement</span>
+              </label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setComposeOpen(false)}
+                  className="px-3 py-1.5 rounded-md text-xs font-medium border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={actionBusy.compose}
+                  className="px-3 py-1.5 rounded-md text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {actionBusy.compose ? "Sending…" : "Send Message"}
+                </button>
+              </div>
+            </div>
+          </form>
+        </section>
+      )}
+
+      {reserveOpen && (
+        <section
+          aria-label="Acquire File Reservation"
+          className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-white dark:bg-gray-800 p-4 space-y-3"
+        >
+          <div className="flex items-center justify-between">
+            <h2 className="text-base font-semibold text-gray-900 dark:text-white">
+              Acquire File Reservation
+            </h2>
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              POST <code className="font-mono">/api/v1/reservations</code>
+            </span>
+          </div>
+          <form onSubmit={handleAcquireReservationSubmit} className="space-y-3">
+            <div>
+              <label
+                htmlFor="reserve-paths"
+                className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1"
+              >
+                File Paths / Globs (comma or newline separated)
+              </label>
+              <textarea
+                id="reserve-paths"
+                rows={2}
+                value={reservePaths}
+                onChange={(event) => setReservePaths(event.target.value)}
+                placeholder="internal/serve/**, web/src/app/(dashboard)/mail/**"
+                className="w-full rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-1.5 font-mono text-xs text-gray-900 dark:text-white"
+              />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div>
+                <label
+                  htmlFor="reserve-ttl"
+                  className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1"
+                >
+                  TTL (seconds)
+                </label>
+                <input
+                  id="reserve-ttl"
+                  type="number"
+                  min={60}
+                  value={reserveTTL}
+                  onChange={(event) => setReserveTTL(event.target.value)}
+                  className="w-full rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-white"
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <label
+                  htmlFor="reserve-reason"
+                  className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1"
+                >
+                  Reason (optional)
+                </label>
+                <input
+                  id="reserve-reason"
+                  value={reserveReason}
+                  onChange={(event) => setReserveReason(event.target.value)}
+                  placeholder="Editing mail UI for bd-rc2"
+                  className="w-full rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-white"
+                />
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={reserveExclusive}
+                  onChange={(event) => setReserveExclusive(event.target.checked)}
+                />
+                <span>Exclusive write lock</span>
+              </label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setReserveOpen(false)}
+                  className="px-3 py-1.5 rounded-md text-xs font-medium border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={actionBusy.reserve}
+                  className="px-3 py-1.5 rounded-md text-xs font-medium bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  {actionBusy.reserve ? "Reserving…" : "Reserve Paths"}
+                </button>
+              </div>
+            </div>
+          </form>
+        </section>
+      )}
 
       {connectionError && (
         <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md">

@@ -73,6 +73,28 @@ function getQueryClient(): QueryClient {
 }
 
 /**
+ * Canonical default WebSocket topics subscribed by the Web Cockpit.
+ * Exported so Go↔Web parity tests can verify every subscribed topic is
+ * accepted by internal/serve/server_ws.go (isValidTopic) and handled by
+ * handleWsEvent.
+ */
+export const DEFAULT_WS_TOPICS = [
+  "sessions:*",
+  "panes:*",
+  "agent:*",
+  "beads:*",
+  "mail:*",
+  "reservations:*",
+  "pipelines:*",
+  "approvals:*",
+  "accounts:*",
+  "attention",
+  "scanner",
+  "memory",
+  "global:*",
+] as const;
+
+/**
  * Provider component that sets up TanStack Query and WebSocket bridge.
  */
 export function NtmQueryProvider({ children }: NtmQueryProviderProps) {
@@ -92,20 +114,7 @@ export function NtmQueryProvider({ children }: NtmQueryProviderProps) {
       handleWsEvent(queryClient, event);
     });
 
-    const topics = [
-      "sessions:*",
-      "panes:*",
-      "beads:*",
-      "mail:*",
-      "reservations:*",
-      "pipelines:*",
-      "approvals:*",
-      "accounts:*",
-      "attention",
-      "scanner",
-      "memory",
-    ];
-    for (const topic of topics) {
+    for (const topic of DEFAULT_WS_TOPICS) {
       void ws.subscribe(topic).catch((error) => {
         if (process.env.NODE_ENV === "development") {
           console.error("[WS Bridge] subscribe failed", topic, error);
@@ -184,13 +193,34 @@ export function handleWsEvent(queryClient: QueryClient, event: WSEvent): void {
     queryClient.invalidateQueries({ queryKey: ["panes"] });
   }
 
-  // Agent events
+  // Agent events (support both singular agent:* from serve hub and plural agents:*)
   if (
+    topic === "agent" ||
+    topic.startsWith("agent:") ||
     topic === "agents" ||
     topic.startsWith("agents:") ||
     event_type.startsWith("agent.")
   ) {
     queryClient.invalidateQueries({ queryKey: ["agents"] });
+  }
+
+  // Attention, incident, and alert feed events
+  if (
+    topic === "attention" ||
+    topic.startsWith("attention:") ||
+    event_type.startsWith("attention.") ||
+    event_type.startsWith("alert.") ||
+    event_type.startsWith("incident.")
+  ) {
+    queryClient.invalidateQueries({ queryKey: ["attention"] });
+    queryClient.invalidateQueries({ queryKey: ["incidents"] });
+    queryClient.invalidateQueries({ queryKey: ["alerts"] });
+  }
+
+  // Global broadcast events
+  if (topic === "global" || topic.startsWith("global:")) {
+    queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    queryClient.invalidateQueries({ queryKey: ["attention"] });
   }
 
   // Memory / CASS Memory (cm) events

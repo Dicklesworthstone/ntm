@@ -481,7 +481,7 @@ describe("Wave 9 Web Cockpit Surfaces", () => {
         if (url.pathname === "/api/v1/mail/inbox") {
           return reply({ messages: [], count: 0 });
         }
-        if (url.pathname === "/api/v1/reservations") {
+        if (url.pathname === "/api/v1/reservations" && method === "GET") {
           return reply({
             reservations: [
               {
@@ -517,6 +517,14 @@ describe("Wave 9 Web Cockpit Surfaces", () => {
               },
             ],
           });
+        }
+        if (url.pathname === "/api/v1/mail/messages" && method === "POST") {
+          reservationMutations.push("POST /api/v1/mail/messages");
+          return reply({ id: 901 });
+        }
+        if (url.pathname === "/api/v1/reservations" && method === "POST") {
+          reservationMutations.push("POST /api/v1/reservations");
+          return reply({ granted: [{ id: 88, path_pattern: "internal/serve/**" }], conflicts: [] });
         }
         if (url.pathname.startsWith("/api/v1/reservations/77/") && method === "POST") {
           reservationMutations.push(`${url.pathname}${url.search}`);
@@ -562,6 +570,32 @@ describe("Wave 9 Web Cockpit Surfaces", () => {
     );
     await waitFor(() => {
       expect(reservationMutations).toContain("/api/v1/reservations/77/force-release");
+    });
+
+    // Compose a new message (POST /api/v1/mail/messages)
+    fireEvent.click(screen.getByRole("button", { name: "Compose Message" }));
+    fireEvent.change(screen.getByLabelText("Recipients (comma-separated)"), {
+      target: { value: "GreenCastle" },
+    });
+    fireEvent.change(screen.getByLabelText("Subject"), {
+      target: { value: "Web Cockpit handoff" },
+    });
+    fireEvent.change(screen.getByLabelText("Body (Markdown)"), {
+      target: { value: "Ready for merge." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send Message" }));
+    await waitFor(() => {
+      expect(reservationMutations).toContain("POST /api/v1/mail/messages");
+    });
+
+    // Acquire a new file reservation (POST /api/v1/reservations)
+    fireEvent.click(screen.getByRole("button", { name: "Acquire Reservation" }));
+    fireEvent.change(screen.getByLabelText("File Paths / Globs (comma or newline separated)"), {
+      target: { value: "internal/serve/**" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Reserve Paths" }));
+    await waitFor(() => {
+      expect(reservationMutations).toContain("POST /api/v1/reservations");
     });
   });
 

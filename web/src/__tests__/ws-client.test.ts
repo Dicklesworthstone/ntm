@@ -7,7 +7,7 @@
 import { QueryClient } from "@tanstack/react-query";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { browserNavigation } from "../lib/api/client";
-import { handleWsEvent } from "../lib/hooks/use-query";
+import { DEFAULT_WS_TOPICS, handleWsEvent } from "../lib/hooks/use-query";
 import {
   applyPaneOutputEvent,
   NtmWebSocket,
@@ -521,5 +521,38 @@ describe("handleWsEvent", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: ["cm"],
     });
+  });
+
+  it("subscribes to attention, agent:*, and global:* and invalidates attention/incidents/alerts + agents caches", () => {
+    expect(DEFAULT_WS_TOPICS).toContain("attention");
+    expect(DEFAULT_WS_TOPICS).toContain("agent:*");
+    expect(DEFAULT_WS_TOPICS).toContain("global:*");
+
+    const queryClient = new QueryClient();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    handleWsEvent(queryClient, {
+      type: "event",
+      topic: "attention",
+      event_type: "attention.item_updated",
+      data: { cursor: 99 },
+      ts: new Date().toISOString(),
+      seq: 30,
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["attention"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["incidents"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["alerts"] });
+
+    invalidateSpy.mockClear();
+
+    handleWsEvent(queryClient, {
+      type: "event",
+      topic: "agent:claude",
+      event_type: "status.changed",
+      data: { pane: "%1" },
+      ts: new Date().toISOString(),
+      seq: 31,
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["agents"] });
   });
 });

@@ -117,6 +117,8 @@ function CommandPalette({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [pendingCommand, setPendingCommand] = useState<KernelCommand | null>(null);
   const [paramValues, setParamValues] = useState<Record<string, string>>({});
+  const [requestBodyText, setRequestBodyText] = useState("{}");
+  const [confirmMutation, setConfirmMutation] = useState(false);
   const [isExecuting, setIsExecuting] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -125,34 +127,29 @@ function CommandPalette({
     if (!open) {
       setPendingCommand(null);
       setParamValues({});
+      setRequestBodyText("{}");
+      setConfirmMutation(false);
       setError(null);
       setResult(null);
       setIsExecuting(false);
-      return;
     }
+  }, [open]);
+
+  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         onOpenChange(!open);
+        return;
       }
-      if (event.key === "Escape") {
+      if (open && event.key === "Escape") {
+        event.preventDefault();
         onOpenChange(false);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [open, onOpenChange]);
-
-  useEffect(() => {
-    const handleGlobal = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        onOpenChange(true);
-      }
-    };
-    window.addEventListener("keydown", handleGlobal);
-    return () => window.removeEventListener("keydown", handleGlobal);
-  }, [onOpenChange]);
 
   const commandsQuery = useQuery({
     queryKey: ["kernel-commands"],
@@ -190,7 +187,8 @@ function CommandPalette({
 
   const executeCommand = async (
     command: KernelCommand,
-    params: Record<string, string>
+    params: Record<string, string>,
+    bodyText?: string
   ) => {
     setError(null);
     setResult(null);
@@ -199,18 +197,34 @@ function CommandPalette({
       return;
     }
 
-    if (command.rest.method.toUpperCase() !== "GET") {
-      setError("This command requires input; only GET commands are supported here.");
-      return;
+    const method = command.rest.method.toUpperCase();
+    const isMutating = method !== "GET";
+    let serializedBody: string | undefined;
+    if (isMutating && bodyText && bodyText.trim() !== "") {
+      try {
+        const parsed = JSON.parse(bodyText);
+        serializedBody = JSON.stringify(parsed);
+      } catch {
+        setError("Request body must be valid JSON.");
+        return;
+      }
     }
 
     setIsExecuting(true);
     try {
       const resolvedPath = resolveKernelRESTPath(command.rest.path, params);
       if (process.env.NODE_ENV === "development") {
-        console.log("[Command Palette] run", command.name, resolvedPath);
+        console.log("[Command Palette] run", method, command.name, resolvedPath);
       }
-      const response = await apiFetch<Record<string, unknown>>(resolvedPath);
+      const response = await apiFetch<Record<string, unknown>>(
+        resolvedPath,
+        isMutating
+          ? {
+              method,
+              ...(serializedBody !== undefined ? { body: serializedBody } : {}),
+            }
+          : undefined
+      );
       setResult(JSON.stringify(response, null, 2));
     } catch (err) {
       if (process.env.NODE_ENV === "development") {
@@ -233,15 +247,13 @@ function CommandPalette({
       return;
     }
 
-    if (command.rest.method.toUpperCase() !== "GET") {
-      setPendingCommand(null);
-      setError("This command requires input; only GET commands are supported here.");
-      return;
-    }
-
+    const method = command.rest.method.toUpperCase();
+    const isMutating = method !== "GET";
     const requiredParams = extractKernelPathParams(command.rest.path);
-    if (requiredParams.length > 0) {
+    if (isMutating || requiredParams.length > 0) {
       setPendingCommand(command);
+      setConfirmMutation(false);
+      setRequestBodyText(method === "DELETE" ? "" : "{}");
       setParamValues((prev) => {
         const next: Record<string, string> = {};
         for (const param of requiredParams) {
@@ -351,24 +363,45 @@ function CommandPalette({
             })}
           </div>
 
-          {pendingCommand && pendingParams.length > 0 && (
+          {pendingCommand && (pendingParams.length > 0 || (pendingCommand.rest?.method?.toUpperCase() ?? "GET") !== "GET") && (() => {
+            const pendingMethod = (pendingCommand.rest?.method ?? "GET").toUpperCase();
+            const isMutating = pendingMethod !== "GET";
+            return (
             <form
               aria-label={`Parameters for ${pendingCommand.name}`}
               onSubmit={(event) => {
                 event.preventDefault();
-                void executeCommand(pendingCommand, paramValues);
+                if (isMutating && !confirmMutation) {
+                  setError("Confirm execution before running a mutating command.");
+                  return;
+                }
+                void executeCommand(pendingCommand, paramValues, isMutating ? requestBodyText : undefined);
               }}
-              className="mt-4 rounded-md border border-blue-200 bg-blue-50/40 p-3 space-y-3 dark:border-blue-800 dark:bg-blue-950/30"
+              className={`mt-4 rounded-md border p-3 space-y-3 ${
+                isMutating
+                  ? "border-amber-300 bg-amber-50/50 dark:border-amber-700 dark:bg-amber-950/30"
+                  : "border-blue-200 bg-blue-50/40 dark:border-blue-800 dark:bg-blue-950/30"
+              }`}
             >
               <div className="flex items-center justify-between gap-2">
-                <div className="text-xs font-semibold text-gray-900 dark:text-white">
-                  Parameters for {pendingCommand.name}
+                <div className="flex items-center gap-2 text-xs font-semibold text-gray-900 dark:text-white">
+                  <span
+                    className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${
+                      isMutating
+                        ? "bg-amber-200 text-amber-900 dark:bg-amber-900/60 dark:text-amber-200"
+                        : "bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-200"
+                    }`}
+                  >
+                    {pendingMethod}
+                  </span>
+                  <span>{isMutating ? `Confirm ${pendingCommand.name}` : `Parameters for ${pendingCommand.name}`}</span>
                 </div>
                 <code className="text-[11px] text-gray-500 dark:text-gray-400">
                   {pendingCommand.rest?.path}
                 </code>
               </div>
 
+              {pendingParams.length > 0 && (
               <div className="grid gap-2 sm:grid-cols-2">
                 {pendingParams.map((paramName) => {
                   const inputId = `kernel-param-${paramName}`;
@@ -397,6 +430,39 @@ function CommandPalette({
                   );
                 })}
               </div>
+              )}
+
+              {isMutating && (
+                <div className="space-y-2">
+                  <div>
+                    <label
+                      htmlFor="kernel-request-body"
+                      className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1"
+                    >
+                      JSON Request Body (optional)
+                    </label>
+                    <textarea
+                      id="kernel-request-body"
+                      rows={3}
+                      value={requestBodyText}
+                      onChange={(event) => setRequestBodyText(event.target.value)}
+                      placeholder='{"key": "value"}'
+                      className="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 font-mono text-xs text-gray-900 focus:border-amber-500 focus:outline-none dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 text-xs text-amber-900 dark:text-amber-200">
+                    <input
+                      type="checkbox"
+                      checked={confirmMutation}
+                      onChange={(event) => setConfirmMutation(event.target.checked)}
+                    />
+                    <span>
+                      Confirm mutating {pendingMethod} execution
+                      {pendingCommand.safety_level ? ` (safety: ${pendingCommand.safety_level})` : ""}
+                    </span>
+                  </label>
+                </div>
+              )}
 
               <div className="flex items-center justify-end gap-2">
                 <button
@@ -404,6 +470,7 @@ function CommandPalette({
                   onClick={() => {
                     setPendingCommand(null);
                     setParamValues({});
+                    setConfirmMutation(false);
                   }}
                   className="rounded-md border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
                 >
@@ -411,14 +478,19 @@ function CommandPalette({
                 </button>
                 <button
                   type="submit"
-                  disabled={isExecuting}
-                  className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                  disabled={isExecuting || (isMutating && !confirmMutation)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50 ${
+                    isMutating
+                      ? "bg-amber-600 hover:bg-amber-700"
+                      : "bg-blue-600 hover:bg-blue-700"
+                  }`}
                 >
-                  {isExecuting ? "Running..." : "Run Command"}
+                  {isExecuting ? "Running..." : isMutating ? `Execute ${pendingMethod}` : "Run Command"}
                 </button>
               </div>
             </form>
-          )}
+            );
+          })()}
 
           {(error || result) && (
             <div className="mt-4 rounded-md border border-gray-200 bg-gray-50 p-3 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-200">

@@ -49,6 +49,18 @@ interface BeadDepsListResponse extends ApiEnvelope {
   dependencies?: BeadDepEntry[];
 }
 
+interface BeadRecipeEntry {
+  name: string;
+  description?: string;
+  source?: string;
+}
+
+interface BeadsRecipesResponse extends ApiEnvelope {
+  recipes?: {
+    recipes?: BeadRecipeEntry[];
+  } | BeadRecipeEntry[];
+}
+
 export function BeadsGraphAndDepsPanel({
   onNotice,
   onSelectBead,
@@ -65,6 +77,16 @@ export function BeadsGraphAndDepsPanel({
     queryKey: ["beads", "bv-priority"],
     queryFn: () => apiFetch<BeadsPriorityResponse>("/api/v1/beads/priority"),
     enabled: priorityRequested,
+    retry: false,
+  });
+
+  // 1b. BV Recipes Catalog (GET /api/v1/beads/recipes)
+  const [recipesRequested, setRecipesRequested] = useState(false);
+
+  const recipesQuery = useQuery({
+    queryKey: ["beads", "bv-recipes"],
+    queryFn: () => apiFetch<BeadsRecipesResponse>("/api/v1/beads/recipes"),
+    enabled: recipesRequested,
     retry: false,
   });
 
@@ -168,6 +190,11 @@ export function BeadsGraphAndDepsPanel({
   };
 
   const priorityRecs = priorityQuery.data?.priority?.recommendations ?? [];
+  const recipesList: BeadRecipeEntry[] = Array.isArray(recipesQuery.data?.recipes)
+    ? recipesQuery.data.recipes
+    : Array.isArray(recipesQuery.data?.recipes?.recipes)
+      ? recipesQuery.data.recipes.recipes
+      : [];
   const depsList = Array.isArray(depsQuery.data?.dependencies)
     ? depsQuery.data.dependencies
     : [];
@@ -253,6 +280,77 @@ export function BeadsGraphAndDepsPanel({
               )}
             </div>
           )}
+
+          {/* BV Recipes Catalog (GET /api/v1/beads/recipes) */}
+          <div className="pt-3 border-t border-gray-200 dark:border-gray-700 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h3 className="text-xs font-semibold text-gray-900 dark:text-white">
+                  BV Filter &amp; Sort Recipes
+                </h3>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                  Discover available BV recipes via <code className="font-mono">/api/v1/beads/recipes</code>.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={recipesQuery.isFetching}
+                onClick={() => {
+                  if (recipesRequested) {
+                    void recipesQuery.refetch();
+                  } else {
+                    setRecipesRequested(true);
+                  }
+                }}
+                className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2.5 py-1 text-xs font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+              >
+                {recipesQuery.isFetching
+                  ? "Loading…"
+                  : recipesRequested
+                    ? "Refresh Recipes"
+                    : "Load Recipes"}
+              </button>
+            </div>
+
+            {recipesQuery.isError && (
+              <div className="text-xs text-red-600 dark:text-red-400">
+                {formatApiErrorMessage(recipesQuery.error)}
+              </div>
+            )}
+
+            {recipesRequested && !recipesQuery.isFetching && !recipesQuery.isError && (
+              <div data-testid="beads-recipes-list" className="space-y-1.5 text-xs">
+                {recipesList.length === 0 ? (
+                  <p className="text-gray-500 dark:text-gray-400">
+                    No BV recipes reported.
+                  </p>
+                ) : (
+                  recipesList.map((recipe) => (
+                    <div
+                      key={recipe.name}
+                      className="rounded border border-gray-200 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-900/40 px-2.5 py-1.5 flex items-start justify-between gap-2"
+                    >
+                      <div>
+                        <div className="font-mono font-medium text-gray-900 dark:text-white">
+                          {recipe.name}
+                        </div>
+                        {recipe.description && (
+                          <div className="text-[11px] text-gray-600 dark:text-gray-300">
+                            {recipe.description}
+                          </div>
+                        )}
+                      </div>
+                      {recipe.source && (
+                        <span className="rounded bg-gray-200 dark:bg-gray-800 px-1.5 py-0.5 text-[10px] font-mono text-gray-700 dark:text-gray-300 shrink-0">
+                          {recipe.source}
+                        </span>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Right: Interactive Dependency Linker */}

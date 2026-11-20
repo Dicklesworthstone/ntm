@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -594,21 +595,28 @@ func TestWebUIHeadlessChromeBrowserQualification(t *testing.T) {
 	}
 	t.Logf("verified / hydrated heading=%q seeded_session=%q attention_fetch=ok", strings.TrimSpace(homeHeading), seededSession)
 
-	// 2. Navigate across key routes (/agents, /beads, /scanner, /analytics) via hydrated SPA nav
+	// 2. Navigate across ALL 14 remaining dashboard routes via hydrated SPA nav
+	// (plus "/" already verified above and "/connect" verified below = 16/16 routes)
 	// and assert real DOM headings without "coming soon".
 	routeChecks := []struct {
 		route       string
 		wantHeading string
 		extraText   string
 	}{
+		{route: "/accounts", wantHeading: "Accounts"},
 		{route: "/agents", wantHeading: "Agents", extraText: seededAgent},
-		{route: "/ensemble", wantHeading: "Ensemble", extraText: "project-diagnosis"},
+		{route: "/analytics", wantHeading: "Analytics", extraText: seededSession},
 		{route: "/attention", wantHeading: "Attention", extraText: seededSummary},
+		{route: "/beads", wantHeading: "Beads"},
+		{route: "/ensemble", wantHeading: "Ensemble", extraText: "project-diagnosis"},
+		{route: "/mail", wantHeading: "Mail"},
+		{route: "/memory", wantHeading: "Memory"},
+		{route: "/pipelines", wantHeading: "Pipelines"},
+		{route: "/safety", wantHeading: "Safety"},
+		{route: "/scanner", wantHeading: "Scanner"},
+		{route: "/sessions", wantHeading: "Session Detail"},
 		{route: "/swarm", wantHeading: "Swarm", extraText: "short_smoke"},
 		{route: "/worktrees", wantHeading: "Worktrees"},
-		{route: "/beads", wantHeading: "Beads"},
-		{route: "/scanner", wantHeading: "Scanner"},
-		{route: "/analytics", wantHeading: "Analytics", extraText: seededSession},
 	}
 
 	for _, rc := range routeChecks {
@@ -642,10 +650,10 @@ func TestWebUIHeadlessChromeBrowserQualification(t *testing.T) {
 		t.Logf("verified route %s hydrated heading=%q (coming-soon absent)", rc.route, rc.wantHeading)
 	}
 
-	// 3. Trigger Ctrl+K and verify the Command Palette dialog opens in the real browser DOM
-	// and loads kernel commands from /api/v1/kernel/commands.
+	// 3. Trigger Ctrl+K and verify the Command Palette dialog opens in the real browser DOM,
+	// loads kernel commands from /api/v1/kernel/commands, AND closes cleanly on a second Ctrl+K.
 	const paletteSelector = `[role="dialog"][aria-label="Command Palette"]`
-	if err := chromedp.Run(timeoutCtx,
+	dispatchCtrlK := []chromedp.Action{
 		input.DispatchKeyEvent(input.KeyRawDown).
 			WithModifiers(input.ModifierCtrl).
 			WithKey("k").
@@ -656,8 +664,8 @@ func TestWebUIHeadlessChromeBrowserQualification(t *testing.T) {
 			WithKey("k").
 			WithCode("KeyK").
 			WithWindowsVirtualKeyCode(75),
-		chromedp.WaitVisible(paletteSelector, chromedp.ByQuery),
-	); err != nil {
+	}
+	if err := chromedp.Run(timeoutCtx, append(dispatchCtrlK, chromedp.WaitVisible(paletteSelector, chromedp.ByQuery))...); err != nil {
 		t.Fatalf("Ctrl+K failed to open Command Palette dialog: %v", err)
 	}
 	if err := waitForDOMCondition(timeoutCtx, "Command Palette kernel commands loaded",
@@ -672,7 +680,31 @@ func TestWebUIHeadlessChromeBrowserQualification(t *testing.T) {
 	)); err != nil {
 		t.Fatalf("count Command Palette buttons: %v", err)
 	}
-	t.Logf("verified Ctrl+K opened Command Palette dialog (rendered %d interactive buttons)", paletteButtonCount)
+	if err := chromedp.Run(timeoutCtx, dispatchCtrlK...); err != nil {
+		t.Fatalf("second Ctrl+K failed: %v", err)
+	}
+	if err := waitForDOMCondition(timeoutCtx, "Command Palette closed on second Ctrl+K",
+		`document.querySelector('[role="dialog"][aria-label="Command Palette"]') === null`,
+	); err != nil {
+		t.Fatalf("Command Palette did not close on second Ctrl+K: %v", err)
+	}
+	t.Logf("verified Ctrl+K toggled Command Palette open (%d buttons) and closed cleanly", paletteButtonCount)
+
+	// 3b. Navigate to /connect (16th of 16 routes) and verify it hydrates with Server URL + origin default.
+	if err := chromedp.Run(timeoutCtx,
+		chromedp.Navigate(baseURL+"/connect/"),
+		chromedp.WaitVisible(`input#baseUrl`, chromedp.ByQuery),
+	); err != nil {
+		t.Fatalf("navigate and hydrate /connect/: %v", err)
+	}
+	var connectURLValue string
+	if err := chromedp.Run(timeoutCtx, chromedp.Value(`input#baseUrl`, &connectURLValue, chromedp.ByQuery)); err != nil {
+		t.Fatalf("read /connect input#baseUrl: %v", err)
+	}
+	if connectURLValue != baseURL {
+		t.Fatalf("/connect input#baseUrl = %q, want %q", connectURLValue, baseURL)
+	}
+	t.Logf("verified route /connect hydrated with baseUrl=%q (16/16 routes live-verified)", connectURLValue)
 
 	// 4. Verify zero uncaught JS exceptions and zero console errors.
 	diagMu.Lock()
@@ -685,5 +717,41 @@ func TestWebUIHeadlessChromeBrowserQualification(t *testing.T) {
 	}
 	if len(gotConsoleErrors) > 0 {
 		t.Fatalf("unexpected browser console.error calls (%d): %v", len(gotConsoleErrors), gotConsoleErrors)
+	}
+}
+
+// TestWebSocketTopicParityGoAndWeb verifies every WebSocket topic subscribed by
+// web/src/lib/hooks/use-query.tsx (DEFAULT_WS_TOPICS) is accepted by Go's
+// internal/serve/server_ws.go isValidTopic() so the Web Cockpit can never
+// silently fail a subscription handshake.
+func TestWebSocketTopicParityGoAndWeb(t *testing.T) {
+	srcPath := filepath.Join("..", "..", "web", "src", "lib", "hooks", "use-query.tsx")
+	data, err := os.ReadFile(srcPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", srcPath, err)
+	}
+	blockRe := regexp.MustCompile(`(?s)export const DEFAULT_WS_TOPICS = \[(.*?)\] as const`)
+	match := blockRe.FindSubmatch(data)
+	if len(match) < 2 {
+		t.Fatalf("DEFAULT_WS_TOPICS array not found in %s", srcPath)
+	}
+	strRe := regexp.MustCompile(`"([^"]+)"`)
+	topicMatches := strRe.FindAllSubmatch(match[1], -1)
+	if len(topicMatches) == 0 {
+		t.Fatalf("no topics extracted from DEFAULT_WS_TOPICS in %s", srcPath)
+	}
+
+	seen := make(map[string]bool, len(topicMatches))
+	for _, tm := range topicMatches {
+		topic := string(tm[1])
+		seen[topic] = true
+		if !isValidTopic(topic) {
+			t.Errorf("Web Cockpit DEFAULT_WS_TOPICS subscribes to %q, which Go serve isValidTopic() rejects", topic)
+		}
+	}
+	for _, required := range []string{"sessions:*", "panes:*", "agent:*", "attention", "beads:*", "mail:*", "reservations:*", "pipelines:*", "approvals:*", "accounts:*", "scanner", "memory"} {
+		if !seen[required] {
+			t.Errorf("DEFAULT_WS_TOPICS missing required topic %q", required)
+		}
 	}
 }

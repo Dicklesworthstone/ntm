@@ -31,6 +31,7 @@ Object.defineProperty(global, "localStorage", {
 import {
   ApiError,
   apiFetch,
+  apiFetchText,
   browserNavigation,
   checkConnection,
   clearConnectionConfig,
@@ -232,6 +233,37 @@ describe("API Client", () => {
       const conn = await checkConnection();
       expect(conn.ok).toBe(false);
       expect(redirectSpy).not.toHaveBeenCalled();
+    });
+
+    it("apiFetchText sends Bearer auth, returns plain text, and redirects on 401", async () => {
+      saveConnectionConfig({
+        baseUrl: "http://127.0.0.1:8443",
+        authToken: "tok-text-42",
+      });
+      const fetchSpy = vi.fn(async () =>
+        new Response("metric_total 42\n", {
+          status: 200,
+          headers: { "Content-Type": "text/plain" },
+        })
+      );
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const text = await apiFetchText("/api/v1/metrics/export?format=prometheus");
+      expect(text).toBe("metric_total 42\n");
+      const [url, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe("http://127.0.0.1:8443/api/v1/metrics/export?format=prometheus");
+      expect((init.headers as Record<string, string>).Authorization).toBe("Bearer tok-text-42");
+
+      vi.spyOn(browserNavigation, "getPathname").mockReturnValue("/analytics");
+      const redirectSpy = vi.spyOn(browserNavigation, "redirect").mockImplementation(() => {});
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response("Unauthorized", { status: 401 }))
+      );
+      await expect(apiFetchText("/api/v1/metrics/export?format=csv")).rejects.toBeInstanceOf(
+        ApiError
+      );
+      expect(redirectSpy).toHaveBeenCalledWith("/connect");
     });
   });
 
