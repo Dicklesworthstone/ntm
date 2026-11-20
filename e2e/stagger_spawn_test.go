@@ -459,18 +459,14 @@ func TestE2E_SmartStaggerMode(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 
 	if err != nil {
-		// Smart mode might not be fully implemented, log and check
-		logger.Log("[E2E-STAGGER] smart stagger spawn: %v output=%s", err, string(out))
+		cleanupSessionIfExists(logger, session, baseDir)
+		t.Fatalf("[E2E-STAGGER] smart stagger spawn failed: %v\noutput: %s", err, string(out))
 	}
 
 	var resp spawnResponse
 	if err := json.Unmarshal(out, &resp); err != nil {
-		logger.Log("[E2E-STAGGER] parse error (may be expected): %v", err)
-		logger.Log("[E2E-STAGGER] output: %s", string(out))
-		// Don't fail - feature may be under development
 		cleanupSessionIfExists(logger, session, baseDir)
-		t.Skip("[E2E-STAGGER] smart stagger mode not yet available")
-		return
+		t.Fatalf("[E2E-STAGGER] smart stagger response invalid JSON: %v\noutput: %s", err, string(out))
 	}
 
 	logger.LogJSON("[E2E-STAGGER] smart spawn response", resp)
