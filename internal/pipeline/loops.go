@@ -48,12 +48,14 @@ func (le *LoopExecutor) ExecuteLoop(ctx context.Context, step *Step, workflow *W
 	}
 
 	// Determine loop type and execute
-	// Priority: items > while > times (times: 0 is valid for immediate completion)
+	// Priority: items > while > until > times (times: 0 is valid for immediate completion)
 	switch {
 	case loop.Items != "":
 		return le.executeForEach(ctx, step, loop, workflow)
 	case loop.While != "":
 		return le.executeWhile(ctx, step, loop, workflow)
+	case loop.Until != "":
+		return le.executeUntil(ctx, step, loop, workflow)
 	default:
 		// Default to times loop (Times: 0 means zero iterations = immediate completion)
 		return le.executeTimes(ctx, step, loop, workflow)
@@ -276,8 +278,16 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 		fmt.Sprintf("Starting while loop (max %d iterations)", maxIterations),
 		le.executor.calculateProgress())
 
+	startIndex := le.executor.beginForeachState(step.ID, maxIterations)
+	le.executor.persistState()
+	if loop.Collect != "" {
+		if prior := le.executor.loadForeachCollectedOutputs(step.ID); len(prior) > 0 {
+			result.Collected = append(result.Collected, prior...)
+		}
+	}
+
 	// Iterate while condition is true
-	for i := 0; i < maxIterations; i++ {
+	for i := startIndex; i < maxIterations; i++ {
 		select {
 		case <-ctx.Done():
 			result.Status = StatusCancelled
@@ -307,24 +317,36 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 			break
 		}
 
+		le.executor.markForeachIterationStarted(step.ID, i, maxIterations)
+		le.executor.markStepInFlight(loopIterationID(step.ID, i), StepKindLoop, i)
+		le.executor.persistState()
+
 		scope := le.pushLoopVars(varName, i, i, maxIterations)
 
-		// Execute nested steps. while/times do not persist iteration
-		// completion records, so the bd-vq8bc completedAllSteps signal is
-		// not consulted here.
-		iterResult, shouldBreak, shouldContinue, _ := le.executeIteration(ctx, step, loop, workflow, i)
+		iterResult, shouldBreak, shouldContinue, completedAllSteps := le.executeIteration(ctx, step, loop, workflow, i)
 		le.popLoopVars(scope)
+		le.executor.clearStepInFlight(loopIterationID(step.ID, i))
 
 		result.Results = append(result.Results, iterResult...)
 		result.Iterations++
+		if shouldCompleteForeachIteration(ctx, iterResult, shouldBreak, completedAllSteps) {
+			le.executor.markForeachIterationCompleted(step.ID, i, maxIterations)
+		}
+		le.executor.persistState()
 
 		// Collect output if configured
 		if loop.Collect != "" && len(iterResult) > 0 {
 			lastResult := iterResult[len(iterResult)-1]
+			var collectedValue interface{}
 			if lastResult.ParsedData != nil {
-				result.Collected = append(result.Collected, lastResult.ParsedData)
+				collectedValue = lastResult.ParsedData
 			} else if lastResult.Output != "" {
-				result.Collected = append(result.Collected, lastResult.Output)
+				collectedValue = lastResult.Output
+			}
+			if collectedValue != nil {
+				result.Collected = append(result.Collected, collectedValue)
+				le.executor.appendForeachCollectedOutput(step.ID, collectedValue)
+				le.executor.persistState()
 			}
 		}
 
@@ -387,6 +409,163 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 	return result
 }
 
+// executeUntil executes loop body steps repeatedly until the `loop.Until` shell
+// predicate exits 0 (post-condition loop bounded by max_iterations), persisting
+// per-iteration resume checkpoints so --mode=continue skips already-completed
+// iterations cleanly.
+func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *LoopConfig, workflow *Workflow) LoopResult {
+	result := LoopResult{
+		Status:    StatusRunning,
+		Results:   make([]StepResult, 0),
+		Collected: make([]interface{}, 0),
+	}
+
+	maxIterations, err := le.resolveMaxIterations(step, loop)
+	if err != nil {
+		result.Status = StatusFailed
+		result.Error = &StepError{
+			Type:      "loop",
+			Message:   err.Error(),
+			Timestamp: time.Now(),
+		}
+		result.FinishedAt = time.Now()
+		return result
+	}
+
+	varName := loop.As
+	if varName == "" {
+		varName = "item"
+	}
+
+	le.executor.emitProgress("loop_start", step.ID,
+		fmt.Sprintf("Starting until loop (max %d iterations)", maxIterations),
+		le.executor.calculateProgress())
+
+	startIndex := le.executor.beginForeachState(step.ID, maxIterations)
+	le.executor.persistState()
+	if loop.Collect != "" {
+		if prior := le.executor.loadForeachCollectedOutputs(step.ID); len(prior) > 0 {
+			result.Collected = append(result.Collected, prior...)
+		}
+	}
+
+	conditionMet := false
+	for i := startIndex; i < maxIterations; i++ {
+		select {
+		case <-ctx.Done():
+			result.Status = StatusCancelled
+			result.FinishedAt = time.Now()
+			return result
+		default:
+		}
+
+		le.executor.markForeachIterationStarted(step.ID, i, maxIterations)
+		le.executor.markStepInFlight(loopIterationID(step.ID, i), StepKindLoop, i)
+		le.executor.persistState()
+
+		scope := le.pushLoopVars(varName, i, i, maxIterations)
+
+		iterResult, shouldBreak, shouldContinue, completedAllSteps := le.executeIteration(ctx, step, loop, workflow, i)
+		result.Results = append(result.Results, iterResult...)
+		result.Iterations++
+
+		if loop.Collect != "" && len(iterResult) > 0 {
+			lastResult := iterResult[len(iterResult)-1]
+			var collectedValue interface{}
+			if lastResult.ParsedData != nil {
+				collectedValue = lastResult.ParsedData
+			} else if lastResult.Output != "" {
+				collectedValue = lastResult.Output
+			}
+			if collectedValue != nil {
+				result.Collected = append(result.Collected, collectedValue)
+				le.executor.appendForeachCollectedOutput(step.ID, collectedValue)
+				le.executor.persistState()
+			}
+		}
+
+		if shouldBreak {
+			le.popLoopVars(scope)
+			le.executor.clearStepInFlight(loopIterationID(step.ID, i))
+			if len(iterResult) > 0 && iterResult[len(iterResult)-1].Status == StatusFailed {
+				result.Error = iterResult[len(iterResult)-1].Error
+			} else {
+				result.BreakReason = "break statement"
+			}
+			le.executor.persistState()
+			break
+		}
+
+		// Evaluate the supervised `until` shell predicate with loop variables
+		// still in scope so predicates can reference ${loop.index}/${item}.
+		untilStep := Step{
+			ID:      fmt.Sprintf("%s_iter%d_until", step.ID, i),
+			Command: loop.Until,
+			Timeout: step.Timeout,
+			OnError: ErrorActionContinue,
+		}
+		untilRes := le.executor.executeCommand(ctx, &untilStep, workflow)
+		le.popLoopVars(scope)
+		le.executor.clearStepInFlight(loopIterationID(step.ID, i))
+
+		if untilRes.Status == StatusCancelled || ctx.Err() != nil {
+			le.executor.persistState()
+			result.Status = StatusCancelled
+			result.FinishedAt = time.Now()
+			return result
+		}
+
+		if shouldCompleteForeachIteration(ctx, iterResult, false, completedAllSteps) {
+			le.executor.markForeachIterationCompleted(step.ID, i, maxIterations)
+		}
+		le.executor.persistState()
+
+		if untilRes.Status == StatusCompleted {
+			conditionMet = true
+			break
+		}
+
+		if shouldContinue {
+			continue
+		}
+
+		if loop.Delay.Duration > 0 && i < maxIterations-1 {
+			select {
+			case <-ctx.Done():
+				result.Status = StatusCancelled
+				result.FinishedAt = time.Now()
+				return result
+			case <-time.After(loop.Delay.Duration):
+			}
+		}
+	}
+
+	if !conditionMet && result.Error == nil && result.BreakReason == "" {
+		result.Error = &StepError{
+			Type:      "loop",
+			Message:   fmt.Sprintf("until loop reached max_iterations limit (%d) without predicate exiting 0", maxIterations),
+			Timestamp: time.Now(),
+		}
+	}
+
+	if loop.Collect != "" {
+		le.storeCollected(loop.Collect, result.Collected)
+	}
+
+	if result.Error != nil {
+		result.Status = StatusFailed
+	} else {
+		result.Status = StatusCompleted
+	}
+	result.FinishedAt = time.Now()
+
+	le.executor.emitProgress("loop_complete", step.ID,
+		fmt.Sprintf("Until loop completed: %d iterations", result.Iterations),
+		le.executor.calculateProgress())
+
+	return result
+}
+
 // executeTimes implements a simple repeat N times loop.
 func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *LoopConfig, workflow *Workflow) LoopResult {
 	result := LoopResult{
@@ -434,8 +613,16 @@ func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *Loop
 		fmt.Sprintf("Starting times loop (%d iterations)", times),
 		le.executor.calculateProgress())
 
+	startIndex := le.executor.beginForeachState(step.ID, times)
+	le.executor.persistState()
+	if loop.Collect != "" {
+		if prior := le.executor.loadForeachCollectedOutputs(step.ID); len(prior) > 0 {
+			result.Collected = append(result.Collected, prior...)
+		}
+	}
+
 	// Iterate N times
-	for i := 0; i < times; i++ {
+	for i := startIndex; i < times; i++ {
 		select {
 		case <-ctx.Done():
 			result.Status = StatusCancelled
@@ -444,24 +631,36 @@ func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *Loop
 		default:
 		}
 
+		le.executor.markForeachIterationStarted(step.ID, i, times)
+		le.executor.markStepInFlight(loopIterationID(step.ID, i), StepKindLoop, i)
+		le.executor.persistState()
+
 		scope := le.pushLoopVars(varName, i, i, times)
 
-		// Execute nested steps. while/times do not persist iteration
-		// completion records, so the bd-vq8bc completedAllSteps signal is
-		// not consulted here.
-		iterResult, shouldBreak, shouldContinue, _ := le.executeIteration(ctx, step, loop, workflow, i)
+		iterResult, shouldBreak, shouldContinue, completedAllSteps := le.executeIteration(ctx, step, loop, workflow, i)
 		le.popLoopVars(scope)
+		le.executor.clearStepInFlight(loopIterationID(step.ID, i))
 
 		result.Results = append(result.Results, iterResult...)
 		result.Iterations++
+		if shouldCompleteForeachIteration(ctx, iterResult, shouldBreak, completedAllSteps) {
+			le.executor.markForeachIterationCompleted(step.ID, i, times)
+		}
+		le.executor.persistState()
 
 		// Collect output if configured
 		if loop.Collect != "" && len(iterResult) > 0 {
 			lastResult := iterResult[len(iterResult)-1]
+			var collectedValue interface{}
 			if lastResult.ParsedData != nil {
-				result.Collected = append(result.Collected, lastResult.ParsedData)
+				collectedValue = lastResult.ParsedData
 			} else if lastResult.Output != "" {
-				result.Collected = append(result.Collected, lastResult.Output)
+				collectedValue = lastResult.Output
+			}
+			if collectedValue != nil {
+				result.Collected = append(result.Collected, collectedValue)
+				le.executor.appendForeachCollectedOutput(step.ID, collectedValue)
+				le.executor.persistState()
 			}
 		}
 
