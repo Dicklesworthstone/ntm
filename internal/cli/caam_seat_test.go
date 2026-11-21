@@ -26,6 +26,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
+	"github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
 
@@ -117,11 +118,11 @@ func TestSeatSelectionDefaultsOff(t *testing.T) {
 	if config.DefaultCAAMConfig().SeatSelection {
 		t.Fatal("seat_selection must default to false; enabling it by default puts a provider API call on the critical path of every spawn")
 	}
-	if caamSeatSelectionEnabled(config.Default()) {
-		t.Fatal("caamSeatSelectionEnabled must be false for a default config")
+	if session.CAAMSeatSelectionEnabled(config.Default()) {
+		t.Fatal("CAAMSeatSelectionEnabled must be false for a default config")
 	}
-	if caamSeatSelectionEnabled(nil) {
-		t.Fatal("caamSeatSelectionEnabled must be false for a nil config")
+	if session.CAAMSeatSelectionEnabled(nil) {
+		t.Fatal("CAAMSeatSelectionEnabled must be false for a nil config")
 	}
 }
 
@@ -811,7 +812,7 @@ func TestCAAMSeatSkipReasonClassifiesErrors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := caamSeatSkipReason("codex", tc.err)
+			got := session.CAAMSeatSkipReason("codex", tc.err)
 			if !strings.Contains(got, tc.contains) {
 				t.Fatalf("reason = %q, want it to contain %q", got, tc.contains)
 			}
@@ -833,8 +834,8 @@ func TestCAAMSeatProviderForAgentType(t *testing.T) {
 		AgentTypeAntigravity: "",
 	}
 	for agentType, want := range cases {
-		if got := caamSeatProviderForAgentType(agentType); got != want {
-			t.Errorf("caamSeatProviderForAgentType(%q) = %q, want %q", agentType, got, want)
+		if got := session.CAAMSeatProviderForAgentType(string(agentType)); got != want {
+			t.Errorf("CAAMSeatProviderForAgentType(%q) = %q, want %q", agentType, got, want)
 		}
 	}
 }

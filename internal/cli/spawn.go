@@ -1416,10 +1416,6 @@ type spawnAssignmentPreflightDependencies struct {
 	fetchActionable func(context.Context, string, int) ([]bv.TriageRecommendation, error)
 }
 
-func preflightWorktreeProject(ctx context.Context, projectDir string) error {
-	return session.PreflightWorktreeProject(ctx, projectDir)
-}
-
 func validateSpawnWorktreeOptions(opts SpawnOptions) error {
 	return session.ValidateSpawnWorktreeOptions(opts.UseWorktrees, opts.WorktreeName, len(opts.Agents))
 }

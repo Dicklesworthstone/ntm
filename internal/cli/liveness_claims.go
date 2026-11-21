@@ -10,6 +10,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
+	"github.com/Dicklesworthstone/ntm/internal/session"
 )
 
 // WS0-G2 config-key liveness claims for keys consumed by internal/cli
@@ -297,9 +298,9 @@ func init() {
 	config.RegisterReader("ensemble.budget.per_agent", applyRobotEnsembleConfigDefaults)
 	config.RegisterReader("ensemble.cache.enabled", applyRobotEnsembleConfigDefaults)
 
-	// CAAM seat selection for unpinned spawn/add panes (caam_seat.go,
-	// spawn.go, add.go). ntm#319.
-	config.RegisterReader("integrations.caam.seat_selection", caamSeatSelectionEnabled)
+	// CAAM seat selection for unpinned spawn/add/robot/REST panes
+	// (internal/session/spawn_engine.go). ntm#319, bd-rc2-track-2-harness-ori-3ydfr.2.
+	config.RegisterReader("integrations.caam.seat_selection", session.CAAMSeatSelectionEnabled)
 
 	// [retry.agent_mail] (bd-ws6-config-truth-ienmd.1). The reader is
 	// agentmail.ApplyRetryPolicy, handed the loaded values by

@@ -24,14 +24,6 @@ type caamSeatPlan = session.CAAMSeatPlan
 // variable so unit tests can substitute a stub without a caam binary.
 var newCAAMSeatResolver = func() caamSeatResolver { return tools.NewCAAMAdapter() }
 
-func caamSeatSelectionEnabled(cfg *config.Config) bool {
-	return session.CAAMSeatSelectionEnabled(cfg)
-}
-
-func caamSeatProviderForAgentType(agentType AgentType) string {
-	return session.CAAMSeatProviderForAgentType(string(agentType))
-}
-
 type caamSeatCandidate struct {
 	Index  int
 	Type   AgentType
@@ -53,10 +45,6 @@ func planCAAMSeats(
 		}
 	}
 	return session.PlanCAAMSeatsWithResolver(ctx, cfg, projectDir, shared, newCAAMSeatResolver())
-}
-
-func caamSeatSkipReason(provider string, err error) string {
-	return session.CAAMSeatSkipReason(provider, err)
 }
 
 func caamSeatModelOverride(p *persona.Persona, modelRequested bool) (string, bool) {
