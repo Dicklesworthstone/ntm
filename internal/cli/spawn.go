@@ -1138,6 +1138,16 @@ func legacySpawnTotalAgentCount(opts SpawnOptions) int {
 	return opts.CCCount + opts.CodCount + opts.GmiCount + opts.AgyCount + opts.GrokCount + opts.CursorCount + opts.WindsurfCount + opts.AiderCount + opts.OpencodeCount + opts.OmpCount + opts.OllamaCount
 }
 
+func spawnPiCount(opts SpawnOptions) int {
+	count := 0
+	for _, spec := range opts.Agents {
+		if tmux.AgentType(spec.Type).Canonical() == tmux.AgentPi {
+			count++
+		}
+	}
+	return count
+}
+
 func spawnHookCountEnv(totalAgents int, opts SpawnOptions) map[string]string {
 	return session.SpawnHookEnv(session.SpawnHookCounts{
 		CC:       opts.CCCount,
@@ -1150,16 +1160,21 @@ func spawnHookCountEnv(totalAgents int, opts SpawnOptions) map[string]string {
 		Aider:    opts.AiderCount,
 		Opencode: opts.OpencodeCount,
 		Omp:      opts.OmpCount,
+		Pi:       spawnPiCount(opts),
 		Ollama:   opts.OllamaCount,
 		Total:    totalAgents,
 	})
 }
 
 func spawnSessionCreatedEventFields(opts SpawnOptions, dir string) map[string]string {
+	totalAgents := len(opts.Agents)
+	if totalAgents == 0 {
+		totalAgents = legacySpawnTotalAgentCount(opts)
+	}
 	return map[string]string{
 		"project_dir":    dir,
 		"recipe":         opts.RecipeName,
-		"agent_count":    fmt.Sprintf("%d", legacySpawnTotalAgentCount(opts)),
+		"agent_count":    fmt.Sprintf("%d", totalAgents),
 		"agent_cc":       fmt.Sprintf("%d", opts.CCCount),
 		"agent_cod":      fmt.Sprintf("%d", opts.CodCount),
 		"agent_gmi":      fmt.Sprintf("%d", opts.GmiCount),
@@ -1170,6 +1185,7 @@ func spawnSessionCreatedEventFields(opts SpawnOptions, dir string) map[string]st
 		"agent_aider":    fmt.Sprintf("%d", opts.AiderCount),
 		"agent_oc":       fmt.Sprintf("%d", opts.OpencodeCount),
 		"agent_omp":      fmt.Sprintf("%d", opts.OmpCount),
+		"agent_pi":       fmt.Sprintf("%d", spawnPiCount(opts)),
 		"agent_ollama":   fmt.Sprintf("%d", opts.OllamaCount),
 	}
 }
@@ -1671,7 +1687,7 @@ func newSpawnCmd() *cobra.Command {
 	// becomes a bottleneck, consider lazy flag registration via cobra's
 	// TraverseRunHooks or a PersistentPreRunE on the spawn subcommand.
 	pluginsDir := pluginAgentsDirForArgs(os.Args[1:])
-	loadedPlugins, _ := plugins.LoadAgentPlugins(pluginsDir)
+	loadedPlugins, _ := plugins.LoadAgentPluginsWithDefaults(pluginsDir)
 	preloadedPluginMap := make(map[string]plugins.AgentPlugin)
 	for _, p := range loadedPlugins {
 		preloadedPluginMap[p.Name] = p
@@ -3604,6 +3620,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		AiderCount:       opts.AiderCount,
 		OpencodeCount:    opts.OpencodeCount,
 		OmpCount:         opts.OmpCount,
+		PiCount:          spawnPiCount(opts),
 		OllamaCount:      opts.OllamaCount,
 		WorkDir:          dir,
 		Recipe:           opts.RecipeName,

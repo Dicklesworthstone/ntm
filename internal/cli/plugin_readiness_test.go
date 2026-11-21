@@ -132,3 +132,53 @@ func TestDefaultDepChecksIncludesOpencode(t *testing.T) {
 		t.Fatal("ntm deps must probe the opencode binary")
 	}
 }
+
+func TestShippedPiExposedAcrossCLISurfaces(t *testing.T) {
+	t.Setenv("NTM_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+	// Missing plugin directory still provides shipped Pi defaults and readiness patterns.
+	missingDir := filepath.Join(t.TempDir(), "missing-agents")
+	effective := registerEffectiveAgentPluginTypes(missingDir)
+	hasPi := false
+	for _, p := range effective {
+		if p.Name == "pi" {
+			hasPi = true
+		}
+	}
+	if !hasPi {
+		t.Fatalf("registerEffectiveAgentPluginTypes(%q) omitted shipped pi: %+v", missingDir, effective)
+	}
+	if !agentpkg.IsPluginType("pi") {
+		t.Fatal("pi must be registered as a known plugin agent type")
+	}
+	if pp, ok := agentpkg.LookupPluginPatterns("pi"); !ok || len(pp.Idle) == 0 || len(pp.Working) == 0 {
+		t.Fatalf("shipped pi readiness patterns missing: ok=%v patterns=%+v", ok, pp)
+	}
+
+	// CLI commands expose --pi out of the box.
+	if f := newSpawnCmd().Flags().Lookup("pi"); f == nil {
+		t.Fatal("ntm spawn missing --pi flag")
+	}
+	if f := newAddCmd().Flags().Lookup("pi"); f == nil {
+		t.Fatal("ntm add missing --pi flag")
+	}
+	if f := newSendCmd().Flags().Lookup("pi"); f == nil || f.NoOptDefVal != "true" {
+		t.Fatalf("ntm send missing bool-style --pi selector: %+v", f)
+	}
+	if f := newResumeCmd().Flags().Lookup("pi"); f == nil {
+		t.Fatal("ntm resume missing --pi flag")
+	}
+	if f := newAdoptCmd().Flags().Lookup("pi"); f == nil {
+		t.Fatal("ntm adopt missing --pi flag")
+	}
+
+	foundPiDep := false
+	for _, c := range defaultDepChecks() {
+		if c.Command == "pi" && c.Category == "AI Agents" {
+			foundPiDep = true
+			break
+		}
+	}
+	if !foundPiDep {
+		t.Fatal("ntm deps must probe the shipped pi binary")
+	}
+}

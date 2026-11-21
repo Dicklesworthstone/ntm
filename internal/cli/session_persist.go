@@ -919,7 +919,8 @@ type guardedResumePromptDeliverer struct{}
 
 func (guardedResumePromptDeliverer) Deliver(ctx context.Context, delivery dispatchsvc.Delivery) error {
 	pane := delivery.Target.Pane
-	guardedCtx, err := tmux.WithPaneMutationGuard(ctx, pane.ID, pane.PID)
+	guardedCtx := tmux.WithObservedPaneAgentType(ctx, pane)
+	guardedCtx, err := tmux.WithPaneMutationGuard(guardedCtx, pane.ID, pane.PID)
 	if err != nil {
 		return dispatchsvc.GuaranteeNoDeliveryActuation(err)
 	}
@@ -937,38 +938,58 @@ func sendResumePrompt(ctx context.Context, sessionName, prompt string, launchedP
 	if prompt = strings.TrimSpace(prompt); prompt == "" {
 		return 0, 0, nil
 	}
+	var allowed map[string]struct{}
+	if len(launchedPanes) > 0 {
+		allowed = make(map[string]struct{}, len(launchedPanes))
+		for _, p := range launchedPanes {
+			if (p.Action == "launched" || p.Action == "resumed") && p.PaneID != "" {
+				allowed[p.PaneID] = struct{}{}
+			}
+		}
+		if len(allowed) == 0 {
+			return 0, 0, nil
+		}
+	}
 	// Give freshly-relaunched agents a moment to start before observing live panes.
 	settleDelay := 750 * time.Millisecond
 	if tmux.DefaultClient != nil && tmux.DefaultClient.MaxSendDelay > 0 && settleDelay > tmux.DefaultClient.MaxSendDelay {
 		settleDelay = tmux.DefaultClient.MaxSendDelay
 	}
 	if err := waitContextDelay(ctx, settleDelay); err != nil {
-		return 0, 0, err
+		return 0, len(allowed), err
 	}
 	panes, err := tmux.GetPanesContext(ctx, sessionName)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return 0, 0, ctxErr
+			return 0, len(allowed), ctxErr
 		}
-		return 0, 0, nil
+		if len(allowed) > 0 {
+			return 0, len(allowed), nil
+		}
+		return 0, 1, nil
 	}
-	if len(launchedPanes) > 0 {
-		allowed := make(map[string]struct{}, len(launchedPanes))
-		for _, p := range launchedPanes {
-			if (p.Action == "launched" || p.Action == "resumed") && p.PaneID != "" {
-				allowed[p.PaneID] = struct{}{}
-			}
-		}
+	missing := 0
+	if len(allowed) > 0 {
 		filtered := make([]tmux.Pane, 0, len(allowed))
 		for _, pane := range panes {
 			if _, ok := allowed[pane.ID]; ok {
 				filtered = append(filtered, pane)
 			}
 		}
+		missing = len(allowed) - len(filtered)
+		panes = filtered
+	} else {
+		filtered := make([]tmux.Pane, 0, len(panes))
+		for _, pane := range panes {
+			if pane.Type.Canonical() == tmux.AgentUser {
+				continue
+			}
+			filtered = append(filtered, pane)
+		}
 		panes = filtered
 	}
 	if len(panes) == 0 {
-		return 0, 0, nil
+		return 0, missing, nil
 	}
 	service, err := dispatchsvc.NewService(dispatchsvc.Ports{
 		Redactor:  shellFinalMessageRedactor(activeShellDispatchRedactionConfig()),
@@ -976,22 +997,38 @@ func sendResumePrompt(ctx context.Context, sessionName, prompt string, launchedP
 		Deliverer: guardedResumePromptDeliverer{},
 	})
 	if err != nil {
-		return 0, 0, err
+		return 0, missing + len(panes), err
 	}
-	result, dispatchErr := service.Execute(ctx, dispatchsvc.Request{
-		Session:       sessionName,
-		Panes:         panes,
-		Message:       prompt,
-		Submit:        true,
-		StopOnFailure: false,
-	})
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return result.Delivered, len(result.Targets) - result.Delivered, ctxErr
+	// Dispatch per-pane so a single pane rejected during Prepare (e.g.
+	// ErrRotationPending or ErrPromptDeliveryUnsupported) increments failed
+	// without aborting prompt delivery to other valid launched panes.
+	sentCount := 0
+	failedCount := missing
+	for i, pane := range panes {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return sentCount, failedCount + (len(panes) - i), ctxErr
+		}
+		res, dispatchErr := service.Execute(ctx, dispatchsvc.Request{
+			Session:       sessionName,
+			Panes:         []tmux.Pane{pane},
+			Message:       prompt,
+			Submit:        true,
+			StopOnFailure: false,
+		})
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return sentCount + res.Delivered, failedCount + (len(panes) - i - res.Delivered), ctxErr
+		}
+		if res.Delivered > 0 {
+			sentCount += res.Delivered
+		} else if dispatchErr != nil || len(res.Targets) == 0 {
+			failedCount++
+		} else {
+			failedCount += len(res.Targets) - res.Delivered
+		}
 	}
 	// Resume/restore prompt injection remains best-effort for ordinary delivery
 	// failures; cancellation is the only error that aborts the parent command.
-	_ = dispatchErr
-	return result.Delivered, len(result.Targets) - result.Delivered, nil
+	return sentCount, failedCount, nil
 }
 
 func runSessionsResume(ctx context.Context, savedName, name string, force, attach, preferCASR bool, prompt, themeName string) error {
@@ -1073,10 +1110,7 @@ func runSessionsResume(ctx context.Context, savedName, name string, force, attac
 		return err
 	}
 	if promptErr != nil {
-		if jsonOutput {
-			return jsonFailureExit()
-		}
-		return promptErr
+		return jsonFailureExit()
 	}
 
 	if attach {

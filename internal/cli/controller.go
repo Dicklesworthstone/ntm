@@ -14,6 +14,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/swarm"
@@ -260,6 +261,12 @@ func buildControllerResponse(ctx context.Context, opts ControllerInput) (*Contro
 	case "antigravity":
 		agentTypeFull = "antigravity"
 		agentCmdTemplate = cfg.Agents.Antigravity
+	case "grok":
+		agentTypeFull = "grok"
+		agentCmdTemplate = cfg.Agents.Grok
+		if strings.TrimSpace(agentCmdTemplate) == "" {
+			agentCmdTemplate = config.Default().Agents.Grok
+		}
 	case "cursor":
 		agentTypeFull = "cursor"
 		agentCmdTemplate = cfg.Agents.Cursor
@@ -277,6 +284,17 @@ func buildControllerResponse(ctx context.Context, opts ControllerInput) (*Contro
 	case "omp":
 		agentTypeFull = "omp"
 		agentCmdTemplate = config.OmpCommandOrDefault(cfg.Agents.Omp)
+	case "pi":
+		agentTypeFull = "pi"
+		agentCmdTemplate = plugins.ShippedPiPlugin().Command
+		if loaded, _ := plugins.LoadAgentPlugins(filepath.Join(selectedConfigDir(), "agents")); len(loaded) > 0 {
+			for _, p := range loaded {
+				if strings.EqualFold(strings.TrimSpace(p.Name), "pi") || strings.EqualFold(strings.TrimSpace(p.Alias), "pi") {
+					agentCmdTemplate = p.Command
+					break
+				}
+			}
+		}
 	case "ollama":
 		agentTypeFull = "ollama"
 		agentCmdTemplate = cfg.Agents.Ollama

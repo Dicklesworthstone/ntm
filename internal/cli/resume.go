@@ -128,9 +128,9 @@ Examples:
 	cmd.Flags().IntVar(&grokCount, "grok", 0, "Number of Grok Build agents to spawn (requires --spawn)")
 	cmd.Flags().IntVar(&ompCount, "omp", 0, "Number of Oh My Pi (omp) agents to spawn (requires --spawn)")
 	cmd.Flags().IntVar(&ocCount, "oc", 0, "Number of OpenCode (oc) agents to spawn (requires --spawn)")
-	// Pin the same plugin configuration used to register spawn selectors.
-	// Pi is a separate plugin from the built-in omp agent.
-	for _, p := range registerAgentPluginTypes(pluginAgentsDirForArgs(os.Args[1:])) {
+	// Pin the same plugin configuration (including shipped Pi) used to register spawn selectors.
+	// Pi is a separate harness from the built-in omp agent.
+	for _, p := range registerEffectiveAgentPluginTypes(pluginAgentsDirForArgs(os.Args[1:])) {
 		registerPluginAgentFlags(cmd, p, &pluginSpecs)
 		pluginMap[p.Name] = p
 	}

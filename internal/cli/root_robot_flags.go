@@ -1672,17 +1672,7 @@ func registerRobotFlags() {
 func registerConfiguredRobotPluginSpawnFlags() {
 	// Register after every built-in root flag so presets cannot replace a
 	// robot control flag such as --spawn-timeout or --spawn-omp.
-	loadedAgents, _ := plugins.LoadAgentPlugins(pluginAgentsDirForArgs(os.Args[1:]))
-	hasPiPlugin := false
-	for _, p := range loadedAgents {
-		if strings.EqualFold(strings.TrimSpace(p.Name), "pi") || strings.EqualFold(strings.TrimSpace(p.Alias), "pi") {
-			hasPiPlugin = true
-			break
-		}
-	}
-	if !hasPiPlugin {
-		loadedAgents = append(loadedAgents, plugins.ShippedPiPlugin())
-	}
+	loadedAgents, _ := plugins.LoadAgentPluginsWithDefaults(pluginAgentsDirForArgs(os.Args[1:]))
 	robotSpawnPlugins = registerRobotPluginSpawnFlags(rootCmd, loadedAgents)
 }
 

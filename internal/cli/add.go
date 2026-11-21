@@ -321,7 +321,7 @@ func newAddCmd() *cobra.Command {
 			// Load plugins (re-load here to ensure latest state and to pass map)
 			// Ideally we should share this logic or load once.
 			pluginsDir := filepath.Join(selectedConfigDir(), "agents")
-			loadedPlugins, _ := plugins.LoadAgentPlugins(pluginsDir)
+			loadedPlugins, _ := plugins.LoadAgentPluginsWithDefaults(pluginsDir)
 			pluginMap := make(map[string]plugins.AgentPlugin)
 			for _, p := range loadedPlugins {
 				pluginMap[p.Name] = p
@@ -395,7 +395,7 @@ func newAddCmd() *cobra.Command {
 
 	// Register plugin flags
 	pluginsDir := pluginAgentsDirForArgs(os.Args[1:])
-	loadedPlugins, _ := plugins.LoadAgentPlugins(pluginsDir)
+	loadedPlugins, _ := plugins.LoadAgentPluginsWithDefaults(pluginsDir)
 	for _, p := range loadedPlugins {
 		registerPluginAgentFlags(cmd, p, &agentSpecs)
 	}

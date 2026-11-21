@@ -17,12 +17,7 @@ import (
 // subcommands alike see plugin panes as their own type rather than
 // "unknown". A missing directory is not an error. Returns the loaded plugins
 // so callers that need the list (deps, send) can reuse them.
-func registerAgentPluginTypes(dir string) []plugins.AgentPlugin {
-	loaded, err := plugins.LoadAgentPlugins(dir)
-	if err != nil {
-		slog.Debug("agent plugins unavailable", "dir", dir, "error", err)
-		return nil
-	}
+func registerLoadedAgentPlugins(loaded []plugins.AgentPlugin) []plugins.AgentPlugin {
 	for _, p := range loaded {
 		for _, name := range []string{p.Name, p.Alias} {
 			if name == "" {
@@ -38,6 +33,27 @@ func registerAgentPluginTypes(dir string) []plugins.AgentPlugin {
 		}
 	}
 	return loaded
+}
+
+func registerAgentPluginTypes(dir string) []plugins.AgentPlugin {
+	loaded, err := plugins.LoadAgentPlugins(dir)
+	if err != nil {
+		slog.Debug("agent plugins unavailable", "dir", dir, "error", err)
+		return nil
+	}
+	return registerLoadedAgentPlugins(loaded)
+}
+
+// registerEffectiveAgentPluginTypes loads user agent plugins from dir, merges
+// shipped built-in defaults (such as Pi when not overridden by agents/pi.toml),
+// and registers every plugin's type and readiness patterns.
+func registerEffectiveAgentPluginTypes(dir string) []plugins.AgentPlugin {
+	dirPlugins := registerAgentPluginTypes(dir)
+	effective := plugins.WithShippedDefaults(dirPlugins)
+	if len(effective) > len(dirPlugins) {
+		registerLoadedAgentPlugins(effective[len(dirPlugins):])
+	}
+	return effective
 }
 
 // registerPluginSendFlags exposes --<plugin> (and --<alias>) on `ntm send` as

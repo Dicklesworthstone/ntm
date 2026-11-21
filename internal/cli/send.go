@@ -1002,8 +1002,8 @@ func newSendCmd() *cobra.Command {
 	cmd.Flags().Lookup("oc").NoOptDefVal = "true"
 	cmd.Flags().Var(newSendTargetValue(AgentTypeOmp, &targets), "omp", "send to Oh My Pi (omp) agents (optional :variant filter)")
 	cmd.Flags().Lookup("omp").NoOptDefVal = "true"
-	// Agent plugins get the same selectors spawn/add expose (ntm#260).
-	for _, p := range registerAgentPluginTypes(pluginAgentsDirForArgs(os.Args[1:])) {
+	// Agent plugins (including shipped defaults like Pi) get the same selectors spawn/add expose (ntm#260).
+	for _, p := range registerEffectiveAgentPluginTypes(pluginAgentsDirForArgs(os.Args[1:])) {
 		registerPluginSendFlags(cmd, p, &targets)
 	}
 	cmd.Flags().BoolVar(&targetAll, "all", false, "send to all agent panes, overriding type/tag filters (the user pane is excluded unless --include-user)")

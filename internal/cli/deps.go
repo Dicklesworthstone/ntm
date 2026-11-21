@@ -122,7 +122,7 @@ func registerDepsKernel() {
 // is reported — and counted as available — alongside the built-ins.
 func defaultDepChecks() []depCheck {
 	checks := builtinDepChecks()
-	return append(checks, pluginDepChecks(registerAgentPluginTypes(pluginAgentsDirForArgs(os.Args[1:])))...)
+	return append(checks, pluginDepChecks(registerEffectiveAgentPluginTypes(pluginAgentsDirForArgs(os.Args[1:])))...)
 }
 
 func builtinDepChecks() []depCheck {

@@ -829,3 +829,28 @@ func TestSessionsRecoveryCommandPreflightsLongCommandBeforeForce(t *testing.T) {
 		})
 	}
 }
+
+func TestSendResumePromptCountsMissingAndUnsupportedPanes(t *testing.T) {
+	sessionRecoveryCommandFixture(t)
+	// Launched pane %99 does not exist in the live fixture (which only has %0 and %1).
+	sent, failed, canceled := sendResumePrompt(t.Context(), "cli_missing", "hello", []session.ResumePane{
+		{PaneID: "%99", Action: "launched"},
+		{PaneID: "%98", Action: "resumed"},
+	})
+	if canceled != nil {
+		t.Fatalf("unexpected cancel error: %v", canceled)
+	}
+	if sent != 0 || failed != 2 {
+		t.Fatalf("sendResumePrompt missing panes = (sent=%d, failed=%d), want (0, 2)", sent, failed)
+	}
+
+	// When launchedPanes is empty, user shell panes (%0) must be skipped rather
+	// than counted as failed prompt deliveries.
+	sent, failed, canceled = sendResumePrompt(t.Context(), "cli_missing", "hello", nil)
+	if canceled != nil {
+		t.Fatalf("unexpected cancel error for empty launchedPanes: %v", canceled)
+	}
+	if failed != 0 {
+		t.Fatalf("sendResumePrompt counted user pane as failed: sent=%d failed=%d", sent, failed)
+	}
+}

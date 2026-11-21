@@ -120,6 +120,7 @@ var supportedAdoptTypes = []adoptTypeSpec{
 	{Flag: "aider", AgentType: agentpkg.AgentTypeAider, Description: "Aider agents", Example: "8"},
 	{Flag: "oc", AgentType: agentpkg.AgentTypeOpencode, Description: "Opencode agents", Example: "9"},
 	{Flag: "omp", AgentType: agentpkg.AgentTypeOmp, Description: "Oh My Pi (omp) agents", Example: "9"},
+	{Flag: "pi", AgentType: agentpkg.AgentTypePi, Description: "Pi agents", Example: "10"},
 	{Flag: "ollama", AgentType: agentpkg.AgentTypeOllama, Description: "Ollama agents", Example: "10"},
 	{Flag: "user", AgentType: agentpkg.AgentTypeUser, Description: "User panes", Example: "10"},
 }

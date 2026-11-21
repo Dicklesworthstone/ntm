@@ -23,6 +23,7 @@ var (
 	robotAdoptAider    string
 	robotAdoptOc       string
 	robotAdoptOmp      string
+	robotAdoptPi       string
 	robotAdoptOllama   string
 	robotAdoptUser     string
 	robotAdoptByWindow string
@@ -96,7 +97,7 @@ var (
 
 func registerRobotExtFlags() {
 	// Robot-adopt flags for adopting external tmux sessions across all 12 pane types
-	rootCmd.Flags().StringVar(&robotAdopt, "robot-adopt", "", "Adopt an external tmux session into NTM management across all 11 agent harnesses plus user panes (JSON). Required: SESSION")
+	rootCmd.Flags().StringVar(&robotAdopt, "robot-adopt", "", "Adopt an external tmux session into NTM management across all 12 agent harnesses plus user panes (JSON). Required: SESSION")
 	rootCmd.Flags().StringVar(&robotAdoptCC, "adopt-cc", "", "Comma-separated pane specs (bare, range, or window.pane) for Claude (cc) agents (use with --robot-adopt)")
 	rootCmd.Flags().StringVar(&robotAdoptCod, "adopt-cod", "", "Comma-separated pane specs for Codex (cod) agents (use with --robot-adopt)")
 	rootCmd.Flags().StringVar(&robotAdoptGmi, "adopt-gmi", "", "Comma-separated pane specs for Gemini (gmi) agents (use with --robot-adopt)")
@@ -107,6 +108,7 @@ func registerRobotExtFlags() {
 	rootCmd.Flags().StringVar(&robotAdoptAider, "adopt-aider", "", "Comma-separated pane specs for Aider agents (use with --robot-adopt)")
 	rootCmd.Flags().StringVar(&robotAdoptOc, "adopt-oc", "", "Comma-separated pane specs for OpenCode (oc) agents (use with --robot-adopt)")
 	rootCmd.Flags().StringVar(&robotAdoptOmp, "adopt-omp", "", "Comma-separated pane specs for Oh My Pi (omp) agents (use with --robot-adopt)")
+	rootCmd.Flags().StringVar(&robotAdoptPi, "adopt-pi", "", "Comma-separated pane specs for Pi (pi) agents (use with --robot-adopt)")
 	rootCmd.Flags().StringVar(&robotAdoptOllama, "adopt-ollama", "", "Comma-separated pane specs for Ollama agents (use with --robot-adopt)")
 	rootCmd.Flags().StringVar(&robotAdoptUser, "adopt-user", "", "Comma-separated pane specs for user shell panes (use with --robot-adopt)")
 	rootCmd.Flags().StringVar(&robotAdoptByWindow, "adopt-by-window", "", "Map every window's sole pane to one harness type (e.g. cc, cod, agy; use with --robot-adopt)")
@@ -213,6 +215,7 @@ func dispatchRobotExtFlags(cmd *cobra.Command, robotDryRunEffective bool) bool {
 			{"adopt-aider", "aider", robotAdoptAider},
 			{"adopt-oc", "oc", robotAdoptOc},
 			{"adopt-omp", "omp", robotAdoptOmp},
+			{"adopt-pi", "pi", robotAdoptPi},
 			{"adopt-ollama", "ollama", robotAdoptOllama},
 			{"adopt-user", "user", robotAdoptUser},
 		}

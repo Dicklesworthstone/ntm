@@ -517,6 +517,7 @@ func resetRobotExtFlags() {
 	robotAdoptAider = ""
 	robotAdoptOc = ""
 	robotAdoptOmp = ""
+	robotAdoptPi = ""
 	robotAdoptOllama = ""
 	robotAdoptUser = ""
 	robotAdoptByWindow = ""
