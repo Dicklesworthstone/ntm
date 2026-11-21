@@ -14,11 +14,123 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 var stopRestoreSessionMonitor = resilience.StopSessionMonitor
+
+// RestoreAgentTemplate selects the configured command for a saved harness.
+// CLI and API recovery use the same mapping and defaults.
+func RestoreAgentTemplate(cfg *config.Config, rawType string) (string, string, bool) {
+	if cfg == nil {
+		return "", "", false
+	}
+	switch agent.AgentType(rawType).Canonical() {
+	case tmux.AgentClaude:
+		return cfg.Agents.Claude, "cc", true
+	case tmux.AgentCodex:
+		return cfg.Agents.Codex, "cod", true
+	case tmux.AgentGemini:
+		return cfg.Agents.Gemini, "gmi", true
+	case tmux.AgentAntigravity:
+		return cfg.Agents.Antigravity, "agy", true
+	case tmux.AgentGrok:
+		return cfg.Agents.Grok, "grok", true
+	case tmux.AgentCursor:
+		return cfg.Agents.Cursor, "cursor", true
+	case tmux.AgentWindsurf:
+		return cfg.Agents.Windsurf, "windsurf", true
+	case tmux.AgentAider:
+		return cfg.Agents.Aider, "aider", true
+	case tmux.AgentOpencode:
+		command := cfg.Agents.Opencode
+		if command == "" {
+			command = config.DefaultOpencodeCommand
+		}
+		return command, "oc", true
+	case tmux.AgentOmp:
+		return config.OmpCommandOrDefault(cfg.Agents.Omp), "omp", true
+	case tmux.AgentOllama:
+		return cfg.Agents.Ollama, "ollama", true
+	default:
+		return "", "", false
+	}
+}
+
+// RestoreAgentCommands renders the fallback commands for legacy snapshots.
+// Recorded launch specs and commands take precedence in replay preflight.
+func RestoreAgentCommands(state *SessionState, cfg *config.Config) AgentCommands {
+	if cfg == nil || state == nil {
+		return AgentCommands{}
+	}
+	render := func(rawType string) string {
+		tmpl, agentType, ok := RestoreAgentTemplate(cfg, rawType)
+		if !ok || tmpl == "" {
+			return ""
+		}
+		// Legacy fallback templates historically received the full harness name.
+		if agentType == "oc" {
+			agentType = "opencode"
+		}
+		vars := config.AgentTemplateVars{
+			SessionName: state.Name, ProjectDir: state.WorkDir, PaneIndex: 1, AgentType: agentType,
+		}
+		if agentType == "cc" {
+			vars.ClaudeSettings = policy.ClaudeAgentLaunchSettings(cfg).Settings
+		}
+		command, err := config.GenerateAgentCommand(tmpl, vars)
+		if err != nil {
+			return ""
+		}
+		policy.LogClaudeHooksNotApplied("restore", command, vars.ClaudeSettings)
+		return command
+	}
+	return AgentCommands{
+		Claude: render("cc"), Codex: render("cod"), Gemini: render("gmi"),
+		Antigravity: render("agy"), Grok: render("grok"), Cursor: render("cursor"),
+		Windsurf: render("windsurf"), Aider: render("aider"), Opencode: render("oc"),
+		Omp: render("omp"), Ollama: render("ollama"),
+	}
+}
+
+// ApplyRestoreModels materializes model-aware commands only for legacy panes
+// without recorded launch settings. Callers own the loaded snapshot; the saved
+// file is unchanged. Existing replay envelopes remain authoritative.
+func ApplyRestoreModels(state *SessionState, cfg *config.Config) {
+	if cfg == nil || state == nil {
+		return
+	}
+	for i := range state.Panes {
+		pane := &state.Panes[i]
+		if pane.LaunchSpec != nil || pane.Command != "" {
+			continue
+		}
+		tmpl, agentType, ok := RestoreAgentTemplate(cfg, pane.AgentType)
+		if !ok || tmpl == "" {
+			continue
+		}
+		alias := strings.TrimSpace(pane.Model)
+		if alias == "" && (agentType != "grok" || pane.HasFreshSessionBinding()) {
+			continue
+		}
+		vars := config.AgentTemplateVars{
+			SessionName: state.Name, ProjectDir: state.WorkDir, PaneIndex: pane.Index,
+			AgentType: agentType, ModelRequested: alias != "",
+		}
+		if alias != "" {
+			vars.Model, vars.ModelAlias = cfg.Models.GetModelName(agentType, alias), alias
+		}
+		if agentType == "cc" {
+			vars.ClaudeSettings = policy.ClaudeAgentLaunchSettings(cfg).Settings
+		}
+		if command, err := config.GenerateAgentCommand(tmpl, vars); err == nil && command != "" {
+			policy.LogClaudeHooksNotApplied("restore", command, vars.ClaudeSettings)
+			pane.Command = command
+		}
+	}
+}
 
 // Restore recreates a session from saved state.
 func Restore(state *SessionState, opts RestoreOptions) (err error) {

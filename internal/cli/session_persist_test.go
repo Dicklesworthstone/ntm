@@ -444,11 +444,11 @@ func TestAgentTemplateAndType_Grok(t *testing.T) {
 	t.Cleanup(func() { cfg = prevCfg })
 
 	for _, rawType := range []string{"grok", "grok-build", "xai-grok-build"} {
-		tmpl, cliType, ok := agentTemplateAndType(rawType)
+		tmpl, cliType, ok := session.RestoreAgentTemplate(cfg, rawType)
 		if !ok {
 			t.Fatalf("agentTemplateAndType(%q) ok = false, want true", rawType)
 		}
-		if cliType != AgentTypeGrok {
+		if cliType != string(AgentTypeGrok) {
 			t.Fatalf("agentTemplateAndType(%q) cliType = %q, want %q", rawType, cliType, AgentTypeGrok)
 		}
 		if tmpl != cfg.Agents.Grok {

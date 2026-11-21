@@ -10,11 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Dicklesworthstone/ntm/internal/agent"
-	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/output"
-	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -618,8 +615,12 @@ func runSessionsRestore(ctx context.Context, savedName string, opts session.Rest
 	if launchAgents {
 		// Render and validate the whole batch before --force can replace the
 		// running session. A malformed later pane must not destroy the original.
-		applyModelCommands(state)
-		cmds = buildAgentCommands(state)
+		renderState := *state
+		if opts.Name != "" {
+			renderState.Name = opts.Name
+		}
+		applyModelCommands(&renderState)
+		cmds = buildAgentCommands(&renderState)
 	}
 
 	// Launching restore performs shared replay preflight before replacing the
@@ -846,49 +847,7 @@ func (r *SessionsResumeResult) JSON() interface{} { return r }
 // non-fatal: that agent's command is left empty so the restore/resume path
 // simply skips launching it rather than sending a broken template into a pane.
 func buildAgentCommands(state *session.SessionState) session.AgentCommands {
-	if cfg == nil || state == nil {
-		return session.AgentCommands{}
-	}
-
-	vars := config.AgentTemplateVars{
-		SessionName: state.Name,
-		ProjectDir:  state.WorkDir,
-		PaneIndex:   1,
-	}
-
-	claudeSettings := policy.ClaudeAgentLaunchSettings(cfg).Settings
-	render := func(tmpl, agentType string) string {
-		if tmpl == "" {
-			return ""
-		}
-		v := vars
-		v.AgentType = agentType
-		if agentType == "cc" {
-			v.ClaudeSettings = claudeSettings
-		}
-		rendered, err := config.GenerateAgentCommand(tmpl, v)
-		if err != nil {
-			// Leave empty so the launch path skips this agent rather than
-			// sending an unrendered template into the pane.
-			return ""
-		}
-		policy.LogClaudeHooksNotApplied("restore", rendered, v.ClaudeSettings)
-		return rendered
-	}
-
-	return session.AgentCommands{
-		Claude:      render(cfg.Agents.Claude, "cc"),
-		Codex:       render(cfg.Agents.Codex, "cod"),
-		Gemini:      render(cfg.Agents.Gemini, "gmi"),
-		Antigravity: render(cfg.Agents.Antigravity, "agy"),
-		Grok:        render(cfg.Agents.Grok, "grok"),
-		Cursor:      render(cfg.Agents.Cursor, "cursor"),
-		Windsurf:    render(cfg.Agents.Windsurf, "windsurf"),
-		Aider:       render(cfg.Agents.Aider, "aider"),
-		Opencode:    render(opencodeCommandOrDefault(cfg.Agents.Opencode), "opencode"),
-		Omp:         render(config.OmpCommandOrDefault(cfg.Agents.Omp), "omp"),
-		Ollama:      render(cfg.Agents.Ollama, "ollama"),
-	}
+	return session.RestoreAgentCommands(state, cfg)
 }
 
 // applyModelCommands renders each agent pane's launch command with that pane's
@@ -900,79 +859,7 @@ func buildAgentCommands(state *session.SessionState) session.AgentCommands {
 // fall back to the no-model type command. Render failures are non-fatal: the
 // pane keeps its empty Command rather than receiving a broken template string.
 func applyModelCommands(state *session.SessionState) {
-	if cfg == nil || state == nil {
-		return
-	}
-	for i := range state.Panes {
-		ps := &state.Panes[i]
-		if ps.LaunchSpec != nil || ps.Command != "" {
-			continue
-		}
-		tmpl, cliType, ok := agentTemplateAndType(ps.AgentType)
-		if !ok || tmpl == "" {
-			continue
-		}
-		modelAlias := strings.TrimSpace(ps.Model)
-		// session.AgentCommands has no dedicated Grok slot, so no-model Grok
-		// saves also materialize their configured launch command here.
-		if modelAlias == "" && (cliType != AgentTypeGrok || ps.HasFreshSessionBinding()) {
-			continue
-		}
-		v := config.AgentTemplateVars{
-			SessionName:    state.Name,
-			ProjectDir:     state.WorkDir,
-			PaneIndex:      ps.Index,
-			AgentType:      string(cliType),
-			ModelRequested: modelAlias != "",
-		}
-		if modelAlias != "" {
-			v.Model = ResolveModel(cliType, modelAlias)
-			v.ModelAlias = modelAlias
-		}
-		if cliType == AgentTypeClaude {
-			v.ClaudeSettings = policy.ClaudeAgentLaunchSettings(cfg).Settings
-		}
-		if rendered, err := config.GenerateAgentCommand(tmpl, v); err == nil && rendered != "" {
-			policy.LogClaudeHooksNotApplied("restore", rendered, v.ClaudeSettings)
-			ps.Command = rendered
-		}
-	}
-}
-
-// agentTemplateAndType maps a saved pane's agent-type string to its configured
-// command template and the CLI AgentType used for model resolution. Mirrors the
-// type switch in session.getAgentCommand so model-aware relaunch covers exactly
-// the agent types the fallback launch path supports.
-func agentTemplateAndType(agentType string) (string, AgentType, bool) {
-	if cfg == nil {
-		return "", "", false
-	}
-	switch agent.AgentType(agentType).Canonical() {
-	case tmux.AgentClaude:
-		return cfg.Agents.Claude, AgentTypeClaude, true
-	case tmux.AgentCodex:
-		return cfg.Agents.Codex, AgentTypeCodex, true
-	case tmux.AgentGemini:
-		return cfg.Agents.Gemini, AgentTypeGemini, true
-	case tmux.AgentAntigravity:
-		return cfg.Agents.Antigravity, AgentTypeAntigravity, true
-	case tmux.AgentGrok:
-		return cfg.Agents.Grok, AgentTypeGrok, true
-	case tmux.AgentCursor:
-		return cfg.Agents.Cursor, AgentTypeCursor, true
-	case tmux.AgentWindsurf:
-		return cfg.Agents.Windsurf, AgentTypeWindsurf, true
-	case tmux.AgentAider:
-		return cfg.Agents.Aider, AgentTypeAider, true
-	case tmux.AgentOpencode:
-		return opencodeCommandOrDefault(cfg.Agents.Opencode), AgentTypeOpencode, true
-	case tmux.AgentOmp:
-		return config.OmpCommandOrDefault(cfg.Agents.Omp), AgentTypeOmp, true
-	case tmux.AgentOllama:
-		return cfg.Agents.Ollama, AgentTypeOllama, true
-	default:
-		return "", "", false
-	}
+	session.ApplyRestoreModels(state, cfg)
 }
 
 // applyResumeTheme applies the named theme to this process's rendered output for
@@ -1061,11 +948,15 @@ func runSessionsResume(ctx context.Context, savedName, name string, force, attac
 
 	// Render each pane's captured model into its launch command so fresh
 	// relaunches honor the saved model (ntm-boi0).
-	applyModelCommands(state)
+	renderState := *state
+	if name != "" {
+		renderState.Name = name
+	}
+	applyModelCommands(&renderState)
 
 	// Render the agent command templates before launching: the raw cfg.Agents.*
 	// values are Go templates and must not be sent into a pane verbatim.
-	cmds := buildAgentCommands(state)
+	cmds := buildAgentCommands(&renderState)
 
 	res, err := session.ResumeContext(ctx, state, cmds, session.ResumeOptions{
 		Name:       name,

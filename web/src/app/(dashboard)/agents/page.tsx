@@ -20,6 +20,7 @@ import {
 import { PersonasAndRecipesPanel } from "@/components/agents/PersonasAndRecipesPanel";
 import { AgentMappingAndBadgesPanel } from "@/components/agents/AgentMappingAndBadgesPanel";
 import { PluginsAndLocalModelsPanel } from "@/components/agents/PluginsAndLocalModelsPanel";
+import { AGENT_TYPE_LABELS } from "@/lib/agent-labels";
 
 type AgentSpawnRequest = components["schemas"]["AgentSpawnRequest"];
 type SpawnOutput = components["schemas"]["SpawnOutput"];
@@ -57,17 +58,6 @@ interface SessionAgentsResponse extends ApiEnvelope {
   agents: AgentRecord[];
   count: number;
 }
-
-export const AGENT_TYPE_LABELS: Record<string, string> = {
-  cc: "Claude Code",
-  cod: "Codex",
-  gmi: "Gemini",
-  agy: "Antigravity",
-  grok: "Grok",
-  omp: "Oh My Pi",
-  oc: "OpenCode",
-  ollama: "Ollama",
-};
 
 const SPAWN_COUNT_FIELDS = [
   { key: "cc_count", label: "Claude Code (cc)" },

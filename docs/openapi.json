@@ -44562,6 +44562,9 @@
           "launch": {
             "type": "boolean"
           },
+          "mode": {
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
@@ -44587,6 +44590,7 @@
         "required": [
           "action",
           "launch",
+          "mode",
           "name",
           "session",
           "success",
@@ -44601,6 +44605,9 @@
           },
           "launch": {
             "type": "boolean"
+          },
+          "mode": {
+            "type": "string"
           },
           "native": {
             "type": "boolean"
@@ -49065,6 +49072,10 @@
             "type": "string",
             "description": "Agent mail name"
           },
+          "caam_profile": {
+            "type": "string",
+            "description": "C a a m profile"
+          },
           "credential_isolated": {
             "type": "boolean",
             "description": "Credential isolated"
@@ -50145,6 +50156,9 @@
           "data": {
             "type": "string"
           },
+          "encrypted": {
+            "type": "boolean"
+          },
           "file_count": {
             "type": "integer"
           },
@@ -50190,6 +50204,7 @@
           "content_suppressed",
           "content_type",
           "data",
+          "encrypted",
           "file_count",
           "filename",
           "format",
