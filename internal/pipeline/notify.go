@@ -250,10 +250,10 @@ func (n *Notifier) notifyWebhook(ctx context.Context, payload NotificationPayloa
 	}
 
 	headers := map[string]string{
-		"User-Agent":        "ntm-pipeline/1.0",
-		"X-NTM-Event-Type":  string(payload.Event),
-		"X-NTM-Workflow":    payload.WorkflowName,
-		"X-NTM-Run-ID":      payload.RunID,
+		"User-Agent":       "ntm-pipeline/1.0",
+		"X-NTM-Event-Type": string(payload.Event),
+		"X-NTM-Workflow":   payload.WorkflowName,
+		"X-NTM-Run-ID":     payload.RunID,
 	}
 	client := &http.Client{Timeout: 10 * time.Second}
 	if _, err := webhook.DeliverJSON(ctx, client, n.webhookURL, n.webhookSecret, body, headers); err != nil {

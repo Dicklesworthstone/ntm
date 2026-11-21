@@ -261,19 +261,23 @@ ERROR: Operation blocked due to sensitive content
 
 Category: OPENAI_KEY
 Location: prompt
-Error Code: REDACTION_BLOCKED
+Error Code: SENSITIVE_DATA_BLOCKED
 
 Resolution options:
 1. Remove the sensitive content manually
-2. Add to allowlist: ntm config redaction.allowlist.add "pattern"
+2. Add a pattern under [redaction] allowlist in config (`ntm config edit`) or set `NTM_REDACTION_ALLOWLIST`
 3. Override for this command: --allow-secret
 ```
+
+### Canonical Error Codes by Surface
+- **CLI & Robot surfaces** (`ntm send`, `ntm mail`, `ntm assign`, `ntm context inject`, `--robot-send`, `--robot-ack`, `--robot-interrupt`): `SENSITIVE_DATA_BLOCKED`
+- **REST API (`ntm serve`)**: HTTP `422` with `error_code: "SECRETS_DETECTED"` (and `422 REDACTION_INSPECTION_LIMIT` when bounded inspection limits are exceeded)
 
 ### Robot Mode Error Response
 ```json
 {
   "success": false,
-  "error_code": "REDACTION_BLOCKED",
+  "error_code": "SENSITIVE_DATA_BLOCKED",
   "error": "Sensitive content detected: OPENAI_KEY",
   "findings": [
     {
@@ -283,7 +287,7 @@ Resolution options:
       "column": 12
     }
   ],
-  "hint": "Use --allow-secret to override"
+  "hint": "Re-run with --allow-secret to bypass, or use --redact=warn/--redact=redact"
 }
 ```
 

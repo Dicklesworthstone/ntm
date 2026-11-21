@@ -22,6 +22,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/audit"
+	"github.com/Dicklesworthstone/ntm/internal/bundle"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/config"
@@ -53,6 +54,10 @@ var (
 	// Global redaction flags - inherited by all subcommands
 	redactMode  string // --redact=MODE override
 	allowSecret bool   // --allow-secret override
+
+	// Global encryption-at-rest override flags (docs/ENCRYPTION_SPEC.md)
+	encryptFlag        bool // --encrypt override
+	allowPlaintextFlag bool // --allow-plaintext override
 
 	// Audit command tracking
 	auditCorrelationID string
@@ -845,11 +850,19 @@ Shell Integration:
 				checkpoint.SetRedactionConfig(&redactCfg)
 			}
 
-			// Wire encryption into history + event log persistence (bd-3ld77).
+			// Apply --encrypt / --allow-plaintext CLI overrides (docs/ENCRYPTION_SPEC.md).
+			if err := applyEncryptionFlagOverrides(cfg); err != nil {
+				return encryptionStartupError(
+					cmd,
+					err,
+					"Pass at most one of --encrypt or --allow-plaintext",
+				)
+			}
+
+			// Wire encryption into history, event log, checkpoint, and support bundle persistence (bd-3ld77, 6en5y.2).
 			// Key resolution failures are fatal for every invocation: continuing
-			// would persist prompt history and event logs in plaintext even though
-			// the operator asked for encryption at rest
-			// (docs/ENCRYPTION_SPEC.md, "Failure Modes").
+			// would persist artifacts in plaintext even though the operator asked
+			// for encryption at rest (docs/ENCRYPTION_SPEC.md, "Failure Modes").
 			if cfg != nil && cfg.Encryption.Enabled {
 				keyCfg := encryption.KeyConfig{
 					KeySource:   cfg.Encryption.KeySource,
@@ -865,7 +878,7 @@ Shell Integration:
 					return encryptionStartupError(
 						cmd,
 						fmt.Errorf("encryption key resolution failed: %w", err),
-						"Configure a valid encryption key source, or set [encryption] enabled = false to persist artifacts unencrypted",
+						"Configure a valid encryption key source, pass --allow-plaintext, or set [encryption] enabled = false to persist artifacts unencrypted",
 					)
 				}
 				allKeys, err := encryption.ResolveKeyring(keyCfg)
@@ -873,7 +886,7 @@ Shell Integration:
 					return encryptionStartupError(
 						cmd,
 						fmt.Errorf("encryption keyring resolution failed: %w", err),
-						"Configure a valid encryption keyring, or set [encryption] enabled = false to persist artifacts unencrypted",
+						"Configure a valid encryption keyring, pass --allow-plaintext, or set [encryption] enabled = false to persist artifacts unencrypted",
 					)
 				}
 				history.SetEncryptionConfig(&history.EncryptionConfig{
@@ -891,10 +904,16 @@ Shell Integration:
 					EncryptKey:  encKey,
 					DecryptKeys: allKeys,
 				})
+				bundle.SetEncryptionConfig(&bundle.EncryptionConfig{
+					Enabled:     true,
+					EncryptKey:  encKey,
+					DecryptKeys: allKeys,
+				})
 			} else {
 				history.SetEncryptionConfig(nil)
 				events.SetEncryptionConfig(nil)
 				checkpoint.SetEncryptionConfig(nil)
+				bundle.SetEncryptionConfig(nil)
 			}
 
 			// Run automatic temp file cleanup if enabled

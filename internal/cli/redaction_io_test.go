@@ -315,3 +315,47 @@ func TestApplyOutputRedaction_AllowlistSuppressesFalsePositives(t *testing.T) {
 		t.Errorf("allowlist should suppress false positives; got %d findings", summaryWithAllowlist.Findings)
 	}
 }
+
+func TestApplyEncryptionFlagOverrides(t *testing.T) {
+	savedEncrypt := encryptFlag
+	savedAllowPlaintext := allowPlaintextFlag
+	t.Cleanup(func() {
+		encryptFlag = savedEncrypt
+		allowPlaintextFlag = savedAllowPlaintext
+	})
+
+	t.Run("encrypt_forces_enabled", func(t *testing.T) {
+		encryptFlag = true
+		allowPlaintextFlag = false
+		c := config.Default()
+		c.Encryption.Enabled = false
+		if err := applyEncryptionFlagOverrides(c); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !c.Encryption.Enabled {
+			t.Fatal("expected --encrypt to enable cfg.Encryption.Enabled")
+		}
+	})
+
+	t.Run("allow_plaintext_forces_disabled", func(t *testing.T) {
+		encryptFlag = false
+		allowPlaintextFlag = true
+		c := config.Default()
+		c.Encryption.Enabled = true
+		if err := applyEncryptionFlagOverrides(c); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if c.Encryption.Enabled {
+			t.Fatal("expected --allow-plaintext to disable cfg.Encryption.Enabled")
+		}
+	})
+
+	t.Run("mutually_exclusive_rejected", func(t *testing.T) {
+		encryptFlag = true
+		allowPlaintextFlag = true
+		c := config.Default()
+		if err := applyEncryptionFlagOverrides(c); err == nil {
+			t.Fatal("expected error when both --encrypt and --allow-plaintext are set")
+		}
+	})
+}

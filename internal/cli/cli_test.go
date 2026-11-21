@@ -301,6 +301,8 @@ func resetFlags() {
 	noColor = false
 	redactMode = ""
 	allowSecret = false
+	encryptFlag = false
+	allowPlaintextFlag = false
 	robotHelp = false
 	robotStatus = false
 	robotVersion = false

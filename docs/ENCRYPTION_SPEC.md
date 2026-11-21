@@ -22,7 +22,7 @@ covered in the encryption library task (`bd-z7ses`).
 - Prompt history (`ENC:v1:` line-level AES-256-GCM)
 - Event logs (`ENC:v1:` line-level AES-256-GCM)
 - Checkpoint metadata (`metadata.json`), session state (`session.json`), pane scrollback captures, git patches/status (`git.patch`, `git_status.txt`), and exported `.tar.gz` / `.zip` archives (`NTMENC1\n` binary AEAD envelope, integrated with `ArtifactIntegrity` digest verification and `key_source = "keyring"` OS keyring resolution)
-- Support bundles (if encrypted output requested)
+- Support bundles (`ntm support-bundle --encrypt` or `[encryption] enabled = true`; sealed in an atomic `0600` `NTMENC1\n` AEAD envelope and transparently verified in memory by `ntm support-bundle --verify`)
 
 ## Configuration
 Add an `[encryption]` section to `config.toml` and `.ntm/config.toml`.
@@ -106,9 +106,9 @@ No automatic or ephemeral keys are generated for persistent data.
 - Logging must never print raw key material.
 - A new `ntm doctor` check can surface encryption enabled/disabled status.
 
-## CLI Flags (Optional Future)
-- `--encrypt` or `--encryption` to override config for a single command.
-- `--allow-plaintext` to explicitly skip encryption when config is enabled.
+## CLI Flags
+- `--encrypt`: require encryption at rest for this invocation (overrides `[encryption] enabled = false`; fails closed if no key can be resolved).
+- `--allow-plaintext`: explicitly skip encryption at rest for this invocation (overrides `[encryption] enabled = true`; mutually exclusive with `--encrypt`).
 
 ## Security Notes
 - Key files should have `0600` permissions.

@@ -42,6 +42,12 @@ type GeneratorConfig struct {
 
 	// WorkDir is the working directory for relative paths.
 	WorkDir string
+
+	// Encrypt wraps the final bundle archive in an NTMENC1 AES-256-GCM envelope.
+	Encrypt bool
+
+	// EncryptKey overrides the process-wide bundle encryption key when set.
+	EncryptKey []byte
 }
 
 // GeneratorResult contains the outcome of bundle generation.
@@ -51,6 +57,9 @@ type GeneratorResult struct {
 
 	// Format is the archive format used.
 	Format Format `json:"format"`
+
+	// Encrypted reports whether the output archive is NTMENC1-encrypted.
+	Encrypted bool `json:"encrypted,omitempty"`
 
 	// FileCount is the number of files in the bundle.
 	FileCount int `json:"file_count"`
@@ -282,9 +291,25 @@ func (g *Generator) Generate() (*GeneratorResult, error) {
 		return nil, fmt.Errorf("unsupported format: %s", g.config.Format)
 	}
 
-	// Get final file size
-	info, err := os.Stat(g.config.OutputPath)
-	if err == nil {
+	encCfg := ActiveEncryptionConfig()
+	shouldEncrypt := g.config.Encrypt || (encCfg != nil && encCfg.Enabled)
+	if shouldEncrypt {
+		key := g.config.EncryptKey
+		if len(key) == 0 && encCfg != nil {
+			key = encCfg.EncryptKey
+		}
+		if len(key) == 0 {
+			_ = os.Remove(g.config.OutputPath)
+			return nil, fmt.Errorf("support bundle encryption requested, but no encryption key is configured")
+		}
+		encSize, encErr := EncryptArchiveFile(g.config.OutputPath, key)
+		if encErr != nil {
+			_ = os.Remove(g.config.OutputPath)
+			return nil, encErr
+		}
+		result.Encrypted = true
+		result.TotalSize = encSize
+	} else if info, err := os.Stat(g.config.OutputPath); err == nil {
 		result.TotalSize = info.Size()
 	}
 

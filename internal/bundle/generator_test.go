@@ -2,12 +2,14 @@ package bundle
 
 import (
 	"archive/zip"
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/encryption"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 )
 
@@ -497,5 +499,114 @@ func TestGenerator_RedactionSummary(t *testing.T) {
 
 	if result.RedactionSummary.FilesScanned != 1 {
 		t.Errorf("FilesScanned = %d, want 1", result.RedactionSummary.FilesScanned)
+	}
+}
+
+func TestEncryptedSupportBundle_ZipAndTarGzRoundTripAndFailClosed(t *testing.T) {
+	t.Cleanup(func() { SetEncryptionConfig(nil) })
+
+	key1 := bytes.Repeat([]byte{0x11}, encryption.KeySize)
+	key2 := bytes.Repeat([]byte{0x22}, encryption.KeySize)
+
+	for _, tc := range []struct {
+		name   string
+		format Format
+		ext    string
+	}{
+		{name: "zip", format: FormatZip, ext: ".zip"},
+		{name: "tar_gz", format: FormatTarGz, ext: ".tar.gz"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			outPath := filepath.Join(dir, "encrypted"+tc.ext)
+
+			SetEncryptionConfig(nil)
+			gen := NewGenerator(GeneratorConfig{
+				Session:    "enc-session",
+				OutputPath: outPath,
+				Format:     tc.format,
+				NTMVersion: "1.38.0",
+				Encrypt:    true,
+				EncryptKey: key1,
+			})
+			if err := gen.AddFile("notes.txt", []byte("top secret diagnostic payload"), ContentTypeConfig, time.Now()); err != nil {
+				t.Fatalf("AddFile: %v", err)
+			}
+			res, err := gen.Generate()
+			if err != nil {
+				t.Fatalf("Generate encrypted %s: %v", tc.format, err)
+			}
+			if !res.Encrypted {
+				t.Fatalf("expected Encrypted=true")
+			}
+
+			raw, err := os.ReadFile(outPath)
+			if err != nil {
+				t.Fatalf("ReadFile: %v", err)
+			}
+			if !encryption.IsEncryptedArtifact(raw) {
+				t.Fatalf("output archive missing %q envelope prefix", encryption.ArtifactEnvelopeMagic)
+			}
+			if bytes.Contains(raw, []byte("top secret diagnostic payload")) {
+				t.Fatal("plaintext leaked into encrypted archive")
+			}
+			info, err := os.Stat(outPath)
+			if err != nil {
+				t.Fatalf("Stat: %v", err)
+			}
+			if perm := info.Mode().Perm(); perm != 0o600 {
+				t.Errorf("encrypted bundle permissions = %04o, want 0600", perm)
+			}
+
+			// Fail closed without decryption keys.
+			SetEncryptionConfig(nil)
+			if _, err := Verify(outPath); err == nil || !strings.Contains(err.Error(), "no decryption keys") {
+				t.Fatalf("Verify without keys = %v, want fail-closed key error", err)
+			}
+
+			// Fail closed with wrong key.
+			SetEncryptionConfig(&EncryptionConfig{Enabled: true, DecryptKeys: [][]byte{key2}})
+			if _, err := Verify(outPath); err == nil {
+				t.Fatal("Verify with wrong key succeeded, want authentication failure")
+			}
+
+			// Succeed with rotated keyring [newKey, oldKey].
+			SetEncryptionConfig(&EncryptionConfig{Enabled: true, DecryptKeys: [][]byte{key2, key1}})
+			vres, err := Verify(outPath)
+			if err != nil {
+				t.Fatalf("Verify with rotated keyring failed: %v", err)
+			}
+			if !vres.Valid || !vres.ChecksumsValid || vres.Details["encrypted"] != "true" {
+				t.Fatalf("unexpected verify result: %+v", vres)
+			}
+
+			// Tampered ciphertext must fail authentication.
+			tampered := append([]byte(nil), raw...)
+			tampered[len(tampered)-1] ^= 0xff
+			tamperedPath := filepath.Join(dir, "tampered"+tc.ext)
+			if err := os.WriteFile(tamperedPath, tampered, 0o600); err != nil {
+				t.Fatalf("WriteFile tampered: %v", err)
+			}
+			if _, err := Verify(tamperedPath); err == nil {
+				t.Fatal("Verify on tampered ciphertext succeeded, want authentication error")
+			}
+		})
+	}
+
+	// Fail closed when Encrypt=true and no key is configured.
+	SetEncryptionConfig(nil)
+	noKeyPath := filepath.Join(t.TempDir(), "nokey.zip")
+	gen := NewGenerator(GeneratorConfig{
+		OutputPath: noKeyPath,
+		Format:     FormatZip,
+		NTMVersion: "1.38.0",
+		Encrypt:    true,
+	})
+	_ = gen.AddFile("a.txt", []byte("data"), ContentTypeConfig, time.Now())
+	if _, err := gen.Generate(); err == nil {
+		t.Fatal("Generate with Encrypt=true and no key succeeded, want error")
+	}
+	if _, statErr := os.Stat(noKeyPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected failed encrypted bundle not to remain on disk, stat err=%v", statErr)
 	}
 }

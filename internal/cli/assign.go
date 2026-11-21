@@ -5183,7 +5183,7 @@ func classifyReassignError(err error, durable *assignment.Assignment) string {
 	case errors.Is(err, assignment.ErrWorkingReplacementNotAllowed), errors.Is(err, assignment.ErrAssignmentStatusMismatch):
 		return "INVALID_STATE"
 	case errors.As(err, &dispatchErr) && dispatchErr.Code == dispatchsvc.ErrRedactionBlocked:
-		return "REDACTION_BLOCKED"
+		return "SENSITIVE_DATA_BLOCKED"
 	case durable != nil && durable.ClearState == assignment.ClearStateReservationReleasing && strings.TrimSpace(durable.ClearError) != "":
 		return "RESERVATION_RELEASE_FAILED"
 	case durable != nil && durable.DispatchAttempts > 0:

@@ -77,6 +77,10 @@ func initRootFlagsAndSubcommands() {
 	rootCmd.PersistentFlags().StringVar(&redactMode, "redact", "", "Redaction mode override: off, warn, redact, block")
 	rootCmd.PersistentFlags().BoolVar(&allowSecret, "allow-secret", false, "Bypass 'block' mode for this invocation (use with caution)")
 
+	// Global encryption-at-rest override flags (docs/ENCRYPTION_SPEC.md)
+	rootCmd.PersistentFlags().BoolVar(&encryptFlag, "encrypt", false, "Require encryption at rest for this invocation (overrides [encryption] enabled = false)")
+	rootCmd.PersistentFlags().BoolVar(&allowPlaintextFlag, "allow-plaintext", false, "Explicitly allow plaintext persistence for this invocation (overrides [encryption] enabled = true)")
+
 	// Profiling flag for startup timing analysis
 	rootCmd.PersistentFlags().BoolVar(&profileStartup, "profile-startup", false, "Enable startup profiling (outputs timing data)")
 
@@ -1008,6 +1012,22 @@ func applyRedactionFlagOverrides(cfg *config.Config) error {
 		cfg.Redaction.Mode = "warn"
 	}
 	return overrideErr
+}
+
+// applyEncryptionFlagOverrides applies --encrypt and --allow-plaintext overrides.
+func applyEncryptionFlagOverrides(cfg *config.Config) error {
+	if encryptFlag && allowPlaintextFlag {
+		return fmt.Errorf("--encrypt and --allow-plaintext cannot be used together")
+	}
+	if cfg == nil {
+		return nil
+	}
+	if encryptFlag {
+		cfg.Encryption.Enabled = true
+	} else if allowPlaintextFlag {
+		cfg.Encryption.Enabled = false
+	}
+	return nil
 }
 
 // canSkipConfigLoading returns true if we can skip Phase 2 config loading.

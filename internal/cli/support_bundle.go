@@ -112,6 +112,7 @@ type BundleResult struct {
 	Files            int                      `json:"files"`
 	FileCount        int                      `json:"file_count"`
 	Redacted         bool                     `json:"redacted"`
+	Encrypted        bool                     `json:"encrypted,omitempty"`
 	RedactionSummary *bundle.RedactionSummary `json:"redaction_summary,omitempty"`
 	Errors           []string                 `json:"errors,omitempty"`
 	Error            string                   `json:"error,omitempty"`
@@ -171,6 +172,9 @@ func runSupportBundle(ctx context.Context, opts supportBundleOptions) error {
 	fmt.Printf("  Size: %d bytes (%d content bytes)\n", result.Size, result.ContentBytes)
 	fmt.Printf("  Files: %d\n", result.FileCount)
 	fmt.Printf("  Redacted: %v\n", result.Redacted)
+	if result.Encrypted {
+		fmt.Printf("  Encrypted: true (NTMENC1 AES-256-GCM)\n")
+	}
 	return nil
 }
 
@@ -407,6 +411,19 @@ func createSupportBundle(ctx context.Context, outputPath string, opts supportBun
 	}
 	zipFile = nil
 
+	encrypted := false
+	if encCfg := bundle.ActiveEncryptionConfig(); encCfg != nil && encCfg.Enabled {
+		if len(encCfg.EncryptKey) == 0 {
+			_ = os.Remove(outputPath)
+			return nil, fmt.Errorf("support bundle encryption requested, but no encryption key is configured")
+		}
+		if _, err := bundle.EncryptArchiveFile(outputPath, encCfg.EncryptKey); err != nil {
+			_ = os.Remove(outputPath)
+			return nil, err
+		}
+		encrypted = true
+	}
+
 	// Get final file size
 	info, err := os.Stat(outputPath)
 	if err != nil {
@@ -432,6 +449,7 @@ func createSupportBundle(ctx context.Context, outputPath string, opts supportBun
 		Files:            fileCount,
 		FileCount:        fileCount,
 		Redacted:         !opts.NoRedact,
+		Encrypted:        encrypted,
 		RedactionSummary: redactionSummary,
 		Errors:           manifest.Errors,
 	}, nil
