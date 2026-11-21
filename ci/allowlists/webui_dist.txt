@@ -14,9 +14,11 @@ stale_build_id:GjCb78KGYKdLSuos4iHwo	bd-rc-track-d-release-docs-3ho85.2	Historic
 stale_build_id:IqvknxVPy0q1wyP0qNcAy	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
 stale_build_id:LfqE_Vtb3rv-Xc-YlxjH8	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
 stale_build_id:Ng79ftHxRLmT0FGKkoBwa	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
+stale_build_id:Tr07DvBOmlsFuylqCFTed	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId from non-destructive rebuild awaiting Rule-1 deletion approval
 stale_build_id:WxWDwrFtWG_o82E2hSk6e	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
 stale_build_id:Ylb_U7VcoWSRthfE3GYow	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
 stale_build_id:h0fJyJ4f58MRvjI8qsbOZ	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
+stale_build_id:i3m77TBZU8I0E0VgjVIQO	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId from non-destructive rebuild awaiting Rule-1 deletion approval
 stale_build_id:kZAF_L1Cb6DQITxWZex_9	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
 stale_build_id:pnGzXXiz0mlbT7ByuXpDW	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
 stale_build_id:uy2_agRC8kwpPHVTXZBeG	bd-rc-track-d-release-docs-3ho85.2	Historical Next.js static export buildId awaiting Rule-1 deletion approval
