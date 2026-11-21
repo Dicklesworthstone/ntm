@@ -11,7 +11,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_DIR="${SCRIPT_DIR}/logs"
+LOG_DIR="${E2E_LOG_DIR:-${SCRIPT_DIR}/logs}"
 RESULTS_FILE="${LOG_DIR}/results_$(date +%Y%m%d_%H%M%S).json"
 
 # Default options
@@ -86,11 +86,13 @@ fi
 
 # Find test scripts (outputs one per line for mapfile)
 find_tests() {
-    for f in "${SCRIPT_DIR}"/test-*.sh; do
+    shopt -s nullglob
+    for f in "${SCRIPT_DIR}"/test-*.sh "${SCRIPT_DIR}"/test_*.sh; do
         if [[ -f "$f" && -x "$f" ]]; then
             echo "$f"
         fi
     done
+    shopt -u nullglob
 }
 
 # Filter tests by pattern (outputs one per line for mapfile)
@@ -114,14 +116,14 @@ run_test() {
     local start_ts
     start_ts=$(date +%s)
 
-    echo ">>> Running: $test_name"
+    echo ">>> Running: $test_name" >&2
 
     local exit_code=0
     local output=""
     local log_file="${LOG_DIR}/${test_name}_runner.log"
 
     if [[ $DRY_RUN -eq 1 ]]; then
-        echo "    [DRY-RUN] Would execute: $test_script"
+        echo "    [DRY-RUN] Would execute: $test_script" >&2
         output='{"test":"'"$test_name"'","result":"skipped","reason":"dry_run"}'
         exit_code=0
     else
@@ -151,9 +153,9 @@ run_test() {
     echo "$json_result"
 
     if [[ $exit_code -eq 0 ]]; then
-        echo "    PASS ($duration s)"
+        echo "    PASS ($duration s)" >&2
     else
-        echo "    FAIL (exit $exit_code, $duration s)"
+        echo "    FAIL (exit $exit_code, $duration s)" >&2
     fi
 
     return $exit_code
@@ -333,8 +335,8 @@ main() {
     fi
 
     if [[ ${#tests_to_run[@]} -eq 0 ]]; then
-        echo "No tests to run"
-        exit 0
+        echo "ERROR: No tests matched (refusing false-green exit 0)" >&2
+        exit 2
     fi
 
     echo "Tests to run: ${#tests_to_run[@]}"

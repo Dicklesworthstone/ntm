@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -2191,15 +2192,20 @@ claude = "bash"
 	}
 }
 
-// Skip tests if ntm binary is missing.
+// Skip tests if ntm binary is missing or NTM_E2E_TESTS is unset, while always
+// honoring `go test -list` so test discovery never silently reports 0 tests.
 func TestMain(m *testing.M) {
+	flag.Parse()
+	if f := flag.Lookup("test.list"); f != nil && f.Value.String() != "" {
+		os.Exit(m.Run())
+	}
 	if os.Getenv("NTM_E2E_TESTS") == "" {
-		// E2E tests are opt-in to avoid long-running tmux workflows in default runs.
-		return
+		fmt.Fprintln(os.Stderr, "SKIP tests/e2e: E2E tests are opt-in (set NTM_E2E_TESTS=1 to run; use `go test -list . ./tests/e2e/...` to list tests)")
+		os.Exit(0)
 	}
 	if _, err := exec.LookPath("ntm"); err != nil {
-		// ntm binary not on PATH; skip suite gracefully
-		return
+		fmt.Fprintln(os.Stderr, "SKIP tests/e2e: ntm binary not found on PATH")
+		os.Exit(0)
 	}
 
 	cleanupTmux, err := testutil.IsolateTmuxTestProcess()

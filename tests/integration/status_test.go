@@ -58,11 +58,6 @@ func TestMain(m *testing.M) {
 }
 
 func TestStatusDetectsIdlePrompt(t *testing.T) {
-	// Skip on CI - this test is flaky due to timing issues with tmux session
-	// initialization and shell readiness detection across different environments.
-	if os.Getenv("CI") == "true" || os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Skip("Skipping flaky tmux test on CI")
-	}
 	testutil.RequireTmuxThrottled(t)
 	logger := testutil.NewTestLogger(t, t.TempDir())
 
@@ -222,11 +217,6 @@ func TestStatusDetectsErrors(t *testing.T) {
 }
 
 func TestStatusDetectsAgentTypes(t *testing.T) {
-	// Skip on CI - this test is flaky due to timing issues with tmux pane creation
-	// and title setting across different environments.
-	if os.Getenv("CI") == "true" || os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Skip("Skipping flaky tmux test on CI")
-	}
 	testutil.RequireTmuxThrottled(t)
 	logger := testutil.NewTestLogger(t, t.TempDir())
 
@@ -252,15 +242,27 @@ func TestStatusDetectsAgentTypes(t *testing.T) {
 
 	requirePaneActivity(t, pane1)
 
+	// Poll briefly so tmux pane-title updates settle deterministically under load.
 	detector := status.NewDetector()
-	statuses, err := detector.DetectAll(session)
-	if err != nil {
-		t.Fatalf("detect all failed: %v", err)
-	}
-
-	found := map[string]bool{}
-	for _, st := range statuses {
-		found[st.AgentType] = true
+	var statuses []status.AgentStatus
+	var found map[string]bool
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		statuses, err = detector.DetectAll(session)
+		if err != nil {
+			t.Fatalf("detect all failed: %v", err)
+		}
+		found = map[string]bool{}
+		for _, st := range statuses {
+			found[st.AgentType] = true
+		}
+		if found["cc"] && found["cod"] && found["gmi"] {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	for _, agent := range []string{"cc", "cod", "gmi"} {
