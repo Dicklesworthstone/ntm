@@ -34,7 +34,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/events"
-	"github.com/Dicklesworthstone/ntm/internal/gemini"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/models"
@@ -48,6 +47,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/recovery"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/spawnidentity"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
@@ -1123,30 +1123,15 @@ func expandProfileAgents(profiles []*persona.Persona, requested AgentSpecs) ([]F
 // (--cod=3 vs a 2-codex set) and an agent-type conflict (a claude persona
 // dropped into a codex-only request).
 func validateProfileAgentDistribution(personaCounts, requestedCounts map[AgentType]int) error {
-	typeSet := make(map[AgentType]struct{})
-	for t := range personaCounts {
-		typeSet[t] = struct{}{}
+	pCounts := make(map[agentpkg.AgentType]int, len(personaCounts))
+	for t, c := range personaCounts {
+		pCounts[agentpkg.AgentType(t)] = c
 	}
-	for t := range requestedCounts {
-		typeSet[t] = struct{}{}
+	rCounts := make(map[agentpkg.AgentType]int, len(requestedCounts))
+	for t, c := range requestedCounts {
+		rCounts[agentpkg.AgentType(t)] = c
 	}
-	types := make([]string, 0, len(typeSet))
-	for t := range typeSet {
-		types = append(types, string(t))
-	}
-	sort.Strings(types)
-
-	var mismatches []string
-	for _, ts := range types {
-		t := AgentType(ts)
-		if personaCounts[t] != requestedCounts[t] {
-			mismatches = append(mismatches, fmt.Sprintf("%s: profile-set defines %d, you requested %d", ts, personaCounts[t], requestedCounts[t]))
-		}
-	}
-	if len(mismatches) > 0 {
-		return fmt.Errorf("profile-set agent distribution conflicts with the requested agent counts (%s); either drop the per-type counts and let --profile-set drive the spawn, or make the counts match the persona set exactly", strings.Join(mismatches, "; "))
-	}
-	return nil
+	return session.ValidateProfileAgentDistribution(pCounts, rCounts)
 }
 
 // sortPanesForAssignment orders panes deterministically — by window index, then
@@ -1167,20 +1152,20 @@ func legacySpawnTotalAgentCount(opts SpawnOptions) int {
 }
 
 func spawnHookCountEnv(totalAgents int, opts SpawnOptions) map[string]string {
-	return map[string]string{
-		"NTM_AGENT_COUNT_CC":       fmt.Sprintf("%d", opts.CCCount),
-		"NTM_AGENT_COUNT_COD":      fmt.Sprintf("%d", opts.CodCount),
-		"NTM_AGENT_COUNT_GMI":      fmt.Sprintf("%d", opts.GmiCount),
-		"NTM_AGENT_COUNT_AGY":      fmt.Sprintf("%d", opts.AgyCount),
-		"NTM_AGENT_COUNT_GROK":     fmt.Sprintf("%d", opts.GrokCount),
-		"NTM_AGENT_COUNT_CURSOR":   fmt.Sprintf("%d", opts.CursorCount),
-		"NTM_AGENT_COUNT_WINDSURF": fmt.Sprintf("%d", opts.WindsurfCount),
-		"NTM_AGENT_COUNT_AIDER":    fmt.Sprintf("%d", opts.AiderCount),
-		"NTM_AGENT_COUNT_OC":       fmt.Sprintf("%d", opts.OpencodeCount),
-		"NTM_AGENT_COUNT_OMP":      fmt.Sprintf("%d", opts.OmpCount),
-		"NTM_AGENT_COUNT_OLLAMA":   fmt.Sprintf("%d", opts.OllamaCount),
-		"NTM_AGENT_COUNT_TOTAL":    fmt.Sprintf("%d", totalAgents),
-	}
+	return session.SpawnHookEnv(session.SpawnHookCounts{
+		CC:       opts.CCCount,
+		Cod:      opts.CodCount,
+		Gmi:      opts.GmiCount,
+		Agy:      opts.AgyCount,
+		Grok:     opts.GrokCount,
+		Cursor:   opts.CursorCount,
+		Windsurf: opts.WindsurfCount,
+		Aider:    opts.AiderCount,
+		Opencode: opts.OpencodeCount,
+		Omp:      opts.OmpCount,
+		Ollama:   opts.OllamaCount,
+		Total:    totalAgents,
+	})
 }
 
 func spawnSessionCreatedEventFields(opts SpawnOptions, dir string) map[string]string {
@@ -1432,84 +1417,11 @@ type spawnAssignmentPreflightDependencies struct {
 }
 
 func preflightWorktreeProject(ctx context.Context, projectDir string) error {
-	if ctx == nil {
-		return errors.New("worktree preflight requires a command context")
-	}
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("worktree preflight canceled: %w", err)
-	}
-
-	projectDir = strings.TrimSpace(projectDir)
-	if projectDir == "" {
-		return errors.New("worktree preflight requires a project directory")
-	}
-	info, err := os.Stat(projectDir)
-	if err != nil {
-		return fmt.Errorf("cannot create isolated agent worktrees: inspect project %s: %w", projectDir, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("cannot create isolated agent worktrees: project path is not a directory: %s", projectDir)
-	}
-
-	runGit := func(args ...string) (string, error) {
-		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", projectDir}, args...)...)
-		output, commandErr := cmd.CombinedOutput()
-		trimmedOutput := strings.TrimSpace(string(output))
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return trimmedOutput, fmt.Errorf("worktree preflight canceled: %w", ctxErr)
-		}
-		return trimmedOutput, commandErr
-	}
-
-	insideWorktree, err := runGit("rev-parse", "--is-inside-work-tree")
-	if err != nil || insideWorktree != "true" {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return fmt.Errorf("worktree preflight canceled: %w", ctxErr)
-		}
-		detail := insideWorktree
-		if detail == "" && err != nil {
-			detail = err.Error()
-		}
-		return fmt.Errorf(
-			"cannot create isolated agent worktrees.\n\n"+
-				"Project: %s\n"+
-				"Problem: this path is not an initialized Git working tree (%s).\n\n"+
-				"Initialize the repository and create its first commit, or rerun without --worktrees",
-			projectDir, detail,
-		)
-	}
-
-	headDetail, err := runGit("rev-parse", "--verify", "HEAD^{commit}")
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return fmt.Errorf("worktree preflight canceled: %w", ctxErr)
-		}
-		if headDetail == "" {
-			headDetail = err.Error()
-		}
-		return fmt.Errorf(
-			"cannot create isolated agent worktrees.\n\n"+
-				"Project: %s\n"+
-				"Problem: the Git repository has no valid HEAD commit (%s).\n\n"+
-				"Create the initial commit, or rerun without --worktrees",
-			projectDir, headDetail,
-		)
-	}
-
-	return nil
+	return session.PreflightWorktreeProject(ctx, projectDir)
 }
 
 func validateSpawnWorktreeOptions(opts SpawnOptions) error {
-	if !opts.UseWorktrees {
-		return nil
-	}
-	if opts.WorktreeName != "" && len(opts.Agents) > 1 {
-		return fmt.Errorf(
-			"--worktree-name is only valid for single-agent spawns; got %d agents",
-			len(opts.Agents),
-		)
-	}
-	return nil
+	return session.ValidateSpawnWorktreeOptions(opts.UseWorktrees, opts.WorktreeName, len(opts.Agents))
 }
 
 func spawnSafetySessionExistsError(session string) error {
@@ -2055,50 +1967,20 @@ Examples:
 				}
 			}
 
-			// Handle --profiles and --profile-set flags for profile assignment
+			// Handle --profiles and --profile-set flags via the shared ORI spawn engine
 			var profileList []*persona.Persona
 			if profilesFlag != "" && profileSetFlag != "" {
 				return fmt.Errorf("cannot use both --profiles and --profile-set; pick one")
 			}
 			if profilesFlag != "" || profileSetFlag != "" {
-				registry, err := persona.LoadRegistry(dir)
-				if err != nil {
-					return fmt.Errorf("loading persona registry: %w", err)
-				}
-
 				var profileNames []string
-				if profileSetFlag != "" {
-					// Resolve profile set to list of names
-					pset, ok := registry.GetSet(profileSetFlag)
-					if !ok {
-						sets := registry.ListSets()
-						var available []string
-						for _, s := range sets {
-							available = append(available, s.Name)
-						}
-						return fmt.Errorf("profile set %q not found; available: %s", profileSetFlag, strings.Join(available, ", "))
-					}
-					profileNames = pset.Personas
-				} else {
-					// Parse comma-separated profile names
+				if profilesFlag != "" {
 					profileNames = strings.Split(profilesFlag, ",")
-					for i := range profileNames {
-						profileNames[i] = strings.TrimSpace(profileNames[i])
-					}
 				}
-
-				// Look up each persona in registry
-				for _, name := range profileNames {
-					if name == "" {
-						continue
-					}
-					p, ok := registry.Get(name)
-					if !ok {
-						return fmt.Errorf("profile %q not found in registry", name)
-					}
-					profileList = append(profileList, p)
+				profileList, err = session.LoadSpawnProfileList(dir, profileSetFlag, profileNames)
+				if err != nil {
+					return err
 				}
-
 			}
 
 			// Parse marching orders file if provided (bd-2lodn)
@@ -2538,16 +2420,16 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	}
 
 	var worktreeManager *worktrees.WorktreeManager
+	var worktreeAgentNames []string
 	if opts.UseWorktrees {
-		if err := preflightWorktreeProject(ctx, dir); err != nil {
-			return outputError(err)
-		}
-		worktreeManager = worktrees.NewManager(dir, opts.Session)
+		worktreeAgentNames = make([]string, 0, len(opts.Agents))
 		for _, agent := range opts.Agents {
-			agentName := worktreeAgentName(agent, opts.WorktreeName)
-			if err := worktreeManager.PreflightForAgent(ctx, agentName); err != nil {
-				return outputError(fmt.Errorf("preflight worktree for agent %s: %w", agentName, err))
-			}
+			worktreeAgentNames = append(worktreeAgentNames, worktreeAgentName(agent, opts.WorktreeName))
+		}
+		var wtErr error
+		worktreeManager, wtErr = session.PreflightSpawnWorktrees(ctx, dir, opts.Session, worktreeAgentNames)
+		if wtErr != nil {
+			return outputError(wtErr)
 		}
 	}
 
@@ -2593,47 +2475,25 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		return outputError(err)
 	}
 
-	// Initialize hook executor
-	var hookExec *hooks.Executor
-	if !opts.NoHooks {
-		var err error
-		hookExec, err = hooks.NewExecutorFromConfig()
-		if err != nil {
-			// Log warning but don't fail if hooks can't be loaded
-			if !IsJSONOutput() {
-				fmt.Printf("⚠ Warning: could not load hooks config: %v\n", err)
-			}
-			hookExec = hooks.NewExecutor(nil) // Use empty config
-		}
+	// Initialize hook executor via shared ORI spawn engine
+	hookExec, hookLoadErr := session.LoadSpawnHooks(opts.NoHooks)
+	if hookLoadErr != nil && !IsJSONOutput() {
+		fmt.Printf("⚠ Warning: could not load hooks config: %v\n", hookLoadErr)
 	}
 
-	// Build execution context for hooks
-	hookCtx := hooks.ExecutionContext{
-		SessionName:   opts.Session,
-		ProjectDir:    dir,
-		AdditionalEnv: spawnHookCountEnv(totalAgents, opts),
-	}
+	hookEnv := spawnHookCountEnv(totalAgents, opts)
 
-	// Run pre-spawn hooks
+	// Run pre-spawn hooks via shared ORI spawn engine
 	if hookExec != nil && hookExec.HasHooksForEvent(hooks.EventPreSpawn) {
 		steps := output.NewSteps()
 		if !IsJSONOutput() {
 			steps.Start("Running pre-spawn hooks")
 		}
-		hookRunCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-		results, err := hookExec.RunHooksForEvent(hookRunCtx, hooks.EventPreSpawn, hookCtx)
-		cancel()
-		if err != nil {
+		if _, err := session.RunPreSpawnHooks(ctx, hookExec, opts.Session, dir, hookEnv); err != nil {
 			if !IsJSONOutput() {
 				steps.Fail()
 			}
-			return outputError(fmt.Errorf("pre-spawn hook failed: %w", err))
-		}
-		if hooks.AnyFailed(results) {
-			if !IsJSONOutput() {
-				steps.Fail()
-			}
-			return outputError(fmt.Errorf("pre-spawn hook failed: %w", hooks.AllErrors(results)))
+			return outputError(err)
 		}
 		if !IsJSONOutput() {
 			steps.Done()
@@ -2646,55 +2506,23 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	// invisible to the build-slot lease reconciliation (ntm-83dz).
 	preSpawnHadWorktrees := worktrees.SessionHasWorktrees(dir, opts.Session)
 
-	provisionedWorktreePaths := make(map[string]string, len(opts.Agents))
+	var worktreePlan *session.SpawnWorktreePlan
 	if opts.UseWorktrees {
 		if !IsJSONOutput() {
 			steps.Start("Creating Git worktrees for agent isolation")
 		}
-		for _, agent := range opts.Agents {
-			if err := ctx.Err(); err != nil {
-				if !IsJSONOutput() {
-					steps.Fail()
-				}
-				return outputError(fmt.Errorf("worktree creation canceled: %w", err))
-			}
-			agentName := worktreeAgentName(agent, opts.WorktreeName)
-			worktreeInfo, createErr := worktreeManager.CreateForAgent(ctx, agentName)
-			if worktreeInfo != nil && worktreeInfo.Created && strings.TrimSpace(worktreeInfo.Path) != "" {
-				lifecyclePartialMutation = true
-				lifecycleAffectedWorktreePaths = append(lifecycleAffectedWorktreePaths, worktreeInfo.Path)
-			}
-			if createErr != nil {
-				if !IsJSONOutput() {
-					steps.Fail()
-				}
-				return outputError(fmt.Errorf("failed to create worktree for agent %s: %w", agentName, createErr))
-			}
-			if worktreeInfo == nil || strings.TrimSpace(worktreeInfo.Path) == "" {
-				return outputError(fmt.Errorf("failed to create worktree for agent %s: manager returned no path", agentName))
-			}
-			provisionedWorktreePaths[agentName] = worktreeInfo.Path
+		var affectedWorktrees []string
+		var provErr error
+		worktreePlan, affectedWorktrees, provErr = session.ProvisionSpawnWorktrees(ctx, worktreeManager, worktreeAgentNames)
+		if len(affectedWorktrees) > 0 {
+			lifecyclePartialMutation = true
+			lifecycleAffectedWorktreePaths = append(lifecycleAffectedWorktreePaths, affectedWorktrees...)
 		}
-		// Revalidate the complete provisioned set before any tmux lifecycle
-		// operation. This catches wrappers, hooks, or concurrent actors that
-		// leave a checkout detached, stale, or on the wrong branch.
-		for _, agent := range opts.Agents {
-			agentName := worktreeAgentName(agent, opts.WorktreeName)
-			worktreeInfo, lookupErr := worktreeManager.GetWorktreeForAgent(ctx, agentName)
-			if lookupErr != nil {
-				return outputError(fmt.Errorf("validate provisioned worktree for agent %s: %w", agentName, lookupErr))
+		if provErr != nil {
+			if !IsJSONOutput() {
+				steps.Fail()
 			}
-			expectedPath := provisionedWorktreePaths[agentName]
-			if worktreeInfo == nil || !worktreeInfo.Created || worktreeInfo.Error != "" || worktreeInfo.Path != expectedPath {
-				detail := "manager returned no worktree"
-				if worktreeInfo != nil {
-					detail = worktreeInfo.Error
-					if detail == "" {
-						detail = fmt.Sprintf("path %q does not match provisioned path %q", worktreeInfo.Path, expectedPath)
-					}
-				}
-				return outputError(fmt.Errorf("validate provisioned worktree for agent %s: %s", agentName, detail))
-			}
+			return outputError(provErr)
 		}
 		if !IsJSONOutput() {
 			steps.Done()
@@ -3333,18 +3161,11 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		// A worktree pane runs with a cwd whose derived project key differs
 		// from the session key Agent Mail registered, so tell the agent's
 		// tooling which key NTM published its identity under (ntm#257).
-		// AGENT_MAIL_PROJECT is the variable the Agent Mail CLI already honours
-		// ahead of cwd derivation. A plugin env var or an explicit --pane-env
-		// value of the same name wins.
 		if opts.UseWorktrees {
-			if _, fromPlugin := envVars["AGENT_MAIL_PROJECT"]; !fromPlugin {
-				if _, fromUser := opts.PaneEnv["AGENT_MAIL_PROJECT"]; !fromUser {
-					if envVars == nil {
-						envVars = make(map[string]string)
-					}
-					envVars["AGENT_MAIL_PROJECT"] = dir
-					launchSpec.AgentMailProject = dir
-				}
+			var injected bool
+			envVars, injected = session.ApplyWorktreeAgentMailProjectEnv(envVars, opts.PaneEnv, dir)
+			if injected {
+				launchSpec.AgentMailProject = dir
 			}
 		}
 
@@ -3401,33 +3222,17 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		}
 
 		// Resolve the launch directory at the final command-construction
-		// boundary. Worktree isolation must never degrade to the shared project
-		// directory when a checkout disappears, detaches, or changes branch.
+		// boundary via the shared ORI spawn engine. Worktree isolation must
+		// never degrade to the shared project directory when a checkout
+		// disappears, detaches, or changes branch.
 		workingDir := dir
 		if opts.UseWorktrees {
-			if worktreeManager == nil {
-				return outputError(fmt.Errorf("building %s agent command: worktree manager is unavailable", agent.Type))
-			}
 			agentName := worktreeAgentName(agent, opts.WorktreeName)
-			expectedPath, provisioned := provisionedWorktreePaths[agentName]
-			if !provisioned || strings.TrimSpace(expectedPath) == "" {
-				return outputError(fmt.Errorf("building %s agent command: no provisioned worktree for agent %s", agent.Type, agentName))
+			resolvedDir, wtErr := worktreePlan.ResolveLaunchDir(ctx, agentName)
+			if wtErr != nil {
+				return outputError(fmt.Errorf("building %s agent command: %w", agent.Type, wtErr))
 			}
-			worktreeInfo, lookupErr := worktreeManager.GetWorktreeForAgent(ctx, agentName)
-			if lookupErr != nil {
-				return outputError(fmt.Errorf("building %s agent command: validate worktree for agent %s: %w", agent.Type, agentName, lookupErr))
-			}
-			if worktreeInfo == nil || !worktreeInfo.Created || worktreeInfo.Error != "" || worktreeInfo.Path != expectedPath {
-				detail := "manager returned no worktree"
-				if worktreeInfo != nil {
-					detail = worktreeInfo.Error
-					if detail == "" {
-						detail = fmt.Sprintf("path %q does not match provisioned path %q", worktreeInfo.Path, expectedPath)
-					}
-				}
-				return outputError(fmt.Errorf("building %s agent command: worktree for agent %s is not launchable: %s", agent.Type, agentName, detail))
-			}
-			workingDir = expectedPath
+			workingDir = resolvedDir
 		}
 
 		cmd, err := tmux.BuildPaneCommand(workingDir, safeAgentCmd)
@@ -3527,27 +3332,16 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 
 		go func(paneID, paneTitle string, idx int, agentType AgentType, agent FlatAgent, panePrompt string, hasPrompt bool) {
 			defer setupWg.Done()
-			// Gemini post-spawn setup: auto-select Pro model
+			// Gemini post-spawn setup: auto-select Pro model (shared ORI spawn engine)
 			if agentType == AgentTypeGemini && cfg.GeminiSetup.AutoSelectProModel {
-				geminiCfg := gemini.SetupConfig{
-					AutoSelectProModel: cfg.GeminiSetup.AutoSelectProModel,
-					ReadyTimeout:       time.Duration(cfg.GeminiSetup.ReadyTimeoutSeconds) * time.Second,
-					ModelSelectTimeout: time.Duration(cfg.GeminiSetup.ModelSelectTimeoutSeconds) * time.Second,
-					PollInterval:       500 * time.Millisecond,
-					Verbose:            cfg.GeminiSetup.Verbose,
-				}
-				setupCtx, setupCancel := context.WithTimeout(setupCtx, geminiCfg.ReadyTimeout+geminiCfg.ModelSelectTimeout+10*time.Second)
-				defer setupCancel()
-				if err := gemini.PostSpawnSetup(setupCtx, paneID, geminiCfg); err != nil {
+				if err := session.RunGeminiPostSpawnSetup(setupCtx, cfg, paneID); err != nil {
 					if !IsJSONOutput() {
 						fmt.Printf("⚠ Warning: Gemini Pro model setup failed for agent %d: %v\n", idx, err)
 						fmt.Printf("  (Agent is running with default model. To disable auto-setup: set gemini_setup.auto_select_pro_model = false in config)\n")
 					}
 					// Don't fail spawn - agent is still running, just possibly with default model
-				} else {
-					if !IsJSONOutput() && cfg.GeminiSetup.Verbose {
-						fmt.Printf("✓ Gemini %d configured for Pro model\n", idx)
-					}
+				} else if !IsJSONOutput() && cfg.GeminiSetup.Verbose {
+					fmt.Printf("✓ Gemini %d configured for Pro model\n", idx)
 				}
 			}
 
@@ -3850,6 +3644,35 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		}
 	}
 
+	// Helper for post-spawn hooks shared across human and --json modes
+	runPostSpawn := func() error {
+		if hookExec == nil || !hookExec.HasHooksForEvent(hooks.EventPostSpawn) {
+			return nil
+		}
+		postSteps := output.NewSteps()
+		if !IsJSONOutput() {
+			postSteps.Start("Running post-spawn hooks")
+		}
+		paneTitles := make([]string, 0, len(finalPanes))
+		for _, p := range finalPanes {
+			if p.Title != "" {
+				paneTitles = append(paneTitles, p.Title)
+			}
+		}
+		if _, postErr := session.RunPostSpawnHooks(ctx, hookExec, opts.Session, dir, hookEnv, len(finalPanes), paneTitles); postErr != nil {
+			if !IsJSONOutput() {
+				postSteps.Warn()
+				output.PrintWarningf("Post-spawn hook failed: %v", postErr)
+			}
+		} else if !IsJSONOutput() {
+			postSteps.Done()
+		}
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("post-spawn hooks canceled: %w", err)
+		}
+		return nil
+	}
+
 	// JSON output mode
 	if IsJSONOutput() {
 		// Build maps keyed by stable tmux pane ID. Window-local indices can repeat,
@@ -3906,6 +3729,9 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		}
 		if err := ctx.Err(); err != nil {
 			return outputError(fmt.Errorf("spawn registration canceled: %w", err))
+		}
+		if err := runPostSpawn(); err != nil {
+			return outputError(err)
 		}
 
 		spawnResponse := &output.SpawnResponse{
@@ -4003,47 +3829,9 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		return outputError(fmt.Errorf("spawn registration canceled: %w", err))
 	}
 
-	// Run post-spawn hooks
-	if hookExec != nil && hookExec.HasHooksForEvent(hooks.EventPostSpawn) {
-		postSteps := output.NewSteps()
-		if !IsJSONOutput() {
-			postSteps.Start("Running post-spawn hooks")
-		}
-
-		// Enrich hook context with final spawn state
-		hookCtx.AdditionalEnv["NTM_PANE_COUNT"] = fmt.Sprintf("%d", len(finalPanes))
-
-		// Build list of pane titles for hooks
-		var paneTitles []string
-		for _, p := range finalPanes {
-			if p.Title != "" {
-				paneTitles = append(paneTitles, p.Title)
-			}
-		}
-		hookCtx.AdditionalEnv["NTM_PANE_TITLES"] = strings.Join(paneTitles, ",")
-		hookCtx.AdditionalEnv["NTM_SPAWN_SUCCESS"] = "true"
-
-		hookRunCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-		results, postErr := hookExec.RunHooksForEvent(hookRunCtx, hooks.EventPostSpawn, hookCtx)
-		cancel()
-		if postErr != nil {
-			// Log error but don't fail (spawn already succeeded)
-			if !IsJSONOutput() {
-				postSteps.Warn()
-				output.PrintWarningf("Post-spawn hook error: %v", postErr)
-			}
-		} else if hooks.AnyFailed(results) {
-			// Log failures but don't fail (spawn already succeeded)
-			if !IsJSONOutput() {
-				postSteps.Warn()
-				output.PrintWarningf("Post-spawn hook failed: %v", hooks.AllErrors(results))
-			}
-		} else if !IsJSONOutput() {
-			postSteps.Done()
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		return outputError(fmt.Errorf("post-spawn hooks canceled: %w", err))
+	// Run post-spawn hooks via shared ORI spawn engine
+	if err := runPostSpawn(); err != nil {
+		return outputError(err)
 	}
 
 	// NOTE: an earlier revision registered agents with Agent Mail a second
@@ -5965,10 +5753,7 @@ func isCodexFamilyModel(model string) bool {
 // that spawn the same agent slot across multiple `--label` values: see
 // ntm#145 for the cross-contamination scenario.
 func worktreeAgentName(a FlatAgent, override string) string {
-	if override != "" {
-		return override
-	}
-	return fmt.Sprintf("%s_%d", strings.ToLower(string(a.Type)), a.Index)
+	return session.WorktreeAgentName(string(a.Type), a.Index, override)
 }
 
 func waitForAgentsReadyWithObserver(

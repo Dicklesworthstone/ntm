@@ -19,7 +19,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/events"
-	"github.com/Dicklesworthstone/ntm/internal/gemini"
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
@@ -29,6 +28,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	sessionpkg "github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/spawnidentity"
 	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -178,15 +178,7 @@ func newAgentLifecycleFailureResponse(
 }
 
 func prepareRequiredPersonaSystemPrompt(p *persona.Persona, projectDir string) (string, error) {
-	promptFile, err := persona.PrepareSystemPrompt(p, projectDir)
-	if err != nil {
-		name := "<unknown>"
-		if p != nil && strings.TrimSpace(p.Name) != "" {
-			name = p.Name
-		}
-		return "", fmt.Errorf("prepare required system prompt for %s: %w", name, err)
-	}
-	return promptFile, nil
+	return sessionpkg.PrepareRequiredPersonaSystemPrompt(p, projectDir)
 }
 
 // opencodeCommandOrDefault returns the configured [agents] oc launch command,
@@ -1023,32 +1015,17 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 			}
 		}
 
-		// Gemini post-spawn setup: auto-select Pro model
+		// Gemini post-spawn setup: auto-select Pro model (shared ORI spawn engine)
 		if agent.Type == AgentTypeGemini && cfg.GeminiSetup.AutoSelectProModel {
-			geminiCfg := gemini.SetupConfig{
-				AutoSelectProModel: cfg.GeminiSetup.AutoSelectProModel,
-				ReadyTimeout:       time.Duration(cfg.GeminiSetup.ReadyTimeoutSeconds) * time.Second,
-				ModelSelectTimeout: time.Duration(cfg.GeminiSetup.ModelSelectTimeoutSeconds) * time.Second,
-				PollInterval:       500 * time.Millisecond,
-				Verbose:            cfg.GeminiSetup.Verbose,
-			}
-			setupCtx, setupCancel := context.WithTimeout(ctx, geminiCfg.ReadyTimeout+geminiCfg.ModelSelectTimeout+10*time.Second)
-			// Defer cancel is safer here, but since we are in a loop, defer runs at function exit.
-			// So we must cancel manually or wrap in func.
-			func() {
-				defer setupCancel()
-				if err := gemini.PostSpawnSetup(setupCtx, paneID, geminiCfg); err != nil {
-					if emitHuman {
-						fmt.Printf("⚠ Warning: Gemini Pro model setup failed: %v\n", err)
-						fmt.Printf("  (Agent is running with default model. To disable auto-setup: set gemini_setup.auto_select_pro_model = false in config)\n")
-					}
-					// Don't fail spawn
-				} else {
-					if emitHuman && cfg.GeminiSetup.Verbose {
-						fmt.Printf("✓ Gemini %d configured for Pro model\n", num)
-					}
+			if err := sessionpkg.RunGeminiPostSpawnSetup(ctx, cfg, paneID); err != nil {
+				if emitHuman {
+					fmt.Printf("⚠ Warning: Gemini Pro model setup failed: %v\n", err)
+					fmt.Printf("  (Agent is running with default model. To disable auto-setup: set gemini_setup.auto_select_pro_model = false in config)\n")
 				}
-			}()
+				// Don't fail spawn
+			} else if emitHuman && cfg.GeminiSetup.Verbose {
+				fmt.Printf("✓ Gemini %d configured for Pro model\n", num)
+			}
 		}
 
 		// Inject CASS context if available

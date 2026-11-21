@@ -11,8 +11,10 @@ import (
 
 	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/recipe"
+	"github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -50,9 +52,15 @@ func prepareSpawnPlugins(opts SpawnOptions) (SpawnOptions, error) {
 	}
 	definitions := make(map[string]plugins.AgentPlugin)
 	definitionErrors := make(map[string]error)
+	// Pi is a first-class harness backed by ShippedPiPlugin and remains
+	// overridable by user-installed agents/pi.toml manifests.
+	isSealedBuiltin := func(name string) bool {
+		t := agentpkg.AgentType(name)
+		return t.IsValid() && t.Canonical() != agentpkg.AgentTypePi
+	}
 	for _, plugin := range loaded {
 		plugin.Name = strings.ToLower(strings.TrimSpace(plugin.Name))
-		if agentpkg.AgentType(plugin.Name).IsValid() || plugin.Name == "unknown" {
+		if isSealedBuiltin(plugin.Name) || plugin.Name == "unknown" {
 			continue // Shipped compatibility presets never override built-ins.
 		}
 		if _, duplicate := definitions[plugin.Name]; duplicate {
@@ -61,7 +69,7 @@ func prepareSpawnPlugins(opts SpawnOptions) (SpawnOptions, error) {
 		}
 		for _, raw := range []string{plugin.Name, plugin.Alias} {
 			name := strings.ToLower(strings.TrimSpace(raw))
-			if name == "" || name == "unknown" || agentpkg.AgentType(name).IsValid() {
+			if name == "" || name == "unknown" || isSealedBuiltin(name) {
 				continue
 			}
 			if previous, exists := definitions[name]; exists && previous.Name != plugin.Name {
@@ -236,10 +244,20 @@ func expandSpawnRecipe(opts SpawnOptions, selected *recipe.Recipe, cfg *config.C
 	expanded.GrokCount, expanded.OmpCount, expanded.OcCount = 0, 0, 0
 	expanded.OllamaCount, expanded.AiderCount, expanded.CursorCount, expanded.WindsurfCount = 0, 0, 0, 0
 	expanded.PluginAgents = nil
+	expanded.slotPersonas = nil
+	dir, _ := spawnWorkingDirectory(opts, cfg)
+	ordinals := make(map[string]int)
 	total := 0
 	for i, spec := range selected.Agents {
-		if strings.TrimSpace(spec.Persona) != "" {
-			return opts, fmt.Errorf("spawn preset %q agent[%d]: personas are not supported by robot spawning; use ntm spawn --recipe", selected.Name, i)
+		var resolvedPersona *persona.Persona
+		if pName := strings.TrimSpace(spec.Persona); pName != "" {
+			slots, err := session.ResolveSpawnPersonas([]session.PersonaSpec{{Name: pName, Count: 1}}, dir)
+			if err != nil {
+				return opts, fmt.Errorf("spawn preset %q agent[%d]: %w", selected.Name, i, err)
+			}
+			if len(slots) > 0 {
+				resolvedPersona = slots[0].Persona
+			}
 		}
 		// Validate above bounds each count, but independently bound the sum
 		// before addition rather than trusting Recipe.TotalAgents arithmetic.
@@ -247,27 +265,38 @@ func expandSpawnRecipe(opts SpawnOptions, selected *recipe.Recipe, cfg *config.C
 			return opts, fmt.Errorf("spawn preset %q exceeds 50 agents", selected.Name)
 		}
 		total += spec.Count
+		robotType := ""
 		switch tmux.AgentType(spec.Type).Canonical() {
 		case tmux.AgentClaude:
 			expanded.CCCount += spec.Count
+			robotType = "claude"
 		case tmux.AgentCodex:
 			expanded.CodCount += spec.Count
+			robotType = "codex"
 		case tmux.AgentGemini:
 			expanded.GmiCount += spec.Count
+			robotType = "gemini"
 		case tmux.AgentAntigravity:
 			expanded.AgyCount += spec.Count
+			robotType = "antigravity"
 		case tmux.AgentGrok:
 			expanded.GrokCount += spec.Count
+			robotType = "grok"
 		case tmux.AgentOmp:
 			expanded.OmpCount += spec.Count
+			robotType = "omp"
 		case tmux.AgentOpencode:
 			expanded.OcCount += spec.Count
+			robotType = "oc"
 		case tmux.AgentOllama:
 			expanded.OllamaCount += spec.Count
+			robotType = "ollama"
 		case tmux.AgentAider:
 			expanded.AiderCount += spec.Count
+			robotType = "aider"
 		case tmux.AgentCursor:
 			expanded.CursorCount += spec.Count
+			robotType = "cursor"
 		case tmux.AgentWindsurf:
 			configured := ""
 			if cfg != nil {
@@ -277,6 +306,7 @@ func expandSpawnRecipe(opts SpawnOptions, selected *recipe.Recipe, cfg *config.C
 				return opts, fmt.Errorf("spawn preset %q agent[%d]: %w", selected.Name, i, err)
 			}
 			expanded.WindsurfCount += spec.Count
+			robotType = "windsurf"
 		default:
 			name := strings.ToLower(strings.TrimSpace(spec.Type))
 			if err := opts.pluginErrors[name]; err != nil {
@@ -292,6 +322,16 @@ func expandSpawnRecipe(opts SpawnOptions, selected *recipe.Recipe, cfg *config.C
 			request := expanded.PluginAgents[plugin.Name]
 			request.Count += spec.Count
 			expanded.PluginAgents[plugin.Name] = request
+			robotType = plugin.Name
+		}
+		for n := 0; n < spec.Count; n++ {
+			ordinals[robotType]++
+			if resolvedPersona != nil {
+				if expanded.slotPersonas == nil {
+					expanded.slotPersonas = make(map[spawnRecipeKey]*persona.Persona)
+				}
+				expanded.slotPersonas[spawnRecipeKey{agentType: robotType, number: ordinals[robotType]}] = resolvedPersona
+			}
 		}
 	}
 	expanded.Preset = selected.Name
@@ -403,6 +443,180 @@ func applySpawnRecipePreview(agents []SpawnedAgent, launches map[spawnRecipeKey]
 type spawnLaunchModelContextKey struct{}
 
 type spawnPluginEnvironmentContextKey struct{}
+
+type spawnLaunchPersonaContextKey struct{}
+
+type spawnLaunchPersona struct {
+	personaName      string
+	systemPromptFile string
+	agentMailProject string
+}
+
+func spawnLaunchPersonaFromContext(ctx context.Context) spawnLaunchPersona {
+	if ctx == nil {
+		return spawnLaunchPersona{}
+	}
+	meta, _ := ctx.Value(spawnLaunchPersonaContextKey{}).(spawnLaunchPersona)
+	return meta
+}
+
+func robotKeyForAgentType(t agentpkg.AgentType) string {
+	switch t.Canonical() {
+	case agentpkg.AgentTypeClaudeCode:
+		return "claude"
+	case agentpkg.AgentTypeCodex:
+		return "codex"
+	case agentpkg.AgentTypeGemini:
+		return "gemini"
+	case agentpkg.AgentTypeAntigravity:
+		return "antigravity"
+	case agentpkg.AgentTypeGrok:
+		return "grok"
+	case agentpkg.AgentTypeOmp:
+		return "omp"
+	case agentpkg.AgentTypeOpencode:
+		return "oc"
+	case agentpkg.AgentTypeOllama:
+		return "ollama"
+	case agentpkg.AgentTypeAider:
+		return "aider"
+	case agentpkg.AgentTypeCursor:
+		return "cursor"
+	case agentpkg.AgentTypeWindsurf:
+		return "windsurf"
+	default:
+		return string(t.Canonical())
+	}
+}
+
+func incrementRobotSpawnCount(opts *SpawnOptions, canonical agentpkg.AgentType) string {
+	key := robotKeyForAgentType(canonical)
+	switch key {
+	case "claude":
+		opts.CCCount++
+	case "codex":
+		opts.CodCount++
+	case "gemini":
+		opts.GmiCount++
+	case "antigravity":
+		opts.AgyCount++
+	case "grok":
+		opts.GrokCount++
+	case "omp":
+		opts.OmpCount++
+	case "oc":
+		opts.OcCount++
+	case "ollama":
+		opts.OllamaCount++
+	case "aider":
+		opts.AiderCount++
+	case "cursor":
+		opts.CursorCount++
+	case "windsurf":
+		opts.WindsurfCount++
+	default:
+		if opts.PluginAgents == nil {
+			opts.PluginAgents = make(map[string]PluginSpawnSpec)
+		}
+		spec := opts.PluginAgents[key]
+		spec.Count++
+		opts.PluginAgents[key] = spec
+	}
+	return key
+}
+
+// expandSpawnPersonasAndProfileSet resolves --spawn-persona and
+// --spawn-profile-set through the shared ORI spawn engine
+// (internal/session/spawn_engine.go), keeping robot/REST persona expansion and
+// distribution validation in lockstep with `ntm spawn`.
+func expandSpawnPersonasAndProfileSet(opts SpawnOptions, cfg *config.Config) (SpawnOptions, error) {
+	profileSet := strings.TrimSpace(opts.ProfileSet)
+	if len(opts.Personas) == 0 && profileSet == "" {
+		return opts, nil
+	}
+	if len(opts.Personas) > 0 && profileSet != "" {
+		return opts, errors.New("cannot combine --spawn-persona and --spawn-profile-set; pick one")
+	}
+
+	dir, err := spawnWorkingDirectory(opts, cfg)
+	if err != nil {
+		return opts, fmt.Errorf("resolve persona project directory: %w", err)
+	}
+
+	expanded := opts
+	if expanded.slotPersonas == nil {
+		expanded.slotPersonas = make(map[spawnRecipeKey]*persona.Persona)
+	}
+
+	if len(opts.Personas) > 0 {
+		specs := make([]session.PersonaSpec, 0, len(opts.Personas))
+		for _, raw := range opts.Personas {
+			spec, parseErr := session.ParsePersonaSpec(raw)
+			if parseErr != nil {
+				return opts, parseErr
+			}
+			specs = append(specs, spec)
+		}
+		slots, resErr := session.ResolveSpawnPersonas(specs, dir)
+		if resErr != nil {
+			return opts, resErr
+		}
+		ordinals := make(map[string]int)
+		for _, spec := range expanded.agentCounts() {
+			if spec.count > 0 {
+				ordinals[spec.agentType] = spec.count
+			}
+		}
+		for _, slot := range slots {
+			key := incrementRobotSpawnCount(&expanded, slot.AgentType)
+			ordinals[key]++
+			expanded.slotPersonas[spawnRecipeKey{agentType: key, number: ordinals[key]}] = slot.Persona
+		}
+		return expanded, nil
+	}
+
+	profiles, loadErr := session.LoadSpawnProfileList(dir, profileSet, nil)
+	if loadErr != nil {
+		return opts, loadErr
+	}
+	personaCounts := make(map[agentpkg.AgentType]int)
+	for _, p := range profiles {
+		if p == nil {
+			continue
+		}
+		personaCounts[agentpkg.AgentType(p.AgentTypeFlag()).Canonical()]++
+	}
+	requestedCounts := make(map[agentpkg.AgentType]int)
+	for _, spec := range expanded.agentCounts() {
+		if spec.count > 0 {
+			requestedCounts[agentpkg.AgentType(spec.agentType).Canonical()] += spec.count
+		}
+	}
+	if len(requestedCounts) > 0 {
+		if distErr := session.ValidateProfileAgentDistribution(personaCounts, requestedCounts); distErr != nil {
+			return opts, distErr
+		}
+	} else {
+		for _, p := range profiles {
+			if p == nil {
+				continue
+			}
+			incrementRobotSpawnCount(&expanded, agentpkg.AgentType(p.AgentTypeFlag()).Canonical())
+		}
+	}
+
+	ordinals := make(map[string]int)
+	for _, p := range profiles {
+		if p == nil {
+			continue
+		}
+		key := robotKeyForAgentType(agentpkg.AgentType(p.AgentTypeFlag()).Canonical())
+		ordinals[key]++
+		expanded.slotPersonas[spawnRecipeKey{agentType: key, number: ordinals[key]}] = p
+	}
+	expanded.ProfileSet = profileSet
+	return expanded, nil
+}
 
 func spawnLaunchModelFromContext(ctx context.Context) spawnLaunchModel {
 	if ctx == nil {

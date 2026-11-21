@@ -241,7 +241,7 @@ func TestSpawnRecipeRejectsUnsupportedIntentBeforeExpansion(t *testing.T) {
 		{"empty", &recipe.Recipe{Name: "empty"}},
 		{"unknown type", &recipe.Recipe{Name: "bad", Agents: []recipe.AgentSpec{{Type: "typo", Count: 1}}}},
 		{"ide only harness", &recipe.Recipe{Name: "bad", Agents: []recipe.AgentSpec{{Type: "windsurf", Count: 1}}}},
-		{"persona", &recipe.Recipe{Name: "bad", Agents: []recipe.AgentSpec{{Type: "cc", Count: 1, Persona: "reviewer"}}}},
+		{"unknown persona", &recipe.Recipe{Name: "bad", Agents: []recipe.AgentSpec{{Type: "cc", Count: 1, Persona: "no-such-persona-xyz"}}}},
 		{"zero count", &recipe.Recipe{Name: "bad", Agents: []recipe.AgentSpec{{Type: "cc", Count: 0}}}},
 		{"negative count", &recipe.Recipe{Name: "bad", Agents: []recipe.AgentSpec{{Type: "cc", Count: -1}}}},
 		{"overlarge count", &recipe.Recipe{Name: "bad", Agents: []recipe.AgentSpec{{Type: "cc", Count: 21}}}},

@@ -8,7 +8,54 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 )
+
+// HarnessCapabilitySummary exposes the declarative 12-harness matrix from
+// internal/agent/capabilities.go in --robot-capabilities discovery.
+type HarnessCapabilitySummary struct {
+	Type                      string   `json:"type"`
+	Aliases                   []string `json:"aliases,omitempty"`
+	DisplayName               string   `json:"display_name"`
+	Provider                  string   `json:"provider"`
+	CAAMTool                  string   `json:"caam_tool,omitempty"`
+	NeedsDoubleEnter          bool     `json:"needs_double_enter"`
+	GracefulExit              string   `json:"graceful_exit"`
+	SupportsBuiltinCompact    bool     `json:"supports_builtin_compact"`
+	BuiltinCompactCommand     string   `json:"builtin_compact_command,omitempty"`
+	SupportsHistoryClear      bool     `json:"supports_history_clear"`
+	HistoryClearCommand       string   `json:"history_clear_command,omitempty"`
+	ComposerGated             bool     `json:"composer_gated"`
+	DefaultContextWindow      int      `json:"default_context_window"`
+	SupportsAutomatedDelivery bool     `json:"supports_automated_delivery"`
+	SupportsAutomatedRelaunch bool     `json:"supports_automated_relaunch"`
+}
+
+func capabilityHarnesses() []HarnessCapabilitySummary {
+	all := agent.AllHarnesses()
+	out := make([]HarnessCapabilitySummary, 0, len(all))
+	for _, h := range all {
+		out = append(out, HarnessCapabilitySummary{
+			Type:                      string(h.Type),
+			Aliases:                   h.Aliases,
+			DisplayName:               h.DisplayName,
+			Provider:                  h.Provider,
+			CAAMTool:                  h.CAAMTool,
+			NeedsDoubleEnter:          h.NeedsDoubleEnter,
+			GracefulExit:              string(h.GracefulExit),
+			SupportsBuiltinCompact:    h.SupportsBuiltinCompact,
+			BuiltinCompactCommand:     h.BuiltinCompactCommand,
+			SupportsHistoryClear:      h.SupportsHistoryClear,
+			HistoryClearCommand:       h.HistoryClearCommand,
+			ComposerGated:             h.ComposerGated,
+			DefaultContextWindow:      h.DefaultContextWindow,
+			SupportsAutomatedDelivery: h.SupportsAutomatedDelivery,
+			SupportsAutomatedRelaunch: h.SupportsAutomatedRelaunch,
+		})
+	}
+	return out
+}
 
 // CapabilitiesOutput represents the output for --robot-capabilities
 type CapabilitiesOutput struct {
@@ -17,6 +64,7 @@ type CapabilitiesOutput struct {
 	Commands   []RobotCommandInfo          `json:"commands"`
 	Surfaces   []CapabilitySurfaceMetadata `json:"surfaces,omitempty"`
 	Categories []string                    `json:"categories"`
+	Harnesses  []HarnessCapabilitySummary  `json:"harnesses,omitempty"`
 	Attention  *AttentionCapabilities      `json:"attention,omitempty"`
 	Filter     *CapabilitiesFilter         `json:"filter,omitempty"`
 	// PaginationContractViolations self-reports drift between the registry
@@ -173,12 +221,17 @@ func GetCapabilitiesWithOptions(opts CapabilitiesOptions) (*CapabilitiesOutput, 
 	categories := capabilityCategories(registry.Categories, commands)
 	attention := DefaultAttentionCapabilities()
 	surfaceMetadata := capabilitySurfaceMetadata(surfaces, commands)
+	harnesses := capabilityHarnesses()
 	if normalized.Compact {
 		commands = compactCapabilitiesCommandCatalog(commands)
 		surfaceMetadata = nil
+		harnesses = nil
 		attention = nil
-	} else if hasCapabilitiesFilter(normalized) && !commandCatalogHasCategory(commands, "attention") {
-		attention = nil
+	} else if hasCapabilitiesFilter(normalized) {
+		harnesses = nil
+		if !commandCatalogHasCategory(commands, "attention") {
+			attention = nil
+		}
 	}
 
 	return &CapabilitiesOutput{
@@ -187,6 +240,7 @@ func GetCapabilitiesWithOptions(opts CapabilitiesOptions) (*CapabilitiesOutput, 
 		Commands:                     commands,
 		Surfaces:                     surfaceMetadata,
 		Categories:                   categories,
+		Harnesses:                    harnesses,
 		Attention:                    attention,
 		Filter:                       capabilitiesFilter(normalized),
 		PaginationContractViolations: SchemaPaginationViolations(),
@@ -1476,6 +1530,11 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "spawn-cursor", Flag: "--spawn-cursor", Type: "string", Required: false, Description: "Cursor Agent CLI (cursor-agent) agents: count[:model]"},
 				{Name: "spawn-pi", Flag: "--spawn-pi", Type: "string", Required: false, Description: "Pi coding agent (pi) agents: count[:model[:effort]] (effort maps to pi --thinking; no model = pi's own configured default)"},
 				{Name: "spawn-preset", Flag: "--spawn-preset", Type: "string", Required: false, Description: "Use recipe preset instead of counts"},
+				{Name: "spawn-persona", Flag: "--spawn-persona", Type: "string", Required: false, Description: "Persona-defined agents (name or name:count, comma-separated/repeatable)"},
+				{Name: "spawn-profile-set", Flag: "--spawn-profile-set", Type: "string", Required: false, Description: "Predefined persona profile set (e.g. backend-team, review-team)"},
+				{Name: "spawn-worktrees", Flag: "--spawn-worktrees", Type: "bool", Required: false, Description: "Enable isolated git worktree per spawned agent"},
+				{Name: "spawn-worktree-name", Flag: "--spawn-worktree-name", Type: "string", Required: false, Description: "Override worktree directory name (single-agent spawns only)"},
+				{Name: "spawn-no-hooks", Flag: "--spawn-no-hooks", Type: "bool", Required: false, Description: "Disable pre-spawn and post-spawn command hooks"},
 				{Name: "spawn-no-user", Flag: "--spawn-no-user", Type: "bool", Required: false, Description: "Skip user pane creation"},
 				{Name: "spawn-wait", Flag: "--spawn-wait", Type: "bool", Required: false, Description: "Wait for agents to show ready state before returning"},
 				{Name: "timeout", Flag: "--timeout", Type: "string", Required: false, Default: "30s", Description: "Max wait for ready state when --spawn-wait is enabled"},

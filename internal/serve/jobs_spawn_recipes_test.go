@@ -322,3 +322,46 @@ func TestConfiguredSwarmJobEnforcesFleetLimitWithoutAssignment(t *testing.T) {
 		t.Fatalf("configured fleet cap was bypassed by ordinary HTTP spawn: %+v", final.Job)
 	}
 }
+
+func TestAgentSpawnRESTAndSwarmJobForwardORIOptions(t *testing.T) {
+	srv := NewHermeticServer("spawn-ori-parity")
+	defer srv.Stop()
+
+	var seen []robot.SpawnOptions
+	srv.spawnAgents = func(_ context.Context, opts robot.SpawnOptions) (*robot.SpawnOutput, error) {
+		seen = append(seen, opts)
+		return &robot.SpawnOutput{
+			RobotResponse: robot.NewRobotResponse(true),
+			Session:       opts.Session,
+			ProfileSet:    opts.ProfileSet,
+			Agents:        []robot.SpawnedAgent{},
+		}, nil
+	}
+
+	// 1. Synchronous REST POST /api/v1/sessions/{id}/agents/spawn accepts pure personas + worktrees + no_hooks.
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/ori-rest/agents/spawn",
+		strings.NewReader(`{"personas":["reviewer:2"],"worktrees":true,"worktree_name":"wt-custom","no_hooks":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("REST spawn status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	// 2. Async swarm_spawn job accepts pure profile_set + worktrees + no_hooks.
+	env := postJob(t, srv, `{"type":"swarm_spawn","params":{"session":"ori-job","profile_set":"review-team","worktrees":true,"no_hooks":true}}`)
+	final := pollJobTerminal(t, srv, env.Job.ID)
+	if final.Job.Status != string(JobStatusCompleted) {
+		t.Fatalf("swarm_spawn job failed: %+v", final.Job)
+	}
+
+	if len(seen) != 2 {
+		t.Fatalf("expected 2 spawn calls, got %d", len(seen))
+	}
+	if len(seen[0].Personas) != 1 || seen[0].Personas[0] != "reviewer:2" || !seen[0].UseWorktrees || seen[0].WorktreeName != "wt-custom" || !seen[0].NoHooks {
+		t.Fatalf("REST spawn did not forward ORI options: %+v", seen[0])
+	}
+	if seen[1].ProfileSet != "review-team" || !seen[1].UseWorktrees || !seen[1].NoHooks {
+		t.Fatalf("swarm_spawn job did not forward ORI options: %+v", seen[1])
+	}
+}

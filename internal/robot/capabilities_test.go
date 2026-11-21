@@ -24,11 +24,33 @@ func TestGetCapabilitiesWithOptionsFiltersAndCompacts(t *testing.T) {
 	if command.Name != "send" || command.Flag != "--robot-send" {
 		t.Fatalf("command = %+v, want send", command)
 	}
-	if len(command.Parameters) != 0 || len(command.Examples) != 0 || output.Surfaces != nil || output.Attention != nil {
+	if len(command.Parameters) != 0 || len(command.Examples) != 0 || output.Surfaces != nil || output.Harnesses != nil || output.Attention != nil {
 		t.Fatalf("compact output retained verbose metadata: %+v", output)
 	}
 	if output.Filter == nil || !output.Filter.Compact || output.Filter.Command != "send" {
 		t.Fatalf("filter metadata = %+v", output.Filter)
+	}
+}
+
+func TestGetCapabilitiesIncludesDeclarativeHarnesses(t *testing.T) {
+	output, err := GetCapabilities()
+	if err != nil {
+		t.Fatalf("GetCapabilities() error: %v", err)
+	}
+	if len(output.Harnesses) != 12 {
+		t.Fatalf("len(Harnesses) = %d, want 12 built-in harnesses", len(output.Harnesses))
+	}
+	seen := make(map[string]bool, len(output.Harnesses))
+	for _, h := range output.Harnesses {
+		seen[h.Type] = true
+		if h.DisplayName == "" || h.Provider == "" || h.DefaultContextWindow <= 0 {
+			t.Errorf("incomplete harness summary: %+v", h)
+		}
+	}
+	for _, want := range []string{"cc", "cod", "gmi", "agy", "grok", "cursor", "windsurf", "aider", "oc", "omp", "pi", "ollama"} {
+		if !seen[want] {
+			t.Errorf("missing harness %q in --robot-capabilities output", want)
+		}
 	}
 }
 

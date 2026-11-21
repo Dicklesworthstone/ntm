@@ -24,7 +24,9 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
+	"github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/models"
+	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/pressure"
@@ -32,12 +34,14 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/recovery"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
+	"github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/spawnidentity"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/worksource"
+	"github.com/Dicklesworthstone/ntm/internal/worktrees"
 )
 
 // readyWordRe matches "ready" as a whole word. A bare substring check also hit
@@ -107,6 +111,12 @@ type SpawnOptions struct {
 	CursorModel         string        // Cursor Agent CLI model override
 	WindsurfModel       string        // Windsurf model override (only used when [agents] windsurf is overridden to a terminal CLI)
 	Preset              string        // Recipe/preset name
+	Personas            []string      // Persona specs ("name" or "name:count") resolved via shared spawn engine
+	ProfileSet          string        // Named persona profile set resolved via shared spawn engine
+	UseWorktrees        bool          // Provision isolated per-agent git worktrees via shared spawn engine
+	WorktreeName        string        // Single-agent worktree directory override
+	NoHooks             bool          // Disable pre-spawn and post-spawn command hooks
+	slotPersonas        map[spawnRecipeKey]*persona.Persona
 	NoUserPane          bool          // Don't create user pane
 	WorkingDir          string        // Override working directory
 	WaitReady           bool          // Wait for agents to be ready
@@ -163,6 +173,14 @@ type SpawnLifecycleDependencies struct {
 	Wait func(context.Context, time.Duration) error
 	// LoadRateLimits loads the learned rate-limit history smart stagger reads.
 	LoadRateLimits func(dir string) (*ratelimit.RateLimitTracker, error)
+	// CAAMSeatResolver overrides the default tools.NewCAAMAdapter() seat
+	// ranker for deterministic tests. Nil uses session.PlanCAAMSeats.
+	CAAMSeatResolver session.CAAMSeatResolver
+	// HookExecutor overrides session.LoadSpawnHooks for deterministic tests.
+	HookExecutor *hooks.Executor
+	// GeminiPostSpawnSetup overrides session.RunGeminiPostSpawnSetup for
+	// deterministic tests. Nil defaults to session.RunGeminiPostSpawnSetup.
+	GeminiPostSpawnSetup func(context.Context, *config.Config, string) error
 }
 
 // SpawnAssignmentDependencies exposes assignment side-effect ports for focused
@@ -249,6 +267,11 @@ type SpawnOutput struct {
 	// or no agent was launched. Agent Mail being unavailable never fails the
 	// spawn; it shows up here as available=false with agents_failed.
 	AgentMail *spawnidentity.AgentMailSpawnStatus `json:"agent_mail,omitempty"`
+	// ProfileSet names the persona profile set when --spawn-profile-set was used.
+	ProfileSet string `json:"profile_set,omitempty"`
+	// SeatSkips lists panes that CAAM seat selection refused to launch when
+	// [integrations.caam] seat_selection = true (ntm#319, ORI parity with CLI).
+	SeatSkips []session.CAAMSeatSkip `json:"seat_skips,omitempty"`
 }
 
 func setSpawnCancellation(output *SpawnOutput, err error) {
@@ -447,7 +470,8 @@ func spawnLifecycleDeps(custom *SpawnLifecycleDependencies) SpawnLifecycleDepend
 		Wait: func(ctx context.Context, delay time.Duration) error {
 			return dispatchsvc.TimerPacer{}.Wait(ctx, dispatchsvc.Pace{Delay: delay})
 		},
-		LoadRateLimits: loadSpawnRateLimits,
+		LoadRateLimits:       loadSpawnRateLimits,
+		GeminiPostSpawnSetup: session.RunGeminiPostSpawnSetup,
 	}
 	if custom == nil {
 		return deps
@@ -493,6 +517,20 @@ func spawnLifecycleDeps(custom *SpawnLifecycleDependencies) SpawnLifecycleDepend
 	}
 	if custom.LoadRateLimits != nil {
 		deps.LoadRateLimits = custom.LoadRateLimits
+	}
+	if custom.CAAMSeatResolver != nil {
+		deps.CAAMSeatResolver = custom.CAAMSeatResolver
+	}
+	if custom.HookExecutor != nil {
+		deps.HookExecutor = custom.HookExecutor
+	}
+	if custom.GeminiPostSpawnSetup != nil {
+		deps.GeminiPostSpawnSetup = custom.GeminiPostSpawnSetup
+	} else if custom.CreateSession != nil {
+		// Mock-tmux unit tests inject CreateSession without live tmux panes;
+		// avoid hanging 30s polling real tmux for Gemini prompts unless the
+		// test supplies a GeminiPostSpawnSetup port.
+		deps.GeminiPostSpawnSetup = nil
 	}
 	return deps
 }
@@ -551,9 +589,12 @@ type SpawnedAgent struct {
 	// pane before launch; absent when registration is disabled or failed.
 	AgentMailName      string `json:"agent_mail_name,omitempty"`
 	Name               string `json:"name,omitempty"`
-	Type               string `json:"type"`
-	Variant            string `json:"variant,omitempty"`
-	Title              string `json:"title"`
+	Type                string `json:"type"`
+	Variant             string `json:"variant,omitempty"`
+	Persona             string `json:"persona,omitempty"`
+	PersonaPromptSource string `json:"persona_prompt_source,omitempty"`
+	WorktreePath        string `json:"worktree_path,omitempty"`
+	Title               string `json:"title"`
 	Ready              bool   `json:"ready"`
 	StartupMs          int64  `json:"startup_ms"`
 	CredentialIsolated *bool  `json:"credential_isolated,omitempty"`
@@ -825,6 +866,15 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 	opts = expanded
 	output.PresetUsed = opts.Preset
 
+	expandedPersonas, personaErr := expandSpawnPersonasAndProfileSet(opts, cfg)
+	if personaErr != nil {
+		output.Error = personaErr.Error()
+		output.RobotResponse = NewErrorResponse(personaErr, ErrCodeInvalidFlag, "Check --spawn-persona / --spawn-profile-set names and requested agent counts")
+		return output, nil
+	}
+	opts = expandedPersonas
+	output.ProfileSet = opts.ProfileSet
+
 	if staggerErr := validateSpawnStagger(opts); staggerErr != nil {
 		output.Error = staggerErr.Error()
 		output.RobotResponse = NewErrorResponse(staggerErr, ErrCodeInvalidFlag,
@@ -835,6 +885,11 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 	if validationErr != nil {
 		output.Error = validationErr.Error()
 		output.RobotResponse = NewErrorResponse(validationErr, ErrCodeInvalidFlag, "Use non-negative agent counts and a supported assignment strategy")
+		return output, nil
+	}
+	if wtOptErr := session.ValidateSpawnWorktreeOptions(opts.UseWorktrees, opts.WorktreeName, opts.totalAgentCount()); wtOptErr != nil {
+		output.Error = wtOptErr.Error()
+		output.RobotResponse = NewErrorResponse(wtOptErr, ErrCodeInvalidFlag, "Use --spawn-worktree-name only for single-agent spawns")
 		return output, nil
 	}
 	if opts.WindsurfCount > 0 {
@@ -1118,8 +1173,50 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		}
 	}
 
+	type launchRequest struct {
+		agentType string
+		number    int
+	}
+	launchRequests := make([]launchRequest, 0, totalAgents)
+	for _, spec := range opts.agentCounts() {
+		for i := 0; i < spec.count; i++ {
+			launchRequests = append(launchRequests, launchRequest{agentType: spec.agentType, number: i + 1})
+		}
+	}
+
+	// Build CAAM seat plan via shared ORI spawn engine (ntm#319, bd-rc2-track-2-harness-ori-3ydfr.2).
+	// Pinned panes (--spawn-persona, --spawn-profile-set, recipe persona) are never re-ranked.
+	seatCandidates := make([]session.CAAMSeatCandidate, 0, len(launchRequests))
+	for i, req := range launchRequests {
+		_, pinned := opts.slotPersonas[spawnRecipeKey{agentType: req.agentType, number: req.number}]
+		seatCandidates = append(seatCandidates, session.CAAMSeatCandidate{
+			Index:  i,
+			Type:   req.agentType,
+			Pinned: pinned,
+		})
+	}
+	var seatPlan *session.CAAMSeatPlan
+	if deps.CAAMSeatResolver != nil {
+		seatPlan = session.PlanCAAMSeatsWithResolver(ctx, cfg, dir, seatCandidates, deps.CAAMSeatResolver)
+	} else {
+		seatPlan = session.PlanCAAMSeats(ctx, cfg, dir, seatCandidates)
+	}
+
+	// Preflight isolated worktrees before hooks or session creation (ORI parity with CLI spawn).
+	worktreeAgentNames := make([]string, 0, len(launchRequests))
+	for _, req := range launchRequests {
+		worktreeAgentNames = append(worktreeAgentNames, session.WorktreeAgentName(req.agentType, req.number, opts.WorktreeName))
+	}
+
 	// Dry-run mode: show what would happen without executing
 	if opts.DryRun {
+		if opts.UseWorktrees {
+			if _, wtErr := session.PreflightSpawnWorktrees(ctx, dir, opts.Session, worktreeAgentNames); wtErr != nil {
+				output.Error = wtErr.Error()
+				output.RobotResponse = NewErrorResponse(wtErr, ErrCodeInvalidFlag, "Ensure working directory is a Git repository with at least one commit, or disable --spawn-worktrees")
+				return output, nil
+			}
+		}
 		output.DryRun = true
 		output.WouldCreate = []SpawnedAgent{}
 
@@ -1145,17 +1242,36 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			paneIdx++
 		}
 
-		for _, spec := range opts.agentCounts() {
-			for i := 0; i < spec.count; i++ {
-				pane := fmt.Sprintf("0.%d", paneIdx)
-				output.WouldCreate = append(output.WouldCreate, SpawnedAgent{
-					Pane:  pane,
-					Name:  dryRunNameMap.AssignNew(spec.agentType, pane),
-					Type:  spec.agentType,
-					Title: fmt.Sprintf("%s__%s_%d", opts.Session, agentTypeShort(spec.agentType), i+1),
+		for reqIdx, req := range launchRequests {
+			if reason, skipped := seatPlan.SkipReason(reqIdx); skipped {
+				decision, _ := seatPlan.For(reqIdx)
+				output.SeatSkips = append(output.SeatSkips, session.CAAMSeatSkip{
+					AgentType: agentTypeShort(req.agentType),
+					Provider:  decision.Provider,
+					Reason:    reason,
 				})
 				paneIdx++
+				continue
 			}
+			pane := fmt.Sprintf("0.%d", paneIdx)
+			personaName := ""
+			if p := opts.slotPersonas[spawnRecipeKey{agentType: req.agentType, number: req.number}]; p != nil {
+				personaName = p.Name
+			} else if seat, ok := seatPlan.Seat(reqIdx); ok {
+				personaName = seat.Persona
+			}
+			title := fmt.Sprintf("%s__%s_%d", opts.Session, agentTypeShort(req.agentType), req.number)
+			if personaName != "" {
+				title = tmux.FormatPaneName(opts.Session, agentTypeShort(req.agentType), req.number, personaName)
+			}
+			output.WouldCreate = append(output.WouldCreate, SpawnedAgent{
+				Pane:    pane,
+				Name:    dryRunNameMap.AssignNew(req.agentType, pane),
+				Type:    req.agentType,
+				Persona: personaName,
+				Title:   title,
+			})
+			paneIdx++
 		}
 
 		applySpawnRecipePreview(output.WouldCreate, recipeLaunches)
@@ -1191,10 +1307,66 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 	}
 
 	// Ensure directory exists (only for real spawns, not dry-run).
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		output.Error = fmt.Sprintf("creating directory: %v", err)
-		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Check directory permissions")
+	if !opts.UseWorktrees {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			output.Error = fmt.Sprintf("creating directory: %v", err)
+			output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Check directory permissions")
+			return output, nil
+		}
+	}
+
+	// Preflight git worktrees BEFORE running hooks so hooks never run on an invalid checkout.
+	wtMgr, wtPreflightErr := func() (*worktrees.WorktreeManager, error) {
+		if !opts.UseWorktrees {
+			return nil, nil
+		}
+		return session.PreflightSpawnWorktrees(ctx, dir, opts.Session, worktreeAgentNames)
+	}()
+	if wtPreflightErr != nil {
+		output.Error = wtPreflightErr.Error()
+		output.RobotResponse = NewErrorResponse(wtPreflightErr, ErrCodeInvalidFlag, "Ensure working directory is a Git repository with at least one commit, or disable --spawn-worktrees")
 		return output, nil
+	}
+
+	// Load and execute pre-spawn hooks via shared ORI spawn engine.
+	hookExec := deps.HookExecutor
+	if hookExec == nil {
+		var hookLoadErr error
+		hookExec, hookLoadErr = session.LoadSpawnHooks(opts.NoHooks)
+		if hookLoadErr != nil {
+			slog.Warn("[robot.spawn] could not load hooks config", "session", opts.Session, "error", hookLoadErr)
+		}
+	}
+	hookEnv := session.SpawnHookEnv(session.SpawnHookCounts{
+		CC: opts.CCCount, Cod: opts.CodCount, Gmi: opts.GmiCount, Agy: opts.AgyCount,
+		Grok: opts.GrokCount, Cursor: opts.CursorCount, Windsurf: opts.WindsurfCount,
+		Aider: opts.AiderCount, Opencode: opts.OcCount, Omp: opts.OmpCount,
+		Ollama: opts.OllamaCount, Total: totalAgents,
+	})
+	if _, hookErr := session.RunPreSpawnHooks(ctx, hookExec, opts.Session, dir, hookEnv); hookErr != nil {
+		if cancelErr := spawnCancellationError(ctx, hookErr); cancelErr != nil {
+			setSpawnCancellation(output, cancelErr)
+		} else {
+			output.Error = hookErr.Error()
+			output.RobotResponse = NewErrorResponse(hookErr, ErrCodeInternalError, "Fix failing pre-spawn hook or pass --spawn-no-hooks")
+		}
+		return output, nil
+	}
+
+	// Provision and revalidate isolated worktrees before creating/mutating tmux session.
+	var worktreePlan *session.SpawnWorktreePlan
+	if opts.UseWorktrees {
+		var provErr error
+		worktreePlan, _, provErr = session.ProvisionSpawnWorktrees(ctx, wtMgr, worktreeAgentNames)
+		if provErr != nil {
+			if cancelErr := spawnCancellationError(ctx, provErr); cancelErr != nil {
+				setSpawnCancellation(output, cancelErr)
+			} else {
+				output.Error = provErr.Error()
+				output.RobotResponse = NewErrorResponse(provErr, ErrCodeInternalError, "Inspect git worktree state and retry")
+			}
+			return output, nil
+		}
 	}
 
 	// Create session if it doesn't exist.
@@ -1335,17 +1507,6 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		}
 	}
 
-	type launchRequest struct {
-		agentType string
-		number    int
-	}
-	launchRequests := make([]launchRequest, 0, totalAgents)
-	for _, spec := range opts.agentCounts() {
-		for i := 0; i < spec.count; i++ {
-			launchRequests = append(launchRequests, launchRequest{agentType: spec.agentType, number: i + 1})
-		}
-	}
-
 	launchErrors := make([]error, 0)
 	// Map each launched agent's envelope pane address ("w.p") to the tmux
 	// pane ID ("%N"). The resilience monitor matches manifest entries against
@@ -1369,10 +1530,113 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			return output, nil
 		}
 		pane := panes[startIdx+i]
+
+		// CAAM seat selection skip (shared ORI spawn engine, ntm#319): never
+		// fall through to a static pin when the pool is unanswerable or empty.
+		if reason, skipped := seatPlan.SkipReason(i); skipped {
+			decision, _ := seatPlan.For(i)
+			output.SeatSkips = append(output.SeatSkips, session.CAAMSeatSkip{
+				AgentType: agentTypeShort(request.agentType),
+				Provider:  decision.Provider,
+				Reason:    reason,
+			})
+			slog.Warn("[robot.spawn] seat selection skipped pane",
+				"session", opts.Session,
+				"pane", pane.ID,
+				"harness", request.agentType,
+				"provider", decision.Provider,
+				"reason", reason,
+			)
+			continue
+		}
+
 		command, model := agentCommands[request.agentType], launchModels[request.agentType]
 		var environment map[string]string
-		if spec, ok := recipeLaunches[spawnRecipeKey(request)]; ok {
+		key := spawnRecipeKey(request)
+		if spec, ok := recipeLaunches[key]; ok {
 			command, model, environment = spec.command, spec.model, spec.environment
+		}
+
+		// Resolve persona pin (--spawn-persona, --spawn-profile-set, recipe persona)
+		// or CAAM-selected seat persona via the shared ORI spawn engine.
+		personaName := ""
+		systemPromptFile := ""
+		modelRequested := strings.TrimSpace(model.ModelAlias) != ""
+		var activePersona *persona.Persona
+		if pinned := opts.slotPersonas[key]; pinned != nil {
+			personaName = pinned.Name
+			activePersona = pinned
+		} else if seat, ok := seatPlan.Seat(i); ok {
+			personaName = seat.Persona
+			if seat.Registered != nil {
+				activePersona = seat.Registered
+			} else if seat.TypeMismatch {
+				slog.Warn(session.CAAMSeatTypeMismatchMessage(request.agentType, seat.Persona),
+					"session", opts.Session,
+					"pane", pane.ID,
+					"harness", request.agentType,
+				)
+			}
+		}
+		if activePersona != nil {
+			if pinned := opts.slotPersonas[key]; pinned != nil {
+				if m := strings.TrimSpace(pinned.Model); m != "" && !modelRequested {
+					modelRequested = true
+					model.ModelAlias = m
+					model.Model = m
+					if cfg != nil {
+						if resolved := cfg.Models.GetModelName(request.agentType, m); resolved != "" {
+							model.Model = resolved
+						}
+					}
+				}
+			} else if m, ok := session.CAAMSeatModelOverride(activePersona, modelRequested); ok {
+				modelRequested = true
+				model.ModelAlias = m
+				model.Model = m
+				if cfg != nil {
+					if resolved := cfg.Models.GetModelName(request.agentType, m); resolved != "" {
+						model.Model = resolved
+					}
+				}
+			}
+			if effort := strings.TrimSpace(activePersona.ReasoningEffort); effort != "" && model.ReasoningEffort == "" {
+				model.ReasoningEffort = effort
+			}
+			promptFile, promptErr := session.PrepareRequiredPersonaSystemPrompt(activePersona, dir)
+			if promptErr != nil {
+				failed := SpawnedAgent{
+					Pane:    fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index),
+					PaneID:  pane.ID,
+					Type:    request.agentType,
+					Persona: personaName,
+					Title:   fmt.Sprintf("%s__%s_%d", opts.Session, agentTypeShort(request.agentType), request.number),
+					Name:    nameMap.AssignNew(request.agentType, fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index)),
+					Error:   promptErr.Error(),
+				}
+				output.Agents = append(output.Agents, failed)
+				launchErrors = append(launchErrors, fmt.Errorf("%s agent %d: %w", request.agentType, request.number, promptErr))
+				continue
+			}
+			systemPromptFile = promptFile
+		}
+		if personaName != "" || systemPromptFile != "" {
+			if rendered, renderErr := renderAgentCommandForSlot(cfg, opts, request.agentType, request.number, dir, model, modelRequested, personaName, systemPromptFile); renderErr != nil {
+				failed := SpawnedAgent{
+					Pane:    fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index),
+					PaneID:  pane.ID,
+					Type:    request.agentType,
+					Persona: personaName,
+					Title:   fmt.Sprintf("%s__%s_%d", opts.Session, agentTypeShort(request.agentType), request.number),
+					Name:    nameMap.AssignNew(request.agentType, fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index)),
+					Error:   renderErr.Error(),
+				}
+				output.Agents = append(output.Agents, failed)
+				launchErrors = append(launchErrors, fmt.Errorf("%s agent %d: %w", request.agentType, request.number, renderErr))
+				continue
+			} else if rendered != "" {
+				command = rendered
+			}
 		}
 		if agentsession.ResumeProvider(request.agentType) == "pi" {
 			command = agentsession.PinPiLaunchSession(command)
@@ -1399,6 +1663,40 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			}
 		}
 		title := fmt.Sprintf("%s__%s_%d", opts.Session, agentTypeShort(request.agentType), request.number)
+		if personaName != "" {
+			title = tmux.FormatPaneName(opts.Session, agentTypeShort(request.agentType), request.number, personaName)
+		}
+
+		// Resolve isolated worktree directory at the launch boundary (ORI parity with CLI).
+		launchDir := dir
+		paneDir := ""
+		agentMailProject := ""
+		if opts.UseWorktrees {
+			agentName := session.WorktreeAgentName(request.agentType, request.number, opts.WorktreeName)
+			resolvedDir, wtErr := worktreePlan.ResolveLaunchDir(ctx, agentName)
+			if wtErr != nil {
+				failed := SpawnedAgent{
+					Pane:    fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index),
+					PaneID:  pane.ID,
+					Type:    request.agentType,
+					Persona: personaName,
+					Title:   title,
+					Name:    nameMap.AssignNew(request.agentType, fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index)),
+					Error:   wtErr.Error(),
+				}
+				output.Agents = append(output.Agents, failed)
+				launchErrors = append(launchErrors, fmt.Errorf("%s agent %d: %w", request.agentType, request.number, wtErr))
+				continue
+			}
+			launchDir = resolvedDir
+			paneDir = resolvedDir
+			var injected bool
+			environment, injected = session.ApplyWorktreeAgentMailProjectEnv(environment, nil, dir)
+			if injected {
+				agentMailProject = dir
+			}
+		}
+
 		// Publish this pane's Agent Mail identity BEFORE its agent command is
 		// sent, exactly as `ntm spawn` does (gh#255): a process resolving its
 		// identity during startup reads its assigned name, and reservation-
@@ -1410,6 +1708,7 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 				PaneIndex:     pane.Index,
 				PaneID:        pane.ID,
 				PaneTitle:     title,
+				PaneDir:       paneDir,
 				AgentType:     agentTypeShort(request.agentType),
 				Model:         model.ModelAlias,
 				ResolvedModel: model.Model,
@@ -1417,11 +1716,18 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			output.AgentMail = identity.Status()
 		}
 		launchCtx := context.WithValue(ctx, spawnLaunchModelContextKey{}, model)
+		if personaName != "" || systemPromptFile != "" || agentMailProject != "" {
+			launchCtx = context.WithValue(launchCtx, spawnLaunchPersonaContextKey{}, spawnLaunchPersona{
+				personaName:      personaName,
+				systemPromptFile: systemPromptFile,
+				agentMailProject: agentMailProject,
+			})
+		}
 		if len(environment) > 0 {
 			launchCtx = context.WithValue(launchCtx, spawnPluginEnvironmentContextKey{}, environment)
 		}
 		agent, launchErr := launch(
-			launchCtx, pane, opts.Session, request.agentType, request.number, dir, command,
+			launchCtx, pane, opts.Session, request.agentType, request.number, launchDir, command,
 		)
 		if agent.Pane == "" {
 			agent.Pane = fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index)
@@ -1429,11 +1735,20 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		if agent.Type == "" {
 			agent.Type = request.agentType
 		}
-		if agent.Title == "" {
+		if agent.Title == "" || personaName != "" {
 			agent.Title = title
 		}
 		if agent.Variant == "" {
 			agent.Variant = model.ModelAlias
+		}
+		if personaName != "" {
+			agent.Persona = personaName
+		}
+		if systemPromptFile != "" {
+			agent.PersonaPromptSource = systemPromptFile
+		}
+		if opts.UseWorktrees {
+			agent.WorktreePath = launchDir
 		}
 		monitorCommands[agent.Pane] = command
 		agent.Name = nameMap.AssignNew(request.agentType, agent.Pane)
@@ -1457,6 +1772,18 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		}
 		if launchErr != nil {
 			launchErrors = append(launchErrors, fmt.Errorf("%s agent %d: %w", request.agentType, request.number, launchErr))
+			continue
+		}
+		// Gemini post-spawn setup via shared ORI spawn engine (auto-select Pro model).
+		if request.agentType == "gemini" && cfg != nil && cfg.GeminiSetup.AutoSelectProModel && deps.GeminiPostSpawnSetup != nil {
+			if err := deps.GeminiPostSpawnSetup(ctx, cfg, pane.ID); err != nil {
+				slog.Warn("[robot.spawn] gemini post-spawn setup failed",
+					"session", opts.Session,
+					"pane", pane.ID,
+					"harness", request.agentType,
+					"error", err,
+				)
+			}
 		}
 	}
 
@@ -1559,6 +1886,23 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 	if err := ctx.Err(); err != nil {
 		setSpawnCancellation(output, err)
 		return output, nil
+	}
+
+	// Run post-spawn hooks via shared ORI spawn engine (non-fatal warning on failure).
+	if hookExec != nil && hookExec.HasHooksForEvent(hooks.EventPostSpawn) {
+		paneTitles := make([]string, 0, len(output.Agents))
+		for _, a := range output.Agents {
+			if a.Title != "" {
+				paneTitles = append(paneTitles, a.Title)
+			}
+		}
+		if _, postErr := session.RunPostSpawnHooks(ctx, hookExec, opts.Session, dir, hookEnv, len(output.Agents), paneTitles); postErr != nil {
+			slog.Warn("[robot.spawn] post-spawn hook failed", "session", opts.Session, "error", postErr)
+		}
+		if err := ctx.Err(); err != nil {
+			setSpawnCancellation(output, err)
+			return output, nil
+		}
 	}
 
 	output.TotalStartupMs = time.Since(startTime).Milliseconds()
@@ -1709,16 +2053,22 @@ func launchAgent(ctx context.Context, pane tmux.Pane, session, agentType string,
 
 // launchAgentWithModel launches a single agent, recording model in the pane's
 // launch specification.
-func launchAgentWithModel(ctx context.Context, pane tmux.Pane, session, agentType string, num int, dir, command string, model spawnLaunchModel) (SpawnedAgent, error) {
+func launchAgentWithModel(ctx context.Context, pane tmux.Pane, sessionName, agentType string, num int, dir, command string, model spawnLaunchModel) (SpawnedAgent, error) {
 	startTime := time.Now()
+	personaMeta := spawnLaunchPersonaFromContext(ctx)
 
-	title := fmt.Sprintf("%s__%s_%d", session, agentTypeShort(agentType), num)
+	title := fmt.Sprintf("%s__%s_%d", sessionName, agentTypeShort(agentType), num)
+	if personaMeta.personaName != "" {
+		title = tmux.FormatPaneName(sessionName, agentTypeShort(agentType), num, personaMeta.personaName)
+	}
 	agent := SpawnedAgent{
-		Pane:    fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index),
-		Type:    agentType,
-		Variant: model.ModelAlias,
-		Title:   title,
-		Ready:   false,
+		Pane:                fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index),
+		Type:                agentType,
+		Variant:             model.ModelAlias,
+		Persona:             personaMeta.personaName,
+		PersonaPromptSource: personaMeta.systemPromptFile,
+		Title:               title,
+		Ready:               false,
 	}
 	if err := ctx.Err(); err != nil {
 		agent.Error = fmt.Sprintf("launch canceled: %v", err)
@@ -1740,12 +2090,12 @@ func launchAgentWithModel(ctx context.Context, pane tmux.Pane, session, agentTyp
 	// caller planned with (settle-aware, so a pane created moments ago is not
 	// refused for its shell's startup children), then from a fresh tmux read
 	// taken right before the pane is mutated (#291).
-	if err := tmux.ValidatePaneLaunchBaselineSettledContext(ctx, session, pane); err != nil {
+	if err := tmux.ValidatePaneLaunchBaselineSettledContext(ctx, sessionName, pane); err != nil {
 		agent.Error = fmt.Sprintf("launching: %v", err)
 		agent.StartupMs = time.Since(startTime).Milliseconds()
 		return agent, fmt.Errorf("launching %s: %w", agentType, err)
 	}
-	if err := tmux.ValidatePaneLaunchBaselineLiveContext(ctx, session, pane.ID); err != nil {
+	if err := tmux.ValidatePaneLaunchBaselineLiveContext(ctx, sessionName, pane.ID); err != nil {
 		agent.Error = fmt.Sprintf("launching: %v", err)
 		agent.StartupMs = time.Since(startTime).Milliseconds()
 		return agent, fmt.Errorf("launching %s: %w", agentType, err)
@@ -1779,12 +2129,15 @@ func launchAgentWithModel(ctx context.Context, pane tmux.Pane, session, agentTyp
 		return agent, fmt.Errorf("launch canceled: %w", err)
 	}
 	launchSpec := tmux.AgentLaunchSpec{
-		Version:         tmux.AgentLaunchSpecVersion,
-		AgentType:       tmux.AgentType(agentType).Canonical(),
-		Command:         safeCommand,
-		Model:           model.Model,
-		ModelAlias:      model.ModelAlias,
-		ReasoningEffort: model.ReasoningEffort,
+		Version:          tmux.AgentLaunchSpecVersion,
+		AgentType:        tmux.AgentType(agentType).Canonical(),
+		Command:          safeCommand,
+		Model:            model.Model,
+		ModelAlias:       model.ModelAlias,
+		Persona:          personaMeta.personaName,
+		ReasoningEffort:  model.ReasoningEffort,
+		SystemPromptFile: personaMeta.systemPromptFile,
+		AgentMailProject: personaMeta.agentMailProject,
 	}
 	for name := range environment {
 		launchSpec.OmittedEnv = append(launchSpec.OmittedEnv, name)
@@ -1814,7 +2167,7 @@ func launchAgentWithModel(ctx context.Context, pane tmux.Pane, session, agentTyp
 	// Every agent type: the launch only counts once a stable non-shell process
 	// owns the pane, because the prompt that follows is refused while the
 	// foreground is still a bare shell (PANE_AGENT_DEAD).
-	if _, err := tmux.WaitForPaneProcessStartContext(ctx, session, pane.ID); err != nil {
+	if _, err := tmux.WaitForPaneProcessStartContext(ctx, sessionName, pane.ID); err != nil {
 		agent.Error = fmt.Sprintf("launching: stable process did not start: %v", err)
 		agent.StartupMs = time.Since(startTime).Milliseconds()
 		return agent, fmt.Errorf("launching %s: stable process did not start: %w", agentType, err)
@@ -2093,7 +2446,7 @@ func spawnModelHints(cfg *config.Config, opts SpawnOptions) []string {
 	return hints
 }
 
-func getAgentCommandsWithOverrides(cfg *config.Config, opts SpawnOptions) (map[string]string, error) {
+func agentCommandTemplates(cfg *config.Config) map[string]string {
 	defaultTmpls := config.DefaultAgentTemplates()
 	defaults := map[string]string{
 		"claude":      "claude",
@@ -2108,7 +2461,6 @@ func getAgentCommandsWithOverrides(cfg *config.Config, opts SpawnOptions) (map[s
 		"cursor":      defaultTmpls.Cursor,
 		"windsurf":    config.DefaultWindsurfCommand,
 	}
-
 	if cfg != nil && cfg.Agents.Claude != "" {
 		defaults["claude"] = cfg.Agents.Claude
 	}
@@ -2142,6 +2494,69 @@ func getAgentCommandsWithOverrides(cfg *config.Config, opts SpawnOptions) (map[s
 	if cfg != nil && cfg.Agents.Windsurf != "" {
 		defaults["windsurf"] = cfg.Agents.Windsurf
 	}
+	return defaults
+}
+
+func renderAgentCommandForSlot(
+	cfg *config.Config,
+	opts SpawnOptions,
+	agentType string,
+	paneIndex int,
+	dir string,
+	model spawnLaunchModel,
+	modelRequested bool,
+	personaName string,
+	systemPromptFile string,
+) (string, error) {
+	tmpls := agentCommandTemplates(cfg)
+	cmdTemplate, ok := tmpls[agentType]
+	if !ok {
+		if plugin, exists := opts.pluginDefinitions[agentType]; exists {
+			cmdTemplate = plugin.Command
+		} else {
+			return "", nil
+		}
+	}
+	// When no explicit template is configured and a system prompt is required,
+	// fall back to the default template with {{.SystemPromptFile}} support.
+	if cfg == nil {
+		defaultTmpls := config.DefaultAgentTemplates()
+		switch agentType {
+		case "claude":
+			cmdTemplate = defaultTmpls.Claude
+		case "codex":
+			cmdTemplate = defaultTmpls.Codex
+		case "gemini":
+			cmdTemplate = defaultTmpls.Gemini
+		}
+	}
+	vars := config.AgentTemplateVars{
+		AgentType:        agentType,
+		Model:            model.Model,
+		ModelAlias:       model.ModelAlias,
+		ModelRequested:   modelRequested,
+		ReasoningEffort:  model.ReasoningEffort,
+		SessionName:      opts.Session,
+		PaneIndex:        paneIndex,
+		ProjectDir:       dir,
+		PersonaName:      personaName,
+		SystemPromptFile: systemPromptFile,
+	}
+	if agentType == "claude" {
+		vars.ClaudeSettings = policy.ClaudeAgentLaunchSettings(cfg).Settings
+	}
+	rendered, err := config.GenerateAgentCommand(cmdTemplate, vars)
+	if err != nil {
+		if modelRequested || model.ReasoningEffort != "" {
+			return "", fmt.Errorf("rendering %s launch command: %w", agentType, err)
+		}
+		return "", nil
+	}
+	return rendered, nil
+}
+
+func getAgentCommandsWithOverrides(cfg *config.Config, opts SpawnOptions) (map[string]string, error) {
+	defaults := agentCommandTemplates(cfg)
 
 	launchModels := spawnLaunchModels(cfg, opts)
 	// Claude agents carry ntm's PreToolUse hooks (safety policy, dcg, rch)

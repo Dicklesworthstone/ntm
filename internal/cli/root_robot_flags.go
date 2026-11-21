@@ -206,10 +206,15 @@ var (
 	robotSpawnNames      string             // custom agent names (comma-separated)
 	robotSpawnLabel      string             // goal label for multi-session support
 	// Initial prompt + thundering-herd pacing for --robot-spawn
-	robotSpawnPrompt       string // initial prompt delivered to every agent after readiness
-	robotSpawnPromptFile   string // file (or '-' for stdin) holding the initial prompt
-	robotSpawnStaggerMode  string // none, fixed, smart ("" = [spawn] stagger_mode)
-	robotSpawnStaggerDelay string // fixed-mode interval ("" = [spawn] stagger_delay)
+	robotSpawnPrompt       string   // initial prompt delivered to every agent after readiness
+	robotSpawnPromptFile   string   // file (or '-' for stdin) holding the initial prompt
+	robotSpawnStaggerMode  string   // none, fixed, smart ("" = [spawn] stagger_mode)
+	robotSpawnStaggerDelay string   // fixed-mode interval ("" = [spawn] stagger_delay)
+	robotSpawnWorktrees    bool     // provision isolated git worktrees per agent
+	robotSpawnWorktreeName string   // single-agent worktree directory name override
+	robotSpawnPersonas     []string // persona specs ("name" or "name:count")
+	robotSpawnProfileSet   string   // predefined persona profile set name
+	robotSpawnNoHooks      bool     // disable pre-spawn / post-spawn command hooks
 
 	// Robot-agent-names flag for querying agent name mappings
 	robotAgentNames string // session name for --robot-agent-names
@@ -964,6 +969,11 @@ func registerRobotFlags() {
 	rootCmd.Flags().StringVar(&robotSpawnPromptFile, "spawn-prompt-file", "", "Read the --spawn-prompt text from a file, or stdin with '-'. Use with --robot-spawn")
 	rootCmd.Flags().StringVar(&robotSpawnStaggerMode, "spawn-stagger-mode", "", "Pace prompt delivery between agents (thundering-herd prevention): none, fixed, or smart (learned rate-limit delay). Default: [spawn] stagger_mode, else none. Use with --robot-spawn")
 	rootCmd.Flags().StringVar(&robotSpawnStaggerDelay, "spawn-stagger-delay", "", "Interval between consecutive agents' prompts for --spawn-stagger-mode=fixed, 0-5m (e.g. 20s). Default: [spawn] stagger_delay, else 30s. Use with --robot-spawn")
+	rootCmd.Flags().BoolVar(&robotSpawnWorktrees, "spawn-worktrees", false, "Enable isolated git worktree provisioning per spawned agent (shared ORI engine with ntm spawn --worktrees). Use with --robot-spawn")
+	rootCmd.Flags().StringVar(&robotSpawnWorktreeName, "spawn-worktree-name", "", "Override auto-derived worktree directory name for single-agent --robot-spawn --spawn-worktrees")
+	rootCmd.Flags().StringSliceVar(&robotSpawnPersonas, "spawn-persona", nil, "Persona-defined agents to spawn (name or name:count, repeatable/comma-separated). Use with --robot-spawn")
+	rootCmd.Flags().StringVar(&robotSpawnProfileSet, "spawn-profile-set", "", "Predefined persona profile set (e.g. backend-team, review-team). Use with --robot-spawn")
+	rootCmd.Flags().BoolVar(&robotSpawnNoHooks, "spawn-no-hooks", false, "Disable pre-spawn and post-spawn command hooks. Use with --robot-spawn")
 
 	// Robot-agent-names flag for querying agent name mappings
 	rootCmd.Flags().StringVar(&robotAgentNames, "robot-agent-names", "", "Get agent name mappings for a session (JSON). Names are generated using NATO phonetic alphabet. Example: ntm --robot-agent-names=myproject")
@@ -1678,9 +1688,16 @@ func registerConfiguredRobotPluginSpawnFlags() {
 
 func registerRobotPluginSpawnFlags(cmd *cobra.Command, loaded []plugins.AgentPlugin) map[string]*string {
 	values := make(map[string]*string)
+	isReservedBuiltin := func(raw string) bool {
+		t := agent.AgentType(raw)
+		// pi is registered in the declarative capability matrix AND ships via
+		// ShippedPiPlugin (overridable by agents/pi.toml), so allow --spawn-pi
+		// to bind through the plugin spawn flag path.
+		return (t.IsValid() && t.Canonical() != agent.AgentTypePi) || raw == "unknown"
+	}
 	for _, plugin := range loaded {
 		name := strings.ToLower(strings.TrimSpace(plugin.Name))
-		if agent.AgentType(name).IsValid() || name == "unknown" {
+		if isReservedBuiltin(name) {
 			continue
 		}
 		if _, duplicate := values[name]; duplicate {
@@ -1690,7 +1707,7 @@ func registerRobotPluginSpawnFlags(cmd *cobra.Command, loaded []plugins.AgentPlu
 		registered := false
 		for _, raw := range []string{name, plugin.Alias} {
 			alias := strings.ToLower(strings.TrimSpace(raw))
-			if alias == "" || agent.AgentType(alias).IsValid() || alias == "unknown" {
+			if alias == "" || isReservedBuiltin(alias) {
 				continue
 			}
 			flag := "spawn-" + alias
