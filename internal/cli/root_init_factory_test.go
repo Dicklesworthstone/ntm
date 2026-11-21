@@ -10,8 +10,6 @@ import (
 // schemas, and kernel commands previously wired via 32 scattered init()
 // functions are deterministically registered through initRootFlagsAndSubcommands().
 func TestCLIExplicitFactoryInitialization(t *testing.T) {
-	t.Parallel()
-
 	// Every previously init()-registered subcommand must exist on rootCmd.
 	wantSubcommands := []string{
 		"attention",

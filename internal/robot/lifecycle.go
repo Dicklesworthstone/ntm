@@ -322,21 +322,22 @@ func waitForLifecycleExit(ctx context.Context, session string, pane tmux.Pane, o
 		pollInterval = lifecyclePollInterval
 	}
 	settleDeadline := time.Now().Add(timeout)
+	probeTimeout := timeout + 5*time.Second
+	if probeTimeout < 5*time.Second {
+		probeTimeout = 5 * time.Second
+	}
 	var observation lifecycleObservation
 	confirmedExit := false
 	for {
-		// A composite observation needs several bounded reads (tmux + ps).
-		// Keep the settling loop deadline independent from ctx so a read
-		// started before settleDeadline is not artificially aborted mid-ps
-		// and misclassified as VerificationFailed, while genuine caller
-		// cancellation or hung probes still cancel through ctx immediately.
-		if observation.paneState != "" && time.Now().After(settleDeadline) {
-			return observation
-		}
+		// Bound each composite tmux+ps observation so a wedged tmux server or
+		// SSH transport cannot hang forever when caller ctx has no deadline,
+		// while giving each read enough headroom not to clip mid-ps.
 		if deadline, ok := ctx.Deadline(); ok && observation.paneState != "" && time.Until(deadline) <= pollInterval {
 			return observation
 		}
-		observation = observeLifecycle(ctx, session, pane, original)
+		probeCtx, probeCancel := context.WithTimeout(ctx, probeTimeout)
+		observation = observeLifecycle(probeCtx, session, pane, original)
+		probeCancel()
 		confirmedExit = confirmedExit || observation.processState == lifecycleProcessExited
 		if confirmedExit {
 			observation.processState = lifecycleProcessExited
@@ -354,10 +355,12 @@ func waitForLifecycleExit(ctx context.Context, session string, pane tmux.Pane, o
 		if remaining < sleepFor {
 			sleepFor = remaining
 		}
+		timer := time.NewTimer(sleepFor)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return observation
-		case <-time.After(sleepFor):
+		case <-timer.C:
 		}
 	}
 }
@@ -730,7 +733,7 @@ func relaunchAgentCLI(ctx context.Context, opts LifecycleOptions, pane tmux.Pane
 	// Both a lost send response and a pane disappearing during boot require
 	// fresh readback; never retain a pre-send shell_preserved:true by default.
 	defer func() {
-		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reconcileTimeout)
+		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reconcileTimeout+5*time.Second)
 		defer cancel()
 		observation := observeLifecycle(readCtx, session, pane, original)
 		applyLifecycleObservation(result, observation)
@@ -1378,7 +1381,7 @@ func killProcessesGracefully(ctx context.Context, original map[int]process.Snaps
 		if len(original) == 0 {
 			return
 		}
-		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reconcileTimeout)
+		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reconcileTimeout+5*time.Second)
 		defer cancel()
 		snapshot, err := process.SnapshotContext(readCtx)
 		if err != nil {

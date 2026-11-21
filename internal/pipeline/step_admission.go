@@ -170,7 +170,7 @@ type deferredAdmissionState struct {
 }
 
 func (e *Executor) canDeferAdmissionPersistForCommand(step *Step) bool {
-	if step == nil || step.Command == "" || step.When != "" || e.config.DryRun {
+	if step == nil || stepKind(step) != StepKindCommand || step.When != "" || e.config.DryRun {
 		return false
 	}
 	if e.checkpointFailure() != nil {

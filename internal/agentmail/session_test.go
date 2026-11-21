@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -1065,5 +1066,77 @@ func TestRegisterSessionAgentFailsClosedWhenProjectEnsureFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ensuring project") {
 		t.Fatalf("error should identify the failed probe, got %v", err)
+	}
+}
+
+func TestHydrateClientTokensForProjectLargeDirSlugPrecedenceAndCrossProcessFreshness(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	projectKey := filepath.Join(home, "work", "my-project")
+	base := getSessionsBaseDir()
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatalf("mkdir base: %v", err)
+	}
+	// Create >= 64 session dirs to trigger the cached bulk scan path.
+	for i := 0; i < tokenHydrationCacheMinDirs+2; i++ {
+		dir := filepath.Join(base, fmt.Sprintf("sess-%03d", i))
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("mkdir session %d: %v", i, err)
+		}
+	}
+
+	// Session 0 has BOTH a legacy slug/direct file with stale token AND a primary
+	// slug file whose tokens were intentionally cleared; primary must win and NOT
+	// resurrect the stale legacy token.
+	slugs := projectSlugCandidates(projectKey)
+	if len(slugs) == 0 {
+		t.Fatal("expected at least one project slug candidate")
+	}
+	primarySlug := slugs[0]
+	sess0 := filepath.Join(base, "sess-000")
+	writeReg := func(path string, tokens map[string]string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+		raw, err := json.Marshal(SessionAgentRegistry{
+			SessionName:        "sess-000",
+			ProjectKey:         projectKey,
+			RegistrationTokens: tokens,
+		})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	// Alphabetically earlier bogus slug + direct legacy file with stale token:
+	writeReg(filepath.Join(sess0, "000-stale-slug", "agent_registry.json"), map[string]string{"OldAgent": "tok-stale-sub"})
+	writeReg(filepath.Join(sess0, "agent_registry.json"), map[string]string{"OldAgent": "tok-stale-direct"})
+	// Primary slug with intentionally empty registration_tokens:
+	primaryPath := filepath.Join(sess0, primarySlug, "agent_registry.json")
+	writeReg(primaryPath, map[string]string{})
+
+	client1 := NewClient(WithProjectKey(projectKey))
+	HydrateClientTokensForProject(client1, projectKey)
+	if tok := client1.RegistrationToken(projectKey, "OldAgent"); tok != "" {
+		t.Fatalf("cleared primary registry resurrected stale token %q", tok)
+	}
+
+	// Simulate an external process updating the primary registry in-place (without
+	// bumping in-process tokenHydrationWriteGen or base mtime).
+	time.Sleep(15 * time.Millisecond)
+	writeReg(primaryPath, map[string]string{"FreshAgent": "tok-fresh-primary"})
+
+	client2 := NewClient(WithProjectKey(projectKey))
+	HydrateClientTokensForProject(client2, projectKey)
+	if got := client2.RegistrationToken(projectKey, "FreshAgent"); got != "tok-fresh-primary" {
+		t.Fatalf("cross-process primary registry write missed by cache: got %q, want tok-fresh-primary", got)
+	}
+	if tok := client2.RegistrationToken(projectKey, "OldAgent"); tok != "" {
+		t.Fatalf("stale slug token leaked alongside primary: got %q", tok)
 	}
 }

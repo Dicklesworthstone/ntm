@@ -311,8 +311,11 @@ func sessionRecoveryCommandFixture(t *testing.T) string {
 	t.Setenv("HOME", dir)
 	logPath := filepath.Join(dir, "tmux-calls")
 	t.Setenv("NTM_SESSION_CLI_LOG", logPath)
+	t.Setenv("NTM_SESSION_CLI_DIR", dir)
 	t.Setenv("NTM_SESSION_CLI_FAIL_PANE", "")
 	t.Setenv("NTM_SESSION_CLI_AGENT_TYPE", "cod")
+	t.Setenv("NTM_SESSION_CLI_RACE_PANE", "")
+	t.Setenv("NTM_SESSION_CLI_RACE_PHASE", "")
 	bin := filepath.Join(dir, "tmux")
 	const script = `#!/bin/sh
 printf '%s\n' "$*" >> "$NTM_SESSION_CLI_LOG"
@@ -323,10 +326,65 @@ case "$1" in
     for i in 0 1; do
       printf '%%%s_NTM_SEP_%s_NTM_SEP__NTM_SEP_bash_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_9999998_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$i" "$i" "$NTM_SESSION_CLI_AGENT_TYPE"
     done ;;
+  display-message)
+    if [ "$5" = '[#{@ntm_agent_type}]' ]; then
+      printf '[%s]\n' "$NTM_SESSION_CLI_AGENT_TYPE"
+    fi ;;
+  if-shell)
+    target="$4"
+    cond="$5"
+    true_cmd="$6"
+    case "$cond" in
+      *'#{==:#{pane_pid},'*'#{==:#{pane_dead},0}'*'#{==:#{pane_current_command},bash}'*) ;;
+      *)
+        echo "fixture missing atomic pane guard condition: $cond" >&2
+        exit 99 ;;
+    esac
+    phase="other"
+    case "$true_cmd" in
+      *'@ntm_agent_launch'*) phase="metadata" ;;
+      *"'send-keys'"*"'Enter'") phase="enter" ;;
+      *'send-keys'*|*'paste-buffer'*) phase="input" ;;
+    esac
+    if [ -n "$NTM_SESSION_CLI_RACE_PANE" ] && [ "$target" = "$NTM_SESSION_CLI_RACE_PANE" ] && [ "$phase" = "$NTM_SESSION_CLI_RACE_PHASE" ]; then
+      printf 'ntm_pane_identity_changed\n'
+      exit 0
+    fi
+    eval "exec \"\$0\" $true_cmd" ;;
+  load-buffer)
+    cat > "$NTM_SESSION_CLI_DIR/buf-$3" ;;
+  paste-buffer)
+    pane="$7"
+    buf="$5"
+    if [ "$pane" = "$NTM_SESSION_CLI_FAIL_PANE" ]; then
+      echo 'fixture pane dispatch failed' >&2
+      exit 2
+    fi
+    if [ -f "$NTM_SESSION_CLI_DIR/buf-$buf" ]; then
+      payload=$(cat "$NTM_SESSION_CLI_DIR/buf-$buf")
+      printf 'pasted %s %s\n' "$pane" "$payload" >> "$NTM_SESSION_CLI_LOG"
+      case "$payload" in
+        '/bin/sh -p '*)
+          printf '%s\n' "$payload" > "$NTM_SESSION_CLI_DIR/handoff-cmd-$pane" ;;
+      esac
+    fi ;;
+  delete-buffer) ;;
   send-keys)
     if [ "$3" = "$NTM_SESSION_CLI_FAIL_PANE" ]; then
       echo 'fixture pane dispatch failed' >&2
       exit 2
+    fi
+    if [ "$4" = '-l' ] && [ "$5" = '--' ]; then
+      case "$6" in
+        '/bin/sh -p '*)
+          printf '%s\n' "$6" > "$NTM_SESSION_CLI_DIR/handoff-cmd-$3" ;;
+      esac
+    elif [ "$4" = 'Enter' ] && [ -f "$NTM_SESSION_CLI_DIR/handoff-cmd-$3" ]; then
+      cmd=$(cat "$NTM_SESSION_CLI_DIR/handoff-cmd-$3")
+      rm -f "$NTM_SESSION_CLI_DIR/handoff-cmd-$3"
+      pipe=$(eval "set -- $cmd; printf '%s' \"\$3\"")
+      out="$NTM_SESSION_CLI_DIR/handoff-payload-$3"
+      sh -c 'cat "$1" > "$2.tmp" && mv "$2.tmp" "$2"' _ "$pipe" "$out" </dev/null >/dev/null 2>&1 &
     fi ;;
 esac
 `
@@ -560,5 +618,214 @@ func TestApplyModelCommands_GrokRoundTrip(t *testing.T) {
 	}
 	if state.Panes[2].Command != "" {
 		t.Fatalf("fresh-session-bound Grok pane Command = %q, want empty so native session binding is preserved", state.Panes[2].Command)
+	}
+}
+
+func TestSessionsRecoveryCommandFencesMetadataInputEnterRacesAndPartialOutcomes(t *testing.T) {
+	for _, command := range []string{"restore", "resume"} {
+		for _, phase := range []string{"metadata", "input", "enter"} {
+			t.Run(command+"/"+phase, func(t *testing.T) {
+				logPath := sessionRecoveryCommandFixture(t)
+				t.Setenv("NTM_SESSION_CLI_RACE_PANE", "%1")
+				t.Setenv("NTM_SESSION_CLI_RACE_PHASE", phase)
+				state := &session.SessionState{
+					Name:    "cli_race",
+					WorkDir: t.TempDir(),
+					Agents:  session.AgentConfig{Codex: 2},
+					Panes: []session.PaneState{
+						{
+							Index:     0,
+							Title:     "cli_race__cod_1",
+							AgentType: "cod",
+							LaunchSpec: &tmux.AgentLaunchSpec{
+								Version:   tmux.AgentLaunchSpecVersion,
+								AgentType: tmux.AgentCodex,
+								Command:   "codex --model first",
+							},
+						},
+						{
+							Index:     1,
+							Title:     "cli_race__cod_2",
+							AgentType: "cod",
+							LaunchSpec: &tmux.AgentLaunchSpec{
+								Version:   tmux.AgentLaunchSpecVersion,
+								AgentType: tmux.AgentCodex,
+								Command:   "codex --model second",
+							},
+						},
+					},
+				}
+				if _, err := session.Save(state, session.SaveOptions{}); err != nil {
+					t.Fatal(err)
+				}
+				cmd := newSessionPersistCmd()
+				args := []string{command, "cli_race", "--force"}
+				if command == "restore" {
+					args = append(args, "--launch")
+				}
+				cmd.SetArgs(args)
+				cmd.SetOut(io.Discard)
+				cmd.SetErr(io.Discard)
+				stdout, err := captureStdout(t, cmd.Execute)
+				if !errors.Is(err, errJSONFailure) {
+					t.Fatalf("%s %s race did not fail with errJSONFailure: err=%v stdout=%s", command, phase, err, stdout)
+				}
+				if command == "restore" {
+					var env SessionsRestoreResult
+					if uErr := json.Unmarshal([]byte(stdout), &env); uErr != nil || env.Success {
+						t.Fatalf("restore %s envelope invalid: err=%v stdout=%s", phase, uErr, stdout)
+					}
+					if env.RestoredAs != "cli_race" || env.AgentCount != 1 || env.Launched != 1 || env.Failed != 1 || len(env.Panes) != 2 {
+						t.Fatalf("restore %s lost partial pane outcomes: %+v", phase, env)
+					}
+					if env.Panes[0].Action != "launched" || env.Panes[1].Action != "failed" || !strings.Contains(env.Panes[1].Error, tmux.ErrPaneIdentityChanged.Error()) {
+						t.Fatalf("restore %s pane details wrong: %+v", phase, env.Panes)
+					}
+					var text bytes.Buffer
+					if tErr := env.Text(&text); tErr != nil || !strings.Contains(text.String(), "available for inspection") || !strings.Contains(text.String(), "1 agent(s) launched, 0 skipped, 1 failed") {
+						t.Fatalf("restore %s text lost partial outcomes: err=%v text=%s", phase, tErr, text.String())
+					}
+				} else {
+					var env SessionsResumeResult
+					if uErr := json.Unmarshal([]byte(stdout), &env); uErr != nil || env.Success {
+						t.Fatalf("resume %s envelope invalid: err=%v stdout=%s", phase, uErr, stdout)
+					}
+					if env.ResumedAs != "cli_race" || env.Launched != 1 || env.Failed != 1 || len(env.Panes) != 2 {
+						t.Fatalf("resume %s lost partial pane outcomes: %+v", phase, env)
+					}
+					if env.Panes[0].Action != "launched" || env.Panes[1].Action != "failed" || !strings.Contains(env.Panes[1].Error, tmux.ErrPaneIdentityChanged.Error()) {
+						t.Fatalf("resume %s pane details wrong: %+v", phase, env.Panes)
+					}
+				}
+				data, rErr := os.ReadFile(logPath)
+				if rErr != nil {
+					t.Fatal(rErr)
+				}
+				calls := string(data)
+				if !strings.Contains(calls, "if-shell -F -t %1") {
+					t.Fatalf("CLI %s did not guard pane %%1 with if-shell: %s", command, calls)
+				}
+				if !strings.Contains(calls, "send-keys -t %0 -l -- ") || !strings.Contains(calls, "send-keys -t %0 Enter") {
+					t.Fatalf("CLI %s did not preserve pane %%0 launch: %s", command, calls)
+				}
+				switch phase {
+				case "metadata":
+					if strings.Contains(calls, "set-option -p -t %1 @ntm_agent_launch") || strings.Contains(calls, "send-keys -t %1") {
+						t.Fatalf("CLI %s metadata race still mutated %%1: %s", command, calls)
+					}
+				case "input":
+					if strings.Contains(calls, "send-keys -t %1") {
+						t.Fatalf("CLI %s input race still sent input to %%1: %s", command, calls)
+					}
+				case "enter":
+					if !strings.Contains(calls, "send-keys -t %1 -l -- ") || strings.Contains(calls, "send-keys -t %1 Enter") {
+						t.Fatalf("CLI %s enter race misbehaved on %%1: %s", command, calls)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestSessionsRecoveryCommandPreflightsLongCommandBeforeForce(t *testing.T) {
+	longArg := strings.Repeat("y", tmux.MaxTypedLaunchCommandBytes+256)
+	longCmd := "codex --model long --custom=" + longArg
+
+	for _, command := range []string{"restore", "resume"} {
+		t.Run(command+"/preflight_failure_protects_live_session", func(t *testing.T) {
+			logPath := sessionRecoveryCommandFixture(t)
+			t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing-tmp"))
+			state := &session.SessionState{
+				Name:    "cli_long",
+				WorkDir: t.TempDir(),
+				Panes: []session.PaneState{
+					{Index: 0, AgentType: "cod", Command: "codex --model short"},
+					{Index: 1, AgentType: "cod", Command: longCmd},
+				},
+			}
+			if _, err := session.Save(state, session.SaveOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			cmd := newSessionPersistCmd()
+			args := []string{command, "cli_long", "--force"}
+			if command == "restore" {
+				args = append(args, "--launch")
+			}
+			cmd.SetArgs(args)
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			stdout, err := captureStdout(t, cmd.Execute)
+			if !errors.Is(err, errJSONFailure) {
+				t.Fatalf("CLI %s long-command preflight did not exit with failure: err=%v stdout=%s", command, err, stdout)
+			}
+			if !strings.Contains(stdout, "private launch handoff") {
+				t.Fatalf("CLI %s response did not report handoff preflight error: %s", command, stdout)
+			}
+			calls, readErr := os.ReadFile(logPath)
+			if readErr != nil && !os.IsNotExist(readErr) {
+				t.Fatal(readErr)
+			}
+			if strings.Contains(string(calls), "kill-session") || strings.Contains(string(calls), "new-session") || strings.Contains(string(calls), "send-keys") {
+				t.Fatalf("CLI %s long-command preflight failure touched live session: %s", command, calls)
+			}
+		})
+
+		t.Run(command+"/private_handoff_succeeds", func(t *testing.T) {
+			logPath := sessionRecoveryCommandFixture(t)
+			cliDir := os.Getenv("NTM_SESSION_CLI_DIR")
+			tmpBase := t.TempDir()
+			t.Setenv("TMPDIR", tmpBase)
+			state := &session.SessionState{
+				Name:    "cli_long_ok",
+				WorkDir: t.TempDir(),
+				Panes:   []session.PaneState{{Index: 0, AgentType: "cod", Command: longCmd}},
+			}
+			if _, err := session.Save(state, session.SaveOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			cmd := newSessionPersistCmd()
+			args := []string{command, "cli_long_ok", "--force"}
+			if command == "restore" {
+				args = append(args, "--launch")
+			}
+			cmd.SetArgs(args)
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			stdout, err := captureStdout(t, cmd.Execute)
+			if err != nil {
+				t.Fatalf("CLI %s long-command handoff failed: err=%v stdout=%s", command, err, stdout)
+			}
+			calls, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(calls), "/bin/sh -p ") || strings.Contains(string(calls), longArg) {
+				t.Fatalf("CLI %s did not route long command through private FIFO handoff: %s", command, calls)
+			}
+			payloadPath := filepath.Join(cliDir, "handoff-payload-%0")
+			var payload []byte
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				var readErr error
+				payload, readErr = os.ReadFile(payloadPath)
+				if readErr == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("CLI %s private handoff lost long command: err=%v", command, readErr)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if !strings.Contains(string(payload), longArg) {
+				t.Fatalf("CLI %s private handoff truncated long command: len=%d", command, len(payload))
+			}
+			entries, err := os.ReadDir(tmpBase)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("CLI %s private handoff leaked temporary directory entries: %+v", command, entries)
+			}
+		})
 	}
 }

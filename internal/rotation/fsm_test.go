@@ -134,3 +134,94 @@ func TestLifecycleFSMConcurrentAcquireSingleOwnerInvariant(t *testing.T) {
 		t.Fatalf("concurrent Acquire admitted %d owners for pane %%99, want exactly 1", count)
 	}
 }
+
+func TestLifecycleFSMPreventsReentryCrossReleaseAndEmptyOpCollision(t *testing.T) {
+	t.Parallel()
+	coord := NewLifecycleCoordinator()
+
+	// Empty opID must mint unique monotonic IDs so concurrent calls from the
+	// same ownerID do not collide as idempotent re-acquires.
+	lease1, err := coord.Acquire("%50", "caam-failover", "", "caam_failover")
+	if err != nil {
+		t.Fatalf("first Acquire: %v", err)
+	}
+	if _, err := coord.Acquire("%50", "caam-failover", "", "caam_failover"); !errors.Is(err, ErrLifecycleLeaseHeld) {
+		t.Fatalf("second empty-op Acquire err = %v, want ErrLifecycleLeaseHeld", err)
+	}
+
+	// Transition cannot bypass Abort to reach StateIdle.
+	if err := coord.Transition(lease1, StateIdle, "bypass"); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("Transition(StateIdle) err = %v, want ErrInvalidTransition", err)
+	}
+
+	// Abort releases the pane; subsequent Complete must NOT silently succeed,
+	// and Transition(StateDraining) must NOT re-enter an active state.
+	if err := coord.Abort(lease1, "cancelled"); err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+	if err := coord.Complete(lease1, "after_abort"); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("Complete after Abort err = %v, want ErrInvalidTransition", err)
+	}
+	if err := coord.Transition(lease1, StateDraining, "reenter"); !errors.Is(err, ErrLeaseFenced) {
+		t.Fatalf("Transition(StateDraining) after Abort err = %v, want ErrLeaseFenced", err)
+	}
+
+	// Full completion: subsequent Abort must NOT silently succeed, and
+	// Transition(StateDraining) must NOT re-enter an active state.
+	lease2, err := coord.Acquire("%50", "auth-restart", "", "auth_restart")
+	if err != nil {
+		t.Fatalf("Acquire lease2: %v", err)
+	}
+	if err := coord.Transition(lease2, StateHandingOff, "handoff"); err != nil {
+		t.Fatalf("Transition(handing_off): %v", err)
+	}
+	if err := coord.Transition(lease2, StateVerifying, "verify"); err != nil {
+		t.Fatalf("Transition(verifying): %v", err)
+	}
+	// Transition cannot bypass Complete/FailRecoverable to reach StateActive or StateFailedRecoverable.
+	if err := coord.Transition(lease2, StateActive, "bypass_complete"); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("Transition(StateActive) err = %v, want ErrInvalidTransition", err)
+	}
+	if err := coord.Transition(lease2, StateFailedRecoverable, "bypass_fail"); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("Transition(StateFailedRecoverable) err = %v, want ErrInvalidTransition", err)
+	}
+	if err := coord.Complete(lease2, "done"); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if err := coord.Abort(lease2, "after_complete"); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("Abort after Complete err = %v, want ErrInvalidTransition", err)
+	}
+	if err := coord.Transition(lease2, StateDraining, "reenter_after_complete"); !errors.Is(err, ErrLeaseFenced) {
+		t.Fatalf("Transition(StateDraining) after Complete err = %v, want ErrLeaseFenced", err)
+	}
+
+	// Failed lease cannot re-enter StateDraining via Transition without re-acquiring.
+	lease3, err := coord.Acquire("%50", "context-rotator", "", "context_rotation")
+	if err != nil {
+		t.Fatalf("Acquire lease3: %v", err)
+	}
+	if err := coord.FailRecoverable(lease3, "drain", "boom", "retry"); err != nil {
+		t.Fatalf("FailRecoverable: %v", err)
+	}
+	if err := coord.Transition(lease3, StateDraining, "reenter_from_failed"); !errors.Is(err, ErrLeaseFenced) {
+		t.Fatalf("Transition(StateDraining) from failed_recoverable err = %v, want ErrLeaseFenced", err)
+	}
+	if err := coord.Abort(lease3, "reset"); err != nil {
+		t.Fatalf("Abort from failed_recoverable: %v", err)
+	}
+
+	// History length stays bounded across many cycles.
+	for i := 0; i < maxLifecycleHistory; i++ {
+		l, err := coord.Acquire("%50", "worker", "", "context_rotation")
+		if err != nil {
+			t.Fatalf("cycle %d Acquire: %v", i, err)
+		}
+		if err := coord.Abort(l, "cycle"); err != nil {
+			t.Fatalf("cycle %d Abort: %v", i, err)
+		}
+	}
+	snap, ok := coord.Snapshot("%50")
+	if !ok || len(snap.History) > maxLifecycleHistory {
+		t.Fatalf("history exceeded bound: len=%d max=%d", len(snap.History), maxLifecycleHistory)
+	}
+}

@@ -32,49 +32,21 @@ func (a *S2PAdapter) Detect() (string, bool) {
 
 // Version returns the installed s2p version
 func (a *S2PAdapter) Version(ctx context.Context) (Version, error) {
-	if path, err := exec.LookPath(a.BinaryName()); err == nil {
-		if key, cacheable := bdBinaryCacheKey(path); cacheable {
-			bdVersionCacheMu.RLock()
-			v, ok := bdVersionCache[key]
-			bdVersionCacheMu.RUnlock()
-			if ok {
-				return v, nil
-			}
-			ctx, cancel := context.WithTimeout(ctx, a.Timeout())
-			defer cancel()
+	return cachedToolVersion(ctx, a.BinaryName(), func(bin string) (Version, error) {
+		ctx, cancel := context.WithTimeout(ctx, a.Timeout())
+		defer cancel()
 
-			cmd := exec.CommandContext(ctx, path, "--version")
-			cmd.WaitDelay = time.Second
-			var stdout bytes.Buffer
-			cmd.Stdout = &stdout
+		cmd := exec.CommandContext(ctx, bin, "--version")
+		cmd.WaitDelay = time.Second
+		var stdout bytes.Buffer
+		cmd.Stdout = &stdout
 
-			if err := cmd.Run(); err != nil {
-				return Version{}, fmt.Errorf("failed to get s2p version: %w", err)
-			}
-
-			v, err := ParseStandardVersion(stdout.String())
-			if err == nil {
-				bdVersionCacheMu.Lock()
-				bdVersionCache[key] = v
-				bdVersionCacheMu.Unlock()
-			}
-			return v, err
+		if err := cmd.Run(); err != nil {
+			return Version{}, fmt.Errorf("failed to get s2p version: %w", err)
 		}
-	}
 
-	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, a.BinaryName(), "--version")
-	cmd.WaitDelay = time.Second
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-
-	if err := cmd.Run(); err != nil {
-		return Version{}, fmt.Errorf("failed to get s2p version: %w", err)
-	}
-
-	return ParseStandardVersion(stdout.String())
+		return ParseStandardVersion(stdout.String())
+	})
 }
 
 // Capabilities does not advertise automated context generation: the installed

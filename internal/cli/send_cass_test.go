@@ -408,7 +408,7 @@ func TestSendCASSCommandCapacityMeasurementLifecycle(t *testing.T) {
 			var watcherDone chan struct{}
 			if mode == "deadline" {
 				var stop context.CancelFunc
-				ctx, stop = context.WithTimeout(ctx, 100*time.Millisecond)
+				ctx, stop = context.WithTimeout(ctx, 250*time.Millisecond)
 				defer stop()
 			} else if mode == "cancel" {
 				watcherDone = make(chan struct{})

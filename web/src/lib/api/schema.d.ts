@@ -4864,6 +4864,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workflows/{name}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Workflows status
+         * @description Served route `GET /api/v1/workflows/{name}/status`. Handler: `handleWorkflowsStatusV1`. Response shape reflected from Go type `WorkflowControlEnvelopeResponse`.
+         */
+        get: operations["get_api_v1_workflows_name_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workflows/{name}/stop": {
         parameters: {
             query?: never;
@@ -5403,6 +5423,7 @@ export interface components {
             oc: number;
             ollama: number;
             omp?: number;
+            pi?: number;
             user: number;
             windsurf: number;
         };
@@ -11846,6 +11867,10 @@ export interface components {
             patterns: string[];
             total_cached: number;
         };
+        RunAgent: {
+            pane: string;
+            role: string;
+        };
         SSEEventStream: {
             data: components["schemas"]["AttentionEvent"];
             event: string;
@@ -14949,16 +14974,28 @@ export interface components {
         };
         WorkflowControlEnvelopeResponse: {
             action: string;
+            agents?: components["schemas"]["RunAgent"][];
+            cancellation_requested?: boolean;
             checkpoint_token?: string;
+            completed?: boolean;
             decision?: components["schemas"]["ManualDecision"];
+            dispatches?: components["schemas"]["StageDispatch"][];
             dry_run?: boolean;
+            job?: components["schemas"]["Job"];
+            job_id?: string;
+            job_status?: string;
             manual_gate?: components["schemas"]["ManualGateStatus"];
+            paused?: boolean;
+            project_dir?: string;
             request_id?: string;
+            running?: boolean;
             session?: string;
             stage?: string;
             state?: components["schemas"]["WorkflowState"];
+            stopped_job?: boolean;
             success: boolean;
             timestamp: string;
+            tmux_endpoint?: string;
             workflow?: string;
         };
         WorkflowError: {
@@ -14980,8 +15017,15 @@ export interface components {
         };
         WorkflowRunRequest: {
             dry_run?: boolean;
+            fire_manual?: boolean;
+            interval?: string;
+            max_transitions?: number;
             project_dir?: string;
+            restart?: boolean;
+            resume?: boolean;
             session: string;
+            timeout?: string;
+            trigger_timeout?: string;
             variables?: {
                 [key: string]: string;
             };
@@ -32379,6 +32423,86 @@ export interface operations {
                     "application/json": components["schemas"]["WorkflowControlEnvelopeResponse"];
                 };
             };
+            /** @description Accepted for asynchronous execution. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowControlEnvelopeResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_v1_workflows_name_status: {
+        parameters: {
+            query?: {
+                /** @description Optional existing absolute project directory override (alias: ?project=). */
+                project_dir?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The name identifier */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowControlEnvelopeResponse"];
+                };
+            };
             /** @description Bad request */
             400: {
                 headers: {
@@ -32444,6 +32568,15 @@ export interface operations {
         responses: {
             /** @description Successful operation */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowControlEnvelopeResponse"];
+                };
+            };
+            /** @description Accepted for asynchronous execution. */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

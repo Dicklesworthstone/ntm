@@ -332,19 +332,28 @@ func restoreSession(ctx context.Context, state *SessionState, opts RestoreOption
 			break
 		}
 		agentType := tmux.ParsePaneAgentTypeOption(paneState.AgentType)
-		if agentType != tmux.AgentUnknown && agentType != tmux.AgentUser {
-			if err := tmux.SetPaneAgentIdentityContext(ctx, tmuxPanes[i].ID, paneState.Title, agentType); err != nil {
-				return fmt.Errorf("setting restored pane %d identity: %w", i, err)
+		if launch == nil {
+			if agentType != tmux.AgentUnknown && agentType != tmux.AgentUser {
+				if err := tmux.SetPaneAgentIdentityContext(ctx, tmuxPanes[i].ID, paneState.Title, agentType); err != nil {
+					return fmt.Errorf("setting restored pane %d identity: %w", i, err)
+				}
+				tmuxPanes[i].Type = agentType
+			} else if paneState.Title != "" {
+				if err := tmux.SetPaneTitleContext(ctx, tmuxPanes[i].ID, paneState.Title); err != nil {
+					return fmt.Errorf("setting restored pane %d title: %w", i, err)
+				}
 			}
-			tmuxPanes[i].Type = agentType
+			// Launching restore/resume publishes @ntm_agent_type and launch
+			// metadata through the PID-guarded path right before dispatch;
+			// topology-only restore preserves saved specs on newly created panes.
+			if paneState.LaunchSpec != nil {
+				if err := tmux.SetPaneLaunchSpecContext(ctx, tmuxPanes[i].ID, *paneState.LaunchSpec); err != nil {
+					return fmt.Errorf("setting restored pane %d launch settings: %w", i, err)
+				}
+			}
 		} else if paneState.Title != "" {
-			if err := tmux.SetPaneTitle(tmuxPanes[i].ID, paneState.Title); err != nil {
+			if err := tmux.SetPaneTitleContext(ctx, tmuxPanes[i].ID, paneState.Title); err != nil {
 				return fmt.Errorf("setting restored pane %d title: %w", i, err)
-			}
-		}
-		if paneState.LaunchSpec != nil {
-			if err := tmux.SetPaneLaunchSpecContext(ctx, tmuxPanes[i].ID, *paneState.LaunchSpec); err != nil {
-				return fmt.Errorf("setting restored pane %d launch settings: %w", i, err)
 			}
 		}
 	}
@@ -500,14 +509,15 @@ type ResumePane struct {
 // launch command. The complete saved batch is preflighted before topology is
 // replaced, and the caller's ctx governs cancellation.
 func ResumeContext(ctx context.Context, state *SessionState, cmds AgentCommands, opts ResumeOptions) (*ResumeResult, error) {
-	launches, err := preflightSavedLaunches(ctx, state, cmds, opts.Config, &opts)
+	name := opts.Name
+	if name == "" && state != nil {
+		name = state.Name
+	}
+	launches, err := preflightSavedLaunches(ctx, name, state, cmds, opts.Config, &opts)
 	if err != nil {
 		return nil, err
 	}
-	name := opts.Name
-	if name == "" {
-		name = state.Name
-	}
+	defer closeSavedLaunches(launches)
 	var result *ResumeResult
 	err = restoreSession(ctx, state, RestoreOptions{Name: name, Force: opts.Force, SkipGitCheck: true}, func(panes []tmux.Pane) error {
 		var launchErr error

@@ -85,41 +85,65 @@ func (o *Orchestrator) ExecuteRestartStrategy(ctx RestartContext) error {
 	}
 
 	fsm := rotation.DefaultLifecycleCoordinator()
-	lease, err := fsm.Acquire(ctx.PaneID, "auth-restart", fmt.Sprintf("auth-%s-%d", ctx.PaneID, time.Now().UnixNano()), "auth_restart")
+	lease, err := fsm.Acquire(ctx.PaneID, "auth-restart", "", "auth_restart")
 	if err != nil {
 		return fmt.Errorf("acquire auth restart lifecycle lease: %w", err)
 	}
+	leaseClosed := false
+	fsmCheckpoint := "draining"
+	defer func() {
+		if !leaseClosed {
+			_ = fsm.FailRecoverable(lease, fsmCheckpoint, "unexpected abort or panic during auth restart", "verify pane process state and retry auth restart")
+		}
+	}()
 
 	// 1. Terminate existing session gracefully (draining)
+	fsmCheckpoint = "terminate_session"
 	if err := o.TerminateSession(ctx.PaneID, ctx.Provider); err != nil {
 		_ = fsm.FailRecoverable(lease, "terminate_session", err.Error(), "verify pane process state and retry auth restart")
+		leaseClosed = true
 		return fmt.Errorf("terminating session: %w", err)
 	}
 
 	// 2. Wait for shell prompt (draining)
+	fsmCheckpoint = "wait_for_shell"
 	if err := o.WaitForShellPrompt(ctx.PaneID, 10*time.Second); err != nil {
 		_ = fsm.FailRecoverable(lease, "wait_for_shell", err.Error(), "verify shell prompt in pane and retry auth restart")
+		leaseClosed = true
 		return fmt.Errorf("session did not terminate: %w", err)
 	}
 
 	// 3. Transition to handing_off before browser auth + relaunch
+	fsmCheckpoint = "browser_auth"
 	if err := fsm.Transition(lease, rotation.StateHandingOff, "browser_auth_and_relaunch"); err != nil {
+		_ = fsm.FailRecoverable(lease, "handing_off", err.Error(), "verify pane lifecycle state and retry auth restart")
+		leaseClosed = true
 		return err
 	}
 	if err := o.PromptBrowserAuth(ctx.TargetEmail); err != nil {
 		_ = fsm.FailRecoverable(lease, "browser_auth", err.Error(), "complete browser account switch and retry auth restart")
+		leaseClosed = true
 		return fmt.Errorf("browser auth prompt: %w", err)
 	}
 
 	// 4. Start new agent session and mark verified/active
+	fsmCheckpoint = "start_new_session"
 	if err := o.StartNewAgentSession(ctx); err != nil {
 		_ = fsm.FailRecoverable(lease, "start_new_session", err.Error(), "relaunch agent command in pane")
+		leaseClosed = true
 		return err
 	}
+	fsmCheckpoint = "verifying"
 	if err := fsm.Transition(lease, rotation.StateVerifying, "relaunch_submitted"); err != nil {
+		_ = fsm.FailRecoverable(lease, "verifying", err.Error(), "verify pane lifecycle state")
+		leaseClosed = true
 		return err
 	}
-	return fsm.Complete(lease, "auth_restart_completed")
+	completeErr := fsm.Complete(lease, "auth_restart_completed")
+	if completeErr == nil {
+		leaseClosed = true
+	}
+	return completeErr
 }
 
 // TerminateSession tries to gracefully stop the agent, then force kills if needed

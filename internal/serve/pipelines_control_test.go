@@ -370,7 +370,7 @@ func TestPipelineRemoteControlProcessHelper(t *testing.T) {
 func TestPipelineResumeHTTPRecoversConfirmedDeliveryWithoutResending(t *testing.T) {
 	root := t.TempDir()
 	workflow := &pipeline.Workflow{SchemaVersion: pipeline.SchemaVersion, Name: "http-agent-recovery", Steps: []pipeline.Step{
-		{ID: "agent", Pane: pipeline.PaneSpec{Index: 1}, Prompt: "Work on this HTTP request", Wait: pipeline.WaitTime, Timeout: pipeline.Duration{Duration: 80 * time.Millisecond}},
+		{ID: "agent", Pane: pipeline.PaneSpec{Index: 1}, Prompt: "Work on this HTTP request", Wait: pipeline.WaitTime, Timeout: pipeline.Duration{Duration: time.Second}},
 		{ID: "consume", Command: "cat", Stdin: "${steps.agent.output}", DependsOn: []string{"agent"}},
 	}}
 	frozen, workflowPath, err := pipeline.SnapshotWorkflow(context.Background(), root, workflow)

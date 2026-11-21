@@ -21,7 +21,20 @@ func jobExecutionResources(jobType string, params map[string]interface{}) []stri
 	}
 	switch jobType {
 	case JobTypePipelineRun, JobTypePipelineExec:
-		return []string{"session:" + session}
+		trimmed := strings.TrimSpace(session)
+		if trimmed == "" {
+			return []string{"*"}
+		}
+		return []string{"session:" + trimmed}
+	case JobTypeWorkflowRun:
+		if dryRun, ok := params["dry_run"].(bool); ok && dryRun {
+			return nil
+		}
+		trimmed := strings.TrimSpace(session)
+		if trimmed == "" {
+			return []string{"*"}
+		}
+		return []string{"session:" + trimmed}
 	case JobTypeEnsembleSpawn, JobTypeEnsembleSynthesize:
 		trimmed := strings.TrimSpace(session)
 		if trimmed == "" {

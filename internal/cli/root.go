@@ -1387,7 +1387,7 @@ func persistEmittedBusEvents(emitter *events.EventEmitter, bus *events.EventBus)
 }
 
 func currentRobotRuntime() *robot.Runtime {
-	if robotRuntime != nil {
+	if robotRuntime != nil && robotRuntime.Store == robotStateStore && robotRuntime.Config == cfg {
 		return robotRuntime
 	}
 	return robot.NewRuntime(robotStateStore, cfg)

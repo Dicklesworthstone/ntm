@@ -350,8 +350,8 @@ func buildConsolidatedSchema(files []string) (string, []consolidatedMigrationEnt
 			ORDER BY CASE type
 				WHEN 'table' THEN 0
 				WHEN 'index' THEN 1
-				WHEN 'trigger' THEN 2
-				WHEN 'view' THEN 3
+				WHEN 'view' THEN 2
+				WHEN 'trigger' THEN 3
 				ELSE 4
 			END, rowid
 		`)
@@ -377,7 +377,7 @@ func buildConsolidatedSchema(files []string) (string, []consolidatedMigrationEnt
 			consolidatedSchemaErr = err
 			return
 		}
-		consolidatedSchemaDDL = strings.Join(stmts, ";\n") + ";"
+		consolidatedSchemaDDL = strings.Join(stmts, "\n;\n") + "\n;"
 		consolidatedSchemaEntries = entries
 	})
 	return consolidatedSchemaDDL, consolidatedSchemaEntries, consolidatedSchemaErr
@@ -399,6 +399,10 @@ func ApplyMigrations(db *sql.DB) error {
 	if !migrationsPending(ctx, db, files) {
 		return nil
 	}
+
+	// Pre-warm the once-built consolidated DDL before acquiring BEGIN IMMEDIATE
+	// so a fresh DB never holds the production write lock during in-memory bootstrap.
+	_, _, _ = buildConsolidatedSchema(files)
 
 	conn, err := db.Conn(ctx)
 	if err != nil {

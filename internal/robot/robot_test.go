@@ -813,9 +813,11 @@ func TestRobotCASSInsightsMatchesInstalledCass(t *testing.T) {
 	// Both runs read the developer's real index, not TestMain's empty data home.
 	t.Setenv("XDG_DATA_HOME", developerDataHome)
 
-	readDirectBuckets := func() []cass.AggregationBucket {
-		t.Helper()
+	readDirectBuckets := func() ([]cass.AggregationBucket, error) {
 		raw, err := exec.Command("cass", "search", "*", "--json", "--limit", "0", "--since", "30d", "--aggregate", "agent,workspace").Output()
+		if err != nil {
+			return nil, err
+		}
 		var direct struct {
 			Aggregations struct {
 				Agent struct {
@@ -823,10 +825,10 @@ func TestRobotCASSInsightsMatchesInstalledCass(t *testing.T) {
 				} `json:"agent"`
 			} `json:"aggregations"`
 		}
-		if err != nil || json.Unmarshal(raw, &direct) != nil {
-			t.Fatalf("cass search --aggregate: %v", err)
+		if err := json.Unmarshal(raw, &direct); err != nil {
+			return nil, err
 		}
-		return direct.Aggregations.Agent.Buckets
+		return direct.Aggregations.Agent.Buckets, nil
 	}
 
 	bucketsEqual := func(a, b []cass.AggregationBucket) bool {
@@ -849,16 +851,12 @@ func TestRobotCASSInsightsMatchesInstalledCass(t *testing.T) {
 		settled  bool
 	)
 	for attempt := 0; attempt < 4; attempt++ {
-		var (
-			before []cass.AggregationBucket
-			err    error
-		)
-		beforeDone := make(chan []cass.AggregationBucket, 1)
-		go func() {
-			beforeDone <- readDirectBuckets()
-		}()
+		before, beforeErr := readDirectBuckets()
+		if beforeErr != nil {
+			t.Fatalf("cass search --aggregate (before): %v", beforeErr)
+		}
+		var err error
 		out, err = GetCASSInsights("30d")
-		before = <-beforeDone
 		if err != nil || !out.Success || out.Period != "30d" {
 			t.Fatalf("GetCASSInsights = %+v, %v", out, err)
 		}
@@ -867,7 +865,10 @@ func TestRobotCASSInsightsMatchesInstalledCass(t *testing.T) {
 			settled = true
 			break
 		}
-		after := readDirectBuckets()
+		after, afterErr := readDirectBuckets()
+		if afterErr != nil {
+			t.Fatalf("cass search --aggregate (after): %v", afterErr)
+		}
 		if bucketsEqual(before, after) {
 			expected = before
 			settled = true
@@ -3140,7 +3141,7 @@ func TestGetStatusWithOptionsRespectsDisabledAlertsConfig(t *testing.T) {
 		}
 	})
 
-	result, err := GetStatusWithOptions(PaginationOptions{})
+	result, err := GetStatusWithOptions(PaginationOptions{ExplicitStore: true})
 	if err != nil {
 		t.Fatalf("GetStatusWithOptions: %v", err)
 	}
@@ -4048,7 +4049,6 @@ esac
 // still advertise a ready bead must not reach the snapshot, its beads summary
 // or its ready_work count once the verified read cannot vouch for them.
 func TestSnapshotNeverServesUnverifiedRuntimeWorkRows(t *testing.T) {
-	t.Parallel()
 	store := newProjectionTestStore(t)
 	now := time.Now().UTC()
 	if err := store.UpsertRuntimeWork(&state.RuntimeWork{

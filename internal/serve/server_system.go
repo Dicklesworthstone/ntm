@@ -598,6 +598,13 @@ func scopedIdempotencyKey(r *http.Request) string {
 			projectMode = "cwd-fallback"
 		}
 	}
+	if wfScope, ok := r.Context().Value(workflowProjectScopeKey{}).(workflowProjectScope); ok {
+		project, scopeErr, projectScoped = wfScope.projectDir, wfScope.err, true
+		projectMode = "workflow-configured"
+		if strings.TrimSpace(wfScope.configuredDir) == "" {
+			projectMode = "workflow-cwd-fallback"
+		}
+	}
 	if jobScope, ok := r.Context().Value(jobHTTPReplayScopeKey{}).(jobHTTPReplayScope); ok {
 		if jobScope.err != nil {
 			return "" // Preserve permission and canonical request errors.
@@ -1272,8 +1279,9 @@ type CreateJobRequest struct {
 	Session string                 `json:"session,omitempty"`
 
 	// Internal service ownership; never accepted from JSON or fingerprinted.
-	executionContext    context.Context
-	executionProjectDir string
+	executionContext        context.Context
+	executionProjectDir     string
+	rejectDuplicateWorkflow bool
 }
 
 // handleCreateJob handles POST /api/v1/jobs.

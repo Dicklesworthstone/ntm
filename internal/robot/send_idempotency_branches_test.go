@@ -682,6 +682,7 @@ func TestGetSendIdempotency_NoProjectionStoreNotImplemented(t *testing.T) {
 		Message:        "echo ntm-idem-no-store",
 		Pane:           paneID,
 		IdempotencyKey: opID,
+		ExplicitStore:  true,
 	})
 	if err != nil {
 		t.Fatalf("GetSend returned error: %v", err)

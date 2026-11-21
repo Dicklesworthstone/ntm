@@ -1,6 +1,6 @@
 {
   "source": "chi-router-walk",
-  "count": 274,
+  "count": 275,
   "endpoints": [
     {
       "method": "GET",
@@ -1337,6 +1337,11 @@
       "method": "POST",
       "path": "/api/v1/workflows/{name}/run",
       "handler": "handleWorkflowsRunV1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/workflows/{name}/status",
+      "handler": "handleWorkflowsStatusV1"
     },
     {
       "method": "POST",

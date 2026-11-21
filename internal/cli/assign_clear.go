@@ -13,6 +13,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/assign"
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
+	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -140,7 +141,7 @@ func runClearAssignments(cmd *cobra.Command, session string) error {
 		return err
 	}
 
-	if assignClear != "" {
+	if strings.TrimSpace(assignClear) != "" {
 		return runClearSpecificBeads(cmd, session, assignClear)
 	}
 
@@ -325,6 +326,7 @@ func runClearSelectedAssignmentsFromStore(cmd *cobra.Command, store *assignment.
 	successCount := 0
 	var cancellationErr error
 	var typedFailureCode string
+	var typedFailureMessage string
 	var firstFailureErr error
 
 	for _, beadID := range beadIDs {
@@ -373,6 +375,7 @@ func runClearSelectedAssignmentsFromStore(cmd *cobra.Command, store *assignment.
 				result.ErrorCode = clearAssignmentFailureCode(clearErr)
 				if typedFailureCode == "" && result.ErrorCode != "" {
 					typedFailureCode = result.ErrorCode
+					typedFailureMessage = result.Error
 				}
 				if result.ErrorCode == robot.ErrCodeTimeout {
 					if cancellationErr == nil {
@@ -422,7 +425,7 @@ func runClearSelectedAssignmentsFromStore(cmd *cobra.Command, store *assignment.
 				message = fmt.Sprintf("assignment clear canceled: %v", cancellationErr)
 			} else if successCount == 0 && typedFailureCode != "" {
 				code = typedFailureCode
-				message = results[0].Error
+				message = typedFailureMessage
 			}
 			envelope.Error = &ClearAssignmentsError{Code: code, Message: message}
 		}
@@ -546,12 +549,14 @@ func runClearPaneAssignments(cmd *cobra.Command, session, selector string) error
 	}
 
 	result := ClearAllResult{
-		Pane:      targetPane.Index,
-		AgentType: agentType,
-		Success:   true,
+		Pane:         targetPane.Index,
+		AgentType:    agentType,
+		ClearedBeads: make([]ClearAssignmentResult, 0, len(paneAssignments)),
+		Success:      true,
 	}
 	var cancellationErr error
 	var typedFailureCode string
+	var typedFailureMessage string
 	var firstFailureErr error
 
 	for _, a := range paneAssignments {
@@ -582,6 +587,7 @@ func runClearPaneAssignments(cmd *cobra.Command, session, selector string) error
 			beadResult.ErrorCode = clearAssignmentFailureCode(clearErr)
 			if typedFailureCode == "" && beadResult.ErrorCode != "" {
 				typedFailureCode = beadResult.ErrorCode
+				typedFailureMessage = beadResult.Error
 			}
 			if beadResult.ErrorCode == robot.ErrCodeTimeout {
 				if cancellationErr == nil {
@@ -644,7 +650,7 @@ func runClearPaneAssignments(cmd *cobra.Command, session, selector string) error
 				message = fmt.Sprintf("pane assignment clear canceled: %v", cancellationErr)
 			} else if successCount == 0 && typedFailureCode != "" {
 				code = typedFailureCode
-				message = result.ClearedBeads[0].Error
+				message = typedFailureMessage
 			}
 			envelope.Error = &ClearAssignmentsError{Code: code, Message: message}
 		}
@@ -768,7 +774,10 @@ func reconcileAndReleaseAssignmentReservationsForClear(ctx context.Context, sess
 		requested = append(requested, current.ReservationInputPaths...)
 	}
 	if len(requested) == 0 {
-		requested = assign.ExtractFilePaths(current.BeadTitle, "")
+		requested = assign.DiscoverReservationPaths(ctx, projectKey, assignment.ReservationRequest{
+			BeadID:    current.BeadID,
+			BeadTitle: current.BeadTitle,
+		}, bv.BeadTextReader(getBeadAssignmentDetailsForAssignment))
 	}
 	if len(requested) == 0 {
 		return nil, fmt.Errorf("cannot reconcile reservation outcome for %s without durable requested paths", current.BeadID)
@@ -878,18 +887,18 @@ func releaseFileReservations(ctx context.Context, session string, current *assig
 		return nil, nil
 	}
 
-	beadTitle, titleErr := getBeadTitle(ctx, projectKey, beadID)
-	if titleErr != nil {
-		return nil, fmt.Errorf("look up bead %s title for reservation release: %w", beadID, titleErr)
+	details, detailsErr := getBeadAssignmentDetailsForAssignment(ctx, projectKey, beadID)
+	if detailsErr != nil {
+		return nil, fmt.Errorf("look up bead %s details for reservation release: %w", beadID, detailsErr)
 	}
-	if beadTitle == "" {
+	if strings.TrimSpace(details.Title) == "" {
 		if assignHumanDiagnostics(assignVerbose) {
 			fmt.Fprintf(os.Stderr, "[RESERVE] No bead title found for %s, cannot determine paths to release\n", beadID)
 		}
 		return nil, nil
 	}
 
-	paths := assign.ExtractFilePaths(beadTitle, "")
+	paths := assign.ReservationPathsForBead(details.Title, details.Description)
 	if len(paths) == 0 {
 		if assignHumanDiagnostics(assignVerbose) {
 			fmt.Fprintf(os.Stderr, "[RESERVE] No file paths found in bead %s title, nothing to release\n", beadID)

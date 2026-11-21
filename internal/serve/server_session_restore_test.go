@@ -25,6 +25,8 @@ func savedRestoreHTTPFixture(t *testing.T) (string, *session.SessionState) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(dir, "data"))
 	t.Setenv("NTM_RESTORE_FIXTURE", dir)
 	t.Setenv("NTM_RESTORE_FAIL_SEND", "")
+	t.Setenv("NTM_RESTORE_RACE_PANE", "")
+	t.Setenv("NTM_RESTORE_RACE_PHASE", "")
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "$NTM_RESTORE_FIXTURE/calls"
 case "$1" in
@@ -40,10 +42,55 @@ case "$1" in
     for i in 0 1; do
       type=cod
       if [ "$i" = 1 ]; then type=user; fi
+      if [ -f "$NTM_RESTORE_FIXTURE/type%$i" ]; then type=$(cat "$NTM_RESTORE_FIXTURE/type%$i"); fi
       printf '%%%s_NTM_SEP_%s_NTM_SEP__NTM_SEP_bash_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_9999998_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$i" "$i" "$type"
     done ;;
-  display-message) printf '%s\n' "$NTM_RESTORE_FIXTURE" ;;
+  display-message)
+    if [ "$5" = '[#{@ntm_agent_type}]' ]; then
+      type=cod
+      if [ "$4" = '%1' ]; then type=user; fi
+      if [ -f "$NTM_RESTORE_FIXTURE/type$4" ]; then type=$(cat "$NTM_RESTORE_FIXTURE/type$4"); fi
+      printf '[%s]\n' "$type"
+    else
+      printf '%s\n' "$NTM_RESTORE_FIXTURE"
+    fi ;;
+  if-shell)
+    target="$4"
+    cond="$5"
+    true_cmd="$6"
+    case "$cond" in
+      *'#{==:#{pane_pid},'*'#{==:#{pane_dead},0}'*'#{==:#{pane_current_command},bash}'*) ;;
+      *)
+        echo "fixture missing atomic pane guard condition: $cond" >&2
+        exit 99 ;;
+    esac
+    phase="other"
+    case "$true_cmd" in
+      *'@ntm_agent_launch'*) phase="metadata" ;;
+      *"'send-keys'"*"'Enter'") phase="enter" ;;
+      *'send-keys'*|*'paste-buffer'*) phase="input" ;;
+    esac
+    if [ -n "$NTM_RESTORE_RACE_PANE" ] && [ "$target" = "$NTM_RESTORE_RACE_PANE" ] && [ "$phase" = "$NTM_RESTORE_RACE_PHASE" ]; then
+      printf 'ntm_pane_identity_changed\n'
+      exit 0
+    fi
+    eval "exec \"\$0\" $true_cmd" ;;
+  load-buffer)
+    cat > "$NTM_RESTORE_FIXTURE/buf-$3" ;;
+  paste-buffer)
+    pane="$7"
+    buf="$5"
+    if [ "$NTM_RESTORE_FAIL_SEND" = 1 ]; then
+      echo 'fixture delivery failed' >&2
+      exit 2
+    fi
+    if [ -f "$NTM_RESTORE_FIXTURE/buf-$buf" ]; then
+      payload=$(cat "$NTM_RESTORE_FIXTURE/buf-$buf")
+      printf 'pasted %s %s\n' "$pane" "$payload" >> "$NTM_RESTORE_FIXTURE/calls"
+    fi ;;
+  delete-buffer) ;;
   set-option)
+    if [ "$5" = '@ntm_agent_type' ]; then printf '%s\n' "$6" > "$NTM_RESTORE_FIXTURE/type$4"; fi
     if [ "$5" = '@ntm_agent_launch' ]; then printf '%s\n' "$6" > "$NTM_RESTORE_FIXTURE/launch$4"; fi ;;
   show-options)
     if [ -f "$NTM_RESTORE_FIXTURE/launch$5" ]; then
@@ -295,5 +342,48 @@ func TestSavedSessionRestoreHTTPPartialFailureIsRetained(t *testing.T) {
 	}
 	if second.Code != first.Code || second.Header().Get("X-Idempotent-Replay") != "true" || second.Body.String() != first.Body.String() || string(before) != string(after) {
 		t.Fatalf("partial failure replay repeated work: %d %s\nbefore=%s\nafter=%s", second.Code, second.Body.String(), before, after)
+	}
+}
+
+func TestSavedSessionRestoreHTTPFencesPaneReplacementRace(t *testing.T) {
+	dir, snapshot := savedRestoreHTTPFixture(t)
+	snapshot.Agents = session.AgentConfig{Codex: 2}
+	snapshot.Panes = []session.PaneState{
+		{Index: 0, AgentType: "cod", Command: "codex --model first"},
+		{Index: 1, AgentType: "cod", Command: "codex --model second"},
+	}
+	t.Setenv("NTM_RESTORE_RACE_PANE", "%1")
+	t.Setenv("NTM_RESTORE_RACE_PHASE", "enter")
+	if _, err := session.Save(snapshot, session.SaveOptions{Name: "recovery"}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewHermeticServer("restore-test")
+	t.Cleanup(srv.Stop)
+	body := `{"target_name":"raced","mode":"launch","force":true}`
+	first := savedRestoreHTTPRequest(t, srv, body, "race-once", nil)
+	var failure struct {
+		Details struct {
+			Resume *session.ResumeResult `json:"resume"`
+		} `json:"details"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &failure); err != nil {
+		t.Fatal(err)
+	}
+	if first.Code != http.StatusInternalServerError || failure.Details.Resume == nil || failure.Details.Resume.Launched != 1 || failure.Details.Resume.Failed != 1 {
+		t.Fatalf("HTTP pane replacement race lost partial outcomes: %d %s", first.Code, first.Body.String())
+	}
+	if !strings.Contains(failure.Details.Resume.Panes[1].Error, tmux.ErrPaneIdentityChanged.Error()) {
+		t.Fatalf("HTTP pane replacement race error = %q, want ErrPaneIdentityChanged", failure.Details.Resume.Panes[1].Error)
+	}
+	calls, err := os.ReadFile(filepath.Join(dir, "calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(calls), "if-shell -F -t %1") || strings.Contains(string(calls), "send-keys -t %1 Enter") {
+		t.Fatalf("HTTP restore did not guard pane %%1 Enter: %s", calls)
+	}
+	second := savedRestoreHTTPRequest(t, srv, body, "race-once", nil)
+	if second.Code != first.Code || second.Header().Get("X-Idempotent-Replay") != "true" {
+		t.Fatalf("HTTP race partial failure was not retained for idempotent replay: %d %s", second.Code, second.Body.String())
 	}
 }

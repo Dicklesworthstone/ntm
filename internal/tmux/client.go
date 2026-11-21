@@ -565,6 +565,34 @@ func (c *Client) RunSilentContext(ctx context.Context, args ...string) error {
 
 type paneMutationGuardContextKey struct{}
 
+type expectedPaneAgentTypeContextKey struct{}
+
+// WithExpectedPaneAgentType pins the expected canonical @ntm_agent_type option
+// for guarded pane mutations executed with ctx. If the pane's durable agent
+// type has been rewritten or cleared (even on the same shell PID), guarded
+// metadata, input, and Enter mutations fail closed with ErrPaneIdentityChanged.
+func WithExpectedPaneAgentType(ctx context.Context, expected AgentType) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	canonical := ParsePaneAgentTypeOption(string(expected))
+	if canonical == AgentUnknown || canonical == AgentUser {
+		return ctx
+	}
+	return context.WithValue(ctx, expectedPaneAgentTypeContextKey{}, canonical)
+}
+
+func expectedPaneAgentTypeFromContext(ctx context.Context) AgentType {
+	if ctx == nil {
+		return AgentUnknown
+	}
+	expected, ok := ctx.Value(expectedPaneAgentTypeContextKey{}).(AgentType)
+	if !ok || expected == "" {
+		return AgentUnknown
+	}
+	return expected
+}
+
 type paneMutationGuard struct {
 	target      string
 	pid         int
@@ -759,6 +787,11 @@ func (c *Client) runPaneMutationIfCurrentContext(ctx context.Context, target str
 	for _, r := range recorded {
 		if unicode.IsControl(r) || strings.ContainsRune("#{},", r) {
 			return errors.New("guarded pane ownership metadata cannot be compared safely")
+		}
+	}
+	if expectedType := expectedPaneAgentTypeFromContext(ctx); expectedType != AgentUnknown {
+		if ParsePaneAgentTypeOption(recorded) != expectedType {
+			return fmt.Errorf("pane %s: %w", target, ErrPaneIdentityChanged)
 		}
 	}
 	condition := fmt.Sprintf("#{==:#{pane_pid},%d}", expectedPID)

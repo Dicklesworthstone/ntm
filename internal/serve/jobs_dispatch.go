@@ -31,6 +31,7 @@ const (
 	JobTypePipelineRun        = "pipeline_run"
 	JobTypePipelineExec       = "pipeline_exec"
 	JobTypePipelineResume     = "pipeline_resume"
+	JobTypeWorkflowRun        = "workflow_run"
 	JobTypeSwarmSpawn         = "swarm_spawn"
 	JobTypeCheckpointRestore  = "checkpoint_restore"
 	JobTypeEnsembleSpawn      = "ensemble_spawn"
@@ -43,6 +44,7 @@ var implementedJobTypes = []string{
 	JobTypePipelineRun,
 	JobTypePipelineExec,
 	JobTypePipelineResume,
+	JobTypeWorkflowRun,
 	JobTypeSwarmSpawn,
 	JobTypeCheckpointRestore,
 	JobTypeEnsembleSpawn,
@@ -69,6 +71,10 @@ func (s *Server) dispatchJob(jobID string, req CreateJobRequest) {
 	// Admission already registered ownership. Every exit, including failure
 	// to acquire a worker fence, must release it AFTER all deferred writes.
 	defer s.jobStore.ClearCancel(jobID)
+	// Release active workflow tracking AFTER checkpointJobOutcome finishes
+	// (LIFO defer order) so callers unblocked by active.done always observe
+	// the persisted terminal job state.
+	defer s.finishWorkflowRunByJobID(jobID)
 	// Take the worker fence before looking at the row. Shutdown cancels even
 	// not-yet-started rows; a late dispatcher then exits without any writes.
 	release, err := s.fenceJobWorker(jobID)
@@ -189,6 +195,8 @@ func (s *Server) executeJobRequest(ctx context.Context, req CreateJobRequest) (m
 		return s.jobPipelineExec(ctx, params)
 	case JobTypePipelineResume:
 		return s.jobPipelineResume(ctx, params)
+	case JobTypeWorkflowRun:
+		return s.jobWorkflowRun(ctx, params)
 	case JobTypeSwarmSpawn:
 		return s.jobSwarmSpawn(ctx, params)
 	case JobTypeCheckpointRestore:

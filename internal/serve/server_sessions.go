@@ -146,13 +146,32 @@ func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request, ses
 	})
 }
 
+// projectionStore returns the server's authoritative projection store, preferring
+// s.stateStore so direct struct construction and post-New overrides stay consistent
+// with s.robotRuntime.
+func (s *Server) projectionStore() *state.Store {
+	if s == nil {
+		return nil
+	}
+	if s.stateStore != nil {
+		return s.stateStore
+	}
+	return s.robotRuntime.ProjectionStore()
+}
+
 // handleRobotStatus handles /api/robot/status - proxies to robot status.
 func (s *Server) robotPaginationOptions() robot.PaginationOptions {
+	if store := s.projectionStore(); store != nil {
+		return robot.PaginationOptions{
+			Store:         store,
+			ExplicitStore: true,
+		}
+	}
 	if s.robotRuntime != nil {
 		return s.robotRuntime.PaginationOptions(0, 0)
 	}
 	return robot.PaginationOptions{
-		Store:         s.stateStore,
+		Store:         nil,
 		ExplicitStore: true,
 	}
 }
@@ -518,6 +537,7 @@ func (s *Server) handleRobotAttentionV1(w http.ResponseWriter, r *http.Request) 
 		actionRequiredOnly = parsed
 	}
 
+	feed := s.getAttentionFeed()
 	output, err := robot.GetAttention(robot.AttentionQueryOptions{
 		Cursor:             cursor,
 		Limit:              limit,
@@ -525,12 +545,13 @@ func (s *Server) handleRobotAttentionV1(w http.ResponseWriter, r *http.Request) 
 		Profile:            strings.TrimSpace(q.Get("profile")),
 		CategoryFilter:     parseCSVParam(q.Get("category")),
 		ActionRequiredOnly: actionRequiredOnly,
+		Feed:               feed,
 	})
 	if err != nil {
 		var cursorErr *robot.CursorExpiredError
 		if errors.As(err, &cursorErr) {
 			newestCursor := int64(0)
-			if feed := robot.GetAttentionFeed(); feed != nil {
+			if feed != nil {
 				newestCursor = feed.CurrentCursor()
 			}
 			payload := attentionCursorExpiredPayload(cursorErr, newestCursor)

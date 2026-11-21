@@ -142,8 +142,19 @@ func NewLifecycleCoordinator() *LifecycleCoordinator {
 	}
 }
 
+const maxLifecycleHistory = 64
+
 func isInFlightState(st LifecycleState) bool {
 	return st == StateDraining || st == StateHandingOff || st == StateVerifying
+}
+
+func appendLifecycleHistory(cur *PaneLifecycle, tr LifecycleTransition) {
+	cur.History = append(cur.History, tr)
+	if len(cur.History) > maxLifecycleHistory {
+		trimmed := make([]LifecycleTransition, maxLifecycleHistory)
+		copy(trimmed, cur.History[len(cur.History)-maxLifecycleHistory:])
+		cur.History = trimmed
+	}
 }
 
 // Acquire claims exclusive ownership for paneKey and transitions idle (or
@@ -206,7 +217,7 @@ func (c *LifecycleCoordinator) Acquire(paneKey, ownerID, opID, kind string) (*Li
 	cur.LastCheckpoint = "acquired"
 	cur.RecoveryHint = ""
 	cur.UpdatedAt = now
-	cur.History = append(cur.History, LifecycleTransition{
+	appendLifecycleHistory(cur, LifecycleTransition{
 		From:      from,
 		To:        StateDraining,
 		OwnerID:   ownerID,
@@ -248,8 +259,14 @@ func (c *LifecycleCoordinator) Transition(lease *LifecycleLease, next LifecycleS
 	if !ok || cur.Token != lease.Token || cur.OwnerID != lease.OwnerID || cur.OpID != lease.OpID {
 		return fmt.Errorf("%w: pane %s owner %s op %s", ErrLeaseFenced, lease.PaneKey, lease.OwnerID, lease.OpID)
 	}
+	if !isInFlightState(cur.State) {
+		return fmt.Errorf("%w: pane %s is in non-active state %s; re-acquire lease", ErrLeaseFenced, lease.PaneKey, cur.State)
+	}
 	if cur.State == next {
 		return nil // idempotent retry
+	}
+	if next == StateIdle || next == StateDraining || next == StateActive || next == StateFailedRecoverable {
+		return fmt.Errorf("%w: pane %s cannot use Transition to move %s -> %s", ErrInvalidTransition, lease.PaneKey, cur.State, next)
 	}
 	if !ValidTransition(cur.State, next) {
 		return fmt.Errorf("%w: pane %s cannot move %s -> %s", ErrInvalidTransition, lease.PaneKey, cur.State, next)
@@ -260,7 +277,7 @@ func (c *LifecycleCoordinator) Transition(lease *LifecycleLease, next LifecycleS
 	cur.State = next
 	cur.LastCheckpoint = string(next)
 	cur.UpdatedAt = now
-	cur.History = append(cur.History, LifecycleTransition{
+	appendLifecycleHistory(cur, LifecycleTransition{
 		From:      from,
 		To:        next,
 		OwnerID:   lease.OwnerID,
@@ -312,7 +329,7 @@ func (c *LifecycleCoordinator) FailRecoverable(lease *LifecycleLease, checkpoint
 	}
 	cur.RecoveryHint = recoveryHint
 	cur.UpdatedAt = now
-	cur.History = append(cur.History, LifecycleTransition{
+	appendLifecycleHistory(cur, LifecycleTransition{
 		From:      from,
 		To:        StateFailedRecoverable,
 		OwnerID:   lease.OwnerID,
@@ -349,13 +366,16 @@ func (c *LifecycleCoordinator) Complete(lease *LifecycleLease, reason string) er
 		return fmt.Errorf("%w: pane %s owner %s op %s", ErrLeaseFenced, lease.PaneKey, lease.OwnerID, lease.OpID)
 	}
 	if cur.State == StateIdle {
-		return nil
+		if cur.LastCheckpoint == "completed" {
+			return nil
+		}
+		return fmt.Errorf("%w: pane %s was already released via %s", ErrInvalidTransition, lease.PaneKey, cur.LastCheckpoint)
 	}
 
 	now := c.now().UTC()
 	if cur.State == StateVerifying {
 		cur.State = StateActive
-		cur.History = append(cur.History, LifecycleTransition{
+		appendLifecycleHistory(cur, LifecycleTransition{
 			From:      StateVerifying,
 			To:        StateActive,
 			OwnerID:   lease.OwnerID,
@@ -373,7 +393,7 @@ func (c *LifecycleCoordinator) Complete(lease *LifecycleLease, reason string) er
 	cur.LastCheckpoint = "completed"
 	cur.RecoveryHint = ""
 	cur.UpdatedAt = now
-	cur.History = append(cur.History, LifecycleTransition{
+	appendLifecycleHistory(cur, LifecycleTransition{
 		From:      StateActive,
 		To:        StateIdle,
 		OwnerID:   lease.OwnerID,
@@ -401,7 +421,10 @@ func (c *LifecycleCoordinator) Abort(lease *LifecycleLease, reason string) error
 		return fmt.Errorf("%w: pane %s owner %s op %s", ErrLeaseFenced, lease.PaneKey, lease.OwnerID, lease.OpID)
 	}
 	if cur.State == StateIdle {
-		return nil
+		if cur.LastCheckpoint == "aborted" {
+			return nil
+		}
+		return fmt.Errorf("%w: pane %s was already released via %s", ErrInvalidTransition, lease.PaneKey, cur.LastCheckpoint)
 	}
 	if !ValidTransition(cur.State, StateIdle) {
 		return fmt.Errorf("%w: pane %s cannot abort from %s", ErrInvalidTransition, lease.PaneKey, cur.State)
@@ -413,7 +436,7 @@ func (c *LifecycleCoordinator) Abort(lease *LifecycleLease, reason string) error
 	cur.LastCheckpoint = "aborted"
 	cur.RecoveryHint = ""
 	cur.UpdatedAt = now
-	cur.History = append(cur.History, LifecycleTransition{
+	appendLifecycleHistory(cur, LifecycleTransition{
 		From:      from,
 		To:        StateIdle,
 		OwnerID:   lease.OwnerID,

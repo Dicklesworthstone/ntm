@@ -21781,6 +21781,107 @@
               }
             }
           },
+          "202": {
+            "description": "Accepted for asynchronous execution.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowControlEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limit exceeded (RATE_LIMITED). Retry-After gives the retry delay in seconds; X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset describe the limiting bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workflows/{name}/status": {
+      "get": {
+        "tags": [
+          "workflows"
+        ],
+        "summary": "Workflows status",
+        "description": "Served route `GET /api/v1/workflows/{name}/status`. Handler: `handleWorkflowsStatusV1`. Response shape reflected from Go type `WorkflowControlEnvelopeResponse`.",
+        "operationId": "get_api_v1_workflows_name_status",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project_dir",
+            "in": "query",
+            "description": "Optional existing absolute project directory override (alias: ?project=).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowControlEnvelopeResponse"
+                }
+              }
+            }
+          },
           "400": {
             "description": "Bad request",
             "content": {
@@ -21865,6 +21966,16 @@
         "responses": {
           "200": {
             "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowControlEnvelopeResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted for asynchronous execution.",
             "content": {
               "application/json": {
                 "schema": {
@@ -23604,6 +23715,9 @@
             "type": "integer"
           },
           "omp": {
+            "type": "integer"
+          },
+          "pi": {
             "type": "integer"
           },
           "user": {
@@ -44269,6 +44383,21 @@
           "total_cached"
         ]
       },
+      "RunAgent": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane",
+          "role"
+        ]
+      },
       "SSEEventStream": {
         "type": "object",
         "properties": {
@@ -53694,20 +53823,56 @@
           "action": {
             "type": "string"
           },
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunAgent"
+            }
+          },
+          "cancellation_requested": {
+            "type": "boolean"
+          },
           "checkpoint_token": {
             "type": "string"
+          },
+          "completed": {
+            "type": "boolean"
           },
           "decision": {
             "$ref": "#/components/schemas/ManualDecision"
           },
+          "dispatches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StageDispatch"
+            }
+          },
           "dry_run": {
             "type": "boolean"
+          },
+          "job": {
+            "$ref": "#/components/schemas/Job"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "job_status": {
+            "type": "string"
           },
           "manual_gate": {
             "$ref": "#/components/schemas/ManualGateStatus"
           },
+          "paused": {
+            "type": "boolean"
+          },
+          "project_dir": {
+            "type": "string"
+          },
           "request_id": {
             "type": "string"
+          },
+          "running": {
+            "type": "boolean"
           },
           "session": {
             "type": "string"
@@ -53718,10 +53883,16 @@
           "state": {
             "$ref": "#/components/schemas/WorkflowState"
           },
+          "stopped_job": {
+            "type": "boolean"
+          },
           "success": {
             "type": "boolean"
           },
           "timestamp": {
+            "type": "string"
+          },
+          "tmux_endpoint": {
             "type": "string"
           },
           "workflow": {
@@ -53803,10 +53974,31 @@
           "dry_run": {
             "type": "boolean"
           },
+          "fire_manual": {
+            "type": "boolean"
+          },
+          "interval": {
+            "type": "string"
+          },
+          "max_transitions": {
+            "type": "integer"
+          },
           "project_dir": {
             "type": "string"
           },
+          "restart": {
+            "type": "boolean"
+          },
+          "resume": {
+            "type": "boolean"
+          },
           "session": {
+            "type": "string"
+          },
+          "timeout": {
+            "type": "string"
+          },
+          "trigger_timeout": {
             "type": "string"
           },
           "variables": {

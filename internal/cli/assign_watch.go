@@ -58,6 +58,7 @@ type AutoReassignOptions struct {
 	Verbose         bool
 	Quiet           bool
 	Timeout         time.Duration
+	Limit           int
 	AgentTypeFilter string
 	DryRun          bool
 	IdleThreshold   time.Duration
@@ -168,6 +169,7 @@ func runWatchMode(cmd *cobra.Command, session, projectDir, policyProject string)
 		Verbose:         assignVerbose,
 		Quiet:           assignQuiet,
 		Timeout:         assignTimeout,
+		Limit:           assignLimit,
 		AgentTypeFilter: agentTypeFilter,
 		DryRun:          assignDryRun,
 		IdleThreshold:   idleThreshold,
@@ -257,16 +259,20 @@ func runWatchMode(cmd *cobra.Command, session, projectDir, policyProject string)
 			for _, assigned := range initialOutput.Assignments {
 				watchLoop.logf("  Would assign %s -> pane %d (%s)", assigned.BeadID, assigned.Pane, assigned.AgentType)
 			}
-		} else if err := executeAssignmentsEnhanced(ctx, session, initialOutput, assignOpts); err != nil {
-			watchLoop.logf("Warning: Failed to execute initial assignments: %v", err)
 		} else {
+			execErr := executeAssignmentsEnhanced(ctx, session, initialOutput, assignOpts)
+			if execErr != nil {
+				watchLoop.logf("Warning: Failed to execute initial assignments: %v", execErr)
+			}
 			sent := 0
 			for _, assigned := range initialOutput.Assignments {
 				if assigned.PromptSent {
 					sent++
 				}
 			}
-			watchLoop.logf("Initial assignment: %d beads dispatched", sent)
+			if sent > 0 || execErr == nil {
+				watchLoop.logf("Initial assignment: %d beads dispatched", sent)
+			}
 			for _, assigned := range initialOutput.Assignments {
 				if !assigned.PromptSent {
 					continue
@@ -666,14 +672,17 @@ func PerformAutoReassignment(ctx context.Context, completedBeadID string, opts *
 	if err != nil {
 		return result, fmt.Errorf("filter auto-reassignment dependency cycles: %w", err)
 	}
-	for i := 0; i < excluded; i++ {
+	if excluded > 0 {
+		kept := make(map[string]struct{}, len(filteredBeads))
+		for _, fb := range filteredBeads {
+			kept[fb.ID] = struct{}{}
+		}
 		for _, unblocked := range result.NewlyUnblocked {
-			if IsBeadInCycle(unblocked.ID, result.CyclesDetected) {
+			if _, ok := kept[unblocked.ID]; !ok {
 				result.Skipped = append(result.Skipped, SkippedItem{
 					BeadID: unblocked.ID,
 					Reason: "in_dependency_cycle",
 				})
-				break
 			}
 		}
 	}
@@ -690,6 +699,7 @@ func PerformAutoReassignment(ctx context.Context, completedBeadID string, opts *
 		ProjectDir:      projectDir,
 		Strategy:        opts.Strategy,
 		Relax:           opts.Relax,
+		Limit:           opts.Limit,
 		Template:        opts.Template,
 		TemplateFile:    opts.TemplateFile,
 		AgentTypeFilter: opts.AgentTypeFilter,
@@ -711,6 +721,15 @@ func PerformAutoReassignment(ctx context.Context, completedBeadID string, opts *
 	result.IdleAgents = len(idleAgents)
 
 	assignments := generateAssignmentsEnhanced(ctx, idleAgents, filteredBeads, assignOpts)
+	if opts.Limit > 0 && len(assignments) > opts.Limit {
+		for _, item := range assignments[opts.Limit:] {
+			result.Skipped = append(result.Skipped, SkippedItem{
+				BeadID: item.BeadID,
+				Reason: "limit_reached",
+			})
+		}
+		assignments = assignments[:opts.Limit]
+	}
 	result.Assignments = assignments
 
 	if len(assignments) > 0 && !opts.DryRun {
@@ -1382,9 +1401,7 @@ func (w *WatchLoop) scanReadyWork(ctx context.Context) error {
 		return nil
 	}
 
-	if err := executeAssignmentsEnhanced(ctx, w.session, out, w.scanOpts); err != nil {
-		return err
-	}
+	execErr := executeAssignmentsEnhanced(ctx, w.session, out, w.scanOpts)
 
 	w.mu.Lock()
 	for _, assigned := range out.Assignments {
@@ -1397,7 +1414,7 @@ func (w *WatchLoop) scanReadyWork(ctx context.Context) error {
 	}
 	w.mu.Unlock()
 
-	return nil
+	return execErr
 }
 
 func (w *WatchLoop) consumeCompletionEvent(ctx context.Context, event completion.CompletionEvent) error {
@@ -1545,7 +1562,15 @@ func (w *WatchLoop) handleCompletion(ctx context.Context, event completion.Compl
 	}
 
 	if assignAutoReassign {
-		result, err := PerformAutoReassignment(ctx, event.BeadID, w.opts)
+		var autoOpts *AutoReassignOptions
+		if w.opts != nil {
+			copied := *w.opts
+			if copied.Limit <= 0 && w.limit > 0 {
+				copied.Limit = w.limit
+			}
+			autoOpts = &copied
+		}
+		result, err := PerformAutoReassignment(ctx, event.BeadID, autoOpts)
 		if err != nil {
 			return fmt.Errorf("auto-reassignment failed: %w", err)
 		}
@@ -1563,6 +1588,9 @@ func (w *WatchLoop) handleCompletion(ctx context.Context, event completion.Compl
 			if dryRun {
 				w.logf("Would assign (dry-run): %s -> pane %d (%s)", assigned.BeadID, assigned.Pane, assigned.AgentType)
 			} else {
+				if !assigned.PromptSent {
+					continue
+				}
 				w.totalAssigned++
 				w.lastAssignmentAt = time.Now()
 				w.logf("Assigned: %s -> pane %d (%s)", assigned.BeadID, assigned.Pane, assigned.AgentType)

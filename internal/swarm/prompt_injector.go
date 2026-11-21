@@ -185,9 +185,9 @@ func (p *PromptInjector) logger() *slog.Logger {
 // This method is exported to satisfy the ensemble.BasicInjector interface.
 func (p *PromptInjector) GetDelayForAgent(agentType string) time.Duration {
 	if p.UseAdaptiveDelay && p.RateLimitTracker != nil {
-		return capSwarmDelay(p.TmuxClient, p.RateLimitTracker.GetOptimalDelay(agentType))
+		return capSwarmDelay(p.tmuxClient(), p.RateLimitTracker.GetOptimalDelay(agentType))
 	}
-	return capSwarmDelay(p.TmuxClient, p.StaggerDelay)
+	return capSwarmDelay(p.tmuxClient(), p.StaggerDelay)
 }
 
 // recordSuccess records a successful send to the rate limit tracker.
@@ -376,7 +376,7 @@ func (p *PromptInjector) sendToPane(ctx context.Context, sessionPane, agentType 
 
 // WaitForReady waits for the agent to show an idle prompt.
 func (p *PromptInjector) WaitForReady(ctx context.Context, target, agentType string) error {
-	pollInterval := capSwarmDelay(p.TmuxClient, 250*time.Millisecond)
+	pollInterval := capSwarmDelay(p.tmuxClient(), 250*time.Millisecond)
 	if pollInterval <= 0 {
 		pollInterval = 250 * time.Millisecond
 	}

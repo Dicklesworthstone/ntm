@@ -1482,10 +1482,11 @@ func TestApplyClaudeIsolation(t *testing.T) {
 	applyClaudeIsolation := func(cfg *config.Config, workDir, sessionName string, pane PaneState, command string) (string, error) {
 		pane.Command = command
 		state := &SessionState{Name: sessionName, WorkDir: workDir, Panes: []PaneState{pane}}
-		launches, err := preflightSavedLaunches(t.Context(), state, AgentCommands{}, cfg, nil)
+		launches, err := preflightSavedLaunches(t.Context(), sessionName, state, AgentCommands{}, cfg, nil)
 		if err != nil {
 			return "", err
 		}
+		defer closeSavedLaunches(launches)
 		return launches[0].plan.Prepare(t.Context(), workDir, sessionName, 0)
 	}
 
@@ -1569,6 +1570,9 @@ func savedSessionRestoreFixture(t *testing.T) string {
 	t.Setenv("NTM_SESSION_TEST_CWD", dir)
 	t.Setenv("NTM_SESSION_TEST_METADATA_FAIL", "")
 	t.Setenv("NTM_SESSION_TEST_PID", "9999998")
+	t.Setenv("NTM_SESSION_TEST_RACE_PANE", "")
+	t.Setenv("NTM_SESSION_TEST_RACE_PHASE", "")
+	t.Setenv("NTM_SESSION_TEST_RETAG_PANE", "")
 	bin := filepath.Join(dir, "tmux")
 	const script = `#!/bin/sh
 printf '%s\n' "$*" >> "$NTM_SESSION_TEST_LOG"
@@ -1592,9 +1596,42 @@ case "$1" in
       printf '%%%s_NTM_SEP_%s_NTM_SEP__NTM_SEP_bash_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_%s_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$i" "$i" "$NTM_SESSION_TEST_PID" "$type"
       i=$((i + 1))
     done ;;
-  display-message) printf '%s\n' "$NTM_SESSION_TEST_CWD" ;;
+  display-message)
+    if [ "$5" = '[#{@ntm_agent_type}]' ]; then
+      type=cod
+      if [ -f "$NTM_SESSION_TEST_RECORD_DIR/type$4" ]; then type=$(cat "$NTM_SESSION_TEST_RECORD_DIR/type$4"); fi
+      printf '[%s]\n' "$type"
+    else
+      printf '%s\n' "$NTM_SESSION_TEST_CWD"
+    fi ;;
+  if-shell)
+    target="$4"
+    cond="$5"
+    true_cmd="$6"
+    case "$cond" in
+      *'#{==:#{pane_pid},'*'#{==:#{pane_dead},0}'*'#{==:#{pane_current_command},bash}'*) ;;
+      *)
+        echo "fixture missing atomic pane guard condition: $cond" >&2
+        exit 99 ;;
+    esac
+    phase="other"
+    case "$true_cmd" in
+      *'@ntm_agent_launch'*) phase="metadata" ;;
+      *"'send-keys'"*"'Enter'") phase="enter" ;;
+      *'send-keys'*|*'paste-buffer'*) phase="input" ;;
+    esac
+    if [ -n "$NTM_SESSION_TEST_RACE_PANE" ] && [ "$target" = "$NTM_SESSION_TEST_RACE_PANE" ] && [ "$phase" = "$NTM_SESSION_TEST_RACE_PHASE" ]; then
+      printf 'ntm_pane_identity_changed\n'
+      exit 0
+    fi
+    eval "exec \"\$0\" $true_cmd" ;;
   set-option)
-    if [ "$5" = '@ntm_agent_type' ]; then printf '%s\n' "$6" > "$NTM_SESSION_TEST_RECORD_DIR/type$4"; fi
+    if [ "$5" = '@ntm_agent_type' ]; then
+      printf '%s\n' "$6" > "$NTM_SESSION_TEST_RECORD_DIR/type$4"
+      if [ -n "$NTM_SESSION_TEST_RETAG_PANE" ] && [ "$4" = "$NTM_SESSION_TEST_RETAG_PANE" ]; then
+        printf 'cc\n' > "$NTM_SESSION_TEST_RECORD_DIR/type$4"
+      fi
+    fi
     if [ "$5" = '@ntm_agent_launch' ]; then
       if [ "$4" = "$NTM_SESSION_TEST_METADATA_FAIL" ]; then
         echo 'metadata persistence failed' >&2
@@ -1609,10 +1646,40 @@ case "$1" in
       echo 'invalid option: @ntm_agent_launch' >&2
       exit 1
     fi ;;
+  load-buffer)
+    cat > "$NTM_SESSION_TEST_RECORD_DIR/buf-$3" ;;
+  paste-buffer)
+    pane="$7"
+    buf="$5"
+    if [ "$pane" = "$NTM_SESSION_TEST_FAIL_PANE" ]; then
+      echo 'fixture pane dispatch failed' >&2
+      exit 2
+    fi
+    if [ -f "$NTM_SESSION_TEST_RECORD_DIR/buf-$buf" ]; then
+      payload=$(cat "$NTM_SESSION_TEST_RECORD_DIR/buf-$buf")
+      printf 'pasted %s %s\n' "$pane" "$payload" >> "$NTM_SESSION_TEST_LOG"
+      case "$payload" in
+        '/bin/sh -p '*)
+          printf '%s\n' "$payload" > "$NTM_SESSION_TEST_RECORD_DIR/handoff-cmd-$pane" ;;
+      esac
+    fi ;;
+  delete-buffer) ;;
   send-keys)
     if [ "$3" = "$NTM_SESSION_TEST_FAIL_PANE" ]; then
       echo 'fixture pane dispatch failed' >&2
       exit 2
+    fi
+    if [ "$4" = '-l' ] && [ "$5" = '--' ]; then
+      case "$6" in
+        '/bin/sh -p '*)
+          printf '%s\n' "$6" > "$NTM_SESSION_TEST_RECORD_DIR/handoff-cmd-$3" ;;
+      esac
+    elif [ "$4" = 'Enter' ] && [ -f "$NTM_SESSION_TEST_RECORD_DIR/handoff-cmd-$3" ]; then
+      cmd=$(cat "$NTM_SESSION_TEST_RECORD_DIR/handoff-cmd-$3")
+      rm -f "$NTM_SESSION_TEST_RECORD_DIR/handoff-cmd-$3"
+      pipe=$(eval "set -- $cmd; printf '%s' \"\$3\"")
+      out="$NTM_SESSION_TEST_RECORD_DIR/handoff-payload-$3"
+      sh -c 'cat "$1" > "$2.tmp" && mv "$2.tmp" "$2"' _ "$pipe" "$out" </dev/null >/dev/null 2>&1 &
     fi ;;
 esac
 `
@@ -1621,7 +1688,9 @@ esac
 	}
 	t.Setenv("NTM_TMUX_BINARY", bin)
 	oldClient := tmux.DefaultClient
-	tmux.DefaultClient = tmux.NewClient("")
+	fastClient := tmux.NewClient("")
+	fastClient.MaxSendDelay = 2 * time.Millisecond
+	tmux.DefaultClient = fastClient
 	t.Cleanup(func() { tmux.DefaultClient = oldClient })
 	return logPath
 }

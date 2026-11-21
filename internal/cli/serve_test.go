@@ -491,7 +491,6 @@ func TestServeBindsUnder200msWithSlowBVAndShutsDownUnder500msOnSIGTERM(t *testin
 }
 
 func TestRobotPolicyDecisionsCLIFlagAndStoreQuery(t *testing.T) {
-	t.Parallel()
 	if rootCmd.Flags().Lookup("robot-policy-decisions") == nil {
 		t.Fatal("--robot-policy-decisions flag not registered on rootCmd")
 	}

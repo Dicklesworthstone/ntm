@@ -352,6 +352,8 @@ func TestJobExecutionResourcesMatchEngineTargets(t *testing.T) {
 	}{
 		{"run", JobTypePipelineRun, map[string]interface{}{"session": "project"}, []string{"session:project"}},
 		{"inline", JobTypePipelineExec, map[string]interface{}{"session": "project--dev"}, []string{"session:project--dev"}},
+		{"workflow run", JobTypeWorkflowRun, map[string]interface{}{"session": "project"}, []string{"session:project"}},
+		{"workflow run trimmed", JobTypeWorkflowRun, map[string]interface{}{"session": " project "}, []string{"session:project"}},
 		{"ensemble spawn", JobTypeEnsembleSpawn, map[string]interface{}{"session": "project"}, []string{"session:project"}},
 		{"ensemble spawn trimmed", JobTypeEnsembleSpawn, map[string]interface{}{"session": " project "}, []string{"session:project"}},
 		{"ensemble synthesize", JobTypeEnsembleSynthesize, map[string]interface{}{"session": "project"}, []string{"session:project"}},

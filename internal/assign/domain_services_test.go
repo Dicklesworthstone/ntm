@@ -1,6 +1,7 @@
 package assign
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -238,5 +239,56 @@ func TestDomainAtomicReservationPortAndReleaseReceipt(t *testing.T) {
 	}, []string{" internal/old.go ", "internal/old.go"}, errors.New("boom"))
 	if !reflect.DeepEqual(errReceipt.ReleasedPaths, []string{"internal/old.go"}) || len(errReceipt.ReleasedReservationIDs) != 0 {
 		t.Fatalf("unexpected error release receipt: %+v", errReceipt)
+	}
+
+	// Nil manager must fail before invoking discoverPaths.
+	discoverCalled := false
+	nilPort := NewAtomicReservationPort(nil, "", func(context.Context, assignment.ReservationRequest) []string {
+		discoverCalled = true
+		return []string{"internal/x.go"}
+	})
+	rec, err := nilPort.ReconcileReservation(context.Background(), req, assignment.LeaseReceipt{})
+	if err == nil || rec.State != assignment.ReservationReconciliationUnknown {
+		t.Fatalf("nil manager ReconcileReservation = (%+v, %v), want unknown+error", rec, err)
+	}
+	if discoverCalled {
+		t.Fatal("ReconcileReservation invoked discoverPaths even though manager is nil")
+	}
+}
+
+func TestDomainPlannerDeterminismAndSingleStrategyBoost(t *testing.T) {
+	t.Parallel()
+
+	// Multi-keyword titles must score deterministically across repeated calls.
+	first := CalculateMatchConfidence("claude", "Fix doc comment", "P1", "balanced")
+	for i := 0; i < 100; i++ {
+		if got := CalculateMatchConfidence("claude", "Fix doc comment", "P1", "balanced"); got != first {
+			t.Fatalf("non-deterministic CalculateMatchConfidence on iteration %d: got %v, want %v", i, got, first)
+		}
+	}
+
+	// Speed strategy must apply its boost once (not twice).
+	agents := []LegacyPlanAgent{
+		{Pane: tmux.Pane{ID: "%1", Index: 1}, AgentType: "codex", AgentName: "BluePeak"},
+		{Pane: tmux.Pane{ID: "%2", Index: 2}, AgentType: "claude", AgentName: "GreenLake"},
+	}
+	speedPlan := PlanLegacyStrategy(agents, []LegacyPlanBead{
+		{ID: "bd-s1", Title: "Refactor router", Priority: "P2"},
+	}, LegacyPlanOptions{Strategy: "speed", AssignedAt: "2026-11-21T00:00:00Z"})
+	wantSpeed := CalculateMatchConfidence("codex", "Refactor router", "P2", "speed")
+	if len(speedPlan) != 1 || speedPlan[0].Score != wantSpeed {
+		t.Fatalf("speed plan score = %+v, want %v (no double-boost)", speedPlan, wantSpeed)
+	}
+
+	// Dependency strategy on P1 must not double-boost a 0.8 agent to tie a 0.9 specialist.
+	depAgents := []LegacyPlanAgent{
+		{Pane: tmux.Pane{ID: "%1", Index: 1}, AgentType: "claude", AgentName: "GreenLake"}, // feature: 0.8 -> +0.1 = 0.90
+		{Pane: tmux.Pane{ID: "%2", Index: 2}, AgentType: "codex", AgentName: "BluePeak"},   // feature: 0.9 -> +0.1 = 0.95
+	}
+	depPlan := PlanLegacyStrategy(depAgents, []LegacyPlanBead{
+		{ID: "bd-d1", Title: "Implement new scheduler", Priority: "P1"},
+	}, LegacyPlanOptions{Strategy: "dependency", AssignedAt: "2026-11-21T00:00:00Z"})
+	if len(depPlan) != 1 || depPlan[0].AgentType != "codex" {
+		t.Fatalf("dependency strategy should pick codex specialist (0.95 vs 0.90), got %+v", depPlan)
 	}
 }

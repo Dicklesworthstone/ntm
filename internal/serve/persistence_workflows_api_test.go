@@ -2,6 +2,7 @@ package serve
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/session"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/workflow"
 )
 
@@ -38,6 +40,7 @@ func TestPersistenceWorkflowsOpenAPISchemaContracts(t *testing.T) {
 		{http.MethodGet, "/api/v1/workflows", "#/components/schemas/WorkflowsEnvelopeResponse", ""},
 		{http.MethodGet, "/api/v1/workflows/{name}", "#/components/schemas/WorkflowsEnvelopeResponse", ""},
 		{http.MethodPost, "/api/v1/workflows/{name}/run", "#/components/schemas/WorkflowControlEnvelopeResponse", "#/components/schemas/WorkflowRunRequest"},
+		{http.MethodGet, "/api/v1/workflows/{name}/status", "#/components/schemas/WorkflowControlEnvelopeResponse", ""},
 		{http.MethodPost, "/api/v1/workflows/{name}/trigger", "#/components/schemas/WorkflowControlEnvelopeResponse", "#/components/schemas/WorkflowTriggerRequest"},
 		{http.MethodPost, "/api/v1/workflows/{name}/stop", "#/components/schemas/WorkflowControlEnvelopeResponse", "#/components/schemas/WorkflowStopRequest"},
 		{http.MethodPost, "/api/v1/sequences", "#/components/schemas/SequenceEnvelopeResponse", "#/components/schemas/SequenceCreateRequest"},
@@ -283,17 +286,20 @@ label = "Approve release"
 		t.Fatalf("unexpected dry_run response: %+v (%v)", wfDryRunResp, err)
 	}
 
-	wfRunRec := doReq(http.MethodPost, "/api/v1/workflows/rest-manual-gate/run", `{"session":"wf_rest_sess","project_dir":`+strconvQuote(repoDir)+`}`)
-	if statusOf(wfRunRec) != http.StatusOK {
-		t.Fatalf("POST /api/v1/workflows/rest-manual-gate/run = %d, body = %s", statusOf(wfRunRec), wfRunRec.Body.String())
+	// Non-dry-run against a nonexistent live tmux session must fail closed (404
+	// SESSION_NOT_FOUND) without creating a fabricated checkpoint on disk.
+	wfMissingSessRec := doReq(http.MethodPost, "/api/v1/workflows/rest-manual-gate/run", `{"session":"wf_rest_sess","project_dir":`+strconvQuote(repoDir)+`}`)
+	if statusOf(wfMissingSessRec) != http.StatusNotFound {
+		t.Fatalf("POST /api/v1/workflows/rest-manual-gate/run for nonexistent session = %d, want 404, body = %s", statusOf(wfMissingSessRec), wfMissingSessRec.Body.String())
 	}
-	var wfRunResp WorkflowControlEnvelopeResponse
-	if err := json.Unmarshal(wfRunRec.Body.Bytes(), &wfRunResp); err != nil || wfRunResp.CheckpointToken == "" || wfRunResp.State == nil || wfRunResp.State.TemplateHash == "" {
-		t.Fatalf("expected saved checkpoint with template hash from workflow run, got %+v (%v)", wfRunResp, err)
+	qDir := url.QueryEscape(repoDir)
+	wfMissingStatusRec := doReq(http.MethodGet, "/api/v1/workflows/wf_rest_sess/status?project_dir="+qDir, "")
+	if statusOf(wfMissingStatusRec) != http.StatusNotFound {
+		t.Fatalf("GET /api/v1/workflows/wf_rest_sess/status without run/checkpoint = %d, want 404, body = %s", statusOf(wfMissingStatusRec), wfMissingStatusRec.Body.String())
 	}
 
-	// Mark stage deliveries completed on the durable checkpoint (preserving the
-	// delivery-journal safety invariant) so RefreshManualGate publishes a gate token.
+	// Offline durable checkpoint status -> manual trigger -> stop lifecycle
+	// (e.g. pausing/approving a CLI-started or prior-server checkpoint).
 	wfStore := workflowStateStoreForProject(repoDir)
 	wfLoader := workflow.NewLoader()
 	wfLoader.ProjectDir = repoDir
@@ -301,33 +307,53 @@ label = "Approve release"
 	if err != nil {
 		t.Fatalf("reload rest-manual-gate: %v", err)
 	}
-	loadedWfState, err := wfStore.Load("wf_rest_sess")
-	if err != nil || loadedWfState == nil {
-		t.Fatalf("load wf_rest_sess checkpoint: %+v (%v)", loadedWfState, err)
+	tmplHash, err := wfTmpl.Fingerprint()
+	if err != nil {
+		t.Fatalf("Fingerprint: %v", err)
 	}
-	loadedWfState.Agents = map[string]string{"%1": "build"}
-	loadedWfState.PanePIDs = map[string]int{"%1": 1001}
-	loadedWfState.Evidence = &workflow.StageEvidence{
-		Version:   1,
-		Stage:     loadedWfState.CurrentStage,
-		StartedAt: loadedWfState.StageStartedAt,
-		Round:     loadedWfState.Turn,
-		Panes: map[string]workflow.StagePaneEvidence{
-			"%1": {PID: 1001},
+	now := time.Now().UTC().Truncate(time.Second)
+	offlineWfState := &workflow.WorkflowState{
+		WorkflowName:   wfTmpl.Name,
+		SessionName:    "wf_rest_sess",
+		CurrentStage:   "review",
+		StageStartedAt: now,
+		Agents:         map[string]string{"%1": "build"},
+		PanePIDs:       map[string]int{"%1": 1001},
+		Variables:      map[string]string{},
+		ResumeVersion:  1,
+		TemplateHash:   tmplHash,
+		ProjectRoot:    repoDir,
+		TmuxEndpoint:   "local",
+		Turn:           1,
+		Evidence: &workflow.StageEvidence{
+			Version:   1,
+			Stage:     "review",
+			StartedAt: now,
+			Round:     1,
+			Panes:     map[string]workflow.StagePaneEvidence{"%1": {PID: 1001, LastActivity: now}},
 		},
+		Dispatches: []workflow.StageDispatch{{Pane: "%1", Role: "build", Turn: 1, Status: "delivered"}},
 	}
-	loadedWfState.Dispatches = []workflow.StageDispatch{{Pane: "%1", Role: "build", Turn: 1, Status: "delivered"}}
-	if err := loadedWfState.RefreshManualGate(wfTmpl); err != nil {
+	if err := offlineWfState.RefreshManualGate(wfTmpl); err != nil {
 		t.Fatalf("RefreshManualGate: %v", err)
 	}
-	if err := wfStore.Save(loadedWfState); err != nil {
-		t.Fatalf("Save manual gate checkpoint: %v", err)
+	if err := wfStore.Save(offlineWfState); err != nil {
+		t.Fatalf("Save offline checkpoint: %v", err)
 	}
-	if loadedWfState.ManualGate == nil || loadedWfState.ManualGate.Token == "" {
-		t.Fatalf("expected published manual gate token, got %+v", loadedWfState.ManualGate)
+	if offlineWfState.ManualGate == nil || offlineWfState.ManualGate.Token == "" {
+		t.Fatalf("expected published manual gate token, got %+v", offlineWfState.ManualGate)
 	}
 
-	wfTrigRec := doReq(http.MethodPost, "/api/v1/workflows/wf_rest_sess/trigger", `{"token":`+strconvQuote(loadedWfState.ManualGate.Token)+`,"transition":0,"reason":"Approved via REST","project_dir":`+strconvQuote(repoDir)+`}`)
+	wfStatusRec := doReq(http.MethodGet, "/api/v1/workflows/wf_rest_sess/status?project_dir="+qDir, "")
+	if statusOf(wfStatusRec) != http.StatusOK {
+		t.Fatalf("GET /api/v1/workflows/wf_rest_sess/status = %d, body = %s", statusOf(wfStatusRec), wfStatusRec.Body.String())
+	}
+	var wfStatusResp WorkflowControlEnvelopeResponse
+	if err := json.Unmarshal(wfStatusRec.Body.Bytes(), &wfStatusResp); err != nil || wfStatusResp.ManualGate == nil || wfStatusResp.ManualGate.Token != offlineWfState.ManualGate.Token || wfStatusResp.Running {
+		t.Fatalf("unexpected offline workflow status: %+v (%v)", wfStatusResp, err)
+	}
+
+	wfTrigRec := doReq(http.MethodPost, "/api/v1/workflows/wf_rest_sess/trigger", `{"token":`+strconvQuote(offlineWfState.ManualGate.Token)+`,"transition":0,"reason":"Approved via REST","project_dir":`+strconvQuote(repoDir)+`}`)
 	if statusOf(wfTrigRec) != http.StatusOK {
 		t.Fatalf("POST /api/v1/workflows/wf_rest_sess/trigger = %d, body = %s", statusOf(wfTrigRec), wfTrigRec.Body.String())
 	}
@@ -351,7 +377,6 @@ label = "Approve release"
 	}
 
 	// 4. Sequences create -> next -> advance (expected_position=0) -> idempotent retry -> 409 conflict on future expected_position
-	qDir := url.QueryEscape(repoDir)
 	seqCreateRec := doReq(http.MethodPost, "/api/v1/sequences", `{"name":"review-seq","steps":["inspect","challenge","summarize"],"project_dir":`+strconvQuote(repoDir)+`}`)
 	if statusOf(seqCreateRec) != http.StatusOK {
 		t.Fatalf("POST /api/v1/sequences status = %d, body = %s", statusOf(seqCreateRec), seqCreateRec.Body.String())
@@ -402,4 +427,579 @@ label = "Approve release"
 func strconvQuote(s string) string {
 	raw, _ := json.Marshal(s)
 	return string(raw)
+}
+
+type workflowProductionTmuxFixture struct {
+	root          string
+	session       string
+	callsPath     string
+	deliveredPath string
+}
+
+func setupWorkflowProductionTmuxFixture(t *testing.T, sessionName string) *workflowProductionTmuxFixture {
+	t.Helper()
+	root := t.TempDir()
+	callsPath := filepath.Join(root, "tmux-calls.log")
+	deliveredPath := filepath.Join(root, "deliveries.log")
+	pid := os.Getpid()
+	// Exact 14-field list-panes output matching tmux.GetPanesContext.
+	pane1 := fmt.Sprintf("%%1_NTM_SEP_1_NTM_SEP_%s__cc_1_NTM_SEP_claude_NTM_SEP_120_NTM_SEP_40_NTM_SEP_1_NTM_SEP_%d_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0_NTM_SEP_[]", sessionName, pid)
+	pane2 := fmt.Sprintf("%%2_NTM_SEP_2_NTM_SEP_%s__cc_2_NTM_SEP_claude_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_%d_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0_NTM_SEP_[]", sessionName, pid)
+
+	script := fmt.Sprintf(`#!/bin/sh
+set -eu
+ROOT=%q
+EXPECTED_SESS=%q
+printf '%%s\n' "$*" >> "$ROOT/tmux-calls.log"
+cmd="$1"
+shift
+case "$cmd" in
+  -V)
+    echo 'tmux 3.4'
+    ;;
+  has-session)
+    target=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -t) target="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    if [ "$target" != "=$EXPECTED_SESS" ] && [ "$target" != "$EXPECTED_SESS" ]; then
+      echo "can't find session: $target" >&2
+      exit 1
+    fi
+    ;;
+  list-panes)
+    target=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -t) target="$2"; shift 2 ;;
+        -F) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    if [ "$target" != "=$EXPECTED_SESS" ]; then
+      echo "can't find session: $target" >&2
+      exit 1
+    fi
+    printf '%%s\n' %q
+    printf '%%s\n' %q
+    ;;
+  display-message)
+    fmt=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -t) shift 2 ;;
+        -p) shift ;;
+        *) fmt="$1"; shift ;;
+      esac
+    done
+    case "$fmt" in
+      *ntm_rotation_token*) printf '[]\n' ;;
+      *) printf '%%s\n' "$ROOT" ;;
+    esac
+    ;;
+  capture-pane)
+    printf 'Claude Code ready\n❯ \n'
+    ;;
+  load-buffer)
+    buf="default"
+    src=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -b) buf="$2"; shift 2 ;;
+        *) src="$1"; shift ;;
+      esac
+    done
+    if [ "$src" = "-" ] || [ -z "$src" ]; then
+      cat > "$ROOT/buf-$buf"
+    else
+      cp "$src" "$ROOT/buf-$buf"
+    fi
+    ;;
+  paste-buffer)
+    buf="default"
+    target=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -b) buf="$2"; shift 2 ;;
+        -t) target="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    printf '===DELIVERY pane=%%s===\n' "$target" >> "$ROOT/deliveries.log"
+    if [ -f "$ROOT/buf-$buf" ]; then
+      cat "$ROOT/buf-$buf" >> "$ROOT/deliveries.log"
+      printf '\n' >> "$ROOT/deliveries.log"
+    fi
+    ;;
+  send-keys)
+    target=""
+    literal=0
+    text=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -t) target="$2"; shift 2 ;;
+        -l) literal=1; shift ;;
+        --) shift; text="$*"; break ;;
+        *) text="$1"; shift ;;
+      esac
+    done
+    if [ "$literal" -eq 1 ] && [ -n "$text" ]; then
+      printf '===DELIVERY pane=%%s===\n%%s\n' "$target" "$text" >> "$ROOT/deliveries.log"
+    fi
+    ;;
+  delete-buffer)
+    ;;
+esac
+`, root, sessionName, pane1, pane2)
+
+	binPath := filepath.Join(root, "fake-tmux")
+	if err := os.WriteFile(binPath, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", binPath)
+	oldClient := tmux.DefaultClient
+	fastClient := tmux.NewClient("")
+	fastClient.MaxSendDelay = 2 * time.Millisecond
+	tmux.DefaultClient = fastClient
+	t.Cleanup(func() {
+		tmux.DefaultClient = oldClient
+	})
+	return &workflowProductionTmuxFixture{
+		root:          root,
+		session:       sessionName,
+		callsPath:     callsPath,
+		deliveredPath: deliveredPath,
+	}
+}
+
+func (f *workflowProductionTmuxFixture) deliveries() string {
+	data, _ := os.ReadFile(f.deliveredPath)
+	return string(data)
+}
+
+func (f *workflowProductionTmuxFixture) callCount() int {
+	data, err := os.ReadFile(f.callsPath)
+	if err != nil || len(data) == 0 {
+		return 0
+	}
+	return strings.Count(string(data), "\n")
+}
+
+func writeWorkflowFixtureTOML(t *testing.T, repoDir, filename, content string) {
+	t.Helper()
+	wfDir := filepath.Join(repoDir, ".ntm", "workflows")
+	if err := os.MkdirAll(wfDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(.ntm/workflows): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wfDir, filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s): %v", filename, err)
+	}
+}
+
+func waitWorkflowStatusCondition(
+	t *testing.T,
+	doReq func(method, path, body string) *httptest.ResponseRecorder,
+	sessionName, projectDir string,
+	timeout time.Duration,
+	cond func(WorkflowControlEnvelopeResponse) bool,
+) WorkflowControlEnvelopeResponse {
+	t.Helper()
+	qDir := url.QueryEscape(projectDir)
+	deadline := time.Now().Add(timeout)
+	var last WorkflowControlEnvelopeResponse
+	var lastStatus int
+	var lastBody string
+	for time.Now().Before(deadline) {
+		rec := doReq(http.MethodGet, "/api/v1/workflows/"+sessionName+"/status?project_dir="+qDir, "")
+		lastStatus = rec.Result().StatusCode
+		lastBody = rec.Body.String()
+		if lastStatus == http.StatusOK {
+			var env WorkflowControlEnvelopeResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &env); err == nil {
+				last = env
+				if cond(env) {
+					return env
+				}
+			}
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for workflow status condition on %s (last HTTP %d): %+v (body=%s)", sessionName, lastStatus, last, lastBody)
+	return WorkflowControlEnvelopeResponse{}
+}
+
+// TestWorkflowsRESTProductionTransportManualGateAndCompletion proves that
+// POST /api/v1/workflows/{name}/run launches a real managed job running the
+// production workflow coordinator, dispatches stage prompts through the real
+// dispatchsvc -> TMUXDeliverer -> tmux transport, exposes live manual gates on
+// GET /api/v1/workflows/{session}/status, advances live stages when
+// POST /api/v1/workflows/{session}/trigger is called, and completes cleanly.
+func TestWorkflowsRESTProductionTransportManualGateAndCompletion(t *testing.T) {
+	fx := setupWorkflowProductionTmuxFixture(t, "wf_prod_live")
+	repoDir := t.TempDir()
+	writeWorkflowFixtureTOML(t, repoDir, "prod-manual-flow.toml", `name = "prod-manual-flow"
+description = "Two-stage production REST workflow"
+coordination = "pipeline"
+
+[[agents]]
+profile = "builder"
+role = "build"
+
+[[agents]]
+profile = "reviewer"
+role = "review"
+
+[[prompts]]
+key = "feature"
+question = "Feature to implement?"
+required = true
+
+[flow]
+initial = "build"
+stages = ["build", "review", "done"]
+
+[[flow.transitions]]
+from = "build"
+to = "review"
+[flow.transitions.trigger]
+type = "manual"
+label = "Approve build"
+
+[[flow.transitions]]
+from = "review"
+to = "done"
+[flow.transitions.trigger]
+type = "manual"
+label = "Ship release"
+`)
+
+	srv := NewHermeticServer("1.39.0-bd-mu7qd")
+	t.Cleanup(func() { srv.Stop() })
+	router := srv.Router()
+	doReq := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// Exact session check: a prefix of the live session must NOT match.
+	prefixRec := doReq(http.MethodPost, "/api/v1/workflows/prod-manual-flow/run",
+		`{"session":"wf_prod","project_dir":`+strconvQuote(repoDir)+`,"variables":{"feature":"rest-live"}}`)
+	if prefixRec.Code != http.StatusNotFound {
+		t.Fatalf("prefix session match = %d, want 404 (%s)", prefixRec.Code, prefixRec.Body.String())
+	}
+
+	// Missing required variable fails 400 before touching tmux or jobs.
+	missingVarRec := doReq(http.MethodPost, "/api/v1/workflows/prod-manual-flow/run",
+		`{"session":"wf_prod_live","project_dir":`+strconvQuote(repoDir)+`}`)
+	if missingVarRec.Code != http.StatusBadRequest {
+		t.Fatalf("missing required var = %d, want 400 (%s)", missingVarRec.Code, missingVarRec.Body.String())
+	}
+
+	// Start the real managed workflow job.
+	runRec := doReq(http.MethodPost, "/api/v1/workflows/prod-manual-flow/run",
+		`{"session":"wf_prod_live","project_dir":`+strconvQuote(repoDir)+`,"variables":{"feature":"rest-live"},"interval":"15ms"}`)
+	if runRec.Code != http.StatusAccepted {
+		t.Fatalf("POST /api/v1/workflows/prod-manual-flow/run = %d, want 202 (%s)", runRec.Code, runRec.Body.String())
+	}
+	var runEnv WorkflowControlEnvelopeResponse
+	if err := json.Unmarshal(runRec.Body.Bytes(), &runEnv); err != nil {
+		t.Fatalf("decode run response: %v", err)
+	}
+	if runEnv.JobID == "" || !runEnv.Running || runEnv.Workflow != "prod-manual-flow" || runEnv.Session != "wf_prod_live" {
+		t.Fatalf("unexpected run envelope: %+v", runEnv)
+	}
+	if gotLoc := runRec.Header().Get("Location"); gotLoc != "/api/v1/jobs/"+runEnv.JobID {
+		t.Fatalf("Location header = %q, want %q", gotLoc, "/api/v1/jobs/"+runEnv.JobID)
+	}
+
+	// Concurrent second run on the exact same (project_dir, session) must 409.
+	dupRec := doReq(http.MethodPost, "/api/v1/workflows/prod-manual-flow/run",
+		`{"session":"wf_prod_live","project_dir":`+strconvQuote(repoDir)+`,"variables":{"feature":"rest-live"}}`)
+	if dupRec.Code != http.StatusConflict {
+		t.Fatalf("duplicate concurrent run = %d, want 409 (%s)", dupRec.Code, dupRec.Body.String())
+	}
+
+	// Wait for the real coordinator to deliver stage "build" and publish its live manual gate.
+	buildStatus := waitWorkflowStatusCondition(t, doReq, "wf_prod_live", repoDir, 8*time.Second, func(env WorkflowControlEnvelopeResponse) bool {
+		return env.Stage == "build" && env.ManualGate != nil && env.ManualGate.Token != "" && len(env.Dispatches) == 1 && env.Dispatches[0].Status == "delivered"
+	})
+	if !buildStatus.Running || buildStatus.JobID != runEnv.JobID {
+		t.Fatalf("expected live running job on build stage, got %+v", buildStatus)
+	}
+	deliveries := fx.deliveries()
+	if !strings.Contains(deliveries, "===DELIVERY pane=%1===") || !strings.Contains(deliveries, "[ntm workflow prod-manual-flow] stage build turn 1") || !strings.Contains(deliveries, "feature: rest-live") {
+		t.Fatalf("production transport did not receive build prompt on %%1:\n%s", deliveries)
+	}
+
+	// Trigger stage 1 manual gate -> live coordinator consumes it and advances to "review".
+	trig1Rec := doReq(http.MethodPost, "/api/v1/workflows/wf_prod_live/trigger",
+		`{"token":`+strconvQuote(buildStatus.ManualGate.Token)+`,"transition":0,"reason":"Build verified","project_dir":`+strconvQuote(repoDir)+`}`)
+	if trig1Rec.Code != http.StatusOK {
+		t.Fatalf("trigger build->review = %d (%s)", trig1Rec.Code, trig1Rec.Body.String())
+	}
+
+	reviewStatus := waitWorkflowStatusCondition(t, doReq, "wf_prod_live", repoDir, 8*time.Second, func(env WorkflowControlEnvelopeResponse) bool {
+		return env.Stage == "review" && env.ManualGate != nil && env.ManualGate.Token != "" && env.ManualGate.Token != buildStatus.ManualGate.Token && len(env.Dispatches) == 1 && env.Dispatches[0].Status == "delivered"
+	})
+	deliveries = fx.deliveries()
+	if !strings.Contains(deliveries, "===DELIVERY pane=%2===") || !strings.Contains(deliveries, "[ntm workflow prod-manual-flow] stage review turn 2") {
+		t.Fatalf("production transport did not receive review prompt on %%2:\n%s", deliveries)
+	}
+
+	// Trigger stage 2 manual gate -> live coordinator reaches terminal "done" and completes managed job.
+	trig2Rec := doReq(http.MethodPost, "/api/v1/workflows/wf_prod_live/trigger",
+		`{"token":`+strconvQuote(reviewStatus.ManualGate.Token)+`,"transition":1,"reason":"Ready to ship","project_dir":`+strconvQuote(repoDir)+`}`)
+	if trig2Rec.Code != http.StatusOK {
+		t.Fatalf("trigger review->done = %d (%s)", trig2Rec.Code, trig2Rec.Body.String())
+	}
+
+	doneStatus := waitWorkflowStatusCondition(t, doReq, "wf_prod_live", repoDir, 8*time.Second, func(env WorkflowControlEnvelopeResponse) bool {
+		return env.Completed && !env.Running && env.JobStatus == JobStatusCompleted
+	})
+	if doneStatus.Stage != "done" || doneStatus.JobID != runEnv.JobID {
+		t.Fatalf("unexpected completed workflow status: %+v", doneStatus)
+	}
+	// Exactly two prompts dispatched through production transport (build -> %1, review -> %2).
+	if gotCount := strings.Count(fx.deliveries(), "===DELIVERY "); gotCount != 2 {
+		t.Fatalf("delivery count = %d, want 2:\n%s", gotCount, fx.deliveries())
+	}
+}
+
+// TestWorkflowsRESTStopCancelsActualRunningJobAndEnforcesProjectIdentity proves:
+//  1. Stop scoped to a different project_dir cannot cancel a running workflow job.
+//  2. PATCH /api/v1/config cannot redirect an already-admitted workflow job.
+//  3. POST /api/v1/workflows/{session}/stop genuinely cancels the live coordinator
+//     goroutine (tmux polling ceases), marks the managed job cancelled, and
+//     durably pauses the checkpoint.
+//  4. Subsequent run with resume=true continues cleanly without resending the
+//     already-delivered stage prompt.
+func TestWorkflowsRESTStopCancelsActualRunningJobAndEnforcesProjectIdentity(t *testing.T) {
+	fx := setupWorkflowProductionTmuxFixture(t, "wf_stop_live")
+	projectA := t.TempDir()
+	projectB := t.TempDir()
+	writeWorkflowFixtureTOML(t, projectA, "stop-flow.toml", `name = "stop-flow"
+description = "True stop cancellation and resume verification"
+coordination = "pipeline"
+
+[[agents]]
+profile = "builder"
+role = "build"
+
+[flow]
+initial = "build"
+stages = ["build", "done"]
+
+[[flow.transitions]]
+from = "build"
+to = "done"
+[flow.transitions.trigger]
+type = "manual"
+label = "Complete build"
+`)
+
+	srv := NewHermeticServer("1.39.0-bd-mu7qd")
+	t.Cleanup(func() { srv.Stop() })
+	router := srv.Router()
+	doReq := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	runRec := doReq(http.MethodPost, "/api/v1/workflows/stop-flow/run",
+		`{"session":"wf_stop_live","project_dir":`+strconvQuote(projectA)+`,"interval":"15ms"}`)
+	if runRec.Code != http.StatusAccepted {
+		t.Fatalf("start stop-flow = %d (%s)", runRec.Code, runRec.Body.String())
+	}
+	var runEnv WorkflowControlEnvelopeResponse
+	if err := json.Unmarshal(runRec.Body.Bytes(), &runEnv); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+
+	liveStatus := waitWorkflowStatusCondition(t, doReq, "wf_stop_live", projectA, 8*time.Second, func(env WorkflowControlEnvelopeResponse) bool {
+		return env.Running && env.ManualGate != nil && env.ManualGate.Token != ""
+	})
+	gateToken := liveStatus.ManualGate.Token
+
+	// Switch the server's default project_dir to projectB via PATCH /config.
+	patchRec := doReq(http.MethodPatch, "/api/v1/config", `{"project_dir":`+strconvQuote(projectB)+`}`)
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("PATCH /api/v1/config = %d (%s)", patchRec.Code, patchRec.Body.String())
+	}
+
+	// Stopping against projectB MUST NOT stop the running job in projectA.
+	wrongProjStop := doReq(http.MethodPost, "/api/v1/workflows/wf_stop_live/stop",
+		`{"reason":"Wrong project stop","project_dir":`+strconvQuote(projectB)+`}`)
+	if wrongProjStop.Code != http.StatusNotFound {
+		t.Fatalf("stop with different project_dir = %d, want 404 (%s)", wrongProjStop.Code, wrongProjStop.Body.String())
+	}
+	stillLiveRec := doReq(http.MethodGet, "/api/v1/workflows/wf_stop_live/status?project_dir="+url.QueryEscape(projectA), "")
+	var stillLive WorkflowControlEnvelopeResponse
+	if err := json.Unmarshal(stillLiveRec.Body.Bytes(), &stillLive); err != nil || !stillLive.Running || stillLive.JobID != runEnv.JobID {
+		t.Fatalf("wrong-project stop affected projectA job: %+v (%v)", stillLive, err)
+	}
+
+	// Stop the actual running job in projectA.
+	stopRec := doReq(http.MethodPost, "/api/v1/workflows/wf_stop_live/stop",
+		`{"reason":"Operator halted live run","project_dir":`+strconvQuote(projectA)+`}`)
+	if stopRec.Code != http.StatusOK {
+		t.Fatalf("stop projectA workflow = %d (%s)", stopRec.Code, stopRec.Body.String())
+	}
+	var stopEnv WorkflowControlEnvelopeResponse
+	if err := json.Unmarshal(stopRec.Body.Bytes(), &stopEnv); err != nil {
+		t.Fatalf("decode stop response: %v", err)
+	}
+	if !stopEnv.StoppedJob || stopEnv.Running || stopEnv.JobID != runEnv.JobID || stopEnv.JobStatus != JobStatusCancelled || !stopEnv.Paused || stopEnv.State == nil || stopEnv.State.PauseReason != "Operator halted live run" {
+		t.Fatalf("stop did not truly cancel job and pause checkpoint: %+v", stopEnv)
+	}
+
+	// Prove the coordinator goroutine genuinely exited (zero further tmux polling).
+	callsAfterStop := fx.callCount()
+	time.Sleep(80 * time.Millisecond)
+	if callsLater := fx.callCount(); callsLater != callsAfterStop {
+		t.Fatalf("workflow coordinator kept polling tmux after stop: calls grew from %d to %d", callsAfterStop, callsLater)
+	}
+
+	// Starting fresh without resume/restart must fail 409 on the paused checkpoint.
+	conflictRec := doReq(http.MethodPost, "/api/v1/workflows/stop-flow/run",
+		`{"session":"wf_stop_live","project_dir":`+strconvQuote(projectA)+`}`)
+	if conflictRec.Code != http.StatusConflict {
+		t.Fatalf("rerun without resume/restart = %d, want 409 (%s)", conflictRec.Code, conflictRec.Body.String())
+	}
+
+	// Resume continues the saved stage WITHOUT re-sending the already-delivered prompt.
+	resumeRec := doReq(http.MethodPost, "/api/v1/workflows/stop-flow/run",
+		`{"session":"wf_stop_live","project_dir":`+strconvQuote(projectA)+`,"resume":true,"interval":"15ms"}`)
+	if resumeRec.Code != http.StatusAccepted {
+		t.Fatalf("resume stop-flow = %d (%s)", resumeRec.Code, resumeRec.Body.String())
+	}
+	trigRec := doReq(http.MethodPost, "/api/v1/workflows/wf_stop_live/trigger",
+		`{"token":`+strconvQuote(gateToken)+`,"transition":0,"reason":"Finish after resume","project_dir":`+strconvQuote(projectA)+`}`)
+	if trigRec.Code != http.StatusOK {
+		t.Fatalf("trigger after resume = %d (%s)", trigRec.Code, trigRec.Body.String())
+	}
+	resumedDone := waitWorkflowStatusCondition(t, doReq, "wf_stop_live", projectA, 8*time.Second, func(env WorkflowControlEnvelopeResponse) bool {
+		return env.Completed && !env.Running && env.JobStatus == JobStatusCompleted
+	})
+	if resumedDone.Stage != "done" {
+		t.Fatalf("unexpected resumed completion status: %+v", resumedDone)
+	}
+	if gotCount := strings.Count(fx.deliveries(), "===DELIVERY "); gotCount != 1 {
+		t.Fatalf("resume duplicated already-delivered prompt: delivery count = %d, want 1\n%s", gotCount, fx.deliveries())
+	}
+}
+
+// TestWorkflowsManagedJobsAPICancelAndDryRun proves POST /api/v1/jobs with
+// type="workflow_run" shares the exact same production engine, supports
+// dry_run validation, and cancels cleanly via DELETE /api/v1/jobs/{id}.
+func TestWorkflowsManagedJobsAPICancelAndDryRun(t *testing.T) {
+	fx := setupWorkflowProductionTmuxFixture(t, "wf_jobs_live")
+	repoDir := t.TempDir()
+	writeWorkflowFixtureTOML(t, repoDir, "jobs-flow.toml", `name = "jobs-flow"
+description = "Managed jobs API workflow test"
+coordination = "pipeline"
+
+[[agents]]
+profile = "builder"
+role = "build"
+
+[flow]
+initial = "build"
+stages = ["build", "done"]
+
+[[flow.transitions]]
+from = "build"
+to = "done"
+[flow.transitions.trigger]
+type = "manual"
+label = "Done"
+`)
+
+	srv := NewHermeticServer("1.39.0-bd-mu7qd")
+	srv.projectDir = repoDir
+	t.Cleanup(func() { srv.Stop() })
+	router := srv.Router()
+	doReq := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// 1. Dry-run through /api/v1/jobs completes with validated status and zero tmux calls.
+	dryEnv := postJob(t, srv, `{"type":"workflow_run","session":"wf_jobs_live","params":{"workflow":"jobs-flow","dry_run":true}}`)
+	dryFinal := pollJobTerminal(t, srv, dryEnv.Job.ID)
+	if dryFinal.Job.Status != string(JobStatusCompleted) || dryFinal.Job.Result["status"] != "validated" || dryFinal.Job.Result["dry_run"] != true {
+		t.Fatalf("unexpected dry_run workflow job result: %+v", dryFinal.Job)
+	}
+	if fx.callCount() != 0 {
+		t.Fatalf("dry_run workflow job invoked tmux (%d calls)", fx.callCount())
+	}
+	// Dry-run via /api/v1/jobs must NEVER pollute GET /api/v1/workflows/{session}/status.
+	dryStatusRec := doReq(http.MethodGet, "/api/v1/workflows/wf_jobs_live/status?project_dir="+url.QueryEscape(repoDir), "")
+	if dryStatusRec.Code != http.StatusNotFound {
+		t.Fatalf("dry_run workflow job polluted /workflows/status: %d %s", dryStatusRec.Code, dryStatusRec.Body.String())
+	}
+
+	// 2. Live run through /api/v1/jobs dispatches prompt and cancels cleanly via DELETE /api/v1/jobs/{id}.
+	liveEnv := postJob(t, srv, `{"type":"workflow_run","session":"wf_jobs_live","params":{"workflow":"jobs-flow","interval":"15ms"}}`)
+	waitWorkflowStatusCondition(t, doReq, "wf_jobs_live", repoDir, 8*time.Second, func(env WorkflowControlEnvelopeResponse) bool {
+		return env.Running && env.ManualGate != nil && env.ManualGate.Token != ""
+	})
+	// Duplicate run rejection must return 409 without creating a phantom cancelled job row.
+	jobsBeforeDup := len(srv.jobStore.List())
+	dupRec := doReq(http.MethodPost, "/api/v1/workflows/jobs-flow/run", `{"session":"wf_jobs_live","resume":true}`)
+	if dupRec.Code != http.StatusConflict {
+		t.Fatalf("duplicate active workflow run = %d, want 409 (%s)", dupRec.Code, dupRec.Body.String())
+	}
+	if got := len(srv.jobStore.List()); got != jobsBeforeDup {
+		t.Fatalf("409 duplicate workflow rejection created phantom job row: before=%d after=%d", jobsBeforeDup, got)
+	}
+	delRec := doReq(http.MethodDelete, "/api/v1/jobs/"+liveEnv.Job.ID, "")
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("DELETE /api/v1/jobs/%s = %d (%s)", liveEnv.Job.ID, delRec.Code, delRec.Body.String())
+	}
+	waitWorkflowStatusCondition(t, doReq, "wf_jobs_live", repoDir, 8*time.Second, func(env WorkflowControlEnvelopeResponse) bool {
+		return !env.Running && env.JobStatus == JobStatusCancelled && env.Paused
+	})
+
+	// 3. Offline POST /api/v1/workflows/{session}/stop refuses to pause an already-completed checkpoint.
+	store := workflowStateStoreForProject(repoDir)
+	doneState := &workflow.WorkflowState{
+		SessionName:    "wf_completed_offline",
+		WorkflowName:   "jobs-flow",
+		CurrentStage:   "done",
+		Completed:      true,
+		Paused:         false,
+		StageStartedAt: time.Now().UTC(),
+	}
+	if err := store.Save(doneState); err != nil {
+		t.Fatalf("save completed checkpoint: %v", err)
+	}
+	stopDoneRec := doReq(http.MethodPost, "/api/v1/workflows/wf_completed_offline/stop", `{"reason":"should not corrupt completed"}`)
+	if stopDoneRec.Code != http.StatusConflict {
+		t.Fatalf("offline stop on completed checkpoint = %d, want 409 (%s)", stopDoneRec.Code, stopDoneRec.Body.String())
+	}
+	reloaded, err := store.Load("wf_completed_offline")
+	if err != nil || reloaded == nil || !reloaded.Completed || reloaded.Paused {
+		t.Fatalf("offline stop corrupted completed checkpoint: state=%+v err=%v", reloaded, err)
+	}
 }

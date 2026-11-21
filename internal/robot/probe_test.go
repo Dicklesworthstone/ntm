@@ -1883,7 +1883,6 @@ func TestGetProbeSession_WindowPerAgentDoesNotCollapse(t *testing.T) {
 // agent index instead, so an agent that read pane numbers off
 // --robot-is-working and fed them to --robot-probe addressed different panes.
 func TestProbeSelectorMatchesCanonicalConvention(t *testing.T) {
-	t.Parallel()
 	windowPerAgent := []tmux.Pane{
 		{ID: "%1", Index: 0, WindowIndex: 0, NTMIndex: 1, Title: "proj__cc_1", Type: tmux.AgentClaude},
 		{ID: "%2", Index: 0, WindowIndex: 1, NTMIndex: 2, Title: "proj__cc_2", Type: tmux.AgentClaude},

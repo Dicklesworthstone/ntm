@@ -377,9 +377,6 @@ func TestRecordHookRefusalAttributesSessionAndCountsMetric(t *testing.T) {
 	t.Setenv("NTM_TMUX_BINARY", fakeTmux)
 	t.Setenv("TMUX", "/tmp/fake-tmux-socket,1,0")
 	t.Setenv("TMUX_PANE", "%7")
-	oldHookTimeout := hookSessionLookupTimeout
-	hookSessionLookupTimeout = 100 * time.Millisecond
-	t.Cleanup(func() { hookSessionLookupTimeout = oldHookTimeout })
 
 	recordHookRefusal(CheckResponse{Command: `git reset --hard "HEAD~1"`, Action: "block", Pattern: `git\s+reset\s+--hard`, Reason: "destroys uncommitted work"})
 

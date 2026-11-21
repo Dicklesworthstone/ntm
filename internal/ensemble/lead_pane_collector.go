@@ -54,6 +54,9 @@ func (c *PaneSynthesisCollector) CollectSynthesisResponse(ctx context.Context, p
 	if interval <= 0 {
 		interval = DefaultLeadPollInterval
 	}
+	if interval <= 0 {
+		interval = 500 * time.Millisecond
+	}
 	maxLines := c.MaxLines
 	if maxLines <= 0 {
 		maxLines = defaultLeadCaptureLines

@@ -310,10 +310,12 @@ func runRetryAssignments(ctx context.Context, session string) error {
 			targetPane = &resolvedPane
 			targetAgentType = agentTypeForPane(resolvedPane)
 		} else if assignToType != "" {
+			wantType := normalizeAgentTypeAlias(assignToType)
 			for i := range idleAgents {
-				if idleAgents[i].agentType == assignToType {
-					targetPane = &idleAgents[i].pane
-					targetAgentType = assignToType
+				if wantType == "" || idleAgents[i].agentType == wantType {
+					paneCopy := idleAgents[i].pane
+					targetPane = &paneCopy
+					targetAgentType = idleAgents[i].agentType
 					idleAgents = append(idleAgents[:i], idleAgents[i+1:]...)
 					break
 				}
@@ -333,7 +335,8 @@ func runRetryAssignments(ctx context.Context, session string) error {
 				})
 				continue
 			}
-			targetPane = &idleAgents[0].pane
+			paneCopy := idleAgents[0].pane
+			targetPane = &paneCopy
 			targetAgentType = idleAgents[0].agentType
 			idleAgents = idleAgents[1:]
 		}
@@ -413,7 +416,7 @@ func runRetryAssignments(ctx context.Context, session string) error {
 			reservationDiscovery = failed.ReservationDiscovery
 			requestedPaths = append([]string(nil), failed.ReservationInputPaths...)
 		}
-		reservationNeedsRefresh := !failed.ReservationCompleted ||
+		reservationNeedsRefresh := !recoverAtomic || !failed.ReservationCompleted ||
 			(failed.ReservationExpiresAt != nil && !failed.ReservationExpiresAt.After(time.Now().UTC()))
 		var retryReservationMgr *assign.FileReservationManager
 		if reservationRequired && reservationNeedsRefresh {

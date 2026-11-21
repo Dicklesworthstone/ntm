@@ -217,7 +217,6 @@ func TestRedactionScanLimitOmitsCachedLocationWithoutRepeatingOperation(t *testi
 }
 
 func TestRedactionScanLimitWithholdsStreamingFrames(t *testing.T) {
-	t.Parallel()
 	padding := strings.Repeat("~", redaction.DefaultScanLimits().MaxCandidates+1)
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		t.Run(string(mode), func(t *testing.T) {

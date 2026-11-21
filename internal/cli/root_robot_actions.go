@@ -480,6 +480,7 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 			Beads:      beads,
 			Strategy:   robotAssignStrategy,
 			Relax:      robotAssignRelax,
+			Store:      currentRobotRuntime().ProjectionStore(),
 		}
 		if err := robot.PrintAssign(cmd.Context(), opts); err != nil {
 			recordRobotProcessExit(err)

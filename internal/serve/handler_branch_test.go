@@ -1282,10 +1282,11 @@ func TestHandlePaneInputV1DeliveryFailureDoesNotReportSent(t *testing.T) {
 			status, code := http.StatusInternalServerError, ErrCodeInternalError
 			if cancelAfterPaste {
 				// Canonical agent submission waits after typing before Enter.
-				// Keep a 200ms post-paste delay so a 60ms request timeout
-				// deterministically cancels that wait without sending a late Enter.
-				tmux.DefaultClient.MaxSendDelay = 200 * time.Millisecond
-				srv.paneInputTimeout = 60 * time.Millisecond
+				// Keep a 400ms post-paste delay so a 150ms request timeout
+				// gives ample headroom for multi-exec fake tmux setup while still
+				// deterministically cancelling that wait without sending a late Enter.
+				tmux.DefaultClient.MaxSendDelay = 400 * time.Millisecond
+				srv.paneInputTimeout = 150 * time.Millisecond
 				status, code = http.StatusGatewayTimeout, ErrCodeTimeout
 			} else {
 				t.Setenv("NTM_TEST_INPUT_FAIL", "send")
@@ -4462,7 +4463,6 @@ func TestHandleMemoryDaemonStart_CMNotInstalled(t *testing.T) {
 }
 
 func TestHandleMemoryDaemonStop_RunningDaemon(t *testing.T) {
-	t.Parallel()
 	tmpDir := t.TempDir()
 	pidsDir := filepath.Join(tmpDir, ".ntm", "pids")
 	if err := os.MkdirAll(pidsDir, 0o755); err != nil {
@@ -6365,7 +6365,6 @@ func TestLimitedLogBufferCapsOutput(t *testing.T) {
 }
 
 func TestStartMemoryDaemonAsync_KeepsDaemonAliveAfterStartup(t *testing.T) {
-	t.Parallel()
 	tmpDir := t.TempDir()
 	pidsDir := filepath.Join(tmpDir, ".ntm", "pids")
 	if err := os.MkdirAll(pidsDir, 0o755); err != nil {

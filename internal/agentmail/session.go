@@ -1,7 +1,6 @@
 package agentmail
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -486,18 +485,19 @@ type tokenHydrationBaseCache struct {
 	scannedAt       time.Time
 	tokensByProject map[string][]hydratedTokenRecord
 	filesByProject  map[string][]hydratedFileStat
+	watchedDirs     []hydratedFileStat
 }
 
 const (
 	tokenHydrationCacheMinDirs = 64
 	tokenHydrationCacheTTL     = 5 * time.Second
+	maxTokenHydrationBases     = 64
 )
 
 var (
 	tokenHydrationMu       sync.RWMutex
 	tokenHydrationCache    = map[string]*tokenHydrationBaseCache{}
 	tokenHydrationWriteGen atomic.Uint64
-	registrationTokensKey  = []byte("registration_tokens")
 )
 
 func tokenHydrationFilesUnchanged(files []hydratedFileStat) bool {
@@ -510,43 +510,45 @@ func tokenHydrationFilesUnchanged(files []hydratedFileStat) bool {
 	return true
 }
 
-func scanTokenHydrationBase(base string, sessionNames []string) (map[string][]hydratedTokenRecord, map[string][]hydratedFileStat) {
+type scannedRegistryCandidate struct {
+	subDir     string // empty for direct <sessDir>/agent_registry.json
+	path       string
+	fileStat   hydratedFileStat
+	projectKey string
+	cleanProj  string
+	tokens     map[string]string
+}
+
+func scanTokenHydrationBase(base string, sessionNames []string) (map[string][]hydratedTokenRecord, map[string][]hydratedFileStat, []hydratedFileStat) {
 	tokensByProject := make(map[string][]hydratedTokenRecord)
 	filesByProject := make(map[string][]hydratedFileStat)
+	watchedDirs := make([]hydratedFileStat, 0, len(sessionNames))
 
-	inspectFile := func(path string, seenProjects map[string]struct{}) {
+	readCandidate := func(subDir, path string) (scannedRegistryCandidate, bool) {
 		info, err := os.Stat(path)
 		if err != nil || !info.Mode().IsRegular() {
-			return
+			return scannedRegistryCandidate{}, false
 		}
 		data, err := os.ReadFile(path)
-		if err != nil || !bytes.Contains(data, registrationTokensKey) {
-			return
+		if err != nil {
+			return scannedRegistryCandidate{}, false
 		}
 		var registry SessionAgentRegistry
-		if err := json.Unmarshal(data, &registry); err != nil || registry.ProjectKey == "" || len(registry.RegistrationTokens) == 0 {
-			return
+		if err := json.Unmarshal(data, &registry); err != nil || registry.ProjectKey == "" {
+			return scannedRegistryCandidate{}, false
 		}
-		cleanProj := filepath.Clean(registry.ProjectKey)
-		if _, dup := seenProjects[cleanProj]; dup {
-			return
-		}
-		seenProjects[cleanProj] = struct{}{}
-		filesByProject[cleanProj] = append(filesByProject[cleanProj], hydratedFileStat{
-			path:    path,
-			modUnix: info.ModTime().UnixNano(),
-			size:    info.Size(),
-		})
-		for agentName, token := range registry.RegistrationTokens {
-			if agentName == "" || token == "" {
-				continue
-			}
-			tokensByProject[cleanProj] = append(tokensByProject[cleanProj], hydratedTokenRecord{
-				projectKey: registry.ProjectKey,
-				agentName:  agentName,
-				token:      token,
-			})
-		}
+		return scannedRegistryCandidate{
+			subDir: subDir,
+			path:   path,
+			fileStat: hydratedFileStat{
+				path:    path,
+				modUnix: info.ModTime().UnixNano(),
+				size:    info.Size(),
+			},
+			projectKey: registry.ProjectKey,
+			cleanProj:  filepath.Clean(registry.ProjectKey),
+			tokens:     registry.RegistrationTokens,
+		}, true
 	}
 
 	for _, sessName := range sessionNames {
@@ -554,6 +556,15 @@ func scanTokenHydrationBase(base string, sessionNames []string) (map[string][]hy
 			continue
 		}
 		sessDir := filepath.Join(base, sessName)
+		sessInfo, err := os.Stat(sessDir)
+		if err != nil || !sessInfo.IsDir() {
+			continue
+		}
+		watchedDirs = append(watchedDirs, hydratedFileStat{
+			path:    sessDir,
+			modUnix: sessInfo.ModTime().UnixNano(),
+			size:    sessInfo.Size(),
+		})
 		dirFile, err := os.Open(sessDir)
 		if err != nil {
 			continue
@@ -564,20 +575,73 @@ func scanTokenHydrationBase(base string, sessionNames []string) (map[string][]hy
 			continue
 		}
 		sort.Strings(subNames)
-		seenProjects := make(map[string]struct{}, 2)
-		hasDirect := false
+
+		byProj := make(map[string][]scannedRegistryCandidate, 2)
 		for _, sub := range subNames {
 			if sub == "agent_registry.json" {
-				hasDirect = true
+				if cand, ok := readCandidate("", filepath.Join(sessDir, "agent_registry.json")); ok {
+					byProj[cand.cleanProj] = append(byProj[cand.cleanProj], cand)
+				}
 				continue
 			}
-			inspectFile(filepath.Join(sessDir, sub, "agent_registry.json"), seenProjects)
+			subPath := filepath.Join(sessDir, sub)
+			if subInfo, statErr := os.Stat(subPath); statErr == nil && subInfo.IsDir() {
+				watchedDirs = append(watchedDirs, hydratedFileStat{
+					path:    subPath,
+					modUnix: subInfo.ModTime().UnixNano(),
+					size:    subInfo.Size(),
+				})
+				if cand, ok := readCandidate(sub, filepath.Join(subPath, "agent_registry.json")); ok {
+					byProj[cand.cleanProj] = append(byProj[cand.cleanProj], cand)
+				}
+			}
 		}
-		if hasDirect {
-			inspectFile(filepath.Join(sessDir, "agent_registry.json"), seenProjects)
+
+		// Select the winning registry per (session, project) using the exact same
+		// precedence as LoadSessionAgentRegistry / sessionArtifactPaths:
+		// projectSlugCandidates(projectKey) in order -> direct agent_registry.json ->
+		// remaining subdirectories alphabetically. Stop at the winning registry even
+		// if its registration_tokens map is empty (never resurrect stale legacy tokens),
+		// and always record its stat so later edits invalidate the cache.
+		for cleanProj, cands := range byProj {
+			if len(cands) == 0 {
+				continue
+			}
+			slugs := projectSlugCandidates(cands[0].projectKey)
+			rankOf := func(subDir string) int {
+				for idx, s := range slugs {
+					if subDir == s {
+						return idx
+					}
+				}
+				if subDir == "" {
+					return len(slugs)
+				}
+				return len(slugs) + 1
+			}
+			winner := cands[0]
+			winnerRank := rankOf(winner.subDir)
+			for _, cand := range cands[1:] {
+				r := rankOf(cand.subDir)
+				if r < winnerRank || (r == winnerRank && cand.subDir < winner.subDir) {
+					winner = cand
+					winnerRank = r
+				}
+			}
+			filesByProject[cleanProj] = append(filesByProject[cleanProj], winner.fileStat)
+			for agentName, token := range winner.tokens {
+				if agentName == "" || token == "" {
+					continue
+				}
+				tokensByProject[cleanProj] = append(tokensByProject[cleanProj], hydratedTokenRecord{
+					projectKey: winner.projectKey,
+					agentName:  agentName,
+					token:      token,
+				})
+			}
 		}
 	}
-	return tokensByProject, filesByProject
+	return tokensByProject, filesByProject, watchedDirs
 }
 
 // HydrateClientTokensForProject scans every session under the ntm
@@ -608,6 +672,7 @@ func HydrateClientTokensForProject(c *Client, projectKey string) {
 		cached.baseModUnix == baseModUnix &&
 		cached.writeGen == currentGen &&
 		time.Since(cached.scannedAt) < tokenHydrationCacheTTL &&
+		tokenHydrationFilesUnchanged(cached.watchedDirs) &&
 		tokenHydrationFilesUnchanged(cached.filesByProject[target]) {
 		for _, rec := range cached.tokensByProject[target] {
 			c.SetRegistrationToken(rec.projectKey, rec.agentName, rec.token)
@@ -627,6 +692,9 @@ func HydrateClientTokensForProject(c *Client, projectKey string) {
 	sort.Strings(sessionNames)
 
 	if len(sessionNames) < tokenHydrationCacheMinDirs {
+		tokenHydrationMu.Lock()
+		delete(tokenHydrationCache, base)
+		tokenHydrationMu.Unlock()
 		for _, sessName := range sessionNames {
 			registry, err := LoadSessionAgentRegistry(sessName, projectKey)
 			if err != nil || registry == nil {
@@ -640,14 +708,18 @@ func HydrateClientTokensForProject(c *Client, projectKey string) {
 		return
 	}
 
-	tokensByProject, filesByProject := scanTokenHydrationBase(base, sessionNames)
+	tokensByProject, filesByProject, watchedDirs := scanTokenHydrationBase(base, sessionNames)
 	tokenHydrationMu.Lock()
+	if len(tokenHydrationCache) >= maxTokenHydrationBases {
+		clear(tokenHydrationCache)
+	}
 	tokenHydrationCache[base] = &tokenHydrationBaseCache{
 		baseModUnix:     baseModUnix,
 		writeGen:        currentGen,
 		scannedAt:       time.Now(),
 		tokensByProject: tokensByProject,
 		filesByProject:  filesByProject,
+		watchedDirs:     watchedDirs,
 	}
 	tokenHydrationMu.Unlock()
 

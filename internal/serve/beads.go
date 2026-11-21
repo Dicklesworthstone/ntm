@@ -473,7 +473,7 @@ func (s *Server) publishAsyncBeadCloseAttention(jobID, beadID string, alreadyClo
 	}
 	if closeErr != nil {
 		details["error"] = closeErr.Error()
-		robot.GetAttentionFeed().Append(robot.AttentionEvent{
+		s.getAttentionFeed().Append(robot.AttentionEvent{
 			Category:      robot.EventCategoryAlert,
 			Type:          robot.EventTypeAlertWarning,
 			Source:        "serve.async_bead_close",
@@ -488,7 +488,7 @@ func (s *Server) publishAsyncBeadCloseAttention(jobID, beadID string, alreadyClo
 	if alreadyClosed {
 		details["already_closed"] = true
 	}
-	robot.GetAttentionFeed().Append(robot.NewBeadEvent(
+	s.getAttentionFeed().Append(robot.NewBeadEvent(
 		robot.EventTypeBeadClosed,
 		beadID,
 		"closed asynchronously",

@@ -53,13 +53,16 @@ func (p *AtomicReservationPort) Reserve(ctx context.Context, req assignment.Rese
 // ReconcileReservation inspects Agent Mail after an ambiguous reservation
 // attempt and classifies whether durable lease handles exist.
 func (p *AtomicReservationPort) ReconcileReservation(ctx context.Context, req assignment.ReservationRequest, _ assignment.LeaseReceipt) (assignment.ReservationReconciliation, error) {
-	requested := append([]string(nil), req.RequestedPaths...)
-	if len(requested) == 0 && p != nil && p.discoverPaths != nil {
-		requested = p.discoverPaths(ctx, req)
-	}
 	if p == nil || p.manager == nil {
 		return assignment.ReservationReconciliation{State: assignment.ReservationReconciliationUnknown},
 			errors.New("file reservation manager is not configured")
+	}
+	requested := append([]string(nil), req.RequestedPaths...)
+	if len(requested) == 0 && p.discoverPaths != nil {
+		requested = p.discoverPaths(ctx, req)
+	}
+	if len(requested) == 0 {
+		requested = ExtractFilePaths(req.BeadTitle, "")
 	}
 	result, err := p.manager.ReconcileForBead(ctx, req.BeadID, req.AgentName, requested)
 	lease, _ := ClassifyReservationAttempt(req, result, err)

@@ -1913,7 +1913,7 @@ func TestCommandLeaderPersistentObservationFailurePreservesTermHandler(t *testin
 		t.Run(fmt.Sprintf("probe_%d", failAt), func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
-			cmd := exec.Command("/bin/sh", "-c", `trap 'sleep 0.15; printf handled > handled; printf finished; exit 0' TERM
+			cmd := exec.Command("/bin/sh", "-c", `trap 'sleep 0.05; printf handled > handled; printf finished; exit 0' TERM
 printf ready > ready
 while :; do sleep 0.01; done
 `)

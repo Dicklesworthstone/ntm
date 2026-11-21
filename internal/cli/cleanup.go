@@ -342,52 +342,47 @@ func runCleanup(dryRun bool, maxAgeHrs int, verbose bool, forceClean bool, clean
 	return nil
 }
 
-// matchesNTMPattern checks if a filename matches any NTM temp pattern.
-// Uses direct prefix/suffix checks equivalent to ntmTempPatterns to avoid
-// repeated filepath.Match glob parsing across large temp directories.
+type compiledTempPattern struct {
+	pattern string
+	prefix  string
+	suffix  string
+	exact   bool
+}
+
+var compiledNTMPatterns = func() []compiledTempPattern {
+	out := make([]compiledTempPattern, 0, len(ntmTempPatterns))
+	for _, p := range ntmTempPatterns {
+		if idx := strings.IndexByte(p, '*'); idx >= 0 {
+			out = append(out, compiledTempPattern{
+				pattern: p,
+				prefix:  p[:idx],
+				suffix:  p[idx+1:],
+			})
+		} else {
+			out = append(out, compiledTempPattern{pattern: p, exact: true})
+		}
+	}
+	return out
+}()
+
+// matchesNTMPattern checks if a filename matches any NTM temp pattern in
+// ntmTempPatterns using direct prefix/suffix checks without filepath.Match
+// glob parsing overhead.
 func matchesNTMPattern(name string) string {
-	if len(name) < 10 {
+	if len(name) < 9 || strings.ContainsRune(name, '/') || strings.ContainsRune(name, filepath.Separator) {
 		return ""
 	}
-	switch name[0] {
-	case 'n':
-		if strings.HasPrefix(name, "ntm-lifecycle-") {
-			return "ntm-lifecycle-*"
+	for _, p := range compiledNTMPatterns {
+		if p.exact {
+			if name == p.pattern {
+				return p.pattern
+			}
+			continue
 		}
-		if strings.HasPrefix(name, "ntm-") && strings.HasSuffix(name, "-desc.md") && len(name) >= len("ntm--desc.md") {
-			return "ntm-*-desc.md"
-		}
-		if name == "ntm-graph.html" {
-			return "ntm-graph.html"
-		}
-		if strings.HasPrefix(name, "ntm-atomic-") {
-			return "ntm-atomic-*"
-		}
-		if strings.HasPrefix(name, "ntm-prompt-") && strings.HasSuffix(name, ".md") && len(name) >= len("ntm-prompt-.md") {
-			return "ntm-prompt-*.md"
-		}
-		if strings.HasPrefix(name, "ntm-mail-") && strings.HasSuffix(name, ".md") && len(name) >= len("ntm-mail-.md") {
-			return "ntm-mail-*.md"
-		}
-	case 't':
-		if strings.HasPrefix(name, "test-ntm-") {
-			return "test-ntm-*"
-		}
-	case '.':
-		if strings.HasPrefix(name, ".handoff-") && strings.HasSuffix(name, ".tmp") && len(name) >= len(".handoff-.tmp") {
-			return ".handoff-*.tmp"
-		}
-	case 'e':
-		if strings.HasPrefix(name, "events-rotate-") && strings.HasSuffix(name, ".jsonl") && len(name) >= len("events-rotate-.jsonl") {
-			return "events-rotate-*.jsonl"
-		}
-	case 'r':
-		if strings.HasPrefix(name, "rotation-") && strings.HasSuffix(name, ".tmp") && len(name) >= len("rotation-.tmp") {
-			return "rotation-*.tmp"
-		}
-	case 'p':
-		if strings.HasPrefix(name, "pending-") && strings.HasSuffix(name, ".tmp") && len(name) >= len("pending-.tmp") {
-			return "pending-*.tmp"
+		if len(name) >= len(p.prefix)+len(p.suffix) &&
+			strings.HasPrefix(name, p.prefix) &&
+			strings.HasSuffix(name, p.suffix) {
+			return p.pattern
 		}
 	}
 	return ""

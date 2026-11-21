@@ -2263,7 +2263,7 @@ func (r *Rotator) rotateAgentContext(ctx stdcontext.Context, session, agentID, w
 	if leaseKey == "" {
 		leaseKey = agentID
 	}
-	fsmLease, leaseErr := fsm.Acquire(leaseKey, "context-rotator", fmt.Sprintf("ctxrot-%s-%d", leaseKey, startTime.UnixNano()), "context_rotation")
+	fsmLease, leaseErr := fsm.Acquire(leaseKey, "context-rotator", "", "context_rotation")
 	if leaseErr != nil {
 		result.Success = false
 		result.State = RotationStateFailed

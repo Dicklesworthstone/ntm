@@ -251,7 +251,7 @@ describe("Wave 15 Web Cockpit Surfaces", () => {
   });
 
   it("wires WorkflowsSequencesAndTemplatesPanel (workflows, session-templates, sequences)", async () => {
-    const calls: Array<{ method: string; path: string }> = [];
+    const calls: Array<{ method: string; path: string; body?: Record<string, unknown> }> = [];
 
     globalThis.fetch = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -260,7 +260,8 @@ describe("Wave 15 Web Cockpit Surfaces", () => {
           "http://127.0.0.1:7337"
         );
         const method = (init?.method || "GET").toUpperCase();
-        calls.push({ method, path: url.pathname + url.search });
+        const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined;
+        calls.push({ method, path: url.pathname + url.search, body });
 
         if (url.pathname === "/api/v1/workflows") {
           return new Response(
@@ -288,8 +289,37 @@ describe("Wave 15 Web Cockpit Surfaces", () => {
               action: "run",
               workflow: "red-green",
               session: "ntm_live",
+              project_dir: "/repo/live",
+              job_id: "job-wf-42",
+              job_status: "running",
+              running: true,
               stage: "red",
-              manual_gate: { token: "gate-tok-1" },
+            }),
+            { status: 202, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
+        if (url.pathname === "/api/v1/workflows/ntm_live/status" && method === "GET") {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              action: "status",
+              workflow: "red-green",
+              session: "ntm_live",
+              project_dir: "/repo/live",
+              job_id: "job-wf-42",
+              job_status: "running",
+              running: true,
+              stage: "red",
+              dispatches: [{ pane: "%1", role: "red", turn: 1, status: "delivered" }],
+              manual_gate: {
+                token: "gate-tok-1",
+                stage: "red",
+                transitions: [
+                  { index: 0, label: "Advance to green", to: "green" },
+                  { index: 1, label: "Skip to done", to: "done" },
+                ],
+              },
             }),
             { status: 200, headers: { "Content-Type": "application/json" } }
           );
@@ -301,7 +331,11 @@ describe("Wave 15 Web Cockpit Surfaces", () => {
               success: true,
               action: "trigger",
               session: "ntm_live",
-              decision: { to: "green" },
+              project_dir: "/repo/live",
+              job_id: "job-wf-42",
+              job_status: "running",
+              running: true,
+              decision: { to: "done", transition: 1 },
             }),
             { status: 200, headers: { "Content-Type": "application/json" } }
           );
@@ -313,6 +347,13 @@ describe("Wave 15 Web Cockpit Surfaces", () => {
               success: true,
               action: "stop",
               session: "ntm_live",
+              project_dir: "/repo/live",
+              job_id: "job-wf-42",
+              job_status: "cancelled",
+              stopped_job: true,
+              running: false,
+              paused: true,
+              stage: "red",
             }),
             { status: 200, headers: { "Content-Type": "application/json" } }
           );
@@ -444,31 +485,64 @@ describe("Wave 15 Web Cockpit Surfaces", () => {
       ).toBe(true)
     );
 
+    fireEvent.change(screen.getByLabelText("Workflow Project Directory"), {
+      target: { value: "/repo/live" },
+    });
+    fireEvent.click(screen.getByLabelText("Resume checkpoint"));
+    expect(screen.getByLabelText("Resume checkpoint")).toBeChecked();
+    fireEvent.click(screen.getByLabelText("Restart fresh"));
+    expect(screen.getByLabelText("Restart fresh")).toBeChecked();
+    expect(screen.getByLabelText("Resume checkpoint")).not.toBeChecked();
+
     fireEvent.click(screen.getByRole("button", { name: "Run Workflow" }));
     await waitFor(() =>
       expect(
-        calls.some((c) => c.method === "POST" && c.path === "/api/v1/workflows/red-green/run")
+        calls.some(
+          (c) =>
+            c.method === "POST" &&
+            c.path === "/api/v1/workflows/red-green/run" &&
+            c.body?.project_dir === "/repo/live" &&
+            c.body?.restart === true
+        )
       ).toBe(true)
     );
+    await screen.findByTestId("workflow-live-status");
+    await screen.findByTestId("workflow-manual-gate-box");
+    expect(screen.getByText(/Job: job-wf-42/)).toBeInTheDocument();
+    expect(screen.getByText(/%1\(red\):delivered/)).toBeInTheDocument();
 
-    await waitFor(() =>
-      expect((screen.getByLabelText("Workflow Gate Token") as HTMLInputElement).value).toBe(
-        "gate-tok-1"
-      )
+    fireEvent.click(screen.getByRole("button", { name: /Select #1: Skip to done/ }));
+    expect((screen.getByLabelText("Workflow Gate Token") as HTMLInputElement).value).toBe(
+      "gate-tok-1"
     );
+    expect((screen.getByLabelText("Workflow Transition Index") as HTMLInputElement).value).toBe("1");
+
     fireEvent.click(screen.getByRole("button", { name: "Trigger Manual Gate" }));
     await waitFor(() =>
       expect(
-        calls.some((c) => c.method === "POST" && c.path === "/api/v1/workflows/ntm_live/trigger")
+        calls.some(
+          (c) =>
+            c.method === "POST" &&
+            c.path === "/api/v1/workflows/ntm_live/trigger" &&
+            c.body?.token === "gate-tok-1" &&
+            c.body?.transition === 1 &&
+            c.body?.project_dir === "/repo/live"
+        )
       ).toBe(true)
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Stop Workflow" }));
     await waitFor(() =>
       expect(
-        calls.some((c) => c.method === "POST" && c.path === "/api/v1/workflows/ntm_live/stop")
+        calls.some(
+          (c) =>
+            c.method === "POST" &&
+            c.path === "/api/v1/workflows/ntm_live/stop" &&
+            c.body?.project_dir === "/repo/live"
+        )
       ).toBe(true)
     );
+    await screen.findByText(/Cancelled active workflow job \(job job-wf-42: cancelled\)/);
   });
 });
 

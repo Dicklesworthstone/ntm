@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentsession"
@@ -19,7 +20,18 @@ type savedPaneLaunch struct {
 	directory string
 	spec      *tmux.AgentLaunchSpec
 	plan      *resilience.AgentLaunchPlan
+	delivery  string
+	handoff   *tmux.LaunchEnvironment
 	outcome   ResumePane
+}
+
+func closeSavedLaunches(launches []savedPaneLaunch) {
+	for i := range launches {
+		if launches[i].handoff != nil {
+			_ = launches[i].handoff.Close()
+			launches[i].handoff = nil
+		}
+	}
 }
 
 func sortedSavedPanes(state *SessionState) []PaneState {
@@ -33,9 +45,10 @@ func sortedSavedPanes(state *SessionState) []PaneState {
 	return panes
 }
 
-// preflightSavedLaunches pins complete commands and configuration for every
-// pane before topology replacement. The caller's saved snapshot stays immutable.
-func preflightSavedLaunches(ctx context.Context, state *SessionState, cmds AgentCommands, cfg *config.Config, resume *ResumeOptions) ([]savedPaneLaunch, error) {
+// preflightSavedLaunches pins complete commands, configuration, and private
+// long-command transport for every pane before topology replacement. The
+// caller's saved snapshot stays immutable. Callers must close returned launches.
+func preflightSavedLaunches(ctx context.Context, name string, state *SessionState, cmds AgentCommands, cfg *config.Config, resume *ResumeOptions) ([]savedPaneLaunch, error) {
 	if ctx == nil {
 		return nil, errors.New("session launch preflight requires a context")
 	}
@@ -54,12 +67,24 @@ func preflightSavedLaunches(ctx context.Context, state *SessionState, cmds Agent
 	if err := ValidateAutomatedRelaunch(state); err != nil {
 		return nil, err
 	}
+	if name == "" {
+		name = state.Name
+	}
+	if err := tmux.ValidateSessionName(name); err != nil {
+		return nil, fmt.Errorf("invalid session name: %w", err)
+	}
 	directory, err := restoreWorkingDirectory(ctx, state.WorkDir)
 	if err != nil {
 		return nil, err
 	}
 	panes := sortedSavedPanes(state)
 	launches := make([]savedPaneLaunch, len(panes))
+	committed := false
+	defer func() {
+		if !committed {
+			closeSavedLaunches(launches)
+		}
+	}()
 	for i, pane := range panes {
 		launch := &launches[i]
 		launch.pane = pane
@@ -142,18 +167,44 @@ func preflightSavedLaunches(ctx context.Context, state *SessionState, cmds Agent
 		if err != nil {
 			return nil, fmt.Errorf("saved pane %d.%d launch settings: %w", pane.WindowIndex, pane.Index, err)
 		}
+		// Preview the exact final delivery payload (including isolation,
+		// AgentMail, and account wrappers) before topology replacement so
+		// commands exceeding the shell input limit preflight a private FIFO.
+		preview, err := launch.plan.Preview(ctx, launch.directory, name, i)
+		if err != nil {
+			return nil, fmt.Errorf("saved pane %d.%d launch delivery: %w", pane.WindowIndex, pane.Index, err)
+		}
+		delivery, err := buildRestoreCommand(launch.directory, preview)
+		if err != nil {
+			return nil, fmt.Errorf("saved pane %d.%d launch command: %w", pane.WindowIndex, pane.Index, err)
+		}
+		launch.delivery = delivery
+		if len(delivery) > tmux.MaxTypedLaunchCommandBytes {
+			handoff, err := tmux.NewLaunchEnvironment(ctx, nil)
+			if err != nil {
+				return nil, fmt.Errorf("saved pane %d.%d private launch handoff: %w", pane.WindowIndex, pane.Index, err)
+			}
+			launch.handoff = handoff
+		}
 		launch.outcome.Command = command
 	}
-	return launches, ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	committed = true
+	return launches, nil
 }
 
 // dispatchSavedLaunches uses the physical targets obtained during topology
-// creation. A failed metadata write prevents dispatch, and successful panes are
-// retained when a later pane fails. Counts mean command dispatch, not agent-ready.
+// creation and fences launch metadata, input, and Enter against pane process
+// replacement inside tmux's command queue. A failed metadata write prevents
+// dispatch, and successful panes are retained when a later pane fails. Counts
+// mean command dispatch, not agent-ready.
 func dispatchSavedLaunches(ctx context.Context, name string, launches []savedPaneLaunch, panes []tmux.Pane) (*ResumeResult, error) {
 	result := &ResumeResult{Session: name, Panes: make([]ResumePane, len(launches))}
 	var failures []error
-	for i, launch := range launches {
+	for i := range launches {
+		launch := &launches[i]
 		result.Panes[i] = launch.outcome
 		outcome := &result.Panes[i]
 		if launch.plan == nil {
@@ -166,25 +217,53 @@ func dispatchSavedLaunches(ctx context.Context, name string, launches []savedPan
 		} else {
 			outcome.PaneID = panes[i].ID
 			var command string
-			// Position is unique across windows; tmux pane indices are not.
-			command, err = launch.plan.Prepare(ctx, launch.directory, name, i)
+			if panes[i].PID <= 0 {
+				err = fmt.Errorf("pane %s has no recorded process identity before launch", panes[i].ID)
+			}
+			if err == nil {
+				// Position is unique across windows; tmux pane indices are not.
+				command, err = launch.plan.Prepare(ctx, launch.directory, name, i)
+			}
 			if err == nil {
 				command, err = buildRestoreCommand(launch.directory, command)
+			}
+			if err == nil && command != launch.delivery {
+				err = errors.New("saved launch preparation changed after delivery preflight; launch was withheld")
 			}
 			if err == nil {
 				err = validateSavedLaunchTarget(ctx, name, panes[i])
 			}
 			if err == nil {
-				err = tmux.SetPaneLaunchSpecContext(ctx, panes[i].ID, *launch.spec)
+				err = tmux.DefaultClient.SetPaneAgentTypeIfCurrentContext(ctx, panes[i].ID, panes[i].PID, launch.spec.AgentType)
+			}
+			guardedCtx := tmux.WithExpectedPaneAgentType(ctx, launch.spec.AgentType)
+			if err == nil {
+				err = tmux.DefaultClient.SetPaneLaunchSpecIfCurrentContext(guardedCtx, panes[i].ID, panes[i].PID, *launch.spec)
 			}
 			if err == nil {
-				err = tmux.SendKeysForAgentContext(ctx, panes[i].ID, command, true, launch.spec.AgentType)
+				if launch.handoff != nil {
+					err = launch.handoff.SendIfCurrent(guardedCtx, panes[i].ID, command, true, launch.spec.AgentType, panes[i].PID)
+				} else {
+					err = tmux.DefaultClient.SendKeysForAgentIfCurrentContext(guardedCtx, panes[i].ID, command, true, launch.spec.AgentType, panes[i].PID, true)
+				}
 			}
+		}
+		if launch.handoff != nil {
+			_ = launch.handoff.Close()
+			launch.handoff = nil
 		}
 		if err != nil {
 			outcome.Action, outcome.Error = "failed", err.Error()
 			result.Failed++
 			failures = append(failures, fmt.Errorf("pane %d.%d agent dispatch: %w", launch.pane.WindowIndex, launch.pane.Index, err))
+			slog.Warn("saved session pane launch failed",
+				"session", name,
+				"pane", outcome.PaneID,
+				"window_index", outcome.WindowIndex,
+				"pane_index", outcome.Index,
+				"harness", outcome.AgentType,
+				"error", err,
+			)
 		} else if outcome.Action == "resumed" {
 			result.Resumed++
 		} else {
@@ -216,8 +295,14 @@ func validateSavedLaunchTarget(ctx context.Context, session string, expected tmu
 		if pane.ID != expected.ID {
 			continue
 		}
-		if pane.PID != expected.PID || pane.Type != expected.Type {
+		if pane.PID != expected.PID {
 			return fmt.Errorf("pane %s changed process or agent identity before launch", expected.ID)
+		}
+		if expected.Type != tmux.AgentUnknown && expected.Type != tmux.AgentUser && pane.Type != expected.Type {
+			return fmt.Errorf("pane %s changed process or agent identity before launch", expected.ID)
+		}
+		if pane.Dead || pane.RotationToken != "" || pane.IsServicePane() {
+			return fmt.Errorf("pane %s is dead or claimed before launch", expected.ID)
 		}
 		if !pane.IdleShell() {
 			return fmt.Errorf("pane %s is not an idle shell before launch", expected.ID)
@@ -231,14 +316,15 @@ func validateSavedLaunchTarget(ctx context.Context, session string, expected tmu
 // existing session, then restores topology and dispatches to its captured panes.
 // A non-nil result with an error reports a partial launch after topology restore.
 func RestoreWithAgents(ctx context.Context, state *SessionState, cmds AgentCommands, cfg *config.Config, opts RestoreOptions) (*ResumeResult, error) {
-	launches, err := preflightSavedLaunches(ctx, state, cmds, cfg, nil)
+	name := opts.Name
+	if name == "" && state != nil {
+		name = state.Name
+	}
+	launches, err := preflightSavedLaunches(ctx, name, state, cmds, cfg, nil)
 	if err != nil {
 		return nil, err
 	}
-	name := opts.Name
-	if name == "" {
-		name = state.Name
-	}
+	defer closeSavedLaunches(launches)
 	var result *ResumeResult
 	err = restoreSession(ctx, state, opts, func(panes []tmux.Pane) error {
 		var launchErr error

@@ -198,6 +198,36 @@ func bindJobExecutionProject(frozen CreateJobRequest, selection jobProjectSelect
 		if err != nil {
 			return frozen, fmt.Errorf("%w: resolve job project: %v", errInvalidJobRequest, err)
 		}
+	case JobTypeWorkflowRun:
+		projectDir := ""
+		if value, supplied := frozen.Params["project_dir"]; supplied {
+			dir, ok := value.(string)
+			if !ok {
+				return frozen, fmt.Errorf("%w: project_dir must be a string", errInvalidJobRequest)
+			}
+			dir = strings.TrimSpace(dir)
+			if dir != "" {
+				if !filepath.IsAbs(dir) {
+					return frozen, fmt.Errorf("%w: project_dir must be an absolute path", errInvalidJobRequest)
+				}
+				projectDir = dir
+			}
+		}
+		if projectDir == "" {
+			projectDir = strings.TrimSpace(selection.projectDir)
+			if projectDir == "" {
+				projectDir = selection.cwd
+			}
+		}
+		absDir, err := selection.absolute(projectDir)
+		if err != nil {
+			return frozen, fmt.Errorf("%w: resolve workflow project: %v", errInvalidJobRequest, err)
+		}
+		resolved, err := ResolveProjectDir(absDir)
+		if err != nil {
+			return frozen, fmt.Errorf("%w: resolve workflow project: %v", errInvalidJobRequest, err)
+		}
+		frozen.executionProjectDir = resolved
 	case JobTypeSwarmSpawn:
 		// The HTTP server's selected project is the default for accepted
 		// swarms, not the process CWD. Resolve relative overrides against that
@@ -230,6 +260,9 @@ func (s *Server) jobExecutionServer(req CreateJobRequest) *Server {
 		return s
 	}
 	view := &Server{projectDir: req.executionProjectDir, wsHub: s.wsHub}
+	if req.Type == JobTypeWorkflowRun {
+		view.recoveryConfig = s.recoveryConfig
+	}
 	if req.Type == JobTypeSwarmSpawn && s.spawnAgents != nil {
 		// Keep the same spawn service and execution context (including
 		// cancellation, progress and operation ownership). Only its admitted
@@ -292,21 +325,49 @@ func (s *Server) submitJob(ctx context.Context, req CreateJobRequest) (*Job, err
 			// the worker and operation-ID journal reporters installed at dispatch.
 			jobCtx = checkpoint.WithRestoreProgress(jobCtx, restoreJobProgressObserver())
 		}
+		var activeWorkflow *activeWorkflowRun
 		ready := false
 		defer func() {
 			if !ready {
 				cancel()
 				if receipt != nil {
 					s.discardQueuedJob(receipt.ID)
+				} else if activeWorkflow != nil {
+					s.cancelWorkflowReservation(activeWorkflow)
 				}
 			}
 		}()
+		var wfName, wfSession string
+		if frozen.Type == JobTypeWorkflowRun {
+			wfName, _ = params["workflow"].(string)
+			wfName = strings.TrimSpace(wfName)
+			wfSession, _ = params["session"].(string)
+			wfSession = strings.TrimSpace(wfSession)
+			dryRun, _ := params["dry_run"].(bool)
+			if !dryRun && wfName != "" && wfSession != "" && frozen.executionProjectDir != "" {
+				var regErr error
+				activeWorkflow, regErr = s.reserveWorkflowRun(wfName, frozen.executionProjectDir, wfSession, req.rejectDuplicateWorkflow)
+				if regErr != nil {
+					return nil, regErr
+				}
+			}
+		}
 		receipt = s.jobStore.Create(frozen.Type, jobOwnership{cancel: cancel, projectDir: frozen.executionProjectDir})
 		if frozen.Type == jobTypeBeadClose {
 			// Persist target identity, not an executable request. A queued or
 			// interrupted close must remain inspectable after a server restart.
 			s.jobStore.Update(receipt.ID, JobStatusPending, 0, map[string]interface{}{
 				"bead_id": params["bead_id"], "project_dir": frozen.executionProjectDir,
+			}, "")
+			receipt = s.jobStore.Get(receipt.ID)
+		}
+		if activeWorkflow != nil {
+			s.bindWorkflowRunJob(activeWorkflow, receipt.ID)
+			jobCtx = context.WithValue(jobCtx, activeWorkflowRunKey{}, activeWorkflow)
+			s.jobStore.Update(receipt.ID, JobStatusPending, 0, map[string]interface{}{
+				"workflow":    wfName,
+				"session":     wfSession,
+				"project_dir": frozen.executionProjectDir,
 			}, "")
 			receipt = s.jobStore.Get(receipt.ID)
 		}
@@ -336,6 +397,7 @@ func (s *Server) submitJob(ctx context.Context, req CreateJobRequest) (*Job, err
 // row terminal. Do not overwrite the operator's cancellation reason or progress.
 func (s *Server) discardQueuedJob(id string) {
 	defer s.jobStore.ClearCancel(id)
+	defer s.finishWorkflowRunByJobID(id)
 	defer func() {
 		if value := recover(); value != nil {
 			s.jobStore.Update(id, JobStatusFailed, 0, nil, fmt.Sprintf("finalize queued job: %v", value))

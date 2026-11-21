@@ -247,7 +247,7 @@ func TestWorkflowManualDecisionCannotCrossRetryOrRestart(t *testing.T) {
 			oldArgs := workflowManualTriggerArgs(opts, initial.ManualGate.Token, 0, "Decision about the original build")
 			oldDecision := workflowManualTrigger(t, oldArgs)
 			if change == "retry stage" {
-				if err := (workflowRunActions{r: run.runner}).RetryStage(t.Context()); err != nil {
+				if err := (workflowRunActions{R: run.runner}).RetryStage(t.Context()); err != nil {
 					t.Fatalf("retry stage: %v", err)
 				}
 			} else {
@@ -349,11 +349,11 @@ func TestWorkflowManualDecisionDoesNotRequireNewScrollback(t *testing.T) {
 			// next capture would fail, but the operator's decision is based on
 			// independent review and still requires the original pane identity.
 			captures, validations := 0, 0
-			run.runner.ports.capture = func(context.Context, string, int) (string, error) {
+			run.runner.Ports.Capture = func(context.Context, string, int) (string, error) {
 				captures++
 				return "", errors.New("pane scrollback is unavailable")
 			}
-			run.runner.ports.validate = func(context.Context) error {
+			run.runner.Ports.Validate = func(context.Context) error {
 				validations++
 				if replaced {
 					return errors.New("pane shell PID changed")

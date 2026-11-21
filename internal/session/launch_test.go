@@ -6,9 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -959,4 +962,368 @@ func TestRemoteAgentRelaunchRefusesBeforeForceReplacement(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestSavedLaunchFencesMetadataInputAndEnterRaces(t *testing.T) {
+	for _, operation := range []string{"restore", "resume"} {
+		for _, phase := range []string{"metadata", "retag", "input", "enter"} {
+			t.Run(operation+"/"+phase, func(t *testing.T) {
+				logPath := savedSessionRestoreFixture(t)
+				if phase == "retag" {
+					t.Setenv("NTM_SESSION_TEST_RETAG_PANE", "%1")
+				} else {
+					t.Setenv("NTM_SESSION_TEST_RACE_PANE", "%1")
+					t.Setenv("NTM_SESSION_TEST_RACE_PHASE", phase)
+				}
+				workDir := t.TempDir()
+				state := &SessionState{
+					Name:    "race_guard",
+					WorkDir: workDir,
+					Version: StateVersion,
+					Panes: []PaneState{
+						{
+							Index:             0,
+							AgentType:         "cod",
+							LaunchSpec:        savedLaunchSpec("codex --model first"),
+							SessionID:         "sess-first",
+							SessionProvider:   "codex",
+							SessionFreshness:  agentsession.BindingFresh,
+							SessionConfidence: 1,
+						},
+						{
+							Index:             1,
+							AgentType:         "cod",
+							LaunchSpec:        savedLaunchSpec("codex --model second"),
+							SessionID:         "sess-second",
+							SessionProvider:   "codex",
+							SessionFreshness:  agentsession.BindingFresh,
+							SessionConfidence: 1,
+						},
+					},
+				}
+				var (
+					result *ResumeResult
+					err    error
+				)
+				if operation == "restore" {
+					result, err = RestoreWithAgents(t.Context(), state, AgentCommands{}, nil, RestoreOptions{Force: true})
+				} else {
+					result, err = ResumeContext(t.Context(), state, AgentCommands{}, ResumeOptions{Force: true})
+				}
+				if !errors.Is(err, tmux.ErrPaneIdentityChanged) {
+					t.Fatalf("%s %s race did not return ErrPaneIdentityChanged: result=%+v err=%v", operation, phase, result, err)
+				}
+				if result == nil || result.Launched+result.Resumed != 1 || result.Failed != 1 || len(result.Panes) != 2 {
+					t.Fatalf("%s %s race lost partial outcomes: %+v", operation, phase, result)
+				}
+				wantFirstAction := "launched"
+				if operation == "resume" {
+					wantFirstAction = "resumed"
+				}
+				if result.Panes[0].Action != wantFirstAction || result.Panes[0].PaneID != "%0" {
+					t.Fatalf("pane 0 outcome = %+v, want %s on %%0", result.Panes[0], wantFirstAction)
+				}
+				if result.Panes[1].Action != "failed" || result.Panes[1].PaneID != "%1" || !strings.Contains(result.Panes[1].Error, tmux.ErrPaneIdentityChanged.Error()) {
+					t.Fatalf("pane 1 outcome = %+v, want failed with identity change on %%1", result.Panes[1])
+				}
+				callsBytes, readErr := os.ReadFile(logPath)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				calls := string(callsBytes)
+				if !strings.Contains(calls, "if-shell -F -t %1") {
+					t.Fatalf("pane %%1 launch was not fenced by if-shell: %s", calls)
+				}
+				if !strings.Contains(calls, "send-keys -t %0 -l -- ") || !strings.Contains(calls, "send-keys -t %0 Enter") {
+					t.Fatalf("pane %%0 did not complete its guarded launch: %s", calls)
+				}
+				if strings.Count(calls, "kill-session") != 1 || strings.Index(calls, "kill-session") > strings.Index(calls, "new-session") {
+					t.Fatalf("partial race failure killed the restored session: %s", calls)
+				}
+				switch phase {
+				case "metadata", "retag":
+					if strings.Contains(calls, "set-option -p -t %1 @ntm_agent_launch") {
+						t.Fatalf("%s race still wrote @ntm_agent_launch on %%1: %s", phase, calls)
+					}
+					if strings.Contains(calls, "send-keys -t %1") || strings.Contains(calls, "pasted %1") {
+						t.Fatalf("%s race still dispatched input to %%1: %s", phase, calls)
+					}
+					if stored, readSpecErr := tmux.ReadPaneLaunchSpecContext(t.Context(), "%1"); readSpecErr != nil || stored != nil {
+						t.Fatalf("%s race persisted launch spec on %%1: stored=%+v err=%v", phase, stored, readSpecErr)
+					}
+				case "input":
+					if !strings.Contains(calls, "set-option -p -t %1 @ntm_agent_launch") {
+						t.Fatalf("expected guarded metadata write before input race: %s", calls)
+					}
+					if strings.Contains(calls, "send-keys -t %1") || strings.Contains(calls, "pasted %1") {
+						t.Fatalf("input race still delivered text or Enter to %%1: %s", calls)
+					}
+				case "enter":
+					if !strings.Contains(calls, "send-keys -t %1 -l -- ") {
+						t.Fatalf("expected guarded literal input before enter race: %s", calls)
+					}
+					if strings.Contains(calls, "send-keys -t %1 Enter") {
+						t.Fatalf("enter race still sent stale Enter to %%1: %s", calls)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestSavedLaunchLongCommandPreflightAndPrivateHandoff(t *testing.T) {
+	longArg := strings.Repeat("x", tmux.MaxTypedLaunchCommandBytes+256)
+	longCmd := "codex --model long-model --custom=" + longArg
+
+	for _, operation := range []string{"restore", "resume"} {
+		t.Run(operation+"/preflight_failure_preserves_live_session", func(t *testing.T) {
+			logPath := savedSessionRestoreFixture(t)
+			workDir := t.TempDir()
+			missingTmp := filepath.Join(t.TempDir(), "no-such-tmp-dir")
+			t.Setenv("TMPDIR", missingTmp)
+			state := &SessionState{
+				Name:    "protect_long",
+				WorkDir: workDir,
+				Version: StateVersion,
+				Panes: []PaneState{
+					{Index: 0, AgentType: "cod", Command: "codex --model short"},
+					{Index: 1, AgentType: "cod", Command: longCmd},
+				},
+			}
+			var (
+				result *ResumeResult
+				err    error
+			)
+			if operation == "restore" {
+				result, err = RestoreWithAgents(t.Context(), state, AgentCommands{}, nil, RestoreOptions{Force: true})
+			} else {
+				result, err = ResumeContext(t.Context(), state, AgentCommands{}, ResumeOptions{Force: true})
+			}
+			if err == nil || result != nil || !strings.Contains(err.Error(), "private launch handoff") {
+				t.Fatalf("long-command handoff failure was not caught in preflight: result=%+v err=%v", result, err)
+			}
+			calls, readErr := os.ReadFile(logPath)
+			if readErr != nil && !os.IsNotExist(readErr) {
+				t.Fatal(readErr)
+			}
+			if len(calls) != 0 {
+				t.Fatalf("long-command preflight failure touched the live session: %s", calls)
+			}
+		})
+
+		t.Run(operation+"/private_handoff_delivers_and_cleans_up", func(t *testing.T) {
+			logPath := savedSessionRestoreFixture(t)
+			recordDir := os.Getenv("NTM_SESSION_TEST_RECORD_DIR")
+			tmpBase := t.TempDir()
+			t.Setenv("TMPDIR", tmpBase)
+			workDir := t.TempDir()
+			state := &SessionState{
+				Name:    "long_handoff",
+				WorkDir: workDir,
+				Version: StateVersion,
+				Panes: []PaneState{
+					{
+						Index:             0,
+						AgentType:         "cod",
+						LaunchSpec:        savedLaunchSpec(longCmd),
+						SessionID:         "long-sess-id",
+						SessionProvider:   "codex",
+						SessionFreshness:  agentsession.BindingFresh,
+						SessionConfidence: 1,
+					},
+				},
+			}
+			var (
+				result *ResumeResult
+				err    error
+			)
+			if operation == "restore" {
+				result, err = RestoreWithAgents(t.Context(), state, AgentCommands{}, nil, RestoreOptions{Force: true})
+			} else {
+				result, err = ResumeContext(t.Context(), state, AgentCommands{}, ResumeOptions{Force: true})
+			}
+			if err != nil || result == nil || result.Failed != 0 || result.Launched+result.Resumed != 1 {
+				t.Fatalf("%s long command handoff failed: result=%+v err=%v", operation, result, err)
+			}
+			calls, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(calls), "/bin/sh -p ") || strings.Contains(string(calls), longArg) {
+				t.Fatalf("long command was typed directly into tmux instead of private FIFO handoff: %s", calls)
+			}
+			payloadPath := filepath.Join(recordDir, "handoff-payload-%0")
+			var payloadBytes []byte
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				var readPayloadErr error
+				payloadBytes, readPayloadErr = os.ReadFile(payloadPath)
+				if readPayloadErr == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("private FIFO payload was not delivered: %v", readPayloadErr)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			payload := string(payloadBytes)
+			if !strings.Contains(payload, longArg) {
+				t.Fatalf("private FIFO payload truncated long command: len=%d", len(payload))
+			}
+			if operation == "resume" && !strings.Contains(payload, "resume 'long-sess-id'") {
+				t.Fatalf("private FIFO resume payload lost session ID: %s", payload)
+			}
+			entries, err := os.ReadDir(tmpBase)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("private FIFO handoff leaked temporary directory entries: %+v", entries)
+			}
+		})
+
+		t.Run(operation+"/handoff_enter_race_refuses_and_cleans_up", func(t *testing.T) {
+			logPath := savedSessionRestoreFixture(t)
+			tmpBase := t.TempDir()
+			t.Setenv("TMPDIR", tmpBase)
+			t.Setenv("NTM_SESSION_TEST_RACE_PANE", "%0")
+			t.Setenv("NTM_SESSION_TEST_RACE_PHASE", "enter")
+			state := &SessionState{
+				Name:    "long_race",
+				WorkDir: t.TempDir(),
+				Version: StateVersion,
+				Panes:   []PaneState{{Index: 0, AgentType: "cod", Command: longCmd}},
+			}
+			var (
+				result *ResumeResult
+				err    error
+			)
+			if operation == "restore" {
+				result, err = RestoreWithAgents(t.Context(), state, AgentCommands{}, nil, RestoreOptions{Force: true})
+			} else {
+				result, err = ResumeContext(t.Context(), state, AgentCommands{}, ResumeOptions{Force: true})
+			}
+			if !errors.Is(err, tmux.ErrPaneIdentityChanged) || result == nil || result.Failed != 1 {
+				t.Fatalf("long-command enter race was not refused: result=%+v err=%v", result, err)
+			}
+			calls, _ := os.ReadFile(logPath)
+			if strings.Contains(string(calls), "send-keys -t %0 Enter") {
+				t.Fatalf("long-command enter race still sent Enter: %s", calls)
+			}
+			entries, err := os.ReadDir(tmpBase)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("refused private handoff leaked temporary directory entries: %+v", entries)
+			}
+		})
+	}
+}
+
+func TestRealSavedLaunchGuardedAgainstReplacementAndLongCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("real tmux test requires POSIX")
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	oldClient := tmux.DefaultClient
+	client := tmux.NewClient("")
+	client.MaxSendDelay = 50 * time.Millisecond
+	tmux.DefaultClient = client
+	t.Cleanup(func() { tmux.DefaultClient = oldClient })
+
+	t.Run("long_command_executes_via_real_tmux_handoff", func(t *testing.T) {
+		sessionName := fmt.Sprintf("ntm_test_long_%d", time.Now().UnixNano())
+		t.Cleanup(func() { _ = tmux.DefaultClient.RunSilent("kill-session", "-t", tmux.TargetSession(sessionName)) })
+		workDir := t.TempDir()
+		marker := filepath.Join(workDir, "long-output")
+		want := strings.Repeat("Z", tmux.MaxTypedLaunchCommandBytes+300)
+		command := fmt.Sprintf("printf '%%s' %s > %s", tmux.ShellQuote(want), tmux.ShellQuote(marker))
+		state := &SessionState{
+			Name:    sessionName,
+			WorkDir: workDir,
+			Version: StateVersion,
+			Panes:   []PaneState{{Index: 0, AgentType: "cod", Command: command}},
+		}
+		result, err := RestoreWithAgents(t.Context(), state, AgentCommands{}, nil, RestoreOptions{Force: true})
+		if err != nil || result == nil || result.Launched != 1 || result.Failed != 0 {
+			t.Fatalf("real tmux long restore failed: result=%+v err=%v", result, err)
+		}
+		deadline := time.Now().Add(4 * time.Second)
+		for {
+			data, readErr := os.ReadFile(marker)
+			if readErr == nil && string(data) == want {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("real tmux private handoff did not execute full long command: err=%v len=%d want=%d", readErr, len(data), len(want))
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+	})
+
+	t.Run("real_tmux_replacement_refuses_metadata_and_input", func(t *testing.T) {
+		sessionName := fmt.Sprintf("ntm_test_race_%d", time.Now().UnixNano())
+		t.Cleanup(func() { _ = tmux.DefaultClient.RunSilent("kill-session", "-t", tmux.TargetSession(sessionName)) })
+		workDir := t.TempDir()
+		if err := tmux.CreateSessionContext(t.Context(), sessionName, workDir); err != nil {
+			t.Fatal(err)
+		}
+		panes, err := tmux.GetPanesContext(t.Context(), sessionName)
+		if err != nil || len(panes) != 1 {
+			t.Fatalf("get panes: %+v, %v", panes, err)
+		}
+		orig := panes[0]
+		if err := tmux.SetPaneAgentIdentityContext(t.Context(), orig.ID, "race__cod_1", tmux.AgentCodex); err != nil {
+			t.Fatal(err)
+		}
+		orig.Type = tmux.AgentCodex
+		marker := filepath.Join(workDir, "must-not-exist")
+		state := &SessionState{
+			Name:    sessionName,
+			WorkDir: workDir,
+			Version: StateVersion,
+			Panes:   []PaneState{{Index: 0, AgentType: "cod", Command: "printf bad > " + tmux.ShellQuote(marker)}},
+		}
+		launches, err := preflightSavedLaunches(t.Context(), sessionName, state, AgentCommands{}, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closeSavedLaunches(launches)
+		// Replace the shell process in the same physical pane before dispatch.
+		if err := tmux.DefaultClient.RespawnPaneIfCurrentContext(t.Context(), orig.ID, orig.PID, true, workDir, true); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			cur, gErr := tmux.GetPanesContext(t.Context(), sessionName)
+			if gErr == nil && len(cur) == 1 && cur[0].PID != orig.PID && cur[0].IdleShell() {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("pane did not respawn with a new PID")
+			}
+			time.Sleep(15 * time.Millisecond)
+		}
+		// Prove direct guarded metadata and send refuse the stale PID inside tmux's queue.
+		if err := tmux.DefaultClient.SetPaneLaunchSpecIfCurrentContext(t.Context(), orig.ID, orig.PID, *launches[0].spec); !errors.Is(err, tmux.ErrPaneIdentityChanged) {
+			t.Fatalf("real tmux metadata guard did not refuse replaced PID: %v", err)
+		}
+		if err := tmux.DefaultClient.SendKeysForAgentIfCurrentContext(t.Context(), orig.ID, launches[0].delivery, true, launches[0].spec.AgentType, orig.PID, true); !errors.Is(err, tmux.ErrPaneIdentityChanged) {
+			t.Fatalf("real tmux input guard did not refuse replaced PID: %v", err)
+		}
+		// Prove dispatchSavedLaunches refuses the replaced pane and leaves spec & marker untouched.
+		result, err := dispatchSavedLaunches(t.Context(), sessionName, launches, []tmux.Pane{orig})
+		if err == nil || result == nil || result.Failed != 1 || result.Launched != 0 {
+			t.Fatalf("dispatchSavedLaunches did not fail closed on replaced pane: result=%+v err=%v", result, err)
+		}
+		if stored, readErr := tmux.ReadPaneLaunchSpecContext(t.Context(), orig.ID); readErr != nil || stored != nil {
+			t.Fatalf("replaced pane received launch metadata: stored=%+v err=%v", stored, readErr)
+		}
+		if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("replaced pane executed refused launch command: %v", statErr)
+		}
+	})
 }

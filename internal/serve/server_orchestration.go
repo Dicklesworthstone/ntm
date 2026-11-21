@@ -475,6 +475,7 @@ func (s *Server) handleRecommendAssignV1(w http.ResponseWriter, r *http.Request)
 		Beads:      req.Beads,
 		Strategy:   strings.TrimSpace(req.Strategy),
 		Relax:      req.Relax,
+		Store:      s.projectionStore(),
 	})
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
@@ -521,7 +522,7 @@ func (s *Server) handleRecommendRouteV1(w http.ResponseWriter, r *http.Request) 
 		Config:         cfg,
 		NoPersist:      true,
 		Relax:          req.Relax,
-		Store:          s.robotRuntime.ProjectionStore(),
+		Store:          s.projectionStore(),
 	})
 	if !out.Success {
 		writeErrorResponse(w, robotErrorHTTPStatus(out.ErrorCode), out.ErrorCode, out.Error, nil, reqID)

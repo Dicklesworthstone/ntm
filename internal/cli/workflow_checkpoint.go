@@ -11,22 +11,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/workflow"
+	"github.com/Dicklesworthstone/ntm/internal/workflowrun"
 )
 
 // WorkflowCheckpointResult exposes execution evidence without printing setup
 // variables or prompt contents, which may contain sensitive project context.
-type WorkflowCheckpointResult struct {
-	Success         bool                       `json:"success"`
-	Workflow        string                     `json:"workflow"`
-	Session         string                     `json:"session"`
-	TmuxEndpoint    string                     `json:"tmux_endpoint,omitempty"`
-	CurrentStage    string                     `json:"current_stage"`
-	Paused          bool                       `json:"paused"`
-	Completed       bool                       `json:"completed"`
-	Dispatches      []workflow.StageDispatch   `json:"dispatches"`
-	CheckpointToken string                     `json:"checkpoint_token"`
-	ManualGate      *workflow.ManualGateStatus `json:"manual_gate,omitempty"`
-}
+type WorkflowCheckpointResult = workflowrun.CheckpointResult
 
 // newWorkflowCheckpointCmd builds the read-only status and explicit recovery
 // surfaces over the same checkpoint used by workflow run. Neither sends keys
@@ -114,42 +104,7 @@ Example:
 }
 
 func getWorkflowCheckpoint(ctx context.Context, projectRoot, session, pane, token, outcome string, recoverDelivery bool) (WorkflowCheckpointResult, error) {
-	if strings.TrimSpace(projectRoot) == "" {
-		return WorkflowCheckpointResult{}, fmt.Errorf("workflow project root is required")
-	}
-	root, err := filepath.Abs(projectRoot)
-	if err != nil {
-		return WorkflowCheckpointResult{}, err
-	}
-	store := &workflow.StateStore{Dir: filepath.Join(root, ".ntm", "workflows", "state")}
-	var state *workflow.WorkflowState
-	if recoverDelivery {
-		state, err = store.ReconcileDelivery(ctx, session, pane, token, outcome)
-	} else {
-		state, err = store.Load(session)
-	}
-	if err != nil {
-		return WorkflowCheckpointResult{}, err
-	}
-	if state == nil {
-		return WorkflowCheckpointResult{}, fmt.Errorf("no workflow checkpoint for session %q in %s; check --project-root", session, root)
-	}
-	currentToken, err := state.CheckpointToken()
-	if err != nil {
-		return WorkflowCheckpointResult{}, err
-	}
-	manualGate, err := store.ManualStatus(state)
-	if err != nil {
-		return WorkflowCheckpointResult{}, err
-	}
-	return WorkflowCheckpointResult{
-		Success: true, Workflow: state.WorkflowName, Session: state.SessionName,
-		TmuxEndpoint: state.TmuxEndpoint,
-		CurrentStage: state.CurrentStage, Paused: state.Paused, Completed: state.Completed,
-		Dispatches:      append([]workflow.StageDispatch{}, state.Dispatches...),
-		CheckpointToken: currentToken,
-		ManualGate:      manualGate,
-	}, nil
+	return workflowrun.GetCheckpoint(ctx, projectRoot, session, pane, token, outcome, recoverDelivery)
 }
 
 // newWorkflowTriggerCmd records one operator choice for the exact stage visit

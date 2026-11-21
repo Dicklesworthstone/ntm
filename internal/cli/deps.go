@@ -670,9 +670,19 @@ type depVersionCacheKey struct {
 	versionArgs string
 }
 
+type depVersionCacheEntry struct {
+	version   string
+	checkedAt time.Time
+}
+
+const (
+	depVersionCacheTTL = 15 * time.Second
+	maxDepVersionCache = 128
+)
+
 var (
 	depVersionCacheMu sync.RWMutex
-	depVersionCache   = map[depVersionCacheKey]string{}
+	depVersionCache   = map[depVersionCacheKey]depVersionCacheEntry{}
 )
 
 // checkDepWithPath checks if a dependency is installed and returns its status, version, and path
@@ -701,10 +711,10 @@ func checkDepWithPath(dep depCheck) (status string, version string, path string)
 				}
 				cacheable = true
 				depVersionCacheMu.RLock()
-				cached, ok := depVersionCache[cacheKey]
+				entry, ok := depVersionCache[cacheKey]
 				depVersionCacheMu.RUnlock()
-				if ok {
-					return "found", cached, path
+				if ok && time.Since(entry.checkedAt) < depVersionCacheTTL {
+					return "found", entry.version, path
 				}
 			}
 		}
@@ -712,21 +722,24 @@ func checkDepWithPath(dep depCheck) (status string, version string, path string)
 		ctx, cancel := context.WithTimeout(context.Background(), depVersionTimeout)
 		defer cancel()
 
-		cmd := exec.CommandContext(ctx, dep.Command, dep.VersionArgs...)
+		cmd := exec.CommandContext(ctx, foundPath, dep.VersionArgs...)
 		cmd.WaitDelay = 2 * time.Second
 		out, err := cmd.CombinedOutput()
 
 		// Some commands print version info but exit non-zero (or get killed on timeout).
-		// Return any output we got, otherwise fall back to "installed".
+		// Return any output we got, otherwise fall back to "installed". Only cache
+		// clean zero-exit probes so transient errors/timeouts never poison the cache.
 		if s := sanitizeDependencyVersion(string(out)); s != "" {
-			if cacheable {
+			if cacheable && err == nil && ctx.Err() == nil {
 				depVersionCacheMu.Lock()
-				depVersionCache[cacheKey] = s
+				if len(depVersionCache) >= maxDepVersionCache {
+					clear(depVersionCache)
+				}
+				depVersionCache[cacheKey] = depVersionCacheEntry{version: s, checkedAt: time.Now()}
 				depVersionCacheMu.Unlock()
 			}
 			return "found", s, path
 		}
-		_ = err
 		return "found", "", path
 	}
 

@@ -576,6 +576,9 @@ func collectBundleVersions(ctx context.Context) (*VersionsInfo, error) {
 
 	tmpRoot := filepath.Clean(os.TempDir())
 	probeFirstLine := func(binPath string, arg string, extraEnv ...string) (string, bool) {
+		if ctx != nil && ctx.Err() != nil {
+			return "", false
+		}
 		var cacheKey depVersionCacheKey
 		cacheable := false
 		cleanPath := filepath.Clean(binPath)
@@ -589,10 +592,10 @@ func collectBundleVersions(ctx context.Context) (*VersionsInfo, error) {
 				}
 				cacheable = true
 				depVersionCacheMu.RLock()
-				cached, ok := depVersionCache[cacheKey]
+				entry, ok := depVersionCache[cacheKey]
 				depVersionCacheMu.RUnlock()
-				if ok {
-					return cached, cached != ""
+				if ok && time.Since(entry.checkedAt) < depVersionCacheTTL {
+					return entry.version, entry.version != ""
 				}
 			}
 		}
@@ -610,9 +613,15 @@ func collectBundleVersions(ctx context.Context) (*VersionsInfo, error) {
 		if idx := strings.Index(version, "\n"); idx > 0 {
 			version = version[:idx]
 		}
-		if cacheable {
+		if version == "" {
+			return "", false
+		}
+		if cacheable && (ctx == nil || ctx.Err() == nil) {
 			depVersionCacheMu.Lock()
-			depVersionCache[cacheKey] = version
+			if len(depVersionCache) >= maxDepVersionCache {
+				clear(depVersionCache)
+			}
+			depVersionCache[cacheKey] = depVersionCacheEntry{version: version, checkedAt: time.Now()}
 			depVersionCacheMu.Unlock()
 		}
 		return version, true

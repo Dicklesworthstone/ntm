@@ -85,8 +85,8 @@ func fileResumeWorkflowTemplate(kind workflow.TriggerType) *workflow.WorkflowTem
 
 // Collect through the production observation/checkpoint path without asking
 // the coordinator to advance yet, so tests can stop at the durable boundary.
-func (r *workflowRunner) checkpointFileTriggers() error {
-	_, err := r.observe(context.Background())
+func checkpointFileTriggersForTest(r *workflowRunner) error {
+	_, err := r.Observe(context.Background())
 	return err
 }
 
@@ -227,7 +227,7 @@ func TestWorkflowResumeRetainsObservedFileAfterRemoval(t *testing.T) {
 		if err := os.WriteFile(path, []byte("finished"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := runner.checkpointFileTriggers(); err != nil {
+		if err := checkpointFileTriggersForTest(runner); err != nil {
 			t.Fatal(err)
 		}
 		if state := mustLoadWorkflowCheckpoint(t, opts); !state.Files.Triggers[0].Fired {
@@ -275,10 +275,10 @@ func TestWorkflowRetryStartsNewFilesystemBoundary(t *testing.T) {
 		if err := os.WriteFile(path, []byte("previous attempt"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := runner.checkpointFileTriggers(); err != nil {
+		if err := checkpointFileTriggersForTest(runner); err != nil {
 			t.Fatal(err)
 		}
-		if err := (workflowRunActions{r: runner}).RetryStage(ctx); err != nil {
+		if err := (workflowRunActions{R: runner}).RetryStage(ctx); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -409,8 +409,8 @@ func TestWorkflowResumeContinuesSavedStageWithoutRepeatingPrompts(t *testing.T) 
 	if err != nil || !result.Success || !result.Resumed || !result.Completed || !reflect.DeepEqual(result.Stages, []string{"review", "done"}) {
 		t.Fatalf("resume = %+v, %v", result, err)
 	}
-	if len(sent) != 2 || resumed.opts.Vars["feature"] != "durable continuation" {
-		t.Fatalf("resume resent work or lost variables: sends=%v vars=%v", sent, resumed.opts.Vars)
+	if len(sent) != 2 || resumed.Opts.Vars["feature"] != "durable continuation" {
+		t.Fatalf("resume resent work or lost variables: sends=%v vars=%v", sent, resumed.Opts.Vars)
 	}
 	state := mustLoadWorkflowCheckpoint(t, opts)
 	if state.Paused || !state.Completed || len(state.StageHistory) != 2 || state.Turn != 2 {
@@ -745,7 +745,7 @@ func TestWorkflowTimeoutCheckpointFailureStopsBeforeFurtherAction(t *testing.T) 
 			ports.sleep = func(_ context.Context, d time.Duration) {
 				now = now.Add(d)
 				if !failAcknowledgment {
-					runner.store.Dir = blocked
+					runner.Store.Dir = blocked
 				}
 			}
 			notifications := 0
@@ -758,7 +758,7 @@ func TestWorkflowTimeoutCheckpointFailureStopsBeforeFurtherAction(t *testing.T) 
 							t.Fatalf("timeout acted before its durable intent: %+v", state)
 						}
 						if failAcknowledgment {
-							runner.store.Dir = blocked
+							runner.Store.Dir = blocked
 						}
 					}
 				}
@@ -996,7 +996,7 @@ func TestWorkflowRecoveryBudgetWriteFailureRefusesSideEffects(t *testing.T) {
 			agents.wire(&ports, &runner)
 			injected := false
 			ports.notify = func(_ string, _ ...any) {
-				if injected || runner.state == nil || len(runner.state.Errors) == 0 {
+				if injected || runner.State == nil || len(runner.State.Errors) == 0 {
 					return
 				}
 				// Agent supervision has saved the fault before notifying. Fail
@@ -1007,7 +1007,7 @@ func TestWorkflowRecoveryBudgetWriteFailureRefusesSideEffects(t *testing.T) {
 					t.Fatalf("fault was not checkpointed before recovery: %+v", state)
 				}
 				injected = true
-				runner.store.Dir = blocked
+				runner.Store.Dir = blocked
 			}
 			runner = mustResumeWorkflowRunner(t, template, resumeWorkflowAgents(), opts, ports)
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -1019,8 +1019,8 @@ func TestWorkflowRecoveryBudgetWriteFailureRefusesSideEffects(t *testing.T) {
 			if len(sent) != 1 || len(agents.restarted()) != 0 {
 				t.Fatalf("failed reservation performed an external action: sends=%d restarts=%v", len(sent), agents.restarted())
 			}
-			if len(runner.state.Dispatches) != 1 || runner.state.Dispatches[0].Status != "delivered" || runner.state.Evidence == nil {
-				t.Fatalf("failed reservation entered the retry action and cleared delivery evidence: %+v", runner.state)
+			if len(runner.State.Dispatches) != 1 || runner.State.Dispatches[0].Status != "delivered" || runner.State.Evidence == nil {
+				t.Fatalf("failed reservation entered the retry action and cleared delivery evidence: %+v", runner.State)
 			}
 			state := mustLoadWorkflowCheckpoint(t, opts)
 			if state.Recovery.Retries["build"] != 0 || state.Recovery.Restarts["%1"] != 0 || len(state.Dispatches) != 1 || state.Dispatches[0].Status != "delivered" {
@@ -1379,7 +1379,7 @@ func TestWorkflowCheckpointWriteFailureStopsFurtherDispatch(t *testing.T) {
 	ports.dispatch = func(ctx context.Context, session, pane, prompt string) error {
 		_ = baseDispatch(ctx, session, pane, prompt)
 		// Make receipt persistence fail after a real successful delivery.
-		runner.store.Dir = blocked
+		runner.Store.Dir = blocked
 		return nil
 	}
 	runner = mustResumeWorkflowRunner(t, resumeWorkflowTemplate(), resumeWorkflowAgents(), opts, ports)

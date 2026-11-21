@@ -639,7 +639,7 @@ func TestBackpressureAndSwarmLabRESTEndpoints(t *testing.T) {
 	t.Cleanup(srv.Stop)
 	router := srv.Router()
 
-	doJSON := func(method, target string, body interface{}) (*httptest.ResponseRecorder, map[string]interface{}) {
+	doJSON := func(t *testing.T, method, target string, body interface{}) (*httptest.ResponseRecorder, map[string]interface{}) {
 		t.Helper()
 		var reader *bytes.Reader
 		if body != nil {
@@ -668,7 +668,7 @@ func TestBackpressureAndSwarmLabRESTEndpoints(t *testing.T) {
 
 	t.Run("GET /api/v1/health/backpressure includes live REST, SSE, and WebSocket surfaces", func(t *testing.T) {
 		t.Parallel()
-		rec, body := doJSON(http.MethodGet, "/api/v1/health/backpressure", nil)
+		rec, body := doJSON(t, http.MethodGet, "/api/v1/health/backpressure", nil)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("GET /api/v1/health/backpressure status=%d body=%v", rec.Code, body)
 		}
@@ -706,7 +706,7 @@ func TestBackpressureAndSwarmLabRESTEndpoints(t *testing.T) {
 			t.Errorf("missing load_shedding contract: %#v", body["load_shedding"])
 		}
 
-		badRec, _ := doJSON(http.MethodGet, "/api/v1/health/backpressure?session=bad:name", nil)
+		badRec, _ := doJSON(t, http.MethodGet, "/api/v1/health/backpressure?session=bad:name", nil)
 		if badRec.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 for invalid session name, got %d", badRec.Code)
 		}
@@ -714,7 +714,7 @@ func TestBackpressureAndSwarmLabRESTEndpoints(t *testing.T) {
 
 	t.Run("GET /api/v1/swarm/lab/scenarios and POST /api/v1/swarm/lab/run", func(t *testing.T) {
 		t.Parallel()
-		listRec, listBody := doJSON(http.MethodGet, "/api/v1/swarm/lab/scenarios?gate=short", nil)
+		listRec, listBody := doJSON(t, http.MethodGet, "/api/v1/swarm/lab/scenarios?gate=short", nil)
 		if listRec.Code != http.StatusOK {
 			t.Fatalf("GET /api/v1/swarm/lab/scenarios status=%d body=%v", listRec.Code, listBody)
 		}
@@ -723,7 +723,7 @@ func TestBackpressureAndSwarmLabRESTEndpoints(t *testing.T) {
 			t.Fatalf("expected scenarios list, got %#v", listBody["scenarios"])
 		}
 
-		runRec, runBody := doJSON(http.MethodPost, "/api/v1/swarm/lab/run", map[string]interface{}{
+		runRec, runBody := doJSON(t, http.MethodPost, "/api/v1/swarm/lab/run", map[string]interface{}{
 			"action":        "run",
 			"pane_count":    4,
 			"command_count": 8,
@@ -735,7 +735,7 @@ func TestBackpressureAndSwarmLabRESTEndpoints(t *testing.T) {
 			t.Fatalf("expected run_result object, got %#v", runBody["run_result"])
 		}
 
-		corpusRec, corpusBody := doJSON(http.MethodPost, "/api/v1/swarm/lab/run", map[string]interface{}{
+		corpusRec, corpusBody := doJSON(t, http.MethodPost, "/api/v1/swarm/lab/run", map[string]interface{}{
 			"action": "corpus",
 		})
 		if corpusRec.Code != http.StatusOK {
@@ -745,7 +745,7 @@ func TestBackpressureAndSwarmLabRESTEndpoints(t *testing.T) {
 			t.Fatalf("expected corpus_summary object, got %#v", corpusBody["corpus_summary"])
 		}
 
-		calRec, calBody := doJSON(http.MethodPost, "/api/v1/swarm/lab/run", map[string]interface{}{
+		calRec, calBody := doJSON(t, http.MethodPost, "/api/v1/swarm/lab/run", map[string]interface{}{
 			"action":     "calibrate",
 			"profile_id": "ci-rest-probe",
 		})
@@ -756,7 +756,7 @@ func TestBackpressureAndSwarmLabRESTEndpoints(t *testing.T) {
 			t.Fatalf("expected calibration object, got %#v", calBody["calibration"])
 		}
 
-		badActionRec, _ := doJSON(http.MethodPost, "/api/v1/swarm/lab/run", map[string]interface{}{
+		badActionRec, _ := doJSON(t, http.MethodPost, "/api/v1/swarm/lab/run", map[string]interface{}{
 			"action": "list",
 		})
 		if badActionRec.Code != http.StatusBadRequest {

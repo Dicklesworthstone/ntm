@@ -1317,6 +1317,9 @@ type AttentionQueryOptions struct {
 	Profile            string
 	CategoryFilter     []string
 	ActionRequiredOnly bool
+	// Feed overrides the package-global attention feed when non-nil so callers
+	// (such as an isolated Server instance) read and report cursors from one feed.
+	Feed *AttentionFeed
 }
 
 // GetAttention returns a non-blocking, cursor-replayable AttentionOutput sorted
@@ -1332,7 +1335,10 @@ func GetAttention(opts AttentionQueryOptions) (*AttentionOutput, error) {
 	resp := NewRobotResponse(true)
 	resp.Version = AttentionContractVersion
 
-	feed := GetAttentionFeed()
+	feed := opts.Feed
+	if feed == nil {
+		feed = GetAttentionFeed()
+	}
 	if feed == nil {
 		return &AttentionOutput{
 			RobotResponse: resp,

@@ -151,9 +151,9 @@ func TestIdempotencyRouterCoverage(t *testing.T) {
 		// through the production middlewares so the probe has the same scope
 		// as the real request below.
 		var scoped string
-		srv.pipelineProjectScopeMiddleware(srv.jobProjectSelectionMiddleware(srv.mailProjectScopeMiddleware(srv.jobHTTPReplayScopeMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		srv.pipelineProjectScopeMiddleware(srv.workflowProjectScopeMiddleware(srv.jobProjectSelectionMiddleware(srv.mailProjectScopeMiddleware(srv.jobHTTPReplayScopeMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			scoped = scopedIdempotencyKey(r)
-		}))))).ServeHTTP(httptest.NewRecorder(), probe)
+		})))))).ServeHTTP(httptest.NewRecorder(), probe)
 		if scoped == "" {
 			t.Fatalf("scoped key empty for %s %s", rt.Method, rt.Pattern)
 		}

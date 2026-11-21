@@ -436,7 +436,19 @@ func runDirectPaneAssignment(ctx context.Context, opts *AssignCommandOptions) er
 
 		var liveDetails *bv.BeadAssignmentDetails
 		if opts.ReserveFiles {
-			if details, detailsErr := getBeadAssignmentDetailsForAssignment(ctx, projectDir, beadID); detailsErr == nil && details != nil {
+			details, detailsErr := getBeadAssignmentDetailsForAssignment(ctx, projectDir, beadID)
+			if detailsErr != nil {
+				code := "BEAD_LOOKUP_FAILED"
+				if errors.Is(detailsErr, context.Canceled) || errors.Is(detailsErr, context.DeadlineExceeded) {
+					code = robot.ErrCodeTimeout
+				}
+				errMsg := fmt.Sprintf("not assigning %s: failed to inspect bead for file reservation discovery: %v", beadID, detailsErr)
+				if IsJSONOutput() {
+					return emitJSONFailureEnvelope(makeDirectAssignEnvelope(opts.Session, false, &DirectAssignData{Assignment: assignItem}, code, errMsg, warnings))
+				}
+				return errors.New(errMsg)
+			}
+			if details != nil {
 				liveDetails = details
 				paths, pathsErr := assign.ReservationPathsForAssignment(details.Title, details.Description)
 				if pathsErr != nil {

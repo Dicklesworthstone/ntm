@@ -2469,7 +2469,6 @@ func GetInspectIncident(opts InspectIncidentOptions) (*InspectIncidentOutput, er
 	return output, nil
 }
 
-// PrintInspectIncident outputs store-backed incident inspection.
 // IncidentResolveOutput is the --robot-incident-resolve response (ntm-rerm):
 // robot mode could open and inspect incidents but never close one, so
 // operators were told to "resolve via coordinator status once the trigger

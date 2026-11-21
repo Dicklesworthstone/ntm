@@ -647,7 +647,7 @@ func isRetryableAssignmentSourceChange(err error) bool {
 }
 
 func prepareResolvedAssignCommand(cmd *cobra.Command, session, projectDir string) (handled bool, policyProject string, closeWebhook func() error, err error) {
-	if assignClear != "" || strings.TrimSpace(assignClearPane) != "" || assignClearFailed {
+	if strings.TrimSpace(assignClear) != "" || strings.TrimSpace(assignClearPane) != "" || assignClearFailed {
 		return true, "", nil, runClearAssignmentsForCommand(cmd, session)
 	}
 
@@ -782,7 +782,7 @@ func runAssign(cmd *cobra.Command, args []string) error {
 		displayAssignOutputEnhanced(assignOutput, assignVerbose)
 	}
 
-	if len(assignOutput.Assignments) == 0 {
+	if len(assignOutput.Assignments) == 0 || assignDryRun {
 		return nil
 	}
 
@@ -1431,11 +1431,12 @@ func getAssignOutputEnhanced(ctx context.Context, opts *AssignCommandOptions) (*
 				Reason: SkipReasonNoPlaceableAgents,
 			})
 		}
-		result.Summary.SkippedCount = len(readyBeads)
+		result.Summary.SkippedCount = len(result.Skipped)
 		return redactAssignOutputForProjection(result), nil
 	}
 
 	if len(readyBeads) == 0 {
+		result.Summary.SkippedCount = len(result.Skipped)
 		return redactAssignOutputForProjection(result), nil
 	}
 
@@ -1597,16 +1598,19 @@ func generateAssignmentsLegacy(agents []assignAgentInfo, beads []bv.BeadPreview,
 
 func buildAssignAllocationInput(ctx context.Context, agents []assignAgentInfo, beads []bv.BeadPreview, opts *AssignCommandOptions, bvAvailable bool) assign.AllocationInput {
 	session := ""
+	projectDir := ""
 	if opts != nil {
 		session = opts.Session
+		projectDir = opts.ProjectDir
 	}
+	multiWindow := tmux.PanesSpanMultipleWindows(assignmentAgentPanes(agents))
 	stats := loadAssignAllocationStats(session)
 	allocationAgents := make([]assign.AllocationAgent, 0, len(agents))
 	totalActive := stats.totalActive
 	totalHeadroom := 0.0
 
 	for _, agentInfo := range agents {
-		agentID := assignAllocationAgentID(session, agentInfo)
+		agentID := assignAllocationAgentID(projectDir, session, agentInfo, multiWindow)
 		paneKey := assignmentPaneStableKey(agentInfo.pane)
 		active := agentInfo.activeAssignments + stats.activeByPane[paneKey]
 		totalActive += agentInfo.activeAssignments
@@ -1700,11 +1704,11 @@ func buildAssignAllocationBeads(beads []bv.BeadPreview) []assign.AllocationReady
 	return out
 }
 
-func assignAllocationAgentID(session string, agentInfo assignAgentInfo) string {
-	physical := assignmentPaneTarget(agentInfo.pane)
+func assignAllocationAgentID(projectDir, session string, agentInfo assignAgentInfo, multiWindow bool) string {
 	if session != "" {
-		return fmt.Sprintf("%s_%s_%s", session, agentInfo.agentType, physical)
+		return assignmentAgentIdentityForPane(projectDir, session, agentInfo.agentType, agentInfo.pane, multiWindow)
 	}
+	physical := assignmentPaneTarget(agentInfo.pane)
 	return fmt.Sprintf("%s_%s", agentInfo.agentType, physical)
 }
 

@@ -160,7 +160,6 @@ func TestEnrichAgentStatus_FreshProcessDoesNotFabricateOutput(t *testing.T) {
 // tracker) inherits the last-change clock from the durable output sequence
 // instead of restarting from "changed just now".
 func TestEnrichAgentStatus_DurableSequenceSuppliesClockAcrossProcesses(t *testing.T) {
-	t.Parallel()
 	store := newProjectionTestStore(t)
 
 	idleClaude := readAgentFixture(t, "claude_idle_completed.txt")

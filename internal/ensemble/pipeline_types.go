@@ -237,8 +237,12 @@ var DefaultOutputCollectorPollInterval = 5 * time.Second
 
 // DefaultOutputCollectorConfig returns sensible defaults.
 func DefaultOutputCollectorConfig() OutputCollectorConfig {
+	poll := DefaultOutputCollectorPollInterval
+	if poll <= 0 {
+		poll = 5 * time.Second
+	}
 	return OutputCollectorConfig{
-		PollInterval: DefaultOutputCollectorPollInterval,
+		PollInterval: poll,
 		Timeout:      10 * time.Minute,
 		RequireAll:   false,
 		MinOutputs:   1,

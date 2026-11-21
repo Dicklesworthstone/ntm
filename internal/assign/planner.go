@@ -169,27 +169,7 @@ func InferTaskType(title string) TaskType {
 // requested assignment strategy.
 func CalculateMatchConfidence(agentType, beadTitle, priority, strategy string) float64 {
 	baseConfidence := 0.7
-
-	title := strings.ToLower(beadTitle)
-	taskType := "task"
-
-	taskPatterns := map[string][]string{
-		"bug":           {"bug", "fix", "broken", "error", "crash"},
-		"testing":       {"test", "spec", "coverage"},
-		"documentation": {"doc", "readme", "comment"},
-		"refactor":      {"refactor", "cleanup", "improve"},
-		"analysis":      {"analyze", "investigate", "research"},
-		"feature":       {"feature", "implement", "add", "new"},
-	}
-
-	for tt, patterns := range taskPatterns {
-		for _, p := range patterns {
-			if strings.Contains(title, p) {
-				taskType = tt
-				break
-			}
-		}
-	}
+	taskType := string(InferTaskType(beadTitle))
 
 	strengths := map[string]map[string]float64{
 		"claude": {"analysis": 0.9, "refactor": 0.9, "documentation": 0.8, "feature": 0.8, "bug": 0.7},
@@ -399,7 +379,7 @@ func PlanLegacyStrategy(agents []LegacyPlanAgent, beads []LegacyPlanBead, opts L
 				if usedAgents[agents[i].Pane.Ref().StableKey()] {
 					continue
 				}
-				score := (CalculateMatchConfidence(agents[i].AgentType, bead.Title, bead.Priority, "speed") + 0.9) / 2
+				score := CalculateMatchConfidence(agents[i].AgentType, bead.Title, bead.Priority, "speed")
 				items = append(items, LegacyPlanItem{
 					BeadID:     bead.ID,
 					BeadTitle:  bead.Title,
@@ -429,9 +409,6 @@ func PlanLegacyStrategy(agents []LegacyPlanAgent, beads []LegacyPlanBead, opts L
 					continue
 				}
 				score := CalculateMatchConfidence(agents[i].AgentType, bead.Title, bead.Priority, "dependency")
-				if ParsePriorityString(bead.Priority) <= 1 {
-					score = min(score+0.1, 0.95)
-				}
 				if score > bestScore {
 					bestScore = score
 					bestAgent = &agents[i]

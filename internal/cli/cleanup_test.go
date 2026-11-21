@@ -29,7 +29,9 @@ func TestMatchesNTMPattern(t *testing.T) {
 
 		// Test directories
 		{name: "test-ntm dir", input: "test-ntm-spawn", expected: "test-ntm-*"},
+		{name: "test-ntm exact prefix (9 chars)", input: "test-ntm-", expected: "test-ntm-*"},
 		{name: "test-ntm with timestamp", input: "test-ntm-20260205", expected: "test-ntm-*"},
+		{name: "path separator rejected", input: "test-ntm-foo/bar", expected: ""},
 
 		// Atomic files
 		{name: "atomic file", input: "ntm-atomic-config.json", expected: "ntm-atomic-*"},

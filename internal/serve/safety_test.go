@@ -369,7 +369,6 @@ func TestApprovalEndpointsFailClosedWithoutStateStore(t *testing.T) {
 }
 
 func TestRobotHealthAndAttentionParityPolicyDecisionsAndMTLSClientCN(t *testing.T) {
-	t.Parallel()
 	s, store := setupTestServer(t)
 
 	// 1. GET /api/robot/health delegates to real robot.GetHealth() with deprecation headers and zero stub notes.

@@ -18,17 +18,32 @@ type bdBinaryProbeKey struct {
 	size    int64
 }
 
+type bdVersionCacheEntry struct {
+	version   Version
+	checkedAt time.Time
+}
+
+type bdDaemonCacheEntry struct {
+	supported bool
+	checkedAt time.Time
+}
+
+const (
+	toolVersionCacheTTL = 15 * time.Second
+	maxToolCacheEntries = 128
+)
+
 var (
 	bdVersionCacheMu sync.RWMutex
-	bdVersionCache   = map[bdBinaryProbeKey]Version{}
-	bdDaemonCache    = map[bdBinaryProbeKey]bool{}
+	bdVersionCache   = map[bdBinaryProbeKey]bdVersionCacheEntry{}
+	bdDaemonCache    = map[bdBinaryProbeKey]bdDaemonCacheEntry{}
 )
 
 // bdBinaryCacheKey returns a cache key for installed executables outside the
 // temp directory so repeated Detect/Version/Capabilities/Health probes within
-// one process do not re-exec slow binaries multiple times per doctor/deps
-// check. Files under os.TempDir() (e.g., per-test stub scripts that inspect
-// env vars) are never cached.
+// one check do not re-exec slow binaries multiple times. Entries expire after
+// toolVersionCacheTTL so long-lived daemons re-probe real binary liveness.
+// Files under os.TempDir() (e.g., per-test stub scripts) are never cached.
 func bdBinaryCacheKey(binary string) (bdBinaryProbeKey, bool) {
 	cleanPath := filepath.Clean(binary)
 	tmpRoot := filepath.Clean(os.TempDir())
@@ -46,21 +61,29 @@ func bdBinaryCacheKey(binary string) (bdBinaryProbeKey, bool) {
 	}, true
 }
 
-// cachedToolVersion looks up or populates the per-binary version cache for
-// installed binaries outside os.TempDir().
-func cachedToolVersion(binaryName string, fetch func(path string) (Version, error)) (Version, error) {
+// cachedToolVersion looks up or populates the TTL-bounded per-binary version
+// cache for installed binaries outside os.TempDir(), honoring ctx cancellation.
+func cachedToolVersion(ctx context.Context, binaryName string, fetch func(path string) (Version, error)) (Version, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return Version{}, err
+		}
+	}
 	if path, err := exec.LookPath(binaryName); err == nil {
 		if key, cacheable := bdBinaryCacheKey(path); cacheable {
 			bdVersionCacheMu.RLock()
-			v, ok := bdVersionCache[key]
+			entry, ok := bdVersionCache[key]
 			bdVersionCacheMu.RUnlock()
-			if ok {
-				return v, nil
+			if ok && time.Since(entry.checkedAt) < toolVersionCacheTTL {
+				return entry.version, nil
 			}
 			v, err := fetch(path)
-			if err == nil {
+			if err == nil && (ctx == nil || ctx.Err() == nil) {
 				bdVersionCacheMu.Lock()
-				bdVersionCache[key] = v
+				if len(bdVersionCache) >= maxToolCacheEntries {
+					clear(bdVersionCache)
+				}
+				bdVersionCache[key] = bdVersionCacheEntry{version: v, checkedAt: time.Now()}
 				bdVersionCacheMu.Unlock()
 			}
 			return v, err
@@ -101,13 +124,18 @@ func (a *BDAdapter) binaryCandidates() []string {
 }
 
 func (a *BDAdapter) versionFromBinary(ctx context.Context, binary string) (Version, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return Version{}, err
+		}
+	}
 	key, cacheable := bdBinaryCacheKey(binary)
 	if cacheable {
 		bdVersionCacheMu.RLock()
-		v, ok := bdVersionCache[key]
+		entry, ok := bdVersionCache[key]
 		bdVersionCacheMu.RUnlock()
-		if ok {
-			return v, nil
+		if ok && time.Since(entry.checkedAt) < toolVersionCacheTTL {
+			return entry.version, nil
 		}
 	}
 
@@ -121,9 +149,12 @@ func (a *BDAdapter) versionFromBinary(ctx context.Context, binary string) (Versi
 	}
 
 	v, err := ParseStandardVersion(stdout.String())
-	if err == nil && cacheable {
+	if err == nil && cacheable && (ctx == nil || ctx.Err() == nil) {
 		bdVersionCacheMu.Lock()
-		bdVersionCache[key] = v
+		if len(bdVersionCache) >= maxToolCacheEntries {
+			clear(bdVersionCache)
+		}
+		bdVersionCache[key] = bdVersionCacheEntry{version: v, checkedAt: time.Now()}
 		bdVersionCacheMu.Unlock()
 	}
 	return v, err
@@ -199,13 +230,16 @@ func (a *BDAdapter) Capabilities(ctx context.Context) ([]Capability, error) {
 }
 
 func (a *BDAdapter) supportsDaemonMode(ctx context.Context, binary string) bool {
+	if ctx != nil && ctx.Err() != nil {
+		return false
+	}
 	key, cacheable := bdBinaryCacheKey(binary)
 	if cacheable {
 		bdVersionCacheMu.RLock()
-		supported, ok := bdDaemonCache[key]
+		entry, ok := bdDaemonCache[key]
 		bdVersionCacheMu.RUnlock()
-		if ok {
-			return supported
+		if ok && time.Since(entry.checkedAt) < toolVersionCacheTTL {
+			return entry.supported
 		}
 	}
 
@@ -217,9 +251,12 @@ func (a *BDAdapter) supportsDaemonMode(ctx context.Context, binary string) bool 
 	cmd.Stderr = &stderr
 
 	supported := cmd.Run() == nil
-	if cacheable && ctx.Err() == nil {
+	if cacheable && (ctx == nil || ctx.Err() == nil) {
 		bdVersionCacheMu.Lock()
-		bdDaemonCache[key] = supported
+		if len(bdDaemonCache) >= maxToolCacheEntries {
+			clear(bdDaemonCache)
+		}
+		bdDaemonCache[key] = bdDaemonCacheEntry{supported: supported, checkedAt: time.Now()}
 		bdVersionCacheMu.Unlock()
 	}
 	return supported

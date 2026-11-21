@@ -34,7 +34,7 @@ func (a *UBSAdapter) Detect() (string, bool) {
 
 // Version returns the installed ubs version
 func (a *UBSAdapter) Version(ctx context.Context) (Version, error) {
-	return cachedToolVersion(a.BinaryName(), func(bin string) (Version, error) {
+	return cachedToolVersion(ctx, a.BinaryName(), func(bin string) (Version, error) {
 		ctx, cancel := context.WithTimeout(ctx, a.Timeout())
 		defer cancel()
 

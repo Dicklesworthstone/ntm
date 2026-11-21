@@ -46,7 +46,7 @@ func (a *CAAMAdapter) Detect() (string, bool) {
 // of version skew: any output containing a parseable X.Y.Z is accepted,
 // including when caam exits non-zero or prints to stderr.
 func (a *CAAMAdapter) Version(ctx context.Context) (Version, error) {
-	return cachedToolVersion(a.BinaryName(), func(bin string) (Version, error) {
+	return cachedToolVersion(ctx, a.BinaryName(), func(bin string) (Version, error) {
 		ctx, cancel := context.WithTimeout(ctx, a.Timeout())
 		defer cancel()
 

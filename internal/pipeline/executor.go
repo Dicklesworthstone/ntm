@@ -1843,8 +1843,9 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		// settled command receipt and step result into that single atomic
 		// checkpoint write.
 		if callerStep, _ := ctx.Value(callerPersistsSettledCommandKey{}).(string); commandSettled && result.Status == StatusCompleted && len(step.OnSuccess) == 0 && callerStep == step.ID {
-			_ = e.recordCommandExecutionInMemory(record)
-			return
+			if err := e.recordCommandExecutionInMemory(record); err == nil {
+				return
+			}
 		}
 		// A failed save stops the workflow through its sticky checkpoint error,
 		// while retaining the actual command outcome in the returned state.

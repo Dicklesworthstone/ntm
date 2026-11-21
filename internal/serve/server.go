@@ -71,6 +71,11 @@ type Server struct {
 	jobStore    *JobStore
 	jobExecutor jobExecutor
 
+	// Active managed workflow runs keyed by canonical (projectDir, session).
+	workflowRunsMu  sync.Mutex
+	workflowRuns    map[workflowRunKey][]*activeWorkflowRun
+	lastWorkflowJob map[workflowRunKey]string
+
 	// Chi router for /api/v1
 	router chi.Router
 
@@ -509,6 +514,9 @@ func (s *Server) buildRouter() chi.Router {
 	// both wait for input while configuration changes in another request.
 	// Validation still follows each pipeline route's permission check.
 	r.Use(s.pipelineProjectScopeMiddleware)
+	// Pin default project scope for /api/v1/workflows/* before Idempotency-Key
+	// replay lookup so PATCH /api/v1/config cannot cross-replay cached responses.
+	r.Use(s.workflowProjectScopeMiddleware)
 	// Jobs select their effective destination from the eventual JSON body.
 	// Pin configuration and cwd before redaction can wait on that body.
 	r.Use(s.jobProjectSelectionMiddleware)

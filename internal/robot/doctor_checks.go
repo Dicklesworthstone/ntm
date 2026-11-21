@@ -453,7 +453,6 @@ func AgentMailDaemonAddr() (string, int) {
 }
 
 func checkDoctorDaemons(ctx context.Context, cfg *config.Config) []DoctorDaemonCheck {
-	checks := make([]DoctorDaemonCheck, 0, 2)
 	amHost, amPort := AgentMailDaemonAddr()
 
 	type daemonPort struct {
@@ -467,7 +466,7 @@ func checkDoctorDaemons(ctx context.Context, cfg *config.Config) []DoctorDaemonC
 		{"cm-server", "127.0.0.1", 8766, false},
 	}
 
-	checks = make([]DoctorDaemonCheck, len(daemons))
+	checks := make([]DoctorDaemonCheck, len(daemons))
 	var wg sync.WaitGroup
 	for i, dp := range daemons {
 		wg.Add(1)

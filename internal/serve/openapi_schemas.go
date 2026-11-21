@@ -1533,10 +1533,18 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 		},
 	},
 	"handleWorkflowsRunV1": {
-		Response:   WorkflowControlEnvelopeResponse{},
-		Envelope:   true,
-		Request:    WorkflowRunRequest{},
-		RequestReq: true,
+		Response:    WorkflowControlEnvelopeResponse{},
+		Envelope:    true,
+		Request:     WorkflowRunRequest{},
+		RequestReq:  true,
+		Accepted202: true,
+	},
+	"handleWorkflowsStatusV1": {
+		Response: WorkflowControlEnvelopeResponse{},
+		Envelope: true,
+		QueryParams: []routeQueryParam{
+			{Name: "project_dir", Type: "string", Description: "Optional existing absolute project directory override (alias: ?project=)."},
+		},
 	},
 	"handleWorkflowsTriggerV1": {
 		Response:   WorkflowControlEnvelopeResponse{},
@@ -1545,9 +1553,10 @@ var servedRouteSchemasByHandler = map[string]routeSchemaSpec{
 		RequestReq: true,
 	},
 	"handleWorkflowsStopV1": {
-		Response: WorkflowControlEnvelopeResponse{},
-		Envelope: true,
-		Request:  WorkflowStopRequest{},
+		Response:    WorkflowControlEnvelopeResponse{},
+		Envelope:    true,
+		Request:     WorkflowStopRequest{},
+		Accepted202: true,
 	},
 	"handleSequencesCreateV1": {
 		Response:   SequenceEnvelopeResponse{},

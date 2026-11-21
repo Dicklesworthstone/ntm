@@ -522,6 +522,10 @@ type SessionsRestoreResult struct {
 	RestoredAs   string                `json:"restored_as"`
 	State        *session.SessionState `json:"state,omitempty"`
 	AgentCount   int                   `json:"agent_count"`
+	Launched     int                   `json:"launched,omitempty"`
+	Skipped      int                   `json:"skipped,omitempty"`
+	Failed       int                   `json:"failed,omitempty"`
+	Panes        []session.ResumePane  `json:"panes,omitempty"`
 	PromptSent   int                   `json:"prompt_sent,omitempty"`
 	PromptFailed int                   `json:"prompt_failed,omitempty"`
 	Error        string                `json:"error,omitempty"`
@@ -533,6 +537,35 @@ func (r *SessionsRestoreResult) Text(w io.Writer) error {
 	if !r.Success {
 		fmt.Fprintf(w, "%s✗%s Failed to restore session: %s\n",
 			colorize(t.Red), colorize(t.Text), r.Error)
+		if r.RestoredAs == "" || len(r.Panes) == 0 {
+			return nil
+		}
+		fmt.Fprintf(w, "  Session '%s' remains available for inspection\n", r.RestoredAs)
+		fmt.Fprintf(w, "  %d agent(s) launched, %d skipped, %d failed\n",
+			r.Launched, r.Skipped, r.Failed)
+		for _, p := range r.Panes {
+			marker := "·"
+			switch p.Action {
+			case "launched":
+				marker = "+"
+			case "failed":
+				marker = "✗"
+			}
+			fmt.Fprintf(w, "  %s [%d] %s (%s)\n", marker, p.Index, p.Title, p.Action)
+			if p.Error != "" {
+				fmt.Fprintf(w, "    %s\n", p.Error)
+			}
+		}
+		if r.PromptSent > 0 || r.PromptFailed > 0 {
+			fmt.Fprintf(w, "  Prompt injected into %d pane(s)", r.PromptSent)
+			if r.PromptFailed > 0 {
+				fmt.Fprintf(w, " (%d failed)", r.PromptFailed)
+			}
+			fmt.Fprintln(w)
+		}
+		if r.GitWarning != "" {
+			fmt.Fprintf(w, "  %sWarning:%s %s\n", colorize(t.Warning), colorize(t.Text), r.GitWarning)
+		}
 		return nil
 	}
 
@@ -668,7 +701,11 @@ func runSessionsRestore(ctx context.Context, savedName string, opts session.Rest
 	if launchAgents {
 		// Optionally inject an initial prompt into the launched panes.
 		if launchErr == nil && strings.TrimSpace(prompt) != "" {
-			promptSent, promptFailed, promptErr = sendResumePrompt(ctx, restoredName, prompt)
+			var launchedPanes []session.ResumePane
+			if launchResult != nil {
+				launchedPanes = launchResult.Panes
+			}
+			promptSent, promptFailed, promptErr = sendResumePrompt(ctx, restoredName, prompt, launchedPanes)
 		}
 		if launchResult != nil {
 			agentCount = launchResult.Launched
@@ -686,6 +723,12 @@ func runSessionsRestore(ctx context.Context, savedName string, opts session.Rest
 		PromptFailed: promptFailed,
 		GitWarning:   gitWarning,
 	}
+	if launchResult != nil {
+		result.Launched = launchResult.Launched
+		result.Skipped = launchResult.Skipped
+		result.Failed = launchResult.Failed
+		result.Panes = launchResult.Panes
+	}
 
 	if launchErr != nil {
 		result.Error = fmt.Sprintf("restored session but failed to launch agents: %v", launchErr)
@@ -698,10 +741,7 @@ func runSessionsRestore(ctx context.Context, savedName string, opts session.Rest
 		return err
 	}
 	if operationErr != nil {
-		if jsonOutput {
-			return jsonFailureExit()
-		}
-		return operationErr
+		return jsonFailureExit()
 	}
 
 	// Attach if requested
@@ -875,16 +915,35 @@ func applyResumeTheme(name string) {
 	theme.ApplyLipGlossDefaults(theme.FromName(name))
 }
 
-// sendResumePrompt injects an initial prompt into each agent pane after a
-// resume/restore relaunch (ntm-boi0 --prompt passthrough). Best-effort: the
-// agents may still be starting, so this mirrors `ntm resume --inject` and a
-// short settle delay precedes delivery. User panes are skipped.
-func sendResumePrompt(ctx context.Context, sessionName, prompt string) (sent, failed int, canceled error) {
+type guardedResumePromptDeliverer struct{}
+
+func (guardedResumePromptDeliverer) Deliver(ctx context.Context, delivery dispatchsvc.Delivery) error {
+	pane := delivery.Target.Pane
+	guardedCtx, err := tmux.WithPaneMutationGuard(ctx, pane.ID, pane.PID)
+	if err != nil {
+		return dispatchsvc.GuaranteeNoDeliveryActuation(err)
+	}
+	return dispatchsvc.TMUXDeliverer{}.Deliver(guardedCtx, delivery)
+}
+
+// sendResumePrompt injects an initial prompt into each launched/resumed agent
+// pane after a resume/restore relaunch (ntm-boi0 --prompt passthrough). Best-effort:
+// the agents may still be starting, so a short settle delay precedes observation
+// and every input/Enter mutation is fenced with tmux.WithPaneMutationGuard.
+func sendResumePrompt(ctx context.Context, sessionName, prompt string, launchedPanes []session.ResumePane) (sent, failed int, canceled error) {
 	if ctx == nil {
 		return 0, 0, fmt.Errorf("session prompt dispatch requires a command context")
 	}
 	if prompt = strings.TrimSpace(prompt); prompt == "" {
 		return 0, 0, nil
+	}
+	// Give freshly-relaunched agents a moment to start before observing live panes.
+	settleDelay := 750 * time.Millisecond
+	if tmux.DefaultClient != nil && tmux.DefaultClient.MaxSendDelay > 0 && settleDelay > tmux.DefaultClient.MaxSendDelay {
+		settleDelay = tmux.DefaultClient.MaxSendDelay
+	}
+	if err := waitContextDelay(ctx, settleDelay); err != nil {
+		return 0, 0, err
 	}
 	panes, err := tmux.GetPanesContext(ctx, sessionName)
 	if err != nil {
@@ -893,18 +952,28 @@ func sendResumePrompt(ctx context.Context, sessionName, prompt string) (sent, fa
 		}
 		return 0, 0, nil
 	}
-	// Give freshly-relaunched agents a moment to accept input before delivery.
-	settleDelay := 750 * time.Millisecond
-	if tmux.DefaultClient != nil && tmux.DefaultClient.MaxSendDelay > 0 && settleDelay > tmux.DefaultClient.MaxSendDelay {
-		settleDelay = tmux.DefaultClient.MaxSendDelay
+	if len(launchedPanes) > 0 {
+		allowed := make(map[string]struct{}, len(launchedPanes))
+		for _, p := range launchedPanes {
+			if (p.Action == "launched" || p.Action == "resumed") && p.PaneID != "" {
+				allowed[p.PaneID] = struct{}{}
+			}
+		}
+		filtered := make([]tmux.Pane, 0, len(allowed))
+		for _, pane := range panes {
+			if _, ok := allowed[pane.ID]; ok {
+				filtered = append(filtered, pane)
+			}
+		}
+		panes = filtered
 	}
-	if err := waitContextDelay(ctx, settleDelay); err != nil {
-		return 0, 0, err
+	if len(panes) == 0 {
+		return 0, 0, nil
 	}
 	service, err := dispatchsvc.NewService(dispatchsvc.Ports{
 		Redactor:  shellFinalMessageRedactor(activeShellDispatchRedactionConfig()),
 		Protocols: shellDispatchProtocolPlanner{},
-		Deliverer: dispatchsvc.TMUXDeliverer{},
+		Deliverer: guardedResumePromptDeliverer{},
 	})
 	if err != nil {
 		return 0, 0, err
@@ -993,7 +1062,7 @@ func runSessionsResume(ctx context.Context, savedName, name string, force, attac
 	// Optionally inject an initial prompt into the relaunched agent panes.
 	var promptErr error
 	if strings.TrimSpace(prompt) != "" {
-		result.PromptSent, result.PromptFailed, promptErr = sendResumePrompt(ctx, res.Session, prompt)
+		result.PromptSent, result.PromptFailed, promptErr = sendResumePrompt(ctx, res.Session, prompt, res.Panes)
 		if promptErr != nil {
 			result.Success = false
 			result.Error = fmt.Sprintf("resumed session but prompt dispatch was canceled: %v", promptErr)

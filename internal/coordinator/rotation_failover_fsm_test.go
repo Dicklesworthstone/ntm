@@ -27,8 +27,9 @@ func TestCoordinatorRotationAndFailoverShareLifecycleFSMFence(t *testing.T) {
 		Index: 1,
 		Title: "fsmsess__cc_1",
 		Type:  tmux.AgentClaude,
+		Width: 120,
 	}}
-	rotEnv := newRotationTestEnv(t, 0.80, true, panes, map[string]string{paneID: workDir}, map[string]string{paneID: failoverIdleCapture}, nil)
+	rotEnv := newRotationTestEnv(t, 80.0, true, panes, map[string]string{paneID: workDir}, map[string]string{paneID: failoverIdleCapture}, nil)
 	foEnv := newFailoverTestEnv(t, []string{"claude"}, 30, panes, map[string]string{paneID: limitedCapture})
 
 	fsm := rotation.DefaultLifecycleCoordinator()
@@ -43,6 +44,9 @@ func TestCoordinatorRotationAndFailoverShareLifecycleFSMFence(t *testing.T) {
 	// 2. Both rotationChecker and failoverChecker MUST decline with lifecycle_lease_held
 	//    and perform ZERO confirmations or account switches.
 	rotDecisions := rotEnv.rc.runOnce(context.Background())
+	if len(rotDecisions) != 1 || rotDecisions[0].Action != "skipped" || rotDecisions[0].SkipReason != "lifecycle_lease_held" {
+		t.Fatalf("rotationChecker should skip with lifecycle_lease_held, got %+v", rotDecisions)
+	}
 	if len(rotEnv.confirmed) != 0 {
 		t.Fatalf("rotationChecker bypassed active FSM lease: confirmed=%v decisions=%+v", rotEnv.confirmed, rotDecisions)
 	}
@@ -71,5 +75,14 @@ func TestCoordinatorRotationAndFailoverShareLifecycleFSMFence(t *testing.T) {
 	if fsm.IsActive(paneID) {
 		snap, _ := fsm.Snapshot(paneID)
 		t.Fatalf("pane left active after failoverChecker returned: %+v", snap)
+	}
+
+	// 4. Once the pane is no longer held in-flight, rotationChecker resumes cleanly.
+	afterRelease := rotEnv.rc.runOnce(context.Background())
+	if len(afterRelease) != 1 || afterRelease[0].Action != "auto_confirmed" {
+		t.Fatalf("rotationChecker should resume and auto-confirm after lease release, got %+v", afterRelease)
+	}
+	if len(rotEnv.confirmed) != 1 {
+		t.Fatalf("expected 1 confirmed rotation after lease release, got %v", rotEnv.confirmed)
 	}
 }

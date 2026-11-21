@@ -33,6 +33,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -244,16 +245,14 @@ func acquireMockServerPaneLock(ctx context.Context, mock *MockTmuxClient, paneID
 		<-ch
 		return nil, err
 	}
-	released := false
+	var releaseOnce sync.Once
 	return func() {
-		if released {
-			return
-		}
-		released = true
-		if legacy != nil {
-			legacy.unlockAndClose()
-		}
-		<-ch
+		releaseOnce.Do(func() {
+			if legacy != nil {
+				legacy.unlockAndClose()
+			}
+			<-ch
+		})
 	}, nil
 }
 

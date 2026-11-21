@@ -141,8 +141,9 @@ func TestPaneLockHonorsCallerCancellation(t *testing.T) {
 	dir := t.TempDir()
 	owner := newLockExecutor(dir, time.Minute)
 	waiter := newLockExecutor(dir, time.Minute)
+	const paneID = "%pane-lock-test-cancel"
 
-	releaseOwner, err := owner.acquirePaneLockCrossProcess(context.Background(), "%5")
+	releaseOwner, err := owner.acquirePaneLockCrossProcess(context.Background(), paneID)
 	if err != nil {
 		t.Fatalf("owner acquire: %v", err)
 	}
@@ -154,7 +155,7 @@ func TestPaneLockHonorsCallerCancellation(t *testing.T) {
 		cancel()
 	}()
 
-	_, err = waiter.acquirePaneLockCrossProcess(ctx, "%5")
+	_, err = waiter.acquirePaneLockCrossProcess(ctx, paneID)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled on operator cancellation, got %v", err)
 	}
@@ -170,9 +171,10 @@ func TestPaneLockReleaseFreesInProcessLockToo(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	e := newLockExecutor(dir, 500*time.Millisecond)
+	const paneID = "%pane-lock-test-release"
 
 	for i := 0; i < 3; i++ {
-		release, err := e.acquirePaneLockCrossProcess(context.Background(), "%3")
+		release, err := e.acquirePaneLockCrossProcess(context.Background(), paneID)
 		if err != nil {
 			t.Fatalf("acquire %d failed; a previous release did not free both locks: %v", i, err)
 		}
@@ -188,13 +190,14 @@ func TestPaneLockFailedAcquireReleasesLocalLock(t *testing.T) {
 	dir := t.TempDir()
 	owner := newLockExecutor(dir, 50*time.Millisecond)
 	waiter := newLockExecutor(dir, 50*time.Millisecond)
+	const paneID = "%pane-lock-test-failed-acquire"
 
-	releaseOwner, err := owner.acquirePaneLockCrossProcess(context.Background(), "%7")
+	releaseOwner, err := owner.acquirePaneLockCrossProcess(context.Background(), paneID)
 	if err != nil {
 		t.Fatalf("owner acquire: %v", err)
 	}
 
-	if _, err := waiter.acquirePaneLockCrossProcess(context.Background(), "%7"); !errors.Is(err, ErrPaneBusyOtherProcess) {
+	if _, err := waiter.acquirePaneLockCrossProcess(context.Background(), paneID); !errors.Is(err, ErrPaneBusyOtherProcess) {
 		t.Fatalf("want busy, got %v", err)
 	}
 	releaseOwner()
@@ -202,7 +205,7 @@ func TestPaneLockFailedAcquireReleasesLocalLock(t *testing.T) {
 	// The waiter's own in-process lock must be free again.
 	done := make(chan error, 1)
 	go func() {
-		release, err := waiter.acquirePaneLockCrossProcess(context.Background(), "%7")
+		release, err := waiter.acquirePaneLockCrossProcess(context.Background(), paneID)
 		if err == nil {
 			release()
 		}
@@ -380,14 +383,15 @@ func TestPaneLockRendezvousSurvivesPathSpelling(t *testing.T) {
 		t.Run(spelling.name, func(t *testing.T) {
 			direct := newLockExecutor(dir, 100*time.Millisecond)
 			other := newLockExecutor(spelling.path, 100*time.Millisecond)
+			const paneID = "%pane-lock-test-rendezvous"
 
-			release, err := direct.acquirePaneLockCrossProcess(context.Background(), "%77")
+			release, err := direct.acquirePaneLockCrossProcess(context.Background(), paneID)
 			if err != nil {
 				t.Fatalf("acquire via canonical path: %v", err)
 			}
 			defer release()
 
-			if _, err := other.acquirePaneLockCrossProcess(context.Background(), "%77"); !errors.Is(err, ErrPaneBusyOtherProcess) {
+			if _, err := other.acquirePaneLockCrossProcess(context.Background(), paneID); !errors.Is(err, ErrPaneBusyOtherProcess) {
 				t.Errorf("a %s of the same project did not contend (err=%v); the two spellings locked different files",
 					spelling.name, err)
 			}
@@ -402,7 +406,7 @@ func TestPaneLockCreatesLockUnderProjectState(t *testing.T) {
 	dir := t.TempDir()
 	e := newLockExecutor(dir, time.Second)
 
-	release, err := e.acquirePaneLockCrossProcess(context.Background(), "%42")
+	release, err := e.acquirePaneLockCrossProcess(context.Background(), "%pane-lock-test-project-state")
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
