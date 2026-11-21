@@ -844,13 +844,14 @@ func TestSendResumePromptCountsMissingAndUnsupportedPanes(t *testing.T) {
 		t.Fatalf("sendResumePrompt missing panes = (sent=%d, failed=%d), want (0, 2)", sent, failed)
 	}
 
-	// When launchedPanes is empty, user shell panes (%0) must be skipped rather
-	// than counted as failed prompt deliveries.
+	// When launchedPanes is empty, user shell panes (%0, %1) must be skipped
+	// rather than counted as failed prompt deliveries.
+	t.Setenv("NTM_SESSION_CLI_AGENT_TYPE", "user")
 	sent, failed, canceled = sendResumePrompt(t.Context(), "cli_missing", "hello", nil)
 	if canceled != nil {
 		t.Fatalf("unexpected cancel error for empty launchedPanes: %v", canceled)
 	}
-	if failed != 0 {
+	if sent != 0 || failed != 0 {
 		t.Fatalf("sendResumePrompt counted user pane as failed: sent=%d failed=%d", sent, failed)
 	}
 }

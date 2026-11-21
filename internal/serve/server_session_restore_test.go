@@ -40,15 +40,13 @@ case "$1" in
   list-windows) echo 0 ;;
   list-panes)
     for i in 0 1; do
-      type=cod
-      if [ "$i" = 1 ]; then type=user; fi
+      type=''
       if [ -f "$NTM_RESTORE_FIXTURE/type%$i" ]; then type=$(cat "$NTM_RESTORE_FIXTURE/type%$i"); fi
       printf '%%%s_NTM_SEP_%s_NTM_SEP__NTM_SEP_bash_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_9999998_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$i" "$i" "$type"
     done ;;
   display-message)
     if [ "$5" = '[#{@ntm_agent_type}]' ]; then
-      type=cod
-      if [ "$4" = '%1' ]; then type=user; fi
+      type=''
       if [ -f "$NTM_RESTORE_FIXTURE/type$4" ]; then type=$(cat "$NTM_RESTORE_FIXTURE/type$4"); fi
       printf '[%s]\n' "$type"
     else

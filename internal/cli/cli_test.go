@@ -7022,7 +7022,8 @@ func TestMultipleSubcommands(t *testing.T) {
 // `version --short`, so this test covers both the command contract and exact
 // normalized version matching.
 func TestVerifyUpgrade(t *testing.T) {
-	t.Parallel()
+	// Keep serial: writing an executable fixture and immediately exec'ing it
+	// races with concurrent fork/exec calls in parallel tests (Linux ETXTBSY).
 	tests := []struct {
 		name            string
 		expectedVersion string
@@ -7063,7 +7064,6 @@ func TestVerifyUpgrade(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			if runtime.GOOS == "windows" {
 				t.Skip("upgrade verifier fixture requires a POSIX shell")
 			}
