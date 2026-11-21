@@ -2,16 +2,19 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
@@ -138,6 +141,124 @@ func TestRobotInterruptTypeFilterInterruptsOnlyThatAgentType(t *testing.T) {
 	}
 	codex.WaitForEvents(t, marker, 1, 0)
 	claude.AssertQuiet(t, marker, 0, 0)
+}
+
+// Exercise the real Cobra, kernel and robot paths with only the tmux transport
+// controlled. The recorded key destinations prove Pi is actually interrupted,
+// user panes are untouched, and a failed sibling cannot end the sweep early.
+func TestPiInterruptCLIAndRobotRespectTargets(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("tmux transport fixture requires /bin/sh")
+	}
+	const script = `#!/bin/sh
+case "$1" in
+  -V) printf 'tmux 3.5a\n' ;;
+  has-session) ;;
+  list-sessions) printf 'pi-control_NTM_SEP_1_NTM_SEP_0_NTM_SEP_1700000000\n' ;;
+  list-panes)
+    activity=''
+    case "$*" in *'#{window_activity}'*) activity='1700000000_NTM_SEP_' ;; esac
+    printf '%%10_NTM_SEP_0_NTM_SEP_pi-control__user_1[focus]_NTM_SEP_bash_NTM_SEP_120_NTM_SEP_40_NTM_SEP_1_NTM_SEP_%s1040_NTM_SEP_0_NTM_SEP_user_NTM_SEP__NTM_SEP__NTM_SEP_0_NTM_SEP_[]\n' "$activity"
+    printf '%%11_NTM_SEP_1_NTM_SEP_pi-control__cc_1[other]_NTM_SEP_claude_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_%s1041_NTM_SEP_0_NTM_SEP_cc_NTM_SEP__NTM_SEP__NTM_SEP_0_NTM_SEP_[]\n' "$activity"
+    printf '%%12_NTM_SEP_2_NTM_SEP_pi-control__pi_1[focus]_NTM_SEP_pi_NTM_SEP_120_NTM_SEP_40_NTM_SEP_0_NTM_SEP_%s1042_NTM_SEP_0_NTM_SEP_pi-agent_NTM_SEP__NTM_SEP__NTM_SEP_0_NTM_SEP_[]\n' "$activity"
+    ;;
+  capture-pane) printf 'Working\n' ;;
+  display-message)
+    case "$*" in
+      *'@ntm_rotation_token'*) printf '[]\n' ;;
+      *'window_activity'*) printf '1700000000\n' ;;
+      *) printf '%s\n' "$NTM_PI_INTERRUPT_ROOT" ;;
+    esac
+    ;;
+  send-keys)
+    printf '%s\n' "$*" >> "$NTM_PI_INTERRUPT_ROOT/keys"
+    if [ "$3" = "$NTM_PI_INTERRUPT_FAIL" ]; then
+      printf "can't find pane: %s\n" "$3" >&2
+      exit 1
+    fi
+    ;;
+  show-options|show-environment) ;;
+  *) printf 'unexpected tmux command: %s\n' "$*" >&2; exit 97 ;;
+esac
+`
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		json       bool
+		robot      bool
+		failTarget string
+		wantKeys   string
+	}{
+		{name: "human mixed batch", args: []string{"interrupt", "pi-control"}, wantKeys: "send-keys -t %11 C-c\nsend-keys -t %12 C-c\n"},
+		{name: "human tagged Pi", args: []string{"interrupt", "pi-control", "--tag=focus"}, wantKeys: "send-keys -t %12 C-c\n"},
+		{name: "kernel mixed batch", args: []string{"interrupt", "pi-control", "--json"}, json: true, wantKeys: "send-keys -t %11 C-c\nsend-keys -t %12 C-c\n"},
+		{name: "kernel tagged Pi", args: []string{"interrupt", "pi-control", "--json", "--tag=focus"}, json: true, wantKeys: "send-keys -t %12 C-c\n"},
+		{name: "kernel sibling fails", args: []string{"interrupt", "pi-control", "--json"}, json: true, failTarget: "%11", wantKeys: "send-keys -t %11 C-c\nsend-keys -t %12 C-c\n"},
+		{name: "robot Pi", args: []string{"--robot-interrupt=pi-control", "--type=pi", "--force", "--no-wait"}, json: true, robot: true, wantKeys: "send-keys -t %12 C-c\n"},
+		{name: "robot Pi alias", args: []string{"--robot-interrupt=pi-control", "--type=pi-agent", "--force", "--no-wait"}, json: true, robot: true, wantKeys: "send-keys -t %12 C-c\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			binary := filepath.Join(root, "tmux")
+			if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			args, err := json.Marshal(tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRobotProcessContractHelper$")
+			cmd.Dir = root
+			cmd.Env = envWithOverrides(os.Environ(),
+				"HOME="+root, "XDG_CONFIG_HOME="+filepath.Join(root, "config"), "XDG_DATA_HOME="+filepath.Join(root, "data"),
+				"NTM_TEST_TMUX_ENV_OWNED=1", "NTM_TMUX_BINARY="+binary, "NTM_PI_INTERRUPT_ROOT="+root, "NTM_PI_INTERRUPT_FAIL="+tc.failTarget,
+				"NTM_NO_COLOR=1", "NTM_CONFIG=", "NTM_ROBOT_FORMAT=", "NTM_OUTPUT_FORMAT=", "TOON_DEFAULT_FORMAT=", "NTM_ROBOT_VERBOSITY=",
+				"NTM_ROBOT_CONTRACT_ARGS="+string(args))
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			runErr := cmd.Run()
+			if (runErr == nil) != (tc.failTarget == "") {
+				t.Fatalf("interrupt error=%v stdout=%s stderr=%s", runErr, stdout.String(), stderr.String())
+			}
+			if runErr != nil {
+				var exitErr *exec.ExitError
+				if !errors.As(runErr, &exitErr) || exitErr.ExitCode() != 1 {
+					t.Fatalf("partial interrupt exit=%v, want exit code 1", runErr)
+				}
+			}
+			keys, err := os.ReadFile(filepath.Join(root, "keys"))
+			if err != nil || string(keys) != tc.wantKeys {
+				t.Fatalf("actual interrupt destinations=%q want=%q err=%v stdout=%s stderr=%s", keys, tc.wantKeys, err, stdout.String(), stderr.String())
+			}
+			wantCount := strings.Count(tc.wantKeys, "\n")
+			if tc.robot {
+				var response robot.InterruptOutput
+				if err := json.Unmarshal(stdout.Bytes(), &response); err != nil || !response.Success || len(response.Interrupted) != 1 || response.Interrupted[0] != "2" {
+					t.Fatalf("robot Pi interrupt response=%+v err=%v stdout=%s", response, err, stdout.String())
+				}
+			} else if tc.json {
+				var response output.InterruptResponse
+				if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
+					t.Fatalf("decode kernel interrupt: %v stdout=%s", err, stdout.String())
+				}
+				wantFailed := 0
+				if tc.failTarget != "" {
+					wantFailed = 1
+				}
+				if response.Success != (wantFailed == 0) || response.Interrupted != wantCount-wantFailed || response.Failed != wantFailed || len(response.Panes) != wantCount {
+					t.Fatalf("kernel interrupt response=%+v", response)
+				}
+				pi := response.Panes[len(response.Panes)-1]
+				if pi.PaneID != "%12" || pi.AgentType != "pi" || pi.Status != "interrupted" {
+					t.Fatalf("Pi receipt=%+v, want successful canonical Pi interrupt", pi)
+				}
+			} else if !strings.Contains(stdout.String(), fmt.Sprintf("Sent Ctrl+C to %d agent pane(s)", wantCount)) {
+				t.Fatalf("human interrupt count not truthful: %s", stdout.String())
+			}
+		})
+	}
 }
 
 // newRobotProcessRunner returns a runner that executes each robot

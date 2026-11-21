@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/output"
@@ -451,8 +452,7 @@ func controllerAgentList(panes []tmux.Pane) ([]string, int) {
 	count := 0
 	for _, p := range panes {
 		canonical := p.Type.Canonical()
-		switch canonical {
-		case tmux.AgentClaude, tmux.AgentCodex, tmux.AgentGemini, tmux.AgentAntigravity, tmux.AgentGrok, tmux.AgentCursor, tmux.AgentWindsurf, tmux.AgentAider, tmux.AgentOpencode, tmux.AgentOmp, tmux.AgentOllama:
+		if _, supported := agentpkg.LookupHarness(canonical); supported {
 			count++
 			list = append(list, fmt.Sprintf("- Pane %d: %s", p.Index, canonical))
 		}
