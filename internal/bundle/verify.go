@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -88,42 +87,7 @@ func EncryptArchiveFile(bundlePath string, key []byte) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("read support bundle for encryption: %w", err)
 	}
-	sealed, err := encryption.EncryptArtifact(key, raw)
-	if err != nil {
-		return 0, fmt.Errorf("encrypt support bundle: %w", err)
-	}
-	dir := filepath.Dir(bundlePath)
-	tmp, err := os.CreateTemp(dir, ".ntm-bundle-enc-*")
-	if err != nil {
-		return 0, fmt.Errorf("create temp encrypted bundle: %w", err)
-	}
-	tmpPath := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return 0, fmt.Errorf("chmod encrypted bundle: %w", err)
-	}
-	if _, err := tmp.Write(sealed); err != nil {
-		_ = tmp.Close()
-		return 0, fmt.Errorf("write encrypted bundle: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return 0, fmt.Errorf("sync encrypted bundle: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return 0, fmt.Errorf("close encrypted bundle: %w", err)
-	}
-	if err := os.Rename(tmpPath, bundlePath); err != nil {
-		return 0, fmt.Errorf("replace bundle with encrypted archive: %w", err)
-	}
-	cleanup = false
-	return int64(len(sealed)), nil
+	return WriteArchive(bundlePath, raw, key, 0)
 }
 
 // maxVerifyEntryBytes bounds individual archive entry reads during verification.
@@ -133,6 +97,9 @@ const maxVerifyEntryBytes = 256 * 1024 * 1024
 type VerifyResult struct {
 	// Valid is true if all checks passed.
 	Valid bool `json:"valid"`
+
+	// Encrypted reports whether AEAD authentication preceded archive verification.
+	Encrypted bool `json:"encrypted"`
 
 	// ManifestValid indicates if the manifest was found and parseable.
 	ManifestValid bool `json:"manifest_valid"`
@@ -189,6 +156,7 @@ func (f Format) Extension() string {
 // DetectFormat determines the archive format from a bundle file path.
 func DetectFormat(bundlePath string) Format {
 	lower := strings.ToLower(strings.TrimSpace(bundlePath))
+	lower = strings.TrimSuffix(lower, ".enc")
 	switch {
 	case strings.HasSuffix(lower, ".zip"):
 		return FormatZip
@@ -201,47 +169,28 @@ func DetectFormat(bundlePath string) Format {
 
 // Verify inspects a support bundle archive, validates its manifest schema, and
 // checks that every declared file is present with matching size and SHA256.
-func Verify(bundlePath string) (*VerifyResult, error) {
+func Verify(bundlePath string, keys ...[]byte) (*VerifyResult, error) {
 	if strings.TrimSpace(bundlePath) == "" {
 		return nil, fmt.Errorf("bundle path is required")
 	}
-	if _, err := os.Stat(bundlePath); err != nil {
-		return nil, fmt.Errorf("stat bundle: %w", err)
+	encrypted, err := IsEncrypted(bundlePath)
+	if err != nil {
+		return nil, err
+	}
+	if !encrypted && strings.HasSuffix(strings.ToLower(bundlePath), ".enc") {
+		return nil, fmt.Errorf("encrypted bundle is missing its authenticated artifact header")
 	}
 
 	format := DetectFormat(bundlePath)
 	if format != FormatZip && format != FormatTarGz {
-		return nil, fmt.Errorf("unsupported bundle format for %q (expected .zip, .tar.gz, or .tgz)", bundlePath)
+		return nil, fmt.Errorf("unsupported bundle format for %q (expected .zip, .tar.gz, or .tgz, optionally .enc)", bundlePath)
 	}
-
-	rawHeader, err := readFilePrefix(bundlePath, len(encryption.ArtifactEnvelopeMagic))
-	if err != nil {
-		return nil, fmt.Errorf("read bundle header: %w", err)
-	}
-
-	var (
-		entries   map[string][]byte
-		encrypted bool
-	)
-	if encryption.IsEncryptedArtifact(rawHeader) {
-		encrypted = true
-		encCfg := ActiveEncryptionConfig()
-		if encCfg == nil || len(encCfg.DecryptKeys) == 0 {
-			return nil, fmt.Errorf("bundle %q is encrypted (NTMENC1), but no decryption keys are configured; configure [encryption] or pass --encrypt", bundlePath)
-		}
-		ciphertext, readErr := os.ReadFile(bundlePath)
-		if readErr != nil {
-			return nil, fmt.Errorf("read encrypted bundle: %w", readErr)
-		}
-		plaintext, decErr := encryption.DecryptArtifactWithKeyring(encCfg.DecryptKeys, ciphertext)
-		if decErr != nil {
-			return nil, fmt.Errorf("decrypt bundle: %w", decErr)
-		}
-		switch format {
-		case FormatZip:
-			entries, err = readZipEntriesFromBytes(plaintext)
-		case FormatTarGz:
-			entries, err = readTarGzEntriesFromReader(bytes.NewReader(plaintext))
+	var entries map[string][]byte
+	if encrypted {
+		var plaintext []byte
+		plaintext, err = decryptArchive(bundlePath, keys)
+		if err == nil {
+			entries, err = readArchiveEntries(plaintext, format)
 		}
 	} else {
 		switch format {
@@ -255,23 +204,108 @@ func Verify(bundlePath string) (*VerifyResult, error) {
 		return nil, err
 	}
 
+	res := verifyEntries(entries, format)
+	res.Encrypted = encrypted
+	res.Details["encrypted"] = strconv.FormatBool(encrypted)
+	return res, nil
+}
+
+// IsEncrypted detects the authenticated artifact envelope without loading the
+// archive. Callers can defer key resolution until an encrypted input needs it.
+func IsEncrypted(bundlePath string) (bool, error) {
+	header, err := readFilePrefix(bundlePath, len(encryption.ArtifactEnvelopeMagic))
+	if err != nil {
+		return false, fmt.Errorf("read bundle header: %w", err)
+	}
+	return encryption.IsEncryptedArtifact(header), nil
+}
+
+// Decrypt verifies an encrypted bundle's AEAD tag, manifest and checksums before
+// atomically exporting its plaintext archive. The caller must explicitly request
+// this operation; a failed verification never publishes plaintext.
+func Decrypt(bundlePath, outputPath string, keys ...[]byte) (*VerifyResult, error) {
+	plaintext, err := decryptArchive(bundlePath, keys)
+	if err != nil {
+		return nil, err
+	}
+	format := DetectFormat(bundlePath)
+	if DetectFormat(outputPath) != format || strings.HasSuffix(strings.ToLower(outputPath), ".enc") {
+		return nil, fmt.Errorf("decrypted output must have the %s archive extension", format.Extension())
+	}
+	entries, err := readArchiveEntries(plaintext, format)
+	if err != nil {
+		return nil, err
+	}
+	res := verifyEntries(entries, format)
+	res.Encrypted = true
+	res.Details["encrypted"] = "true"
+	if !res.Valid {
+		return res, fmt.Errorf("bundle verification failed: %s", strings.Join(res.Errors, "; "))
+	}
+	if _, err := WriteArchive(outputPath, plaintext, nil, 0); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+func decryptArchive(bundlePath string, keys [][]byte) ([]byte, error) {
+	if len(keys) == 0 {
+		if encCfg := ActiveEncryptionConfig(); encCfg != nil {
+			keys = encCfg.DecryptKeys
+		}
+	}
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("bundle %q is encrypted (NTMENC1), but no decryption keys are configured", bundlePath)
+	}
+	f, err := os.Open(bundlePath)
+	if err != nil {
+		return nil, fmt.Errorf("open encrypted bundle: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	// AEAD needs the whole ciphertext. Bound that allocation independently of
+	// individual expanded ZIP/tar entries (the default generation limit is 50MB).
+	data, err := io.ReadAll(io.LimitReader(f, maxVerifyEntryBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read encrypted bundle: %w", err)
+	}
+	if len(data) > maxVerifyEntryBytes {
+		return nil, fmt.Errorf("encrypted bundle exceeds max verify size (%d bytes)", maxVerifyEntryBytes)
+	}
+	plaintext, err := encryption.DecryptArtifactWithKeyring(keys, data)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt support bundle: %w", err)
+	}
+	return plaintext, nil
+}
+
+func readArchiveEntries(data []byte, format Format) (map[string][]byte, error) {
+	switch format {
+	case FormatZip:
+		return readZipEntriesFromBytes(data)
+	case FormatTarGz:
+		return readTarGzEntriesFromReader(bytes.NewReader(data))
+	default:
+		return nil, fmt.Errorf("unsupported bundle format %q", format)
+	}
+}
+
+func verifyEntries(entries map[string][]byte, format Format) *VerifyResult {
 	res := &VerifyResult{
 		Details: map[string]string{
-			"format":    string(format),
-			"encrypted": strconv.FormatBool(encrypted),
+			"format": string(format),
 		},
 	}
 
 	manifestRaw, ok := entries[ManifestFileName]
 	if !ok {
 		res.Errors = append(res.Errors, fmt.Sprintf("missing %s in archive", ManifestFileName))
-		return res, nil
+		return res
 	}
 
 	var manifest Manifest
 	if err := json.Unmarshal(manifestRaw, &manifest); err != nil {
 		res.Errors = append(res.Errors, fmt.Sprintf("parse %s: %v", ManifestFileName, err))
-		return res, nil
+		return res
 	}
 
 	res.Manifest = &manifest
@@ -331,7 +365,7 @@ func Verify(bundlePath string) (*VerifyResult, error) {
 	res.FilesPresent = allPresent
 	res.ChecksumsValid = allPresent && allChecksums
 	res.Valid = res.ManifestValid && res.SchemaValid && res.FilesPresent && res.ChecksumsValid
-	return res, nil
+	return res
 }
 
 func readFilePrefix(bundlePath string, n int) ([]byte, error) {

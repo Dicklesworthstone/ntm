@@ -3,12 +3,12 @@ package cli
 import (
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -19,6 +19,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/bundle"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/encryption"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -29,6 +30,9 @@ import (
 type supportBundleOptions struct {
 	Output          string
 	Verify          string
+	Decrypt         string
+	Encrypt         bool
+	AllowPlaintext  bool
 	Session         string
 	Panes           string
 	Lines           int
@@ -63,15 +67,24 @@ for troubleshooting NTM issues, or verify an existing bundle archive. The bundle
 
 By default, sensitive data is redacted using the configured redaction engine.
 Use --no-redact to include raw data (only for trusted recipients).
+Encryption follows [encryption] enabled. Use --encrypt for this bundle only, or
+--allow-plaintext to explicitly export without encryption. Encrypted bundles use
+the .zip.enc extension. Verification and decryption use the configured key source
+and rotation keyring; plaintext is published only after authentication succeeds.
 
 Examples:
   ntm support-bundle --output bundle.zip
   ntm support-bundle --session myproj --lines 500 -o bundle.zip
   ntm support-bundle --since 2h -o bundle.zip
   ntm support-bundle --include-sessions -o bundle.zip
-  ntm support-bundle --verify bundle.zip`,
+  ntm support-bundle --verify bundle.zip
+  ntm support-bundle --encrypt -o bundle.zip.enc
+  ntm support-bundle --verify bundle.zip.enc
+  ntm support-bundle --decrypt bundle.zip.enc -o bundle.zip`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			effectiveOpts := opts
+			effectiveOpts.Encrypt = effectiveOpts.Encrypt || encryptFlag
+			effectiveOpts.AllowPlaintext = effectiveOpts.AllowPlaintext || allowPlaintextFlag
 			effectiveOpts.RobotMode = effectiveOpts.RobotMode || IsJSONOutput()
 			return runSupportBundle(cmd.Context(), effectiveOpts)
 		},
@@ -79,6 +92,9 @@ Examples:
 
 	cmd.Flags().StringVarP(&opts.Output, "output", "o", "", "Output file path (required unless --verify is set)")
 	cmd.Flags().StringVar(&opts.Verify, "verify", "", "Verify an existing support bundle archive")
+	cmd.Flags().StringVar(&opts.Decrypt, "decrypt", "", "Authenticate, verify and decrypt an encrypted bundle to --output")
+	cmd.Flags().BoolVar(&opts.Encrypt, "encrypt", false, "Encrypt the bundle with the configured AES-256-GCM key")
+	cmd.Flags().BoolVar(&opts.AllowPlaintext, "allow-plaintext", false, "Explicitly export this bundle without encryption")
 	cmd.Flags().StringVar(&opts.Session, "session", "", "Include specific session only")
 	cmd.Flags().StringVar(&opts.Panes, "panes", "", "Pane indices to include (comma-separated)")
 	cmd.Flags().IntVar(&opts.Lines, "lines", opts.Lines, "Lines of pane output to capture")
@@ -130,6 +146,15 @@ func runSupportBundle(ctx context.Context, opts supportBundleOptions) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if opts.Encrypt && opts.AllowPlaintext {
+		return fmt.Errorf("--encrypt and --allow-plaintext are mutually exclusive")
+	}
+	if opts.Verify != "" && (opts.Decrypt != "" || opts.Output != "" || opts.Encrypt || opts.AllowPlaintext) {
+		return fmt.Errorf("--verify cannot be combined with --decrypt, --output, --encrypt or --allow-plaintext")
+	}
+	if opts.Decrypt != "" && (opts.Encrypt || opts.AllowPlaintext) {
+		return fmt.Errorf("--decrypt explicitly exports plaintext and cannot be combined with --encrypt or --allow-plaintext")
+	}
 
 	if strings.TrimSpace(opts.Verify) != "" {
 		return runSupportBundleVerify(opts.Verify, opts.RobotMode)
@@ -139,11 +164,25 @@ func runSupportBundle(ctx context.Context, opts supportBundleOptions) error {
 	if opts.Output == "" {
 		return fmt.Errorf("output path is required")
 	}
+	if strings.TrimSpace(opts.Decrypt) != "" {
+		return runSupportBundleDecrypt(opts)
+	}
 
 	// Expand path
 	outputPath := util.ExpandPath(opts.Output)
-	if !strings.HasSuffix(outputPath, ".zip") {
-		outputPath += ".zip"
+	if supportBundleEncryptionRequired(opts) {
+		outputPath = strings.TrimSuffix(outputPath, ".enc")
+		if !strings.HasSuffix(outputPath, ".zip") {
+			outputPath += ".zip"
+		}
+		outputPath += ".enc"
+	} else {
+		if strings.HasSuffix(outputPath, ".enc") {
+			return fmt.Errorf("plaintext bundle output must not use the .enc extension")
+		}
+		if !strings.HasSuffix(outputPath, ".zip") {
+			outputPath += ".zip"
+		}
 	}
 
 	// Create the bundle
@@ -180,7 +219,11 @@ func runSupportBundle(ctx context.Context, opts supportBundleOptions) error {
 
 func runSupportBundleVerify(verifyPath string, robotMode bool) error {
 	resolved := util.ExpandPath(verifyPath)
-	res, err := bundle.Verify(resolved)
+	keys, err := supportBundleReadKeys(resolved)
+	var res *bundle.VerifyResult
+	if err == nil {
+		res, err = bundle.Verify(resolved, keys...)
+	}
 	if err != nil {
 		if robotMode {
 			if outErr := robot.Output(BundleVerifyResponse{
@@ -234,28 +277,103 @@ func runSupportBundleVerify(verifyPath string, robotMode bool) error {
 	return nil
 }
 
-func createSupportBundle(ctx context.Context, outputPath string, opts supportBundleOptions) (result *BundleResult, retErr error) {
-	// Create output directory if needed
-	dir := filepath.Dir(outputPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("create output directory: %w", err)
-	}
+func supportBundleEncryptionRequired(opts supportBundleOptions) bool {
+	return !opts.AllowPlaintext && (opts.Encrypt || (cfg != nil && cfg.Encryption.Enabled))
+}
 
-	// Create zip file
-	zipFile, err := os.Create(outputPath)
+// Only the direct diagnostic command may defer startup key resolution. Other
+// commands retain fail-closed encryption for their persisted history and events.
+func supportBundleHandlesEncryption(cmd *cobra.Command) bool {
+	if cmd == nil || cmd.Name() != "support-bundle" {
+		return false
+	}
+	parent := cmd.Parent()
+	return parent != nil && parent.Parent() == nil && parent.Name() == "ntm"
+}
+
+// Both bundle surfaces must load selected policy strictly. A skipped project
+// overlay or missing explicit config cannot authorize an unencrypted export.
+func supportBundleRequiresStrictConfig(cmd *cobra.Command) bool {
+	if supportBundleHandlesEncryption(cmd) {
+		return true
+	}
+	return cmd != nil && cmd.Name() == "ntm" && cmd.Parent() == nil &&
+		(robotSupportBundle != "" || cmd.Flags().Changed("robot-support-bundle"))
+}
+
+func supportBundleKeyConfig() (encryption.KeyConfig, error) {
+	enc := config.DefaultEncryptionConfig()
+	if cfg != nil {
+		enc = cfg.Encryption
+	}
+	// --encrypt also validates a key configuration whose global toggle is off.
+	enc.Enabled = true
+	if err := config.ValidateEncryptionConfig(&enc); err != nil {
+		return encryption.KeyConfig{}, err
+	}
+	return encryption.KeyConfig{
+		KeySource: enc.KeySource, KeyEnv: enc.KeyEnv,
+		KeyFile: util.ExpandPath(enc.KeyFile), KeyCommand: enc.KeyCommand,
+		KeyFormat: enc.KeyFormat, ActiveKeyID: enc.ActiveKeyID, Keyring: enc.Keyring,
+	}, nil
+}
+
+func supportBundleReadKeys(path string) ([][]byte, error) {
+	encrypted, err := bundle.IsEncrypted(path)
+	if err != nil || !encrypted {
+		return nil, err
+	}
+	keyCfg, err := supportBundleKeyConfig()
 	if err != nil {
-		return nil, fmt.Errorf("create zip file: %w", err)
+		return nil, err
 	}
-	defer func() {
-		if zipFile == nil {
-			return
-		}
-		if err := zipFile.Close(); err != nil && retErr == nil {
-			retErr = fmt.Errorf("close zip file: %w", err)
-		}
-	}()
+	return encryption.ResolveKeyring(keyCfg)
+}
 
-	zipWriter := zip.NewWriter(zipFile)
+func runSupportBundleDecrypt(opts supportBundleOptions) error {
+	inputPath := util.ExpandPath(opts.Decrypt)
+	outputPath := util.ExpandPath(opts.Output)
+	keys, err := supportBundleReadKeys(inputPath)
+	var res *bundle.VerifyResult
+	if err == nil {
+		res, err = bundle.Decrypt(inputPath, outputPath, keys...)
+	}
+	if opts.RobotMode {
+		response := BundleVerifyResponse{Success: err == nil, Path: outputPath, Result: res}
+		if err != nil {
+			response.Error = err.Error()
+		}
+		if outputErr := robot.Output(response, robot.FormatJSON); outputErr != nil {
+			return outputErr
+		}
+		if err != nil {
+			return jsonFailureExit()
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Support bundle decrypted and verified: %s\n", outputPath)
+	return nil
+}
+
+func createSupportBundle(ctx context.Context, outputPath string, opts supportBundleOptions) (result *BundleResult, retErr error) {
+	var encryptKey []byte
+	if supportBundleEncryptionRequired(opts) {
+		keyCfg, err := supportBundleKeyConfig()
+		if err != nil {
+			return nil, err
+		}
+		encryptKey, err = encryption.ResolveKey(keyCfg)
+		if err != nil {
+			return nil, fmt.Errorf("support bundle encryption required: %w; use --allow-plaintext only for an intentional unencrypted export", err)
+		}
+	}
+
+	// No plaintext archive is ever written to disk before encryption.
+	var archive bytes.Buffer
+	zipWriter := zip.NewWriter(&archive)
 	defer func() {
 		if zipWriter == nil {
 			return
@@ -390,7 +508,6 @@ func createSupportBundle(ctx context.Context, outputPath string, opts supportBun
 	manifest.RedactionSummary = redactionSummary
 
 	if err := manifest.Validate(); err != nil {
-		_ = os.Remove(outputPath)
 		return nil, fmt.Errorf("validate bundle manifest: %w", err)
 	}
 
@@ -405,35 +522,9 @@ func createSupportBundle(ctx context.Context, outputPath string, opts supportBun
 	}
 	zipWriter = nil
 
-	// Close file before stat so any buffered writes are fully persisted.
-	if err := zipFile.Close(); err != nil {
-		return nil, fmt.Errorf("close zip file: %w", err)
-	}
-	zipFile = nil
-
-	encrypted := false
-	if encCfg := bundle.ActiveEncryptionConfig(); encCfg != nil && encCfg.Enabled {
-		if len(encCfg.EncryptKey) == 0 {
-			_ = os.Remove(outputPath)
-			return nil, fmt.Errorf("support bundle encryption requested, but no encryption key is configured")
-		}
-		if _, err := bundle.EncryptArchiveFile(outputPath, encCfg.EncryptKey); err != nil {
-			_ = os.Remove(outputPath)
-			return nil, err
-		}
-		encrypted = true
-	}
-
-	// Get final file size
-	info, err := os.Stat(outputPath)
+	size, err := bundle.WriteArchive(outputPath, archive.Bytes(), encryptKey, opts.MaxSize)
 	if err != nil {
-		return nil, fmt.Errorf("stat output: %w", err)
-	}
-
-	// Check size limit
-	if opts.MaxSize > 0 && info.Size() > opts.MaxSize {
-		os.Remove(outputPath)
-		return nil, fmt.Errorf("bundle size %d exceeds limit %d", info.Size(), opts.MaxSize)
+		return nil, err
 	}
 
 	contentBytes := manifest.TotalSize()
@@ -443,13 +534,13 @@ func createSupportBundle(ctx context.Context, outputPath string, opts supportBun
 		Success:          true,
 		Path:             outputPath,
 		Format:           string(bundle.FormatZip),
-		Size:             info.Size(),
-		TotalSize:        info.Size(),
+		Size:             size,
+		TotalSize:        size,
 		ContentBytes:     contentBytes,
 		Files:            fileCount,
 		FileCount:        fileCount,
 		Redacted:         !opts.NoRedact,
-		Encrypted:        encrypted,
+		Encrypted:        encryptKey != nil,
 		RedactionSummary: redactionSummary,
 		Errors:           manifest.Errors,
 	}, nil
@@ -494,10 +585,14 @@ func collectBundleVersions(ctx context.Context) (*VersionsInfo, error) {
 }
 
 func exportBundleConfigTOML(cfg *config.Config, redactCfg *redaction.Config) ([]byte, error) {
-	// Create a copy and redact sensitive fields
+	// Encryption credentials must never be exported, even with --no-redact.
+	// A shallow copy is sufficient: only replace fields, never mutate the map.
+	safeConfig := *cfg
+	safeConfig.Encryption.Keyring = nil
+	safeConfig.Encryption.KeyCommand = ""
 	var buf strings.Builder
 	encoder := toml.NewEncoder(&buf)
-	if err := encoder.Encode(cfg); err != nil {
+	if err := encoder.Encode(&safeConfig); err != nil {
 		return nil, err
 	}
 
@@ -540,13 +635,31 @@ func collectBundleEvents(sinceStr string, redactCfg *redaction.Config) ([]byte, 
 	}()
 
 	var buf strings.Builder
+	var decryptKeys [][]byte
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024) // 10MB max line
 
 	for scanner.Scan() {
-		line := scanner.Text()
+		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
+		}
+		if encryption.IsEncryptedLine([]byte(line)) {
+			if decryptKeys == nil {
+				keyCfg, err := supportBundleKeyConfig()
+				if err != nil {
+					return nil, fmt.Errorf("read encrypted events: %w", err)
+				}
+				decryptKeys, err = encryption.ResolveKeyring(keyCfg)
+				if err != nil {
+					return nil, fmt.Errorf("read encrypted events: %w", err)
+				}
+			}
+			plain, err := encryption.DecryptLineWithKeyring(decryptKeys, []byte(line))
+			if err != nil {
+				return nil, fmt.Errorf("read encrypted events: %w", err)
+			}
+			line = string(plain)
 		}
 
 		// Parse timestamp from JSON

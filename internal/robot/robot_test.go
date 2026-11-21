@@ -23,10 +23,12 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
+	"github.com/Dicklesworthstone/ntm/internal/bundle"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/cass"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
+	"github.com/Dicklesworthstone/ntm/internal/encryption"
 	"github.com/Dicklesworthstone/ntm/internal/privacy"
 	"github.com/Dicklesworthstone/ntm/internal/robot/adapters"
 	"github.com/Dicklesworthstone/ntm/internal/state"
@@ -34,6 +36,76 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/worksource"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
+
+func TestGenerateSupportBundle_EncryptionPolicyAndCredentialScrubbing(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("NTM_ROBOT_BUNDLE_KEY", "")
+	enc := config.DefaultEncryptionConfig()
+	enc.Enabled = true
+	enc.KeyEnv = "NTM_ROBOT_BUNDLE_KEY"
+	path := filepath.Join(dir, "diagnostics.zip")
+	opts := SupportBundleOptions{OutputPath: path, Format: "zip", NTMVersion: "test", NoRedact: true, Encryption: &enc}
+	output, err := GenerateSupportBundle(opts)
+	if err != nil || output == nil || output.Success || output.ErrorCode != ErrCodeInternalError {
+		t.Fatalf("missing key did not fail closed: output=%+v error=%v", output, err)
+	}
+	if _, err := os.Stat(path + ".enc"); !os.IsNotExist(err) {
+		t.Fatalf("missing-key failure created an output: %v", err)
+	}
+	key := bytes.Repeat([]byte{0x44}, encryption.KeySize)
+	t.Setenv("NTM_ROBOT_BUNDLE_KEY", strings.Repeat("44", encryption.KeySize))
+	configDir := filepath.Join(dir, ".ntm")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	configText := "[encryption]\nenabled=true\nkey_command=\"printf do-not-export-key-command\"\n[encryption.keyring]\ncurrent=\"" + strings.Repeat("47", encryption.KeySize) + "\"\n"
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(configText), 0600); err != nil {
+		t.Fatal(err)
+	}
+	output, err = GenerateSupportBundle(opts)
+	if err != nil || output == nil || !output.Success || !output.Encrypted {
+		t.Fatalf("encrypted generation failed: output=%+v error=%v", output, err)
+	}
+	verified, err := bundle.Verify(output.Path, key)
+	if err != nil || !verified.Valid || !verified.Encrypted {
+		t.Fatalf("encrypted verification failed: output=%+v error=%v", verified, err)
+	}
+	archiveOutput, data, err := GenerateSupportBundleArchive(opts, 1<<20)
+	if err != nil || archiveOutput == nil || !archiveOutput.Success || !archiveOutput.Encrypted || !encryption.IsEncryptedArtifact(data) {
+		t.Fatalf("archive export lost encryption: output=%+v error=%v", archiveOutput, err)
+	}
+	plaintext, err := encryption.DecryptArtifactWithKeyring([][]byte{key}, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(plaintext), int64(len(plaintext)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, entry := range zr.File {
+		if entry.Name != "config/config.toml" {
+			continue
+		}
+		found = true
+		r, err := entry.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		content, err := io.ReadAll(r)
+		_ = r.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(content, []byte("do-not-export-key-command")) || bytes.Contains(content, []byte(strings.Repeat("47", encryption.KeySize))) {
+			t.Fatal("key material escaped into robot bundle with redaction disabled")
+		}
+	}
+	if !found {
+		t.Fatal("config was omitted instead of safely exporting diagnostic fields")
+	}
+}
 
 // Helper to capture stdout
 func captureStdout(t *testing.T, f func() error) (string, error) {

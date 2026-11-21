@@ -1396,6 +1396,9 @@ func dispatchRobotInspectionAndOps(cmd *cobra.Command, args []string) bool {
 			AllowPersist: allowSecret,  // Reuse --allow-secret for persist override
 			NTMVersion:   Version,
 		}
+		if cfg != nil {
+			opts.Encryption = &cfg.Encryption
+		}
 		if err := robot.PrintSupportBundle(opts); err != nil {
 			recordRobotProcessExit(err)
 		}

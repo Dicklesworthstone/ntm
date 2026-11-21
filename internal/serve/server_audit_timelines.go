@@ -12,6 +12,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/bundle"
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -125,6 +126,7 @@ type SupportBundleEnvelopeResponse struct {
 	PrivacyMode       bool                          `json:"privacy_mode"`
 	PrivacySessions   []string                      `json:"privacy_sessions,omitempty"`
 	ContentSuppressed bool                          `json:"content_suppressed"`
+	Encrypted         bool                          `json:"encrypted"`
 	RedactionSummary  *robot.BundleRedactionSummary `json:"redaction_summary,omitempty"`
 	Warnings          []string                      `json:"warnings,omitempty"`
 }
@@ -699,6 +701,17 @@ func (s *Server) handleCreateSupportBundleV1(w http.ResponseWriter, r *http.Requ
 	if version == "" {
 		version = "dev"
 	}
+	loadConfig := s.recoveryConfig
+	if loadConfig == nil {
+		loadConfig = func(project string) (*config.Config, error) {
+			return config.LoadAssignmentPolicyStrict(project, config.DefaultPath(), false)
+		}
+	}
+	effective, err := loadConfig(s.projectDirSnapshot())
+	if err != nil || effective == nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "cannot load support bundle encryption policy", nil, reqID)
+		return
+	}
 
 	bundleOut, archiveBytes, err := robot.GenerateSupportBundleArchive(
 		robot.SupportBundleOptions{
@@ -710,6 +723,7 @@ func (s *Server) handleCreateSupportBundleV1(w http.ResponseWriter, r *http.Requ
 			RedactMode:  redactMode,
 			AllSessions: session == "",
 			NTMVersion:  version,
+			Encryption:  &effective.Encryption,
 		},
 		maxServeSupportBundleReadBytes,
 	)
@@ -728,6 +742,10 @@ func (s *Server) handleCreateSupportBundleV1(w http.ResponseWriter, r *http.Requ
 	}
 
 	displayName := filepath.Base(bundle.SuggestOutputPath(session, archiveFormat))
+	if bundleOut.Encrypted {
+		displayName += ".enc"
+		contentType = "application/octet-stream"
+	}
 	targetResource := session
 	if targetResource == "" {
 		targetResource = "all"
@@ -746,6 +764,7 @@ func (s *Server) handleCreateSupportBundleV1(w http.ResponseWriter, r *http.Requ
 		PrivacyMode:       bundleOut.PrivacyMode,
 		PrivacySessions:   bundleOut.PrivacySessions,
 		ContentSuppressed: bundleOut.ContentSuppressed,
+		Encrypted:         bundleOut.Encrypted,
 		RedactionSummary:  bundleOut.RedactionSummary,
 		Warnings:          bundleOut.Warnings,
 	}

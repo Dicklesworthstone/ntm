@@ -2,16 +2,23 @@
 package robot
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/BurntSushi/toml"
+
 	"github.com/Dicklesworthstone/ntm/internal/bundle"
+	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/encryption"
 	"github.com/Dicklesworthstone/ntm/internal/privacy"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 // SupportBundleOptions configures support bundle generation.
@@ -48,6 +55,10 @@ type SupportBundleOptions struct {
 
 	// NTMVersion is the version string to include in the manifest.
 	NTMVersion string
+
+	// Encryption applies the operator-selected encryption policy. Robot and
+	// HTTP exports do not permit a plaintext downgrade of an enabled policy.
+	Encryption *config.EncryptionConfig
 }
 
 // SupportBundleOutput represents the output for --robot-support-bundle.
@@ -63,6 +74,7 @@ type SupportBundleOutput struct {
 	PrivacyMode       bool                    `json:"privacy_mode"`
 	PrivacySessions   []string                `json:"privacy_sessions,omitempty"`
 	ContentSuppressed bool                    `json:"content_suppressed"`
+	Encrypted         bool                    `json:"encrypted"`
 }
 
 // BundleRedactionSummary provides aggregate redaction statistics for the bundle.
@@ -100,11 +112,32 @@ func GenerateSupportBundle(opts SupportBundleOptions) (*SupportBundleOutput, err
 		return output, nil
 	}
 	output.Format = string(format)
+	var encryptKey []byte
+	if opts.Encryption != nil && opts.Encryption.Enabled {
+		enc := *opts.Encryption
+		if err := config.ValidateEncryptionConfig(&enc); err != nil {
+			output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Invalid support bundle encryption policy")
+			return output, nil
+		}
+		var err error
+		encryptKey, err = encryption.ResolveKey(encryption.KeyConfig{
+			KeySource: enc.KeySource, KeyEnv: enc.KeyEnv,
+			KeyFile: util.ExpandPath(enc.KeyFile), KeyCommand: enc.KeyCommand,
+			KeyFormat: enc.KeyFormat, ActiveKeyID: enc.ActiveKeyID, Keyring: enc.Keyring,
+		})
+		if err != nil {
+			output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Configure a valid key; support bundle encryption is required")
+			return output, nil
+		}
+	}
 
 	// Determine output path
 	outputPath := opts.OutputPath
 	if outputPath == "" {
 		outputPath = bundle.SuggestOutputPath(opts.Session, format)
+	}
+	if encryptKey != nil && !strings.HasSuffix(outputPath, ".enc") {
+		outputPath += ".enc"
 	}
 
 	// Parse since duration
@@ -157,6 +190,13 @@ func GenerateSupportBundle(opts SupportBundleOptions) (*SupportBundleOutput, err
 		Lines:           opts.Lines,
 		MaxSizeBytes:    int64(opts.MaxSizeMB) * 1024 * 1024,
 		RedactionConfig: redactConfig,
+		EncryptKey:      encryptKey,
+	}
+	if opts.Encryption != nil {
+		genConfig.Encryption = &bundle.EncryptionConfig{
+			Enabled:    opts.Encryption.Enabled,
+			EncryptKey: encryptKey,
+		}
 	}
 
 	// Create generator and collect content
@@ -224,6 +264,7 @@ func GenerateSupportBundle(opts SupportBundleOptions) (*SupportBundleOutput, err
 	output.Path = result.Path
 	output.FileCount = result.FileCount
 	output.TotalSize = result.TotalSize
+	output.Encrypted = result.Encrypted
 	output.Errors = result.Errors
 	output.Warnings = result.Warnings
 	output.PrivacyMode = contentSuppressed
@@ -259,6 +300,9 @@ func GenerateSupportBundleArchive(opts SupportBundleOptions, maxBytes int64) (*S
 	tempPattern := "ntm-support-bundle-*.zip"
 	if opts.Format == string(bundle.FormatTarGz) || opts.Format == "tgz" {
 		tempPattern = "ntm-support-bundle-*.tar.gz"
+	}
+	if opts.Encryption != nil && opts.Encryption.Enabled {
+		tempPattern += ".enc"
 	}
 
 	tmpFile, err := os.CreateTemp("", tempPattern)
@@ -402,7 +446,26 @@ func collectConfigFiles(gen *bundle.Generator) error {
 	for _, name := range configFiles {
 		path := ntmDir + "/" + name
 		if data, err := os.ReadFile(path); err == nil {
-			gen.AddFile("config/"+name, data, bundle.ContentTypeConfig, time.Now())
+			if name == "config.toml" {
+				// Encryption credentials are not diagnostic content, including
+				// when general secret redaction is explicitly disabled.
+				var values map[string]any
+				if _, err := toml.Decode(string(data), &values); err != nil {
+					return fmt.Errorf("cannot safely export invalid config.toml")
+				}
+				if enc, ok := values["encryption"].(map[string]any); ok {
+					delete(enc, "keyring")
+					delete(enc, "key_command")
+				}
+				var sanitized bytes.Buffer
+				if err := toml.NewEncoder(&sanitized).Encode(values); err != nil {
+					return fmt.Errorf("cannot encode sanitized config.toml")
+				}
+				data = sanitized.Bytes()
+			}
+			if err := gen.AddFile("config/"+name, data, bundle.ContentTypeConfig, time.Now()); err != nil {
+				return err
+			}
 		}
 	}
 

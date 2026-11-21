@@ -765,7 +765,16 @@ Shell Integration:
 		if needsConfigLoading(cmd.Name()) {
 			endProfile := ProfileConfigLoad()
 			var err error
-			cfg, err = startup.GetConfig()
+			strictBundlePolicy := supportBundleRequiresStrictConfig(cmd)
+			if strictBundlePolicy {
+				var projectDir string
+				projectDir, err = os.Getwd()
+				if err == nil {
+					cfg, err = config.LoadAssignmentPolicyStrict(projectDir, selectedConfigPath(), selectedConfigIsExplicit())
+				}
+			} else {
+				cfg, err = startup.GetConfig()
+			}
 			endProfile()
 			if err != nil {
 				if machineInvocation, machineCommand := machineJSONInvocation(cmd); machineInvocation {
@@ -775,6 +784,9 @@ Shell Integration:
 						"Fix the selected TOML configuration or pass --config with a valid file",
 						machineCommand,
 					)
+				}
+				if strictBundlePolicy {
+					return fmt.Errorf("cannot load support bundle encryption policy: %w", err)
 				}
 				// Config loading failed for a genuine reason (e.g. an invalid
 				// global config); an invalid project overlay no longer reaches
@@ -851,19 +863,25 @@ Shell Integration:
 			}
 
 			// Apply --encrypt / --allow-plaintext CLI overrides (docs/ENCRYPTION_SPEC.md).
-			if err := applyEncryptionFlagOverrides(cfg); err != nil {
-				return encryptionStartupError(
-					cmd,
-					err,
-					"Pass at most one of --encrypt or --allow-plaintext",
-				)
+			// support-bundle resolves its export policy locally so verification and
+			// decryption can still read keys when encryption for new writes is off.
+			if !supportBundleHandlesEncryption(cmd) {
+				if err := applyEncryptionFlagOverrides(cfg); err != nil {
+					return encryptionStartupError(
+						cmd,
+						err,
+						"Pass at most one of --encrypt or --allow-plaintext",
+					)
+				}
 			}
 
 			// Wire encryption into history, event log, checkpoint, and support bundle persistence (bd-3ld77, 6en5y.2).
-			// Key resolution failures are fatal for every invocation: continuing
+			// Key resolution failures are fatal for normal invocations: continuing
 			// would persist artifacts in plaintext even though the operator asked
 			// for encryption at rest (docs/ENCRYPTION_SPEC.md, "Failure Modes").
-			if cfg != nil && cfg.Encryption.Enabled {
+			// support-bundle owns its explicit export policy, including its local
+			// --allow-plaintext override; it does not persist prompts or events.
+			if cfg != nil && cfg.Encryption.Enabled && !supportBundleHandlesEncryption(cmd) {
 				keyCfg := encryption.KeyConfig{
 					KeySource:   cfg.Encryption.KeySource,
 					KeyEnv:      cfg.Encryption.KeyEnv,

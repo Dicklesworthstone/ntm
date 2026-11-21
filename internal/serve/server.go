@@ -90,7 +90,10 @@ type Server struct {
 	sendAgents      func(robot.SendOptions) (*robot.SendOutput, error)
 	interruptAgents func(robot.InterruptOptions) (*robot.InterruptOutput, error)
 	waitAgents      func(context.Context, robot.WaitOptions) (*robot.WaitResponse, int)
-	resolvePane     func(context.Context, string, int) (tmux.Pane, error)
+	// recoveryConfig loads the selected policy for the saved project's agents.
+	// ConfigureSpawnPolicy binds the same operator-selected file to both paths.
+	recoveryConfig func(string) (*config.Config, error)
+	resolvePane    func(context.Context, string, int) (tmux.Pane, error)
 	// paneInputTimeout bounds lookup, ownership waits, and canonical delivery.
 	// Zero means defaultPaneInputTimeout; tests may shorten it.
 	paneInputTimeout time.Duration
@@ -389,6 +392,9 @@ func New(cfg Config) *Server {
 			return robot.GetSpawn(ctx, opts, nil)
 		},
 		waitAgents: robot.GetWaitContext,
+		recoveryConfig: func(project string) (*config.Config, error) {
+			return config.LoadAssignmentPolicyStrict(project, config.DefaultPath(), false)
+		},
 	}
 
 	// Wire redaction into both consumers: redactionMiddleware (REST bodies) and
