@@ -1009,6 +1009,15 @@ func TestRunReassignment_RedactionBlockLeavesRecoverableHandoffBarrier(t *testin
 	defer snapshot.restore()
 
 	tmpDir := t.TempDir()
+	fakeBinDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBinDir, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+	fakeBr := filepath.Join(fakeBinDir, "br")
+	if err := os.WriteFile(fakeBr, []byte("#!/bin/sh\necho '[{\"id\":\"bd-redaction\",\"title\":\"Redaction bead\",\"status\":\"in_progress\"}]'\n"), 0o755); err != nil {
+		t.Fatalf("write fake br: %v", err)
+	}
+	t.Setenv("PATH", fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("XDG_DATA_HOME", filepath.Join(tmpDir, "xdg"))
 	t.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1")
 	cfg = newTmuxIntegrationTestConfig(tmpDir)
@@ -1045,8 +1054,8 @@ func TestRunReassignment_RedactionBlockLeavesRecoverableHandoffBarrier(t *testin
 	if err := json.Unmarshal([]byte(output), &envelope); err != nil {
 		t.Fatalf("decode reassignment output: %v\n%s", err, output)
 	}
-	if envelope.Success || envelope.Error == nil || envelope.Error.Code != "REDACTION_BLOCKED" {
-		t.Fatalf("redaction envelope = %+v", envelope)
+	if envelope.Success || envelope.Error == nil || envelope.Error.Code != "SENSITIVE_DATA_BLOCKED" {
+		t.Fatalf("redaction envelope = %+v (err=%+v)", envelope, envelope.Error)
 	}
 	reloaded, err := assignment.LoadStoreStrict(sessionName)
 	if err != nil {
