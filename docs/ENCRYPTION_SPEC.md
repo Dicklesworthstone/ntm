@@ -100,7 +100,11 @@ document; humans receive the error plus a remediation hint on stderr. To persist
 artifacts unencrypted, set `enabled = false` explicitly or pass `--allow-plaintext`
 for that invocation. The diagnostic
 `support-bundle` command resolves its own export key before collecting data and
-applies the override to its export without changing the saved configuration.
+applies the override only to its export. It preserves the configured encryption
+requirement for history, events, checkpoints, and other bundle generators; those
+writes refuse to proceed while their keys are unavailable. Supplying historical
+decryption keys without an active write key still allows existing history and
+events to be read, but never authorizes new plaintext entries.
 
 No automatic or ephemeral keys are generated for persistent data.
 

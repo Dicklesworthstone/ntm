@@ -15,8 +15,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/bundle"
+	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/encryption"
+	"github.com/Dicklesworthstone/ntm/internal/events"
+	"github.com/Dicklesworthstone/ntm/internal/history"
+	"github.com/Dicklesworthstone/ntm/internal/startup"
 )
 
 func TestSupportBundleEncryptionCommandRoundTrip(t *testing.T) {
@@ -112,6 +116,95 @@ func TestSupportBundleConfigNeverExportsEncryptionCredentials(t *testing.T) {
 	}
 	if configuration.Encryption.Keyring["current"] != credential || configuration.Encryption.KeyCommand != "printf key-command-secret" {
 		t.Fatal("export mutated the live encryption configuration")
+	}
+}
+
+// The diagnostic override authorizes only the requested export. Exercise the
+// production startup hook, because command-local tests cannot catch a global
+// persistence policy being disabled before the bundle command runs (bd-vbnrd).
+func TestSupportBundleStartupKeepsOtherPersistenceEncrypted(t *testing.T) {
+	for _, position := range []string{"after subcommand", "before subcommand"} {
+		t.Run(position, func(t *testing.T) {
+			resetFlags()
+			t.Cleanup(resetFlags)
+			startup.ResetConfig()
+			t.Cleanup(startup.ResetConfig)
+			dir := t.TempDir()
+			t.Chdir(dir)
+			t.Setenv("HOME", dir)
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+			t.Setenv("XDG_DATA_HOME", filepath.Join(dir, "data"))
+			t.Setenv("NTM_CONFIG", "")
+			t.Setenv("NTM_SUPPORT_BUNDLE_MISSING_KEY", "")
+			configPath := filepath.Join(dir, "encryption.toml")
+			settings := "[encryption]\nenabled = true\nkey_source = 'env'\nkey_env = 'NTM_SUPPORT_BUNDLE_MISSING_KEY'\nkey_format = 'hex'\n"
+			if err := os.WriteFile(configPath, []byte(settings), 0600); err != nil {
+				t.Fatal(err)
+			}
+			oldCfg, oldCfgFile := cfg, cfgFile
+			cfg = nil
+			t.Cleanup(func() {
+				cfg, cfgFile = oldCfg, oldCfgFile
+				history.SetEncryptionConfig(nil)
+				events.SetEncryptionConfig(nil)
+				checkpoint.SetEncryptionConfig(nil)
+				bundle.SetEncryptionConfig(nil)
+			})
+			commandRoot := &cobra.Command{Use: "ntm", PersistentPreRunE: rootCmd.PersistentPreRunE}
+			commandRoot.PersistentFlags().StringVar(&cfgFile, "config", "", "config file")
+			commandRoot.PersistentFlags().BoolVar(&jsonOutput, "json", false, "JSON output")
+			commandRoot.PersistentFlags().BoolVar(&allowPlaintextFlag, "allow-plaintext", false, "allow plaintext")
+			commandRoot.AddCommand(newSupportBundleCmd())
+			output := filepath.Join(dir, "diagnostics.zip")
+			args := []string{"--config", configPath, "--json"}
+			if position == "before subcommand" {
+				args = append(args, "--allow-plaintext", "support-bundle")
+			} else {
+				args = append(args, "support-bundle", "--allow-plaintext")
+			}
+			args = append(args, "--include-events=false", "--output", output)
+			stdout, err := captureStdout(t, func() error {
+				commandRoot.SetArgs(args)
+				return commandRoot.ExecuteContext(t.Context())
+			})
+			if err != nil {
+				t.Fatalf("explicit plaintext export with unavailable key: %v\n%s", err, stdout)
+			}
+			var result BundleResult
+			if err := json.Unmarshal([]byte(stdout), &result); err != nil || !result.Success || result.Encrypted {
+				t.Fatalf("plaintext export response: result=%+v error=%v", result, err)
+			}
+			verified, err := bundle.Verify(output)
+			if err != nil || !verified.Valid || verified.Encrypted {
+				t.Fatalf("plaintext export invalid: result=%+v error=%v", verified, err)
+			}
+			if cfg == nil || !cfg.Encryption.Enabled {
+				t.Fatal("local export disabled the configured encryption policy")
+			}
+			err = history.Append(&history.HistoryEntry{ID: "must-refuse", Prompt: "private history", Timestamp: time.Now(), Source: history.SourceCLI})
+			if !encryption.IsKind(err, encryption.ErrInvalidKey) {
+				t.Fatalf("bundle override authorized unrelated history persistence: %v", err)
+			}
+			data, err := os.ReadFile(history.StoragePath())
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if len(data) != 0 {
+				t.Fatal("bundle override wrote unrelated history in plaintext")
+			}
+			storage := &checkpoint.Storage{BaseDir: filepath.Join(dir, "checkpoints")}
+			if err := storage.SaveGitStatus("diagnostic-test", "checkpoint", "private status"); err == nil {
+				t.Fatal("bundle override authorized unrelated checkpoint persistence")
+			}
+			statusPath := filepath.Join(storage.CheckpointDir("diagnostic-test", "checkpoint"), checkpoint.GitStatusFile)
+			if _, err := os.Stat(statusPath); !os.IsNotExist(err) {
+				t.Fatalf("bundle override published unrelated checkpoint: %v", err)
+			}
+			policy := bundle.ActiveEncryptionConfig()
+			if policy == nil || !policy.Enabled || len(policy.EncryptKey) != 0 {
+				t.Fatal("bundle override removed the required policy for other bundle generators")
+			}
+		})
 	}
 }
 

@@ -1,7 +1,9 @@
 package events
 
 import (
+	"bytes"
 	"crypto/rand"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -39,6 +41,50 @@ func TestSetEncryptionConfig_Events(t *testing.T) {
 			t.Error("expected enabled")
 		}
 	})
+}
+
+func TestEventEncryptionUnavailableWriteKey(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  []byte
+	}{
+		{name: "missing"},
+		{name: "empty", key: []byte{}},
+		{name: "invalid", key: []byte("invalid-key")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "events.jsonl")
+			readKey := evtTestKey(t)
+			SetEncryptionConfig(&EncryptionConfig{Enabled: true, EncryptKey: readKey, DecryptKeys: [][]byte{readKey}})
+			t.Cleanup(func() { SetEncryptionConfig(nil) })
+			logger, err := NewLogger(LoggerOptions{Path: path, Enabled: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closeLogger(logger)
+			if err := logger.Log(NewEvent(EventSessionCreate, "existing", nil)); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			SetEncryptionConfig(&EncryptionConfig{Enabled: true, EncryptKey: tc.key, DecryptKeys: [][]byte{readKey}})
+			err = logger.Log(NewEvent(EventPromptSend, "private-event-must-not-become-plaintext", nil))
+			if !encryption.IsKind(err, encryption.ErrInvalidKey) {
+				t.Fatalf("Log must reject unavailable write key: %v", err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("failed append changed existing encrypted events: %v", err)
+			}
+			entries, err := ReadSince(path, time.Time{})
+			if err != nil || len(entries) != 1 || entries[0].Session != "existing" {
+				t.Fatalf("read keyring must remain usable without a write key: entries=%+v error=%v", entries, err)
+			}
+		})
+	}
 }
 
 func TestEncryptedEventLogRoundTrip(t *testing.T) {

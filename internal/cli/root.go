@@ -879,33 +879,40 @@ Shell Integration:
 			// Key resolution failures are fatal for normal invocations: continuing
 			// would persist artifacts in plaintext even though the operator asked
 			// for encryption at rest (docs/ENCRYPTION_SPEC.md, "Failure Modes").
-			// support-bundle owns its explicit export policy, including its local
-			// --allow-plaintext override; it does not persist prompts or events.
-			if cfg != nil && cfg.Encryption.Enabled && !supportBundleHandlesEncryption(cmd) {
-				keyCfg := encryption.KeyConfig{
-					KeySource:   cfg.Encryption.KeySource,
-					KeyEnv:      cfg.Encryption.KeyEnv,
-					KeyFile:     cfg.Encryption.KeyFile,
-					KeyCommand:  cfg.Encryption.KeyCommand,
-					KeyFormat:   cfg.Encryption.KeyFormat,
-					ActiveKeyID: cfg.Encryption.ActiveKeyID,
-					Keyring:     cfg.Encryption.Keyring,
-				}
-				encKey, err := encryption.ResolveKey(keyCfg)
-				if err != nil {
-					return encryptionStartupError(
-						cmd,
-						fmt.Errorf("encryption key resolution failed: %w", err),
-						"Configure a valid encryption key source, pass --allow-plaintext, or set [encryption] enabled = false to persist artifacts unencrypted",
-					)
-				}
-				allKeys, err := encryption.ResolveKeyring(keyCfg)
-				if err != nil {
-					return encryptionStartupError(
-						cmd,
-						fmt.Errorf("encryption keyring resolution failed: %w", err),
-						"Configure a valid encryption keyring, pass --allow-plaintext, or set [encryption] enabled = false to persist artifacts unencrypted",
-					)
+			// support-bundle resolves keys for its own explicit export policy.
+			// Keep all other persistence enabled with no write key while resolution
+			// is deferred, so a local plaintext export cannot authorize unrelated
+			// history, event, or checkpoint writes (bd-vbnrd).
+			if cfg != nil && cfg.Encryption.Enabled {
+				var encKey []byte
+				var allKeys [][]byte
+				if !supportBundleHandlesEncryption(cmd) {
+					keyCfg := encryption.KeyConfig{
+						KeySource:   cfg.Encryption.KeySource,
+						KeyEnv:      cfg.Encryption.KeyEnv,
+						KeyFile:     cfg.Encryption.KeyFile,
+						KeyCommand:  cfg.Encryption.KeyCommand,
+						KeyFormat:   cfg.Encryption.KeyFormat,
+						ActiveKeyID: cfg.Encryption.ActiveKeyID,
+						Keyring:     cfg.Encryption.Keyring,
+					}
+					var err error
+					encKey, err = encryption.ResolveKey(keyCfg)
+					if err != nil {
+						return encryptionStartupError(
+							cmd,
+							fmt.Errorf("encryption key resolution failed: %w", err),
+							"Configure a valid encryption key source, pass --allow-plaintext, or set [encryption] enabled = false to persist artifacts unencrypted",
+						)
+					}
+					allKeys, err = encryption.ResolveKeyring(keyCfg)
+					if err != nil {
+						return encryptionStartupError(
+							cmd,
+							fmt.Errorf("encryption keyring resolution failed: %w", err),
+							"Configure a valid encryption keyring, pass --allow-plaintext, or set [encryption] enabled = false to persist artifacts unencrypted",
+						)
+					}
 				}
 				history.SetEncryptionConfig(&history.EncryptionConfig{
 					Enabled:     true,
