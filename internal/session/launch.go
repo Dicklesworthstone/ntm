@@ -120,8 +120,7 @@ func preflightSavedLaunches(ctx context.Context, state *SessionState, cmds Agent
 			}
 		}
 		if command == "" {
-			launch.outcome.Action = "skipped"
-			continue
+			return nil, fmt.Errorf("saved pane %d.%d (%s) has no usable launch command; provide a configured command or use topology-only restore", pane.WindowIndex, pane.Index, pane.AgentType)
 		}
 		if launch.spec == nil {
 			launch.spec = &tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: agentType, Model: pane.Model}

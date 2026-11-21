@@ -65,13 +65,14 @@ type AgentConfig struct {
 	Aider       int `json:"aider"`
 	Opencode    int `json:"oc"`
 	Omp         int `json:"omp,omitempty"`
+	Pi          int `json:"pi,omitempty"`
 	Ollama      int `json:"ollama"`
 	User        int `json:"user"`
 }
 
 // Total returns the total number of agents.
 func (a AgentConfig) Total() int {
-	return a.Claude + a.Codex + a.Gemini + a.Antigravity + a.Grok + a.Cursor + a.Windsurf + a.Aider + a.Opencode + a.Omp + a.Ollama + a.User
+	return a.Claude + a.Codex + a.Gemini + a.Antigravity + a.Grok + a.Cursor + a.Windsurf + a.Aider + a.Opencode + a.Omp + a.Pi + a.Ollama + a.User
 }
 
 // ErrAutomatedRelaunchNotImplemented is the sentinel returned when a saved
@@ -173,6 +174,7 @@ type AgentCommands struct {
 	Aider       string
 	Opencode    string
 	Omp         string
+	Pi          string
 	Ollama      string
 }
 

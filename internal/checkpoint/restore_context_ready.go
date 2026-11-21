@@ -149,12 +149,15 @@ func restoreContextReadiness(pane status.PaneObservation, paneID string, expecte
 		return false, "agent has existing draft or queued input", nil
 	}
 	switch expected.Canonical() {
-	case tmux.AgentClaude, tmux.AgentCodex, tmux.AgentGrok, tmux.AgentOmp:
+	case tmux.AgentClaude, tmux.AgentCodex, tmux.AgentGrok, tmux.AgentOmp, tmux.AgentPi:
 		if !composer.MarkerVisible {
 			return false, "agent composer is not visible", nil
 		}
 	}
 	if expected.Canonical() == tmux.AgentOmp && agent.ParseOmpComposer(pane.RawOutput).RowsBelow != 0 {
+		return false, "agent composer has an open completion list", nil
+	}
+	if expected.Canonical() == tmux.AgentPi && agent.ParsePiComposer(pane.RawOutput).CompletionRows != 0 {
 		return false, "agent composer has an open completion list", nil
 	}
 	return true, "", nil

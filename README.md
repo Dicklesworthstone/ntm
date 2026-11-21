@@ -1819,6 +1819,12 @@ Managed `spawn` and `add` launches assign each fresh pi pane a distinct
 `--session-id` and record it with the launch command. Simultaneous panes in the
 same working directory can therefore be saved and resumed without guessing
 from transcript timestamps. Explicit pi session selectors remain authoritative.
+Saved-session counts distinguish Pi from Oh My Pi. Older Pi snapshots without
+recorded launch settings can launch with the shipped Pi template and their saved
+model; recorded custom commands still take precedence. Checkpoint recovery also
+reconstructs Pi when tmux captured only its `node` runtime. A saved agent without
+a usable launch command fails recovery before an existing session is replaced;
+topology-only restore remains available for inspecting its saved panes.
 Workflow template profiles named `pi` also retain their plugin type and count.
 Robot spawning loads registered agents from the selected configuration and
 accepts the same count, model, and thinking-level grammar through

@@ -85,12 +85,33 @@ func TestRestoreContextReadinessRecognizesEmptyComposers(t *testing.T) {
 		{tmux.AgentCodex, "› Ask Codex to do anything\n"},
 		{tmux.AgentCodex, "» Ask Codex to do anything\n"},
 		{tmux.AgentGrok, "│ ❯     │\n╰───────╯\n"},
+		{tmux.AgentPi, "Recovered conversation\n────────────────────────────────\n\n────────────────────────────────\n/tmp/project\n↑0 ↓0 $0.000 0.0%/200k (auto)\n"},
 	} {
 		pane := readyRestoreObservation(time.Now())
 		pane.Metadata.Type, pane.RawOutput = tc.kind, tc.text
 		ready, reason, err := restoreContextReadiness(pane, "%7", tc.kind, time.Now())
 		if !ready || err != nil || reason != "" {
 			t.Fatalf("idle %s refused: %q, %v", tc.kind, reason, err)
+		}
+	}
+}
+
+func TestRestoreContextReadinessRequiresPiComposer(t *testing.T) {
+	for _, screen := range []string{
+		"Recovered conversation\n",
+		"────────────────────────────────\nprivate unsent draft\n────────────────────────────────\n/tmp/project\n↑0 ↓0 $0.000 0.0%/200k (auto)\n",
+		"────────────────────────────────\n\n────────────────────────────────\n→ /model\n  /settings\n/tmp/project\n↑0 ↓0 $0.000 0.0%/200k (auto)\n",
+	} {
+		pane := readyRestoreObservation(time.Now())
+		pane.Metadata.Type = tmux.AgentPi
+		pane.Metadata.Command = "pi"
+		pane.RawOutput = screen
+		ready, reason, err := restoreContextReadiness(pane, "%7", tmux.AgentPi, time.Now())
+		if ready || err != nil || reason == "" {
+			t.Fatalf("unsafe Pi recovery UI accepted: ready=%v reason=%q err=%v", ready, reason, err)
+		}
+		if strings.Contains(reason, "private unsent") {
+			t.Fatal("readiness refusal exposed the existing draft")
 		}
 	}
 }

@@ -197,6 +197,42 @@ func TestSavedLaunchPreflightProtectsExistingSession(t *testing.T) {
 	}
 }
 
+func TestSavedLaunchMissingCommandProtectsExistingSession(t *testing.T) {
+	for _, operation := range []string{"restore", "resume"} {
+		for _, kind := range []string{"pi", "cod", "saved-session-legacy-plugin"} {
+			t.Run(operation+"/"+kind, func(t *testing.T) {
+				logPath := savedSessionRestoreFixture(t)
+				if kind == "saved-session-legacy-plugin" {
+					if err := agentpkg.RegisterPlugin(kind, nil, nil, nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+				state := &SessionState{Name: "protect_live", WorkDir: t.TempDir(), Panes: []PaneState{
+					{Index: 0, AgentType: "cod", Command: "codex"},
+					{Index: 1, AgentType: kind},
+				}}
+				var result *ResumeResult
+				var err error
+				if operation == "restore" {
+					result, err = RestoreWithAgents(t.Context(), state, AgentCommands{}, nil, RestoreOptions{Force: true})
+				} else {
+					result, err = ResumeContext(t.Context(), state, AgentCommands{}, ResumeOptions{Force: true})
+				}
+				if err == nil || result != nil || !strings.Contains(err.Error(), "0.1") || !strings.Contains(err.Error(), "no usable launch command") {
+					t.Fatalf("missing %s launch was silently skipped: result=%+v err=%v", kind, result, err)
+				}
+				calls, readErr := os.ReadFile(logPath)
+				if readErr != nil && !os.IsNotExist(readErr) {
+					t.Fatal(readErr)
+				}
+				if len(calls) != 0 {
+					t.Fatalf("missing launch command replaced or touched the live session: %s", calls)
+				}
+			})
+		}
+	}
+}
+
 func TestSavedNativeResumePreservesSettingsAndReplacesPriorID(t *testing.T) {
 	logPath := savedSessionRestoreFixture(t)
 	directory := t.TempDir()

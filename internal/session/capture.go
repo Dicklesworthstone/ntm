@@ -220,7 +220,7 @@ func parseWindowList(output, sep string) []WindowState {
 func countAgents(panes []tmux.Pane) AgentConfig {
 	config := AgentConfig{}
 	for _, p := range panes {
-		switch p.Type {
+		switch p.Type.Canonical() {
 		case tmux.AgentClaude:
 			config.Claude++
 		case tmux.AgentCodex:
@@ -241,6 +241,8 @@ func countAgents(panes []tmux.Pane) AgentConfig {
 			config.Opencode++
 		case tmux.AgentOmp:
 			config.Omp++
+		case tmux.AgentPi:
+			config.Pi++
 		case tmux.AgentOllama:
 			config.Ollama++
 		case tmux.AgentUser:
