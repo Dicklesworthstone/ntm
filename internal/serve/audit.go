@@ -653,6 +653,7 @@ func (s *AuditStore) rotateJSONLIfLarge(path string) error {
 
 	s.appendMu.Lock()
 	defer s.appendMu.Unlock()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -772,6 +773,12 @@ func (s *AuditStore) Close() error {
 		close(s.stopCleanup)
 	})
 	s.cleanupWG.Wait()
+
+	// Acquire appendMu before mu (matching Record and rotateJSONLIfLarge lock
+	// order) so Close cannot close jsonlFile while a concurrent Record is
+	// actively writing to it.
+	s.appendMu.Lock()
+	defer s.appendMu.Unlock()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

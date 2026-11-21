@@ -265,6 +265,7 @@ type StatusSummary struct {
 	AiderCount       int            `json:"aider_count"`
 	OpencodeCount    int            `json:"opencode_count"`
 	OmpCount         int            `json:"omp_count"`
+	PiCount          int            `json:"pi_count"`
 	OllamaCount      int            `json:"ollama_count"`
 	AgentsByState    map[string]int `json:"agents_by_state"`
 	AgentsByType     map[string]int `json:"agents_by_type"`
@@ -670,6 +671,8 @@ func statusAccumulateAgentSummary(summary *StatusSummary, agentType, agentState 
 		summary.OpencodeCount++
 	case "omp":
 		summary.OmpCount++
+	case "pi":
+		summary.PiCount++
 	case "ollama":
 		summary.OllamaCount++
 	}

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -50,6 +51,16 @@ func NewWorkflowPanel() *WorkflowPanel {
 }
 
 func (p *WorkflowPanel) Init() tea.Cmd { return nil }
+
+func (p *WorkflowPanel) Keybindings() []Keybinding {
+	return []Keybinding{
+		{
+			Key:         key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "stage details")),
+			Description: "Toggle workflow stage details",
+			Action:      "toggle_details",
+		},
+	}
+}
 
 func (p *WorkflowPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.String() == "enter" && p.data.State != nil {

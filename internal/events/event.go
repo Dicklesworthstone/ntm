@@ -82,6 +82,7 @@ type SessionCreateData struct {
 	AiderCount       int    `json:"aider_count,omitempty"`
 	OpencodeCount    int    `json:"opencode_count,omitempty"`
 	OmpCount         int    `json:"omp_count,omitempty"`
+	PiCount          int    `json:"pi_count,omitempty"`
 	OllamaCount      int    `json:"ollama_count,omitempty"`
 	WorkDir          string `json:"work_dir,omitempty"`
 	Recipe           string `json:"recipe,omitempty"`
@@ -149,6 +150,7 @@ func ToMap(v interface{}) map[string]interface{} {
 			"aider_count":       d.AiderCount,
 			"opencode_count":    d.OpencodeCount,
 			"omp_count":         d.OmpCount,
+			"pi_count":          d.PiCount,
 			"ollama_count":      d.OllamaCount,
 			"work_dir":          d.WorkDir,
 			"recipe":            d.Recipe,

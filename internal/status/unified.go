@@ -330,6 +330,7 @@ func isKnownAgentType(agentType string) bool {
 		agent.AgentTypeAider,
 		agent.AgentTypeOpencode,
 		agent.AgentTypeOmp,
+		agent.AgentTypePi,
 		agent.AgentTypeOllama:
 		return true
 	default:

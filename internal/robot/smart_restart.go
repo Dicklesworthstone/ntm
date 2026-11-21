@@ -1481,6 +1481,7 @@ func restartCanonicalAgentType(agentType string) agent.AgentType {
 		agent.AgentTypeAider,
 		agent.AgentTypeOpencode,
 		agent.AgentTypeOmp,
+		agent.AgentTypePi,
 		agent.AgentTypeOllama,
 		agent.AgentTypeUser,
 		agent.AgentTypeUnknown:

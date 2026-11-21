@@ -59,6 +59,7 @@ type SpawnWizard struct {
 	// Step 1: Method selection
 	methodForm   *huh.Form
 	configMethod string
+	submitted    bool
 
 	// Step 2: Agent counts
 	countsForm *huh.Form
@@ -119,6 +120,9 @@ func (sw *SpawnWizard) Init() tea.Cmd {
 
 // Update implements tea.Model.
 func (sw *SpawnWizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if sw.submitted {
+		return sw, nil
+	}
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -175,7 +179,8 @@ func (sw *SpawnWizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			sw.confirmForm = f
 		}
 		cmd = c
-		if sw.confirmForm.State == huh.StateCompleted {
+		if sw.confirmForm.State == huh.StateCompleted && !sw.submitted {
+			sw.submitted = true
 			result := sw.currentResult()
 			return sw, func() tea.Msg {
 				return SpawnWizardDoneMsg{

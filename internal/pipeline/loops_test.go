@@ -1329,3 +1329,218 @@ func TestLoopExecutor_UntilAndResumeCheckpoints(t *testing.T) {
 		}
 	})
 }
+
+func TestPipelineWaveF4Fixes(t *testing.T) {
+	t.Parallel()
+
+	t.Run("P1_early_and_concurrent_Cancel_is_race_free_and_latched", func(t *testing.T) {
+		t.Parallel()
+		exec := NewExecutor(ExecutorConfig{
+			Session:       "cancel-sess",
+			DryRun:        false,
+			GlobalTimeout: 10 * time.Second,
+		})
+		// Cancel called BEFORE Run must latch and cancel immediately on Run entry.
+		exec.Cancel()
+		wf := &Workflow{
+			SchemaVersion: SchemaVersion,
+			Name:          "early-cancel",
+			Settings:      DefaultWorkflowSettings(),
+			Steps: []Step{
+				{ID: "sleep", Command: "sleep 5"},
+			},
+		}
+		state, err := exec.Run(context.Background(), wf, nil, nil)
+		if state == nil || state.Status != StatusCancelled {
+			t.Fatalf("early Cancel() did not cancel Run: state=%+v err=%v", state, err)
+		}
+	})
+
+	t.Run("P2_control_only_step_failed_when_reports_StatusFailed", func(t *testing.T) {
+		t.Parallel()
+		exec := NewExecutor(ExecutorConfig{Session: "p2", GlobalTimeout: 10 * time.Second})
+		exec.state = &ExecutionState{
+			RunID:        "run-p2",
+			WorkflowID:   "wf-p2",
+			Variables:    map[string]interface{}{},
+			Steps:        map[string]StepResult{},
+			ForeachState: map[string]ForeachIterationState{},
+		}
+		wf := &Workflow{
+			SchemaVersion: SchemaVersion,
+			Name:          "wf-p2",
+			Settings:      DefaultWorkflowSettings(),
+			Steps: []Step{
+				{
+					ID: "bad-when-loop",
+					Loop: &LoopConfig{
+						Times: 2,
+						Steps: []Step{
+							{ID: "guard", LoopControl: LoopControlBreak, When: "${vars.missing_var} == 1"},
+						},
+					},
+				},
+			},
+		}
+		exec.graph = NewDependencyGraph(wf)
+		res := exec.loopExec.ExecuteLoop(context.Background(), &wf.Steps[0], wf)
+		if res.Status != StatusFailed || res.Error == nil {
+			t.Fatalf("failed control-only when reported status=%s err=%+v, want StatusFailed", res.Status, res.Error)
+		}
+	})
+
+	t.Run("P3_retry_exhausted_step_fails_loop_instead_of_succeeding", func(t *testing.T) {
+		t.Parallel()
+		exec := NewExecutor(ExecutorConfig{Session: "p3", DefaultTimeout: 5 * time.Second, GlobalTimeout: 10 * time.Second})
+		exec.state = &ExecutionState{
+			RunID:        "run-p3",
+			WorkflowID:   "wf-p3",
+			Variables:    map[string]interface{}{},
+			Steps:        map[string]StepResult{},
+			ForeachState: map[string]ForeachIterationState{},
+		}
+		wf := &Workflow{
+			SchemaVersion: SchemaVersion,
+			Name:          "wf-p3",
+			Settings:      DefaultWorkflowSettings(),
+			Steps: []Step{
+				{
+					ID: "retry-loop",
+					Loop: &LoopConfig{
+						Times: 2,
+						Steps: []Step{
+							{ID: "fail-cmd", Command: "exit 1", OnError: ErrorActionRetry, RetryCount: 1, RetryDelay: Duration{Duration: time.Millisecond}},
+						},
+					},
+				},
+			},
+		}
+		exec.graph = NewDependencyGraph(wf)
+		res := exec.loopExec.ExecuteLoop(context.Background(), &wf.Steps[0], wf)
+		if res.Status != StatusFailed || res.Error == nil {
+			t.Fatalf("retry-exhausted loop reported status=%s err=%+v, want StatusFailed", res.Status, res.Error)
+		}
+	})
+
+	t.Run("P4_resumed_while_enforces_max_iterations_across_prior_progress", func(t *testing.T) {
+		t.Parallel()
+		exec := NewExecutor(ExecutorConfig{Session: "p4", DryRun: true, GlobalTimeout: 10 * time.Second})
+		exec.state = &ExecutionState{
+			RunID:        "run-p4",
+			WorkflowID:   "wf-p4",
+			Variables:    map[string]interface{}{"keep_going": true},
+			Steps:        map[string]StepResult{},
+			ForeachState: map[string]ForeachIterationState{},
+		}
+		// 2 of 3 iterations completed prior to resume.
+		exec.beginForeachState("wloop", 3)
+		exec.markForeachIterationCompleted("wloop", 0, 3)
+		exec.markForeachIterationCompleted("wloop", 1, 3)
+		wf := &Workflow{
+			SchemaVersion: SchemaVersion,
+			Name:          "wf-p4",
+			Settings:      DefaultWorkflowSettings(),
+			Steps: []Step{
+				{
+					ID: "wloop",
+					Loop: &LoopConfig{
+						While:         "${vars.keep_going}",
+						MaxIterations: IntOrExpr{Value: 3},
+						Steps:         []Step{{ID: "noop", Command: "true"}},
+					},
+				},
+			},
+		}
+		exec.graph = NewDependencyGraph(wf)
+		res := exec.loopExec.ExecuteLoop(context.Background(), &wf.Steps[0], wf)
+		if res.Status != StatusFailed || res.Error == nil || !strings.Contains(res.Error.Message, "max_iterations") {
+			t.Fatalf("resumed while loop did not fail on max_iterations: status=%s err=%+v", res.Status, res.Error)
+		}
+	})
+
+	t.Run("P7_resumeCompletedForeachIteration_reconstructs_multi_round_results", func(t *testing.T) {
+		t.Parallel()
+		exec := NewExecutor(ExecutorConfig{Session: "p7", GlobalTimeout: 10 * time.Second})
+		exec.state = &ExecutionState{
+			RunID:      "run-p7",
+			WorkflowID: "wf-p7",
+			Variables:  map[string]interface{}{},
+			Steps: map[string]StepResult{
+				"fan_iter0_work_round1": {StepID: "fan_iter0_work_round1", Status: StatusCompleted, Output: "r1"},
+				"fan_iter0_work_round2": {StepID: "fan_iter0_work_round2", Status: StatusCompleted, Output: "r2"},
+			},
+		}
+		parent := &Step{
+			ID: "fan",
+			Foreach: &ForeachConfig{
+				MaxRounds: IntOrExpr{Value: 2},
+			},
+		}
+		plan := foreachIterationPlan{
+			Index: 0,
+			Item:  "alpha",
+			Steps: []Step{{ID: "fan_iter0_work"}},
+		}
+		res := exec.resumeCompletedForeachIteration(parent, plan)
+		if len(res.Results) != 2 || res.Results[0].Output != "r1" || res.Results[1].Output != "r2" {
+			t.Fatalf("multi-round resumed iteration dropped round outputs: %+v", res.Results)
+		}
+	})
+
+	t.Run("Pass4_cancelled_last_step_reports_StatusCancelled_and_skips_collect", func(t *testing.T) {
+		t.Parallel()
+		exec := NewExecutor(ExecutorConfig{Session: "p4-cancel", DefaultTimeout: 5 * time.Second, GlobalTimeout: 10 * time.Second})
+		exec.state = &ExecutionState{
+			RunID:        "run-p4-cancel",
+			WorkflowID:   "wf-p4-cancel",
+			Variables:    map[string]interface{}{},
+			Steps:        map[string]StepResult{},
+			ForeachState: map[string]ForeachIterationState{},
+		}
+		wf := &Workflow{
+			SchemaVersion: SchemaVersion,
+			Name:          "wf-p4-cancel",
+			Settings:      DefaultWorkflowSettings(),
+			Steps: []Step{
+				{
+					ID: "cancel-loop",
+					Loop: &LoopConfig{
+						Times:   1,
+						Collect: "collected",
+						Steps: []Step{
+							{ID: "slow", Command: "printf partial; sleep 5"},
+						},
+					},
+				},
+			},
+		}
+		exec.graph = NewDependencyGraph(wf)
+		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+		defer cancel()
+		res := exec.loopExec.ExecuteLoop(ctx, &wf.Steps[0], wf)
+		if res.Status != StatusCancelled {
+			t.Fatalf("cancelled single-iteration loop reported status=%s err=%+v, want StatusCancelled", res.Status, res.Error)
+		}
+		if len(res.Collected) != 0 {
+			t.Fatalf("cancelled step polluted loop.Collect: %+v", res.Collected)
+		}
+	})
+
+	t.Run("Pass4_normalizeAgentType_runtime_parity_for_grok_opencode_pi", func(t *testing.T) {
+		t.Parallel()
+		cases := map[string]string{
+			"opencode":   "oc",
+			"open-code":  "oc",
+			"oc":         "oc",
+			"grok":       "grok",
+			"grok-build": "grok",
+			"pi":         "pi",
+			"pi-agent":   "pi",
+		}
+		for in, want := range cases {
+			if got := normalizeAgentType(in); got != want {
+				t.Errorf("normalizeAgentType(%q) = %q, want %q", in, got, want)
+			}
+		}
+	})
+}

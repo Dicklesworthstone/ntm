@@ -131,3 +131,30 @@ func ShippedPiPlugin() AgentPlugin {
 	p.Readiness.WorkingPatterns = []string{`^\s*─+\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏].*─+\s*$`}
 	return p
 }
+
+// WithShippedDefaults returns loaded followed by any shipped built-in agent
+// plugins (currently Pi) not already declared by name or alias in loaded.
+func WithShippedDefaults(loaded []AgentPlugin) []AgentPlugin {
+	out := make([]AgentPlugin, 0, len(loaded)+1)
+	hasPi := false
+	for _, p := range loaded {
+		out = append(out, p)
+		if strings.EqualFold(strings.TrimSpace(p.Name), "pi") || strings.EqualFold(strings.TrimSpace(p.Alias), "pi") {
+			hasPi = true
+		}
+	}
+	if !hasPi {
+		out = append(out, ShippedPiPlugin())
+	}
+	return out
+}
+
+// LoadAgentPluginsWithDefaults loads user plugins from dir and merges shipped
+// built-in defaults (such as Pi) when not overridden by a user plugin file.
+func LoadAgentPluginsWithDefaults(dir string) ([]AgentPlugin, error) {
+	loaded, err := LoadAgentPlugins(dir)
+	if err != nil {
+		return WithShippedDefaults(nil), err
+	}
+	return WithShippedDefaults(loaded), nil
+}

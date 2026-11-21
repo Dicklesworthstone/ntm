@@ -209,6 +209,10 @@ func TestLifecycleFSMPreventsReentryCrossReleaseAndEmptyOpCollision(t *testing.T
 	if err := coord.Abort(lease3, "reset"); err != nil {
 		t.Fatalf("Abort from failed_recoverable: %v", err)
 	}
+	abortedSnap, ok := coord.Snapshot("%50")
+	if !ok || abortedSnap.FailedFrom != "" || abortedSnap.RecoveryHint != "" {
+		t.Fatalf("Abort must clear stale FailedFrom and RecoveryHint, got FailedFrom=%q RecoveryHint=%q", abortedSnap.FailedFrom, abortedSnap.RecoveryHint)
+	}
 
 	// History length stays bounded across many cycles.
 	for i := 0; i < maxLifecycleHistory; i++ {

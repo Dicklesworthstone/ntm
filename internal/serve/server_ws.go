@@ -122,6 +122,17 @@ type WSAttentionSub struct {
 	// unsubscribe is the function to stop the feed subscription.
 	unsubscribe func()
 	topics      []string
+	// replaying and pendingLive serialize historical replay ahead of live
+	// feed callbacks (guarded by WSClient.attentionSubMu) so concurrent live
+	// events never arrive out-of-order or duplicate replayed cursors while
+	// redaction failures still fail-fast during replay.
+	replaying   bool
+	pendingLive []bufferedAttentionFrame
+}
+
+type bufferedAttentionFrame struct {
+	cursor int64
+	data   []byte
 }
 
 // WSClient represents a connected WebSocket client.
@@ -1128,16 +1139,31 @@ func (c *WSClient) handleAttentionSubscribeWithFeed(feed attentionStreamFeed, ms
 		ExcludeSnoozed:      excludeSnoozed,
 		StartedAt:           time.Now(),
 		topics:              append([]string(nil), topics...),
+		replaying:           sinceCursor >= 0,
 	}
 
-	// Subscribe to the feed with filtering
-	sub.unsubscribe = feed.Subscribe(func(event robot.AttentionEvent) {
-		c.deliverAttentionEvent(event, sub)
-	})
-
-	// Store subscription
+	// Publish subscription before attaching the feed callback so live events
+	// published during subscribe→replay are buffered instead of dropped or
+	// delivered out of order.
 	c.attentionSubMu.Lock()
 	c.attentionSub = sub
+	c.attentionSubMu.Unlock()
+
+	// Subscribe to the feed with filtering
+	unsub := feed.Subscribe(func(event robot.AttentionEvent) {
+		c.deliverAttentionEvent(event, sub)
+	})
+	c.attentionSubMu.Lock()
+	if c.attentionSub == sub {
+		sub.unsubscribe = unsub
+	} else {
+		c.attentionSubMu.Unlock()
+		unsub()
+		return map[string]interface{}{
+			"error":      "attention subscription was replaced during subscribe; retry subscription",
+			"error_code": "ATTENTION_REPLAY_FAILED",
+		}
+	}
 	c.attentionSubMu.Unlock()
 
 	// Retain the requested topics for replacement and explicit unsubscribe.
@@ -1148,53 +1174,102 @@ func (c *WSClient) handleAttentionSubscribeWithFeed(feed attentionStreamFeed, ms
 	// Perform replay if cursor is not "start from now"
 	var replayCount int
 	if sinceCursor >= 0 {
-		events, _, err := feed.Replay(sinceCursor, stats.Count)
-		if err != nil {
-			// The cursor can fall out of the bounded replay window after the
-			// preflight above and before Replay acquires the feed's journal lock.
-			// Do not acknowledge a subscription which missed its requested
-			// history: remove the live callback before
-			// reporting the failure to the caller.
-			c.cancelAttentionSubscription()
-			c.Unsubscribe(topics)
+		// Re-read feed stats AFTER attaching the live callback so every event
+		// published before Subscribe is covered by Replay (with any events
+		// published after Subscribe buffered in sub.pendingLive), preventing
+		// a silent cursor gap while guaranteeing bounded replay termination.
+		postSubStats := feed.Stats()
+		targetCursor := postSubStats.NewestCursor
+		replayCursor := sinceCursor
+		limit := postSubStats.Count
+		if limit <= 0 {
+			limit = 1
+		}
+		var events []robot.AttentionEvent
+		for {
+			chunk, _, err := feed.Replay(replayCursor, limit)
+			if err != nil {
+				// The cursor can fall out of the bounded replay window after the
+				// preflight above and before Replay acquires the feed's journal lock.
+				// Do not acknowledge a subscription which missed its requested
+				// history: remove only this subscription before reporting failure.
+				c.cancelAttentionSubscriptionIfCurrent(sub)
 
-			var cursorErr *robot.CursorExpiredError
-			if errors.As(err, &cursorErr) {
-				currentStats := feed.Stats()
+				var cursorErr *robot.CursorExpiredError
+				if errors.As(err, &cursorErr) {
+					currentStats := feed.Stats()
+					return map[string]interface{}{
+						"error":          "cursor_expired",
+						"error_code":     robot.ErrCodeCursorExpired,
+						"oldest_cursor":  cursorErr.EarliestCursor,
+						"newest_cursor":  currentStats.NewestCursor,
+						"resync_hint":    "Resync via --robot-snapshot, then resubscribe with since_cursor=-1",
+						"resync_command": "ntm --robot-snapshot",
+					}
+				}
 				return map[string]interface{}{
-					"error":          "cursor_expired",
-					"error_code":     robot.ErrCodeCursorExpired,
-					"oldest_cursor":  cursorErr.EarliestCursor,
-					"newest_cursor":  currentStats.NewestCursor,
-					"resync_hint":    "Resync via --robot-snapshot, then resubscribe with since_cursor=-1",
-					"resync_command": "ntm --robot-snapshot",
+					"error":      fmt.Sprintf("replay attention events: %v", err),
+					"error_code": "ATTENTION_REPLAY_FAILED",
+				}
+			}
+			events = append(events, chunk...)
+			if len(chunk) == 0 || len(chunk) < limit || chunk[len(chunk)-1].Cursor >= targetCursor {
+				break
+			}
+			replayCursor = chunk[len(chunk)-1].Cursor
+		}
+		// Deliver replayed events while live callbacks buffer into sub.pendingLive.
+		var replayErr error
+		replayCount, replayErr = c.deliverAttentionReplay(events, topics, sub)
+		if replayErr != nil {
+			c.cancelAttentionSubscriptionIfCurrent(sub)
+			if errors.Is(replayErr, errAttentionSubChanged) {
+				return map[string]interface{}{
+					"error":      "attention subscription was replaced during replay; retry subscription",
+					"error_code": "ATTENTION_REPLAY_FAILED",
 				}
 			}
 			return map[string]interface{}{
-				"error":      fmt.Sprintf("replay attention events: %v", err),
-				"error_code": "ATTENTION_REPLAY_FAILED",
+				"error":      "attention replay could not be disclosed safely; resynchronize the subscription",
+				"error_code": "REDACTION_FAILED",
 			}
-		} else {
-			// Deliver replayed events
-			var replayErr error
-			replayCount, replayErr = c.deliverAttentionReplay(events, topics, sub)
-			if replayErr != nil {
-				c.cancelAttentionSubscription()
-				return map[string]interface{}{
-					"error":      "attention replay could not be disclosed safely; resynchronize the subscription",
-					"error_code": "REDACTION_FAILED",
+		}
+		// Drain any live frames buffered during replay strictly in cursor order
+		// and deduplicated against sub.Cursor before enabling direct live sends.
+		c.attentionSubMu.Lock()
+		if c.attentionSub == sub && sub.Active {
+			for _, frame := range sub.pendingLive {
+				if frame.cursor <= sub.Cursor {
+					continue
+				}
+				if c.trySend(frame.data, nil) {
+					sub.Cursor = frame.cursor
+					sub.EventCount++
+				} else {
+					sub.DroppedCount++
+					log.Printf("ws attention: dropped buffered event cursor=%d client=%s", frame.cursor, c.id)
 				}
 			}
 		}
+		sub.replaying = false
+		sub.pendingLive = nil
+		c.attentionSubMu.Unlock()
 	}
 
 	// Live delivery may have failed while replay was in progress, including
 	// an empty replay. Never report that inactive subscription as accepted.
 	c.attentionSubMu.Lock()
-	active := c.attentionSub == sub && sub.Active
+	replaced := c.attentionSub != sub
+	active := !replaced && sub.Active
 	c.attentionSubMu.Unlock()
 	if !active {
-		c.cancelAttentionSubscription()
+		c.cancelAttentionSubscriptionIfCurrent(sub)
+		if replaced {
+			return map[string]interface{}{
+				"error":      "attention subscription was replaced during subscribe; retry subscription",
+				"error_code": "ATTENTION_REPLAY_FAILED",
+			}
+		}
 		return map[string]interface{}{
 			"error":      "attention subscription is no longer active; resynchronize the subscription",
 			"error_code": "REDACTION_FAILED",
@@ -1219,6 +1294,8 @@ func (c *WSClient) handleAttentionSubscribeWithFeed(feed attentionStreamFeed, ms
 	return result
 }
 
+var errAttentionSubChanged = errors.New("attention subscription changed during replay")
+
 // cancelAttentionSubscription stops any existing attention subscription.
 func (c *WSClient) cancelAttentionSubscription() {
 	c.attentionSubMu.Lock()
@@ -1231,6 +1308,29 @@ func (c *WSClient) cancelAttentionSubscription() {
 	}
 	if sub != nil && len(sub.topics) > 0 {
 		c.Unsubscribe(sub.topics)
+	}
+}
+
+// cancelAttentionSubscriptionIfCurrent stops expected only if it is still the
+// client's active attention subscription, avoiding clobbering a concurrent
+// replacement subscription.
+func (c *WSClient) cancelAttentionSubscriptionIfCurrent(expected *WSAttentionSub) {
+	if expected == nil {
+		return
+	}
+	c.attentionSubMu.Lock()
+	if c.attentionSub != expected {
+		c.attentionSubMu.Unlock()
+		return
+	}
+	c.attentionSub = nil
+	c.attentionSubMu.Unlock()
+
+	if expected.unsubscribe != nil {
+		expected.unsubscribe()
+	}
+	if len(expected.topics) > 0 {
+		c.Unsubscribe(expected.topics)
 	}
 }
 
@@ -1267,14 +1367,11 @@ func (c *WSClient) removeAttentionTopics(topics []string) {
 }
 
 // deliverAttentionEvent delivers a single attention event to the client.
-// Applies subscription filters and tracks cursor position.
+// Applies subscription filters, runs redaction immediately (so redaction
+// failures fail-fast even during replay), buffers valid live frames until
+// historical replay completes so cursors never interleave or duplicate, and
+// advances cursor position atomically under attentionSubMu.
 func (c *WSClient) deliverAttentionEvent(event robot.AttentionEvent, expected *WSAttentionSub) {
-	// Snapshot the filter criteria AND the cursor under the lock. Copying only
-	// the pointer and then reading sub.Cursor/sub.Active raced the locked
-	// cursor writes below and in deliverAttentionReplay: AttentionFeed invokes
-	// subscriber handlers synchronously on the publishing goroutine, so any
-	// event published during the subscribe→replay window runs both at once,
-	// which either re-delivered an event or rolled the cursor backwards.
 	c.attentionSubMu.Lock()
 	sub := c.attentionSub
 	if sub == nil || sub != expected || !sub.Active {
@@ -1352,6 +1449,19 @@ func (c *WSClient) deliverAttentionEvent(event robot.AttentionEvent, expected *W
 	// operation with respect to those changes.
 	c.attentionSubMu.Lock()
 	if c.attentionSub != expected || !expected.Active || event.Cursor <= expected.Cursor {
+		c.attentionSubMu.Unlock()
+		return
+	}
+	if expected.replaying {
+		const maxPendingLiveEvents = 4096
+		if len(expected.pendingLive) < maxPendingLiveEvents {
+			expected.pendingLive = append(expected.pendingLive, bufferedAttentionFrame{
+				cursor: event.Cursor,
+				data:   data,
+			})
+		} else {
+			expected.DroppedCount++
+		}
 		c.attentionSubMu.Unlock()
 		return
 	}
@@ -1437,7 +1547,7 @@ func (c *WSClient) deliverAttentionReplay(events []robot.AttentionEvent, topics 
 		c.attentionSubMu.Lock()
 		if c.attentionSub != sub || !sub.Active {
 			c.attentionSubMu.Unlock()
-			return delivered, errors.New("attention subscription changed during replay")
+			return delivered, errAttentionSubChanged
 		}
 		if c.trySend(data, nil) {
 			delivered++

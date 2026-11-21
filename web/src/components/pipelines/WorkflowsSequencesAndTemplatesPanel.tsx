@@ -20,7 +20,7 @@
  *   - POST /api/v1/sequences/{name}/advance
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   formatApiErrorMessage,
@@ -60,6 +60,7 @@ export function WorkflowsSequencesAndTemplatesPanel() {
   const [wfTransitionIdx, setWfTransitionIdx] = useState("0");
   const [wfReason, setWfReason] = useState("Approved via Web Cockpit");
   const [wfControlMsg, setWfControlMsg] = useState<string | null>(null);
+  const [wfStatusRefreshing, setWfStatusRefreshing] = useState(false);
   const [wfStatusTarget, setWfStatusTarget] = useState<{
     session: string;
     projectDir: string;
@@ -69,6 +70,8 @@ export function WorkflowsSequencesAndTemplatesPanel() {
     projectDir: string;
     data: WorkflowControlState;
   } | null>(null);
+  const wfActiveInputRef = useRef({ session: "ntm_live", projectDir: "" });
+  const wfRefreshSeqRef = useRef(0);
 
   const workflowsQuery = useQuery({
     queryKey: ["workflows-catalog", roleFilter],
@@ -187,6 +190,27 @@ export function WorkflowsSequencesAndTemplatesPanel() {
 
   const activeSession = wfSession.trim();
   const activeProjectDir = wfProjectDir.trim();
+  wfActiveInputRef.current = {
+    session: activeSession,
+    projectDir: activeProjectDir,
+  };
+  const prevTargetRef = useRef({
+    session: activeSession,
+    projectDir: activeProjectDir,
+  });
+  useEffect(() => {
+    if (
+      prevTargetRef.current.session !== activeSession ||
+      prevTargetRef.current.projectDir !== activeProjectDir
+    ) {
+      prevTargetRef.current = {
+        session: activeSession,
+        projectDir: activeProjectDir,
+      };
+      setWfGateToken("");
+    }
+  }, [activeSession, activeProjectDir]);
+
   const statusMatchesInputs =
     wfStatusTarget !== null &&
     wfStatusTarget.session === activeSession &&
@@ -220,6 +244,8 @@ export function WorkflowsSequencesAndTemplatesPanel() {
     const targetSession = wfSession.trim();
     const targetProjectDir = wfProjectDir.trim();
     if (!targetSession) return;
+    const seq = ++wfRefreshSeqRef.current;
+    setWfStatusRefreshing(true);
     setWfDirectSnapshot(null);
     setWfStatusTarget({
       session: targetSession,
@@ -238,12 +264,32 @@ export function WorkflowsSequencesAndTemplatesPanel() {
             },
             signal,
           }),
+        staleTime: 0,
+        retry: false,
       });
+      if (
+        wfRefreshSeqRef.current !== seq ||
+        wfActiveInputRef.current.session !== targetSession ||
+        wfActiveInputRef.current.projectDir !== targetProjectDir
+      ) {
+        return;
+      }
       setWfControlMsg(
         `Loaded status for "${targetSession}" (${res.job_status || (res.running ? "running" : res.completed ? "completed" : res.paused ? "paused" : "idle")}).`
       );
     } catch (err) {
+      if (
+        wfRefreshSeqRef.current !== seq ||
+        wfActiveInputRef.current.session !== targetSession ||
+        wfActiveInputRef.current.projectDir !== targetProjectDir
+      ) {
+        return;
+      }
       setWfControlMsg(`Status check failed: ${formatApiErrorMessage(err)}`);
+    } finally {
+      if (wfRefreshSeqRef.current === seq) {
+        setWfStatusRefreshing(false);
+      }
     }
   };
 
@@ -273,16 +319,7 @@ export function WorkflowsSequencesAndTemplatesPanel() {
       }));
     },
     onSuccess: ({ res, targetSession, trimmedDir }, name) => {
-      setWfDirectSnapshot({
-        session: targetSession,
-        projectDir: trimmedDir,
-        data: res,
-      });
       if (!res.dry_run) {
-        setWfStatusTarget({
-          session: targetSession,
-          projectDir: trimmedDir,
-        });
         queryClient.setQueryData(
           ["workflow-live-status", targetSession, trimmedDir],
           res
@@ -291,12 +328,28 @@ export function WorkflowsSequencesAndTemplatesPanel() {
           queryKey: ["workflow-live-status", targetSession, trimmedDir],
         });
       }
-      const jobNote = res.job_id
-        ? ` (job ${res.job_id}, ${res.job_status || "running"})`
-        : "";
-      setWfControlMsg(
-        `Workflow "${name}" ${res.dry_run ? "validated (dry-run)" : "started"}${jobNote} for session "${targetSession}" at stage "${res.stage || "initial"}".`
-      );
+      const isCurrentTarget =
+        wfActiveInputRef.current.session === targetSession &&
+        wfActiveInputRef.current.projectDir === trimmedDir;
+      if (isCurrentTarget) {
+        setWfDirectSnapshot({
+          session: targetSession,
+          projectDir: trimmedDir,
+          data: res,
+        });
+        if (!res.dry_run) {
+          setWfStatusTarget({
+            session: targetSession,
+            projectDir: trimmedDir,
+          });
+        }
+        const jobNote = res.job_id
+          ? ` (job ${res.job_id}, ${res.job_status || "running"})`
+          : "";
+        setWfControlMsg(
+          `Workflow "${name}" ${res.dry_run ? "validated (dry-run)" : "started"}${jobNote} for session "${targetSession}" at stage "${res.stage || "initial"}".`
+        );
+      }
     },
     onError: (err) => {
       setWfControlMsg(`Run workflow failed: ${formatApiErrorMessage(err)}`);
@@ -324,17 +377,22 @@ export function WorkflowsSequencesAndTemplatesPanel() {
       return { res, targetSession, trimmedDir };
     },
     onSuccess: ({ res, targetSession, trimmedDir }) => {
-      setWfDirectSnapshot(null);
-      setWfStatusTarget({
-        session: targetSession,
-        projectDir: trimmedDir,
-      });
       void queryClient.invalidateQueries({
         queryKey: ["workflow-live-status", targetSession, trimmedDir],
       });
-      setWfControlMsg(
-        `Recorded manual transition for "${targetSession}" -> "${res.decision?.to || "next"}".`
-      );
+      if (
+        wfActiveInputRef.current.session === targetSession &&
+        wfActiveInputRef.current.projectDir === trimmedDir
+      ) {
+        setWfDirectSnapshot(null);
+        setWfStatusTarget({
+          session: targetSession,
+          projectDir: trimmedDir,
+        });
+        setWfControlMsg(
+          `Recorded manual transition for "${targetSession}" -> "${res.decision?.to || "next"}".`
+        );
+      }
     },
     onError: (err) => {
       setWfControlMsg(`Trigger gate failed: ${formatApiErrorMessage(err)}`);
@@ -354,15 +412,6 @@ export function WorkflowsSequencesAndTemplatesPanel() {
       }).then((res) => ({ res, targetSession, trimmedDir }));
     },
     onSuccess: ({ res, targetSession, trimmedDir }) => {
-      setWfDirectSnapshot({
-        session: targetSession,
-        projectDir: trimmedDir,
-        data: res,
-      });
-      setWfStatusTarget({
-        session: targetSession,
-        projectDir: trimmedDir,
-      });
       queryClient.setQueryData(
         ["workflow-live-status", targetSession, trimmedDir],
         res
@@ -370,19 +419,33 @@ export function WorkflowsSequencesAndTemplatesPanel() {
       void queryClient.invalidateQueries({
         queryKey: ["workflow-live-status", targetSession, trimmedDir],
       });
-      const jobNote = res.job_id
-        ? ` (job ${res.job_id}: ${res.job_status || "cancelled"})`
-        : "";
-      if (res.running || res.cancellation_requested) {
-        setWfControlMsg(
-          `Cancellation requested for active workflow job${jobNote}; polling session "${targetSession}" until unwind completes.`
-        );
-      } else {
-        setWfControlMsg(
-          res.stopped_job
-            ? `Cancelled active workflow job${jobNote} and paused session "${targetSession}".`
-            : `Paused workflow checkpoint${jobNote} for session "${targetSession}".`
-        );
+      if (
+        wfActiveInputRef.current.session === targetSession &&
+        wfActiveInputRef.current.projectDir === trimmedDir
+      ) {
+        setWfDirectSnapshot({
+          session: targetSession,
+          projectDir: trimmedDir,
+          data: res,
+        });
+        setWfStatusTarget({
+          session: targetSession,
+          projectDir: trimmedDir,
+        });
+        const jobNote = res.job_id
+          ? ` (job ${res.job_id}: ${res.job_status || "cancelled"})`
+          : "";
+        if (res.running || res.cancellation_requested) {
+          setWfControlMsg(
+            `Cancellation requested for active workflow job${jobNote}; polling session "${targetSession}" until unwind completes.`
+          );
+        } else {
+          setWfControlMsg(
+            res.stopped_job
+              ? `Cancelled active workflow job${jobNote} and paused session "${targetSession}".`
+              : `Paused workflow checkpoint${jobNote} for session "${targetSession}".`
+          );
+        }
       }
     },
     onError: (err) => {
@@ -612,7 +675,7 @@ export function WorkflowsSequencesAndTemplatesPanel() {
           </h3>
           <button
             type="button"
-            disabled={!wfSession.trim() || wfStatusQuery.isFetching}
+            disabled={!wfSession.trim() || wfStatusRefreshing || wfStatusQuery.isFetching}
             onClick={() => void refreshWorkflowStatus()}
             className="rounded border border-gray-300 dark:border-gray-700 px-2.5 py-1 text-xs font-medium text-gray-700 dark:text-gray-200 hover:bg-white dark:hover:bg-gray-800 disabled:opacity-50"
           >

@@ -1002,6 +1002,10 @@
             "description": "Opencode count",
             "type": "integer"
           },
+          "pi_count": {
+            "description": "Pi count",
+            "type": "integer"
+          },
           "ready_work": {
             "description": "Ready work",
             "type": "integer"
@@ -1033,6 +1037,7 @@
           "aider_count",
           "opencode_count",
           "omp_count",
+          "pi_count",
           "ollama_count",
           "agents_by_state",
           "agents_by_type",

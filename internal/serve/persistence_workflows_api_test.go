@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,10 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentsession"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/workflow"
@@ -1002,4 +1005,315 @@ label = "Done"
 	if err != nil || reloaded == nil || !reloaded.Completed || reloaded.Paused {
 		t.Fatalf("offline stop corrupted completed checkpoint: state=%+v err=%v", reloaded, err)
 	}
+}
+
+// TestWorkflowsPass3ReliabilityContracts covers Pass-3 fresh-eyes fixes:
+// 1. Pre-bind /stop cancels reserved workflow immediately without 5s stall or race.
+// 2. Request-scoped workflow timeout durably pauses the checkpoint.
+// 3. Stale prior completed checkpoint never clobbers GET /status after a different workflow cancels early.
+// 4. Explicit project_dir keeps Idempotency-Key replay working across PATCH /api/v1/config.
+// 5. Server shutdown wakes active SSE /events streams promptly.
+// 6. WS attention subscribe+replay buffers concurrent live events in strict monotonic order.
+func TestWorkflowsPass3ReliabilityContracts(t *testing.T) {
+	t.Run("stop_prebind_reservation_cancels_immediately_without_stall", func(t *testing.T) {
+		repoDir := t.TempDir()
+		srv := New(Config{Host: "127.0.0.1", Port: 0, ProjectDir: repoDir})
+		defer srv.Stop()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		active, err := srv.reserveWorkflowRun("prebind-wf", repoDir, "prebind_sess", cancel, true)
+		if err != nil {
+			t.Fatalf("reserveWorkflowRun: %v", err)
+		}
+		// Simulate admission unwinding immediately once its context is cancelled.
+		go func() {
+			<-ctx.Done()
+			srv.cancelWorkflowReservation(active)
+		}()
+
+		start := time.Now()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/prebind_sess/stop",
+			strings.NewReader(`{"reason":"stop before bind"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.Router().ServeHTTP(rec, req)
+		elapsed := time.Since(start)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("pre-bind stop = %d, want 200 (%s)", rec.Code, rec.Body.String())
+		}
+		if elapsed >= 2*time.Second {
+			t.Fatalf("pre-bind stop stalled for %v (want immediate cancel)", elapsed)
+		}
+		var env WorkflowControlEnvelopeResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+			t.Fatalf("decode stop response: %v", err)
+		}
+		if !env.StoppedJob || env.Running {
+			t.Fatalf("pre-bind stop envelope = %+v, want stopped_job=true running=false", env)
+		}
+		if !srv.bindWorkflowRunJob(active, "late-job") {
+			t.Fatal("bindWorkflowRunJob did not observe prior stopRequested")
+		}
+	})
+
+	t.Run("stale_prior_completed_checkpoint_never_clobbers_cancelled_different_workflow", func(t *testing.T) {
+		repoDir := t.TempDir()
+		srv := New(Config{Host: "127.0.0.1", Port: 0, ProjectDir: repoDir})
+		defer srv.Stop()
+
+		store := workflowStateStoreForProject(repoDir)
+		if err := store.Save(&workflow.WorkflowState{
+			SessionName:    "stale_sess",
+			WorkflowName:   "wf-alpha",
+			CurrentStage:   "done",
+			Completed:      true,
+			StageStartedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("save prior completed state: %v", err)
+		}
+
+		// Record a newer cancelled job for wf-beta that never wrote a checkpoint.
+		job := srv.jobStore.Create(JobTypeWorkflowRun, jobOwnership{projectDir: repoDir})
+		srv.jobStore.Update(job.ID, JobStatusCancelled, 0, map[string]interface{}{
+			"workflow":    "wf-beta",
+			"session":     "stale_sess",
+			"project_dir": repoDir,
+		}, "cancelled before checkpoint")
+		srv.recordAcceptedWorkflowJob(&activeWorkflowRun{projectDir: repoDir, session: "stale_sess"}, job.ID)
+
+		rec := httptest.NewRecorder()
+		srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/workflows/stale_sess/status", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /status = %d (%s)", rec.Code, rec.Body.String())
+		}
+		var env WorkflowControlEnvelopeResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+			t.Fatalf("decode status: %v", err)
+		}
+		if env.Workflow != "wf-beta" || env.Completed {
+			t.Fatalf("stale prior checkpoint clobbered status: workflow=%q completed=%v (want wf-beta, false)", env.Workflow, env.Completed)
+		}
+	})
+
+	t.Run("explicit_project_dir_preserves_idempotency_replay_across_config_patch", func(t *testing.T) {
+		defaultA := t.TempDir()
+		defaultB := t.TempDir()
+		explicitProj := t.TempDir()
+		writeWorkflowFixtureTOML(t, explicitProj, "idem-flow.toml", `name = "idem-flow"
+description = "explicit dir replay test"
+coordination = "ping-pong"
+
+[[agents]]
+profile = "builder"
+role = "worker"
+
+[flow]
+initial = "s1"
+stages = ["s1", "done"]
+
+[[flow.transitions]]
+from = "s1"
+to = "done"
+[flow.transitions.trigger]
+type = "manual"
+label = "complete"
+`)
+
+		srv := New(Config{Host: "127.0.0.1", Port: 0, ProjectDir: defaultA})
+		defer srv.Stop()
+
+		body := fmt.Sprintf(`{"session":"idem_sess","project_dir":%q,"dry_run":true}`, explicitProj)
+		req1 := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/idem-flow/run", strings.NewReader(body))
+		req1.Header.Set("Content-Type", "application/json")
+		req1.Header.Set("Idempotency-Key", "explicit-wf-key-1")
+		rec1 := httptest.NewRecorder()
+		srv.Router().ServeHTTP(rec1, req1)
+		if rec1.Code != http.StatusOK {
+			t.Fatalf("first explicit workflow dry-run = %d (%s)", rec1.Code, rec1.Body.String())
+		}
+
+		// Mutate server default project_dir via PATCH /api/v1/config.
+		patchReq := httptest.NewRequest(http.MethodPatch, "/api/v1/config",
+			strings.NewReader(fmt.Sprintf(`{"project_dir":%q}`, defaultB)))
+		patchReq.Header.Set("Content-Type", "application/json")
+		patchRec := httptest.NewRecorder()
+		srv.Router().ServeHTTP(patchRec, patchReq)
+		if patchRec.Code != http.StatusOK {
+			t.Fatalf("PATCH /api/v1/config = %d (%s)", patchRec.Code, patchRec.Body.String())
+		}
+
+		// Retry with identical Idempotency-Key and explicit project_dir must replay cleanly.
+		req2 := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/idem-flow/run", strings.NewReader(body))
+		req2.Header.Set("Content-Type", "application/json")
+		req2.Header.Set("Idempotency-Key", "explicit-wf-key-1")
+		rec2 := httptest.NewRecorder()
+		srv.Router().ServeHTTP(rec2, req2)
+		if rec2.Code != http.StatusOK || rec2.Header().Get("X-Idempotent-Replay") != "true" {
+			t.Fatalf("retry explicit workflow after PATCH /config did not replay: status=%d replay=%q body=%s",
+				rec2.Code, rec2.Header().Get("X-Idempotent-Replay"), rec2.Body.String())
+		}
+	})
+
+	t.Run("sse_stream_exits_promptly_on_server_shutdown", func(t *testing.T) {
+		srv := New(Config{Host: "127.0.0.1", Port: 0})
+		defer srv.Stop()
+
+		done := make(chan struct{})
+		req := httptest.NewRequest(http.MethodGet, "/events", nil)
+		rec := httptest.NewRecorder()
+		go func() {
+			defer close(done)
+			srv.handleEventStream(rec, req)
+		}()
+
+		// Wait until client registers on sseClients.
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			srv.sseClientsMu.RLock()
+			n := len(srv.sseClients)
+			srv.sseClientsMu.RUnlock()
+			if n > 0 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("SSE client never registered")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+
+		srv.signalShutdown()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("handleEventStream did not exit promptly after server shutdown signal")
+		}
+	})
+
+	t.Run("ws_attention_subscribe_buffers_live_events_during_replay_in_order", func(t *testing.T) {
+		feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{
+			JournalSize: 128,
+		})
+		for i := 1; i <= 5; i++ {
+			feed.Append(robot.AttentionEvent{
+				Session:       "ws_order_sess",
+				Category:      robot.EventCategoryAgent,
+				Type:          robot.EventTypeAgentStateChange,
+				Actionability: robot.ActionabilityInteresting,
+				Summary:       fmt.Sprintf("hist-%d", i),
+			})
+		}
+
+		srv := New(Config{Host: "127.0.0.1", Port: 0})
+		srv.attentionFeed = feed
+		defer srv.Stop()
+
+		client := &WSClient{
+			id:     "order-test-client",
+			hub:    srv.wsHub,
+			send:   make(chan []byte, 256),
+			topics: make(map[string]struct{}),
+		}
+
+		var pubWG sync.WaitGroup
+		pubWG.Add(1)
+		go func() {
+			defer pubWG.Done()
+			for i := 6; i <= 25; i++ {
+				feed.Append(robot.AttentionEvent{
+					Session:       "ws_order_sess",
+					Category:      robot.EventCategoryAgent,
+					Type:          robot.EventTypeAgentStateChange,
+					Actionability: robot.ActionabilityInteresting,
+					Summary:       fmt.Sprintf("live-%d", i),
+				})
+			}
+		}()
+
+		resp := client.handleAttentionSubscribeWithFeed(feed, WSMessage{
+			Data: map[string]interface{}{"since_cursor": int64(0)},
+		}, []string{"attention:ws_order_sess"})
+		pubWG.Wait()
+		client.cancelAttentionSubscription()
+
+		if subscribed, _ := resp["subscribed"].(bool); !subscribed {
+			t.Fatalf("handleAttentionSubscribe failed: %+v", resp)
+		}
+		var prevSeq int64
+		count := 0
+		for {
+			select {
+			case raw := <-client.send:
+				var ev WSEvent
+				if err := json.Unmarshal(raw, &ev); err != nil {
+					t.Fatalf("unmarshal ws event: %v", err)
+				}
+				if ev.Type != WSMsgEvent {
+					continue
+				}
+				if ev.Seq <= prevSeq {
+					t.Fatalf("out-of-order or duplicate WS attention cursor: got %d after %d", ev.Seq, prevSeq)
+				}
+				if prevSeq > 0 && ev.Seq != prevSeq+1 {
+					t.Fatalf("silent cursor gap in WS attention delivery: jumped from %d to %d", prevSeq, ev.Seq)
+				}
+				prevSeq = ev.Seq
+				count++
+			default:
+				goto doneDrain
+			}
+		}
+	doneDrain:
+		if count != 25 {
+			t.Fatalf("expected all 25 contiguous attention events without silent gap, got %d (last seq=%d)", count, prevSeq)
+		}
+	})
+}
+
+func TestWorkflowsRESTRequestTimeoutPausesCheckpoint(t *testing.T) {
+	fx := setupWorkflowProductionTmuxFixture(t, "wf_timeout_sess")
+	repoDir := t.TempDir()
+	writeWorkflowFixtureTOML(t, repoDir, "timeout-flow.toml", `name = "timeout-flow"
+description = "pauses checkpoint on request timeout"
+coordination = "ping-pong"
+
+[[agents]]
+profile = "builder"
+role = "build"
+
+[flow]
+initial = "wait_forever"
+stages = ["wait_forever", "done"]
+
+[[flow.transitions]]
+from = "wait_forever"
+to = "done"
+[flow.transitions.trigger]
+type = "manual"
+label = "never fired"
+`)
+
+	srv := New(Config{Host: "127.0.0.1", Port: 0, ProjectDir: repoDir})
+	defer srv.Stop()
+	doReq := func(method, target, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, target, strings.NewReader(body))
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		srv.Router().ServeHTTP(rec, req)
+		return rec
+	}
+
+	runRec := doReq(http.MethodPost, "/api/v1/workflows/timeout-flow/run",
+		`{"session":"wf_timeout_sess","interval":"15ms","timeout":"120ms"}`)
+	if runRec.Code != http.StatusAccepted {
+		t.Fatalf("POST /run = %d (%s)", runRec.Code, runRec.Body.String())
+	}
+	env := waitWorkflowStatusCondition(t, doReq, "wf_timeout_sess", repoDir, 8*time.Second, func(e WorkflowControlEnvelopeResponse) bool {
+		return !e.Running && e.Paused
+	})
+	if env.State == nil || !strings.Contains(env.State.PauseReason, "timeout") {
+		t.Fatalf("timeout pause reason missing: state=%+v", env.State)
+	}
+	_ = fx
 }

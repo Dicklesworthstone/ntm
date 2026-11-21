@@ -44,6 +44,45 @@
       "schema_source": "built_in"
     },
     {
+      "name": "analytics",
+      "flag": "--robot-analytics",
+      "category": "state",
+      "summary": "Get session, harness, and error analytics.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:analytics:v1",
+      "schema_type": "analytics",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "audit",
+      "flag": "--robot-audit",
+      "category": "state",
+      "summary": "Query and verify tamper-evident audit logs.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:audit:v1",
+      "schema_type": "audit",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "backpressure",
+      "flag": "--robot-backpressure",
+      "category": "state",
+      "summary": "Evaluate live subsystem backpressure.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:backpressure:v1",
+      "schema_type": "backpressure",
+      "schema_source": "built_in"
+    },
+    {
       "name": "context",
       "flag": "--robot-context",
       "category": "state",
@@ -87,7 +126,7 @@
       "name": "dialogs",
       "flag": "--robot-dialogs",
       "category": "state",
-      "summary": "Classify in-pane interactive dialogs per pane (trust_prompt, rate_limit_options, usage_overlay, paste_limbo, destructive_confirm, unknown_dialog) with the extracted option list.",
+      "summary": "Classify interactive prompts and dialogs in panes.",
       "output_formats": [
         "json"
       ],
@@ -110,6 +149,19 @@
       "schema_source": "built_in"
     },
     {
+      "name": "doctor",
+      "flag": "--robot-doctor",
+      "category": "state",
+      "summary": "Run ecosystem and invariant health checks.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:doctor:v1",
+      "schema_type": "doctor",
+      "schema_source": "built_in"
+    },
+    {
       "name": "errors",
       "flag": "--robot-errors",
       "category": "state",
@@ -123,6 +175,19 @@
       "schema_source": "built_in"
     },
     {
+      "name": "extract",
+      "flag": "--robot-extract",
+      "category": "state",
+      "summary": "Extract fenced code blocks from pane output.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:extract:v1",
+      "schema_type": "extract",
+      "schema_source": "built_in"
+    },
+    {
       "name": "files",
       "flag": "--robot-files",
       "category": "state",
@@ -133,6 +198,32 @@
       "default_output_format": "json",
       "schema_id": "ntm:robot:files:v1",
       "schema_type": "files",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "grep",
+      "flag": "--robot-grep",
+      "category": "state",
+      "summary": "Search pane scrollback with regex.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:grep:v1",
+      "schema_type": "grep",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "handoff",
+      "flag": "--robot-handoff",
+      "category": "state",
+      "summary": "Inspect or create session continuity handoffs.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:handoff:v1",
+      "schema_type": "handoff",
       "schema_source": "built_in"
     },
     {
@@ -305,6 +396,19 @@
       "schema_source": "built_in"
     },
     {
+      "name": "mapping",
+      "flag": "--robot-mapping",
+      "category": "state",
+      "summary": "Resolve Agent Mail pane mappings and badges.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:mapping:v1",
+      "schema_type": "mapping",
+      "schema_source": "built_in"
+    },
+    {
       "name": "markdown",
       "flag": "--robot-markdown",
       "category": "state",
@@ -346,7 +450,7 @@
       "name": "pane-address",
       "flag": "--robot-pane-address",
       "category": "state",
-      "summary": "Per-pane addressing cards: the canonical selector send/tail accept, the stable tmux %pane_id (immune to base-index and renumbering), physical topology, and a ready-to-paste tmux target.",
+      "summary": "Resolve canonical and stable pane selectors.",
       "output_formats": [
         "json"
       ],
@@ -372,13 +476,26 @@
       "name": "productivity",
       "flag": "--robot-productivity",
       "category": "state",
-      "summary": "Return attributable commit, Beads, and live build/test evidence for whether a swarm should continue or has converged.",
+      "summary": "Check swarm commit/Beads/test convergence.",
       "output_formats": [
         "json"
       ],
       "default_output_format": "json",
       "schema_id": "ntm:robot:productivity:v1",
       "schema_type": "productivity",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "saved-sessions",
+      "flag": "--robot-saved-sessions",
+      "category": "state",
+      "summary": "Manage saved session snapshots.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:saved-sessions:v1",
+      "schema_type": "saved_sessions",
       "schema_source": "built_in"
     },
     {
@@ -444,6 +561,19 @@
       "default_output_format": "text",
       "schema_source": "none",
       "schema_unavailable_reason": "Terse output is intentionally a compact single-line text protocol"
+    },
+    {
+      "name": "timeline",
+      "flag": "--robot-timeline",
+      "category": "state",
+      "summary": "Inspect persisted session timelines and stats.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:timeline:v1",
+      "schema_type": "timeline",
+      "schema_source": "built_in"
     },
     {
       "name": "watch-bead",
@@ -563,6 +693,19 @@
       "schema_source": "built_in"
     },
     {
+      "name": "ensemble-synthesize",
+      "flag": "--robot-ensemble-synthesize",
+      "category": "ensemble",
+      "summary": "Synthesize completed reasoning mode outputs for an ensemble session with disagreement audit and redundancy analysis.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:ensemble-synthesize:v1",
+      "schema_type": "ensemble_synthesize",
+      "schema_source": "built_in"
+    },
+    {
       "name": "ensemble_spawn",
       "flag": "--robot-ensemble-spawn",
       "category": "ensemble",
@@ -586,6 +729,19 @@
       "default_output_format": "json",
       "schema_id": "ntm:robot:ack:v1",
       "schema_type": "ack",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "action-status",
+      "flag": "--robot-action-status",
+      "category": "control",
+      "summary": "Inspect durable robot operation or wait state.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:action-status:v1",
+      "schema_type": "action_status",
       "schema_source": "built_in"
     },
     {
@@ -628,6 +784,19 @@
       "schema_source": "built_in"
     },
     {
+      "name": "cancel-request",
+      "flag": "--robot-cancel-request",
+      "category": "control",
+      "summary": "Cancel a pre-dispatch durable operation claim or an active --robot-wait handle by request ID.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:cancel-request:v1",
+      "schema_type": "cancel_request",
+      "schema_source": "built_in"
+    },
+    {
       "name": "context-inject",
       "flag": "--robot-context-inject",
       "category": "control",
@@ -637,6 +806,19 @@
       ],
       "default_output_format": "json",
       "schema_source": "external"
+    },
+    {
+      "name": "coordinator",
+      "flag": "--robot-coordinator",
+      "category": "control",
+      "summary": "Inspect session coordinator and digests.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:coordinator:v1",
+      "schema_type": "coordinator",
+      "schema_source": "built_in"
     },
     {
       "name": "exit-cli",
@@ -704,6 +886,19 @@
       "schema_source": "built_in"
     },
     {
+      "name": "rebalance",
+      "flag": "--robot-rebalance",
+      "category": "control",
+      "summary": "Rebalance session workload and geometry.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:rebalance:v1",
+      "schema_type": "rebalance",
+      "schema_source": "built_in"
+    },
+    {
       "name": "restart-pane",
       "flag": "--robot-restart-pane",
       "category": "control",
@@ -714,6 +909,19 @@
       "default_output_format": "json",
       "schema_id": "ntm:robot:restart-pane:v1",
       "schema_type": "restart_pane",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "review-queue",
+      "flag": "--robot-review-queue",
+      "category": "control",
+      "summary": "Generate or dispatch peer review queue.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:review-queue:v1",
+      "schema_type": "review_queue",
       "schema_source": "built_in"
     },
     {
@@ -746,7 +954,7 @@
       "name": "send-receipt",
       "flag": "--robot-send-receipt",
       "category": "control",
-      "summary": "Query the durable receipt of an idempotent --robot-send or --robot-interrupt by operation ID: operation kind, payload digest, byte count, per-target admission states, and the recorded outcome (outcome for sends, interrupt_outcome for interrupts).",
+      "summary": "Query durable idempotent send/interrupt receipt.",
       "output_formats": [
         "json"
       ],
@@ -795,6 +1003,32 @@
       "schema_source": "built_in"
     },
     {
+      "name": "wait-request",
+      "flag": "--robot-wait-request",
+      "category": "control",
+      "summary": "Wait for a durable robot operation to finish.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:wait-request:v1",
+      "schema_type": "wait_request",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "adopt",
+      "flag": "--robot-adopt",
+      "category": "spawn",
+      "summary": "Adopt an external tmux session.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:adopt:v1",
+      "schema_type": "adopt",
+      "schema_source": "built_in"
+    },
+    {
       "name": "controller-spawn",
       "flag": "--robot-controller-spawn",
       "category": "spawn",
@@ -804,6 +1038,19 @@
       ],
       "default_output_format": "json",
       "schema_source": "external"
+    },
+    {
+      "name": "personas",
+      "flag": "--robot-personas",
+      "category": "spawn",
+      "summary": "List agent personas and profile sets.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:personas:v1",
+      "schema_type": "personas",
+      "schema_source": "built_in"
     },
     {
       "name": "recipes",
@@ -816,6 +1063,32 @@
       "default_output_format": "json",
       "schema_id": "ntm:robot:recipes:v1",
       "schema_type": "recipes",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "scale",
+      "flag": "--robot-scale",
+      "category": "spawn",
+      "summary": "Scale session agent counts per harness.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:scale:v1",
+      "schema_type": "scale",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "session-templates",
+      "flag": "--robot-session-templates",
+      "category": "spawn",
+      "summary": "List or inspect session templates.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:session-templates:v1",
+      "schema_type": "session_templates",
       "schema_source": "built_in"
     },
     {
@@ -1173,6 +1446,19 @@
       "schema_source": "external"
     },
     {
+      "name": "workflows",
+      "flag": "--robot-workflows",
+      "category": "pipeline",
+      "summary": "List or inspect workflow templates.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:workflows:v1",
+      "schema_type": "workflows",
+      "schema_source": "built_in"
+    },
+    {
       "name": "account-status",
       "flag": "--robot-account-status",
       "category": "utility",
@@ -1241,7 +1527,7 @@
       "name": "causality",
       "flag": "--robot-causality",
       "category": "utility",
-      "summary": "Get unified causality timeline across audit, Agent Mail, and pipeline/session state.",
+      "summary": "Get unified causality timeline for a session.",
       "output_formats": [
         "json"
       ],
@@ -1362,6 +1648,19 @@
       "default_output_format": "json",
       "schema_id": "ntm:robot:history:v1",
       "schema_type": "history",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "hooks",
+      "flag": "--robot-hooks",
+      "category": "utility",
+      "summary": "Inspect or run repository git hooks.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:hooks:v1",
+      "schema_type": "hooks",
       "schema_source": "built_in"
     },
     {
@@ -1521,6 +1820,19 @@
       "schema_source": "built_in"
     },
     {
+      "name": "models",
+      "flag": "--robot-models",
+      "category": "utility",
+      "summary": "Inspect or recommend local Ollama models.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:models:v1",
+      "schema_type": "models",
+      "schema_source": "built_in"
+    },
+    {
       "name": "ms-search",
       "flag": "--robot-ms-search",
       "category": "utility",
@@ -1560,6 +1872,19 @@
       "schema_source": "built_in"
     },
     {
+      "name": "plugins",
+      "flag": "--robot-plugins",
+      "category": "utility",
+      "summary": "List installed agent and command plugins.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:plugins:v1",
+      "schema_type": "plugins",
+      "schema_source": "built_in"
+    },
+    {
       "name": "policy-decisions",
       "flag": "--robot-policy-decisions",
       "category": "utility",
@@ -1570,6 +1895,19 @@
       "default_output_format": "json",
       "schema_id": "ntm:robot:policy-decisions:v1",
       "schema_type": "policy_decisions",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "preflight",
+      "flag": "--robot-preflight",
+      "category": "utility",
+      "summary": "Lint and validate a prompt for secrets, destructive commands, PII, and oversize limits before sending.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:preflight:v1",
+      "schema_type": "preflight",
       "schema_source": "built_in"
     },
     {
@@ -1670,6 +2008,19 @@
       "default_output_format": "json",
       "schema_id": "ntm:robot:rch-workers:v1",
       "schema_type": "rch_workers",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "redact",
+      "flag": "--robot-redact",
+      "category": "utility",
+      "summary": "Preview secret and PII redaction.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:redact:v1",
+      "schema_type": "redact",
       "schema_source": "built_in"
     },
     {
@@ -1816,6 +2167,19 @@
       "schema_source": "built_in"
     },
     {
+      "name": "swarm-lab",
+      "flag": "--robot-swarm-lab",
+      "category": "utility",
+      "summary": "Run synthetic swarm scale scenarios.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:swarm-lab:v1",
+      "schema_type": "swarm_lab",
+      "schema_source": "built_in"
+    },
+    {
       "name": "switch-account",
       "flag": "--robot-switch-account",
       "category": "utility",
@@ -1858,13 +2222,26 @@
       "name": "ubs-scan",
       "flag": "--robot-ubs-scan",
       "category": "utility",
-      "summary": "Run UBS static bug analysis across a directory, single file, git-staged files, or working-tree diff.",
+      "summary": "Run UBS static bug analysis.",
       "output_formats": [
         "json"
       ],
       "default_output_format": "json",
       "schema_id": "ntm:robot:ubs-scan:v1",
       "schema_type": "ubs_scan",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "validate",
+      "flag": "--robot-validate",
+      "category": "utility",
+      "summary": "Validate NTM config, recipes, personas, and policy.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:validate:v1",
+      "schema_type": "validate",
       "schema_source": "built_in"
     },
     {
@@ -1878,6 +2255,19 @@
       "default_output_format": "json",
       "schema_id": "ntm:robot:version:v1",
       "schema_type": "version",
+      "schema_source": "built_in"
+    },
+    {
+      "name": "webhook-outbox",
+      "flag": "--robot-webhook-outbox",
+      "category": "utility",
+      "summary": "Manage durable webhook outbox receipts.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:webhook-outbox:v1",
+      "schema_type": "webhook_outbox",
       "schema_source": "built_in"
     },
     {

@@ -23455,6 +23455,9 @@
           "omp": {
             "type": "integer"
           },
+          "pi": {
+            "type": "integer"
+          },
           "user": {
             "type": "integer"
           },
@@ -23473,6 +23476,7 @@
           "oc",
           "ollama",
           "omp",
+          "pi",
           "user",
           "windsurf"
         ]
@@ -49872,6 +49876,10 @@
             "type": "integer",
             "description": "Opencode count"
           },
+          "pi_count": {
+            "type": "integer",
+            "description": "Pi count"
+          },
           "ready_work": {
             "type": "integer",
             "description": "Ready work"
@@ -49903,6 +49911,7 @@
           "aider_count",
           "opencode_count",
           "omp_count",
+          "pi_count",
           "ollama_count",
           "agents_by_state",
           "agents_by_type",

@@ -28,6 +28,7 @@ var adoptSummaryOrder = []agent.AgentType{
 	agent.AgentTypeAider,
 	agent.AgentTypeOpencode,
 	agent.AgentTypeOmp,
+	agent.AgentTypePi,
 	agent.AgentTypeOllama,
 	agent.AgentTypeUser,
 }
@@ -43,7 +44,7 @@ type AdoptedPaneInfo struct {
 	NTMIndex    int    `json:"ntm_index"`
 }
 
-// AdoptedAgentCounts tracks adopted pane counts across all 12 supported pane types.
+// AdoptedAgentCounts tracks adopted pane counts across all 13 supported pane types.
 type AdoptedAgentCounts struct {
 	CC       int `json:"cc"`
 	Cod      int `json:"cod"`
@@ -55,13 +56,14 @@ type AdoptedAgentCounts struct {
 	Aider    int `json:"aider"`
 	Opencode int `json:"oc"`
 	Omp      int `json:"omp"`
+	Pi       int `json:"pi"`
 	Ollama   int `json:"ollama"`
 	User     int `json:"user"`
 }
 
 // Total returns the total number of adopted panes across all types.
 func (a AdoptedAgentCounts) Total() int {
-	return a.CC + a.Cod + a.Gmi + a.Agy + a.Grok + a.Cursor + a.Windsurf + a.Aider + a.Opencode + a.Omp + a.Ollama + a.User
+	return a.CC + a.Cod + a.Gmi + a.Agy + a.Grok + a.Cursor + a.Windsurf + a.Aider + a.Opencode + a.Omp + a.Pi + a.Ollama + a.User
 }
 
 // Summary formats non-zero adopted pane counts in canonical harness order.
@@ -102,6 +104,8 @@ func (a *AdoptedAgentCounts) Increment(agentType agent.AgentType) {
 		a.Opencode++
 	case agent.AgentTypeOmp:
 		a.Omp++
+	case agent.AgentTypePi:
+		a.Pi++
 	case agent.AgentTypeOllama:
 		a.Ollama++
 	case agent.AgentTypeUser:
@@ -132,6 +136,8 @@ func (a AdoptedAgentCounts) CountFor(agentType agent.AgentType) int {
 		return a.Opencode
 	case agent.AgentTypeOmp:
 		return a.Omp
+	case agent.AgentTypePi:
+		return a.Pi
 	case agent.AgentTypeOllama:
 		return a.Ollama
 	case agent.AgentTypeUser:
@@ -180,7 +186,7 @@ func adoptCapabilityCommand() RobotCommandInfo {
 		Flag:        "--robot-adopt",
 		Category:    "spawn",
 		Summary:     "Adopt an external tmux session.",
-		Description: "Adopt an external tmux session into NTM management across all 11 agent harnesses plus user panes with 2D window.pane or --adopt-by-window addressing.",
+		Description: "Adopt an external tmux session into NTM management across all 12 agent harnesses plus user panes with 2D window.pane or --adopt-by-window addressing.",
 		Parameters: []RobotParameter{
 			{Name: "session", Flag: "--robot-adopt", Type: "string", Required: true, Description: "External tmux session name to adopt"},
 			{Name: "adopt-cc", Flag: "--adopt-cc", Type: "string", Required: false, Description: "Pane specs (bare, range, or window.pane) for Claude (cc) agents"},
@@ -193,6 +199,7 @@ func adoptCapabilityCommand() RobotCommandInfo {
 			{Name: "adopt-aider", Flag: "--adopt-aider", Type: "string", Required: false, Description: "Pane specs for Aider agents"},
 			{Name: "adopt-oc", Flag: "--adopt-oc", Type: "string", Required: false, Description: "Pane specs for OpenCode (oc) agents"},
 			{Name: "adopt-omp", Flag: "--adopt-omp", Type: "string", Required: false, Description: "Pane specs for Oh My Pi (omp) agents"},
+			{Name: "adopt-pi", Flag: "--adopt-pi", Type: "string", Required: false, Description: "Pane specs for Pi (pi) agents"},
 			{Name: "adopt-ollama", Flag: "--adopt-ollama", Type: "string", Required: false, Description: "Pane specs for Ollama agents"},
 			{Name: "adopt-user", Flag: "--adopt-user", Type: "string", Required: false, Description: "Pane specs for user shell panes"},
 			{Name: "adopt-by-window", Flag: "--adopt-by-window", Type: "string", Required: false, Description: "Map every window's sole pane to one harness type (e.g. cc, cod, agy)"},

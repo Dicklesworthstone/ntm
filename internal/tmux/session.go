@@ -63,19 +63,20 @@ const FieldSeparator = "_NTM_SEP_"
 
 // Pane represents a tmux pane
 type Pane struct {
-	ID          string
-	Index       int
-	WindowIndex int // The window index (0-based)
-	NTMIndex    int // The NTM-specific index parsed from the title (e.g., 1 for cc_1)
-	Title       string
-	Type        AgentType
-	Variant     string   // Model alias or persona name (from pane title)
-	Tags        []string // User-defined tags (from pane title, e.g., [frontend,api])
-	Command     string
-	Width       int
-	Height      int
-	Active      bool
-	PID         int // Shell PID
+	ID           string
+	Index        int
+	WindowIndex  int // The window index (0-based)
+	NTMIndex     int // The NTM-specific index parsed from the title (e.g., 1 for cc_1)
+	Title        string
+	Type         AgentType
+	RecordedType AgentType // Explicit @ntm_agent_type option when set on the pane; empty if detected from title/command
+	Variant      string    // Model alias or persona name (from pane title)
+	Tags         []string  // User-defined tags (from pane title, e.g., [frontend,api])
+	Command      string
+	Width        int
+	Height       int
+	Active       bool
+	PID          int // Shell PID
 	// Dead is tmux's #{pane_dead}: the pane's process has exited and the pane
 	// is retained only because remain-on-exit kept its scrollback. A dead pane
 	// has no current path, no foreground process and cannot accept input, so
@@ -4566,6 +4567,7 @@ func parsePaneFromParts(parts1, parts2 []string) (*Pane, error) {
 	// still consulted above for the NTM index, variant and tags.
 	if recorded := ParsePaneAgentTypeOption(recordedType); recorded != AgentUnknown {
 		pane.Type = recorded
+		pane.RecordedType = recorded
 		// A deliberate ntm adoption outranks a service tag: whoever ran
 		// `ntm adopt` on this pane wants it treated as an agent (ntm#305).
 		pane.Service, pane.ServiceManager = "", ""
@@ -4640,12 +4642,14 @@ func (c *Client) SetPaneAgentTypeContext(ctx context.Context, paneID string, age
 
 // SetPaneAgentTypeIfCurrentContext records the type only on the preflighted
 // replacement shell, without relabeling a concurrently respawned or claimed pane.
+// If the pane already carries a non-empty @ntm_agent_type for a different agent,
+// the mutation fails closed with ErrPaneIdentityChanged.
 func (c *Client) SetPaneAgentTypeIfCurrentContext(ctx context.Context, paneID string, expectedPID int, agentType AgentType) error {
 	recorded := ParsePaneAgentTypeOption(string(agentType))
 	if recorded == AgentUnknown {
 		return errors.New("guarded pane identity requires a known agent type")
 	}
-	return c.runPaneMutationIfCurrentContext(ctx, paneID, expectedPID, paneMutationShell,
+	return c.runPaneMutationIfCurrentContext(withClaimPaneAgentType(ctx, recorded), paneID, expectedPID, paneMutationShell,
 		"set-option", "-p", "-t", ExactTarget(paneID), PaneAgentTypeOption, string(recorded))
 }
 

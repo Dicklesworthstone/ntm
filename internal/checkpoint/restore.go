@@ -615,8 +615,12 @@ func (r *Restorer) restoreAgents(cp *Checkpoint, workDir string) error {
 			return fmt.Errorf("restored session has %d recorded panes, expected %d", len(r.restoredPaneIDs), len(sortedStates))
 		}
 		paneID := r.restoredPaneIDs[i]
-		if _, ok := livePanes[paneID]; !ok {
+		livePane, ok := livePanes[paneID]
+		if !ok {
 			return fmt.Errorf("restored pane %s disappeared before agent launch", paneID)
+		}
+		if livePane.RotationToken != "" || livePane.IsServicePane() {
+			return fmt.Errorf("restored pane %s is claimed before agent launch", paneID)
 		}
 
 		agentCmd := restorableAgentCommand(paneState)
@@ -633,8 +637,15 @@ func (r *Restorer) restoreAgents(cp *Checkpoint, workDir string) error {
 			if err != nil {
 				return fmt.Errorf("preparing restored pane %s launch: %w", paneID, err)
 			}
-			if err := tmux.SetPaneLaunchSpecContext(ctx, paneID, *paneState.LaunchSpec); err != nil {
-				return fmt.Errorf("recording restored pane %s launch specification: %w", paneID, err)
+			var specErr error
+			if livePane.PID > 0 {
+				guardedCtx := tmux.WithExpectedPaneAgentType(ctx, paneState.LaunchSpec.AgentType)
+				specErr = tmux.DefaultClient.SetPaneLaunchSpecIfCurrentContext(guardedCtx, paneID, livePane.PID, *paneState.LaunchSpec)
+			} else {
+				specErr = tmux.SetPaneLaunchSpecContext(ctx, paneID, *paneState.LaunchSpec)
+			}
+			if specErr != nil {
+				return fmt.Errorf("recording restored pane %s launch specification: %w", paneID, specErr)
 			}
 		}
 
@@ -988,11 +999,21 @@ func (r *Restorer) injectContext(cp *Checkpoint, maxLines int) (int, error) {
 				return "", fmt.Errorf("no restored target for checkpoint pane %d", paneState.Index)
 			}
 			if targetPane.Type.Canonical() != agent.AgentType(paneState.AgentType).Canonical() ||
-				targetPane.Dead || targetPane.Service != "" || strings.TrimSpace(targetPane.Command) == "" ||
+				targetPane.Dead || targetPane.RotationToken != "" || targetPane.IsServicePane() ||
+				strings.TrimSpace(targetPane.Command) == "" ||
 				tmux.PaneCommandIsStarting(targetPane.Command) || targetPane.IdleShell() {
 				return "", fmt.Errorf("restored pane %s is no longer a running %s agent; context was not sent", targetPane.ID, paneState.AgentType)
 			}
-			if err := tmux.DefaultClient.SendBufferContext(ctx, targetPane.ID, contextMsg, true); err != nil {
+			sendCtx := ctx
+			if targetPane.PID > 0 {
+				var guardErr error
+				sendCtx = tmux.WithExpectedPaneAgentType(ctx, targetPane.Type)
+				sendCtx, guardErr = tmux.WithPaneMutationGuard(sendCtx, targetPane.ID, targetPane.PID)
+				if guardErr != nil {
+					return "", fmt.Errorf("guarding context injection for pane %s: %w", targetPane.ID, guardErr)
+				}
+			}
+			if err := tmux.DefaultClient.SendBufferContext(sendCtx, targetPane.ID, contextMsg, true); err != nil {
 				return "", fmt.Errorf("sending context to pane %s: %w", targetPane.ID, err)
 			}
 			injected++

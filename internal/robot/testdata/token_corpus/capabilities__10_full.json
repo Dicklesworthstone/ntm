@@ -157,6 +157,211 @@
       ]
     },
     {
+      "name": "analytics",
+      "flag": "--robot-analytics",
+      "category": "state",
+      "summary": "Get session, harness, and error analytics.",
+      "description": "Get aggregated session, harness, prompt, token, and error analytics.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:analytics:v1",
+      "schema_type": "analytics",
+      "schema_source": "built_in",
+      "sections": [
+        "summary",
+        "sessions",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "analytics-days",
+          "flag": "--analytics-days",
+          "type": "int",
+          "required": false,
+          "default": "30",
+          "description": "Number of days of event history for --robot-analytics"
+        },
+        {
+          "name": "analytics-since",
+          "flag": "--analytics-since",
+          "type": "string",
+          "required": false,
+          "description": "Cutoff date (YYYY-MM-DD or RFC3339) for --robot-analytics"
+        },
+        {
+          "name": "analytics-sessions",
+          "flag": "--analytics-sessions",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Include per-session breakdown in --robot-analytics"
+        }
+      ],
+      "examples": [
+        "ntm --robot-analytics",
+        "ntm --robot-analytics --analytics-days=7 --analytics-sessions",
+        "ntm --robot-analytics --analytics-since=2026-01-01"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-analytics"
+        }
+      ]
+    },
+    {
+      "name": "audit",
+      "flag": "--robot-audit",
+      "category": "state",
+      "summary": "Query and verify tamper-evident audit logs.",
+      "description": "Query, search, list, verify, or inspect projection source health for tamper-evident audit logs.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:audit:v1",
+      "schema_type": "audit",
+      "schema_source": "built_in",
+      "sections": [
+        "events",
+        "source_health",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--robot-audit",
+          "type": "string",
+          "required": false,
+          "default": "all",
+          "description": "Session name to inspect or verify, or 'all' / omit for global list/search"
+        },
+        {
+          "name": "audit-action",
+          "flag": "--audit-action",
+          "type": "string",
+          "required": false,
+          "description": "Audit action: list, show, search, verify, sources (auto-inferred when omitted)"
+        },
+        {
+          "name": "audit-search",
+          "flag": "--audit-search",
+          "type": "string",
+          "required": false,
+          "description": "Regex pattern to search across audit logs"
+        },
+        {
+          "name": "audit-verify",
+          "flag": "--audit-verify",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Verify tamper-evident hash chain integrity"
+        },
+        {
+          "name": "audit-sources",
+          "flag": "--audit-sources",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Query runtime projection data-source health from state store"
+        },
+        {
+          "name": "audit-type",
+          "flag": "--audit-type",
+          "type": "string",
+          "required": false,
+          "description": "Filter by event type (comma-separated: command,spawn,send,response,error,state_change)"
+        },
+        {
+          "name": "audit-actor",
+          "flag": "--audit-actor",
+          "type": "string",
+          "required": false,
+          "description": "Filter by actor (comma-separated: user,agent,system)"
+        },
+        {
+          "name": "audit-since",
+          "flag": "--audit-since",
+          "type": "string",
+          "required": false,
+          "description": "Filter entries since time (RFC3339, YYYY-MM-DD, or duration like 1h, 7d)"
+        },
+        {
+          "name": "audit-days",
+          "flag": "--audit-days",
+          "type": "int",
+          "required": false,
+          "default": "30",
+          "description": "Number of days to search when --audit-since is omitted"
+        },
+        {
+          "name": "audit-limit",
+          "flag": "--audit-limit",
+          "type": "int",
+          "required": false,
+          "default": "50",
+          "description": "Maximum entries or log files per page"
+        },
+        {
+          "name": "audit-offset",
+          "flag": "--audit-offset",
+          "type": "int",
+          "required": false,
+          "default": "0",
+          "description": "Pagination offset"
+        }
+      ],
+      "examples": [
+        "ntm --robot-audit",
+        "ntm --robot-audit=myproject --audit-limit=25",
+        "ntm --robot-audit --audit-search=spawn --audit-days=7",
+        "ntm --robot-audit=myproject --audit-verify",
+        "ntm --robot-audit --audit-sources"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-audit"
+        }
+      ]
+    },
+    {
+      "name": "backpressure",
+      "flag": "--robot-backpressure",
+      "category": "state",
+      "summary": "Evaluate live subsystem backpressure.",
+      "description": "Evaluate live subsystem backpressure, dashboard summary, operator heatmap, and load-shedding contract.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:backpressure:v1",
+      "schema_type": "backpressure",
+      "schema_source": "built_in",
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--session",
+          "type": "string",
+          "required": false,
+          "description": "Filter live backpressure inspection to a specific tmux session"
+        }
+      ],
+      "examples": [
+        "ntm --robot-backpressure",
+        "ntm --robot-backpressure --session=myproject"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-backpressure"
+        }
+      ]
+    },
+    {
       "name": "context",
       "flag": "--robot-context",
       "category": "state",
@@ -285,7 +490,7 @@
       "name": "dialogs",
       "flag": "--robot-dialogs",
       "category": "state",
-      "summary": "Classify in-pane interactive dialogs per pane (trust_prompt, rate_limit_options, usage_overlay, paste_limbo, destructive_confirm, unknown_dialog) with the extracted option list.",
+      "summary": "Classify interactive prompts and dialogs in panes.",
       "description": "Classify in-pane interactive dialogs per pane (trust_prompt, rate_limit_options, usage_overlay, paste_limbo, destructive_confirm, unknown_dialog) with the extracted option list.",
       "output_formats": [
         "json"
@@ -362,6 +567,53 @@
       ]
     },
     {
+      "name": "doctor",
+      "flag": "--robot-doctor",
+      "category": "state",
+      "summary": "Run ecosystem and invariant health checks.",
+      "description": "Validate NTM ecosystem health, tools, dependencies, daemons, configuration, invariants, and optional shared-resource contention.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:doctor:v1",
+      "schema_type": "doctor",
+      "schema_source": "built_in",
+      "sections": [
+        "source_health",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "doctor-contention",
+          "flag": "--doctor-contention",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Include shared-resource process contention scan"
+        },
+        {
+          "name": "doctor-verbose",
+          "flag": "--doctor-verbose",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Include verbose tool adapter diagnostics"
+        }
+      ],
+      "examples": [
+        "ntm --robot-doctor",
+        "ntm --robot-doctor --doctor-contention",
+        "ntm --robot-doctor --doctor-verbose"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-doctor"
+        }
+      ]
+    },
+    {
       "name": "errors",
       "flag": "--robot-errors",
       "category": "state",
@@ -421,6 +673,81 @@
       ]
     },
     {
+      "name": "extract",
+      "flag": "--robot-extract",
+      "category": "state",
+      "summary": "Extract fenced code blocks from pane output.",
+      "description": "Parse fenced Markdown code blocks, language tags, and inferred target file paths from captured session pane scrollback.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:extract:v1",
+      "schema_type": "extract",
+      "schema_source": "built_in",
+      "sections": [
+        "sessions"
+      ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--robot-extract",
+          "type": "string",
+          "required": true,
+          "description": "Target tmux session name"
+        },
+        {
+          "name": "extract-pane",
+          "flag": "--extract-pane",
+          "type": "string",
+          "required": false,
+          "description": "Filter to a specific pane index, %pane_id, or title substring"
+        },
+        {
+          "name": "extract-lang",
+          "flag": "--extract-lang",
+          "type": "string",
+          "required": false,
+          "description": "Filter extracted blocks by language (e.g. go, python, typescript, bash)"
+        },
+        {
+          "name": "extract-last",
+          "flag": "--extract-last",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Extract only from the currently active pane"
+        },
+        {
+          "name": "extract-select",
+          "flag": "--extract-select",
+          "type": "int",
+          "required": false,
+          "default": "0",
+          "description": "Select a single extracted block by 1-based index"
+        },
+        {
+          "name": "lines",
+          "flag": "--lines",
+          "type": "int",
+          "required": false,
+          "default": "500",
+          "description": "Number of scrollback lines captured per pane"
+        }
+      ],
+      "examples": [
+        "ntm --robot-extract=myproject",
+        "ntm --robot-extract=myproject --extract-lang=go --lines=1000",
+        "ntm --robot-extract=myproject --extract-pane=cc_1 --extract-select=1"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-extract"
+        }
+      ]
+    },
+    {
       "name": "files",
       "flag": "--robot-files",
       "category": "state",
@@ -469,6 +796,212 @@
         {
           "type": "cli",
           "endpoint": "ntm --robot-files"
+        }
+      ]
+    },
+    {
+      "name": "grep",
+      "flag": "--robot-grep",
+      "category": "state",
+      "summary": "Search pane scrollback with regex.",
+      "description": "Search captured tmux pane output with regular expressions across one or all sessions, with 11-harness agent filtering and before/after context lines.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:grep:v1",
+      "schema_type": "grep",
+      "schema_source": "built_in",
+      "sections": [
+        "sessions"
+      ],
+      "parameters": [
+        {
+          "name": "pattern",
+          "flag": "--robot-grep",
+          "type": "string",
+          "required": true,
+          "description": "Go regular expression to search for"
+        },
+        {
+          "name": "grep-session",
+          "flag": "--grep-session",
+          "type": "string",
+          "required": false,
+          "description": "Target session name (required unless --all is set)"
+        },
+        {
+          "name": "all",
+          "flag": "--all",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Search across all active tmux sessions"
+        },
+        {
+          "name": "type",
+          "flag": "--type",
+          "type": "string",
+          "required": false,
+          "description": "Comma-separated harness filter (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama)"
+        },
+        {
+          "name": "grep-ignore-case",
+          "flag": "--grep-ignore-case",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Case-insensitive regex matching"
+        },
+        {
+          "name": "grep-invert",
+          "flag": "--grep-invert",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Invert matching to return non-matching lines"
+        },
+        {
+          "name": "grep-context",
+          "flag": "--grep-context",
+          "type": "int",
+          "required": false,
+          "default": "0",
+          "description": "Symmetric context lines before and after each match"
+        },
+        {
+          "name": "grep-before",
+          "flag": "--grep-before",
+          "type": "int",
+          "required": false,
+          "default": "0",
+          "description": "Context lines before each match"
+        },
+        {
+          "name": "grep-after",
+          "flag": "--grep-after",
+          "type": "int",
+          "required": false,
+          "default": "0",
+          "description": "Context lines after each match"
+        },
+        {
+          "name": "lines",
+          "flag": "--lines",
+          "type": "int",
+          "required": false,
+          "default": "1000",
+          "description": "Max scrollback lines captured per pane"
+        },
+        {
+          "name": "grep-list-only",
+          "flag": "--grep-list-only",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Return only matching session/pane identifiers without match bodies"
+        }
+      ],
+      "examples": [
+        "ntm --robot-grep='panic:|FAIL' --grep-session=myproject",
+        "ntm --robot-grep='TODO' --all --type=cc,cod --grep-context=2",
+        "ntm --robot-grep='rate limit' --all --grep-ignore-case --grep-list-only"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-grep"
+        }
+      ]
+    },
+    {
+      "name": "handoff",
+      "flag": "--robot-handoff",
+      "category": "state",
+      "summary": "Inspect or create session continuity handoffs.",
+      "description": "Inspect or create session Goal/Now continuity handoffs with deterministic 4-dimension quality scores and ledger metadata.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:handoff:v1",
+      "schema_type": "handoff",
+      "schema_source": "built_in",
+      "sections": [
+        "sessions",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--robot-handoff",
+          "type": "string",
+          "required": true,
+          "description": "Session name, or 'all' / '*' to list recent handoffs across sessions"
+        },
+        {
+          "name": "handoff-create",
+          "flag": "--handoff-create",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Create and persist a new session handoff"
+        },
+        {
+          "name": "handoff-auto",
+          "flag": "--handoff-auto",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Auto-generate handoff from session output and git/beads state when creating"
+        },
+        {
+          "name": "handoff-goal",
+          "flag": "--handoff-goal",
+          "type": "string",
+          "required": false,
+          "description": "What this session accomplished (required for manual --handoff-create)"
+        },
+        {
+          "name": "handoff-now",
+          "flag": "--handoff-now",
+          "type": "string",
+          "required": false,
+          "description": "What the next session should do first (required for manual --handoff-create)"
+        },
+        {
+          "name": "handoff-description",
+          "flag": "--handoff-description",
+          "type": "string",
+          "required": false,
+          "description": "Optional short slug for handoff filename"
+        },
+        {
+          "name": "handoff-limit",
+          "flag": "--handoff-limit",
+          "type": "int",
+          "required": false,
+          "default": "10",
+          "description": "Max handoffs to return"
+        },
+        {
+          "name": "handoff-project-dir",
+          "flag": "--handoff-project-dir",
+          "type": "string",
+          "required": false,
+          "description": "Explicit absolute project directory"
+        }
+      ],
+      "examples": [
+        "ntm --robot-handoff=myproject",
+        "ntm --robot-handoff=all --handoff-limit=5",
+        "ntm --robot-handoff=myproject --handoff-create --handoff-goal='Implemented auth' --handoff-now='Add integration tests'",
+        "ntm --robot-handoff=myproject --handoff-create --handoff-auto"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-handoff"
         }
       ]
     },
@@ -1020,6 +1553,49 @@
       ]
     },
     {
+      "name": "mapping",
+      "flag": "--robot-mapping",
+      "category": "state",
+      "summary": "Resolve Agent Mail pane mappings and badges.",
+      "description": "Resolve Agent Mail agent names to live tmux panes, reconcile canonical identity files, publish/withdraw border badges, and report drift.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:mapping:v1",
+      "schema_type": "mapping",
+      "schema_source": "built_in",
+      "sections": [
+        "sessions",
+        "source_health"
+      ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--robot-mapping",
+          "type": "string",
+          "required": true,
+          "description": "Target tmux session name"
+        },
+        {
+          "name": "project",
+          "flag": "--project",
+          "type": "string",
+          "required": false,
+          "description": "Project directory override for Agent Mail registry lookup"
+        }
+      ],
+      "examples": [
+        "ntm --robot-mapping=myproject"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-mapping"
+        }
+      ]
+    },
+    {
       "name": "markdown",
       "flag": "--robot-markdown",
       "category": "state",
@@ -1247,7 +1823,7 @@
       "name": "pane-address",
       "flag": "--robot-pane-address",
       "category": "state",
-      "summary": "Per-pane addressing cards: the canonical selector send/tail accept, the stable tmux %pane_id (immune to base-index and renumbering), physical topology, and a ready-to-paste tmux target.",
+      "summary": "Resolve canonical and stable pane selectors.",
       "description": "Per-pane addressing cards: the canonical selector send/tail accept, the stable tmux %pane_id (immune to base-index and renumbering), physical topology, and a ready-to-paste tmux target.",
       "output_formats": [
         "json"
@@ -1348,7 +1924,7 @@
       "name": "productivity",
       "flag": "--robot-productivity",
       "category": "state",
-      "summary": "Return attributable commit, Beads, and live build/test evidence for whether a swarm should continue or has converged.",
+      "summary": "Check swarm commit/Beads/test convergence.",
       "description": "Return attributable commit, Beads, and live build/test evidence for whether a swarm should continue or has converged.",
       "output_formats": [
         "json"
@@ -1381,6 +1957,76 @@
         {
           "type": "cli",
           "endpoint": "ntm --robot-productivity"
+        }
+      ]
+    },
+    {
+      "name": "saved-sessions",
+      "flag": "--robot-saved-sessions",
+      "category": "state",
+      "summary": "Manage saved session snapshots.",
+      "description": "List, inspect (with 11-harness counts and casr/native resume readiness), capture, archive, or unarchive saved session snapshots.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:saved-sessions:v1",
+      "schema_type": "saved_sessions",
+      "schema_source": "built_in",
+      "sections": [
+        "sessions"
+      ],
+      "parameters": [
+        {
+          "name": "saved-action",
+          "flag": "--saved-action",
+          "type": "string",
+          "required": false,
+          "default": "list",
+          "description": "Action: list (default), show, save, archive, or unarchive"
+        },
+        {
+          "name": "saved-name",
+          "flag": "--saved-name",
+          "type": "string",
+          "required": false,
+          "description": "Saved snapshot name for show/archive/unarchive, or custom destination name for save"
+        },
+        {
+          "name": "saved-session",
+          "flag": "--saved-session",
+          "type": "string",
+          "required": false,
+          "description": "Live tmux session name to capture when --saved-action=save"
+        },
+        {
+          "name": "saved-archived",
+          "flag": "--saved-archived",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "List archived snapshots instead of active ones when --saved-action=list"
+        },
+        {
+          "name": "saved-overwrite",
+          "flag": "--saved-overwrite",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Overwrite an existing snapshot when --saved-action=save"
+        }
+      ],
+      "examples": [
+        "ntm --robot-saved-sessions",
+        "ntm --robot-saved-sessions --saved-archived",
+        "ntm --robot-saved-sessions --saved-action=show --saved-name=myproject",
+        "ntm --robot-saved-sessions --saved-action=save --saved-session=myproject --saved-overwrite",
+        "ntm --robot-saved-sessions --saved-action=archive --saved-name=myproject"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-saved-sessions"
         }
       ]
     },
@@ -1620,6 +2266,77 @@
         {
           "type": "cli",
           "endpoint": "ntm --robot-terse"
+        }
+      ]
+    },
+    {
+      "name": "timeline",
+      "flag": "--robot-timeline",
+      "category": "state",
+      "summary": "Inspect persisted session timelines and stats.",
+      "description": "List persisted session timelines, inspect a session timeline with transition stats, or compute aggregate storage statistics.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:timeline:v1",
+      "schema_type": "timeline",
+      "schema_source": "built_in",
+      "sections": [
+        "sessions",
+        "events",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--robot-timeline",
+          "type": "string",
+          "required": false,
+          "default": "all",
+          "description": "Session ID to inspect, or 'all' / 'list' / 'stats' / omit"
+        },
+        {
+          "name": "timeline-action",
+          "flag": "--timeline-action",
+          "type": "string",
+          "required": false,
+          "description": "Timeline action: list, show, stats (auto-inferred when omitted)"
+        },
+        {
+          "name": "timeline-events",
+          "flag": "--timeline-events",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Include full state-transition event rows when showing a session timeline"
+        },
+        {
+          "name": "timeline-stats",
+          "flag": "--timeline-stats",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Show aggregate storage and agent statistics across all persisted timelines"
+        },
+        {
+          "name": "timeline-limit",
+          "flag": "--timeline-limit",
+          "type": "int",
+          "required": false,
+          "default": "20",
+          "description": "Maximum saved timelines to return when listing"
+        }
+      ],
+      "examples": [
+        "ntm --robot-timeline",
+        "ntm --robot-timeline=myproject --timeline-events",
+        "ntm --robot-timeline --timeline-stats"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-timeline"
         }
       ]
     },
@@ -2127,6 +2844,80 @@
       ]
     },
     {
+      "name": "ensemble-synthesize",
+      "flag": "--robot-ensemble-synthesize",
+      "category": "ensemble",
+      "summary": "Synthesize completed reasoning mode outputs for an ensemble session with disagreement audit and redundancy analysis.",
+      "description": "Synthesize completed reasoning mode outputs for an ensemble session with disagreement audit and redundancy analysis.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:ensemble-synthesize:v1",
+      "schema_type": "ensemble_synthesize",
+      "schema_source": "built_in",
+      "sections": [
+        "sessions",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--robot-ensemble-synthesize",
+          "type": "string",
+          "required": true,
+          "description": "Session name to synthesize"
+        },
+        {
+          "name": "synth-strategy",
+          "flag": "--synth-strategy",
+          "type": "string",
+          "required": false,
+          "description": "Synthesis strategy override (consensus, dialectical, adversarial, bayesian, meta-reasoning)"
+        },
+        {
+          "name": "synth-format",
+          "flag": "--synth-format",
+          "type": "string",
+          "required": false,
+          "default": "markdown",
+          "description": "Rendered synthesis output format: markdown, json, yaml"
+        },
+        {
+          "name": "synth-output",
+          "flag": "--synth-output",
+          "type": "string",
+          "required": false,
+          "description": "Optional file path to persist formatted synthesis output"
+        },
+        {
+          "name": "synth-force",
+          "flag": "--synth-force",
+          "type": "bool",
+          "required": false,
+          "description": "Synthesize available mode outputs even while other modes are pending or working"
+        },
+        {
+          "name": "project",
+          "flag": "--project",
+          "type": "string",
+          "required": false,
+          "description": "Project directory override"
+        }
+      ],
+      "examples": [
+        "ntm --robot-ensemble-synthesize=myproject",
+        "ntm --robot-ensemble-synthesize=myproject --synth-strategy=dialectical --synth-format=json",
+        "ntm --robot-ensemble-synthesize=myproject --synth-force --synth-output=synthesis.md"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-ensemble-synthesize"
+        }
+      ]
+    },
+    {
       "name": "ensemble_spawn",
       "flag": "--robot-ensemble-spawn",
       "category": "ensemble",
@@ -2293,6 +3084,46 @@
       ]
     },
     {
+      "name": "action-status",
+      "flag": "--robot-action-status",
+      "category": "control",
+      "summary": "Inspect durable robot operation or wait state.",
+      "description": "Inspect the current lifecycle state of any durable robot operation (--op-id / Idempotency-Key) or active --robot-wait handle by request ID: source, kind, status, terminal/cancellable flags, timestamps, and recorded outcome.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:action-status:v1",
+      "schema_type": "action_status",
+      "schema_source": "built_in",
+      "parameters": [
+        {
+          "name": "request-id",
+          "flag": "--robot-action-status",
+          "type": "string",
+          "required": false,
+          "description": "Request/operation ID (or pass via --request-id)"
+        },
+        {
+          "name": "request-id-flag",
+          "flag": "--request-id",
+          "type": "string",
+          "required": false,
+          "description": "Explicit request/operation ID selector"
+        }
+      ],
+      "examples": [
+        "ntm --robot-action-status=deploy-42",
+        "ntm --robot-action-status --request-id=wait-7"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-action-status"
+        }
+      ]
+    },
+    {
       "name": "answer-dialog",
       "flag": "--robot-answer-dialog",
       "category": "control",
@@ -2385,11 +3216,12 @@
           "type": "bool",
           "required": false,
           "default": "false",
-          "description": "Relax routing constraints to include THINKING agents when idle agents are insufficient"
+          "description": "Retry an empty scored assignment plan with half its minimum score; preserve availability, context, occupancy, and bead safety gates. Each fallback recommendation includes relaxation provenance. Has no effect on simple sequential pairing. On --robot-route the same flag includes THINKING agents when idle agents are insufficient"
         }
       ],
       "examples": [
         "ntm --robot-assign=proj --strategy=speed --beads=bd-abc,bd-xyz",
+        "ntm --robot-assign=proj --strategy=quality --relax",
         "ntm --robot-assign=proj --strategy=balanced --relax"
       ],
       "transports": [
@@ -2534,6 +3366,46 @@
       ]
     },
     {
+      "name": "cancel-request",
+      "flag": "--robot-cancel-request",
+      "category": "control",
+      "summary": "Cancel a pre-dispatch durable operation claim or an active --robot-wait handle by request ID.",
+      "description": "Cancel a pre-dispatch durable operation claim or an active --robot-wait handle by request ID. Safely refuses with REQUEST_ALREADY_DISPATCHED once pane actuation has begun, or REQUEST_NOT_CANCELLABLE when already terminal.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:cancel-request:v1",
+      "schema_type": "cancel_request",
+      "schema_source": "built_in",
+      "parameters": [
+        {
+          "name": "request-id",
+          "flag": "--robot-cancel-request",
+          "type": "string",
+          "required": false,
+          "description": "Request/operation ID (or pass via --request-id)"
+        },
+        {
+          "name": "request-id-flag",
+          "flag": "--request-id",
+          "type": "string",
+          "required": false,
+          "description": "Explicit request/operation ID selector"
+        }
+      ],
+      "examples": [
+        "ntm --robot-cancel-request=deploy-42",
+        "ntm --robot-cancel-request --request-id=wait-7"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-cancel-request"
+        }
+      ]
+    },
+    {
       "name": "context-inject",
       "flag": "--robot-context-inject",
       "category": "control",
@@ -2602,6 +3474,61 @@
         {
           "type": "cli",
           "endpoint": "ntm --robot-context-inject"
+        }
+      ]
+    },
+    {
+      "name": "coordinator",
+      "flag": "--robot-coordinator",
+      "category": "control",
+      "summary": "Inspect session coordinator and digests.",
+      "description": "Inspect session coordinator agent states, generate or send coordination digests, or detect active file reservation conflicts.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:coordinator:v1",
+      "schema_type": "coordinator",
+      "schema_source": "built_in",
+      "sections": [
+        "sessions",
+        "coordination",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--robot-coordinator",
+          "type": "string",
+          "required": true,
+          "description": "Session name"
+        },
+        {
+          "name": "coordinator-action",
+          "flag": "--coordinator-action",
+          "type": "string",
+          "required": false,
+          "default": "status",
+          "description": "Coordinator action: status, digest, conflicts"
+        },
+        {
+          "name": "coordinator-send-digest",
+          "flag": "--coordinator-send-digest",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Send generated coordinator digest via Agent Mail when --coordinator-action=digest"
+        }
+      ],
+      "examples": [
+        "ntm --robot-coordinator=myproject",
+        "ntm --robot-coordinator=myproject --coordinator-action=digest",
+        "ntm --robot-coordinator=myproject --coordinator-action=conflicts"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-coordinator"
         }
       ]
     },
@@ -2907,6 +3834,92 @@
       ]
     },
     {
+      "name": "rebalance",
+      "flag": "--robot-rebalance",
+      "category": "control",
+      "summary": "Rebalance session workload and geometry.",
+      "description": "Analyze bead assignment imbalance across session panes, optionally check tile geometry, and apply suggested transfers.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:rebalance:v1",
+      "schema_type": "rebalance",
+      "schema_source": "built_in",
+      "sections": [
+        "sessions",
+        "work",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--robot-rebalance",
+          "type": "string",
+          "required": true,
+          "description": "Session name to analyze or rebalance"
+        },
+        {
+          "name": "rebalance-apply",
+          "flag": "--rebalance-apply",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Apply suggested bead transfers non-interactively"
+        },
+        {
+          "name": "rebalance-threshold",
+          "flag": "--rebalance-threshold",
+          "type": "float",
+          "required": false,
+          "default": "0",
+          "description": "Minimum imbalance score threshold before suggesting transfers"
+        },
+        {
+          "name": "rebalance-geometry",
+          "flag": "--rebalance-geometry",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Verify pane geometry uniformity and retile when --rebalance-apply is set"
+        },
+        {
+          "name": "rebalance-geometry-tolerance",
+          "flag": "--rebalance-geometry-tolerance",
+          "type": "int",
+          "required": false,
+          "default": "2",
+          "description": "Maximum allowed width/height delta in cells for --rebalance-geometry"
+        },
+        {
+          "name": "type",
+          "flag": "--type",
+          "type": "string",
+          "required": false,
+          "description": "Filter rebalance candidates by agent type"
+        },
+        {
+          "name": "dry-run",
+          "flag": "--dry-run",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Preview transfers without mutating assignments"
+        }
+      ],
+      "examples": [
+        "ntm --robot-rebalance=myproject --dry-run",
+        "ntm --robot-rebalance=myproject --rebalance-apply --rebalance-threshold=0.5",
+        "ntm --robot-rebalance=myproject --rebalance-geometry --rebalance-geometry-tolerance=2"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-rebalance"
+        }
+      ]
+    },
+    {
       "name": "restart-pane",
       "flag": "--robot-restart-pane",
       "category": "control",
@@ -3006,6 +4019,83 @@
         {
           "type": "cli",
           "endpoint": "ntm --robot-restart-pane"
+        }
+      ]
+    },
+    {
+      "name": "review-queue",
+      "flag": "--robot-review-queue",
+      "category": "control",
+      "summary": "Generate or dispatch peer review queue.",
+      "description": "Detect idle agents in a session, generate peer-review prompts from completed beads and recent git commits, and optionally dispatch them.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:review-queue:v1",
+      "schema_type": "review_queue",
+      "schema_source": "built_in",
+      "sections": [
+        "sessions",
+        "work",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--robot-review-queue",
+          "type": "string",
+          "required": true,
+          "description": "Session name"
+        },
+        {
+          "name": "review-dispatch",
+          "flag": "--review-dispatch",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Automatically dispatch generated review prompts to idle agents"
+        },
+        {
+          "name": "review-idle-threshold",
+          "flag": "--review-idle-threshold",
+          "type": "duration",
+          "required": false,
+          "default": "2m0s",
+          "description": "Minimum idle duration to classify an agent as idle"
+        },
+        {
+          "name": "review-commits",
+          "flag": "--review-commits",
+          "type": "int",
+          "required": false,
+          "default": "5",
+          "description": "Number of recent git commits to include as review sources"
+        },
+        {
+          "name": "type",
+          "flag": "--type",
+          "type": "string",
+          "required": false,
+          "description": "Filter idle agents by harness type"
+        },
+        {
+          "name": "project",
+          "flag": "--project",
+          "type": "string",
+          "required": false,
+          "description": "Project directory override for git commit discovery"
+        }
+      ],
+      "examples": [
+        "ntm --robot-review-queue=myproject",
+        "ntm --robot-review-queue=myproject --review-idle-threshold=5m --review-commits=10",
+        "ntm --robot-review-queue=myproject --review-dispatch --type=claude"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-review-queue"
         }
       ]
     },
@@ -3251,7 +4341,7 @@
       "name": "send-receipt",
       "flag": "--robot-send-receipt",
       "category": "control",
-      "summary": "Query the durable receipt of an idempotent --robot-send or --robot-interrupt by operation ID: operation kind, payload digest, byte count, per-target admission states, and the recorded outcome (outcome for sends, interrupt_outcome for interrupts).",
+      "summary": "Query durable idempotent send/interrupt receipt.",
       "description": "Query the durable receipt of an idempotent --robot-send or --robot-interrupt by operation ID: operation kind, payload digest, byte count, per-target admission states, and the recorded outcome (outcome for sends, interrupt_outcome for interrupts). Receipts survive caller timeouts and crashes.",
       "output_formats": [
         "json"
@@ -3547,6 +4637,207 @@
       ]
     },
     {
+      "name": "wait-request",
+      "flag": "--robot-wait-request",
+      "category": "control",
+      "summary": "Wait for a durable robot operation to finish.",
+      "description": "Block until a durable robot operation or wait handle reaches a terminal state (completed or canceled), or return TIMEOUT when --timeout elapses.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:wait-request:v1",
+      "schema_type": "wait_request",
+      "schema_source": "built_in",
+      "parameters": [
+        {
+          "name": "request-id",
+          "flag": "--robot-wait-request",
+          "type": "string",
+          "required": false,
+          "description": "Request/operation ID (or pass via --request-id)"
+        },
+        {
+          "name": "request-id-flag",
+          "flag": "--request-id",
+          "type": "string",
+          "required": false,
+          "description": "Explicit request/operation ID selector"
+        },
+        {
+          "name": "timeout",
+          "flag": "--timeout",
+          "type": "string",
+          "required": false,
+          "default": "30s",
+          "description": "Maximum wait time before returning TIMEOUT"
+        },
+        {
+          "name": "poll",
+          "flag": "--poll",
+          "type": "string",
+          "required": false,
+          "default": "100ms",
+          "description": "Poll interval while waiting"
+        }
+      ],
+      "examples": [
+        "ntm --robot-wait-request=deploy-42 --timeout=30s",
+        "ntm --robot-wait-request --request-id=wait-7 --timeout=10s --poll=100ms"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-wait-request"
+        }
+      ]
+    },
+    {
+      "name": "adopt",
+      "flag": "--robot-adopt",
+      "category": "spawn",
+      "summary": "Adopt an external tmux session.",
+      "description": "Adopt an external tmux session into NTM management across all 11 agent harnesses plus user panes with 2D window.pane or --adopt-by-window addressing.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:adopt:v1",
+      "schema_type": "adopt",
+      "schema_source": "built_in",
+      "sections": [
+        "sessions",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--robot-adopt",
+          "type": "string",
+          "required": true,
+          "description": "External tmux session name to adopt"
+        },
+        {
+          "name": "adopt-cc",
+          "flag": "--adopt-cc",
+          "type": "string",
+          "required": false,
+          "description": "Pane specs (bare, range, or window.pane) for Claude (cc) agents"
+        },
+        {
+          "name": "adopt-cod",
+          "flag": "--adopt-cod",
+          "type": "string",
+          "required": false,
+          "description": "Pane specs for Codex (cod) agents"
+        },
+        {
+          "name": "adopt-gmi",
+          "flag": "--adopt-gmi",
+          "type": "string",
+          "required": false,
+          "description": "Pane specs for Gemini (gmi) agents"
+        },
+        {
+          "name": "adopt-agy",
+          "flag": "--adopt-agy",
+          "type": "string",
+          "required": false,
+          "description": "Pane specs for Antigravity (agy) agents"
+        },
+        {
+          "name": "adopt-grok",
+          "flag": "--adopt-grok",
+          "type": "string",
+          "required": false,
+          "description": "Pane specs for Grok Build (grok) agents"
+        },
+        {
+          "name": "adopt-cursor",
+          "flag": "--adopt-cursor",
+          "type": "string",
+          "required": false,
+          "description": "Pane specs for Cursor agents"
+        },
+        {
+          "name": "adopt-windsurf",
+          "flag": "--adopt-windsurf",
+          "type": "string",
+          "required": false,
+          "description": "Pane specs for Windsurf agents"
+        },
+        {
+          "name": "adopt-aider",
+          "flag": "--adopt-aider",
+          "type": "string",
+          "required": false,
+          "description": "Pane specs for Aider agents"
+        },
+        {
+          "name": "adopt-oc",
+          "flag": "--adopt-oc",
+          "type": "string",
+          "required": false,
+          "description": "Pane specs for OpenCode (oc) agents"
+        },
+        {
+          "name": "adopt-omp",
+          "flag": "--adopt-omp",
+          "type": "string",
+          "required": false,
+          "description": "Pane specs for Oh My Pi (omp) agents"
+        },
+        {
+          "name": "adopt-ollama",
+          "flag": "--adopt-ollama",
+          "type": "string",
+          "required": false,
+          "description": "Pane specs for Ollama agents"
+        },
+        {
+          "name": "adopt-user",
+          "flag": "--adopt-user",
+          "type": "string",
+          "required": false,
+          "description": "Pane specs for user shell panes"
+        },
+        {
+          "name": "adopt-by-window",
+          "flag": "--adopt-by-window",
+          "type": "string",
+          "required": false,
+          "description": "Map every window's sole pane to one harness type (e.g. cc, cod, agy)"
+        },
+        {
+          "name": "adopt-auto-name",
+          "flag": "--adopt-auto-name",
+          "type": "bool",
+          "required": false,
+          "default": "true",
+          "description": "Automatically rename adopted panes to NTM title convention"
+        },
+        {
+          "name": "dry-run",
+          "flag": "--dry-run",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Preview adoption plan without mutating tmux pane titles or options"
+        }
+      ],
+      "examples": [
+        "ntm --robot-adopt=external_proj --adopt-cc=0,1 --adopt-cod=2",
+        "ntm --robot-adopt=external_proj --adopt-cc=1.0,2.0 --adopt-agy=3.0 --dry-run",
+        "ntm --robot-adopt=external_proj --adopt-by-window=cc"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-adopt"
+        }
+      ]
+    },
+    {
       "name": "controller-spawn",
       "flag": "--robot-controller-spawn",
       "category": "spawn",
@@ -3604,6 +4895,57 @@
       ]
     },
     {
+      "name": "personas",
+      "flag": "--robot-personas",
+      "category": "spawn",
+      "summary": "List agent personas and profile sets.",
+      "description": "List built-in, user, and project agent personas and profile sets with 11-harness alias and tag filtering.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:personas:v1",
+      "schema_type": "personas",
+      "schema_source": "built_in",
+      "sections": [
+        "sessions"
+      ],
+      "parameters": [
+        {
+          "name": "personas-agent",
+          "flag": "--personas-agent",
+          "type": "string",
+          "required": false,
+          "description": "Filter personas by harness alias (cc, cod, gmi, agy, grok, cursor, windsurf, aider, oc, omp, ollama)"
+        },
+        {
+          "name": "personas-tag",
+          "flag": "--personas-tag",
+          "type": "string",
+          "required": false,
+          "description": "Filter personas by tag"
+        },
+        {
+          "name": "project",
+          "flag": "--project",
+          "type": "string",
+          "required": false,
+          "description": "Project directory for .ntm/personas.toml overrides (defaults to CWD)"
+        }
+      ],
+      "examples": [
+        "ntm --robot-personas",
+        "ntm --robot-personas --personas-agent=claude",
+        "ntm --robot-personas --personas-tag=review"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-personas"
+        }
+      ]
+    },
+    {
       "name": "recipes",
       "flag": "--robot-recipes",
       "category": "spawn",
@@ -3623,6 +4965,180 @@
         {
           "type": "cli",
           "endpoint": "ntm --robot-recipes"
+        }
+      ]
+    },
+    {
+      "name": "scale",
+      "flag": "--robot-scale",
+      "category": "spawn",
+      "summary": "Scale session agent counts per harness.",
+      "description": "Scale agent counts per harness up or down across all 11 built-in harnesses without interactive prompts.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:scale:v1",
+      "schema_type": "scale",
+      "schema_source": "built_in",
+      "sections": [
+        "sessions",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--robot-scale",
+          "type": "string",
+          "required": true,
+          "description": "Session name to scale"
+        },
+        {
+          "name": "scale-cc",
+          "flag": "--scale-cc",
+          "type": "int",
+          "required": false,
+          "description": "Target Claude (cc) agent count"
+        },
+        {
+          "name": "scale-cod",
+          "flag": "--scale-cod",
+          "type": "int",
+          "required": false,
+          "description": "Target Codex (cod) agent count"
+        },
+        {
+          "name": "scale-gmi",
+          "flag": "--scale-gmi",
+          "type": "int",
+          "required": false,
+          "description": "Target Gemini (gmi) agent count"
+        },
+        {
+          "name": "scale-agy",
+          "flag": "--scale-agy",
+          "type": "int",
+          "required": false,
+          "description": "Target Antigravity (agy) agent count"
+        },
+        {
+          "name": "scale-ollama",
+          "flag": "--scale-ollama",
+          "type": "int",
+          "required": false,
+          "description": "Target Ollama local agent count"
+        },
+        {
+          "name": "scale-cursor",
+          "flag": "--scale-cursor",
+          "type": "int",
+          "required": false,
+          "description": "Target Cursor agent count"
+        },
+        {
+          "name": "scale-windsurf",
+          "flag": "--scale-windsurf",
+          "type": "int",
+          "required": false,
+          "description": "Target Windsurf agent count"
+        },
+        {
+          "name": "scale-aider",
+          "flag": "--scale-aider",
+          "type": "int",
+          "required": false,
+          "description": "Target Aider agent count"
+        },
+        {
+          "name": "scale-grok",
+          "flag": "--scale-grok",
+          "type": "int",
+          "required": false,
+          "description": "Target Grok Build agent count"
+        },
+        {
+          "name": "scale-omp",
+          "flag": "--scale-omp",
+          "type": "int",
+          "required": false,
+          "description": "Target Oh My Pi (omp) agent count"
+        },
+        {
+          "name": "scale-oc",
+          "flag": "--scale-oc",
+          "type": "int",
+          "required": false,
+          "description": "Target OpenCode (oc) agent count"
+        },
+        {
+          "name": "dry-run",
+          "flag": "--dry-run",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Preview scale plan without adding or killing panes"
+        },
+        {
+          "name": "force",
+          "flag": "--force",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Force scale-down without safety confirmation"
+        }
+      ],
+      "examples": [
+        "ntm --robot-scale=myproject --scale-cc=4 --scale-cod=2",
+        "ntm --robot-scale=myproject --scale-ollama=1 --scale-aider=1 --dry-run",
+        "ntm --robot-scale=myproject --scale-cod=0 --force"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-scale"
+        }
+      ]
+    },
+    {
+      "name": "session-templates",
+      "flag": "--robot-session-templates",
+      "category": "spawn",
+      "summary": "List or inspect session templates.",
+      "description": "List built-in, user, and project multi-agent session templates or inspect a template specification by name.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:session-templates:v1",
+      "schema_type": "session_templates",
+      "schema_source": "built_in",
+      "sections": [
+        "sessions"
+      ],
+      "parameters": [
+        {
+          "name": "template-name",
+          "flag": "--template-name",
+          "type": "string",
+          "required": false,
+          "description": "Session template name to inspect in detail (omit to list all)"
+        },
+        {
+          "name": "project",
+          "flag": "--project",
+          "type": "string",
+          "required": false,
+          "description": "Project directory for .ntm/templates overrides"
+        }
+      ],
+      "examples": [
+        "ntm --robot-session-templates",
+        "ntm --robot-session-templates --template-name=refactor"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-session-templates"
         }
       ]
     },
@@ -3730,6 +5246,41 @@
           "type": "string",
           "required": false,
           "description": "Use recipe preset instead of counts"
+        },
+        {
+          "name": "spawn-persona",
+          "flag": "--spawn-persona",
+          "type": "string",
+          "required": false,
+          "description": "Persona-defined agents (name or name:count, comma-separated/repeatable)"
+        },
+        {
+          "name": "spawn-profile-set",
+          "flag": "--spawn-profile-set",
+          "type": "string",
+          "required": false,
+          "description": "Predefined persona profile set (e.g. backend-team, review-team)"
+        },
+        {
+          "name": "spawn-worktrees",
+          "flag": "--spawn-worktrees",
+          "type": "bool",
+          "required": false,
+          "description": "Enable isolated git worktree per spawned agent"
+        },
+        {
+          "name": "spawn-worktree-name",
+          "flag": "--spawn-worktree-name",
+          "type": "string",
+          "required": false,
+          "description": "Override worktree directory name (single-agent spawns only)"
+        },
+        {
+          "name": "spawn-no-hooks",
+          "flag": "--spawn-no-hooks",
+          "type": "bool",
+          "required": false,
+          "description": "Disable pre-spawn and post-spawn command hooks"
         },
         {
           "name": "spawn-no-user",
@@ -4855,6 +6406,57 @@
       ]
     },
     {
+      "name": "workflows",
+      "flag": "--robot-workflows",
+      "category": "pipeline",
+      "summary": "List or inspect workflow templates.",
+      "description": "List built-in, user, and project workflow coordination templates (ping-pong, pipeline, parallel, review-gate) or inspect one template with trigger validation.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:workflows:v1",
+      "schema_type": "workflows",
+      "schema_source": "built_in",
+      "sections": [
+        "sessions"
+      ],
+      "parameters": [
+        {
+          "name": "workflows-name",
+          "flag": "--workflows-name",
+          "type": "string",
+          "required": false,
+          "description": "Workflow template name to inspect in detail (omit to list all)"
+        },
+        {
+          "name": "workflows-role",
+          "flag": "--workflows-role",
+          "type": "string",
+          "required": false,
+          "description": "Filter workflows or displayed agents by declared role"
+        },
+        {
+          "name": "project",
+          "flag": "--project",
+          "type": "string",
+          "required": false,
+          "description": "Project directory for .ntm/workflows overrides"
+        }
+      ],
+      "examples": [
+        "ntm --robot-workflows",
+        "ntm --robot-workflows --workflows-role=reviewer",
+        "ntm --robot-workflows --workflows-name=red-green"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-workflows"
+        }
+      ]
+    },
+    {
       "name": "account-status",
       "flag": "--robot-account-status",
       "category": "utility",
@@ -5063,7 +6665,7 @@
       "name": "causality",
       "flag": "--robot-causality",
       "category": "utility",
-      "summary": "Get unified causality timeline across audit, Agent Mail, and pipeline/session state.",
+      "summary": "Get unified causality timeline for a session.",
       "description": "Get unified causality timeline across audit, Agent Mail, and pipeline/session state. Count semantics: total=post-dedupe pre-filter events, available=post-filter pre-limit events, filtered=returned events.",
       "output_formats": [
         "json"
@@ -5504,6 +7106,68 @@
       ]
     },
     {
+      "name": "hooks",
+      "flag": "--robot-hooks",
+      "category": "utility",
+      "summary": "Inspect or run repository git hooks.",
+      "description": "Inspect installed repository git hooks or execute pre-commit, pre-push, commit-msg, post-commit, or post-checkout checks.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:hooks:v1",
+      "schema_type": "hooks",
+      "schema_source": "built_in",
+      "sections": [
+        "source_health",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "hooks-action",
+          "flag": "--hooks-action",
+          "type": "string",
+          "required": false,
+          "default": "status",
+          "description": "Hooks action: status (default) or run"
+        },
+        {
+          "name": "hooks-type",
+          "flag": "--hooks-type",
+          "type": "string",
+          "required": false,
+          "default": "pre-commit",
+          "description": "Hook type for --hooks-action=run: pre-commit, pre-push, commit-msg, post-commit, post-checkout"
+        },
+        {
+          "name": "hooks-fail-on-warning",
+          "flag": "--hooks-fail-on-warning",
+          "type": "bool",
+          "required": false,
+          "default": "true",
+          "description": "Treat UBS warnings as errors when running pre-commit"
+        },
+        {
+          "name": "project",
+          "flag": "--project",
+          "type": "string",
+          "required": false,
+          "description": "Repository directory to inspect or run hooks against (defaults to CWD)"
+        }
+      ],
+      "examples": [
+        "ntm --robot-hooks",
+        "ntm --robot-hooks --hooks-action=run --hooks-type=pre-commit",
+        "ntm --robot-hooks --hooks-action=run --hooks-type=pre-push --project=/data/projects/ntm"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-hooks"
+        }
+      ]
+    },
+    {
       "name": "jfp-bundles",
       "flag": "--robot-jfp-bundles",
       "category": "utility",
@@ -5931,6 +7595,50 @@
       ]
     },
     {
+      "name": "models",
+      "flag": "--robot-models",
+      "category": "utility",
+      "summary": "Inspect or recommend local Ollama models.",
+      "description": "Recommend local coding models based on detected GPU VRAM or list installed Ollama models, storage usage, and LRU cleanup hints.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:models:v1",
+      "schema_type": "models",
+      "schema_source": "built_in",
+      "sections": [
+        "summary"
+      ],
+      "parameters": [
+        {
+          "name": "models-action",
+          "flag": "--models-action",
+          "type": "string",
+          "required": false,
+          "default": "recommend",
+          "description": "Action: recommend (offline VRAM advisor, default) or list (live Ollama inventory)"
+        },
+        {
+          "name": "models-host",
+          "flag": "--models-host",
+          "type": "string",
+          "required": false,
+          "description": "Optional Ollama daemon URL override"
+        }
+      ],
+      "examples": [
+        "ntm --robot-models",
+        "ntm --robot-models --models-action=list"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-models"
+        }
+      ]
+    },
+    {
       "name": "ms-search",
       "flag": "--robot-ms-search",
       "category": "utility",
@@ -6047,6 +7755,32 @@
       ]
     },
     {
+      "name": "plugins",
+      "flag": "--robot-plugins",
+      "category": "utility",
+      "summary": "List installed agent and command plugins.",
+      "description": "Inspect installed TOML agent plugins and executable command plugins from the active NTM config directory.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:plugins:v1",
+      "schema_type": "plugins",
+      "schema_source": "built_in",
+      "sections": [
+        "summary"
+      ],
+      "examples": [
+        "ntm --robot-plugins"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-plugins"
+        }
+      ]
+    },
+    {
       "name": "policy-decisions",
       "flag": "--robot-policy-decisions",
       "category": "utility",
@@ -6093,6 +7827,58 @@
         {
           "type": "cli",
           "endpoint": "ntm --robot-policy-decisions"
+        }
+      ]
+    },
+    {
+      "name": "preflight",
+      "flag": "--robot-preflight",
+      "category": "utility",
+      "summary": "Lint and validate a prompt for secrets, destructive commands, PII, and oversize limits before sending.",
+      "description": "Lint and validate a prompt for secrets, destructive commands, PII, and oversize limits before sending.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:preflight:v1",
+      "schema_type": "preflight",
+      "schema_source": "built_in",
+      "sections": [
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "prompt",
+          "flag": "--robot-preflight",
+          "type": "string",
+          "required": false,
+          "description": "Prompt text to validate (or omit when using --preflight-file)"
+        },
+        {
+          "name": "preflight-strict",
+          "flag": "--preflight-strict",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Escalate all preflight warnings to blocking errors"
+        },
+        {
+          "name": "preflight-file",
+          "flag": "--preflight-file",
+          "type": "string",
+          "required": false,
+          "description": "Read prompt text from file path"
+        }
+      ],
+      "examples": [
+        "ntm --robot-preflight='fix the bug in auth.go'",
+        "ntm --robot-preflight='rm -rf /tmp/cache' --preflight-strict",
+        "ntm --robot-preflight --preflight-file=prompt.txt"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-preflight"
         }
       ]
     },
@@ -6335,6 +8121,49 @@
         {
           "type": "cli",
           "endpoint": "ntm --robot-rch-workers"
+        }
+      ]
+    },
+    {
+      "name": "redact",
+      "flag": "--robot-redact",
+      "category": "utility",
+      "summary": "Preview secret and PII redaction.",
+      "description": "Scan text or a file for secrets/PII and return safe-redacted output with line/column finding metadata without ever emitting raw matched secrets.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:redact:v1",
+      "schema_type": "redact",
+      "schema_source": "built_in",
+      "sections": [
+        "source_health"
+      ],
+      "parameters": [
+        {
+          "name": "text",
+          "flag": "--robot-redact",
+          "type": "string",
+          "required": false,
+          "description": "Inline text to scan and redact (or omit value and pass --redact-file)"
+        },
+        {
+          "name": "redact-file",
+          "flag": "--redact-file",
+          "type": "string",
+          "required": false,
+          "description": "File path to scan and redact (mutually exclusive with inline --robot-redact=\u003ctext\u003e)"
+        }
+      ],
+      "examples": [
+        "ntm --robot-redact='Authorization: Bearer sk-live-1234567890abcdef1234567890'",
+        "ntm --robot-redact --redact-file=./notes.txt"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-redact"
         }
       ]
     },
@@ -6794,6 +8623,56 @@
       ]
     },
     {
+      "name": "swarm-lab",
+      "flag": "--robot-swarm-lab",
+      "category": "utility",
+      "summary": "Run synthetic swarm scale scenarios.",
+      "description": "Run synthetic swarm scale scenarios, overload regression corpus checks, and host-capacity calibration.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:swarm-lab:v1",
+      "schema_type": "swarm_lab",
+      "schema_source": "built_in",
+      "parameters": [
+        {
+          "name": "lab-action",
+          "flag": "--lab-action",
+          "type": "string",
+          "required": false,
+          "default": "list",
+          "description": "Lab action: list, run, corpus, calibrate"
+        },
+        {
+          "name": "lab-scenario",
+          "flag": "--lab-scenario",
+          "type": "string",
+          "required": false,
+          "description": "Named scenario ID (short_smoke, benchmark_32_pane, load_100_pane)"
+        },
+        {
+          "name": "lab-gate",
+          "flag": "--lab-gate",
+          "type": "string",
+          "required": false,
+          "description": "Scenario cost gate filter: short, benchmark, load"
+        }
+      ],
+      "examples": [
+        "ntm --robot-swarm-lab --lab-action=list",
+        "ntm --robot-swarm-lab --lab-action=run --lab-scenario=short_smoke",
+        "ntm --robot-swarm-lab --lab-action=corpus",
+        "ntm --robot-swarm-lab --lab-action=calibrate"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-swarm-lab"
+        }
+      ]
+    },
+    {
       "name": "switch-account",
       "flag": "--robot-switch-account",
       "category": "utility",
@@ -6929,7 +8808,7 @@
       "name": "ubs-scan",
       "flag": "--robot-ubs-scan",
       "category": "utility",
-      "summary": "Run UBS static bug analysis across a directory, single file, git-staged files, or working-tree diff.",
+      "summary": "Run UBS static bug analysis.",
       "description": "Run UBS static bug analysis across a directory, single file, git-staged files, or working-tree diff.",
       "output_formats": [
         "json"
@@ -7033,6 +8912,59 @@
       ]
     },
     {
+      "name": "validate",
+      "flag": "--robot-validate",
+      "category": "utility",
+      "summary": "Validate NTM config, recipes, personas, and policy.",
+      "description": "Validate main config.toml, project .ntm/config.toml, recipes.toml, personas.toml, and policy.yaml schemas, file references, and 11-harness agent executables.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:validate:v1",
+      "schema_type": "validate",
+      "schema_source": "built_in",
+      "sections": [
+        "summary"
+      ],
+      "parameters": [
+        {
+          "name": "validate-all",
+          "flag": "--validate-all",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Include absent optional user and project config locations"
+        },
+        {
+          "name": "validate-fix",
+          "flag": "--validate-fix",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Auto-create missing fixable directories (projects_base, templates.dir)"
+        },
+        {
+          "name": "project",
+          "flag": "--project",
+          "type": "string",
+          "required": false,
+          "description": "Project directory override for .ntm/* discovery"
+        }
+      ],
+      "examples": [
+        "ntm --robot-validate",
+        "ntm --robot-validate --validate-all --project=/path/to/repo",
+        "ntm --robot-validate --validate-fix"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-validate"
+        }
+      ]
+    },
+    {
       "name": "version",
       "flag": "--robot-version",
       "category": "utility",
@@ -7052,6 +8984,68 @@
         {
           "type": "cli",
           "endpoint": "ntm --robot-version"
+        }
+      ]
+    },
+    {
+      "name": "webhook-outbox",
+      "flag": "--robot-webhook-outbox",
+      "category": "utility",
+      "summary": "Manage durable webhook outbox receipts.",
+      "description": "Inspect, retry, or archive durable project webhook outbox receipts without starting background HTTP senders.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:webhook-outbox:v1",
+      "schema_type": "webhook_outbox",
+      "schema_source": "built_in",
+      "sections": [
+        "events",
+        "source_health",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "outbox-action",
+          "flag": "--outbox-action",
+          "type": "string",
+          "required": false,
+          "default": "list",
+          "description": "Outbox action: list, retry, archive"
+        },
+        {
+          "name": "outbox-record",
+          "flag": "--outbox-record",
+          "type": "string",
+          "required": false,
+          "description": "Outbox record filename (required for retry and archive)"
+        },
+        {
+          "name": "outbox-revision",
+          "flag": "--outbox-revision",
+          "type": "string",
+          "required": false,
+          "description": "64-hex optimistic concurrency revision from outbox list (required for retry and archive)"
+        },
+        {
+          "name": "project",
+          "flag": "--project",
+          "type": "string",
+          "required": false,
+          "default": ".",
+          "description": "Project directory containing .ntm/webhooks/outbox"
+        }
+      ],
+      "examples": [
+        "ntm --robot-webhook-outbox",
+        "ntm --robot-webhook-outbox --outbox-action=retry --outbox-record=0001.json --outbox-revision=deadbeef",
+        "ntm --robot-webhook-outbox --outbox-action=archive --outbox-record=0001.json --outbox-revision=deadbeef"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-webhook-outbox"
         }
       ]
     },
@@ -7157,6 +9151,37 @@
       "paginated_reason": "bounded: one entry per live agent pane"
     },
     {
+      "name": "analytics",
+      "paginated": false,
+      "paginated_reason": "bounded: aggregated event summary, harness breakdown, and per-session summary rows within requested window",
+      "consumer_guidance": {
+        "intended_use": "Inspect aggregated multi-harness session, prompt, token, crash, restart, and error analytics from event history",
+        "summary_hint": "Read total_sessions, total_agents, agent_breakdown, error_types, agent_crashes, and agent_restarts; pass --analytics-sessions for per-session breakdown"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded to events within --analytics-days (default 30) or --analytics-since window"
+      }
+    },
+    {
+      "name": "audit",
+      "paginated": true,
+      "paginated_reason": "entries, logs, and sources arrays page via --audit-limit/--audit-offset (or --limit/--offset)",
+      "consumer_guidance": {
+        "intended_use": "Query, regex-search, list, or verify tamper-evident JSONL audit logs and projection source health",
+        "summary_hint": "Read entries/logs/files/sources based on action; follow pagination and _agent_hints.next_offset for continuation"
+      },
+      "boundedness": {
+        "default_limit": 50,
+        "supports_pagination": true,
+        "truncation_behavior": "Results paged via --audit-limit (default 50) and --audit-offset"
+      }
+    },
+    {
+      "name": "backpressure",
+      "paginated": false,
+      "paginated_reason": "bounded: one snapshot row per active backpressure surface plus compact heatmap buckets"
+    },
+    {
       "name": "context",
       "paginated": false,
       "paginated_reason": "bounded: per-pane context usage rows"
@@ -7203,14 +9228,63 @@
       "paginated_reason": "bounded: pane-vs-pane comparison rows"
     },
     {
+      "name": "doctor",
+      "paginated": false,
+      "paginated_reason": "bounded: fixed ecosystem tool/dependency/daemon/config/invariant checks plus live contention holders",
+      "consumer_guidance": {
+        "intended_use": "Validate NTM ecosystem health, tools, dependencies, daemons, configuration, invariants, and shared-resource contention",
+        "summary_hint": "Read overall, tools, dependencies, daemons, configuration, invariants, guard_hook, and contention; pass --doctor-contention to scan active process locks"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded to installed tool/dependency/daemon/config/invariant checks and live contention holders"
+      }
+    },
+    {
       "name": "errors",
       "paginated": false,
       "paginated_reason": "bounded: recent errors capped by --limit truncation"
     },
     {
+      "name": "extract",
+      "paginated": false,
+      "paginated_reason": "bounded: fenced code blocks parsed from bounded per-pane scrollback (--lines)",
+      "consumer_guidance": {
+        "intended_use": "Extract fenced Markdown code blocks, language tags, and inferred target file paths from captured session pane scrollback",
+        "summary_hint": "Read blocks, total_found, and panes_scanned"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded per pane by --lines (default 500)"
+      }
+    },
+    {
       "name": "files",
       "paginated": false,
       "paginated_reason": "bounded: recent file activity capped per response"
+    },
+    {
+      "name": "grep",
+      "paginated": false,
+      "paginated_reason": "bounded: regex matches across bounded per-pane scrollback (--lines)",
+      "consumer_guidance": {
+        "intended_use": "Search captured tmux pane scrollback with regular expressions across one or all sessions and all 11 agent harnesses",
+        "summary_hint": "Read matches, matching_panes, match_count, and panes_searched"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded per pane by --lines (default 1000)"
+      }
+    },
+    {
+      "name": "handoff",
+      "paginated": false,
+      "paginated_reason": "bounded: session list plus recent handoffs capped by --handoff-limit (default 10)",
+      "consumer_guidance": {
+        "intended_use": "Inspect or create Goal/Now session continuity handoffs with 4-dimension quality scoring",
+        "summary_hint": "Read latest, quality, handoffs, and ledger; pass --handoff-create with --handoff-goal/--handoff-now or --handoff-auto to persist a new handoff"
+      },
+      "boundedness": {
+        "default_limit": 10,
+        "truncation_behavior": "Recent handoffs capped by --handoff-limit (default 10)"
+      }
     },
     {
       "name": "health",
@@ -7352,6 +9426,18 @@
       "paginated_reason": "bounded: recent log lines capped by --limit truncation"
     },
     {
+      "name": "mapping",
+      "paginated": false,
+      "paginated_reason": "bounded: mapped panes and identity discrepancy records for a single session",
+      "consumer_guidance": {
+        "intended_use": "Resolve Agent Mail names to live tmux panes, reconcile canonical identity files, publish/withdraw border badges, and surface drift",
+        "summary_hint": "Read entries, count, discrepancies, and badges for the target session"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded to mapped panes and discrepancy records in the target tmux session"
+      }
+    },
+    {
       "name": "markdown",
       "consumer_guidance": {
         "intended_use": "Human-readable markdown for reports and chat",
@@ -7390,6 +9476,18 @@
       "name": "productivity",
       "paginated": false,
       "paginated_reason": "bounded: per-agent productivity rows for one window"
+    },
+    {
+      "name": "saved-sessions",
+      "paginated": false,
+      "paginated_reason": "bounded: saved session snapshots and per-session panes on local host",
+      "consumer_guidance": {
+        "intended_use": "List, inspect (with 11-harness counts and casr/native resume readiness), capture, archive, or unarchive saved session snapshots",
+        "summary_hint": "Read sessions and count on list, or state and resumable_panes on show/save"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded to saved session snapshot files stored under ~/.ntm/sessions"
+      }
     },
     {
       "name": "snapshot",
@@ -7485,6 +9583,19 @@
       "boundedness": {
         "truncation_behavior": "All sections heavily truncated for minimal tokens",
         "payload_budget_bytes": 2048
+      }
+    },
+    {
+      "name": "timeline",
+      "paginated": false,
+      "paginated_reason": "bounded: saved timeline list capped by --timeline-limit (default 20); single-session events bounded by timeline retention",
+      "consumer_guidance": {
+        "intended_use": "List persisted session timelines, inspect agent state transitions for a session, or compute storage statistics",
+        "summary_hint": "Read timelines for list, info/session_stats/events for show, and aggregate_stats for stats"
+      },
+      "boundedness": {
+        "default_limit": 20,
+        "truncation_behavior": "Saved timelines capped by --timeline-limit (default 20)"
       }
     },
     {
@@ -7603,6 +9714,15 @@
       "paginated_reason": "bounded: top-K suggestions"
     },
     {
+      "name": "ensemble-synthesize",
+      "paginated": false,
+      "paginated_reason": "bounded: single-session synthesis report, findings, disagreement audit, and redundancy summary",
+      "consumer_guidance": {
+        "intended_use": "Synthesize completed reasoning mode outputs for an ensemble session with disagreement audit and redundancy analysis",
+        "summary_hint": "Inspect report, audit, and formatted_output; pass --synth-force to synthesize completed modes before all panes finish"
+      }
+    },
+    {
       "name": "ensemble_spawn",
       "paginated": false,
       "paginated_reason": "bounded: per-request spawn echo (one row per spawned mode)"
@@ -7611,6 +9731,11 @@
       "name": "ack",
       "paginated": false,
       "paginated_reason": "bounded: per-request acknowledgement results for addressed panes"
+    },
+    {
+      "name": "action-status",
+      "paginated": false,
+      "paginated_reason": "bounded: status and warning list for a single request or operation ID"
     },
     {
       "name": "answer-dialog",
@@ -7644,7 +9769,24 @@
       }
     },
     {
+      "name": "cancel-request",
+      "paginated": false,
+      "paginated_reason": "bounded: cancellation echo and target admission rows for a single request ID"
+    },
+    {
       "name": "context-inject"
+    },
+    {
+      "name": "coordinator",
+      "paginated": false,
+      "paginated_reason": "bounded: per-pane coordinator state, digest summary, and active conflicts for a single session",
+      "consumer_guidance": {
+        "intended_use": "Inspect session coordinator agent status, generate or send coordination digests, or list active file reservation conflicts",
+        "summary_hint": "Read agents/runtime/config for status, digest/digest_sent for digest, and conflicts/conflict_count for conflicts"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded to panes, digest summary, and active file reservation conflicts for one session"
+      }
     },
     {
       "name": "exit-cli",
@@ -7670,9 +9812,34 @@
       "name": "overlay"
     },
     {
+      "name": "rebalance",
+      "paginated": false,
+      "paginated_reason": "bounded: per-pane workloads and suggested bead transfers for a single session",
+      "consumer_guidance": {
+        "intended_use": "Analyze per-pane bead assignment imbalance, check tile geometry uniformity, and optionally apply rebalance transfers",
+        "summary_hint": "Read imbalance_score, recommendation, workloads, transfers, and geometry; pass --rebalance-apply to execute transfers"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded to panes and active bead assignments in the target session"
+      }
+    },
+    {
       "name": "restart-pane",
       "paginated": false,
       "paginated_reason": "bounded: per-request restart echo"
+    },
+    {
+      "name": "review-queue",
+      "paginated": false,
+      "paginated_reason": "bounded: idle panes and capped recent commit review suggestions for a single session",
+      "consumer_guidance": {
+        "intended_use": "Identify idle session agents and generate or dispatch peer-review prompts from completed beads and recent git commits",
+        "summary_hint": "Read idle_agents, suggestions, dispatched, sent, and skipped; pass --review-dispatch to deliver prompts automatically"
+      },
+      "boundedness": {
+        "default_limit": 5,
+        "truncation_behavior": "Bounded to idle panes in the target session and recent git commits (--review-commits, default 5)"
+      }
     },
     {
       "name": "route",
@@ -7707,12 +9874,65 @@
       "name": "wait-cancel"
     },
     {
+      "name": "wait-request",
+      "paginated": false,
+      "paginated_reason": "bounded: terminal status and warning list for a single request or operation ID"
+    },
+    {
+      "name": "adopt",
+      "paginated": false,
+      "paginated_reason": "bounded: adopted pane descriptors for a single tmux session",
+      "consumer_guidance": {
+        "intended_use": "Adopt an external tmux session into NTM management across all 11 agent harnesses plus user panes",
+        "summary_hint": "Read adopted_panes, total_panes, and agents; pass --dry-run first or --adopt-by-window for window-per-agent sessions"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded to panes in the target tmux session"
+      }
+    },
+    {
       "name": "controller-spawn"
+    },
+    {
+      "name": "personas",
+      "paginated": false,
+      "paginated_reason": "bounded: configured built-in, user, and project persona catalog",
+      "consumer_guidance": {
+        "intended_use": "List built-in, user, and project agent personas and profile sets with 11-harness alias and tag filtering",
+        "summary_hint": "Read personas, profile_sets, count, and builtin_count; filter with --personas-agent or --personas-tag"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded to configured built-in, user, and project persona definitions"
+      }
     },
     {
       "name": "recipes",
       "paginated": false,
       "paginated_reason": "bounded: fixed recipe catalog"
+    },
+    {
+      "name": "scale",
+      "paginated": false,
+      "paginated_reason": "bounded: one scale action row per harness for a single session",
+      "consumer_guidance": {
+        "intended_use": "Scale session agent counts up or down across all 11 built-in harnesses in one structured call",
+        "summary_hint": "Read before, after, actions, and errors; pass --dry-run to preview or --force when scaling down active panes"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded to one action row per scaled harness in the target session"
+      }
+    },
+    {
+      "name": "session-templates",
+      "paginated": false,
+      "paginated_reason": "bounded: configured built-in, user, and project session templates",
+      "consumer_guidance": {
+        "intended_use": "List built-in, user, and project multi-agent session templates or inspect a template specification by name",
+        "summary_hint": "Read templates and total on list, or template when --template-name is set"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded to built-in, user, and project session template definitions"
+      }
     },
     {
       "name": "spawn",
@@ -7875,7 +10095,9 @@
       "paginated_reason": "bounded: top-K search hits from CASS"
     },
     {
-      "name": "cass-status"
+      "name": "cass-status",
+      "paginated": false,
+      "paginated_reason": "bounded: fixed capability feature and connector sets from CASS"
     },
     {
       "name": "pipeline-cancel"
@@ -7891,6 +10113,18 @@
     },
     {
       "name": "sequence"
+    },
+    {
+      "name": "workflows",
+      "paginated": false,
+      "paginated_reason": "bounded: configured built-in, user, and project workflow templates",
+      "consumer_guidance": {
+        "intended_use": "List workflow coordination templates (ping-pong, pipeline, parallel, review-gate) or inspect one template with trigger validation",
+        "summary_hint": "Read workflows and total on list, or workflow and validated_triggers when --workflows-name is set"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded to built-in, user, and project workflow template definitions"
+      }
     },
     {
       "name": "account-status",
@@ -7967,6 +10201,18 @@
       "paginated_reason": "entries array pages via --limit/--offset"
     },
     {
+      "name": "hooks",
+      "paginated": false,
+      "paginated_reason": "bounded: 5 managed git hook slots or a single hook execution report",
+      "consumer_guidance": {
+        "intended_use": "Inspect installed repository git hooks or execute pre-commit, pre-push, commit-msg, post-commit, or post-checkout checks",
+        "summary_hint": "Read hooks and installed_count on status, or passed, pre_commit_result, and check_result on run"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded to the 5 managed git hook slots or a single hook execution report"
+      }
+    },
+    {
       "name": "jfp-bundles"
     },
     {
@@ -8009,6 +10255,18 @@
       "paginated_reason": "bounded: per-session mail check rows"
     },
     {
+      "name": "models",
+      "paginated": false,
+      "paginated_reason": "bounded: locally installed Ollama models and VRAM recommendation bands",
+      "consumer_guidance": {
+        "intended_use": "Recommend local coding models from detected GPU VRAM or list installed Ollama models and storage usage",
+        "summary_hint": "Read detected_vram_gb and recommendations on recommend, or models and disk_low on list"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded to installed local Ollama models and 4 VRAM recommendation tiers"
+      }
+    },
+    {
       "name": "ms-search",
       "paginated": false,
       "paginated_reason": "bounded: ms returns at most its --limit (default 20) skill matches"
@@ -8022,12 +10280,36 @@
       "paginated_reason": "bounded: fixed palette command catalog"
     },
     {
+      "name": "plugins",
+      "paginated": false,
+      "paginated_reason": "bounded: installed TOML agent plugins and executable command plugins",
+      "consumer_guidance": {
+        "intended_use": "Inspect installed TOML agent plugins and executable command plugins from the active NTM config directory",
+        "summary_hint": "Read agent_plugins, command_plugins, and total_count"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded to installed files in agents/ and commands/ plugin directories"
+      }
+    },
+    {
       "name": "policy-decisions",
       "paginated": false,
       "paginated_reason": "bounded: recent audit decisions capped by --limit truncation",
       "consumer_guidance": {
         "intended_use": "Inspect durable policy and operator audit decisions recorded in the runtime state store",
         "summary_hint": "Filter by --policy-entity-type and --policy-entity-id when auditing a specific resource"
+      }
+    },
+    {
+      "name": "preflight",
+      "paginated": false,
+      "paginated_reason": "bounded: lint findings for a single submitted prompt",
+      "consumer_guidance": {
+        "intended_use": "Lint and validate a prompt for secrets, destructive commands, PII, and size limits before sending to agents",
+        "summary_hint": "Read success, findings, error_count, warning_count, estimated_tokens, and preview; pass --preflight-strict to escalate warnings to errors"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded to lint findings for one submitted prompt; preview truncated at 500 characters"
       }
     },
     {
@@ -8042,10 +10324,14 @@
       "paginated_reason": "bounded: configured proxy routes plus recent failover events"
     },
     {
-      "name": "quota-check"
+      "name": "quota-check",
+      "paginated": false,
+      "paginated_reason": "bounded: single-provider quota detail with capped recent rate-limit window"
     },
     {
-      "name": "quota-status"
+      "name": "quota-status",
+      "paginated": false,
+      "paginated_reason": "bounded: one entry per configured provider with capped recent rate-limit window"
     },
     {
       "name": "rano-stats",
@@ -8059,6 +10345,18 @@
       "name": "rch-workers",
       "paginated": false,
       "paginated_reason": "bounded: one row per remote compilation worker"
+    },
+    {
+      "name": "redact",
+      "paginated": false,
+      "paginated_reason": "bounded: secret/PII findings within a single scanned text or file payload",
+      "consumer_guidance": {
+        "intended_use": "Preview secret/PII detection findings and safe-redacted output without exposing raw matched secrets",
+        "summary_hint": "Read finding_count, findings (category, redacted token, line, column), and safe output"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded to findings detected within the single inline text or file input"
+      }
     },
     {
       "name": "replay",
@@ -8130,6 +10428,11 @@
       "paginated_reason": "bounded: bundle manifest for one collection run"
     },
     {
+      "name": "swarm-lab",
+      "paginated": false,
+      "paginated_reason": "bounded: synthetic lab scenarios, per-run experiment artifacts, and host calibration recommendations"
+    },
+    {
       "name": "switch-account",
       "paginated": false,
       "paginated_reason": "bounded: per-request switch echo for affected panes"
@@ -8154,7 +10457,31 @@
       }
     },
     {
+      "name": "validate",
+      "paginated": false,
+      "paginated_reason": "bounded: active user and project configuration files",
+      "consumer_guidance": {
+        "intended_use": "Validate main config.toml, project .ntm/config.toml, recipes.toml, personas.toml, policy.yaml, and 11-harness executables",
+        "summary_hint": "Read valid, summary, and results[].errors / results[].warnings"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded to active user and project configuration files"
+      }
+    },
+    {
       "name": "version"
+    },
+    {
+      "name": "webhook-outbox",
+      "paginated": false,
+      "paginated_reason": "bounded: retained durable project webhook outbox receipts",
+      "consumer_guidance": {
+        "intended_use": "Inspect, retry, or archive durable project webhook outbox receipts without starting background HTTP senders",
+        "summary_hint": "Read snapshot.entries and each entry revision on list; pass --outbox-record and --outbox-revision for retry or archive"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded to retained durable webhook outbox receipt files in the project directory"
+      }
     },
     {
       "name": "xf-search",
@@ -8176,6 +10503,257 @@
     "cass",
     "pipeline",
     "utility"
+  ],
+  "harnesses": [
+    {
+      "type": "cc",
+      "aliases": [
+        "cc",
+        "claude",
+        "claude-code",
+        "claude_code",
+        "claudecode"
+      ],
+      "display_name": "Claude Code",
+      "provider": "anthropic",
+      "caam_tool": "claude",
+      "needs_double_enter": false,
+      "graceful_exit": "double_interrupt",
+      "supports_builtin_compact": true,
+      "builtin_compact_command": "/compact",
+      "supports_history_clear": true,
+      "history_clear_command": "/clear",
+      "composer_gated": true,
+      "default_context_window": 200000,
+      "supports_automated_delivery": true,
+      "supports_automated_relaunch": true
+    },
+    {
+      "type": "cod",
+      "aliases": [
+        "cod",
+        "codex",
+        "codex-cli",
+        "codex_cli",
+        "codexcli",
+        "openai",
+        "openai-codex",
+        "openai_codex",
+        "openaicodex"
+      ],
+      "display_name": "Codex CLI",
+      "provider": "openai",
+      "caam_tool": "codex",
+      "needs_double_enter": true,
+      "graceful_exit": "slash_exit",
+      "supports_builtin_compact": false,
+      "supports_history_clear": false,
+      "composer_gated": true,
+      "default_context_window": 128000,
+      "supports_automated_delivery": true,
+      "supports_automated_relaunch": true
+    },
+    {
+      "type": "gmi",
+      "aliases": [
+        "gmi",
+        "gemini",
+        "gemini-cli",
+        "gemini_cli",
+        "geminicli",
+        "google",
+        "google-ai",
+        "google_ai",
+        "google-gemini",
+        "google_gemini",
+        "googlegemini"
+      ],
+      "display_name": "Gemini CLI",
+      "provider": "google",
+      "caam_tool": "gemini",
+      "needs_double_enter": true,
+      "graceful_exit": "escape_interrupt",
+      "supports_builtin_compact": false,
+      "supports_history_clear": true,
+      "history_clear_command": "/clear",
+      "composer_gated": false,
+      "default_context_window": 1000000,
+      "supports_automated_delivery": true,
+      "supports_automated_relaunch": true
+    },
+    {
+      "type": "agy",
+      "aliases": [
+        "agy",
+        "antigravity",
+        "antigravity-cli",
+        "antigravity_cli",
+        "antigravitycli",
+        "google-antigravity"
+      ],
+      "display_name": "Antigravity CLI",
+      "provider": "google",
+      "caam_tool": "gemini",
+      "needs_double_enter": true,
+      "graceful_exit": "escape_interrupt",
+      "supports_builtin_compact": false,
+      "supports_history_clear": true,
+      "history_clear_command": "/clear",
+      "composer_gated": true,
+      "default_context_window": 1000000,
+      "supports_automated_delivery": true,
+      "supports_automated_relaunch": true
+    },
+    {
+      "type": "grok",
+      "aliases": [
+        "grok",
+        "grok-build",
+        "grok_build",
+        "grokbuild",
+        "xai-grok-build",
+        "xai_grok_build",
+        "xaigrokbuild"
+      ],
+      "display_name": "Grok Build",
+      "provider": "xai",
+      "needs_double_enter": false,
+      "graceful_exit": "double_interrupt",
+      "supports_builtin_compact": false,
+      "supports_history_clear": false,
+      "composer_gated": true,
+      "default_context_window": 256000,
+      "supports_automated_delivery": true,
+      "supports_automated_relaunch": true
+    },
+    {
+      "type": "oc",
+      "aliases": [
+        "oc",
+        "opencode",
+        "opencode-cli",
+        "opencode_cli",
+        "opencodecli",
+        "open-code"
+      ],
+      "display_name": "Opencode",
+      "provider": "opencode",
+      "needs_double_enter": false,
+      "graceful_exit": "double_interrupt",
+      "supports_builtin_compact": false,
+      "supports_history_clear": false,
+      "composer_gated": true,
+      "default_context_window": 200000,
+      "supports_automated_delivery": true,
+      "supports_automated_relaunch": true
+    },
+    {
+      "type": "omp",
+      "aliases": [
+        "omp",
+        "oh-my-pi",
+        "oh_my_pi",
+        "ohmypi"
+      ],
+      "display_name": "Oh My Pi",
+      "provider": "omp",
+      "needs_double_enter": false,
+      "graceful_exit": "double_interrupt",
+      "supports_builtin_compact": true,
+      "builtin_compact_command": "/compact",
+      "supports_history_clear": true,
+      "history_clear_command": "/clear",
+      "composer_gated": true,
+      "default_context_window": 200000,
+      "supports_automated_delivery": true,
+      "supports_automated_relaunch": true
+    },
+    {
+      "type": "pi",
+      "aliases": [
+        "pi",
+        "pi-agent",
+        "pi_agent",
+        "piagent"
+      ],
+      "display_name": "Pi Agent",
+      "provider": "pi",
+      "needs_double_enter": false,
+      "graceful_exit": "double_interrupt",
+      "supports_builtin_compact": true,
+      "builtin_compact_command": "/compact",
+      "supports_history_clear": true,
+      "history_clear_command": "/clear",
+      "composer_gated": true,
+      "default_context_window": 200000,
+      "supports_automated_delivery": true,
+      "supports_automated_relaunch": true
+    },
+    {
+      "type": "cursor",
+      "aliases": [
+        "cursor"
+      ],
+      "display_name": "Cursor",
+      "provider": "cursor",
+      "needs_double_enter": false,
+      "graceful_exit": "single_interrupt",
+      "supports_builtin_compact": false,
+      "supports_history_clear": false,
+      "composer_gated": false,
+      "default_context_window": 200000,
+      "supports_automated_delivery": true,
+      "supports_automated_relaunch": true
+    },
+    {
+      "type": "windsurf",
+      "aliases": [
+        "windsurf",
+        "ws"
+      ],
+      "display_name": "Windsurf",
+      "provider": "windsurf",
+      "needs_double_enter": false,
+      "graceful_exit": "single_interrupt",
+      "supports_builtin_compact": false,
+      "supports_history_clear": false,
+      "composer_gated": false,
+      "default_context_window": 200000,
+      "supports_automated_delivery": true,
+      "supports_automated_relaunch": true
+    },
+    {
+      "type": "aider",
+      "aliases": [
+        "aider"
+      ],
+      "display_name": "Aider",
+      "provider": "aider",
+      "needs_double_enter": false,
+      "graceful_exit": "single_interrupt",
+      "supports_builtin_compact": false,
+      "supports_history_clear": false,
+      "composer_gated": false,
+      "default_context_window": 128000,
+      "supports_automated_delivery": true,
+      "supports_automated_relaunch": true
+    },
+    {
+      "type": "ollama",
+      "aliases": [
+        "ollama"
+      ],
+      "display_name": "Ollama",
+      "provider": "ollama",
+      "needs_double_enter": false,
+      "graceful_exit": "single_interrupt",
+      "supports_builtin_compact": false,
+      "supports_history_clear": false,
+      "composer_gated": false,
+      "default_context_window": 128000,
+      "supports_automated_delivery": true,
+      "supports_automated_relaunch": true
+    }
   ],
   "attention": {
     "contract_version": "1.2.0",

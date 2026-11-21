@@ -567,16 +567,30 @@ type paneMutationGuardContextKey struct{}
 
 type expectedPaneAgentTypeContextKey struct{}
 
+type claimPaneAgentTypeContextKey struct{}
+
+// expectedPaneAgentTypeConflict is an impossible canonical AgentType sentinel
+// stored when a nested WithExpectedPaneAgentType conflicts with an outer pin,
+// ensuring guarded mutations fail closed instead of weakening the outer pin.
+const expectedPaneAgentTypeConflict AgentType = "\x00conflict"
+
 // WithExpectedPaneAgentType pins the expected canonical @ntm_agent_type option
 // for guarded pane mutations executed with ctx. If the pane's durable agent
 // type has been rewritten or cleared (even on the same shell PID), guarded
 // metadata, input, and Enter mutations fail closed with ErrPaneIdentityChanged.
+// A nested binding cannot weaken or replace a conflicting outer pin.
 func WithExpectedPaneAgentType(ctx context.Context, expected AgentType) context.Context {
 	if ctx == nil {
 		return nil
 	}
 	canonical := ParsePaneAgentTypeOption(string(expected))
 	if canonical == AgentUnknown || canonical == AgentUser {
+		return ctx
+	}
+	if existing := expectedPaneAgentTypeFromContext(ctx); existing != AgentUnknown {
+		if existing == expectedPaneAgentTypeConflict || existing != canonical {
+			return context.WithValue(ctx, expectedPaneAgentTypeContextKey{}, expectedPaneAgentTypeConflict)
+		}
 		return ctx
 	}
 	return context.WithValue(ctx, expectedPaneAgentTypeContextKey{}, canonical)
@@ -591,6 +605,52 @@ func expectedPaneAgentTypeFromContext(ctx context.Context) AgentType {
 		return AgentUnknown
 	}
 	return expected
+}
+
+// WithObservedPaneAgentType fences guarded pane mutations against the agent
+// identity that was observed on pane. When the pane carried an explicit durable
+// @ntm_agent_type option (pane.RecordedType != ""), the mutation requires that
+// exact durable option to remain unchanged (rejecting both clearing and
+// re-tagging). When the pane was detected from its title or command without an
+// explicit @ntm_agent_type option, the mutation allows the pane to remain
+// unlabeled while still failing closed if another agent adopts it as a
+// different type.
+func WithObservedPaneAgentType(ctx context.Context, pane Pane) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	if pane.RecordedType != "" {
+		return WithExpectedPaneAgentType(ctx, pane.RecordedType)
+	}
+	canonical := ParsePaneAgentTypeOption(string(pane.Type))
+	if canonical == AgentUnknown || canonical == AgentUser {
+		return ctx
+	}
+	return withClaimPaneAgentType(ctx, canonical)
+}
+
+func withClaimPaneAgentType(ctx context.Context, claim AgentType) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	if existing := claimPaneAgentTypeFromContext(ctx); existing != AgentUnknown {
+		if existing == expectedPaneAgentTypeConflict || existing != claim {
+			return context.WithValue(ctx, claimPaneAgentTypeContextKey{}, expectedPaneAgentTypeConflict)
+		}
+		return ctx
+	}
+	return context.WithValue(ctx, claimPaneAgentTypeContextKey{}, claim)
+}
+
+func claimPaneAgentTypeFromContext(ctx context.Context) AgentType {
+	if ctx == nil {
+		return AgentUnknown
+	}
+	claim, ok := ctx.Value(claimPaneAgentTypeContextKey{}).(AgentType)
+	if !ok || claim == "" {
+		return AgentUnknown
+	}
+	return claim
 }
 
 type paneMutationGuard struct {
@@ -789,8 +849,13 @@ func (c *Client) runPaneMutationIfCurrentContext(ctx context.Context, target str
 			return errors.New("guarded pane ownership metadata cannot be compared safely")
 		}
 	}
+	if claimType := claimPaneAgentTypeFromContext(ctx); claimType != AgentUnknown {
+		if claimType == expectedPaneAgentTypeConflict || (recorded != "" && ParsePaneAgentTypeOption(recorded) != claimType) {
+			return fmt.Errorf("pane %s already claimed as %q: %w", target, recorded, ErrPaneIdentityChanged)
+		}
+	}
 	if expectedType := expectedPaneAgentTypeFromContext(ctx); expectedType != AgentUnknown {
-		if ParsePaneAgentTypeOption(recorded) != expectedType {
+		if expectedType == expectedPaneAgentTypeConflict || ParsePaneAgentTypeOption(recorded) != expectedType {
 			return fmt.Errorf("pane %s: %w", target, ErrPaneIdentityChanged)
 		}
 	}

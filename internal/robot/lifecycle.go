@@ -627,7 +627,15 @@ func prepareLifecycleRelaunch(ctx context.Context, session string, panes []tmux.
 	if err != nil {
 		return restartLaunchPlan{}, fmt.Errorf("load relaunch configuration: %w", err)
 	}
-	return prepareRestartLaunchPlan(ctx, session, panes, multiWindow, cfg, restartLaunchOverride{}, restartPaneDeps(nil), nil)
+	plan, err := prepareRestartLaunchPlan(ctx, session, panes, multiWindow, cfg, restartLaunchOverride{}, restartPaneDeps(nil), nil)
+	if err != nil {
+		return restartLaunchPlan{}, err
+	}
+	if err := plan.prepareDeliveryWithOptions(ctx, session, nil, false); err != nil {
+		plan.close()
+		return restartLaunchPlan{}, err
+	}
+	return plan, nil
 }
 
 func lifecyclePaneIdentityMatches(original, refreshed tmux.Pane) bool {
@@ -726,6 +734,10 @@ func relaunchAgentCLI(ctx context.Context, opts LifecycleOptions, pane tmux.Pane
 			result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf("prepare saved relaunch failed: %v", err))
 			return
 		}
+		if expected := plan.DeliveryCommands[result.Pane]; expected != "" && launchCmd != expected {
+			result.Detail = joinLifecycleDetail(result.Detail, "saved relaunch preparation changed after delivery preflight; relaunch was withheld")
+			return
+		}
 		if !verifyLifecycleRelaunchShell(ctx, session, pane, original, result) {
 			return
 		}
@@ -741,11 +753,20 @@ func relaunchAgentCLI(ctx context.Context, opts LifecycleOptions, pane tmux.Pane
 			result.Relaunched = false
 		}
 	}()
-	if err := tmux.DefaultClient.SetPaneLaunchSpecIfCurrentContext(ctx, pane.ID, pane.PID, spec); err != nil {
+	guardedCtx := tmux.WithObservedPaneAgentType(ctx, pane)
+	if err := tmux.DefaultClient.SetPaneLaunchSpecIfCurrentContext(guardedCtx, pane.ID, pane.PID, spec); err != nil {
 		result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf("record relaunch specification failed: %v", err))
 		return
 	}
-	if err := tmux.DefaultClient.SendKeysForAgentIfCurrentContext(ctx, pane.ID, launchCmd, true, tmux.AgentUser, pane.PID, true); err != nil {
+	var sendErr error
+	if handoff := plan.handoffs[result.Pane]; handoff != nil {
+		sendErr = handoff.SendIfCurrent(guardedCtx, pane.ID, launchCmd, true, tmux.AgentUser, pane.PID)
+		_ = handoff.Close()
+		delete(plan.handoffs, result.Pane)
+	} else {
+		sendErr = tmux.DefaultClient.SendKeysForAgentIfCurrentContext(guardedCtx, pane.ID, launchCmd, true, tmux.AgentUser, pane.PID, true)
+	}
+	if sendErr != nil {
 		// A tmux command error can contain the command's private arguments.
 		result.Detail = joinLifecycleDetail(result.Detail, "relaunch command delivery failed")
 		return
@@ -1109,6 +1130,7 @@ func GetExitCLI(ctx context.Context, opts LifecycleOptions) (*ExitCLIOutput, err
 			output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Fix the saved launch specification or its dependencies before retrying; no agent was exited")
 			return output, nil
 		}
+		defer launchPlan.close()
 	}
 	exitPolicy := "refuse"
 	if opts.RespawnShell {
@@ -1285,6 +1307,7 @@ func GetKillAgent(ctx context.Context, opts LifecycleOptions) (*KillAgentOutput,
 			output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Fix the saved launch specification or its dependencies before retrying; no agent was killed")
 			return output, nil
 		}
+		defer launchPlan.close()
 	}
 	for _, pane := range targets {
 		result := LifecyclePaneResult{

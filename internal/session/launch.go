@@ -231,7 +231,7 @@ func dispatchSavedLaunches(ctx context.Context, name string, launches []savedPan
 				err = errors.New("saved launch preparation changed after delivery preflight; launch was withheld")
 			}
 			if err == nil {
-				err = validateSavedLaunchTarget(ctx, name, panes[i])
+				err = validateSavedLaunchTarget(ctx, name, panes[i], launch.spec.AgentType)
 			}
 			if err == nil {
 				err = tmux.DefaultClient.SetPaneAgentTypeIfCurrentContext(ctx, panes[i].ID, panes[i].PID, launch.spec.AgentType)
@@ -280,7 +280,7 @@ func dispatchSavedLaunches(ctx context.Context, name string, launches []savedPan
 	return result, nil
 }
 
-func validateSavedLaunchTarget(ctx context.Context, session string, expected tmux.Pane) error {
+func validateSavedLaunchTarget(ctx context.Context, session string, expected tmux.Pane, targetType tmux.AgentType) error {
 	if expected.PID <= 0 {
 		return fmt.Errorf("pane %s has no recorded process identity before launch", expected.ID)
 	}
@@ -291,6 +291,7 @@ func validateSavedLaunchTarget(ctx context.Context, session string, expected tmu
 	if err != nil {
 		return fmt.Errorf("checking restored pane identity: %w", err)
 	}
+	canonicalTarget := tmux.ParsePaneAgentTypeOption(string(targetType))
 	for _, pane := range panes {
 		if pane.ID != expected.ID {
 			continue
@@ -299,6 +300,10 @@ func validateSavedLaunchTarget(ctx context.Context, session string, expected tmu
 			return fmt.Errorf("pane %s changed process or agent identity before launch", expected.ID)
 		}
 		if expected.Type != tmux.AgentUnknown && expected.Type != tmux.AgentUser && pane.Type != expected.Type {
+			return fmt.Errorf("pane %s changed process or agent identity before launch", expected.ID)
+		}
+		if pane.Type != tmux.AgentUnknown && pane.Type != tmux.AgentUser &&
+			canonicalTarget != tmux.AgentUnknown && canonicalTarget != tmux.AgentUser && pane.Type != canonicalTarget {
 			return fmt.Errorf("pane %s changed process or agent identity before launch", expected.ID)
 		}
 		if pane.Dead || pane.RotationToken != "" || pane.IsServicePane() {

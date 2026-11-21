@@ -144,9 +144,12 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 
 	// Stream events
 	ctx := r.Context()
+	shutdownCh := s.shutdownChan()
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-shutdownCh:
 			return
 		case event := <-clientCh:
 			if err := s.writeSSEEvent(w, event.EventType(), map[string]interface{}{
@@ -467,9 +470,12 @@ func (s *Server) handleAttentionStreamV1(w http.ResponseWriter, r *http.Request)
 		}
 		heartbeatTimer.Reset(nextInterval)
 	}
+	shutdownCh := s.shutdownChan()
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-shutdownCh:
 			return
 		case event := <-prepared.eventCh:
 			if event.Cursor <= replayCursor {

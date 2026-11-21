@@ -237,14 +237,26 @@ func (plan *restartLaunchPlan) close() {
 	for _, handoff := range plan.handoffs {
 		_ = handoff.Close()
 	}
+	plan.handoffs = nil
 }
 
 // prepareDelivery belongs to the destructive restart path. Other lifecycle
-// operations reuse launch composition while retaining their existing shell;
-// they must not create or leak unused restart-only FIFO handoffs.
+// operations reuse prepareDeliveryWithOptions(requireRestartShell=false) so
+// they preflight long-command FIFO handoffs before killing any live agent
+// without requiring a separate replacement shell check.
 func (plan *restartLaunchPlan) prepareDelivery(ctx context.Context, session string, environment map[string]string) error {
+	return plan.prepareDeliveryWithOptions(ctx, session, environment, true)
+}
+
+func (plan *restartLaunchPlan) prepareDeliveryWithOptions(ctx context.Context, session string, environment map[string]string, requireRestartShell bool) error {
 	plan.DeliveryCommands = make(map[string]string, len(plan.Commands))
 	plan.handoffs = make(map[string]*tmux.LaunchEnvironment)
+	committed := false
+	defer func() {
+		if !committed {
+			plan.close()
+		}
+	}()
 	for key, command := range plan.Commands {
 		if replay := plan.Replay[key]; replay != nil {
 			var err error
@@ -272,12 +284,16 @@ func (plan *restartLaunchPlan) prepareDelivery(ctx context.Context, session stri
 		}
 		plan.handoffs[key] = handoff
 	}
-	if len(plan.Commands) > 0 {
+	if requireRestartShell && len(plan.Commands) > 0 {
 		if err := tmux.DefaultClient.PreflightRestartShellContext(ctx); err != nil {
 			return fmt.Errorf("preflight replacement shell: %w", err)
 		}
 	}
-	return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func prepareRestartLaunchPlan(

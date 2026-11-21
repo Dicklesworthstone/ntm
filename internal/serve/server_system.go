@@ -600,9 +600,13 @@ func scopedIdempotencyKey(r *http.Request) string {
 	}
 	if wfScope, ok := r.Context().Value(workflowProjectScopeKey{}).(workflowProjectScope); ok {
 		project, scopeErr, projectScoped = wfScope.projectDir, wfScope.err, true
-		projectMode = "workflow-configured"
-		if strings.TrimSpace(wfScope.configuredDir) == "" {
+		switch {
+		case wfScope.explicit:
+			projectMode = "workflow-explicit"
+		case strings.TrimSpace(wfScope.configuredDir) == "":
 			projectMode = "workflow-cwd-fallback"
+		default:
+			projectMode = "workflow-configured"
 		}
 	}
 	if jobScope, ok := r.Context().Value(jobHTTPReplayScopeKey{}).(jobHTTPReplayScope); ok {

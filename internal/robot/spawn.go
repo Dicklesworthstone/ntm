@@ -1350,11 +1350,15 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			slog.Warn("[robot.spawn] could not load hooks config", "session", opts.Session, "error", hookLoadErr)
 		}
 	}
+	piCount := 0
+	if spec, ok := opts.PluginAgents["pi"]; ok && spec.Count > 0 {
+		piCount = spec.Count
+	}
 	hookEnv := session.SpawnHookEnv(session.SpawnHookCounts{
 		CC: opts.CCCount, Cod: opts.CodCount, Gmi: opts.GmiCount, Agy: opts.AgyCount,
 		Grok: opts.GrokCount, Cursor: opts.CursorCount, Windsurf: opts.WindsurfCount,
 		Aider: opts.AiderCount, Opencode: opts.OcCount, Omp: opts.OmpCount,
-		Ollama: opts.OllamaCount, Total: totalAgents,
+		Pi: piCount, Ollama: opts.OllamaCount, Total: totalAgents,
 	})
 	if _, hookErr := session.RunPreSpawnHooks(ctx, hookExec, opts.Session, dir, hookEnv); hookErr != nil {
 		if cancelErr := spawnCancellationError(ctx, hookErr); cancelErr != nil {
@@ -2227,16 +2231,36 @@ func launchAgentWithModel(ctx context.Context, pane tmux.Pane, sessionName, agen
 		agent.Error = resilience.ErrCAAMClaudeIsolationConflict.Error()
 		return agent, resilience.ErrCAAMClaudeIsolationConflict
 	}
-	if err := tmux.SetPaneLaunchSpecContext(ctx, pane.ID, launchSpec); err != nil {
-		agent.Error = fmt.Sprintf("recording launch specification: %v", err)
+	if privateEnvironment == nil && len(cmd) > tmux.MaxTypedLaunchCommandBytes && pane.PID > 0 {
+		var envErr error
+		privateEnvironment, envErr = tmux.NewLaunchEnvironment(ctx, nil)
+		if envErr != nil {
+			agent.Error = fmt.Sprintf("preparing launch handoff: %v", envErr)
+			agent.StartupMs = time.Since(startTime).Milliseconds()
+			return agent, fmt.Errorf("preparing launch handoff: %w", envErr)
+		}
+		defer privateEnvironment.Close()
+	}
+	guardedCtx := tmux.WithExpectedPaneAgentType(ctx, launchSpec.AgentType)
+	var specErr error
+	if pane.PID > 0 {
+		specErr = tmux.DefaultClient.SetPaneLaunchSpecIfCurrentContext(guardedCtx, pane.ID, pane.PID, launchSpec)
+	} else {
+		specErr = tmux.SetPaneLaunchSpecContext(ctx, pane.ID, launchSpec)
+	}
+	if specErr != nil {
+		agent.Error = fmt.Sprintf("recording launch specification: %v", specErr)
 		agent.StartupMs = time.Since(startTime).Milliseconds()
-		return agent, fmt.Errorf("recording launch specification: %w", err)
+		return agent, fmt.Errorf("recording launch specification: %w", specErr)
 	}
 
-	// Use the agent-aware context path so cancellation covers staging and Enter.
+	// Use the guarded agent-aware context path when pane PID is known so
+	// concurrent respawn/retag races cannot receive the launch command.
 	var sendErr error
 	if privateEnvironment != nil {
-		sendErr = privateEnvironment.SendIfCurrent(ctx, pane.ID, cmd, true, tmux.AgentType(agentTypeShort(agentType)), pane.PID)
+		sendErr = privateEnvironment.SendIfCurrent(guardedCtx, pane.ID, cmd, true, tmux.AgentType(agentTypeShort(agentType)), pane.PID)
+	} else if pane.PID > 0 {
+		sendErr = tmux.DefaultClient.SendKeysForAgentIfCurrentContext(guardedCtx, pane.ID, cmd, true, tmux.AgentType(agentTypeShort(agentType)), pane.PID, true)
 	} else {
 		sendErr = tmux.SendKeysForAgentContext(ctx, pane.ID, cmd, true, tmux.AgentType(agentTypeShort(agentType)))
 	}

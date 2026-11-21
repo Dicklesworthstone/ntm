@@ -1,9 +1,12 @@
 package serve
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -232,25 +235,91 @@ type workflowProjectScopeKey struct{}
 type workflowProjectScope struct {
 	configuredDir string
 	projectDir    string
+	explicit      bool
 	err           error
 }
 
-// workflowProjectScopeMiddleware pins the default project directory for
-// /api/v1/workflows/* requests before Idempotency-Key lookup so PATCH /config
-// cannot cross-replay a cached response against a different project.
+type workflowBodyReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
+type workflowErrReader struct {
+	err error
+}
+
+func (r workflowErrReader) Read([]byte) (int, error) {
+	return 0, r.err
+}
+
+// workflowProjectScopeMiddleware pins the project directory for
+// /api/v1/workflows/* requests before Idempotency-Key lookup. Explicit JSON
+// body or query project_dir targets pin their own canonical path (matching
+// resolvePersistenceProjectDir precedence, so PATCH /api/v1/config does not
+// break retries for explicit targets), while implicit requests pin the current
+// server/CWD default (so PATCH /api/v1/config cannot cross-replay cached
+// responses against a different default project).
 func (s *Server) workflowProjectScopeMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/workflows" && !strings.HasPrefix(r.URL.Path, "/api/v1/workflows/") {
 			next.ServeHTTP(w, r)
 			return
 		}
-		scope := workflowProjectScope{configuredDir: s.projectDirSnapshot()}
-		root := strings.TrimSpace(scope.configuredDir)
-		if root == "" {
-			root, scope.err = os.Getwd()
+		var explicitDir string
+		var bodyReadErr error
+		if r.Body != nil && r.Body != http.NoBody &&
+			(r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete) {
+			origBody := r.Body
+			raw, readErr := io.ReadAll(io.LimitReader(origBody, maxServePersistenceBodyBytes+1))
+			if len(raw) > maxServePersistenceBodyBytes {
+				// Leave oversized bodies intact for the handler's MaxBytesReader.
+				r.Body = workflowBodyReadCloser{
+					Reader: io.MultiReader(bytes.NewReader(raw), origBody),
+					Closer: origBody,
+				}
+			} else if readErr != nil {
+				_ = origBody.Close()
+				bodyReadErr = readErr
+				r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(raw), workflowErrReader{err: readErr}))
+			} else {
+				_ = origBody.Close()
+				r.Body = io.NopCloser(bytes.NewReader(raw))
+				if len(bytes.TrimSpace(raw)) > 0 {
+					var probe struct {
+						ProjectDir string `json:"project_dir"`
+					}
+					if json.Unmarshal(raw, &probe) == nil {
+						explicitDir = strings.TrimSpace(probe.ProjectDir)
+					}
+				}
+			}
 		}
-		if scope.err == nil && strings.TrimSpace(root) != "" {
-			scope.projectDir, scope.err = ResolveProjectDir(root)
+		if explicitDir == "" {
+			explicitDir = strings.TrimSpace(firstQueryParam(r, "project_dir"))
+		}
+		if explicitDir == "" {
+			explicitDir = strings.TrimSpace(firstQueryParam(r, "project"))
+		}
+
+		var scope workflowProjectScope
+		if bodyReadErr != nil {
+			scope.err = bodyReadErr
+		} else if explicitDir != "" {
+			scope.explicit = true
+			if !filepath.IsAbs(explicitDir) {
+				scope.err = errors.New("explicit workflow project_dir must be an absolute path")
+			} else {
+				scope.projectDir, scope.err = ResolveProjectDir(explicitDir)
+			}
+		} else {
+			scope.configuredDir = s.projectDirSnapshot()
+			root := strings.TrimSpace(scope.configuredDir)
+			if root == "" {
+				root, scope.err = os.Getwd()
+			}
+			if scope.err == nil && strings.TrimSpace(root) != "" {
+				scope.projectDir, scope.err = ResolveProjectDir(root)
+			}
 		}
 		ctx := context.WithValue(r.Context(), workflowProjectScopeKey{}, scope)
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -505,33 +574,60 @@ type workflowRunKey struct {
 type activeWorkflowRunKey struct{}
 
 type activeWorkflowRun struct {
-	jobID      string
 	workflow   string
 	projectDir string
 	session    string
 	done       chan struct{}
 	doneOnce   sync.Once
-	stopMu     sync.Mutex
-	stopReason string
+
+	mu            sync.Mutex
+	jobID         string
+	cancel        context.CancelFunc
+	stopRequested bool
+	stopReason    string
 }
 
-func (a *activeWorkflowRun) setStopReason(reason string) {
+func (a *activeWorkflowRun) getJobID() string {
 	if a == nil {
-		return
+		return ""
 	}
-	a.stopMu.Lock()
-	if a.stopReason == "" {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.jobID
+}
+
+func (a *activeWorkflowRun) bindJob(jobID string) bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	a.jobID = jobID
+	stopped := a.stopRequested
+	a.mu.Unlock()
+	return stopped
+}
+
+func (a *activeWorkflowRun) requestStop(reason string) (string, context.CancelFunc) {
+	if a == nil {
+		return "", nil
+	}
+	a.mu.Lock()
+	a.stopRequested = true
+	if a.stopReason == "" && reason != "" {
 		a.stopReason = reason
 	}
-	a.stopMu.Unlock()
+	jobID := a.jobID
+	cancelFn := a.cancel
+	a.mu.Unlock()
+	return jobID, cancelFn
 }
 
 func (a *activeWorkflowRun) getStopReason() string {
 	if a == nil {
 		return ""
 	}
-	a.stopMu.Lock()
-	defer a.stopMu.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	return a.stopReason
 }
 
@@ -557,14 +653,14 @@ func (e *workflowAlreadyRunningError) Error() string {
 	return fmt.Sprintf("a workflow is already active for session %q (job %s)", e.session, e.jobID)
 }
 
-func (s *Server) reserveWorkflowRun(workflowName, projectDir, session string, rejectDuplicate bool) (*activeWorkflowRun, error) {
+func (s *Server) reserveWorkflowRun(workflowName, projectDir, session string, cancel context.CancelFunc, rejectDuplicate bool) (*activeWorkflowRun, error) {
 	key := workflowRunKey{projectDir: projectDir, session: session}
 	s.workflowRunsMu.Lock()
 	defer s.workflowRunsMu.Unlock()
 	if rejectDuplicate && len(s.workflowRuns[key]) > 0 {
 		existing := s.workflowRuns[key][0]
 		return nil, &workflowAlreadyRunningError{
-			jobID:    existing.jobID,
+			jobID:    existing.getJobID(),
 			workflow: existing.workflow,
 			session:  session,
 		}
@@ -577,18 +673,25 @@ func (s *Server) reserveWorkflowRun(workflowName, projectDir, session string, re
 		projectDir: projectDir,
 		session:    session,
 		done:       make(chan struct{}),
+		cancel:     cancel,
 	}
 	s.workflowRuns[key] = append(s.workflowRuns[key], active)
 	return active, nil
 }
 
-func (s *Server) bindWorkflowRunJob(active *activeWorkflowRun, jobID string) {
+func (s *Server) bindWorkflowRunJob(active *activeWorkflowRun, jobID string) bool {
+	if active == nil || jobID == "" {
+		return false
+	}
+	return active.bindJob(jobID)
+}
+
+func (s *Server) recordAcceptedWorkflowJob(active *activeWorkflowRun, jobID string) {
 	if active == nil || jobID == "" {
 		return
 	}
 	key := workflowRunKey{projectDir: active.projectDir, session: active.session}
 	s.workflowRunsMu.Lock()
-	active.jobID = jobID
 	if s.lastWorkflowJob == nil {
 		s.lastWorkflowJob = make(map[workflowRunKey]string)
 	}
@@ -637,7 +740,7 @@ func (s *Server) finishWorkflowRunByJobID(jobID string) {
 	for key, list := range s.workflowRuns {
 		kept := list[:0]
 		for _, item := range list {
-			if item.jobID == jobID {
+			if item.getJobID() == jobID {
 				finished = append(finished, item)
 				if s.lastWorkflowJob == nil {
 					s.lastWorkflowJob = make(map[workflowRunKey]string)
@@ -670,7 +773,7 @@ func (s *Server) activeWorkflowRuns(projectDir, session string) []*activeWorkflo
 	return append([]*activeWorkflowRun(nil), list...)
 }
 
-func (s *Server) workflowRunStatusSnapshot(projectDir, session string) (*activeWorkflowRun, *Job) {
+func (s *Server) workflowRunStatusSnapshot(projectDir, session string) (*activeWorkflowRun, string, *Job) {
 	key := workflowRunKey{projectDir: projectDir, session: session}
 	s.workflowRunsMu.Lock()
 	var active *activeWorkflowRun
@@ -679,7 +782,7 @@ func (s *Server) workflowRunStatusSnapshot(projectDir, session string) (*activeW
 	}
 	jobID := ""
 	if active != nil {
-		jobID = active.jobID
+		jobID = active.getJobID()
 	} else {
 		jobID = s.lastWorkflowJob[key]
 	}
@@ -688,7 +791,7 @@ func (s *Server) workflowRunStatusSnapshot(projectDir, session string) (*activeW
 	if jobID != "" && s.jobStore != nil {
 		job = s.jobStore.Get(jobID)
 	}
-	return active, job
+	return active, jobID, job
 }
 
 func workflowStateStoreForProject(projectDir string) *workflow.StateStore {
@@ -963,14 +1066,19 @@ func (s *Server) jobWorkflowRun(ctx context.Context, params map[string]interface
 	runner.Mu.Unlock()
 
 	// When the managed job's parent context was cancelled (via /workflows/{session}/stop,
-	// DELETE /api/v1/jobs/{id}, or server shutdown) or timed out, durably pause the
-	// checkpoint only if this runner actually owned it, so a rejected/unowned job can
-	// never mutate or leak another run's checkpoint.
-	if ctx.Err() != nil {
+	// DELETE /api/v1/jobs/{id}, or server shutdown) OR the request-scoped workflow
+	// timeout elapsed, durably pause the checkpoint only if this runner actually
+	// owned it, so a rejected/unowned job can never mutate or leak another run's
+	// checkpoint.
+	if runCtx.Err() != nil {
 		if ownedCheckpoint {
 			pauseReason := "cancelled via jobs API"
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				pauseReason = "job execution timeout elapsed"
+			if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+				if cause := context.Cause(runCtx); cause != nil && !errors.Is(cause, context.DeadlineExceeded) {
+					pauseReason = cause.Error()
+				} else {
+					pauseReason = "job execution timeout elapsed"
+				}
 			}
 			if active, ok := ctx.Value(activeWorkflowRunKey{}).(*activeWorkflowRun); ok {
 				if custom := strings.TrimSpace(active.getStopReason()); custom != "" {
@@ -988,8 +1096,12 @@ func (s *Server) jobWorkflowRun(ctx context.Context, params map[string]interface
 			}
 			pauseCancel()
 		}
-		if runErr == nil || !errors.Is(runErr, ctx.Err()) {
-			runErr = errors.Join(runErr, ctx.Err())
+		if ctx.Err() != nil {
+			if runErr == nil || !errors.Is(runErr, ctx.Err()) {
+				runErr = errors.Join(runErr, ctx.Err())
+			}
+		} else if runErr == nil {
+			runErr = context.Cause(runCtx)
 		}
 	}
 
@@ -1139,8 +1251,27 @@ func (s *Server) handleWorkflowsRunV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Non-dry-run: validate config, live session/pane assignment, and durable
-	// checkpoint preconditions before accepting a managed workflow job.
+	// Non-dry-run: check for an already-active managed workflow first so callers
+	// receive a deterministic 409 conflict instead of a misleading 404/checkpoint
+	// error while another run is live; atomic duplicate rejection still happens
+	// inside submitJob/reserveWorkflowRun.
+	if activeRuns := s.activeWorkflowRuns(projectDir, sessName); len(activeRuns) > 0 {
+		existing := activeRuns[0]
+		runningErr := &workflowAlreadyRunningError{
+			jobID:    existing.getJobID(),
+			workflow: existing.workflow,
+			session:  sessName,
+		}
+		writeErrorResponse(w, http.StatusConflict, ErrCodeConflict, runningErr.Error(), map[string]interface{}{
+			"job_id":   runningErr.jobID,
+			"workflow": runningErr.workflow,
+			"session":  runningErr.session,
+		}, reqID)
+		return
+	}
+
+	// Validate config, live session/pane assignment, and durable checkpoint
+	// preconditions before accepting a managed workflow job.
 	if _, err := s.loadWorkflowConfig(projectDir); err != nil {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil, reqID)
 		return
@@ -1283,7 +1414,7 @@ func (s *Server) handleWorkflowsStatusV1(w http.ResponseWriter, r *http.Request)
 	// Snapshot live job tracking BEFORE reading disk checkpoint so a worker
 	// finishing between the two reads cannot pair a terminal job status with a
 	// stale pre-completion/pre-pause checkpoint.
-	active, job := s.workflowRunStatusSnapshot(projectDir, sessName)
+	active, activeJobID, job := s.workflowRunStatusSnapshot(projectDir, sessName)
 	store := workflowStateStoreForProject(projectDir)
 	state, err := store.Load(sessName)
 	if err != nil {
@@ -1303,7 +1434,7 @@ func (s *Server) handleWorkflowsStatusV1(w http.ResponseWriter, r *http.Request)
 	}
 	if active != nil {
 		resp.Running = true
-		resp.JobID = active.jobID
+		resp.JobID = activeJobID
 		resp.Workflow = active.workflow
 	}
 	if job != nil {
@@ -1320,10 +1451,10 @@ func (s *Server) handleWorkflowsStatusV1(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	if state != nil {
-		// While a newly queued/restarted workflow is active, do not let a
-		// superseded checkpoint from a completed or different workflow clobber
-		// the active run's identity or completion flag.
-		stalePrior := active != nil && (state.Completed || (active.workflow != "" && state.WorkflowName != "" && state.WorkflowName != active.workflow))
+		// Do not let a superseded checkpoint from a different workflow or an
+		// earlier completed run clobber a newer active, cancelled, or failed job.
+		stalePrior := (resp.Workflow != "" && state.WorkflowName != "" && state.WorkflowName != resp.Workflow) ||
+			(state.Completed && (active != nil || (job != nil && job.Status != JobStatusCompleted)))
 		if !stalePrior {
 			populateWorkflowCheckpointFields(&resp, store, state)
 		}
@@ -1390,10 +1521,10 @@ func (s *Server) handleWorkflowsTriggerV1(w http.ResponseWriter, r *http.Request
 		Stage:      decision.Stage,
 		Decision:   decision,
 	}
-	if active, job := s.workflowRunStatusSnapshot(projectDir, sessName); active != nil || job != nil {
+	if active, activeJobID, job := s.workflowRunStatusSnapshot(projectDir, sessName); active != nil || job != nil {
 		if active != nil {
 			resp.Running = true
-			resp.JobID = active.jobID
+			resp.JobID = activeJobID
 			resp.Workflow = active.workflow
 		}
 		if job != nil {
@@ -1447,11 +1578,21 @@ func (s *Server) handleWorkflowsStopV1(w http.ResponseWriter, r *http.Request) {
 		primary := activeRuns[0]
 		stoppedAny := false
 		for _, run := range activeRuns {
-			run.setStopReason(reason)
-			if _, cancelErr := s.cancelJob(run.jobID); cancelErr == nil {
+			jobID, cancelFn := run.requestStop(reason)
+			if jobID != "" {
+				if _, cancelErr := s.cancelJob(jobID); cancelErr == nil {
+					stoppedAny = true
+				} else if errors.Is(cancelErr, errJobNotFound) && cancelFn != nil {
+					cancelFn()
+					stoppedAny = true
+				} else if !errors.Is(cancelErr, errJobNotCancellable) && !errors.Is(cancelErr, errJobNotFound) {
+					slog.Warn("workflow stop cancel persistence warning", "job_id", jobID, "session", sessName, "error", cancelErr)
+				}
+			} else if cancelFn != nil {
+				// Admission has reserved the slot before binding a job ID; cancel
+				// the context directly so admission unwinds immediately.
+				cancelFn()
 				stoppedAny = true
-			} else if !errors.Is(cancelErr, errJobNotCancellable) && !errors.Is(cancelErr, errJobNotFound) {
-				slog.Warn("workflow stop cancel persistence warning", "job_id", run.jobID, "session", sessName, "error", cancelErr)
 			}
 		}
 
@@ -1471,7 +1612,8 @@ func (s *Server) handleWorkflowsStopV1(w http.ResponseWriter, r *http.Request) {
 			pauseCtx, pauseCancel := context.WithTimeout(r.Context(), 2*time.Second)
 			if unlock, lockErr := store.Acquire(pauseCtx, sessName); lockErr == nil {
 				if loaded, loadErr := store.Load(sessName); loadErr == nil && loaded != nil {
-					if !loaded.Completed && !loaded.Paused {
+					if !loaded.Completed && !loaded.Paused &&
+						(primary.workflow == "" || loaded.WorkflowName == "" || loaded.WorkflowName == primary.workflow) {
 						_ = store.Pause(loaded, reason, time.Now().UTC())
 					}
 					state = loaded
@@ -1484,13 +1626,17 @@ func (s *Server) handleWorkflowsStopV1(w http.ResponseWriter, r *http.Request) {
 			state, _ = store.Load(sessName)
 		}
 
-		job := s.jobStore.Get(primary.jobID)
+		primaryJobID := primary.getJobID()
+		var job *Job
+		if primaryJobID != "" && s.jobStore != nil {
+			job = s.jobStore.Get(primaryJobID)
+		}
 		resp := WorkflowControlEnvelopeResponse{
 			Action:                "stop",
 			Workflow:              primary.workflow,
 			Session:               sessName,
 			ProjectDir:            projectDir,
-			JobID:                 primary.jobID,
+			JobID:                 primaryJobID,
 			StoppedJob:            stoppedAny,
 			Running:               !allStopped,
 			CancellationRequested: !allStopped,
@@ -1502,7 +1648,8 @@ func (s *Server) handleWorkflowsStopV1(w http.ResponseWriter, r *http.Request) {
 			resp.JobStatus = JobStatusCancelled
 		}
 		if state != nil {
-			stalePrior := !allStopped && (state.Completed || (primary.workflow != "" && state.WorkflowName != "" && state.WorkflowName != primary.workflow))
+			stalePrior := (primary.workflow != "" && state.WorkflowName != "" && state.WorkflowName != primary.workflow) ||
+				(state.Completed && (!allStopped || job == nil || job.Status != JobStatusCompleted))
 			if !stalePrior {
 				populateWorkflowCheckpointFields(&resp, store, state)
 			}
@@ -1556,7 +1703,7 @@ func (s *Server) handleWorkflowsStopV1(w http.ResponseWriter, r *http.Request) {
 		Session:    sessName,
 		ProjectDir: projectDir,
 	}
-	if _, job := s.workflowRunStatusSnapshot(projectDir, sessName); job != nil {
+	if _, _, job := s.workflowRunStatusSnapshot(projectDir, sessName); job != nil {
 		resp.JobID = job.ID
 		resp.JobStatus = job.Status
 		resp.Job = job

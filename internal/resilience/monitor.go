@@ -25,7 +25,7 @@ import (
 // Protected by hooksMu for concurrent access from spawned goroutines.
 var (
 	hooksMu                  sync.RWMutex
-	sendKeysFn               = tmux.SendKeysContext
+	sendKeysFn               func(ctx context.Context, target, keys string, enter bool) error
 	buildPaneCmdFn           = tmux.BuildPaneCommand
 	prepareLaunchCommandFn   = PrepareLaunchCommand
 	readPaneLaunchSpecFn     = tmux.ReadPaneLaunchSpecContext
@@ -51,6 +51,25 @@ var (
 	// come from here.
 	recordLifecycleEventFn = events.Emit
 )
+
+// defaultResilienceSendKeys fences crash auto-restart delivery against
+// concurrent pane respawn/retag races and routes commands exceeding tmux's
+// typed-input limit through a private FIFO handoff when the pane PID is known.
+func defaultResilienceSendKeys(ctx context.Context, pane tmux.Pane, target, keys string, enter bool) error {
+	if pane.PID > 0 {
+		guardedCtx := tmux.WithObservedPaneAgentType(ctx, pane)
+		if len(keys) > tmux.MaxTypedLaunchCommandBytes {
+			handoff, err := tmux.NewLaunchEnvironment(guardedCtx, nil)
+			if err != nil {
+				return err
+			}
+			defer handoff.Close()
+			return handoff.SendIfCurrent(guardedCtx, target, keys, enter, pane.Type, pane.PID)
+		}
+		return tmux.DefaultClient.SendKeysForAgentIfCurrentContext(guardedCtx, target, keys, enter, pane.Type, pane.PID, true)
+	}
+	return tmux.SendKeysContext(ctx, target, keys, enter)
+}
 
 // recordAgentLifecycle durably records one crash or restart for a pane.
 func (m *Monitor) recordAgentLifecycle(eventType events.EventType, data events.AgentLifecycleData) {
@@ -1043,9 +1062,15 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 	attemptRestartCount := currentAgent.RestartCount
 	m.mu.Unlock()
 
-	if err := sendFunc(ctx, agent.PaneID, paneCmd, true); err != nil {
+	var sendErr error
+	if sendFunc != nil {
+		sendErr = sendFunc(ctx, agent.PaneID, paneCmd, true)
+	} else {
+		sendErr = defaultResilienceSendKeys(ctx, *latestPane, agent.PaneID, paneCmd, true)
+	}
+	if sendErr != nil {
 		log.Printf("[resilience] Failed to restart agent %s (attempt %d/%d): %v",
-			agent.PaneID, attemptRestartCount, m.cfg.Resilience.MaxRestarts, err)
+			agent.PaneID, attemptRestartCount, m.cfg.Resilience.MaxRestarts, sendErr)
 		return
 	}
 

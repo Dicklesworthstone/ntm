@@ -592,7 +592,7 @@ func (e *Executor) executeForeachIterationsSequential(ctx context.Context, paren
 		// bd-qeatk: a prior run already completed this iteration; skip
 		// re-dispatch so commands/prompts don't duplicate side effects.
 		if _, done := completedIters[loopIterationID(parent.ID, plan.Index)]; done {
-			results = append(results, e.resumeCompletedForeachIteration(plan))
+			results = append(results, e.resumeCompletedForeachIteration(parent, plan))
 			progress.iterationFinished()
 			continue
 		}
@@ -668,7 +668,7 @@ func (e *Executor) executeForeachIterationsParallel(ctx context.Context, parent 
 		}
 		// bd-qeatk: prior-run completion suppresses re-dispatch on resume.
 		if _, done := completedIters[loopIterationID(parent.ID, plan.Index)]; done {
-			results[i] = e.resumeCompletedForeachIteration(plan)
+			results[i] = e.resumeCompletedForeachIteration(parent, plan)
 			progress.iterationFinished()
 			continue
 		}
@@ -707,12 +707,13 @@ func (e *Executor) executeForeachIterationsParallel(ctx context.Context, parent 
 			}
 			iterResult := e.executeForeachIteration(runCtx, parent, workflow, plan, onError)
 			if isBreak() && foreachIterationCancelled(iterResult) {
+				iterResult.Skipped = true
 				iterResult.SkipKind = SkipKindForeachBreak
 				iterResult.SkipReason = "loop break"
 				iterResult.Error = ""
 			}
 			results[i] = iterResult
-			if !iterResult.failed() && iterResult.Control != LoopControlBreak {
+			if !iterResult.failed() && iterResult.SkipKind != SkipKindForeachBreak && iterResult.Control != LoopControlBreak {
 				e.markForeachIterationCompleted(parent.ID, plan.Index, len(plans))
 			}
 			if iterResult.Control == LoopControlBreak {
@@ -1954,13 +1955,32 @@ func resumeCompletedForeachIteration(plan foreachIterationPlan) foreachIteration
 	}
 }
 
-func (e *Executor) resumeCompletedForeachIteration(plan foreachIterationPlan) foreachIterationResult {
+func (e *Executor) resumeCompletedForeachIteration(parent *Step, plan foreachIterationPlan) foreachIterationResult {
 	result := resumeCompletedForeachIteration(plan)
 	if e == nil || e.state == nil || len(plan.Steps) == 0 {
 		return result
 	}
+	maxRounds := 1
+	if parent != nil {
+		if mr, err := e.resolveForeachMaxRounds(parent); err == nil && mr > 1 {
+			maxRounds = mr
+		}
+	}
 	e.stateMu.RLock()
 	defer e.stateMu.RUnlock()
+	if maxRounds > 1 {
+		for round := 1; round <= maxRounds; round++ {
+			for _, step := range plan.Steps {
+				roundStepID := fmt.Sprintf("%s_round%d", step.ID, round)
+				if prior, ok := e.state.Steps[roundStepID]; ok {
+					result.Results = append(result.Results, prior)
+				}
+			}
+		}
+		if len(result.Results) > 0 {
+			return result
+		}
+	}
 	for _, step := range plan.Steps {
 		if prior, ok := e.state.Steps[step.ID]; ok {
 			result.Results = append(result.Results, prior)

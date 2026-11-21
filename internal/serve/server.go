@@ -157,6 +157,11 @@ type Server struct {
 	// performing its initial asynchronous refresh ("warming_up"), up to date
 	// ("ready"), or degraded ("degraded"). Guarded by mu.
 	projectionState string
+
+	// shutdownCh is closed when Start begins shutting down or Stop is called,
+	// waking long-lived SSE streams so http.Server.Shutdown returns promptly.
+	shutdownCh   chan struct{}
+	shutdownOnce sync.Once
 }
 
 // Config holds server configuration.
@@ -391,6 +396,7 @@ func New(cfg Config) *Server {
 		auditStore:         cfg.AuditStore,
 		webUI:              cfg.WebUI,
 		projectionState:    initialProjectionState,
+		shutdownCh:         make(chan struct{}),
 		sseClients:         make(map[chan events.BusEvent]struct{}),
 		corsAllowedOrigins: cfg.AllowedOrigins,
 		jwksCache:          newJWKSCache(cfg.Auth.OIDC.CacheTTL),
@@ -514,9 +520,6 @@ func (s *Server) buildRouter() chi.Router {
 	// both wait for input while configuration changes in another request.
 	// Validation still follows each pipeline route's permission check.
 	r.Use(s.pipelineProjectScopeMiddleware)
-	// Pin default project scope for /api/v1/workflows/* before Idempotency-Key
-	// replay lookup so PATCH /api/v1/config cannot cross-replay cached responses.
-	r.Use(s.workflowProjectScopeMiddleware)
 	// Jobs select their effective destination from the eventual JSON body.
 	// Pin configuration and cwd before redaction can wait on that body.
 	r.Use(s.jobProjectSelectionMiddleware)
@@ -524,6 +527,11 @@ func (s *Server) buildRouter() chi.Router {
 	// redact response content. Inert unless Config.Redaction was supplied (see
 	// that field): no redaction config means untouched request/response bytes.
 	r.Use(s.redactionMiddleware)
+	// Pin project scope for /api/v1/workflows/* (explicit query/body project_dir
+	// or server default) after redaction and before Idempotency-Key replay lookup
+	// so PATCH /api/v1/config cannot cross-replay default-scoped responses or
+	// break retries for explicit project_dir requests.
+	r.Use(s.workflowProjectScopeMiddleware)
 	// Freeze mail and reservation requests' projects before replay lookup.
 	// Validation errors follow each route's permission check.
 	r.Use(s.mailProjectScopeMiddleware)
@@ -872,16 +880,40 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	// Wait for context cancellation or error
+	defer s.signalShutdown()
 	select {
 	case <-ctx.Done():
 		log.Println("Shutting down server...")
+		s.signalShutdown()
 		s.jobExecutor.closeAdmission()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return s.server.Shutdown(shutdownCtx)
+		if err := s.server.Shutdown(shutdownCtx); err != nil {
+			_ = s.server.Close()
+			return err
+		}
+		return nil
 	case err := <-errCh:
 		return err
 	}
+}
+
+func (s *Server) signalShutdown() {
+	if s == nil {
+		return
+	}
+	s.shutdownOnce.Do(func() {
+		if s.shutdownCh != nil {
+			close(s.shutdownCh)
+		}
+	})
+}
+
+func (s *Server) shutdownChan() <-chan struct{} {
+	if s == nil {
+		return nil
+	}
+	return s.shutdownCh
 }
 
 func (s *Server) ensureWSHubRunning() {
@@ -1312,6 +1344,7 @@ func parseCSVParam(value string) []string {
 
 // Stop cleans up resources used by the Server.
 func (s *Server) Stop() {
+	s.signalShutdown()
 	if s.jobStore != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := s.drainJobWorkers(ctx); err != nil {

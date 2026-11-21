@@ -20,6 +20,7 @@ type StatusBarOptions struct {
 	GeminiCount      int
 	GrokCount        int
 	OmpCount         int
+	PiCount          int
 	OpencodeCount    int
 	AntigravityCount int
 	UserCount        int
@@ -110,6 +111,7 @@ func renderStatusLeft(t theme.Theme, base lipgloss.Style, opts StatusBarOptions)
 		{"GMI", t.Gemini, opts.GeminiCount},
 		{"GRK", t.Pink, opts.GrokCount},
 		{"OMP", t.Sky, opts.OmpCount},
+		{"PI", t.Sapphire, opts.PiCount},
 		{"OC", ocColor, opts.OpencodeCount},
 		{"AGY", t.Lavender, opts.AntigravityCount},
 	}

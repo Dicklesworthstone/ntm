@@ -1586,12 +1586,15 @@ case "$1" in
       echo "can't find session" >&2
       exit 1
     fi ;;
+  new-session)
+    : > "$NTM_SESSION_TEST_RECORD_DIR/restored" ;;
   list-sessions) printf 'saved_NTM_SEP_1_NTM_SEP_0\n' ;;
   list-windows) echo 0 ;;
   list-panes)
     i=0
     while [ "$i" -lt "$NTM_SESSION_TEST_PANES" ]; do
       type=cod
+      if [ -f "$NTM_SESSION_TEST_RECORD_DIR/restored" ]; then type=''; fi
       if [ -f "$NTM_SESSION_TEST_RECORD_DIR/type%$i" ]; then type=$(cat "$NTM_SESSION_TEST_RECORD_DIR/type%$i"); fi
       printf '%%%s_NTM_SEP_%s_NTM_SEP__NTM_SEP_bash_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_%s_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$i" "$i" "$NTM_SESSION_TEST_PID" "$type"
       i=$((i + 1))
@@ -1599,6 +1602,7 @@ case "$1" in
   display-message)
     if [ "$5" = '[#{@ntm_agent_type}]' ]; then
       type=cod
+      if [ -f "$NTM_SESSION_TEST_RECORD_DIR/restored" ]; then type=''; fi
       if [ -f "$NTM_SESSION_TEST_RECORD_DIR/type$4" ]; then type=$(cat "$NTM_SESSION_TEST_RECORD_DIR/type$4"); fi
       printf '[%s]\n' "$type"
     else

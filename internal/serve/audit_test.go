@@ -1034,3 +1034,45 @@ func TestAuditStoreQueryFiltersPaginationAndMissingDB(t *testing.T) {
 		t.Fatalf("empty match JSON = %s, want []", rawJSON)
 	}
 }
+
+func TestAuditStore_CloseConcurrentWithRecord(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	store, err := NewAuditStore(AuditStoreConfig{
+		JSONLPath:       filepath.Join(tmpDir, "audit.jsonl"),
+		Retention:       24 * time.Hour,
+		CleanupInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewAuditStore: %v", err)
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			<-start
+			for i := 0; i < 40; i++ {
+				_ = store.Record(&AuditRecord{
+					RequestID:  fmt.Sprintf("req-%d-%d", worker, i),
+					UserID:     "alice",
+					Role:       RoleAdmin,
+					Action:     AuditActionExecute,
+					Resource:   "workflows",
+					Method:     "POST",
+					Path:       "/api/v1/workflows/test/run",
+					StatusCode: 202,
+				})
+			}
+		}(g)
+	}
+
+	close(start)
+	time.Sleep(2 * time.Millisecond)
+	if err := store.Close(); err != nil {
+		t.Fatalf("AuditStore.Close during concurrent Record: %v", err)
+	}
+	wg.Wait()
+}

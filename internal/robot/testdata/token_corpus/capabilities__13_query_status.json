@@ -260,6 +260,101 @@
       ]
     },
     {
+      "name": "action-status",
+      "flag": "--robot-action-status",
+      "category": "control",
+      "summary": "Inspect durable robot operation or wait state.",
+      "description": "Inspect the current lifecycle state of any durable robot operation (--op-id / Idempotency-Key) or active --robot-wait handle by request ID: source, kind, status, terminal/cancellable flags, timestamps, and recorded outcome.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:action-status:v1",
+      "schema_type": "action_status",
+      "schema_source": "built_in",
+      "parameters": [
+        {
+          "name": "request-id",
+          "flag": "--robot-action-status",
+          "type": "string",
+          "required": false,
+          "description": "Request/operation ID (or pass via --request-id)"
+        },
+        {
+          "name": "request-id-flag",
+          "flag": "--request-id",
+          "type": "string",
+          "required": false,
+          "description": "Explicit request/operation ID selector"
+        }
+      ],
+      "examples": [
+        "ntm --robot-action-status=deploy-42",
+        "ntm --robot-action-status --request-id=wait-7"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-action-status"
+        }
+      ]
+    },
+    {
+      "name": "coordinator",
+      "flag": "--robot-coordinator",
+      "category": "control",
+      "summary": "Inspect session coordinator and digests.",
+      "description": "Inspect session coordinator agent states, generate or send coordination digests, or detect active file reservation conflicts.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:coordinator:v1",
+      "schema_type": "coordinator",
+      "schema_source": "built_in",
+      "sections": [
+        "sessions",
+        "coordination",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "session",
+          "flag": "--robot-coordinator",
+          "type": "string",
+          "required": true,
+          "description": "Session name"
+        },
+        {
+          "name": "coordinator-action",
+          "flag": "--coordinator-action",
+          "type": "string",
+          "required": false,
+          "default": "status",
+          "description": "Coordinator action: status, digest, conflicts"
+        },
+        {
+          "name": "coordinator-send-digest",
+          "flag": "--coordinator-send-digest",
+          "type": "bool",
+          "required": false,
+          "default": "false",
+          "description": "Send generated coordinator digest via Agent Mail when --coordinator-action=digest"
+        }
+      ],
+      "examples": [
+        "ntm --robot-coordinator=myproject",
+        "ntm --robot-coordinator=myproject --coordinator-action=digest",
+        "ntm --robot-coordinator=myproject --coordinator-action=conflicts"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-coordinator"
+        }
+      ]
+    },
+    {
       "name": "beads-list",
       "flag": "--robot-beads-list",
       "category": "beads",
@@ -467,6 +562,68 @@
         {
           "type": "cli",
           "endpoint": "ntm --robot-dcg-status"
+        }
+      ]
+    },
+    {
+      "name": "hooks",
+      "flag": "--robot-hooks",
+      "category": "utility",
+      "summary": "Inspect or run repository git hooks.",
+      "description": "Inspect installed repository git hooks or execute pre-commit, pre-push, commit-msg, post-commit, or post-checkout checks.",
+      "output_formats": [
+        "json"
+      ],
+      "default_output_format": "json",
+      "schema_id": "ntm:robot:hooks:v1",
+      "schema_type": "hooks",
+      "schema_source": "built_in",
+      "sections": [
+        "source_health",
+        "next_actions"
+      ],
+      "parameters": [
+        {
+          "name": "hooks-action",
+          "flag": "--hooks-action",
+          "type": "string",
+          "required": false,
+          "default": "status",
+          "description": "Hooks action: status (default) or run"
+        },
+        {
+          "name": "hooks-type",
+          "flag": "--hooks-type",
+          "type": "string",
+          "required": false,
+          "default": "pre-commit",
+          "description": "Hook type for --hooks-action=run: pre-commit, pre-push, commit-msg, post-commit, post-checkout"
+        },
+        {
+          "name": "hooks-fail-on-warning",
+          "flag": "--hooks-fail-on-warning",
+          "type": "bool",
+          "required": false,
+          "default": "true",
+          "description": "Treat UBS warnings as errors when running pre-commit"
+        },
+        {
+          "name": "project",
+          "flag": "--project",
+          "type": "string",
+          "required": false,
+          "description": "Repository directory to inspect or run hooks against (defaults to CWD)"
+        }
+      ],
+      "examples": [
+        "ntm --robot-hooks",
+        "ntm --robot-hooks --hooks-action=run --hooks-type=pre-commit",
+        "ntm --robot-hooks --hooks-action=run --hooks-type=pre-push --project=/data/projects/ntm"
+      ],
+      "transports": [
+        {
+          "type": "cli",
+          "endpoint": "ntm --robot-hooks"
         }
       ]
     },
@@ -946,6 +1103,23 @@
       "paginated_reason": "bounded: one ensemble run echo with its nested mode list"
     },
     {
+      "name": "action-status",
+      "paginated": false,
+      "paginated_reason": "bounded: status and warning list for a single request or operation ID"
+    },
+    {
+      "name": "coordinator",
+      "paginated": false,
+      "paginated_reason": "bounded: per-pane coordinator state, digest summary, and active conflicts for a single session",
+      "consumer_guidance": {
+        "intended_use": "Inspect session coordinator agent status, generate or send coordination digests, or list active file reservation conflicts",
+        "summary_hint": "Read agents/runtime/config for status, digest/digest_sent for digest, and conflicts/conflict_count for conflicts"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded to panes, digest summary, and active file reservation conflicts for one session"
+      }
+    },
+    {
       "name": "beads-list",
       "paginated": false,
       "paginated_reason": "bounded via --limit truncation; total reported, no offset paging",
@@ -966,7 +1140,9 @@
       }
     },
     {
-      "name": "cass-status"
+      "name": "cass-status",
+      "paginated": false,
+      "paginated_reason": "bounded: fixed capability feature and connector sets from CASS"
     },
     {
       "name": "pipeline-status"
@@ -983,6 +1159,18 @@
       "name": "dcg-status"
     },
     {
+      "name": "hooks",
+      "paginated": false,
+      "paginated_reason": "bounded: 5 managed git hook slots or a single hook execution report",
+      "consumer_guidance": {
+        "intended_use": "Inspect installed repository git hooks or execute pre-commit, pre-push, commit-msg, post-commit, or post-checkout checks",
+        "summary_hint": "Read hooks and installed_count on status, or passed, pre_commit_result, and check_result on run"
+      },
+      "boundedness": {
+        "truncation_behavior": "Bounded to the 5 managed git hook slots or a single hook execution report"
+      }
+    },
+    {
       "name": "jfp-status"
     },
     {
@@ -996,7 +1184,9 @@
       "paginated_reason": "bounded: configured proxy routes plus recent failover events"
     },
     {
-      "name": "quota-status"
+      "name": "quota-status",
+      "paginated": false,
+      "paginated_reason": "bounded: one entry per configured provider with capped recent rate-limit window"
     },
     {
       "name": "rch-status"
@@ -1054,6 +1244,7 @@
     "state",
     "attention",
     "ensemble",
+    "control",
     "beads",
     "cass",
     "pipeline",

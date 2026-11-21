@@ -85,6 +85,7 @@ const HARNESS_LABELS: Array<{
   { key: "aider", label: "Aider" },
   { key: "oc", label: "OpenCode (oc)" },
   { key: "omp", label: "Oh My Pi (omp)" },
+  { key: "pi", label: "Pi (pi)" },
   { key: "ollama", label: "Ollama" },
   { key: "user", label: "User" },
 ];

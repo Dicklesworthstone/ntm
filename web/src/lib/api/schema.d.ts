@@ -5335,6 +5335,7 @@ export interface components {
             oc: number;
             ollama: number;
             omp: number;
+            pi: number;
             user: number;
             windsurf: number;
         };
@@ -13703,6 +13704,8 @@ export interface components {
             omp_count: number;
             /** @description Opencode count */
             opencode_count: number;
+            /** @description Pi count */
+            pi_count: number;
             /** @description Ready work */
             ready_work: number;
             /** @description Total agents */

@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 // LoopExecutor handles execution of loop constructs within workflows.
 type LoopExecutor struct {
-	executor *Executor
+	executor  *Executor
+	resolveMu sync.Mutex
 }
 
 // NewLoopExecutor creates a new loop executor for the given workflow executor.
@@ -188,7 +190,7 @@ func (le *LoopExecutor) executeForEach(ctx context.Context, step *Step, loop *Lo
 		// reconstruct outputs from iterations that completed before the
 		// interruption — without this, a mid-loop resume would silently
 		// drop pre-resume entries when storeCollected runs at the end.
-		if loop.Collect != "" && len(iterResult) > 0 {
+		if loop.Collect != "" && len(iterResult) > 0 && iterResult[len(iterResult)-1].Status != StatusCancelled {
 			lastResult := iterResult[len(iterResult)-1]
 			var collectedValue interface{}
 			if lastResult.ParsedData != nil {
@@ -202,6 +204,12 @@ func (le *LoopExecutor) executeForEach(ctx context.Context, step *Step, loop *Lo
 			}
 		}
 		le.executor.persistState()
+
+		if ctx.Err() != nil && !completedAllSteps {
+			result.Status = StatusCancelled
+			result.FinishedAt = time.Now()
+			return result
+		}
 
 		if shouldBreak {
 			if len(iterResult) > 0 && iterResult[len(iterResult)-1].Status == StatusFailed {
@@ -286,6 +294,7 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 	}
 
 	// Iterate while condition is true
+	brokeEarly := false
 	for i := startIndex; i < maxIterations; i++ {
 		select {
 		case <-ctx.Done():
@@ -313,6 +322,7 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 		// EvaluateCondition returns true if step should be SKIPPED (condition is false)
 		if shouldSkip {
 			// Condition is false, exit loop
+			brokeEarly = true
 			break
 		}
 
@@ -333,7 +343,7 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 		}
 
 		// Collect output if configured
-		if loop.Collect != "" && len(iterResult) > 0 {
+		if loop.Collect != "" && len(iterResult) > 0 && iterResult[len(iterResult)-1].Status != StatusCancelled {
 			lastResult := iterResult[len(iterResult)-1]
 			var collectedValue interface{}
 			if lastResult.ParsedData != nil {
@@ -348,7 +358,14 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 		}
 		le.executor.persistState()
 
+		if ctx.Err() != nil && !completedAllSteps {
+			result.Status = StatusCancelled
+			result.FinishedAt = time.Now()
+			return result
+		}
+
 		if shouldBreak {
+			brokeEarly = true
 			if len(iterResult) > 0 && iterResult[len(iterResult)-1].Status == StatusFailed {
 				result.Error = iterResult[len(iterResult)-1].Error
 			} else {
@@ -373,8 +390,9 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 		}
 	}
 
-	// Check if we hit max iterations without condition becoming false
-	if result.Iterations >= maxIterations {
+	// Check if we hit max iterations without condition becoming false. Include
+	// startIndex so resumed while loops enforce the same total iteration cap.
+	if !brokeEarly && startIndex+result.Iterations >= maxIterations {
 		// Evaluate condition one more time to see if it's still true.
 		// bd-ypo73: ctx-aware for the same max_rounds overlay reasoning.
 		shouldSkip, _ := le.executor.evaluateConditionCtx(ctx, loop.While)
@@ -467,7 +485,7 @@ func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *Loop
 		result.Results = append(result.Results, iterResult...)
 		result.Iterations++
 
-		if loop.Collect != "" && len(iterResult) > 0 {
+		if loop.Collect != "" && len(iterResult) > 0 && iterResult[len(iterResult)-1].Status != StatusCancelled {
 			lastResult := iterResult[len(iterResult)-1]
 			var collectedValue interface{}
 			if lastResult.ParsedData != nil {
@@ -480,6 +498,15 @@ func (le *LoopExecutor) executeUntil(ctx context.Context, step *Step, loop *Loop
 				le.executor.appendForeachCollectedOutput(step.ID, collectedValue)
 				le.executor.persistState()
 			}
+		}
+
+		if ctx.Err() != nil && !completedAllSteps {
+			le.popLoopVars(scope)
+			le.executor.clearStepInFlight(loopIterationID(step.ID, i))
+			le.executor.persistState()
+			result.Status = StatusCancelled
+			result.FinishedAt = time.Now()
+			return result
 		}
 
 		if shouldBreak {
@@ -646,7 +673,7 @@ func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *Loop
 		}
 
 		// Collect output if configured
-		if loop.Collect != "" && len(iterResult) > 0 {
+		if loop.Collect != "" && len(iterResult) > 0 && iterResult[len(iterResult)-1].Status != StatusCancelled {
 			lastResult := iterResult[len(iterResult)-1]
 			var collectedValue interface{}
 			if lastResult.ParsedData != nil {
@@ -660,6 +687,12 @@ func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *Loop
 			}
 		}
 		le.executor.persistState()
+
+		if ctx.Err() != nil && !completedAllSteps {
+			result.Status = StatusCancelled
+			result.FinishedAt = time.Now()
+			return result
+		}
 
 		if shouldBreak {
 			if len(iterResult) > 0 && iterResult[len(iterResult)-1].Status == StatusFailed {
@@ -722,16 +755,22 @@ func (le *LoopExecutor) resolveIntOrExpr(step *Step, field string, value *IntOrE
 	if value == nil {
 		return fallback, nil
 	}
-	if value.Expr == "" {
-		if value.Value > 0 {
-			return value.Value, nil
+	le.resolveMu.Lock()
+	expr := value.Expr
+	literal := value.Value
+	if expr == "" {
+		if literal > 0 {
+			le.resolveMu.Unlock()
+			return literal, nil
 		}
-		// Field absent (zero value): use the default safety cap.
+		// Field absent (zero value): record and return default safety cap.
 		value.Value = fallback
+		le.resolveMu.Unlock()
 		return fallback, nil
 	}
+	le.resolveMu.Unlock()
 
-	resolved, err := le.substituteIntExpr(value.Expr)
+	resolved, err := le.substituteIntExpr(expr)
 	if err == nil {
 		parsed, parseErr := strconv.Atoi(strings.TrimSpace(resolved))
 		if parseErr != nil {
@@ -748,24 +787,26 @@ func (le *LoopExecutor) resolveIntOrExpr(step *Step, field string, value *IntOrE
 			if parsed > fallback {
 				le.executor.stepLogger(step).Warn(EventSubstWarn,
 					FieldSubstitutionKey, field,
-					FieldSubstitutionResolved, value.Expr,
+					FieldSubstitutionResolved, expr,
 					"requested", parsed,
 					"cap", fallback,
 					"hint", "set max_iterations to a literal integer to opt out of the cap",
 				)
 				parsed = fallback
 			}
+			le.resolveMu.Lock()
 			value.Value = parsed
+			le.resolveMu.Unlock()
 			return parsed, nil
 		}
 	}
 
 	le.executor.stepLogger(step).Warn(EventSubstWarn,
 		FieldSubstitutionKey, field,
-		FieldSubstitutionResolved, value.Expr,
+		FieldSubstitutionResolved, expr,
 		"error", err,
 	)
-	return 0, fmt.Errorf("resolve %s expression %q: %w", field, value.Expr, err)
+	return 0, fmt.Errorf("resolve %s expression %q: %w", field, expr, err)
 }
 
 func (le *LoopExecutor) substituteIntExpr(expr string) (string, error) {
@@ -839,9 +880,20 @@ func (le *LoopExecutor) executeIteration(ctx context.Context, step *Step, loop *
 		if foreachControlOnlyStep(nestedStep) {
 			control, applies, condErr := loopControlAppliesForStep(ctx, nestedStep, le.executor)
 			if condErr != nil {
-				// Surface a failed control-condition like other failures: log
-				// and stop the iteration. Mirrors foreach behaviour for
-				// failed when-condition evaluation on a control-only step.
+				// Record a failed step result so the enclosing loop reports
+				// StatusFailed with the condition error instead of succeeding.
+				now := time.Now()
+				results = append(results, StepResult{
+					StepID:     fmt.Sprintf("%s_iter%d_%s", step.ID, iterIndex, nestedStep.ID),
+					Status:     StatusFailed,
+					StartedAt:  now,
+					FinishedAt: now,
+					Error: &StepError{
+						Type:      "condition",
+						Message:   fmt.Sprintf("failed to evaluate loop_control when condition: %v", condErr),
+						Timestamp: now,
+					},
+				})
 				return results, true, false, false
 			}
 			if applies {
@@ -872,14 +924,18 @@ func (le *LoopExecutor) executeIteration(ctx context.Context, step *Step, loop *
 		if findStepAdmissionError(result.Error) != nil {
 			return results, true, false, false
 		}
+		if result.Status == StatusCancelled {
+			return results, false, false, false
+		}
 
 		// Handle step failure based on error action
 		if result.Status == StatusFailed {
 			onError := resolveErrorAction(nestedStep.OnError, workflow.Settings.OnError)
 
 			switch onError {
-			case ErrorActionFail, ErrorActionFailFast:
-				// Stop loop on failure
+			case ErrorActionFail, ErrorActionFailFast, ErrorActionRetry:
+				// Stop loop on failure (executeStep already exhausted retries
+				// when onError is ErrorActionRetry).
 				return results, true, false, false
 			case ErrorActionContinue:
 				// Continue with next step in iteration

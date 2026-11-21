@@ -841,3 +841,78 @@ func TestRealSetPaneAgentTypeSurvivesTitleRewrite(t *testing.T) {
 		}
 	}
 }
+
+func TestRealSetPaneAgentTypeIfCurrentRefusesMismatchedClaimAndConflictingNestedPin(t *testing.T) {
+	session := createTestSession(t)
+	pane := waitGuardedTestPane(t, session, func(p Pane) bool { return p.PID > 0 && p.IdleShell() })
+
+	// Claiming an unlabeled pane succeeds.
+	if err := DefaultClient.SetPaneAgentTypeIfCurrentContext(t.Context(), pane.ID, pane.PID, AgentCodex); err != nil {
+		t.Fatalf("initial SetPaneAgentTypeIfCurrentContext(cod) failed: %v", err)
+	}
+	// Re-confirming the exact same canonical type succeeds.
+	if err := DefaultClient.SetPaneAgentTypeIfCurrentContext(t.Context(), pane.ID, pane.PID, AgentCodex); err != nil {
+		t.Fatalf("matching SetPaneAgentTypeIfCurrentContext(cod) failed: %v", err)
+	}
+	// Overwriting a non-empty mismatched @ntm_agent_type on the same shell PID MUST fail closed.
+	if err := DefaultClient.SetPaneAgentTypeIfCurrentContext(t.Context(), pane.ID, pane.PID, AgentClaude); !errors.Is(err, ErrPaneIdentityChanged) {
+		t.Fatalf("mismatched SetPaneAgentTypeIfCurrentContext(cc over cod) = %v, want ErrPaneIdentityChanged", err)
+	}
+	// Verify @ntm_agent_type remained cod.
+	cur := waitGuardedTestPane(t, session, func(p Pane) bool { return p.ID == pane.ID })
+	if cur.Type != AgentCodex {
+		t.Fatalf("pane type changed after refused overwrite: got %q, want %q", cur.Type, AgentCodex)
+	}
+
+	// Conflicting nested WithExpectedPaneAgentType MUST fail closed instead of weakening the outer pin.
+	outer := WithExpectedPaneAgentType(t.Context(), AgentClaude)
+	nested := WithExpectedPaneAgentType(outer, AgentCodex)
+	spec := AgentLaunchSpec{Version: AgentLaunchSpecVersion, AgentType: AgentCodex, Command: "codex"}
+	if err := DefaultClient.SetPaneLaunchSpecIfCurrentContext(nested, pane.ID, pane.PID, spec); !errors.Is(err, ErrPaneIdentityChanged) {
+		t.Fatalf("conflicting nested WithExpectedPaneAgentType = %v, want ErrPaneIdentityChanged", err)
+	}
+	// Matching nested pin remains allowed.
+	matchingNested := WithExpectedPaneAgentType(WithExpectedPaneAgentType(t.Context(), AgentCodex), AgentCodex)
+	if err := DefaultClient.SetPaneLaunchSpecIfCurrentContext(matchingNested, pane.ID, pane.PID, spec); err != nil {
+		t.Fatalf("matching nested WithExpectedPaneAgentType failed: %v", err)
+	}
+}
+
+func TestRealWithObservedPaneAgentTypeHandlesUnlabeledAndLabeledPanes(t *testing.T) {
+	session := createTestSession(t)
+	pane := waitGuardedTestPane(t, session, func(p Pane) bool { return p.PID > 0 && p.IdleShell() })
+
+	// 1. Unlabeled pane detected by title (no @ntm_agent_type): WithObservedPaneAgentType
+	// MUST allow guarded mutations while unlabeled, and reject concurrent adoption as another type.
+	if err := DefaultClient.SetPaneTitleContext(t.Context(), pane.ID, session+"__cc_1"); err != nil {
+		t.Fatalf("SetPaneTitleContext: %v", err)
+	}
+	unlabeled := waitGuardedTestPane(t, session, func(p Pane) bool { return p.ID == pane.ID && p.Type == AgentClaude })
+	if unlabeled.RecordedType != "" {
+		t.Fatalf("expected unlabeled title-detected pane to have empty RecordedType, got %q", unlabeled.RecordedType)
+	}
+	ccSpec := AgentLaunchSpec{Version: AgentLaunchSpecVersion, AgentType: AgentClaude, Command: "claude"}
+	if err := DefaultClient.SetPaneLaunchSpecIfCurrentContext(WithObservedPaneAgentType(t.Context(), unlabeled), unlabeled.ID, unlabeled.PID, ccSpec); err != nil {
+		t.Fatalf("WithObservedPaneAgentType rejected legitimately unlabeled title-detected pane: %v", err)
+	}
+	// If another actor adopts the pane as codex, the stale unlabeled observation MUST fail closed.
+	if err := DefaultClient.SetPaneAgentTypeContext(t.Context(), pane.ID, AgentCodex); err != nil {
+		t.Fatalf("SetPaneAgentTypeContext(cod): %v", err)
+	}
+	if err := DefaultClient.SetPaneLaunchSpecIfCurrentContext(WithObservedPaneAgentType(t.Context(), unlabeled), unlabeled.ID, unlabeled.PID, ccSpec); !errors.Is(err, ErrPaneIdentityChanged) {
+		t.Fatalf("WithObservedPaneAgentType allowed mutation after concurrent adoption as cod: %v", err)
+	}
+
+	// 2. Labeled pane (RecordedType == AgentCodex): clearing @ntm_agent_type MUST fail closed.
+	labeled := waitGuardedTestPane(t, session, func(p Pane) bool { return p.ID == pane.ID && p.RecordedType == AgentCodex })
+	codSpec := AgentLaunchSpec{Version: AgentLaunchSpecVersion, AgentType: AgentCodex, Command: "codex"}
+	if err := DefaultClient.SetPaneLaunchSpecIfCurrentContext(WithObservedPaneAgentType(t.Context(), labeled), labeled.ID, labeled.PID, codSpec); err != nil {
+		t.Fatalf("WithObservedPaneAgentType rejected intact labeled pane: %v", err)
+	}
+	if err := DefaultClient.RunSilentContext(t.Context(), "set-option", "-p", "-u", "-t", pane.ID, PaneAgentTypeOption); err != nil {
+		t.Fatalf("unset @ntm_agent_type: %v", err)
+	}
+	if err := DefaultClient.SetPaneLaunchSpecIfCurrentContext(WithObservedPaneAgentType(t.Context(), labeled), labeled.ID, labeled.PID, codSpec); !errors.Is(err, ErrPaneIdentityChanged) {
+		t.Fatalf("WithObservedPaneAgentType allowed mutation after @ntm_agent_type was cleared: %v", err)
+	}
+}

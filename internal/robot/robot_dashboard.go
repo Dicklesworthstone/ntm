@@ -116,6 +116,8 @@ func GetDashboard() (*DashboardOutput, error) {
 							output.Summary.OpencodeCount++
 						case "omp":
 							output.Summary.OmpCount++
+						case "pi":
+							output.Summary.PiCount++
 						case "ollama":
 							output.Summary.OllamaCount++
 						}

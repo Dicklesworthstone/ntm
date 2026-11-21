@@ -131,6 +131,20 @@ var DefaultCapabilities = map[tmux.AgentType]map[TaskType]float64{
 		TaskChore:         0.75, // (0.70 + 0.80) / 2
 		TaskEpic:          0.75, // (0.90 + 0.60) / 2
 	},
+	// Pi (pi) is a model-agnostic CLI coding harness with frontier provider
+	// routing analogous to omp/opencode; mirror the frontier midpoint scores.
+	tmux.AgentPi: {
+		TaskRefactor:      0.85,
+		TaskAnalysis:      0.80,
+		TaskDocs:          0.78,
+		TaskDocumentation: 0.78,
+		TaskBug:           0.85,
+		TaskFeature:       0.88,
+		TaskTesting:       0.80,
+		TaskTask:          0.83,
+		TaskChore:         0.75,
+		TaskEpic:          0.75,
+	},
 	// Grok Build (grok) is xAI's frontier coding CLI agent: strong at bug
 	// triage, feature implementation, and fast code analysis, with solid
 	// refactoring and testing scores across general software tasks.

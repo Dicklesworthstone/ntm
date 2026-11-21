@@ -193,17 +193,19 @@ type Executor struct {
 	loopExec *LoopExecutor
 
 	// Runtime state (reset per execution)
-	state    *ExecutionState
-	stateMu  sync.RWMutex // Protects state.Steps for concurrent access
-	varMu    sync.RWMutex // Protects state.Variables for concurrent access
-	defaults map[string]interface{}
-	limits   LimitsConfig
-	tmux     TmuxClient
-	paneMeta *PaneMetadataLoader
-	paneMu   sync.Mutex
-	graph    *DependencyGraph
-	progress chan<- ProgressEvent
-	cancelFn context.CancelFunc
+	state           *ExecutionState
+	stateMu         sync.RWMutex // Protects state.Steps for concurrent access
+	varMu           sync.RWMutex // Protects state.Variables for concurrent access
+	defaults        map[string]interface{}
+	limits          LimitsConfig
+	tmux            TmuxClient
+	paneMeta        *PaneMetadataLoader
+	paneMu          sync.Mutex
+	graph           *DependencyGraph
+	progress        chan<- ProgressEvent
+	cancelMu        sync.Mutex
+	cancelFn        context.CancelFunc
+	cancelRequested bool
 
 	// backgroundCommandWG tracks WaitNone command cleanup workers. A workflow
 	// return cancels those commands and joins their workers so callers never
@@ -336,7 +338,7 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 	e.resetCheckpointFailure()
 	// Create cancellable context
 	ctx, cancel := context.WithCancel(ctx)
-	e.cancelFn = cancel
+	e.setCancelFunc(cancel)
 
 	// Apply global timeout
 	timeout := e.config.GlobalTimeout
@@ -347,6 +349,7 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 	defer func() {
 		timeoutCancel()
 		cancel()
+		e.clearCancelFunc()
 		e.backgroundCommandWG.Wait()
 	}()
 
@@ -495,7 +498,7 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 	e.resetCheckpointFailure()
 	// Create cancellable context
 	ctx, cancel := context.WithCancel(ctx)
-	e.cancelFn = cancel
+	e.setCancelFunc(cancel)
 
 	// Apply global timeout
 	timeout := e.config.GlobalTimeout
@@ -506,6 +509,7 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 	defer func() {
 		timeoutCancel()
 		cancel()
+		e.clearCancelFunc()
 		e.backgroundCommandWG.Wait()
 	}()
 
@@ -775,10 +779,35 @@ func (e *Executor) runOnCancelSteps(workflow *Workflow) {
 	}
 }
 
-// Cancel cancels the current execution
+func (e *Executor) setCancelFunc(cancel context.CancelFunc) {
+	e.cancelMu.Lock()
+	e.cancelFn = cancel
+	alreadyCancelled := e.cancelRequested
+	e.cancelRequested = false
+	e.cancelMu.Unlock()
+	if alreadyCancelled && cancel != nil {
+		cancel()
+	}
+}
+
+func (e *Executor) clearCancelFunc() {
+	e.cancelMu.Lock()
+	e.cancelFn = nil
+	e.cancelRequested = false
+	e.cancelMu.Unlock()
+}
+
+// Cancel cancels the current execution. If called before Run or Resume installs
+// its cancel function, the cancellation is latched and applied immediately on entry.
 func (e *Executor) Cancel() {
-	if e.cancelFn != nil {
-		e.cancelFn()
+	e.cancelMu.Lock()
+	fn := e.cancelFn
+	if fn == nil {
+		e.cancelRequested = true
+	}
+	e.cancelMu.Unlock()
+	if fn != nil {
+		fn()
 	}
 }
 

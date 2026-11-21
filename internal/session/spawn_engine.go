@@ -788,6 +788,7 @@ type SpawnHookCounts struct {
 	Aider    int
 	Opencode int
 	Omp      int
+	Pi       int
 	Ollama   int
 	Total    int
 }
@@ -805,6 +806,7 @@ func SpawnHookEnv(counts SpawnHookCounts) map[string]string {
 		"NTM_AGENT_COUNT_AIDER":    strconv.Itoa(counts.Aider),
 		"NTM_AGENT_COUNT_OC":       strconv.Itoa(counts.Opencode),
 		"NTM_AGENT_COUNT_OMP":      strconv.Itoa(counts.Omp),
+		"NTM_AGENT_COUNT_PI":       strconv.Itoa(counts.Pi),
 		"NTM_AGENT_COUNT_OLLAMA":   strconv.Itoa(counts.Ollama),
 		"NTM_AGENT_COUNT_TOTAL":    strconv.Itoa(counts.Total),
 	}

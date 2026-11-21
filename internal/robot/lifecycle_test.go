@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
@@ -1162,4 +1163,51 @@ func TestExitCLI_DirectExecProtectionAndOptInFlags(t *testing.T) {
 			t.Fatalf("expected pane_closed without verification_failed, got %+v", res)
 		}
 	})
+}
+
+func TestLifecycleRelaunchPreflightsLongCommandFIFOAndCleansUp(t *testing.T) {
+	longCmd := "codex --model long --custom=" + strings.Repeat("x", tmux.MaxTypedLaunchCommandBytes+256)
+	plan := restartLaunchPlan{
+		Commands: map[string]string{"1": longCmd},
+	}
+	// Missing TMPDIR must fail preflight cleanly before any agent is killed.
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing-fifo-dir"))
+	if err := plan.prepareDeliveryWithOptions(t.Context(), "sess", nil, false); err == nil {
+		t.Fatal("prepareDeliveryWithOptions succeeded despite unwritable TMPDIR for >1024B command")
+	}
+
+	// Writable TMPDIR creates a private FIFO handoff and close() cleans it up.
+	tmpDir := t.TempDir()
+	t.Setenv("TMPDIR", tmpDir)
+	if err := plan.prepareDeliveryWithOptions(t.Context(), "sess", nil, false); err != nil {
+		t.Fatalf("prepareDeliveryWithOptions failed for >1024B command: %v", err)
+	}
+	if plan.handoffs["1"] == nil {
+		t.Fatal("expected FIFO LaunchEnvironment handoff for >1024B relaunch command")
+	}
+	plan.close()
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("plan.close() leaked temporary FIFO entries: %+v", entries)
+	}
+}
+
+func TestPiGrokOpencodeRoutingParity(t *testing.T) {
+	if got := restartLaunchAlias("pi"); got != "pi" {
+		t.Fatalf("restartLaunchAlias(pi) = %q, want %q (must not fall back to cc)", got, "pi")
+	}
+	if got := normalizeEnsembleAgentType("grok"); got != "grok" {
+		t.Fatalf("normalizeEnsembleAgentType(grok) = %q, want %q", got, "grok")
+	}
+	if got := normalizeEnsembleAgentType("pi"); got != "pi" {
+		t.Fatalf("normalizeEnsembleAgentType(pi) = %q, want %q", got, "pi")
+	}
+	var counts AdoptedAgentCounts
+	counts.Increment(agent.AgentTypePi)
+	if counts.Pi != 1 || counts.Total() != 1 || counts.CountFor(agent.AgentTypePi) != 1 || counts.Summary() != "pi:1" {
+		t.Fatalf("AdoptedAgentCounts pi tracking broken: %+v summary=%q", counts, counts.Summary())
+	}
 }

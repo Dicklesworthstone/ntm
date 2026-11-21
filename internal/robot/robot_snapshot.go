@@ -91,6 +91,7 @@ func cloneSnapshotOutput(base *SnapshotOutput) *SnapshotOutput {
 		AiderCount:       base.Summary.AiderCount,
 		OpencodeCount:    base.Summary.OpencodeCount,
 		OmpCount:         base.Summary.OmpCount,
+		PiCount:          base.Summary.PiCount,
 		OllamaCount:      base.Summary.OllamaCount,
 		AgentsByState:    make(map[string]int, len(base.Summary.AgentsByState)),
 		AgentsByType:     make(map[string]int, len(base.Summary.AgentsByType)),

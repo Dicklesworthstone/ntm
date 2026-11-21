@@ -434,6 +434,7 @@ func (c *LifecycleCoordinator) Abort(lease *LifecycleLease, reason string) error
 	from := cur.State
 	cur.State = StateIdle
 	cur.LastCheckpoint = "aborted"
+	cur.FailedFrom = ""
 	cur.RecoveryHint = ""
 	cur.UpdatedAt = now
 	appendLifecycleHistory(cur, LifecycleTransition{

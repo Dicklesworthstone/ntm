@@ -330,10 +330,11 @@ func (s *Server) submitJob(ctx context.Context, req CreateJobRequest) (*Job, err
 		defer func() {
 			if !ready {
 				cancel()
+				if activeWorkflow != nil {
+					s.cancelWorkflowReservation(activeWorkflow)
+				}
 				if receipt != nil {
 					s.discardQueuedJob(receipt.ID)
-				} else if activeWorkflow != nil {
-					s.cancelWorkflowReservation(activeWorkflow)
 				}
 			}
 		}()
@@ -346,7 +347,7 @@ func (s *Server) submitJob(ctx context.Context, req CreateJobRequest) (*Job, err
 			dryRun, _ := params["dry_run"].(bool)
 			if !dryRun && wfName != "" && wfSession != "" && frozen.executionProjectDir != "" {
 				var regErr error
-				activeWorkflow, regErr = s.reserveWorkflowRun(wfName, frozen.executionProjectDir, wfSession, req.rejectDuplicateWorkflow)
+				activeWorkflow, regErr = s.reserveWorkflowRun(wfName, frozen.executionProjectDir, wfSession, cancel, req.rejectDuplicateWorkflow)
 				if regErr != nil {
 					return nil, regErr
 				}
@@ -362,13 +363,20 @@ func (s *Server) submitJob(ctx context.Context, req CreateJobRequest) (*Job, err
 			receipt = s.jobStore.Get(receipt.ID)
 		}
 		if activeWorkflow != nil {
-			s.bindWorkflowRunJob(activeWorkflow, receipt.ID)
-			jobCtx = context.WithValue(jobCtx, activeWorkflowRunKey{}, activeWorkflow)
-			s.jobStore.Update(receipt.ID, JobStatusPending, 0, map[string]interface{}{
+			workflowMeta := map[string]interface{}{
 				"workflow":    wfName,
 				"session":     wfSession,
 				"project_dir": frozen.executionProjectDir,
-			}, "")
+			}
+			// Populate workflow metadata BEFORE exposing receipt.ID via
+			// bindWorkflowRunJob so a concurrent /stop cannot cancel the job
+			// before its workflow identity is recorded on job.Result.
+			s.jobStore.Update(receipt.ID, JobStatusPending, 0, workflowMeta, "")
+			if stoppedDuringAdmission := s.bindWorkflowRunJob(activeWorkflow, receipt.ID); stoppedDuringAdmission {
+				s.jobStore.Update(receipt.ID, JobStatusCancelled, 0, workflowMeta, "workflow stopped during admission")
+				return nil, errJobAdmissionClosed
+			}
+			jobCtx = context.WithValue(jobCtx, activeWorkflowRunKey{}, activeWorkflow)
 			receipt = s.jobStore.Get(receipt.ID)
 		}
 		frozen.executionContext = jobCtx
@@ -376,6 +384,9 @@ func (s *Server) submitJob(ctx context.Context, req CreateJobRequest) (*Job, err
 			s.jobStore.Update(receipt.ID, JobStatusFailed, 0, receipt.Result,
 				fmt.Sprintf("checkpoint job before acceptance: %v", err))
 			return nil, fmt.Errorf("checkpoint job before acceptance: %w", err)
+		}
+		if activeWorkflow != nil {
+			s.recordAcceptedWorkflowJob(activeWorkflow, receipt.ID)
 		}
 		id := receipt.ID
 		work := &scheduledJob{

@@ -571,8 +571,27 @@ func TestSavedLaunchRejectsReplacementShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("NTM_SESSION_TEST_PID", "9999999")
-	if err := validateSavedLaunchTarget(t.Context(), "recovery", panes[0]); err == nil {
+	if err := validateSavedLaunchTarget(t.Context(), "recovery", panes[0], tmux.AgentCodex); err == nil {
 		t.Fatal("launch accepted a replacement shell under the original physical pane ID")
+	}
+}
+
+func TestSavedLaunchRejectsConcurrentlyAdoptedDifferentAgent(t *testing.T) {
+	savedSessionRestoreFixture(t)
+	panes, err := tmux.GetPanes("recovery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fresh restored shell pane starts unlabeled (AgentUser), while live tmux
+	// reports it was concurrently adopted as Codex ("cod").
+	fresh := panes[0]
+	fresh.Type = tmux.AgentUser
+	if err := validateSavedLaunchTarget(t.Context(), "recovery", fresh, tmux.AgentClaude); err == nil {
+		t.Fatal("launch accepted a fresh shell pane concurrently adopted as a different agent type")
+	}
+	// Same target agent type remains allowed.
+	if err := validateSavedLaunchTarget(t.Context(), "recovery", fresh, tmux.AgentCodex); err != nil {
+		t.Fatalf("launch rejected a pane matching the target agent type: %v", err)
 	}
 }
 
