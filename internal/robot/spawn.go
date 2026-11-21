@@ -96,26 +96,26 @@ type SpawnOptions struct {
 	// command has a reasoning-effort knob (cc/cod/grok/omp — see
 	// config.agentTypeConsumesReasoningEffort); agy's model is hard-pinned by
 	// config, so it carries no override fields at all.
-	CCModel             string        // Claude model alias/name override
-	CCReasoningEffort   string        // Claude reasoning-effort override
-	CodModel            string        // Codex model alias/name override
-	CodReasoningEffort  string        // Codex reasoning-effort override
-	GmiModel            string        // Gemini model alias/name override
-	GrokModel           string        // Grok Build model alias/name override
-	GrokReasoningEffort string        // Grok Build reasoning-effort override
-	OmpModel            string        // Oh My Pi model override (omp fuzzy-matches it); empty = omp's own default
-	OmpReasoningEffort  string        // Oh My Pi --thinking level override
-	OcModel             string        // OpenCode provider/model override; empty = OpenCode's own default (no effort knob: the TUI has no --variant)
-	OllamaModel         string        // Ollama model override (e.g., codellama:latest)
-	AiderModel          string        // Aider model override
-	CursorModel         string        // Cursor Agent CLI model override
-	WindsurfModel       string        // Windsurf model override (only used when [agents] windsurf is overridden to a terminal CLI)
-	Preset              string        // Recipe/preset name
-	Personas            []string      // Persona specs ("name" or "name:count") resolved via shared spawn engine
-	ProfileSet          string        // Named persona profile set resolved via shared spawn engine
-	UseWorktrees        bool          // Provision isolated per-agent git worktrees via shared spawn engine
-	WorktreeName        string        // Single-agent worktree directory override
-	NoHooks             bool          // Disable pre-spawn and post-spawn command hooks
+	CCModel             string   // Claude model alias/name override
+	CCReasoningEffort   string   // Claude reasoning-effort override
+	CodModel            string   // Codex model alias/name override
+	CodReasoningEffort  string   // Codex reasoning-effort override
+	GmiModel            string   // Gemini model alias/name override
+	GrokModel           string   // Grok Build model alias/name override
+	GrokReasoningEffort string   // Grok Build reasoning-effort override
+	OmpModel            string   // Oh My Pi model override (omp fuzzy-matches it); empty = omp's own default
+	OmpReasoningEffort  string   // Oh My Pi --thinking level override
+	OcModel             string   // OpenCode provider/model override; empty = OpenCode's own default (no effort knob: the TUI has no --variant)
+	OllamaModel         string   // Ollama model override (e.g., codellama:latest)
+	AiderModel          string   // Aider model override
+	CursorModel         string   // Cursor Agent CLI model override
+	WindsurfModel       string   // Windsurf model override (only used when [agents] windsurf is overridden to a terminal CLI)
+	Preset              string   // Recipe/preset name
+	Personas            []string // Persona specs ("name" or "name:count") resolved via shared spawn engine
+	ProfileSet          string   // Named persona profile set resolved via shared spawn engine
+	UseWorktrees        bool     // Provision isolated per-agent git worktrees via shared spawn engine
+	WorktreeName        string   // Single-agent worktree directory override
+	NoHooks             bool     // Disable pre-spawn and post-spawn command hooks
 	slotPersonas        map[spawnRecipeKey]*persona.Persona
 	NoUserPane          bool          // Don't create user pane
 	WorkingDir          string        // Override working directory
@@ -587,18 +587,18 @@ type SpawnedAgent struct {
 	PaneID string `json:"pane_id,omitempty"`
 	// AgentMailName is the canonical Agent Mail identity published for the
 	// pane before launch; absent when registration is disabled or failed.
-	AgentMailName      string `json:"agent_mail_name,omitempty"`
-	Name               string `json:"name,omitempty"`
+	AgentMailName       string `json:"agent_mail_name,omitempty"`
+	Name                string `json:"name,omitempty"`
 	Type                string `json:"type"`
 	Variant             string `json:"variant,omitempty"`
 	Persona             string `json:"persona,omitempty"`
 	PersonaPromptSource string `json:"persona_prompt_source,omitempty"`
 	WorktreePath        string `json:"worktree_path,omitempty"`
 	Title               string `json:"title"`
-	Ready              bool   `json:"ready"`
-	StartupMs          int64  `json:"startup_ms"`
-	CredentialIsolated *bool  `json:"credential_isolated,omitempty"`
-	Error              string `json:"error,omitempty"`
+	Ready               bool   `json:"ready"`
+	StartupMs           int64  `json:"startup_ms"`
+	CredentialIsolated  *bool  `json:"credential_isolated,omitempty"`
+	Error               string `json:"error,omitempty"`
 }
 
 func collectSpawnAdmissionInputWithPanes(
@@ -2323,7 +2323,7 @@ func isAgentReady(output, agentType string) bool {
 	// patterns used by status and dispatch. Pi has no generic prompt glyph;
 	// falling through below made a successfully restarted pi pane time out.
 	kind := agentpkg.AgentType(agentType).Canonical()
-	if patterns, registered := agentpkg.LookupPluginPatterns(kind); !kind.IsValid() && registered && patterns.Declared() {
+	if patterns, registered := agentpkg.LookupPluginPatterns(kind); (!kind.IsValid() || kind == agentpkg.AgentTypePi) && registered && patterns.Declared() {
 		return statuspkg.DetectIdleFromOutput(output, string(kind))
 	}
 	lower := strings.ToLower(output)

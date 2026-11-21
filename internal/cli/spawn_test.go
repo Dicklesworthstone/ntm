@@ -175,25 +175,25 @@ func TestCaptureAgentLaunchSpecPreservesPreparedPersonaAndExcludesEnvironmentVal
 
 func TestPreflightWorktreeProject(t *testing.T) {
 	t.Run("nil context", func(t *testing.T) {
-		err := preflightWorktreeProject(nil, t.TempDir())
+		err := session.PreflightWorktreeProject(nil, t.TempDir())
 		if err == nil || !strings.Contains(err.Error(), "requires a command context") {
-			t.Fatalf("preflightWorktreeProject() error = %v", err)
+			t.Fatalf("PreflightWorktreeProject() error = %v", err)
 		}
 	})
 
 	t.Run("canceled context", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		err := preflightWorktreeProject(ctx, t.TempDir())
+		err := session.PreflightWorktreeProject(ctx, t.TempDir())
 		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("preflightWorktreeProject() error = %v, want context.Canceled", err)
+			t.Fatalf("PreflightWorktreeProject() error = %v, want context.Canceled", err)
 		}
 	})
 
 	t.Run("missing directory", func(t *testing.T) {
-		err := preflightWorktreeProject(t.Context(), filepath.Join(t.TempDir(), "missing"))
+		err := session.PreflightWorktreeProject(t.Context(), filepath.Join(t.TempDir(), "missing"))
 		if err == nil || !strings.Contains(err.Error(), "inspect project") {
-			t.Fatalf("preflightWorktreeProject() error = %v", err)
+			t.Fatalf("PreflightWorktreeProject() error = %v", err)
 		}
 	})
 
@@ -202,16 +202,16 @@ func TestPreflightWorktreeProject(t *testing.T) {
 		if err := os.WriteFile(path, []byte("not a directory\n"), 0o600); err != nil {
 			t.Fatalf("write project fixture: %v", err)
 		}
-		err := preflightWorktreeProject(t.Context(), path)
+		err := session.PreflightWorktreeProject(t.Context(), path)
 		if err == nil || !strings.Contains(err.Error(), "not a directory") {
-			t.Fatalf("preflightWorktreeProject() error = %v", err)
+			t.Fatalf("PreflightWorktreeProject() error = %v", err)
 		}
 	})
 
 	t.Run("ordinary directory", func(t *testing.T) {
-		err := preflightWorktreeProject(t.Context(), t.TempDir())
+		err := session.PreflightWorktreeProject(t.Context(), t.TempDir())
 		if err == nil || !strings.Contains(err.Error(), "not an initialized Git working tree") {
-			t.Fatalf("preflightWorktreeProject() error = %v", err)
+			t.Fatalf("PreflightWorktreeProject() error = %v", err)
 		}
 	})
 
@@ -221,19 +221,19 @@ func TestPreflightWorktreeProject(t *testing.T) {
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Skipf("git init unavailable: %v: %s", err, output)
 		}
-		err := preflightWorktreeProject(t.Context(), repo)
+		err := session.PreflightWorktreeProject(t.Context(), repo)
 		if err == nil || !strings.Contains(err.Error(), "no valid HEAD commit") {
-			t.Fatalf("preflightWorktreeProject() error = %v", err)
+			t.Fatalf("PreflightWorktreeProject() error = %v", err)
 		}
 		if !strings.Contains(err.Error(), "fatal:") && !strings.Contains(err.Error(), "exit status") {
-			t.Fatalf("preflightWorktreeProject() error omits Git diagnostic: %v", err)
+			t.Fatalf("PreflightWorktreeProject() error omits Git diagnostic: %v", err)
 		}
 	})
 
 	t.Run("repository with commit", func(t *testing.T) {
 		repo := setupCLIWorktreeGitRepo(t)
-		if err := preflightWorktreeProject(t.Context(), repo); err != nil {
-			t.Fatalf("preflightWorktreeProject() error = %v", err)
+		if err := session.PreflightWorktreeProject(t.Context(), repo); err != nil {
+			t.Fatalf("PreflightWorktreeProject() error = %v", err)
 		}
 	})
 
@@ -243,8 +243,8 @@ func TestPreflightWorktreeProject(t *testing.T) {
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("detach fixture HEAD: %v: %s", err, output)
 		}
-		if err := preflightWorktreeProject(t.Context(), repo); err != nil {
-			t.Fatalf("preflightWorktreeProject() detached HEAD error = %v", err)
+		if err := session.PreflightWorktreeProject(t.Context(), repo); err != nil {
+			t.Fatalf("PreflightWorktreeProject() detached HEAD error = %v", err)
 		}
 	})
 
@@ -257,9 +257,9 @@ func TestPreflightWorktreeProject(t *testing.T) {
 		t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancel()
-		err := preflightWorktreeProject(ctx, t.TempDir())
+		err := session.PreflightWorktreeProject(ctx, t.TempDir())
 		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("preflightWorktreeProject() error = %v, want context deadline", err)
+			t.Fatalf("PreflightWorktreeProject() error = %v, want context deadline", err)
 		}
 	})
 }
