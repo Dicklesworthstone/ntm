@@ -21,6 +21,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
@@ -551,12 +552,10 @@ func matchesLegacySendTypeFilter(pane tmux.Pane, targetCC, targetCod, targetGmi 
 }
 
 func isInterruptibleAgentPane(pane tmux.Pane) bool {
-	switch tmux.AgentType(pane.Type).Canonical() {
-	case tmux.AgentClaude, tmux.AgentCodex, tmux.AgentGemini, tmux.AgentAntigravity, tmux.AgentGrok, tmux.AgentCursor, tmux.AgentWindsurf, tmux.AgentAider, tmux.AgentOpencode, tmux.AgentOmp, tmux.AgentOllama:
-		return true
-	default:
-		return false
-	}
+	// Share the supported harness registry with spawn and robot mode. A local
+	// allowlist silently omitted Pi from both human and kernel interrupts.
+	_, supported := agentpkg.LookupHarness(pane.Type)
+	return supported
 }
 
 // shuffledPermutation returns a Fisher-Yates permutation of [0..n) using a deterministic PRNG.

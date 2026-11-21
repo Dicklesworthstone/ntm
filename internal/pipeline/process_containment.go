@@ -53,8 +53,9 @@ type commandContainmentMetadata struct {
 // StepExitReceipt records the terminal outcome written atomically by the child
 // wrapper or subreaper when a command step finishes. If the parent ntm
 // orchestrator crashes (e.g. SIGKILL) mid-step, resume reconciles this receipt
-// once (leader_pid, leader_start_time_ticks) and any cgroup leaf are confirmed
-// quiescent.
+// once its containment proof confirms descendant completion. A raw shell EXIT
+// receipt records only the leader's outcome and cannot establish settlement
+// after the supervisor loses its original process-group ownership.
 type StepExitReceipt struct {
 	Version              int       `json:"version"`
 	StepID               string    `json:"step_id"`
@@ -217,6 +218,11 @@ func stepRequiresCapturedStdout(workflow *Workflow, stepID string, exitCode int)
 //   - still-populated step cgroup (cgroup.events populated 1)
 //   - recycled numeric PID (leader_start_time_ticks mismatch — never signaled)
 //   - quiescent step with a verified atomic exit_code_file receipt -> settled!
+//
+// Automatic recovery requires a subreaper receipt written after ECHILD, or a
+// cgroup leaf whose quiescence can still be verified. The proc-PGID fallback's
+// shell EXIT trap runs before background descendants necessarily finish, and
+// inspecting a dead leader cannot recover the lost group/stream proof.
 func reconcileInterruptedCommandExecution(workflow *Workflow, state *ExecutionState, stepID string, record CommandExecutionState) (CommandExecutionState, bool, error) {
 	if record.Status != commandExecutionRunning || record.Background {
 		return record, false, nil
@@ -255,6 +261,20 @@ func reconcileInterruptedCommandExecution(workflow *Workflow, state *ExecutionSt
 				"recorded_start_time_ticks", record.LeaderStartTimeTicks,
 			)
 		}
+	}
+
+	switch record.ContainmentTier {
+	case ContainmentTierSubreaperPIDFD:
+		// This receipt is emitted only after the child tree has been reaped.
+	case ContainmentTierCgroupV2:
+		if strings.TrimSpace(record.CgroupPath) == "" {
+			return record, false, nil
+		}
+	default:
+		// Preserve the original receipt for explicit operator recovery. An
+		// exited shell, including a legacy receipt with no recorded tier,
+		// must not release downstream work or authorize repeating effects.
+		return record, false, nil
 	}
 
 	cgroupEmptyReadyToRemove := false

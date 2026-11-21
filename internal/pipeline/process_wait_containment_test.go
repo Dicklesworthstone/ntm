@@ -268,6 +268,172 @@ sleep 30`,
 	}
 }
 
+func TestCrashOnlyReceiptReconciliationRequiresContainmentProof(t *testing.T) {
+	// A shell's EXIT trap proves only its own exit. Its background child can
+	// still be running after the orchestrator dies and the leader is reaped.
+	// Neither a successful exit nor a failed exit may release downstream work
+	// or authorize retrying the original command in that state.
+	for _, tier := range []struct {
+		name string
+		tier string
+	}{
+		{"proc_pgid", ContainmentTierProcPGID},
+		{"legacy_without_tier", ""},
+		{"cgroup_without_leaf", ContainmentTierCgroupV2},
+	} {
+		for _, exitCode := range []int{0, 7} {
+			t.Run(fmt.Sprintf("%s/exit_%d", tier.name, exitCode), func(t *testing.T) {
+				t.Setenv(ContainmentTierEnv, ContainmentTierProcPGID)
+				root := t.TempDir()
+				cfg := DefaultExecutorConfig("unproven-shell-exit")
+				cfg.ProjectDir, cfg.RunID = root, "run-unproven-shell-exit"
+				workflow := &Workflow{
+					SchemaVersion: SchemaVersion,
+					Name:          "unproven-shell-exit",
+					Settings:      DefaultWorkflowSettings(),
+					Steps: []Step{
+						{
+							ID: "produce",
+							Command: fmt.Sprintf(`printf 'once\n' >> launches
+if [ ! -f release-leader ]; then
+  sleep 30 >/dev/null 2>&1 &
+  printf '%%s\n' "$!" > descendant.pid
+  while [ ! -f release-leader ]; do sleep 0.01; done
+fi
+exit %d`, exitCode),
+						},
+						{ID: "consume", DependsOn: []string{"produce"}, Command: "printf unsafe > downstream"},
+					},
+				}
+				frozen, path, err := SnapshotWorkflow(context.Background(), root, workflow)
+				if err != nil {
+					t.Fatal(err)
+				}
+				cfg.WorkflowFile = path
+				stepHash, err := commandDefinitionHash(&frozen.Steps[0])
+				if err != nil {
+					t.Fatal(err)
+				}
+				startedAt := time.Now().UTC()
+				exitFile := stepExitReceiptPath(root, cfg.RunID, "produce", startedAt)
+				if err := os.MkdirAll(filepath.Dir(exitFile), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				cmd := exec.Command("/bin/sh", "-c", frozen.Steps[0].Command)
+				cmd.Dir = root
+				meta, err := startCommandWithContainment(context.Background(), cmd, commandStartOptions{
+					RecordLaunchMetadata: true, ExitCodeFile: exitFile, StepID: "produce", StepHash: stepHash,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Simulate losing the supervisor: no owned-group waiter survives.
+				// Hold a separate child handle solely for deterministic test cleanup.
+				_, _ = takeCommandContainmentHandle(cmd)
+				leaderWaited := false
+				t.Cleanup(func() {
+					if !leaderWaited {
+						_ = cmd.Process.Kill()
+						_ = cmd.Wait()
+					}
+				})
+				childPID := waitForPIDFile(t, filepath.Join(root, "descendant.pid"))
+				child, err := os.FindProcess(childPID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					_ = child.Kill()
+					_ = child.Release()
+					if !waitForPIDGone(childPID, 2*time.Second) {
+						t.Errorf("test descendant %d did not exit", childPID)
+					}
+				})
+				if meta.Tier != ContainmentTierProcPGID || meta.LeaderStartTimeTicks == 0 {
+					t.Fatalf("fixture lacks running fallback leader evidence: %+v", meta)
+				}
+				prior := &ExecutionState{
+					RunID: cfg.RunID, WorkflowID: frozen.Name, WorkflowFile: path,
+					Session: cfg.Session, Status: StatusRunning, StartedAt: startedAt, UpdatedAt: startedAt,
+					Steps: map[string]StepResult{},
+					InFlightSteps: map[string]InFlightStepState{
+						"produce": {StepID: "produce", Kind: StepKindCommand, StartedAt: startedAt},
+					},
+					CommandExecutions: map[string]CommandExecutionState{
+						"produce": {
+							Version: commandExecutionVersion, StepID: "produce", StepHash: stepHash,
+							Status: commandExecutionRunning, ProcessID: cmd.Process.Pid,
+							LeaderPID: meta.LeaderPID, LeaderStartTimeTicks: meta.LeaderStartTimeTicks,
+							ContainmentTier: tier.tier, ExitCodeFile: exitFile, StartedAt: startedAt,
+						},
+					},
+				}
+				if err := SaveState(root, prior); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(root, "release-leader"), []byte("exit"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				_ = cmd.Wait()
+				leaderWaited = true
+				if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != exitCode {
+					t.Fatalf("leader did not exit as requested: %v", cmd.ProcessState)
+				}
+				receipt, err := readStepExitReceipt(exitFile)
+				if err != nil || receipt.ExitCode != exitCode {
+					t.Fatalf("shell did not publish its natural exit receipt: %+v %v", receipt, err)
+				}
+				before := commandOperatorRecoveryBytes(t, cfg)
+				loaded, err := LoadState(root, cfg.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := NewExecutor(cfg).Resume(context.Background(), frozen, loaded, nil); err == nil || !strings.Contains(err.Error(), "unresolved launch") {
+					t.Fatalf("resume accepted shell exit without descendant settlement: %v", err)
+				}
+				if !bytes.Equal(before, commandOperatorRecoveryBytes(t, cfg)) {
+					t.Fatal("rejected resume changed the original running receipt")
+				}
+				if err := child.Signal(syscall.Signal(0)); err != nil {
+					t.Fatalf("resume harmed the still-running descendant: %v", err)
+				}
+				if data, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(data) != "once\n" {
+					t.Fatalf("resume repeated the original side effect: %q %v", data, err)
+				}
+				if _, err := os.Stat(filepath.Join(root, "downstream")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("resume released dependent work before descendant settlement: %v", err)
+				}
+				if exitCode == 0 {
+					// The ordinary explicit recovery surface remains available after
+					// an operator has independently verified the descendant ended.
+					if err := child.Kill(); err != nil || !waitForPIDGone(childPID, 2*time.Second) {
+						t.Fatalf("could not finish descendant for explicit recovery: %v", err)
+					}
+					entry := commandOperatorRecoveryEntry(t, cfg)
+					if _, err := AcceptCommandExecutionContext(context.Background(), root, cfg.RunID, entry.StepID,
+						entry.ReceiptToken, "Verified the original background descendant ended", 0, ""); err != nil {
+						t.Fatal(err)
+					}
+					resolved, err := LoadState(root, cfg.RunID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					final, err := NewExecutor(cfg).Resume(context.Background(), frozen, resolved, nil)
+					if err != nil || final == nil || final.Status != StatusCompleted {
+						t.Fatalf("resume after explicit recovery failed: %+v %v", final, err)
+					}
+					if data, err := os.ReadFile(filepath.Join(root, "launches")); err != nil || string(data) != "once\n" {
+						t.Fatalf("explicit recovery repeated the original side effect: %q %v", data, err)
+					}
+					if data, err := os.ReadFile(filepath.Join(root, "downstream")); err != nil || string(data) != "unsafe" {
+						t.Fatalf("explicit recovery did not release dependent work: %q %v", data, err)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestCrashOnlyReceiptReconciliationOnResume(t *testing.T) {
 	t.Run("reconciles_completed_step_after_orchestrator_crash", func(t *testing.T) {
 		t.Setenv(ContainmentTierEnv, ContainmentTierSubreaperPIDFD)

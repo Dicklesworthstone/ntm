@@ -235,7 +235,7 @@ func (e *agentTypeError) Error() string {
 	return "unknown agent type: " + e.agentType
 }
 
-func TestControllerAgentListCanonicalizesAliasesAndIncludesOllama(t *testing.T) {
+func TestControllerAgentListCanonicalizesAliasesAndIncludesPi(t *testing.T) {
 
 	panes := []tmux.Pane{
 		{Index: 2, Type: tmux.AgentType("claude_code")},
@@ -245,11 +245,12 @@ func TestControllerAgentListCanonicalizesAliasesAndIncludesOllama(t *testing.T) 
 		{Index: 6, Type: tmux.AgentOllama},
 		{Index: 7, Type: tmux.AgentType("controller_codex")},
 		{Index: 8, Type: tmux.AgentUser},
+		{Index: 9, Type: tmux.AgentType("pi-agent")},
 	}
 
 	list, count := controllerAgentList(panes)
-	if count != 5 {
-		t.Fatalf("controllerAgentList() count = %d, want 5", count)
+	if count != 6 {
+		t.Fatalf("controllerAgentList() count = %d, want 6", count)
 	}
 
 	want := []string{
@@ -258,6 +259,7 @@ func TestControllerAgentListCanonicalizesAliasesAndIncludesOllama(t *testing.T) 
 		"- Pane 4: gmi",
 		"- Pane 5: windsurf",
 		"- Pane 6: ollama",
+		"- Pane 9: pi",
 	}
 	if len(list) != len(want) {
 		t.Fatalf("controllerAgentList() len = %d, want %d (%v)", len(list), len(want), list)
@@ -266,6 +268,10 @@ func TestControllerAgentListCanonicalizesAliasesAndIncludesOllama(t *testing.T) 
 		if list[i] != want[i] {
 			t.Fatalf("controllerAgentList()[%d] = %q, want %q", i, list[i], want[i])
 		}
+	}
+	prompt, _, err := resolveControllerPrompt(ControllerInput{}, "mixed", strings.Join(list, "\n"), t.TempDir())
+	if err != nil || !strings.Contains(prompt, "- Pane 9: pi") {
+		t.Fatalf("controller prompt omitted its Pi worker: error=%v prompt=%q", err, prompt)
 	}
 }
 
