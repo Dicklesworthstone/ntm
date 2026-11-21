@@ -36,6 +36,11 @@ type KeyMap struct {
 	QuotaToggle     key.Binding // '$' toggles the usage/quota panel
 	RateLimitToggle key.Binding // 'o' toggles the OAuth/rate-limit panel
 	AccountsToggle  key.Binding // 'a' toggles the CAAM accounts panel
+	// Operational dashboard panels [reality-bridge: bd-rc2-track-2-harness-ori-3ydfr.8]
+	PipelinesToggle key.Binding // 'P' toggles the Pipelines panel
+	ApprovalsToggle key.Binding // 'S' toggles the Safety & Approvals panel
+	WorktreesToggle key.Binding // 'W' toggles the Worktrees & Checkpoints panel
+	MailInboxToggle key.Binding // 'I' toggles the Agent Mail Inbox panel
 	Tab             key.Binding
 	ShiftTab        key.Binding
 	Num1            key.Binding
@@ -60,7 +65,7 @@ func (k KeyMap) ShortHelp() []key.Binding {
 func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Zoom}, // Navigation
-		{k.NextPanel, k.PrevPanel, k.ViewToggle, k.QuotaToggle, k.RateLimitToggle, k.AccountsToggle},              // Panels & Actions
+		{k.NextPanel, k.PrevPanel, k.ViewToggle, k.QuotaToggle, k.RateLimitToggle, k.AccountsToggle, k.PipelinesToggle, k.ApprovalsToggle, k.WorktreesToggle, k.MailInboxToggle}, // Panels & Actions
 		{k.Refresh, k.ContextRefresh, k.MailRefresh, k.CassSearch},                                                // Data
 		{k.Help, k.Quit, k.Pause, k.Diagnostics, k.ToastDismiss, k.ToastHistory, k.SpawnWizard, k.WorkflowToggle}, // Control
 	}
@@ -108,6 +113,11 @@ var dashKeys = KeyMap{
 	QuotaToggle:     key.NewBinding(key.WithKeys("$"), key.WithHelp("$", "toggle usage/quota")),
 	RateLimitToggle: key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "toggle oauth/rate status")),
 	AccountsToggle:  key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "toggle accounts")),
+	// Operational dashboard panels [reality-bridge: bd-rc2-track-2-harness-ori-3ydfr.8]
+	PipelinesToggle: key.NewBinding(key.WithKeys("P"), key.WithHelp("P", "toggle pipelines")),
+	ApprovalsToggle: key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "toggle approvals")),
+	WorktreesToggle: key.NewBinding(key.WithKeys("W"), key.WithHelp("W", "toggle worktrees/checkpoints")),
+	MailInboxToggle: key.NewBinding(key.WithKeys("I"), key.WithHelp("I", "toggle mail inbox")),
 	Tab:             key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next panel")),
 	ShiftTab:        key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "prev panel")),
 	Num1:            key.NewBinding(key.WithKeys("1")),

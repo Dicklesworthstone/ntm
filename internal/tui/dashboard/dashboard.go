@@ -23,6 +23,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
+	"github.com/Dicklesworthstone/ntm/internal/approval"
 	"github.com/Dicklesworthstone/ntm/internal/backpressure"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
@@ -37,6 +38,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/integrations/caut"
 	"github.com/Dicklesworthstone/ntm/internal/integrations/rano"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
+	"github.com/Dicklesworthstone/ntm/internal/pipeline"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/scanner"
@@ -56,6 +58,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/util"
 	"github.com/Dicklesworthstone/ntm/internal/watcher"
 	"github.com/Dicklesworthstone/ntm/internal/workflow"
+	"github.com/Dicklesworthstone/ntm/internal/worktrees"
 )
 
 func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
@@ -1222,6 +1225,32 @@ func (m Model) sidebarInteractivePanels() []sidebarPanelRef {
 			panel: m.accountsPanel,
 		})
 	}
+	// Operational dashboard panels join focus cycling while toggled visible.
+	// [reality-bridge: bd-rc2-track-2-harness-ori-3ydfr.8]
+	if m.showPipelinesPanel && m.pipelinesPanel != nil {
+		refs = append(refs, sidebarPanelRef{
+			id:    m.pipelinesPanel.Config().ID,
+			panel: m.pipelinesPanel,
+		})
+	}
+	if m.showApprovalsPanel && m.approvalsPanel != nil {
+		refs = append(refs, sidebarPanelRef{
+			id:    m.approvalsPanel.Config().ID,
+			panel: m.approvalsPanel,
+		})
+	}
+	if m.showWorktreesPanel && m.worktreesPanel != nil {
+		refs = append(refs, sidebarPanelRef{
+			id:    m.worktreesPanel.Config().ID,
+			panel: m.worktreesPanel,
+		})
+	}
+	if m.showMailInboxPanel && m.mailInboxPanel != nil {
+		refs = append(refs, sidebarPanelRef{
+			id:    m.mailInboxPanel.Config().ID,
+			panel: m.mailInboxPanel,
+		})
+	}
 	if m.timelinePanel != nil {
 		refs = append(refs, sidebarPanelRef{
 			id:    m.timelinePanel.Config().ID,
@@ -1350,6 +1379,27 @@ func (m *Model) syncSidebarPanelFocusState() {
 	if m.cassPanel != nil {
 		m.cassPanel.Blur()
 	}
+	if m.quotaPanel != nil {
+		m.quotaPanel.Blur()
+	}
+	if m.rateLimitPanel != nil {
+		m.rateLimitPanel.Blur()
+	}
+	if m.accountsPanel != nil {
+		m.accountsPanel.Blur()
+	}
+	if m.pipelinesPanel != nil {
+		m.pipelinesPanel.Blur()
+	}
+	if m.approvalsPanel != nil {
+		m.approvalsPanel.Blur()
+	}
+	if m.worktreesPanel != nil {
+		m.worktreesPanel.Blur()
+	}
+	if m.mailInboxPanel != nil {
+		m.mailInboxPanel.Blur()
+	}
 	if m.timelinePanel != nil {
 		m.timelinePanel.Blur()
 	}
@@ -1455,6 +1505,220 @@ func (m Model) fetchAccountsStatus() tea.Cmd {
 			Available: caamStatus != nil && caamStatus.Available,
 		}}
 	}
+}
+
+// Operational panel data fetchers and action executors.
+// [reality-bridge: bd-rc2-track-2-harness-ori-3ydfr.8]
+
+var dashboardFetchPipelinesData = func(projectDir string) panels.PipelinesData {
+	runs, warnings, err := pipeline.ListPipelineSnapshots(projectDir)
+	return panels.PipelinesData{
+		Runs:     runs,
+		Warnings: warnings,
+		Error:    err,
+	}
+}
+
+var dashboardCancelPipeline = func(ctx context.Context, projectDir, runID string) error {
+	return pipeline.RequestRunCancellation(ctx, projectDir, runID)
+}
+
+var dashboardFetchApprovalsData = func() panels.ApprovalsData {
+	store, err := state.Open("")
+	if err != nil {
+		return panels.ApprovalsData{Available: false, Error: err}
+	}
+	defer store.Close()
+	if err := store.Migrate(); err != nil {
+		return panels.ApprovalsData{Available: false, Error: err}
+	}
+	pending, err := store.ListPendingApprovals()
+	if err != nil {
+		return panels.ApprovalsData{Available: true, Error: err}
+	}
+	return panels.ApprovalsData{
+		Pending:   pending,
+		Available: true,
+	}
+}
+
+var dashboardDecideApproval = func(ctx context.Context, approvalID string, approve bool, approver string) error {
+	store, err := state.Open("")
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if err := store.Migrate(); err != nil {
+		return err
+	}
+	engine := approval.New(store, nil, nil, approval.DefaultConfig())
+	if approve {
+		return engine.Approve(ctx, approvalID, approver)
+	}
+	return engine.Deny(ctx, approvalID, approver, "denied via dashboard")
+}
+
+var dashboardFetchWorktreesCheckpointsData = func(ctx context.Context, projectDir, session string) panels.WorktreesCheckpointsData {
+	data := panels.WorktreesCheckpointsData{}
+	if strings.TrimSpace(projectDir) != "" && strings.TrimSpace(session) != "" {
+		mgr := worktrees.NewManager(projectDir, session)
+		wts, err := mgr.ListWorktrees(ctx)
+		if err != nil {
+			data.WorktreeError = err
+		} else {
+			data.GitAvailable = true
+			data.Worktrees = wts
+		}
+	}
+	if strings.TrimSpace(session) != "" {
+		cps, err := checkpoint.NewStorage().List(session)
+		if err != nil {
+			data.CheckpointError = err
+		} else {
+			data.Checkpoints = cps
+		}
+	}
+	return data
+}
+
+var dashboardRestoreCheckpoint = func(ctx context.Context, session, checkpointID string) error {
+	storage := checkpoint.NewStorage()
+	cp, err := storage.Load(session, checkpointID)
+	if err != nil {
+		return err
+	}
+	_, err = checkpoint.NewRestorerWithStorage(storage).RestoreFromCheckpointContext(ctx, cp, checkpoint.RestoreOptions{
+		InjectContext: true,
+	})
+	return err
+}
+
+func dashboardCurrentApprover() string {
+	if user := strings.TrimSpace(os.Getenv("NTM_USER")); user != "" {
+		return user
+	}
+	if user := strings.TrimSpace(os.Getenv("USER")); user != "" {
+		return user
+	}
+	return "dashboard"
+}
+
+func (m Model) fetchPipelinesStatus() tea.Cmd {
+	projectDir := m.projectDir
+	return func() tea.Msg {
+		return PipelinesStatusMsg{Data: dashboardFetchPipelinesData(projectDir)}
+	}
+}
+
+func (m Model) cancelPipelineCmd(runID string) tea.Cmd {
+	projectDir := m.projectDir
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err := dashboardCancelPipeline(ctx, projectDir, runID)
+		return PipelineCancelResultMsg{RunID: runID, Err: err}
+	}
+}
+
+func (m Model) fetchApprovalsStatus() tea.Cmd {
+	return func() tea.Msg {
+		return ApprovalsStatusMsg{Data: dashboardFetchApprovalsData()}
+	}
+}
+
+func (m Model) decideApprovalCmd(approvalID string, approve bool) tea.Cmd {
+	approver := dashboardCurrentApprover()
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		err := dashboardDecideApproval(ctx, approvalID, approve, approver)
+		return ApprovalDecisionResultMsg{ApprovalID: approvalID, Approve: approve, Err: err}
+	}
+}
+
+func (m Model) fetchWorktreesCheckpoints() tea.Cmd {
+	projectDir := m.projectDir
+	session := m.session
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return WorktreesCheckpointsMsg{
+			Data: dashboardFetchWorktreesCheckpointsData(ctx, projectDir, session),
+		}
+	}
+}
+
+func (m Model) restoreCheckpointCmd(checkpointID string) tea.Cmd {
+	session := m.session
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		err := dashboardRestoreCheckpoint(ctx, session, checkpointID)
+		return CheckpointRestoreResultMsg{CheckpointID: checkpointID, Err: err}
+	}
+}
+
+func (m *Model) syncMailInboxPanel() {
+	if m.mailInboxPanel == nil {
+		return
+	}
+	items := make([]panels.MailInboxItem, 0)
+	for paneID, msgs := range m.agentMailInbox {
+		agentName := m.agentMailAgents[paneID]
+		for _, msg := range msgs {
+			items = append(items, panels.MailInboxItem{
+				AgentName: agentName,
+				PaneID:    paneID,
+				Message:   msg,
+			})
+		}
+	}
+	var firstErr error
+	for _, err := range m.agentMailInboxErrors {
+		if err != nil {
+			firstErr = err
+			break
+		}
+	}
+	m.mailInboxPanel.SetData(panels.MailInboxData{
+		Items:     items,
+		Available: m.agentMailAvailable || m.agentMailConnected || len(items) > 0,
+		Error:     firstErr,
+	})
+}
+
+// activeOperationalPanel returns the toggled operational panel that should be
+// surfaced directly in narrow/split views where the ultra sidebar is absent.
+func (m Model) activeOperationalPanel() panels.Panel {
+	candidates := []struct {
+		show  bool
+		panel panels.Panel
+	}{
+		{m.showPipelinesPanel, m.pipelinesPanel},
+		{m.showApprovalsPanel, m.approvalsPanel},
+		{m.showWorktreesPanel, m.worktreesPanel},
+		{m.showMailInboxPanel, m.mailInboxPanel},
+	}
+	for _, c := range candidates {
+		if c.show && c.panel != nil && c.panel.Config().ID == m.sidebarActivePanel {
+			return c.panel
+		}
+	}
+	for _, c := range candidates {
+		if c.show && c.panel != nil {
+			return c.panel
+		}
+	}
+	return nil
+}
+
+func (m Model) renderOperationalPanel(panel panels.Panel, width, height int) string {
+	if panel == nil || width <= 0 || height <= 0 {
+		return ""
+	}
+	panel.Focus()
+	panel.SetSize(width, height)
+	return renderBoundedPanelView(panel, height)
 }
 
 // accountsToggleShortcutAvailable reports whether the global 'a' accounts
@@ -2488,6 +2752,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.fetchAccountsStatus())
 			}
 		}
+		// Operational dashboard panels refresh only while visible.
+		// [reality-bridge: bd-rc2-track-2-harness-ori-3ydfr.8]
+		if m.showPipelinesPanel && m.pipelinesPanel != nil && !m.fetchingPipelines {
+			interval := m.pipelinesPanel.Config().RefreshInterval
+			if m.pipelinesPanel.HasError() {
+				interval = 2 * interval
+			}
+			if now.Sub(m.lastPipelinesFetch) >= interval {
+				m.fetchingPipelines = true
+				cmds = append(cmds, m.fetchPipelinesStatus())
+			}
+		}
+		if m.showApprovalsPanel && m.approvalsPanel != nil && !m.fetchingApprovals {
+			interval := m.approvalsPanel.Config().RefreshInterval
+			if m.approvalsPanel.HasError() {
+				interval = 2 * interval
+			}
+			if now.Sub(m.lastApprovalsFetch) >= interval {
+				m.fetchingApprovals = true
+				cmds = append(cmds, m.fetchApprovalsStatus())
+			}
+		}
+		if m.showWorktreesPanel && m.worktreesPanel != nil && !m.fetchingWorktrees {
+			interval := m.worktreesPanel.Config().RefreshInterval
+			if m.worktreesPanel.HasError() {
+				interval = 5 * time.Second
+			}
+			if now.Sub(m.lastWorktreesFetch) >= interval {
+				m.fetchingWorktrees = true
+				cmds = append(cmds, m.fetchWorktreesCheckpoints())
+			}
+		}
 
 		cmds = append(cmds, m.tick())
 		return m, tea.Batch(cmds...)
@@ -2524,6 +2820,125 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastAccountsFetch = time.Now()
 		if m.accountsPanel != nil {
 			m.accountsPanel.SetData(msg.Data)
+		}
+		return m, nil
+
+	// Operational panel data arrivals and action results.
+	// [reality-bridge: bd-rc2-track-2-harness-ori-3ydfr.8]
+	case PipelinesStatusMsg:
+		m.fetchingPipelines = false
+		m.lastPipelinesFetch = time.Now()
+		if m.pipelinesPanel != nil {
+			m.pipelinesPanel.SetData(msg.Data)
+		}
+		return m, nil
+
+	case panels.PipelineCancelActionMsg:
+		return m, m.cancelPipelineCmd(msg.RunID)
+
+	case PipelineCancelResultMsg:
+		if msg.Err != nil {
+			if m.toasts != nil {
+				m.toasts.Push(components.Toast{
+					ID:      "pipeline-cancel-failed-" + msg.RunID,
+					Message: fmt.Sprintf("Cancel pipeline %s failed: %v", msg.RunID, msg.Err),
+					Level:   components.ToastError,
+				})
+			}
+		} else {
+			if m.toasts != nil {
+				m.toasts.Push(components.Toast{
+					ID:      "pipeline-cancel-ok-" + msg.RunID,
+					Message: fmt.Sprintf("Cancellation requested for %s", msg.RunID),
+					Level:   components.ToastSuccess,
+				})
+			}
+		}
+		if m.showPipelinesPanel && !m.fetchingPipelines {
+			m.fetchingPipelines = true
+			return m, m.fetchPipelinesStatus()
+		}
+		return m, nil
+
+	case ApprovalsStatusMsg:
+		m.fetchingApprovals = false
+		m.lastApprovalsFetch = time.Now()
+		if m.approvalsPanel != nil {
+			m.approvalsPanel.SetData(msg.Data)
+		}
+		return m, nil
+
+	case panels.ApprovalDecisionActionMsg:
+		return m, m.decideApprovalCmd(msg.ApprovalID, msg.Approve)
+
+	case ApprovalDecisionResultMsg:
+		verb := "Denied"
+		if msg.Approve {
+			verb = "Approved"
+		}
+		if msg.Err != nil {
+			if m.toasts != nil {
+				m.toasts.Push(components.Toast{
+					ID:      "approval-decision-failed-" + msg.ApprovalID,
+					Message: fmt.Sprintf("%s %s failed: %v", verb, msg.ApprovalID, msg.Err),
+					Level:   components.ToastError,
+				})
+			}
+		} else {
+			if m.toasts != nil {
+				m.toasts.Push(components.Toast{
+					ID:      "approval-decision-ok-" + msg.ApprovalID,
+					Message: fmt.Sprintf("%s approval %s", verb, msg.ApprovalID),
+					Level:   components.ToastSuccess,
+				})
+			}
+		}
+		if m.showApprovalsPanel && !m.fetchingApprovals {
+			m.fetchingApprovals = true
+			return m, m.fetchApprovalsStatus()
+		}
+		return m, nil
+
+	case WorktreesCheckpointsMsg:
+		m.fetchingWorktrees = false
+		m.lastWorktreesFetch = time.Now()
+		if m.worktreesPanel != nil {
+			m.worktreesPanel.SetData(msg.Data)
+		}
+		return m, nil
+
+	case panels.WorktreeCheckpointActionMsg:
+		switch msg.Action {
+		case "save":
+			return m, m.createCheckpointCmd()
+		case "restore":
+			if msg.CheckpointID != "" {
+				return m, m.restoreCheckpointCmd(msg.CheckpointID)
+			}
+		}
+		return m, nil
+
+	case CheckpointRestoreResultMsg:
+		if msg.Err != nil {
+			if m.toasts != nil {
+				m.toasts.Push(components.Toast{
+					ID:      "checkpoint-restore-failed-" + msg.CheckpointID,
+					Message: fmt.Sprintf("Restore checkpoint %s failed: %v", msg.CheckpointID, msg.Err),
+					Level:   components.ToastError,
+				})
+			}
+		} else {
+			if m.toasts != nil {
+				m.toasts.Push(components.Toast{
+					ID:      "checkpoint-restore-ok-" + msg.CheckpointID,
+					Message: fmt.Sprintf("Restored checkpoint %s", msg.CheckpointID),
+					Level:   components.ToastSuccess,
+				})
+			}
+		}
+		if m.showWorktreesPanel && !m.fetchingWorktrees {
+			m.fetchingWorktrees = true
+			return m, m.fetchWorktreesCheckpoints()
 		}
 		return m, nil
 
@@ -3062,6 +3477,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.agentMailLockInfo = nil
 		}
 		m.markUpdated(refreshAgentMail, time.Now())
+		m.syncMailInboxPanel()
 		return m, nil
 
 	case AgentMailInboxSummaryMsg:
@@ -3140,6 +3556,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.agentMailUnread = unread
 		m.agentMailUrgent = urgent
 		m.markUpdated(refreshAgentMailInbox, now)
+		m.syncMailInboxPanel()
 		m.refreshBackpressure()
 		return m, m.selectedPaneInboxDetailCmd()
 
@@ -3158,6 +3575,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.agentMailInbox[msg.PaneID] = mergeInboxBodies(m.agentMailInbox[msg.PaneID], msg.Messages)
 			m.markUpdated(refreshAgentMailInboxDetail, time.Now())
 		}
+		m.syncMailInboxPanel()
 		return m, nil
 
 	case CheckpointUpdateMsg:
@@ -3303,6 +3721,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.checkpointCount++
 			m.checkpointStatus = "recent"
 			m.checkpointError = nil
+		}
+		if m.showWorktreesPanel && !m.fetchingWorktrees {
+			m.fetchingWorktrees = true
+			return m, m.fetchWorktreesCheckpoints()
 		}
 		return m, nil
 
@@ -3547,6 +3969,83 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.fetchAccountsStatus()
 			}
 			return m, nil
+		}
+
+		// Operational dashboard panel toggles: Pipelines ('P'), Safety & Approvals ('S'),
+		// Worktrees & Checkpoints ('W'), Agent Mail Inbox ('I').
+		// [reality-bridge: bd-rc2-track-2-harness-ori-3ydfr.8]
+		if key.Matches(msg, dashKeys.PipelinesToggle) {
+			m.showPipelinesPanel = !m.showPipelinesPanel
+			if m.showPipelinesPanel {
+				if m.pipelinesPanel != nil {
+					m.sidebarActivePanel = m.pipelinesPanel.Config().ID
+				}
+				m.syncSidebarPanelFocusState()
+				if !m.fetchingPipelines {
+					m.fetchingPipelines = true
+					return m, m.fetchPipelinesStatus()
+				}
+			}
+			m.syncSidebarPanelFocusState()
+			return m, nil
+		}
+		if key.Matches(msg, dashKeys.ApprovalsToggle) {
+			m.showApprovalsPanel = !m.showApprovalsPanel
+			if m.showApprovalsPanel {
+				if m.approvalsPanel != nil {
+					m.sidebarActivePanel = m.approvalsPanel.Config().ID
+				}
+				m.syncSidebarPanelFocusState()
+				if !m.fetchingApprovals {
+					m.fetchingApprovals = true
+					return m, m.fetchApprovalsStatus()
+				}
+			}
+			m.syncSidebarPanelFocusState()
+			return m, nil
+		}
+		if key.Matches(msg, dashKeys.WorktreesToggle) {
+			m.showWorktreesPanel = !m.showWorktreesPanel
+			if m.showWorktreesPanel {
+				if m.worktreesPanel != nil {
+					m.sidebarActivePanel = m.worktreesPanel.Config().ID
+				}
+				m.syncSidebarPanelFocusState()
+				if !m.fetchingWorktrees {
+					m.fetchingWorktrees = true
+					return m, m.fetchWorktreesCheckpoints()
+				}
+			}
+			m.syncSidebarPanelFocusState()
+			return m, nil
+		}
+		if key.Matches(msg, dashKeys.MailInboxToggle) {
+			m.showMailInboxPanel = !m.showMailInboxPanel
+			if m.showMailInboxPanel {
+				if m.mailInboxPanel != nil {
+					m.sidebarActivePanel = m.mailInboxPanel.Config().ID
+				}
+				m.syncMailInboxPanel()
+				m.syncSidebarPanelFocusState()
+				if !m.fetchingMailInbox {
+					m.fetchingMailInbox = true
+					m.lastMailInboxFetch = time.Now()
+					return m, m.fetchAgentMailInboxes()
+				}
+			}
+			m.syncSidebarPanelFocusState()
+			return m, nil
+		}
+
+		// Route panel-owned action keys before global shortcuts intercept 'c' or 'enter'
+		// when one of the 4 operational panels owns focus (or is surfaced in split/narrow view).
+		if activeOp := m.focusedOperationalPanelForKeys(); activeOp != nil {
+			switch msg.String() {
+			case "j", "k", "up", "down", "x", "y", "c", "enter":
+				activeOp.Focus()
+				_, cmd := activeOp.Update(msg)
+				return m, cmd
+			}
 		}
 
 		// [tui-upgrade: bd-uz09d] Open spawn wizard with ctrl+w.
@@ -4763,6 +5262,27 @@ func (m *Model) resizeSidebarPanels(width, height int) {
 	if m.cassPanel != nil {
 		m.cassPanel.SetSize(width, height)
 	}
+	if m.quotaPanel != nil {
+		m.quotaPanel.SetSize(width, height)
+	}
+	if m.rateLimitPanel != nil {
+		m.rateLimitPanel.SetSize(width, height)
+	}
+	if m.accountsPanel != nil {
+		m.accountsPanel.SetSize(width, height)
+	}
+	if m.pipelinesPanel != nil {
+		m.pipelinesPanel.SetSize(width, height)
+	}
+	if m.approvalsPanel != nil {
+		m.approvalsPanel.SetSize(width, height)
+	}
+	if m.worktreesPanel != nil {
+		m.worktreesPanel.SetSize(width, height)
+	}
+	if m.mailInboxPanel != nil {
+		m.mailInboxPanel.SetSize(width, height)
+	}
 }
 
 func (m *Model) resizePanelsForLayout() {
@@ -5539,6 +6059,34 @@ func (m Model) renderSidebar(width, height int) string {
 		}
 	}
 
+	// Operational dashboard panels render in the sidebar while toggled visible.
+	// [reality-bridge: bd-rc2-track-2-harness-ori-3ydfr.8]
+	for _, op := range []struct {
+		show  bool
+		panel panels.Panel
+	}{
+		{m.showPipelinesPanel, m.pipelinesPanel},
+		{m.showApprovalsPanel, m.approvalsPanel},
+		{m.showWorktreesPanel, m.worktreesPanel},
+		{m.showMailInboxPanel, m.mailInboxPanel},
+	} {
+		if !op.show || op.panel == nil || height <= 0 {
+			continue
+		}
+		used := lipgloss.Height(strings.Join(lines, "\n"))
+		panelHeight := height - used - 1
+		if panelHeight >= op.panel.Config().MinHeight {
+			if panelHeight > 12 {
+				panelHeight = 12
+			}
+			if activeSidebarID == op.panel.Config().ID {
+				op.panel.Focus()
+			}
+			op.panel.SetSize(width, panelHeight)
+			lines = append(lines, renderBoundedPanelView(op.panel, panelHeight), "")
+		}
+	}
+
 	headerStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(t.Text).
@@ -5849,7 +6397,26 @@ func (m Model) renderSplitPrimaryPanel(width, height int) string {
 	if m.focusedPanel == PanelAttention && m.attentionPanel != nil {
 		return m.renderAttentionPanel(width, height)
 	}
+	if activeOp := m.activeOperationalPanel(); activeOp != nil {
+		return m.renderOperationalPanel(activeOp, width, height)
+	}
 	return m.renderPaneDetail(width)
+}
+
+func (m Model) focusedOperationalPanelForKeys() panels.Panel {
+	if m.focusedPanel == PanelSidebar {
+		if ref, ok := m.sidebarActivePanelRef(); ok {
+			switch ref.id {
+			case "pipelines", "approvals", "worktrees_checkpoints", "mail_inbox":
+				return ref.panel
+			}
+		}
+		return nil
+	}
+	if m.tier < layout.TierUltra {
+		return m.activeOperationalPanel()
+	}
+	return nil
 }
 
 func (m Model) renderConflictsPanel(width, height int) string {

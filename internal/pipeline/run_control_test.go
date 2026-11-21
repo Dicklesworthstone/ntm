@@ -257,3 +257,59 @@ func TestRunControlProcessHelper(t *testing.T) {
 		t.Fatalf("external cancellation did not stop real subprocess work: %v", err)
 	}
 }
+
+func TestListPipelineSnapshots(t *testing.T) {
+	dir := t.TempDir()
+
+	// Empty project returns empty slice and no warnings.
+	runs, warnings, err := ListPipelineSnapshots(dir)
+	if err != nil {
+		t.Fatalf("ListPipelineSnapshots(empty) error = %v", err)
+	}
+	if len(runs) != 0 || len(warnings) != 0 {
+		t.Fatalf("expected 0 runs and 0 warnings, got %d / %d", len(runs), len(warnings))
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	older := &ExecutionState{
+		RunID:      "run-older",
+		WorkflowID: "wf-a",
+		Session:    "sess-1",
+		Status:     StatusCompleted,
+		StartedAt:  now.Add(-10 * time.Minute),
+		Steps:      map[string]StepResult{"s1": {StepID: "s1", Status: StatusCompleted}},
+	}
+	newer := &ExecutionState{
+		RunID:      "run-newer",
+		WorkflowID: "wf-b",
+		Session:    "sess-1",
+		Status:     StatusRunning,
+		StartedAt:  now.Add(-1 * time.Minute),
+		Steps:      map[string]StepResult{"s1": {StepID: "s1", Status: StatusRunning}},
+	}
+	if err := SaveState(dir, older); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveState(dir, newer); err != nil {
+		t.Fatal(err)
+	}
+	// Write one corrupt JSON file to prove warnings are surfaced without failing the scan.
+	corruptPath := filepath.Join(dir, ".ntm", "pipelines", "broken-run.json")
+	if err := os.WriteFile(corruptPath, []byte("{not-json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	runs, warnings, err = ListPipelineSnapshots(dir)
+	if err != nil {
+		t.Fatalf("ListPipelineSnapshots error = %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("expected 2 runs, got %d", len(runs))
+	}
+	if runs[0].RunID != "run-newer" || runs[1].RunID != "run-older" {
+		t.Fatalf("expected newest-first order [run-newer, run-older], got [%s, %s]", runs[0].RunID, runs[1].RunID)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "broken-run") {
+		t.Fatalf("expected 1 warning mentioning broken-run, got %v", warnings)
+	}
+}

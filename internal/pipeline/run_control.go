@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -268,4 +269,41 @@ func LoadPipelineSnapshot(projectDir, runID string) *PipelineExecution {
 		return nil
 	}
 	return snapshotFromPersistedState(state)
+}
+
+// ListPipelineSnapshots scans the durable .ntm/pipelines state directory for
+// projectDir and returns snapshots sorted newest-first alongside any unreadable
+// state file warnings. Both the HTTP serve layer and TUI dashboard use this
+// single canonical reader (ORI).
+func ListPipelineSnapshots(projectDir string) ([]*PipelineExecution, []string, error) {
+	if strings.TrimSpace(projectDir) == "" {
+		return []*PipelineExecution{}, nil, nil
+	}
+	entries, err := os.ReadDir(filepath.Join(projectDir, ".ntm", "pipelines"))
+	if errors.Is(err, os.ErrNotExist) {
+		return []*PipelineExecution{}, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	out := make([]*PipelineExecution, 0, len(entries))
+	var warnings []string
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		if snapshot := LoadPipelineSnapshot(projectDir, id); snapshot != nil {
+			out = append(out, snapshot)
+		} else {
+			warnings = append(warnings, fmt.Sprintf("pipeline state %q could not be read; inspect it before recovery", id))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].StartedAt.Equal(out[j].StartedAt) {
+			return out[i].StartedAt.After(out[j].StartedAt)
+		}
+		return out[i].RunID < out[j].RunID
+	})
+	return out, warnings, nil
 }

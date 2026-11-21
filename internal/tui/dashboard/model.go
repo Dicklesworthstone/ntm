@@ -351,6 +351,24 @@ type Model struct {
 	lastOAuthFetch      time.Time
 	lastAccountsFetch   time.Time
 
+	// Operational dashboard panels: pipelines, approvals, worktrees/checkpoints,
+	// and Agent Mail inbox toggled into the sidebar.
+	// [reality-bridge: bd-rc2-track-2-harness-ori-3ydfr.8]
+	pipelinesPanel     *panels.PipelinesPanel
+	approvalsPanel     *panels.ApprovalsPanel
+	worktreesPanel     *panels.WorktreesCheckpointsPanel
+	mailInboxPanel     *panels.MailInboxPanel
+	showPipelinesPanel bool
+	showApprovalsPanel bool
+	showWorktreesPanel bool
+	showMailInboxPanel bool
+	fetchingPipelines  bool
+	fetchingApprovals  bool
+	fetchingWorktrees  bool
+	lastPipelinesFetch time.Time
+	lastApprovalsFetch time.Time
+	lastWorktreesFetch time.Time
+
 	// Data for new panels
 	beadsSummary             bv.BeadsSummary
 	beadsReady               []bv.BeadPreview
@@ -634,6 +652,10 @@ func New(session, projectDir string) Model {
 		quotaPanel:           panels.NewQuotaPanel(),
 		rateLimitPanel:       panels.NewRateLimitPanel(),
 		accountsPanel:        panels.NewAccountsPanel(),
+		pipelinesPanel:       panels.NewPipelinesPanel(),
+		approvalsPanel:       panels.NewApprovalsPanel(),
+		worktreesPanel:       panels.NewWorktreesCheckpointsPanel(),
+		mailInboxPanel:       panels.NewMailInboxPanel(),
 		velocityByType:       make(map[string][]float64),
 
 		// Init() only kicks off the critical first-paint session fetch. Everything

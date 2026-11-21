@@ -330,7 +330,12 @@ func (m Model) renderMainContentSection() string {
 			case m.tier >= layout.TierSplit:
 				b.WriteString(m.renderSplitView() + "\n")
 			default:
-				b.WriteString(m.renderPaneGrid() + "\n")
+				if activeOp := m.activeOperationalPanel(); activeOp != nil {
+					opHeight := max(contentHeightFor(m.height)-2, activeOp.Config().MinHeight)
+					b.WriteString(m.renderOperationalPanel(activeOp, stateWidth, opHeight) + "\n")
+				} else {
+					b.WriteString(m.renderPaneGrid() + "\n")
+				}
 			}
 		}
 	}

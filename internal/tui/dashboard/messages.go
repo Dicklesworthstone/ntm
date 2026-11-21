@@ -55,6 +55,40 @@ type QuotaStatusMsg struct {
 	Data panels.QuotaData
 }
 
+// PipelinesStatusMsg carries durable pipeline run snapshots for PipelinesPanel.
+type PipelinesStatusMsg struct {
+	Data panels.PipelinesData
+}
+
+// PipelineCancelResultMsg reports the result of an async pipeline cancel request.
+type PipelineCancelResultMsg struct {
+	RunID string
+	Err   error
+}
+
+// ApprovalsStatusMsg carries pending SLB/policy approval requests for ApprovalsPanel.
+type ApprovalsStatusMsg struct {
+	Data panels.ApprovalsData
+}
+
+// ApprovalDecisionResultMsg reports the result of approving or denying an approval request.
+type ApprovalDecisionResultMsg struct {
+	ApprovalID string
+	Approve    bool
+	Err        error
+}
+
+// WorktreesCheckpointsMsg carries git worktree and checkpoint snapshots for WorktreesCheckpointsPanel.
+type WorktreesCheckpointsMsg struct {
+	Data panels.WorktreesCheckpointsData
+}
+
+// CheckpointRestoreResultMsg reports the result of restoring a selected checkpoint.
+type CheckpointRestoreResultMsg struct {
+	CheckpointID string
+	Err          error
+}
+
 // ActivityState tracks dashboard activity for adaptive tick rate.
 type ActivityState int
 
