@@ -1545,9 +1545,13 @@ func (c *WSClient) deliverAttentionReplay(events []robot.AttentionEvent, topics 
 		}
 
 		c.attentionSubMu.Lock()
-		if c.attentionSub != sub || !sub.Active {
+		if c.attentionSub != sub {
 			c.attentionSubMu.Unlock()
 			return delivered, errAttentionSubChanged
+		}
+		if !sub.Active {
+			c.attentionSubMu.Unlock()
+			return delivered, errors.New("attention subscription became inactive during replay")
 		}
 		if c.trySend(data, nil) {
 			delivered++
