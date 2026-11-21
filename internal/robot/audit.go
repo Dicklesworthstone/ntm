@@ -26,21 +26,22 @@ const (
 
 // AuditOptions configures --robot-audit inspection, search, verification, and source health queries.
 type AuditOptions struct {
-	Session    string // session name from --robot-audit=SESSION, or "all" / "" for global list/search
-	Sessions   string // optional comma-separated session filter for search
-	Action     string // "list", "show", "search", "verify", "sources" (auto-inferred when empty)
-	Pattern    string // --audit-search regex pattern
-	Verify     bool   // --audit-verify hash-chain verification
-	Sources    bool   // --audit-sources projection source health
-	EventTypes string // --audit-type comma-separated event types
-	Actors     string // --audit-actor comma-separated actors
-	Target     string // optional target glob pattern
-	Since      string // --audit-since lower time bound
-	Until      string // optional upper time bound
-	Days       int    // --audit-days lookback window when searching without Since (default 30)
-	Limit      int    // --audit-limit page size (default 50)
-	Offset     int    // --audit-offset pagination offset (default 0)
-	AuditDir   string // optional explicit audit directory override; defaults to audit.Dir()
+	Session    string       // session name from --robot-audit=SESSION, or "all" / "" for global list/search
+	Sessions   string       // optional comma-separated session filter for search
+	Action     string       // "list", "show", "search", "verify", "sources" (auto-inferred when empty)
+	Pattern    string       // --audit-search regex pattern
+	Verify     bool         // --audit-verify hash-chain verification
+	Sources    bool         // --audit-sources projection source health
+	EventTypes string       // --audit-type comma-separated event types
+	Actors     string       // --audit-actor comma-separated actors
+	Target     string       // optional target glob pattern
+	Since      string       // --audit-since lower time bound
+	Until      string       // optional upper time bound
+	Days       int          // --audit-days lookback window when searching without Since (default 30)
+	Limit      int          // --audit-limit page size (default 50)
+	Offset     int          // --audit-offset pagination offset (default 0)
+	AuditDir   string       // optional explicit audit directory override; defaults to audit.Dir()
+	Store      *state.Store `json:"-"` // optional explicit runtime projection store for --audit-sources
 }
 
 // AuditLogFileSummary describes a tamper-evident JSONL audit log file on disk.
@@ -255,7 +256,7 @@ func GetAudit(ctx context.Context, opts AuditOptions) (*AuditOutput, error) {
 		return out, nil
 
 	case "sources":
-		sources, err := queryAuditProjectionSources()
+		sources, err := queryAuditProjectionSources(opts.Store)
 		if err != nil {
 			return newAuditErrorOutput(action, sessionLabel, err, ErrCodeInternalError, "Inspect state.db permissions or run ntm --robot-snapshot"), nil
 		}
@@ -627,8 +628,7 @@ func buildRobotAuditEntriesOutput(action, sessionLabel, auditDir string, res *au
 	return out
 }
 
-func queryAuditProjectionSources() ([]state.SourceHealth, error) {
-	store := currentProjectionStore()
+func queryAuditProjectionSources(store *state.Store) ([]state.SourceHealth, error) {
 	closeStore := false
 	if store == nil {
 		opened, err := state.Open("")

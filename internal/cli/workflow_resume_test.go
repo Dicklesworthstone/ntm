@@ -115,6 +115,7 @@ func stopFileWorkflowAfterDispatch(t *testing.T, template *workflow.WorkflowTemp
 }
 
 func TestWorkflowResumeObservesFilesChangedWhileStopped(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name             string
 		kind             workflow.TriggerType
@@ -174,6 +175,7 @@ func TestWorkflowResumeObservesFilesChangedWhileStopped(t *testing.T) {
 }
 
 func TestWorkflowResumeUnchangedFilesDoNotCompleteStage(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []workflow.TriggerType{workflow.TriggerFileCreated, workflow.TriggerFileModified} {
 		t.Run(string(kind), func(t *testing.T) {
 			opts := resumeWorkflowOptions(t)
@@ -208,6 +210,7 @@ func TestWorkflowResumeUnchangedFilesDoNotCompleteStage(t *testing.T) {
 }
 
 func TestWorkflowResumeRetainsObservedFileAfterRemoval(t *testing.T) {
+	t.Parallel()
 	opts := resumeWorkflowOptions(t)
 	opts.FireManual = false
 	template := fileResumeWorkflowTemplate(workflow.TriggerFileCreated)
@@ -249,6 +252,7 @@ func TestWorkflowResumeRetainsObservedFileAfterRemoval(t *testing.T) {
 }
 
 func TestWorkflowRetryStartsNewFilesystemBoundary(t *testing.T) {
+	t.Parallel()
 	opts := resumeWorkflowOptions(t)
 	opts.FireManual = false
 	template := fileResumeWorkflowTemplate(workflow.TriggerFileCreated)
@@ -290,6 +294,7 @@ func TestWorkflowRetryStartsNewFilesystemBoundary(t *testing.T) {
 }
 
 func TestWorkflowResumeRejectsMissingOrStaleFilesystemEvidence(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		change func(*workflow.WorkflowState)
@@ -331,6 +336,7 @@ func TestWorkflowResumeRejectsMissingOrStaleFilesystemEvidence(t *testing.T) {
 }
 
 func TestWorkflowFileTriggersIgnoreCheckpointWrites(t *testing.T) {
+	t.Parallel()
 	for _, location := range []string{"default", "custom", "symlink alias"} {
 		t.Run(location, func(t *testing.T) {
 			opts := resumeWorkflowOptions(t)
@@ -381,6 +387,7 @@ func TestWorkflowFileTriggersIgnoreCheckpointWrites(t *testing.T) {
 }
 
 func TestWorkflowResumeContinuesSavedStageWithoutRepeatingPrompts(t *testing.T) {
+	t.Parallel()
 	opts := resumeWorkflowOptions(t)
 	var sent []string
 	first := mustResumeWorkflowRunner(t, resumeWorkflowTemplate(), resumeWorkflowAgents(), opts, resumeWorkflowPorts(&sent))
@@ -417,6 +424,7 @@ func TestWorkflowResumeContinuesSavedStageWithoutRepeatingPrompts(t *testing.T) 
 }
 
 func TestWorkflowTimeoutRetriesRearmAndRemainBoundedAcrossResume(t *testing.T) {
+	t.Parallel()
 	opts := resumeWorkflowOptions(t)
 	opts.FireManual, opts.Interval = false, 5*time.Minute
 	template := resumeWorkflowTemplate()
@@ -506,6 +514,7 @@ func TestWorkflowTimeoutRetriesRearmAndRemainBoundedAcrossResume(t *testing.T) {
 }
 
 func TestWorkflowResumeRetainsTimeoutDeadlineAndAcknowledgesOnce(t *testing.T) {
+	t.Parallel()
 	for _, action := range []workflow.ErrorAction{workflow.ErrorActionPause, workflow.ErrorActionNotify, ""} {
 		t.Run("policy="+string(action), func(t *testing.T) {
 			opts := resumeWorkflowOptions(t)
@@ -581,6 +590,7 @@ func TestWorkflowResumeRetainsTimeoutDeadlineAndAcknowledgesOnce(t *testing.T) {
 }
 
 func TestWorkflowExpiredResumeHandlesTimeoutBeforePendingDeliveries(t *testing.T) {
+	t.Parallel()
 	for _, action := range []workflow.ErrorAction{workflow.ErrorActionPause, workflow.ErrorActionSkipStage, workflow.ErrorActionRetry} {
 		t.Run(string(action), func(t *testing.T) {
 			opts := resumeWorkflowOptions(t)
@@ -646,6 +656,7 @@ func TestWorkflowExpiredResumeHandlesTimeoutBeforePendingDeliveries(t *testing.T
 }
 
 func TestWorkflowTimeoutSkipCommitsBeforeDestinationDelivery(t *testing.T) {
+	t.Parallel()
 	opts := resumeWorkflowOptions(t)
 	opts.FireManual, opts.Interval = false, time.Minute
 	template := resumeWorkflowTemplate()
@@ -684,6 +695,7 @@ func TestWorkflowTimeoutSkipCommitsBeforeDestinationDelivery(t *testing.T) {
 }
 
 func TestWorkflowTimeoutSkipSelfTransitionStartsFreshVisit(t *testing.T) {
+	t.Parallel()
 	opts := resumeWorkflowOptions(t)
 	opts.FireManual, opts.Interval, opts.MaxTransitions = false, time.Minute, 2
 	template := resumeWorkflowTemplate()
@@ -710,6 +722,7 @@ func TestWorkflowTimeoutSkipSelfTransitionStartsFreshVisit(t *testing.T) {
 }
 
 func TestWorkflowTimeoutCheckpointFailureStopsBeforeFurtherAction(t *testing.T) {
+	t.Parallel()
 	for _, failAcknowledgment := range []bool{false, true} {
 		name := "handling intent"
 		if failAcknowledgment {
@@ -777,6 +790,7 @@ func TestWorkflowTimeoutCheckpointFailureStopsBeforeFurtherAction(t *testing.T) 
 }
 
 func TestWorkflowResumeRejectsMissingOrStaleTimeoutReceipt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		change func(*workflow.StageTimeout) *workflow.StageTimeout
@@ -853,6 +867,7 @@ func TestWorkflowResumeRejectsMissingOrStaleTimeoutReceipt(t *testing.T) {
 }
 
 func TestWorkflowResumePreservesConsumedRecoveryBudget(t *testing.T) {
+	t.Parallel()
 	for _, action := range []workflow.ErrorAction{workflow.ErrorActionRestartAgent, workflow.ErrorActionRetry} {
 		t.Run(string(action), func(t *testing.T) {
 			opts := resumeWorkflowOptions(t)
@@ -955,6 +970,7 @@ func TestWorkflowResumePreservesConsumedRecoveryBudget(t *testing.T) {
 }
 
 func TestWorkflowRecoveryBudgetWriteFailureRefusesSideEffects(t *testing.T) {
+	t.Parallel()
 	for _, action := range []workflow.ErrorAction{workflow.ErrorActionRestartAgent, workflow.ErrorActionRetry} {
 		t.Run(string(action), func(t *testing.T) {
 			opts := resumeWorkflowOptions(t)
@@ -1015,6 +1031,7 @@ func TestWorkflowRecoveryBudgetWriteFailureRefusesSideEffects(t *testing.T) {
 }
 
 func TestWorkflowResumeRejectsMissingOrInvalidRecoveryEvidence(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		change func(*workflow.WorkflowState)
@@ -1068,6 +1085,7 @@ func TestWorkflowResumeRejectsMissingOrInvalidRecoveryEvidence(t *testing.T) {
 }
 
 func TestWorkflowResumeCompletedCheckpointDoesNotRequireRecoveryEvidence(t *testing.T) {
+	t.Parallel()
 	opts := resumeWorkflowOptions(t)
 	opts.MaxTransitions, opts.MaxAgentRestarts = 3, 1
 	template := resumeWorkflowTemplate()
@@ -1091,6 +1109,7 @@ func TestWorkflowResumeCompletedCheckpointDoesNotRequireRecoveryEvidence(t *test
 }
 
 func TestWorkflowResumeBindsTmuxEndpointBeforeObservation(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name            string
 		original        string
@@ -1184,6 +1203,7 @@ func TestWorkflowResumeBindsTmuxEndpointBeforeObservation(t *testing.T) {
 }
 
 func TestWorkflowResumePartiallyDispatchedParallelStage(t *testing.T) {
+	t.Parallel()
 	opts := resumeWorkflowOptions(t)
 	template := resumeWorkflowTemplate()
 	template.Flow = nil
@@ -1223,6 +1243,7 @@ func TestWorkflowResumePartiallyDispatchedParallelStage(t *testing.T) {
 }
 
 func TestWorkflowResumeRefusesUnknownDeliveryAndRequiresExplicitRestart(t *testing.T) {
+	t.Parallel()
 	opts := resumeWorkflowOptions(t)
 	var sent []string
 	ports := resumeWorkflowPorts(&sent)
@@ -1261,6 +1282,7 @@ func TestWorkflowResumeRefusesUnknownDeliveryAndRequiresExplicitRestart(t *testi
 }
 
 func TestWorkflowResumeRejectsMismatchedOrInvalidCheckpointWithoutMutation(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		change func(*workflow.WorkflowState)
@@ -1321,6 +1343,7 @@ func TestWorkflowResumeRejectsMismatchedOrInvalidCheckpointWithoutMutation(t *te
 }
 
 func TestWorkflowResumeRejectsVariableChangesAndMissingCheckpoint(t *testing.T) {
+	t.Parallel()
 	opts := resumeWorkflowOptions(t)
 	var sent []string
 	opts.Resume = true
@@ -1343,6 +1366,7 @@ func TestWorkflowResumeRejectsVariableChangesAndMissingCheckpoint(t *testing.T) 
 }
 
 func TestWorkflowCheckpointWriteFailureStopsFurtherDispatch(t *testing.T) {
+	t.Parallel()
 	opts := resumeWorkflowOptions(t)
 	var sent []string
 	ports := resumeWorkflowPorts(&sent)
@@ -1369,6 +1393,7 @@ func TestWorkflowCheckpointWriteFailureStopsFurtherDispatch(t *testing.T) {
 }
 
 func TestWorkflowRunLeaseExcludesASecondRunner(t *testing.T) {
+	t.Parallel()
 	opts := resumeWorkflowOptions(t)
 	entered, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
@@ -1409,6 +1434,7 @@ func TestWorkflowRunLeaseExcludesASecondRunner(t *testing.T) {
 }
 
 func TestWorkflowReconciledDeliveryResumesWithoutRestartingPriorStages(t *testing.T) {
+	t.Parallel()
 	for _, outcome := range []string{"delivered", "not-sent"} {
 		t.Run(outcome, func(t *testing.T) {
 			opts := resumeWorkflowOptions(t)
@@ -1460,6 +1486,7 @@ func TestWorkflowReconciledDeliveryResumesWithoutRestartingPriorStages(t *testin
 }
 
 func TestWorkflowResumeRetainsFreshReviewVotesWithoutRepeatingPrompts(t *testing.T) {
+	t.Parallel()
 	opts := resumeWorkflowOptions(t)
 	opts.MaxTransitions = 5
 	opts.PanePIDs["%3"] = 1003
@@ -1511,6 +1538,7 @@ func TestWorkflowResumeRetainsFreshReviewVotesWithoutRepeatingPrompts(t *testing
 }
 
 func TestWorkflowResumeRefusesMissingVerdictBoundaryWithoutChangingCheckpoint(t *testing.T) {
+	t.Parallel()
 	opts := resumeWorkflowOptions(t)
 	template := reviewGateTemplate("all")
 	template.Flow.Initial = "review"
@@ -1542,6 +1570,7 @@ func TestWorkflowResumeRefusesMissingVerdictBoundaryWithoutChangingCheckpoint(t 
 }
 
 func TestWorkflowResumePendingRecipientExcludesItsEarlierTaskVerdict(t *testing.T) {
+	t.Parallel()
 	opts := resumeWorkflowOptions(t)
 	opts.MaxTransitions = 5
 	opts.PanePIDs["%3"] = 1003

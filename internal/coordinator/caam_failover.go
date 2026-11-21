@@ -36,6 +36,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/rotation"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -1052,6 +1053,17 @@ func (fc *failoverChecker) checkPane(ctx context.Context, pane tmux.Pane) (failo
 	// be observed again next tick without suppressing recovery for an hour.
 	request.Scope, request.ObservedSwitch = scope, observedSwitch
 
+	fsm := rotation.DefaultLifecycleCoordinator()
+	lease, leaseErr := fsm.Acquire(pane.ID, "caam-failover", fmt.Sprintf("failover-%s-%d", pane.ID, fc.now().UnixNano()), "caam_failover")
+	if leaseErr != nil {
+		if snap, ok := fsm.Snapshot(pane.ID); ok {
+			slog.Info("caam failover declined because pane lifecycle lease is held",
+				"session", fc.session, "pane", pane.ID, "agent", agentID,
+				"holder_kind", snap.Kind, "holder_owner", snap.OwnerID, "holder_state", string(snap.State))
+		}
+		return fc.decline(decision, "lifecycle_lease_held", true), true
+	}
+
 	out, err := fc.recoverPane(ctx, pane, decision.Provider, request)
 	decision.AccountActivationAttempted = out.ActivationAttempted
 	decision.AccountActivated = out.AccountActivated
@@ -1061,10 +1073,14 @@ func (fc *failoverChecker) checkPane(ctx context.Context, pane tmux.Pane) (failo
 	decision.PrevAccount = out.PrevAccount
 	var declined *accountRecoveryDecline
 	if errors.As(err, &declined) && !out.ActivationAttempted && !out.AccountActivated {
+		_ = fsm.Abort(lease, declined.reason)
 		return fc.decline(decision, declined.reason, true), true
 	}
 	success := err == nil && out.ConversationRecovered
 	if success {
+		_ = fsm.Transition(lease, rotation.StateHandingOff, "account_activated")
+		_ = fsm.Transition(lease, rotation.StateVerifying, "conversation_recovered")
+		_ = fsm.Complete(lease, "caam_failover_recovered")
 		decision.Action = "recovered"
 		slog.Info("caam failover recovered native conversation",
 			"session", fc.session, "pane", pane.ID, "agent", agentID,
@@ -1073,6 +1089,16 @@ func (fc *failoverChecker) checkPane(ctx context.Context, pane tmux.Pane) (failo
 			"new_account", request.Account,
 			"banner", decision.Banner, "reset_hint", decision.ResetHint)
 	} else {
+		checkpoint := "failover_drain"
+		if out.ActivationAttempted || out.AccountActivated || out.ActivationUnknown {
+			_ = fsm.Transition(lease, rotation.StateHandingOff, "account_activation_attempted")
+			checkpoint = "account_activation_attempted"
+		}
+		errReason := "conversation_not_recovered"
+		if err != nil {
+			errReason = err.Error()
+		}
+		_ = fsm.FailRecoverable(lease, checkpoint, errReason, "inspect CAAM account state and pane conversation before retrying failover")
 		decision.Action = "recovery_failed"
 		if out.ActivationUnknown {
 			decision.Action = "activation_unknown"

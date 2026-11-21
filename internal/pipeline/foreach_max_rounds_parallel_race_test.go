@@ -11,6 +11,7 @@ import (
 // and reads it back. With a global e.state.Variables["round"] mutated by
 // both goroutines, the body steps observe values from the wrong iteration.
 func TestForeachMaxRounds_ParallelRaceOnRoundVar(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("max-rounds-parallel-race"))
 
 	workflow := &Workflow{

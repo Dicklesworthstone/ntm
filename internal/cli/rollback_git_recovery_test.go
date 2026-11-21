@@ -160,6 +160,7 @@ func TestCheckpointSaveIncludeUntrackedFlagReachesCapture(t *testing.T) {
 }
 
 func TestCheckpointSaveRejectsIncompatibleGitFlagsBeforeLookup(t *testing.T) {
+	t.Parallel()
 	cmd := newCheckpointSaveCmd()
 	for _, name := range []string{"no-git", "include-untracked"} {
 		if err := cmd.Flags().Set(name, "true"); err != nil {

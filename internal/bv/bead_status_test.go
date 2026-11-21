@@ -466,10 +466,12 @@ func TestValidateBeadAssignmentAuthorizationAllowsExplicitStaleOwnershipState(t 
 }
 
 func TestClaimBeadForAssignmentTransactionRejectsDirectStartBlockers(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 
 	for _, dependencyType := range []string{"blocks", "conditional-blocks", "waits-for"} {
 		t.Run(dependencyType, func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			runRealBR(t, dir, "init", "--quiet")
 			targetID := createRealBRBead(t, dir, "assignment claim target "+dependencyType)
@@ -493,6 +495,7 @@ func TestClaimBeadForAssignmentTransactionRejectsDirectStartBlockers(t *testing.
 }
 
 func TestClaimBeadForAssignmentTransactionRejectsEveryOperatorGate(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 	dir := t.TempDir()
 	runRealBR(t, dir, "init", "--quiet")
@@ -515,9 +518,11 @@ func TestClaimBeadForAssignmentTransactionRejectsEveryOperatorGate(t *testing.T)
 }
 
 func TestClaimBeadForAssignmentMirrorsStartBlockerSemantics(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 
 	t.Run("parent-child rollup does not block start", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		runRealBR(t, dir, "init", "--quiet")
 		parentID := createRealBRBead(t, dir, "claimable parent")
@@ -531,6 +536,7 @@ func TestClaimBeadForAssignmentMirrorsStartBlockerSemantics(t *testing.T) {
 	})
 
 	t.Run("closed direct blocker does not block start", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		runRealBR(t, dir, "init", "--quiet")
 		targetID := createRealBRBead(t, dir, "claimable after blocker closes")
@@ -545,9 +551,11 @@ func TestClaimBeadForAssignmentMirrorsStartBlockerSemantics(t *testing.T) {
 }
 
 func TestClaimBeadForAssignmentStatusConflictAndIdempotency(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 
 	t.Run("terminal status is ineligible", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		runRealBR(t, dir, "init", "--quiet")
 		beadID := createRealBRBead(t, dir, "terminal assignment claim")
@@ -561,6 +569,7 @@ func TestClaimBeadForAssignmentStatusConflictAndIdempotency(t *testing.T) {
 	})
 
 	t.Run("other owner is conflict", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		runRealBR(t, dir, "init", "--quiet")
 		beadID := createRealBRBead(t, dir, "assignment owner conflict")
@@ -573,6 +582,7 @@ func TestClaimBeadForAssignmentStatusConflictAndIdempotency(t *testing.T) {
 	})
 
 	t.Run("same owner retry is idempotent while gates remain clear", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		runRealBR(t, dir, "init", "--quiet")
 		beadID := createRealBRBead(t, dir, "idempotent assignment claim")
@@ -587,6 +597,7 @@ func TestClaimBeadForAssignmentStatusConflictAndIdempotency(t *testing.T) {
 	})
 
 	t.Run("same owner retry rechecks operator gates", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		runRealBR(t, dir, "init", "--quiet")
 		beadID := createRealBRBead(t, dir, "gated assignment recovery")
@@ -604,6 +615,7 @@ func TestClaimBeadForAssignmentStatusConflictAndIdempotency(t *testing.T) {
 	})
 
 	t.Run("same owner retry rechecks blockers", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		runRealBR(t, dir, "init", "--quiet")
 		beadID := createRealBRBead(t, dir, "blocked assignment recovery")
@@ -623,6 +635,7 @@ func TestClaimBeadForAssignmentStatusConflictAndIdempotency(t *testing.T) {
 }
 
 func TestClaimStaleBeadForAssignmentAdoptsOnlyUnownedInProgressWork(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 	dir := t.TempDir()
 	runRealBR(t, dir, "init", "--quiet")
@@ -718,6 +731,7 @@ func TestClaimStaleBeadForAssignmentAdoptsOnlyUnownedInProgressWork(t *testing.T
 }
 
 func TestClaimBeadForAssignmentTransactionRejectsNonReadyOpenWork(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 
 	tests := []struct {
@@ -749,6 +763,7 @@ func TestClaimBeadForAssignmentTransactionRejectsNonReadyOpenWork(t *testing.T) 
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			runRealBR(t, dir, "init", "--quiet")
 			beadID := createRealBRBead(t, dir, "non-ready assignment "+test.name)
@@ -798,6 +813,7 @@ func TestClaimBeadForAssignmentTransactionRejectsNonReadyOpenWork(t *testing.T) 
 	}
 
 	t.Run("wisp", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		runRealBR(t, dir, "init", "--quiet")
 		databasePath := realBRDatabasePath(t, dir)
@@ -841,6 +857,7 @@ func TestClaimBeadForAssignmentTransactionRejectsNonReadyOpenWork(t *testing.T) 
 }
 
 func TestClaimBeadNonTerminalGuardRefusesCloseAfterReopenRead(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 	dir := t.TempDir()
 	runRealBR(t, dir, "init", "--quiet")
@@ -867,6 +884,7 @@ func TestClaimBeadNonTerminalGuardRefusesCloseAfterReopenRead(t *testing.T) {
 }
 
 func TestClaimBeadNonTerminalGuardPreservesBeadsMutationInvariants(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 	dir := t.TempDir()
 	runRealBR(t, dir, "init", "--quiet")
@@ -949,6 +967,7 @@ func TestClaimBeadNonTerminalGuardPreservesBeadsMutationInvariants(t *testing.T)
 }
 
 func TestReleaseBeadClaimPreservesBeadsMutationInvariants(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 	dir := t.TempDir()
 	runRealBR(t, dir, "init", "--quiet")
@@ -1030,6 +1049,7 @@ func TestReleaseBeadClaimPreservesBeadsMutationInvariants(t *testing.T) {
 }
 
 func TestReleaseBeadClaimRetryFinalizesCommittedSQLiteMutation(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 	dir := t.TempDir()
 	runRealBR(t, dir, "init", "--quiet")
@@ -1080,6 +1100,7 @@ func TestReleaseBeadClaimRetryFinalizesCommittedSQLiteMutation(t *testing.T) {
 }
 
 func TestReleaseBeadClaimLeavesDifferentOwnerAndPreservesTerminalStatus(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 	dir := t.TempDir()
 	runRealBR(t, dir, "init", "--quiet")
@@ -1303,9 +1324,11 @@ func corruptRealBRBTreeRootPage(t *testing.T, databasePath, name string) (int64,
 // The claim paths now trigger recovery themselves and retry once, including
 // the verified doctor fallback when br refuses a preservation check (#365).
 func TestGuardedClaimRebuildsAndRetriesOnCorruption(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 
 	t.Run("assignment claim recovers", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		runRealBR(t, dir, "init", "--quiet")
 		beadID := createRealBRBead(t, dir, "claim across corruption")
@@ -1323,6 +1346,7 @@ func TestGuardedClaimRebuildsAndRetriesOnCorruption(t *testing.T) {
 	})
 
 	t.Run("nonterminal claim recovers", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		runRealBR(t, dir, "init", "--quiet")
 		beadID := createRealBRBead(t, dir, "nonterminal claim across corruption")
@@ -1337,6 +1361,7 @@ func TestGuardedClaimRebuildsAndRetriesOnCorruption(t *testing.T) {
 	})
 
 	t.Run("claim release recovers", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		runRealBR(t, dir, "init", "--quiet")
 		beadID := createRealBRBead(t, dir, "release across corruption")
@@ -1357,6 +1382,7 @@ func TestGuardedClaimRebuildsAndRetriesOnCorruption(t *testing.T) {
 	})
 
 	t.Run("claim release retains a different owner after recovery", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		runRealBR(t, dir, "init", "--quiet")
 		beadID := createRealBRBead(t, dir, "different owner across corruption")
@@ -1372,6 +1398,7 @@ func TestGuardedClaimRebuildsAndRetriesOnCorruption(t *testing.T) {
 }
 
 func TestGuardedClaimCorruptionRecoveryPreservesJSONLAndGuards(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 	dir := t.TempDir()
 	runRealBR(t, dir, "init", "--quiet")
@@ -1433,6 +1460,7 @@ func TestGuardedClaimCorruptionRecoveryPreservesJSONLAndGuards(t *testing.T) {
 }
 
 func TestGuardedClaimCorruptionRecoveryRejectsInvalidJSONL(t *testing.T) {
+	t.Parallel()
 	requireRealBR(t)
 	dir := t.TempDir()
 	runRealBR(t, dir, "init", "--quiet")

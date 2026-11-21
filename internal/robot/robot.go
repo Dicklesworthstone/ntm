@@ -17,7 +17,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/models"
 	"github.com/Dicklesworthstone/ntm/internal/recipe"
-	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -50,37 +49,11 @@ func SetOutputFormat(f RobotFormat) {
 	outputFormat = f
 }
 
-var (
-	projectionStoreMu sync.RWMutex
-	projectionStore   *state.Store
-)
-
 const (
 	statusSchemaVersion       = "ntm.robot.status.v2"
 	snapshotSchemaVersion     = "ntm.robot.snapshot.v1"
 	statusLiveCollectionLimit = 2 * time.Second
 )
-
-// SetProjectionStore configures the shared runtime projection store used by
-// store-backed robot surfaces such as --robot-status.
-func SetProjectionStore(store *state.Store) {
-	projectionStoreMu.Lock()
-	defer projectionStoreMu.Unlock()
-	projectionStore = store
-}
-
-func currentProjectionStore() *state.Store {
-	projectionStoreMu.RLock()
-	defer projectionStoreMu.RUnlock()
-	return projectionStore
-}
-
-func resolveProjectionStore(explicit *state.Store, hasExplicit bool) *state.Store {
-	if hasExplicit {
-		return explicit
-	}
-	return currentProjectionStore()
-}
 
 type robotHelpSection struct {
 	Title        string
@@ -542,6 +515,8 @@ func ResolveAgentType(t string) string {
 		return "oc"
 	case agent.AgentTypeOmp:
 		return "omp"
+	case agent.AgentTypePi:
+		return "pi"
 	case agent.AgentTypeOllama:
 		return "ollama"
 	case agent.AgentTypeUser:

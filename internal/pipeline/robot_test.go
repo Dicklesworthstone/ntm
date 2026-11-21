@@ -68,6 +68,7 @@ func stubPersistedStateRoot(t *testing.T, root string) {
 }
 
 func TestNewRobotResponse(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name    string
@@ -105,6 +106,7 @@ func TestNewRobotResponse(t *testing.T) {
 }
 
 func TestNewErrorResponse(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name     string
@@ -181,6 +183,7 @@ func TestNewErrorResponse(t *testing.T) {
 }
 
 func TestRobotCalculateProgress(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -283,6 +286,7 @@ func TestRobotCalculateProgress(t *testing.T) {
 }
 
 func TestConvertSteps(t *testing.T) {
+	t.Parallel()
 
 	now := time.Now()
 	later := now.Add(5 * time.Second)
@@ -376,6 +380,7 @@ func TestConvertSteps(t *testing.T) {
 }
 
 func TestRobotProgressSkipKindCounts(t *testing.T) {
+	t.Parallel()
 	state := &ExecutionState{
 		Steps: map[string]StepResult{
 			"a": {Status: StatusSkipped, SkipKind: SkipKindWhenCondition},
@@ -406,6 +411,7 @@ func TestRobotProgressSkipKindCounts(t *testing.T) {
 }
 
 func TestRobotConvertStepsCarriesSkipKind(t *testing.T) {
+	t.Parallel()
 	state := &ExecutionState{
 		Steps: map[string]StepResult{
 			"step1": {
@@ -443,6 +449,7 @@ func TestRobotConvertStepsCarriesSkipKind(t *testing.T) {
 }
 
 func TestRobotProgressSkipKindCountsJSON(t *testing.T) {
+	t.Parallel()
 	progress := PipelineProgress{
 		Skipped: 2,
 		Total:   2,
@@ -466,6 +473,7 @@ func TestRobotProgressSkipKindCountsJSON(t *testing.T) {
 }
 
 func TestCountLines(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -515,6 +523,7 @@ func TestCountLines(t *testing.T) {
 }
 
 func TestParsePipelineVars(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name    string

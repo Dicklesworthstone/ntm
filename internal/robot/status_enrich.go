@@ -16,6 +16,7 @@ import (
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tokens"
@@ -59,7 +60,7 @@ var codexRateLimitPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)RateLimitError`),
 }
 
-func enrichAgentStatus(agent *Agent, sessionName, modelName string, content string) {
+func enrichAgentStatus(store *state.Store, agent *Agent, sessionName, modelName string, content string) {
 	// 1. PID is already populated from tmux
 	if agent.PID == 0 {
 		return // Cannot do much without PID
@@ -106,7 +107,7 @@ func enrichAgentStatus(agent *Agent, sessionName, modelName string, content stri
 
 		// Durable output-change sequence (#246). agent.Pane carries the tmux
 		// pane ID on this path, matching the scope used by --robot-activity.
-		agent.OutputSequence = observeOutputSequence(sessionName, agent.Pane, content, observedAt)
+		agent.OutputSequence = observeOutputSequenceWithStore(store, sessionName, agent.Pane, content, observedAt)
 
 		if lastOutputTS.IsZero() {
 			// No in-process baseline: fall back to the durable sequence, which

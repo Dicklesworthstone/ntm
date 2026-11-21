@@ -320,6 +320,7 @@ func TestSpawnIdentityCoordinator_WorktreePanePublishesUnderBothKeys(t *testing.
 // AGENT_MAIL_PROJECT=<session dir>, unless a plugin env var or --pane-env
 // already sets it.
 func TestSpawnWorktreeInjectsAgentMailProject(t *testing.T) {
+	t.Parallel()
 	projectDir := filepath.Join(t.TempDir(), "session project")
 	for _, tc := range []struct {
 		name         string

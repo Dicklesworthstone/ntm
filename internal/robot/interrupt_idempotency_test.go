@@ -42,7 +42,7 @@ func logInterruptEnvelope(t *testing.T, label string, output *InterruptOutput) {
 // interruptFixtureOptions targets the fixture pane explicitly, forces the
 // interrupt key regardless of observed state, and skips the readiness wait
 // (the fixture is not an agent CLI with a recognizable idle prompt).
-func interruptFixtureOptions(session, paneID, message, opID string) InterruptOptions {
+func interruptFixtureOptions(store *state.Store, session, paneID, message, opID string) InterruptOptions {
 	return InterruptOptions{
 		Session:        session,
 		Panes:          []string{paneID},
@@ -50,6 +50,8 @@ func interruptFixtureOptions(session, paneID, message, opID string) InterruptOpt
 		NoWait:         true,
 		Message:        message,
 		IdempotencyKey: opID,
+		Store:          store,
+		ExplicitStore:  true,
 	}
 }
 
@@ -65,7 +67,7 @@ func TestGetInterruptIdempotency_IdenticalRetryReplaysWithoutSecondInterrupt(t *
 
 	marker := fmt.Sprintf("ntm-int-replay-%d", time.Now().UnixNano())
 	opID := "op-int-replay-" + marker
-	opts := interruptFixtureOptions(session, paneID, "new task "+marker, opID)
+	opts := interruptFixtureOptions(store, session, paneID, "new task "+marker, opID)
 
 	first, err := GetInterrupt(opts)
 	if err != nil {
@@ -98,7 +100,7 @@ func TestGetInterruptIdempotency_IdenticalRetryReplaysWithoutSecondInterrupt(t *
 	// The retry an orchestrator issues after its own timeout: byte-identical
 	// command, same operation ID. Selector order and wait behavior are not
 	// part of the binding, so a longer timeout still replays.
-	retry := interruptFixtureOptions(session, paneID, "new task "+marker, opID)
+	retry := interruptFixtureOptions(store, session, paneID, "new task "+marker, opID)
 	retry.TimeoutMs = 30000
 	second, err := GetInterrupt(retry)
 	if err != nil {
@@ -136,7 +138,7 @@ func TestGetInterruptIdempotency_IdenticalRetryReplaysWithoutSecondInterrupt(t *
 		t.Fatalf("durable outcome persisted pane output: %s", row.OutcomeJSON)
 	}
 
-	receipt, err := GetSendReceipt(opID)
+	receipt, err := GetSendReceiptForStore(store, opID)
 	if err != nil {
 		t.Fatalf("GetSendReceipt error: %v", err)
 	}
@@ -169,7 +171,7 @@ func TestGetInterruptIdempotency_ConflictingReuseRejected(t *testing.T) {
 
 	marker := fmt.Sprintf("ntm-int-conflict-%d", time.Now().UnixNano())
 	opID := "op-int-conflict-" + marker
-	original := interruptFixtureOptions(session, paneID, "task A "+marker, opID)
+	original := interruptFixtureOptions(store, session, paneID, "task A "+marker, opID)
 	first, err := GetInterrupt(original)
 	if err != nil {
 		t.Fatalf("first GetInterrupt error: %v", err)
@@ -184,8 +186,8 @@ func TestGetInterruptIdempotency_ConflictingReuseRejected(t *testing.T) {
 		t.Fatalf("GetSendOperation = (%+v, %v), want the recorded interrupt", recorded, err)
 	}
 
-	otherTask := interruptFixtureOptions(session, paneID, "task B "+marker, opID)
-	notForced := interruptFixtureOptions(session, paneID, "task A "+marker, opID)
+	otherTask := interruptFixtureOptions(store, session, paneID, "task B "+marker, opID)
+	notForced := interruptFixtureOptions(store, session, paneID, "task A "+marker, opID)
 	notForced.Force = false
 	for name, opts := range map[string]InterruptOptions{"different task": otherTask, "different force": notForced} {
 		output, err := GetInterrupt(opts)
@@ -208,7 +210,7 @@ func TestGetInterruptIdempotency_ConflictingReuseRejected(t *testing.T) {
 	// Operation IDs share one namespace per session across actuation kinds:
 	// a send reusing the interrupt's ID is a conflict, not a replay of the
 	// interrupt's outcome and not a fresh delivery.
-	send, err := GetSend(SendOptions{Session: session, Pane: paneID, Message: "send " + marker, IdempotencyKey: opID})
+	send, err := GetSend(SendOptions{Session: session, Pane: paneID, Message: "send " + marker, IdempotencyKey: opID, Store: store, ExplicitStore: true})
 	if err != nil {
 		t.Fatalf("cross-kind GetSend error: %v", err)
 	}
@@ -237,7 +239,7 @@ func TestGetInterruptIdempotency_InProgressClaimNotInterrupted(t *testing.T) {
 
 	marker := fmt.Sprintf("ntm-int-inprog-%d", time.Now().UnixNano())
 	opID := "op-int-inprog-" + marker
-	opts := interruptFixtureOptions(session, paneID, "task "+marker, opID)
+	opts := interruptFixtureOptions(store, session, paneID, "task "+marker, opID)
 	payloadSHA, payloadBytes := operationPayloadDigest(opts.Message)
 	if _, claimed, err := store.ClaimSendOperation(&state.SendOperation{
 		OperationID:   opID,
@@ -283,10 +285,7 @@ func TestGetInterruptIdempotency_FailsClosedWithoutStoreAndSkipsDryRun(t *testin
 	session, paneID := fx.Session, fx.PaneID
 	marker := fmt.Sprintf("ntm-int-nostore-%d", time.Now().UnixNano())
 
-	oldStore := currentProjectionStore()
-	SetProjectionStore(nil)
-	output, err := GetInterrupt(interruptFixtureOptions(session, paneID, "task "+marker, "op-int-nostore-"+marker))
-	SetProjectionStore(oldStore)
+	output, err := GetInterrupt(interruptFixtureOptions(nil, session, paneID, "task "+marker, "op-int-nostore-"+marker))
 	if err != nil {
 		t.Fatalf("GetInterrupt error: %v", err)
 	}
@@ -298,7 +297,7 @@ func TestGetInterruptIdempotency_FailsClosedWithoutStoreAndSkipsDryRun(t *testin
 
 	store := installIdempotencyBranchStore(t)
 	dryOpID := "op-int-dry-" + marker
-	dry := interruptFixtureOptions(session, paneID, "task "+marker, dryOpID)
+	dry := interruptFixtureOptions(store, session, paneID, "task "+marker, dryOpID)
 	dry.DryRun = true
 	preview, err := GetInterrupt(dry)
 	if err != nil {
@@ -450,6 +449,7 @@ func TestApplyReplayedInterruptOutcomeRestoresRecordedFailure(t *testing.T) {
 // The receipt surface decodes whichever kind claimed the ID. Runs without
 // tmux so short-mode CI covers the interrupt receipt shape.
 func TestGetSendReceiptReportsInterruptOperation(t *testing.T) {
+	t.Parallel()
 	store := installIdempotencyBranchStore(t)
 
 	claim, claimed, err := store.ClaimSendOperation(&state.SendOperation{
@@ -458,7 +458,7 @@ func TestGetSendReceiptReportsInterruptOperation(t *testing.T) {
 	if err != nil || !claimed {
 		t.Fatalf("claim = (claimed=%v, err=%v)", claimed, err)
 	}
-	pending, err := GetSendReceipt("op-int-receipt")
+	pending, err := GetSendReceiptForStore(store, "op-int-receipt")
 	if err != nil || !pending.Success || pending.Operation == nil ||
 		pending.Operation.Kind != state.OperationKindInterrupt || pending.Operation.Status != state.SendOperationInProgress ||
 		pending.InterruptOutcome != nil {
@@ -476,7 +476,7 @@ func TestGetSendReceiptReportsInterruptOperation(t *testing.T) {
 	if err := store.CompleteSendOperation("op-int-receipt", "proj", claim.ClaimToken, string(data), time.Now().UTC()); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
-	receipt, err := GetSendReceipt("op-int-receipt")
+	receipt, err := GetSendReceiptForStore(store, "op-int-receipt")
 	if err != nil || !receipt.Success {
 		t.Fatalf("receipt = (%+v, %v), want success", receipt, err)
 	}
@@ -488,7 +488,7 @@ func TestGetSendReceiptReportsInterruptOperation(t *testing.T) {
 		t.Fatalf("receipt = outcome %+v operation %+v, want the recorded interrupt", receipt.InterruptOutcome, receipt.Operation)
 	}
 
-	missing, err := GetSendReceipt("op-never-claimed")
+	missing, err := GetSendReceiptForStore(store, "op-never-claimed")
 	if err != nil || missing.Success || missing.ErrorCode != ErrCodeNotFound || !strings.Contains(missing.Hint, "--robot-interrupt") {
 		t.Fatalf("unknown receipt = (%+v, %v), want NOT_FOUND hinting at both actuations", missing, err)
 	}

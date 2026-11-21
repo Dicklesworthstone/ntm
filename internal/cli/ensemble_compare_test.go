@@ -36,6 +36,7 @@ func (w ensembleFailureWriter) Write([]byte) (int, error) {
 }
 
 func TestRenderCheckpointResumeFailureOutputPreservesCause(t *testing.T) {
+	t.Parallel()
 	cause := errors.New("checkpoint metadata unavailable")
 	payload := checkpointResumeOutput{
 		GeneratedAt: time.Now().UTC(),
@@ -59,6 +60,7 @@ func TestRenderCheckpointResumeFailureOutputPreservesCause(t *testing.T) {
 }
 
 func TestRenderCheckpointResumeFailureOutputSurfacesEncoderError(t *testing.T) {
+	t.Parallel()
 	writeErr := errors.New("writer closed")
 	cause := errors.New("checkpoint failed")
 	err := renderCheckpointResumeFailureOutput(ensembleFailureWriter{err: writeErr}, checkpointResumeOutput{
@@ -75,6 +77,7 @@ func TestRenderCheckpointResumeFailureOutputSurfacesEncoderError(t *testing.T) {
 }
 
 func TestNewEnsembleCompareCmd(t *testing.T) {
+	t.Parallel()
 	t.Log("TEST: TestNewEnsembleCompareCmd - starting")
 
 	cmd := newEnsembleCompareCmd()
@@ -103,6 +106,7 @@ func TestNewEnsembleCompareCmd(t *testing.T) {
 }
 
 func TestWriteCompareResult_JSON(t *testing.T) {
+	t.Parallel()
 	t.Log("TEST: TestWriteCompareResult_JSON - starting")
 
 	result := &ensemble.ComparisonResult{
@@ -163,6 +167,7 @@ func TestWriteCompareResult_JSON(t *testing.T) {
 }
 
 func TestWriteCompareResult_Text(t *testing.T) {
+	t.Parallel()
 	t.Log("TEST: TestWriteCompareResult_Text - starting")
 
 	result := &ensemble.ComparisonResult{
@@ -215,6 +220,7 @@ func TestWriteCompareResult_Text(t *testing.T) {
 }
 
 func TestWriteCompareResult_Text_Verbose(t *testing.T) {
+	t.Parallel()
 	t.Log("TEST: TestWriteCompareResult_Text_Verbose - starting")
 
 	result := &ensemble.ComparisonResult{
@@ -1002,6 +1008,7 @@ func TestRunEnsembleSynthesizeResumeRejectsCheckpointSessionMismatch(t *testing.
 }
 
 func TestWriteCompareError_JSON(t *testing.T) {
+	t.Parallel()
 	t.Log("TEST: TestWriteCompareError_JSON - starting")
 
 	testErr := &testError{msg: "session not found"}
@@ -1036,6 +1043,7 @@ func TestWriteCompareError_JSON(t *testing.T) {
 }
 
 func TestWriteCompareError_JSONSurfacesEncoderError(t *testing.T) {
+	t.Parallel()
 	writeErr := errors.New("compare writer closed")
 	cause := errors.New("compare failed")
 	err := writeCompareError(ensembleFailureWriter{err: writeErr}, "run-a", "run-b", cause, "json")
@@ -1048,6 +1056,7 @@ func TestWriteCompareError_JSONSurfacesEncoderError(t *testing.T) {
 }
 
 func TestWriteCompareError_YAMLPreservesCauseAndEncoderError(t *testing.T) {
+	t.Parallel()
 	writeErr := errors.New("compare yaml writer closed")
 	cause := errors.New("compare failed")
 	err := writeCompareError(ensembleFailureWriter{err: writeErr}, "run-a", "run-b", cause, "yaml")
@@ -1057,6 +1066,7 @@ func TestWriteCompareError_YAMLPreservesCauseAndEncoderError(t *testing.T) {
 }
 
 func TestWriteCompareError_YAMLReturnsOriginalCauseAfterEncoding(t *testing.T) {
+	t.Parallel()
 	cause := errors.New("compare failed")
 	var buf bytes.Buffer
 	err := writeCompareError(&buf, "run-a", "run-b", cause, "yaml")
@@ -1073,6 +1083,7 @@ func TestWriteCompareError_YAMLReturnsOriginalCauseAfterEncoding(t *testing.T) {
 }
 
 func TestCompareOutput_Struct(t *testing.T) {
+	t.Parallel()
 	t.Log("TEST: TestCompareOutput_Struct - starting")
 
 	out := compareOutput{
@@ -1108,6 +1119,7 @@ func TestCompareOutput_Struct(t *testing.T) {
 }
 
 func TestWriteCompareResult_ChangedSectionsAndUnchanged(t *testing.T) {
+	t.Parallel()
 	empty := &ensemble.ComparisonResult{
 		RunA:    "same-a",
 		RunB:    "same-b",
@@ -1164,6 +1176,7 @@ func TestWriteCompareResult_ChangedSectionsAndUnchanged(t *testing.T) {
 }
 
 func TestRenderProvenanceValidation(t *testing.T) {
+	t.Parallel()
 	validChain := &ensemble.ProvenanceChain{
 		FindingID:    "f-valid-001",
 		SourceMode:   "deductive",

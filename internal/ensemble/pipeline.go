@@ -1888,7 +1888,11 @@ func (m *EnsembleManager) collectAssignedModeOutputsWithEarlyStop(
 	pollCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	ticker := time.NewTicker(150 * time.Millisecond)
+	pollInterval := 150 * time.Millisecond
+	if DefaultOutputCollectorPollInterval > 0 && DefaultOutputCollectorPollInterval < pollInterval {
+		pollInterval = DefaultOutputCollectorPollInterval
+	}
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	var lastErr error

@@ -29,6 +29,7 @@ import (
 // no caller, so its tables only grew (bd-a25g6). serve's maintenance loop must
 // prune a row whose staleness window passed while keeping a fresh one.
 func TestServeStateMaintenanceCollectsStaleRuntimeRows(t *testing.T) {
+	t.Parallel()
 	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("open state store: %v", err)
@@ -79,6 +80,7 @@ func TestServeStateMaintenanceCollectsStaleRuntimeRows(t *testing.T) {
 // serve must still collect (bd-7dhqw), but robot commands run constantly, so
 // a pass happens only when the stamp next to the DB is older than the interval.
 func TestCollectStateGarbageOccasionallyThrottlesCLIPasses(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store, err := state.Open(filepath.Join(dir, "state.db"))
 	if err != nil {
@@ -317,6 +319,7 @@ func TestServeProcessTriageFeedsAgentHealthAndAttention(t *testing.T) {
 }
 
 func TestNewWebCmdExposesAllServerAuthTLSAndCORSFlags(t *testing.T) {
+	t.Parallel()
 	serveCmd := newServeCmd()
 	webCmd := newWebCmd()
 
@@ -488,6 +491,7 @@ func TestServeBindsUnder200msWithSlowBVAndShutsDownUnder500msOnSIGTERM(t *testin
 }
 
 func TestRobotPolicyDecisionsCLIFlagAndStoreQuery(t *testing.T) {
+	t.Parallel()
 	if rootCmd.Flags().Lookup("robot-policy-decisions") == nil {
 		t.Fatal("--robot-policy-decisions flag not registered on rootCmd")
 	}

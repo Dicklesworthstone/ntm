@@ -118,6 +118,7 @@ func TestForceReleaseCommandUsesSessionProjectPolicy(t *testing.T) {
 }
 
 func TestForceReleaseGatePolicyModesNeedNoApprovalStore(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"never", "auto"} {
 		t.Run(mode, func(t *testing.T) {
 			pol := &policy.Policy{Automation: policy.AutomationConfig{ForceRelease: mode}}

@@ -17,6 +17,7 @@ import (
 )
 
 func TestTruncateCassText(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string
@@ -123,6 +124,7 @@ func TestTruncateCassText(t *testing.T) {
 // TestTruncateCassText_MultibyteLoopFallthrough tests the fallthrough at
 // end of the for-range loop (line 513) when all rune starts fit within targetLen.
 func TestTruncateCassText_MultibyteLoopFallthrough(t *testing.T) {
+	t.Parallel()
 
 	// "aaaa🌍" = 8 bytes. maxLen=7, targetLen=4.
 	// Rune starts: 0,1,2,3,4. All <= 4. Loop completes. prevI=4.
@@ -138,6 +140,7 @@ func TestTruncateCassText_MultibyteLoopFallthrough(t *testing.T) {
 // TestTruncateCassText_SmallMaxLenLoopFallthrough tests the maxLen<=3 loop
 // completing without an early return when a single rune is wider than maxLen.
 func TestTruncateCassText_SmallMaxLenLoopFallthrough(t *testing.T) {
+	t.Parallel()
 	got := truncateCassText("\xf0\x9f\x8c\x8d", 3)
 	if got != "" {
 		t.Errorf("truncateCassText(emoji, 3) = %q, want empty string", got)
@@ -170,24 +173,47 @@ func TestSessionWorkspaceMatchesCassWorkspaceFilter(t *testing.T) {
 	if !client.IsInstalled() {
 		t.Skip("cass not installed")
 	}
-	matches := func(workspace string) int {
-		t.Helper()
-		resp, err := client.Search(context.Background(), casspkg.SearchOptions{Query: "*", Limit: 1, Since: "60d", Workspace: workspace})
-		if err != nil {
-			t.Fatalf("cass search --workspace=%q: %v", workspace, err)
-		}
-		return resp.TotalMatches
+	type searchRes struct {
+		n   int
+		err error
 	}
 	project := sessionWorkspace("frankentui")
-	if matches(project) == 0 {
+	projCh := make(chan searchRes, 1)
+	bareCh := make(chan searchRes, 1)
+	go func() {
+		resp, err := client.Search(context.Background(), casspkg.SearchOptions{Query: "*", Limit: 1, Since: "60d", Workspace: project})
+		if err != nil {
+			projCh <- searchRes{err: err}
+			return
+		}
+		projCh <- searchRes{n: resp.TotalMatches}
+	}()
+	go func() {
+		resp, err := client.Search(context.Background(), casspkg.SearchOptions{Query: "*", Limit: 1, Since: "60d", Workspace: "frankentui"})
+		if err != nil {
+			bareCh <- searchRes{err: err}
+			return
+		}
+		bareCh <- searchRes{n: resp.TotalMatches}
+	}()
+	projRes := <-projCh
+	bareRes := <-bareCh
+	if projRes.err != nil {
+		t.Fatalf("cass search --workspace=%q: %v", project, projRes.err)
+	}
+	if projRes.n == 0 {
 		t.Skipf("no sessions indexed under %s on this machine", project)
 	}
-	if n := matches("frankentui"); n != 0 {
-		t.Fatalf("cass matched %d hits for the bare name; the workspace contract changed", n)
+	if bareRes.err != nil {
+		t.Fatalf("cass search --workspace=%q: %v", "frankentui", bareRes.err)
+	}
+	if bareRes.n != 0 {
+		t.Fatalf("cass matched %d hits for the bare name; the workspace contract changed", bareRes.n)
 	}
 }
 
 func TestExtractSessionNameFromPath(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		path     string
@@ -257,6 +283,7 @@ func TestExtractSessionNameFromPath(t *testing.T) {
 }
 
 func TestNewCassPreviewCmd(t *testing.T) {
+	t.Parallel()
 	cmd := newCassPreviewCmd()
 
 	// Verify command structure
@@ -301,6 +328,7 @@ func TestNewCassPreviewCmd(t *testing.T) {
 }
 
 func TestCassPreviewCmdAddedToParent(t *testing.T) {
+	t.Parallel()
 	cmd := newCassCmd()
 
 	// Find preview subcommand
@@ -318,6 +346,7 @@ func TestCassPreviewCmdAddedToParent(t *testing.T) {
 }
 
 func TestNewSearchCmd(t *testing.T) {
+	t.Parallel()
 	cmd := newSearchCmd()
 
 	if cmd.Use != "search <query>" {
@@ -335,6 +364,7 @@ func TestNewSearchCmd(t *testing.T) {
 }
 
 func TestSearchCmdFlags(t *testing.T) {
+	t.Parallel()
 	cmd := newSearchCmd()
 
 	flags := []struct {
@@ -361,6 +391,7 @@ func TestSearchCmdFlags(t *testing.T) {
 }
 
 func TestSearchCmdDefaults(t *testing.T) {
+	t.Parallel()
 	cmd := newSearchCmd()
 
 	limit, err := cmd.Flags().GetInt("limit")
@@ -422,6 +453,7 @@ func TestSearchCmdRequiresExactlyOneArg(t *testing.T) {
 }
 
 func TestCassSubcommands(t *testing.T) {
+	t.Parallel()
 	cmd := newCassCmd()
 	expected := map[string]bool{
 		"status":   false,
@@ -445,6 +477,7 @@ func TestCassSubcommands(t *testing.T) {
 }
 
 func TestCassSearchCmdFlags(t *testing.T) {
+	t.Parallel()
 	cmd := newCassSearchCmd()
 
 	flags := []string{"agent", "workspace", "since", "limit", "offset"}
@@ -461,6 +494,7 @@ func TestCassSearchCmdFlags(t *testing.T) {
 }
 
 func TestSearchVsCassSearchDifferences(t *testing.T) {
+	t.Parallel()
 	searchCmd := newSearchCmd()
 	cassSearchCmd := newCassSearchCmd()
 

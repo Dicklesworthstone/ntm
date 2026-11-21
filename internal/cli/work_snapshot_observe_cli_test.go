@@ -244,6 +244,7 @@ func TestWorkWatchCommandReportsSourceFailureAndResumesWithoutImplicitRefresh(t 
 }
 
 func TestWorkObservationCommandRejectsInvalidModeFlags(t *testing.T) {
+	t.Parallel()
 	for _, args := range [][]string{
 		{"--watch", "--wait-ready=1"}, {"--wait-ready=0"}, {"--wait-ready=-1"}, {"--wait-ready=100001"},
 		{"--interval=1s"}, {"--watch", "--interval=0"}, {"--watch", "--interval=1m"},
@@ -261,6 +262,7 @@ func TestWorkObservationCommandRejectsInvalidModeFlags(t *testing.T) {
 }
 
 func TestWorkObservationReplyPreservesCancellationClassification(t *testing.T) {
+	t.Parallel()
 	cause := fmt.Errorf("collection ended: %w", errors.Join(&worksource.StaleError{Reason: "source read failed"}, context.Canceled))
 	reply, err := makeWorkSnapshotReply("/project", observationWork(999, 1), cause, &workObservationInfo{Terminal: true})
 	if reply.Success || reply.Work != nil || reply.ErrorCode != "CANCELLED" || !errors.Is(err, context.Canceled) || !errors.Is(err, worksource.ErrStale) {

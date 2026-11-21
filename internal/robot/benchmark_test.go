@@ -939,7 +939,6 @@ func TestLatencyRegression_Filter(t *testing.T) {
 
 // TestAllocRegression_BuildDigest verifies digest building doesn't allocate excessively.
 func TestAllocRegression_BuildDigest(t *testing.T) {
-
 	fixture := newBenchmarkFixture(scenarioMediumSessions, scenarioMediumAgents, scenarioMediumEvents)
 	opts := DefaultAttentionDigestOptions()
 

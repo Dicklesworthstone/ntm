@@ -46,42 +46,44 @@ func (a *CAAMAdapter) Detect() (string, bool) {
 // of version skew: any output containing a parseable X.Y.Z is accepted,
 // including when caam exits non-zero or prints to stderr.
 func (a *CAAMAdapter) Version(ctx context.Context) (Version, error) {
-	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
-	defer cancel()
+	return cachedToolVersion(a.BinaryName(), func(bin string) (Version, error) {
+		ctx, cancel := context.WithTimeout(ctx, a.Timeout())
+		defer cancel()
 
-	cmd := exec.CommandContext(ctx, a.BinaryName(), "version")
-	cmd.WaitDelay = time.Second
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+		cmd := exec.CommandContext(ctx, bin, "version")
+		cmd.WaitDelay = time.Second
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
 
-	err := cmd.Run()
+		err := cmd.Run()
 
-	// Prefer stdout; fall back to stderr (older/newer caam builds, or a
-	// usage banner, may route the version string there). A parseable
-	// version in either stream is good enough — don't hard-fail on a
-	// non-zero exit if we still recovered a usable version.
-	out := strings.TrimSpace(stdout.String())
-	if out == "" {
-		out = strings.TrimSpace(stderr.String())
-	}
-
-	if out != "" {
-		if v, perr := ParseStandardVersion(out); perr == nil && (v.Major != 0 || v.Minor != 0 || v.Patch != 0) {
-			return v, nil
+		// Prefer stdout; fall back to stderr (older/newer caam builds, or a
+		// usage banner, may route the version string there). A parseable
+		// version in either stream is good enough — don't hard-fail on a
+		// non-zero exit if we still recovered a usable version.
+		out := strings.TrimSpace(stdout.String())
+		if out == "" {
+			out = strings.TrimSpace(stderr.String())
 		}
-	}
 
-	if err != nil {
-		return Version{}, fmt.Errorf("failed to get caam version: %w", err)
-	}
+		if out != "" {
+			if v, perr := ParseStandardVersion(out); perr == nil && (v.Major != 0 || v.Minor != 0 || v.Patch != 0) {
+				return v, nil
+			}
+		}
 
-	// Command succeeded but we could not extract an X.Y.Z. Return whatever
-	// raw text we have rather than a misleading 0.0.0 with no provenance.
-	if out != "" {
-		return ParseStandardVersion(out)
-	}
-	return Version{}, fmt.Errorf("caam version produced no output")
+		if err != nil {
+			return Version{}, fmt.Errorf("failed to get caam version: %w", err)
+		}
+
+		// Command succeeded but we could not extract an X.Y.Z. Return whatever
+		// raw text we have rather than a misleading 0.0.0 with no provenance.
+		if out != "" {
+			return ParseStandardVersion(out)
+		}
+		return Version{}, fmt.Errorf("caam version produced no output")
+	})
 }
 
 // Capabilities returns the list of caam capabilities

@@ -45,6 +45,7 @@ func selectorBudgetNoEffect(t *testing.T, e *Executor, name string) {
 }
 
 func TestSelectorOutputBudgetAdmissionPreservesExactBoundaryAndReceipts(t *testing.T) {
+	t.Parallel()
 	e := selectorBudgetExecutor(t, 4)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -83,8 +84,10 @@ func selectorBudgetAwait(t *testing.T, done <-chan selectorBudgetOutcome) select
 }
 
 func TestSelectorOutputBudgetConcurrentAdmissionWaitsAndCancels(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"release", "cancel_waiter", "deadline_waiter"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			e := selectorBudgetExecutor(t, 8)
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -182,8 +185,10 @@ func TestSelectorOutputBudgetConcurrentAdmissionWaitsAndCancels(t *testing.T) {
 }
 
 func TestSelectorOutputBudgetKnownFailuresReleaseReservations(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"start_failure", "settled_exit_failure"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			e := selectorBudgetExecutor(t, 8)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -215,8 +220,10 @@ func TestSelectorOutputBudgetKnownFailuresReleaseReservations(t *testing.T) {
 }
 
 func TestSelectorOutputBudgetUncertainReceiptsRetainFullChargeAfterReload(t *testing.T) {
+	t.Parallel()
 	for _, status := range []string{commandExecutionStarting, commandExecutionUnresolved} {
 		t.Run(status, func(t *testing.T) {
+			t.Parallel()
 			e := selectorBudgetExecutor(t, 8)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -258,6 +265,7 @@ func TestSelectorOutputBudgetUncertainReceiptsRetainFullChargeAfterReload(t *tes
 }
 
 func TestSelectorOutputBudgetCachedBytesRemainUsableAboveLowerLimit(t *testing.T) {
+	t.Parallel()
 	e := selectorBudgetExecutor(t, 8)
 	want := []byte{0xff, 0, 'a', '\n'}
 	if err := os.WriteFile(filepath.Join(e.config.ProjectDir, "source-output"), want, 0600); err != nil {
@@ -295,6 +303,7 @@ func TestSelectorOutputBudgetCachedBytesRemainUsableAboveLowerLimit(t *testing.T
 }
 
 func TestSelectorOutputBudgetAcceptanceCanReduceOverBudgetUncertainty(t *testing.T) {
+	t.Parallel()
 	e := selectorBudgetExecutor(t, 8)
 	const script = "printf once >> source-effects; printf good"
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: e.state.WorkflowID, Settings: DefaultWorkflowSettings(), Steps: []Step{{
@@ -353,6 +362,7 @@ func TestSelectorOutputBudgetAcceptanceCanReduceOverBudgetUncertainty(t *testing
 }
 
 func TestSelectorOutputBudgetCheckpointFailureDoesNotStrandWaiters(t *testing.T) {
+	t.Parallel()
 	e := selectorBudgetExecutor(t, 8)
 	// Prevent the first intent from becoming durable, before any process may
 	// start. The sticky checkpoint error must not leave a live capacity wait.
@@ -373,6 +383,7 @@ func TestSelectorOutputBudgetCheckpointFailureDoesNotStrandWaiters(t *testing.T)
 }
 
 func TestSelectorOutputBudgetExplicitRestartPrunesOnlyAuthorizedReceipts(t *testing.T) {
+	t.Parallel()
 	e := selectorBudgetExecutor(t, 8)
 	const keptScript = "printf once >> kept-effects; printf kept"
 	const retryScript = "printf once >> retry-effects; printf redo"

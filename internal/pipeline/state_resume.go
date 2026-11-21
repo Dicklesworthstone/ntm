@@ -1223,7 +1223,7 @@ func (e *Executor) loadCommandExecution(stepID string) (CommandExecutionState, b
 	return cloneCommandExecution(record), ok
 }
 
-func (e *Executor) saveCommandExecution(record CommandExecutionState) error {
+func (e *Executor) recordCommandExecutionInMemory(record CommandExecutionState) error {
 	if err := validateCommandExecution(record.StepID, record); err != nil {
 		return err
 	}
@@ -1237,6 +1237,13 @@ func (e *Executor) saveCommandExecution(record CommandExecutionState) error {
 	}
 	e.state.CommandExecutions[record.StepID] = cloneCommandExecution(record)
 	e.stateMu.Unlock()
+	return nil
+}
+
+func (e *Executor) saveCommandExecution(record CommandExecutionState) error {
+	if err := e.recordCommandExecutionInMemory(record); err != nil {
+		return err
+	}
 	return e.persistState()
 }
 

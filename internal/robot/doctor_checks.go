@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -24,8 +25,6 @@ import (
 )
 
 func checkDoctorTools(ctx context.Context, verbose bool) []DoctorToolCheck {
-	checks := make([]DoctorToolCheck, 0)
-
 	requiredTools := map[tools.ToolName]bool{
 		tools.ToolBV: true,
 		tools.ToolBD: true,
@@ -38,57 +37,101 @@ func checkDoctorTools(ctx context.Context, verbose bool) []DoctorToolCheck {
 		tools.ToolS2P,
 	}
 
-	for _, toolName := range tools.AllTools() {
-		adapter, ok := tools.Get(toolName)
-		if !ok {
-			continue
+	type registeredTool struct {
+		name    tools.ToolName
+		adapter tools.Adapter
+	}
+	allTools := tools.AllTools()
+	registered := make([]registeredTool, 0, len(allTools))
+	for _, toolName := range allTools {
+		if adapter, ok := tools.Get(toolName); ok {
+			registered = append(registered, registeredTool{name: toolName, adapter: adapter})
 		}
+	}
 
-		displayName := string(toolName)
-		if toolName == tools.ToolBD {
-			displayName = "br"
-		}
-
-		check := DoctorToolCheck{
-			Name:     displayName,
-			Required: requiredTools[toolName],
-		}
-
-		path, installed := adapter.Detect()
-		check.Installed = installed
-		check.Path = path
-
-		if installed {
-			if version, err := adapter.Version(ctx); err == nil {
-				check.Version = version.String()
+	checks := make([]DoctorToolCheck, len(registered))
+	var wg sync.WaitGroup
+	for i, rt := range registered {
+		wg.Add(1)
+		go func(idx int, toolName tools.ToolName, adapter tools.Adapter) {
+			defer wg.Done()
+			displayName := string(toolName)
+			if toolName == tools.ToolBD {
+				displayName = "br"
 			}
-			if caps, err := adapter.Capabilities(ctx); err == nil {
-				for _, c := range caps {
-					check.Capabilities = append(check.Capabilities, string(c))
+
+			check := DoctorToolCheck{
+				Name:     displayName,
+				Required: requiredTools[toolName],
+			}
+
+			path, installed := adapter.Detect()
+			check.Installed = installed
+			check.Path = path
+
+			if installed {
+				var (
+					toolWG  sync.WaitGroup
+					version tools.Version
+					verErr  error
+					caps    []tools.Capability
+					capsErr error
+					health  *tools.HealthStatus
+					hlthErr error
+					details []string
+				)
+				toolWG.Add(3)
+				go func() {
+					defer toolWG.Done()
+					version, verErr = adapter.Version(ctx)
+				}()
+				go func() {
+					defer toolWG.Done()
+					caps, capsErr = adapter.Capabilities(ctx)
+				}()
+				go func() {
+					defer toolWG.Done()
+					health, hlthErr = adapter.Health(ctx)
+				}()
+				if verbose {
+					toolWG.Add(1)
+					go func() {
+						defer toolWG.Done()
+						details = CollectVerboseToolDetails(ctx, adapter)
+					}()
+				}
+				toolWG.Wait()
+
+				if verErr == nil {
+					check.Version = version.String()
+				}
+				if capsErr == nil {
+					for _, c := range caps {
+						check.Capabilities = append(check.Capabilities, string(c))
+					}
+				}
+				if hlthErr == nil && health != nil && health.Healthy {
+					check.Status = "ok"
+					check.Message = check.Version
+				} else {
+					check.Status = "warning"
+					check.Message = "health check failed"
+				}
+				check.Details = details
+			} else {
+				if check.Required {
+					check.Status = "error"
+					check.Message = "required tool not found"
+				} else {
+					check.Status = "warning"
+					check.Message = "optional tool not found"
 				}
 			}
-			if health, err := adapter.Health(ctx); err == nil && health.Healthy {
-				check.Status = "ok"
-				check.Message = check.Version
-			} else {
-				check.Status = "warning"
-				check.Message = "health check failed"
-			}
-			if verbose {
-				check.Details = CollectVerboseToolDetails(ctx, adapter)
-			}
-		} else {
-			if check.Required {
-				check.Status = "error"
-				check.Message = "required tool not found"
-			} else {
-				check.Status = "warning"
-				check.Message = "optional tool not found"
-			}
-		}
 
-		checks = append(checks, check)
+			checks[idx] = check
+		}(i, rt.name, rt.adapter)
 	}
+	wg.Wait()
 
 	for _, name := range optionalTools {
 		found := false
@@ -224,83 +267,98 @@ func CollectVerboseToolDetails(ctx context.Context, adapter tools.Adapter) []str
 
 // CheckDoctorDependencies probes core runtime and optional agent CLI dependencies.
 func CheckDoctorDependencies(ctx context.Context) []DoctorDepCheck {
-	checks := make([]DoctorDepCheck, 0, 4)
+	checks := make([]DoctorDepCheck, 4)
+	var wg sync.WaitGroup
+	wg.Add(4)
 
-	tmuxCheck := DoctorDepCheck{
-		Name:       "tmux",
-		MinVersion: "3.0",
-		Required:   true,
-	}
-	if tmux.DefaultClient.IsInstalled() {
-		path := tmux.BinaryPath()
-		tmuxCheck.Installed = true
-		tmuxCheck.Path = path
-		cmd := exec.CommandContext(ctx, path, "-V")
-		cmd.WaitDelay = 2 * time.Second
-		if out, err := cmd.Output(); err == nil {
-			tmuxCheck.Version = SanitizeDependencyVersion(string(out))
+	go func() {
+		defer wg.Done()
+		tmuxCheck := DoctorDepCheck{
+			Name:       "tmux",
+			MinVersion: "3.0",
+			Required:   true,
 		}
-		tmuxCheck.Status = "ok"
-	} else {
-		tmuxCheck.Status = "error"
-		tmuxCheck.Message = "tmux is required for NTM"
-	}
-	checks = append(checks, tmuxCheck)
-
-	goCheck := DoctorDepCheck{
-		Name:       "go",
-		MinVersion: "1.25",
-	}
-	if path, err := exec.LookPath("go"); err == nil {
-		goCheck.Installed = true
-		goCheck.Path = path
-		cmd := exec.CommandContext(ctx, path, "version")
-		cmd.WaitDelay = 2 * time.Second
-		if out, err := cmd.Output(); err == nil {
-			parts := strings.Fields(string(out))
-			if len(parts) >= 3 && parts[0] == "go" && parts[1] == "version" {
-				goCheck.Version = parts[2]
-			} else {
-				goCheck.Version = "unknown"
+		if tmux.DefaultClient.IsInstalled() {
+			path := tmux.BinaryPath()
+			tmuxCheck.Installed = true
+			tmuxCheck.Path = path
+			cmd := exec.CommandContext(ctx, path, "-V")
+			cmd.WaitDelay = 2 * time.Second
+			if out, err := cmd.Output(); err == nil {
+				tmuxCheck.Version = SanitizeDependencyVersion(string(out))
 			}
-			goCheck.Status = "ok"
+			tmuxCheck.Status = "ok"
 		} else {
-			goCheck.Status = "warning"
-			goCheck.Message = "version check failed"
+			tmuxCheck.Status = "error"
+			tmuxCheck.Message = "tmux is required for NTM"
 		}
-	} else {
-		goCheck.Installed = false
-		goCheck.Status = "warning"
-		goCheck.Message = "not found (needed for plugins)"
-	}
-	checks = append(checks, goCheck)
+		checks[0] = tmuxCheck
+	}()
 
-	grokInstalled, grokVersion, grokPath := probeOptionalBinaryVersion(ctx, "grok", "--version")
-	grokCheck := DoctorDepCheck{
-		Name:      "grok",
-		Installed: grokInstalled,
-		Version:   grokVersion,
-		Path:      grokPath,
-		Status:    "ok",
-	}
-	if !grokCheck.Installed {
-		grokCheck.Message = "optional agent not found"
-	}
-	checks = append(checks, grokCheck)
+	go func() {
+		defer wg.Done()
+		goCheck := DoctorDepCheck{
+			Name:       "go",
+			MinVersion: "1.25",
+		}
+		if path, err := exec.LookPath("go"); err == nil {
+			goCheck.Installed = true
+			goCheck.Path = path
+			cmd := exec.CommandContext(ctx, path, "version")
+			cmd.WaitDelay = 2 * time.Second
+			if out, err := cmd.Output(); err == nil {
+				parts := strings.Fields(string(out))
+				if len(parts) >= 3 && parts[0] == "go" && parts[1] == "version" {
+					goCheck.Version = parts[2]
+				} else {
+					goCheck.Version = "unknown"
+				}
+				goCheck.Status = "ok"
+			} else {
+				goCheck.Status = "warning"
+				goCheck.Message = "version check failed"
+			}
+		} else {
+			goCheck.Installed = false
+			goCheck.Status = "warning"
+			goCheck.Message = "not found (needed for plugins)"
+		}
+		checks[1] = goCheck
+	}()
 
-	ompInstalled, ompVersion, ompPath := probeOptionalBinaryVersion(ctx, "omp", "--version")
-	ompCheck := DoctorDepCheck{
-		Name:      "omp",
-		Installed: ompInstalled,
-		Version:   ompVersion,
-		Path:      ompPath,
-		Status:    "ok",
-	}
-	if !ompCheck.Installed {
-		ompCheck.Message = "optional agent not found"
-	}
-	checks = append(checks, ompCheck)
+	go func() {
+		defer wg.Done()
+		grokInstalled, grokVersion, grokPath := probeOptionalBinaryVersion(ctx, "grok", "--version")
+		grokCheck := DoctorDepCheck{
+			Name:      "grok",
+			Installed: grokInstalled,
+			Version:   grokVersion,
+			Path:      grokPath,
+			Status:    "ok",
+		}
+		if !grokCheck.Installed {
+			grokCheck.Message = "optional agent not found"
+		}
+		checks[2] = grokCheck
+	}()
 
+	go func() {
+		defer wg.Done()
+		ompInstalled, ompVersion, ompPath := probeOptionalBinaryVersion(ctx, "omp", "--version")
+		ompCheck := DoctorDepCheck{
+			Name:      "omp",
+			Installed: ompInstalled,
+			Version:   ompVersion,
+			Path:      ompPath,
+			Status:    "ok",
+		}
+		if !ompCheck.Installed {
+			ompCheck.Message = "optional agent not found"
+		}
+		checks[3] = ompCheck
+	}()
+
+	wg.Wait()
 	return checks
 }
 
@@ -409,20 +467,27 @@ func checkDoctorDaemons(ctx context.Context, cfg *config.Config) []DoctorDaemonC
 		{"cm-server", "127.0.0.1", 8766, false},
 	}
 
-	dialer := &net.Dialer{Timeout: time.Second}
-	for _, dp := range daemons {
-		check := DoctorDaemonCheck{
-			Name: dp.name,
-			Port: dp.port,
-		}
-		conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(dp.host, strconv.Itoa(dp.port)))
-		if err == nil {
-			_ = conn.Close()
-			check.Running = true
-		}
-		check.Status, check.Message = DaemonVerdict(check.Running, dp.expected, dp.port)
-		checks = append(checks, check)
+	checks = make([]DoctorDaemonCheck, len(daemons))
+	var wg sync.WaitGroup
+	for i, dp := range daemons {
+		wg.Add(1)
+		go func(idx int, dp daemonPort) {
+			defer wg.Done()
+			dialer := &net.Dialer{Timeout: time.Second}
+			check := DoctorDaemonCheck{
+				Name: dp.name,
+				Port: dp.port,
+			}
+			conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(dp.host, strconv.Itoa(dp.port)))
+			if err == nil {
+				_ = conn.Close()
+				check.Running = true
+			}
+			check.Status, check.Message = DaemonVerdict(check.Running, dp.expected, dp.port)
+			checks[idx] = check
+		}(i, dp)
 	}
+	wg.Wait()
 
 	return checks
 }

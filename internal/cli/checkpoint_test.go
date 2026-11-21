@@ -17,6 +17,7 @@ import (
 )
 
 func TestNewCheckpointCmd(t *testing.T) {
+	t.Parallel()
 	cmd := newCheckpointCmd()
 
 	if cmd.Use != "checkpoint" {
@@ -45,6 +46,7 @@ func TestNewCheckpointCmd(t *testing.T) {
 }
 
 func TestNewCheckpointSaveCmd(t *testing.T) {
+	t.Parallel()
 	cmd := newCheckpointSaveCmd()
 
 	if cmd.Use != "save <session>" {
@@ -61,6 +63,7 @@ func TestNewCheckpointSaveCmd(t *testing.T) {
 }
 
 func TestNewCheckpointListCmd(t *testing.T) {
+	t.Parallel()
 	cmd := newCheckpointListCmd()
 
 	if cmd.Use != "list [session]" {
@@ -69,6 +72,7 @@ func TestNewCheckpointListCmd(t *testing.T) {
 }
 
 func TestNewCheckpointShowCmd(t *testing.T) {
+	t.Parallel()
 	cmd := newCheckpointShowCmd()
 
 	if cmd.Use != "show <session> <id>" {
@@ -77,6 +81,7 @@ func TestNewCheckpointShowCmd(t *testing.T) {
 }
 
 func TestNewCheckpointDeleteCmd(t *testing.T) {
+	t.Parallel()
 	cmd := newCheckpointDeleteCmd()
 
 	if cmd.Use != "delete <session> <id>" {
@@ -90,6 +95,7 @@ func TestNewCheckpointDeleteCmd(t *testing.T) {
 }
 
 func TestNewCheckpointRestoreCmd(t *testing.T) {
+	t.Parallel()
 	cmd := newCheckpointRestoreCmd()
 
 	if cmd.Use != "restore <session> [checkpoint-id]" {
@@ -104,6 +110,7 @@ func TestNewCheckpointRestoreCmd(t *testing.T) {
 }
 
 func TestFormatAge(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		ago  time.Duration
@@ -128,6 +135,7 @@ func TestFormatAge(t *testing.T) {
 }
 
 func TestTruncateStr(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		s      string
 		maxLen int
@@ -154,6 +162,7 @@ func TestTruncateStr(t *testing.T) {
 
 // TestFormatAge_WeekPlus tests the default case (>7 days) that returns a date format.
 func TestFormatAge_WeekPlus(t *testing.T) {
+	t.Parallel()
 
 	// 10 days ago
 	testTime := time.Now().Add(-10 * 24 * time.Hour)
@@ -167,6 +176,7 @@ func TestFormatAge_WeekPlus(t *testing.T) {
 // TestTruncateStr_MultibyteLoopFallthrough tests line 852: all rune starts
 // fit within targetLen but string length exceeds maxLen.
 func TestTruncateStr_MultibyteLoopFallthrough(t *testing.T) {
+	t.Parallel()
 
 	// "aaaa🌍" = 8 bytes. maxLen=7, targetLen=4.
 	// Rune starts: 0,1,2,3,4. All <=4. Loop completes.
@@ -181,6 +191,7 @@ func TestTruncateStr_MultibyteLoopFallthrough(t *testing.T) {
 
 // TestTruncateStr_MaxLen1 tests a very small positive maxLen.
 func TestTruncateStr_MaxLen1(t *testing.T) {
+	t.Parallel()
 
 	got := truncateStr("hello", 1)
 	want := "."
@@ -191,6 +202,7 @@ func TestTruncateStr_MaxLen1(t *testing.T) {
 
 // TestTruncateStr_MaxLen2 tests maxLen=2 with "..."[:2]
 func TestTruncateStr_MaxLen2(t *testing.T) {
+	t.Parallel()
 
 	got := truncateStr("hello", 2)
 	want := ".."
@@ -200,6 +212,7 @@ func TestTruncateStr_MaxLen2(t *testing.T) {
 }
 
 func TestListCheckpointSessions(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "ntm-cli-test")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
@@ -254,6 +267,7 @@ func TestListCheckpointSessions(t *testing.T) {
 }
 
 func TestListCheckpointSessions_SkipsSymlinkSessionDir(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := &checkpoint.Storage{BaseDir: tmpDir}
 
@@ -272,6 +286,7 @@ func TestListCheckpointSessions_SkipsSymlinkSessionDir(t *testing.T) {
 }
 
 func TestListCheckpointSessions_IncludesSessionWithOnlyInvalidCheckpoints(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	storage := &checkpoint.Storage{BaseDir: tmpDir}
 
@@ -647,6 +662,7 @@ func listCheckpointSessionsWithDir(baseDir string) ([]string, error) {
 }
 
 func TestCheckpointRestoreCmdArgs(t *testing.T) {
+	t.Parallel()
 	cmd := newCheckpointRestoreCmd()
 
 	if err := cmd.Args(cmd, []string{"myproject"}); err != nil {
@@ -664,6 +680,7 @@ func TestCheckpointRestoreCmdArgs(t *testing.T) {
 }
 
 func TestCheckpointCmdJSONOutput(t *testing.T) {
+	t.Parallel()
 	// Test that JSON output produces valid JSON structure
 	tmpDir, err := os.MkdirTemp("", "ntm-cli-test")
 	if err != nil {
@@ -700,6 +717,7 @@ func TestCheckpointCmdJSONOutput(t *testing.T) {
 }
 
 func TestCheckpointSaveCmdFlags(t *testing.T) {
+	t.Parallel()
 	cmd := newCheckpointSaveCmd()
 
 	// Verify default values
@@ -715,6 +733,7 @@ func TestCheckpointSaveCmdFlags(t *testing.T) {
 }
 
 func TestCheckpointRestoreCmdFlags(t *testing.T) {
+	t.Parallel()
 	cmd := newCheckpointRestoreCmd()
 
 	flags := []string{

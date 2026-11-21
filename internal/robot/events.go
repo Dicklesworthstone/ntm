@@ -205,7 +205,7 @@ func BuildEventsOutput(opts EventsOptions) (EventsOutput, int) {
 				Events:        []AttentionEvent{},
 			}, status
 		}
-		if store := resolveProjectionStore(opts.Store, opts.ExplicitStore); store != nil {
+		if store := opts.Store; store != nil {
 			if incident, incidentErr := store.GetIncident(opts.IncidentID); incidentErr == nil && incident != nil {
 				summary := snapshotIncidentFromState(*incident)
 				incidentSummary = &summary
@@ -866,7 +866,7 @@ func PrintDigest(opts DigestOptions) error {
 		RetentionPeriod: stats.RetentionPeriod.String(),
 		ResyncCommand:   "ntm --robot-snapshot",
 	}
-	activeIncidents, err := snapshotIncidentsFromStore(resolveProjectionStore(opts.Store, opts.ExplicitStore))
+	activeIncidents, err := snapshotIncidentsFromStore(opts.Store)
 	if err != nil {
 		activeIncidents = []SnapshotIncident{}
 	}
@@ -991,7 +991,7 @@ func GetDigest(opts DigestOptions) (*DigestResponse, error) {
 		RetentionPeriod: stats.RetentionPeriod.String(),
 		ResyncCommand:   "ntm --robot-snapshot",
 	}
-	activeIncidents, err := snapshotIncidentsFromStore(resolveProjectionStore(opts.Store, opts.ExplicitStore))
+	activeIncidents, err := snapshotIncidentsFromStore(opts.Store)
 	if err != nil {
 		activeIncidents = []SnapshotIncident{}
 	}

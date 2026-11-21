@@ -13,6 +13,7 @@ import (
 )
 
 func TestGetProbeSessionFailureUsesGeneralErrorExit(t *testing.T) {
+	t.Parallel()
 	output, exitCode := GetProbeSession(ProbeSessionOptions{})
 	if exitCode != 1 {
 		t.Fatalf("GetProbeSession() exit code = %d, want 1", exitCode)
@@ -89,6 +90,7 @@ func TestPrintProbeSessionUnresponsiveForcesCanonicalFailureJSON(t *testing.T) {
 }
 
 func TestValidProbeMethods(t *testing.T) {
+	t.Parallel()
 	methods := ValidProbeMethods()
 	if len(methods) != 3 {
 		t.Errorf("expected 3 probe methods, got %d", len(methods))
@@ -111,6 +113,7 @@ func TestValidProbeMethods(t *testing.T) {
 }
 
 func TestIsValidProbeMethod(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		method string
 		valid  bool
@@ -134,6 +137,7 @@ func TestIsValidProbeMethod(t *testing.T) {
 }
 
 func TestDefaultProbeFlags(t *testing.T) {
+	t.Parallel()
 	flags := DefaultProbeFlags()
 
 	if flags.Method != ProbeMethodKeystrokeEcho {
@@ -148,6 +152,7 @@ func TestDefaultProbeFlags(t *testing.T) {
 }
 
 func TestParseProbeFlags(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		method      string
@@ -268,6 +273,7 @@ func TestParseProbeFlags(t *testing.T) {
 }
 
 func TestParseProbeFlags_DefaultValues(t *testing.T) {
+	t.Parallel()
 	flags, err := ParseProbeFlags("", 0, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -286,6 +292,7 @@ func TestParseProbeFlags_DefaultValues(t *testing.T) {
 }
 
 func TestProbeConstants(t *testing.T) {
+	t.Parallel()
 	// Verify timeout constants are reasonable
 	if ProbeMinTimeoutMs < 1 {
 		t.Errorf("ProbeMinTimeoutMs = %d, should be >= 1", ProbeMinTimeoutMs)
@@ -299,6 +306,7 @@ func TestProbeConstants(t *testing.T) {
 }
 
 func TestProbeConfidenceValues(t *testing.T) {
+	t.Parallel()
 	// Ensure confidence values are non-empty strings
 	confidences := []ProbeConfidence{
 		ProbeConfidenceHigh,
@@ -313,6 +321,7 @@ func TestProbeConfidenceValues(t *testing.T) {
 }
 
 func TestProbeRecommendationValues(t *testing.T) {
+	t.Parallel()
 	// Ensure recommendation values are non-empty strings
 	recommendations := []ProbeRecommendation{
 		ProbeRecommendationHealthy,
@@ -331,6 +340,7 @@ func TestProbeRecommendationValues(t *testing.T) {
 // =============================================================================
 
 func TestHashContent(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		content  string
@@ -380,6 +390,7 @@ func TestHashContent(t *testing.T) {
 }
 
 func TestCountNonEmptyLines(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		content string
@@ -416,6 +427,7 @@ func mockCapture(content string) PaneBaseline {
 }
 
 func TestAnalyzeChange(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		baseline PaneBaseline
@@ -459,6 +471,7 @@ func TestAnalyzeChange(t *testing.T) {
 }
 
 func TestPaneBaselineStruct(t *testing.T) {
+	t.Parallel()
 	// Test that PaneBaseline can be created with expected fields
 	content := "test content\nline 2\n"
 	baseline := &PaneBaseline{
@@ -479,6 +492,7 @@ func TestPaneBaselineStruct(t *testing.T) {
 }
 
 func TestComparePaneState_NoChange(t *testing.T) {
+	t.Parallel()
 	content := "test content\nline 2\n"
 	baseline := &PaneBaseline{
 		Content:     content,
@@ -502,6 +516,7 @@ func TestComparePaneState_NoChange(t *testing.T) {
 }
 
 func TestComparePaneState_ContentChanged(t *testing.T) {
+	t.Parallel()
 	baseline := &PaneBaseline{
 		Content:     "original content\n",
 		ContentHash: hashContent("original content\n"),
@@ -530,6 +545,7 @@ func TestComparePaneState_ContentChanged(t *testing.T) {
 }
 
 func TestComparePaneState_LinesRemoved(t *testing.T) {
+	t.Parallel()
 	baseline := &PaneBaseline{
 		Content:     "line1\nline2\nline3\n",
 		ContentHash: hashContent("line1\nline2\nline3\n"),
@@ -558,6 +574,7 @@ func TestComparePaneState_LinesRemoved(t *testing.T) {
 }
 
 func TestComparePaneState_NilBaseline(t *testing.T) {
+	t.Parallel()
 	current := &PaneBaseline{
 		Content:     "content",
 		ContentHash: hashContent("content"),
@@ -573,6 +590,7 @@ func TestComparePaneState_NilBaseline(t *testing.T) {
 }
 
 func TestComparePaneState_NilCurrent(t *testing.T) {
+	t.Parallel()
 	baseline := &PaneBaseline{
 		Content:     "content",
 		ContentHash: hashContent("content"),
@@ -588,6 +606,7 @@ func TestComparePaneState_NilCurrent(t *testing.T) {
 }
 
 func TestComparePaneState_BothNil(t *testing.T) {
+	t.Parallel()
 	change := ComparePaneState(nil, nil)
 
 	// When both are nil, assume changed (edge case)
@@ -597,6 +616,7 @@ func TestComparePaneState_BothNil(t *testing.T) {
 }
 
 func TestPaneChangeStruct(t *testing.T) {
+	t.Parallel()
 	// Test PaneChange JSON field names
 	change := PaneChange{
 		Changed:      true,
@@ -622,6 +642,7 @@ func TestPaneChangeStruct(t *testing.T) {
 // =============================================================================
 
 func TestProbeResultStruct(t *testing.T) {
+	t.Parallel()
 	// Test that ProbeResult can be created with all fields
 	result := ProbeResult{
 		Responsive: true,
@@ -663,6 +684,7 @@ func TestProbeResultStruct(t *testing.T) {
 }
 
 func TestProbeResultUnresponsive(t *testing.T) {
+	t.Parallel()
 	// Test unresponsive ProbeResult configuration
 	result := ProbeResult{
 		Responsive: false,
@@ -691,6 +713,7 @@ func TestProbeResultUnresponsive(t *testing.T) {
 }
 
 func TestProbePollIntervalConstant(t *testing.T) {
+	t.Parallel()
 	// Verify poll interval is reasonable (50ms)
 	if probePollInterval < 10*time.Millisecond {
 		t.Errorf("probePollInterval = %v, seems too fast", probePollInterval)
@@ -705,6 +728,7 @@ func TestProbePollIntervalConstant(t *testing.T) {
 }
 
 func TestProbeDetailsStruct(t *testing.T) {
+	t.Parallel()
 	// Test ProbeDetails can hold various states
 	tests := []struct {
 		name    string
@@ -753,6 +777,7 @@ func TestProbeDetailsStruct(t *testing.T) {
 }
 
 func TestProbeOutputIntegration(t *testing.T) {
+	t.Parallel()
 	// Test that ProbeOutput correctly includes ProbeResult fields
 	output := ProbeOutput{
 		RobotResponse: NewRobotResponse(true),
@@ -796,6 +821,7 @@ func TestProbeOutputIntegration(t *testing.T) {
 // =============================================================================
 
 func TestInterruptTestProbeResultStructure(t *testing.T) {
+	t.Parallel()
 	// Test that ProbeResult can hold interrupt_test specific values
 	result := ProbeResult{
 		Responsive: true,
@@ -825,6 +851,7 @@ func TestInterruptTestProbeResultStructure(t *testing.T) {
 }
 
 func TestInterruptTestUnresponsive(t *testing.T) {
+	t.Parallel()
 	// Test unresponsive result structure for interrupt_test
 	result := ProbeResult{
 		Responsive: false,
@@ -855,6 +882,7 @@ func TestInterruptTestUnresponsive(t *testing.T) {
 }
 
 func TestInterruptTestProbeOutputIntegration(t *testing.T) {
+	t.Parallel()
 	// Test that ProbeOutput works with interrupt_test method
 	output := ProbeOutput{
 		RobotResponse: NewRobotResponse(true),
@@ -890,6 +918,7 @@ func TestInterruptTestProbeOutputIntegration(t *testing.T) {
 }
 
 func TestInterruptTestVsKeystrokeEchoConfidence(t *testing.T) {
+	t.Parallel()
 	// Verify interrupt_test gives definitive results (high confidence) when unresponsive
 	// while keystroke_echo gives medium confidence
 	keystrokeResult := ProbeResult{
@@ -926,6 +955,7 @@ func TestInterruptTestVsKeystrokeEchoConfidence(t *testing.T) {
 // =============================================================================
 
 func TestConfidenceRecommendationMatrix(t *testing.T) {
+	t.Parallel()
 	// Verify the confidence/recommendation mapping matches the spec:
 	// | Confidence | Response | Recommendation      |
 	// |------------|----------|---------------------|
@@ -1016,6 +1046,7 @@ func TestConfidenceRecommendationMatrix(t *testing.T) {
 }
 
 func TestConfidenceLevelValues(t *testing.T) {
+	t.Parallel()
 	// Verify confidence level string values match expected output
 	tests := []struct {
 		confidence ProbeConfidence
@@ -1036,6 +1067,7 @@ func TestConfidenceLevelValues(t *testing.T) {
 }
 
 func TestRecommendationValues(t *testing.T) {
+	t.Parallel()
 	// Verify recommendation string values match expected output
 	tests := []struct {
 		recommendation ProbeRecommendation
@@ -1056,6 +1088,7 @@ func TestRecommendationValues(t *testing.T) {
 }
 
 func TestConfidenceExplanation(t *testing.T) {
+	t.Parallel()
 	// Test that reasoning strings explain the confidence level
 	tests := []struct {
 		name       string
@@ -1110,6 +1143,7 @@ func TestConfidenceExplanation(t *testing.T) {
 // =============================================================================
 
 func TestTimeoutBoundaries(t *testing.T) {
+	t.Parallel()
 	// Test timeout validation at boundaries
 	tests := []struct {
 		name    string
@@ -1152,6 +1186,7 @@ func TestTimeoutBoundaries(t *testing.T) {
 }
 
 func TestTimeoutConstants(t *testing.T) {
+	t.Parallel()
 	// Verify timeout constants match documentation
 	if ProbeMinTimeoutMs != 100 {
 		t.Errorf("ProbeMinTimeoutMs = %d, want 100", ProbeMinTimeoutMs)
@@ -1162,6 +1197,7 @@ func TestTimeoutConstants(t *testing.T) {
 }
 
 func TestTimeoutDurationConversion(t *testing.T) {
+	t.Parallel()
 	// Test that timeout is correctly converted to duration
 	flags, err := ParseProbeFlags("keystroke_echo", 3000, false)
 	if err != nil {
@@ -1179,6 +1215,7 @@ func TestTimeoutDurationConversion(t *testing.T) {
 // =============================================================================
 
 func TestProbeFlagErrorStruct(t *testing.T) {
+	t.Parallel()
 	// Test ProbeFlagError structure fields
 	validMethods := []string{"keystroke_echo", "interrupt_test"}
 	errOutput := ProbeFlagError{
@@ -1211,6 +1248,7 @@ func TestProbeFlagErrorStruct(t *testing.T) {
 }
 
 func TestInvalidMethodError(t *testing.T) {
+	t.Parallel()
 	_, err := ParseProbeFlags("invalid_method", 5000, false)
 	if err == nil {
 		t.Fatal("expected error for invalid method")
@@ -1224,6 +1262,7 @@ func TestInvalidMethodError(t *testing.T) {
 }
 
 func TestTimeoutRangeError(t *testing.T) {
+	t.Parallel()
 	_, err := ParseProbeFlags("keystroke_echo", 50, false)
 	if err == nil {
 		t.Fatal("expected error for timeout below minimum")
@@ -1241,6 +1280,7 @@ func TestTimeoutRangeError(t *testing.T) {
 // =============================================================================
 
 func TestAggressiveModeParsing(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		method     string
@@ -1300,6 +1340,7 @@ func TestAggressiveModeParsing(t *testing.T) {
 }
 
 func TestAggressiveModeDescription(t *testing.T) {
+	t.Parallel()
 	// Verify the aggressive mode error message mentions the correct method
 	_, err := ParseProbeFlags("interrupt_test", 5000, true)
 	if err == nil {
@@ -1318,6 +1359,7 @@ func TestAggressiveModeDescription(t *testing.T) {
 // =============================================================================
 
 func TestProbeOptionsStruct(t *testing.T) {
+	t.Parallel()
 	flags := DefaultProbeFlags()
 	opts := ProbeOptions{
 		Session: "test-session",
@@ -1337,6 +1379,7 @@ func TestProbeOptionsStruct(t *testing.T) {
 }
 
 func TestProbeOutputErrorFields(t *testing.T) {
+	t.Parallel()
 	// Test that ProbeOutput can hold error information
 	output := ProbeOutput{
 		RobotResponse: RobotResponse{
@@ -1376,6 +1419,7 @@ func TestProbeOutputErrorFields(t *testing.T) {
 // =============================================================================
 
 func TestProbeResultDefaults(t *testing.T) {
+	t.Parallel()
 	// Test that a zero-value ProbeResult has safe defaults
 	var result ProbeResult
 	if result.Responsive {
@@ -1388,6 +1432,7 @@ func TestProbeResultDefaults(t *testing.T) {
 }
 
 func TestPaneChangeLatency(t *testing.T) {
+	t.Parallel()
 	// Test that latency is calculated correctly
 	baseline := &PaneBaseline{
 		Content:     "content",
@@ -1413,6 +1458,7 @@ func TestPaneChangeLatency(t *testing.T) {
 }
 
 func TestHashContentDeterminism(t *testing.T) {
+	t.Parallel()
 	// Test that hash is deterministic across calls
 	content := "test content with special chars: !@#$%^&*()"
 	hash1 := hashContent(content)
@@ -1425,6 +1471,7 @@ func TestHashContentDeterminism(t *testing.T) {
 }
 
 func TestHashContentCollisionResistance(t *testing.T) {
+	t.Parallel()
 	// Test that similar strings produce different hashes
 	hashes := make(map[string]bool)
 	testStrings := []string{
@@ -1452,6 +1499,7 @@ func TestHashContentCollisionResistance(t *testing.T) {
 }
 
 func TestProbeOutputWithAllFields(t *testing.T) {
+	t.Parallel()
 	// Test that ProbeOutput correctly serializes all fields
 	output := ProbeOutput{
 		RobotResponse: NewRobotResponse(true),
@@ -1495,6 +1543,7 @@ func TestProbeOutputWithAllFields(t *testing.T) {
 }
 
 func TestProbeMethodStringConversion(t *testing.T) {
+	t.Parallel()
 	// Test ProbeMethod to string conversion
 	if string(ProbeMethodKeystrokeEcho) != "keystroke_echo" {
 		t.Errorf("ProbeMethodKeystrokeEcho = %q", ProbeMethodKeystrokeEcho)
@@ -1834,6 +1883,7 @@ func TestGetProbeSession_WindowPerAgentDoesNotCollapse(t *testing.T) {
 // agent index instead, so an agent that read pane numbers off
 // --robot-is-working and fed them to --robot-probe addressed different panes.
 func TestProbeSelectorMatchesCanonicalConvention(t *testing.T) {
+	t.Parallel()
 	windowPerAgent := []tmux.Pane{
 		{ID: "%1", Index: 0, WindowIndex: 0, NTMIndex: 1, Title: "proj__cc_1", Type: tmux.AgentClaude},
 		{ID: "%2", Index: 0, WindowIndex: 1, NTMIndex: 2, Title: "proj__cc_2", Type: tmux.AgentClaude},

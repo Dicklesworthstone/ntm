@@ -29,7 +29,7 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 			failRobotCommand(errors.New("--robot-send-receipt cannot be combined with --robot-send or --robot-interrupt"), robot.ErrCodeInvalidFlag, "Run the send or interrupt first, then query the receipt in a separate invocation", "robot-send-receipt")
 			return true
 		}
-		if err := robot.PrintSendReceipt(robotSendReceipt); err != nil {
+		if err := currentRobotRuntime().PrintSendReceipt(robotSendReceipt); err != nil {
 			recordRobotProcessExit(err)
 		}
 		return true
@@ -46,7 +46,7 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 			failRobotCommand(errors.New("conflicting request IDs supplied to --robot-action-status and --request-id"), robot.ErrCodeInvalidFlag, "Pass either --robot-action-status=ID or --robot-action-status --request-id=ID", "robot-action-status")
 			return true
 		}
-		if err := robot.PrintActionStatus(reqID); err != nil {
+		if err := currentRobotRuntime().PrintActionStatus(reqID); err != nil {
 			recordRobotProcessExit(err)
 		}
 		return true
@@ -82,9 +82,11 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 			waitPoll = parsed
 		}
 		if err := robot.PrintWaitRequest(cmd.Context(), robot.WaitRequestOptions{
-			RequestID:    reqID,
-			Timeout:      waitTimeout,
-			PollInterval: waitPoll,
+			RequestID:     reqID,
+			Timeout:       waitTimeout,
+			PollInterval:  waitPoll,
+			Store:         currentRobotRuntime().ProjectionStore(),
+			ExplicitStore: true,
 		}); err != nil {
 			recordRobotProcessExit(err)
 		}
@@ -102,7 +104,7 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 			failRobotCommand(errors.New("conflicting request IDs supplied to --robot-cancel-request and --request-id"), robot.ErrCodeInvalidFlag, "Pass either --robot-cancel-request=ID or --robot-cancel-request --request-id=ID", "robot-cancel-request")
 			return true
 		}
-		if err := robot.PrintCancelRequest(reqID); err != nil {
+		if err := currentRobotRuntime().PrintCancelRequest(reqID); err != nil {
 			recordRobotProcessExit(err)
 		}
 		return true
@@ -206,25 +208,27 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 			withCASS, cassQuery, cassFilter, cassInject := robotSendCASSOptions(robotSendWithCASS, robotSendNoCASS, cfg)
 			opts := robot.SendAndAckOptions{
 				SendOptions: robot.SendOptions{
-					Context:      cmd.Context(),
-					Session:      session,
-					Message:      robotSendMsg,
-					All:          robotSendAll,
-					Pane:         singularPane,
-					Panes:        paneSelectors,
-					AgentTypes:   agentTypes,
-					Exclude:      excludeList,
-					DelayMs:      robotSendDelay,
-					Enter:        enterOverride,
-					DryRun:       robotDryRunEffective,
-					ClearInput:   robotSendClearInput,
-					VerifyRender: robotSendVerifyRender,
-					WithCASS:     withCASS,
-					CASSConfig:   cassQuery,
-					FilterConfig: cassFilter,
-					InjectConfig: cassInject,
-					WithMemory:   withMemory,
-					MemoryInject: memoryInject,
+					Context:       cmd.Context(),
+					Session:       session,
+					Message:       robotSendMsg,
+					All:           robotSendAll,
+					Pane:          singularPane,
+					Panes:         paneSelectors,
+					AgentTypes:    agentTypes,
+					Exclude:       excludeList,
+					DelayMs:       robotSendDelay,
+					Enter:         enterOverride,
+					DryRun:        robotDryRunEffective,
+					ClearInput:    robotSendClearInput,
+					VerifyRender:  robotSendVerifyRender,
+					WithCASS:      withCASS,
+					CASSConfig:    cassQuery,
+					FilterConfig:  cassFilter,
+					InjectConfig:  cassInject,
+					WithMemory:    withMemory,
+					MemoryInject:  memoryInject,
+					Store:         currentRobotRuntime().ProjectionStore(),
+					ExplicitStore: true,
 				},
 				AckTimeoutMs: int(ackTimeout.Milliseconds()),
 				AckPollMs:    ackPollMs,
@@ -261,6 +265,8 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 			InjectConfig:   cassInject,
 			WithMemory:     withMemory,
 			MemoryInject:   memoryInject,
+			Store:          currentRobotRuntime().ProjectionStore(),
+			ExplicitStore:  true,
 		}
 		if cfg != nil {
 			opts.Redaction = cfg.Redaction.ToRedactionLibConfig()
@@ -613,6 +619,8 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 			TimeoutMs:      int(interruptTimeout.Milliseconds()),
 			DryRun:         robotDryRunEffective,
 			IdempotencyKey: strings.TrimSpace(robotOpID),
+			Store:          currentRobotRuntime().ProjectionStore(),
+			ExplicitStore:  true,
 		}
 		if cfg != nil {
 			opts.Redaction = cfg.Redaction.ToRedactionLibConfig()
@@ -808,7 +816,7 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 		return true
 	}
 	if robotTerse {
-		if err := robot.PrintTerse(cfg); err != nil {
+		if err := currentRobotRuntime().PrintTerse(cfg); err != nil {
 			recordRobotProcessExit(err)
 		}
 		return true
@@ -822,6 +830,7 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 		opts := robot.DefaultMarkdownOptions()
 		opts.Compact = robotMarkdownCompact
 		opts.Session = session
+		opts.Store = currentRobotRuntime().ProjectionStore()
 		if robotMarkdownSections != "" {
 			parts := strings.Split(robotMarkdownSections, ",")
 			var sections []string
@@ -918,6 +927,7 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 		}
 		opts := robot.InspectSessionOptions{
 			Session: session,
+			Store:   currentRobotRuntime().ProjectionStore(),
 		}
 		if err := robot.PrintInspectSession(opts); err != nil {
 			recordRobotProcessExit(err)
@@ -927,6 +937,7 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 	if robotInspectAgent != "" {
 		opts := robot.InspectAgentOptions{
 			AgentID: robotInspectAgent,
+			Store:   currentRobotRuntime().ProjectionStore(),
 		}
 		if err := robot.PrintInspectAgent(opts); err != nil {
 			recordRobotProcessExit(err)
@@ -936,6 +947,7 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 	if robotInspectWork != "" {
 		opts := robot.InspectWorkOptions{
 			BeadID: robotInspectWork,
+			Store:  currentRobotRuntime().ProjectionStore(),
 		}
 		if err := robot.PrintInspectWork(opts); err != nil {
 			recordRobotProcessExit(err)
@@ -945,6 +957,7 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 	if robotInspectCoord != "" {
 		opts := robot.InspectCoordinationOptions{
 			AgentName: robotInspectCoord,
+			Store:     currentRobotRuntime().ProjectionStore(),
 		}
 		if err := robot.PrintInspectCoordination(opts); err != nil {
 			recordRobotProcessExit(err)
@@ -954,6 +967,7 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 	if robotInspectQuota != "" {
 		opts := robot.InspectQuotaOptions{
 			QuotaID: robotInspectQuota,
+			Store:   currentRobotRuntime().ProjectionStore(),
 		}
 		if err := robot.PrintInspectQuota(opts); err != nil {
 			recordRobotProcessExit(err)
@@ -963,6 +977,7 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 	if robotInspectIncident != "" {
 		opts := robot.InspectIncidentOptions{
 			IncidentID: robotInspectIncident,
+			Store:      currentRobotRuntime().ProjectionStore(),
 		}
 		if err := robot.PrintInspectIncident(opts); err != nil {
 			recordRobotProcessExit(err)
@@ -974,7 +989,7 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 		return true
 	}
 	if robotIncidentResolve != "" {
-		if err := robot.PrintIncidentResolve(robotIncidentResolve, robotIncidentNote); err != nil {
+		if err := currentRobotRuntime().PrintIncidentResolve(robotIncidentResolve, robotIncidentNote); err != nil {
 			recordRobotProcessExit(err)
 		}
 		return true
@@ -1040,6 +1055,7 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 			Session:         session,
 			Period:          robotMetricsPeriod,
 			DiskAttribution: robotDiskAttribution,
+			Store:           currentRobotRuntime().ProjectionStore(),
 		}
 		if err := robot.PrintMetrics(opts); err != nil {
 			recordRobotProcessExit(err)
@@ -1300,6 +1316,7 @@ func dispatchRobotActionsAndParity(cmd *cobra.Command, robotDryRunEffective bool
 			EntityType: robotPolicyEntityType,
 			EntityID:   robotPolicyEntityID,
 			Limit:      limit,
+			Store:      currentRobotRuntime().ProjectionStore(),
 		}
 		if err := robot.PrintPolicyDecisions(opts); err != nil {
 			recordRobotProcessExit(err)

@@ -65,7 +65,30 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	// Isolate TMPDIR for the CLI test process so MaybeRunStartupCleanup and
+	// per-test temp files never scan or mutate unrelated host temp files.
+	origTMPDIR, hadTMPDIR := os.LookupEnv("TMPDIR")
+	isolatedTmp, err := os.MkdirTemp("", "ntmcli-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "isolate CLI temp dir: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.Setenv("TMPDIR", isolatedTmp); err != nil {
+		fmt.Fprintf(os.Stderr, "set isolated CLI TMPDIR: %v\n", err)
+		os.Exit(1)
+	}
+
 	code := m.Run()
+
+	if hadTMPDIR {
+		_ = os.Setenv("TMPDIR", origTMPDIR)
+	} else {
+		_ = os.Unsetenv("TMPDIR")
+	}
+	if err := os.RemoveAll(isolatedTmp); err != nil {
+		fmt.Fprintf(os.Stderr, "clean up isolated CLI temp dir: %v\n", err)
+		code = 1
+	}
 
 	if err := cleanupGit(); err != nil {
 		fmt.Fprintf(os.Stderr, "clean up isolated CLI git config: %v\n", err)

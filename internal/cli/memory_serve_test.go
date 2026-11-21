@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -22,7 +23,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/supervisor"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestMemoryServeMissingBinaryFailsFastAndLoud(t *testing.T) {
@@ -82,92 +83,82 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// stubCMCLISource mirrors the cm 0.2.x contract: MCP JSON-RPC at the daemon
-// root, no REST /health.
-const stubCMCLISource = `package main
-
-import (
-	"encoding/json"
-	"flag"
-	"fmt"
-	"net/http"
-	"os"
-)
-
-func main() {
-	// Simulate an executable becoming unavailable during an upgrade after
-	// the first successful launch. Subsequent attempts fail before a new
-	// process exists, exercising the supervisor's launch-error budget.
+// TestMemoryServeStubCMHelper implements the stub cm 0.2.x MCP JSON-RPC server
+// inside the already-compiled test binary so tests avoid shelling out to a cold
+// `go build` while still supervising a real separate OS process.
+func TestMemoryServeStubCMHelper(t *testing.T) {
+	if os.Getenv("STUB_CM_HELPER") != "1" {
+		return
+	}
 	if os.Getenv("STUB_CM_DISABLE_RESTARTS") == "1" {
-		exe, err := os.Executable()
-		if err == nil {
-			err = os.Chmod(exe, 0644)
+		target := os.Getenv("STUB_CM_SELF")
+		if target == "" {
+			fmt.Fprintln(os.Stderr, "missing STUB_CM_SELF")
+			os.Exit(2)
 		}
-		if err != nil {
+		if err := os.Chmod(target, 0644); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
 		os.Exit(1)
 	}
 
-	args := os.Args[1:]
+	var args []string
+	for i, a := range os.Args[1:] {
+		if a == "--" {
+			args = os.Args[i+2:]
+			break
+		}
+	}
 	if len(args) > 0 && args[0] == "serve" {
 		args = args[1:]
 	}
 	fs := flag.NewFlagSet("stubcm", flag.ExitOnError)
 	port := fs.Int("port", 8200, "")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			ID     any    ` + "`json:\"id\"`" + `
-			Method string ` + "`json:\"method\"`" + `
+			ID     any    `json:"id"`
+			Method string `json:"method"`
 		}
-		json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		w.Header().Set("Content-Type", "application/json")
 		switch req.Method {
 		case "initialize", "tools/list":
 			// serverInfo is mandatory in a real MCP initialize result; the
 			// probe requires it (bd-2c0yh.3), so the stub must send it too.
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"jsonrpc": "2.0", "id": req.ID,
 				"result": map[string]any{"protocolVersion": "2024-11-05", "serverInfo": map[string]string{"name": "stub-cm"}},
 			})
 		default:
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"jsonrpc": "2.0", "id": req.ID,
 				"error": map[string]any{"code": -32601, "message": "Unsupported method"},
 			})
 		}
 	})
-	if err := http.ListenAndServe(fmt.Sprintf("127.0.0.1:%d", *port), nil); err != nil {
+	if err := http.ListenAndServe(fmt.Sprintf("127.0.0.1:%d", *port), mux); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	os.Exit(0)
 }
-`
 
 func buildStubCMBinary(t *testing.T, binDir string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("stub daemon behavioral test requires unix process semantics")
 	}
-	goTool, err := exec.LookPath("go")
+	exe, err := os.Executable()
 	if err != nil {
-		t.Skipf("go toolchain not on PATH: %v", err)
+		t.Fatalf("resolve test executable: %v", err)
 	}
-
-	srcDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(srcDir, "main.go"), []byte(stubCMCLISource), 0644); err != nil {
-		t.Fatalf("write stub source: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(srcDir, "go.mod"), []byte("module stubcm\n\ngo 1.21\n"), 0644); err != nil {
-		t.Fatalf("write stub go.mod: %v", err)
-	}
-	cmd := exec.Command(goTool, "build", "-o", filepath.Join(binDir, "cm"), ".")
-	cmd.Dir = srcDir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build stub cm: %v\n%s", err, out)
+	script := fmt.Sprintf("#!/bin/sh\nSTUB_CM_HELPER=1 STUB_CM_SELF=\"$0\" exec %s -test.run='^TestMemoryServeStubCMHelper$' -- \"$@\"\n", tmux.ShellQuote(exe))
+	if err := os.WriteFile(filepath.Join(binDir, "cm"), []byte(script), 0755); err != nil {
+		t.Fatalf("install stub cm: %v", err)
 	}
 }
 
@@ -187,8 +178,16 @@ func TestMemoryServeSupervisesStubCM(t *testing.T) {
 	}
 
 	origPoll := memoryServePollInterval
-	memoryServePollInterval = 50 * time.Millisecond
-	defer func() { memoryServePollInterval = origPoll }()
+	origHealth := memoryServeHealthInterval
+	origStartup := memoryServeStartupDelay
+	memoryServePollInterval = 25 * time.Millisecond
+	memoryServeHealthInterval = 100 * time.Millisecond
+	memoryServeStartupDelay = 25 * time.Millisecond
+	defer func() {
+		memoryServePollInterval = origPoll
+		memoryServeHealthInterval = origHealth
+		memoryServeStartupDelay = origStartup
+	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -214,7 +213,7 @@ func TestMemoryServeSupervisesStubCM(t *testing.T) {
 		select {
 		case err := <-errCh:
 			t.Fatalf("runMemoryServe() exited early: %v\noutput:\n%s", err, out.String())
-		case <-time.After(50 * time.Millisecond):
+		case <-time.After(15 * time.Millisecond):
 		}
 	}
 	if pid == 0 {
@@ -232,7 +231,7 @@ func TestMemoryServeSupervisesStubCM(t *testing.T) {
 		if strings.Contains(out.String(), "starting -> running") {
 			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(15 * time.Millisecond)
 	}
 	if !strings.Contains(out.String(), "starting -> running") {
 		logData, _ := os.ReadFile(logPath)
@@ -318,10 +317,18 @@ func TestMemoryServeReportsExhaustedRestartLaunchFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Exercise the actual Cobra surface with the production restart budget
-	// and backoff (1+2+4+8+16 seconds). A wedged StateRestarting used to keep
-	// this command alive until the operator interrupted it.
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	// Exercise the actual Cobra surface with the full production restart budget
+	// (DefaultMaxRestarts=5) while capping restart backoff for fast hermetic execution.
+	// A wedged StateRestarting used to keep this command alive until interrupted.
+	origPoll := memoryServePollInterval
+	origBackoff := memoryServeRestartBackoffMax
+	memoryServePollInterval = 10 * time.Millisecond
+	memoryServeRestartBackoffMax = 20 * time.Millisecond
+	defer func() {
+		memoryServePollInterval = origPoll
+		memoryServeRestartBackoffMax = origBackoff
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	var out bytes.Buffer
 	cmd := newMemoryServeCmd()
@@ -359,6 +366,7 @@ func TestMemoryServeReportsExhaustedRestartLaunchFailures(t *testing.T) {
 // and `ntm memory serve` run the supervisor), so the old advice sentence must
 // not exist anywhere in code or docs.
 func TestNoFalseSpawnAutoStartAdvice(t *testing.T) {
+	t.Parallel()
 	root := repoRootForGrep(t)
 	falseAdvice := regexp.MustCompile(`(?i)(spawn'? to auto-?start|auto-?starts? the memory daemon)`)
 

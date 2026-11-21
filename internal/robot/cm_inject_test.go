@@ -733,12 +733,14 @@ func TestGetSendWithMemoryDeliversInjectedBlockRealTmux(t *testing.T) {
 // Exercise the public send engines with real CM HTTP/CLI traffic and recording
 // tmux/SSH transports. Each subprocess isolates tmux discovery and global state.
 func TestSendMemoryTargetScope(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("recording transport requires a POSIX shell")
 	}
 	for _, tracked := range []bool{false, true} {
 		for _, mode := range []string{"daemon", "cli", "dry-run", "unknown", "remote", "canceled", "cancel-query", "disabled", "changed-daemon"} {
 			t.Run(fmt.Sprintf("tracked=%t/%s", tracked, mode), func(t *testing.T) {
+				t.Parallel()
 				root := t.TempDir()
 				const transport = `#!/bin/sh
 set -eu
@@ -876,7 +878,9 @@ func TestSendMemoryTargetScopeHelper(t *testing.T) {
 		writePID(target, "target", targetPort)
 	}
 	oldClient := tmux.DefaultClient
-	tmux.DefaultClient = tmux.NewClient("")
+	fastClient := tmux.NewClient("")
+	fastClient.MaxSendDelay = 2 * time.Millisecond
+	tmux.DefaultClient = fastClient
 	t.Cleanup(func() { tmux.DefaultClient = oldClient })
 	if mode == "remote" {
 		tmux.DefaultClient.Remote = "test-host"

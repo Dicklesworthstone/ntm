@@ -44,6 +44,8 @@ type Command struct {
 	SafetyLevel SafetyLevel  `json:"safety_level,omitempty"`
 	EmitsEvents []string     `json:"emits_events,omitempty"`
 	Idempotent  bool         `json:"idempotent,omitempty"`
+	Executable  bool         `json:"executable"`
+	CatalogOnly bool         `json:"catalog_only"`
 }
 
 // ListResponse is the output schema for listing registered commands.

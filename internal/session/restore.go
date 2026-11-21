@@ -52,6 +52,8 @@ func RestoreAgentTemplate(cfg *config.Config, rawType string) (string, string, b
 		return command, "oc", true
 	case tmux.AgentOmp:
 		return config.OmpCommandOrDefault(cfg.Agents.Omp), "omp", true
+	case agent.AgentTypePi:
+		return "pi", "pi", true
 	case tmux.AgentOllama:
 		return cfg.Agents.Ollama, "ollama", true
 	default:
@@ -91,7 +93,7 @@ func RestoreAgentCommands(state *SessionState, cfg *config.Config) AgentCommands
 		Claude: render("cc"), Codex: render("cod"), Gemini: render("gmi"),
 		Antigravity: render("agy"), Grok: render("grok"), Cursor: render("cursor"),
 		Windsurf: render("windsurf"), Aider: render("aider"), Opencode: render("oc"),
-		Omp: render("omp"), Ollama: render("ollama"),
+		Omp: render("omp"), Pi: render("pi"), Ollama: render("ollama"),
 	}
 }
 
@@ -535,6 +537,8 @@ func getAgentCommand(agentType string, cmds AgentCommands) string {
 		return cmds.Opencode
 	case tmux.AgentOmp:
 		return cmds.Omp
+	case agent.AgentTypePi:
+		return cmds.Pi
 	case tmux.AgentOllama:
 		return cmds.Ollama
 	default:

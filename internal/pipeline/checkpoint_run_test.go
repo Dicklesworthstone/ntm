@@ -34,8 +34,10 @@ func awaitOwnLaunchJournal(runID string) string {
 }
 
 func TestCheckpointAdmissionFailureStartsNoWork(t *testing.T) {
+	t.Parallel()
 	for _, resume := range []bool{false, true} {
 		t.Run(fmt.Sprintf("resume=%v", resume), func(t *testing.T) {
+			t.Parallel()
 			cfg := checkpointRunConfig(t)
 			e := NewExecutor(cfg)
 			if err := os.MkdirAll(pipelineStatePath(cfg.ProjectDir, cfg.RunID), 0700); err != nil {
@@ -65,6 +67,7 @@ func TestCheckpointAdmissionFailureStartsNoWork(t *testing.T) {
 }
 
 func TestControlledPipelineCheckpointFailureStopsDependents(t *testing.T) {
+	t.Parallel()
 	cfg := checkpointRunConfig(t)
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "checkpoint-run", Settings: WorkflowSettings{
 		OnError:  ErrorActionContinue,
@@ -99,6 +102,7 @@ func TestControlledPipelineCheckpointFailureStopsDependents(t *testing.T) {
 }
 
 func TestCheckpointFailureCancelsAndJoinsRunningSibling(t *testing.T) {
+	t.Parallel()
 	cfg := checkpointRunConfig(t)
 	e := NewExecutor(cfg)
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "checkpoint-run", Settings: WorkflowSettings{
@@ -131,6 +135,7 @@ func TestCheckpointFailureCancelsAndJoinsRunningSibling(t *testing.T) {
 // really wrote instead of returning an empty failure. Replay safety is
 // unchanged: the last durable journal entry still marks the launch uncertain.
 func TestCommandLaunchJournalFailureRetainsCapturedOutput(t *testing.T) {
+	t.Parallel()
 	cfg := checkpointRunConfig(t)
 	e := NewExecutor(cfg)
 	statePath := pipelineStatePath(cfg.ProjectDir, cfg.RunID)
@@ -196,6 +201,7 @@ func TestCommandLaunchJournalFailureRetainsCapturedOutput(t *testing.T) {
 }
 
 func TestCheckpointExecutorCanStartNewAttemptAfterStorageRepair(t *testing.T) {
+	t.Parallel()
 	cfg := checkpointRunConfig(t)
 	e := NewExecutor(cfg)
 	path := pipelineStatePath(cfg.ProjectDir, cfg.RunID)
@@ -218,6 +224,7 @@ func TestCheckpointExecutorCanStartNewAttemptAfterStorageRepair(t *testing.T) {
 }
 
 func TestControlledCheckpointDryRunWritesNoArtifacts(t *testing.T) {
+	t.Parallel()
 	cfg := checkpointRunConfig(t)
 	cfg.DryRun = true
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "read-only", Steps: []Step{{ID: "work", Command: "printf unsafe > dispatched"}}}
@@ -235,6 +242,7 @@ func TestControlledCheckpointDryRunWritesNoArtifacts(t *testing.T) {
 }
 
 func TestCheckpointRunWaitNoneCleanupFailureCannotSucceed(t *testing.T) {
+	t.Parallel()
 	cfg := checkpointRunConfig(t)
 	e := NewExecutor(cfg)
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "checkpoint-run", Steps: []Step{
@@ -251,6 +259,7 @@ func TestCheckpointRunWaitNoneCleanupFailureCannotSucceed(t *testing.T) {
 }
 
 func TestCheckpointHealthyCancellationRetainsCancelledOutcome(t *testing.T) {
+	t.Parallel()
 	cfg := checkpointRunConfig(t)
 	e := NewExecutor(cfg)
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "checkpoint-run", Steps: []Step{

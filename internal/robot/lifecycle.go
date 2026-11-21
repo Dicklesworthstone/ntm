@@ -36,6 +36,48 @@ type LifecycleOptions struct {
 	// ExpectedProcesses carries the preceding in-process operation's observed
 	// lifetimes into an escalation. It cannot authorize a replacement agent.
 	ExpectedProcesses *LifecycleProcessIdentity
+
+	// Optional timing overrides (zero uses package defaults).
+	ExitTimeout      time.Duration
+	PollInterval     time.Duration
+	TermGrace        time.Duration
+	KillGrace        time.Duration
+	ReconcileTimeout time.Duration
+}
+
+func (o LifecycleOptions) exitTimeout() time.Duration {
+	if o.ExitTimeout > 0 {
+		return o.ExitTimeout
+	}
+	return lifecycleExitTimeout
+}
+
+func (o LifecycleOptions) pollInterval() time.Duration {
+	if o.PollInterval > 0 {
+		return o.PollInterval
+	}
+	return lifecyclePollInterval
+}
+
+func (o LifecycleOptions) termGrace() time.Duration {
+	if o.TermGrace > 0 {
+		return o.TermGrace
+	}
+	return lifecycleTermGrace
+}
+
+func (o LifecycleOptions) killGrace() time.Duration {
+	if o.KillGrace > 0 {
+		return o.KillGrace
+	}
+	return lifecycleKillGrace
+}
+
+func (o LifecycleOptions) reconcileTimeout() time.Duration {
+	if o.ReconcileTimeout > 0 {
+		return o.ReconcileTimeout
+	}
+	return lifecycleReconcileTimeout
 }
 
 // LifecyclePaneResult is per-pane structured evidence for a lifecycle verb.
@@ -84,14 +126,17 @@ type KillAgentOutput struct {
 // within roughly 0.1-0.3s of the first to treat the pair as "exit" instead
 // of "clear input"; other CLIs tolerate the same cadence.
 const (
-	lifecycleDoubleTapGap     = 200 * time.Millisecond
+	lifecycleDoubleTapGap  = 200 * time.Millisecond
+	lifecycleChildPIDLimit = 16
+)
+
+var (
 	lifecycleExitTimeout      = 6 * time.Second
 	lifecyclePollInterval     = 250 * time.Millisecond
 	lifecycleTermGrace        = 2 * time.Second
 	lifecycleKillGrace        = 1 * time.Second
 	lifecycleRelaunchBoot     = 10 * time.Second
 	lifecycleReconcileTimeout = 2 * time.Second
-	lifecycleChildPIDLimit    = 16
 )
 
 // Pane presence and the original process's lifetime are independent evidence.
@@ -272,17 +317,23 @@ func applyLifecycleObservation(result *LifecyclePaneResult, observation lifecycl
 
 // Wait only for observations. Cancellation stops all mutations; a separate,
 // bounded read-only context may subsequently reconcile a partially sent exit.
-func waitForLifecycleExit(ctx context.Context, session string, pane tmux.Pane, original *LifecycleProcessIdentity, timeout time.Duration) lifecycleObservation {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+func waitForLifecycleExit(ctx context.Context, session string, pane tmux.Pane, original *LifecycleProcessIdentity, timeout, pollInterval time.Duration) lifecycleObservation {
+	if pollInterval <= 0 {
+		pollInterval = lifecyclePollInterval
+	}
+	settleDeadline := time.Now().Add(timeout)
 	var observation lifecycleObservation
 	confirmedExit := false
 	for {
-		// A composite observation needs several bounded reads. Do not start
-		// one in the final polling interval only to invalidate a completed
-		// observation with our own settling deadline. Genuine read failures
-		// still replace the evidence with unknown state below.
-		if deadline, ok := ctx.Deadline(); ok && observation.paneState != "" && time.Until(deadline) <= lifecyclePollInterval {
+		// A composite observation needs several bounded reads (tmux + ps).
+		// Keep the settling loop deadline independent from ctx so a read
+		// started before settleDeadline is not artificially aborted mid-ps
+		// and misclassified as VerificationFailed, while genuine caller
+		// cancellation or hung probes still cancel through ctx immediately.
+		if observation.paneState != "" && time.Now().After(settleDeadline) {
+			return observation
+		}
+		if deadline, ok := ctx.Deadline(); ok && observation.paneState != "" && time.Until(deadline) <= pollInterval {
 			return observation
 		}
 		observation = observeLifecycle(ctx, session, pane, original)
@@ -295,10 +346,18 @@ func waitForLifecycleExit(ctx context.Context, session string, pane tmux.Pane, o
 			(observation.processState == lifecycleProcessExited && observation.idle) {
 			return observation
 		}
+		remaining := time.Until(settleDeadline)
+		if remaining <= 0 {
+			return observation
+		}
+		sleepFor := pollInterval
+		if remaining < sleepFor {
+			sleepFor = remaining
+		}
 		select {
 		case <-ctx.Done():
 			return observation
-		case <-time.After(lifecyclePollInterval):
+		case <-time.After(sleepFor):
 		}
 	}
 }
@@ -641,7 +700,10 @@ func verifyLifecycleRelaunchShell(ctx context.Context, session string, pane tmux
 
 // relaunchAgentCLI replays the preflighted command only after observing the
 // original pane back at a shell, recording that command before delivery.
-func relaunchAgentCLI(ctx context.Context, session string, pane tmux.Pane, original *LifecycleProcessIdentity, plan restartLaunchPlan, result *LifecyclePaneResult) {
+func relaunchAgentCLI(ctx context.Context, opts LifecycleOptions, pane tmux.Pane, original *LifecycleProcessIdentity, plan restartLaunchPlan, result *LifecyclePaneResult) {
+	session := opts.Session
+	reconcileTimeout := opts.reconcileTimeout()
+	pollInterval := opts.pollInterval()
 	launchCmd, ok := plan.Commands[result.Pane]
 	spec, hasSpec := plan.Specs[result.Pane]
 	if !ok || !hasSpec || strings.TrimSpace(launchCmd) == "" {
@@ -668,7 +730,7 @@ func relaunchAgentCLI(ctx context.Context, session string, pane tmux.Pane, origi
 	// Both a lost send response and a pane disappearing during boot require
 	// fresh readback; never retain a pre-send shell_preserved:true by default.
 	defer func() {
-		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lifecycleReconcileTimeout)
+		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reconcileTimeout)
 		defer cancel()
 		observation := observeLifecycle(readCtx, session, pane, original)
 		applyLifecycleObservation(result, observation)
@@ -705,7 +767,7 @@ func relaunchAgentCLI(ctx context.Context, session string, pane tmux.Pane, origi
 			result.Detail = joinLifecycleDetail(result.Detail,
 				fmt.Sprintf("relaunch sent but the agent CLI did not appear within %s", lifecycleRelaunchBoot))
 			return
-		case <-time.After(lifecyclePollInterval):
+		case <-time.After(pollInterval):
 		}
 	}
 }
@@ -717,7 +779,10 @@ func joinLifecycleDetail(existing, extra string) string {
 	return existing + "; " + extra
 }
 
-func waitForBareShell(ctx context.Context, session, paneID string, timeout time.Duration) (tmux.Pane, bool) {
+func waitForBareShell(ctx context.Context, session, paneID string, timeout, pollInterval time.Duration) (tmux.Pane, bool) {
+	if pollInterval <= 0 {
+		pollInterval = lifecyclePollInterval
+	}
 	deadline := time.Now().Add(timeout)
 	var last tmux.Pane
 	for {
@@ -729,7 +794,7 @@ func waitForBareShell(ctx context.Context, session, paneID string, timeout time.
 			if time.Now().After(deadline) || ctx.Err() != nil {
 				return last, false
 			}
-			time.Sleep(lifecyclePollInterval)
+			time.Sleep(pollInterval)
 			continue
 		}
 		last = pane
@@ -742,7 +807,7 @@ func waitForBareShell(ctx context.Context, session, paneID string, timeout time.
 		if time.Now().After(deadline) || ctx.Err() != nil {
 			return pane, false
 		}
-		time.Sleep(lifecyclePollInterval)
+		time.Sleep(pollInterval)
 	}
 }
 
@@ -833,7 +898,10 @@ func restorePaneRemainOnExit(ctx context.Context, paneID, previous string) {
 	_ = tmux.DefaultClient.RunSilentContext(restoreCtx, "set-option", "-p", "-t", tmux.ExactTarget(paneID), "remain-on-exit", trimmed)
 }
 
-func waitForDirectExecExit(ctx context.Context, session, paneID string, rootPID int, timeout time.Duration) (tmux.Pane, paneLookup, bool) {
+func waitForDirectExecExit(ctx context.Context, session, paneID string, rootPID int, timeout, pollInterval time.Duration) (tmux.Pane, paneLookup, bool) {
+	if pollInterval <= 0 {
+		pollInterval = lifecyclePollInterval
+	}
 	deadline := time.Now().Add(timeout)
 	for {
 		pane, lookup := refreshLifecyclePane(ctx, session, paneID)
@@ -851,7 +919,7 @@ func waitForDirectExecExit(ctx context.Context, session, paneID string, rootPID 
 		if time.Now().After(deadline) || ctx.Err() != nil {
 			return pane, lookup, false
 		}
-		time.Sleep(lifecyclePollInterval)
+		time.Sleep(pollInterval)
 	}
 }
 
@@ -884,7 +952,7 @@ func exitDirectExecPane(ctx context.Context, opts LifecycleOptions, original tmu
 			exitErr = sendExitChoreography(ctx, refreshed, func(checkCtx context.Context) error {
 				return directExecExitInput(checkCtx, opts.Session, original, refreshed)
 			})
-			obs, obsLookup, exited = waitForDirectExecExit(ctx, opts.Session, original.ID, original.PID, lifecycleExitTimeout)
+			obs, obsLookup, exited = waitForDirectExecExit(ctx, opts.Session, original.ID, original.PID, opts.exitTimeout(), opts.pollInterval())
 			if errors.Is(exitErr, tmux.ErrPaneIdentityChanged) && (obsLookup == paneAbsent || (obsLookup == paneFound && obs.Dead)) {
 				exitErr = nil
 				exited = true
@@ -946,7 +1014,7 @@ func exitDirectExecPane(ctx context.Context, opts LifecycleOptions, original tmu
 		exitErr = sendExitChoreography(ctx, refreshed, func(checkCtx context.Context) error {
 			return directExecExitInput(checkCtx, opts.Session, original, refreshed)
 		})
-		obs, obsLookup, exited = waitForDirectExecExit(ctx, opts.Session, original.ID, original.PID, lifecycleExitTimeout)
+		obs, obsLookup, exited = waitForDirectExecExit(ctx, opts.Session, original.ID, original.PID, opts.exitTimeout(), opts.pollInterval())
 		if errors.Is(exitErr, tmux.ErrPaneIdentityChanged) && obsLookup == paneFound && obs.Dead {
 			exitErr = nil
 			exited = true
@@ -971,7 +1039,7 @@ func exitDirectExecPane(ctx context.Context, opts LifecycleOptions, original tmu
 		result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf("respawn shell failed: %v", err))
 		return obs, false
 	}
-	shellPane, shellReady := waitForBareShell(ctx, opts.Session, original.ID, lifecycleExitTimeout)
+	shellPane, shellReady := waitForBareShell(ctx, opts.Session, original.ID, opts.exitTimeout(), opts.pollInterval())
 	if !shellReady || tmux.DefaultClient.ValidatePanePersistentShellContext(ctx, shellPane) != nil {
 		result.Status = "failed"
 		result.Detail = joinLifecycleDetail(result.Detail, "respawned shell could not be verified as an idle persistent shell")
@@ -1083,7 +1151,7 @@ func GetExitCLI(ctx context.Context, opts LifecycleOptions) (*ExitCLIOutput, err
 					result.Detail = joinLifecycleDetail(result.Detail, "relaunch withheld: "+err.Error())
 				} else {
 					result.ProcessIdentity = shellIdentity
-					relaunchAgentCLI(ctx, opts.Session, relaunchTarget, shellIdentity, launchPlan, &result)
+					relaunchAgentCLI(ctx, opts, relaunchTarget, shellIdentity, launchPlan, &result)
 				}
 			}
 		} else {
@@ -1115,7 +1183,7 @@ func GetExitCLI(ctx context.Context, opts LifecycleOptions) (*ExitCLIOutput, err
 				if exitErr != nil {
 					break
 				}
-				observation = waitForLifecycleExit(ctx, opts.Session, pane, original, lifecycleExitTimeout)
+				observation = waitForLifecycleExit(ctx, opts.Session, pane, original, opts.exitTimeout(), opts.pollInterval())
 			}
 			if observation.processState == lifecycleProcessExited {
 				result.ProcessState = lifecycleProcessExited
@@ -1123,8 +1191,11 @@ func GetExitCLI(ctx context.Context, opts LifecycleOptions) (*ExitCLIOutput, err
 			if exitErr != nil || ctx.Err() != nil || observation.verificationFailed {
 				// A failed/canceled send may have delivered its first key. This
 				// context is strictly read-only and must never reach a relaunch.
-				readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lifecycleReconcileTimeout)
-				observation = waitForLifecycleExit(readCtx, opts.Session, pane, original, lifecycleReconcileTimeout)
+				// Give readCtx headroom beyond the settling window so an active
+				// process snapshot is never clipped mid-read by the loop timeout.
+				reconcileTimeout := opts.reconcileTimeout()
+				readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reconcileTimeout+5*time.Second)
+				observation = waitForLifecycleExit(readCtx, opts.Session, pane, original, reconcileTimeout, opts.pollInterval())
 				cancel()
 			}
 			applyLifecycleObservation(&result, observation)
@@ -1150,7 +1221,7 @@ func GetExitCLI(ctx context.Context, opts LifecycleOptions) (*ExitCLIOutput, err
 				result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf("exit keystrokes stopped: %v", exitErr))
 			}
 			if opts.Relaunch && result.Exited && result.ShellPreserved && !result.Refused && ctx.Err() == nil {
-				relaunchAgentCLI(ctx, opts.Session, pane, original, launchPlan, &result)
+				relaunchAgentCLI(ctx, opts, pane, original, launchPlan, &result)
 			}
 		}
 		slog.Info("[robot.exit-cli] completed pane lifecycle",
@@ -1237,7 +1308,7 @@ func GetKillAgent(ctx context.Context, opts LifecycleOptions) (*KillAgentOutput,
 		}
 		result.AgentPIDs = lifecycleProcessIDs(original.agents)
 		result.ProcessIdentity = original
-		result.Killed, err = killProcessesGracefully(ctx, original.agents, func(checkCtx context.Context) error {
+		result.Killed, err = killProcessesGracefully(ctx, original.agents, opts.termGrace(), opts.killGrace(), opts.reconcileTimeout(), func(checkCtx context.Context) error {
 			observation := observeLifecycle(checkCtx, opts.Session, pane, original)
 			if observation.verificationFailed || !observation.shellPreserved {
 				return errors.New("kill withheld: original persistent shell is unverified")
@@ -1250,8 +1321,9 @@ func GetKillAgent(ctx context.Context, opts LifecycleOptions) (*KillAgentOutput,
 		if len(original.agents) > 0 && len(result.Killed) == len(original.agents) {
 			result.ProcessState = lifecycleProcessExited
 		}
-		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lifecycleReconcileTimeout)
-		observation := waitForLifecycleExit(readCtx, opts.Session, pane, original, lifecycleReconcileTimeout)
+		reconcileTimeout := opts.reconcileTimeout()
+		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reconcileTimeout+5*time.Second)
+		observation := waitForLifecycleExit(readCtx, opts.Session, pane, original, reconcileTimeout, opts.pollInterval())
 		cancel()
 		applyLifecycleObservation(&result, observation)
 		result.Refused = err != nil || observation.verificationFailed || !observation.shellPreserved ||
@@ -1268,7 +1340,7 @@ func GetKillAgent(ctx context.Context, opts LifecycleOptions) (*KillAgentOutput,
 			result.Detail = joinLifecycleDetail(result.Detail, "original agent process remains active")
 		}
 		if opts.Relaunch && result.Exited && result.ShellPreserved && !result.Refused && ctx.Err() == nil {
-			relaunchAgentCLI(ctx, opts.Session, pane, original, launchPlan, &result)
+			relaunchAgentCLI(ctx, opts, pane, original, launchPlan, &result)
 		}
 		output.Results = append(output.Results, result)
 	}
@@ -1284,7 +1356,16 @@ func GetKillAgent(ctx context.Context, opts LifecycleOptions) (*KillAgentOutput,
 // killProcessesGracefully SIGTERMs each PID, waits for exit, and escalates to
 // SIGKILL only after a complete grace period and positive survivor evidence.
 // Failed observations or cancellation stop signals, including escalation.
-func killProcessesGracefully(ctx context.Context, original map[int]process.SnapshotProcess, beforeSignal func(context.Context) error) (killed []int, signalErr error) {
+func killProcessesGracefully(ctx context.Context, original map[int]process.SnapshotProcess, termGrace, killGrace, reconcileTimeout time.Duration, beforeSignal func(context.Context) error) (killed []int, signalErr error) {
+	if termGrace <= 0 {
+		termGrace = lifecycleTermGrace
+	}
+	if killGrace <= 0 {
+		killGrace = lifecycleKillGrace
+	}
+	if reconcileTimeout <= 0 {
+		reconcileTimeout = lifecycleReconcileTimeout
+	}
 	confirmedExited := make(map[int]bool)
 	rememberExits := func(snapshot map[int]process.SnapshotProcess) {
 		for pid, previous := range original {
@@ -1297,7 +1378,7 @@ func killProcessesGracefully(ctx context.Context, original map[int]process.Snaps
 		if len(original) == 0 {
 			return
 		}
-		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lifecycleReconcileTimeout)
+		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reconcileTimeout)
 		defer cancel()
 		snapshot, err := process.SnapshotContext(readCtx)
 		if err != nil {
@@ -1311,7 +1392,7 @@ func killProcessesGracefully(ctx context.Context, original map[int]process.Snaps
 			}
 		}
 	}()
-	for phase, grace := range []time.Duration{lifecycleTermGrace, lifecycleKillGrace} {
+	for phase, grace := range []time.Duration{termGrace, killGrace} {
 		for _, pid := range lifecycleProcessIDs(original) {
 			if err := ctx.Err(); err != nil {
 				return nil, err

@@ -38,23 +38,25 @@ func (a *SLBAdapter) Detect() (string, bool) {
 
 // Version returns the installed slb version
 func (a *SLBAdapter) Version(ctx context.Context) (Version, error) {
-	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
-	defer cancel()
+	return cachedToolVersion(a.BinaryName(), func(bin string) (Version, error) {
+		ctx, cancel := context.WithTimeout(ctx, a.Timeout())
+		defer cancel()
 
-	// slb exposes version via the `version` SUBCOMMAND, not a `--version` flag.
-	// `slb --version` errors with "unknown flag: --version" (exit 1) on current
-	// releases, which previously made both `ntm doctor`'s version display AND its
-	// health check fail for a perfectly healthy slb (issue #202).
-	cmd := exec.CommandContext(ctx, a.BinaryName(), "version")
-	cmd.WaitDelay = time.Second
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
+		// slb exposes version via the `version` SUBCOMMAND, not a `--version` flag.
+		// `slb --version` errors with "unknown flag: --version" (exit 1) on current
+		// releases, which previously made both `ntm doctor`'s version display AND its
+		// health check fail for a perfectly healthy slb (issue #202).
+		cmd := exec.CommandContext(ctx, bin, "version")
+		cmd.WaitDelay = time.Second
+		var stdout bytes.Buffer
+		cmd.Stdout = &stdout
 
-	if err := cmd.Run(); err != nil {
-		return Version{}, fmt.Errorf("failed to get slb version: %w", err)
-	}
+		if err := cmd.Run(); err != nil {
+			return Version{}, fmt.Errorf("failed to get slb version: %w", err)
+		}
 
-	return parseSLBVersion(stdout.String())
+		return parseSLBVersion(stdout.String())
+	})
 }
 
 // parseSLBVersion extracts version from slb --version output

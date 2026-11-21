@@ -10,6 +10,7 @@ import (
 )
 
 func TestBeadQuery_ParseYAMLAndValidate(t *testing.T) {
+	t.Parallel()
 	content := `
 schema_version: "2.0"
 name: bead-query
@@ -43,6 +44,7 @@ steps:
 }
 
 func TestBeadQuery_ParseTOMLKnownFields(t *testing.T) {
+	t.Parallel()
 	content := `
 schema_version = "2.0"
 name = "bead-query-toml"
@@ -70,6 +72,7 @@ filter = "status==open"
 }
 
 func TestBeadQuery_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
 	step := Step{
 		ID: "collect",
 		BeadQuery: &BeadQueryStep{
@@ -95,6 +98,7 @@ func TestBeadQuery_JSONRoundTrip(t *testing.T) {
 }
 
 func TestBeadQuery_ValidationConflict(t *testing.T) {
+	t.Parallel()
 	result := Validate(&Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "bead-query-conflict",
@@ -116,6 +120,7 @@ func TestBeadQuery_ValidationConflict(t *testing.T) {
 }
 
 func TestBeadQueryValidateLiteralFilters(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		expr  string
 		valid bool
@@ -149,6 +154,7 @@ func TestBeadQueryValidateLiteralFilters(t *testing.T) {
 }
 
 func TestExecuteBeadQueryCapturesTypedRecords(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "bead-query-exec",
@@ -208,6 +214,7 @@ func TestExecuteBeadQueryCapturesTypedRecords(t *testing.T) {
 }
 
 func TestBeadQueryFilterOperators(t *testing.T) {
+	t.Parallel()
 	records := []BeadRecord{
 		{ID: "bd-1", Labels: []string{"hypothesis"}, Status: "open", Priority: 1},
 		{ID: "bd-2", Labels: []string{"question"}, Status: "open", Priority: 2},
@@ -232,6 +239,7 @@ func TestBeadQueryFilterOperators(t *testing.T) {
 }
 
 func TestBeadQueryFilterGroupingAndLiteralTypes(t *testing.T) {
+	t.Parallel()
 	records := []BeadRecord{
 		{ID: "bd-1", Labels: []string{"hypothesis", "01"}, Status: "open", Priority: 1, Title: `Parser (a && b) || "fallback"`},
 		{ID: "bd-2", Labels: []string{"phase-4", "1"}, Status: "open", State: "queued", Priority: 2, Title: "Don't split != or =="},
@@ -275,6 +283,7 @@ func TestBeadQueryFilterGroupingAndLiteralTypes(t *testing.T) {
 }
 
 func TestBeadQueryGroupedFilterRunsWorkflow(t *testing.T) {
+	t.Parallel()
 	workflow, err := ParseString(`
 schema_version: "2.0"
 name: grouped-bead-selection
@@ -333,6 +342,7 @@ steps:
 }
 
 func TestBeadQueryInvalidFiltersFailBeforeQuery(t *testing.T) {
+	t.Parallel()
 	for _, expr := range []string{
 		`status==open || missing==x`,
 		`status==closed && priority==high`,
@@ -377,6 +387,7 @@ func TestBeadQueryInvalidFiltersFailBeforeQuery(t *testing.T) {
 }
 
 func TestBeadQuerySubstitutesVariablesInArgsAndFilter(t *testing.T) {
+	t.Parallel()
 	// bead_query is meant to replace shell-piped br|jq commands. Without
 	// variable substitution, fields like label/status/filter would be sent
 	// verbatim (literal "${vars.target_label}") to br, returning the wrong
@@ -431,6 +442,7 @@ func TestBeadQuerySubstitutesVariablesInArgsAndFilter(t *testing.T) {
 }
 
 func TestBeadQueryFailsOnUnresolvedVariable(t *testing.T) {
+	t.Parallel()
 	// A typo'd reference must fail the step rather than silently sending the
 	// literal "${vars.unknown}" to br.
 	workflow := &Workflow{
@@ -465,6 +477,7 @@ func TestBeadQueryFailsOnUnresolvedVariable(t *testing.T) {
 }
 
 func TestBeadQueryBrErrorFailsStep(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "bead-query-error",
@@ -492,6 +505,7 @@ func TestBeadQueryBrErrorFailsStep(t *testing.T) {
 // Operator-looking values require quotes; an accidental chained comparison
 // must never become a silently different work selection.
 func TestBeadFilterComparisonOperators(t *testing.T) {
+	t.Parallel()
 	record := BeadRecord{
 		ID:       "bd-test",
 		Priority: 1,
@@ -541,6 +555,7 @@ func TestBeadFilterComparisonOperators(t *testing.T) {
 // sanitized first. Same attack class as bd-82zsc (command) and bd-g40ad
 // (agent/parallel/branch). Each control byte must round-trip as '?'.
 func TestExecuteBeadQuery_DryRun_SanitizesControlBytes(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	cfg := DefaultExecutorConfig("bead-query-dryrun-sanitize")
 	cfg.ProjectDir = tmpDir
@@ -585,6 +600,7 @@ func TestExecuteBeadQuery_DryRun_SanitizesControlBytes(t *testing.T) {
 
 // Label aliases retain membership semantics regardless of field-name case.
 func TestBeadFilterLabelCaseInsensitive(t *testing.T) {
+	t.Parallel()
 	record := BeadRecord{
 		ID:     "bd-test",
 		Labels: []string{"alpha", "beta", "gamma"},
@@ -620,6 +636,7 @@ func TestBeadFilterLabelCaseInsensitive(t *testing.T) {
 }
 
 func TestBeadQueryRecordsFlowThroughFreshAndResumedWorkflows(t *testing.T) {
+	t.Parallel()
 	for _, resumeBeforeConsumption := range []bool{false, true} {
 		t.Run(fmt.Sprintf("resume=%t", resumeBeforeConsumption), func(t *testing.T) {
 			workflow := &Workflow{
@@ -802,6 +819,7 @@ func TestBeadQueryRecordsFlowThroughFreshAndResumedWorkflows(t *testing.T) {
 // Both native bead consumers must refuse the entire response rather than
 // treating missing data as an empty query or exposing a valid prefix.
 func TestBeadQueryResponseRequiresCompleteWorkSet(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		payload string
@@ -879,6 +897,7 @@ func TestBeadQueryResponseRequiresCompleteWorkSet(t *testing.T) {
 }
 
 func TestBeadQueryResponsePreservesExplicitEmptyAndCompleteLists(t *testing.T) {
+	t.Parallel()
 	for _, payload := range []string{
 		`{"issues":[]}`,
 		`{"issues":[],"total":0,"limit":0,"offset":0,"has_more":false}`,

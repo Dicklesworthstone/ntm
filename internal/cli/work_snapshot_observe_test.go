@@ -33,6 +33,7 @@ func observationOptions(minimum int) workObservationOptions {
 }
 
 func TestWorkReadyWaitUsesVerifiedCountNotPreview(t *testing.T) {
+	t.Parallel()
 	work := observationWork(3, 1)
 	original := *work.Verification
 	var got []workObservation
@@ -48,6 +49,7 @@ func TestWorkReadyWaitUsesVerifiedCountNotPreview(t *testing.T) {
 }
 
 func TestWorkReadyWaitRejectsUnverifiedAndInconsistentCounts(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"missing verification", "missing source", "unbound source", "tool count", "preview count", "missing count", "wrong count", "negative count", "oversized preview", "unavailable", "nil"} {
 		t.Run(mode, func(t *testing.T) {
 			work := observationWork(3, 1)
@@ -95,6 +97,7 @@ func TestWorkReadyWaitRejectsUnverifiedAndInconsistentCounts(t *testing.T) {
 }
 
 func TestWorkReadyWaitObservesChangedEligibility(t *testing.T) {
+	t.Parallel()
 	var reads, outputs int
 	start := time.Now()
 	err := observeWorkSnapshots(context.Background(), observationOptions(2),
@@ -117,6 +120,7 @@ func TestWorkReadyWaitObservesChangedEligibility(t *testing.T) {
 }
 
 func TestWorkReadyWaitCanRequireObservedReservations(t *testing.T) {
+	t.Parallel()
 	var reads int
 	opts := observationOptions(2)
 	opts.RequireReservations = true
@@ -148,6 +152,7 @@ func TestWorkReadyWaitCanRequireObservedReservations(t *testing.T) {
 }
 
 func TestWorkWatchEmitsUnavailableThenRecoversWithoutReplay(t *testing.T) {
+	t.Parallel()
 	failure := errors.New("read failed")
 	stop := errors.New("consumer stopped")
 	var reads int
@@ -180,6 +185,7 @@ func TestWorkWatchEmitsUnavailableThenRecoversWithoutReplay(t *testing.T) {
 }
 
 func TestWorkObservationCancellationIsTerminalAndNonmutating(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"before read", "during read", "between reads"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -223,6 +229,7 @@ func TestWorkObservationCancellationIsTerminalAndNonmutating(t *testing.T) {
 }
 
 func TestWorkObservationHonorsReadAndWaitDeadlines(t *testing.T) {
+	t.Parallel()
 	opts := observationOptions(1)
 	opts.SampleTimeout = 5 * time.Millisecond
 	var calls int
@@ -258,6 +265,7 @@ func TestWorkObservationHonorsReadAndWaitDeadlines(t *testing.T) {
 }
 
 func TestWorkObservationOutputBackpressureStopsCollection(t *testing.T) {
+	t.Parallel()
 	entered, release := make(chan struct{}), make(chan struct{})
 	stop := errors.New("broken output")
 	var reads atomic.Int32
@@ -283,6 +291,7 @@ func TestWorkObservationOutputBackpressureStopsCollection(t *testing.T) {
 }
 
 func TestWorkReadyWaitDoesNotRepairFailedEvidence(t *testing.T) {
+	t.Parallel()
 	failure := &worksource.StaleError{Reason: "source changed"}
 	var calls int
 	err := observeWorkSnapshots(context.Background(), observationOptions(1),
@@ -299,6 +308,7 @@ func TestWorkReadyWaitDoesNotRepairFailedEvidence(t *testing.T) {
 }
 
 func TestWorkObservationPinsProjectAcrossAliasesAndReplacement(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	original, other := filepath.Join(root, "original"), filepath.Join(root, "other")
 	if err := os.Mkdir(original, 0700); err != nil {
@@ -350,6 +360,7 @@ func TestWorkObservationPinsProjectAcrossAliasesAndReplacement(t *testing.T) {
 }
 
 func TestWorkObservationRejectsInvalidOptionsBeforeCollection(t *testing.T) {
+	t.Parallel()
 	for _, opts := range []workObservationOptions{
 		{}, {Interval: time.Nanosecond, SampleTimeout: time.Second},
 		{Interval: time.Hour, SampleTimeout: time.Second},

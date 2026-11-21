@@ -25,6 +25,7 @@ type IterationSourceResolver struct {
 	Limits     LimitsConfig
 	RunShell   func(ctx context.Context, shellCmd string) ([]byte, error)
 	RunBr      func(ctx context.Context, args []string) ([]byte, error)
+	BrBin      string
 }
 
 // A source evaluation has the same timeout selection as a command step, but
@@ -589,7 +590,11 @@ func (r *IterationSourceResolver) runBr(ctx context.Context, args []string) ([]b
 		out, err := r.RunBr(ctx, args)
 		return checkedIterationSourceOutput(ctx, out, err, limits.MaxCommandStdoutBytes)
 	}
-	cmd := exec.Command("br", bv.BeadsReadArgs(r.ProjectDir, args)...)
+	brBin := r.BrBin
+	if brBin == "" {
+		brBin = "br"
+	}
+	cmd := exec.Command(brBin, bv.BeadsReadArgs(r.ProjectDir, args)...)
 	if r.ProjectDir != "" {
 		cmd.Dir = r.ProjectDir
 	}

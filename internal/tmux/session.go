@@ -1928,7 +1928,7 @@ func (c *Client) SetPaneTitleContext(ctx context.Context, paneID, title string) 
 		// Retry briefly to reduce flakiness (especially under `go test`).
 		const attempts = 5
 		for i := 0; i < attempts && selectErr != nil; i++ {
-			if err := waitForSendDelay(ctx, 50*time.Millisecond); err != nil {
+			if err := c.waitForSendDelay(ctx, 50*time.Millisecond); err != nil {
 				return err
 			}
 			selectErr = c.RunSilentContext(ctx, "select-pane", "-t", ExactTarget(paneID), "-T", title)
@@ -2132,7 +2132,7 @@ func (c *Client) sendKeysWithDelayContext(ctx context.Context, target, keys stri
 		// Delay before Enter to ensure the target has time to process the pasted text.
 		// Without this, Enter can be lost due to input buffering.
 		// Agent TUIs (Codex, Gemini) need ~50ms; shells may need 150ms or more.
-		if err := waitForSendDelay(ctx, enterDelay); err != nil {
+		if err := c.waitForSendDelay(ctx, enterDelay); err != nil {
 			return err
 		}
 		// Use "Enter" instead of "C-m" (Ctrl+M) because some TUIs (e.g., Codex)
@@ -2140,6 +2140,13 @@ func (c *Client) sendKeysWithDelayContext(ctx context.Context, target, keys stri
 		return run(ctx, "send-keys", "-t", ExactTarget(target), "Enter")
 	}
 	return nil
+}
+
+func (c *Client) waitForSendDelay(ctx context.Context, delay time.Duration) error {
+	if c != nil && c.MaxSendDelay > 0 && delay > c.MaxSendDelay {
+		delay = c.MaxSendDelay
+	}
+	return waitForSendDelay(ctx, delay)
 }
 
 func waitForSendDelay(ctx context.Context, delay time.Duration) error {
@@ -2320,7 +2327,7 @@ func (c *Client) sendBufferWithDelayContext(ctx context.Context, target, content
 	}
 
 	if enter {
-		if err := waitForSendDelay(ctx, enterDelay); err != nil {
+		if err := c.waitForSendDelay(ctx, enterDelay); err != nil {
 			return err
 		}
 		return run(ctx, "send-keys", "-t", ExactTarget(target), "Enter")
@@ -2598,7 +2605,7 @@ func (c *Client) sendKeysForAgentDoubleEnterContext(ctx context.Context, target,
 	if err := sendText(); err != nil {
 		return err
 	}
-	if err := waitForSendDelay(ctx, DoubleEnterFirstDelay); err != nil {
+	if err := c.waitForSendDelay(ctx, DoubleEnterFirstDelay); err != nil {
 		return err
 	}
 	if canonicalAgentType(agentType) == AgentOpencode && strings.TrimSpace(keys) != "" {
@@ -2610,7 +2617,7 @@ func (c *Client) sendKeysForAgentDoubleEnterContext(ctx context.Context, target,
 	if err := sendEnter(); err != nil {
 		return err
 	}
-	if err := waitForSendDelay(ctx, DoubleEnterSecondDelay); err != nil {
+	if err := c.waitForSendDelay(ctx, DoubleEnterSecondDelay); err != nil {
 		return err
 	}
 	// Second Enter
@@ -3350,7 +3357,7 @@ func (c *Client) ClearComposerContext(ctx context.Context, target string, agentT
 	sendKeys := func(keys []string) error {
 		for i, key := range keys {
 			if i > 0 {
-				if err := waitForSendDelay(ctx, composerClearKeyGap); err != nil {
+				if err := c.waitForSendDelay(ctx, composerClearKeyGap); err != nil {
 					return err
 				}
 			}
@@ -3391,7 +3398,7 @@ func (c *Client) ClearComposerContext(ctx context.Context, target string, agentT
 			}
 			transcriptDismissed = true
 			result.Rounds = round
-			if err := waitForSendDelay(ctx, composerClearVerifyWait); err != nil {
+			if err := c.waitForSendDelay(ctx, composerClearVerifyWait); err != nil {
 				return result, err
 			}
 			continue
@@ -3453,7 +3460,7 @@ func (c *Client) ClearComposerContext(ctx context.Context, target string, agentT
 			return result, err
 		}
 		if drain > 0 {
-			if err := waitForSendDelay(ctx, composerClearKeyGap); err != nil {
+			if err := c.waitForSendDelay(ctx, composerClearKeyGap); err != nil {
 				return result, err
 			}
 			// One tmux call with -N: a per-key gap would turn a long entry
@@ -3462,7 +3469,7 @@ func (c *Client) ClearComposerContext(ctx context.Context, target string, agentT
 				return result, fmt.Errorf("send composer backspace drain: %w", err)
 			}
 		}
-		if err := waitForSendDelay(ctx, composerClearVerifyWait); err != nil {
+		if err := c.waitForSendDelay(ctx, composerClearVerifyWait); err != nil {
 			return result, err
 		}
 
@@ -3620,7 +3627,7 @@ func grokComposerHoldsPayload(capture, message string) bool {
 // paneWidth is accepted for signature parity with the other verifiers; grok's
 // working check is a full-capture match and does not depend on it.
 func (c *Client) VerifyGrokSubmissionContext(ctx context.Context, target, message string, paneWidth int) (bool, bool, error) {
-	if err := waitForSendDelay(ctx, codexVerifyInitialDelay); err != nil {
+	if err := c.waitForSendDelay(ctx, codexVerifyInitialDelay); err != nil {
 		return false, false, err
 	}
 	capture, err := c.CapturePaneVisibleContext(ctx, target)
@@ -3638,7 +3645,7 @@ func (c *Client) VerifyGrokSubmissionContext(ctx context.Context, target, messag
 		return false, true, fmt.Errorf("send rescue Enter to grok pane: %w", err)
 	}
 	for poll := 0; poll < codexVerifyMaxPolls; poll++ {
-		if err := waitForSendDelay(ctx, codexVerifyPollInterval); err != nil {
+		if err := c.waitForSendDelay(ctx, codexVerifyPollInterval); err != nil {
 			return false, true, err
 		}
 		capture, err = c.CapturePaneVisibleContext(ctx, target)
@@ -3728,7 +3735,7 @@ func (c *Client) clearOmpComposerContext(ctx context.Context, target string) (Co
 			return ComposerClearResult{Rounds: sent}, fmt.Errorf("send composer clear key %q: %w", "C-c", err)
 		}
 		sent++
-		if err := waitForSendDelay(ctx, ompClearVerifyWait); err != nil {
+		if err := c.waitForSendDelay(ctx, ompClearVerifyWait); err != nil {
 			return ComposerClearResult{Rounds: sent}, err
 		}
 	}
@@ -3751,7 +3758,7 @@ func (c *Client) clearOmpComposerContext(ctx context.Context, target string) (Co
 // paneWidth is accepted for signature parity; omp's chrome is anchored to the
 // composer box rather than a width-dependent tail.
 func (c *Client) VerifyOmpSubmissionContext(ctx context.Context, target, message string, _ int) (bool, bool, error) {
-	if err := waitForSendDelay(ctx, codexVerifyInitialDelay); err != nil {
+	if err := c.waitForSendDelay(ctx, codexVerifyInitialDelay); err != nil {
 		return false, false, err
 	}
 	capture, err := c.CapturePaneVisibleContext(ctx, target)
@@ -3765,7 +3772,7 @@ func (c *Client) VerifyOmpSubmissionContext(ctx context.Context, target, message
 		return false, true, fmt.Errorf("send rescue Enter to omp pane: %w", err)
 	}
 	for poll := 0; poll < codexVerifyMaxPolls; poll++ {
-		if err := waitForSendDelay(ctx, codexVerifyPollInterval); err != nil {
+		if err := c.waitForSendDelay(ctx, codexVerifyPollInterval); err != nil {
 			return false, true, err
 		}
 		capture, err = c.CapturePaneVisibleContext(ctx, target)
@@ -3796,7 +3803,7 @@ func VerifyOmpSubmissionContext(ctx context.Context, target, message string, pan
 // callers can thread one real pane width (bd-eeifh); codex's working check
 // is a full-capture substring match and does not depend on it.
 func (c *Client) VerifyCodexSubmissionContext(ctx context.Context, target, message string, paneWidth int) (bool, bool, error) {
-	if err := waitForSendDelay(ctx, codexVerifyInitialDelay); err != nil {
+	if err := c.waitForSendDelay(ctx, codexVerifyInitialDelay); err != nil {
 		return false, false, err
 	}
 	// Visible-screen capture only: a scrollback capture can resurrect a stale
@@ -3819,7 +3826,7 @@ func (c *Client) VerifyCodexSubmissionContext(ctx context.Context, target, messa
 		return false, true, fmt.Errorf("send rescue Enter to codex pane: %w", err)
 	}
 	for poll := 0; poll < codexVerifyMaxPolls; poll++ {
-		if err := waitForSendDelay(ctx, codexVerifyPollInterval); err != nil {
+		if err := c.waitForSendDelay(ctx, codexVerifyPollInterval); err != nil {
 			return false, true, err
 		}
 		capture, err = c.CapturePaneVisibleContext(ctx, target)
@@ -3894,7 +3901,7 @@ func claudeComposerHoldsPayload(capture, message string) bool {
 // paneWidth is the real tmux pane width used by the width-adaptive Claude
 // working detector (bd-eeifh); pass 0 when unknown.
 func (c *Client) VerifyClaudeSubmissionContext(ctx context.Context, target, message string, paneWidth int) (bool, bool, error) {
-	if err := waitForSendDelay(ctx, codexVerifyInitialDelay); err != nil {
+	if err := c.waitForSendDelay(ctx, codexVerifyInitialDelay); err != nil {
 		return false, false, err
 	}
 	capture, err := c.CapturePaneVisibleContext(ctx, target)
@@ -3910,7 +3917,7 @@ func (c *Client) VerifyClaudeSubmissionContext(ctx context.Context, target, mess
 	// working in the gap since the first capture would interrupt the running
 	// turn. Two consecutive stranded observations shrink that race window to
 	// effectively zero.
-	if err := waitForSendDelay(ctx, 300*time.Millisecond); err != nil {
+	if err := c.waitForSendDelay(ctx, 300*time.Millisecond); err != nil {
 		return false, false, err
 	}
 	capture, err = c.CapturePaneVisibleContext(ctx, target)
@@ -3926,14 +3933,14 @@ func (c *Client) VerifyClaudeSubmissionContext(ctx context.Context, target, mess
 	if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "Escape"); err != nil {
 		return false, true, fmt.Errorf("send rescue Escape to claude pane: %w", err)
 	}
-	if err := waitForSendDelay(ctx, 300*time.Millisecond); err != nil {
+	if err := c.waitForSendDelay(ctx, 300*time.Millisecond); err != nil {
 		return false, true, err
 	}
 	if err := c.RunSilentContext(ctx, "send-keys", "-t", ExactTarget(target), "Enter"); err != nil {
 		return false, true, fmt.Errorf("send rescue Enter to claude pane: %w", err)
 	}
 	for poll := 0; poll < codexVerifyMaxPolls; poll++ {
-		if err := waitForSendDelay(ctx, codexVerifyPollInterval); err != nil {
+		if err := c.waitForSendDelay(ctx, codexVerifyPollInterval); err != nil {
 			return false, true, err
 		}
 		capture, err = c.CapturePaneVisibleContext(ctx, target)
@@ -4046,7 +4053,7 @@ func (c *Client) SendOmpExitContext(ctx context.Context, target string) error {
 			return fmt.Errorf("send omp exit key %q: %w", step.key, err)
 		}
 		if step.pause > 0 {
-			if err := waitForSendDelay(ctx, step.pause); err != nil {
+			if err := c.waitForSendDelay(ctx, step.pause); err != nil {
 				return err
 			}
 		}

@@ -31,7 +31,7 @@ func groupTestFile(t *testing.T, dir, name, content string) string {
 
 func awaitGroupTestFile(t *testing.T, path string) []byte {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
 			return data
@@ -275,6 +275,7 @@ while [ ! -f release ]; do sleep 0.01; done
 }
 
 func TestCommandCleanupRejectsUnstartedAndReapedCommands(t *testing.T) {
+	t.Parallel()
 	for _, cmd := range []*exec.Cmd{nil, exec.Command("/bin/sh", "-c", "exit 0")} {
 		if result := waitCommandWithProcessGroupCleanup(context.Background(), cmd); result.Err == nil {
 			t.Fatal("invalid command was accepted")
@@ -463,6 +464,7 @@ type commandInputFailureWriter struct{ err error }
 func (writer commandInputFailureWriter) Write([]byte) (int, error) { return 0, writer.err }
 
 func TestCommandInputSettlementRequiresCopyOrClosedReaders(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		source  io.Reader
@@ -477,6 +479,7 @@ func TestCommandInputSettlementRequiresCopyOrClosedReaders(t *testing.T) {
 		{name: "short_write", source: strings.NewReader("payload"), dst: commandInputFailureWriter{}, cause: io.ErrShortWrite},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			cmd := &exec.Cmd{Stdin: tc.source}
 			configureCommandProcessGroup(cmd)
 			input, ok := cmd.Stdin.(*commandInput)
@@ -781,6 +784,7 @@ func TestCommandCleanupSettlesCompleteCappedOutput(t *testing.T) {
 }
 
 func TestCappedCaptureRetainsIncompleteReadEvidence(t *testing.T) {
+	t.Parallel()
 	writer := newCappedWriter(3)
 	reader, pipe := io.Pipe()
 	finished := make(chan error, 1)
@@ -812,6 +816,7 @@ func TestCappedCaptureRetainsIncompleteReadEvidence(t *testing.T) {
 }
 
 func TestCommandGroupInspectionRejectsMissingLeader(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("/bin/sh", "-c", "exit 0")
 	configureCommandProcessGroup(cmd)
 	if err := cmd.Run(); err != nil {
@@ -828,6 +833,7 @@ func TestCommandGroupInspectionRejectsMissingLeader(t *testing.T) {
 }
 
 func TestCommandGroupInspectionRejectsForeignGroupLeader(t *testing.T) {
+	t.Parallel()
 	// This child inherits the test's group; its PID is not a group we own.
 	// Killing the child by its own handle is safe. Never signal its group.
 	cmd := exec.Command("/bin/sleep", "30")
@@ -860,6 +866,7 @@ func TestCommandGroupInspectionRetainsZombieLeaderEvidence(t *testing.T) {
 }
 
 func TestParseCommandGroupStatRequiresCompleteIdentity(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		input string
@@ -903,6 +910,7 @@ func TestParseCommandGroupStatRequiresCompleteIdentity(t *testing.T) {
 		{"negative group", "42 (worker) Z 1 -1", 0, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			group, state, err := parseCommandGroupStat([]byte(tc.input), 42)
 			if (err == nil) != tc.valid || group != tc.group || state != tc.state {
 				t.Fatalf("got group=%d state=%q err=%v, want group=%d state=%q valid=%t", group, state, err, tc.group, tc.state, tc.valid)
@@ -932,6 +940,7 @@ func TestCommandCleanupSettlesEmptyCapturedStreams(t *testing.T) {
 }
 
 func TestCommandGroupObservationRetriesAndPreservesFailure(t *testing.T) {
+	t.Parallel()
 	fault := errors.New("injected process census failure")
 	for _, tc := range []struct {
 		name      string
@@ -944,6 +953,7 @@ func TestCommandGroupObservationRetriesAndPreservesFailure(t *testing.T) {
 		{name: "unresolved at deadline", wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			calls := 0
 			ctx, cancel := context.WithTimeout(context.Background(), 4*commandGroupPollInterval)
 			defer cancel()

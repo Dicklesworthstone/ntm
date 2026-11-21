@@ -46,6 +46,7 @@ func digestTestEvent(cursor int64, category EventCategory, eventType EventType, 
 }
 
 func TestPtAttentionSessionUsesFinalSeparator(t *testing.T) {
+	t.Parallel()
 
 	if got := ptAttentionSession("", "my__project__cc_1"); got != "my__project" {
 		t.Fatalf("ptAttentionSession() = %q, want %q", got, "my__project")
@@ -57,6 +58,7 @@ func TestPtAttentionSessionUsesFinalSeparator(t *testing.T) {
 // =============================================================================
 
 func TestCursorAllocator_Monotonic(t *testing.T) {
+	t.Parallel()
 	alloc := NewCursorAllocator()
 
 	// Cursors must be strictly increasing
@@ -71,6 +73,7 @@ func TestCursorAllocator_Monotonic(t *testing.T) {
 }
 
 func TestCursorAllocator_Current(t *testing.T) {
+	t.Parallel()
 	alloc := NewCursorAllocator()
 
 	// Current returns 0 before any allocations
@@ -91,6 +94,7 @@ func TestCursorAllocator_Current(t *testing.T) {
 }
 
 func TestNewAttentionFeed_CustomJournalUsesDefaultRetentionForDurableEvents(t *testing.T) {
+	t.Parallel()
 	store := newStubAttentionStore()
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       37,
@@ -128,6 +132,7 @@ func TestNewAttentionFeed_CustomJournalUsesDefaultRetentionForDurableEvents(t *t
 }
 
 func TestCursorAllocator_AdvanceToNeverRegresses(t *testing.T) {
+	t.Parallel()
 	alloc := NewCursorAllocator()
 	alloc.AdvanceTo(105)
 	alloc.AdvanceTo(110)
@@ -142,6 +147,7 @@ func TestCursorAllocator_AdvanceToNeverRegresses(t *testing.T) {
 }
 
 func TestCursorAllocator_Concurrent(t *testing.T) {
+	t.Parallel()
 	alloc := NewCursorAllocator()
 	const goroutines = 100
 	const iterations = 100
@@ -185,6 +191,7 @@ func TestCursorAllocator_Concurrent(t *testing.T) {
 // =============================================================================
 
 func TestAttentionJournal_AppendAndReplay(t *testing.T) {
+	t.Parallel()
 	journal := NewAttentionJournal(100, time.Hour)
 
 	// Append some events
@@ -232,6 +239,7 @@ func TestAttentionJournal_AppendAndReplay(t *testing.T) {
 }
 
 func TestAttentionJournal_Limit(t *testing.T) {
+	t.Parallel()
 	journal := NewAttentionJournal(100, time.Hour)
 
 	// Append 10 events
@@ -255,6 +263,7 @@ func TestAttentionJournal_Limit(t *testing.T) {
 }
 
 func TestAttentionJournal_Wraparound(t *testing.T) {
+	t.Parallel()
 	journal := NewAttentionJournal(5, time.Hour)
 
 	// Append 10 events (will wrap around)
@@ -285,6 +294,7 @@ func TestAttentionJournal_Wraparound(t *testing.T) {
 }
 
 func TestAttentionJournal_CursorExpired(t *testing.T) {
+	t.Parallel()
 	journal := NewAttentionJournal(5, time.Hour)
 
 	// Append events to cause wraparound
@@ -321,6 +331,7 @@ func TestAttentionJournal_CursorExpired(t *testing.T) {
 }
 
 func TestAttentionJournal_Stats(t *testing.T) {
+	t.Parallel()
 	journal := NewAttentionJournal(100, time.Hour)
 
 	// Initial stats
@@ -350,6 +361,7 @@ func TestAttentionJournal_Stats(t *testing.T) {
 // =============================================================================
 
 func TestAttentionFeed_Append(t *testing.T) {
+	t.Parallel()
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       100,
 		RetentionPeriod:   time.Hour,
@@ -389,6 +401,7 @@ func TestAttentionFeed_Append(t *testing.T) {
 }
 
 func TestAttentionFeed_Subscribe(t *testing.T) {
+	t.Parallel()
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       100,
 		RetentionPeriod:   time.Hour,
@@ -429,6 +442,7 @@ func TestAttentionFeed_Subscribe(t *testing.T) {
 }
 
 func TestAttentionFeed_CurrentCursor(t *testing.T) {
+	t.Parallel()
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       100,
 		RetentionPeriod:   time.Hour,
@@ -452,6 +466,7 @@ func TestAttentionFeed_CurrentCursor(t *testing.T) {
 }
 
 func TestAttentionFeed_HeartbeatLoopSkipsWithoutSubscribers(t *testing.T) {
+	t.Parallel()
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       100,
 		RetentionPeriod:   time.Hour,
@@ -478,6 +493,7 @@ func TestAttentionFeed_HeartbeatLoopSkipsWithoutSubscribers(t *testing.T) {
 }
 
 func TestAttentionFeed_HeartbeatLoopPublishesEphemeralHeartbeats(t *testing.T) {
+	t.Parallel()
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       100,
 		RetentionPeriod:   time.Hour,
@@ -541,6 +557,7 @@ func TestAttentionFeed_HeartbeatLoopPublishesEphemeralHeartbeats(t *testing.T) {
 }
 
 func TestAttentionFeed_HeartbeatLoopDefersHeartbeatUntilQuiet(t *testing.T) {
+	t.Parallel()
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       100,
 		RetentionPeriod:   time.Hour,
@@ -597,6 +614,7 @@ func TestAttentionFeed_HeartbeatLoopDefersHeartbeatUntilQuiet(t *testing.T) {
 }
 
 func TestAttentionFeed_StopWaitsForHeartbeatDelivery(t *testing.T) {
+	t.Parallel()
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       100,
 		RetentionPeriod:   time.Hour,
@@ -651,6 +669,7 @@ func TestAttentionFeed_StopWaitsForHeartbeatDelivery(t *testing.T) {
 }
 
 func TestAttentionFeed_ConcurrentAppend(t *testing.T) {
+	t.Parallel()
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       10000,
 		RetentionPeriod:   time.Hour,
@@ -683,6 +702,7 @@ func TestAttentionFeed_ConcurrentAppend(t *testing.T) {
 }
 
 func TestAttentionFeed_SubscriberPanicRecovery(t *testing.T) {
+	t.Parallel()
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       100,
 		RetentionPeriod:   time.Hour,
@@ -711,6 +731,7 @@ func TestAttentionFeed_SubscriberPanicRecovery(t *testing.T) {
 }
 
 func TestAttentionFeed_SubscriberCanAppendFollowOnEvent(t *testing.T) {
+	t.Parallel()
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       100,
 		RetentionPeriod:   time.Hour,
@@ -749,6 +770,7 @@ func TestAttentionFeed_SubscriberCanAppendFollowOnEvent(t *testing.T) {
 }
 
 func TestAttentionFeed_SubscriberFollowOnEventPreservesDeliveryOrder(t *testing.T) {
+	t.Parallel()
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       100,
 		RetentionPeriod:   time.Hour,
@@ -778,6 +800,7 @@ func TestAttentionFeed_SubscriberFollowOnEventPreservesDeliveryOrder(t *testing.
 }
 
 func TestAttentionFeed_QueuedFollowOnEventUsesStableSnapshot(t *testing.T) {
+	t.Parallel()
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       100,
 		RetentionPeriod:   time.Hour,
@@ -830,6 +853,7 @@ func TestAttentionFeed_QueuedFollowOnEventUsesStableSnapshot(t *testing.T) {
 }
 
 func TestAttentionFeed_PublishActuationOutcome(t *testing.T) {
+	t.Parallel()
 	feed := newTestAttentionFeed(t)
 
 	published := feed.PublishActuation(ActuationRecord{
@@ -889,6 +913,7 @@ func TestAttentionFeed_PublishActuationOutcome(t *testing.T) {
 }
 
 func TestAttentionFeed_PublishActuationVerificationTimeout(t *testing.T) {
+	t.Parallel()
 	feed := newTestAttentionFeed(t)
 
 	published := feed.PublishActuation(ActuationRecord{
@@ -933,6 +958,7 @@ func TestAttentionFeed_PublishActuationVerificationTimeout(t *testing.T) {
 // A kill emits session_killed and the legacy session_ended; the feed keeps one
 // record of it (bd-zp9su).
 func TestNewBusAttentionEvent_KillRecordedOnce(t *testing.T) {
+	t.Parallel()
 	if _, ok := NewBusAttentionEvent(ntmevents.NewWebhookEvent(ntmevents.WebhookSessionKilled, "proj", "", "", "Killed session 'proj'", nil)); ok {
 		t.Fatal("session_killed must not add a second record next to session_ended")
 	}
@@ -943,6 +969,7 @@ func TestNewBusAttentionEvent_KillRecordedOnce(t *testing.T) {
 }
 
 func TestAttentionFeed_SubscribeEventBus(t *testing.T) {
+	t.Parallel()
 	feed := newTestAttentionFeed(t)
 	bus := ntmevents.NewEventBus(10)
 
@@ -980,6 +1007,7 @@ func TestAttentionFeed_SubscribeEventBus(t *testing.T) {
 // with an identical fingerprint, so digest consumers that dedupe by item key
 // re-alerted on every repeat and an acknowledgement never stuck.
 func TestAttentionFeed_RepeatedAgentErrorKeepsOneItem(t *testing.T) {
+	t.Parallel()
 	store := newTestAttentionStore(t)
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       100,
@@ -1058,6 +1086,7 @@ func TestAttentionFeed_RepeatedAgentErrorKeepsOneItem(t *testing.T) {
 // =============================================================================
 
 func TestAttentionFeed_StoreBackedPersistence(t *testing.T) {
+	t.Parallel()
 
 	store := newTestAttentionStore(t)
 
@@ -1131,6 +1160,7 @@ func TestAttentionFeed_StoreBackedPersistence(t *testing.T) {
 }
 
 func TestAttentionFeed_StoreSyncCursorOnStartup(t *testing.T) {
+	t.Parallel()
 
 	store := newTestAttentionStore(t)
 
@@ -1183,6 +1213,7 @@ func TestAttentionFeed_StoreSyncCursorOnStartup(t *testing.T) {
 }
 
 func TestAttentionFeed_ReplayForIncidentIncludesBoundedContext(t *testing.T) {
+	t.Parallel()
 
 	store := newTestAttentionStore(t)
 	now := time.Now().UTC().Truncate(time.Second)
@@ -1253,6 +1284,7 @@ func TestAttentionFeed_ReplayForIncidentIncludesBoundedContext(t *testing.T) {
 }
 
 func TestAttentionFeed_ReconstructAsOfReturnsRecentWindowAndMetadata(t *testing.T) {
+	t.Parallel()
 
 	store := newTestAttentionStore(t)
 	now := time.Now().UTC().Truncate(time.Second)
@@ -1329,11 +1361,6 @@ func TestAttentionFeed_ReconstructAsOfReturnsRecentWindowAndMetadata(t *testing.
 func TestBuildEventsOutput_IncidentReplayIncludesHistoricalMetadata(t *testing.T) {
 
 	store := newTestAttentionStore(t)
-	oldStore := currentProjectionStore()
-	SetProjectionStore(store)
-	t.Cleanup(func() {
-		SetProjectionStore(oldStore)
-	})
 
 	now := time.Now().UTC().Truncate(time.Second)
 	appendStored := func(ts time.Time, summary string) int64 {
@@ -1392,9 +1419,11 @@ func TestBuildEventsOutput_IncidentReplayIncludesHistoricalMetadata(t *testing.T
 	})
 
 	output, status := BuildEventsOutput(EventsOptions{
-		IncidentID:   "inc-replay",
-		Limit:        10,
-		WindowBefore: 10 * time.Second,
+		IncidentID:    "inc-replay",
+		Limit:         10,
+		WindowBefore:  10 * time.Second,
+		Store:         store,
+		ExplicitStore: true,
 	})
 	if status != 200 {
 		t.Fatalf("status = %d, want 200", status)
@@ -1492,6 +1521,7 @@ func TestBuildEventsOutput_AsOfIncludesHistoricalMetadata(t *testing.T) {
 }
 
 func TestAttentionFeed_ReplayAnnotatesDurableOperatorState(t *testing.T) {
+	t.Parallel()
 
 	store := newTestAttentionStore(t)
 	feed := NewAttentionFeed(AttentionFeedConfig{
@@ -1593,6 +1623,7 @@ func TestAttentionFeed_ReplayAnnotatesDurableOperatorState(t *testing.T) {
 }
 
 func TestAttentionFeed_ReplayResurfacesAcknowledgedItemOnFingerprintChange(t *testing.T) {
+	t.Parallel()
 
 	store := newTestAttentionStore(t)
 	feed := NewAttentionFeed(AttentionFeedConfig{
@@ -1670,6 +1701,7 @@ func TestAttentionFeed_ReplayResurfacesAcknowledgedItemOnFingerprintChange(t *te
 }
 
 func TestBuildAttentionDigest_RespectsOperatorStateVisibility(t *testing.T) {
+	t.Parallel()
 
 	base := digestTestEvent(1, EventCategoryAlert, EventTypeAlertWarning, ActionabilityInteresting, SeverityWarning, "operator-managed alert")
 
@@ -1727,6 +1759,7 @@ func TestBuildAttentionDigest_RespectsOperatorStateVisibility(t *testing.T) {
 }
 
 func TestAttentionFeed_AppendDeduplicated_AnnotatesCooldownResurfacing(t *testing.T) {
+	t.Parallel()
 
 	feed := newTestAttentionFeed(t)
 	window := 2 * time.Minute
@@ -1807,6 +1840,7 @@ func TestAttentionFeed_AppendDeduplicated_AnnotatesCooldownResurfacing(t *testin
 }
 
 func TestAttentionFeed_StoreCursorExpiration(t *testing.T) {
+	t.Parallel()
 
 	store := newTestAttentionStore(t)
 
@@ -1853,6 +1887,7 @@ func TestAttentionFeed_StoreCursorExpiration(t *testing.T) {
 }
 
 func TestAttentionFeed_StoreWriteFailureFallsBackConsistently(t *testing.T) {
+	t.Parallel()
 
 	store := newStubAttentionStore()
 	store.seed("persisted")
@@ -1923,6 +1958,7 @@ func TestAttentionFeed_StoreWriteFailureFallsBackConsistently(t *testing.T) {
 }
 
 func TestAttentionFeed_ConcurrentAppendPreservesCursorOrder(t *testing.T) {
+	t.Parallel()
 
 	store := newStubAttentionStore()
 	store.blockFirstAppend()
@@ -2063,6 +2099,7 @@ func newTestAttentionStore(t *testing.T) *state.Store {
 }
 
 func TestPersistNormalizedProjection_ReplacesRows(t *testing.T) {
+	t.Parallel()
 	store := newTestAttentionStore(t)
 	firstCollectedAt := time.Now().UTC()
 	staleWindow := 10 * time.Minute
@@ -2478,6 +2515,7 @@ func TestPersistNormalizedProjection_ReplacesRows(t *testing.T) {
 }
 
 func TestPublishNormalizedAttentionSignals_DeduplicatesRefreshOutput(t *testing.T) {
+	t.Parallel()
 	feed := newTestAttentionFeed(t)
 	collectedAt := time.Date(2026, 3, 22, 19, 45, 0, 0, time.UTC)
 
@@ -2578,6 +2616,7 @@ func float64Pointer(v float64) *float64 {
 }
 
 func TestPublishMailPending_UsesRobotMailCheckAction(t *testing.T) {
+	t.Parallel()
 	feed := newTestAttentionFeed(t)
 
 	event := feed.PublishMailPending("/data/projects/ntm", "GreenStone", "BlueLake", "Need review", 42, "br-42")
@@ -2606,6 +2645,7 @@ func TestPublishMailPending_UsesRobotMailCheckAction(t *testing.T) {
 }
 
 func TestPublishMailAckRequired_UsesRobotMailCheckAction(t *testing.T) {
+	t.Parallel()
 	feed := newTestAttentionFeed(t)
 
 	event := feed.PublishMailAckRequired("/data/projects/ntm", "GreenStone", "BlueLake", "Need ack", 77, "br-77")
@@ -2803,6 +2843,7 @@ func (s *stubAttentionStore) GCExpiredEvents() (int64, error) {
 // =============================================================================
 
 func TestAttentionSignal_ContextHotThresholdBoundary(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name              string
 		usagePercent      float64
@@ -2822,6 +2863,7 @@ func TestAttentionSignal_ContextHotThresholdBoundary(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			event := NewContextPressureAttentionEvent("proj", tmux.Pane{ID: "%1", Index: 1, Title: "proj__cc_1"}, tt.usagePercent, 75)
 			t.Logf("usage=%.1f signal=%v reason=%v actionability=%q next_actions=%v", tt.usagePercent, event.Details["signal"], event.Details["signal_reason"], event.Actionability, event.NextActions)
 
@@ -2865,6 +2907,7 @@ func TestPublishContextPressureSurfacesEscalationDespiteDedup(t *testing.T) {
 }
 
 func TestAttentionSignal_DoesNotPromotePaneOutput(t *testing.T) {
+	t.Parallel()
 	event := annotateAttentionSignal(AttentionEvent{
 		Session:       "proj",
 		Pane:          5,
@@ -2888,6 +2931,7 @@ func TestAttentionSignal_DoesNotPromotePaneOutput(t *testing.T) {
 // The resilience monitor's rate-limit webhook event is the live rate-limit
 // producer; it must carry the rate_limited signal.
 func TestAttentionSignal_RateLimitedFromMonitorWebhook(t *testing.T) {
+	t.Parallel()
 	event, ok := NewBusAttentionEvent(ntmevents.NewWebhookEvent(ntmevents.WebhookAgentRateLimit, "proj", "%2", "codex",
 		"Agent codex rate limited", map[string]string{"wait_seconds": "60"}))
 	if !ok {
@@ -2904,6 +2948,7 @@ func TestAttentionSignal_RateLimitedFromMonitorWebhook(t *testing.T) {
 }
 
 func TestAttentionSignal_AlertInfoPreservesSeverity(t *testing.T) {
+	t.Parallel()
 	event := annotateAttentionSignal(AttentionEvent{
 		Session:       "proj",
 		Category:      EventCategoryAlert,
@@ -2929,6 +2974,7 @@ func TestAttentionSignal_AlertInfoPreservesSeverity(t *testing.T) {
 }
 
 func TestBuildAttentionDigest_CoalescesPaneOutputBursts(t *testing.T) {
+	t.Parallel()
 	events := []AttentionEvent{
 		digestTestEvent(1, EventCategoryPane, EventTypePaneOutput, ActionabilityInteresting, SeverityInfo, "output update 1"),
 		digestTestEvent(2, EventCategoryPane, EventTypePaneOutput, ActionabilityInteresting, SeverityInfo, "output update 2"),
@@ -2994,6 +3040,7 @@ func TestBuildAttentionDigest_CoalescesPaneOutputBursts(t *testing.T) {
 }
 
 func TestBuildAttentionDigest_SuppressesLifecycleNoiseAndDuplicateAlerts(t *testing.T) {
+	t.Parallel()
 	attached := digestTestEvent(1, EventCategorySession, EventTypeSessionAttached, ActionabilityInteresting, SeverityInfo, "session attached")
 	attached.Pane = 0
 	delete(attached.Details, "pane_ref")
@@ -3039,6 +3086,7 @@ func TestBuildAttentionDigest_SuppressesLifecycleNoiseAndDuplicateAlerts(t *test
 }
 
 func TestBuildAttentionDigest_PrefersRecurringResurfacedItemsWhenBucketLimited(t *testing.T) {
+	t.Parallel()
 	recurring := digestTestEvent(1, EventCategoryAlert, EventTypeAlertWarning, ActionabilityInteresting, SeverityInfo, "quota still high")
 	recurring.Details[attentionDetailResurfaced] = true
 	recurring.Details[attentionDetailResurfaceReason] = attentionResurfaceReasonCooldownExpired
@@ -3063,6 +3111,7 @@ func TestBuildAttentionDigest_PrefersRecurringResurfacedItemsWhenBucketLimited(t
 }
 
 func TestAttentionFeed_DigestPreservesCursorBoundariesAndImportantSignals(t *testing.T) {
+	t.Parallel()
 	feed := newTestAttentionFeed(t)
 
 	feed.Append(digestTestEvent(0, EventCategorySystem, EventType(DefaultTransportLiveness.HeartbeatType), ActionabilityBackground, SeverityDebug, "Heartbeat"))
@@ -3105,6 +3154,7 @@ func TestAttentionFeed_DigestPreservesCursorBoundariesAndImportantSignals(t *tes
 }
 
 func TestBuildAttentionDigest_HonorsExplicitZeroBackgroundLimit(t *testing.T) {
+	t.Parallel()
 	background := digestTestEvent(1, EventCategorySystem, EventTypeSystemHealthChange, ActionabilityBackground, SeverityInfo, "background work")
 	interesting := digestTestEvent(2, EventCategoryAgent, EventTypeAgentStateChange, ActionabilityInteresting, SeverityInfo, "agent is waiting")
 
@@ -3125,6 +3175,7 @@ func TestBuildAttentionDigest_HonorsExplicitZeroBackgroundLimit(t *testing.T) {
 }
 
 func TestAttentionFeed_DigestCursorEndDoesNotSkipConcurrentAppend(t *testing.T) {
+	t.Parallel()
 	store := newStubAttentionStore()
 	store.seed("existing event")
 	store.appendOnReplayWindowCall = 2
@@ -3152,6 +3203,7 @@ func TestAttentionFeed_DigestCursorEndDoesNotSkipConcurrentAppend(t *testing.T) 
 }
 
 func TestBuildAttentionDigest_SummaryStableAndBucketAssignment(t *testing.T) {
+	t.Parallel()
 	heartbeat := digestTestEvent(1, EventCategorySystem, EventType(DefaultTransportLiveness.HeartbeatType), ActionabilityBackground, SeverityDebug, "Heartbeat")
 	heartbeat.Pane = 0
 	delete(heartbeat.Details, "pane_ref")
@@ -3197,6 +3249,7 @@ func TestBuildAttentionDigest_SummaryStableAndBucketAssignment(t *testing.T) {
 }
 
 func TestBuildAttentionDigest_PrioritizedQueueMergesBuckets(t *testing.T) {
+	t.Parallel()
 	// Create events across all three actionability levels
 	action1 := digestTestEvent(1, EventCategoryAlert, EventTypeAlertWarning, ActionabilityActionRequired, SeverityError, "critical alert 1")
 	action2 := digestTestEvent(2, EventCategoryAlert, EventTypeAlertWarning, ActionabilityActionRequired, SeverityWarning, "critical alert 2")
@@ -3255,6 +3308,7 @@ func TestBuildAttentionDigest_PrioritizedQueueMergesBuckets(t *testing.T) {
 }
 
 func TestBuildAttentionDigest_PrioritizedQueueCapsAtLimit(t *testing.T) {
+	t.Parallel()
 	// Create more events than the cap (10)
 	events := make([]AttentionEvent, 15)
 	for i := 0; i < 15; i++ {
@@ -3278,6 +3332,7 @@ func TestBuildAttentionDigest_PrioritizedQueueCapsAtLimit(t *testing.T) {
 }
 
 func TestBuildAttentionDigest_PrioritizedQueueEmptyWhenNoBuckets(t *testing.T) {
+	t.Parallel()
 	opts := DefaultAttentionDigestOptions()
 	digest := BuildAttentionDigest([]AttentionEvent{}, 0, 0, opts)
 
@@ -3291,6 +3346,7 @@ func TestBuildAttentionDigest_PrioritizedQueueEmptyWhenNoBuckets(t *testing.T) {
 // =============================================================================
 
 func TestAttentionEvent_JSONSerialization(t *testing.T) {
+	t.Parallel()
 	event := AttentionEvent{
 		Cursor:        42,
 		Ts:            "2026-03-20T10:00:00Z",
@@ -3335,6 +3391,7 @@ func TestAttentionEvent_JSONSerialization(t *testing.T) {
 }
 
 func TestCursorExpiredDetails_JSONSerialization(t *testing.T) {
+	t.Parallel()
 	details := CursorExpiredDetails{
 		RequestedCursor: 42,
 		EarliestCursor:  100,
@@ -3435,6 +3492,7 @@ func BenchmarkAttentionFeed_Append(b *testing.B) {
 // projection refresh; the guidance must point at the session diff and use no
 // stale --session/--file argument forms.
 func TestNormalizedCoordinationProblemEvent_FileConflict(t *testing.T) {
+	t.Parallel()
 	att, ok := normalizedCoordinationProblemEvent(time.Date(2026, 3, 22, 19, 45, 0, 0, time.UTC), "myproject", adapters.CoordinationProblem{
 		Kind:     "file_conflict",
 		Severity: "warning",
@@ -3486,6 +3544,7 @@ func BenchmarkBuildAttentionDigest_Burst(b *testing.B) {
 // =============================================================================
 
 func TestFilterEventsForRobot_NoFilters(t *testing.T) {
+	t.Parallel()
 	events := []AttentionEvent{
 		{Cursor: 1, Session: "proj", Category: EventCategoryPane, Actionability: ActionabilityInteresting, Severity: SeverityInfo},
 		{Cursor: 2, Session: "other", Category: EventCategoryAlert, Actionability: ActionabilityActionRequired, Severity: SeverityWarning},
@@ -3500,6 +3559,7 @@ func TestFilterEventsForRobot_NoFilters(t *testing.T) {
 }
 
 func TestFilterEventsForRobot_SessionFilter(t *testing.T) {
+	t.Parallel()
 	events := []AttentionEvent{
 		{Cursor: 1, Session: "proj", Category: EventCategoryPane},
 		{Cursor: 2, Session: "other", Category: EventCategoryAlert},
@@ -3520,6 +3580,7 @@ func TestFilterEventsForRobot_SessionFilter(t *testing.T) {
 }
 
 func TestFilterEventsForRobot_CategoryFilter(t *testing.T) {
+	t.Parallel()
 	events := []AttentionEvent{
 		{Cursor: 1, Session: "proj", Category: EventCategoryPane},
 		{Cursor: 2, Session: "proj", Category: EventCategoryAlert},
@@ -3541,6 +3602,7 @@ func TestFilterEventsForRobot_CategoryFilter(t *testing.T) {
 }
 
 func TestFilterEventsForRobot_ActionabilityFilter(t *testing.T) {
+	t.Parallel()
 	events := []AttentionEvent{
 		{Cursor: 1, Session: "proj", Category: EventCategoryPane, Actionability: ActionabilityActionRequired},
 		{Cursor: 2, Session: "proj", Category: EventCategoryAlert, Actionability: ActionabilityActionRequired},
@@ -3566,6 +3628,7 @@ func TestFilterEventsForRobot_ActionabilityFilter(t *testing.T) {
 }
 
 func TestFilterEventsForRobot_SeverityFilter(t *testing.T) {
+	t.Parallel()
 	events := []AttentionEvent{
 		{Cursor: 1, Session: "proj", Category: EventCategoryPane, Actionability: ActionabilityActionRequired, Severity: SeverityInfo},
 		{Cursor: 2, Session: "proj", Category: EventCategoryAlert, Actionability: ActionabilityActionRequired, Severity: SeverityWarning},
@@ -3592,6 +3655,7 @@ func TestFilterEventsForRobot_SeverityFilter(t *testing.T) {
 }
 
 func TestFilterEventsForRobot_MultipleCategoryValues(t *testing.T) {
+	t.Parallel()
 	events := []AttentionEvent{
 		{Cursor: 1, Session: "proj", Category: EventCategoryPane},
 		{Cursor: 2, Session: "proj", Category: EventCategoryAlert},
@@ -3607,6 +3671,7 @@ func TestFilterEventsForRobot_MultipleCategoryValues(t *testing.T) {
 }
 
 func TestToStringSetForEvents_Empty(t *testing.T) {
+	t.Parallel()
 	result := toStringSetForEvents(nil)
 	if result != nil {
 		t.Errorf("expected nil for empty input, got %v", result)
@@ -3619,6 +3684,7 @@ func TestToStringSetForEvents_Empty(t *testing.T) {
 }
 
 func TestToStringSetForEvents_Values(t *testing.T) {
+	t.Parallel()
 	input := []string{"a", "b", "c"}
 	result := toStringSetForEvents(input)
 
@@ -3633,6 +3699,7 @@ func TestToStringSetForEvents_Values(t *testing.T) {
 }
 
 func TestEventsOptions_Fields(t *testing.T) {
+	t.Parallel()
 	// Verify the EventsOptions struct has expected fields
 	opts := EventsOptions{
 		SinceCursor:         100,
@@ -3659,6 +3726,7 @@ func TestEventsOptions_Fields(t *testing.T) {
 // =============================================================================
 
 func TestDigestOptions_Fields(t *testing.T) {
+	t.Parallel()
 
 	opts := DigestOptions{
 		SinceCursor:         100,
@@ -3913,6 +3981,7 @@ func TestDigestResponse_SessionFilter(t *testing.T) {
 // =============================================================================
 
 func TestAttentionOptions_Fields(t *testing.T) {
+	t.Parallel()
 	// Verify AttentionOptions has all expected fields
 	opts := AttentionOptions{
 		SinceCursor:         100,
@@ -3944,6 +4013,7 @@ func TestAttentionOptions_Fields(t *testing.T) {
 }
 
 func TestAttentionResponse_Fields(t *testing.T) {
+	t.Parallel()
 	// Verify AttentionResponse has all expected fields
 	resp := AttentionResponse{
 		RobotResponse: RobotResponse{
@@ -3992,6 +4062,7 @@ func TestAttentionResponse_Fields(t *testing.T) {
 }
 
 func TestAttentionCursorInfo_NextCommand(t *testing.T) {
+	t.Parallel()
 	// Verify NextCommand format is correct for cursor chaining
 	info := AttentionCursorInfo{
 		StartCursor:  10,
@@ -4009,6 +4080,7 @@ func TestAttentionCursorInfo_NextCommand(t *testing.T) {
 }
 
 func TestAttentionResponse_TimeoutWake(t *testing.T) {
+	t.Parallel()
 	// Verify timeout response has correct wake reason
 	resp := AttentionResponse{
 		RobotResponse: RobotResponse{Success: false},
@@ -4124,6 +4196,7 @@ func TestPrintAttentionAdvancesAcrossBoundedReplay(t *testing.T) {
 }
 
 func TestAttentionResponse_CursorExpired(t *testing.T) {
+	t.Parallel()
 	// Verify cursor expired response has correct structure
 	resp := AttentionResponse{
 		RobotResponse: NewErrorResponse(
@@ -4366,6 +4439,7 @@ func TestOperatorLoop_CursorChaining(t *testing.T) {
 }
 
 func TestOperatorLoop_ProfileFilteredEvents(t *testing.T) {
+	t.Parallel()
 
 	feed := newTestAttentionFeed(t)
 
@@ -4494,6 +4568,7 @@ func TestPrintAttentionSuppressesBackgroundByDefault(t *testing.T) {
 }
 
 func TestNewPTStateChangeAttentionEvent_SuppressesBenignInitialClassification(t *testing.T) {
+	t.Parallel()
 
 	event, ok := NewPTStateChangeAttentionEvent(pt.ClassificationStateChange{
 		Session:  "proj",
@@ -4516,6 +4591,7 @@ func TestNewPTStateChangeAttentionEvent_SuppressesBenignInitialClassification(t 
 }
 
 func TestNewPTStateChangeAttentionEvent_RecoverySemantics(t *testing.T) {
+	t.Parallel()
 
 	event, ok := NewPTStateChangeAttentionEvent(pt.ClassificationStateChange{
 		Session:  "proj",
@@ -4550,6 +4626,7 @@ func TestNewPTStateChangeAttentionEvent_RecoverySemantics(t *testing.T) {
 }
 
 func TestPTAttentionEventsUseStatusActionForPaneTitles(t *testing.T) {
+	t.Parallel()
 	timestamp := time.Date(2026, 3, 22, 20, 2, 0, 0, time.UTC)
 
 	stateEvent, ok := NewPTStateChangeAttentionEvent(pt.ClassificationStateChange{
@@ -4590,6 +4667,7 @@ func TestPTAttentionEventsUseStatusActionForPaneTitles(t *testing.T) {
 }
 
 func TestAttentionTailOrStatusActionsAcceptsRobotPaneSelectors(t *testing.T) {
+	t.Parallel()
 	for _, paneRef := range []string{"2", "1.2", "%42"} {
 		actions := attentionTailOrStatusActions("proj", paneRef, "inspect output")
 		if len(actions) != 1 {
@@ -4605,6 +4683,7 @@ func TestAttentionTailOrStatusActionsAcceptsRobotPaneSelectors(t *testing.T) {
 }
 
 func TestPublishPTAlert_DeduplicatesRepeatedThresholdAlerts(t *testing.T) {
+	t.Parallel()
 
 	feed := newTestAttentionFeed(t)
 	base := time.Date(2026, 3, 22, 20, 2, 0, 0, time.UTC)
@@ -4644,6 +4723,7 @@ func TestPublishPTAlert_DeduplicatesRepeatedThresholdAlerts(t *testing.T) {
 }
 
 func TestOperatorLoop_SnapshotSummaryConsistency(t *testing.T) {
+	t.Parallel()
 
 	feed := newTestAttentionFeed(t)
 
@@ -4712,6 +4792,7 @@ func TestOperatorLoop_SnapshotSummaryConsistency(t *testing.T) {
 // every session's handoff surface on a transient Agent Mail outage; the row must
 // survive and expire via stale_after instead.
 func TestPersistNormalizedProjectionKeepsHandoffWhenCoordinationUnavailable(t *testing.T) {
+	t.Parallel()
 	store := newTestAttentionStore(t)
 
 	collectedAt := time.Now().UTC()
@@ -4785,6 +4866,7 @@ func TestPersistNormalizedProjectionKeepsHandoffWhenCoordinationUnavailable(t *t
 // real event. Consumers polling --since-cursor=<that value> then never saw the
 // next real events, and the first durable append regressed the counter.
 func TestAttentionFeed_EphemeralDoesNotAdvanceDurableCursor(t *testing.T) {
+	t.Parallel()
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:     100,
 		RetentionPeriod: time.Hour,

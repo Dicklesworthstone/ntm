@@ -13,6 +13,7 @@ import (
 )
 
 func TestRouterSpecAgentMailProjectSelector(t *testing.T) {
+	t.Parallel()
 	spec, err := GenerateOpenAPISpecFromRouter("test", "http://localhost:7337")
 	if err != nil {
 		t.Fatal(err)
@@ -46,6 +47,7 @@ func TestRouterSpecAgentMailProjectSelector(t *testing.T) {
 }
 
 func TestRouterSpecPipelineDetachedResumeContract(t *testing.T) {
+	t.Parallel()
 	spec, err := GenerateOpenAPISpecFromRouter("test", "http://localhost:7337")
 	if err != nil {
 		t.Fatal(err)
@@ -76,6 +78,7 @@ func TestRouterSpecPipelineDetachedResumeContract(t *testing.T) {
 // TestRouterSpecDeterminism verifies two independent generations are
 // byte-identical — the property the openapi-drift CI job depends on.
 func TestRouterSpecDeterminism(t *testing.T) {
+	t.Parallel()
 	spec1, err := GenerateOpenAPISpecFromRouter("1.0.0", "http://localhost:8080")
 	if err != nil {
 		t.Fatalf("generate spec1: %v", err)
@@ -109,6 +112,7 @@ func TestRouterSpecDeterminism(t *testing.T) {
 // routes (verified by chi.Walk); the honest assertion is exact equality with
 // the walk plus a >150 floor.
 func TestRouterSpecCoversEveryServedRoute(t *testing.T) {
+	t.Parallel()
 	srv := NewHermeticServer("test")
 	defer srv.Stop()
 
@@ -150,6 +154,7 @@ func TestRouterSpecCoversEveryServedRoute(t *testing.T) {
 // endpoints: the 200 response must reference the robot registry component,
 // and the component must expose a known field of the real Go type.
 func TestRouterSpecRobotSchemaJoin(t *testing.T) {
+	t.Parallel()
 	spec, err := GenerateOpenAPISpecFromRouter("test", "http://localhost:8080")
 	if err != nil {
 		t.Fatalf("generate spec: %v", err)
@@ -214,6 +219,7 @@ func TestRouterSpecRobotSchemaJoin(t *testing.T) {
 // TestRouterSpecUnjoinedRoutesGetHonestGenerics verifies unmapped handlers
 // reference the generic envelope, never a fabricated specific schema.
 func TestRouterSpecUnjoinedRoutesGetHonestGenerics(t *testing.T) {
+	t.Parallel()
 	spec, err := GenerateOpenAPISpecFromRouter("test", "http://localhost:8080")
 	if err != nil {
 		t.Fatalf("generate spec: %v", err)
@@ -265,6 +271,7 @@ func TestRouterSpecUnjoinedRoutesGetHonestGenerics(t *testing.T) {
 // TestRouterSpecAllRefsResolve verifies every $ref in the document points at
 // a defined component, so validators and client generators never break.
 func TestRouterSpecAllRefsResolve(t *testing.T) {
+	t.Parallel()
 	spec, err := GenerateOpenAPISpecFromRouter("test", "http://localhost:8080")
 	if err != nil {
 		t.Fatalf("generate spec: %v", err)
@@ -319,6 +326,7 @@ func TestRouterSpecAllRefsResolve(t *testing.T) {
 // to the chi.Walk route count, sorted rows, no timestamps, and the verified
 // robot-schema joins present.
 func TestParityMatrixGeneratedFromRouter(t *testing.T) {
+	t.Parallel()
 	m1, err := GenerateParityMatrixFromRouter("test")
 	if err != nil {
 		t.Fatalf("generate matrix: %v", err)
@@ -392,6 +400,7 @@ func TestParityMatrixGeneratedFromRouter(t *testing.T) {
 // operationId, summary, path parameters, and a 200 response, and that
 // operationIds are unique.
 func TestRouterSpecOperationBasics(t *testing.T) {
+	t.Parallel()
 	spec, err := GenerateOpenAPISpecFromRouter("test", "http://localhost:8080")
 	if err != nil {
 		t.Fatalf("generate spec: %v", err)
@@ -447,6 +456,7 @@ func TestRouterSpecOperationBasics(t *testing.T) {
 // docs/parity_matrix.json, and complete path coverage in web/src/lib/api/schema.d.ts
 // (bd-rc-track-e-uplift-xkt68.1).
 func TestRouterSpecCompletenessAndArtifactFreshness(t *testing.T) {
+	t.Parallel()
 	// The generation CLI stamps VERSION into checked-in artifacts. Compare
 	// against that same release version so this gate rejects stale metadata
 	// without requiring correctly stamped artifacts to advertise "dev".

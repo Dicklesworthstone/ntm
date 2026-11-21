@@ -17,7 +17,20 @@ import (
 	"time"
 )
 
+func init() {
+	// Tighten process-group cleanup/settlement windows inside `go test` while
+	// keeping production defaults (5s/1s/50ms/5s) unchanged in cmd/ntm. Every
+	// lifecycle test still exercises the full SIGTERM->grace->SIGKILL, pipe
+	// drain, and settlement-recovery choreography using these symbolic durations.
+	commandCancelGracePeriod = 250 * time.Millisecond
+	commandPipeDrainTimeout = 250 * time.Millisecond
+	commandGroupPollInterval = 12 * time.Millisecond
+	commandSettlementRecoveryTimeout = 350 * time.Millisecond
+	commandLeaderObservationRetryTimeout = 120 * time.Millisecond
+}
+
 func TestExecuteCommand_CancelKillsProcessGroupChild(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	pidFile := e.config.ProjectDir + "/child.pid"
 
@@ -60,6 +73,7 @@ func TestExecuteCommand_CancelKillsProcessGroupChild(t *testing.T) {
 }
 
 func TestCommandBackgroundChildSettlesBeforeReceiptRecovery(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	dir := e.config.ProjectDir
 	workflow := &Workflow{
@@ -135,6 +149,7 @@ func TestCommandBackgroundChildSettlesBeforeReceiptRecovery(t *testing.T) {
 }
 
 func TestCommandBackgroundChildSettlesBeforeExitRetry(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	workflow := &Workflow{
 		Name: e.state.WorkflowID, Settings: DefaultWorkflowSettings(),
@@ -170,6 +185,7 @@ func TestCommandBackgroundChildSettlesBeforeExitRetry(t *testing.T) {
 }
 
 func TestCommandBackgroundChildCancellationSettlesAndResumes(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	dir := e.config.ProjectDir
 	child := `trap '' TERM
@@ -320,6 +336,7 @@ func TestCommandGroupInspectionFailurePreservesUnresolvedLaunch(t *testing.T) {
 }
 
 func TestCommandBackgroundChildCooperativeCancellationSettles(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	dir := e.config.ProjectDir
 	child := "trap 'printf handled > handled; exit 0' TERM\n" +
@@ -410,6 +427,7 @@ func errorsIsPermission(err error) bool {
 // parentheses and can itself contain spaces or parentheses, so we must
 // scan back to the LAST `)` before splitting fields.
 func TestParseProcStatPGID(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		stat string
@@ -441,6 +459,7 @@ func TestParseProcStatPGID(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			got, ok := parseProcStatPGID([]byte(tc.stat))
 			if ok != tc.ok {
 				t.Fatalf("ok = %v, want %v", ok, tc.ok)
@@ -482,6 +501,7 @@ func TestSignalCommandProcessGroupZombieOnlyGroupIsDone(t *testing.T) {
 // EPERM from a group signal can also mean a live member this process may not
 // signal, so it is discounted only when the census finds no live member.
 func TestGroupSignalFoundOnlyZombiesRejectsLiveGroup(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("/bin/sh", "-c", "sleep 30")
 	configureCommandProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
@@ -502,6 +522,7 @@ func TestGroupSignalFoundOnlyZombiesRejectsLiveGroup(t *testing.T) {
 // portable test, but the helper must be safe to call when /proc is
 // missing (early return) and when leaderPID matches no one.
 func TestKillProcessGroupDescendantsBestEffort(t *testing.T) {
+	t.Parallel()
 	// Should be a silent no-op rather than panicking.
 	killProcessGroupDescendants(0)
 	killProcessGroupDescendants(-5)
@@ -510,8 +531,10 @@ func TestKillProcessGroupDescendantsBestEffort(t *testing.T) {
 }
 
 func TestCommandGroupObservationPolicy(t *testing.T) {
+	t.Parallel()
 	fault := errors.New("injected process-group observation failure")
 	t.Run("unknown then live then quiet", func(t *testing.T) {
+		t.Parallel()
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		calls := 0
@@ -541,6 +564,7 @@ func TestCommandGroupObservationPolicy(t *testing.T) {
 		{"cancel during quiet observation", false, nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			calls := 0
@@ -558,6 +582,7 @@ func TestCommandGroupObservationPolicy(t *testing.T) {
 		})
 	}
 	t.Run("independent cleanup preserves observer", func(t *testing.T) {
+		t.Parallel()
 		calls := 0
 		ctx := context.WithValue(context.Background(), commandGroupObservationTestHookKey{}, func(pgid int) (bool, error) {
 			if pgid != 42 {
@@ -581,6 +606,7 @@ func TestCommandGroupObservationPolicy(t *testing.T) {
 		}
 	})
 	t.Run("persistent unknown uses full deadline", func(t *testing.T) {
+		t.Parallel()
 		const budget = 150 * time.Millisecond
 		ctx, cancel := context.WithTimeout(context.Background(), budget)
 		defer cancel()
@@ -591,6 +617,7 @@ func TestCommandGroupObservationPolicy(t *testing.T) {
 		}
 	})
 	t.Run("settlement budget accepts completed quiet census at deadline", func(t *testing.T) {
+		t.Parallel()
 		settle, stop := withCommandSettlementBudget(context.Background(), 20*time.Millisecond)
 		defer stop()
 		err := waitCommandGroupObservation(settle, 42, func() (bool, error) {
@@ -604,6 +631,7 @@ func TestCommandGroupObservationPolicy(t *testing.T) {
 }
 
 func TestParseCommandGroupPSOutputRequiresCompleteEvidence(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		output string
@@ -628,6 +656,7 @@ func TestParseCommandGroupPSOutputRequiresCompleteEvidence(t *testing.T) {
 		{"negative group", "42 -1 Z\n", false, "invalid ps process identity"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			alive, err := parseCommandGroupPSOutput([]byte(tc.output), 42)
 			if tc.err != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.err) || alive {

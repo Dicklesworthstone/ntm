@@ -245,6 +245,7 @@ func runMigrateChild(t *testing.T, mode, configContents string) (stdout, stderr 
 // command warns with exactly ONE actionable stderr line pointing at
 // `ntm config migrate` — never the ~30-line per-key disposition wall.
 func TestDeadKeyLoadWarningIsOneLine(t *testing.T) {
+	t.Parallel()
 	_, stderr := runMigrateChild(t, "config-show", cliMigrateFixture)
 
 	lines := []string{}
@@ -279,6 +280,7 @@ func TestDeadKeyLoadWarningIsOneLine(t *testing.T) {
 // TestParseErrorWarningKeepsFullForm: a genuine TOML syntax error is not a
 // dead-key failure and keeps the historical full warning.
 func TestParseErrorWarningKeepsFullForm(t *testing.T) {
+	t.Parallel()
 	_, stderr := runMigrateChild(t, "config-show", "not = [valid\n")
 	if !strings.Contains(stderr, "ntm: warning: config load failed") ||
 		!strings.Contains(stderr, "using built-in defaults") {
@@ -293,6 +295,7 @@ func TestParseErrorWarningKeepsFullForm(t *testing.T) {
 // .zshrc surface from the field incident — must emit ZERO stderr bytes even
 // with a dead-key config selected.
 func TestShellIntegrationStderrByteClean(t *testing.T) {
+	t.Parallel()
 	stdout, stderr := runMigrateChild(t, "shell-zsh", cliMigrateFixture)
 	if stderr != "" {
 		t.Errorf("ntm shell zsh wrote %d stderr byte(s) with a dead-key config:\n%s", len(stderr), stderr)
@@ -308,6 +311,7 @@ func TestShellIntegrationStderrByteClean(t *testing.T) {
 // stderr for every cobra CLI — the generated shell scripts discard it — so
 // only that line is tolerated.)
 func TestCompletionStderrByteClean(t *testing.T) {
+	t.Parallel()
 	stdout, stderr := runMigrateChild(t, "complete", cliMigrateFixture)
 	for _, line := range strings.Split(strings.TrimRight(stderr, "\n"), "\n") {
 		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "Completion ended with directive:") {
@@ -326,6 +330,7 @@ func TestCompletionStderrByteClean(t *testing.T) {
 // config itself — a user-customized [agents] command must appear in the
 // emitted aliases, and stderr must stay byte-clean.
 func TestShellIntegrationReflectsCustomAgentConfig(t *testing.T) {
+	t.Parallel()
 	custom := `# custom agents
 [agents]
 claude = "my-custom-claude --special-flag"
@@ -378,6 +383,7 @@ func TestConfigMigrateUnresolvedOnlyNotClean(t *testing.T) {
 // keys fed [recovery], and repeating that sentence for them would tell the
 // user their config still means what it used to when it may not (ntm#323).
 func TestMigrateBehaviorNoteIsHonestPerBatch(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name             string
 		changes          []config.MigrationChange
@@ -436,6 +442,7 @@ func TestMigrateBehaviorNoteIsHonestPerBatch(t *testing.T) {
 // users a key had failed loading "since v1.27.0" in releases where it still
 // worked — the same false version claim the issue is about.
 func TestDoctorCitesEachKeysOwnRemovalBatch(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		knob    config.RemovedKnob

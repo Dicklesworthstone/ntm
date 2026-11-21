@@ -330,6 +330,7 @@ func (e *Executor) resolveForeachItems(ctx context.Context, config *ForeachConfi
 		ProjectDir: e.config.ProjectDir,
 		Limits:     e.limits,
 		RunBr:      e.config.BeadQueryRunBr,
+		BrBin:      e.config.brBin,
 	}
 	switch {
 	case config.Items != "":
@@ -1058,11 +1059,18 @@ func (e *Executor) logForeachLoopControl(control LoopControl, workflow *Workflow
 }
 
 func (e *Executor) executeForeachNestedStep(ctx context.Context, step *Step, workflow *Workflow) StepResult {
-	if err := e.admitRuntimeIDs(ctx, []string{step.ID}); err != nil {
+	deferPersist := e.canDeferAdmissionPersistForCommand(step)
+	if _, admittedNew, err := e.admitStepAndMarkInFlight(ctx, step, nil, deferPersist); err != nil {
 		return stepAdmissionResult(step, err)
+	} else if deferPersist {
+		deferred := &deferredAdmissionState{admittedNew: admittedNew, pending: true}
+		ctx = context.WithValue(ctx, deferredAdmissionPersistKey{}, deferred)
+		defer func() {
+			if deferred.pending && deferred.admittedNew {
+				_ = e.persistState()
+			}
+		}()
 	}
-	e.markStepInFlight(step.ID, stepKind(step), -1)
-	e.persistState()
 	defer e.clearStepInFlight(step.ID)
 	if recovered, ok := e.resumeSuccessHookStep(ctx, step, workflow); ok {
 		return recovered

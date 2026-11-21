@@ -23,6 +23,7 @@ func useFailingTmuxBinary(t *testing.T) {
 }
 
 func TestGetWaitContextReturnsCanceledBeforeTmuxLookup(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -74,6 +75,7 @@ func TestGetSnapshotWithOptionsSurfacesTmuxEnumerationFailure(t *testing.T) {
 }
 
 func TestWaitForPollOrCancellationInterruptsPendingPoll(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -119,6 +121,7 @@ func TestGetWaitCancelTargetsOnlyActiveHandle(t *testing.T) {
 }
 
 func TestIsValidWaitCondition(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		condition string
@@ -159,6 +162,7 @@ func TestIsValidWaitCondition(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := isValidWaitCondition(tt.condition)
 			if got != tt.want {
 				t.Errorf("isValidWaitCondition(%q) = %v, want %v", tt.condition, got, tt.want)
@@ -168,6 +172,7 @@ func TestIsValidWaitCondition(t *testing.T) {
 }
 
 func TestSplitWaitConditionsSeparatesConvergenceEvidence(t *testing.T) {
+	t.Parallel()
 	panes, attention, convergence := splitWaitConditions([]string{
 		WaitConditionIdle,
 		WaitConditionActionRequired,
@@ -185,6 +190,7 @@ func TestSplitWaitConditionsSeparatesConvergenceEvidence(t *testing.T) {
 }
 
 func TestMeetsSingleWaitCondition(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		state     AgentState
@@ -206,6 +212,7 @@ func TestMeetsSingleWaitCondition(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			activity := &AgentActivity{
 				State: tt.state,
 			}
@@ -219,6 +226,7 @@ func TestMeetsSingleWaitCondition(t *testing.T) {
 }
 
 func TestMeetsAllWaitConditions(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		state      AgentState
@@ -234,6 +242,7 @@ func TestMeetsAllWaitConditions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			activity := &AgentActivity{
 				State: tt.state,
 			}
@@ -247,7 +256,9 @@ func TestMeetsAllWaitConditions(t *testing.T) {
 }
 
 func TestCompleteCondition(t *testing.T) {
+	t.Parallel()
 	t.Run("waiting with no recent output", func(t *testing.T) {
+		t.Parallel()
 		activity := &AgentActivity{
 			State:      StateWaiting,
 			LastOutput: time.Time{}, // Zero time - no output recorded
@@ -259,6 +270,7 @@ func TestCompleteCondition(t *testing.T) {
 	})
 
 	t.Run("waiting with recent output", func(t *testing.T) {
+		t.Parallel()
 		activity := &AgentActivity{
 			State:      StateWaiting,
 			LastOutput: time.Now(), // Just now
@@ -270,6 +282,7 @@ func TestCompleteCondition(t *testing.T) {
 	})
 
 	t.Run("waiting with old output", func(t *testing.T) {
+		t.Parallel()
 		activity := &AgentActivity{
 			State:      StateWaiting,
 			LastOutput: time.Now().Add(-10 * time.Second), // 10 seconds ago
@@ -281,6 +294,7 @@ func TestCompleteCondition(t *testing.T) {
 	})
 
 	t.Run("generating does not meet complete", func(t *testing.T) {
+		t.Parallel()
 		activity := &AgentActivity{
 			State: StateGenerating,
 		}
@@ -292,6 +306,7 @@ func TestCompleteCondition(t *testing.T) {
 }
 
 func TestWaitConditionConstants(t *testing.T) {
+	t.Parallel()
 	// Ensure condition constants have expected string values
 	if WaitConditionIdle != "idle" {
 		t.Errorf("WaitConditionIdle = %q, want %q", WaitConditionIdle, "idle")
@@ -308,6 +323,7 @@ func TestWaitConditionConstants(t *testing.T) {
 }
 
 func TestWaitOptionsDefaults(t *testing.T) {
+	t.Parallel()
 	opts := WaitOptions{
 		Session:   "test",
 		Condition: "idle",
@@ -326,6 +342,7 @@ func TestWaitOptionsDefaults(t *testing.T) {
 }
 
 func TestSplitWaitConditions(t *testing.T) {
+	t.Parallel()
 	paneConditions, attentionConditions, convergenceConditions := splitWaitConditions([]string{
 		" idle ",
 		"action_required",
@@ -345,6 +362,7 @@ func TestSplitWaitConditions(t *testing.T) {
 }
 
 func TestAttentionEventMatchesWaitCondition(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		condition string
@@ -446,6 +464,7 @@ func TestAttentionEventMatchesWaitCondition(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := attentionEventMatchesWaitCondition(tt.condition, tt.event)
 			if got != tt.want {
 				t.Fatalf("attentionEventMatchesWaitCondition(%q, %#v) = %v, want %v", tt.condition, tt.event, got, tt.want)
@@ -804,6 +823,7 @@ func newWaitTestFeed(retention time.Duration) *AttentionFeed {
 // =============================================================================
 
 func TestWaitPaneAgentTypePrefersParsedPaneType(t *testing.T) {
+	t.Parallel()
 	pane := tmux.Pane{
 		Title: "operator-notes",
 		Type:  tmux.AgentGemini,
@@ -815,6 +835,7 @@ func TestWaitPaneAgentTypePrefersParsedPaneType(t *testing.T) {
 }
 
 func TestResolveWaitPanesCanonicalSelectors(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{ID: "%10", WindowIndex: 0, Index: 0, Type: tmux.AgentUser},
 		{ID: "%11", WindowIndex: 0, Index: 1, Type: tmux.AgentClaude},
@@ -850,6 +871,7 @@ func TestResolveWaitPanesCanonicalSelectors(t *testing.T) {
 // working), pending on unknown/error/stalled/rate-limited. Replaces the
 // documented "sleep 8-10 after relaunch" folklore.
 func TestAgentReadyWaitCondition(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		activity *AgentActivity
@@ -865,6 +887,7 @@ func TestAgentReadyWaitCondition(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if got := meetsSingleWaitCondition(tc.activity, WaitConditionAgentReady); got != tc.want {
 				t.Errorf("agent_ready(%+v) = %v, want %v", tc.activity, got, tc.want)
 			}

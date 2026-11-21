@@ -22,6 +22,7 @@ import (
 // rendezvous on the other's start marker; under serial scheduling one of them
 // would time out waiting and the workflow would fail.
 func TestParallelReadySteps_DiamondOverlap(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	rendezvous := func(self, other string) string {
@@ -84,6 +85,7 @@ func TestParallelReadySteps_DiamondOverlap(t *testing.T) {
 // TestParallelReadySteps_BoundedConcurrency asserts max_parallel_steps caps
 // the number of simultaneously-running top-level steps.
 func TestParallelReadySteps_BoundedConcurrency(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	// Pair the four steps behind two rendezvous points. With the configured
@@ -153,6 +155,7 @@ func TestParallelReadySteps_BoundedConcurrency(t *testing.T) {
 // TestParallelReadySteps_FailFastCancelsInFlight asserts a fail_fast failure
 // cancels concurrently-running sibling steps instead of waiting them out.
 func TestParallelReadySteps_FailFastCancelsInFlight(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	workflow := &Workflow{
@@ -198,6 +201,7 @@ func TestParallelReadySteps_FailFastCancelsInFlight(t *testing.T) {
 // TestParallelReadySteps_ContinueDoesNotCancel asserts on_error=continue lets
 // concurrently-running siblings finish after a failure.
 func TestParallelReadySteps_ContinueDoesNotCancel(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	marker := filepath.Join(tmpDir, "survivor.txt")
 
@@ -239,6 +243,7 @@ func TestParallelReadySteps_ContinueDoesNotCancel(t *testing.T) {
 // the diamond after the sibling leg completed; resume must re-run only the
 // failed leg (plus its dependents), not the completed sibling.
 func TestParallelReadySteps_ResumeMidParallelGroup(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	bRuns := filepath.Join(tmpDir, "b-runs.txt")
 	allowC := filepath.Join(tmpDir, "allow-c.txt")
@@ -352,6 +357,7 @@ func (c *timestampedTmuxClient) pasteTimes(target string) []time.Time {
 // that resolve to the SAME tmux pane do not interleave their dispatch
 // windows even though the scheduler runs them concurrently.
 func TestParallelReadySteps_SamePaneSerialized(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	mock := NewMockTmuxClient(tmux.Pane{ID: "%1", Index: 1, Type: tmux.AgentClaude})
@@ -416,6 +422,7 @@ func TestParallelReadySteps_SamePaneSerialized(t *testing.T) {
 // TestParallelReadySteps_SerialWhenLimitOne pins the legacy behavior:
 // max_parallel_steps=1 must not overlap independent steps.
 func TestParallelReadySteps_SerialWhenLimitOne(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	workflow := &Workflow{

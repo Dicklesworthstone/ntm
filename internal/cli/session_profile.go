@@ -49,7 +49,7 @@ type SessionProfileShowOutput struct {
 	Profile SessionProfile `json:"profile"`
 }
 
-func init() {
+func registerSessionProfileSchemas() {
 	robot.MustRegisterSchemaCommand("profile_list", SessionProfileListOutput{})
 	robot.MustRegisterSchemaCommand("profile_show", SessionProfileShowOutput{})
 	robot.MustRegisterSchemaPagination("profile_list", robot.SchemaPaginationFlag{

@@ -102,7 +102,7 @@ func (c *Client) requireOpencodePayloadStaged(ctx context.Context, target string
 		if poll >= opencodeStageMaxPolls {
 			return fmt.Errorf("pane %s: %w", target, ErrOpencodePayloadNotStaged)
 		}
-		if err := waitForSendDelay(ctx, opencodeStagePollInterval); err != nil {
+		if err := c.waitForSendDelay(ctx, opencodeStagePollInterval); err != nil {
 			return err
 		}
 	}
@@ -131,7 +131,7 @@ const (
 // paneWidth is accepted for signature parity; the composer is located by its
 // closing rule, not by width.
 func (c *Client) VerifyOpencodeSubmissionContext(ctx context.Context, target, message string, _ int) (bool, bool, error) {
-	if err := waitForSendDelay(ctx, codexVerifyInitialDelay); err != nil {
+	if err := c.waitForSendDelay(ctx, codexVerifyInitialDelay); err != nil {
 		return false, false, err
 	}
 	holds := func() (bool, error) {
@@ -152,7 +152,7 @@ func (c *Client) VerifyOpencodeSubmissionContext(ctx context.Context, target, me
 		if poll >= opencodeSubmitGracePolls {
 			break
 		}
-		if err := waitForSendDelay(ctx, codexVerifyPollInterval); err != nil {
+		if err := c.waitForSendDelay(ctx, codexVerifyPollInterval); err != nil {
 			return false, false, err
 		}
 	}
@@ -160,7 +160,7 @@ func (c *Client) VerifyOpencodeSubmissionContext(ctx context.Context, target, me
 		return false, true, fmt.Errorf("send rescue Enter to opencode pane: %w", err)
 	}
 	for poll := 0; poll < opencodeRescuePolls; poll++ {
-		if err := waitForSendDelay(ctx, codexVerifyPollInterval); err != nil {
+		if err := c.waitForSendDelay(ctx, codexVerifyPollInterval); err != nil {
 			return false, true, err
 		}
 		stranded, err := holds()

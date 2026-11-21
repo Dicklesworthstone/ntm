@@ -12,7 +12,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/serve"
 )
 
-func init() {
+func registerOpenAPIKernel() {
 	kernel.MustRegister(kernel.Command{
 		Name:        "openapi.generate",
 		Description: "Generate OpenAPI 3.1 specification by walking the served chi router",

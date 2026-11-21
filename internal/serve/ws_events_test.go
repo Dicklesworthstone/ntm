@@ -43,6 +43,7 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 }
 
 func TestWSEventStore_StoreAndRetrieve(t *testing.T) {
+	t.Parallel()
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
@@ -92,6 +93,7 @@ func TestWSEventStore_StoreAndRetrieve(t *testing.T) {
 }
 
 func TestWSEventStore_RestartAfterEntireHistoryExpires(t *testing.T) {
+	t.Parallel()
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 	cfg := WSEventStoreConfig{BufferSize: 8, RetentionSeconds: 60, CleanupInterval: time.Hour}
@@ -136,6 +138,7 @@ func TestWSEventStore_RestartAfterEntireHistoryExpires(t *testing.T) {
 }
 
 func TestWSEventStore_SharedDatabaseAllocatesAndReplaysAllCursors(t *testing.T) {
+	t.Parallel()
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 	first := NewWSEventStore(db, DefaultWSEventStoreConfig())
@@ -162,6 +165,7 @@ func TestWSEventStore_SharedDatabaseAllocatesAndReplaysAllCursors(t *testing.T) 
 }
 
 func TestWSEventStore_FailedPersistenceDoesNotPublishCursor(t *testing.T) {
+	t.Parallel()
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 	store := NewWSEventStore(db, DefaultWSEventStoreConfig())
@@ -190,6 +194,7 @@ func TestWSEventStore_FailedPersistenceDoesNotPublishCursor(t *testing.T) {
 }
 
 func TestWSEventStore_TopicFilter(t *testing.T) {
+	t.Parallel()
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
@@ -227,6 +232,7 @@ func TestWSEventStore_TopicFilter(t *testing.T) {
 }
 
 func TestWSEventStore_FilteredReplayFindsSparseTopics(t *testing.T) {
+	t.Parallel()
 	for _, backend := range []string{"memory", "sqlite"} {
 		t.Run(backend, func(t *testing.T) {
 			var db *sql.DB
@@ -302,6 +308,7 @@ func TestWSEventStore_FilteredReplayFindsSparseTopics(t *testing.T) {
 }
 
 func TestWSEventStore_TopicMatchingPreservesLiteralCharacters(t *testing.T) {
+	t.Parallel()
 	for _, backend := range []string{"memory", "sqlite"} {
 		t.Run(backend, func(t *testing.T) {
 			var db *sql.DB
@@ -363,6 +370,7 @@ func TestWSEventStore_TopicMatchingPreservesLiteralCharacters(t *testing.T) {
 }
 
 func TestWSEventStore_RingBufferOverflow(t *testing.T) {
+	t.Parallel()
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
@@ -407,6 +415,7 @@ func TestWSEventStore_RingBufferOverflow(t *testing.T) {
 }
 
 func TestWSEventStore_DroppedEvents(t *testing.T) {
+	t.Parallel()
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
@@ -442,6 +451,7 @@ func TestWSEventStore_DroppedEvents(t *testing.T) {
 }
 
 func TestWSEventStore_MemoryOnly(t *testing.T) {
+	t.Parallel()
 	// Test without database
 	cfg := WSEventStoreConfig{
 		BufferSize:       100,
@@ -475,6 +485,7 @@ func TestWSEventStore_MemoryOnly(t *testing.T) {
 }
 
 func TestWSEventStore_CursorReset(t *testing.T) {
+	t.Parallel()
 	cfg := WSEventStoreConfig{
 		BufferSize:       10,
 		RetentionSeconds: 3600,
@@ -504,6 +515,7 @@ func TestWSEventStore_CursorReset(t *testing.T) {
 }
 
 func TestStreamResetMessage(t *testing.T) {
+	t.Parallel()
 	reset := NewStreamReset("sessions:proj1", "cursor_expired", 100, 50)
 
 	switch reset.Type {
@@ -522,6 +534,7 @@ func TestStreamResetMessage(t *testing.T) {
 }
 
 func TestPaneOutputDroppedMessage(t *testing.T) {
+	t.Parallel()
 	dropped := NewPaneOutputDropped("panes:proj:0", 5, 10, 14, "buffer_full")
 
 	if dropped.Type != "pane.output.dropped" {
@@ -540,6 +553,7 @@ func TestPaneOutputDroppedMessage(t *testing.T) {
 // =============================================================================
 
 func TestWSEventStore_SequenceContinuity(t *testing.T) {
+	t.Parallel()
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
@@ -588,6 +602,7 @@ func TestWSEventStore_SequenceContinuity(t *testing.T) {
 }
 
 func TestWSEventStore_ReconnectWithCursor(t *testing.T) {
+	t.Parallel()
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
@@ -638,6 +653,7 @@ func TestWSEventStore_ReconnectWithCursor(t *testing.T) {
 }
 
 func TestWSEventStore_BackpressureRecording(t *testing.T) {
+	t.Parallel()
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
@@ -691,6 +707,7 @@ func TestWSEventStore_BackpressureRecording(t *testing.T) {
 }
 
 func TestWSEventStore_FanOutCorrectness(t *testing.T) {
+	t.Parallel()
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
@@ -755,6 +772,7 @@ func TestWSEventStore_FanOutCorrectness(t *testing.T) {
 }
 
 func TestWSEventStore_ConcurrentPublish(t *testing.T) {
+	t.Parallel()
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
@@ -831,6 +849,7 @@ func TestWSEventStore_ConcurrentPublish(t *testing.T) {
 }
 
 func TestWSEventStore_Stop_Idempotent(t *testing.T) {
+	t.Parallel()
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 	store := NewWSEventStore(db, DefaultWSEventStoreConfig())
@@ -882,6 +901,7 @@ func droppedStatsForTest(t *testing.T, s *WSEventStore, clientID string, since t
 }
 
 func TestWSRedactionProtectsLivePersistenceAndReplay(t *testing.T) {
+	t.Parallel()
 	const credential = "0123456789abcdefghijklmnopqrstuv"
 	const receipt = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 	type record struct {
@@ -1001,6 +1021,7 @@ func TestWSRedactionProtectsLivePersistenceAndReplay(t *testing.T) {
 }
 
 func TestWSRedactionAppliesCurrentPolicyToHistoricalReplay(t *testing.T) {
+	t.Parallel()
 	const credential = "0123456789abcdefghijklmnopqrstuv"
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		t.Run(string(mode), func(t *testing.T) {
@@ -1127,6 +1148,7 @@ func TestWSRedactionRejectsSensitiveRoutingMetadata(t *testing.T) {
 }
 
 func TestWSRedactionAttentionLiveAndReplay(t *testing.T) {
+	t.Parallel()
 	const credential = "0123456789abcdefghijklmnopqrstuv"
 	event := robot.AttentionEvent{
 		Cursor: 9007199254740993, Ts: time.Now().UTC().Format(time.RFC3339Nano),
@@ -1183,6 +1205,7 @@ func TestWSRedactionAttentionLiveAndReplay(t *testing.T) {
 }
 
 func TestWSRedactionAttentionFailureCannotAcknowledgeOrSkipHistory(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		t.Run(string(mode), func(t *testing.T) {
 			hub := NewWSHub()

@@ -7134,10 +7134,12 @@ export interface components {
             start_line: number;
         };
         Command: {
+            catalog_only: boolean;
             category?: string;
             description: string;
             emits_events?: string[];
             examples?: components["schemas"]["Example"][];
+            executable: boolean;
             idempotent?: boolean;
             input?: components["schemas"]["SchemaRef"];
             name: string;

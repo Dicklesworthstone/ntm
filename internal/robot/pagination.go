@@ -12,7 +12,7 @@ type PaginationOptions struct {
 }
 
 func (opts PaginationOptions) resolveStore() *state.Store {
-	return resolveProjectionStore(opts.Store, opts.ExplicitStore)
+	return opts.Store
 }
 
 // PaginationInfo describes pagination state for array outputs.

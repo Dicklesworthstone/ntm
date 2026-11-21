@@ -625,6 +625,7 @@ func TestRobotAnalyticsFlagsRegistered(t *testing.T) {
 }
 
 func TestRobotAnalyticsSubprocessAndJSONParity(t *testing.T) {
+	t.Parallel()
 	tmpRoot := t.TempDir()
 	homeDir := filepath.Join(tmpRoot, "home")
 	configHome := filepath.Join(tmpRoot, "config")

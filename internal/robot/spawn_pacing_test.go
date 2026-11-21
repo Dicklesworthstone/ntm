@@ -22,6 +22,7 @@ import (
 )
 
 func TestSpawnLaunchIntervalPreservesOptionsAndPorts(t *testing.T) {
+	t.Parallel()
 	launchErr := errors.New("original launcher failure")
 	wantAgent := SpawnedAgent{Pane: "2.3", Type: "claude", Error: launchErr.Error()}
 	var calls int
@@ -64,6 +65,7 @@ func TestSpawnLaunchIntervalPreservesOptionsAndPorts(t *testing.T) {
 }
 
 func TestSpawnLaunchIntervalSpacesAttemptsIncludingFailures(t *testing.T) {
+	t.Parallel()
 	const interval = 15 * time.Millisecond
 	var starts []time.Time
 	opts, err := WithSpawnLaunchInterval(SpawnOptions{LifecycleDeps: &SpawnLifecycleDependencies{
@@ -93,6 +95,7 @@ func TestSpawnLaunchIntervalSpacesAttemptsIncludingFailures(t *testing.T) {
 }
 
 func TestSpawnLaunchIntervalCancellationStopsFurtherLaunches(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	opts, err := WithSpawnLaunchInterval(SpawnOptions{LifecycleDeps: &SpawnLifecycleDependencies{
 		LaunchAgent: func(context.Context, tmux.Pane, string, string, int, string, string) (SpawnedAgent, error) {
@@ -128,6 +131,7 @@ func TestSpawnLaunchIntervalCancellationStopsFurtherLaunches(t *testing.T) {
 }
 
 func TestSpawnLaunchIntervalConcurrentWaitIsCancellable(t *testing.T) {
+	t.Parallel()
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var calls atomic.Int32
@@ -164,6 +168,7 @@ func TestSpawnLaunchIntervalConcurrentWaitIsCancellable(t *testing.T) {
 }
 
 func TestSpawnProgressRecordsLifecycleBoundaries(t *testing.T) {
+	t.Parallel()
 	var events []SpawnProgress
 	var effects []string
 	checkIntent := func(stage string) {
@@ -261,8 +266,10 @@ func TestSpawnProgressRecordsLifecycleBoundaries(t *testing.T) {
 }
 
 func TestSpawnProgressCheckpointFailureStopsLaterEffects(t *testing.T) {
+	t.Parallel()
 	for _, phase := range []string{"started", "finished"} {
 		t.Run(phase, func(t *testing.T) {
+			t.Parallel()
 			checkpointErr, launchErr := errors.New("disk full"), errors.New("launch partially failed")
 			calls := 0
 			opts := WithSpawnProgress(SpawnOptions{LifecycleDeps: &SpawnLifecycleDependencies{
@@ -296,6 +303,7 @@ func TestSpawnProgressCheckpointFailureStopsLaterEffects(t *testing.T) {
 }
 
 func TestSpawnProgressCancellationPreservesFinishedEvidence(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var events []SpawnProgress
@@ -316,6 +324,7 @@ func TestSpawnProgressCancellationPreservesFinishedEvidence(t *testing.T) {
 }
 
 func TestSpawnProgressDoesNotAnnounceLaunchDuringPacingWait(t *testing.T) {
+	t.Parallel()
 	var events []SpawnProgress
 	opts := WithSpawnProgress(SpawnOptions{LifecycleDeps: &SpawnLifecycleDependencies{
 		LaunchAgent: func(context.Context, tmux.Pane, string, string, int, string, string) (SpawnedAgent, error) {
@@ -456,6 +465,7 @@ func staggerAt(offset time.Duration) string {
 }
 
 func TestResolveSpawnStaggerModes(t *testing.T) {
+	t.Parallel()
 	tracker := ratelimit.NewRateLimitTracker("")
 	tracker.RecordRateLimit("anthropic", "spawn")
 	learned := tracker.GetOptimalDelay("anthropic")
@@ -479,6 +489,7 @@ func TestResolveSpawnStaggerModes(t *testing.T) {
 		{name: "smart without history uses the built-in delay", req: SpawnStaggerRequest{Mode: "smart"}, wantMode: "smart", wantInterval: ratelimit.DefaultDelayAnthropic, wantProvider: "anthropic"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			got := ResolveSpawnStagger(tc.req, claude, tc.tracker)
 			if got.Mode != tc.wantMode || got.Interval != tc.wantInterval || got.Provider != tc.wantProvider {
 				t.Fatalf("ResolveSpawnStagger = %+v, want mode %q interval %v provider %q", got, tc.wantMode, tc.wantInterval, tc.wantProvider)
@@ -499,6 +510,7 @@ func TestResolveSpawnStaggerModes(t *testing.T) {
 // choice: the strictest provider present wins, and an omp-only batch uses
 // omp's own bucket rather than Anthropic's learned backoff.
 func TestResolveSpawnStaggerSmartProviderPriority(t *testing.T) {
+	t.Parallel()
 	tracker := ratelimit.NewRateLimitTracker("")
 	for i := 0; i < 3; i++ {
 		tracker.RecordRateLimit("anthropic", "spawn")
@@ -530,6 +542,7 @@ func TestResolveSpawnStaggerSmartProviderPriority(t *testing.T) {
 // through the canonical dispatch port, and consecutive deliveries are exactly
 // one stagger interval apart on the injected clock.
 func TestGetSpawnDeliversInitialPromptInOrderWithFixedStagger(t *testing.T) {
+	t.Parallel()
 	world := newStaggerSpawnWorld(t, "stagger-prompts", tmux.AgentClaude, tmux.AgentClaude, tmux.AgentCodex)
 	opts := world.options(t)
 	opts.CCCount, opts.CodCount = 2, 1
@@ -587,6 +600,7 @@ func TestGetSpawnDeliversInitialPromptInOrderWithFixedStagger(t *testing.T) {
 }
 
 func TestGetSpawnWithoutStaggerDeliversBackToBack(t *testing.T) {
+	t.Parallel()
 	world := newStaggerSpawnWorld(t, "unpaced-prompts", tmux.AgentClaude, tmux.AgentClaude)
 	opts := world.options(t)
 	opts.CCCount = 2
@@ -609,6 +623,7 @@ func TestGetSpawnWithoutStaggerDeliversBackToBack(t *testing.T) {
 // project's learned rate-limit history, and an unreadable history to the
 // provider's built-in delay with a visible warning.
 func TestGetSpawnSmartStaggerUsesLearnedRateLimitDelay(t *testing.T) {
+	t.Parallel()
 	learned := ratelimit.NewRateLimitTracker("")
 	learned.RecordRateLimit("anthropic", "spawn")
 	learned.RecordRateLimit("anthropic", "spawn")
@@ -820,6 +835,7 @@ func TestGetSpawnAssignWorkEnrichesWorkPromptAndReplaysWithoutRequery(t *testing
 }
 
 func TestGetSpawnPromptDeliveryFailureIsReportedPerAgent(t *testing.T) {
+	t.Parallel()
 	world := newStaggerSpawnWorld(t, "partial-prompts", tmux.AgentClaude, tmux.AgentClaude, tmux.AgentClaude)
 	world.failPane = "%3"
 	opts := world.options(t)
@@ -845,6 +861,7 @@ func TestGetSpawnPromptDeliveryFailureIsReportedPerAgent(t *testing.T) {
 }
 
 func TestGetSpawnStaggerWaitCancellationStopsLaterDeliveries(t *testing.T) {
+	t.Parallel()
 	world := newStaggerSpawnWorld(t, "cancel-prompts", tmux.AgentClaude, tmux.AgentClaude, tmux.AgentClaude)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -873,6 +890,7 @@ func TestGetSpawnStaggerWaitCancellationStopsLaterDeliveries(t *testing.T) {
 // TestGetSpawnRejectsInvalidStaggerBeforeLifecycle pins INVALID_FLAG for an
 // unsupported mode or an out-of-range delay before any tmux side effect.
 func TestGetSpawnRejectsInvalidStaggerBeforeLifecycle(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		mode    string
 		delay   time.Duration
@@ -883,6 +901,7 @@ func TestGetSpawnRejectsInvalidStaggerBeforeLifecycle(t *testing.T) {
 		{mode: "none", delay: config.MaxSpawnStaggerDelay + time.Second, wantErr: "--spawn-stagger-delay must be between 0 and 5m0s"},
 	} {
 		t.Run(tc.mode+"/"+tc.delay.String(), func(t *testing.T) {
+			t.Parallel()
 			var tmuxCalls atomic.Int32
 			lifecycle := &SpawnLifecycleDependencies{IsTMUXInstalled: func() bool { tmuxCalls.Add(1); return true }}
 			out, err := GetSpawn(t.Context(), SpawnOptions{
@@ -905,6 +924,7 @@ func TestGetSpawnRejectsInvalidStaggerBeforeLifecycle(t *testing.T) {
 // Grok Build phase 2 (GH#251) implemented readiness and composer-gated
 // delivery, so a spawn prompt for Grok agents is accepted like any other.
 func TestValidateSpawnRequestAcceptsGrokSpawnPrompt(t *testing.T) {
+	t.Parallel()
 	if _, err := validateSpawnRequest(SpawnOptions{Session: "grok-prompt", GrokCount: 1, Prompt: "go"}); err != nil {
 		t.Fatalf("validateSpawnRequest refused a Grok spawn prompt: %v", err)
 	}
@@ -914,6 +934,7 @@ func TestValidateSpawnRequestAcceptsGrokSpawnPrompt(t *testing.T) {
 // per-agent delays it would use without waiting, delivering, or stamping
 // scheduled times.
 func TestGetSpawnDryRunPreviewsStaggerSchedule(t *testing.T) {
+	t.Parallel()
 	world := newStaggerSpawnWorld(t, "dry-stagger", tmux.AgentClaude, tmux.AgentCodex)
 	opts := world.options(t)
 	opts.CCCount, opts.CodCount = 1, 1

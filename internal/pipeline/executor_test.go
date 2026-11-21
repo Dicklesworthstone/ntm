@@ -42,6 +42,7 @@ func (m *mockDetector) DetectAll(session string) ([]status.AgentStatus, error) {
 }
 
 func TestDefaultExecutorConfig(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test-session")
 
 	if cfg.Session != "test-session" {
@@ -62,6 +63,7 @@ func TestDefaultExecutorConfig(t *testing.T) {
 }
 
 func TestNewExecutor(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
 
@@ -94,6 +96,7 @@ func (e *Executor) SetNotifier(n *Notifier) {
 }
 
 func TestExecutor_SetNotifier(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
 
@@ -120,6 +123,7 @@ func TestExecutor_SetNotifier(t *testing.T) {
 }
 
 func TestExecutor_Validate(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
 
@@ -138,6 +142,7 @@ func TestExecutor_Validate(t *testing.T) {
 }
 
 func TestExecutor_Validate_Invalid(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
 
@@ -154,6 +159,7 @@ func TestExecutor_Validate_Invalid(t *testing.T) {
 }
 
 func TestSubstituteVariables(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test-session")
 	e := NewExecutor(cfg)
 
@@ -249,6 +255,7 @@ func TestSubstituteVariables_Env(t *testing.T) {
 }
 
 func TestEvaluateCondition(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
 	e.state = &ExecutionState{
@@ -341,6 +348,7 @@ func TestEvaluateCondition(t *testing.T) {
 }
 
 func TestParseOutput(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
 
@@ -456,6 +464,7 @@ func TestParseOutput(t *testing.T) {
 }
 
 func TestCalculateRetryDelay(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
 
@@ -529,6 +538,7 @@ func TestCalculateRetryDelay(t *testing.T) {
 }
 
 func TestCalculateProgress(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
 
@@ -577,6 +587,7 @@ func TestCalculateProgress(t *testing.T) {
 }
 
 func TestEmitProgress(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
 
@@ -606,6 +617,7 @@ func TestEmitProgress(t *testing.T) {
 }
 
 func TestEmitProgress_NilChannel(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
 	e.progress = nil
@@ -615,6 +627,7 @@ func TestEmitProgress_NilChannel(t *testing.T) {
 }
 
 func TestEmitProgress_FullChannel(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
 
@@ -638,6 +651,7 @@ func TestEmitProgress_FullChannel(t *testing.T) {
 }
 
 func TestTruncatePrompt(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		input string
@@ -727,6 +741,7 @@ func TestTruncatePrompt(t *testing.T) {
 }
 
 func TestGenerateRunID(t *testing.T) {
+	t.Parallel()
 	id1 := generateRunID()
 	id2 := generateRunID()
 
@@ -747,6 +762,7 @@ func TestGenerateRunID(t *testing.T) {
 }
 
 func TestExecutor_Cancel(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
 
@@ -771,6 +787,7 @@ func TestExecutor_Cancel(t *testing.T) {
 }
 
 func TestExecutor_GetState(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
 
@@ -795,6 +812,7 @@ func TestExecutor_GetState(t *testing.T) {
 }
 
 func TestExecutor_ResolvePrompt(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
 
@@ -828,6 +846,7 @@ func TestExecutor_ResolvePrompt(t *testing.T) {
 
 // Integration-style test for the execution workflow
 func TestExecutor_Run_ValidationError(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
 
@@ -856,6 +875,7 @@ func TestExecutor_Run_ValidationError(t *testing.T) {
 }
 
 func TestExecutorConfig_Overrides(t *testing.T) {
+	t.Parallel()
 	cfg := ExecutorConfig{
 		Session:          "custom-session",
 		DefaultTimeout:   10 * time.Minute,
@@ -888,6 +908,7 @@ func TestExecutorConfig_Overrides(t *testing.T) {
 }
 
 func TestShouldRerunStep(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name   string
@@ -957,6 +978,7 @@ func TestShouldRerunStep(t *testing.T) {
 }
 
 func TestExecutor_ClearStepVariables(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name          string
@@ -1073,6 +1095,7 @@ func TestExecutor_ClearStepVariables(t *testing.T) {
 }
 
 func TestExecutor_ApplyResumeState(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name         string
@@ -1172,6 +1195,7 @@ func TestExecutor_ApplyResumeState(t *testing.T) {
 
 // TestExecutor_Run_DryRun tests full workflow execution in dry run mode
 func TestExecutor_Run_DryRun(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test-session")
 	cfg.DryRun = true
@@ -1215,6 +1239,7 @@ func TestExecutor_Run_DryRun(t *testing.T) {
 }
 
 func TestBuildSideEffectManifestExtractsStepKindsAndRollbackPreview(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "manifest-workflow",
@@ -1306,6 +1331,7 @@ func TestBuildSideEffectManifestExtractsStepKindsAndRollbackPreview(t *testing.T
 }
 
 func TestRenderSideEffectManifestTextConcise(t *testing.T) {
+	t.Parallel()
 	manifest := SideEffectManifest{}
 	manifest.add(SideEffectEntry{
 		StepID:      "build",
@@ -1349,6 +1375,7 @@ func findSideEffect(t *testing.T, entries []SideEffectEntry, stepID, kind string
 }
 
 func TestExecutor_Run_DryRun_RendersStepDescription(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test-session")
 	cfg.DryRun = true
 	e := NewExecutor(cfg)
@@ -1382,6 +1409,7 @@ func TestExecutor_Run_DryRun_RendersStepDescription(t *testing.T) {
 
 // TestExecutor_Run_DryRun_WithVariables tests variable substitution in dry run mode
 func TestExecutor_Run_DryRun_WithVariables(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test-session")
 	cfg.DryRun = true
@@ -1417,6 +1445,7 @@ func TestExecutor_Run_DryRun_WithVariables(t *testing.T) {
 
 // TestExecutor_Run_DryRun_WithConditional tests conditional steps in dry run mode
 func TestExecutor_Run_DryRun_WithConditional(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test-session")
 	cfg.DryRun = true
@@ -1456,6 +1485,7 @@ func TestExecutor_Run_DryRun_WithConditional(t *testing.T) {
 
 // TestExecutor_Resume_DryRun tests resume functionality in dry run mode
 func TestExecutor_Resume_DryRun(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test-session")
 	cfg.DryRun = true
@@ -1513,6 +1543,7 @@ func TestExecutor_Resume_DryRun(t *testing.T) {
 
 // TestExecutor_Resume_NilState tests resume with nil state
 func TestExecutor_Resume_NilState(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test-session")
 	cfg.DryRun = true
@@ -1536,6 +1567,7 @@ func TestExecutor_Resume_NilState(t *testing.T) {
 // Production prepares under stateMu and delivers after releasing it; this
 // single-goroutine test composes the two phases directly.
 func TestExecutor_prepareAndDeliverNotification(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test-session")
 	e := NewExecutor(cfg)
 
@@ -1617,6 +1649,7 @@ func TestExecutor_prepareAndDeliverNotification(t *testing.T) {
 
 // TestExecutor_selectPane_DryRun tests selectPane returns dummy values in dry run mode
 func TestExecutor_selectPane_DryRun(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test-session")
 	cfg.DryRun = true
@@ -1638,6 +1671,7 @@ func TestExecutor_selectPane_DryRun(t *testing.T) {
 
 // TestExecutor_Run_DryRun_ProgressEvents tests progress events are emitted in dry run mode
 func TestExecutor_Run_DryRun_ProgressEvents(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test-session")
 	cfg.DryRun = true
@@ -1702,6 +1736,7 @@ func TestExecutor_Run_DryRun_ProgressEvents(t *testing.T) {
 }
 
 func TestCaptureErrorContext_DryRun(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	cfg.DryRun = true
 	e := NewExecutor(cfg)
@@ -1714,6 +1749,7 @@ func TestCaptureErrorContext_DryRun(t *testing.T) {
 }
 
 func TestCaptureErrorContext_EmptyPaneID(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
 
@@ -1725,6 +1761,7 @@ func TestCaptureErrorContext_EmptyPaneID(t *testing.T) {
 }
 
 func TestDetectAgentState_DryRun(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	cfg.DryRun = true
 	e := NewExecutor(cfg)
@@ -1737,6 +1774,7 @@ func TestDetectAgentState_DryRun(t *testing.T) {
 }
 
 func TestDetectAgentState_EmptyPaneID(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
 
@@ -1753,6 +1791,7 @@ func TestDetectAgentState_EmptyPaneID(t *testing.T) {
 
 // TestWaitForIdle_ContextCancelled tests waitForIdle with cancelled context
 func TestWaitForIdle_ContextCancelled(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	cfg.ProgressInterval = MinProgressInterval
@@ -1775,6 +1814,7 @@ func TestWaitForIdle_ContextCancelled(t *testing.T) {
 
 // TestWaitForIdle_ContextDeadline tests waitForIdle with deadline exceeded
 func TestWaitForIdle_ContextDeadline(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	cfg.ProgressInterval = MinProgressInterval
@@ -1797,6 +1837,7 @@ func TestWaitForIdle_ContextDeadline(t *testing.T) {
 
 // TestPersistState_NilState tests persistState with nil state
 func TestPersistState_NilState(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
@@ -1823,6 +1864,7 @@ func TestPersistState_EmptyProjectDir(t *testing.T) {
 
 // TestSnapshotState tests snapshotState function
 func TestSnapshotState(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
@@ -1865,6 +1907,7 @@ func TestSnapshotState(t *testing.T) {
 
 // TestSnapshotState_NilState tests snapshotState with nil state
 func TestSnapshotState_NilState(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
@@ -1879,6 +1922,7 @@ func TestSnapshotState_NilState(t *testing.T) {
 
 // TestExecutor_Run_DryRun_WithParallel tests parallel step execution in dry run mode
 func TestExecutor_Run_DryRun_WithParallel(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test-session")
 	cfg.DryRun = true
@@ -1914,6 +1958,7 @@ func TestExecutor_Run_DryRun_WithParallel(t *testing.T) {
 
 // TestExecutor_Run_DryRun_WithLoop tests loop step execution in dry run mode
 func TestExecutor_Run_DryRun_WithLoop(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test-session")
 	cfg.DryRun = true
@@ -1953,9 +1998,12 @@ func TestExecutor_Run_DryRun_WithLoop(t *testing.T) {
 // TestWaitForIdle_SuccessfulDetection tests waitForIdle with a mock detector
 // that transitions from working to idle after a few polls.
 func TestWaitForIdle_SuccessfulDetection(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	cfg.ProgressInterval = MinProgressInterval
+	cfg.IdleDebounce = 5 * time.Millisecond
+	cfg.IdlePollInterval = 5 * time.Millisecond
 	e := NewExecutor(cfg)
 
 	var callCount int32
@@ -1982,6 +2030,7 @@ func TestWaitForIdle_SuccessfulDetection(t *testing.T) {
 
 // TestWaitForIdle_TimeoutWithMock tests that waitForIdle returns error when timeout expires (mock detector)
 func TestWaitForIdle_TimeoutWithMock(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	cfg.ProgressInterval = MinProgressInterval
@@ -2010,9 +2059,12 @@ func TestWaitForIdle_TimeoutWithMock(t *testing.T) {
 
 // TestWaitForIdle_DetectorErrors tests that waitForIdle continues polling when detector returns errors
 func TestWaitForIdle_DetectorErrors(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	cfg.ProgressInterval = MinProgressInterval
+	cfg.IdleDebounce = 5 * time.Millisecond
+	cfg.IdlePollInterval = 5 * time.Millisecond
 	e := NewExecutor(cfg)
 
 	var callCount int32
@@ -2039,8 +2091,11 @@ func TestWaitForIdle_DetectorErrors(t *testing.T) {
 // placeholders, spinner gaps) must NOT complete the wait. Idle has to hold
 // for idleStablePolls consecutive polls.
 func TestWaitForIdle_RequiresStableIdleStreak(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	cfg.ProgressInterval = MinProgressInterval
+	cfg.IdleDebounce = 5 * time.Millisecond
+	cfg.IdlePollInterval = 5 * time.Millisecond
 	e := NewExecutor(cfg)
 
 	// Flap: every idle reading is immediately followed by working readings,
@@ -2056,7 +2111,7 @@ func TestWaitForIdle_RequiresStableIdleStreak(t *testing.T) {
 		},
 	}
 
-	err := e.waitForIdle(context.Background(), "mock-pane", 3*time.Second)
+	err := e.waitForIdle(context.Background(), "mock-pane", 150*time.Millisecond)
 	if err == nil {
 		t.Fatal("waitForIdle() completed on flapping idle readings; a single idle poll must not count as completion")
 	}
@@ -2066,8 +2121,11 @@ func TestWaitForIdle_RequiresStableIdleStreak(t *testing.T) {
 // stability requirement: working, then persistently idle → completes after
 // exactly idleStablePolls consecutive idle readings.
 func TestWaitForIdle_StableIdleCompletes(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	cfg.ProgressInterval = MinProgressInterval
+	cfg.IdleDebounce = 5 * time.Millisecond
+	cfg.IdlePollInterval = 5 * time.Millisecond
 	e := NewExecutor(cfg)
 
 	var callCount int32
@@ -2093,6 +2151,7 @@ func TestWaitForIdle_StableIdleCompletes(t *testing.T) {
 
 // TestDetectAgentState_WithMockDetector tests detectAgentState returns state from detector
 func TestDetectAgentState_WithMockDetector(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
@@ -2111,6 +2170,7 @@ func TestDetectAgentState_WithMockDetector(t *testing.T) {
 
 // TestDetectAgentState_WorkingState tests detectAgentState with working state
 func TestDetectAgentState_WorkingState(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
@@ -2129,6 +2189,7 @@ func TestDetectAgentState_WorkingState(t *testing.T) {
 
 // TestDetectAgentState_ErrorReturnsUnknown tests detectAgentState returns "unknown" on error
 func TestDetectAgentState_ErrorReturnsUnknown(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
@@ -2148,6 +2209,7 @@ func TestDetectAgentState_ErrorReturnsUnknown(t *testing.T) {
 // --- Resume tests ---
 
 func TestResume_NilState(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	cfg.DryRun = true
@@ -2163,6 +2225,7 @@ func TestResume_NilState(t *testing.T) {
 }
 
 func TestResume_CompletedStepsPreserved(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	cfg.DryRun = true
@@ -2201,6 +2264,7 @@ func TestResume_CompletedStepsPreserved(t *testing.T) {
 }
 
 func TestResume_FillsDefaults(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test-session")
 	cfg.DryRun = true
@@ -2243,6 +2307,7 @@ func TestResume_FillsDefaults(t *testing.T) {
 // --- calculateRetryDelay tests ---
 
 func TestCalculateRetryDelay_Exponential(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
@@ -2268,6 +2333,7 @@ func TestCalculateRetryDelay_Exponential(t *testing.T) {
 }
 
 func TestCalculateRetryDelay_Linear(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
@@ -2291,6 +2357,7 @@ func TestCalculateRetryDelay_Linear(t *testing.T) {
 }
 
 func TestCalculateRetryDelay_NoBackoff(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
@@ -2307,6 +2374,7 @@ func TestCalculateRetryDelay_NoBackoff(t *testing.T) {
 // --- persistState tests ---
 
 func TestPersistState_WithProjectDir(t *testing.T) {
+	t.Parallel()
 
 	tmpDir := t.TempDir()
 	cfg := DefaultExecutorConfig("test")
@@ -2342,6 +2410,7 @@ func TestPersistState_WithProjectDir(t *testing.T) {
 // --- Run workflow tests ---
 
 func TestExecutor_Run_DryRun_WithConditions(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test-session")
 	cfg.DryRun = true
@@ -2384,6 +2453,7 @@ func TestExecutor_Run_DryRun_WithConditions(t *testing.T) {
 }
 
 func TestExecutor_Run_DryRun_WithOutputVars(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test-session")
 	cfg.DryRun = true
@@ -2417,6 +2487,7 @@ func TestExecutor_Run_DryRun_WithOutputVars(t *testing.T) {
 }
 
 func TestExecutor_Run_DryRun_WithWhileLoop(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test-session")
 	cfg.DryRun = true
@@ -2453,6 +2524,7 @@ func TestExecutor_Run_DryRun_WithWhileLoop(t *testing.T) {
 }
 
 func TestExecutor_Run_DryRun_Cancel(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test-session")
 	cfg.DryRun = true
@@ -2484,6 +2556,7 @@ func TestExecutor_Run_DryRun_Cancel(t *testing.T) {
 }
 
 func TestExecutor_Run_DryRun_WithTimesLoop(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test-session")
 	cfg.DryRun = true
@@ -2518,6 +2591,7 @@ func TestExecutor_Run_DryRun_WithTimesLoop(t *testing.T) {
 // --- clearStepVariables tests ---
 
 func TestClearStepVariables(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	cfg.DryRun = true
@@ -2562,6 +2636,7 @@ func TestClearStepVariables(t *testing.T) {
 }
 
 func TestClearStepVariables_NilState(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
@@ -2572,6 +2647,7 @@ func TestClearStepVariables_NilState(t *testing.T) {
 // --- truncatePrompt edge cases ---
 
 func TestTruncatePrompt_EdgeCases(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -2606,6 +2682,7 @@ func TestTruncatePrompt_EdgeCases(t *testing.T) {
 // --- calculateProgress tests ---
 
 func TestCalculateProgress_NoGraph(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
@@ -2618,6 +2695,7 @@ func TestCalculateProgress_NoGraph(t *testing.T) {
 }
 
 func TestCalculateProgress_EmptyWorkflow(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
@@ -2634,6 +2712,7 @@ func TestCalculateProgress_EmptyWorkflow(t *testing.T) {
 }
 
 func TestCalculateProgress_PartiallyComplete(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
@@ -2663,6 +2742,7 @@ func TestCalculateProgress_PartiallyComplete(t *testing.T) {
 // --- MinProgressInterval tests ---
 
 func TestNewExecutor_MinProgressInterval(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	cfg.ProgressInterval = 1 * time.Millisecond
@@ -2674,6 +2754,7 @@ func TestNewExecutor_MinProgressInterval(t *testing.T) {
 }
 
 func TestNewExecutor_ZeroProgressInterval(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	cfg.ProgressInterval = 0
@@ -2687,6 +2768,7 @@ func TestNewExecutor_ZeroProgressInterval(t *testing.T) {
 // --- GenerateRunID tests ---
 
 func TestGenerateRunID_Format(t *testing.T) {
+	t.Parallel()
 
 	id := GenerateRunID()
 	if !strings.HasPrefix(id, "run-") {
@@ -2716,6 +2798,7 @@ func TestGenerateRunID_Format(t *testing.T) {
 }
 
 func TestGenerateRunID_Unique(t *testing.T) {
+	t.Parallel()
 	// bd-rkwcw: with the documented 4-hex random suffix, 100 IDs generated
 	// in the same UTC second hit ~26% birthday-collision odds. Limit the
 	// in-second batch to a size where collision probability stays well
@@ -2733,6 +2816,7 @@ func TestGenerateRunID_Unique(t *testing.T) {
 // --- resolvePrompt tests ---
 
 func TestResolvePrompt_FromFile(t *testing.T) {
+	t.Parallel()
 
 	tmpDir := t.TempDir()
 	promptPath := filepath.Join(tmpDir, "prompt.txt")
@@ -2752,6 +2836,7 @@ func TestResolvePrompt_FromFile(t *testing.T) {
 }
 
 func TestResolvePrompt_MissingFile(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
@@ -2764,6 +2849,7 @@ func TestResolvePrompt_MissingFile(t *testing.T) {
 }
 
 func TestResolvePrompt_NoPrompt(t *testing.T) {
+	t.Parallel()
 
 	cfg := DefaultExecutorConfig("test")
 	e := NewExecutor(cfg)
@@ -2778,6 +2864,7 @@ func TestResolvePrompt_NoPrompt(t *testing.T) {
 // --- executeWorkflow / executeStep tests via dry-run ---
 
 func TestExecutor_Run_DryRun_FailedDependency(t *testing.T) {
+	t.Parallel()
 
 	// Create workflow where step2 depends on step1, step1 fails
 	workflow := &Workflow{
@@ -2850,6 +2937,7 @@ func TestExecuteStep_UsesWorkflowRetryPolicy(t *testing.T) {
 }
 
 func TestExecutor_Run_DryRun_WhenConditionTrue(t *testing.T) {
+	t.Parallel()
 
 	workflow := &Workflow{
 		Name: "test-when-true",
@@ -2872,6 +2960,7 @@ func TestExecutor_Run_DryRun_WhenConditionTrue(t *testing.T) {
 }
 
 func TestExecutor_Run_DryRun_WhenConditionFalse(t *testing.T) {
+	t.Parallel()
 
 	workflow := &Workflow{
 		Name: "test-when-false",
@@ -2894,6 +2983,7 @@ func TestExecutor_Run_DryRun_WhenConditionFalse(t *testing.T) {
 }
 
 func TestExecutor_Run_DryRun_OutputVar(t *testing.T) {
+	t.Parallel()
 
 	workflow := &Workflow{
 		Name: "test-output-var",
@@ -2919,6 +3009,7 @@ func TestExecutor_Run_DryRun_OutputVar(t *testing.T) {
 }
 
 func TestExecutor_Run_DryRun_PromptFile(t *testing.T) {
+	t.Parallel()
 
 	tmpDir := t.TempDir()
 	promptFile := filepath.Join(tmpDir, "prompt.txt")
@@ -2945,6 +3036,7 @@ func TestExecutor_Run_DryRun_PromptFile(t *testing.T) {
 }
 
 func TestExecutor_Run_DryRun_MissingPromptFile(t *testing.T) {
+	t.Parallel()
 
 	workflow := &Workflow{
 		Name: "test-missing-prompt",
@@ -2965,6 +3057,7 @@ func TestExecutor_Run_DryRun_MissingPromptFile(t *testing.T) {
 }
 
 func TestCalculateProgress_PartialExecution(t *testing.T) {
+	t.Parallel()
 
 	state := &ExecutionState{
 		Steps: map[string]StepResult{
@@ -2998,6 +3091,7 @@ func TestCalculateProgress_PartialExecution(t *testing.T) {
 }
 
 func TestTruncatePrompt_Various(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		prompt string
@@ -3021,6 +3115,7 @@ func TestTruncatePrompt_Various(t *testing.T) {
 }
 
 func TestTruncatePrompt_ForLoopCompletion(t *testing.T) {
+	t.Parallel()
 
 	// Test case where the for loop completes without returning early (line 1490)
 	// String "abc🌍" is 7 bytes, with rune boundaries at 0, 1, 2, 3
@@ -3036,6 +3131,7 @@ func TestTruncatePrompt_ForLoopCompletion(t *testing.T) {
 // --- normalizeAgentType tests ---
 
 func TestNormalizeAgentType_Aliases(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		input string
@@ -3082,6 +3178,7 @@ func TestNormalizeAgentType_Aliases(t *testing.T) {
 // shared alias resolver — raw string comparison filtered out every agent and
 // typed routing failed with "no suitable agents found".
 func TestFilterAgentsByType_NormalizesBothSides(t *testing.T) {
+	t.Parallel()
 	// Long-form types, as produced by robot.ScoreAgents / routePaneAgentType.
 	scored := []robot.ScoredAgent{
 		{PaneID: "%0", AgentType: "claude"},
@@ -3146,6 +3243,7 @@ func newCommandTestExecutor(t *testing.T) *Executor {
 }
 
 func TestExecuteCommand_EchoHello(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	step := &Step{ID: "echo-step", Command: "echo hello"}
 	result := e.executeCommand(context.Background(), step, &Workflow{Name: "test"})
@@ -3162,6 +3260,7 @@ func TestExecuteCommand_EchoHello(t *testing.T) {
 }
 
 func TestExecuteCommand_ExitCode(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	step := &Step{ID: "exit-step", Command: "exit 7"}
 	result := e.executeCommand(context.Background(), step, &Workflow{Name: "test"})
@@ -3190,6 +3289,7 @@ func TestExecuteCommand_ExitCode(t *testing.T) {
 // (substituted, truncated) stdin payload alongside the command line so
 // authors can verify substitution end-to-end without executing.
 func TestExecuteCommand_DryRun_IncludesStdinPayload(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	e.config.DryRun = true
 
@@ -3218,6 +3318,7 @@ func TestExecuteCommand_DryRun_IncludesStdinPayload(t *testing.T) {
 // case: a dry-run command step with no Stdin should produce only the
 // command line (no stale "with stdin:" header).
 func TestExecuteCommand_DryRun_OmitsStdinWhenEmpty(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	e.config.DryRun = true
 
@@ -3240,6 +3341,7 @@ func TestExecuteCommand_DryRun_OmitsStdinWhenEmpty(t *testing.T) {
 // terminal during --dry-run — the same attack class bd-lqz30 patched for
 // description fields. Each control byte must round-trip as '?'.
 func TestExecuteCommand_DryRun_SanitizesControlBytes(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	e.config.DryRun = true
 	// Pre-stage a prior step output containing an ANSI clear-screen +
@@ -3276,6 +3378,7 @@ func TestExecuteCommand_DryRun_SanitizesControlBytes(t *testing.T) {
 // referenced via ${steps.X.output} in a downstream agent prompt and
 // printed verbatim during --dry-run unless sanitized first.
 func TestExecuteStepOnce_DryRun_SanitizesAgentPrompt(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	e.config.DryRun = true
 	e.state.Steps["evil"] = StepResult{Output: "\x1b[2J\x1b[H\x07payload"}
@@ -3300,6 +3403,7 @@ func TestExecuteStepOnce_DryRun_SanitizesAgentPrompt(t *testing.T) {
 }
 
 func TestExecuteCommand_Timeout(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	step := &Step{
 		ID:      "slow-step",
@@ -3326,6 +3430,7 @@ func TestExecuteCommand_Timeout(t *testing.T) {
 }
 
 func TestExecuteCommand_CtxCancelled(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	e := newCommandTestExecutor(t)
 	step := &Step{
@@ -3347,6 +3452,7 @@ func TestExecuteCommand_CtxCancelled(t *testing.T) {
 }
 
 func TestExecuteCommand_VariableSubstitution(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	e.state.Variables["x"] = "world"
 	step := &Step{ID: "var-step", Command: "echo ${vars.x}"}
@@ -3361,6 +3467,7 @@ func TestExecuteCommand_VariableSubstitution(t *testing.T) {
 }
 
 func TestExecuteCommand_ArgsAsEnvVars(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	step := &Step{
 		ID:      "env-step",
@@ -3386,6 +3493,7 @@ func TestExecuteCommand_ArgsAsEnvVars(t *testing.T) {
 // this, args: {NAME: "${vars.name}"} would ship the literal text
 // "${vars.name}" to the shell instead of the resolved value.
 func TestExecuteCommand_ArgsExpandPipelineVariables(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	e.varMu.Lock()
 	e.state.Variables["greeting"] = "hello"
@@ -3419,6 +3527,7 @@ func TestExecuteCommand_ArgsExpandPipelineVariables(t *testing.T) {
 }
 
 func TestExecuteCommand_InvalidArgEnvNameFailsValidation(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	step := &Step{
 		ID:      "bad-env-step",
@@ -3439,6 +3548,7 @@ func TestExecuteCommand_InvalidArgEnvNameFailsValidation(t *testing.T) {
 }
 
 func TestExecuteCommand_DryRun(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test-cmd")
 	cfg.DryRun = true
 	e := NewExecutor(cfg)
@@ -3463,6 +3573,7 @@ func TestExecuteCommand_DryRun(t *testing.T) {
 // fail-fast feedback. Previously the dry-run early-return shadowed the
 // argsToEnv check and the workflow only failed on a real run.
 func TestExecuteCommand_DryRunRejectsInvalidArgEnvName(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test-cmd")
 	cfg.DryRun = true
 	e := NewExecutor(cfg)
@@ -3556,6 +3667,7 @@ func TestExecuteCommand_HeartbeatStopsAfterCommandCompletes(t *testing.T) {
 // input. cat is the natural test target — its stdout is exactly its stdin,
 // so we can assert the captured Output round-trips the value.
 func TestExecuteCommand_StdinPipesPayload(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	e.state.Variables["greeting"] = "world"
 
@@ -3578,6 +3690,7 @@ func TestExecuteCommand_StdinPipesPayload(t *testing.T) {
 // Stdin set leaves cmd.Stdin alone (commands like `cat </dev/null` should
 // hit EOF immediately and produce empty output rather than blocking).
 func TestExecuteCommand_StdinEmptyPreservesNoStdin(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	step := &Step{
 		ID:      "no-stdin",
@@ -3598,6 +3711,7 @@ func TestExecuteCommand_StdinEmptyPreservesNoStdin(t *testing.T) {
 // the step must fail with a clear "exceeds limits.max_command_stdin_bytes"
 // error rather than silently shovel the full payload through Go memory.
 func TestExecuteCommand_StdinExceedsCap(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	e.limits = LimitsConfig{MaxCommandStdinBytes: 16}.EffectiveLimits()
 	e.state.Steps["src"] = StepResult{Output: strings.Repeat("x", 32)}
@@ -3627,6 +3741,7 @@ func TestExecuteCommand_StdinExceedsCap(t *testing.T) {
 // payload exactly at limits.max_command_stdin_bytes round-trips normally
 // rather than being rejected as overflow.
 func TestExecuteCommand_StdinAtCapSucceeds(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	e.limits = LimitsConfig{MaxCommandStdinBytes: 8}.EffectiveLimits()
 	step := &Step{
@@ -3645,6 +3760,7 @@ func TestExecuteCommand_StdinAtCapSucceeds(t *testing.T) {
 }
 
 func TestExecuteCommand_WaitNone(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	step := &Step{
 		ID:      "fire-forget",
@@ -3664,6 +3780,7 @@ func TestExecuteCommand_WaitNone(t *testing.T) {
 }
 
 func TestExecuteCommand_ProjectDir(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	step := &Step{ID: "pwd-step", Command: "pwd"}
 	result := e.executeCommand(context.Background(), step, &Workflow{Name: "test"})
@@ -3677,6 +3794,7 @@ func TestExecuteCommand_ProjectDir(t *testing.T) {
 }
 
 func TestExecuteCommand_MultilineOutput(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	step := &Step{ID: "multi-step", Command: "echo line1; echo line2; echo line3"}
 	result := e.executeCommand(context.Background(), step, &Workflow{Name: "test"})
@@ -3690,6 +3808,7 @@ func TestExecuteCommand_MultilineOutput(t *testing.T) {
 }
 
 func TestExecuteTemplate_DryRun(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	templateFile := filepath.Join(tmpDir, "test-template.md")
 	if err := os.WriteFile(templateFile, []byte("Hello <NAME>, this is a test."), 0o644); err != nil {
@@ -3724,6 +3843,7 @@ func TestExecuteTemplate_DryRun(t *testing.T) {
 }
 
 func TestExecuteTemplate_MissingFile(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test-tpl")
 	cfg.ProjectDir = t.TempDir()
 	e := NewExecutor(cfg)
@@ -3756,6 +3876,7 @@ func TestExecuteTemplate_MissingFile(t *testing.T) {
 }
 
 func TestExecuteTemplate_UnresolvedDeclaredPlaceholder(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	content := "**Parameters:** <NAME>, <ROLE>\nHello <NAME>, role: <ROLE>"
 	if err := os.WriteFile(filepath.Join(tmpDir, "tpl.md"), []byte(content), 0o644); err != nil {
@@ -3796,6 +3917,7 @@ func TestExecuteTemplate_UnresolvedDeclaredPlaceholder(t *testing.T) {
 }
 
 func TestExecuteTemplate_ResolveFromWorkflowDir(t *testing.T) {
+	t.Parallel()
 	workflowDir := t.TempDir()
 	projectDir := t.TempDir()
 	templateFile := filepath.Join(workflowDir, "my-template.md")
@@ -3828,6 +3950,7 @@ func TestExecuteTemplate_ResolveFromWorkflowDir(t *testing.T) {
 }
 
 func TestExecuteTemplate_DispatchLog(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(tmpDir, "tpl.md"), []byte("rendered content"), 0o644); err != nil {
 		t.Fatal(err)
@@ -3858,6 +3981,7 @@ func TestExecuteTemplate_DispatchLog(t *testing.T) {
 }
 
 func TestResolveTemplatePath(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(tmpDir, "exists.md"), []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)
@@ -3895,6 +4019,7 @@ func TestResolveTemplatePath(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExecuteCommand_StdoutTruncation(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	e.limits = LimitsConfig{MaxCommandStdoutBytes: 50}.EffectiveLimits()
 
@@ -3917,6 +4042,7 @@ func TestExecuteCommand_StdoutTruncation(t *testing.T) {
 }
 
 func TestExecuteCommand_StdoutUnderLimit(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	e.limits = LimitsConfig{MaxCommandStdoutBytes: 1000}.EffectiveLimits()
 
@@ -3942,6 +4068,7 @@ func TestExecuteCommand_StdoutUnderLimit(t *testing.T) {
 // drops bytes past MaxCommandStderrBytes during execution rather than after
 // cmd.Wait() has buffered everything.
 func TestExecuteCommand_StderrCappedWhenOutputParseEnabled(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	e.limits = LimitsConfig{
 		MaxCommandStdoutBytes: 1000,
@@ -3972,6 +4099,7 @@ func TestExecuteCommand_StderrCappedWhenOutputParseEnabled(t *testing.T) {
 // stdoutBuf cappedWriter; the existing stdout cap covers both streams and
 // the [TRUNCATED] marker still surfaces.
 func TestExecuteCommand_MergedStdoutStderrTruncatedAtStdoutCap(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	e.limits = LimitsConfig{MaxCommandStdoutBytes: 50}.EffectiveLimits()
 
@@ -3993,6 +4121,7 @@ func TestExecuteCommand_MergedStdoutStderrTruncatedAtStdoutCap(t *testing.T) {
 // total/truncated state regardless of whether the cap is hit by a single
 // large write or accumulated across many small writes.
 func TestCappedWriter_TruncationContract(t *testing.T) {
+	t.Parallel()
 	t.Run("single large write past cap", func(t *testing.T) {
 		w := newCappedWriter(10)
 		n, err := w.Write([]byte("0123456789ABCDEF"))
@@ -4059,6 +4188,7 @@ func TestCappedWriter_TruncationContract(t *testing.T) {
 }
 
 func TestExecuteTemplate_SizeLimitExceeded(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	bigContent := strings.Repeat("X", 1024)
 	if err := os.WriteFile(filepath.Join(tmpDir, "big.md"), []byte(bigContent), 0644); err != nil {
@@ -4084,6 +4214,7 @@ func TestExecuteTemplate_SizeLimitExceeded(t *testing.T) {
 }
 
 func TestExecuteTemplate_SizeUnderLimit(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(tmpDir, "small.md"), []byte("Hello <NAME>"), 0644); err != nil {
 		t.Fatal(err)
@@ -4107,6 +4238,7 @@ func TestExecuteTemplate_SizeUnderLimit(t *testing.T) {
 }
 
 func TestLimitsConfig_EffectiveLimits_Defaults(t *testing.T) {
+	t.Parallel()
 	lc := LimitsConfig{}.EffectiveLimits()
 	if lc.MaxForeachIterations != DefaultMaxForeachIterations {
 		t.Errorf("MaxForeachIterations=%d, want %d", lc.MaxForeachIterations, DefaultMaxForeachIterations)
@@ -4132,6 +4264,7 @@ func TestLimitsConfig_EffectiveLimits_Defaults(t *testing.T) {
 }
 
 func TestLimitsConfig_EffectiveLimits_Override(t *testing.T) {
+	t.Parallel()
 	lc := LimitsConfig{
 		MaxForeachIterations:        50000,
 		MaxCommandStdoutBytes:       32 * 1024 * 1024,
@@ -4160,6 +4293,7 @@ func TestLimitsConfig_EffectiveLimits_Override(t *testing.T) {
 // bd-3uqce: outputs validation post-run.
 
 func TestExecutor_ValidateDeclaredOutputs_FoundAndMissing(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	present := filepath.Join(dir, "present.md")
 	if err := os.WriteFile(present, []byte("ok"), 0o600); err != nil {
@@ -4200,6 +4334,7 @@ func TestExecutor_ValidateDeclaredOutputs_FoundAndMissing(t *testing.T) {
 }
 
 func TestExecutor_ValidateDeclaredOutputs_SubstitutesVariables(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	target := filepath.Join(dir, "report.md")
 	if err := os.WriteFile(target, []byte("ok"), 0o600); err != nil {
@@ -4236,6 +4371,7 @@ func TestExecutor_ValidateDeclaredOutputs_SubstitutesVariables(t *testing.T) {
 }
 
 func TestExecutor_ValidateDeclaredOutputs_NoOutputsLeavesStateNil(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test-session")
 	e := NewExecutor(cfg)
 	e.state = &ExecutionState{
@@ -4257,6 +4393,7 @@ func TestExecutor_ValidateDeclaredOutputs_NoOutputsLeavesStateNil(t *testing.T) 
 }
 
 func TestExecutor_ValidateDeclaredOutputs_DryRunSkipped(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfg := DefaultExecutorConfig("test-session")
 	cfg.DryRun = true
@@ -4285,6 +4422,7 @@ func TestExecutor_ValidateDeclaredOutputs_DryRunSkipped(t *testing.T) {
 // bd-6lkqr.9: ${steps.X.parsed_data} + dotted-path access to structured outputs.
 
 func TestSubstituteVariables_ParsedDataDottedPath(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test-session")
 	e := NewExecutor(cfg)
 	e.state = &ExecutionState{
@@ -4325,6 +4463,7 @@ func TestSubstituteVariables_ParsedDataDottedPath(t *testing.T) {
 }
 
 func TestSubstituteVariables_ParsedDataArrayIndex(t *testing.T) {
+	t.Parallel()
 	// bd-6lkqr.9 acceptance: array-index access ${steps.X.parsed_data[N]}
 	// when ParsedData itself is an array (not a field within an object).
 	cfg := DefaultExecutorConfig("test-session")
@@ -4357,6 +4496,7 @@ func TestSubstituteVariables_ParsedDataArrayIndex(t *testing.T) {
 }
 
 func TestSubstituteVariables_ParsedDataMissingErrors(t *testing.T) {
+	t.Parallel()
 	// bd-6lkqr.9 acceptance: missing parsed_data (step without output_parse)
 	// must surface a clear error rather than silently substituting the literal.
 	cfg := DefaultExecutorConfig("test-session")
@@ -4384,6 +4524,7 @@ func TestSubstituteVariables_ParsedDataMissingErrors(t *testing.T) {
 }
 
 func TestSubstituteVariables_ParsedDataComplexJSONStringify(t *testing.T) {
+	t.Parallel()
 	// bd-6lkqr.9: arrays/maps stringify as JSON when used as a whole.
 	cfg := DefaultExecutorConfig("test-session")
 	e := NewExecutor(cfg)
@@ -4407,10 +4548,12 @@ func TestSubstituteVariables_ParsedDataComplexJSONStringify(t *testing.T) {
 }
 
 func TestExecutor_CommandStep_OutputParseJSON_DownstreamSubstitution(t *testing.T) {
+	t.Parallel()
 	// bd-6lkqr.9 acceptance: end-to-end — command step with output_parse: json
 	// produces ParsedData; downstream ${steps.X.parsed_data.foo} substitution
 	// resolves into the parsed structure.
 	cfg := DefaultExecutorConfig("test-session")
+	cfg.ProjectDir = t.TempDir()
 	cfg.DryRun = false
 	e := NewExecutor(cfg)
 
@@ -4450,6 +4593,7 @@ func TestExecutor_CommandStep_OutputParseJSON_DownstreamSubstitution(t *testing.
 }
 
 func TestExecutor_Run_PopulatesOutputValidation(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	target := filepath.Join(dir, "deliverable.md")
 	if err := os.WriteFile(target, []byte("ok"), 0o600); err != nil {
@@ -4458,6 +4602,7 @@ func TestExecutor_Run_PopulatesOutputValidation(t *testing.T) {
 	missing := filepath.Join(dir, "absent.md")
 
 	cfg := DefaultExecutorConfig("test-session")
+	cfg.ProjectDir = dir
 	cfg.DryRun = false
 	e := NewExecutor(cfg)
 

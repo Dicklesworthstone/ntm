@@ -3,12 +3,7 @@ package serve
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -103,32 +98,5 @@ func (s *Server) consumePipelineProgress(runID, workflowID, session string) (cha
 }
 
 func (s *Server) projectPipelineSnapshots() ([]*pipeline.PipelineExecution, []string, error) {
-	root := s.pipelineProjectDir()
-	entries, err := os.ReadDir(filepath.Join(root, ".ntm", "pipelines"))
-	if errors.Is(err, os.ErrNotExist) {
-		return []*pipeline.PipelineExecution{}, nil, nil
-	}
-	if err != nil {
-		return nil, nil, err
-	}
-	out := make([]*pipeline.PipelineExecution, 0)
-	var warnings []string
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		id := strings.TrimSuffix(entry.Name(), ".json")
-		if snapshot := pipeline.LoadPipelineSnapshot(root, id); snapshot != nil {
-			out = append(out, snapshot)
-		} else {
-			warnings = append(warnings, fmt.Sprintf("pipeline state %q could not be read; inspect it before recovery", id))
-		}
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if !out[i].StartedAt.Equal(out[j].StartedAt) {
-			return out[i].StartedAt.After(out[j].StartedAt)
-		}
-		return out[i].RunID < out[j].RunID
-	})
-	return out, warnings, nil
+	return pipeline.ListPipelineSnapshots(s.pipelineProjectDir())
 }

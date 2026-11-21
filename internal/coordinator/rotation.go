@@ -33,6 +33,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/models"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/rotation"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -319,6 +320,17 @@ func (rc *rotationChecker) checkPane(ctx context.Context, pane tmux.Pane, usage 
 		if stored, err := rc.storedPending(decision.AgentID); err == nil && stored != nil {
 			return rotationDecision{}, false
 		}
+	}
+	if fsm := rotation.DefaultLifecycleCoordinator(); fsm.IsActive(pane.ID) {
+		if snap, ok := fsm.Snapshot(pane.ID); ok {
+			slog.Info("context rotation skipped because pane lifecycle lease is held",
+				"session", rc.session, "pane", pane.ID, "agent", decision.AgentID,
+				"holder_kind", snap.Kind, "holder_owner", snap.OwnerID, "holder_state", string(snap.State))
+		}
+		decision.Action = "skipped"
+		decision.SkipReason = "lifecycle_lease_held"
+		rc.reportSkip(decision)
+		return decision, true
 	}
 
 	// Fire-time safety gates on a FRESH capture. A pane we cannot observe is

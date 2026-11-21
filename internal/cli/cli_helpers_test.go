@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/assign"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 )
 
@@ -115,9 +116,9 @@ func TestCalculateMatchConfidence(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := calculateMatchConfidence(tc.agentType, tc.bead, tc.strategy)
+			got := assign.CalculateMatchConfidence(tc.agentType, tc.bead.Title, tc.bead.Priority, tc.strategy)
 			if got < tc.wantMin || got > tc.wantMax {
-				t.Errorf("calculateMatchConfidence(%q, %q, %q) = %f; want [%f, %f]",
+				t.Errorf("CalculateMatchConfidence(%q, %q, %q) = %f; want [%f, %f]",
 					tc.agentType, tc.bead.Title, tc.strategy, got, tc.wantMin, tc.wantMax)
 			}
 		})
@@ -200,9 +201,9 @@ func TestBuildReasoning(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := buildReasoning(tc.agentType, tc.bead, tc.strategy)
+			got := assign.BuildReasoning(tc.agentType, tc.bead.Title, tc.bead.Priority, tc.strategy)
 			if !strings.Contains(got, tc.wantSub) {
-				t.Errorf("buildReasoning(%q, %q, %q) = %q; want substring %q",
+				t.Errorf("BuildReasoning(%q, %q, %q) = %q; want substring %q",
 					tc.agentType, tc.bead.Title, tc.strategy, got, tc.wantSub)
 			}
 		})

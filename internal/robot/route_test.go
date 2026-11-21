@@ -19,6 +19,7 @@ import (
 )
 
 func TestParseExcludePanes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		input   string
@@ -65,6 +66,7 @@ func TestParseExcludePanes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := ParseExcludePanes(tt.input)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseExcludePanes() error = %v, wantErr %v", err, tt.wantErr)
@@ -229,6 +231,7 @@ func TestRouteKeepsContextAndExclusionsWithPhysicalPane(t *testing.T) {
 }
 
 func TestRouteOptions(t *testing.T) {
+	t.Parallel()
 	opts := RouteOptions{
 		Session:      "test",
 		Strategy:     StrategyLeastLoaded,
@@ -251,6 +254,7 @@ func TestRouteOptions(t *testing.T) {
 }
 
 func TestRoutePaneAgentTypePrefersParsedPaneType(t *testing.T) {
+	t.Parallel()
 
 	pane := tmux.Pane{
 		Title:   "custom title",
@@ -264,6 +268,7 @@ func TestRoutePaneAgentTypePrefersParsedPaneType(t *testing.T) {
 }
 
 func TestRoutePaneAgentTypeFallsBackToTitle(t *testing.T) {
+	t.Parallel()
 
 	pane := tmux.Pane{
 		Title:   "myproj__cod_2",
@@ -277,6 +282,7 @@ func TestRoutePaneAgentTypeFallsBackToTitle(t *testing.T) {
 }
 
 func TestRouteOutput(t *testing.T) {
+	t.Parallel()
 	output := RouteOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       "myproject",
@@ -297,6 +303,7 @@ func TestRouteOutput(t *testing.T) {
 }
 
 func TestRouteRecommendation(t *testing.T) {
+	t.Parallel()
 	rec := RouteRecommendation{
 		PaneID:       "cc_1",
 		PaneIndex:    1,
@@ -319,6 +326,7 @@ func TestRouteRecommendation(t *testing.T) {
 }
 
 func TestRouteCandidate(t *testing.T) {
+	t.Parallel()
 	candidate := RouteCandidate{
 		PaneID:       "cc_2",
 		PaneIndex:    2,
@@ -339,6 +347,7 @@ func TestRouteCandidate(t *testing.T) {
 }
 
 func TestRouteExcluded(t *testing.T) {
+	t.Parallel()
 	excluded := RouteExcluded{
 		PaneID:    "cc_3",
 		PaneIndex: 3,
@@ -356,6 +365,7 @@ func TestRouteExcluded(t *testing.T) {
 }
 
 func TestRouteAgentHints(t *testing.T) {
+	t.Parallel()
 	hints := RouteAgentHints{
 		Summary:     "Route to cc (pane %41) with score 85.5 - WAITING",
 		SendCommand: "ntm --robot-send=test --panes=%41 --msg='YOUR_MESSAGE'",
@@ -374,7 +384,9 @@ func TestRouteAgentHints(t *testing.T) {
 }
 
 func TestGenerateRouteHints(t *testing.T) {
+	t.Parallel()
 	t.Run("with recommendation", func(t *testing.T) {
+		t.Parallel()
 		opts := RouteOptions{Session: "test"}
 		output := RouteOutput{
 			Recommendation: &RouteRecommendation{
@@ -396,6 +408,7 @@ func TestGenerateRouteHints(t *testing.T) {
 	})
 
 	t.Run("no candidates", func(t *testing.T) {
+		t.Parallel()
 		opts := RouteOptions{Session: "test"}
 		output := RouteOutput{
 			Candidates: []RouteCandidate{},
@@ -414,6 +427,7 @@ func TestGenerateRouteHints(t *testing.T) {
 	})
 
 	t.Run("fallback used", func(t *testing.T) {
+		t.Parallel()
 		opts := RouteOptions{Session: "test"}
 		output := RouteOutput{
 			FallbackUsed: true,
@@ -434,6 +448,7 @@ func TestGenerateRouteHints(t *testing.T) {
 	})
 
 	t.Run("affinity fallback explains the missing holder", func(t *testing.T) {
+		t.Parallel()
 		opts := RouteOptions{Session: "test", Strategy: StrategyAffinity}
 		output := RouteOutput{
 			FallbackUsed: true,
@@ -449,6 +464,7 @@ func TestGenerateRouteHints(t *testing.T) {
 }
 
 func TestRouteStrategyNames(t *testing.T) {
+	t.Parallel()
 	names := strategyNames()
 	if len(names) != 8 {
 		t.Errorf("strategyNames() returned %d names, want 8", len(names))
@@ -473,6 +489,7 @@ func TestRouteStrategyNames(t *testing.T) {
 }
 
 func TestGetRoute_MissingSession(t *testing.T) {
+	t.Parallel()
 	out, code := GetRoute(RouteOptions{Strategy: StrategyLeastLoaded})
 	if code == 0 {
 		t.Fatal("expected non-zero exit code for missing session")
@@ -489,6 +506,7 @@ func TestGetRoute_MissingSession(t *testing.T) {
 }
 
 func TestGetRoute_InvalidStrategy(t *testing.T) {
+	t.Parallel()
 	out, code := GetRoute(RouteOptions{
 		Session:  "fake-session",
 		Strategy: StrategyName("bogus"),
@@ -512,6 +530,7 @@ func TestGetRoute_InvalidStrategy(t *testing.T) {
 // ever fall back to least-loaded. It must fail as INVALID_ARGS (before any
 // tmux lookup) rather than quietly answer a different question.
 func TestGetRoute_AffinityRequiresMessage(t *testing.T) {
+	t.Parallel()
 	for _, prompt := range []string{"", "   \n\t"} {
 		out, code := GetRoute(RouteOptions{
 			Session:  "fake-session",
@@ -730,6 +749,7 @@ func TestGetRoute_AffinityRoutesToReservationHolder(t *testing.T) {
 }
 
 func TestSummarizeRouteReservations(t *testing.T) {
+	t.Parallel()
 	if got := summarizeRouteReservations(nil); got != nil {
 		t.Fatalf("summarizeRouteReservations(nil) = %+v, want nil", got)
 	}
@@ -776,6 +796,7 @@ func TestSummarizeRouteReservations(t *testing.T) {
 // only when another agent holds a file the message names, never for the sole
 // holder, and never without a wired reservation cache.
 func TestRouteReservationWarning(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultRoutingConfig()
 	cfg.AgentMail.Enabled = true
 	scorer := NewAgentScorer(cfg)
@@ -1125,10 +1146,6 @@ esac
 	if err := store.Migrate(); err != nil {
 		t.Fatalf("store.Migrate: %v", err)
 	}
-	oldStore := currentProjectionStore()
-	SetProjectionStore(store)
-	t.Cleanup(func() { SetProjectionStore(oldStore) })
-
 	cfg := config.Default()
 	cfg.Routing.ExcludeContextAbove = 85
 
@@ -1139,11 +1156,12 @@ esac
 		Config:    cfg,
 		NoPersist: true,
 		Relax:     true,
+		Store:     store,
 	})
 	if code != 0 {
 		t.Fatalf("NoPersist GetRoute code = %d, want 0", code)
 	}
-	before, err := GetPolicyDecisions(PolicyDecisionsOptions{EntityType: "session", EntityID: "route-relax-ledger"})
+	before, err := GetPolicyDecisions(PolicyDecisionsOptions{EntityType: "session", EntityID: "route-relax-ledger", Store: store})
 	if err != nil || !before.Success || before.Count != 0 {
 		t.Fatalf("after NoPersist GetRoute, decisions = %+v, err=%v, want 0 rows", before, err)
 	}
@@ -1155,12 +1173,13 @@ esac
 		Strategy: StrategyLeastLoaded,
 		Config:   cfg,
 		Relax:    true,
+		Store:    store,
 	})
 	if code != 0 || !out.Success || !out.Relaxed {
 		t.Fatalf("persisted GetRoute = %+v, code=%d, want relaxed success", out, code)
 	}
 
-	after, err := GetPolicyDecisions(PolicyDecisionsOptions{EntityType: "session", EntityID: "route-relax-ledger"})
+	after, err := GetPolicyDecisions(PolicyDecisionsOptions{EntityType: "session", EntityID: "route-relax-ledger", Store: store})
 	if err != nil || !after.Success || after.Count != 1 {
 		t.Fatalf("after persisted GetRoute, decisions = %+v, err=%v, want 1 row", after, err)
 	}

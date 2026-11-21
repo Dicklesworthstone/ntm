@@ -20,6 +20,7 @@ import (
 )
 
 func TestAgentTypeLabel(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		agentType tmux.AgentType
 		want      string
@@ -43,6 +44,7 @@ func TestAgentTypeLabel(t *testing.T) {
 }
 
 func TestScaleDeltaCalculation(t *testing.T) {
+	t.Parallel()
 	// Test the core delta calculation logic directly by simulating current counts
 	// and target counts, then verifying the expected actions
 	tests := []struct {
@@ -148,6 +150,7 @@ func TestScaleDeltaCalculation(t *testing.T) {
 }
 
 func TestScaleTargetValidation(t *testing.T) {
+	t.Parallel()
 	// Verify negative counts are caught
 	targets := []scaleTarget{
 		{agentType: AgentTypeClaude, count: -1, set: true},
@@ -161,6 +164,7 @@ func TestScaleTargetValidation(t *testing.T) {
 }
 
 func TestScaleTargetNoFlagsSet(t *testing.T) {
+	t.Parallel()
 	targets := []scaleTarget{
 		{agentType: AgentTypeClaude, count: 0, set: false},
 		{agentType: AgentTypeCodex, count: 0, set: false},
@@ -180,6 +184,7 @@ func TestScaleTargetNoFlagsSet(t *testing.T) {
 }
 
 func TestScaleAgentSelectionOrder(t *testing.T) {
+	t.Parallel()
 	// Verify that agents are selected for killing in NTMIndex descending order
 	panes := []tmux.Pane{
 		{NTMIndex: 1, Title: "proj__cc_1"},
@@ -213,6 +218,7 @@ func TestScaleAgentSelectionOrder(t *testing.T) {
 }
 
 func TestNewScaleCmd(t *testing.T) {
+	t.Parallel()
 	cmd := newScaleCmd()
 
 	if cmd.Use != "scale <session>" {
@@ -235,6 +241,7 @@ func TestNewScaleCmd(t *testing.T) {
 }
 
 func TestScaleResponseFields(t *testing.T) {
+	t.Parallel()
 	resp := ScaleResponse{
 		Session: "test",
 		Before:  map[string]int{"cc": 3, "cod": 2, "gmi": 0},
@@ -340,6 +347,7 @@ func TestResolveAddSessionBlockedListingCancellationHelper(t *testing.T) {
 }
 
 func TestResolveAddSessionBlockedListingHonorsContext(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	tmuxPath := filepath.Join(root, "tmux")
 	script := `#!/bin/sh
@@ -392,6 +400,7 @@ func TestResolveSessionWithOptionsContextStaleTMUXHelper(t *testing.T) {
 }
 
 func TestResolveSessionWithOptionsContextFallsBackFromStaleTMUX(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	tmuxPath := filepath.Join(root, "tmux")
 	script := `#!/bin/sh
@@ -451,6 +460,7 @@ func TestScaleJSONCancellationProcessHelper(t *testing.T) {
 }
 
 func TestScaleJSONCancellationProcessContract(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestScaleJSONCancellationProcessHelper$")
 	cmd.Env = append(os.Environ(), "NTM_SCALE_CANCEL_HELPER=1")
 	var stdout bytes.Buffer

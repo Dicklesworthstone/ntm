@@ -73,6 +73,10 @@ func (j *jobJournal) path(id string) (string, error) {
 }
 
 func (j *jobJournal) save(job *Job) error {
+	return j.saveWithDirSync(job, true)
+}
+
+func (j *jobJournal) saveWithDirSync(job *Job, syncDir bool) error {
 	if job == nil {
 		return errors.New("cannot persist a nil job")
 	}
@@ -87,17 +91,30 @@ func (j *jobJournal) save(job *Job) error {
 	if len(data) > jobJournalMaxRecordBytes {
 		return fmt.Errorf("job %s exceeds journal record limit", job.ID)
 	}
-	return writeJobJournalRecord(j.dir, path, data)
+	if err := writeJobJournalRecordNoDirSync(j.dir, path, data); err != nil {
+		return err
+	}
+	if syncDir {
+		return syncJobJournalDirectory(j.dir)
+	}
+	return nil
 }
 
 // writeJobJournalRecord is the single publication path for execution history
 // and durable operation receipts. Callers own the appropriate journal fence.
 func writeJobJournalRecord(directory, path string, data []byte) error {
+	if err := writeJobJournalRecordNoDirSync(directory, path, data); err != nil {
+		return err
+	}
+	return syncJobJournalDirectory(directory)
+}
+
+func writeJobJournalRecordNoDirSync(directory, path string, data []byte) error {
 	if len(data) > jobJournalMaxRecordBytes {
 		return errors.New("job journal record exceeds size limit")
 	}
 	// Never truncate the last known checkpoint. The rename publishes a fully
-	// flushed record; syncing the directory makes that publication durable.
+	// flushed record; callers sync the directory to make publication durable.
 	file, err := os.CreateTemp(directory, ".job-*.tmp")
 	if err != nil {
 		return err
@@ -111,10 +128,7 @@ func writeJobJournalRecord(directory, path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Rename(name, path); err != nil {
-		return err
-	}
-	return syncJobJournalDirectory(directory)
+	return os.Rename(name, path)
 }
 
 func syncJobJournalDirectory(directory string) error {
@@ -290,6 +304,55 @@ func (j *jobJournal) recover(now time.Time) ([]*Job, error) {
 	}
 	for {
 		if unfinished > 0 {
+			const recoverWorkers = 16
+			batch := make([]*Job, 0, jobJournalReadBatchSize)
+			wroteAny := false
+			flushBatch := func() error {
+				if len(batch) == 0 {
+					return nil
+				}
+				wroteAny = true
+				if len(batch) == 1 {
+					job := batch[0]
+					batch = batch[:0]
+					if err := j.saveWithDirSync(job, false); err != nil {
+						return fmt.Errorf("record interrupted job %s: %w", job.ID, err)
+					}
+					return nil
+				}
+				ch := make(chan *Job, len(batch))
+				for _, job := range batch {
+					ch <- job
+				}
+				close(ch)
+				workers := recoverWorkers
+				if len(batch) < workers {
+					workers = len(batch)
+				}
+				var (
+					wg       sync.WaitGroup
+					errMu    sync.Mutex
+					firstErr error
+				)
+				for w := 0; w < workers; w++ {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						for job := range ch {
+							if err := j.saveWithDirSync(job, false); err != nil {
+								errMu.Lock()
+								if firstErr == nil {
+									firstErr = fmt.Errorf("record interrupted job %s: %w", job.ID, err)
+								}
+								errMu.Unlock()
+							}
+						}
+					}()
+				}
+				wg.Wait()
+				batch = batch[:0]
+				return firstErr
+			}
 			if err := j.walkJobs(func(job *Job) error {
 				if !jobNeedsRecovery(job) {
 					return nil
@@ -307,12 +370,21 @@ func (j *jobJournal) recover(now time.Time) ([]*Job, error) {
 				delete(job.Result, "_execution_in_progress")
 				job.Result["interrupted"] = true
 				job.Result["outcome_unknown"] = true
-				if err := j.save(job); err != nil {
-					return fmt.Errorf("record interrupted job %s: %w", job.ID, err)
+				batch = append(batch, job)
+				if len(batch) >= cap(batch) {
+					return flushBatch()
 				}
 				return nil
 			}); err != nil {
 				return nil, err
+			}
+			if err := flushBatch(); err != nil {
+				return nil, err
+			}
+			if wroteAny {
+				if err := syncJobJournalDirectory(j.dir); err != nil {
+					return nil, err
+				}
 			}
 		}
 		// Atomic rewrites may make a directory iterator omit or repeat entries.

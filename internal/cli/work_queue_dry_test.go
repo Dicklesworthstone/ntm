@@ -21,6 +21,7 @@ import (
 )
 
 func TestEvaluateQueueDrySyncInSync(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	beadsDir := filepath.Join(dir, ".beads")
 	mustMkdirAll(t, beadsDir)
@@ -47,6 +48,7 @@ func TestEvaluateQueueDrySyncInSync(t *testing.T) {
 }
 
 func TestEvaluateQueueDrySyncDBNewerNeedsFlush(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	beadsDir := filepath.Join(dir, ".beads")
 	mustMkdirAll(t, beadsDir)
@@ -70,6 +72,7 @@ func TestEvaluateQueueDrySyncDBNewerNeedsFlush(t *testing.T) {
 }
 
 func TestFindStaleInProgressSortAndLimit(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	inProgress := []bv.BeadInProgress{
 		{ID: "bd-newer", Title: "newer", UpdatedAt: now.Add(-30 * time.Hour)},
@@ -87,6 +90,7 @@ func TestFindStaleInProgressSortAndLimit(t *testing.T) {
 }
 
 func TestBuildQueueDryRecommendationsQueueDry(t *testing.T) {
+	t.Parallel()
 	report := QueueDryResponse{
 		QueueDry: true,
 		Evidence: QueueDryEvidence{
@@ -119,6 +123,7 @@ func TestBuildQueueDryRecommendationsQueueDry(t *testing.T) {
 }
 
 func TestBuildQueueDryRecommendationsActionableRequiresLiveReadyQueueInspection(t *testing.T) {
+	t.Parallel()
 	report := QueueDryResponse{
 		QueueDry: false,
 		Evidence: QueueDryEvidence{
@@ -145,6 +150,7 @@ func TestBuildQueueDryRecommendationsActionableRequiresLiveReadyQueueInspection(
 }
 
 func TestEvaluateQueueDryQuiescenceQueueDry(t *testing.T) {
+	t.Parallel()
 	report := QueueDryResponse{
 		QueueDry: true,
 		Evidence: QueueDryEvidence{
@@ -170,6 +176,7 @@ func TestEvaluateQueueDryQuiescenceQueueDry(t *testing.T) {
 }
 
 func TestEvaluateQueueDryQuiescenceBlockedByPeer(t *testing.T) {
+	t.Parallel()
 	report := QueueDryResponse{
 		QueueDry: true,
 		Evidence: QueueDryEvidence{
@@ -195,6 +202,7 @@ func TestEvaluateQueueDryQuiescenceBlockedByPeer(t *testing.T) {
 }
 
 func TestEvaluateQueueDryQuiescenceUnsafeReservationUnknown(t *testing.T) {
+	t.Parallel()
 	report := QueueDryResponse{
 		QueueDry: true,
 		Evidence: QueueDryEvidence{
@@ -221,6 +229,7 @@ func TestEvaluateQueueDryQuiescenceUnsafeReservationUnknown(t *testing.T) {
 }
 
 func TestEvaluateQueueDryQuiescenceUnsafeReadyWork(t *testing.T) {
+	t.Parallel()
 	report := QueueDryResponse{
 		QueueDry: false,
 		Evidence: QueueDryEvidence{
@@ -240,6 +249,7 @@ func TestEvaluateQueueDryQuiescenceUnsafeReadyWork(t *testing.T) {
 }
 
 func TestEvaluateQueueDryQuiescenceUnsafeDirtyTracker(t *testing.T) {
+	t.Parallel()
 	report := QueueDryResponse{
 		QueueDry: true,
 		Evidence: QueueDryEvidence{
@@ -260,6 +270,7 @@ func TestEvaluateQueueDryQuiescenceUnsafeDirtyTracker(t *testing.T) {
 }
 
 func TestQueueDryReservationTimeoutIsInteractive(t *testing.T) {
+	t.Parallel()
 	// queue-dry is interactive — the operator runs `ntm work queue-dry`
 	// and expects sub-second feedback. Guard the *intent* rather than
 	// the literal value so future tuning (e.g. 1.5s, configurable) does
@@ -443,6 +454,7 @@ func TestCollectQueueDryReservationsServerUnavailableHealthFails(t *testing.T) {
 }
 
 func TestQueueDryTriageTimeoutIsInteractive(t *testing.T) {
+	t.Parallel()
 	if queueDryTriageTimeout <= 0 {
 		t.Fatalf("queueDryTriageTimeout = %s, must be positive", queueDryTriageTimeout)
 	}
@@ -492,6 +504,7 @@ func TestCollectQueueDryReportWarnsWhenTriageUnavailable(t *testing.T) {
 }
 
 func TestAppendQueueDryReservationWarning(t *testing.T) {
+	t.Parallel()
 	report := QueueDryResponse{
 		Evidence: QueueDryEvidence{
 			Reservations: QueueDryReservations{
@@ -515,6 +528,7 @@ func TestAppendQueueDryReservationWarning(t *testing.T) {
 }
 
 func TestQueueDryIdeationDryQueueRendersRoadmap(t *testing.T) {
+	t.Parallel()
 	report := fixtureQueueDryDiagnostic(true)
 	snapshot := fixtureQueueDryIdeationSnapshot()
 
@@ -544,6 +558,7 @@ func TestQueueDryIdeationDryQueueRendersRoadmap(t *testing.T) {
 }
 
 func TestQueueDryIdeationNonDrySkipsWithoutForce(t *testing.T) {
+	t.Parallel()
 	report := fixtureQueueDryDiagnostic(false)
 	report.Evidence.TriageTopIDs = []string{"bd-ready"}
 	report.Recommendations = buildQueueDryRecommendations(report)
@@ -565,6 +580,7 @@ func TestQueueDryIdeationNonDrySkipsWithoutForce(t *testing.T) {
 }
 
 func TestQueueDryIdeationForceAllowsNonDryPreview(t *testing.T) {
+	t.Parallel()
 	report := fixtureQueueDryDiagnostic(false)
 	snapshot := fixtureQueueDryIdeationSnapshot()
 	snapshot.Queue.ActionableCount = 1
@@ -658,6 +674,7 @@ func TestQueueDryIdeationDegradedOptionalSourcesContinue(t *testing.T) {
 }
 
 func TestQueueDryIdeationJSONOutputContainsDryRunPreview(t *testing.T) {
+	t.Parallel()
 	ideationReport := buildQueueDryIdeationReport(fixtureQueueDryDiagnostic(true), fixtureQueueDryIdeationSnapshot(), QueueDryIdeationOptions{Requested: true})
 	report := fixtureQueueDryDiagnostic(true)
 	report.Ideation = &ideationReport
@@ -675,6 +692,7 @@ func TestQueueDryIdeationJSONOutputContainsDryRunPreview(t *testing.T) {
 }
 
 func TestQueueDryIdeationMarkdownOutputContainsRoadmap(t *testing.T) {
+	t.Parallel()
 	ideationReport := buildQueueDryIdeationReport(fixtureQueueDryDiagnostic(true), fixtureQueueDryIdeationSnapshot(), QueueDryIdeationOptions{Requested: true})
 	report := fixtureQueueDryDiagnostic(true)
 	report.Ideation = &ideationReport
@@ -689,6 +707,7 @@ func TestQueueDryIdeationMarkdownOutputContainsRoadmap(t *testing.T) {
 }
 
 func TestQueueDryIdeationDryRunCommandsDoNotMutate(t *testing.T) {
+	t.Parallel()
 	got := buildQueueDryIdeationReport(fixtureQueueDryDiagnostic(true), fixtureQueueDryIdeationSnapshot(), QueueDryIdeationOptions{Requested: true})
 	if got.Roadmap == nil || len(got.Roadmap.CommandPreview) == 0 {
 		t.Fatalf("roadmap commands empty: %+v", got.Roadmap)
@@ -701,6 +720,7 @@ func TestQueueDryIdeationDryRunCommandsDoNotMutate(t *testing.T) {
 }
 
 func TestQueueDryIdeationCreateBeadsRequiresConfirmation(t *testing.T) {
+	t.Parallel()
 	got := buildQueueDryIdeationReport(fixtureQueueDryDiagnostic(true), fixtureQueueDryIdeationSnapshot(), QueueDryIdeationOptions{
 		Requested:   true,
 		CreateBeads: true,
@@ -721,14 +741,14 @@ func TestQueueDryIdeationCreateBeadsRequiresConfirmation(t *testing.T) {
 }
 
 func TestQueueDryIdeationTempWorkspaceGate(t *testing.T) {
+	t.Parallel()
 	requireQueueDryGateCommand(t, "br")
 	requireQueueDryGateCommand(t, "bv")
 	requireQueueDryGateCommand(t, "git")
-	restore := stubQueueDryCollectOptional(t, func(ctx context.Context, snapshot *ideaplan.IdeaEvidenceSnapshot, opts ideaplan.OptionalAdapterOptions) {
+	optionalStub := func(ctx context.Context, snapshot *ideaplan.IdeaEvidenceSnapshot, opts ideaplan.OptionalAdapterOptions) {
 		snapshot.RecordSource(ideaplan.CandidateSource{ID: "cass:search", Kind: ideaplan.SourceCASS, Available: true, Evidence: []string{"cass search fixture"}})
 		snapshot.RecordSource(ideaplan.CandidateSource{ID: "cm:context", Kind: ideaplan.SourceCM, Available: true, Evidence: []string{"cm context fixture"}})
-	})
-	defer restore()
+	}
 
 	const scenarioID = "queue-dry-temp-workspace-gate"
 	projectDir := t.TempDir()
@@ -755,8 +775,9 @@ func TestQueueDryIdeationTempWorkspaceGate(t *testing.T) {
 		t.Fatalf("QueueDry=false, evidence=%+v warnings=%v errors=%v", report.Evidence, report.Warnings, report.Errors)
 	}
 	dryRun := collectQueueDryIdeationReport(projectDir, report, QueueDryIdeationOptions{
-		Requested:   true,
-		PlanVersion: scenarioID + "-dry-run",
+		Requested:       true,
+		PlanVersion:     scenarioID + "-dry-run",
+		collectOptional: optionalStub,
 	})
 	if dryRun.Roadmap == nil || dryRun.Roadmap.RenderedCount == 0 {
 		t.Fatalf("dry-run roadmap=%+v, want rendered candidates", dryRun.Roadmap)
@@ -772,10 +793,11 @@ func TestQueueDryIdeationTempWorkspaceGate(t *testing.T) {
 	}
 
 	blocked := collectQueueDryIdeationReport(projectDir, report, QueueDryIdeationOptions{
-		Requested:     true,
-		CreateBeads:   true,
-		ConfirmCreate: true,
-		PlanVersion:   scenarioID + "-blocked-create",
+		Requested:       true,
+		CreateBeads:     true,
+		ConfirmCreate:   true,
+		PlanVersion:     scenarioID + "-blocked-create",
+		collectOptional: optionalStub,
 	})
 	if blocked.Status != "creation_blocked" || !containsQueueDryCreationError(blocked.Creation, "creation_blocked_by_guard") {
 		t.Fatalf("blocked status=%q creation=%+v, want guard-blocked degraded creation", blocked.Status, blocked.Creation)
@@ -824,9 +846,10 @@ func TestQueueDryIdeationTempWorkspaceGate(t *testing.T) {
 		t.Fatalf("QueueDry=true after ready bead %s, want non-dry queue", readyID)
 	}
 	skipped := collectQueueDryIdeationReport(projectDir, nonDryReport, QueueDryIdeationOptions{
-		Requested:     true,
-		CreateBeads:   true,
-		ConfirmCreate: true,
+		Requested:       true,
+		CreateBeads:     true,
+		ConfirmCreate:   true,
+		collectOptional: optionalStub,
 	})
 	if skipped.Status != "skipped_ready_work" || skipped.Creation != nil {
 		t.Fatalf("skipped=%+v, want ready work to win without creation", skipped)
@@ -859,6 +882,7 @@ func TestQueueDryIdeationTempWorkspaceGate(t *testing.T) {
 }
 
 func TestApplyCommitLintReportCopiesFindings(t *testing.T) {
+	t.Parallel()
 	report := CommitReadyResponse{
 		Success: true,
 		Agent:   "YellowBluff",
@@ -891,6 +915,7 @@ func TestApplyCommitLintReportCopiesFindings(t *testing.T) {
 }
 
 func TestApplyCommitLintReportKeepsEmptyFindingsArray(t *testing.T) {
+	t.Parallel()
 	report := CommitReadyResponse{Success: true}
 
 	applyCommitLintReport(&report, commitlint.Report{SafeToCommit: true})
@@ -901,6 +926,7 @@ func TestApplyCommitLintReportKeepsEmptyFindingsArray(t *testing.T) {
 }
 
 func TestAppendCommitReadyFindingMarksCriticalUnsafe(t *testing.T) {
+	t.Parallel()
 	report := CommitReadyResponse{
 		Success:      true,
 		SafeToCommit: true,
@@ -1470,6 +1496,7 @@ func mustMarshalQueueDryIdeation(t *testing.T, report QueueDryIdeationReport) st
 }
 
 func TestQueueDryIdeationParentDetectedFromTargetProjectEpic(t *testing.T) {
+	t.Parallel()
 	projectDir, failurePath := newQueueDryParentWorkspace(t)
 	epicID := createQueueDryParentEpic(t, projectDir, failurePath, "Target project epic")
 
@@ -1495,6 +1522,7 @@ func TestQueueDryIdeationParentDetectedFromTargetProjectEpic(t *testing.T) {
 }
 
 func TestQueueDryIdeationParentAmbiguousWithTwoOpenEpics(t *testing.T) {
+	t.Parallel()
 	projectDir, failurePath := newQueueDryParentWorkspace(t)
 	epicA := createQueueDryParentEpic(t, projectDir, failurePath, "Epic candidate A")
 	epicB := createQueueDryParentEpic(t, projectDir, failurePath, "Epic candidate B")
@@ -1527,6 +1555,7 @@ func TestQueueDryIdeationParentAmbiguousWithTwoOpenEpics(t *testing.T) {
 }
 
 func TestQueueDryIdeationParentFlagOverridesDetection(t *testing.T) {
+	t.Parallel()
 	projectDir, failurePath := newQueueDryParentWorkspace(t)
 	createQueueDryParentEpic(t, projectDir, failurePath, "Epic that must not win A")
 	createQueueDryParentEpic(t, projectDir, failurePath, "Epic that must not win B")
@@ -1548,6 +1577,7 @@ func TestQueueDryIdeationParentFlagOverridesDetection(t *testing.T) {
 }
 
 func TestQueueDryIdeationDryRunReflectsWhatHappened(t *testing.T) {
+	t.Parallel()
 	projectDir, failurePath := newQueueDryParentWorkspace(t)
 	epicID := createQueueDryParentEpic(t, projectDir, failurePath, "Truthful dry-run epic")
 	rowsBefore := countQueueDryWorkspaceBeads(t, projectDir, failurePath)

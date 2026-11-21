@@ -24,6 +24,7 @@ import (
 
 // TestClearAssignmentResultStructure tests the ClearAssignmentResult type
 func TestClearAssignmentResultStructure(t *testing.T) {
+	t.Parallel()
 	result := ClearAssignmentResult{
 		BeadID:                   "bd-xyz",
 		BeadTitle:                "Test task",
@@ -55,6 +56,7 @@ func TestClearAssignmentResultStructure(t *testing.T) {
 
 // TestClearAssignmentResultNotFound tests result when assignment not found
 func TestClearAssignmentResultNotFound(t *testing.T) {
+	t.Parallel()
 	result := ClearAssignmentResult{
 		BeadID:          "bd-notfound",
 		AssignmentFound: false,
@@ -76,6 +78,7 @@ func TestClearAssignmentResultNotFound(t *testing.T) {
 
 // TestClearAssignmentResultJSON tests JSON marshaling
 func TestClearAssignmentResultJSON(t *testing.T) {
+	t.Parallel()
 	result := ClearAssignmentResult{
 		BeadID:          "bd-json",
 		PreviousPane:    2,
@@ -105,6 +108,7 @@ func TestClearAssignmentResultJSON(t *testing.T) {
 
 // TestClearAllResultStructure tests the ClearAllResult type
 func TestClearAllResultStructure(t *testing.T) {
+	t.Parallel()
 	result := ClearAllResult{
 		Pane:      3,
 		AgentType: "claude",
@@ -128,6 +132,7 @@ func TestClearAllResultStructure(t *testing.T) {
 
 // TestClearAssignmentsSummaryStructure tests the ClearAssignmentsSummary type
 func TestClearAssignmentsSummaryStructure(t *testing.T) {
+	t.Parallel()
 	summary := ClearAssignmentsSummary{
 		ClearedCount:         5,
 		ReservationsReleased: 3,
@@ -147,6 +152,7 @@ func TestClearAssignmentsSummaryStructure(t *testing.T) {
 
 // TestClearAssignmentsDataStructure tests the ClearAssignmentsData type
 func TestClearAssignmentsDataStructure(t *testing.T) {
+	t.Parallel()
 	pane := 3
 	data := ClearAssignmentsData{
 		Cleared: []ClearAssignmentResult{
@@ -172,6 +178,7 @@ func TestClearAssignmentsDataStructure(t *testing.T) {
 
 // TestClearAssignmentsErrorStructure tests the ClearAssignmentsError type
 func TestClearAssignmentsErrorStructure(t *testing.T) {
+	t.Parallel()
 	err := ClearAssignmentsError{
 		Code:    "NOT_ASSIGNED",
 		Message: "assignment not found",
@@ -190,6 +197,7 @@ func TestClearAssignmentsErrorStructure(t *testing.T) {
 
 // TestClearAssignmentsEnvelopeStructure tests the ClearAssignmentsEnvelope type
 func TestClearAssignmentsEnvelopeStructure(t *testing.T) {
+	t.Parallel()
 	envelope := ClearAssignmentsEnvelope{
 		Command:    "assign",
 		Subcommand: "clear",
@@ -222,6 +230,7 @@ func TestClearAssignmentsEnvelopeStructure(t *testing.T) {
 
 // TestClearErrorCodes tests the documented error code constants
 func TestClearErrorCodes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		code    string
 		meaning string
@@ -253,6 +262,7 @@ func TestClearErrorCodes(t *testing.T) {
 
 // TestClearEnvelopeWithError tests error envelope creation
 func TestClearEnvelopeWithError(t *testing.T) {
+	t.Parallel()
 	envelope := ClearAssignmentsEnvelope{
 		Command:    "assign",
 		Subcommand: "clear",
@@ -283,6 +293,7 @@ func TestClearEnvelopeWithError(t *testing.T) {
 
 // TestClearAndClearPaneMutuallyExclusive tests that --clear and --clear-pane can't be used together
 func TestClearAndClearPaneMutuallyExclusive(t *testing.T) {
+	t.Parallel()
 	// If both are set, it's an error
 	clearBeads := "bd-001"
 	clearPane := "0.3"
@@ -295,6 +306,7 @@ func TestClearAndClearPaneMutuallyExclusive(t *testing.T) {
 
 // TestClearRequiresBeadIDs tests that --clear requires bead IDs
 func TestClearRequiresBeadIDs(t *testing.T) {
+	t.Parallel()
 	// Empty string means no beads
 	clearBeads := ""
 	if clearBeads != "" {
@@ -304,6 +316,7 @@ func TestClearRequiresBeadIDs(t *testing.T) {
 
 // TestClearParsesCommaSeparatedBeads tests parsing comma-separated bead IDs
 func TestClearParsesCommaSeparatedBeads(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input    string
 		expected []string
@@ -362,6 +375,7 @@ func trimSpaces(s string) string {
 
 // TestClearOnlyNonCompletedWithoutForce tests that completed assignments need --force
 func TestClearOnlyNonCompletedWithoutForce(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		status   assignment.AssignmentStatus
 		force    bool
@@ -389,6 +403,7 @@ func TestClearOnlyNonCompletedWithoutForce(t *testing.T) {
 
 // TestClearFailedOnlyFlag tests the --clear-failed flag logic
 func TestClearFailedOnlyFlag(t *testing.T) {
+	t.Parallel()
 	assignments := []assignment.Assignment{
 		{BeadID: "bd-001", Status: assignment.StatusWorking},
 		{BeadID: "bd-002", Status: assignment.StatusFailed},
@@ -413,6 +428,7 @@ func TestClearFailedOnlyFlag(t *testing.T) {
 }
 
 func TestClearPaneSelectionAndFilteringUsePhysicalIdentity(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{ID: "%40", WindowIndex: 0, Index: 1, Type: tmux.AgentCodex},
 		{ID: "%41", WindowIndex: 1, Index: 1, Type: tmux.AgentClaude},
@@ -835,6 +851,7 @@ func TestClearPaneFlagDefaultValue(t *testing.T) {
 
 // TestClearReleasesFileReservations tests that clear releases file reservations
 func TestClearReleasesFileReservations(t *testing.T) {
+	t.Parallel()
 	result := ClearAssignmentResult{
 		BeadID:                   "bd-xyz",
 		AssignmentFound:          true,
@@ -853,6 +870,7 @@ func TestClearReleasesFileReservations(t *testing.T) {
 
 // TestClearWithNoReservationsToRelease tests clear with no file reservations
 func TestClearWithNoReservationsToRelease(t *testing.T) {
+	t.Parallel()
 	result := ClearAssignmentResult{
 		BeadID:                   "bd-xyz",
 		AssignmentFound:          true,
@@ -872,6 +890,7 @@ func TestClearWithNoReservationsToRelease(t *testing.T) {
 
 // TestClearEmptyBeadList tests clearing with empty bead list
 func TestClearEmptyBeadList(t *testing.T) {
+	t.Parallel()
 	beadIDs := []string{}
 
 	// Empty list should be handled gracefully
@@ -882,6 +901,7 @@ func TestClearEmptyBeadList(t *testing.T) {
 
 // TestClearNonExistentBead tests clearing a bead that doesn't exist
 func TestClearNonExistentBead(t *testing.T) {
+	t.Parallel()
 	result := ClearAssignmentResult{
 		BeadID:          "bd-nonexistent",
 		AssignmentFound: false,
@@ -899,6 +919,7 @@ func TestClearNonExistentBead(t *testing.T) {
 
 // TestClearPaneWithNoAssignments tests clearing a pane with no assignments
 func TestClearPaneWithNoAssignments(t *testing.T) {
+	t.Parallel()
 	result := ClearAllResult{
 		Pane:         5,
 		AgentType:    "claude",
@@ -917,6 +938,7 @@ func TestClearPaneWithNoAssignments(t *testing.T) {
 
 // TestClearAlreadyClearedAssignment tests clearing the same assignment twice
 func TestClearAlreadyClearedAssignment(t *testing.T) {
+	t.Parallel()
 	// First clear succeeds
 	firstResult := ClearAssignmentResult{
 		BeadID:          "bd-xyz",
@@ -942,6 +964,7 @@ func TestClearAlreadyClearedAssignment(t *testing.T) {
 
 // TestClearCompletedWithoutForce tests clearing completed assignment without --force
 func TestClearCompletedWithoutForce(t *testing.T) {
+	t.Parallel()
 	a := assignment.Assignment{
 		BeadID: "bd-completed",
 		Status: assignment.StatusCompleted,
@@ -957,6 +980,7 @@ func TestClearCompletedWithoutForce(t *testing.T) {
 
 // TestClearCompletedWithForce tests clearing completed assignment with --force
 func TestClearCompletedWithForce(t *testing.T) {
+	t.Parallel()
 	a := assignment.Assignment{
 		BeadID: "bd-completed",
 		Status: assignment.StatusCompleted,
@@ -976,6 +1000,7 @@ func TestClearCompletedWithForce(t *testing.T) {
 
 // TestBatchClearSuccess tests clearing multiple beads successfully
 func TestBatchClearSuccess(t *testing.T) {
+	t.Parallel()
 	results := []ClearAssignmentResult{
 		{BeadID: "bd-001", Success: true},
 		{BeadID: "bd-002", Success: true},
@@ -996,6 +1021,7 @@ func TestBatchClearSuccess(t *testing.T) {
 
 // TestBatchClearPartialFailure tests clearing multiple beads with some failures
 func TestBatchClearPartialFailure(t *testing.T) {
+	t.Parallel()
 	results := []ClearAssignmentResult{
 		{BeadID: "bd-001", Success: true},
 		{BeadID: "bd-002", Success: false, Error: "assignment not found"},
@@ -1022,6 +1048,7 @@ func TestBatchClearPartialFailure(t *testing.T) {
 
 // TestClearSummaryAccuracy tests that summary stats are accurate
 func TestClearSummaryAccuracy(t *testing.T) {
+	t.Parallel()
 	results := []ClearAssignmentResult{
 		{BeadID: "bd-001", Success: true, FilesReleased: []string{"a.go"}},
 		{BeadID: "bd-002", Success: true, FilesReleased: []string{"b.go", "c.go"}},
@@ -1058,6 +1085,7 @@ func TestClearSummaryAccuracy(t *testing.T) {
 
 // TestClearEnvelopeJSONMarshaling tests JSON marshaling of envelope
 func TestClearEnvelopeJSONMarshaling(t *testing.T) {
+	t.Parallel()
 	envelope := ClearAssignmentsEnvelope{
 		Command:    "assign",
 		Subcommand: "clear",
@@ -1102,6 +1130,7 @@ func TestClearEnvelopeJSONMarshaling(t *testing.T) {
 
 // TestClearPaneEnvelopeSubcommand tests the subcommand value for clear-pane
 func TestClearPaneEnvelopeSubcommand(t *testing.T) {
+	t.Parallel()
 	pane := 3
 	envelope := ClearAssignmentsEnvelope{
 		Command:    "assign",

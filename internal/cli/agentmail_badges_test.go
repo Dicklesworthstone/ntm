@@ -592,6 +592,7 @@ func TestSpawnIdentityCoordinator_BadgesOffPublishesNothing(t *testing.T) {
 }
 
 func TestPaneBadgeConfig(t *testing.T) {
+	t.Parallel()
 	c := config.Default()
 	if c.AgentMail.PaneBadgesOrDefault() {
 		t.Fatal("default must be off")

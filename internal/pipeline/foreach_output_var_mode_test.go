@@ -13,6 +13,7 @@ import (
 // Pre-fix, the per-iteration storeForeachNestedResult writes overwrote
 // each other and only the last writer survived.
 func TestForeachOutputVarMode_AggregateDefault(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-aggregate-default",
@@ -57,6 +58,7 @@ func TestForeachOutputVarMode_AggregateDefault(t *testing.T) {
 // positional index. A skipped control-only step produces no StepResult, while
 // max_rounds appends one result per round; the final round must win.
 func TestForeachOutputVarMode_AggregateUsesFinalRoundResult(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-aggregate-final-round",
@@ -105,6 +107,7 @@ func TestForeachOutputVarMode_AggregateUsesFinalRoundResult(t *testing.T) {
 // After the fix, every completed iteration contributes one slice entry
 // and the entries are in iteration order regardless of completion order.
 func TestForeachOutputVarMode_AggregateParallelKeepsAllIterations(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-aggregate-parallel",
@@ -145,6 +148,7 @@ func TestForeachOutputVarMode_AggregateParallelKeepsAllIterations(t *testing.T) 
 // bead/pair/debate iteration shape — items have stable "id" fields, so
 // collect-mode should produce a map[string]string keyed by those ids.
 func TestForeachOutputVarMode_CollectKeyedByItemIdentity(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-collect",
@@ -185,6 +189,7 @@ func TestForeachOutputVarMode_CollectKeyedByItemIdentity(t *testing.T) {
 // and not a string) the key becomes "iter_<index>" so map entries stay
 // distinct.
 func TestForeachOutputVarMode_CollectFallsBackToIterIndex(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-collect-fallback",
@@ -230,6 +235,7 @@ func TestForeachOutputVarMode_CollectFallsBackToIterIndex(t *testing.T) {
 // in vars[output_var]) rather than wrapping in a slice. Sequential
 // foreach lands on the final iteration deterministically.
 func TestForeachOutputVarMode_LastKeepsScalarSemantics(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-last",
@@ -269,6 +275,7 @@ func TestForeachOutputVarMode_LastKeepsScalarSemantics(t *testing.T) {
 // effectiveForeachOutputVarMode prefers it over the implicit aggregate
 // default when Step.OutputVarMode is unset.
 func TestForeachOutputVarMode_ConfigLevelMode(t *testing.T) {
+	t.Parallel()
 	parent := &Step{OutputVarMode: ""}
 	cfg := &ForeachConfig{OutputVarMode: OutputVarModeCollect}
 	if got := effectiveForeachOutputVarMode(parent, cfg); got != OutputVarModeCollect {
@@ -291,6 +298,7 @@ func TestForeachOutputVarMode_ConfigLevelMode(t *testing.T) {
 // filter-excluded iterations contribute no entry to the aggregate — the
 // "no result" semantics noted in storeForeachOutputVars.
 func TestForeachOutputVarMode_SkippedIterationsExcluded(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-skip-excluded",
@@ -327,6 +335,7 @@ func TestForeachOutputVarMode_SkippedIterationsExcluded(t *testing.T) {
 }
 
 func TestForeachOutputVarMode_ResumeCompletedIterationsContributePriorOutput(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-resume-output-var",

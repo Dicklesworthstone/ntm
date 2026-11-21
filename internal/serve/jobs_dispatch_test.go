@@ -90,6 +90,7 @@ func pollJobTerminal(t *testing.T, srv *Server, jobID string) jobEnvelope {
 // file on disk, and the run is queryable from the pipeline run state
 // (GetPipelineSnapshot) afterwards.
 func TestJobDispatchPipelineRun(t *testing.T) {
+	t.Parallel()
 	srv := NewHermeticServer("test")
 	defer srv.Stop()
 
@@ -143,6 +144,7 @@ steps:
 // pipeline_run naming a nonexistent workflow must land the job in
 // JobStatusFailed carrying the real error — never a simulated completion.
 func TestJobDispatchPipelineRunFailure(t *testing.T) {
+	t.Parallel()
 	srv := NewHermeticServer("test")
 	defer srv.Stop()
 
@@ -169,6 +171,7 @@ func TestJobDispatchPipelineRunFailure(t *testing.T) {
 // spawn seam the synchronous spawn route uses, with the requested options,
 // and that the job's terminal state carries the spawn result.
 func TestJobDispatchSwarmSpawn(t *testing.T) {
+	t.Parallel()
 	srv := NewHermeticServer("test")
 	defer srv.Stop()
 
@@ -202,6 +205,7 @@ func TestJobDispatchSwarmSpawn(t *testing.T) {
 // TestJobDispatchSwarmSpawnFailure: a spawn seam error must surface as a
 // FAILED terminal state carrying the real error.
 func TestJobDispatchSwarmSpawnFailure(t *testing.T) {
+	t.Parallel()
 	srv := NewHermeticServer("test")
 	defer srv.Stop()
 
@@ -339,6 +343,7 @@ func TestJobDispatchCheckpointRestoreFailure(t *testing.T) {
 }
 
 func TestCheckpointJobPrecancelled(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	out, err := (&Server{}).jobCheckpointRestore(ctx, nil)
@@ -455,6 +460,7 @@ func TestCheckpointJobHTTPPartialFailure(t *testing.T) {
 // simulator types are covered explicitly: they used to be "accepted" and then
 // simulated with a time.Sleep.
 func TestJobsNotImplementedTypes(t *testing.T) {
+	t.Parallel()
 	srv := NewHermeticServer("test")
 	defer srv.Stop()
 
@@ -501,6 +507,7 @@ func TestJobsNotImplementedTypes(t *testing.T) {
 // scripts/guards/placebo_lint.sh against ci/allowlists/placebo.txt — the D5
 // waiver line is gone, so the simulator comment can never come back waived.)
 func TestNoSimulatorInProduction(t *testing.T) {
+	t.Parallel()
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read package dir: %v", err)

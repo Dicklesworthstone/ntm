@@ -15,6 +15,7 @@ import (
 )
 
 func TestExecuteCommandRetryPolicyRetriesExitCodeFailure(t *testing.T) {
+	t.Parallel()
 	executor := newCommandTestExecutor(t)
 	attemptsPath := filepath.Join(executor.config.ProjectDir, "retry-attempts.txt")
 	workflow := &Workflow{
@@ -54,6 +55,7 @@ func TestExecuteCommandRetryPolicyRetriesExitCodeFailure(t *testing.T) {
 }
 
 func TestExecuteCommandContextCancellationReturnsCancelled(t *testing.T) {
+	t.Parallel()
 	executor := newCommandTestExecutor(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -93,6 +95,7 @@ func TestExecuteCommandContextCancellationReturnsCancelled(t *testing.T) {
 }
 
 func TestCommandReceiptRecoversResultBeforeSchedulerCheckpoint(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion, Name: e.state.WorkflowID, Settings: DefaultWorkflowSettings(),
@@ -132,6 +135,7 @@ func TestCommandReceiptRecoversResultBeforeSchedulerCheckpoint(t *testing.T) {
 }
 
 func TestCommandLaunchRequiresDurableIntent(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	blockCheckpointPath(t, e)
 	step := Step{ID: "must-not-start", Command: "printf started > effects"}
@@ -145,6 +149,7 @@ func TestCommandLaunchRequiresDurableIntent(t *testing.T) {
 }
 
 func TestCommandResumeRejectsUnknownEvidenceBeforeExplicitReset(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	step := Step{ID: "command", Command: "printf once >> effects"}
 	workflow := &Workflow{Name: e.state.WorkflowID, Steps: []Step{step}}
@@ -179,6 +184,7 @@ func TestCommandResumeRejectsUnknownEvidenceBeforeExplicitReset(t *testing.T) {
 }
 
 func TestCommandUnresolvedReceiptRequiresFailureEvidence(t *testing.T) {
+	t.Parallel()
 	started := time.Now().Add(-time.Second)
 	record := CommandExecutionState{
 		Version: commandExecutionVersion, StepID: "work", StepHash: strings.Repeat("a", 64),
@@ -224,6 +230,7 @@ func TestCommandUnresolvedReceiptRequiresFailureEvidence(t *testing.T) {
 }
 
 func TestCommandUnresolvedReceiptBlocksReplayAndSupportsOperatorRecovery(t *testing.T) {
+	t.Parallel()
 	for _, status := range []ExecutionStatus{StatusFailed, StatusCancelled} {
 		t.Run(string(status), func(t *testing.T) {
 			cfg, workflow, prior, output := commandOperatorRecoveryFixture(t, 0, "direct")
@@ -299,6 +306,7 @@ func TestCommandUnresolvedReceiptBlocksReplayAndSupportsOperatorRecovery(t *test
 }
 
 func TestLegacyFailedCommandResumeCannotReplayLiveEffects(t *testing.T) {
+	t.Parallel()
 	for _, status := range []ExecutionStatus{StatusFailed, StatusCancelled} {
 		t.Run(string(status), func(t *testing.T) {
 			cfg := DefaultExecutorConfig("legacy-command")
@@ -400,6 +408,7 @@ printf finished > original-finished
 }
 
 func TestCommandSettledTerminalFailureStillAllowsOrdinaryResume(t *testing.T) {
+	t.Parallel()
 	for _, status := range []ExecutionStatus{StatusFailed, StatusCancelled} {
 		t.Run(string(status), func(t *testing.T) {
 			e := newCommandTestExecutor(t)
@@ -455,6 +464,7 @@ func TestCommandSettledTerminalFailureStillAllowsOrdinaryResume(t *testing.T) {
 }
 
 func TestLegacyBackgroundRerunMarkerRequiresSettlementEvidence(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	step := Step{ID: "sidecar", Command: "sleep 30", Wait: WaitNone}
 	workflow := &Workflow{Name: e.state.WorkflowID, Steps: []Step{step}}
@@ -468,6 +478,7 @@ func TestLegacyBackgroundRerunMarkerRequiresSettlementEvidence(t *testing.T) {
 }
 
 func TestCommandResumeProtectsLiveWaitNoneAfterSchedulerCompletion(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	step := Step{ID: "sidecar", Command: "sleep 60", Wait: WaitNone}
 	workflow := &Workflow{Name: e.state.WorkflowID, Steps: []Step{step}}
@@ -507,6 +518,7 @@ func TestCommandResumeProtectsLiveWaitNoneAfterSchedulerCompletion(t *testing.T)
 }
 
 func TestCommandReplayCannotEraseWorkBehindCompletedContainer(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"parallel", "foreach_rounds"} {
 		t.Run(kind, func(t *testing.T) {
 			e := newCommandTestExecutor(t)
@@ -564,6 +576,7 @@ func TestCommandReplayCannotEraseWorkBehindCompletedContainer(t *testing.T) {
 }
 
 func TestCommandCleanupRunsForEveryResumedAttempt(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"direct", "parallel", "foreach_rounds", "success_foreach_rounds"} {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
@@ -612,6 +625,7 @@ func TestCommandCleanupRunsForEveryResumedAttempt(t *testing.T) {
 }
 
 func TestCommandResumePreservesUnresolvedCleanup(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	cleanup := Step{ID: "release", Command: "sleep 60", Wait: WaitNone}
 	workflow := &Workflow{Name: e.state.WorkflowID, Settings: DefaultWorkflowSettings(), Steps: []Step{{ID: "work", Command: "printf unsafe > effects"}}}
@@ -652,6 +666,7 @@ func TestCommandResumePreservesUnresolvedCleanup(t *testing.T) {
 }
 
 func TestCommandCleanupResetPreservesMainNamespaceCollision(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: e.state.WorkflowID, Settings: DefaultWorkflowSettings(), Steps: []Step{
 		{ID: "cleanup_group_release", Command: `printf 'once\n' >> main_effects`},
@@ -814,6 +829,7 @@ func commandOperatorRecoveryBytes(t *testing.T, cfg ExecutorConfig) []byte {
 }
 
 func TestCommandOperatorRecoveryPublishesOnlyOnResume(t *testing.T) {
+	t.Parallel()
 	for _, layout := range []string{"direct", "foreach", "parallel", "branch", "post"} {
 		t.Run(layout, func(t *testing.T) {
 			cfg, workflow, prior, output := commandOperatorRecoveryFixture(t, 0, layout)
@@ -885,6 +901,7 @@ func TestCommandOperatorRecoveryPublishesOnlyOnResume(t *testing.T) {
 }
 
 func TestCommandOperatorRecoveryAcceptedFailureDoesNotRetry(t *testing.T) {
+	t.Parallel()
 	cfg, workflow, _, output := commandOperatorRecoveryFixture(t, 7, "direct")
 	entry := commandOperatorRecoveryEntry(t, cfg)
 	if _, err := AcceptCommandExecutionContext(context.Background(), cfg.ProjectDir, cfg.RunID, entry.StepID, entry.ReceiptToken, "Verified the group ended with exit 7", 7, output); err != nil {
@@ -914,6 +931,7 @@ func TestCommandOperatorRecoveryAcceptedFailureDoesNotRetry(t *testing.T) {
 }
 
 func TestCommandOperatorRecoveryRefusalsPreserveCheckpoint(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"stale receipt", "live owner", "background", "terminal step", "completed container", "completed iteration", "missing workflow", "output limit", "changed reason", "changed output", "changed exit", "canceled context"} {
 		t.Run(scenario, func(t *testing.T) {
 			layout := "direct"
@@ -1014,6 +1032,7 @@ func TestCommandOperatorRecoveryRefusalsPreserveCheckpoint(t *testing.T) {
 }
 
 func TestCommandOperatorRecoveryRetainsSessionIdentity(t *testing.T) {
+	t.Parallel()
 	cfg, workflow, _, output := commandOperatorRecoveryFixture(t, 0, "direct")
 	entry := commandOperatorRecoveryEntry(t, cfg)
 	if _, err := AcceptCommandExecutionContext(context.Background(), cfg.ProjectDir, cfg.RunID, entry.StepID, entry.ReceiptToken, "Verified the complete result", 0, output); err != nil {
@@ -1035,6 +1054,7 @@ func TestCommandOperatorRecoveryRetainsSessionIdentity(t *testing.T) {
 }
 
 func TestCommandOperatorRecoveryRejectsCorruptResolutionBeforeReset(t *testing.T) {
+	t.Parallel()
 	for _, corrupt := range []string{"output", "parsed data", "token", "exit code", "timestamp"} {
 		t.Run(corrupt, func(t *testing.T) {
 			cfg, workflow, _, output := commandOperatorRecoveryFixture(t, 0, "direct")
@@ -1081,6 +1101,7 @@ func TestCommandOperatorRecoveryRejectsCorruptResolutionBeforeReset(t *testing.T
 }
 
 func TestControlledPipelineHandledProcessFailuresRemainCompleted(t *testing.T) {
+	t.Parallel()
 	if _, err := os.Stat("/bin/sh"); err != nil {
 		t.Skip("requires /bin/sh")
 	}
@@ -1138,6 +1159,7 @@ func TestControlledPipelineHandledProcessFailuresRemainCompleted(t *testing.T) {
 }
 
 func TestCommandOperatorRecoveryReopensPrematureCompletion(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		unresolved bool
@@ -1233,6 +1255,7 @@ func TestCommandOperatorRecoveryReopensPrematureCompletion(t *testing.T) {
 }
 
 func TestCommandOperatorRecoveryPrematureCompletionRetainsOtherUncertainty(t *testing.T) {
+	t.Parallel()
 	cfg, workflow, prior, output := commandOperatorRecoveryFixture(t, 0, "direct")
 	entry := commandOperatorRecoveryEntry(t, cfg)
 	prior.Status = StatusCompleted
@@ -1274,6 +1297,7 @@ func TestCommandOperatorRecoveryPrematureCompletionRetainsOtherUncertainty(t *te
 }
 
 func TestCommandOperatorRecoveryPrematureCompletionRefusalsPreserveState(t *testing.T) {
+	t.Parallel()
 	for _, status := range []ExecutionStatus{StatusCompleted, StatusSkipped, StatusPending, StatusRunning, ""} {
 		t.Run(string(status), func(t *testing.T) {
 			cfg, _, prior, output := commandOperatorRecoveryFixture(t, 0, "direct")

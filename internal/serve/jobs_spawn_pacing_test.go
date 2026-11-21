@@ -16,6 +16,7 @@ import (
 // carry the actual pacing policy to the shared spawn service and keep previews
 // and partial failures observable without waiting for the configured interval.
 func TestSwarmJobLaunchPacingHTTP(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		interval string
@@ -97,6 +98,7 @@ func TestSwarmJobLaunchPacingHTTP(t *testing.T) {
 }
 
 func TestSwarmJobStartupTimeoutHTTP(t *testing.T) {
+	t.Parallel()
 	for _, returnError := range []bool{false, true} {
 		t.Run(fmt.Sprintf("backend_error=%t", returnError), func(t *testing.T) {
 			srv := NewHermeticServer("test")
@@ -131,6 +133,7 @@ func TestSwarmJobStartupTimeoutHTTP(t *testing.T) {
 }
 
 func TestSwarmJobStartupTimeoutRespectsParentCancellation(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	srv := &Server{spawnAgents: func(spawnCtx context.Context, opts robot.SpawnOptions) (*robot.SpawnOutput, error) {
@@ -151,6 +154,7 @@ func TestSwarmJobStartupTimeoutRespectsParentCancellation(t *testing.T) {
 }
 
 func TestSwarmJobStartupTimeoutRejectsInvalidInputHTTP(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{`"0s"`, `"-1s"`, `"invalid"`, `"999999999999999999h"`, `10`} {
 		t.Run(value, func(t *testing.T) {
 			srv := NewHermeticServer("test")
@@ -175,6 +179,7 @@ func TestSwarmJobStartupTimeoutRejectsInvalidInputHTTP(t *testing.T) {
 }
 
 func TestSwarmJobLaunchPacingRejectsInvalidInputHTTP(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{`"-1s"`, `"invalid"`, `"999999999999999999h"`, `10`, `true`, `{}`} {
 		t.Run(value, func(t *testing.T) {
 			srv := NewHermeticServer("test")

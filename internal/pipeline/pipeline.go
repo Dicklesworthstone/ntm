@@ -166,15 +166,23 @@ func (e *Executor) executeAdHocStage(ctx context.Context, stage Stage, paneID, p
 		record = next
 		return ready, nil
 	}
-	timer := time.NewTimer(2 * time.Second)
+	debounceDuration := e.config.IdleDebounce
+	if debounceDuration <= 0 {
+		debounceDuration = DefaultIdleDebounce
+	}
+	timer := time.NewTimer(debounceDuration)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return record, ctx.Err()
 	case <-timer.C:
 	}
+	pollInterval := e.config.IdlePollInterval
+	if pollInterval <= 0 {
+		pollInterval = StageIdlePollInterval
+	}
 	for {
-		if err := waitForIdle(ctx, e.detector, paneID, collect); err != nil {
+		if err := waitForIdleWithInterval(ctx, e.detector, paneID, pollInterval, collect); err != nil {
 			return record, fmt.Errorf("waiting for stage completion: %w", err)
 		}
 		// The last detector call may have outlived cancellation, pane
@@ -262,8 +270,20 @@ func normalizeAgentType(t string) string {
 	}
 }
 
-func waitForIdle(ctx context.Context, detector status.Detector, paneID string, evidence ...func() (bool, error)) error {
-	ticker := time.NewTicker(1 * time.Second)
+// DefaultIdleDebounce and StageIdlePollInterval control the default wait
+// before and between agent-idle polls when ExecutorConfig leaves them unset.
+// Exported as vars so integration tests with stub tmux panes can verify full
+// delivery/recovery flows without sleeping multi-second production walls.
+var (
+	DefaultIdleDebounce   = 2 * time.Second
+	StageIdlePollInterval = 1 * time.Second
+)
+
+func waitForIdleWithInterval(ctx context.Context, detector status.Detector, paneID string, interval time.Duration, evidence ...func() (bool, error)) error {
+	if interval <= 0 {
+		interval = StageIdlePollInterval
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	timeout := time.After(30 * time.Minute) // Max 30 min per stage default

@@ -163,7 +163,8 @@ func (r *Registry) RegisterHandler(name string, handler HandlerFunc) error {
 	return nil
 }
 
-// List returns all commands in deterministic order.
+// List returns all commands in deterministic order with Executable and
+// CatalogOnly derived mechanically from whether a HandlerFunc is registered.
 func (r *Registry) List() []Command {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -180,9 +181,31 @@ func (r *Registry) List() []Command {
 
 	out := make([]Command, 0, len(names))
 	for _, name := range names {
-		out = append(out, r.commands[name])
+		cmd := r.commands[name]
+		hasHandler := r.handlers[name] != nil
+		cmd.Executable = hasHandler
+		cmd.CatalogOnly = !hasHandler
+		out = append(out, cmd)
 	}
 	return out
+}
+
+// Get returns a single registered command with accurate Executable/CatalogOnly flags.
+func (r *Registry) Get(name string) (Command, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return Command{}, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	cmd, ok := r.commands[name]
+	if !ok {
+		return Command{}, false
+	}
+	hasHandler := r.handlers[name] != nil
+	cmd.Executable = hasHandler
+	cmd.CatalogOnly = !hasHandler
+	return cmd, true
 }
 
 // Run executes a registered command handler.
@@ -285,6 +308,11 @@ func MustRegisterHandler(name string, handler HandlerFunc) {
 // List returns all commands from the default registry.
 func List() []Command {
 	return defaultRegistry.List()
+}
+
+// Get looks up a single command by name from the default registry.
+func Get(name string) (Command, bool) {
+	return defaultRegistry.Get(name)
 }
 
 // Run executes a handler in the default registry.

@@ -299,6 +299,7 @@ func TestLevelConfigPersistence(t *testing.T) {
 }
 
 func TestLevelTierBounds(t *testing.T) {
+	t.Parallel()
 	// Test tier validation
 	tests := []struct {
 		tier     tiers.Tier
@@ -322,6 +323,7 @@ func TestLevelTierBounds(t *testing.T) {
 }
 
 func TestGetTierColor(t *testing.T) {
+	t.Parallel()
 	// This tests the color assignment logic
 	// Each tier should have a distinct color
 	colors := make(map[string]tiers.Tier)
@@ -348,6 +350,7 @@ func TestGetTierColor(t *testing.T) {
 }
 
 func TestGetUnlocksDescription(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		tier     tiers.Tier
 		contains []string

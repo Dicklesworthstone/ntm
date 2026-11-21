@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -341,15 +342,54 @@ func runCleanup(dryRun bool, maxAgeHrs int, verbose bool, forceClean bool, clean
 	return nil
 }
 
-// matchesNTMPattern checks if a filename matches any NTM temp pattern
+// matchesNTMPattern checks if a filename matches any NTM temp pattern.
+// Uses direct prefix/suffix checks equivalent to ntmTempPatterns to avoid
+// repeated filepath.Match glob parsing across large temp directories.
 func matchesNTMPattern(name string) string {
-	for _, pattern := range ntmTempPatterns {
-		matched, err := filepath.Match(pattern, name)
-		if err == nil && matched {
-			return pattern
+	if len(name) < 10 {
+		return ""
+	}
+	switch name[0] {
+	case 'n':
+		if strings.HasPrefix(name, "ntm-lifecycle-") {
+			return "ntm-lifecycle-*"
+		}
+		if strings.HasPrefix(name, "ntm-") && strings.HasSuffix(name, "-desc.md") && len(name) >= len("ntm--desc.md") {
+			return "ntm-*-desc.md"
+		}
+		if name == "ntm-graph.html" {
+			return "ntm-graph.html"
+		}
+		if strings.HasPrefix(name, "ntm-atomic-") {
+			return "ntm-atomic-*"
+		}
+		if strings.HasPrefix(name, "ntm-prompt-") && strings.HasSuffix(name, ".md") && len(name) >= len("ntm-prompt-.md") {
+			return "ntm-prompt-*.md"
+		}
+		if strings.HasPrefix(name, "ntm-mail-") && strings.HasSuffix(name, ".md") && len(name) >= len("ntm-mail-.md") {
+			return "ntm-mail-*.md"
+		}
+	case 't':
+		if strings.HasPrefix(name, "test-ntm-") {
+			return "test-ntm-*"
+		}
+	case '.':
+		if strings.HasPrefix(name, ".handoff-") && strings.HasSuffix(name, ".tmp") && len(name) >= len(".handoff-.tmp") {
+			return ".handoff-*.tmp"
+		}
+	case 'e':
+		if strings.HasPrefix(name, "events-rotate-") && strings.HasSuffix(name, ".jsonl") && len(name) >= len("events-rotate-.jsonl") {
+			return "events-rotate-*.jsonl"
+		}
+	case 'r':
+		if strings.HasPrefix(name, "rotation-") && strings.HasSuffix(name, ".tmp") && len(name) >= len("rotation-.tmp") {
+			return "rotation-*.tmp"
+		}
+	case 'p':
+		if strings.HasPrefix(name, "pending-") && strings.HasSuffix(name, ".tmp") && len(name) >= len("pending-.tmp") {
+			return "pending-*.tmp"
 		}
 	}
-
 	return ""
 }
 
@@ -468,20 +508,27 @@ func RunStartupCleanup(maxAgeHours int, verbose bool) (CleanupStats, error) {
 
 	var stats CleanupStats
 
-	entries, err := os.ReadDir(tmpDir)
+	// Read unsorted entry names directly and stat only matching NTM temp
+	// entries so large shared temp directories do not pay O(N log N) sorting
+	// and DirEntry allocation overhead on startup.
+	dir, err := os.Open(tmpDir)
+	if err != nil {
+		return stats, fmt.Errorf("failed to read temp directory: %w", err)
+	}
+	names, err := dir.Readdirnames(-1)
+	_ = dir.Close()
 	if err != nil {
 		return stats, fmt.Errorf("failed to read temp directory: %w", err)
 	}
 
-	for _, entry := range entries {
-		name := entry.Name()
+	for _, name := range names {
 		matchedPattern := matchesNTMPattern(name)
 		if matchedPattern == "" {
 			continue
 		}
 
 		fullPath := filepath.Join(tmpDir, name)
-		info, err := entry.Info()
+		info, err := os.Lstat(fullPath)
 		if err != nil {
 			stats.Errors++
 			continue
@@ -489,7 +536,7 @@ func RunStartupCleanup(maxAgeHours int, verbose bool) (CleanupStats, error) {
 
 		// Get size
 		var size int64
-		if entry.IsDir() {
+		if info.IsDir() {
 			size = getDirSize(fullPath)
 		} else {
 			size = info.Size()
@@ -504,7 +551,7 @@ func RunStartupCleanup(maxAgeHours int, verbose bool) (CleanupStats, error) {
 
 		// Delete the file/directory
 		var removeErr error
-		if entry.IsDir() {
+		if info.IsDir() {
 			removeErr = os.RemoveAll(fullPath)
 		} else {
 			removeErr = os.Remove(fullPath)

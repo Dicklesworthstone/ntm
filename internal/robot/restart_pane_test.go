@@ -76,6 +76,7 @@ func TestRestartBeadCorruptionRecovery(t *testing.T) {
 }
 
 func TestRestartPaneBeadPromptTemplate(t *testing.T) {
+	t.Parallel()
 	// Verify the template contains the expected placeholders
 	if !strings.Contains(restartPaneBeadPromptTemplate, "{bead_id}") {
 		t.Fatal("template missing {bead_id} placeholder")
@@ -95,6 +96,7 @@ func TestRestartPaneBeadPromptTemplate(t *testing.T) {
 }
 
 func TestRestartPaneBeadPromptExpansion(t *testing.T) {
+	t.Parallel()
 	// Test that the template expands correctly using the same replacer logic
 	beadID := "bd-abc12"
 	beadTitle := "Fix authentication bug"
@@ -123,6 +125,7 @@ func TestRestartPaneBeadPromptExpansion(t *testing.T) {
 }
 
 func TestValidateRestartBeadTargetsRequiresOneAgentPane(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		targets []tmux.Pane
@@ -134,6 +137,7 @@ func TestValidateRestartBeadTargetsRequiresOneAgentPane(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			err := validateRestartBeadTargets(test.targets)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("validateRestartBeadTargets() error = %v, want containing %q", err, test.want)
@@ -618,6 +622,7 @@ func TestPreflightRestartBeadDryRunHonorsCancellationAfterReadOnlyLedgerLoad(t *
 }
 
 func TestRestartMatchingAssignmentRejectsReservationEvidenceWithoutRequiredFlag(t *testing.T) {
+	t.Parallel()
 	const prompt = "resume reserved work"
 	base := assignment.Assignment{
 		BeadID: "ntm-reserved-replay", Pane: 2, AgentType: "codex", AgentName: "restart-pane-7",
@@ -653,6 +658,7 @@ func TestRestartMatchingAssignmentRejectsReservationEvidenceWithoutRequiredFlag(
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			current := base
 			test.edit(&current)
 			if got := restartMatchingAssignment(&current, "%7", 2, "codex", "restart-pane-7", prompt); got != nil {
@@ -663,6 +669,7 @@ func TestRestartMatchingAssignmentRejectsReservationEvidenceWithoutRequiredFlag(
 }
 
 func TestValidateRestartStorePreflightAcceptsReleasedRequiredTerminalAssignment(t *testing.T) {
+	t.Parallel()
 	store := assignment.NewStore("restart-released-terminal")
 	store.Assignments["ntm-released"] = &assignment.Assignment{
 		BeadID:              "ntm-released",
@@ -677,6 +684,7 @@ func TestValidateRestartStorePreflightAcceptsReleasedRequiredTerminalAssignment(
 }
 
 func TestRestartAssignmentEligibilityPortRechecksAuthoritativeLiveState(t *testing.T) {
+	t.Parallel()
 	const (
 		projectDir = "/authoritative/project"
 		beadID     = "ntm-final-live-check"
@@ -750,6 +758,7 @@ func TestPreflightRestartBeadRecognizesExactDurableReplayWithoutNewIdentity(t *t
 }
 
 func TestRestartPaneOptionsPromptOverridesBead(t *testing.T) {
+	t.Parallel()
 	// When both Bead and Prompt are set, Prompt should take precedence.
 	// This tests the logic flow: promptToSend defaults to Prompt, falling back to beadPrompt.
 	opts := RestartPaneOptions{
@@ -771,6 +780,7 @@ func TestRestartPaneOptionsPromptOverridesBead(t *testing.T) {
 }
 
 func TestRestartPaneOptionsBeadPromptFallback(t *testing.T) {
+	t.Parallel()
 	// When only Bead is set (no Prompt), beadPrompt should be used
 	opts := RestartPaneOptions{
 		Session: "test-session",
@@ -789,6 +799,7 @@ func TestRestartPaneOptionsBeadPromptFallback(t *testing.T) {
 }
 
 func TestRestartPaneOutputBeadFields(t *testing.T) {
+	t.Parallel()
 	// Verify the output struct carries bead assignment info
 	output := RestartPaneOutput{
 		BeadAssigned: "bd-abc12",
@@ -804,6 +815,7 @@ func TestRestartPaneOutputBeadFields(t *testing.T) {
 }
 
 func TestRestartPaneOutputPromptError(t *testing.T) {
+	t.Parallel()
 	output := RestartPaneOutput{
 		BeadAssigned: "bd-abc12",
 		PromptSent:   false,
@@ -819,6 +831,7 @@ func TestRestartPaneOutputPromptError(t *testing.T) {
 }
 
 func TestSetRestartPanePromptFailureMarksTopLevelResponseFailed(t *testing.T) {
+	t.Parallel()
 	output := &RestartPaneOutput{RobotResponse: NewRobotResponse(true), Restarted: []string{"1"}}
 
 	setRestartPanePromptFailure(output, []string{"pane 1: send-keys failed"})
@@ -838,6 +851,7 @@ func TestSetRestartPanePromptFailureMarksTopLevelResponseFailed(t *testing.T) {
 }
 
 func TestSetRestartPanePromptFailureIgnoresEmptyErrors(t *testing.T) {
+	t.Parallel()
 	output := &RestartPaneOutput{RobotResponse: NewRobotResponse(true), PromptSent: true}
 
 	setRestartPanePromptFailure(output, nil)
@@ -848,6 +862,7 @@ func TestSetRestartPanePromptFailureIgnoresEmptyErrors(t *testing.T) {
 }
 
 func TestRestartPaneDryRunShowsBead(t *testing.T) {
+	t.Parallel()
 	// In dry-run mode, BeadAssigned should still be populated
 	output := RestartPaneOutput{
 		DryRun:       true,
@@ -864,6 +879,7 @@ func TestRestartPaneDryRunShowsBead(t *testing.T) {
 }
 
 func TestRestartPaneAgentTypePrefersParsedPaneType(t *testing.T) {
+	t.Parallel()
 
 	pane := tmux.Pane{
 		Title:   "custom title",
@@ -877,6 +893,7 @@ func TestRestartPaneAgentTypePrefersParsedPaneType(t *testing.T) {
 }
 
 func TestSelectRestartPaneTargetsUsesParsedPaneTypeForFilters(t *testing.T) {
+	t.Parallel()
 
 	panes := []tmux.Pane{
 		{ID: "%0", Index: 0, Title: "shell", Type: tmux.AgentUser, Command: "zsh"},
@@ -896,6 +913,7 @@ func TestSelectRestartPaneTargetsUsesParsedPaneTypeForFilters(t *testing.T) {
 // GH#251 phase 2: grok supports automated relaunch, so grok-only and mixed
 // batches pass the preflight and every pane (including grok) is respawned.
 func TestRespawnRestartPaneTargetsAcceptsGrokBatch(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		targets []tmux.Pane
@@ -915,6 +933,7 @@ func TestRespawnRestartPaneTargetsAcceptsGrokBatch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			var respawned []string
 			output := &RestartPaneOutput{Restarted: []string{}, Failed: []RestartError{}}
 			pid := 100
@@ -948,6 +967,7 @@ func TestRespawnRestartPaneTargetsAcceptsGrokBatch(t *testing.T) {
 }
 
 func TestRespawnRestartPaneTargetsContextStopsAfterCancellation(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	output := &RestartPaneOutput{Restarted: []string{}, Failed: []RestartError{}}
 	targets := []tmux.Pane{
@@ -1004,6 +1024,7 @@ func TestRespawnRestartPaneTargetsContextStopsAfterCancellation(t *testing.T) {
 }
 
 func TestRespawnRestartPaneTargetsContextReportsMutationWhenCommandReturnsCancellation(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	output := &RestartPaneOutput{Restarted: []string{}, Failed: []RestartError{}}
@@ -1068,7 +1089,9 @@ func TestRespawnRestartPaneTargetsContextReportsMutationWhenCommandReturnsCancel
 }
 
 func TestRestartPaneReadinessAndDelayHonorCancellation(t *testing.T) {
+	t.Parallel()
 	t.Run("readiness capture", func(t *testing.T) {
+		t.Parallel()
 		ctx, cancel := context.WithCancel(t.Context())
 		var captureCalls, childCalls int
 		ready, err := waitForPaneAgentReadyWithContext(
@@ -1095,6 +1118,7 @@ func TestRestartPaneReadinessAndDelayHonorCancellation(t *testing.T) {
 	})
 
 	t.Run("settle delay", func(t *testing.T) {
+		t.Parallel()
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 		started := time.Now()
@@ -1109,6 +1133,7 @@ func TestRestartPaneReadinessAndDelayHonorCancellation(t *testing.T) {
 }
 
 func TestExecuteRestartBeadWaitsForCanonicalSafeDispatchObservation(t *testing.T) {
+	t.Parallel()
 	const (
 		session = "restart-safe-dispatch"
 		paneID  = "%7"
@@ -1128,6 +1153,7 @@ func TestExecuteRestartBeadWaitsForCanonicalSafeDispatchObservation(t *testing.T
 	}
 
 	t.Run("delayed canonical idle", func(t *testing.T) {
+		t.Parallel()
 		var observeCalls, executeCalls int
 		result, err := executeRestartBeadAfterSafeObservation(
 			t.Context(), session, request, time.Second, time.Millisecond,
@@ -1161,6 +1187,7 @@ func TestExecuteRestartBeadWaitsForCanonicalSafeDispatchObservation(t *testing.T
 	})
 
 	t.Run("caller cancellation prevents execution", func(t *testing.T) {
+		t.Parallel()
 		ctx, cancel := context.WithCancel(t.Context())
 		var executeCalls int
 		_, err := executeRestartBeadAfterSafeObservation(
@@ -1180,6 +1207,7 @@ func TestExecuteRestartBeadWaitsForCanonicalSafeDispatchObservation(t *testing.T
 	})
 
 	t.Run("local timeout prevents execution", func(t *testing.T) {
+		t.Parallel()
 		var observeCalls, executeCalls int
 		_, err := executeRestartBeadAfterSafeObservation(
 			t.Context(), session, request, 25*time.Millisecond, time.Millisecond,
@@ -1200,6 +1228,7 @@ func TestExecuteRestartBeadWaitsForCanonicalSafeDispatchObservation(t *testing.T
 }
 
 func TestAppendRestartCancellationFailuresMarksEveryUnfinishedPane(t *testing.T) {
+	t.Parallel()
 	output := &RestartPaneOutput{
 		Restarted: []string{"0", "1", "2"},
 		Failed:    []RestartError{{Pane: "0", Reason: "readiness canceled: context canceled"}},
@@ -1216,6 +1245,7 @@ func TestAppendRestartCancellationFailuresMarksEveryUnfinishedPane(t *testing.T)
 }
 
 func TestSendRestartPromptsUsesAgentAwareSender(t *testing.T) {
+	t.Parallel()
 	targets := []restartPromptTarget{
 		{Pane: "1", Target: "%1", AgentType: tmux.AgentCodex},
 		{Pane: "2", Target: "%2", AgentType: tmux.AgentClaude},
@@ -1245,6 +1275,7 @@ func TestSendRestartPromptsUsesAgentAwareSender(t *testing.T) {
 }
 
 func TestSendRestartPromptsContextStopsAfterCancellation(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	targets := []restartPromptTarget{
 		{Pane: "1", Target: "%1", AgentType: tmux.AgentCodex},
@@ -1278,8 +1309,10 @@ func TestSendRestartPromptsContextStopsAfterCancellation(t *testing.T) {
 }
 
 func TestSendRestartPromptsContextPreservesConfirmedDeliveryWhenCancellationFollowsNilReturn(t *testing.T) {
+	t.Parallel()
 	for _, targetCount := range []int{1, 2} {
 		t.Run(fmt.Sprintf("targets_%d", targetCount), func(t *testing.T) {
+			t.Parallel()
 			ctx, cancel := context.WithCancel(t.Context())
 			targets := []restartPromptTarget{{Pane: "1", Target: "%1", AgentType: tmux.AgentCodex}}
 			if targetCount == 2 {
@@ -1319,6 +1352,7 @@ func TestSendRestartPromptsContextPreservesConfirmedDeliveryWhenCancellationFoll
 }
 
 func TestRelaunchRestartPaneAgentContextObservesReadyAgentAfterSenderReturnsCancellation(t *testing.T) {
+	t.Parallel()
 	type contextKey struct{}
 	ctx, cancel := context.WithCancel(context.WithValue(t.Context(), contextKey{}, "restart-test"))
 	defer cancel()
@@ -1399,6 +1433,7 @@ func TestRelaunchRestartPaneAgentContextObservesReadyAgentAfterSenderReturnsCanc
 }
 
 func TestApplyRestartAtomicResultMapsCancellationToTimeout(t *testing.T) {
+	t.Parallel()
 	output := &RestartPaneOutput{
 		RobotResponse: NewRobotResponse(true),
 		Restarted:     []string{"0"},
@@ -1415,6 +1450,7 @@ func TestApplyRestartAtomicResultMapsCancellationToTimeout(t *testing.T) {
 }
 
 func TestSetRestartPaneCancellationPreservesConfirmedOrdinaryPromptDelivery(t *testing.T) {
+	t.Parallel()
 	output := &RestartPaneOutput{
 		RobotResponse: NewRobotResponse(true),
 		PromptSent:    true,
@@ -1429,6 +1465,7 @@ func TestSetRestartPaneCancellationPreservesConfirmedOrdinaryPromptDelivery(t *t
 }
 
 func TestRestartPaneOutputJSONFields(t *testing.T) {
+	t.Parallel()
 	output := RestartPaneOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       "myproject",
@@ -1462,6 +1499,7 @@ func TestRestartPaneOutputJSONFields(t *testing.T) {
 }
 
 func TestRestartPaneOutputJSONOmitEmpty(t *testing.T) {
+	t.Parallel()
 	// When no bead is used, bead fields should be omitted from JSON
 	output := RestartPaneOutput{
 		RobotResponse: NewRobotResponse(true),
@@ -1486,6 +1524,7 @@ func TestRestartPaneOutputJSONOmitEmpty(t *testing.T) {
 }
 
 func TestRestartPaneOptionsDefaults(t *testing.T) {
+	t.Parallel()
 	opts := RestartPaneOptions{
 		Session: "test-session",
 	}
@@ -1511,6 +1550,7 @@ func TestRestartPaneOptionsDefaults(t *testing.T) {
 }
 
 func TestRestartPaneOptionsAllFieldsSet(t *testing.T) {
+	t.Parallel()
 	effectiveConfig := config.Default()
 	opts := RestartPaneOptions{
 		Session: "proj",
@@ -1550,6 +1590,7 @@ func TestRestartPaneOptionsAllFieldsSet(t *testing.T) {
 }
 
 func TestRestartErrorStructure(t *testing.T) {
+	t.Parallel()
 	re := RestartError{
 		Pane:   "2",
 		Reason: "failed to respawn: pane not found",
@@ -1574,6 +1615,7 @@ func TestRestartErrorStructure(t *testing.T) {
 }
 
 func TestRestartTargetIsAgent(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		resolvedType string
 		want         bool
@@ -1598,6 +1640,7 @@ func TestRestartTargetIsAgent(t *testing.T) {
 }
 
 func TestRestartAgentLaunchCommandNilConfigFallsBackToAlias(t *testing.T) {
+	t.Parallel()
 	// Without a config the canonical launch alias must be used (#187).
 	tests := []struct {
 		agentType string
@@ -1619,6 +1662,7 @@ func TestRestartAgentLaunchCommandNilConfigFallsBackToAlias(t *testing.T) {
 // GH#251 phase 2: grok has its own canonical launch command — and it must be
 // the grok command, never a fallback to claude's alias.
 func TestRestartAgentLaunchCommandGrokUsesGrokCommand(t *testing.T) {
+	t.Parallel()
 	if got, err := restartAgentLaunchCommandWithOverride(nil, "grok", "", restartLaunchOverride{}); err != nil || got != "grok --always-approve" {
 		t.Fatalf("restartAgentLaunchCommandWithOverride(nil, grok) = %q, %v, want %q", got, err, "grok --always-approve")
 	}
@@ -1628,6 +1672,7 @@ func TestRestartAgentLaunchCommandGrokUsesGrokCommand(t *testing.T) {
 }
 
 func TestRestartAgentLaunchCommandUsesConfiguredCommand(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{}
 	cfg.Agents.Claude = "claude --dangerously-skip-permissions"
 	cfg.Agents.Codex = "codex --yolo"
@@ -1645,6 +1690,7 @@ func TestRestartAgentLaunchCommandUsesConfiguredCommand(t *testing.T) {
 }
 
 func TestRestartAgentLaunchCommandRendersTemplate(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{}
 	// Template with optional fields renders with empty vars — same as the
 	// robot-spawn pattern (spawn.go getAgentCommands).
@@ -1656,6 +1702,7 @@ func TestRestartAgentLaunchCommandRendersTemplate(t *testing.T) {
 }
 
 func TestRestartAgentLaunchCommandInvalidTemplateFallsBack(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{}
 	cfg.Agents.Claude = "claude {{.Broken"
 
@@ -1665,6 +1712,7 @@ func TestRestartAgentLaunchCommandInvalidTemplateFallsBack(t *testing.T) {
 }
 
 func TestRestartAgentLaunchCommandRejectsControlCharacters(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{}
 	cfg.Agents.Claude = "claude\nrm -x"
 
@@ -1674,6 +1722,7 @@ func TestRestartAgentLaunchCommandRejectsControlCharacters(t *testing.T) {
 }
 
 func TestRestartPaneOutputAgentRelaunchedJSON(t *testing.T) {
+	t.Parallel()
 	output := RestartPaneOutput{
 		RobotResponse:       NewRobotResponse(true),
 		Session:             "myproject",
@@ -1720,6 +1769,7 @@ func TestRestartPaneOutputAgentRelaunchedJSON(t *testing.T) {
 }
 
 func TestRestartPaneBeadPromptTemplateMatchesBulkAssign(t *testing.T) {
+	t.Parallel()
 	// The restart-pane bead template should be compatible with the bulk-assign template.
 	// Both should include: AGENTS.md reference, Agent Mail, bead ID, br show, ultrathink.
 	template := restartPaneBeadPromptTemplate
@@ -1741,6 +1791,7 @@ func TestRestartPaneBeadPromptTemplateMatchesBulkAssign(t *testing.T) {
 }
 
 func TestRestartPanePromptOnlyNoBeadAssigned(t *testing.T) {
+	t.Parallel()
 	// When --prompt is used without --bead, BeadAssigned should be empty
 	output := RestartPaneOutput{
 		Restarted:  []string{"1"},
@@ -1756,6 +1807,7 @@ func TestRestartPanePromptOnlyNoBeadAssigned(t *testing.T) {
 }
 
 func TestRestartAgentLaunchCommandPreservesModelPin(t *testing.T) {
+	t.Parallel()
 	// #223: restarting a pane pinned to a specific model must not silently
 	// come back as the bare account-default command. The pin is recovered
 	// from the pane-title variant via the configured model alias table.
@@ -1791,6 +1843,7 @@ func TestRestartAgentLaunchCommandPreservesModelPin(t *testing.T) {
 }
 
 func TestRestartPaneMultiplePanesPromptErrors(t *testing.T) {
+	t.Parallel()
 	// Test that prompt errors for multiple panes are joined with semicolons
 	errors := []string{
 		"pane 1: connection refused",
@@ -1813,6 +1866,7 @@ func TestRestartPaneMultiplePanesPromptErrors(t *testing.T) {
 // template injects --model unconditionally, so an empty value renders
 // `--model ”` and the pane dies at the ready gate instead of restarting.
 func TestRestartModelVarsKeepsPinnedAndAliasedModels(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 
 	for _, agentType := range []string{"antigravity", "agy"} {
@@ -1842,6 +1896,7 @@ func TestRestartModelVarsKeepsPinnedAndAliasedModels(t *testing.T) {
 
 // Tests for the restart relaunch override (ntm-yusj).
 func TestRestartAgentLaunchCommandWithOverride(t *testing.T) {
+	t.Parallel()
 	legacyCodex := `codex --dangerously-bypass-approvals-and-sandbox -m gpt-5.6-sol -c model_reasoning_effort=ultra`
 	templateCodex := `codex -m {{.Model}} -c model_reasoning_effort={{.ReasoningEffort}}`
 
@@ -1898,6 +1953,7 @@ func TestRestartAgentLaunchCommandWithOverride(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			cfg := &config.Config{}
 			cfg.Agents.Codex = tc.codexCmd
 			cfg.Agents.Claude = tc.claudeCmd
@@ -1927,6 +1983,7 @@ func TestRestartAgentLaunchCommandWithOverride(t *testing.T) {
 }
 
 func TestParseRestartLaunchOverride(t *testing.T) {
+	t.Parallel()
 	if o, err := parseRestartLaunchOverride("gpt-5.6-terra@high", "--search"); err != nil ||
 		o.Model != "gpt-5.6-terra" || o.Effort != "high" || o.Args != "--search" {
 		t.Fatalf("parse = %+v err=%v", o, err)
@@ -1946,6 +2003,7 @@ func TestParseRestartLaunchOverride(t *testing.T) {
 // respawn whose shell PID did not change was NOT a restart; it must be
 // reported as a failure with the PID evidence instead of counted restarted.
 func TestRespawnRecordsPIDEvidenceAndDetectsSoftRestart(t *testing.T) {
+	t.Parallel()
 	output := &RestartPaneOutput{Restarted: []string{}, Failed: []RestartError{}}
 	targets := []tmux.Pane{
 		{ID: "%1", Index: 1, WindowIndex: 0, Type: tmux.AgentClaude},
@@ -2003,9 +2061,11 @@ func TestRespawnRecordsPIDEvidenceAndDetectsSoftRestart(t *testing.T) {
 // effort was never recovered at all — so a whole swarm silently changed model
 // and reasoning budget on any recovery, with no operator signal.
 func TestRestartModelVarsRecoversExactModelAndEffort(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 
 	t.Run("exact model id and effort survive", func(t *testing.T) {
+		t.Parallel()
 		vars := restartModelVars(cfg, "codex", "gpt-5.6-terra@high")
 		if vars.Model != "gpt-5.6-terra" {
 			t.Fatalf("Model = %q, want gpt-5.6-terra (an exact model ID must not fall back to the default)", vars.Model)
@@ -2019,6 +2079,7 @@ func TestRestartModelVarsRecoversExactModelAndEffort(t *testing.T) {
 	})
 
 	t.Run("a bare unknown variant is still treated as a persona, not a model", func(t *testing.T) {
+		t.Parallel()
 		// Deliberate: spawn writes a persona name into the same field, and
 		// rendering `--model 'architect'` would kill the pane at its ready
 		// gate. Only the `model@effort` form proves the variant is a model.
@@ -2029,6 +2090,7 @@ func TestRestartModelVarsRecoversExactModelAndEffort(t *testing.T) {
 	})
 
 	t.Run("configured alias still resolves to its full name", func(t *testing.T) {
+		t.Parallel()
 		aliased := config.Default()
 		aliased.Models.Codex = map[string]string{"max": "gpt-5.1-codex-max"}
 		vars := restartModelVars(aliased, "codex", "max@high")
@@ -2044,6 +2106,7 @@ func TestRestartModelVarsRecoversExactModelAndEffort(t *testing.T) {
 	})
 
 	t.Run("no variant keeps the configured default", func(t *testing.T) {
+		t.Parallel()
 		vars := restartModelVars(cfg, "codex", "")
 		if vars.Model != cfg.Models.DefaultCodex {
 			t.Fatalf("Model = %q, want the default %q", vars.Model, cfg.Models.DefaultCodex)
@@ -2056,6 +2119,7 @@ func TestRestartModelVarsRecoversExactModelAndEffort(t *testing.T) {
 // templates that CAN place it; for the rest it has to stay a quiet no-op, or
 // the silent-drop guard turns every respawn of such a pane into a hard failure.
 func TestRestartLaunchCommandToleratesEffortTemplateCannotRender(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	// A legacy hardcoded command: no placeholders at all.
 	cfg.Agents.Codex = `codex --dangerously-bypass-approvals-and-sandbox -m gpt-5.6-sol`
@@ -2122,6 +2186,7 @@ func TestNotifyRestartPaneIdentityHookForwardsRestartedAgentPanes(t *testing.T) 
 // are sent, and the response carries a typed per-pane failure so ready:true can
 // never coexist with a silently swallowed prompt.
 func TestSendRestartPromptsWithholdsPromptWhenPaneNeverReady(t *testing.T) {
+	t.Parallel()
 	targets := []restartPromptTarget{
 		{Pane: "1", Target: "%1", AgentType: tmux.AgentClaude, ResolvedType: "claude"},
 	}
@@ -2168,6 +2233,7 @@ func TestSendRestartPromptsWithholdsPromptWhenPaneNeverReady(t *testing.T) {
 // After keys are sent, an unconfirmed submission is a per-pane failure with
 // status unknown, not a delivered success.
 func TestSendRestartPromptsSurfacesUnconfirmedSubmission(t *testing.T) {
+	t.Parallel()
 	targets := []restartPromptTarget{
 		{Pane: "1", Target: "%1", AgentType: tmux.AgentCodex, ResolvedType: "codex"},
 		{Pane: "2", Target: "%2", AgentType: tmux.AgentClaude, ResolvedType: "claude"},
@@ -2207,9 +2273,11 @@ func TestSendRestartPromptsSurfacesUnconfirmedSubmission(t *testing.T) {
 // The readiness gate must keep polling while the foreground is a shell, then
 // report ready only when a non-shell foreground AND a ready composer coincide.
 func TestWaitForRestartPromptDeliveryReadyGatesOnShellAndComposer(t *testing.T) {
+	t.Parallel()
 	target := restartPromptTarget{Pane: "1", Target: "%1", AgentType: tmux.AgentClaude, ResolvedType: "claude"}
 
 	t.Run("becomes ready once agent is foreground with composer", func(t *testing.T) {
+		t.Parallel()
 		commands := []string{"zsh", "zsh", "node"}
 		call := 0
 		ready, reason, err := waitForRestartPromptDeliveryReadyContext(
@@ -2233,6 +2301,7 @@ func TestWaitForRestartPromptDeliveryReadyGatesOnShellAndComposer(t *testing.T) 
 	})
 
 	t.Run("times out with shell reason when foreground never leaves the shell", func(t *testing.T) {
+		t.Parallel()
 		ready, reason, err := waitForRestartPromptDeliveryReadyContext(
 			t.Context(),
 			target,
@@ -2253,6 +2322,7 @@ func TestWaitForRestartPromptDeliveryReadyGatesOnShellAndComposer(t *testing.T) 
 	})
 
 	t.Run("times out with composer reason when composer never appears", func(t *testing.T) {
+		t.Parallel()
 		ready, reason, err := waitForRestartPromptDeliveryReadyContext(
 			t.Context(),
 			target,

@@ -28,6 +28,7 @@ func readAgentFixture(t *testing.T, name string) string {
 }
 
 func TestClassifyAgentState_NoOutputClockUsesTail(t *testing.T) {
+	t.Parallel()
 	a := NewTmuxAdapter(DefaultTmuxAdapterConfig())
 	idleClaude := readAgentFixture(t, "claude_idle_completed.txt")
 	workingClaude := readAgentFixture(t, "claude_working_monitor.txt")
@@ -129,12 +130,10 @@ func TestClassifyAgentState_NoOutputClockUsesTail(t *testing.T) {
 // timestamp or a line delta, and the adapter must therefore report idle.
 func TestEnrichAgentStatus_FreshProcessDoesNotFabricateOutput(t *testing.T) {
 	clearPaneStates()
-	SetProjectionStore(nil)
-	t.Cleanup(func() { SetProjectionStore(nil) })
 
 	idleClaude := readAgentFixture(t, "claude_idle_completed.txt")
 	agent := &Agent{PID: os.Getpid(), Pane: "%288", Type: "claude"}
-	enrichAgentStatus(agent, "sess", "", idleClaude)
+	enrichAgentStatus(nil, agent, "sess", "", idleClaude)
 
 	if !agent.LastOutputTS.IsZero() {
 		t.Fatalf("LastOutputTS = %v, want zero on first observation", agent.LastOutputTS)
@@ -150,7 +149,7 @@ func TestEnrichAgentStatus_FreshProcessDoesNotFabricateOutput(t *testing.T) {
 	}
 
 	// A real change seen by the same process still counts as output.
-	enrichAgentStatus(agent, "sess", "", idleClaude+"\nmore output\n")
+	enrichAgentStatus(nil, agent, "sess", "", idleClaude+"\nmore output\n")
 	if agent.LastOutputTS.IsZero() || agent.OutputLinesSinceLast == 0 {
 		t.Fatalf("in-process change not tracked: ts=%v lines=%d", agent.LastOutputTS, agent.OutputLinesSinceLast)
 	}
@@ -161,9 +160,8 @@ func TestEnrichAgentStatus_FreshProcessDoesNotFabricateOutput(t *testing.T) {
 // tracker) inherits the last-change clock from the durable output sequence
 // instead of restarting from "changed just now".
 func TestEnrichAgentStatus_DurableSequenceSuppliesClockAcrossProcesses(t *testing.T) {
+	t.Parallel()
 	store := newProjectionTestStore(t)
-	SetProjectionStore(store)
-	t.Cleanup(func() { SetProjectionStore(nil) })
 
 	idleClaude := readAgentFixture(t, "claude_idle_completed.txt")
 	newAgent := func() *Agent { return &Agent{PID: os.Getpid(), Pane: "%289", Type: "claude"} }
@@ -171,7 +169,7 @@ func TestEnrichAgentStatus_DurableSequenceSuppliesClockAcrossProcesses(t *testin
 	// Process 1: first observation ever. No baseline anywhere.
 	clearPaneStates()
 	agent := newAgent()
-	enrichAgentStatus(agent, "sess", "", idleClaude)
+	enrichAgentStatus(store, agent, "sess", "", idleClaude)
 	if !agent.LastOutputTS.IsZero() || agent.OutputLinesSinceLast != 0 {
 		t.Fatalf("first observation ever: ts=%v lines=%d, want zero/0", agent.LastOutputTS, agent.OutputLinesSinceLast)
 	}
@@ -179,7 +177,7 @@ func TestEnrichAgentStatus_DurableSequenceSuppliesClockAcrossProcesses(t *testin
 	// Process 2: same content. Still no change ever recorded.
 	clearPaneStates()
 	agent = newAgent()
-	enrichAgentStatus(agent, "sess", "", idleClaude)
+	enrichAgentStatus(store, agent, "sess", "", idleClaude)
 	if !agent.LastOutputTS.IsZero() || agent.OutputLinesSinceLast != 0 {
 		t.Fatalf("unchanged across processes: ts=%v lines=%d, want zero/0", agent.LastOutputTS, agent.OutputLinesSinceLast)
 	}
@@ -188,7 +186,7 @@ func TestEnrichAgentStatus_DurableSequenceSuppliesClockAcrossProcesses(t *testin
 	// real output evidence and must produce a clock plus a change marker.
 	clearPaneStates()
 	agent = newAgent()
-	enrichAgentStatus(agent, "sess", "", idleClaude+"\nnew line\n")
+	enrichAgentStatus(store, agent, "sess", "", idleClaude+"\nnew line\n")
 	if agent.LastOutputTS.IsZero() || agent.OutputLinesSinceLast != 1 {
 		t.Fatalf("changed across processes: ts=%v lines=%d, want recent/1", agent.LastOutputTS, agent.OutputLinesSinceLast)
 	}
@@ -199,7 +197,7 @@ func TestEnrichAgentStatus_DurableSequenceSuppliesClockAcrossProcesses(t *testin
 	// Process 4: same content again. The clock carries over, the delta does not.
 	clearPaneStates()
 	agent = newAgent()
-	enrichAgentStatus(agent, "sess", "", idleClaude+"\nnew line\n")
+	enrichAgentStatus(store, agent, "sess", "", idleClaude+"\nnew line\n")
 	if agent.LastOutputTS.IsZero() || agent.OutputLinesSinceLast != 0 {
 		t.Fatalf("unchanged after change: ts=%v lines=%d, want carried clock/0", agent.LastOutputTS, agent.OutputLinesSinceLast)
 	}
@@ -212,8 +210,6 @@ func TestEnrichAgentStatus_DurableSequenceSuppliesClockAcrossProcesses(t *testin
 // live classifier instead of reporting every agent busy.
 func TestProjectionStatusIdlePanesAreNotReportedBusy(t *testing.T) {
 	store := newProjectionTestStore(t)
-	SetProjectionStore(store)
-	t.Cleanup(func() { SetProjectionStore(nil) })
 	clearPaneStates()
 
 	idleClaude := readAgentFixture(t, "claude_idle_completed.txt")
@@ -234,7 +230,7 @@ func TestProjectionStatusIdlePanesAreNotReportedBusy(t *testing.T) {
 	tails := make(map[string]string, len(panes))
 	for _, p := range panes {
 		agent := Agent{PID: os.Getpid(), Pane: p.id, Type: p.typ}
-		enrichAgentStatus(&agent, sess.Name, "", p.tail)
+		enrichAgentStatus(store, &agent, sess.Name, "", p.tail)
 		agents = append(agents, agent)
 		tails[p.id] = p.tail
 	}

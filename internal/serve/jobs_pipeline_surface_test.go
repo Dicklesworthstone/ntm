@@ -39,8 +39,10 @@ func awaitPipelineJobFile(t *testing.T, path string) {
 }
 
 func TestJobDispatchPipelineExecOwnsInlineWorkflow(t *testing.T) {
+	t.Parallel()
 	for _, fail := range []bool{false, true} {
 		t.Run(fmt.Sprintf("fail=%v", fail), func(t *testing.T) {
+			t.Parallel()
 			srv := NewHermeticServer("test")
 			defer srv.Stop()
 			dir := t.TempDir()
@@ -83,8 +85,10 @@ func TestJobDispatchPipelineExecOwnsInlineWorkflow(t *testing.T) {
 }
 
 func TestJobDispatchPipelineResumePreservesCompletedWork(t *testing.T) {
+	t.Parallel()
 	for _, cancel := range []bool{false, true} {
 		t.Run(fmt.Sprintf("cancel=%v", cancel), func(t *testing.T) {
+			t.Parallel()
 			srv := NewHermeticServer("test")
 			defer srv.Stop()
 			dir := t.TempDir()
@@ -159,6 +163,7 @@ steps:
 }
 
 func TestJobDispatchPipelineResumeRejectsUnavailableState(t *testing.T) {
+	t.Parallel()
 	srv := NewHermeticServer("test")
 	defer srv.Stop()
 	dir := t.TempDir()
@@ -175,8 +180,10 @@ func TestJobDispatchPipelineResumeRejectsUnavailableState(t *testing.T) {
 }
 
 func TestPipelineJobIdentitySurvivesInterruptedJournal(t *testing.T) {
+	t.Parallel()
 	for _, jobType := range []string{JobTypePipelineRun, JobTypePipelineExec, JobTypePipelineResume} {
 		t.Run(jobType, func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			path := filepath.Join(dir, "state.db")
 			srv, closeServer := newJournalHTTPServer(t, path)
@@ -301,9 +308,11 @@ func TestPipelineJobIdentitySurvivesInterruptedJournal(t *testing.T) {
 }
 
 func TestPipelineJobCheckpointStopsBeforeExecution(t *testing.T) {
+	t.Parallel()
 	for _, resume := range []bool{false, true} {
 		for _, cancelled := range []bool{false, true} {
 			t.Run(fmt.Sprintf("resume=%v/cancelled=%v", resume, cancelled), func(t *testing.T) {
+				t.Parallel()
 				dir := t.TempDir()
 				srv := NewHermeticServer("test")
 				defer srv.Stop()

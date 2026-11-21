@@ -141,10 +141,8 @@ func TestHandleAgentActuationV1PreservesUnknownOperationReceipt(t *testing.T) {
 //   - reusing the key with a different body is a 409 IDEMPOTENCY_CONFLICT.
 func TestHandleAgentInterruptV1IdempotencyKeyIsDurable(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
-	srv, store := setupTestServer(t)
+	srv, _ := setupTestServer(t)
 
-	robot.SetProjectionStore(store)
-	t.Cleanup(func() { robot.SetProjectionStore(nil) })
 	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{JournalSize: 100, RetentionPeriod: time.Hour})
 	oldFeed := robot.GetAttentionFeed()
 	robot.SetAttentionFeed(feed)

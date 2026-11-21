@@ -17,6 +17,7 @@ import (
 )
 
 func TestExecutePipelineJobOwnsBackgroundLifetime(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	started := make(chan struct{})
@@ -66,6 +67,7 @@ func TestExecutePipelineJobOwnsBackgroundLifetime(t *testing.T) {
 }
 
 func TestExecutePipelineJobTerminalOutcomes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, status                      string
 		dry, reportedDry, success, wantOK bool
@@ -81,6 +83,7 @@ func TestExecutePipelineJobTerminalOutcomes(t *testing.T) {
 		{"dry run must not execute", "completed", true, false, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			out, err := executePipelineJob(context.Background(), pipeline.PipelineRunOptions{Session: "owned", DryRun: tc.dry}, func(context.Context, pipeline.PipelineRunOptions) pipeline.PipelineRunOutput {
 				return pipeline.PipelineRunOutput{
 					RobotResponse: pipeline.NewRobotResponse(tc.success), RunID: "run-123",
@@ -98,6 +101,7 @@ func TestExecutePipelineJobTerminalOutcomes(t *testing.T) {
 }
 
 func TestExecutePipelineJobPrecancelDoesNotRun(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	out, err := executePipelineJob(ctx, pipeline.PipelineRunOptions{}, func(context.Context, pipeline.PipelineRunOptions) pipeline.PipelineRunOutput {
@@ -110,6 +114,7 @@ func TestExecutePipelineJobPrecancelDoesNotRun(t *testing.T) {
 }
 
 func TestExecutePipelineJobCancellationRetainsRun(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	out, err := executePipelineJob(ctx, pipeline.PipelineRunOptions{}, func(context.Context, pipeline.PipelineRunOptions) pipeline.PipelineRunOutput {
@@ -124,8 +129,10 @@ func TestExecutePipelineJobCancellationRetainsRun(t *testing.T) {
 // These tests enter through the real jobs surface and run a command workflow.
 // File rendezvous keeps the pipeline live until the test explicitly releases it.
 func TestJobDispatchBackgroundPipelineLifetime(t *testing.T) {
+	t.Parallel()
 	for _, fail := range []bool{false, true} {
 		t.Run(fmt.Sprintf("fail=%v", fail), func(t *testing.T) {
+			t.Parallel()
 			srv := NewHermeticServer("test")
 			defer srv.Stop()
 			dir := t.TempDir()
@@ -174,6 +181,7 @@ func TestJobDispatchBackgroundPipelineLifetime(t *testing.T) {
 }
 
 func TestJobDispatchCancelledBeforeRegistration(t *testing.T) {
+	t.Parallel()
 	srv := NewHermeticServer("test")
 	defer srv.Stop()
 	job := srv.jobStore.Create(JobTypeSwarmSpawn)
@@ -192,6 +200,7 @@ func TestJobDispatchCancelledBeforeRegistration(t *testing.T) {
 }
 
 func TestJobDispatchBackgroundPipelineCancellation(t *testing.T) {
+	t.Parallel()
 	srv := NewHermeticServer("test")
 	defer srv.Stop()
 	dir := t.TempDir()

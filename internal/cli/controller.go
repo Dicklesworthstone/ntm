@@ -76,7 +76,7 @@ and does not return output to you. Use --robot-tail or --robot-snapshot for insp
 Start by calling ntm --robot-snapshot to survey the current state, then ntm --robot-attention
 to wait for the first event that needs coordination.`
 
-func init() {
+func registerControllerKernelAndSchemas() {
 	robot.MustRegisterSchemaCommand("controller_spawn", ControllerResponse{})
 
 	// Register sessions.controller command

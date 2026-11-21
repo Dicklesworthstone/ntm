@@ -179,6 +179,7 @@ func TestRunRebalancePolicyFailuresPrecedeStoreAndTmuxReads(t *testing.T) {
 }
 
 func TestCalculateImbalanceScore(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		workloads []RebalanceWorkload
@@ -262,6 +263,7 @@ func TestCalculateImbalanceScore(t *testing.T) {
 }
 
 func TestGetRecommendation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		score float64
@@ -287,6 +289,7 @@ func TestGetRecommendation(t *testing.T) {
 }
 
 func TestMatchesRebalanceFilter(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		agentType string
@@ -325,6 +328,7 @@ func TestMatchesRebalanceFilter(t *testing.T) {
 }
 
 func TestNormalizeAgentTypeFilter(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		filter  string
@@ -353,6 +357,7 @@ func TestNormalizeAgentTypeFilter(t *testing.T) {
 }
 
 func TestRebalanceWorkloadCounts(t *testing.T) {
+	t.Parallel()
 	workloads := []RebalanceWorkload{
 		{Pane: 1, PaneID: "%11", TaskCount: 5},
 		{Pane: 2, PaneID: "%22", TaskCount: 3},
@@ -376,6 +381,7 @@ func TestRebalanceWorkloadCounts(t *testing.T) {
 }
 
 func TestBuildRebalanceWorkloads_UsesParsedPaneType(t *testing.T) {
+	t.Parallel()
 	store := assignment.NewStore("test-session")
 	panes := []tmux.Pane{
 		{ID: "%1", WindowIndex: 0, Index: 1, Type: tmux.AgentClaude, Title: "notes", Active: true},
@@ -396,6 +402,7 @@ func TestBuildRebalanceWorkloads_UsesParsedPaneType(t *testing.T) {
 }
 
 func TestBuildRebalanceWorkloadsCanonicalizesDuplicateWindowLocalIndexes(t *testing.T) {
+	t.Parallel()
 	first := makeAssignment("bd-window-0", "window zero", 0, assignment.StatusWorking)
 	first.OccupancyKey, first.DispatchTarget = "%11", "%11"
 	first.AgentType = "codex"
@@ -442,6 +449,7 @@ func TestBuildRebalanceWorkloadsCanonicalizesDuplicateWindowLocalIndexes(t *test
 }
 
 func TestBuildRebalanceWorkloadsFailsClosedOnMissingActivePhysicalPane(t *testing.T) {
+	t.Parallel()
 	missing := makeAssignment("ntm-missing-pane", "missing pane", 0, assignment.StatusWorking)
 	missing.OccupancyKey, missing.DispatchTarget = "%99", "%99"
 	missing.AgentType = "codex"
@@ -454,6 +462,7 @@ func TestBuildRebalanceWorkloadsFailsClosedOnMissingActivePhysicalPane(t *testin
 }
 
 func TestRebalanceResponseRequiredArraysMarshalEmptyNotNull(t *testing.T) {
+	t.Parallel()
 	data, err := json.Marshal(RebalanceResponse{
 		TimestampedResponse: output.NewTimestamped(),
 		Success:             true,
@@ -472,6 +481,7 @@ func TestRebalanceResponseRequiredArraysMarshalEmptyNotNull(t *testing.T) {
 }
 
 func TestClassifyRebalanceErrorUsesStableCodes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		err  error
 		want string
@@ -490,6 +500,7 @@ func TestClassifyRebalanceErrorUsesStableCodes(t *testing.T) {
 }
 
 func TestCalculateAfterState(t *testing.T) {
+	t.Parallel()
 	workloads := []RebalanceWorkload{
 		{Pane: 1, PaneID: "%11", TaskCount: 5},
 		{Pane: 2, PaneID: "%22", TaskCount: 0},
@@ -511,6 +522,7 @@ func TestCalculateAfterState(t *testing.T) {
 }
 
 func TestCalculateAfterStateEmpty(t *testing.T) {
+	t.Parallel()
 	workloads := []RebalanceWorkload{
 		{Pane: 1, PaneID: "%11", TaskCount: 3},
 	}
@@ -525,6 +537,7 @@ func TestCalculateAfterStateEmpty(t *testing.T) {
 }
 
 func TestSuggestTransfersDistributesAcrossTargets(t *testing.T) {
+	t.Parallel()
 	workloads := []RebalanceWorkload{
 		{Pane: 1, PaneTarget: "0.1", PaneID: "%1", AgentType: "claude", TaskCount: 5, TaskIDs: []string{"bd-1", "bd-2", "bd-3", "bd-4", "bd-5"}},
 		{Pane: 2, PaneTarget: "0.2", PaneID: "%2", AgentType: "codex", TaskCount: 0, IsHealthy: true, IsIdle: true},
@@ -556,6 +569,7 @@ func TestSuggestTransfersDistributesAcrossTargets(t *testing.T) {
 }
 
 func TestSuggestTransfersRequiresWorkingAtomicGeneration(t *testing.T) {
+	t.Parallel()
 	workloads := []RebalanceWorkload{
 		{Pane: 1, PaneTarget: "0.1", PaneID: "%1", AgentType: "claude", TaskCount: 2, TaskIDs: []string{"bd-assigned", "bd-working"}},
 		{Pane: 2, PaneTarget: "0.2", PaneID: "%2", AgentType: "codex", TaskCount: 0, IsHealthy: true, IsIdle: true},
@@ -577,6 +591,7 @@ func TestSuggestTransfersRequiresWorkingAtomicGeneration(t *testing.T) {
 }
 
 func TestSuggestTransfersReasonSameType(t *testing.T) {
+	t.Parallel()
 	workloads := []RebalanceWorkload{
 		{Pane: 1, PaneTarget: "0.1", PaneID: "%1", AgentType: "claude", TaskCount: 3, TaskIDs: []string{"bd-1", "bd-2", "bd-3"}},
 		{Pane: 2, PaneTarget: "0.2", PaneID: "%2", AgentType: "claude", TaskCount: 0, IsHealthy: true, IsIdle: true},
@@ -600,6 +615,7 @@ func TestSuggestTransfersReasonSameType(t *testing.T) {
 }
 
 func TestSuggestTransfersReasonTargetIdle(t *testing.T) {
+	t.Parallel()
 	workloads := []RebalanceWorkload{
 		{Pane: 1, PaneTarget: "0.1", PaneID: "%1", AgentType: "claude", TaskCount: 2, TaskIDs: []string{"bd-1", "bd-2"}},
 		{Pane: 2, PaneTarget: "0.2", PaneID: "%2", AgentType: "codex", TaskCount: 0, IsHealthy: true, IsIdle: true},

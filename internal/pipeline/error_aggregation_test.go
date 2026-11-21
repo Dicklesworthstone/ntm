@@ -8,6 +8,7 @@ import (
 )
 
 func TestForeachContinueAggregatesAllIterationFailures(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-error-aggregation",
@@ -47,6 +48,7 @@ func TestForeachContinueAggregatesAllIterationFailures(t *testing.T) {
 }
 
 func TestForeachFailFastAggregatesFirstFailureAndCancelsRemaining(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-fail-fast-aggregation",
@@ -86,6 +88,7 @@ func TestForeachFailFastAggregatesFirstFailureAndCancelsRemaining(t *testing.T) 
 }
 
 func TestParallelAggregatesMultipleSubstepFailures(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("test")
 	cfg.DryRun = true
 	cfg.ProjectDir = t.TempDir()
@@ -139,7 +142,9 @@ func TestParallelAggregatesMultipleSubstepFailures(t *testing.T) {
 // emit kind=foreach / step_id=... / reason=... details that mirror the
 // stepRuntimeError contract used by command and template steps.
 func TestForeachStructuredFailureDetails(t *testing.T) {
+	t.Parallel()
 	t.Run("source failure", func(t *testing.T) {
+		t.Parallel()
 		got := foreachStructuredError("fanout", "foreach_source", "boom", "")
 		if got.Type != "foreach_source" {
 			t.Errorf("Type = %q, want foreach_source", got.Type)
@@ -151,18 +156,21 @@ func TestForeachStructuredFailureDetails(t *testing.T) {
 		}
 	})
 	t.Run("limit failure", func(t *testing.T) {
+		t.Parallel()
 		got := foreachStructuredError("fanout", "limit", "200 iterations exceed max_foreach_iterations 100", "shrink the source")
 		if !strings.Contains(got.Details, "hint=shrink the source") {
 			t.Errorf("Details %q missing hint", got.Details)
 		}
 	})
 	t.Run("iteration failure carries iteration index", func(t *testing.T) {
+		t.Parallel()
 		got := foreachStructuredErrorAtIteration("fanout", "foreach", "iter-3 failed", "", 3)
 		if !strings.Contains(got.Details, "iteration=3") {
 			t.Errorf("Details %q missing iteration=3", got.Details)
 		}
 	})
 	t.Run("iteration index omitted when negative", func(t *testing.T) {
+		t.Parallel()
 		got := foreachStructuredErrorAtIteration("fanout", "foreach", "no iter info", "", -1)
 		if strings.Contains(got.Details, "iteration=") {
 			t.Errorf("Details %q should not include iteration field", got.Details)
@@ -174,6 +182,7 @@ func TestForeachStructuredFailureDetails(t *testing.T) {
 // when the foreach failure happens at index 0 the JSON details must still
 // carry "iteration":0 instead of omitting the field via json:",omitempty".
 func TestForeachAggregateErrorIncludesIterationZero(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-iter-zero-aggregation",

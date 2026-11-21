@@ -891,7 +891,11 @@ func sendResumePrompt(ctx context.Context, sessionName, prompt string) (sent, fa
 		return 0, 0, nil
 	}
 	// Give freshly-relaunched agents a moment to accept input before delivery.
-	if err := waitContextDelay(ctx, 750*time.Millisecond); err != nil {
+	settleDelay := 750 * time.Millisecond
+	if tmux.DefaultClient != nil && tmux.DefaultClient.MaxSendDelay > 0 && settleDelay > tmux.DefaultClient.MaxSendDelay {
+		settleDelay = tmux.DefaultClient.MaxSendDelay
+	}
+	if err := waitContextDelay(ctx, settleDelay); err != nil {
 		return 0, 0, err
 	}
 	service, err := dispatchsvc.NewService(dispatchsvc.Ports{

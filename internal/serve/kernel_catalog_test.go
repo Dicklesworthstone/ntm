@@ -67,5 +67,22 @@ func TestKernelCatalogConvergedWithCapabilitiesAndServedRoutes(t *testing.T) {
 	if !payload.Success || payload.Count != len(commands) {
 		t.Fatalf("/api/v1/kernel/commands success=%v count=%d, want count=%d", payload.Success, payload.Count, len(commands))
 	}
-	t.Logf("Converged kernel catalog: %d total commands, %d REST-bound commands", len(commands), restCount)
+
+	// Verify honest executable vs catalog_only metadata across all returned entries.
+	catalogOnlyCount := 0
+	for _, c := range payload.Commands {
+		if c.Executable == c.CatalogOnly {
+			t.Errorf("command %q has contradictory executable=%v catalog_only=%v", c.Name, c.Executable, c.CatalogOnly)
+		}
+		if strings.HasPrefix(c.Name, "rest.") || strings.HasPrefix(c.Name, "robot.") {
+			if c.Executable || !c.CatalogOnly {
+				t.Errorf("synthesized catalog command %q reported executable=%v catalog_only=%v, want false/true", c.Name, c.Executable, c.CatalogOnly)
+			}
+			catalogOnlyCount++
+		}
+	}
+	if catalogOnlyCount == 0 {
+		t.Fatal("expected synthesized catalog_only entries in /api/v1/kernel/commands")
+	}
+	t.Logf("Converged kernel catalog: %d total commands, %d REST-bound commands, %d catalog_only", len(commands), restCount, catalogOnlyCount)
 }

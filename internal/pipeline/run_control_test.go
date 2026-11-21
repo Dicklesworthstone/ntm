@@ -15,6 +15,7 @@ import (
 )
 
 func TestRunControlCancellationKeepsOwnershipUntilExecutionReturns(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	control, err := AcquireRunControl(context.Background(), dir, "run")
 	if err != nil {
@@ -53,6 +54,7 @@ func TestRunControlCancellationKeepsOwnershipUntilExecutionReturns(t *testing.T)
 }
 
 func TestRunControlRejectsInvalidAndPrecancelledRequests(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -79,6 +81,7 @@ func TestRunControlRejectsInvalidAndPrecancelledRequests(t *testing.T) {
 }
 
 func TestRunControlRequiresLiveAcknowledgment(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := RequestRunCancellation(context.Background(), dir, "missing"); !errors.Is(err, ErrRunControlUnavailable) {
 		t.Fatalf("missing owner: %v", err)
@@ -103,6 +106,7 @@ func TestRunControlRequiresLiveAcknowledgment(t *testing.T) {
 }
 
 func TestRunControlProjectIsolationAndCanonicalRoot(t *testing.T) {
+	t.Parallel()
 	root, otherRoot := t.TempDir(), t.TempDir()
 	first, err := AcquireRunControl(context.Background(), root, "same-id")
 	if err != nil {
@@ -134,6 +138,7 @@ func TestRunControlProjectIsolationAndCanonicalRoot(t *testing.T) {
 }
 
 func TestRunControlConcurrentCancellationIsIdempotent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	control, err := AcquireRunControl(context.Background(), dir, "run")
 	if err != nil {
@@ -156,6 +161,7 @@ func TestRunControlConcurrentCancellationIsIdempotent(t *testing.T) {
 }
 
 func TestRunControlBoundsRecordReads(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "record")
 	if err := os.WriteFile(path, []byte(strings.Repeat("x", 4097)), 0600); err != nil {
 		t.Fatal(err)
@@ -167,6 +173,7 @@ func TestRunControlBoundsRecordReads(t *testing.T) {
 }
 
 func TestRunControlAcrossProcesses(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"cancel", "crash"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
@@ -259,6 +266,7 @@ func TestRunControlProcessHelper(t *testing.T) {
 }
 
 func TestListPipelineSnapshots(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	// Empty project returns empty slice and no warnings.

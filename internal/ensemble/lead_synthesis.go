@@ -25,11 +25,14 @@ const (
 const (
 	// DefaultLeadSynthesisTimeout bounds how long we wait for the lead agent.
 	DefaultLeadSynthesisTimeout = 5 * time.Minute
-	// DefaultLeadPollInterval is how often the pane collector polls for output.
-	DefaultLeadPollInterval = 5 * time.Second
 	// defaultLeadCaptureLines is how many pane lines the collector captures.
 	defaultLeadCaptureLines = 2000
 )
+
+// DefaultLeadPollInterval is how often the pane collector polls for output.
+// Declared as var so tests with mock panes can tune polling cadence without
+// altering production defaults.
+var DefaultLeadPollInterval = 5 * time.Second
 
 // sampleSynthesisSummary is the sentinel summary embedded in the prompt's
 // schema example. Lead responses that echo it back are rejected so the

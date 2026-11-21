@@ -25,14 +25,9 @@ import (
 )
 
 const (
-	// restartPaneSettleDelay is how long to wait after respawn-pane -k before
-	// typing into the fresh shell (the shell needs a moment to initialize).
-	restartPaneSettleDelay = 750 * time.Millisecond
 	// restartPaneReadyTimeout bounds the post-relaunch ready-gate: we poll for
 	// the agent TUI instead of sleeping a fixed interval (#187).
 	restartPaneReadyTimeout = 15 * time.Second
-	// restartPaneReadyPollInterval is the ready-gate poll cadence.
-	restartPaneReadyPollInterval = 400 * time.Millisecond
 	// restartPaneDispatchReadyTimeout bounds the canonical idle observation gate
 	// that runs after relaunch readiness but before an atomic bead claim.
 	restartPaneDispatchReadyTimeout = 15 * time.Second
@@ -41,6 +36,14 @@ const (
 	// that point, but we still need a short observation window to report whether
 	// respawn-pane changed the pane before returning the cancellation error.
 	restartPaneMutationObservationTimeout = 2 * time.Second
+)
+
+var (
+	// restartPaneSettleDelay is how long to wait after respawn-pane -k before
+	// typing into the fresh shell (the shell needs a moment to initialize).
+	restartPaneSettleDelay = 750 * time.Millisecond
+	// restartPaneReadyPollInterval is the ready-gate poll cadence.
+	restartPaneReadyPollInterval = 400 * time.Millisecond
 )
 
 // RestartPaneOutput is the structured output for --robot-restart-pane

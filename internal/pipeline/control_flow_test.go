@@ -17,8 +17,10 @@ import (
 // resolveBranch + lookupBranch tests (bd-w6nth.1)
 // ---------------------------------------------------------------------------
 
-func newBranchTestExecutor() *Executor {
+func newBranchTestExecutor(t *testing.T) *Executor {
+	t.Helper()
 	cfg := DefaultExecutorConfig("test-session")
+	cfg.ProjectDir = t.TempDir()
 	cfg.RunID = "run-branch-test"
 	e := NewExecutor(cfg)
 	e.state = &ExecutionState{
@@ -31,7 +33,8 @@ func newBranchTestExecutor() *Executor {
 }
 
 func TestResolveBranch_Literal(t *testing.T) {
-	e := newBranchTestExecutor()
+	t.Parallel()
+	e := newBranchTestExecutor(t)
 	step := &Step{
 		ID:     "branch-lit",
 		Branch: "fresh-pass",
@@ -47,7 +50,8 @@ func TestResolveBranch_Literal(t *testing.T) {
 }
 
 func TestResolveBranch_ShellCommand(t *testing.T) {
-	e := newBranchTestExecutor()
+	t.Parallel()
+	e := newBranchTestExecutor(t)
 	step := &Step{
 		ID:     "branch-shell",
 		Branch: "$(echo audit-only)",
@@ -63,7 +67,8 @@ func TestResolveBranch_ShellCommand(t *testing.T) {
 }
 
 func TestResolveBranch_ShellTrimWhitespace(t *testing.T) {
-	e := newBranchTestExecutor()
+	t.Parallel()
+	e := newBranchTestExecutor(t)
 	step := &Step{
 		ID:     "branch-ws",
 		Branch: `$(printf "  spaced  \n")`,
@@ -79,7 +84,8 @@ func TestResolveBranch_ShellTrimWhitespace(t *testing.T) {
 }
 
 func TestResolveBranch_ShellFailure(t *testing.T) {
-	e := newBranchTestExecutor()
+	t.Parallel()
+	e := newBranchTestExecutor(t)
 	step := &Step{
 		ID:     "branch-fail",
 		Branch: "$(exit 1)",
@@ -92,7 +98,8 @@ func TestResolveBranch_ShellFailure(t *testing.T) {
 }
 
 func TestResolveBranch_VariableSubstitution(t *testing.T) {
-	e := newBranchTestExecutor()
+	t.Parallel()
+	e := newBranchTestExecutor(t)
 	e.state.Variables["mode"] = "fast"
 	e.defaults = map[string]interface{}{"prefix": "run"}
 
@@ -111,6 +118,7 @@ func TestResolveBranch_VariableSubstitution(t *testing.T) {
 }
 
 func TestLookupBranch_MatchFound(t *testing.T) {
+	t.Parallel()
 	branches := map[string]interface{}{
 		"fresh-pass": map[string]interface{}{"command": "echo fresh"},
 		"audit-only": map[string]interface{}{"command": "echo audit"},
@@ -126,6 +134,7 @@ func TestLookupBranch_MatchFound(t *testing.T) {
 }
 
 func TestLookupBranch_NoMatch_Error(t *testing.T) {
+	t.Parallel()
 	branches := map[string]interface{}{
 		"a": map[string]interface{}{"command": "echo a"},
 		"b": map[string]interface{}{"command": "echo b"},
@@ -141,6 +150,7 @@ func TestLookupBranch_NoMatch_Error(t *testing.T) {
 }
 
 func TestLookupBranch_DefaultFallback(t *testing.T) {
+	t.Parallel()
 	branches := map[string]interface{}{
 		"a":       map[string]interface{}{"command": "echo a"},
 		"default": map[string]interface{}{"command": "echo fallback"},
@@ -160,6 +170,7 @@ func TestLookupBranch_DefaultFallback(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseBranchSteps_SingleStep(t *testing.T) {
+	t.Parallel()
 	val := map[string]interface{}{
 		"id":      "step-a",
 		"command": "echo hello",
@@ -177,6 +188,7 @@ func TestParseBranchSteps_SingleStep(t *testing.T) {
 }
 
 func TestParseBranchSteps_ListOfSteps(t *testing.T) {
+	t.Parallel()
 	val := []interface{}{
 		map[string]interface{}{"id": "s1", "command": "echo one"},
 		map[string]interface{}{"id": "s2", "command": "echo two"},
@@ -195,6 +207,7 @@ func TestParseBranchSteps_ListOfSteps(t *testing.T) {
 }
 
 func TestParseBranchSteps_AutoGeneratesID(t *testing.T) {
+	t.Parallel()
 	val := map[string]interface{}{
 		"command": "echo auto-id",
 	}
@@ -212,7 +225,8 @@ func TestParseBranchSteps_AutoGeneratesID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExecuteBranch_SingleCommandStep(t *testing.T) {
-	e := newBranchTestExecutor()
+	t.Parallel()
+	e := newBranchTestExecutor(t)
 	step := &Step{
 		ID:     "br-cmd",
 		Branch: "fresh-pass",
@@ -234,7 +248,8 @@ func TestExecuteBranch_SingleCommandStep(t *testing.T) {
 }
 
 func TestExecuteBranch_ShellDispatch(t *testing.T) {
-	e := newBranchTestExecutor()
+	t.Parallel()
+	e := newBranchTestExecutor(t)
 	step := &Step{
 		ID:     "br-shell-disp",
 		Branch: "$(echo audit-only)",
@@ -254,7 +269,8 @@ func TestExecuteBranch_ShellDispatch(t *testing.T) {
 }
 
 func TestExecuteBranch_MultipleSteps(t *testing.T) {
-	e := newBranchTestExecutor()
+	t.Parallel()
+	e := newBranchTestExecutor(t)
 	step := &Step{
 		ID:     "br-multi",
 		Branch: "investigate",
@@ -277,7 +293,8 @@ func TestExecuteBranch_MultipleSteps(t *testing.T) {
 }
 
 func TestExecuteBranch_NoMatch_Error(t *testing.T) {
-	e := newBranchTestExecutor()
+	t.Parallel()
+	e := newBranchTestExecutor(t)
 	step := &Step{
 		ID:     "br-nomatch",
 		Branch: "unknown-key",
@@ -296,7 +313,8 @@ func TestExecuteBranch_NoMatch_Error(t *testing.T) {
 }
 
 func TestExecuteBranch_DefaultFallback(t *testing.T) {
-	e := newBranchTestExecutor()
+	t.Parallel()
+	e := newBranchTestExecutor(t)
 	step := &Step{
 		ID:     "br-default",
 		Branch: "$(echo something-unexpected)",
@@ -316,7 +334,8 @@ func TestExecuteBranch_DefaultFallback(t *testing.T) {
 }
 
 func TestExecuteBranch_DryRun(t *testing.T) {
-	e := newBranchTestExecutor()
+	t.Parallel()
+	e := newBranchTestExecutor(t)
 	e.config.DryRun = true
 	step := &Step{
 		ID:     "br-dry",
@@ -336,11 +355,12 @@ func TestExecuteBranch_DryRun(t *testing.T) {
 }
 
 func TestExecuteBranch_DryRun_RendersDispatchLineWithDescription(t *testing.T) {
+	t.Parallel()
 	// Branch dry-run must use the shared dryRunOutput() helper so the
 	// dispatch line "▶ [step.id] description" appears, matching the
 	// prompt/command/template/bead-query dry-run paths (bd-zc034). Without
 	// this, branch steps lack the operator-facing dispatch line.
-	e := newBranchTestExecutor()
+	e := newBranchTestExecutor(t)
 	e.config.DryRun = true
 	step := &Step{
 		ID:          "br-described",
@@ -365,7 +385,8 @@ func TestExecuteBranch_DryRun_RendersDispatchLineWithDescription(t *testing.T) {
 }
 
 func TestExecuteBranch_ShellFailure(t *testing.T) {
-	e := newBranchTestExecutor()
+	t.Parallel()
+	e := newBranchTestExecutor(t)
 	step := &Step{
 		ID:     "br-shellfail",
 		Branch: "$(exit 42)",
@@ -384,7 +405,8 @@ func TestExecuteBranch_ShellFailure(t *testing.T) {
 }
 
 func TestExecuteBranch_BodyStepFails(t *testing.T) {
-	e := newBranchTestExecutor()
+	t.Parallel()
+	e := newBranchTestExecutor(t)
 	step := &Step{
 		ID:     "br-fail-body",
 		Branch: "go",
@@ -404,7 +426,8 @@ func TestExecuteBranch_BodyStepFails(t *testing.T) {
 }
 
 func TestExecuteBranch_VariableScopeCleanup(t *testing.T) {
-	e := newBranchTestExecutor()
+	t.Parallel()
+	e := newBranchTestExecutor(t)
 	e.state.Variables["keep_me"] = "preserved"
 
 	step := &Step{
@@ -430,6 +453,7 @@ func TestExecuteBranch_VariableScopeCleanup(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOnFailureRecoveryDispatchesTemplateToPane(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	if err := os.WriteFile(tmpDir+"/recover.md", []byte("Recover <CAUSE>"), 0o644); err != nil {
 		t.Fatal(err)
@@ -487,6 +511,7 @@ func TestOnFailureRecoveryDispatchesTemplateToPane(t *testing.T) {
 }
 
 func TestOnFailureRecoveryFailureIsRecorded(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	mock := NewMockTmuxClient(tmux.Pane{ID: "%1", Index: 1, Type: tmux.AgentCodex})
 	t.Cleanup(mock.Reset)
@@ -531,6 +556,7 @@ func TestOnFailureRecoveryFailureIsRecorded(t *testing.T) {
 }
 
 func TestOnFailureRecoveryCanSuppressOriginalFailure(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	if err := os.WriteFile(tmpDir+"/recover.md", []byte("Recover now"), 0o644); err != nil {
 		t.Fatal(err)
@@ -572,6 +598,7 @@ func TestOnFailureRecoveryCanSuppressOriginalFailure(t *testing.T) {
 }
 
 func TestOnFailureActionSetsRuntimeVariableAndSkipsOriginalFailure(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("runtime-failure-session"))
 
 	workflow := &Workflow{
@@ -623,6 +650,7 @@ func TestOnFailureActionSetsRuntimeVariableAndSkipsOriginalFailure(t *testing.T)
 }
 
 func TestOnFailureActionFiresInsideForeachBody(t *testing.T) {
+	t.Parallel()
 	// A failed foreach body step with on_failure: <action> must run the
 	// on_failure action just like a top-level step does. Without this,
 	// moving a working step into a foreach body silently disabled the
@@ -673,6 +701,7 @@ func TestOnFailureActionFiresInsideForeachBody(t *testing.T) {
 }
 
 func TestOnFailureActionNotSetOnSuccessSkipsRuntimeGuardedStep(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("runtime-failure-session"))
 
 	workflow := &Workflow{
@@ -711,6 +740,7 @@ func TestOnFailureActionNotSetOnSuccessSkipsRuntimeGuardedStep(t *testing.T) {
 // parent step must trigger every step in its OnSuccess chain. Failures
 // inside the chain are logged but do not flip the parent's status.
 func TestOnSuccessStepsRunOnParentSuccess(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	cfg := DefaultExecutorConfig("on-success-success")
 	cfg.ProjectDir = tmpDir
@@ -754,6 +784,7 @@ func TestOnSuccessStepsRunOnParentSuccess(t *testing.T) {
 // TestOnSuccessStepsSkipOnParentFailure covers bd-w6nth.7: when the
 // parent step fails, OnSuccess steps must NOT run.
 func TestOnSuccessStepsSkipOnParentFailure(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	cfg := DefaultExecutorConfig("on-success-fail")
 	cfg.ProjectDir = tmpDir
@@ -784,6 +815,7 @@ func TestOnSuccessStepsSkipOnParentFailure(t *testing.T) {
 // if 1 of N OnSuccess steps fails, the others still run and the parent
 // remains StatusCompleted.
 func TestOnSuccessChildFailureDoesNotFlipParentStatus(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	cfg := DefaultExecutorConfig("on-success-mixed")
 	cfg.ProjectDir = tmpDir
@@ -822,6 +854,7 @@ func TestOnSuccessChildFailureDoesNotFlipParentStatus(t *testing.T) {
 }
 
 func TestOnSuccessExplicitIDsInsideForeachAreNamespaced(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("on-success-foreach"))
 
 	workflow := &Workflow{
@@ -876,6 +909,7 @@ func TestOnSuccessExplicitIDsInsideForeachAreNamespaced(t *testing.T) {
 // run and land in state.Steps under the canonical
 // <parent>_on_success_<child> key.
 func TestOnSuccessFiresForTopLevelParallel(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("on-success-parallel")
 	cfg.DryRun = true
 	executor := NewExecutor(cfg)
@@ -917,6 +951,7 @@ func TestOnSuccessFiresForTopLevelParallel(t *testing.T) {
 // the parallel group is not StatusCompleted, the OnSuccess chain must NOT run.
 // This matches the existing OnSuccess contract for command steps.
 func TestOnSuccessSkipsForFailedTopLevelParallel(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("on-success-parallel-fail")
 	cfg.DryRun = true
 	executor := NewExecutor(cfg)
@@ -946,6 +981,7 @@ func TestOnSuccessSkipsForFailedTopLevelParallel(t *testing.T) {
 }
 
 func TestOnFailureActionFiresForFailedTopLevelParallel(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("on-failure-parallel-parent")
 	cfg.DryRun = true
 	executor := NewExecutor(cfg)
@@ -989,6 +1025,7 @@ func TestOnFailureActionFiresForFailedTopLevelParallel(t *testing.T) {
 }
 
 func TestOnFailureActionFiresForFailedTopLevelLoop(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("on-failure-loop-parent"))
 
 	workflow := &Workflow{
@@ -1030,6 +1067,7 @@ func TestOnFailureActionFiresForFailedTopLevelLoop(t *testing.T) {
 }
 
 func TestRetryFiresForFailedTopLevelParallel(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("retry-parallel-parent")
 	cfg.DryRun = true
 	executor := NewExecutor(cfg)
@@ -1068,6 +1106,7 @@ func TestRetryFiresForFailedTopLevelParallel(t *testing.T) {
 }
 
 func TestRetryFiresForFailedTopLevelLoop(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("retry-loop-parent"))
 
 	workflow := &Workflow{
@@ -1104,6 +1143,7 @@ func TestRetryFiresForFailedTopLevelLoop(t *testing.T) {
 }
 
 func TestRunFailsAfterRetryExhaustion(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("retry-exhaustion"))
 
 	workflow := &Workflow{
@@ -1139,6 +1179,7 @@ func TestRunFailsAfterRetryExhaustion(t *testing.T) {
 }
 
 func TestFailedTopLevelParallelPreservesStructuredResultData(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("failed-parallel-data")
 	cfg.DryRun = true
 	executor := NewExecutor(cfg)
@@ -1198,7 +1239,8 @@ func TestFailedTopLevelParallelPreservesStructuredResultData(t *testing.T) {
 // was schema-accepted and silently skipped. Mirrors the bd-0fkcn fix for
 // the foreach body case.
 func TestOnSuccessFiresForBranchBodyChild(t *testing.T) {
-	executor := newBranchTestExecutor()
+	t.Parallel()
+	executor := newBranchTestExecutor(t)
 	step := &Step{
 		ID:     "router",
 		Branch: "primary",
@@ -1243,6 +1285,7 @@ func TestOnSuccessFiresForBranchBodyChild(t *testing.T) {
 // pane selection, the same fixture used by
 // TestOnSuccessFiresForTopLevelParallel.
 func TestOnSuccessFiresForParallelSubstep(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("parallel-substep-on-success")
 	cfg.DryRun = true
 	executor := NewExecutor(cfg)
@@ -1283,6 +1326,7 @@ func TestOnSuccessFiresForParallelSubstep(t *testing.T) {
 // steps must stay inside executeStep's common retry/success/failure tail so
 // `loop: ... on_success: ...` behaves like ordinary command steps.
 func TestOnSuccessFiresForTopLevelLoop(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("on-success-loop"))
 
 	workflow := &Workflow{
@@ -1318,6 +1362,7 @@ func TestOnSuccessFiresForTopLevelLoop(t *testing.T) {
 }
 
 func TestOnSuccessFiresForTopLevelBranch(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("on-success-branch"))
 
 	workflow := &Workflow{
@@ -1350,6 +1395,7 @@ func TestOnSuccessFiresForTopLevelBranch(t *testing.T) {
 }
 
 func TestOnSuccessFiresForTopLevelForeach(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("on-success-foreach-parent"))
 
 	workflow := &Workflow{
@@ -1382,6 +1428,7 @@ func TestOnSuccessFiresForTopLevelForeach(t *testing.T) {
 }
 
 func TestOnSuccessFiresForTopLevelBeadQuery(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("on-success-bead-query")
 	cfg.BeadQueryRunBr = func(ctx context.Context, args []string) ([]byte, error) {
 		return []byte(`{"issues":[]}`), nil
@@ -1414,6 +1461,7 @@ func TestOnSuccessFiresForTopLevelBeadQuery(t *testing.T) {
 }
 
 func TestBranchChildrenInsideForeachAreNamespaced(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("branch-foreach"))
 
 	workflow := &Workflow{
@@ -1459,6 +1507,7 @@ func TestBranchChildrenInsideForeachAreNamespaced(t *testing.T) {
 }
 
 func TestParallelChildrenInsideForeachAreNamespaced(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("parallel-foreach")
 	cfg.DryRun = true
 	executor := NewExecutor(cfg)
@@ -1515,6 +1564,7 @@ func TestParallelChildrenInsideForeachAreNamespaced(t *testing.T) {
 // the main pipeline graph completes successfully, post_pipeline_steps
 // must run and their results land in state.Steps.
 func TestRunPostPipelineStepsExecuteAfterMainSuccess(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	cfg := DefaultExecutorConfig("post-pipeline-success")
 	cfg.ProjectDir = tmpDir
@@ -1556,6 +1606,7 @@ func TestRunPostPipelineStepsExecuteAfterMainSuccess(t *testing.T) {
 // pipeline steps must run even when the main graph fails. The pipeline
 // status remains Failed; post-step results are still persisted.
 func TestRunPostPipelineStepsRunAfterMainFailure(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	cfg := DefaultExecutorConfig("post-pipeline-fail")
 	cfg.ProjectDir = tmpDir
@@ -1630,6 +1681,7 @@ func assertResumeFinalizationOutputs(t *testing.T, state *ExecutionState, found,
 }
 
 func TestResumeFinalizationRunsHooksAndValidatesOutputs(t *testing.T) {
+	t.Parallel()
 	for _, mainFails := range []bool{false, true} {
 		name := "main-success"
 		if mainFails {
@@ -1703,6 +1755,7 @@ func TestResumeFinalizationRunsHooksAndValidatesOutputs(t *testing.T) {
 }
 
 func TestResumeFinalizationValidatesOutputsWithoutHooks(t *testing.T) {
+	t.Parallel()
 	projectDir := t.TempDir()
 	outputPath := filepath.Join(projectDir, "result.txt")
 	if err := os.WriteFile(outputPath, []byte("already written"), 0600); err != nil {
@@ -1729,6 +1782,7 @@ func TestResumeFinalizationValidatesOutputsWithoutHooks(t *testing.T) {
 }
 
 func TestResumeFinalizationKeepsCompletedHooks(t *testing.T) {
+	t.Parallel()
 	for _, completedContainer := range []bool{false, true} {
 		name := "simple-main"
 		if completedContainer {
@@ -1776,6 +1830,7 @@ func TestResumeFinalizationKeepsCompletedHooks(t *testing.T) {
 }
 
 func TestResumeFinalizationCancellationRunsOnlyOnCancel(t *testing.T) {
+	t.Parallel()
 	projectDir := t.TempDir()
 	settings := DefaultWorkflowSettings()
 	settings.OnCancel = []Step{{ID: "cancel-cleanup", Command: "printf cleaned > cancel-cleanup.txt"}}
@@ -1815,6 +1870,7 @@ func TestResumeFinalizationCancellationRunsOnlyOnCancel(t *testing.T) {
 }
 
 func TestResumeFinalizationStartsFreshTailWhenMainReopens(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"direct", "on-success", "parallel", "foreach-rounds"} {
 		t.Run(kind, func(t *testing.T) {
 			cfg := resumeFinalizationConfig(t.TempDir())
@@ -1864,6 +1920,7 @@ func TestResumeFinalizationStartsFreshTailWhenMainReopens(t *testing.T) {
 }
 
 func TestResumeFinalizationAdoptsCompletedSuccessChildBeforeRootCheckpoint(t *testing.T) {
+	t.Parallel()
 	cfg := resumeFinalizationConfig(t.TempDir())
 	calls := 0
 	cfg.BeadQueryRunBr = func(_ context.Context, _ []string) ([]byte, error) {
@@ -1921,6 +1978,7 @@ func TestResumeFinalizationAdoptsCompletedSuccessChildBeforeRootCheckpoint(t *te
 }
 
 func TestResumeFinalizationRejectsNewDynamicPhaseCollisions(t *testing.T) {
+	t.Parallel()
 	for _, fromPost := range []bool{false, true} {
 		name := "main-materializes-id"
 		if fromPost {
@@ -1966,6 +2024,7 @@ func TestResumeFinalizationRejectsNewDynamicPhaseCollisions(t *testing.T) {
 }
 
 func TestResumeFinalizationClearsReopenedNamedOutputs(t *testing.T) {
+	t.Parallel()
 	for _, reset := range []bool{false, true} {
 		name := "failed-post-output"
 		if reset {
@@ -2036,6 +2095,7 @@ func TestResumeFinalizationClearsReopenedNamedOutputs(t *testing.T) {
 // top-level executeStep tail. Without the fix the body step kept its
 // StatusFailed and downstream when: guards never saw the runtime var.
 func TestOnFailureActionFiresInsideBranchBody(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("branch-failure-session"))
 
 	workflow := &Workflow{
@@ -2081,6 +2141,7 @@ func TestOnFailureActionFiresInsideBranchBody(t *testing.T) {
 // the retry loop and the prompt-resolution failure exercises the new
 // tail.
 func TestOnFailureActionFiresInsideParallelChild(t *testing.T) {
+	t.Parallel()
 	mock := NewMockTmuxClient(tmux.Pane{ID: "%1", Index: 1, Type: tmux.AgentCodex})
 
 	executor := NewExecutor(DefaultExecutorConfig("parallel-failure-session"))
@@ -2133,6 +2194,7 @@ func TestOnFailureActionFiresInsideParallelChild(t *testing.T) {
 // regression in lookupBranch / parseBranchSteps shows up as a wrong-mode
 // dispatch rather than a generic failure.
 func TestBranchPhaseDispatchHonorsAllFiveResumeModes(t *testing.T) {
+	t.Parallel()
 	modes := []string{"phase_2", "phase_3", "phase_4", "phase_5", "phase_6"}
 
 	for _, mode := range modes {
@@ -2193,6 +2255,7 @@ func TestBranchPhaseDispatchHonorsAllFiveResumeModes(t *testing.T) {
 // the chain end-to-end (not just the runtime variable) so a future regression
 // in when:-evaluation or skip propagation is caught.
 func TestOnFailureFallbackToNtmInboxRoutesDownstreamCoordinations(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("register-mail-fallback"))
 
 	workflow := &Workflow{
@@ -2268,6 +2331,7 @@ func TestOnFailureFallbackToNtmInboxRoutesDownstreamCoordinations(t *testing.T) 
 // content reaches the pane (not just that the recovery step finished) so a
 // regression in pane selection or template substitution is caught.
 func TestOnFailurePaneTemplateRecoveryDispatchesMO03cToPaneOne(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	const moBody = "MO-03c third-alternative for hypothesis <HYPOTHESIS_ID>: " +
 		"investigate the <THIRD_ALT_REASON> alternative.\n"
@@ -2338,6 +2402,7 @@ func TestOnFailurePaneTemplateRecoveryDispatchesMO03cToPaneOne(t *testing.T) {
 // that the post-step finished) so a regression in runPostPipelineSteps' use of
 // the regular executeStep machinery is caught.
 func TestPostPipelineStepsDispatchesMO09HandbackTemplate(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	const moBody = "MO-09 handback to <ORIGINATING_PANE>: methodology run " +
 		"<RUN_ID> complete.\n"
@@ -2402,6 +2467,7 @@ func TestPostPipelineStepsDispatchesMO09HandbackTemplate(t *testing.T) {
 }
 
 func TestOnFailureActionScopesCommandSettlement(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		scope      string
@@ -2431,7 +2497,7 @@ func TestOnFailureActionScopesCommandSettlement(t *testing.T) {
 		{name: "unrelated_similar_prefix", scope: "unrelated", status: commandExecutionUnresolved, scheduler: StatusFailed, handled: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			executor := newBranchTestExecutor()
+			executor := newBranchTestExecutor(t)
 			child := Step{ID: "child", Command: "exit 7"}
 			if tc.background {
 				child.Wait = WaitNone
@@ -2513,6 +2579,7 @@ func TestOnFailureActionScopesCommandSettlement(t *testing.T) {
 }
 
 func TestCommandSettlementUsesCurrentBackgroundAcknowledgement(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		mutate func(*CommandExecutionState, *StepResult)
@@ -2574,6 +2641,7 @@ func TestCommandSettlementUsesCurrentBackgroundAcknowledgement(t *testing.T) {
 }
 
 func TestSuccessHookFailurePreservesSettlementAndCapacityClassification(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		err        error

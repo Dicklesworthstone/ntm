@@ -16,6 +16,7 @@ import (
 )
 
 func TestCommandEvaluationDurableIntentAndReturnedUncertainty(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	step := &Step{ID: "choose", Branch: "$(printf selected)", Branches: map[string]interface{}{"selected": Step{ID: "body", Command: "true"}}}
 	lifecycle := e.commandEvaluationContext(context.Background(), step).Value(commandOutputLifecycleKey{}).(*commandOutputLifecycle)
@@ -70,6 +71,7 @@ func TestCommandEvaluationDurableIntentAndReturnedUncertainty(t *testing.T) {
 }
 
 func TestCommandEvaluationProvenFailureClearsIntent(t *testing.T) {
+	t.Parallel()
 	for _, waitErr := range []error{context.Canceled, errors.New("settled command exited unsuccessfully")} {
 		e := newCommandTestExecutor(t)
 		step := &Step{ID: "source", Foreach: &ForeachConfig{Items: "$(printf item)"}}
@@ -141,6 +143,7 @@ func selectorRecoveryIntentFixture(t *testing.T, layout string) (ExecutorConfig,
 }
 
 func TestSelectorOperatorRecoveryAdmissionRefusalsPreserveCheckpoint(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"active owner", "cancelled", "stale token", "empty reason", "invalid reason", "negative exit", "large exit", "capture cap", "absolute cap", "workflow cap", "legacy", "future journal", "missing journal version", "future start", "future cleanup", "definition", "missing receipt", "completed run", "completed selector", "skipped selector", "branch admission", "iteration admission", "body evidence", "completed container", "completed iteration", "on_cancel", "post"} {
 		t.Run(scenario, func(t *testing.T) {
 			layout := "direct"
@@ -248,6 +251,7 @@ func TestSelectorOperatorRecoveryAdmissionRefusalsPreserveCheckpoint(t *testing.
 }
 
 func TestSelectorOperatorRecoveryCorruptDecisionCannotResumeOrReset(t *testing.T) {
+	t.Parallel()
 	for _, change := range []string{"output", "output hash", "exit", "reason", "resolved time", "decision hash", "receipt token", "original status", "pid", "start", "cleanup error", "invocation", "definition", "capture limit", "journal version", "session", "workflow snapshot", "native status"} {
 		t.Run(change, func(t *testing.T) {
 			cfg, workflow, prior, id := selectorRecoveryIntentFixture(t, "direct")
@@ -331,6 +335,7 @@ func TestSelectorOperatorRecoveryCorruptDecisionCannotResumeOrReset(t *testing.T
 }
 
 func TestSelectorOperatorRecoveryAcceptedOutcomeResetScope(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"continue", "failed restart", "completed unrelated restart", "whole reset", "force selected iteration", "move session"} {
 		t.Run(scenario, func(t *testing.T) {
 			layout := "direct"
@@ -385,6 +390,7 @@ func TestSelectorOperatorRecoveryAcceptedOutcomeResetScope(t *testing.T) {
 }
 
 func TestCommandEvaluationResumeScopePreservesUnprovenWork(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"continue", "completed recovery", "restart top-level", "completed container", "completed iteration", "force wrong suffix", "force selected suffix", "reset"} {
 		t.Run(scenario, func(t *testing.T) {
 			e := newCommandTestExecutor(t)
@@ -452,6 +458,7 @@ func TestCommandEvaluationResumeScopePreservesUnprovenWork(t *testing.T) {
 }
 
 func TestCommandEvaluationMalformedReceiptCannotBeReset(t *testing.T) {
+	t.Parallel()
 	for _, damage := range []string{"version", "journal version", "identity", "hash", "status", "started", "pid", "finished", "error"} {
 		t.Run(damage, func(t *testing.T) {
 			e := newCommandTestExecutor(t)
@@ -496,6 +503,7 @@ func TestCommandEvaluationMalformedReceiptCannotBeReset(t *testing.T) {
 }
 
 func TestCommandEvaluationSettledReceiptCorruptionCannotAuthorizeReuseOrReset(t *testing.T) {
+	t.Parallel()
 	for _, damage := range []string{"output bytes", "output hash", "invocation hash", "stdout bound", "stderr bound", "pid", "timestamp", "error", "old version", "future version"} {
 		t.Run(damage, func(t *testing.T) {
 			e := newCommandTestExecutor(t)
@@ -554,6 +562,7 @@ func TestCommandEvaluationSettledReceiptCorruptionCannotAuthorizeReuseOrReset(t 
 }
 
 func TestLegacyCommandEvaluationResumeRequiresLaunchEvidence(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		step     Step
@@ -608,6 +617,7 @@ func TestLegacyCommandEvaluationResumeRequiresLaunchEvidence(t *testing.T) {
 }
 
 func TestCommandEvaluationCheckpointFailurePreventsLaunch(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	// Block checkpoint-directory creation while leaving the working directory
 	// usable by the shell. A failed intent must never dispatch its command.
@@ -625,6 +635,7 @@ func TestCommandEvaluationCheckpointFailurePreventsLaunch(t *testing.T) {
 }
 
 func TestLegacyFailedCommandEvaluationCannotAuthorizeReplay(t *testing.T) {
+	t.Parallel()
 	for _, status := range []ExecutionStatus{StatusFailed, StatusCancelled} {
 		for _, step := range []Step{{ID: "choose", Branch: "$(printf selected)"}, {ID: "source", Foreach: &ForeachConfig{Beads: "$(printf item)"}}} {
 			t.Run(string(status)+"/"+step.ID, func(t *testing.T) {
@@ -643,6 +654,7 @@ func TestLegacyFailedCommandEvaluationCannotAuthorizeReplay(t *testing.T) {
 }
 
 func TestResumeContinueRestartsFirstIncompleteLoopIteration(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "iterations.log")
 	markerPath := filepath.Join(tmpDir, "failed-once")
@@ -715,6 +727,7 @@ func TestResumeContinueRestartsFirstIncompleteLoopIteration(t *testing.T) {
 }
 
 func TestResumeRestartFailedRerunsFailedStepOnly(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "resume.log")
 	workflow := &Workflow{
@@ -765,6 +778,7 @@ func TestResumeRestartFailedRerunsFailedStepOnly(t *testing.T) {
 }
 
 func TestResumeRestartFailedPreservesStateWhenKeepStateOmitted(t *testing.T) {
+	t.Parallel()
 	// bd-uyjdn: callers that pass a partial ResumeOptions (e.g. only Mode)
 	// without explicitly setting KeepState=true should still preserve
 	// completed step state. Previously normalizeResumeOptions left KeepState
@@ -819,6 +833,7 @@ func TestResumeRestartFailedPreservesStateWhenKeepStateOmitted(t *testing.T) {
 }
 
 func TestResumeResetOptInClearsCompletedSteps(t *testing.T) {
+	t.Parallel()
 	// bd-uyjdn: explicit Reset=true reproduces the legacy KeepState=false
 	// behavior — prior step state is cleared and the workflow runs from the
 	// beginning.
@@ -869,6 +884,7 @@ func TestResumeResetOptInClearsCompletedSteps(t *testing.T) {
 }
 
 func TestNormalizeResumeOptionsDefaultsKeepStateOnNonZero(t *testing.T) {
+	t.Parallel()
 	// bd-uyjdn: every non-zero ResumeOptions normalizes to KeepState=true
 	// unless Reset=true is set explicitly.
 	tests := []struct {
@@ -900,6 +916,7 @@ func TestNormalizeResumeOptionsDefaultsKeepStateOnNonZero(t *testing.T) {
 }
 
 func TestResumeRejectsMismatchedWorkflowID(t *testing.T) {
+	t.Parallel()
 	// bd-0wzkc: prior state captured for a different workflow must not
 	// resume against the current workflow. Otherwise applyResumeState
 	// marks any matching step IDs as executed in the new graph and reuses
@@ -929,6 +946,7 @@ func TestResumeRejectsMismatchedWorkflowID(t *testing.T) {
 }
 
 func TestResumeAcceptsMatchingWorkflowID(t *testing.T) {
+	t.Parallel()
 	// bd-0wzkc: matching workflow IDs continue to resume normally so the
 	// happy path is not regressed.
 	tmpDir := t.TempDir()
@@ -966,6 +984,7 @@ func TestResumeAcceptsMatchingWorkflowID(t *testing.T) {
 }
 
 func TestResumeAcceptsLegacyEmptyWorkflowID(t *testing.T) {
+	t.Parallel()
 	// bd-0wzkc: a legacy state file with no recorded WorkflowID continues to
 	// resume; the validator should only reject explicit non-empty mismatches.
 	tmpDir := t.TempDir()
@@ -1002,6 +1021,7 @@ func TestResumeAcceptsLegacyEmptyWorkflowID(t *testing.T) {
 }
 
 func TestResumeRosterChangeAbort(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "resume-roster",
@@ -1034,6 +1054,7 @@ func TestResumeRosterChangeAbort(t *testing.T) {
 }
 
 func TestResumeRejectsStaleState(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "resume-stale",
@@ -1066,6 +1087,7 @@ func TestResumeRejectsStaleState(t *testing.T) {
 }
 
 func TestResumeRejectingStaleStateDoesNotRefreshCheckpoint(t *testing.T) {
+	t.Parallel()
 	// bd-0n73e: a resume that fails the MaxResumeAge guard must not
 	// rewrite LastCheckpointAt/UpdatedAt on disk; otherwise a second
 	// attempt would silently pass the same age check and resume work
@@ -1131,6 +1153,7 @@ func TestResumeRejectingStaleStateDoesNotRefreshCheckpoint(t *testing.T) {
 }
 
 func TestResumeRejectsLegacyStateWithOnlyUpdatedAt(t *testing.T) {
+	t.Parallel()
 	// bd-05l02: a legacy state with LastCheckpointAt zero, UpdatedAt older
 	// than MaxResumeAge, and no child step / foreach / parallel / in-flight
 	// timestamps must still fail the stale-age guard. Before the fix
@@ -1168,6 +1191,7 @@ func TestResumeRejectsLegacyStateWithOnlyUpdatedAt(t *testing.T) {
 }
 
 func TestResumeRejectsLegacyStateWithoutCheckpoint(t *testing.T) {
+	t.Parallel()
 	// bd-5uqtd: a true legacy state file lacks both LastCheckpointAt AND
 	// UpdatedAt. The previous version of this test left UpdatedAt set to
 	// `stale`, which let the pre-fix `checkpoint = state.UpdatedAt`
@@ -1217,6 +1241,7 @@ func TestResumeRejectsLegacyStateWithoutCheckpoint(t *testing.T) {
 }
 
 func TestExecutionStateResumeMetadataJSONRoundTrip(t *testing.T) {
+	t.Parallel()
 	stamp := time.Date(2026, 5, 7, 12, 30, 0, 0, time.UTC)
 	original := ExecutionState{
 		RunID:            "roundtrip",
@@ -1339,6 +1364,7 @@ func TestApplyResumeStateLogsOrphanDrops(t *testing.T) {
 }
 
 func TestResumeParallelScopedChildDoesNotReExecuteCompletedSubstep(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("parallel-resume-scoped")
 	cfg.DryRun = true
 	executor := NewExecutor(cfg)
@@ -1398,6 +1424,7 @@ func TestResumeParallelScopedChildDoesNotReExecuteCompletedSubstep(t *testing.T)
 }
 
 func TestApplyResumeStateRetainsScopedBranchChildResult(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "branch-resume-scoped-workflow",
@@ -1450,6 +1477,7 @@ func TestApplyResumeStateRetainsScopedBranchChildResult(t *testing.T) {
 // file with Steps populated but Variables empty leaves downstream
 // substitution unable to see the producer's output.
 func TestApplyResumeStateRebuildsRetainedStepOutputs(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "applyResumeState-rebuild",

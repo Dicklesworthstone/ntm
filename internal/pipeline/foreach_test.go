@@ -21,6 +21,7 @@ import (
 func createForeachTestExecutor(t *testing.T, workflow *Workflow) *Executor {
 	t.Helper()
 	cfg := DefaultExecutorConfig("test")
+	cfg.ProjectDir = t.TempDir()
 	cfg.DefaultTimeout = 2 * time.Second
 	e := NewExecutor(cfg)
 	e.graph = NewDependencyGraph(workflow)
@@ -38,6 +39,7 @@ func createForeachTestExecutor(t *testing.T, workflow *Workflow) *Executor {
 }
 
 func TestExecuteStepOnceForeachSequentialDispatchesOrderedResults(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-sequential",
@@ -80,6 +82,7 @@ func TestExecuteStepOnceForeachSequentialDispatchesOrderedResults(t *testing.T) 
 }
 
 func TestExecuteForeachParallelMaxConcurrentCompletesAllIterations(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-parallel",
@@ -443,6 +446,7 @@ func TestForeachParallelBreakAndFailFastStopQueuedDispatch(t *testing.T) {
 }
 
 func TestForeachParallelCancelledAndEmptyInputsDoNotDispatch(t *testing.T) {
+	t.Parallel()
 	for _, count := range []int{0, 4} {
 		for _, concurrency := range []int{0, int(^uint(0) >> 1)} {
 			t.Run(fmt.Sprintf("plans=%d/concurrency=%d", count, concurrency), func(t *testing.T) {
@@ -469,6 +473,7 @@ func TestForeachParallelCancelledAndEmptyInputsDoNotDispatch(t *testing.T) {
 }
 
 func TestExecuteForeachContinueKeepsOtherIterationsAfterFailure(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-continue",
@@ -512,6 +517,7 @@ func TestExecuteForeachContinueKeepsOtherIterationsAfterFailure(t *testing.T) {
 }
 
 func TestExecuteForeachWorkflowContinueKeepsBodyStepsAfterFailure(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-workflow-continue",
@@ -563,6 +569,7 @@ func TestExecuteForeachWorkflowContinueKeepsBodyStepsAfterFailure(t *testing.T) 
 // later body steps in the same iteration even though the pipeline author
 // scoped continue semantics to that exact foreach.
 func TestExecuteForeachParentStepContinueKeepsBodyStepsAfterFailure(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-parent-continue",
@@ -610,6 +617,7 @@ func TestExecuteForeachParentStepContinueKeepsBodyStepsAfterFailure(t *testing.T
 }
 
 func TestExecuteForeachFilterExcludesIterationsBeforeDispatch(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-filter",
@@ -665,6 +673,7 @@ func TestExecuteForeachFilterExcludesIterationsBeforeDispatch(t *testing.T) {
 }
 
 func TestExecuteForeachNestedAliasesExposeOuterAndInnerItems(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-nested-aliases",
@@ -747,6 +756,7 @@ func TestExecuteForeachNestedDefaultItemShadowsOuterItem(t *testing.T) {
 }
 
 func TestExecuteForeachNestedAliasesSupportThreeLevels(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-nested-three-levels",
@@ -792,6 +802,7 @@ func TestExecuteForeachNestedAliasesSupportThreeLevels(t *testing.T) {
 }
 
 func TestExecuteForeachParallelOuterSequentialInnerKeepsAliasesIsolated(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-parallel-nested-isolation",
@@ -832,6 +843,7 @@ func TestExecuteForeachParallelOuterSequentialInnerKeepsAliasesIsolated(t *testi
 }
 
 func TestExecuteForeachLoopControlBreakSkipsRemainingIterations(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-break",
@@ -877,6 +889,7 @@ func TestExecuteForeachLoopControlBreakSkipsRemainingIterations(t *testing.T) {
 }
 
 func TestExecuteForeachSkippedBodyStepSkipsIteration(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-skipped-body",
@@ -919,6 +932,7 @@ func TestExecuteForeachSkippedBodyStepSkipsIteration(t *testing.T) {
 }
 
 func TestExecuteForeachMixedSkippedAndCompletedIterations(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-mixed-skip",
@@ -961,6 +975,7 @@ func TestExecuteForeachMixedSkippedAndCompletedIterations(t *testing.T) {
 }
 
 func TestExecuteForeachFailFastFailureIsNotCountedAsSkipped(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-fail-fast-not-skipped",
@@ -997,6 +1012,7 @@ func TestExecuteForeachFailFastFailureIsNotCountedAsSkipped(t *testing.T) {
 }
 
 func TestExecuteForeachLoopControlContinueSkipsRestOfIteration(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-continue",
@@ -1044,6 +1060,7 @@ func TestExecuteForeachLoopControlContinueSkipsRestOfIteration(t *testing.T) {
 }
 
 func TestExecuteForeachParallelLoopControlBreakCancelsInFlight(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-parallel-break",
@@ -1123,6 +1140,7 @@ func appendForeachLeafOutputs(outputs *[]string, result StepResult) {
 }
 
 func TestSubstituteForeachFieldsResolvesModelsList(t *testing.T) {
+	t.Parallel()
 	// bd-8bujt: foreach.models entries must receive the same protected-root
 	// substitution as items/beads/pairs/debates/filter, otherwise workflow
 	// vars and shell sources containing ${...} reach ResolveModels as raw
@@ -1163,6 +1181,7 @@ func TestSubstituteForeachFieldsResolvesModelsList(t *testing.T) {
 }
 
 func TestForeachMaxConcurrentBoundedByGlobalCap(t *testing.T) {
+	t.Parallel()
 	// bd-pwxh1: per-step foreach.max_concurrent must be capped by the
 	// global settings.limits.max_concurrent_foreach. Otherwise a workflow
 	// could set a low global safety limit and bypass it on a single step.
@@ -1188,6 +1207,7 @@ func TestForeachMaxConcurrentBoundedByGlobalCap(t *testing.T) {
 }
 
 func TestForeachMaxConcurrentZeroGlobalAllowsPerStep(t *testing.T) {
+	t.Parallel()
 	// When the global cap is zero/disabled, a per-step value still applies
 	// without being clamped to zero.
 	limits := LimitsConfig{}
@@ -1209,6 +1229,7 @@ func TestForeachMaxConcurrentZeroGlobalAllowsPerStep(t *testing.T) {
 // tick on every iteration; larger fan-outs use ceil(total/20) so the
 // emitted event count stays bounded.
 func TestForeachProgressIntervalBoundsTotalTickCount(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		total int
 		want  int
@@ -1237,6 +1258,7 @@ func TestForeachProgressIntervalBoundsTotalTickCount(t *testing.T) {
 // maxForeachProgressTicks. Pre-fix this assertion would fire for
 // every total ≥ 100 (where the cap-at-5 produced total/5 ticks).
 func TestForeachProgressIntervalCapsTickCountAcrossSizes(t *testing.T) {
+	t.Parallel()
 	for _, total := range []int{50, 100, 500, 1000, 5000, 10000, 100000} {
 		interval := foreachProgressInterval(total)
 		if interval <= 0 {
@@ -1375,6 +1397,7 @@ func extractJSONIntField(line, key string) int {
 // it. Items come from the tmux client's pane list and are surfaced as
 // ${item.X} / ${pane.X} maps.
 func TestExecuteForeachPaneNoFilterIteratesAllPanes(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-pane-no-filter",
@@ -1426,6 +1449,7 @@ func TestExecuteForeachPaneNoFilterIteratesAllPanes(t *testing.T) {
 // metadata satisfies the predicate; non-matching panes are recorded as
 // SkipKindForeachFilter without dispatching the body.
 func TestExecuteForeachPaneFilterByRoleIncludesOnlyMatchingPanes(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "foreach-pane-filter",
@@ -1489,6 +1513,7 @@ func TestExecuteForeachPaneFilterByRoleIncludesOnlyMatchingPanes(t *testing.T) {
 // commands, re-prompting agents) violates the resume contract that the
 // foreach progress bookkeeping was added to enforce.
 func TestExecuteForeach_ResumeSkipsCompletedIterations(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	counterPath := tmpDir + "/iter-runs.txt"
 
@@ -1567,6 +1592,7 @@ func TestExecuteForeach_ResumeSkipsCompletedIterations(t *testing.T) {
 // so output_var_mode was dead and downstream `${vars.x}` consumers read a status
 // string instead of the collected data.
 func TestStepOwnsForeachOutputVar(t *testing.T) {
+	t.Parallel()
 	cases := map[string]struct {
 		step *Step
 		want bool
@@ -1586,6 +1612,7 @@ func TestStepOwnsForeachOutputVar(t *testing.T) {
 // storeForeachOutputVars writes the declared aggregate shape; the value must
 // survive as that shape rather than being replaced by a summary string.
 func TestForeachAggregateOutputVarKeepsDeclaredShape(t *testing.T) {
+	t.Parallel()
 	state := &ExecutionState{Variables: map[string]interface{}{}}
 	e := &Executor{state: state, config: ExecutorConfig{DryRun: true}}
 

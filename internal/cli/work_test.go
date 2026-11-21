@@ -36,6 +36,7 @@ func repoBeadsRoot(t *testing.T) string {
 // from the installed bv: histories are keyed by bead ID and events carry
 // event_type.
 func TestWorkHistoryDecodesInstalledBV(t *testing.T) {
+	t.Parallel()
 	root := repoBeadsRoot(t)
 	out, err := tools.NewBVAdapter().GetHistory(context.Background(), root, "30d")
 	if err != nil {
@@ -63,6 +64,7 @@ func TestWorkHistoryDecodesInstalledBV(t *testing.T) {
 // TestWorkGraphTextFromInstalledBV extracts DOT and Mermaid from bv's JSON
 // envelope rather than printing the envelope.
 func TestWorkGraphTextFromInstalledBV(t *testing.T) {
+	t.Parallel()
 	root := repoBeadsRoot(t)
 	for format, prefix := range map[string]string{"dot": "digraph", "mermaid": "graph"} {
 		out, err := tools.NewBVAdapter().GetGraph(context.Background(), root, tools.BVGraphOptions{Format: format})
@@ -79,6 +81,7 @@ func TestWorkGraphTextFromInstalledBV(t *testing.T) {
 // TestWorkBurndownDecodesInstalledBV builds a two-issue sprint with the
 // installed br and git, and decodes bv's issue-based burndown for it.
 func TestWorkBurndownDecodesInstalledBV(t *testing.T) {
+	t.Parallel()
 	for _, tool := range []string{"bv", "br", "git"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("%s not installed", tool)

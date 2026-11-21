@@ -125,6 +125,7 @@ func TestRedactionMiddleware_RejectsCredentialJSON(t *testing.T) {
 }
 
 func TestRedactionMiddleware_RejectsDecodedJSONCredentials(t *testing.T) {
+	t.Parallel()
 	const token = "abcdefghijklmnopqrstuv"
 	escapedProvider := `\u0073` + wiringFakeSecret[1:]
 	inner := `{"api_\u0074oken":"` + token + `"}`
@@ -143,6 +144,7 @@ func TestRedactionMiddleware_RejectsDecodedJSONCredentials(t *testing.T) {
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		for _, tt := range tests {
 			t.Run(string(mode)+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
 				s := &Server{redactionCfg: &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: mode}}}
 				called := false
 				handler := s.redactionMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -260,6 +262,7 @@ func TestRedactionRouterRejectsEncodedApprovalBeforeStorageAndLogs(t *testing.T)
 }
 
 func TestRedactionMiddlewarePreservesPermittedEncodedJSON(t *testing.T) {
+	t.Parallel()
 	const token = "abcdefghijklmnopqrstuv"
 	inner := `{"api_\u0074oken":"` + token + `"}`
 	encoded, err := json.Marshal(inner)
@@ -281,6 +284,7 @@ func TestRedactionMiddlewarePreservesPermittedEncodedJSON(t *testing.T) {
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		for _, tt := range tests {
 			t.Run(string(mode)+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
 				if !json.Valid([]byte(tt.body)) {
 					t.Fatal("permitted fixture is invalid JSON")
 				}
@@ -308,6 +312,7 @@ func TestRedactionMiddlewarePreservesPermittedEncodedJSON(t *testing.T) {
 }
 
 func TestRedactionMiddleware_BoundsRejectionDiagnostics(t *testing.T) {
+	t.Parallel()
 	const secret = "syntheticNeverValidToken123456789"
 	body := "[" + strings.TrimSuffix(strings.Repeat(`{"api_token":"`+secret+`"},`, 101), ",") + "]"
 	srv := &Server{redactionCfg: &RedactionConfig{
@@ -339,6 +344,7 @@ func TestRedactionMiddleware_BoundsRejectionDiagnostics(t *testing.T) {
 }
 
 func TestRedactionMiddleware_PreservesPermittedJSONBytes(t *testing.T) {
+	t.Parallel()
 	const ordinary = " \n{ \"prompt\" : \"hello\", \"nested\" : { \"items\" : [true, null, 9007199254740993] }, \"label\":\"first\", \"label\":\"last\" }\t\n"
 	const secret = "syntheticNeverValidToken123456789"
 	const credential = `{"prompt":"hello","api_token":"` + secret + `"}`
@@ -374,6 +380,7 @@ func TestRedactionMiddleware_PreservesPermittedJSONBytes(t *testing.T) {
 				name = tc.name + "/chunked"
 			}
 			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 				srv := &Server{redactionCfg: tc.cfg}
 				called := false
 				next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -448,6 +455,7 @@ func TestRedactionMiddleware_CustomDetectionNeverEchoesSensitiveFieldNames(t *te
 }
 
 func TestRedactionMiddleware_RequestScopeUsesAPIContract(t *testing.T) {
+	t.Parallel()
 	const credential = `{"api_token":"syntheticNeverValidToken123456789"}`
 	const ordinary = ` { "prompt" : "hello", "nested" : [true, 9007199254740993] } `
 	for _, tc := range []struct {
@@ -466,6 +474,7 @@ func TestRedactionMiddleware_RequestScopeUsesAPIContract(t *testing.T) {
 		{"outside API explicit JSON", "/hook", "application/json", credential, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			srv := &Server{redactionCfg: &RedactionConfig{
 				Enabled: true, Config: redaction.Config{Mode: redaction.ModeRedact},
 			}}
@@ -496,6 +505,7 @@ func TestRedactionMiddleware_RequestScopeUsesAPIContract(t *testing.T) {
 }
 
 func TestRedactionMiddleware_RejectsMalformedJSONWithoutLeakingParserInput(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, body string
 		status     int
@@ -508,6 +518,7 @@ func TestRedactionMiddleware_RejectsMalformedJSONWithoutLeakingParserInput(t *te
 		{"credential in malformed JSON", `{"api_token":"syntheticNeverValidToken123456789",`, http.StatusUnprocessableEntity, "SECRETS_DETECTED"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			srv := &Server{redactionCfg: &RedactionConfig{
 				Enabled: true, Config: redaction.Config{Mode: redaction.ModeRedact},
 			}}
@@ -538,6 +549,7 @@ func TestRedactionMiddleware_RejectsMalformedJSONWithoutLeakingParserInput(t *te
 }
 
 func TestRedactionMiddleware_JSONBodyLimitNeverForwardsAPrefix(t *testing.T) {
+	t.Parallel()
 	const limit = 10 << 20
 	// The first limit bytes are themselves valid JSON. Silently truncating at
 	// the limit would let a handler execute a request that the caller never sent.
@@ -558,6 +570,7 @@ func TestRedactionMiddleware_JSONBodyLimitNeverForwardsAPrefix(t *testing.T) {
 				name = tc.name + "/chunked"
 			}
 			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 				srv := &Server{redactionCfg: &RedactionConfig{
 					Enabled: true, Config: redaction.Config{Mode: redaction.ModeRedact},
 				}}
@@ -668,6 +681,7 @@ func serveRedactedJSON(t *testing.T, path, body string) string {
 }
 
 func TestRedactedJSONResponseStaysJSON(t *testing.T) {
+	t.Parallel()
 	const secret = "abcDEF1234567890abcDEF1234567890"
 	for _, tc := range []struct {
 		name, body string
@@ -682,6 +696,7 @@ func TestRedactedJSONResponseStaysJSON(t *testing.T) {
 		{"field inside an encoded string", `{"payload":"{\"api_token\":\"` + secret + `\"}"}`, secret},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			out := serveRedactedJSON(t, "/api/v1/sessions", tc.body)
 			var parsed any
 			if err := json.Unmarshal([]byte(out), &parsed); err != nil {
@@ -698,6 +713,7 @@ func TestRedactedJSONResponseStaysJSON(t *testing.T) {
 }
 
 func TestRedactedJSONFieldKeepsItsKeyAndNeighbours(t *testing.T) {
+	t.Parallel()
 	out := serveRedactedJSON(t, "/api/v1/sessions", `{"status":"sending","api_token":"abcDEF1234567890abcDEF1234567890","endpoint":"e"}`)
 	var parsed map[string]string
 	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
@@ -835,9 +851,11 @@ func TestJSONResponseRedactionProtectsDecodedCredentials(t *testing.T) {
 }
 
 func TestJSONResponseRedactionPreservesUnchangedBytes(t *testing.T) {
+	t.Parallel()
 	const body = " \n{ \"error\":\"service unavailable\", \"count\":9007199254740993, \"label\":\"first\", \"label\":\"last\", \"items\":[true,null] }\t\n"
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock, redaction.ModeWarn, redaction.ModeOff} {
 		t.Run(string(mode), func(t *testing.T) {
+			t.Parallel()
 			rec := serveJSONResponseWithConfig(t, "/api/v1/test", body, http.StatusServiceUnavailable, redaction.Config{Mode: mode})
 			if rec.Code != http.StatusServiceUnavailable || rec.Body.String() != body {
 				t.Errorf("response without findings changed: status=%d body=%s", rec.Code, rec.Body)
@@ -922,6 +940,7 @@ func assertResponseCaptureReleased(t *testing.T, rw *redactingResponseWriter) {
 }
 
 func TestJSONResponseCapturePreservesExactBound(t *testing.T) {
+	t.Parallel()
 	// An odd limit also exercises a final buffer growth that cannot round up
 	// beyond the configured bound. Whitespace, duplicate keys and large
 	// integers must remain byte-exact when inspection can complete.
@@ -930,6 +949,7 @@ func TestJSONResponseCapturePreservesExactBound(t *testing.T) {
 	body := strings.Repeat(" ", limit-len(document)) + document
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		t.Run(string(mode), func(t *testing.T) {
+			t.Parallel()
 			rec := httptest.NewRecorder()
 			rw := responseCaptureTestWriter(rec, mode, limit)
 			rw.Header().Set("Content-Type", "application/json")
@@ -1070,6 +1090,7 @@ func TestJSONResponseCaptureOverflowIsSticky(t *testing.T) {
 }
 
 func TestJSONResponseCaptureProductionLimit(t *testing.T) {
+	t.Parallel()
 	// Exercise the real default once. The source allocation belongs to the
 	// handler; a single oversized Write must not retain a second large copy.
 	limit := redaction.DefaultScanLimits().MaxInputBytes
@@ -1094,12 +1115,14 @@ func TestJSONResponseCaptureProductionLimit(t *testing.T) {
 }
 
 func TestJSONResponseCapturePreventsLateStreamingPromotion(t *testing.T) {
+	t.Parallel()
 	const limit = 256
 	body := []byte(`{"api_token":"` + wiringFakeSecret + `","diagnostic":"ordinary"}`)
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		for _, initialType := range []string{"", "application/json"} {
 			for _, flush := range []bool{false, true} {
 				t.Run(string(mode)+"/"+initialType+"/flush="+strconv.FormatBool(flush), func(t *testing.T) {
+					t.Parallel()
 					rec := httptest.NewRecorder()
 					rw := responseCaptureTestWriter(rec, mode, limit)
 					rw.Header().Set("Content-Type", initialType)
@@ -1128,6 +1151,7 @@ func TestJSONResponseCapturePreventsLateStreamingPromotion(t *testing.T) {
 			}
 		}
 		t.Run(string(mode)+"/declared stream", func(t *testing.T) {
+			t.Parallel()
 			rec := httptest.NewRecorder()
 			rw := responseCaptureTestWriter(rec, mode, limit)
 			rw.Header().Set("Content-Type", "text/event-stream")
@@ -1152,9 +1176,11 @@ func TestJSONResponseCapturePreventsLateStreamingPromotion(t *testing.T) {
 }
 
 func TestJSONResponseCapturePermissiveModesPreserveBytes(t *testing.T) {
+	t.Parallel()
 	body := `{"diagnostic":"` + strings.Repeat("safe ", 64) + `","api_token":"` + wiringFakeSecret + `"}`
 	for _, mode := range []redaction.Mode{redaction.ModeOff, redaction.ModeWarn} {
 		t.Run(string(mode), func(t *testing.T) {
+			t.Parallel()
 			rec := httptest.NewRecorder()
 			rw := responseCaptureTestWriter(rec, mode, 64)
 			rw.Header().Set("Content-Type", "application/json")
@@ -1171,6 +1197,7 @@ func TestJSONResponseCapturePermissiveModesPreserveBytes(t *testing.T) {
 }
 
 func TestJSONResponseRedactionHandlesCustomMatchBoundaries(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		for _, tc := range []struct {
 			name, body, match, leak string
@@ -1187,6 +1214,7 @@ func TestJSONResponseRedactionHandlesCustomMatchBoundaries(t *testing.T) {
 			{"escaped string boundary", `{"private":"before\"sensitive-data\"after","error":"service unavailable"}`, `\"sensitive-data\"`, "sensitive-data", `before"sensitive-data"after`, false},
 		} {
 			t.Run(string(mode)+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
 				if !json.Valid([]byte(tc.body)) {
 					t.Fatal("fixture must start as valid JSON")
 				}
@@ -1238,8 +1266,10 @@ func assertJSONResponseWithheld(t *testing.T, body []byte) {
 }
 
 func TestJSONResponseRedactionFallbackPreservesCompletedHandlerStatus(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		t.Run(string(mode), func(t *testing.T) {
+			t.Parallel()
 			cfg := redaction.Config{Mode: mode, ExtraPatterns: map[redaction.Category][]string{
 				"PRIVATE_ID": {"123456789"},
 			}}
@@ -1253,11 +1283,13 @@ func TestJSONResponseRedactionFallbackPreservesCompletedHandlerStatus(t *testing
 }
 
 func TestJSONResponseRedactionFlushCannotBypassProtection(t *testing.T) {
+	t.Parallel()
 	const secret = "syntheticNeverValidToken123456789"
 	body := `{"error_code":"UPSTREAM_FAILURE","error":"try later","api_token":"` + secret + `"}`
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		for _, flushAt := range []string{"complete body", "before content type", "after headers", "inside credential"} {
 			t.Run(string(mode)+"/"+flushAt, func(t *testing.T) {
+				t.Parallel()
 				srv := &Server{redactionCfg: &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: mode}}}
 				rec := httptest.NewRecorder()
 				next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1311,12 +1343,14 @@ func TestJSONResponseRedactionFlushCannotBypassProtection(t *testing.T) {
 }
 
 func TestJSONResponseRedactionKeepsOnlyRecoveryReceiptExemption(t *testing.T) {
+	t.Parallel()
 	const secret = "syntheticNeverValidToken123456789"
 	token := strings.Repeat("ab", 32)
 	body := `{"delivery":{"receipt_token":"` + token + `","api_token":"` + secret + `"},"status":"pending"}`
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		for _, path := range []string{"/api/v1/pipelines/run-1/recover", "/api/v1/sessions"} {
 			t.Run(string(mode)+path, func(t *testing.T) {
+				t.Parallel()
 				rec := serveJSONResponseWithConfig(t, path, body, http.StatusOK, redaction.Config{Mode: mode})
 				var response struct {
 					Delivery map[string]string `json:"delivery"`
@@ -1341,6 +1375,7 @@ func TestJSONResponseRedactionKeepsOnlyRecoveryReceiptExemption(t *testing.T) {
 }
 
 func TestReceiptTokenExemptionIsLimitedToPipelineRecovery(t *testing.T) {
+	t.Parallel()
 	token := strings.Repeat("ab", 32)
 	body := `{"delivery":{"receipt_token":"` + token + `"}}`
 

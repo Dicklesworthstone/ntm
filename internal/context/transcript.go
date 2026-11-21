@@ -726,6 +726,11 @@ func ProcessTranscriptUsage(ctx stdcontext.Context, agentType string, panePID in
 // the operation. stopAt allows returning as soon as the caller's skip threshold
 // is reached. Percentages are truncated to the injection engines' whole-percent
 // contract, so a reading just below the threshold is never rounded up.
+// MaxPaneContextUsageTimeout bounds the shared optional capacity-measurement
+// probe budget across selected panes. Declared as var so tests can exercise
+// probe timeout behavior without sleeping the full 2s production wall.
+var MaxPaneContextUsageTimeout = 2 * time.Second
+
 func MaxPaneContextUsage(ctx stdcontext.Context, client *tmux.Client, panes []tmux.Pane, stopAt int) (percent int, known bool, err error) {
 	if ctx == nil {
 		return 0, false, fmt.Errorf("pane context measurement requires an operation context")
@@ -736,7 +741,11 @@ func MaxPaneContextUsage(ctx stdcontext.Context, client *tmux.Client, panes []tm
 	if client == nil {
 		client = tmux.DefaultClient
 	}
-	probeCtx, cancel := stdcontext.WithTimeout(ctx, 2*time.Second)
+	budget := MaxPaneContextUsageTimeout
+	if budget <= 0 {
+		budget = 2 * time.Second
+	}
+	probeCtx, cancel := stdcontext.WithTimeout(ctx, budget)
 	defer cancel()
 	percent, known = maxPaneContextUsage(probeCtx, panes, stopAt, client.Remote == "",
 		client.CapturePaneVisibleContext, ProcessTranscriptUsage, time.Now)

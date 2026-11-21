@@ -162,6 +162,7 @@ func TestParallelServersProjectionStoreIsolation(t *testing.T) {
 }
 
 func TestLocalModeSecurityLockdown(t *testing.T) {
+	t.Parallel()
 	srv, store := setupTestServer(t)
 
 	// 1. Runtime allowed_origins mutation in AuthModeLocal must fail closed (403) and record audit decision.

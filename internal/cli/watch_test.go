@@ -22,6 +22,7 @@ import (
 )
 
 func TestAncillaryDispatchCancellationPreventsPostReturnEnter(t *testing.T) {
+	t.Parallel()
 	pane := tmux.Pane{ID: "%9101", WindowIndex: 0, Index: 1, Type: tmux.AgentClaude, Title: "cancel_cc_1"}
 	tests := []struct {
 		name     string
@@ -33,6 +34,7 @@ func TestAncillaryDispatchCancellationPreventsPostReturnEnter(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			staged := make(chan struct{})
 			entered := make(chan struct{}, 1)
 			service, err := dispatchsvc.NewService(dispatchsvc.Ports{
@@ -91,6 +93,7 @@ func TestAncillaryDispatchCancellationPreventsPostReturnEnter(t *testing.T) {
 }
 
 func TestParseWatchInterval(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name    string
@@ -126,6 +129,7 @@ func TestParseWatchInterval(t *testing.T) {
 }
 
 func TestExtractBeadMentions(t *testing.T) {
+	t.Parallel()
 
 	re, err := beadMentionRegexp("bd-123")
 	if err != nil {
@@ -147,6 +151,7 @@ func TestExtractBeadMentions(t *testing.T) {
 }
 
 func TestFilterPanesCanonicalizesAliases(t *testing.T) {
+	t.Parallel()
 
 	panes := []tmux.Pane{
 		{Index: 0, Type: tmux.AgentUser, Title: "user_0"},
@@ -249,6 +254,7 @@ func TestResolveWatchProjectDir_ExplicitRejectsWorkspaceFallback(t *testing.T) {
 }
 
 func TestWatchEventMatchesPattern_UsesWatchRootRelativePath(t *testing.T) {
+	t.Parallel()
 
 	watchRoot := filepath.Join(string(filepath.Separator), "tmp", "actual-project")
 	eventPath := filepath.Join(watchRoot, "internal", "cli", "watch.go")
@@ -258,6 +264,7 @@ func TestWatchEventMatchesPattern_UsesWatchRootRelativePath(t *testing.T) {
 }
 
 func TestWatchEventMatchesPattern_RejectsOutsideWatchRoot(t *testing.T) {
+	t.Parallel()
 
 	watchRoot := filepath.Join(string(filepath.Separator), "tmp", "actual-project")
 	eventPath := filepath.Join(string(filepath.Separator), "tmp", "other-project", "internal", "cli", "watch.go")

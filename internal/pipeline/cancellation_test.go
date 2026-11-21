@@ -70,6 +70,7 @@ observed:
 }
 
 func TestStepEntryCancellationPersistsNoDispatchProofAndResumes(t *testing.T) {
+	t.Parallel()
 	for _, boundary := range []struct {
 		name                   string
 		afterInFlight, foreach bool
@@ -151,6 +152,7 @@ func TestStepEntryCancellationPersistsNoDispatchProofAndResumes(t *testing.T) {
 }
 
 func TestStepEntryCancellationPreservesEarlierAttemptEvidence(t *testing.T) {
+	t.Parallel()
 	for _, adapter := range []string{"top-level", "foreach"} {
 		t.Run(adapter, func(t *testing.T) {
 			executor := newCommandTestExecutor(t)
@@ -193,6 +195,7 @@ func TestStepEntryCancellationPreservesEarlierAttemptEvidence(t *testing.T) {
 }
 
 func TestNativeCancellationBeforeStartPersistsSettlementAndResumes(t *testing.T) {
+	t.Parallel()
 	executor := newCommandTestExecutor(t)
 	executor.state.Session = executor.config.Session
 	executor.state.CommandEvaluationVersion = commandEvaluationVersion
@@ -265,6 +268,7 @@ func TestExecuteCommand_GlobalTimeoutCancelsWithPartialOutput(t *testing.T) {
 }
 
 func TestExecutor_Run_GlobalTimeoutRunsOnCancelSteps(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	cleanupPath := filepath.Join(tmpDir, "cleanup.txt")
 
@@ -332,6 +336,7 @@ func TestExecutor_Run_GlobalTimeoutRunsOnCancelSteps(t *testing.T) {
 }
 
 func TestExecutor_Run_CancellationRecordsActiveStep(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	startedPath := filepath.Join(tmpDir, "started.txt")
 
@@ -419,6 +424,7 @@ waitForStart:
 // StatusCompleted, the persisted step result must be flagged for rerun on
 // resume so the sidecar gets relaunched instead of skipped.
 func TestExecuteCommand_WaitNoneCancellation_MarksRerunOnResume(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -470,6 +476,7 @@ func TestExecuteCommand_WaitNoneCancellation_MarksRerunOnResume(t *testing.T) {
 }
 
 func TestControlledPipelineWaitNoneNaturalFailurePersistsAndResumes(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX command and signal fixtures")
 	}
@@ -671,6 +678,7 @@ func TestControlledPipelineWaitNoneNaturalFailurePersistsAndResumes(t *testing.T
 }
 
 func TestControlledPipelineWaitNoneExplicitTimeoutPersistsFailure(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX command and SIGTERM fixture")
 	}
@@ -770,6 +778,7 @@ func TestControlledPipelineWaitNoneExplicitTimeoutPersistsFailure(t *testing.T) 
 }
 
 func TestExecuteCommandWaitNoneWithoutExplicitTimeoutKeepsRunLifetime(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX command fixture")
 	}
@@ -806,6 +815,7 @@ func TestExecuteCommandWaitNoneWithoutExplicitTimeoutKeepsRunLifetime(t *testing
 }
 
 func TestExecuteCommandWaitNoneExplicitTimeoutPreservesCancellationCause(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX command and SIGTERM fixture")
 	}
@@ -890,6 +900,7 @@ func awaitCommandCancellationFile(t *testing.T, path, want string) {
 }
 
 func TestExecutor_Run_WaitNoneCleanupSettlesBeforeReturn(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	cfg := DefaultExecutorConfig("wait-none-lifecycle")
 	cfg.ProjectDir = tmpDir
@@ -925,6 +936,7 @@ func TestExecutor_Run_WaitNoneCleanupSettlesBeforeReturn(t *testing.T) {
 }
 
 func TestExecutor_Resume_WaitNoneCleanupSettlesBeforeReturn(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	cfg := DefaultExecutorConfig("wait-none-resume-lifecycle")
 	cfg.ProjectDir = tmpDir
@@ -976,6 +988,7 @@ func TestExecutor_Resume_WaitNoneCleanupSettlesBeforeReturn(t *testing.T) {
 // fire-and-forget commands flagged after cancellation cleanup: the explicit
 // RerunOnResume flag overrides the stale persisted Completed status.
 func TestShouldRerunStep_RerunOnResumeFlagWins(t *testing.T) {
+	t.Parallel()
 	completed := StepResult{Status: StatusCompleted}
 	if shouldRerunStep(completed) {
 		t.Fatalf("shouldRerunStep(plain completed) = true; want false")
@@ -992,6 +1005,7 @@ func TestShouldRerunStep_RerunOnResumeFlagWins(t *testing.T) {
 // wall-clock budget; the test sets it well below the cleanup sleep so
 // the cleanup phase returns within seconds rather than minutes.
 func TestExecutor_RunOnCancelSteps_HungCleanupRespectsTimeout(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	cfg := DefaultExecutorConfig("hung-cleanup")
 	cfg.ProjectDir = tmpDir
@@ -1033,6 +1047,7 @@ func TestExecutor_RunOnCancelSteps_HungCleanupRespectsTimeout(t *testing.T) {
 }
 
 func TestExecutorCancellationHooksFollowMainBackgroundSupervision(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX command and SIGTERM fixtures")
 	}
@@ -1306,6 +1321,7 @@ func interruptedSuccessHookRun(t *testing.T, shape string, tail bool) (ExecutorC
 }
 
 func TestSuccessHookCancellationResumesWithoutReplayingConsumedEffects(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, shape string
 		tail        bool
@@ -1399,6 +1415,7 @@ func TestSuccessHookCancellationResumesWithoutReplayingConsumedEffects(t *testin
 }
 
 func TestSuccessHookRecoveryRejectsChangedEvidenceBeforeEffects(t *testing.T) {
+	t.Parallel()
 	cfg, _, original, parentID := interruptedSuccessHookRun(t, "command", true)
 	snapshot, err := json.Marshal(original)
 	if err != nil {
@@ -1489,6 +1506,7 @@ func TestSuccessHookRecoveryRejectsChangedEvidenceBeforeEffects(t *testing.T) {
 }
 
 func TestSuccessHookRecoveryRejectsChangedForeachDefinition(t *testing.T) {
+	t.Parallel()
 	cfg, workflow, prior, _ := interruptedSuccessHookRun(t, "foreach", true)
 	before, err := os.ReadFile(pipelineStatePath(cfg.ProjectDir, cfg.RunID))
 	if err != nil {
@@ -1520,6 +1538,7 @@ func TestSuccessHookRecoveryRejectsChangedForeachDefinition(t *testing.T) {
 }
 
 func TestSuccessHookReplayRequiresContainingScope(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		options       ResumeOptions
@@ -1604,6 +1623,7 @@ func TestSuccessHookReplayRequiresContainingScope(t *testing.T) {
 }
 
 func TestSuccessHookBackgroundCommandRelaunchPreservesConsumedSiblings(t *testing.T) {
+	t.Parallel()
 	cfg, workflow, prior, parentID := interruptedSuccessHookRun(t, "background", true)
 	sidecarID := parentID + "_on_success_sidecar"
 	if got := prior.Steps[sidecarID]; !got.RerunOnResume {

@@ -4,6 +4,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -13,6 +14,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+var errRuntimeVariableUnset = errors.New("runtime variable unset")
 
 // PrepareWorkflowVariables applies runtime overrides and workflow defaults,
 // validating declared variable types as values enter the execution state.
@@ -416,6 +419,9 @@ const escapedDollarPlaceholder = "\x00ESC_DOLLAR\x00"
 // foreach materialization -> execution) without exposing sealed terminal values
 // to double-substitution.
 func (s *Substitutor) SubstituteRetainingSeals(template string) (string, error) {
+	if strings.IndexByte(template, '$') < 0 {
+		return template, nil
+	}
 	result := protectEscapedSubstitutions(template)
 	maxDepth := s.effectiveMaxDepth()
 
@@ -479,6 +485,10 @@ func (s *Substitutor) substituteOnce(template string) (string, int, error) {
 					resolved++
 				}
 				return defaultVal
+			}
+			if errors.Is(err, errRuntimeVariableUnset) {
+				resolved++
+				return ""
 			}
 			if firstErr == nil {
 				firstErr = &SubstitutionError{VarRef: varPath, Message: err.Error()}
@@ -599,11 +609,17 @@ func sealTerminalValue(v string) string {
 }
 
 func protectEscapedSubstitutions(template string) string {
+	if !strings.Contains(template, `\$`) {
+		return template
+	}
 	result := escapedPattern.ReplaceAllString(template, escapePlaceholder)
 	return escapedDollarPattern.ReplaceAllString(result, escapedDollarPlaceholder)
 }
 
 func restoreEscapedSubstitutions(template string) string {
+	if strings.IndexByte(template, 0) < 0 {
+		return template
+	}
 	result := strings.ReplaceAll(template, escapePlaceholder, "${")
 	return strings.ReplaceAll(result, escapedDollarPlaceholder, "$")
 }
@@ -698,6 +714,8 @@ func (s *Substitutor) resolveVar(path string) (interface{}, error) {
 		return s.resolveItem(parts[1:])
 	case "pane":
 		return s.resolvePane(parts[1:])
+	case "runtime":
+		return s.resolveRuntime(parts[1:])
 	case "session":
 		return s.session, nil
 	case "run_id":
@@ -727,6 +745,35 @@ func (s *Substitutor) resolveVar(path string) (interface{}, error) {
 	default:
 		return nil, fmt.Errorf("unknown variable namespace: %s", parts[0])
 	}
+}
+
+// resolveRuntime handles runtime.X (and nested runtime.X.Y) references,
+// matching Executor.substituteRuntimeVariables semantics: unset runtime keys
+// evaluate to empty string (or explicit default) rather than a substitution error.
+func (s *Substitutor) resolveRuntime(parts []string) (interface{}, error) {
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("runtime requires a variable name")
+	}
+	if s.state == nil || s.state.Variables == nil {
+		return nil, errRuntimeVariableUnset
+	}
+	key := strings.Join(parts, ".")
+	if value, ok := s.state.Variables["runtime."+key]; ok {
+		return value, nil
+	}
+	runtimeVars, ok := s.state.Variables["runtime"].(map[string]interface{})
+	if !ok {
+		return nil, errRuntimeVariableUnset
+	}
+	if value, ok := runtimeVars[key]; ok {
+		return value, nil
+	}
+	if len(parts) > 1 {
+		if value, err := navigateNested(runtimeVars, parts); err == nil {
+			return value, nil
+		}
+	}
+	return nil, errRuntimeVariableUnset
 }
 
 // resolveVars handles vars.X and vars.X.nested.field references

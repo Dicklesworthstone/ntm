@@ -400,12 +400,10 @@ func TestPublishDiskTrajectoryAlertLifecycle(t *testing.T) {
 }
 
 func TestMetricsOutputIncludesDiskSection(t *testing.T) {
+	t.Parallel()
 	store := newDiskTestStore(t)
-	oldStore := currentProjectionStore()
-	SetProjectionStore(store)
-	t.Cleanup(func() { SetProjectionStore(oldStore) })
 
-	out, err := GetMetrics(MetricsOptions{Period: "24h"})
+	out, err := GetMetrics(MetricsOptions{Period: "24h", Store: store})
 	if err != nil {
 		t.Fatalf("GetMetrics: %v", err)
 	}

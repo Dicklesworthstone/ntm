@@ -271,6 +271,7 @@ func TestIncidentsRESTEndpointsLifecycle(t *testing.T) {
 }
 
 func TestHandoffsRESTEndpointsLifecycle(t *testing.T) {
+	t.Parallel()
 	projectDir := t.TempDir()
 	srv := New(Config{ProjectDir: projectDir})
 	t.Cleanup(srv.Stop)

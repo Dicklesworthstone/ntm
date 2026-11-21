@@ -631,8 +631,10 @@ func TestRestartSavedCodexModelOverrideReplacesScalarOption(t *testing.T) {
 }
 
 func TestGetRestartPaneRefreshesMetadataAfterRespawnBeforeDelivery(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"metadata-failure", "delivery-failure", "respawn-failure", "unverified-respawn", "dry-run"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			path := filepath.Join(root, "tmux")
 			script := `#!/bin/sh
@@ -693,6 +695,9 @@ func TestGetRestartPaneMetadataTransportHelper(t *testing.T) {
 	if root == "" {
 		return
 	}
+	restartPaneSettleDelay = 5 * time.Millisecond
+	restartPaneReadyPollInterval = 5 * time.Millisecond
+	tmux.DefaultClient.MaxSendDelay = 2 * time.Millisecond
 	mode := os.Getenv("NTM_RESTART_SPEC_TEST_MODE")
 	saved := tmux.AgentLaunchSpec{Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentClaude, Command: "claude --model 'original' --custom 'retained'", Model: "original"}
 	var recorded *tmux.AgentLaunchSpec
@@ -777,9 +782,11 @@ func TestGetRestartPaneMetadataTransportHelper(t *testing.T) {
 // result proves the replacement received the environment, not just that the
 // preflight accepted a populated map.
 func TestGetRestartPaneExplicitEnvironmentRecovery(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("recording tmux executable requires a POSIX shell")
 	}
+	sem := make(chan struct{}, 8)
 	for _, mode := range []string{
 		"reported", "empty-value", "model-override", "ordinary", "missing", "partial", "unknown",
 		"invalid-name", "nul-value", "multiline-value", "implicit", "multiple-targets", "native-recovery",
@@ -791,6 +798,9 @@ func TestGetRestartPaneExplicitEnvironmentRecovery(t *testing.T) {
 	} {
 		for _, dryRun := range []bool{false, true} {
 			t.Run(mode+"/dry-run="+strconv.FormatBool(dryRun), func(t *testing.T) {
+				t.Parallel()
+				sem <- struct{}{}
+				defer func() { <-sem }()
 				root := t.TempDir()
 				binary := filepath.Join(root, "tmux")
 				const script = `#!/bin/sh
@@ -883,6 +893,9 @@ func TestRestartPaneEnvironmentRecoveryTransportHelper(t *testing.T) {
 	if root == "" {
 		return
 	}
+	restartPaneSettleDelay = 5 * time.Millisecond
+	restartPaneReadyPollInterval = 5 * time.Millisecond
+	tmux.DefaultClient.MaxSendDelay = 2 * time.Millisecond
 	mode := os.Getenv("NTM_RESTART_ENV_TEST_MODE")
 	dryRun := os.Getenv("NTM_RESTART_ENV_TEST_DRY_RUN") == "true"
 	t.Setenv("NTM_RESTART_ENV_TEST_NEW_PID", strconv.Itoa(os.Getpid()))

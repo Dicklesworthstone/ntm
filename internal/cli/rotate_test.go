@@ -68,7 +68,11 @@ func TestContextConfirmCommandExecutesPersistedChoice(t *testing.T) {
 			t.Setenv("NTM_CONFIRM_COMPACTED_LINE", `{"timestamp":"`+time.Now().UTC().Format(time.RFC3339Nano)+`","type":"assistant","message":{"model":"claude-opus-4","usage":{"input_tokens":30000}}}`)
 			oldCfg, oldJSON, oldClient := cfg, jsonOutput, tmux.DefaultClient
 			oldStore, oldHistory := ctxmon.DefaultPendingRotationStore, ctxmon.DefaultRotationHistoryStore
-			cfg, jsonOutput, tmux.DefaultClient = config.Default(), true, tmux.NewClient("")
+			oldRotDelay := ctxmon.MaxRotationDelay
+			fastClient := tmux.NewClient("")
+			fastClient.MaxSendDelay = 2 * time.Millisecond
+			cfg, jsonOutput, tmux.DefaultClient = config.Default(), true, fastClient
+			ctxmon.MaxRotationDelay = 5 * time.Millisecond
 			if cfg.Rotation.AutoConfirm {
 				t.Fatal("fixture must exercise manual confirmation with default auto-confirm disabled")
 			}
@@ -80,6 +84,7 @@ func TestContextConfirmCommandExecutesPersistedChoice(t *testing.T) {
 			t.Cleanup(func() {
 				cfg, jsonOutput, tmux.DefaultClient = oldCfg, oldJSON, oldClient
 				ctxmon.DefaultPendingRotationStore, ctxmon.DefaultRotationHistoryStore = oldStore, oldHistory
+				ctxmon.MaxRotationDelay = oldRotDelay
 			})
 			pending := &ctxmon.PendingRotation{AgentID: "demo__cc_1", SessionName: "demo", PaneID: "%1", PanePID: 123, PaneType: "cc", WorkDir: workDir, ContextPercent: 75, CreatedAt: time.Now(), TimeoutAt: time.Now().Add(time.Hour)}
 			if err := ctxmon.AddPendingRotation(pending); err != nil {
@@ -774,6 +779,7 @@ func errorMatchesAny(err string, matches []string) bool {
 }
 
 func TestQuotaProviderForAgentType_CanonicalizesAliases(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name      string
@@ -802,6 +808,7 @@ func TestQuotaProviderForAgentType_CanonicalizesAliases(t *testing.T) {
 }
 
 func TestNormalizedProviderName_CanonicalizesFallbacks(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name      string

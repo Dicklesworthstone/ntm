@@ -12,6 +12,7 @@ import (
 )
 
 func TestExtractPathParams(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		path     string
 		expected []string
@@ -42,6 +43,7 @@ func TestExtractPathParams(t *testing.T) {
 }
 
 func TestHandleOpenAPISpec_Handler(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{})
 
 	rr := httptest.NewRecorder()
@@ -70,6 +72,7 @@ func TestHandleOpenAPISpec_Handler(t *testing.T) {
 }
 
 func TestOpenAPICORSConfiguredOrigins(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{AllowedOrigins: []string{"https://cockpit.example.test"}})
 	t.Cleanup(srv.Stop)
 	for _, tc := range []struct {
@@ -82,6 +85,7 @@ func TestOpenAPICORSConfiguredOrigins(t *testing.T) {
 		{"opaque origin", "null", "", http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil)
 			req.RemoteAddr = "127.0.0.1:12345"
 			req.Header.Set("Origin", tc.origin)
@@ -105,6 +109,7 @@ func TestOpenAPICORSConfiguredOrigins(t *testing.T) {
 }
 
 func TestSwaggerEmbeddedAssets(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{Auth: AuthConfig{Mode: AuthModeAPIKey, APIKey: "docs-test-key"}})
 	t.Cleanup(srv.Stop)
 	for _, tc := range []struct {
@@ -115,6 +120,7 @@ func TestSwaggerEmbeddedAssets(t *testing.T) {
 		{"swagger-ui-standalone-preset.js", "text/javascript", "SwaggerUIStandalonePreset"},
 	} {
 		t.Run(tc.asset, func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest(http.MethodGet, "/docs?asset="+tc.asset, nil)
 			rr := httptest.NewRecorder()
 			srv.Router().ServeHTTP(rr, req)
@@ -143,6 +149,7 @@ func TestSwaggerEmbeddedAssets(t *testing.T) {
 
 // TestHandleSwaggerUI exercises the Swagger UI HTML handler.
 func TestHandleSwaggerUI_Handler(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{})
 
 	rr := httptest.NewRecorder()
@@ -196,6 +203,7 @@ func TestHandleSwaggerUI_Handler(t *testing.T) {
 }
 
 func TestSwaggerPublicURLIsEscaped(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{PublicBaseURL: "https://ntm.example.test/</script><script>alert(1)</script>"})
 	t.Cleanup(srv.Stop)
 	rr := httptest.NewRecorder()
@@ -209,6 +217,7 @@ func TestSwaggerPublicURLIsEscaped(t *testing.T) {
 }
 
 func TestSwaggerCSPRejectsConfiguredSourceInjection(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{PublicBaseURL: "https://ntm.example.test;connect-src*/control"})
 	t.Cleanup(srv.Stop)
 	rr := httptest.NewRecorder()
@@ -220,6 +229,7 @@ func TestSwaggerCSPRejectsConfiguredSourceInjection(t *testing.T) {
 }
 
 func TestDocumentationURLsUseBrowserOrigin(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, host, browserOrigin string
 		port                      int
@@ -231,6 +241,7 @@ func TestDocumentationURLsUseBrowserOrigin(t *testing.T) {
 		{"ephemeral browser port", "127.0.0.1", "http://127.0.0.1:53112", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			srv := New(Config{Host: tc.host, Port: tc.port})
 			t.Cleanup(srv.Stop)
 			pageURL, err := url.Parse(tc.browserOrigin + "/docs")
@@ -294,6 +305,7 @@ func TestDocumentationURLsUseBrowserOrigin(t *testing.T) {
 }
 
 func TestDocumentationHandlersUseConfiguredPublicBaseURL(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{
 		Host:          "0.0.0.0",
 		Port:          7337,

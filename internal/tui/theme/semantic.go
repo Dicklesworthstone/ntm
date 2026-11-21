@@ -170,7 +170,7 @@ func (p SemanticPalette) AgentColor(agentType string) lipgloss.Color {
 		return p.AgentGemini
 	case agent.AgentTypeGrok:
 		return p.AgentGrok
-	case agent.AgentTypeOmp:
+	case agent.AgentTypeOmp, agent.AgentTypePi:
 		return p.AgentOmp
 	case agent.AgentTypeAntigravity:
 		return p.AgentAntigravity

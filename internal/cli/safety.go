@@ -423,7 +423,7 @@ type CheckDCGVerdict struct {
 }
 
 // hookSessionLookupTimeout bounds the tmux query recordHookRefusal makes.
-const hookSessionLookupTimeout = 2 * time.Second
+var hookSessionLookupTimeout = 2 * time.Second
 
 // recordHookRefusal files a command an installed safety hook refused: an entry
 // in the blocked-command log (`ntm safety blocked`) naming the tmux session and

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/config"
@@ -64,7 +65,9 @@ esac
 	}
 	t.Setenv("NTM_TMUX_BINARY", bin)
 	oldClient := tmux.DefaultClient
-	tmux.DefaultClient = tmux.NewClient("")
+	fastClient := tmux.NewClient("")
+	fastClient.MaxSendDelay = 2 * time.Millisecond
+	tmux.DefaultClient = fastClient
 	t.Cleanup(func() { tmux.DefaultClient = oldClient })
 	state := &session.SessionState{
 		Name: "original", WorkDir: dir, Version: session.StateVersion, Layout: "tiled",

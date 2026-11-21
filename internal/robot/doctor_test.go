@@ -116,6 +116,7 @@ func TestDoctor_GuardHookDegradedLedgerAndUnhealthyConfig(t *testing.T) {
 }
 
 func TestDoctor_ClassifyAndFindContentionHolders(t *testing.T) {
+	t.Parallel()
 	got := ClassifyContentionProcess(DoctorContentionProcess{
 		Command:   "/usr/local/bin/cargo build --release && rsync -a target/ out/",
 		Status:    "D",
@@ -159,6 +160,7 @@ func TestDoctor_ClassifyAndFindContentionHolders(t *testing.T) {
 }
 
 func TestDoctor_TerminateContentionHolderGuardsAndExecution(t *testing.T) {
+	t.Parallel()
 	holders := []DoctorContentionHolder{
 		{PID: 424242, InSwarm: true, Resource: "beads_db", Command: "br ready"},
 	}
@@ -202,6 +204,7 @@ func TestDoctor_TerminateContentionHolderGuardsAndExecution(t *testing.T) {
 }
 
 func TestDoctor_CancelledContextAndRegistrySchema(t *testing.T) {
+	t.Parallel()
 	cancelledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 	out, err := GetDoctor(cancelledCtx, DoctorOptions{})

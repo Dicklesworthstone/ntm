@@ -521,6 +521,7 @@ func (s *Server) handleRecommendRouteV1(w http.ResponseWriter, r *http.Request) 
 		Config:         cfg,
 		NoPersist:      true,
 		Relax:          req.Relax,
+		Store:          s.robotRuntime.ProjectionStore(),
 	})
 	if !out.Success {
 		writeErrorResponse(w, robotErrorHTTPStatus(out.ErrorCode), out.ErrorCode, out.Error, nil, reqID)

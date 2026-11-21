@@ -18,6 +18,7 @@ import (
 )
 
 func TestSaveState(t *testing.T) {
+	t.Parallel()
 	// Create temp directory
 	tmpDir := t.TempDir()
 
@@ -72,6 +73,7 @@ func TestSaveState(t *testing.T) {
 }
 
 func TestSaveState_NilState(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	err := SaveState(tmpDir, nil)
 	if err == nil {
@@ -80,6 +82,7 @@ func TestSaveState_NilState(t *testing.T) {
 }
 
 func TestSaveState_EmptyRunID(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	state := &ExecutionState{
 		RunID: "", // Empty
@@ -91,6 +94,7 @@ func TestSaveState_EmptyRunID(t *testing.T) {
 }
 
 func TestSaveState_Overwrite(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	// Save initial state
@@ -122,6 +126,7 @@ func TestSaveState_Overwrite(t *testing.T) {
 }
 
 func TestLoadState(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	// Save a state first
@@ -170,6 +175,7 @@ func TestLoadState(t *testing.T) {
 }
 
 func TestLoadState_EmptyRunID(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	_, err := LoadState(tmpDir, "")
 	if err == nil {
@@ -178,6 +184,7 @@ func TestLoadState_EmptyRunID(t *testing.T) {
 }
 
 func TestLoadState_NotFound(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	_, err := LoadState(tmpDir, "nonexistent-run")
 	if err == nil {
@@ -186,6 +193,7 @@ func TestLoadState_NotFound(t *testing.T) {
 }
 
 func TestLoadState_InvalidJSON(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	// Create directory structure
@@ -207,6 +215,7 @@ func TestLoadState_InvalidJSON(t *testing.T) {
 }
 
 func TestLoadState_EmptyRunIDInFile(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	// Create directory structure
@@ -313,6 +322,7 @@ func checkCleanupReceipt(t *testing.T, state *ExecutionState, eligible bool, rea
 }
 
 func TestCleanupStates(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	for _, status := range []ExecutionStatus{StatusCompleted, StatusFailed, StatusCancelled} {
 		state := cleanupStateFixture("old-" + string(status))
@@ -366,6 +376,7 @@ func TestCleanupStates(t *testing.T) {
 }
 
 func TestCleanupStatesInvalidArgumentsAndCancellation(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	state := cleanupStateFixture("cancelled-request")
 	before := saveOldCleanupState(t, dir, state)
@@ -393,6 +404,7 @@ func TestCleanupStatesInvalidArgumentsAndCancellation(t *testing.T) {
 }
 
 func TestCleanupStatesRetainsUnfinishedState(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		change func(*ExecutionState)
@@ -530,6 +542,7 @@ func cleanupReservationFixture(state *ExecutionState, status string) Reservation
 }
 
 func TestCleanupStatesReceiptPhases(t *testing.T) {
+	t.Parallel()
 	for _, status := range []string{commandExecutionStarting, commandExecutionRunning, commandExecutionUnresolved, commandExecutionSettled} {
 		t.Run("command_"+status, func(t *testing.T) {
 			state := cleanupStateFixture("command-" + status)
@@ -588,6 +601,7 @@ func TestCleanupStatesReceiptPhases(t *testing.T) {
 }
 
 func TestCleanupStatesSettledBackgroundAndFailedIterations(t *testing.T) {
+	t.Parallel()
 	state := cleanupStateFixture("settled-background")
 	state.Status = StatusFailed
 	record := cleanupCommandFixture(state, commandExecutionSettled)
@@ -609,6 +623,7 @@ func TestCleanupStatesSettledBackgroundAndFailedIterations(t *testing.T) {
 }
 
 func TestCleanupStatesRequiresParallelSettlement(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		change func(*ParallelGroupState)
@@ -636,6 +651,7 @@ func TestCleanupStatesRequiresParallelSettlement(t *testing.T) {
 }
 
 func TestCleanupStatesAcceptedReceiptProvenance(t *testing.T) {
+	t.Parallel()
 	for _, family := range []string{"command", "selector", "agent"} {
 		for _, corrupt := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/corrupt_%t", family, corrupt), func(t *testing.T) {
@@ -720,6 +736,7 @@ func cleanupStateWithReceipts(t *testing.T) *ExecutionState {
 }
 
 func TestCleanupStatesReceiptIntegrity(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		change func(*ExecutionState)
@@ -780,6 +797,7 @@ func TestCleanupStatesReceiptIntegrity(t *testing.T) {
 }
 
 func TestCleanupStatesRetainsLiveOwnerAndIgnoresStaleOwnerMetadata(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	state := cleanupStateFixture("owned")
 	control, err := AcquireRunControl(t.Context(), dir, state.RunID)
@@ -832,6 +850,7 @@ func TestCleanupStatesRetainsLiveOwnerAndIgnoresStaleOwnerMetadata(t *testing.T)
 }
 
 func TestCleanupStatesRechecksChangedCheckpoint(t *testing.T) {
+	t.Parallel()
 	for _, sameAge := range []bool{false, true} {
 		t.Run(fmt.Sprintf("same_age_%t", sameAge), func(t *testing.T) {
 			dir := t.TempDir()
@@ -869,6 +888,7 @@ func TestCleanupStatesRechecksChangedCheckpoint(t *testing.T) {
 }
 
 func TestCleanupStatesPreservesUninspectableFiles(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"malformed", "future_schema", "negative_schema", "mismatched_id", "oversized", "symlink"} {
 		t.Run(kind, func(t *testing.T) {
 			dir := t.TempDir()
@@ -952,6 +972,7 @@ func TestCleanupStatesPreservesUninspectableFiles(t *testing.T) {
 }
 
 func TestCleanupStatesSkipsOtherFilesAndDirectories(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	stateDir := pipelineStateDir(dir)
 	if err := os.MkdirAll(filepath.Join(stateDir, "directory.json"), 0755); err != nil {
@@ -978,6 +999,7 @@ func TestCleanupStatesSkipsOtherFilesAndDirectories(t *testing.T) {
 }
 
 func TestPipelineStateDir(t *testing.T) {
+	t.Parallel()
 	got := pipelineStateDir("/project")
 	want := filepath.Join("/project", ".ntm", "pipelines")
 	if got != want {
@@ -986,6 +1008,7 @@ func TestPipelineStateDir(t *testing.T) {
 }
 
 func TestPipelineStatePath(t *testing.T) {
+	t.Parallel()
 	got := pipelineStatePath("/project", "run-123")
 	want := filepath.Join("/project", ".ntm", "pipelines", "run-123.json")
 	if got != want {
@@ -994,6 +1017,7 @@ func TestPipelineStatePath(t *testing.T) {
 }
 
 func TestSaveAndLoadState_ComplexState(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	// Create a complex state with all fields populated
@@ -1109,6 +1133,7 @@ func TestSaveAndLoadState_ComplexState(t *testing.T) {
 }
 
 func TestCleanupStates_MultipleFiles(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	dir := filepath.Join(tmpDir, ".ntm", "pipelines")
 	if err := os.MkdirAll(dir, 0755); err != nil {

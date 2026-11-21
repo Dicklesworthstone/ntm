@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Dicklesworthstone/ntm/internal/assign"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -38,9 +39,9 @@ func TestInferTaskTypeFromBead(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			bead := bv.BeadPreview{Title: tc.title}
-			got := inferTaskTypeFromBead(bead)
+			got := string(assign.InferTaskType(bead.Title))
 			if got != tc.want {
-				t.Errorf("inferTaskTypeFromBead(%q) = %q, want %q", tc.title, got, tc.want)
+				t.Errorf("InferTaskType(%q) = %q, want %q", tc.title, got, tc.want)
 			}
 		})
 	}

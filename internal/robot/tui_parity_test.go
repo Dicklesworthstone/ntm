@@ -39,6 +39,7 @@ func diagnosticSectionByKind(sections []InspectDiagnosticSection, kind string) *
 }
 
 func TestFormatTerseLine_FeedUnavailableMarker(t *testing.T) {
+	t.Parallel()
 	state := TerseState{
 		Session:           "proj",
 		ActiveAgents:      2,
@@ -115,6 +116,7 @@ func TestPrintDashboardMarkdown_IncludesAttentionSection(t *testing.T) {
 // =============================================================================
 
 func TestDetectErrors(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		lines    []string
@@ -196,6 +198,7 @@ func TestDetectErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := detectErrors(tt.lines)
 			if len(result) != len(tt.expected) {
 				t.Errorf("expected %d errors, got %d", len(tt.expected), len(result))
@@ -211,6 +214,7 @@ func TestDetectErrors(t *testing.T) {
 }
 
 func TestParseCodeBlocks(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		lines    []string
@@ -274,6 +278,7 @@ func TestParseCodeBlocks(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := parseCodeBlocks(tt.lines)
 			if len(result) != len(tt.expected) {
 				t.Errorf("expected %d blocks, got %d", len(tt.expected), len(result))
@@ -295,6 +300,7 @@ func TestParseCodeBlocks(t *testing.T) {
 }
 
 func TestExtractFileReferences(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		lines    []string
@@ -339,6 +345,7 @@ func TestExtractFileReferences(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := extractFileReferences(tt.lines)
 			resultSet := make(map[string]bool)
 			for _, f := range result {
@@ -355,6 +362,7 @@ func TestExtractFileReferences(t *testing.T) {
 }
 
 func TestIsLikelyFilePath(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input    string
 		expected bool
@@ -374,6 +382,7 @@ func TestIsLikelyFilePath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
+			t.Parallel()
 			result := isLikelyFilePath(tt.input)
 			if result != tt.expected {
 				t.Errorf("isLikelyFilePath(%q) = %v, expected %v", tt.input, result, tt.expected)
@@ -383,6 +392,7 @@ func TestIsLikelyFilePath(t *testing.T) {
 }
 
 func TestTruncateString(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input    string
 		max      int
@@ -398,6 +408,7 @@ func TestTruncateString(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
+			t.Parallel()
 			result := truncateString(tt.input, tt.max)
 			if result != tt.expected {
 				t.Errorf("truncateString(%q, %d) = %q, expected %q", tt.input, tt.max, result, tt.expected)
@@ -1234,6 +1245,7 @@ func sortedStrings(in []string) []string {
 // =============================================================================
 
 func TestTUIAlertsOutputStructure(t *testing.T) {
+	t.Parallel()
 	output := TUIAlertsOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       "test",
@@ -1273,6 +1285,7 @@ func TestTUIAlertsOutputStructure(t *testing.T) {
 }
 
 func TestFilesOutputStructure(t *testing.T) {
+	t.Parallel()
 	output := FilesOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       "test",
@@ -1314,6 +1327,7 @@ func TestFilesOutputStructure(t *testing.T) {
 }
 
 func TestBeadsListOutputStructure(t *testing.T) {
+	t.Parallel()
 	output := BeadsListOutput{
 		RobotResponse: NewRobotResponse(true),
 		Beads: []BeadListItem{
@@ -1360,6 +1374,7 @@ func TestBeadsListOutputStructure(t *testing.T) {
 // =============================================================================
 
 func TestBeadsListOptionsDefaults(t *testing.T) {
+	t.Parallel()
 	opts := BeadsListOptions{}
 
 	// Verify default values
@@ -1376,6 +1391,7 @@ func TestBeadsListOptionsDefaults(t *testing.T) {
 // =============================================================================
 
 func TestFormatTimestampConsistency(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	formatted := FormatTimestamp(now)
 
@@ -1397,6 +1413,7 @@ func TestFormatTimestampConsistency(t *testing.T) {
 // =============================================================================
 
 func TestAlertInfoFromRealAlert(t *testing.T) {
+	t.Parallel()
 	// Test that TUIAlertInfo can be properly created from alerts.Alert
 	now := time.Now()
 	alertCreatedAt := now.Add(-2 * time.Minute)
@@ -1481,6 +1498,7 @@ func TestPrintInspectPaneWithOptions(t *testing.T) {
 }
 
 func TestInspectPaneOutputStructure(t *testing.T) {
+	t.Parallel()
 	output := InspectPaneOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       "test",
@@ -1522,6 +1540,7 @@ func TestInspectPaneOutputStructure(t *testing.T) {
 }
 
 func TestInspectSessionOutputStructure(t *testing.T) {
+	t.Parallel()
 	output := InspectSessionOutput{
 		RobotResponse: NewRobotResponse(true),
 		SchemaID:      defaultRobotSchemaID("inspect-session"),
@@ -1573,6 +1592,7 @@ func TestInspectSessionOutputStructure(t *testing.T) {
 }
 
 func TestInspectAgentOutputStructure(t *testing.T) {
+	t.Parallel()
 	output := InspectAgentOutput{
 		RobotResponse: NewRobotResponse(true),
 		SchemaID:      defaultRobotSchemaID("inspect-agent"),
@@ -1615,6 +1635,7 @@ func TestInspectAgentOutputStructure(t *testing.T) {
 }
 
 func TestGetInspectSessionUsesProjectionStore(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
 	if err != nil {
@@ -1624,10 +1645,7 @@ func TestGetInspectSessionUsesProjectionStore(t *testing.T) {
 		t.Fatalf("Migrate store: %v", err)
 	}
 
-	oldStore := currentProjectionStore()
-	SetProjectionStore(store)
 	t.Cleanup(func() {
-		SetProjectionStore(oldStore)
 		_ = store.Close()
 	})
 
@@ -1679,7 +1697,7 @@ func TestGetInspectSessionUsesProjectionStore(t *testing.T) {
 		t.Fatalf("UpsertSourceHealth(tmux): %v", err)
 	}
 
-	output, err := GetInspectSession(InspectSessionOptions{Session: "alpha"})
+	output, err := GetInspectSession(InspectSessionOptions{Session: "alpha", Store: store})
 	if err != nil {
 		t.Fatalf("GetInspectSession: %v", err)
 	}
@@ -1708,6 +1726,7 @@ func TestGetInspectSessionUsesProjectionStore(t *testing.T) {
 }
 
 func TestGetInspectAgentUsesProjectionStore(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
 	if err != nil {
@@ -1717,10 +1736,7 @@ func TestGetInspectAgentUsesProjectionStore(t *testing.T) {
 		t.Fatalf("Migrate store: %v", err)
 	}
 
-	oldStore := currentProjectionStore()
-	SetProjectionStore(store)
 	t.Cleanup(func() {
-		SetProjectionStore(oldStore)
 		_ = store.Close()
 	})
 
@@ -1765,7 +1781,7 @@ func TestGetInspectAgentUsesProjectionStore(t *testing.T) {
 		t.Fatalf("UpsertSourceHealth(tmux): %v", err)
 	}
 
-	output, err := GetInspectAgent(InspectAgentOptions{AgentID: "alpha:%2"})
+	output, err := GetInspectAgent(InspectAgentOptions{AgentID: "alpha:%2", Store: store})
 	if err != nil {
 		t.Fatalf("GetInspectAgent: %v", err)
 	}
@@ -1785,6 +1801,7 @@ func TestGetInspectAgentUsesProjectionStore(t *testing.T) {
 }
 
 func TestInspectWorkOutputStructure(t *testing.T) {
+	t.Parallel()
 	output := InspectWorkOutput{
 		RobotResponse: NewRobotResponse(true),
 		SchemaID:      defaultRobotSchemaID("inspect-work"),
@@ -1828,6 +1845,7 @@ func TestInspectWorkOutputStructure(t *testing.T) {
 }
 
 func TestInspectCoordinationOutputStructure(t *testing.T) {
+	t.Parallel()
 	output := InspectCoordinationOutput{
 		RobotResponse: NewRobotResponse(true),
 		SchemaID:      defaultRobotSchemaID("inspect-coordination"),
@@ -1869,6 +1887,7 @@ func TestInspectCoordinationOutputStructure(t *testing.T) {
 }
 
 func TestInspectQuotaOutputStructure(t *testing.T) {
+	t.Parallel()
 	output := InspectQuotaOutput{
 		RobotResponse: NewRobotResponse(true),
 		SchemaID:      defaultRobotSchemaID("inspect-quota"),
@@ -1911,6 +1930,7 @@ func TestInspectQuotaOutputStructure(t *testing.T) {
 }
 
 func TestInspectIncidentOutputStructure(t *testing.T) {
+	t.Parallel()
 	output := InspectIncidentOutput{
 		RobotResponse: NewRobotResponse(true),
 		SchemaID:      defaultRobotSchemaID("inspect-incident"),
@@ -1956,6 +1976,7 @@ func TestInspectIncidentOutputStructure(t *testing.T) {
 }
 
 func TestGetInspectWorkUsesProjectionStore(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
 	if err != nil {
@@ -1965,10 +1986,7 @@ func TestGetInspectWorkUsesProjectionStore(t *testing.T) {
 		t.Fatalf("Migrate store: %v", err)
 	}
 
-	oldStore := currentProjectionStore()
-	SetProjectionStore(store)
 	t.Cleanup(func() {
-		SetProjectionStore(oldStore)
 		_ = store.Close()
 	})
 
@@ -2001,7 +2019,7 @@ func TestGetInspectWorkUsesProjectionStore(t *testing.T) {
 		t.Fatalf("UpsertSourceHealth(beads): %v", err)
 	}
 
-	output, err := GetInspectWork(InspectWorkOptions{BeadID: "bd-j9jo3.6.6"})
+	output, err := GetInspectWork(InspectWorkOptions{BeadID: "bd-j9jo3.6.6", Store: store})
 	if err != nil {
 		t.Fatalf("GetInspectWork: %v", err)
 	}
@@ -2024,6 +2042,7 @@ func TestGetInspectWorkUsesProjectionStore(t *testing.T) {
 }
 
 func TestGetInspectCoordinationUsesProjectionStore(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
 	if err != nil {
@@ -2033,10 +2052,7 @@ func TestGetInspectCoordinationUsesProjectionStore(t *testing.T) {
 		t.Fatalf("Migrate store: %v", err)
 	}
 
-	oldStore := currentProjectionStore()
-	SetProjectionStore(store)
 	t.Cleanup(func() {
-		SetProjectionStore(oldStore)
 		_ = store.Close()
 	})
 
@@ -2093,7 +2109,7 @@ func TestGetInspectCoordinationUsesProjectionStore(t *testing.T) {
 		t.Fatalf("CreateIncident: %v", err)
 	}
 
-	output, err := GetInspectCoordination(InspectCoordinationOptions{AgentName: "BlueLake"})
+	output, err := GetInspectCoordination(InspectCoordinationOptions{AgentName: "BlueLake", Store: store})
 	if err != nil {
 		t.Fatalf("GetInspectCoordination: %v", err)
 	}
@@ -2112,6 +2128,7 @@ func TestGetInspectCoordinationUsesProjectionStore(t *testing.T) {
 }
 
 func TestGetInspectQuotaUsesProjectionStore(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
 	if err != nil {
@@ -2121,10 +2138,7 @@ func TestGetInspectQuotaUsesProjectionStore(t *testing.T) {
 		t.Fatalf("Migrate store: %v", err)
 	}
 
-	oldStore := currentProjectionStore()
-	SetProjectionStore(store)
 	t.Cleanup(func() {
-		SetProjectionStore(oldStore)
 		_ = store.Close()
 	})
 
@@ -2152,7 +2166,7 @@ func TestGetInspectQuotaUsesProjectionStore(t *testing.T) {
 		t.Fatalf("UpsertSourceHealth(anthropic): %v", err)
 	}
 
-	output, err := GetInspectQuota(InspectQuotaOptions{QuotaID: "anthropic/default"})
+	output, err := GetInspectQuota(InspectQuotaOptions{QuotaID: "anthropic/default", Store: store})
 	if err != nil {
 		t.Fatalf("GetInspectQuota: %v", err)
 	}
@@ -2171,6 +2185,7 @@ func TestGetInspectQuotaUsesProjectionStore(t *testing.T) {
 }
 
 func TestGetInspectQuotaAcceptsCanonicalProviderAlias(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
 	if err != nil {
@@ -2180,10 +2195,7 @@ func TestGetInspectQuotaAcceptsCanonicalProviderAlias(t *testing.T) {
 		t.Fatalf("Migrate store: %v", err)
 	}
 
-	oldStore := currentProjectionStore()
-	SetProjectionStore(store)
 	t.Cleanup(func() {
-		SetProjectionStore(oldStore)
 		_ = store.Close()
 	})
 
@@ -2202,7 +2214,7 @@ func TestGetInspectQuotaAcceptsCanonicalProviderAlias(t *testing.T) {
 		t.Fatalf("UpsertRuntimeQuota: %v", err)
 	}
 
-	output, err := GetInspectQuota(InspectQuotaOptions{QuotaID: "claude/default"})
+	output, err := GetInspectQuota(InspectQuotaOptions{QuotaID: "claude/default", Store: store})
 	if err != nil {
 		t.Fatalf("GetInspectQuota: %v", err)
 	}
@@ -2215,6 +2227,7 @@ func TestGetInspectQuotaAcceptsCanonicalProviderAlias(t *testing.T) {
 }
 
 func TestGetInspectIncidentUsesStore(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
 	if err != nil {
@@ -2224,10 +2237,7 @@ func TestGetInspectIncidentUsesStore(t *testing.T) {
 		t.Fatalf("Migrate store: %v", err)
 	}
 
-	oldStore := currentProjectionStore()
-	SetProjectionStore(store)
 	t.Cleanup(func() {
-		SetProjectionStore(oldStore)
 		_ = store.Close()
 	})
 
@@ -2285,7 +2295,7 @@ func TestGetInspectIncidentUsesStore(t *testing.T) {
 		t.Fatalf("CreateIncident: %v", err)
 	}
 
-	output, err := GetInspectIncident(InspectIncidentOptions{IncidentID: "inc-demo"})
+	output, err := GetInspectIncident(InspectIncidentOptions{IncidentID: "inc-demo", Store: store})
 	if err != nil {
 		t.Fatalf("GetInspectIncident: %v", err)
 	}
@@ -2595,6 +2605,7 @@ func TestPrintReplayRealTmuxDeliversOnce(t *testing.T) {
 }
 
 func TestReplayOutputStructure(t *testing.T) {
+	t.Parallel()
 	output := ReplayOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       "test",
@@ -2723,6 +2734,7 @@ func TestPrintBeadClaimConflictReturnsTypedProcessFailure(t *testing.T) {
 }
 
 func TestBeadClaimOutputStructure(t *testing.T) {
+	t.Parallel()
 	output := BeadClaimOutput{
 		RobotResponse: NewRobotResponse(true),
 		BeadID:        "ntm-abc123",
@@ -2935,6 +2947,7 @@ func TestPrintBeadCreateMissingTitle(t *testing.T) {
 }
 
 func TestBeadCreateOutputStructure(t *testing.T) {
+	t.Parallel()
 	output := BeadCreateOutput{
 		RobotResponse: NewRobotResponse(true),
 		BeadID:        "ntm-xyz789",
@@ -2988,6 +3001,7 @@ func TestPrintBeadShowMissingID(t *testing.T) {
 }
 
 func TestBeadShowOutputStructure(t *testing.T) {
+	t.Parallel()
 	output := BeadShowOutput{
 		RobotResponse: NewRobotResponse(true),
 		BeadID:        "ntm-abc123",
@@ -3041,6 +3055,7 @@ func TestPrintBeadCloseMissingID(t *testing.T) {
 }
 
 func TestBeadCloseOutputStructure(t *testing.T) {
+	t.Parallel()
 	output := BeadCloseOutput{
 		RobotResponse: NewRobotResponse(true),
 		BeadID:        "ntm-abc123",
@@ -3073,6 +3088,7 @@ func TestBeadCloseOutputStructure(t *testing.T) {
 // =============================================================================
 
 func TestExtractFileReferencesEdgeCases(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		lines    []string
@@ -3102,6 +3118,7 @@ func TestExtractFileReferencesEdgeCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := extractFileReferences(tt.lines)
 			if len(result) < tt.minCount {
 				t.Errorf("expected at least %d file references, got %d: %v", tt.minCount, len(result), result)
@@ -3111,6 +3128,7 @@ func TestExtractFileReferencesEdgeCases(t *testing.T) {
 }
 
 func TestDetectErrorsEdgeCases(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		lines     []string
@@ -3135,6 +3153,7 @@ func TestDetectErrorsEdgeCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := detectErrors(tt.lines)
 			if len(result) != tt.wantCount {
 				t.Errorf("expected %d errors, got %d: %v", tt.wantCount, len(result), result)

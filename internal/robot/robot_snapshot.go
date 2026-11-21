@@ -402,12 +402,6 @@ type SwarmRecentEvent struct {
 // BeadLimit controls how many ready/in-progress beads to include in snapshot
 var BeadLimit = 5
 
-// GetSnapshot retrieves complete system state for AI orchestration.
-// This function returns the data struct directly, enabling CLI/REST parity.
-func GetSnapshot(cfg *config.Config) (*SnapshotOutput, error) {
-	return GetSnapshotWithOptions(cfg, PaginationOptions{})
-}
-
 // GetSnapshotWithOptions retrieves complete system state with pagination applied to sessions.
 func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*SnapshotOutput, error) {
 	if cfg == nil {
@@ -418,7 +412,7 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 	// Disk trajectory must attach before either snapshot path (projection or
 	// fallback) drains alerts.GetActiveAlerts, so a within-horizon projection
 	// surfaces in this same snapshot's alert sections.
-	attachSnapshotDisk(output, cfg)
+	attachSnapshotDisk(output, cfg, opts.Store)
 
 	feed := GetAttentionFeed()
 	populateSnapshotFeedMetadata(output, feed)
@@ -1648,10 +1642,9 @@ type Change struct {
 	Data    map[string]interface{} `json:"data,omitempty"`
 }
 
-// GetSnapshotDelta retrieves state changes since the given timestamp.
-// Replays the durable attention feed, including event-specific payloads.
-// This function returns the data struct directly, enabling CLI/REST parity.
-func GetSnapshotDelta(since time.Time) (*SnapshotDeltaOutput, error) {
+// GetSnapshotDeltaForStore retrieves state changes since the given timestamp
+// from the explicitly injected runtime projection store.
+func GetSnapshotDeltaForStore(store *state.Store, since time.Time) (*SnapshotDeltaOutput, error) {
 	output := &SnapshotDeltaOutput{
 		RobotResponse: NewRobotResponse(true),
 		Timestamp:     time.Now().UTC().Format(time.RFC3339),
@@ -1665,7 +1658,6 @@ func GetSnapshotDelta(since time.Time) (*SnapshotDeltaOutput, error) {
 	// invocation, being a fresh process, reported "nothing changed" with
 	// success:true forever, indistinguishable from a genuinely empty delta
 	// (bd-fresh-eyes-audit .11).
-	store := currentProjectionStore()
 	if store == nil {
 		output.RobotResponse = NewErrorResponse(
 			errors.New("snapshot deltas require the runtime projection store"),
@@ -1718,12 +1710,3 @@ func GetSnapshotDelta(since time.Time) (*SnapshotDeltaOutput, error) {
 // snapshotDeltaEventLimit bounds one delta response; Truncated tells the
 // caller to narrow --since rather than silently believing it saw everything.
 const snapshotDeltaEventLimit = 500
-
-// PrintSnapshotDelta outputs changes since the given timestamp.
-func PrintSnapshotDelta(since time.Time) error {
-	output, err := GetSnapshotDelta(since)
-	if err != nil {
-		return err
-	}
-	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot snapshot delta failed")
-}

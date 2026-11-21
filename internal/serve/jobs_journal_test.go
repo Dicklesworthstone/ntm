@@ -20,6 +20,7 @@ import (
 )
 
 func TestJobJournalRoundTripAndInterruptedRecovery(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	journal, err := openJobJournal(dir)
 	if err != nil {
@@ -68,7 +69,19 @@ func TestJobJournalRoundTripAndInterruptedRecovery(t *testing.T) {
 	}
 }
 
+func seedJobJournalFixture(t *testing.T, dir string, job *Job) {
+	t.Helper()
+	data, err := json.Marshal(jobJournalRecord{Version: jobJournalVersion, Job: job})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, job.ID+".json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestJobJournalRecoveryChecksExcludedHistoryBeforeMutation(t *testing.T) {
+	t.Parallel()
 	journal, err := openJobJournal(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -85,9 +98,7 @@ func TestJobJournalRecoveryChecksExcludedHistoryBeforeMutation(t *testing.T) {
 			Error: "cancelled by user", Result: map[string]interface{}{
 				"session": "existing", "pane_id": "%9", "_execution_in_progress": true,
 			}}
-		if err := journal.save(job); err != nil {
-			t.Fatal(err)
-		}
+		seedJobJournalFixture(t, journal.dir, job)
 	}
 	// ReadDir streams filesystem order, not sorted names. Put bad evidence at
 	// the actual end of that order without renaming its entry, so a one-pass
@@ -266,6 +277,7 @@ func TestJobJournalRecoveryChecksExcludedHistoryBeforeMutation(t *testing.T) {
 }
 
 func TestJobJournalFailedSaveKeepsLastCheckpoint(t *testing.T) {
+	t.Parallel()
 	journal, err := openJobJournal(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -294,6 +306,7 @@ func TestJobJournalFailedSaveKeepsLastCheckpoint(t *testing.T) {
 }
 
 func TestJobOutcomePublicationFollowsDurableCheckpoint(t *testing.T) {
+	t.Parallel()
 	srv, journal := progressJournalServer(t)
 	job := srv.jobStore.Create(JobTypeSwarmSpawn)
 	srv.jobStore.Update(job.ID, JobStatusRunning, 0, nil, "")
@@ -333,6 +346,7 @@ func TestJobOutcomePublicationFollowsDurableCheckpoint(t *testing.T) {
 }
 
 func TestJobJournalRejectsInvalidHistory(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ name, data string }{
 		{"truncated", `{"version":1,"job":`},
 		{"new version", `{"version":2,"job":{"id":"job","status":"pending"}}`},
@@ -364,6 +378,7 @@ func TestJobJournalRejectsInvalidHistory(t *testing.T) {
 }
 
 func TestJobJournalRejectsTraversalAndIgnoresUncommittedTemps(t *testing.T) {
+	t.Parallel()
 	journal, err := openJobJournal(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -383,6 +398,7 @@ func TestJobJournalRejectsTraversalAndIgnoresUncommittedTemps(t *testing.T) {
 }
 
 func TestJobJournalExclusiveOwnershipAndLiveWorkerFence(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	journal, err := openJobJournal(dir)
 	if err != nil {
@@ -422,6 +438,7 @@ func TestJobJournalExclusiveOwnershipAndLiveWorkerFence(t *testing.T) {
 }
 
 func TestJobJournalProcessExitReleasesOwnership(t *testing.T) {
+	t.Parallel()
 	if dir := os.Getenv("NTM_JOB_JOURNAL_EXIT_FIXTURE"); dir != "" {
 		journal, err := openJobJournal(dir)
 		if err != nil {
@@ -450,6 +467,7 @@ func TestJobJournalProcessExitReleasesOwnership(t *testing.T) {
 }
 
 func TestJobJournalDrainCancelsAndWaitsForWorkers(t *testing.T) {
+	t.Parallel()
 	srv := &Server{jobStore: NewJobStore()}
 	job := srv.jobStore.Create("swarm_spawn")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -482,6 +500,7 @@ func TestJobJournalDrainCancelsAndWaitsForWorkers(t *testing.T) {
 }
 
 func TestJobJournalDrainRespectsDeadline(t *testing.T) {
+	t.Parallel()
 	srv := &Server{jobStore: NewJobStore()}
 	job := srv.jobStore.Create("swarm_spawn")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -519,6 +538,7 @@ func progressJournalServer(t *testing.T) (*Server, *jobJournal) {
 }
 
 func TestJobProgressCheckpointIsImmutableAndDurable(t *testing.T) {
+	t.Parallel()
 	srv, journal := progressJournalServer(t)
 	job := srv.jobStore.Create(JobTypeSwarmSpawn)
 	srv.jobStore.Update(job.ID, JobStatusRunning, 0, nil, "")
@@ -557,6 +577,7 @@ func TestJobProgressCheckpointIsImmutableAndDurable(t *testing.T) {
 }
 
 func TestJobProgressPanicRetainsCreatedAgent(t *testing.T) {
+	t.Parallel()
 	srv, journal := progressJournalServer(t)
 	srv.spawnAgents = func(ctx context.Context, _ robot.SpawnOptions) (*robot.SpawnOutput, error) {
 		if err := reportJobProgress(ctx, map[string]interface{}{"session": "partial", "agent_pane": "%7"}); err != nil {
@@ -577,6 +598,7 @@ func TestJobProgressPanicRetainsCreatedAgent(t *testing.T) {
 }
 
 func TestJobProgressRecoveryClearsDeadWorkerMarker(t *testing.T) {
+	t.Parallel()
 	for _, status := range []JobStatus{JobStatusRunning, JobStatusCancelled} {
 		t.Run(string(status), func(t *testing.T) {
 			journal, err := openJobJournal(t.TempDir())
@@ -605,6 +627,7 @@ func TestJobProgressRecoveryClearsDeadWorkerMarker(t *testing.T) {
 }
 
 func TestSpawnJobProgressObserverStopsOnLostCheckpoint(t *testing.T) {
+	t.Parallel()
 	srv, journal := progressJournalServer(t)
 	job := srv.jobStore.Create(JobTypeSwarmSpawn)
 	srv.jobStore.Update(job.ID, JobStatusRunning, 0, nil, "")
@@ -646,6 +669,7 @@ func TestSpawnJobProgressObserverStopsOnLostCheckpoint(t *testing.T) {
 }
 
 func TestSpawnJobProgressObserverSnapshotsDoNotAlias(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
 	var snapshots []map[string]interface{}
@@ -676,6 +700,7 @@ func TestSpawnJobProgressObserverSnapshotsDoNotAlias(t *testing.T) {
 }
 
 func TestJobProgressFailedWriteKeepsPublishedCheckpoint(t *testing.T) {
+	t.Parallel()
 	srv, journal := progressJournalServer(t)
 	job := srv.jobStore.Create(JobTypeSwarmSpawn)
 	srv.jobStore.Update(job.ID, JobStatusRunning, 0, nil, "")
@@ -700,6 +725,7 @@ func TestJobProgressFailedWriteKeepsPublishedCheckpoint(t *testing.T) {
 }
 
 func TestJobOperationProgressCrashRecovery(t *testing.T) {
+	t.Parallel()
 	req := CreateJobRequest{Type: JobTypeSwarmSpawn, Params: map[string]interface{}{"session": "partial", "cc_count": 2}}
 	if dir := os.Getenv("NTM_JOB_PROGRESS_CRASH"); dir != "" {
 		_, err := runJobOperation(context.Background(), dir, "progress-crash", "original-job", req,
@@ -743,6 +769,7 @@ func TestJobOperationProgressCrashRecovery(t *testing.T) {
 }
 
 func TestJobOperationProgressTerminalAndLateReporting(t *testing.T) {
+	t.Parallel()
 	for _, fails := range []bool{false, true} {
 		t.Run(fmt.Sprint(fails), func(t *testing.T) {
 			dir := t.TempDir()
@@ -792,6 +819,7 @@ func TestJobOperationProgressTerminalAndLateReporting(t *testing.T) {
 }
 
 func TestJobOperationProgressFailureCannotBeIgnored(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	diskErr := errors.New("outer checkpoint unavailable")
 	var reports int
@@ -823,6 +851,7 @@ func TestJobOperationProgressFailureCannotBeIgnored(t *testing.T) {
 }
 
 func TestJobOperationProgressVisibleToConcurrentRetry(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	req := CreateJobRequest{Type: JobTypeSwarmSpawn}
 	_, err := runJobOperation(context.Background(), dir, "inflight-progress", "original", req,
@@ -846,6 +875,7 @@ func TestJobOperationProgressVisibleToConcurrentRetry(t *testing.T) {
 }
 
 func TestJobOperationFailedFinalSaveRetainsProgress(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	req := CreateJobRequest{Type: JobTypeSwarmSpawn}
 	_, err := runJobOperation(context.Background(), dir, "lost-final", "original", req,
@@ -869,6 +899,7 @@ func TestJobOperationFailedFinalSaveRetainsProgress(t *testing.T) {
 }
 
 func TestJobOperationProgressFailedSaveKeepsLastDurableEvidence(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	req := CreateJobRequest{Type: JobTypeSwarmSpawn}
 	_, err := runJobOperation(context.Background(), dir, "oversized-progress", "original", req,
@@ -896,6 +927,7 @@ func TestJobOperationProgressFailedSaveKeepsLastDurableEvidence(t *testing.T) {
 }
 
 func TestJobOperationProgressAfterCancellationIsRetained(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

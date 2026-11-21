@@ -12,6 +12,7 @@ import (
 // These tests exercise the complete native Run surface, not the isolated
 // scheduler callbacks. They require the repository's Go toolchain/dependencies.
 func TestParallelChildDAGRunPublishesProducerOutputs(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("requires a POSIX shell")
 	}
@@ -46,6 +47,7 @@ func TestParallelChildDAGRunPublishesProducerOutputs(t *testing.T) {
 }
 
 func TestParallelChildDAGRunContinueBlocksFailedDependencyEffects(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("requires a POSIX shell")
 	}
@@ -83,6 +85,7 @@ func TestParallelChildDAGRunContinueBlocksFailedDependencyEffects(t *testing.T) 
 }
 
 func TestParallelChildDAGContinueDoesNotHideCancellation(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("requires a POSIX shell")
 	}
@@ -147,6 +150,7 @@ waitFailure:
 // Native end-to-end coverage for the new receipt field, SaveState/LoadState,
 // Resume alias rebuilding, and the actual foreach/command lifecycles.
 func TestParallelChildDAGResumeRestoresCollectedOutputWithoutReplay(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("requires a POSIX shell")
 	}
@@ -202,6 +206,7 @@ func TestParallelChildDAGResumeRestoresCollectedOutputWithoutReplay(t *testing.T
 }
 
 func TestParallelChildDAGSnapshotOwnsCompletionReceiptMap(t *testing.T) {
+	t.Parallel()
 	e := &Executor{state: &ExecutionState{ParallelState: map[string]ParallelGroupState{
 		"group": {StepID: "group", ChildCheckpoints: map[string]string{"group_child": "immutable receipt"}},
 	}}}
@@ -216,6 +221,7 @@ func TestParallelChildDAGSnapshotOwnsCompletionReceiptMap(t *testing.T) {
 // completed here. Resume must restore its nested collections before dispatching
 // the independent top-level consumer, without entering the producer again.
 func TestParallelChildDAGResumeCompletedOuterRestoresNestedCollections(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("requires a POSIX shell")
 	}
@@ -279,6 +285,7 @@ func TestParallelChildDAGResumeCompletedOuterRestoresNestedCollections(t *testin
 // Exercise the native Run/LoadState/Resume and shell journals. This test is
 // shipped with the patch but cannot run in the reduced validation harness.
 func TestParallelChildDAGResumeFinishesSuccessHooksWithoutRepeatingProducer(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("requires a POSIX shell")
 	}

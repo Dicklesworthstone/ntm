@@ -464,6 +464,7 @@ func TestCrashOnlyReceiptReconciliationOnResume(t *testing.T) {
 	})
 
 	t.Run("rejects_pid_reuse_start_time_ticks_mismatch", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		cfg := DefaultExecutorConfig("pid-reuse")
 		cfg.ProjectDir = root
@@ -544,6 +545,7 @@ func TestCrashOnlyReceiptReconciliationOnResume(t *testing.T) {
 	})
 
 	t.Run("refuses_replay_while_leader_still_alive_or_cgroup_populated", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		cfg := DefaultExecutorConfig("still-alive")
 		cfg.ProjectDir = root

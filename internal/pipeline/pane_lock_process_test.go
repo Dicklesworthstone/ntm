@@ -78,6 +78,7 @@ func runPaneLockHelper(dir string) int {
 // never asked to clean up, so the lock's release is the OS closing its file
 // descriptors at exit.
 func TestPaneLockExcludesASeparateProcess(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ready := dir + "/" + paneLockHelperReadyFile
 

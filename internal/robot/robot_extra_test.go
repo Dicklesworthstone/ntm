@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -24,7 +25,8 @@ func TestPrintTerse(t *testing.T) {
 	}
 
 	cfg := config.Default()
-	output, err := captureStdout(t, func() error { return PrintTerse(cfg) })
+	rt := NewRuntime(nil, cfg)
+	output, err := captureStdout(t, func() error { return rt.PrintTerse(cfg) })
 	if err != nil {
 		t.Fatalf("PrintTerse failed: %v", err)
 	}
@@ -49,7 +51,8 @@ func TestPrintTerseNoTmux(t *testing.T) {
 	// or rely on PrintTerse behavior in current env.
 
 	cfg := config.Default()
-	output, err := captureStdout(t, func() error { return PrintTerse(cfg) })
+	rt := NewRuntime(nil, cfg)
+	output, err := captureStdout(t, func() error { return rt.PrintTerse(cfg) })
 	if err != nil {
 		t.Fatalf("PrintTerse failed: %v", err)
 	}
@@ -66,6 +69,7 @@ func TestPrintTerseNoTmux(t *testing.T) {
 }
 
 func TestTerseKeyMapUnique(t *testing.T) {
+	t.Parallel()
 	seen := make(map[string]string, len(TerseKeyMap))
 	for longKey, shortKey := range TerseKeyMap {
 		if shortKey == "" {
@@ -170,6 +174,7 @@ func TestGetFileBeadsReadsInstalledBV(t *testing.T) {
 // br dep tree lists the queried issue itself at depth 0, so --robot-graph's
 // correlation reported every bead as its own blocker and dependent.
 func TestGetBeadNeighborsExcludesTheQueriedIssue(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("br"); err != nil {
 		t.Skip("br not installed")
 	}
@@ -254,6 +259,19 @@ func TestAdditionalBVSurfacesReportTypedMissingDependency(t *testing.T) {
 
 func TestGetACFSStatus_WithFakeTools(t *testing.T) {
 	withFakeTools(t)
+	if runtime.GOOS != "windows" {
+		// testdata/faketools only ships acfs and bv; stub the remaining
+		// setupToolSpecs binaries so GetACFSStatus does not invoke slow host
+		// CLIs (e.g. Node-based gemini --version taking 1.3-2.3s).
+		stubDir := t.TempDir()
+		for _, bin := range []string{"tmux", "br", "claude", "codex", "gemini", "git"} {
+			stubPath := filepath.Join(stubDir, bin)
+			if err := os.WriteFile(stubPath, []byte("#!/bin/sh\necho \""+bin+" 0.0.0-fake\"\n"), 0o700); err != nil {
+				t.Fatalf("write fake %s: %v", bin, err)
+			}
+		}
+		t.Setenv("PATH", fakeToolsPath(t)+string(os.PathListSeparator)+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
 
 	output, err := GetACFSStatus()
 	if err != nil {
@@ -339,6 +357,7 @@ func TestAttachSnapshotResourcePressureEmitsRobotPressure(t *testing.T) {
 }
 
 func TestBuildTerseOutputFromSnapshotUsesSharedProjection(t *testing.T) {
+	t.Parallel()
 	claudeContext, codexContext, geminiContext, userContext := 60.0, 80.0, 70.0, 100.0
 	snapshot := &SnapshotOutput{
 		RobotResponse: NewRobotResponse(true),
@@ -410,6 +429,7 @@ func TestBuildTerseOutputFromSnapshotUsesSharedProjection(t *testing.T) {
 }
 
 func TestBuildTerseOutputFromSnapshotLeavesContextAtZeroWithoutAgents(t *testing.T) {
+	t.Parallel()
 	userContext := 100.0
 	snapshot := &SnapshotOutput{
 		RobotResponse: NewRobotResponse(true),
@@ -433,6 +453,7 @@ func TestBuildTerseOutputFromSnapshotLeavesContextAtZeroWithoutAgents(t *testing
 }
 
 func TestBuildTerseOutputFromSnapshotPropagatesFailure(t *testing.T) {
+	t.Parallel()
 	snapshot := &SnapshotOutput{
 		RobotResponse: NewErrorResponse(errors.New("snapshot unavailable"), ErrCodeInternalError, "retry snapshot"),
 		Sessions:      []SnapshotSession{},
@@ -448,6 +469,7 @@ func TestBuildTerseOutputFromSnapshotPropagatesFailure(t *testing.T) {
 }
 
 func TestRenderMarkdownFromSnapshotUsesRegistrySections(t *testing.T) {
+	t.Parallel()
 	snapshot := &SnapshotOutput{
 		Timestamp: "2026-03-25T03:00:00Z",
 		Summary: StatusSummary{
@@ -525,6 +547,7 @@ func TestRenderMarkdownFromSnapshotUsesRegistrySections(t *testing.T) {
 }
 
 func TestRenderMarkdownFromSnapshotRejectsUnknownSections(t *testing.T) {
+	t.Parallel()
 	_, err := renderMarkdownFromSnapshot(&SnapshotOutput{}, MarkdownOptions{
 		IncludeSections: []string{"mail"},
 	})
@@ -636,6 +659,7 @@ func TestCASSSurfacesWithoutIndex(t *testing.T) {
 }
 
 func TestBuildTerseOutputFromSnapshotIncludesMeasuredZeroAndSkipsUnknown(t *testing.T) {
+	t.Parallel()
 	zero, measured := 0.0, 80.0
 	snapshot := &SnapshotOutput{
 		RobotResponse: NewRobotResponse(true),

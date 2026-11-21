@@ -12,7 +12,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
 
-func init() {
+func registerPaginationSchemas() {
 	// The five unbounded-growth list surfaces (sessions, history, audit,
 	// checkpoints, approvals) — all paginated via --limit/--offset with
 	// count/total_matches/has_more plus _agent_hints.next_offset.

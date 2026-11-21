@@ -182,7 +182,6 @@ func (le *LoopExecutor) executeForEach(ctx context.Context, step *Step, loop *Lo
 		if shouldCompleteForeachIteration(ctx, iterResult, shouldBreak, completedAllSteps) {
 			le.executor.markForeachIterationCompleted(step.ID, i, total)
 		}
-		le.executor.persistState()
 
 		// Collect output if configured. bd-t3q8a: persist each iteration's
 		// collected entry on the foreach state so a subsequent resume can
@@ -200,9 +199,9 @@ func (le *LoopExecutor) executeForEach(ctx context.Context, step *Step, loop *Lo
 			if collectedValue != nil {
 				result.Collected = append(result.Collected, collectedValue)
 				le.executor.appendForeachCollectedOutput(step.ID, collectedValue)
-				le.executor.persistState()
 			}
 		}
+		le.executor.persistState()
 
 		if shouldBreak {
 			if len(iterResult) > 0 && iterResult[len(iterResult)-1].Status == StatusFailed {
@@ -332,7 +331,6 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 		if shouldCompleteForeachIteration(ctx, iterResult, shouldBreak, completedAllSteps) {
 			le.executor.markForeachIterationCompleted(step.ID, i, maxIterations)
 		}
-		le.executor.persistState()
 
 		// Collect output if configured
 		if loop.Collect != "" && len(iterResult) > 0 {
@@ -346,9 +344,9 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 			if collectedValue != nil {
 				result.Collected = append(result.Collected, collectedValue)
 				le.executor.appendForeachCollectedOutput(step.ID, collectedValue)
-				le.executor.persistState()
 			}
 		}
+		le.executor.persistState()
 
 		if shouldBreak {
 			if len(iterResult) > 0 && iterResult[len(iterResult)-1].Status == StatusFailed {
@@ -646,7 +644,6 @@ func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *Loop
 		if shouldCompleteForeachIteration(ctx, iterResult, shouldBreak, completedAllSteps) {
 			le.executor.markForeachIterationCompleted(step.ID, i, times)
 		}
-		le.executor.persistState()
 
 		// Collect output if configured
 		if loop.Collect != "" && len(iterResult) > 0 {
@@ -660,9 +657,9 @@ func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *Loop
 			if collectedValue != nil {
 				result.Collected = append(result.Collected, collectedValue)
 				le.executor.appendForeachCollectedOutput(step.ID, collectedValue)
-				le.executor.persistState()
 			}
 		}
+		le.executor.persistState()
 
 		if shouldBreak {
 			if len(iterResult) > 0 && iterResult[len(iterResult)-1].Status == StatusFailed {

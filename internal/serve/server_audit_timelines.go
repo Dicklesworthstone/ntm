@@ -387,6 +387,7 @@ func (s *Server) handleGetSessionAuditV1(w http.ResponseWriter, r *http.Request)
 		Limit:      limit,
 		Offset:     offset,
 		AuditDir:   s.auditLogsDir,
+		Store:      s.robotRuntime.ProjectionStore(),
 	})
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
@@ -461,6 +462,7 @@ func (s *Server) handleVerifySessionAuditV1(w http.ResponseWriter, r *http.Reque
 		Action:   "verify",
 		Verify:   true,
 		AuditDir: s.auditLogsDir,
+		Store:    s.robotRuntime.ProjectionStore(),
 	})
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)

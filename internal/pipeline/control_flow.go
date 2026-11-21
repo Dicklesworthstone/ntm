@@ -1394,7 +1394,7 @@ func (e *Executor) runPostPipelineSteps(ctx context.Context, workflow *Workflow)
 		e.state.UpdatedAt = time.Now()
 		e.stateMu.Unlock()
 
-		result := e.executeStep(ctx, &step, workflow)
+		result := e.executeStep(withCallerPersistsSettledCommand(ctx, step.ID), &step, workflow)
 		if !e.runtimeIDAdmitted(step.ID) {
 			continue
 		}
@@ -1478,6 +1478,9 @@ func (e *Executor) executeOnFailureAction(step *Step, failed StepResult) StepRes
 }
 
 func (e *Executor) substituteRuntimeVariables(s string) string {
+	if strings.IndexByte(s, '$') < 0 && strings.IndexByte(s, 0) < 0 {
+		return s
+	}
 	escaped := escapedPattern.ReplaceAllString(s, escapePlaceholder)
 	result := varPattern.ReplaceAllStringFunc(escaped, func(match string) string {
 		expr := strings.TrimSpace(match[2 : len(match)-1])

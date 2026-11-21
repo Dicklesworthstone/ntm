@@ -44,6 +44,7 @@ func setupRouteAuditServer(t *testing.T) *Server {
 // verifies they return non-empty response bodies. Routes that require path
 // parameters are tested with placeholder values.
 func TestRouteAudit_NoEmptyGetHandlers(t *testing.T) {
+	t.Parallel()
 	srv := setupRouteAuditServer(t)
 	router := srv.Router()
 

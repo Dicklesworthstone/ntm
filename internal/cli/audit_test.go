@@ -808,6 +808,7 @@ func TestAuditHTTPSubcommand_MissingAndFilteredPagination(t *testing.T) {
 }
 
 func TestRobotAuditAndTimelineSubprocess(t *testing.T) {
+	t.Parallel()
 	tmpRoot := t.TempDir()
 	homeDir := filepath.Join(tmpRoot, "home")
 	configHome := filepath.Join(tmpRoot, "config")

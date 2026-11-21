@@ -63,6 +63,20 @@ func setupIsolatedEnsembleTmuxEnv(t *testing.T, logger *testutil.TestLogger) *is
 	t.Setenv("NO_COLOR", "1")
 	t.Setenv("TERM", "xterm-256color")
 
+	oldClient := tmux.DefaultClient
+	fastClient := tmux.NewClient("")
+	fastClient.MaxSendDelay = 25 * time.Millisecond
+	tmux.DefaultClient = fastClient
+	oldLeadPoll := ensemble.DefaultLeadPollInterval
+	oldCollectorPoll := ensemble.DefaultOutputCollectorPollInterval
+	ensemble.DefaultLeadPollInterval = 50 * time.Millisecond
+	ensemble.DefaultOutputCollectorPollInterval = 50 * time.Millisecond
+	t.Cleanup(func() {
+		tmux.DefaultClient = oldClient
+		ensemble.DefaultLeadPollInterval = oldLeadPoll
+		ensemble.DefaultOutputCollectorPollInterval = oldCollectorPoll
+	})
+
 	fixtureRoot := t.TempDir()
 	responseDir := filepath.Join(fixtureRoot, "responses")
 	eventDir := filepath.Join(fixtureRoot, "events")
@@ -87,7 +101,7 @@ func setupIsolatedEnsembleTmuxEnv(t *testing.T, logger *testutil.TestLogger) *is
 		"      seen_mode=\"${clean#\"**ID**: \"}\"",
 		"      seen_mode=\"${seen_mode#\"${seen_mode%%[![:space:]]*}\"}\"",
 		"      seen_mode=\"${seen_mode%\"${seen_mode##*[![:space:]]}\"}\"",
-		"      while IFS= read -r -t 0.35 _; do :; done",
+		"      while IFS= read -r -t 0.1 _; do :; done",
 		"      if [ -n \"$seen_mode\" ]; then",
 		"        printf '{\"mode_id\":\"%s\",\"pane\":\"%s\"}\\n' \"$seen_mode\" \"${TMUX_PANE:-}\" >> \"$EVENT_DIR/invocations.jsonl\"",
 		"        printf '%s\\n' \"$seen_mode\" >> \"$EVENT_DIR/$seen_mode.runs\"",
@@ -111,7 +125,7 @@ func setupIsolatedEnsembleTmuxEnv(t *testing.T, logger *testutil.TestLogger) *is
 		"    \"You are the SYNTHESIZER for a reasoning ensemble.\"*) ",
 		"      synth_findings=()",
 		"      in_task=0",
-		"      while IFS= read -r -t 0.35 sline; do",
+		"      while IFS= read -r -t 0.1 sline; do",
 		"        sclean=\"${sline%$'\\r'}\"",
 		"        case \"$sclean\" in",
 		"          \"## Your Task\"*) in_task=1 ;;",

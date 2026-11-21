@@ -16,6 +16,7 @@ import (
 // =============================================================================
 
 func TestIntegration_ParseRealWorkflowFile_Simple(t *testing.T) {
+	t.Parallel()
 
 	// Create a real workflow YAML file
 	tmpDir := t.TempDir()
@@ -73,6 +74,7 @@ steps:
 }
 
 func TestIntegration_ParseRealWorkflowFile_WithParallel(t *testing.T) {
+	t.Parallel()
 
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "parallel-workflow.yaml")
@@ -127,6 +129,7 @@ steps:
 }
 
 func TestIntegration_ParseRealWorkflowFile_WithLoops(t *testing.T) {
+	t.Parallel()
 
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "loop-workflow.yaml")
@@ -190,6 +193,7 @@ steps:
 }
 
 func TestIntegration_ParseRealWorkflowFile_WithVariables(t *testing.T) {
+	t.Parallel()
 
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "vars-workflow.yaml")
@@ -263,6 +267,7 @@ steps:
 }
 
 func TestIntegration_ParseRealWorkflowFile_TOML(t *testing.T) {
+	t.Parallel()
 
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "workflow.toml")
@@ -309,6 +314,7 @@ depends_on = ["design"]
 // =============================================================================
 
 func TestIntegration_ExecuteWorkflow_DryRun_Simple(t *testing.T) {
+	t.Parallel()
 
 	// Create workflow from a real file
 	tmpDir := t.TempDir()
@@ -383,6 +389,7 @@ steps:
 }
 
 func TestIntegration_ExecuteWorkflow_DryRun_WithParallel(t *testing.T) {
+	t.Parallel()
 
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "parallel-exec.yaml")
@@ -461,6 +468,7 @@ steps:
 }
 
 func TestIntegration_ExecuteWorkflow_DryRun_WithVariables(t *testing.T) {
+	t.Parallel()
 
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "vars-exec.yaml")
@@ -532,6 +540,7 @@ steps:
 }
 
 func TestIntegration_ExecuteWorkflow_DryRun_ProgressEvents(t *testing.T) {
+	t.Parallel()
 
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "progress-exec.yaml")
@@ -619,6 +628,7 @@ steps:
 // =============================================================================
 
 func TestIntegration_OutputCapture_StepResults(t *testing.T) {
+	t.Parallel()
 
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "output-workflow.yaml")
@@ -685,6 +695,7 @@ steps:
 }
 
 func TestIntegration_OutputCapture_StatePersistence(t *testing.T) {
+	t.Parallel()
 
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "persist-workflow.yaml")
@@ -755,6 +766,7 @@ steps:
 }
 
 func TestIntegration_OutputCapture_ParallelResults(t *testing.T) {
+	t.Parallel()
 
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "parallel-output.yaml")
@@ -836,6 +848,7 @@ steps:
 // =============================================================================
 
 func TestIntegration_ParseWorkflow_InvalidYAML(t *testing.T) {
+	t.Parallel()
 
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "invalid.yaml")
@@ -859,6 +872,7 @@ steps:
 }
 
 func TestIntegration_ParseWorkflow_MissingSchemaVersion(t *testing.T) {
+	t.Parallel()
 
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "no-version.yaml")
@@ -885,6 +899,7 @@ steps:
 }
 
 func TestIntegration_ExecuteWorkflow_CyclicDependency(t *testing.T) {
+	t.Parallel()
 
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "cyclic.yaml")
@@ -930,6 +945,7 @@ steps:
 }
 
 func TestIntegration_ExecuteWorkflow_ContextCancellation(t *testing.T) {
+	t.Parallel()
 
 	tmpDir := t.TempDir()
 	workflowPath := filepath.Join(tmpDir, "cancel-test.yaml")

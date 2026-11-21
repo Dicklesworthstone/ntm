@@ -552,8 +552,3 @@ Examples:
 
 	return cmd
 }
-
-func init() {
-	// personas is registered with the other configuration commands in root.go.
-	rootCmd.AddCommand(newProfilesCmd())
-}

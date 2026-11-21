@@ -27,6 +27,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
+	"github.com/Dicklesworthstone/ntm/internal/rotation"
 	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -689,6 +690,16 @@ const (
 	rotationReadyPoll    = 200 * time.Millisecond
 )
 
+func effectiveRotationPoll(poll time.Duration) time.Duration {
+	if poll <= 0 {
+		poll = rotationReadyPoll
+	}
+	if MaxRotationDelay > 0 && poll > MaxRotationDelay {
+		return MaxRotationDelay
+	}
+	return poll
+}
+
 type rotationPaneLister func(stdcontext.Context, string) ([]tmux.Pane, error)
 type rotationPaneCapture func(stdcontext.Context, string) (string, error)
 type rotationOutputCapture func(stdcontext.Context, string, int) (string, error)
@@ -808,9 +819,7 @@ func waitForRotationReady(ctx stdcontext.Context, session string, expected tmux.
 	if timeout <= 0 {
 		timeout = rotationReadyTimeout
 	}
-	if poll <= 0 {
-		poll = rotationReadyPoll
-	}
+	poll = effectiveRotationPoll(poll)
 	waitCtx, cancel := stdcontext.WithTimeout(ctx, timeout)
 	defer cancel()
 	stableCommand := ""
@@ -915,9 +924,7 @@ func waitForRotationSummary(ctx stdcontext.Context, session, agentID string, exp
 	if summary == nil || ctx == nil || list == nil || capture == nil || visible == nil {
 		return nil, errors.New("handoff summary requires a context and observation dependencies")
 	}
-	if poll <= 0 {
-		poll = rotationReadyPoll
-	}
+	poll = effectiveRotationPoll(poll)
 	timeout := summary.promptTimeout
 	if timeout <= 0 {
 		timeout = rotationReadyTimeout
@@ -962,7 +969,15 @@ func waitForRotationSummary(ctx stdcontext.Context, session, agentID string, exp
 	}
 }
 
+// MaxRotationDelay, when > 0, caps waitForRotationDelay waits (compaction
+// settle and readiness polling). Production leaves it zero; stub-tmux tests
+// can cap it without skipping any rotation or verification step.
+var MaxRotationDelay time.Duration
+
 func waitForRotationDelay(ctx stdcontext.Context, duration time.Duration) error {
+	if MaxRotationDelay > 0 && duration > MaxRotationDelay {
+		duration = MaxRotationDelay
+	}
 	timer := time.NewTimer(duration)
 	defer timer.Stop()
 	select {
@@ -2241,6 +2256,36 @@ func (r *Rotator) rotateAgentContext(ctx stdcontext.Context, session, agentID, w
 		return result
 	}
 
+	// Acquire the shared pane lifecycle FSM lease so context rotation cannot race
+	// with CAAM failover or auth restart on the same physical pane.
+	fsm := rotation.DefaultLifecycleCoordinator()
+	leaseKey := strings.TrimSpace(oldPane.ID)
+	if leaseKey == "" {
+		leaseKey = agentID
+	}
+	fsmLease, leaseErr := fsm.Acquire(leaseKey, "context-rotator", fmt.Sprintf("ctxrot-%s-%d", leaseKey, startTime.UnixNano()), "context_rotation")
+	if leaseErr != nil {
+		result.Success = false
+		result.State = RotationStateFailed
+		result.Error = fmt.Sprintf("pane lifecycle lease conflict: %v", leaseErr)
+		result.Duration = time.Since(startTime)
+		return result
+	}
+	fsmCheckpoint := "draining"
+	defer func() {
+		switch result.State {
+		case RotationStateCompleted:
+			_ = fsm.Transition(fsmLease, rotation.StateVerifying, "rotation_verified")
+			_ = fsm.Complete(fsmLease, "context_rotation_completed")
+		case RotationStateAborted:
+			if abortErr := fsm.Abort(fsmLease, result.Error); abortErr != nil {
+				_ = fsm.FailRecoverable(fsmLease, fsmCheckpoint, result.Error, "inspect pane and clear rotation state")
+			}
+		default:
+			_ = fsm.FailRecoverable(fsmLease, fsmCheckpoint, result.Error, "inspect durable continuation state and retry or resolve rotation")
+		}
+	}()
+
 	// Try compaction first if configured
 	if r.config.TryCompactFirst && r.compactor != nil {
 		compactResult := r.tryCompactionContext(ctx, session, agentID, oldPane.ID, oldPane.Type)
@@ -2364,6 +2409,8 @@ func (r *Rotator) rotateAgentContext(ctx stdcontext.Context, session, agentID, w
 	}
 
 	// Spawn replacement agent with same type
+	fsmCheckpoint = "handing_off"
+	_ = fsm.Transition(fsmLease, rotation.StateHandingOff, "spawn_and_handoff")
 	agentType := agentTypeLong(string(oldPane.Type))
 	newIndex := extractAgentIndex(agentID)
 	var prepareReplacement func(stdcontext.Context, tmux.Pane) error
@@ -2461,6 +2508,8 @@ func (r *Rotator) rotateAgentContext(ctx stdcontext.Context, session, agentID, w
 	}
 
 	// The replacement begins with an empty context window. Only now commit the
+	fsmCheckpoint = "verifying"
+	_ = fsm.Transition(fsmLease, rotation.StateVerifying, "handoff_delivered")
 	// monitor transition, so failed handoffs retain the predecessor's usage and
 	// remain eligible for a later retry. Custom titles can produce a different
 	// canonical replacement ID.

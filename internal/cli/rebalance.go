@@ -50,7 +50,7 @@ type RebalanceWorkload = robot.RebalanceWorkload
 // RebalanceGeometryReport captures pane layout uniformity and optional tiling rebalance.
 type RebalanceGeometryReport = robot.RebalanceGeometryReport
 
-func init() {
+func registerRebalanceKernel() {
 	kernel.MustRegister(kernel.Command{
 		Name:        "sessions.rebalance",
 		Description: "Analyze agent workload distribution and optionally apply bead transfers and pane geometry tiling",

@@ -37,6 +37,7 @@ func routingStateTestAgents() []ScoredAgent {
 // >=2 distinct agents over 20 draws of 3 — the old nil-randFunc behavior
 // always returned the middle agent.
 func TestRandomStrategy_SeededSourceHitsMultipleAgents(t *testing.T) {
+	t.Parallel()
 	src := rand.New(rand.NewSource(42))
 	strat := &RandomStrategy{randFunc: src.Intn}
 	agents := routingStateTestAgents()
@@ -58,6 +59,7 @@ func TestRandomStrategy_SeededSourceHitsMultipleAgents(t *testing.T) {
 // (nil randFunc) no longer degenerates to the deterministic middle agent.
 // 60 draws of 3 all landing on one agent has probability ~2e-28.
 func TestRandomStrategy_DefaultIsReallyRandom(t *testing.T) {
+	t.Parallel()
 	strat := &RandomStrategy{}
 	agents := routingStateTestAgents()
 
@@ -81,6 +83,7 @@ func TestRandomStrategy_DefaultIsReallyRandom(t *testing.T) {
 // persisted rotation cursor advances per send. Degenerate least-loaded cannot
 // reproduce an exact modular order over 4 draws.
 func TestRoundRobin_PersistedRotationAcrossInvocations(t *testing.T) {
+	t.Parallel()
 	store := routingStateTestStore(t)
 	opts := RouteOptions{Session: "rrproj", Strategy: StrategyRoundRobin}
 
@@ -123,6 +126,7 @@ func TestRoundRobin_PersistedRotationAcrossInvocations(t *testing.T) {
 // vanished pane's SUCCESSOR now sits AT the cursor position — the rotation
 // starts there WITHOUT advancing (advancing skipped the successor).
 func TestRoundRobin_CursorAnchorsWhenPaneIDsChange(t *testing.T) {
+	t.Parallel()
 	store := routingStateTestStore(t)
 	if err := store.SaveRoutingState(&state.RoutingState{
 		SessionName: "rrproj2", LastAgent: "%gone", RotationCursor: 2,
@@ -147,6 +151,7 @@ func TestRoundRobin_CursorAnchorsWhenPaneIDsChange(t *testing.T) {
 // old code anchored at B's stale index and advanced +1 in the SHRUNK list,
 // selecting D and starving C.
 func TestRoundRobin_VanishedPaneDoesNotSkipSuccessor(t *testing.T) {
+	t.Parallel()
 	store := routingStateTestStore(t)
 	opts := RouteOptions{Session: "rrvanish", Strategy: StrategyRoundRobin}
 	full := []ScoredAgent{
@@ -188,6 +193,7 @@ func TestRoundRobin_VanishedPaneDoesNotSkipSuccessor(t *testing.T) {
 // cannot shift a pane-ID anchor, and a cursor past the shrunk end wraps to
 // the head (which IS the vanished tail's successor).
 func TestRoundRobin_CursorRobustnessTopologies(t *testing.T) {
+	t.Parallel()
 	mk := func(ids ...string) []ScoredAgent {
 		agents := make([]ScoredAgent, len(ids))
 		for i, id := range ids {
@@ -238,6 +244,7 @@ func TestRoundRobin_CursorRobustnessTopologies(t *testing.T) {
 
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			store := routingStateTestStore(t)
 			session := fmt.Sprintf("topo%d", i)
 			if err := store.SaveRoutingState(&state.RoutingState{
@@ -272,6 +279,7 @@ func TestRoundRobin_CursorRobustnessTopologies(t *testing.T) {
 // OWN persisted rotation, so no pane in either filtered set is starved. With
 // the old session-only key, the cc and cod cursors corrupted each other.
 func TestRoundRobin_FilterSetsRotateIndependently(t *testing.T) {
+	t.Parallel()
 	store := routingStateTestStore(t)
 	ccAgents := func() []ScoredAgent {
 		return []ScoredAgent{
@@ -328,6 +336,7 @@ func TestRoundRobin_FilterSetsRotateIndependently(t *testing.T) {
 // index. They must keep independent rotation histories for their physical
 // candidate sets, including when those sets overlap.
 func TestRoundRobinPhysicalPaneFilterSetsRotateIndependently(t *testing.T) {
+	t.Parallel()
 	store := routingStateTestStore(t)
 	first := RouteOptions{Session: "window-filters", Strategy: StrategyRoundRobin, ExcludePaneIDs: []string{"%41"}}
 	second := RouteOptions{Session: "window-filters", Strategy: StrategyRoundRobin, ExcludePaneIDs: []string{"%51"}}
@@ -367,6 +376,7 @@ func TestRoundRobinPhysicalPaneFilterSetsRotateIndependently(t *testing.T) {
 // TestRoutingStateFilterKey pins the key derivation: unfiltered sends map to
 // the legacy empty key, and exclude sets are order-insensitive.
 func TestRoutingStateFilterKey(t *testing.T) {
+	t.Parallel()
 	if got := routingStateFilterKey(RouteOptions{Session: "s"}); got != "" {
 		t.Fatalf("unfiltered key = %q, want empty (legacy row compatibility)", got)
 	}
@@ -414,6 +424,7 @@ func TestRoutingStateFilterKey(t *testing.T) {
 // become the WORST-scored (least-loaded would move away from it, so a
 // degenerate implementation fails this).
 func TestSticky_PersistedAcrossInvocations(t *testing.T) {
+	t.Parallel()
 	store := routingStateTestStore(t)
 	opts := RouteOptions{Session: "stickyproj", Strategy: StrategySticky}
 
@@ -445,6 +456,7 @@ func TestSticky_PersistedAcrossInvocations(t *testing.T) {
 // TestRoutingState_ExplicitLastAgentWinsOverPersisted asserts an explicit
 // --last-agent still takes precedence over persisted state.
 func TestRoutingState_ExplicitLastAgentWinsOverPersisted(t *testing.T) {
+	t.Parallel()
 	store := routingStateTestStore(t)
 	if err := store.SaveRoutingState(&state.RoutingState{
 		SessionName: "explicitproj", LastAgent: "%1", RotationCursor: 0,
@@ -469,6 +481,7 @@ func TestRoutingState_ExplicitLastAgentWinsOverPersisted(t *testing.T) {
 // a no-op: with no baseline read, an insert-only claim hits the existing row,
 // reports contention that never happened, and drops the write.
 func TestExplicitLastAgentStillPersistsRoutingState(t *testing.T) {
+	t.Parallel()
 	store := routingStateTestStore(t)
 
 	// Seed a prior rotation so a row already exists.

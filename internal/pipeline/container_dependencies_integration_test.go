@@ -11,6 +11,7 @@ import (
 )
 
 func TestContainerDependenciesControlledAdmissionWaitsForProducer(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("dependency-admission")
 	cfg.ProjectDir, cfg.RunID = t.TempDir(), "run-admission"
 	cfg.GlobalTimeout = 5 * time.Second
@@ -38,6 +39,7 @@ func TestContainerDependenciesControlledAdmissionWaitsForProducer(t *testing.T) 
 }
 
 func TestContainerDependenciesControlledFailureSkipsWholeGroup(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("dependency-failure")
 	cfg.ProjectDir, cfg.RunID = t.TempDir(), "run-admission-failure"
 	cfg.GlobalTimeout = 5 * time.Second
@@ -70,6 +72,7 @@ func TestContainerDependenciesControlledFailureSkipsWholeGroup(t *testing.T) {
 }
 
 func TestContainerDependenciesControlledCycleStartsNoWork(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("dependency-cycle")
 	cfg.ProjectDir, cfg.RunID = t.TempDir(), "run-admission-cycle"
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "cyclic-admission", Steps: []Step{
@@ -90,6 +93,7 @@ func TestContainerDependenciesControlledCycleStartsNoWork(t *testing.T) {
 }
 
 func TestContainerDependenciesControlledResumeRetainsProducer(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("dependency-resume")
 	cfg.ProjectDir, cfg.RunID = t.TempDir(), "run-admission-resume"
 	cfg.GlobalTimeout = 5 * time.Second

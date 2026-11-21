@@ -13,6 +13,7 @@ import (
 // bindings; the same iteration runs the body three times with distinct round
 // values. Per-round step IDs land under unique keys in state.Steps.
 func TestForeachMaxRounds_LiteralRunsBodyNTimes(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("max-rounds-literal"))
 
 	workflow := &Workflow{
@@ -61,6 +62,7 @@ func TestForeachMaxRounds_LiteralRunsBodyNTimes(t *testing.T) {
 // iteration's round loop early. Round 1 runs; round 2's body sets break;
 // rounds 3 and 4 must not run.
 func TestForeachMaxRounds_LoopControlBreakExitsEarly(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("max-rounds-break"))
 
 	workflow := &Workflow{
@@ -114,6 +116,7 @@ func TestForeachMaxRounds_LoopControlBreakExitsEarly(t *testing.T) {
 // expression string would be interpreted as the int 0 and the body would
 // never run, or worse, the string would parse-error and fail the iteration.
 func TestForeachMaxRounds_ExprResolvesAtIterationEntry(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("max-rounds-expr"))
 
 	workflow := &Workflow{
@@ -167,6 +170,7 @@ func TestForeachMaxRounds_ExprResolvesAtIterationEntry(t *testing.T) {
 // without any `_round<N>` suffix so existing pipelines and assertions keep
 // working.
 func TestForeachMaxRounds_UnsetPreservesSingleRoundBehavior(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("max-rounds-unset"))
 
 	workflow := &Workflow{
@@ -214,6 +218,7 @@ func TestForeachMaxRounds_UnsetPreservesSingleRoundBehavior(t *testing.T) {
 // distinct keys without any need to recurse into nested config inside
 // rewriteRoundStepIDs. This regression locks that contract.
 func TestForeachMaxRounds_NestedForeachKeepsRoundUnique(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("max-rounds-nested-foreach"))
 
 	workflow := &Workflow{
@@ -271,6 +276,7 @@ func TestForeachMaxRounds_NestedForeachKeepsRoundUnique(t *testing.T) {
 // error pointing at the offending field, not silently degrade to a single
 // round at runtime.
 func TestForeachMaxRounds_NegativeLiteralRejectedAtParse(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "neg-rounds",
@@ -311,6 +317,7 @@ func TestForeachMaxRounds_NegativeLiteralRejectedAtParse(t *testing.T) {
 // value cannot drive the body loop unbounded. Literal values are not
 // clamped (parser already rejected the dangerous shapes).
 func TestForeachMaxRounds_ExprResolvedAboveCapClampsToDefault(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("max-rounds-cap")
 	cfg.DryRun = true
 	executor := NewExecutor(cfg)
@@ -362,6 +369,7 @@ func TestForeachMaxRounds_ExprResolvedAboveCapClampsToDefault(t *testing.T) {
 // well above the operator's chosen cap so we observe the clamp at the new
 // boundary instead of at DefaultMaxRounds.
 func TestForeachMaxRounds_OperatorOverrideRaisesCap(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("max-rounds-override")
 	cfg.DryRun = true
 	executor := NewExecutor(cfg)
@@ -416,6 +424,7 @@ func TestForeachMaxRounds_OperatorOverrideRaisesCap(t *testing.T) {
 // expression doesn't flip behaviour. Acceptance from the bead: the two
 // forms produce the same observable behaviour.
 func TestForeachMaxRounds_LiteralZeroAndExprZeroBothDefaultToOne(t *testing.T) {
+	t.Parallel()
 	t.Run("literal_zero", func(t *testing.T) {
 		executor := NewExecutor(DefaultExecutorConfig("max-rounds-literal-zero"))
 		workflow := &Workflow{
@@ -523,6 +532,7 @@ func buildExpectedRoundStepID(round int) string {
 // counter file gets two writes, not four), and the recorded watermark
 // advances to 4 after the run finishes.
 func TestForeachMaxRounds_ResumeSkipsAlreadyCompletedRounds(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	counterPath := tmpDir + "/rounds.log"
 
@@ -618,6 +628,7 @@ func TestForeachMaxRounds_ResumeSkipsAlreadyCompletedRounds(t *testing.T) {
 // recorded step result surfaces a "round not set" or branch-default
 // fallthrough error.
 func TestForeachMaxRounds_BranchPredicateResolvesRoundOverlay(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("max-rounds-branch")
 	cfg.ProjectDir = t.TempDir()
 	executor := NewExecutor(cfg)
@@ -662,6 +673,7 @@ func TestForeachMaxRounds_BranchPredicateResolvesRoundOverlay(t *testing.T) {
 // the round watermark per iteration so a subsequent resume can detect
 // progress. Without this, every resume re-runs all rounds from 1.
 func TestForeachMaxRounds_FreshRunRecordsRoundWatermark(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("max-rounds-fresh-watermark")
 	cfg.ProjectDir = t.TempDir()
 	executor := NewExecutor(cfg)
@@ -717,6 +729,7 @@ func TestForeachMaxRounds_FreshRunRecordsRoundWatermark(t *testing.T) {
 // the bd-ypo73 fix, no recorded step result surfaces a "round not set"
 // error; the gated body completes for round 2 and skips for rounds 1/3.
 func TestForeachMaxRounds_NestedLoopWhenResolvesRoundOverlay(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("max-rounds-nested-when"))
 
 	workflow := &Workflow{

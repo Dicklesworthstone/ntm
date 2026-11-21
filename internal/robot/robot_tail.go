@@ -1377,7 +1377,7 @@ func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
 			ObservationConfidence: paneObservation.Current.Confidence,
 			SafeToDispatch:        paneObservation.SafeToDispatch(),
 			OutputSequence: observeOutputSequenceWithStore(
-				resolveProjectionStore(opts.Store, opts.ExplicitStore),
+				opts.Store,
 				opts.Session, pane.ID, paneObservation.RawOutput,
 				paneObservation.Current.ObservedAt,
 			),

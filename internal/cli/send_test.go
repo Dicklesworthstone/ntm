@@ -44,6 +44,7 @@ func (e *recordingDistributeAtomicExecutor) Execute(_ context.Context, request a
 }
 
 func TestExecuteDistributeDispatchRejectsCanceledContextBeforeTopologyOrSend(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	_, err := executeDistributeDispatch(ctx, t.TempDir(), "unused", robot.DistributeRecommendation{BeadID: "bd-cancel", PaneID: "%1"}, "must not send")
@@ -119,6 +120,7 @@ func TestExecuteDistributeDispatchBuildsOneReplayStableAtomicRequest(t *testing.
 }
 
 func TestDistributeAssignmentIdempotencyAndReceiptContracts(t *testing.T) {
+	t.Parallel()
 	base := distributeAssignmentIdempotencyKey("proj", "ntm-work", "%9", "prompt", 0)
 	if base == "" || distributeAssignmentIdempotencyKey("proj", "ntm-work", "%9", "prompt", 0) != base {
 		t.Fatal("same distribute intent did not produce one stable key")
@@ -261,6 +263,7 @@ func TestEmitCodexGoalSendResultSurfacesEncoderFailure(t *testing.T) {
 }
 
 func TestWaitCodexGoalContextCancelsWithoutDelay(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	started := time.Now()
@@ -273,6 +276,7 @@ func TestWaitCodexGoalContextCancelsWithoutDelay(t *testing.T) {
 }
 
 func TestResolveSendSessionForCommandContextRejectsCanceledContextBeforeTopology(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	_, _, err := resolveSendSessionForCommandContext(ctx, "unused")
@@ -362,6 +366,7 @@ func TestShellDispatchRequestUsesStableSelectorsAndFailurePolicy(t *testing.T) {
 }
 
 func TestSaveDeliveredPromptSkipsUndeliveredPrompts(t *testing.T) {
+	t.Parallel()
 	entry := sessionPkg.PromptEntry{Content: "must not persist"}
 	if err := saveDeliveredPrompt(0, entry); err != nil {
 		t.Fatalf("zero-delivery prompt persistence error = %v, want nil", err)
@@ -423,6 +428,7 @@ func TestEmitBatchResultPreservesFailureCause(t *testing.T) {
 }
 
 func TestFinishSendDryRunResultCollectsDeliverySummary(t *testing.T) {
+	t.Parallel()
 	collected := &sendExecutionResult{}
 	err := finishSendDryRunResult(SendOptions{
 		executionPolicy: sendExecutionCollect,
@@ -449,6 +455,7 @@ func TestFinishSendDryRunResultCollectsDeliverySummary(t *testing.T) {
 }
 
 func TestBuildSendProjectResultAggregatesAndSortsReceipts(t *testing.T) {
+	t.Parallel()
 	input := []sendProjectSessionResult{
 		{Session: "proj--z", Success: false, Failed: 1, ErrorCode: robot.ErrCodeTimeout, Error: "canceled"},
 		{Session: "proj--a", Success: true, Targets: []string{"0"}, Delivered: 2},
@@ -475,6 +482,7 @@ func TestBuildSendProjectResultAggregatesAndSortsReceipts(t *testing.T) {
 }
 
 func TestSendProjectSessionFromExecutionClassifiesCancellation(t *testing.T) {
+	t.Parallel()
 	cause := fmt.Errorf("dispatch interrupted: %w", context.DeadlineExceeded)
 	collected := &sendExecutionResult{
 		recorded: true,
@@ -781,6 +789,7 @@ func TestSendRealSession(t *testing.T) {
 
 // TestGetPromptContentFromArgs tests reading prompt from positional arguments
 func TestGetPromptContentFromArgs(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		args      []string
@@ -898,6 +907,7 @@ func TestGetSessionWorkingDirAllowsWorkspaceFallbackForInferredSession(t *testin
 
 // TestGetPromptContentFromFile tests reading prompt from a file
 func TestGetPromptContentFromFile(t *testing.T) {
+	t.Parallel()
 	// Create a temp file with content
 	tmpDir := t.TempDir()
 	testFile := filepath.Join(tmpDir, "prompt.txt")
@@ -982,6 +992,7 @@ func TestGetPromptContentFromFile(t *testing.T) {
 }
 
 func TestShuffledPermutation_DeterministicSeed(t *testing.T) {
+	t.Parallel()
 
 	seed := int64(12345)
 	seedUsed1, perm1 := shuffledPermutation(32, seed)
@@ -1001,6 +1012,7 @@ func TestShuffledPermutation_DeterministicSeed(t *testing.T) {
 }
 
 func TestShuffledPermutation_IsPermutation(t *testing.T) {
+	t.Parallel()
 
 	_, perm := shuffledPermutation(100, 999)
 	seen := make(map[int]bool, len(perm))
@@ -1016,6 +1028,7 @@ func TestShuffledPermutation_IsPermutation(t *testing.T) {
 }
 
 func TestPermutePanes_AppliesPermutation(t *testing.T) {
+	t.Parallel()
 
 	panes := []tmux.Pane{
 		{Index: 10},
@@ -1039,6 +1052,7 @@ func TestPermutePanes_AppliesPermutation(t *testing.T) {
 
 // TestBuildPrompt tests the buildPrompt helper function
 func TestBuildPrompt(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		content string
@@ -1096,6 +1110,7 @@ func TestBuildPrompt(t *testing.T) {
 
 // TestTruncatePrompt tests the truncatePrompt helper
 func TestTruncatePrompt(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input  string
 		maxLen int
@@ -1120,6 +1135,7 @@ func TestTruncatePrompt(t *testing.T) {
 }
 
 func TestExtractLikelyCommands(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		input string
@@ -1218,6 +1234,7 @@ func TestExtractLikelyCommands(t *testing.T) {
 }
 
 func TestLooksLikeShellCommand(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		line   string
 		expect bool
@@ -1314,6 +1331,7 @@ func TestSendFlagNoOptDefVal(t *testing.T) {
 
 // TestParseBatchFile tests the batch file parser
 func TestParseBatchFile(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	tests := []struct {
@@ -1606,6 +1624,7 @@ func TestSendDefaultTargetsAllAgentsWithoutUserPane(t *testing.T) {
 }
 
 func TestResolveShellSendSelectorsTopologyAware(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{ID: "%3", WindowIndex: 1, Index: 1, Type: tmux.AgentClaude},
 		{ID: "%0", WindowIndex: 0, Index: 0, Type: tmux.AgentUser},
@@ -1773,6 +1792,7 @@ func TestSendDryRunTargetsRealMultiWindowSession(t *testing.T) {
 }
 
 func TestParseShellPaneSelectorsStrict(t *testing.T) {
+	t.Parallel()
 	selectors, err := parseShellPaneSelectors("0, 1.2, %7")
 	if err != nil {
 		t.Fatalf("parseShellPaneSelectors returned error: %v", err)
@@ -2067,7 +2087,9 @@ func installSmartRoutingIdentityTmux(t *testing.T) string {
 	dir := t.TempDir()
 	chdirForTerminalJSONTest(t, dir)
 	oldConfig, oldJSON, oldClient := cfg, jsonOutput, tmux.DefaultClient
-	cfg, jsonOutput, tmux.DefaultClient = newTmuxIntegrationTestConfig(dir), true, tmux.NewClient("")
+	fastClient := tmux.NewClient("")
+	fastClient.MaxSendDelay = 2 * time.Millisecond
+	cfg, jsonOutput, tmux.DefaultClient = newTmuxIntegrationTestConfig(dir), true, fastClient
 	cfg.Checkpoints.Enabled = false
 	cfg.AgentMail.Enabled = false
 	cfg.CASS.Context.Enabled = false
@@ -2394,6 +2416,7 @@ func TestSendSmartRouteIsDisabledWhenPanesSpecified(t *testing.T) {
 
 // TestRemoveComments tests the comment removal helper
 func TestRemoveComments(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input string
 		want  string
@@ -2418,6 +2441,7 @@ func TestRemoveComments(t *testing.T) {
 
 // TestTruncateForPreview tests the preview truncation helper
 func TestTruncateForPreview(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input  string
 		maxLen int
@@ -2443,6 +2467,7 @@ func TestTruncateForPreview(t *testing.T) {
 
 // TestBuildTargetDescription tests the target description builder
 func TestBuildTargetDescription(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		cc        bool
@@ -2477,6 +2502,7 @@ func TestBuildTargetDescription(t *testing.T) {
 }
 
 func TestBuildObservedTargetTypes(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Type: tmux.AgentUser},
 		{Type: tmux.AgentType("claude_code")},
@@ -2494,6 +2520,7 @@ func TestBuildObservedTargetTypes(t *testing.T) {
 }
 
 func TestFilterPanesForBatch(t *testing.T) {
+	t.Parallel()
 	// Sample panes for testing
 	panes := []tmux.Pane{
 		{Index: 0, Type: tmux.AgentUser, Title: "user_0"},
@@ -2636,6 +2663,7 @@ func TestFilterPanesForBatch(t *testing.T) {
 }
 
 func TestFilterPanesForBatchEmpty(t *testing.T) {
+	t.Parallel()
 	// Test with empty panes slice
 	got := filterPanesForBatch([]tmux.Pane{}, SendOptions{})
 	if len(got) != 0 {
@@ -2644,6 +2672,7 @@ func TestFilterPanesForBatchEmpty(t *testing.T) {
 }
 
 func TestFilterPanesForBatchAllUser(t *testing.T) {
+	t.Parallel()
 	// Test with only user panes (should return empty without TargetAll)
 	userPanes := []tmux.Pane{
 		{Index: 0, Type: tmux.AgentUser},
@@ -2671,6 +2700,7 @@ func TestFilterPanesForBatchAllUser(t *testing.T) {
 // --- Tests for base prompt feature (bd-3ejl) ---
 
 func TestApplyBasePrompt(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		base string
@@ -2720,6 +2750,7 @@ func TestApplyBasePrompt(t *testing.T) {
 }
 
 func TestResolveBasePrompt_FlagPriority(t *testing.T) {
+	t.Parallel()
 	got, err := resolveBasePrompt("from flag", "", "from config", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2730,6 +2761,7 @@ func TestResolveBasePrompt_FlagPriority(t *testing.T) {
 }
 
 func TestResolveBasePrompt_FlagFilePriority(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "base.txt")
 	if err := os.WriteFile(path, []byte("from flag file\n"), 0644); err != nil {
@@ -2745,6 +2777,7 @@ func TestResolveBasePrompt_FlagFilePriority(t *testing.T) {
 }
 
 func TestResolveBasePrompt_ConfigValue(t *testing.T) {
+	t.Parallel()
 	got, err := resolveBasePrompt("", "", "from config", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2755,6 +2788,7 @@ func TestResolveBasePrompt_ConfigValue(t *testing.T) {
 }
 
 func TestResolveBasePrompt_ConfigFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "base_config.txt")
 	if err := os.WriteFile(path, []byte("  from config file  \n"), 0644); err != nil {
@@ -2770,6 +2804,7 @@ func TestResolveBasePrompt_ConfigFile(t *testing.T) {
 }
 
 func TestResolveBasePrompt_AllEmpty(t *testing.T) {
+	t.Parallel()
 	got, err := resolveBasePrompt("", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2780,6 +2815,7 @@ func TestResolveBasePrompt_AllEmpty(t *testing.T) {
 }
 
 func TestResolveBasePrompt_MissingFlagFile(t *testing.T) {
+	t.Parallel()
 	_, err := resolveBasePrompt("", "/nonexistent/base.txt", "", "")
 	if err == nil {
 		t.Fatal("expected error for missing flag file")
@@ -2790,6 +2826,7 @@ func TestResolveBasePrompt_MissingFlagFile(t *testing.T) {
 }
 
 func TestResolveBasePrompt_MissingConfigFile(t *testing.T) {
+	t.Parallel()
 	_, err := resolveBasePrompt("", "", "", "/nonexistent/base.txt")
 	if err == nil {
 		t.Fatal("expected error for missing config file")
@@ -2802,6 +2839,7 @@ func TestResolveBasePrompt_MissingConfigFile(t *testing.T) {
 // --- bd-2wzs: priority-order tests ---
 
 func TestParsePriorityAnnotation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		text string
@@ -2829,6 +2867,7 @@ func TestParsePriorityAnnotation(t *testing.T) {
 }
 
 func TestSortBatchByPriority(t *testing.T) {
+	t.Parallel()
 
 	t.Run("sorts P0 before P2 before unset", func(t *testing.T) {
 		prompts := []BatchPrompt{
@@ -2882,6 +2921,7 @@ func TestSortBatchByPriority(t *testing.T) {
 }
 
 func TestParseBatchFile_PriorityAnnotations(t *testing.T) {
+	t.Parallel()
 
 	t.Run("multi-line format extracts priority", func(t *testing.T) {
 		content := "---\n# priority: 0\nCritical fix\n---\n# priority: 2\nMedium task\n---\nNo priority\n"
@@ -2935,6 +2975,7 @@ func TestParseBatchFile_PriorityAnnotations(t *testing.T) {
 }
 
 func TestFilterPanesForBatchCanonicalizesAliasTypes(t *testing.T) {
+	t.Parallel()
 
 	panes := []tmux.Pane{
 		{Index: 0, Type: tmux.AgentUser, Title: "user_0"},
@@ -2989,6 +3030,7 @@ func TestSendForceNonInteractiveFlag(t *testing.T) {
 // backwards-compatible: the new `non_interactive_forced` field has `omitempty`,
 // so callers that don't set the flag never see it appear.
 func TestSendResultJSONOmitsForceFieldByDefault(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		payload any
@@ -3014,6 +3056,7 @@ func TestSendResultJSONOmitsForceFieldByDefault(t *testing.T) {
 // pass --force-non-interactive, the JSON contract surfaces it for downstream
 // auditing/log analysis.
 func TestSendResultJSONEmitsForceFieldWhenSet(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		payload any
@@ -3042,6 +3085,7 @@ func TestSendResultJSONEmitsForceFieldWhenSet(t *testing.T) {
 // TestOrphanReapExcluded verifies the exclusion predicate never lets the reap
 // target init, the running process, or its parent.
 func TestOrphanReapExcluded(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		pid  int
 		want bool
@@ -3066,6 +3110,7 @@ func TestOrphanReapExcluded(t *testing.T) {
 // collectPaneDescendants walks it recursively, while never returning self, the
 // parent, init, or the supplied pane-shell PID itself.
 func TestCollectPaneDescendants_RecursiveAndExclusion(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")
 	}
@@ -3122,6 +3167,7 @@ func TestCollectPaneDescendants_RecursiveAndExclusion(t *testing.T) {
 
 // --all excludes the user pane unless --include-user (ntm-hykz).
 func TestFilterPanesForBatchAllExcludesUserPane(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Index: 0, Type: tmux.AgentUser, Title: "proj"},
 		{Index: 1, Type: tmux.AgentClaude, Title: "proj__cc_1"},
@@ -4031,6 +4077,7 @@ func TestShellDispatchServiceSendsEachTargetItsOwnMessage(t *testing.T) {
 }
 
 func TestGroupSendPromptsAndDeliveryCounts(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{ID: "%1", Index: 1, Type: tmux.AgentClaude},
 		{ID: "%2", Index: 2, Type: tmux.AgentClaude},

@@ -12,6 +12,7 @@ import (
 	assignmentstore "github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/worksource"
@@ -27,6 +28,7 @@ type AssignOptions struct {
 	// treat thinking or other non-idle panes as eligible; that relaxation
 	// belongs to --robot-route.
 	Relax bool
+	Store *state.Store `json:"-"`
 }
 
 // assignStrategyDefault is the strategy used when none is requested.
@@ -216,7 +218,7 @@ func GetAssignRecommendations(ctx context.Context, opts AssignOptions) ([]Distri
 
 	// Assign --relax is the score floor inside planAssignments. Do not also
 	// widen this pool to thinking agents; that would undo the eligibility gate.
-	candidatePanes, _, _, _, _, err := resolveAssignCandidatePool(opts.Session, agents, idleAgentPanes, len(readyBeads), false)
+	candidatePanes, _, _, _, _, err := resolveAssignCandidatePool(opts.Store, opts.Session, agents, idleAgentPanes, len(readyBeads), false)
 	if err != nil {
 		return nil, fmt.Errorf("resolve relaxed assignment pool: %w", err)
 	}
@@ -367,6 +369,7 @@ func GetAssign(ctx context.Context, opts AssignOptions) (*AssignOutput, error) {
 	// Assign --relax is the score floor inside planAssignments. Do not also
 	// widen this pool to thinking agents; that would undo the eligibility gate.
 	candidatePanes, relaxed, relaxedConstraints, origScore, relaxedScore, err := resolveAssignCandidatePool(
+		opts.Store,
 		opts.Session,
 		agents,
 		idleAgentPanes,
@@ -594,6 +597,7 @@ func assignAgentsFromObservation(observation statuspkg.SessionObservation, now t
 }
 
 func resolveAssignCandidatePool(
+	store *state.Store,
 	session string,
 	agents []assignAgentInfo,
 	idleAgentPanes []string,
@@ -630,6 +634,7 @@ func resolveAssignCandidatePool(
 			selectedPaneID = candidates[0]
 		}
 		persistRelaxedRoutingDecision(
+			store,
 			session,
 			"robot.assign",
 			StrategyLeastLoaded,

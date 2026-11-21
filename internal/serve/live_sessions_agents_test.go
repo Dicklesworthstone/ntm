@@ -39,6 +39,7 @@ func decodeSessionsList(t *testing.T, rec *httptest.ResponseRecorder) ([]map[str
 // the list endpoint must also report what tmux is running; otherwise the web
 // dashboard shows no sessions (and therefore no agents) while agents are live.
 func TestHandleSessionsV1_MergesLiveTmuxSessions(t *testing.T) {
+	t.Parallel()
 	srv, store := setupTestServer(t)
 	createTestSessionForServe(t, store, "stored-only")
 	createTestSessionForServe(t, store, "both")
@@ -83,6 +84,7 @@ func TestHandleSessionsV1_MergesLiveTmuxSessions(t *testing.T) {
 }
 
 func TestHandleSessionsV1_TmuxFailureKeepsStoredSessions(t *testing.T) {
+	t.Parallel()
 	srv, store := setupTestServer(t)
 	createTestSessionForServe(t, store, "stored")
 	srv.listLiveSessions = func(context.Context) ([]tmux.Session, error) {
@@ -98,6 +100,7 @@ func TestHandleSessionsV1_TmuxFailureKeepsStoredSessions(t *testing.T) {
 }
 
 func TestHandleSessionV1_FallsBackToLiveTmuxSession(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	srv.listLiveSessions = func(context.Context) ([]tmux.Session, error) {
 		return []tmux.Session{{Name: "live-one", Windows: 1}}, nil
@@ -522,6 +525,7 @@ func TestSessionAgentsEndpoints_SessionNotRunning(t *testing.T) {
 // br hierarchical issues are "<parent>.<n>" (bd-1aae9.1, bd-1aae9.1.2) and
 // prefixes may contain hyphens; both used to be rejected with 400.
 func TestBeadIDPattern(t *testing.T) {
+	t.Parallel()
 	valid := []string{
 		"bd-2euwg", "ntm-y9cd", "beads_rust-orko", "bd-1aae9.1", "bd-1aae9.1.2",
 		"bc-fwh.14", "my-proj-a1b2", "coding-agent-search-x9.3",
@@ -546,6 +550,7 @@ func TestBeadIDPattern(t *testing.T) {
 // is bounded, the list endpoint degrades to the stored rows, and the detail
 // endpoint answers instead of blocking.
 func TestHandleSessionsV1_HungTmuxDegradesToStoredSessions(t *testing.T) {
+	t.Parallel()
 	srv, store := setupTestServer(t)
 	createTestSessionForServe(t, store, "stored")
 	srv.liveSessionsTimeout = 50 * time.Millisecond
@@ -593,6 +598,7 @@ func TestHandleSessionsV1_HungTmuxDegradesToStoredSessions(t *testing.T) {
 // Any other tmux failure behind the detail endpoint is an unavailable
 // dependency (503), not an internal server error.
 func TestHandleSessionV1_TmuxFailureIsServiceUnavailable(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	srv.listLiveSessions = func(context.Context) ([]tmux.Session, error) {
 		return nil, errors.New("tmux circuit breaker open")

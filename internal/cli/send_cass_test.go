@@ -18,6 +18,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/cass"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
 
@@ -29,6 +30,7 @@ func cassTestConfig(topEnabled, ctxEnabled bool) *config.Config {
 }
 
 func TestResolveSendCASSEnabled_Precedence(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		withFlag bool
@@ -58,6 +60,7 @@ func TestResolveSendCASSEnabled_Precedence(t *testing.T) {
 // [cass.context] key (plus [cass] binary_path/timeout) and observes it land
 // in the robot engine configs — the liveness claims are readers in fact.
 func TestRobotSendCASSOptions_ConfigKeysParameterizeEngine(t *testing.T) {
+	t.Parallel()
 	cfg := cassTestConfig(true, true)
 	cfg.CASS.BinaryPath = "/opt/bin/cass"
 	cfg.CASS.Timeout = 7
@@ -110,6 +113,7 @@ func TestRobotSendCASSOptions_ConfigKeysParameterizeEngine(t *testing.T) {
 }
 
 func TestSendCASSInjectionConfigs_MirrorsRobotMapping(t *testing.T) {
+	t.Parallel()
 	cfg := cassTestConfig(true, true)
 	cfg.CASS.Timeout = 7
 	cfg.CASS.Context.MaxSessions = 3
@@ -138,6 +142,7 @@ func TestSendCASSInjectionConfigs_MirrorsRobotMapping(t *testing.T) {
 }
 
 func TestSendCASSInjectionInfo_DegradedRecordsSkip(t *testing.T) {
+	t.Parallel()
 	info := sendCASSInjectionInfo(cass.InjectionResult{
 		Success: false,
 		Error:   "CASS query failed: cass command not found",
@@ -154,6 +159,7 @@ func TestSendCASSInjectionInfo_DegradedRecordsSkip(t *testing.T) {
 // send. An optional search must relinquish dispatch on its configured deadline,
 // even when a subprocess keeps the search command's output pipes open.
 func TestSendCASSConfiguredDeadlineRecordsSkippedEnrichment(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("CASS process fixture requires a POSIX shell")
 	}
@@ -164,7 +170,9 @@ func TestSendCASSConfiguredDeadlineRecordsSkippedEnrichment(t *testing.T) {
 		{name: "hung-search", body: "exec sleep 4"},
 		{name: "inherited-output", body: "sleep 4 &\nwait"},
 	} {
+		fixture := fixture
 		t.Run(fixture.name, func(t *testing.T) {
+			t.Parallel()
 			binary := filepath.Join(t.TempDir(), "cass")
 			if err := os.WriteFile(binary, []byte("#!/bin/sh\n"+fixture.body+"\n"), 0o700); err != nil {
 				t.Fatal(err)
@@ -207,6 +215,7 @@ func TestSendCommand_CASSFlagsRegistered(t *testing.T) {
 }
 
 func TestSendCASSInjectionInfo_UsesIndexedAge(t *testing.T) {
+	t.Parallel()
 	indexed := time.Now().UTC().Add(-72 * time.Hour)
 	for _, format := range []cass.InjectionFormat{cass.FormatMarkdown, cass.FormatMinimal, cass.FormatStructured} {
 		inject := cass.DefaultInjectConfig()
@@ -388,6 +397,9 @@ func TestSendCASSCommandRespectsSelectedPaneCapacity(t *testing.T) {
 }
 
 func TestSendCASSCommandCapacityMeasurementLifecycle(t *testing.T) {
+	oldUsageTimeout := ntmctx.MaxPaneContextUsageTimeout
+	ntmctx.MaxPaneContextUsageTimeout = 250 * time.Millisecond
+	t.Cleanup(func() { ntmctx.MaxPaneContextUsageTimeout = oldUsageTimeout })
 	for _, mode := range []string{"cancel", "deadline", "optional-probe-timeout"} {
 		t.Run(mode, func(t *testing.T) {
 			projectRoot, tmuxLog, cassDir := sendCASSCapacityFixture(t, "wait")
@@ -396,7 +408,7 @@ func TestSendCASSCommandCapacityMeasurementLifecycle(t *testing.T) {
 			var watcherDone chan struct{}
 			if mode == "deadline" {
 				var stop context.CancelFunc
-				ctx, stop = context.WithTimeout(ctx, time.Second)
+				ctx, stop = context.WithTimeout(ctx, 100*time.Millisecond)
 				defer stop()
 			} else if mode == "cancel" {
 				watcherDone = make(chan struct{})
@@ -522,7 +534,7 @@ func TestSendCASSCommandStopsRetrievalWithoutDelivery(t *testing.T) {
 			var watcherDone chan struct{}
 			if mode == "deadline" {
 				var deadlineCancel context.CancelFunc
-				ctx, deadlineCancel = context.WithTimeout(ctx, time.Second)
+				ctx, deadlineCancel = context.WithTimeout(ctx, 450*time.Millisecond)
 				defer deadlineCancel()
 			} else {
 				watcherDone = make(chan struct{})

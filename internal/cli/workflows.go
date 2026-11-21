@@ -40,7 +40,7 @@ type RobotSequenceOutput = robot.SequenceOutput
 // that fails the whole package build.
 var robotSequenceExpectedPositionFlag *pflag.Flag
 
-func init() {
+func registerWorkflowSequenceFlagsAndSchemas() {
 	rootCmd.Flags().Int("sequence-expected-position", 0,
 		"Zero-based position being completed; makes retries safe without skipping prompts. Optional with --robot-sequence and --sequence-action=advance")
 	robotSequenceExpectedPositionFlag = rootCmd.Flags().Lookup("sequence-expected-position")

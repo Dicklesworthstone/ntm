@@ -19,6 +19,7 @@ import (
 )
 
 func TestCommandOutputPreservesCompleteStdoutAndExitDiagnostics(t *testing.T) {
+	t.Parallel()
 	for _, script := range []string{"printf 12345; printf abc >&2", "printf 12345; printf abc >&2; exit 7"} {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		cmd := exec.Command("/bin/sh", "-c", script)
@@ -36,12 +37,14 @@ func TestCommandOutputPreservesCompleteStdoutAndExitDiagnostics(t *testing.T) {
 }
 
 func TestCommandOutputRejectsOverflowInsteadOfReturningPrefix(t *testing.T) {
+	t.Parallel()
 	for name, script := range map[string]string{
 		"stdout": "printf 123456",
 		"stderr": "printf useful; printf abcdef >&2",
 		"both":   "printf 123456; printf abcdef >&2",
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			out, err := runCommandOutput(ctx, exec.Command("/bin/sh", "-c", script), 5, 5)
@@ -56,8 +59,10 @@ func TestCommandOutputRejectsOverflowInsteadOfReturningPrefix(t *testing.T) {
 }
 
 func TestCommandOutputOverflowStopsUnboundedProducer(t *testing.T) {
+	t.Parallel()
 	for _, redirect := range []string{"", ">&2"} {
 		t.Run(redirect, func(t *testing.T) {
+			t.Parallel()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			cmd := exec.Command("/bin/sh", "-c", "while :; do printf 012345678901234567890123456789 "+redirect+"; done")
@@ -74,6 +79,7 @@ func TestCommandOutputOverflowStopsUnboundedProducer(t *testing.T) {
 }
 
 func TestCommandOutputPreCancelledStartsNoWork(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	cmd := exec.Command("/bin/sh", "-c", "printf dispatched > marker")
 	cmd.Dir = root
@@ -89,6 +95,7 @@ func TestCommandOutputPreCancelledStartsNoWork(t *testing.T) {
 }
 
 func TestCommandOutputDeadlineReturnsNoPartialWork(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 	out, err := runCommandOutput(ctx, exec.Command("/bin/sh", "-c", "printf partial; sleep 30"), 100, 100)
@@ -98,6 +105,7 @@ func TestCommandOutputDeadlineReturnsNoPartialWork(t *testing.T) {
 }
 
 func TestCommandOutputRejectsInvalidSetup(t *testing.T) {
+	t.Parallel()
 	for _, limit := range []int64{0, -1} {
 		cmd := exec.Command("/bin/sh", "-c", "exit 0")
 		if _, err := runCommandOutput(context.Background(), cmd, limit, 100); err == nil || cmd.Process != nil {
@@ -127,6 +135,7 @@ func TestCommandOutputRejectsInvalidSetup(t *testing.T) {
 }
 
 func TestCancelOnTruncationWriterRetainsBoundedBytes(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	capture := newCappedWriter(4)
@@ -143,6 +152,7 @@ func TestCancelOnTruncationWriterRetainsBoundedBytes(t *testing.T) {
 }
 
 func TestCancelOnTruncationWriterTracksStreamFailure(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	writer := &cancelOnTruncationWriter{capture: newCappedWriter(4), cancel: cancel}
@@ -181,8 +191,10 @@ func TestCancelOnTruncationWriterTracksStreamFailure(t *testing.T) {
 }
 
 func TestCommandOutputLifecycleGatesDispatchAndPublication(t *testing.T) {
+	t.Parallel()
 	for _, phase := range []string{"before_start", "cancel_after_intent", "start_failure", "after_wait", "cancel_after_wait"} {
 		t.Run(phase, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -303,8 +315,10 @@ func TestCommandOutputRejectsEscapedInheritedPipes(t *testing.T) {
 }
 
 func TestCommandOutputReusesDurableSuccessBytesAfterReload(t *testing.T) {
+	t.Parallel()
 	for _, empty := range []bool{false, true} {
 		t.Run(fmt.Sprintf("empty_%t", empty), func(t *testing.T) {
+			t.Parallel()
 			e := newCommandTestExecutor(t)
 			script := `printf x >> selections; printf '\377\000\300tail'`
 			want := []byte{0xff, 0, 0xc0, 't', 'a', 'i', 'l'}
@@ -377,8 +391,10 @@ func TestCommandOutputInvocationFreezePreservesEffectiveEnvironment(t *testing.T
 }
 
 func TestCommandOutputRejectsChangedDurableInvocation(t *testing.T) {
+	t.Parallel()
 	for _, change := range []string{"expanded command", "executable", "directory", "environment", "definition", "stdout limit", "stderr limit", "invalid UTF-8 argument"} {
 		t.Run(change, func(t *testing.T) {
+			t.Parallel()
 			e := newCommandTestExecutor(t)
 			script := "printf x >> selections; printf original"
 			step := &Step{ID: "source", Branch: "${vars.expanded_selector}"}
@@ -438,6 +454,7 @@ func TestCommandOutputRejectsChangedDurableInvocation(t *testing.T) {
 }
 
 func TestCommandOutputLostSuccessCheckpointKeepsIntentUnresolved(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	step := &Step{ID: "source", Branch: "$(printf x >> selections; printf complete)"}
 	ctx := e.commandEvaluationContext(context.Background(), step)
@@ -565,9 +582,11 @@ func selectorRecoveryCheckpoint(t *testing.T, cfg ExecutorConfig) []byte {
 }
 
 func TestSelectorOperatorRecoveryPreservesOriginalEvidenceAndBytes(t *testing.T) {
+	t.Parallel()
 	for _, unresolved := range []bool{false, true} {
 		for _, exitCode := range []int{0, 7, 255} {
 			t.Run(fmt.Sprintf("unresolved_%t/exit_%d", unresolved, exitCode), func(t *testing.T) {
+				t.Parallel()
 				output := []byte{0xff, 0, 0xc0, 'r', 'a', 'w'}
 				cfg, workflow, prior, script := selectorOperatorRecoveryFixture(t, "branch", output, exitCode, unresolved)
 				original := prior.CommandEvaluations["select"]
@@ -623,8 +642,10 @@ func TestSelectorOperatorRecoveryPreservesOriginalEvidenceAndBytes(t *testing.T)
 }
 
 func TestSelectorOperatorRecoveryChangedInvocationCannotConsumeOrLaunch(t *testing.T) {
+	t.Parallel()
 	for _, change := range []string{"command", "directory", "environment", "definition", "stdout cap", "stderr cap"} {
 		t.Run(change, func(t *testing.T) {
+			t.Parallel()
 			cfg, workflow, _, script := selectorOperatorRecoveryFixture(t, "branch", []byte("good"), 0, false)
 			entry := selectorRecoveryEntry(t, cfg)
 			if _, err := AcceptCommandEvaluationContext(context.Background(), cfg.ProjectDir, cfg.RunID, entry.StepID, entry.ReceiptToken, "Verified complete original outcome", 0, []byte("good")); err != nil {

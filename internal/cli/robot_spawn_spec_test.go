@@ -158,6 +158,7 @@ func TestRobotPiSpawnThroughRootCommand(t *testing.T) {
 // TestParseRobotSpawnAgentFlag covers the count[:model[:effort]] grammar the
 // robot spawn flags share with `ntm spawn --cc/--cod/...` (bd-rr8gn).
 func TestParseRobotSpawnAgentFlag(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		flag       string

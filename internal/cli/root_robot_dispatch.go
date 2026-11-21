@@ -160,7 +160,7 @@ func dispatchRobotInspectionAndOps(cmd *cobra.Command, args []string) bool {
 				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use an ISO8601/RFC3339 timestamp", "robot-snapshot")
 				return true
 			}
-			err = robot.PrintSnapshotDelta(sinceTime)
+			err = currentRobotRuntime().PrintSnapshotDelta(sinceTime)
 		} else {
 			err = robot.PrintSnapshotWithOptions(cfg, pagination)
 		}
@@ -176,11 +176,13 @@ func dispatchRobotInspectionAndOps(cmd *cobra.Command, args []string) bool {
 			return true
 		}
 		opts := robot.EventsOptions{
-			SinceCursor: robotEventsSinceCursor,
-			Limit:       robotEventsLimit,
-			IncidentID:  robotEventsIncident,
-			Session:     session,
-			Profile:     robotProfile,
+			SinceCursor:   robotEventsSinceCursor,
+			Limit:         robotEventsLimit,
+			IncidentID:    robotEventsIncident,
+			Session:       session,
+			Profile:       robotProfile,
+			Store:         currentRobotRuntime().ProjectionStore(),
+			ExplicitStore: true,
 		}
 		if robotEventsAsOf != "" {
 			asOf, err := time.Parse(time.RFC3339, robotEventsAsOf)
@@ -265,9 +267,11 @@ func dispatchRobotInspectionAndOps(cmd *cobra.Command, args []string) bool {
 			sinceCursor = robotEventsSinceCursor
 		}
 		opts := robot.DigestOptions{
-			SinceCursor: sinceCursor,
-			Session:     session,
-			Profile:     robotProfile,
+			SinceCursor:   sinceCursor,
+			Session:       session,
+			Profile:       robotProfile,
+			Store:         currentRobotRuntime().ProjectionStore(),
+			ExplicitStore: true,
 		}
 		if err := robot.PrintDigest(opts); err != nil {
 			recordRobotProcessExit(err)
@@ -784,6 +788,7 @@ func dispatchRobotInspectionAndOps(cmd *cobra.Command, args []string) bool {
 			Days:       robotAuditDays,
 			Limit:      limit,
 			Offset:     offset,
+			Store:      currentRobotRuntime().ProjectionStore(),
 		}
 		if err := robot.PrintAudit(cmd.Context(), opts); err != nil {
 			recordRobotProcessExit(err)
@@ -950,9 +955,11 @@ func dispatchRobotInspectionAndOps(cmd *cobra.Command, args []string) bool {
 			agentTypes = strings.Split(activityType, ",")
 		}
 		opts := robot.ActivityOptions{
-			Session:    session,
-			Panes:      paneFilter,
-			AgentTypes: agentTypes,
+			Session:       session,
+			Panes:         paneFilter,
+			AgentTypes:    agentTypes,
+			Store:         currentRobotRuntime().ProjectionStore(),
+			ExplicitStore: true,
 		}
 		if err := robot.PrintActivity(opts); err != nil {
 			recordRobotProcessExit(err)
@@ -1076,6 +1083,7 @@ func dispatchRobotInspectionAndOps(cmd *cobra.Command, args []string) bool {
 			LastAgent:    strings.TrimSpace(robotRouteLastAgent),
 			Config:       loadSelectedConfigOrDefault(),
 			Relax:        robotAssignRelax,
+			Store:        currentRobotRuntime().ProjectionStore(),
 		}
 		exitCode := robot.PrintRoute(opts)
 		recordLegacyRobotExit(exitCode)
@@ -1549,7 +1557,7 @@ func dispatchRobotSwarmOps(cmd *cobra.Command, robotDryRunEffective bool) bool {
 }
 
 func resolveRobotPagination(cmd *cobra.Command) (robot.PaginationOptions, error) {
-	opts := robot.PaginationOptions{}
+	opts := currentRobotRuntime().PaginationOptions(0, 0)
 
 	if cmd.Flags().Changed("robot-limit") {
 		opts.Limit = robotLimit

@@ -92,6 +92,7 @@ type PolicyDecisionsOptions struct {
 	EntityType string
 	EntityID   string
 	Limit      int
+	Store      *state.Store `json:"-"`
 }
 
 // PolicyDecisionsOutput is the robot envelope for durable audit decision history.
@@ -104,9 +105,9 @@ type PolicyDecisionsOutput struct {
 	Limit      int                   `json:"limit"`
 }
 
-// GetPolicyDecisions queries the runtime projection store's audit decision log.
+// GetPolicyDecisions queries the injected projection store's audit decision log.
 func GetPolicyDecisions(opts PolicyDecisionsOptions) (*PolicyDecisionsOutput, error) {
-	return GetPolicyDecisionsForStore(currentProjectionStore(), opts)
+	return GetPolicyDecisionsForStore(opts.Store, opts)
 }
 
 // GetPolicyDecisionsForStore queries audit decision history from an explicit state.Store.

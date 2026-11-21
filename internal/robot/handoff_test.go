@@ -12,6 +12,7 @@ import (
 )
 
 func TestHandoffInspectEmptySession(t *testing.T) {
+	t.Parallel()
 	projectDir := t.TempDir()
 
 	out, err := GetHandoff(context.Background(), HandoffOptions{
@@ -51,6 +52,7 @@ func TestHandoffInspectEmptySession(t *testing.T) {
 }
 
 func TestHandoffCreateManualAndInspectWithQualityReport(t *testing.T) {
+	t.Parallel()
 	projectDir := t.TempDir()
 
 	created, err := GetHandoff(context.Background(), HandoffOptions{
@@ -266,6 +268,7 @@ func TestHandoffCreateAutoEnrichesGitRepository(t *testing.T) {
 }
 
 func TestHandoffValidationAndPathTraversalRefusal(t *testing.T) {
+	t.Parallel()
 	validDir := t.TempDir()
 	fileInDir := filepath.Join(validDir, "not-a-dir.txt")
 	if err := os.WriteFile(fileInDir, []byte("x"), 0o600); err != nil {
@@ -328,6 +331,7 @@ func TestHandoffValidationAndPathTraversalRefusal(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			out, err := GetHandoff(context.Background(), tc.opts)
 			if err != nil {
 				t.Fatalf("GetHandoff returned unexpected Go error: %v", err)

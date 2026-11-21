@@ -163,6 +163,7 @@ func pasteContents(t *testing.T, mock *MockTmuxClient, paneID string) []string {
 // and route H-005 to whichever pane happens to be next in iteration
 // order — silently misrouting domain-owning work.
 func TestPhase4InvestigateForeachBeadsRoundRobinByDomain(t *testing.T) {
+	t.Parallel()
 	body := "Investigate <H_ID>: <TITLE>\n"
 	_, mock, executor := setupBrennerbotIntegration(t, body)
 
@@ -227,6 +228,7 @@ func TestPhase4InvestigateForeachBeadsRoundRobinByDomain(t *testing.T) {
 // hypothesis back to a Claude pane. Asserts cross-family routing for
 // each item and that no same-family pane received the dispatch.
 func TestPhase4DevilsAdvocateForeachBeadsByModelFamilyDifference(t *testing.T) {
+	t.Parallel()
 	body := "Devils-advocate <H_ID> authored by <AUTHOR>\n"
 	_, mock, executor := setupBrennerbotIntegration(t, body)
 
@@ -298,6 +300,7 @@ func TestPhase4DevilsAdvocateForeachBeadsByModelFamilyDifference(t *testing.T) {
 // dispatches MO-05-debate-round to a single pane. Asserts the total paste
 // count is pairs*rounds and the round counter advances per iteration.
 func TestPhase5DebateForeachPairsMaxRounds(t *testing.T) {
+	t.Parallel()
 	body := "Debate <DEBATE_ID> round <ROUND>: <H1> vs <H2>\n"
 	projectDir, mock, executor := setupBrennerbotIntegration(t, body)
 
@@ -360,6 +363,7 @@ DEBATE-002|H-005|H-007|%3|%4
 // must pick a non-champion pane per debate and rotate so subsequent
 // debates get a different adjudicator when possible.
 func TestPhase5AdjudicateForeachDebatesRotateAdjudicator(t *testing.T) {
+	t.Parallel()
 	body := "Adjudicate <DEBATE_ID> by <CHAMPIONS>\n"
 	projectDir, mock, executor := setupBrennerbotIntegration(t, body)
 
@@ -435,6 +439,7 @@ func TestPhase5AdjudicateForeachDebatesRotateAdjudicator(t *testing.T) {
 // distill MO to one pane per family. Asserts each family pane received
 // the dispatch and no off-family pane did.
 func TestPhase6DistillForeachModels(t *testing.T) {
+	t.Parallel()
 	body := "Distill family <FAMILY>\n"
 	_, mock, executor := setupBrennerbotIntegration(t, body)
 
@@ -489,6 +494,7 @@ func TestPhase6DistillForeachModels(t *testing.T) {
 // Each pane must receive exactly one dispatch carrying its own pane.id
 // substituted into the rendered MO.
 func TestPhase7TrioForeachPane(t *testing.T) {
+	t.Parallel()
 	body := "Audit pane <PANE_ID> role=<ROLE>\n"
 	_, mock, executor := setupBrennerbotIntegration(t, body)
 

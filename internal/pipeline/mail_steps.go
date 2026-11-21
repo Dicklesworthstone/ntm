@@ -969,24 +969,32 @@ type agentMailClientCache struct {
 	byProject map[string]*agentmail.Client
 }
 
-func (c *agentMailClientCache) get(projectKey string) *agentmail.Client {
+func (c *agentMailClientCache) get(projectKey, baseURL string) *agentmail.Client {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.byProject == nil {
 		c.byProject = make(map[string]*agentmail.Client)
 	}
-	if client := c.byProject[projectKey]; client != nil {
+	cacheKey := projectKey
+	if baseURL != "" {
+		cacheKey = baseURL + "\x00" + projectKey
+	}
+	if client := c.byProject[cacheKey]; client != nil {
 		return client
 	}
 
-	client := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
-	c.byProject[projectKey] = client
+	opts := []agentmail.Option{agentmail.WithProjectKey(projectKey)}
+	if baseURL != "" {
+		opts = append(opts, agentmail.WithBaseURL(baseURL))
+	}
+	client := agentmail.NewClient(opts...)
+	c.byProject[cacheKey] = client
 	return client
 }
 
 func (e *Executor) mailClient(projectKey string) *agentmail.Client {
-	return e.mailClients.get(projectKey)
+	return e.mailClients.get(projectKey, e.config.AgentMailURL)
 }
 
 // executeMailStep is the executor dispatch branch for Agent Mail step kinds.

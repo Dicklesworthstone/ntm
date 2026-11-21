@@ -28,6 +28,7 @@ import (
 )
 
 func TestCoordinatorFeatureKeys(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		feature  string
@@ -71,6 +72,7 @@ func TestCoordinatorFeatureKeys(t *testing.T) {
 }
 
 func TestRunCoordinatorToggleValidationClassifiesInvalidFlag(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		feature  string
@@ -150,6 +152,7 @@ func TestRunCoordinatorTogglePersistsSelectedConfig(t *testing.T) {
 }
 
 func TestCoordinatorRunCommandExposesDeterministicOnceMode(t *testing.T) {
+	t.Parallel()
 	cmd := newCoordinatorRunCmd()
 	if cmd.Use != "run [session]" {
 		t.Fatalf("Use=%q", cmd.Use)
@@ -735,6 +738,7 @@ func stubCoordinatorLiveTopology(t *testing.T, panes []tmux.Pane, paths map[stri
 }
 
 func TestCoordinatorRunFailureIncludesAssignmentFailures(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		assignments []coordinator.AssignmentResult
@@ -875,6 +879,7 @@ func TestResolveCoordinatorProjectKeyAcceptsLinkedWorktrees(t *testing.T) {
 // every field when the TOML carries explicit values. Anchors the contract
 // `coordinator status --json` relies on.
 func TestCoordinatorConfigFromTOMLPropagatesValues(t *testing.T) {
+	t.Parallel()
 	toml := config.CoordinatorConfig{
 		PollInterval:      30 * time.Second,
 		DigestInterval:    30 * time.Minute,
@@ -924,6 +929,7 @@ func TestCoordinatorConfigFromTOMLPropagatesValues(t *testing.T) {
 // the runtime minimums (which would otherwise panic time.NewTicker) is clamped
 // up. This matches the validation inside SessionCoordinator.Start.
 func TestCoordinatorConfigFromTOMLClampsBelowMinimumDurations(t *testing.T) {
+	t.Parallel()
 	toml := config.CoordinatorConfig{
 		PollInterval:   1 * time.Millisecond, // below MinPollInterval
 		DigestInterval: 1 * time.Second,      // below MinDigestInterval
@@ -942,6 +948,7 @@ func TestCoordinatorConfigFromTOMLClampsBelowMinimumDurations(t *testing.T) {
 // `human_agent = ""` in TOML must fall back to the runtime default. Otherwise
 // digest delivery would silently target an empty agent name.
 func TestCoordinatorConfigFromTOMLEmptyHumanAgentFallsBack(t *testing.T) {
+	t.Parallel()
 	toml := config.CoordinatorConfig{
 		PollInterval:   coordinator.MinPollInterval,
 		DigestInterval: coordinator.MinDigestInterval,
@@ -962,6 +969,7 @@ func TestCoordinatorConfigFromTOMLEmptyHumanAgentFallsBack(t *testing.T) {
 // package because it can import both internal/config and internal/coordinator
 // without forming a cycle (config → coordinator → robot → config).
 func TestCoordinatorMirrorMatchesRuntime(t *testing.T) {
+	t.Parallel()
 	mirror := config.DefaultCoordinatorConfig()
 	runtime := coordinator.DefaultCoordinatorConfig()
 
@@ -995,6 +1003,7 @@ func TestCoordinatorMirrorMatchesRuntime(t *testing.T) {
 }
 
 func TestFormatIdleDuration(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name     string

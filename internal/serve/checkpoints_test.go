@@ -896,6 +896,7 @@ func TestRestoreCheckpointHTTP_InvalidRequestsDoNotMutate(t *testing.T) {
 }
 
 func TestRollbackResponseToMap(t *testing.T) {
+	t.Parallel()
 
 	t.Run("basic fields", func(t *testing.T) {
 		r := RollbackResponse{
@@ -978,6 +979,7 @@ func TestRollbackResponseToMap(t *testing.T) {
 }
 
 func TestCheckpointToResponse(t *testing.T) {
+	t.Parallel()
 
 	now := time.Now()
 
@@ -1145,6 +1147,7 @@ func TestCheckpointToResponse(t *testing.T) {
 // the project directory is what stops a caller holding only sessions:write
 // from rewriting an unrelated repository on the host.
 func TestResolveCheckpointWorkDirConfinesToProjectDir(t *testing.T) {
+	t.Parallel()
 	s, _ := setupTestServer(t)
 	root := s.projectDirSnapshot()
 
@@ -1197,6 +1200,7 @@ func TestResolveCheckpointWorkDirConfinesToProjectDir(t *testing.T) {
 // display, so a non-object-id value is both an argument-injection vector and a
 // panic (the slice is on the dry-run path).
 func TestCheckpointCommitPatternRejectsNonObjectIDs(t *testing.T) {
+	t.Parallel()
 	valid := []string{"abc1234", "0123456789abcdef0123456789abcdef01234567"}
 	for _, commit := range valid {
 		if !checkpointCommitPattern.MatchString(commit) {
@@ -1215,6 +1219,7 @@ func TestCheckpointCommitPatternRejectsNonObjectIDs(t *testing.T) {
 // header and into a temp filename, but was the one checkpoint handler that
 // never validated it. ValidateSessionName's allowlist is what excludes CR/LF.
 func TestHandleExportCheckpointValidatesSessionName(t *testing.T) {
+	t.Parallel()
 	s, _ := setupTestServer(t)
 
 	for _, name := range []string{

@@ -517,19 +517,19 @@ func TestIntegration_OperatorAcknowledgmentPersists(t *testing.T) {
 }
 
 func TestIntegration_OperatorSnoozeAndExpiry(t *testing.T) {
+	t.Parallel()
 
 	scenarioID := NewScenarioID("operator_snooze", 10)
 	recorder := NewTestRecorder(t, scenarioID, true)
 
-	// Use 2 second duration to avoid RFC3339 sub-second truncation issues
+	now := time.Now().UTC().Truncate(time.Second)
 	snoozeDuration := 2 * time.Second
-	// Add a full second buffer to ensure we're safely in the future after RFC3339 truncation
-	snoozeUntil := time.Now().Add(snoozeDuration).Truncate(time.Second).Add(time.Second)
+	snoozeUntil := now.Add(snoozeDuration)
 
 	state := &OperatorAttentionState{
 		ItemID:      "item-456",
-		SnoozedAt:   time.Now().UTC().Format(time.RFC3339),
-		SnoozeUntil: snoozeUntil.UTC().Format(time.RFC3339),
+		SnoozedAt:   now.Format(time.RFC3339),
+		SnoozeUntil: snoozeUntil.Format(time.RFC3339),
 		SnoozedBy:   "operator-bob",
 	}
 	recorder.Record(TestObservation{
@@ -540,16 +540,16 @@ func TestIntegration_OperatorSnoozeAndExpiry(t *testing.T) {
 		},
 	})
 
-	// Check snooze is active
-	if !state.IsSnoozed(time.Now()) {
+	// Check snooze is active before expiry
+	if !state.IsSnoozed(now) {
 		t.Error("snooze should be active immediately after setting")
 	}
+	if !state.IsSnoozed(snoozeUntil.Add(-time.Second)) {
+		t.Error("snooze should remain active before snooze_until")
+	}
 
-	// Wait for snooze to expire
-	time.Sleep(snoozeDuration + time.Second)
-
-	// Check snooze has expired
-	if state.IsSnoozed(time.Now()) {
+	// Check snooze has expired after snooze_until
+	if state.IsSnoozed(snoozeUntil.Add(time.Second)) {
 		t.Error("snooze should have expired")
 	}
 	recorder.Record(TestObservation{

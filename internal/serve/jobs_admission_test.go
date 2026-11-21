@@ -67,6 +67,7 @@ func admissionBlockSpawn(srv *Server) (<-chan struct{}, func(), *atomic.Int32) {
 }
 
 func TestJobAdmissionHTTPOverloadAndQueuedCancellation(t *testing.T) {
+	t.Parallel()
 	srv := NewHermeticServer("admission-test")
 	defer srv.Stop()
 	srv.jobExecutor.maxConcurrent, srv.jobExecutor.maxQueued = 1, 1
@@ -106,6 +107,7 @@ func TestJobAdmissionHTTPOverloadAndQueuedCancellation(t *testing.T) {
 }
 
 func TestJobAdmissionHTTPReceiptExistsBeforeAcceptance(t *testing.T) {
+	t.Parallel()
 	srv, _ := newJournalHTTPServer(t, filepath.Join(t.TempDir(), "state.db"))
 	srv.jobExecutor.maxConcurrent, srv.jobExecutor.maxQueued = 1, 1
 	started, release, _ := admissionBlockSpawn(srv)
@@ -150,6 +152,7 @@ func TestJobAdmissionHTTPReceiptExistsBeforeAcceptance(t *testing.T) {
 }
 
 func TestJobAdmissionPreservesLiveProgressOnCancellation(t *testing.T) {
+	t.Parallel()
 	srv := &Server{jobStore: NewJobStore()}
 	job := srv.jobStore.Create(JobTypeSwarmSpawn)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -172,6 +175,7 @@ func TestJobAdmissionPreservesLiveProgressOnCancellation(t *testing.T) {
 }
 
 func TestJobAdmissionOwnedTerminalJobsSurviveRetention(t *testing.T) {
+	t.Parallel()
 	store := NewJobStore()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -205,6 +209,7 @@ func TestJobAdmissionOwnedTerminalJobsSurviveRetention(t *testing.T) {
 }
 
 func TestJobAdmissionLateCancelRegistrationObservesTerminalState(t *testing.T) {
+	t.Parallel()
 	for _, status := range []JobStatus{JobStatusCancelled, JobStatusCompleted, JobStatusFailed} {
 		store := NewJobStore()
 		job := store.Create(JobTypeSwarmSpawn)
@@ -220,6 +225,7 @@ func TestJobAdmissionLateCancelRegistrationObservesTerminalState(t *testing.T) {
 }
 
 func TestJobAdmissionFreezePreservesOperationIdentityAndNumbers(t *testing.T) {
+	t.Parallel()
 	input := `{"type":"pipeline_exec","session":"outer","params":{"operation_id":"once","workflow":{"steps":[{"value":9007199254740993}]},"variables":{"n":9223372036854775807}}}`
 	req, err := decodeCreateJobRequest(strings.NewReader(input))
 	if err != nil {
@@ -254,6 +260,7 @@ func TestJobAdmissionFreezePreservesOperationIdentityAndNumbers(t *testing.T) {
 }
 
 func TestJobAdmissionHTTPRejectsBadEnvelopeWithoutJob(t *testing.T) {
+	t.Parallel()
 	srv := NewHermeticServer("admission-test")
 	defer srv.Stop()
 	for _, body := range []string{
@@ -272,6 +279,7 @@ func TestJobAdmissionHTTPRejectsBadEnvelopeWithoutJob(t *testing.T) {
 }
 
 func TestJobAdmissionHTTPStopClosesAdmission(t *testing.T) {
+	t.Parallel()
 	srv := NewHermeticServer("admission-test")
 	srv.Stop()
 	rec := admissionRequest(srv, http.MethodPost, "/api/v1/jobs", `{"type":"swarm_spawn","params":{"session":"late","cc_count":1}}`)
@@ -282,6 +290,7 @@ func TestJobAdmissionHTTPStopClosesAdmission(t *testing.T) {
 }
 
 func TestJobAdmissionShutdownDeadlineWhileStoreLocked(t *testing.T) {
+	t.Parallel()
 	srv := &Server{jobStore: NewJobStore()}
 	srv.jobStore.mu.Lock()
 	defer srv.jobStore.mu.Unlock()
@@ -303,6 +312,7 @@ func TestJobAdmissionShutdownDeadlineWhileStoreLocked(t *testing.T) {
 }
 
 func TestJobAdmissionPreparationFailureReturnsCapacity(t *testing.T) {
+	t.Parallel()
 	srv := &Server{jobStore: NewJobStore()}
 	for i := 0; i < 10; i++ {
 		job, err := srv.submitJob(context.Background(), CreateJobRequest{Type: JobTypeSwarmSpawn, Params: map[string]interface{}{"bad": make(chan int)}})
@@ -316,6 +326,7 @@ func TestJobAdmissionPreparationFailureReturnsCapacity(t *testing.T) {
 }
 
 func TestJobAdmissionConfigLimitsAreValidated(t *testing.T) {
+	t.Parallel()
 	for _, limit := range []int{-1, maxJobConcurrency + 1} {
 		if err := ValidateConfig(Config{JobConcurrency: limit}); err == nil {
 			t.Fatalf("invalid concurrency %d accepted", limit)
@@ -350,6 +361,7 @@ func TestJobAdmissionConfigLimitsAreValidated(t *testing.T) {
 }
 
 func TestJobAdmissionCancellationReceiptSurvivesConcurrentEviction(t *testing.T) {
+	t.Parallel()
 	srv := &Server{jobStore: NewJobStore()}
 	job := srv.jobStore.Create(JobTypeSwarmSpawn)
 	srv.jobStore.SetCancel(job.ID, func() {
@@ -367,6 +379,7 @@ func TestJobAdmissionCancellationReceiptSurvivesConcurrentEviction(t *testing.T)
 }
 
 func TestJobAdmissionPipelineProjectPinnedBeforeDispatch(t *testing.T) {
+	t.Parallel()
 	projectA, projectB := t.TempDir(), t.TempDir()
 	for _, kind := range []string{JobTypePipelineRun, JobTypePipelineExec, JobTypePipelineResume} {
 		t.Run(kind, func(t *testing.T) {
@@ -401,6 +414,7 @@ func TestJobAdmissionPipelineProjectPinnedBeforeDispatch(t *testing.T) {
 }
 
 func TestJobAdmissionHTTPPendingReceiptKeepsSelectedProject(t *testing.T) {
+	t.Parallel()
 	srv, _ := newJournalHTTPServer(t, filepath.Join(t.TempDir(), "state.db"))
 	srv.jobExecutor.maxConcurrent, srv.jobExecutor.maxQueued = 1, 1
 	projectA, projectB := t.TempDir(), t.TempDir()
@@ -440,6 +454,7 @@ func TestJobAdmissionHTTPPendingReceiptKeepsSelectedProject(t *testing.T) {
 }
 
 func TestJobAdmissionCheckpointKeepsExistingProjectResolution(t *testing.T) {
+	t.Parallel()
 	srv := NewHermeticServer("pin-test")
 	defer srv.Stop()
 	for _, kind := range []string{JobTypeCheckpointRestore} {
@@ -455,6 +470,7 @@ func TestJobAdmissionCheckpointKeepsExistingProjectResolution(t *testing.T) {
 }
 
 func TestJobAdmissionSwarmProjectPinnedWithoutChangingRequest(t *testing.T) {
+	t.Parallel()
 	projectA, projectB, override := t.TempDir(), t.TempDir(), t.TempDir()
 	for _, tc := range []struct {
 		name, workingDir, want string
@@ -533,6 +549,7 @@ func TestJobAdmissionSwarmProjectPinnedWithoutChangingRequest(t *testing.T) {
 }
 
 func TestJobAdmissionSwarmMissingServiceRemainsUnavailable(t *testing.T) {
+	t.Parallel()
 	srv := &Server{projectDir: t.TempDir()}
 	frozen, err := srv.prepareJobRequest(CreateJobRequest{Type: JobTypeSwarmSpawn})
 	if err != nil {
@@ -544,6 +561,7 @@ func TestJobAdmissionSwarmMissingServiceRemainsUnavailable(t *testing.T) {
 }
 
 func TestJobAdmissionSwarmRejectsMalformedDirectory(t *testing.T) {
+	t.Parallel()
 	srv := &Server{projectDir: t.TempDir()}
 	for _, value := range []interface{}{nil, 42, true, []string{}, map[string]interface{}{}} {
 		_, err := srv.prepareJobRequest(CreateJobRequest{Type: JobTypeSwarmSpawn, Params: map[string]interface{}{"working_dir": value}})
@@ -554,6 +572,7 @@ func TestJobAdmissionSwarmRejectsMalformedDirectory(t *testing.T) {
 }
 
 func TestJobAdmissionSwarmProjectHTTPQueuedExecutionAndRecovery(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"default", "relative partial failure", "absolute preview", "queued cancellation"} {
 		t.Run(scenario, func(t *testing.T) {
 			srv, _ := newJournalHTTPServer(t, filepath.Join(t.TempDir(), "state.db"))
@@ -666,6 +685,7 @@ func TestJobAdmissionSwarmProjectHTTPQueuedExecutionAndRecovery(t *testing.T) {
 }
 
 func TestJobAdmissionSwarmRejectsMalformedDirectoryWithoutAdmission(t *testing.T) {
+	t.Parallel()
 	srv := NewHermeticServer("swarm-project-test")
 	defer srv.Stop()
 	for _, value := range []string{`null`, `42`, `true`, `[]`, `{}`} {
@@ -731,6 +751,7 @@ func (b *jobScopeHTTPBodyBarrier) Read(p []byte) (int, error) {
 }
 
 func TestJobHTTPProjectScopePipelineAdmissionAndReplay(t *testing.T) {
+	t.Parallel()
 	srv, _ := newJournalHTTPServer(t, filepath.Join(t.TempDir(), "state.db"))
 	projectA, projectB := t.TempDir(), t.TempDir()
 	jobScopeHTTPPatchProject(t, srv, projectA)
@@ -821,6 +842,7 @@ func TestJobHTTPProjectScopePipelineAdmissionAndReplay(t *testing.T) {
 }
 
 func TestJobHTTPProjectScopeSwarmExplicitAndRelativeTargets(t *testing.T) {
+	t.Parallel()
 	for _, absolute := range []bool{false, true} {
 		t.Run(fmt.Sprintf("absolute=%v", absolute), func(t *testing.T) {
 			srv := NewHermeticServer("job-scope")
@@ -910,6 +932,7 @@ func TestJobHTTPProjectScopeKeepsCheckpointReplayGlobal(t *testing.T) {
 }
 
 func TestJobHTTPProjectScopeHashesBodyBeyondFormerPrefixLimit(t *testing.T) {
+	t.Parallel()
 	srv := NewHermeticServer("job-scope")
 	defer srv.Stop()
 	jobScopeHTTPPatchProject(t, srv, t.TempDir())

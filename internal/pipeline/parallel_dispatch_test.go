@@ -34,6 +34,7 @@ func parallelDispatchWorkflow(children ...Step) *Workflow {
 }
 
 func TestParallelDispatchControlledCommandsActuallyOverlap(t *testing.T) {
+	t.Parallel()
 	cfg := parallelDispatchConfig(t)
 	// Neither command can finish until the other has started. Serial dispatch
 	// (or routing commands to a tmux prompt) cannot satisfy this rendezvous.
@@ -64,6 +65,7 @@ func TestParallelDispatchControlledCommandsActuallyOverlap(t *testing.T) {
 }
 
 func TestParallelDispatchNestedGroupsRunAndResumeWithoutRepeatingChildren(t *testing.T) {
+	t.Parallel()
 	cfg := parallelDispatchConfig(t)
 	workflow := parallelDispatchWorkflow(Step{ID: "nested", Parallel: ParallelSpec{Steps: []Step{
 		{ID: "once", Command: "printf x >> once; printf saved"},
@@ -103,6 +105,7 @@ func TestParallelDispatchNestedGroupsRunAndResumeWithoutRepeatingChildren(t *tes
 }
 
 func TestParallelDispatchCommandsUseRetriesAndSuccessHooks(t *testing.T) {
+	t.Parallel()
 	cfg := parallelDispatchConfig(t)
 	workflow := parallelDispatchWorkflow(Step{
 		ID: "retry", Command: "if [ ! -f attempted ]; then printf x > attempted; exit 7; fi; printf recovered",
@@ -123,6 +126,7 @@ func TestParallelDispatchCommandsUseRetriesAndSuccessHooks(t *testing.T) {
 }
 
 func TestParallelDispatchFailFastCancelsRunningCommandSibling(t *testing.T) {
+	t.Parallel()
 	cfg := parallelDispatchConfig(t)
 	workflow := parallelDispatchWorkflow(
 		Step{ID: "failure", Command: "while [ ! -f started ]; do sleep 0.01; done; exit 9"},
@@ -145,6 +149,7 @@ func TestParallelDispatchFailFastCancelsRunningCommandSibling(t *testing.T) {
 }
 
 func TestParallelDispatchNestedScopeResolutionIsExact(t *testing.T) {
+	t.Parallel()
 	workflow := parallelDispatchWorkflow(Step{ID: "nested", Parallel: ParallelSpec{Steps: []Step{
 		{ID: "leaf", Command: "true", OutputVar: "nested_result"},
 		{ID: "leaf_extra", Command: "true"},
@@ -162,6 +167,7 @@ func TestParallelDispatchNestedScopeResolutionIsExact(t *testing.T) {
 }
 
 func TestParallelDispatchContinueRetainsFailureAndSuccessfulOutput(t *testing.T) {
+	t.Parallel()
 	cfg := parallelDispatchConfig(t)
 	workflow := parallelDispatchWorkflow(
 		Step{ID: "bad", Command: "exit 3", OutputVar: "shared"},
@@ -185,6 +191,7 @@ func TestParallelDispatchContinueRetainsFailureAndSuccessfulOutput(t *testing.T)
 }
 
 func TestParallelDispatchDryRunAndSkippedCommandsDoNotRun(t *testing.T) {
+	t.Parallel()
 	for _, dry := range []bool{false, true} {
 		t.Run(fmt.Sprintf("dry=%v", dry), func(t *testing.T) {
 			cfg := parallelDispatchConfig(t)
@@ -212,6 +219,7 @@ func TestParallelDispatchDryRunAndSkippedCommandsDoNotRun(t *testing.T) {
 }
 
 func TestParallelDispatchParsesCommandOutputWithoutNamedVariable(t *testing.T) {
+	t.Parallel()
 	cfg := parallelDispatchConfig(t)
 	workflow := parallelDispatchWorkflow(Step{ID: "json", Command: `printf '{"ok":true}'`, OutputParse: OutputParse{Type: "json"}})
 	state, err := RunControlledPipeline(context.Background(), workflow, nil, cfg, nil)
@@ -291,6 +299,7 @@ func (m *parallelDispatchTransport) VerifySubmission(ctx context.Context, _, _, 
 }
 
 func TestParallelDispatchTemplateRetriesStayOnSelectedPane(t *testing.T) {
+	t.Parallel()
 	cfg := parallelDispatchConfig(t)
 	path := filepath.Join(cfg.ProjectDir, "instructions.md")
 	if err := os.WriteFile(path, []byte("Do <TASK>"), 0600); err != nil {
@@ -319,6 +328,7 @@ func TestParallelDispatchTemplateRetriesStayOnSelectedPane(t *testing.T) {
 }
 
 func TestParallelDispatchUnknownTemplateDeliveryIsNotRetried(t *testing.T) {
+	t.Parallel()
 	cfg := parallelDispatchConfig(t)
 	path := filepath.Join(cfg.ProjectDir, "instructions.md")
 	if err := os.WriteFile(path, []byte("Do <TASK>"), 0600); err != nil {
@@ -360,6 +370,7 @@ func TestParallelDispatchSuccessHookCanReuseParentPane(t *testing.T) {
 }
 
 func TestParallelDispatchSuccessHookDoesNotInheritParentTarget(t *testing.T) {
+	t.Parallel()
 	cfg := parallelDispatchConfig(t)
 	workflow := parallelDispatchWorkflow(Step{ID: "parent", Prompt: "parent", Pane: PaneSpec{Index: 1}, Wait: WaitNone,
 		OnSuccess: []Step{{ID: "hook", Prompt: "other pane", Pane: PaneSpec{Index: 2}, Wait: WaitNone}}})
@@ -376,6 +387,7 @@ func TestParallelDispatchSuccessHookDoesNotInheritParentTarget(t *testing.T) {
 }
 
 func TestParallelDispatchMixedPromptTemplateAndCommand(t *testing.T) {
+	t.Parallel()
 	cfg := parallelDispatchConfig(t)
 	path := filepath.Join(cfg.ProjectDir, "instructions.md")
 	if err := os.WriteFile(path, []byte("template <TASK>"), 0600); err != nil {

@@ -221,12 +221,14 @@ func TestUnknownAdmissions(t *testing.T) {
 // envelope cannot hide duplicate keystrokes. These tests run under -short and
 // need neither a live tmux server nor an agent installation.
 func TestOperationCrashRecoveryTransport(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("recording tmux transport requires a POSIX shell")
 	}
 	for _, kind := range []string{state.OperationKindSend, state.OperationKindInterrupt} {
 		for _, scenario := range []string{"stale-started", "fresh-started", "stale-unstarted", "start-failure", "completion-failure", "message-guard"} {
 			t.Run(kind+"/"+scenario, func(t *testing.T) {
+				t.Parallel()
 				root := t.TempDir()
 				const transport = `#!/bin/sh
 set -eu
@@ -308,11 +310,13 @@ func TestOperationCrashRecoveryTransportHelper(t *testing.T) {
 	sendOptions := SendOptions{
 		Session: session, All: true, Message: message,
 		IdempotencyKey: operationID, Redaction: redactionConfig,
+		Store: store, ExplicitStore: true,
 	}
 	interruptOptions := InterruptOptions{
 		Session: session, All: true, Force: true, NoWait: true,
 		Message: message, IdempotencyKey: operationID, Redaction: redactionConfig,
 		TimeoutMs: 10000, PollMs: 300,
+		Store: store, ExplicitStore: true,
 	}
 
 	type actuationResult struct {
@@ -432,7 +436,7 @@ func TestOperationCrashRecoveryTransportHelper(t *testing.T) {
 				stored.DispatchStartedAt == nil || !stored.DispatchStartedAt.Equal(*original.DispatchStartedAt) || stored.OutcomeJSON != "" {
 				t.Fatalf("retry changed the original crash evidence: got %+v, original %+v", stored, original)
 			}
-			receipt, err := GetSendReceipt(operationID)
+			receipt, err := GetSendReceiptForStore(store, operationID)
 			if err != nil || receipt == nil || !receipt.Success || receipt.Outcome != nil || receipt.InterruptOutcome != nil {
 				t.Fatalf("unknown receipt = (%+v, %v), want pending evidence without invented outcome", receipt, err)
 			}
@@ -579,6 +583,7 @@ func TestOperationCrashRecoveryTransportHelper(t *testing.T) {
 }
 
 func TestRequestIdentityStatusWaitAndCancel(t *testing.T) {
+	t.Parallel()
 	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("state.Open: %v", err)
@@ -588,34 +593,33 @@ func TestRequestIdentityStatusWaitAndCancel(t *testing.T) {
 		t.Fatalf("store.Migrate: %v", err)
 	}
 
-	SetProjectionStore(store)
-	t.Cleanup(func() { SetProjectionStore(nil) })
-
 	// 1. Unknown ID -> NOT_FOUND across status/wait/cancel.
-	missing, err := GetActionStatus("req_unknown")
+	missing, err := GetActionStatusWithStore("req_unknown", store, true)
 	if err != nil || missing.Success || missing.ErrorCode != ErrCodeNotFound {
 		t.Fatalf("GetActionStatus(missing) = (%+v, %v), want NOT_FOUND", missing, err)
 	}
 
 	// 2. Pre-dispatch send operation claim -> status in_progress + cancellable -> cancel fences start & retry.
 	claimRes := claimRobotOperation(operationClaimRequest{
-		Kind:        state.OperationKindSend,
-		OperationID: "req_predispatch_1",
-		Session:     "proj",
-		BindingHash: "bind-1",
-		Payload:     "hello",
-		Targets:     []string{"1"},
+		Kind:          state.OperationKindSend,
+		OperationID:   "req_predispatch_1",
+		Session:       "proj",
+		BindingHash:   "bind-1",
+		Payload:       "hello",
+		Targets:       []string{"1"},
+		Store:         store,
+		ExplicitStore: true,
 	})
 	if claimRes.Verdict != operationExecute || claimRes.Owned == nil {
 		t.Fatalf("claimRobotOperation = %+v, want execute", claimRes)
 	}
 
-	st, err := GetActionStatus("req_predispatch_1")
+	st, err := GetActionStatusWithStore("req_predispatch_1", store, true)
 	if err != nil || !st.Success || st.Status != state.SendOperationInProgress || st.Terminal || !st.Cancellable {
 		t.Fatalf("GetActionStatus(predispatch) = (%+v, %v), want in_progress+cancellable", st, err)
 	}
 
-	canceled, err := GetCancelRequest("req_predispatch_1")
+	canceled, err := GetCancelRequestWithStore("req_predispatch_1", store, true)
 	if err != nil || !canceled.Success || !canceled.Canceled || canceled.Status != state.SendOperationCanceled {
 		t.Fatalf("GetCancelRequest(predispatch) = (%+v, %v), want canceled", canceled, err)
 	}
@@ -627,12 +631,14 @@ func TestRequestIdentityStatusWaitAndCancel(t *testing.T) {
 
 	// Retry with same ID refuses cleanly as OPERATION_CANCELED.
 	retryRes := claimRobotOperation(operationClaimRequest{
-		Kind:        state.OperationKindSend,
-		OperationID: "req_predispatch_1",
-		Session:     "proj",
-		BindingHash: "bind-1",
-		Payload:     "hello",
-		Targets:     []string{"1"},
+		Kind:          state.OperationKindSend,
+		OperationID:   "req_predispatch_1",
+		Session:       "proj",
+		BindingHash:   "bind-1",
+		Payload:       "hello",
+		Targets:       []string{"1"},
+		Store:         store,
+		ExplicitStore: true,
 	})
 	if retryRes.Verdict != operationRefused || retryRes.Response.ErrorCode != "OPERATION_CANCELED" {
 		t.Fatalf("retry after cancel = %+v, want OPERATION_CANCELED", retryRes)
@@ -640,26 +646,30 @@ func TestRequestIdentityStatusWaitAndCancel(t *testing.T) {
 
 	// 3. Dispatched operation -> cannot be canceled (REQUEST_ALREADY_DISPATCHED), wait times out while in_progress, then wakes on completion.
 	dispatchedClaim := claimRobotOperation(operationClaimRequest{
-		Kind:        state.OperationKindSend,
-		OperationID: "req_dispatched_2",
-		Session:     "proj",
-		BindingHash: "bind-2",
-		Payload:     "world",
-		Targets:     []string{"1"},
+		Kind:          state.OperationKindSend,
+		OperationID:   "req_dispatched_2",
+		Session:       "proj",
+		BindingHash:   "bind-2",
+		Payload:       "world",
+		Targets:       []string{"1"},
+		Store:         store,
+		ExplicitStore: true,
 	})
 	if err := dispatchedClaim.Owned.start("world", []string{"1"}); err != nil {
 		t.Fatalf("dispatched start: %v", err)
 	}
 
-	refusedCancel, err := GetCancelRequest("req_dispatched_2")
+	refusedCancel, err := GetCancelRequestWithStore("req_dispatched_2", store, true)
 	if err != nil || refusedCancel.Success || refusedCancel.ErrorCode != "REQUEST_ALREADY_DISPATCHED" {
 		t.Fatalf("GetCancelRequest(dispatched) = (%+v, %v), want REQUEST_ALREADY_DISPATCHED", refusedCancel, err)
 	}
 
 	timedOut, err := GetWaitRequest(context.Background(), WaitRequestOptions{
-		RequestID:    "req_dispatched_2",
-		Timeout:      40 * time.Millisecond,
-		PollInterval: 10 * time.Millisecond,
+		RequestID:     "req_dispatched_2",
+		Timeout:       40 * time.Millisecond,
+		PollInterval:  10 * time.Millisecond,
+		Store:         store,
+		ExplicitStore: true,
 	})
 	if err != nil || timedOut.Success || timedOut.ErrorCode != ErrCodeTimeout {
 		t.Fatalf("GetWaitRequest(timeout) = (%+v, %v), want TIMEOUT", timedOut, err)
@@ -678,9 +688,11 @@ func TestRequestIdentityStatusWaitAndCancel(t *testing.T) {
 	}()
 
 	settled, err := GetWaitRequest(context.Background(), WaitRequestOptions{
-		RequestID:    "req_dispatched_2",
-		Timeout:      2 * time.Second,
-		PollInterval: 10 * time.Millisecond,
+		RequestID:     "req_dispatched_2",
+		Timeout:       2 * time.Second,
+		PollInterval:  10 * time.Millisecond,
+		Store:         store,
+		ExplicitStore: true,
 	})
 	if err != nil || !settled.Success || !settled.Terminal || settled.Status != state.SendOperationCompleted || settled.Outcome == nil || len(settled.Outcome.Successful) != 1 {
 		t.Fatalf("GetWaitRequest(completed) = (%+v, %v), want completed outcome", settled, err)
@@ -690,11 +702,11 @@ func TestRequestIdentityStatusWaitAndCancel(t *testing.T) {
 	if err := store.CreateRobotWaitHandle(&state.RobotWaitHandle{ID: "wait_req_3", SessionName: "proj"}); err != nil {
 		t.Fatalf("CreateRobotWaitHandle: %v", err)
 	}
-	waitSt, err := GetActionStatus("wait_req_3")
+	waitSt, err := GetActionStatusWithStore("wait_req_3", store, true)
 	if err != nil || !waitSt.Success || waitSt.Source != "wait_handle" || !waitSt.Cancellable {
 		t.Fatalf("GetActionStatus(wait_handle) = (%+v, %v)", waitSt, err)
 	}
-	waitCancel, err := GetCancelRequest("wait_req_3")
+	waitCancel, err := GetCancelRequestWithStore("wait_req_3", store, true)
 	if err != nil || !waitCancel.Success || !waitCancel.Canceled || waitCancel.Status != state.SendOperationCanceled {
 		t.Fatalf("GetCancelRequest(wait_handle) = (%+v, %v)", waitCancel, err)
 	}

@@ -215,6 +215,9 @@ func TestRotateContextCancelCmd_CancelsQueuedAndReportsRemaining(t *testing.T) {
 
 func TestRotateContextManualCmd_CompactionSkipAndFullManualRotate(t *testing.T) {
 	isolateContextRotationStores(t)
+	oldRotDelay := ctxmon.MaxRotationDelay
+	ctxmon.MaxRotationDelay = 5 * time.Millisecond
+	t.Cleanup(func() { ctxmon.MaxRotationDelay = oldRotDelay })
 	workDir := t.TempDir()
 
 	t.Run("compaction_reduces_below_threshold_skips_rotation", func(t *testing.T) {

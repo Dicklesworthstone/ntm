@@ -18,6 +18,7 @@ import (
 )
 
 func TestBranchPredicateCaptureRejectsOverflowBeforeDispatch(t *testing.T) {
+	t.Parallel()
 	for _, script := range []string{"printf good-extra", "printf good; printf noisy-stderr >&2"} {
 		e := newCommandTestExecutor(t)
 		e.limits.MaxCommandStdoutBytes = 4
@@ -44,6 +45,7 @@ func TestBranchPredicateCaptureRejectsOverflowBeforeDispatch(t *testing.T) {
 }
 
 func TestBranchPredicateCapturePreservesNormalSelection(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	e.limits.MaxCommandStdoutBytes = 4
 	e.limits.MaxCommandStderrBytes = 4
@@ -64,6 +66,7 @@ func TestBranchPredicateCapturePreservesNormalSelection(t *testing.T) {
 }
 
 func TestControlledPipelineRejectsOversizedBranchBeforeDefault(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "bounded-decision", Steps: []Step{
 		{ID: "choose", Branch: "$(printf overflowing-key)", Branches: map[string]interface{}{
@@ -150,6 +153,7 @@ func TestControlledPipelineRejectsUnsettledSelectorOutput(t *testing.T) {
 }
 
 func TestControlledPipelineRetriesSettledSelectorExitFailure(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"branch", "foreach"} {
 		t.Run(kind, func(t *testing.T) {
 			root := t.TempDir()
@@ -199,16 +203,16 @@ func TestControlledPipelineRejectsUnsettledBeadQueryOutput(t *testing.T) {
 			if err := os.Mkdir(bin, 0700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(bin, "br"), []byte("#!/bin/sh\n"+script+"\n"), 0700); err != nil {
+			brPath := filepath.Join(bin, "br")
+			if err := os.WriteFile(brPath, []byte("#!/bin/sh\n"+script+"\n"), 0700); err != nil {
 				t.Fatal(err)
 			}
-			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 			step := Step{ID: "query", BeadQuery: &BeadQueryStep{Status: "open"},
 				OnError: ErrorActionRetry, RetryCount: 2, RetryDelay: Duration{Duration: time.Millisecond}}
 			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "unsettled-bead-query", Settings: DefaultWorkflowSettings(),
 				Steps: []Step{step, {ID: "consumer", DependsOn: []string{step.ID}, Command: "printf dispatched > marker"}}}
 			cfg := DefaultExecutorConfig("unsettled-bead-query")
-			cfg.ProjectDir, cfg.RunID = root, "run-unsettled-bead-query"
+			cfg.ProjectDir, cfg.RunID, cfg.brBin = root, "run-unsettled-bead-query", brPath
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			state, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)
@@ -254,6 +258,7 @@ func TestControlledPipelineRejectsUnsettledBeadQueryOutput(t *testing.T) {
 }
 
 func TestControlledPipelineReusesForeachSourceBeforeAdmissionCheckpoint(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	step := Step{ID: "items", Foreach: &ForeachConfig{Beads: "$(printf x >> selections; cat source-items)",
 		Steps: []Step{{ID: "body", Command: "printf '%s\\n' '${item}' >> admitted"}}}}
@@ -295,6 +300,7 @@ func TestControlledPipelineReusesForeachSourceBeforeAdmissionCheckpoint(t *testi
 }
 
 func TestSelectorOperatorRecoveryPublishesOnlyOnOrdinaryResume(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"branch", "foreach"} {
 		t.Run(kind, func(t *testing.T) {
 			output, admitted := []byte("good"), "good\n"
@@ -361,6 +367,7 @@ func TestSelectorOperatorRecoveryPublishesOnlyOnOrdinaryResume(t *testing.T) {
 }
 
 func TestSelectorOperatorRecoveryRetainsNonzeroOutcomeAcrossResume(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"branch", "foreach"} {
 		t.Run(kind, func(t *testing.T) {
 			cfg, workflow, _, _ := selectorOperatorRecoveryFixture(t, kind, []byte("good"), 7, false)
@@ -403,6 +410,7 @@ func TestSelectorOperatorRecoveryRetainsNonzeroOutcomeAcrossResume(t *testing.T)
 }
 
 func TestSelectorOperatorRecoveryReopensPrematureCompletion(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		kind       string
@@ -498,6 +506,7 @@ func TestSelectorOperatorRecoveryReopensPrematureCompletion(t *testing.T) {
 }
 
 func TestSelectorOperatorRecoveryPrematureCompletionRefusalsPreserveState(t *testing.T) {
+	t.Parallel()
 	for _, status := range []ExecutionStatus{StatusCompleted, StatusSkipped, StatusPending, StatusRunning, ""} {
 		t.Run(string(status), func(t *testing.T) {
 			output := []byte("good")
@@ -525,6 +534,7 @@ func TestSelectorOperatorRecoveryPrematureCompletionRefusalsPreserveState(t *tes
 }
 
 func TestControlledPipelineRetainsForeachSourceAcrossChildFailure(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []ResumeMode{ResumeModeContinue, ResumeModeRestartFailed} {
 		t.Run(string(mode), func(t *testing.T) {
 			root := t.TempDir()
@@ -625,6 +635,7 @@ func TestControlledPipelineReusesBeadQueryBeforeResultCheckpoint(t *testing.T) {
 }
 
 func TestUnresolvedProcessFailureDefersAuthoredRecovery(t *testing.T) {
+	t.Parallel()
 	for _, selector := range []bool{false, true} {
 		for _, nested := range []bool{false, true} {
 			for _, policy := range []string{"action", "fallback", "suppress"} {

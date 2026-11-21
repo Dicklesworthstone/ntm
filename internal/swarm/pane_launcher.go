@@ -320,11 +320,11 @@ func (pl *PaneLauncher) LaunchAgentInPane(ctx context.Context, sessionName strin
 		"project", paneSpec.Project,
 		"agent_type", paneSpec.AgentType)
 
-	if pl.CDDelay > 0 {
+	if cdDelay := capSwarmDelay(client, pl.CDDelay); cdDelay > 0 {
 		select {
 		case <-ctx.Done():
 			return fail(ctx.Err())
-		case <-time.After(pl.CDDelay):
+		case <-time.After(cdDelay):
 		}
 	}
 
@@ -419,12 +419,12 @@ func (pl *PaneLauncher) LaunchSession(ctx context.Context, sessionSpec SessionSp
 
 	for i, paneSpec := range sessionSpec.Panes {
 		// Stagger launches (skip delay for first pane)
-		if i > 0 && staggerDelay > 0 {
+		if stagger := capSwarmDelay(pl.tmuxClient(), staggerDelay); i > 0 && stagger > 0 {
 			select {
 			case <-ctx.Done():
 				result.Duration = time.Since(start)
 				return result, ctx.Err()
-			case <-time.After(staggerDelay):
+			case <-time.After(stagger):
 			}
 		}
 

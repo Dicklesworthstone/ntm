@@ -71,7 +71,7 @@ var scaleHarnessLabels = map[string]string{
 
 const scaleNoTargetsUsage = "no target counts specified (use --cc, --cod, --gmi, --agy, --ollama, --cursor, --windsurf, --aider, --grok, --omp, or --oc)"
 
-func init() {
+func registerScaleKernel() {
 	kernel.MustRegister(kernel.Command{
 		Name:        "sessions.scale",
 		Description: "Scale agents in a session to target harness counts across all 11 supported harnesses",

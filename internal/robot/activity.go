@@ -602,14 +602,9 @@ func outputSeqContentHash(rawContent string) string {
 	return computeContentHash(lastNLines(clean, outputSeqHashLines))
 }
 
-// observeOutputSequence hashes the normalized tail of raw pane content, then
-// advances the durable output sequence for the pane's scope. Errors and a
-// missing store both degrade to nil: the signal is additive and must never
-// break the surface that carries it.
-func observeOutputSequence(sessionName, paneID, rawContent string, observedAt time.Time) *OutputSequenceInfo {
-	return observeOutputSequenceWithStore(currentProjectionStore(), sessionName, paneID, rawContent, observedAt)
-}
-
+// observeOutputSequenceWithStore hashes the normalized tail of raw pane content,
+// then advances the durable output sequence for the pane's scope using the
+// explicitly injected store. Errors and a nil store degrade to nil.
 func observeOutputSequenceWithStore(store *state.Store, sessionName, paneID, rawContent string, observedAt time.Time) *OutputSequenceInfo {
 	if store == nil {
 		return nil

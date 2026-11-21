@@ -233,10 +233,27 @@ func initRootFlagsAndSubcommands() {
 		newRecipesCmd(),
 		newWorkflowsCmd(),
 		newPersonasCmd(),
+		newProfilesCmd(),
 		newTemplateCmd(),
 		newSessionTemplatesCmd(),
 		newSessionProfileCmd(), // bd-29kr: session profiles
+
+		// Attention, work snapshots, and webhook outbox
+		newAttentionCmd(),
+		newWorkSnapshotCmd(),
+		newWebhookOutboxCmd(),
 	)
+
+	// Explicit deterministic subcommand, hook, schema, and kernel registrations
+	// (replaces scattered package-level init() side effects).
+	registerPipelineWorkerSubcommands()
+	robot.SetRestartPaneIdentityHook(registerRelaunchedPanes)
+	robot.SetSendCommandGuard(maybeBlockSendWithDCG)
+	registerContextSchemas()
+	registerSessionProfileSchemas()
+	registerWorkflowSequenceFlagsAndSchemas()
+	registerPaginationSchemas()
+	registerCLIKernelCommands()
 
 	// Load command plugins
 	cmdDir := pluginConfigDirForArgs(os.Args[1:])
@@ -1088,4 +1105,26 @@ func needsConfigLoading(cmdName string) bool {
 	}
 
 	return false
+}
+
+// registerCLIKernelCommands wires every CLI-owned kernel catalog registration in
+// deterministic order from initRootFlagsAndSubcommands() instead of relying on
+// scattered package-level init() functions.
+func registerCLIKernelCommands() {
+	registerCoreVersionKernel()
+	registerKernelListKernel()
+	registerOpenAPIKernel()
+	registerDepsKernel()
+	registerCreateKernel()
+	registerSessionListKernel()
+	registerAdoptKernel()
+	registerHealthKernel()
+	registerViewKernel()
+	registerZoomKernel()
+	registerScaleKernel()
+	registerRebalanceKernel()
+	registerCoordinatorKernel()
+	registerControllerKernelAndSchemas()
+	registerSendInterruptKernel()
+	registerPreflightKernel()
 }

@@ -35,6 +35,7 @@ func pipelineControlRequest(method, runID string) *http.Request {
 }
 
 func TestPipelineCleanupHTTPRetainsRecoveryEvidenceAndLiveOwners(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	srv.auth = AuthConfig{Mode: AuthModeAPIKey, APIKey: "pipeline-recovery-test-key", Role: RoleOperator}
 	root := srv.projectDir
@@ -162,6 +163,7 @@ func TestPipelineCleanupHTTPRetainsRecoveryEvidenceAndLiveOwners(t *testing.T) {
 }
 
 func TestPipelineResumeRejectsLiveOwnerBeforeCheckpointMutation(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	runID := pipeline.GenerateRunID()
 	workflowPath := filepath.Join(dir, "owned.yaml")
@@ -208,6 +210,7 @@ func TestPipelineResumeRejectsLiveOwnerBeforeCheckpointMutation(t *testing.T) {
 }
 
 func TestPipelineResumeReloadsCheckpointInsideOwnership(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	runID := pipeline.GenerateRunID()
 	marker := filepath.Join(dir, "must-not-repeat")
@@ -245,6 +248,7 @@ func TestPipelineResumeReloadsCheckpointInsideOwnership(t *testing.T) {
 }
 
 func TestPipelineCancelRequiresAcknowledgingOwner(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	runID := pipeline.GenerateRunID()
 	state := &pipeline.ExecutionState{RunID: runID, WorkflowID: "orphan", Session: "orphan", Status: pipeline.StatusRunning}
@@ -264,6 +268,7 @@ func TestPipelineCancelRequiresAcknowledgingOwner(t *testing.T) {
 }
 
 func TestPipelineCancelReachesSeparateServerProcess(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ready := filepath.Join(dir, "command-running")
 	binary, err := os.Executable()
@@ -365,7 +370,7 @@ func TestPipelineRemoteControlProcessHelper(t *testing.T) {
 func TestPipelineResumeHTTPRecoversConfirmedDeliveryWithoutResending(t *testing.T) {
 	root := t.TempDir()
 	workflow := &pipeline.Workflow{SchemaVersion: pipeline.SchemaVersion, Name: "http-agent-recovery", Steps: []pipeline.Step{
-		{ID: "agent", Pane: pipeline.PaneSpec{Index: 1}, Prompt: "Work on this HTTP request", Wait: pipeline.WaitTime, Timeout: pipeline.Duration{Duration: time.Second}},
+		{ID: "agent", Pane: pipeline.PaneSpec{Index: 1}, Prompt: "Work on this HTTP request", Wait: pipeline.WaitTime, Timeout: pipeline.Duration{Duration: 80 * time.Millisecond}},
 		{ID: "consume", Command: "cat", Stdin: "${steps.agent.output}", DependsOn: []string{"agent"}},
 	}}
 	frozen, workflowPath, err := pipeline.SnapshotWorkflow(context.Background(), root, workflow)
@@ -437,8 +442,16 @@ esac
 	}
 	t.Setenv("NTM_TMUX_BINARY", bin)
 	oldClient := tmux.DefaultClient
-	tmux.DefaultClient = tmux.NewClient("")
-	t.Cleanup(func() { tmux.DefaultClient = oldClient })
+	oldDebounce, oldPoll := pipeline.DefaultIdleDebounce, pipeline.StageIdlePollInterval
+	fastClient := tmux.NewClient("")
+	fastClient.MaxSendDelay = 2 * time.Millisecond
+	tmux.DefaultClient = fastClient
+	pipeline.DefaultIdleDebounce = 15 * time.Millisecond
+	pipeline.StageIdlePollInterval = 15 * time.Millisecond
+	t.Cleanup(func() {
+		tmux.DefaultClient = oldClient
+		pipeline.DefaultIdleDebounce, pipeline.StageIdlePollInterval = oldDebounce, oldPoll
+	})
 	srv := &Server{projectDir: root}
 	request := pipelineControlRequest(http.MethodPost, prior.RunID)
 	resumeCtx, cancelResume := context.WithTimeout(request.Context(), 10*time.Second)
@@ -544,7 +557,7 @@ func pipelineRecoveryHTTPJournal(t *testing.T, root, runID string) []byte {
 func pipelineRecoveryHTTPCheckpoint(t *testing.T, root, kind string) *pipeline.ExecutionState {
 	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	step := pipeline.Step{ID: "agent", Pane: pipeline.PaneSpec{Index: 1}, Prompt: "Work on this HTTP request", Wait: pipeline.WaitTime, Timeout: pipeline.Duration{Duration: time.Second}}
+	step := pipeline.Step{ID: "agent", Pane: pipeline.PaneSpec{Index: 1}, Prompt: "Work on this HTTP request", Wait: pipeline.WaitTime, Timeout: pipeline.Duration{Duration: 80 * time.Millisecond}}
 	if kind == "template" {
 		path := filepath.Join(root, "review.md")
 		if err := os.WriteFile(path, []byte("Work on this HTTP template request"), 0600); err != nil {
@@ -613,8 +626,16 @@ esac
 	}
 	t.Setenv("NTM_TMUX_BINARY", bin)
 	oldClient := tmux.DefaultClient
-	tmux.DefaultClient = tmux.NewClient("")
-	t.Cleanup(func() { tmux.DefaultClient = oldClient })
+	oldDebounce, oldPoll := pipeline.DefaultIdleDebounce, pipeline.StageIdlePollInterval
+	fastClient := tmux.NewClient("")
+	fastClient.MaxSendDelay = 2 * time.Millisecond
+	tmux.DefaultClient = fastClient
+	pipeline.DefaultIdleDebounce = 15 * time.Millisecond
+	pipeline.StageIdlePollInterval = 15 * time.Millisecond
+	t.Cleanup(func() {
+		tmux.DefaultClient = oldClient
+		pipeline.DefaultIdleDebounce, pipeline.StageIdlePollInterval = oldDebounce, oldPoll
+	})
 	return filepath.Join(root, "recovery-tmux-calls")
 }
 
@@ -1733,6 +1754,7 @@ func TestPipelineHTTPProjectScopeCancellationKeepsOriginalOwner(t *testing.T) {
 }
 
 func TestPipelineRecoveryOutputPreservesUnicode(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		raw  string

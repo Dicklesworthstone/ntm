@@ -13,6 +13,7 @@ import (
 )
 
 func TestStepAdmissionBatchIsAtomicAndPhaseOwned(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	e.config.DryRun = true
 	e.limits.MaxStepCountTotal = 3
@@ -44,6 +45,7 @@ func TestStepAdmissionBatchIsAtomicAndPhaseOwned(t *testing.T) {
 }
 
 func TestForeachAdmissionCancellationPreservesRoundHistory(t *testing.T) {
+	t.Parallel()
 	for _, boundary := range []string{"runtime_ids", "round_materialization"} {
 		t.Run(boundary, func(t *testing.T) {
 			e := newCommandTestExecutor(t)
@@ -115,6 +117,7 @@ func TestForeachAdmissionCancellationPreservesRoundHistory(t *testing.T) {
 }
 
 func TestForeachCancellationCannotHideAdmissionFailure(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	e.config.DryRun = true
 	e.limits.MaxStepCountTotal = 1
@@ -143,6 +146,7 @@ func TestForeachCancellationCannotHideAdmissionFailure(t *testing.T) {
 }
 
 func TestStepAdmissionLegacyImportExcludesSyntheticBookkeeping(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	workflow := &Workflow{Name: e.state.WorkflowID, Steps: []Step{
 		{ID: "batch", Loop: &LoopConfig{Items: "[0,1]", Steps: []Step{{ID: "loop_child", Command: "true"}}}},
@@ -189,6 +193,7 @@ func TestStepAdmissionLegacyImportExcludesSyntheticBookkeeping(t *testing.T) {
 }
 
 func TestStepAdmissionWholeResetRetainsCapacityHistory(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	e.config.DryRun = true
 	e.limits.MaxStepCountTotal = 2
@@ -214,6 +219,7 @@ func TestStepAdmissionWholeResetRetainsCapacityHistory(t *testing.T) {
 }
 
 func TestStepAdmissionNilGraphPreflightPreservesFinalizationEvidence(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "preflight-finalization",
 		Steps: []Step{{ID: "main", Command: "exit 7"}},
@@ -265,6 +271,7 @@ func TestStepAdmissionNilGraphPreflightPreservesFinalizationEvidence(t *testing.
 }
 
 func TestStepAdmissionBackgroundPreflightHonorsMaterializationOverride(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "preflight-definition-limit", Steps: []Step{
 		{ID: "first", Command: "true"}, {ID: "second", Command: "true"},
@@ -305,6 +312,7 @@ func TestStepAdmissionBackgroundPreflightHonorsMaterializationOverride(t *testin
 }
 
 func TestStepAdmissionPureControlRequiresCapacity(t *testing.T) {
+	t.Parallel()
 	for _, limit := range []int{1, 2} {
 		name := "refused"
 		if limit == 2 {
@@ -336,6 +344,7 @@ func TestStepAdmissionPureControlRequiresCapacity(t *testing.T) {
 }
 
 func TestStepAdmissionPreCancelledAttemptReservesLaterCleanupRoot(t *testing.T) {
+	t.Parallel()
 	for _, resume := range []bool{false, true} {
 		name := "run"
 		if resume {
@@ -397,6 +406,7 @@ func TestStepAdmissionPreCancelledAttemptReservesLaterCleanupRoot(t *testing.T) 
 }
 
 func TestStepMaterializationLeaseIsBoundedAndAttemptOwned(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	e.limits.MaxMaterializedStepNodes = 3
 	first, err := e.acquireStepMaterialization(context.Background(), 2)
@@ -426,6 +436,7 @@ func TestStepMaterializationLeaseIsBoundedAndAttemptOwned(t *testing.T) {
 }
 
 func TestStepDefinitionWalkCountsNestedAndRawBranches(t *testing.T) {
+	t.Parallel()
 	rawForeach := map[string]interface{}{"id": "batch", "parallel": true, "foreach": map[string]interface{}{
 		"items": "[1]", "steps": []interface{}{map[string]interface{}{"id": "work", "command": "exit 0"}},
 	}}
@@ -464,6 +475,7 @@ func TestStepDefinitionWalkCountsNestedAndRawBranches(t *testing.T) {
 }
 
 func TestRawBranchParallelForeachHonorsMaterializationLimit(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "raw-parallel-foreach", Steps: []Step{{
 		ID: "choose", Branch: "selected", Branches: map[string]interface{}{"selected": map[string]interface{}{
@@ -488,6 +500,7 @@ func TestRawBranchParallelForeachHonorsMaterializationLimit(t *testing.T) {
 }
 
 func TestAdmissionDeniedCannotEraseExistingExecutionEvidence(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"command", "selector"} {
 		t.Run(kind, func(t *testing.T) {
 			e := newCommandTestExecutor(t)
@@ -524,6 +537,7 @@ func TestAdmissionDeniedCannotEraseExistingExecutionEvidence(t *testing.T) {
 }
 
 func TestStepAdmissionDeniedSuccessHookResumesWithoutRepeatingParent(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "admission-hook", Steps: []Step{{
 		ID: "once", Command: "printf x >> original; printf ready",

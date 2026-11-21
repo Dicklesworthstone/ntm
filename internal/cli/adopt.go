@@ -19,7 +19,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
-func init() {
+func registerAdoptKernel() {
 	kernel.MustRegister(kernel.Command{
 		Name:        "sessions.adopt",
 		Description: "Adopt an external tmux session into NTM management across all 11 agent harnesses plus user panes",

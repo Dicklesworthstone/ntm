@@ -51,7 +51,7 @@ type HealthOutput struct {
 	Error string `json:"error,omitempty"`
 }
 
-func init() {
+func registerHealthKernel() {
 	kernel.MustRegister(kernel.Command{
 		Name:        "sessions.health",
 		Description: "Session health status summary",

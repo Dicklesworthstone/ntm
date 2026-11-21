@@ -1,6 +1,7 @@
 package agentmail
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -465,6 +468,118 @@ func NewSessionAgentRegistry(sessionName, projectKey string) *SessionAgentRegist
 	}
 }
 
+type hydratedTokenRecord struct {
+	projectKey string
+	agentName  string
+	token      string
+}
+
+type hydratedFileStat struct {
+	path    string
+	modUnix int64
+	size    int64
+}
+
+type tokenHydrationBaseCache struct {
+	baseModUnix     int64
+	writeGen        uint64
+	scannedAt       time.Time
+	tokensByProject map[string][]hydratedTokenRecord
+	filesByProject  map[string][]hydratedFileStat
+}
+
+const (
+	tokenHydrationCacheMinDirs = 64
+	tokenHydrationCacheTTL     = 5 * time.Second
+)
+
+var (
+	tokenHydrationMu       sync.RWMutex
+	tokenHydrationCache    = map[string]*tokenHydrationBaseCache{}
+	tokenHydrationWriteGen atomic.Uint64
+	registrationTokensKey  = []byte("registration_tokens")
+)
+
+func tokenHydrationFilesUnchanged(files []hydratedFileStat) bool {
+	for _, f := range files {
+		info, err := os.Stat(f.path)
+		if err != nil || info.ModTime().UnixNano() != f.modUnix || info.Size() != f.size {
+			return false
+		}
+	}
+	return true
+}
+
+func scanTokenHydrationBase(base string, sessionNames []string) (map[string][]hydratedTokenRecord, map[string][]hydratedFileStat) {
+	tokensByProject := make(map[string][]hydratedTokenRecord)
+	filesByProject := make(map[string][]hydratedFileStat)
+
+	inspectFile := func(path string, seenProjects map[string]struct{}) {
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			return
+		}
+		data, err := os.ReadFile(path)
+		if err != nil || !bytes.Contains(data, registrationTokensKey) {
+			return
+		}
+		var registry SessionAgentRegistry
+		if err := json.Unmarshal(data, &registry); err != nil || registry.ProjectKey == "" || len(registry.RegistrationTokens) == 0 {
+			return
+		}
+		cleanProj := filepath.Clean(registry.ProjectKey)
+		if _, dup := seenProjects[cleanProj]; dup {
+			return
+		}
+		seenProjects[cleanProj] = struct{}{}
+		filesByProject[cleanProj] = append(filesByProject[cleanProj], hydratedFileStat{
+			path:    path,
+			modUnix: info.ModTime().UnixNano(),
+			size:    info.Size(),
+		})
+		for agentName, token := range registry.RegistrationTokens {
+			if agentName == "" || token == "" {
+				continue
+			}
+			tokensByProject[cleanProj] = append(tokensByProject[cleanProj], hydratedTokenRecord{
+				projectKey: registry.ProjectKey,
+				agentName:  agentName,
+				token:      token,
+			})
+		}
+	}
+
+	for _, sessName := range sessionNames {
+		if validateSessionStorageName(sessName) != nil {
+			continue
+		}
+		sessDir := filepath.Join(base, sessName)
+		dirFile, err := os.Open(sessDir)
+		if err != nil {
+			continue
+		}
+		subNames, readErr := dirFile.Readdirnames(-1)
+		_ = dirFile.Close()
+		if readErr != nil || len(subNames) == 0 {
+			continue
+		}
+		sort.Strings(subNames)
+		seenProjects := make(map[string]struct{}, 2)
+		hasDirect := false
+		for _, sub := range subNames {
+			if sub == "agent_registry.json" {
+				hasDirect = true
+				continue
+			}
+			inspectFile(filepath.Join(sessDir, sub, "agent_registry.json"), seenProjects)
+		}
+		if hasDirect {
+			inspectFile(filepath.Join(sessDir, "agent_registry.json"), seenProjects)
+		}
+	}
+	return tokensByProject, filesByProject
+}
+
 // HydrateClientTokensForProject scans every session under the ntm
 // sessions base dir for an agent_registry.json that targets the given
 // projectKey and pushes each (agent_name, registration_token) pair
@@ -477,24 +592,67 @@ func HydrateClientTokensForProject(c *Client, projectKey string) {
 	if c == nil || projectKey == "" {
 		return
 	}
-	base := getSessionsBaseDir()
-	entries, err := os.ReadDir(base)
-	if err != nil {
+	base := filepath.Clean(getSessionsBaseDir())
+	baseInfo, err := os.Stat(base)
+	if err != nil || !baseInfo.IsDir() {
 		return
 	}
 	target := filepath.Clean(projectKey)
-	for _, ent := range entries {
-		if !ent.IsDir() {
-			continue
+	baseModUnix := baseInfo.ModTime().UnixNano()
+	currentGen := tokenHydrationWriteGen.Load()
+
+	tokenHydrationMu.RLock()
+	cached := tokenHydrationCache[base]
+	tokenHydrationMu.RUnlock()
+	if cached != nil &&
+		cached.baseModUnix == baseModUnix &&
+		cached.writeGen == currentGen &&
+		time.Since(cached.scannedAt) < tokenHydrationCacheTTL &&
+		tokenHydrationFilesUnchanged(cached.filesByProject[target]) {
+		for _, rec := range cached.tokensByProject[target] {
+			c.SetRegistrationToken(rec.projectKey, rec.agentName, rec.token)
 		}
-		registry, err := LoadSessionAgentRegistry(ent.Name(), projectKey)
-		if err != nil || registry == nil {
-			continue
+		return
+	}
+
+	dirFile, err := os.Open(base)
+	if err != nil {
+		return
+	}
+	sessionNames, err := dirFile.Readdirnames(-1)
+	_ = dirFile.Close()
+	if err != nil {
+		return
+	}
+	sort.Strings(sessionNames)
+
+	if len(sessionNames) < tokenHydrationCacheMinDirs {
+		for _, sessName := range sessionNames {
+			registry, err := LoadSessionAgentRegistry(sessName, projectKey)
+			if err != nil || registry == nil {
+				continue
+			}
+			if filepath.Clean(registry.ProjectKey) != target {
+				continue
+			}
+			registry.HydrateClientTokens(c)
 		}
-		if filepath.Clean(registry.ProjectKey) != target {
-			continue
-		}
-		registry.HydrateClientTokens(c)
+		return
+	}
+
+	tokensByProject, filesByProject := scanTokenHydrationBase(base, sessionNames)
+	tokenHydrationMu.Lock()
+	tokenHydrationCache[base] = &tokenHydrationBaseCache{
+		baseModUnix:     baseModUnix,
+		writeGen:        currentGen,
+		scannedAt:       time.Now(),
+		tokensByProject: tokensByProject,
+		filesByProject:  filesByProject,
+	}
+	tokenHydrationMu.Unlock()
+
+	for _, rec := range tokensByProject[target] {
+		c.SetRegistrationToken(rec.projectKey, rec.agentName, rec.token)
 	}
 }
 
@@ -706,6 +864,7 @@ func saveSessionAgentRegistryLocked(path string, registry *SessionAgentRegistry)
 	if err := util.AtomicWriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("writing agent registry: %w", err)
 	}
+	tokenHydrationWriteGen.Add(1)
 	registry.Revision = copyRegistry.Revision
 	registry.UpdatedAt = copyRegistry.UpdatedAt
 	return nil

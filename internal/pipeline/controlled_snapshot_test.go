@@ -13,8 +13,10 @@ import (
 )
 
 func TestControlledForegroundResumeUsesFrozenWorkflow(t *testing.T) {
+	t.Parallel()
 	for _, fileBacked := range []bool{false, true} {
 		t.Run(fmt.Sprintf("file_backed=%v", fileBacked), func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			cfg := DefaultExecutorConfig("foreground-snapshot")
 			cfg.ProjectDir, cfg.RunID = root, "run-frozen"
@@ -82,6 +84,7 @@ func TestControlledForegroundResumeUsesFrozenWorkflow(t *testing.T) {
 }
 
 func TestControlledForegroundFreezesSourceRelativeTemplates(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	cfg := DefaultExecutorConfig("foreground-template")
 	cfg.ProjectDir, cfg.RunID = root, "run-template"
@@ -113,8 +116,10 @@ func TestControlledForegroundFreezesSourceRelativeTemplates(t *testing.T) {
 }
 
 func TestControlledForegroundSnapshotFailureStartsNoWork(t *testing.T) {
+	t.Parallel()
 	for _, corrupt := range []bool{false, true} {
 		t.Run(fmt.Sprintf("corrupt=%v", corrupt), func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			cfg := DefaultExecutorConfig("foreground-rejected")
 			cfg.ProjectDir, cfg.RunID = root, "run-rejected"

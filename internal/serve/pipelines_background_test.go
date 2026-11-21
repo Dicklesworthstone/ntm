@@ -29,6 +29,7 @@ import (
 // The second dependent step cannot be started by a shell orphaned when the
 // server died: only the surviving canonical workflow executor can dispatch it.
 func TestRESTBackgroundPipelineSurvivesServerExit(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"file", "inline"} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
@@ -81,6 +82,7 @@ func TestRESTBackgroundPipelineSurvivesServerExit(t *testing.T) {
 }
 
 func TestRESTBackgroundPipelineFreshServerCancelsActualWorker(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	id := launchAPIDetachedFixture(t, root, "inline")
 	srv := &Server{projectDir: root}
@@ -112,6 +114,7 @@ func TestRESTBackgroundPipelineFreshServerCancelsActualWorker(t *testing.T) {
 }
 
 func TestRESTBackgroundPipelineRejectsBeforeAcceptingWork(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"cancelled", "storage", "variables"} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
@@ -156,6 +159,7 @@ func TestRESTBackgroundPipelineRejectsBeforeAcceptingWork(t *testing.T) {
 }
 
 func TestRESTPipelineListUsesConfiguredProjectAndReportsUnreadableStates(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	srv := &Server{projectDir: root}
 	when := time.Now().Add(-time.Hour)
@@ -402,6 +406,7 @@ func TestAPIDetachedPipelineProcess(t *testing.T) {
 }
 
 func TestRESTPipelineCancellationUsesProjectOwnerNotCollidingRegistry(t *testing.T) {
+	t.Parallel()
 	for _, hasOwner := range []bool{true, false} {
 		t.Run(fmt.Sprintf("owner=%v", hasOwner), func(t *testing.T) {
 			root, foreignRoot := t.TempDir(), t.TempDir()
@@ -452,6 +457,7 @@ func TestRESTPipelineCancellationUsesProjectOwnerNotCollidingRegistry(t *testing
 }
 
 func TestRESTPipelineCancellationHonorsPreCanceledRequests(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	id := pipeline.GenerateRunID()
 	if err := pipeline.SaveState(root, &pipeline.ExecutionState{RunID: id, Status: pipeline.StatusRunning}); err != nil {
@@ -483,6 +489,7 @@ func TestRESTPipelineCancellationHonorsPreCanceledRequests(t *testing.T) {
 }
 
 func TestRESTPipelineInspectionNeverFallsBackToForeignRegistry(t *testing.T) {
+	t.Parallel()
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -572,6 +579,7 @@ func useAPIDetachedResumeWorker(t *testing.T) {
 }
 
 func TestRESTBackgroundResumeSurvivesServerExit(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	prior := interruptedAPIDetachedResume(t, root)
 	id := launchAPIDetachedFixture(t, root, "resume")
@@ -658,6 +666,7 @@ func TestRESTBackgroundResumeOwnsLifetimeAfterRequestCancellation(t *testing.T) 
 }
 
 func TestRESTBackgroundResumeRejectsInvalidInputsBeforeLaunch(t *testing.T) {
+	t.Parallel()
 	for _, body := range []string{
 		`{"background":true,"variables":{"saved":"replace"}}`,
 		`{"background":true,"session":"bad:session"}`,
@@ -750,6 +759,7 @@ func TestRESTBackgroundResumeRefusesUnacceptedStartup(t *testing.T) {
 }
 
 func TestRESTBackgroundResumeKeepsPermissionAndProjectScope(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	srv.auth = AuthConfig{Mode: AuthModeAPIKey, APIKey: "pipeline-recovery-test-key", Role: RoleViewer}
 	projectA, projectB := srv.projectDir, t.TempDir()

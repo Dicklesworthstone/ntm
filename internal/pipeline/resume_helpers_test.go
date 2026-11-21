@@ -149,6 +149,7 @@ func uncertainRecoveryFixture(t *testing.T, shape string, agentTypes ...tmux.Age
 }
 
 func TestPiAgentDeliveryRecoveryAfterRepaint(t *testing.T) {
+	t.Parallel()
 	cfg, workflow, prior, client, stepID, token := uncertainRecoveryFixture(t, "plain", tmux.AgentType("pi"))
 	original := prior.AgentDeliveries[stepID]
 	const response = "SECRET-TASK original\nFRESH-RESPONSE after the pane repaint"
@@ -198,6 +199,7 @@ func TestPiAgentDeliveryRecoveryAfterRepaint(t *testing.T) {
 }
 
 func TestPiFireAndForgetRecoveryDoesNotRequireResponseEvidence(t *testing.T) {
+	t.Parallel()
 	cfg, workflow, _, client, stepID, token := uncertainRecoveryFixture(t, "fire-and-forget", tmux.AgentType("pi"))
 	// This prompt's link rendering is unsupported for response attribution.
 	// Its explicit wait:none contract only requires confirmed delivery.
@@ -227,6 +229,7 @@ func TestPiFireAndForgetRecoveryDoesNotRequireResponseEvidence(t *testing.T) {
 }
 
 func TestPiAgentDeliveryRecoveryRejectsUnattributedRepaints(t *testing.T) {
+	t.Parallel()
 	const prompt = "SECRET-TASK original"
 	for _, tc := range []struct {
 		name, transcript, draft string
@@ -286,6 +289,7 @@ func TestPiAgentDeliveryRecoveryRejectsUnattributedRepaints(t *testing.T) {
 }
 
 func TestAgentDeliveryRecoveryScopedContinuation(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, shape string
 		drift       bool
@@ -350,6 +354,7 @@ func TestAgentDeliveryRecoveryScopedContinuation(t *testing.T) {
 }
 
 func TestFailureFallbackRecoveryContinuesOriginalAttempt(t *testing.T) {
+	t.Parallel()
 	for _, shape := range []string{"fallback-branch", "fallback-rounds", "fallback-post", "fallback-prelaunch"} {
 		t.Run(shape, func(t *testing.T) {
 			cfg, workflow, prior, client, stepID, token := uncertainRecoveryFixture(t, shape)
@@ -427,6 +432,7 @@ func TestFailureFallbackRecoveryContinuesOriginalAttempt(t *testing.T) {
 }
 
 func TestFailureFallbackRecoveryRefusesChangedEvidence(t *testing.T) {
+	t.Parallel()
 	for _, change := range []string{"parent definition", "fallback definition", "materialized fallback inputs", "missing parent receipt"} {
 		t.Run(change, func(t *testing.T) {
 			cfg, workflow, _, client, stepID, token := uncertainRecoveryFixture(t, "fallback")
@@ -472,6 +478,7 @@ func TestFailureFallbackRecoveryRefusesChangedEvidence(t *testing.T) {
 }
 
 func TestFailureFallbackAcceptanceChecksSelectedStaticDefinition(t *testing.T) {
+	t.Parallel()
 	for _, shape := range []string{"fallback-static", "fallback-branch-static"} {
 		t.Run(shape, func(t *testing.T) {
 			cfg, _, prior, client, stepID, _ := uncertainRecoveryFixture(t, shape)
@@ -504,6 +511,7 @@ func TestFailureFallbackAcceptanceChecksSelectedStaticDefinition(t *testing.T) {
 }
 
 func TestFailureFallbackCannotSuppressInvalidParentAcceptance(t *testing.T) {
+	t.Parallel()
 	cfg, workflow, _, client, stepID, token := uncertainRecoveryFixture(t, "fallback")
 	resolver := NewExecutor(cfg)
 	resolver.SetTmuxClient(client)
@@ -544,6 +552,7 @@ func TestFailureFallbackCannotSuppressInvalidParentAcceptance(t *testing.T) {
 }
 
 func TestFailureFallbackFinalizationResetPreservesPendingParent(t *testing.T) {
+	t.Parallel()
 	for _, phase := range []string{"on_cancel", "post_pipeline"} {
 		for _, status := range []string{agentDeliverySending, agentDeliveryDelivered, agentDeliveryCompleted} {
 			t.Run(phase+"/"+status, func(t *testing.T) {
@@ -588,6 +597,7 @@ func TestFailureFallbackFinalizationResetPreservesPendingParent(t *testing.T) {
 }
 
 func TestAgentDeliveryRecoveryRejectsChangedAcceptedIdentity(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		mutate func(*AgentDeliveryState)
@@ -636,6 +646,8 @@ type recoveryCaptureClient struct {
 	onCapture func()
 }
 
+func (c *recoveryCaptureClient) unwrapMockTmux() *MockTmuxClient { return c.MockTmuxClient }
+
 func (c *recoveryCaptureClient) CapturePaneOutput(target string, lines int) (string, error) {
 	if c.onCapture != nil {
 		c.onCapture()
@@ -644,6 +656,7 @@ func (c *recoveryCaptureClient) CapturePaneOutput(target string, lines int) (str
 }
 
 func TestAgentDeliveryRecoveryInterruptedAcceptancePreservesReceipt(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"cancelled during observation", "persistence refused"} {
 		t.Run(mode, func(t *testing.T) {
 			cfg, _, _, client, stepID, token := uncertainRecoveryFixture(t, "plain")
@@ -696,6 +709,7 @@ func testAgentDelivery(stepID, status string) AgentDeliveryState {
 }
 
 func TestAgentDeliveryJournalPersistsAndReturnsCopies(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("resume-session")
 	cfg.ProjectDir = t.TempDir()
 	executor := NewExecutor(cfg)
@@ -746,6 +760,7 @@ func TestAgentDeliveryJournalPersistsAndReturnsCopies(t *testing.T) {
 }
 
 func TestAgentStepHashUsesCompleteStableDefinition(t *testing.T) {
+	t.Parallel()
 	step := Step{ID: "review", Template: "review", Params: map[string]interface{}{"a": "first", "b": "second"}}
 	hash, err := agentStepHash(&step)
 	if err != nil {
@@ -772,6 +787,7 @@ func TestAgentStepHashUsesCompleteStableDefinition(t *testing.T) {
 }
 
 func TestResumeRejectsInvalidAgentDeliveriesBeforeReset(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		mutate func(*AgentDeliveryState)
@@ -835,6 +851,7 @@ func TestResumeRejectsInvalidAgentDeliveriesBeforeReset(t *testing.T) {
 }
 
 func TestResumeAgentDeliveryPolicies(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []ResumeMode{ResumeModeContinue, ResumeModeRestartFailed} {
 		t.Run(string(mode), func(t *testing.T) {
 			executor := NewExecutor(DefaultExecutorConfig("resume-session"))
@@ -868,6 +885,7 @@ func TestResumeAgentDeliveryPolicies(t *testing.T) {
 }
 
 func TestResumeAgentDeliveryCannotMoveSessionsWithoutReset(t *testing.T) {
+	t.Parallel()
 	for _, reset := range []bool{false, true} {
 		executor := NewExecutor(DefaultExecutorConfig("new-session"))
 		record := testAgentDelivery("review", agentDeliveryDelivered)
@@ -892,6 +910,7 @@ func TestResumeAgentDeliveryCannotMoveSessionsWithoutReset(t *testing.T) {
 }
 
 func TestResumeLegacyExternalLeafRequiresExplicitRestart(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{Name: "legacy", Steps: []Step{
 		{ID: "prompt", Prompt: "review"},
 		{ID: "template", Template: "review"},
@@ -940,6 +959,7 @@ func TestResumeLegacyExternalLeafRequiresExplicitRestart(t *testing.T) {
 }
 
 func TestResumeCancelledBeforeDispatchRequiresConsistentEvidence(t *testing.T) {
+	t.Parallel()
 	workflow := &Workflow{Name: "undispatched", Steps: []Step{{ID: "group", Parallel: ParallelSpec{Steps: []Step{
 		{ID: "command", Command: "printf work"},
 		{ID: "prompt", Prompt: "review"},
@@ -986,6 +1006,7 @@ func TestResumeCancelledBeforeDispatchRequiresConsistentEvidence(t *testing.T) {
 }
 
 func TestResumeCancelledBeforeDispatchDoesNotBypassLaunchReceipts(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"command", "selector", "agent"} {
 		t.Run(kind, func(t *testing.T) {
 			step := Step{ID: "work", Command: "printf work"}
@@ -1035,6 +1056,7 @@ func TestResumeCancelledBeforeDispatchDoesNotBypassLaunchReceipts(t *testing.T) 
 }
 
 func TestResumeResetClearsDurableWorkStateAndStepVariables(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("resume-session"))
 	executor.state = &ExecutionState{
 		RunID:       "run-reset",
@@ -1110,6 +1132,7 @@ func TestResumeResetClearsDurableWorkStateAndStepVariables(t *testing.T) {
 }
 
 func TestForceResumeIterationPrunesFutureIterationState(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("resume-session"))
 	executor.state = &ExecutionState{
 		RunID:      "run-force",
@@ -1200,6 +1223,7 @@ func TestForceResumeIterationPrunesFutureIterationState(t *testing.T) {
 }
 
 func TestResumeProgressBookkeepingHelpers(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("resume-session"))
 	executor.state = &ExecutionState{
 		RunID:      "run-bookkeeping",
@@ -1285,6 +1309,7 @@ func TestResumeProgressBookkeepingHelpers(t *testing.T) {
 }
 
 func TestResumeParallelAndScopeBookkeepingHelpers(t *testing.T) {
+	t.Parallel()
 	executor := NewExecutor(DefaultExecutorConfig("resume-session"))
 	executor.state = &ExecutionState{
 		RunID:      "run-parallel",

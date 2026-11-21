@@ -160,7 +160,7 @@ func interruptedPipelineAgentDelivery(t *testing.T, root, kind string) *pipeline
 // enough evidence to continue without submitting the original work again.
 func pipelineAgentDeliveryCheckpoint(t *testing.T, root, kind string, uncertain bool) *pipeline.ExecutionState {
 	t.Helper()
-	step := pipeline.Step{ID: "agent", Pane: pipeline.PaneSpec{Index: 1}, Prompt: "Work on this request", Wait: pipeline.WaitTime, Timeout: pipeline.Duration{Duration: time.Second}}
+	step := pipeline.Step{ID: "agent", Pane: pipeline.PaneSpec{Index: 1}, Prompt: "Work on this request", Wait: pipeline.WaitTime, Timeout: pipeline.Duration{Duration: 80 * time.Millisecond}}
 	if kind == "template" {
 		path := filepath.Join(root, "review.md")
 		if err := os.WriteFile(path, []byte("Work on this template request"), 0600); err != nil {
@@ -570,8 +570,16 @@ esac
 	}
 	t.Setenv("NTM_TMUX_BINARY", bin)
 	oldClient := tmux.DefaultClient
-	tmux.DefaultClient = tmux.NewClient("")
-	t.Cleanup(func() { tmux.DefaultClient = oldClient })
+	oldDebounce, oldPoll := pipeline.DefaultIdleDebounce, pipeline.StageIdlePollInterval
+	fastClient := tmux.NewClient("")
+	fastClient.MaxSendDelay = 2 * time.Millisecond
+	tmux.DefaultClient = fastClient
+	pipeline.DefaultIdleDebounce = 15 * time.Millisecond
+	pipeline.StageIdlePollInterval = 15 * time.Millisecond
+	t.Cleanup(func() {
+		tmux.DefaultClient = oldClient
+		pipeline.DefaultIdleDebounce, pipeline.StageIdlePollInterval = oldDebounce, oldPoll
+	})
 	return logPath
 }
 

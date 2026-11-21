@@ -832,6 +832,9 @@ type QueueDryIdeationOptions struct {
 	PlanVersion     string
 	// Parent overrides target-project epic detection for created beads.
 	Parent string
+	// collectOptional overrides optional adapter collection when set (used by
+	// parallel tests to stay isolated from package-level hooks).
+	collectOptional func(context.Context, *ideaplan.IdeaEvidenceSnapshot, ideaplan.OptionalAdapterOptions)
 }
 
 // QueueDryIdeationReport embeds the idea-wizard dry-run planning pipeline in queue-dry output.
@@ -1493,7 +1496,16 @@ func collectQueueDryIdeationReport(dir string, report QueueDryResponse, opts Que
 		ProjectDir: dir,
 	})
 	annotateQueueDryOptionalSources(&snapshot, report)
-	collectQueueDryOptionalSignals(context.Background(), &snapshot, dir)
+	if opts.collectOptional != nil {
+		opts.collectOptional(context.Background(), &snapshot, ideaplan.OptionalAdapterOptions{
+			ProjectDir:     dir,
+			CommandTimeout: 6 * time.Second,
+			CASSQueries:    []string{"queue-dry ideation"},
+			CMQuery:        "queue-dry ideation",
+		})
+	} else {
+		collectQueueDryOptionalSignals(context.Background(), &snapshot, dir)
+	}
 	return buildQueueDryIdeationReport(report, snapshot, opts)
 }
 

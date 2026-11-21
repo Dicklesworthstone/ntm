@@ -33,7 +33,9 @@ func swarmCommandFixture(t *testing.T) (string, string) {
 	cfg.Swarm.StaggerDelayMs = 1
 	cfg.Swarm.Tier3Allocation = config.AllocationSpec{CC: 1, Cod: 1}
 	jsonOutput = false
-	tmux.DefaultClient = tmux.NewClient("")
+	fastClient := tmux.NewClient("")
+	fastClient.MaxSendDelay = 2 * time.Millisecond
+	tmux.DefaultClient = fastClient
 	dir := t.TempDir()
 	project := filepath.Join(dir, "project")
 	if err := os.MkdirAll(filepath.Join(project, ".git"), 0700); err != nil {
@@ -181,7 +183,7 @@ func TestSwarmCommandWaitsOutProjectCodexCooldown(t *testing.T) {
 	project, dir := swarmCommandFixture(t)
 	// Record the cooldown the way the resilience monitor does.
 	monitorTracker := ratelimit.NewRateLimitTracker(project)
-	cooldown := monitorTracker.RecordRateLimitWithCooldown("openai", "send", 2)
+	cooldown := monitorTracker.RecordRateLimitWithCooldown("openai", "send", 1)
 	deadline := time.Now().Add(cooldown)
 	if err := monitorTracker.SaveToDir(project); err != nil {
 		t.Fatal(err)
@@ -367,6 +369,7 @@ func TestSwarmCommandJSONReadinessTimeoutIsFailure(t *testing.T) {
 }
 
 func TestWritePlanToFile(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "plans", "swarm_plan.json")
 
@@ -411,6 +414,7 @@ func TestWritePlanToFile(t *testing.T) {
 }
 
 func TestWritePlanToFileNilPlan(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "plan.json")
 
@@ -494,6 +498,7 @@ func TestSwarmCmd_PromptFlagsExist(t *testing.T) {
 }
 
 func TestResolveSwarmInitialPrompt_MutuallyExclusive(t *testing.T) {
+	t.Parallel()
 	_, _, _, err := resolveSwarmInitialPrompt("hi", "/tmp/prompt.txt")
 	if err == nil {
 		t.Fatal("expected error for mutually exclusive flags, got nil")
@@ -501,6 +506,7 @@ func TestResolveSwarmInitialPrompt_MutuallyExclusive(t *testing.T) {
 }
 
 func TestResolveSwarmInitialPrompt_PromptFlag(t *testing.T) {
+	t.Parallel()
 	got, source, path, err := resolveSwarmInitialPrompt("hello", "")
 	if err != nil {
 		t.Fatalf("resolveSwarmInitialPrompt error: %v", err)
@@ -517,6 +523,7 @@ func TestResolveSwarmInitialPrompt_PromptFlag(t *testing.T) {
 }
 
 func TestResolveSwarmInitialPrompt_PromptFile(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "prompt.txt")
 	if err := os.WriteFile(path, []byte("from-file"), 0644); err != nil {
@@ -539,6 +546,7 @@ func TestResolveSwarmInitialPrompt_PromptFile(t *testing.T) {
 }
 
 func TestResolveSwarmInitialPrompt_PromptFileReadError(t *testing.T) {
+	t.Parallel()
 	_, _, _, err := resolveSwarmInitialPrompt("", "/definitely/does/not/exist.txt")
 	if err == nil {
 		t.Fatal("expected error for missing prompt file, got nil")
@@ -546,6 +554,7 @@ func TestResolveSwarmInitialPrompt_PromptFileReadError(t *testing.T) {
 }
 
 func TestGlobToRegex(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name   string
@@ -582,6 +591,7 @@ func TestGlobToRegex(t *testing.T) {
 }
 
 func TestBuildSwarmPlanOutput(t *testing.T) {
+	t.Parallel()
 
 	plan := &swarm.SwarmPlan{
 		ScanDir:         "/projects",
@@ -656,6 +666,7 @@ func TestBuildSwarmPlanOutput(t *testing.T) {
 }
 
 func TestBuildSwarmPlanOutput_EmptyPlan(t *testing.T) {
+	t.Parallel()
 
 	plan := &swarm.SwarmPlan{
 		ScanDir:     "/empty",

@@ -183,6 +183,7 @@ func awaitResumeState(t *testing.T, root, id string, status ExecutionStatus) *Ex
 }
 
 func TestBackgroundResumeSurvivesLauncherExit(t *testing.T) {
+	t.Parallel()
 	root, prior := resumeFixture(t, "run-resume-exit")
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -219,6 +220,7 @@ func TestBackgroundResumeSurvivesLauncherExit(t *testing.T) {
 }
 
 func TestBackgroundResumeCancellationAndNewAttempt(t *testing.T) {
+	t.Parallel()
 	root, prior := resumeFixture(t, "run-resume-cancel")
 	for attempt := 0; attempt < 2; attempt++ {
 		out, err := startDetachedResume(context.Background(), root, prior.RunID, "", ResumeOptions{}, false, resumeTestCommand)
@@ -266,6 +268,7 @@ func TestBackgroundResumeCancellationAndNewAttempt(t *testing.T) {
 // The shared launcher must preserve REST's startup-only context contract
 // when adding detached resume; cancellation before Start must not spawn work.
 func TestBackgroundResumeSharedLauncherPreservesStartupContext(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	cfg := DefaultExecutorConfig("context")
 	cfg.ProjectDir, cfg.RunID = root, "run-context"
@@ -294,6 +297,7 @@ func TestBackgroundResumeSharedLauncherPreservesStartupContext(t *testing.T) {
 }
 
 func TestBackgroundResumeRefusesLiveOwnerBeforeReadingState(t *testing.T) {
+	t.Parallel()
 	root, prior := resumeFixture(t, "run-resume-owned")
 	owner, err := AcquireRunControl(context.Background(), root, prior.RunID)
 	if err != nil {
@@ -312,6 +316,7 @@ func TestBackgroundResumeRefusesLiveOwnerBeforeReadingState(t *testing.T) {
 }
 
 func TestBackgroundResumeConcurrentAttemptsHaveOneOwner(t *testing.T) {
+	t.Parallel()
 	root, prior := resumeFixture(t, "run-resume-concurrent")
 	const attempts = 6
 	results := make(chan error, attempts)
@@ -362,8 +367,10 @@ func resumeRequestFixture(t *testing.T, root string, prior *ExecutionState, opts
 }
 
 func TestBackgroundResumeAuthorizationPreservesCheckpointAndConsumesAttempt(t *testing.T) {
+	t.Parallel()
 	for _, input := range []string{"", "wrong-token\n"} {
 		t.Run(fmt.Sprintf("input=%q", input), func(t *testing.T) {
+			t.Parallel()
 			root, prior := resumeFixture(t, "run-unauthorized")
 			before, err := os.ReadFile(pipelineStatePath(root, prior.RunID))
 			if err != nil {
@@ -400,8 +407,10 @@ func TestBackgroundResumeAuthorizationPreservesCheckpointAndConsumesAttempt(t *t
 }
 
 func TestBackgroundResumeRefusalsPreserveRecoveryEvidence(t *testing.T) {
+	t.Parallel()
 	for _, failure := range []string{"completed", "workflow_identity", "corrupt_workflow", "missing_workflow", "stale", "roster"} {
 		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
 			root, prior := resumeFixture(t, "run-refused")
 			opts, session := ResumeOptions{}, ""
 			switch failure {
@@ -444,6 +453,7 @@ func TestBackgroundResumeRefusalsPreserveRecoveryEvidence(t *testing.T) {
 }
 
 func TestBackgroundResumeExplicitResetAndRosterOverride(t *testing.T) {
+	t.Parallel()
 	root, prior := resumeFixture(t, "run-reset")
 	writeResumeTestFile(t, filepath.Join(root, "release"), "go")
 	out, err := startDetachedResume(context.Background(), root, prior.RunID, "new-session", ResumeOptions{Reset: true, OnRosterChange: ResumeRosterProceed}, false, resumeTestCommand)
@@ -458,8 +468,10 @@ func TestBackgroundResumeExplicitResetAndRosterOverride(t *testing.T) {
 }
 
 func TestBackgroundResumeValidationDoesNotLaunch(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"cancelled", "bad_id", "empty_root", "bad_mode"} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			root, id, opts := t.TempDir(), "run-valid", ResumeOptions{}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -491,6 +503,7 @@ func TestBackgroundResumeValidationDoesNotLaunch(t *testing.T) {
 }
 
 func TestBackgroundResumeAuthorizationDeadlinePreservesCheckpoint(t *testing.T) {
+	t.Parallel()
 	root, prior := resumeFixture(t, "run-auth-deadline")
 	_, id := resumeRequestFixture(t, root, prior, ResumeOptions{Reset: true})
 	before, err := os.ReadFile(pipelineStatePath(root, prior.RunID))
@@ -515,6 +528,7 @@ func TestBackgroundResumeAuthorizationDeadlinePreservesCheckpoint(t *testing.T) 
 }
 
 func TestBackgroundResumeFailedLaunchCanUseNewAttempt(t *testing.T) {
+	t.Parallel()
 	root, prior := resumeFixture(t, "run-launch-retry")
 	before, err := os.ReadFile(pipelineStatePath(root, prior.RunID))
 	if err != nil {
@@ -542,6 +556,7 @@ func TestBackgroundResumeFailedLaunchCanUseNewAttempt(t *testing.T) {
 }
 
 func TestBackgroundResumeSharedLauncherStillCreatesNewRuns(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	cfg := DefaultExecutorConfig("fresh-session")
 	cfg.ProjectDir, cfg.RunID = root, "run-fresh"

@@ -154,6 +154,8 @@ func syncKernelRobotCapabilities() {
 				Examples:    examples,
 				SafetyLevel: safety,
 				Idempotent:  idempotent,
+				Executable:  false,
+				CatalogOnly: true,
 			})
 		}
 	})
@@ -211,5 +213,7 @@ func kernelCommandFromServedRoute(route RouterRoute) kernel.Command {
 		},
 		SafetyLevel: safety,
 		Idempotent:  idempotent,
+		Executable:  false,
+		CatalogOnly: true,
 	}
 }

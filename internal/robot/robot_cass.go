@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/cass"
@@ -455,17 +456,41 @@ func GetACFSStatus() (*ACFSStatusOutput, error) {
 		Tools:         make(map[string]SetupToolStatus, len(setupToolSpecs)),
 	}
 
-	// Collect tool statuses
-	for _, spec := range setupToolSpecs {
-		output.Tools[spec.Key] = buildSetupToolStatus(spec)
+	// Collect tool statuses and ACFS availability/version concurrently.
+	results := make([]SetupToolStatus, len(setupToolSpecs))
+	var (
+		wg            sync.WaitGroup
+		acfsPath      string
+		acfsInstalled bool
+		acfsVersion   string
+	)
+	for i, spec := range setupToolSpecs {
+		wg.Add(1)
+		go func(idx int, s setupToolSpec) {
+			defer wg.Done()
+			results[idx] = buildSetupToolStatus(s)
+		}(i, spec)
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		acfsPath, acfsInstalled = adapter.Detect()
+		if acfsInstalled {
+			if version, err := adapter.Version(context.Background()); err == nil {
+				acfsVersion = version.Raw
+			}
+		}
+	}()
+	wg.Wait()
+
+	for i, spec := range setupToolSpecs {
+		output.Tools[spec.Key] = results[i]
 	}
 
-	// Check ACFS availability
-	path, installed := adapter.Detect()
-	output.ACFSAvailable = installed
-	output.ACFSPath = path
+	output.ACFSAvailable = acfsInstalled
+	output.ACFSPath = acfsPath
 
-	if !installed {
+	if !acfsInstalled {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("acfs not installed"),
 			ErrCodeDependencyMissing,
@@ -474,11 +499,7 @@ func GetACFSStatus() (*ACFSStatusOutput, error) {
 		return output, nil
 	}
 
-	ctx := context.Background()
-	version, err := adapter.Version(ctx)
-	if err == nil {
-		output.ACFSVersion = version.Raw
-	}
+	output.ACFSVersion = acfsVersion
 
 	return output, nil
 }

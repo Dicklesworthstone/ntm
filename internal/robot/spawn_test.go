@@ -118,6 +118,7 @@ func TestSpawnAssignmentCorruptionRecovery(t *testing.T) {
 }
 
 func TestGetSpawnRejectsProjectNameWithLabelSeparator(t *testing.T) {
+	t.Parallel()
 	opts := SpawnOptions{
 		Session: "my--project",
 		CCCount: 1,
@@ -186,6 +187,7 @@ func testSpawnConfig() *config.Config {
 }
 
 func TestGetSpawnSafetyRejectsSessionCreatedBetweenExistenceChecks(t *testing.T) {
+	t.Parallel()
 	const session = "safety-toctou"
 	var sessionExistsCalls int
 	var createCalls, getPanesCalls, splitCalls, layoutCalls, launchCalls int
@@ -272,6 +274,7 @@ func TestGetSpawnSafetyRejectsSessionCreatedBetweenExistenceChecks(t *testing.T)
 }
 
 func TestValidateSpawnRequestRejectsInvalidCountsAndEmptySpawn(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		opts SpawnOptions
@@ -303,6 +306,7 @@ func TestValidateSpawnRequestRejectsInvalidCountsAndEmptySpawn(t *testing.T) {
 }
 
 func TestGetSpawnGrokUsesExactCommandWithFakeLifecycle(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{{ID: "%1", WindowIndex: 0, Index: 0}}
 	deps := testSpawnLifecycleDependencies(panes)
 	var gotType, gotCommand string
@@ -326,6 +330,7 @@ func TestGetSpawnGrokUsesExactCommandWithFakeLifecycle(t *testing.T) {
 }
 
 func TestGetSpawnGrokUsesConfiguredDefaultModelWithFakeLifecycle(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{{ID: "%1", WindowIndex: 0, Index: 0}}
 	deps := testSpawnLifecycleDependencies(panes)
 	var gotCommand string
@@ -348,8 +353,10 @@ func TestGetSpawnGrokUsesConfiguredDefaultModelWithFakeLifecycle(t *testing.T) {
 }
 
 func TestGetSpawnPersistsLaunchSpecBeforeCommandDelivery(t *testing.T) {
+	t.Parallel()
 	for _, fail := range []string{"", "metadata-failure", "selected-seat", "selected-seat-plain", "worktree", "claude-isolated"} {
 		t.Run(fail, func(t *testing.T) {
+			t.Parallel()
 			if fail == "claude-isolated" && (runtime.GOOS == "darwin" || runtime.GOOS == "windows") {
 				t.Skip("file-backed Claude credential isolation requires Linux config dir storage")
 			}
@@ -624,6 +631,7 @@ func TestGetSpawnLaunchSpecTransportHelper(t *testing.T) {
 // #291: every agent type launches by typing into the pane, so every agent
 // type must refuse a pane that is already running a non-shell process.
 func TestLaunchAgentRejectsBusyPaneBeforeMutationForEveryAgentType(t *testing.T) {
+	t.Parallel()
 	for _, agentType := range []string{"claude", "codex", "gemini", "antigravity", "grok"} {
 		t.Run(agentType, func(t *testing.T) {
 			agent, err := launchAgent(
@@ -646,6 +654,7 @@ func TestLaunchAgentRejectsBusyPaneBeforeMutationForEveryAgentType(t *testing.T)
 }
 
 func TestGetSpawnRefusesOccupiedExistingPaneForNonGrokAgents(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{ID: "%0", WindowIndex: 0, Index: 0, Command: "zsh"},
 		{ID: "%1", WindowIndex: 0, Index: 1, Command: "cat"},
@@ -683,6 +692,7 @@ func TestGetSpawnRefusesOccupiedExistingPaneForNonGrokAgents(t *testing.T) {
 }
 
 func TestSpawnAgentPaneRangeCountsEveryAgentFamily(t *testing.T) {
+	t.Parallel()
 	start, count := spawnAgentPaneRange(SpawnOptions{CCCount: 2, CodCount: 1, GmiCount: 1, AgyCount: 1, GrokCount: 1})
 	if start != 1 || count != 6 {
 		t.Fatalf("spawnAgentPaneRange() = (%d, %d), want (1, 6)", start, count)
@@ -694,6 +704,7 @@ func TestSpawnAgentPaneRangeCountsEveryAgentFamily(t *testing.T) {
 }
 
 func TestGetSpawnGrokRejectsBusyExistingPaneBeforeTopologyOrLaunch(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{{ID: "%1", WindowIndex: 0, Index: 0, Command: "claude"}}
 	deps := testSpawnLifecycleDependencies(panes)
 	splitCalls := 0
@@ -727,6 +738,7 @@ func TestGetSpawnGrokRejectsBusyExistingPaneBeforeTopologyOrLaunch(t *testing.T)
 }
 
 func TestGetSpawnGrokAllowsIdleExistingPaneBeforeAddingMissingPane(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{{ID: "%1", WindowIndex: 0, Index: 0, Command: "zsh"}}
 	deps := testSpawnLifecycleDependencies(nil)
 	splitCalls := 0
@@ -769,6 +781,7 @@ func TestGetSpawnGrokAllowsIdleExistingPaneBeforeAddingMissingPane(t *testing.T)
 // allows waiting for and assigning work to Grok panes. Robot spawn used to
 // keep refusing both with NOT_IMPLEMENTED.
 func TestValidateSpawnRequestAcceptsGrokWaitAndAssignWork(t *testing.T) {
+	t.Parallel()
 	for _, opts := range []SpawnOptions{
 		{Session: "grok-wait", GrokCount: 1, WaitReady: true},
 		{Session: "grok-assign", GrokCount: 1, AssignWork: true, AssignStrategy: "top-n"},
@@ -785,6 +798,7 @@ func TestValidateSpawnRequestAcceptsGrokWaitAndAssignWork(t *testing.T) {
 }
 
 func TestValidateSpawnRequestRequiresStrictAssignmentStrategy(t *testing.T) {
+	t.Parallel()
 	for _, strategy := range []string{"", "   ", "round-robin"} {
 		t.Run(fmt.Sprintf("strategy_%q", strategy), func(t *testing.T) {
 			out, err := GetSpawn(t.Context(), SpawnOptions{
@@ -806,6 +820,7 @@ func TestValidateSpawnRequestRequiresStrictAssignmentStrategy(t *testing.T) {
 }
 
 func TestGetSpawnInitializesAgentsOnInvalidLabel(t *testing.T) {
+	t.Parallel()
 	out, err := GetSpawn(t.Context(), SpawnOptions{Session: "project", Label: "not valid!", CCCount: 1}, testSpawnConfig())
 	if err != nil {
 		t.Fatalf("GetSpawn returned transport error: %v", err)
@@ -816,6 +831,7 @@ func TestGetSpawnInitializesAgentsOnInvalidLabel(t *testing.T) {
 }
 
 func TestGetSpawnPreservesSubsecondReadyTimeout(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{{ID: "%1", WindowIndex: 0, Index: 0}}
 	deps := testSpawnLifecycleDependencies(panes)
 	var gotTimeout time.Duration
@@ -836,6 +852,7 @@ func TestGetSpawnPreservesSubsecondReadyTimeout(t *testing.T) {
 }
 
 func TestGetSpawnUserPaneUsesPhysicalWindowIdentity(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{ID: "%41", WindowIndex: 4, Index: 2, Title: "operator"},
 		{ID: "%42", WindowIndex: 4, Index: 3, Title: "agent"},
@@ -852,6 +869,7 @@ func TestGetSpawnUserPaneUsesPhysicalWindowIdentity(t *testing.T) {
 }
 
 func TestGetSpawnPropagatesTiledLayoutFailure(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{{ID: "%1", WindowIndex: 0, Index: 0}}
 	deps := testSpawnLifecycleDependencies(panes)
 	launches := 0
@@ -875,6 +893,7 @@ func TestGetSpawnPropagatesTiledLayoutFailure(t *testing.T) {
 }
 
 func TestGetSpawnRejectsShortTopology(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{{ID: "%1", WindowIndex: 0, Index: 0}}
 	deps := testSpawnLifecycleDependencies(panes)
 	splits := 0
@@ -899,6 +918,7 @@ func TestGetSpawnRejectsShortTopology(t *testing.T) {
 }
 
 func TestGetSpawnAggregatesLaunchFailures(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{ID: "%1", WindowIndex: 0, Index: 0},
 		{ID: "%2", WindowIndex: 0, Index: 1},
@@ -928,6 +948,7 @@ func TestGetSpawnAggregatesLaunchFailures(t *testing.T) {
 }
 
 func TestGetSpawnPreservesTypedLaunchAndReadinessTimeouts(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{{ID: "%1", WindowIndex: 0, Index: 0}}
 	tests := []struct {
 		name   string
@@ -1042,6 +1063,7 @@ func TestGetSpawnPreservesTypedLaunchAndReadinessTimeouts(t *testing.T) {
 }
 
 func TestWaitForAgentsReadyDeadlineWrapsDeadlineExceeded(t *testing.T) {
+	t.Parallel()
 	started := time.Now()
 	err := waitForAgentsReadyWithCapture(
 		t.Context(),
@@ -1058,6 +1080,7 @@ func TestWaitForAgentsReadyDeadlineWrapsDeadlineExceeded(t *testing.T) {
 }
 
 func TestWaitForAgentsReadyDeadlineCancelsBlockingCapture(t *testing.T) {
+	t.Parallel()
 	started := time.Now()
 	err := waitForAgentsReadyWithCapture(
 		t.Context(),
@@ -1123,6 +1146,7 @@ func TestPrintSpawn(t *testing.T) {
 }
 
 func TestAgentTypeShort(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input    string
 		expected string
@@ -1153,6 +1177,7 @@ func TestAgentTypeShort(t *testing.T) {
 
 // TestIsAgentReady_Patterns validates agent ready detection patterns
 func TestIsAgentReady_Patterns(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name      string
@@ -1207,6 +1232,7 @@ func TestIsAgentReady_Patterns(t *testing.T) {
 // with a model override that the launch template cannot carry fails with
 // INVALID_FLAG before any tmux session or pane is touched (bd-rr8gn).
 func TestGetSpawnRejectsUnhonorableModelOverrideBeforeMutation(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.Agents.Codex = "custom-codex --flag" // no {{.Model}} placeholder
 	mutated := false
@@ -1311,6 +1337,7 @@ func TestSpawnOptions_DryRunMode(t *testing.T) {
 }
 
 func TestSpawnOptions_DryRunCustomNamesExcludeUserPane(t *testing.T) {
+	t.Parallel()
 	opts := SpawnOptions{
 		Session:     "test_dryrun_custom_names",
 		CCCount:     2,
@@ -1338,6 +1365,7 @@ func TestSpawnOptions_DryRunCustomNamesExcludeUserPane(t *testing.T) {
 }
 
 func TestSpawnOptions_DryRunIncludesAdmission(t *testing.T) {
+	t.Parallel()
 	opts := SpawnOptions{
 		Session:    "test_dryrun_admission",
 		CCCount:    1,
@@ -1376,6 +1404,7 @@ func TestSpawnOptions_DryRunIncludesAdmission(t *testing.T) {
 }
 
 func TestSpawnOptions_DryRunAdmissionRefusesAgentCap(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.SpawnPacing.AgentCaps.ClaudeMaxConcurrent = 1
 	cfg.SpawnPacing.AgentCaps.CodexMaxConcurrent = 0
@@ -1411,6 +1440,7 @@ func TestSpawnOptions_DryRunAdmissionRefusesAgentCap(t *testing.T) {
 // one host budget (running + requested), so omp's term must cover the swarm;
 // at the former omp default of 2 the same request was refused outright.
 func TestSpawnAdmission_OmpSwarmOfEightIsAdmitted(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	// Isolate the agent-cap clause: a request below the large-spawn threshold
 	// is never deferred by live host pressure, which would make this flaky.
@@ -1438,6 +1468,7 @@ func TestSpawnAdmission_OmpSwarmOfEightIsAdmitted(t *testing.T) {
 }
 
 func TestCollectSpawnAdmissionInputCancellationReachesTopology(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	started := make(chan struct{})
 	done := make(chan struct{})
@@ -2048,6 +2079,7 @@ func spawnObservation(session string, state statuspkg.AgentState, panes ...tmux.
 }
 
 func TestNormalizeAssignStrategyStrict(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input    string
 		expected string
@@ -2087,6 +2119,7 @@ func TestNormalizeAssignStrategyStrict(t *testing.T) {
 
 // TestGenerateWorkPrompt validates work prompt generation
 func TestGenerateWorkPrompt(t *testing.T) {
+	t.Parallel()
 
 	item := workItem{
 		ID:       "test-123",
@@ -2123,6 +2156,7 @@ func TestGenerateWorkPrompt(t *testing.T) {
 }
 
 func TestGetSpawnAssignmentPreflightFailurePreventsEveryActuation(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name                string
 		dryRun              bool
@@ -2264,6 +2298,7 @@ func TestGetSpawnAssignmentPreflightFailurePreventsEveryActuation(t *testing.T) 
 }
 
 func TestSpawnOptions_AssignWorkDryRunPreflightsPolicyAndActionablePlan(t *testing.T) {
+	t.Parallel()
 	projectDir := t.TempDir()
 	var order []string
 	mutations := 0
@@ -2339,6 +2374,7 @@ func TestSpawnOptions_AssignWorkDryRunPreflightsPolicyAndActionablePlan(t *testi
 }
 
 func TestGetSpawnEmptyVerifiedAssignmentSetPrecedesTopologyAndLaunch(t *testing.T) {
+	t.Parallel()
 	projectDir := t.TempDir()
 	var order []string
 	panes := []tmux.Pane{}
@@ -2439,6 +2475,7 @@ func TestGetSpawnEmptyVerifiedAssignmentSetPrecedesTopologyAndLaunch(t *testing.
 }
 
 func TestAssignWorkEmptyVerifiedPlanReplaysOnlyExactDurableSentIntent(t *testing.T) {
+	t.Parallel()
 	const (
 		session = "spawn-empty-plan-replay"
 		beadID  = "bd-replay"
@@ -2564,6 +2601,7 @@ func spawnOpenAssignmentDetails(_ context.Context, _ string, beadID string) (*bv
 }
 
 func TestWaitForAgentsReadyCancellationInterruptsPolling(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	err := waitForAgentsReady(ctx, &SpawnOutput{Session: "cancel-ready", Agents: []SpawnedAgent{{Type: "claude", Pane: "0.1"}}}, time.Hour)
@@ -2573,6 +2611,7 @@ func TestWaitForAgentsReadyCancellationInterruptsPolling(t *testing.T) {
 }
 
 func TestLaunchAgentCanceledContextStopsBeforePaneMutation(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	agent, err := launchAgent(ctx, tmux.Pane{ID: "%does-not-exist", WindowIndex: 0, Index: 1}, "cancel", "claude", 1, t.TempDir(), "claude")
@@ -2585,6 +2624,7 @@ func TestLaunchAgentCanceledContextStopsBeforePaneMutation(t *testing.T) {
 }
 
 func TestSpawnCancellationErrorRecognizesWrappedPartialActuation(t *testing.T) {
+	t.Parallel()
 	partial := fmt.Errorf("tmux pane was created before cancellation: %w", context.Canceled)
 	if got := spawnCancellationError(t.Context(), partial); !errors.Is(got, context.Canceled) || got.Error() != partial.Error() {
 		t.Fatalf("spawnCancellationError() = %v, want wrapped partial-actuation cancellation", got)
@@ -2592,6 +2632,7 @@ func TestSpawnCancellationErrorRecognizesWrappedPartialActuation(t *testing.T) {
 }
 
 func TestGetSpawnCanceledContextReturnsSingleStructuredFailure(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	out, err := GetSpawn(ctx, SpawnOptions{Session: "cancel-spawn", CCCount: 1}, config.Default())
@@ -2604,6 +2645,7 @@ func TestGetSpawnCanceledContextReturnsSingleStructuredFailure(t *testing.T) {
 }
 
 func TestFinalizeSpawnAssignmentOutputRequiresEveryEligibleAgent(t *testing.T) {
+	t.Parallel()
 	agents := []SpawnedAgent{
 		{Pane: "0.0", Name: "One", Type: "claude"},
 		{Pane: "0.1", Name: "Two", Type: "codex"},
@@ -2741,6 +2783,7 @@ func TestGetSpawnPreservesTypedAssignmentPreflightTimeoutWithoutLifecycleMutatio
 
 // TestSpawnAssignmentOutput_SchemaStability validates assignment output schema
 func TestSpawnAssignmentOutput_SchemaStability(t *testing.T) {
+	t.Parallel()
 
 	// Create a test assignment
 	assignment := SpawnAssignment{
@@ -2787,6 +2830,7 @@ func TestSpawnAssignmentOutput_SchemaStability(t *testing.T) {
 
 // TestSpawnOutput_ModeField validates mode field is set correctly
 func TestSpawnOutput_ModeField(t *testing.T) {
+	t.Parallel()
 
 	// Test output struct with mode field
 	output := SpawnOutput{
@@ -2833,6 +2877,7 @@ func TestSpawnOutput_ModeField(t *testing.T) {
 
 // TestSpawnRecovery_SchemaStability ensures SpawnRecovery JSON structure is stable
 func TestSpawnRecovery_SchemaStability(t *testing.T) {
+	t.Parallel()
 
 	recovery := SpawnRecovery{
 		HandoffPath:  "/path/to/handoff.yaml",
@@ -2871,6 +2916,7 @@ func TestSpawnRecovery_SchemaStability(t *testing.T) {
 
 // TestSpawnOutput_RecoveryField verifies the recovery field is included in SpawnOutput
 func TestSpawnOutput_RecoveryField(t *testing.T) {
+	t.Parallel()
 
 	output := SpawnOutput{
 		Session:    "test-session",
@@ -2918,6 +2964,7 @@ func TestSpawnOutput_RecoveryField(t *testing.T) {
 
 // TestSpawnOutput_RecoveryOmittedWhenNil verifies recovery is omitted from JSON when nil
 func TestSpawnOutput_RecoveryOmittedWhenNil(t *testing.T) {
+	t.Parallel()
 
 	output := SpawnOutput{
 		Session:    "test-session",
@@ -2946,6 +2993,7 @@ func TestSpawnOutput_RecoveryOmittedWhenNil(t *testing.T) {
 
 // TestLoadLatestHandoff_NoHandoff verifies graceful handling when no handoff exists
 func TestLoadLatestHandoff_NoHandoff(t *testing.T) {
+	t.Parallel()
 
 	// Use a temp directory with no handoffs
 	tmpDir := t.TempDir()
@@ -3016,6 +3064,7 @@ func TestWaitForAgentsReadyRequiresLiveProcess(t *testing.T) {
 
 // "ready" must match as a word: as a bare substring it also hit "already".
 func TestIsAgentReadyDoesNotMatchAlready(t *testing.T) {
+	t.Parallel()
 	if isAgentReady("Already up to date.\n", "claude") {
 		t.Fatal(`"Already up to date." must not count as an agent being ready`)
 	}
@@ -3030,6 +3079,7 @@ func TestIsAgentReadyDoesNotMatchAlready(t *testing.T) {
 // reservations. AGENTS.md calls project-key mismatch the single most common
 // source of cross-tool breakage, and it was invisible in spawn output.
 func TestSpawnOutputExposesEffectiveProjectKeyOnlyWhenItDiffers(t *testing.T) {
+	t.Parallel()
 	realDir := t.TempDir()
 	// t.TempDir on macOS is itself under a symlink (/var -> /private/var), so
 	// resolve first to get a path that is genuinely its own canonical form.
@@ -3097,6 +3147,7 @@ func skillMatchTriageFixture() *bv.TriageResponse {
 // assignments under skill-matched than under top-n, proving skill-matched
 // no longer silently falls back.
 func TestGetWorkItemsForStrategySkillMatchedDiffersFromTopN(t *testing.T) {
+	t.Parallel()
 	triage := skillMatchTriageFixture()
 	agents := []SpawnedAgent{
 		{Pane: "0.1", Type: "cod"},
@@ -3160,6 +3211,7 @@ func TestGetWorkItemsForStrategySkillMatchedDiffersFromTopN(t *testing.T) {
 // (unknown agent type, uniform 0.5 scores) is recorded loudly instead of
 // silently masquerading as skill matching.
 func TestGetSkillMatchedWorkItemsNoSignalIsLoud(t *testing.T) {
+	t.Parallel()
 	triage := skillMatchTriageFixture()
 	agents := []SpawnedAgent{{Pane: "0.1", Type: "totally-unknown-agent"}}
 
@@ -3179,6 +3231,7 @@ func TestGetSkillMatchedWorkItemsNoSignalIsLoud(t *testing.T) {
 // TestGetWorkItemsForStrategyUnknownStrategyIsLoud verifies that a strategy
 // value leaking past strict normalization records a fallback reason.
 func TestGetWorkItemsForStrategyUnknownStrategyIsLoud(t *testing.T) {
+	t.Parallel()
 	triage := skillMatchTriageFixture()
 	agents := []SpawnedAgent{{Pane: "0.1", Type: "cc"}}
 
@@ -3194,6 +3247,7 @@ func TestGetWorkItemsForStrategyUnknownStrategyIsLoud(t *testing.T) {
 // TestSpawnTaskTypeForRecommendationLadder covers the explicit-type, label,
 // and title-inference rungs.
 func TestSpawnTaskTypeForRecommendationLadder(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		rec  bv.TriageRecommendation
@@ -3214,6 +3268,7 @@ func TestSpawnTaskTypeForRecommendationLadder(t *testing.T) {
 }
 
 func TestSpawnModelHints(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 
 	// Known models and empty overrides produce no hints.
@@ -3240,6 +3295,7 @@ func TestSpawnModelHints(t *testing.T) {
 // capabilities document concluded oc panes were unsupported. --spawn-oc
 // launches them through the same template as `ntm spawn --oc`.
 func TestGetAgentCommandsWithOverridesOpencode(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	commands, err := getAgentCommandsWithOverrides(cfg, SpawnOptions{OcCount: 1, OcModel: "opencode/big-pickle"})
 	if err != nil {
@@ -3268,6 +3324,7 @@ func TestGetAgentCommandsWithOverridesOpencode(t *testing.T) {
 }
 
 func TestSpawnDryRunPlansOpencodePanes(t *testing.T) {
+	t.Parallel()
 	opts := SpawnOptions{Session: "oc_dryrun", CCCount: 1, OcCount: 2, NoUserPane: true, DryRun: true}
 	out, err := GetSpawn(t.Context(), opts, config.Default())
 	if err != nil {
@@ -3288,6 +3345,7 @@ func TestSpawnDryRunPlansOpencodePanes(t *testing.T) {
 }
 
 func TestIsAgentReadyOpencodeWaitsForComposer(t *testing.T) {
+	t.Parallel()
 	composer := strings.Join([]string{
 		"",
 		"  ┃",
@@ -3349,6 +3407,7 @@ func TestGetSpawnClaudeIsolationReportsCredentialIsolated(t *testing.T) {
 }
 
 func TestGetSpawnRefusesWindsurfIDEOnlyHarnessUnlessOverridden(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	out, err := GetSpawn(t.Context(), SpawnOptions{
 		Session:       "windsurf_gui",
@@ -3383,6 +3442,7 @@ func TestGetSpawnRefusesWindsurfIDEOnlyHarnessUnlessOverridden(t *testing.T) {
 }
 
 func TestSpawnDryRunPlansOllamaAiderCursorPiParity(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
 	opts := SpawnOptions{
@@ -3436,6 +3496,7 @@ func TestSpawnDryRunPlansOllamaAiderCursorPiParity(t *testing.T) {
 }
 
 func TestIsAgentReadyAntigravityWaitsForComposer(t *testing.T) {
+	t.Parallel()
 	composer := strings.Join([]string{
 		"Antigravity",
 		"",

@@ -28,6 +28,7 @@ func operationMetadata(t *testing.T, result map[string]interface{}) map[string]i
 }
 
 func TestJobOperationDurableReplay(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	req := jobOperationTestRequest()
 	calls := 0
@@ -72,8 +73,10 @@ func TestJobOperationDurableReplay(t *testing.T) {
 }
 
 func TestJobOperationReplaysFailureAndCancellation(t *testing.T) {
+	t.Parallel()
 	for _, cause := range []error{errors.New("second pane failed"), context.Canceled, context.DeadlineExceeded} {
 		t.Run(cause.Error(), func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			original := fmt.Errorf("spawn partially created: %w", cause)
 			result, err := runJobOperation(context.Background(), dir, "retryable-http", "first", jobOperationTestRequest(),
@@ -99,6 +102,7 @@ func TestJobOperationReplaysFailureAndCancellation(t *testing.T) {
 }
 
 func TestJobOperationConflictingRequestsNeverExecute(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	original := jobOperationTestRequest()
 	if _, err := runJobOperation(context.Background(), dir, "same-id", "first", original,
@@ -123,6 +127,7 @@ func TestJobOperationConflictingRequestsNeverExecute(t *testing.T) {
 }
 
 func TestJobOperationFingerprintCoversWholeBodyWithoutStoringIt(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	secret := "PRIVATE-WORKFLOW-PARAMETER"
 	large := strings.Repeat("x", (8<<20)+1)
@@ -147,6 +152,7 @@ func TestJobOperationFingerprintCoversWholeBodyWithoutStoringIt(t *testing.T) {
 }
 
 func TestJobOperationConcurrentDuplicatesAreFenced(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -206,6 +212,7 @@ func TestJobOperationCrashHelper(t *testing.T) {
 }
 
 func TestJobOperationCrashRefusesReexecution(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -231,6 +238,7 @@ func TestJobOperationCrashRefusesReexecution(t *testing.T) {
 }
 
 func TestJobOperationFailedFinalCheckpointBlocksRetry(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	got, err := runJobOperation(context.Background(), dir, "bad-result", "first", jobOperationTestRequest(),
 		func(context.Context, CreateJobRequest) (map[string]interface{}, error) {
@@ -250,8 +258,10 @@ func TestJobOperationFailedFinalCheckpointBlocksRetry(t *testing.T) {
 }
 
 func TestJobOperationUnreadableReceiptFailsClosed(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"corrupt", "null", "trailing", "oversized", "directory", "symlink", "wrong identity", "bad status", "bad version"} {
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			path := jobOperationPath(dir, "damaged")
 			if err := os.Mkdir(filepath.Dir(path), 0o700); err != nil {
@@ -311,6 +321,7 @@ func TestJobOperationUnreadableReceiptFailsClosed(t *testing.T) {
 }
 
 func TestJobOperationCancellationBeforeClaimHasNoEffects(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -329,6 +340,7 @@ func TestJobOperationCancellationBeforeClaimHasNoEffects(t *testing.T) {
 }
 
 func TestSplitJobOperationRequest(t *testing.T) {
+	t.Parallel()
 	for _, id := range []interface{}{nil, false, 3, "", " ", " leading", "trailing ", "a\nb", strings.Repeat("x", 201)} {
 		req := jobOperationTestRequest()
 		req.Params["operation_id"] = id
@@ -354,6 +366,7 @@ func TestSplitJobOperationRequest(t *testing.T) {
 }
 
 func TestJobExecutionParamsSessionBinding(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		req     CreateJobRequest
@@ -374,6 +387,7 @@ func TestJobExecutionParamsSessionBinding(t *testing.T) {
 		{name: "blank envelope", req: CreateJobRequest{Session: " \t"}, wantErr: "must not be whitespace"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			before, err := jobOperationFingerprint(tc.req)
 			if err != nil {
 				t.Fatal(err)

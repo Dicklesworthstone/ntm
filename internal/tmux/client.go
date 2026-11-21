@@ -99,6 +99,12 @@ const (
 type Client struct {
 	Remote string // "user@host" or empty for local
 
+	// MaxSendDelay, when > 0, caps internal send/verification/composer-clear
+	// pacing waits on this client. Production callers leave it zero to use the
+	// full TUI timing budgets; stub-tmux tests can cap it (e.g. 2ms) without
+	// skipping any protocol steps, rescue rounds, or verification polls.
+	MaxSendDelay time.Duration
+
 	// captureBackpressure keeps the most recent capture attempt for each pane
 	// so runtime overload snapshots are based on live tmux activity.
 	captureBackpressure *captureBackpressureTracker

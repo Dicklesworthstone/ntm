@@ -126,6 +126,8 @@ func newStageDeliveryFixture(t *testing.T) (*Executor, *stageDeliveryClient, *st
 	detector := &stageIdleDetector{}
 	cfg := DefaultExecutorConfig("stage-test")
 	cfg.PaneLockWait = 50 * time.Millisecond
+	cfg.IdleDebounce = 5 * time.Millisecond
+	cfg.IdlePollInterval = 5 * time.Millisecond
 	executor := NewExecutor(cfg)
 	executor.SetTmuxClient(client)
 	executor.SetDetector(detector)
@@ -246,7 +248,7 @@ func TestAdHocStageResponseAndHandoff(t *testing.T) {
 func TestAdHocStageRequiresMoreThanIdlePromptEcho(t *testing.T) {
 	executor, client, detector := newStageDeliveryFixture(t)
 	client.echoOnly = true
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 	_, err := executor.executeAdHocStage(ctx, Stage{AgentType: "cc", Prompt: "Unanswered task"}, client.pane.ID, "", AgentDeliveryState{})
 	if !errors.Is(err, context.DeadlineExceeded) || client.pastes != 1 || detector.calls < idleStablePolls {
@@ -325,7 +327,7 @@ func TestPiAdHocRepaintRequiresMoreThanIdleEcho(t *testing.T) {
 					client.after = strings.TrimSuffix(client.after, "0.0%/1.0M (auto)  DeepSeek-V4.1-Flash")
 				}
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 			defer cancel()
 			_, err := executor.executeAdHocStage(ctx, Stage{AgentType: "pi", Prompt: "Review the intake."}, client.pane.ID, "", AgentDeliveryState{})
 			if !errors.Is(err, context.DeadlineExceeded) || client.pastes != 1 || detector.calls < idleStablePolls {
@@ -451,6 +453,7 @@ func TestPiDeliveryDistinguishesRenderedPromptFromResponse(t *testing.T) {
 }
 
 func TestStageWaitCancellationWinsOverLateIdle(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	detector := &stageIdleDetector{onIdle: func(call int) {
@@ -458,7 +461,7 @@ func TestStageWaitCancellationWinsOverLateIdle(t *testing.T) {
 			cancel()
 		}
 	}}
-	if err := waitForIdle(ctx, detector, "%71"); !errors.Is(err, context.Canceled) {
+	if err := waitForIdleWithInterval(ctx, detector, "%71", 5*time.Millisecond); !errors.Is(err, context.Canceled) {
 		t.Fatalf("late final idle observation hid cancellation: %v", err)
 	}
 }

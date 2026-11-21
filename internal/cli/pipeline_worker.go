@@ -9,7 +9,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/pipeline"
 )
 
-func init() {
+func registerPipelineWorkerSubcommands() {
 	rootCmd.AddCommand(newPipelineWorkerCmd())
 	rootCmd.AddCommand(newInternalStepReaperCmd())
 	pipeline.BackgroundWorkerFlags = pipelineWorkerFlags

@@ -109,6 +109,7 @@ type MockTmuxClient struct {
 	// confirmed", which is what an agent that submits normally looks like.
 	verifier      func(target, message, agentType string) error
 	verifications []MockTmuxVerification
+	paneLocks     map[string]chan struct{}
 }
 
 // SetSubmissionVerifier installs the outcome of future VerifySubmission calls.

@@ -304,7 +304,7 @@ func observeCommandExitID(idType, id, extraFlags int) error {
 	}
 }
 
-const commandLeaderObservationRetryTimeout = 250 * time.Millisecond
+var commandLeaderObservationRetryTimeout = 250 * time.Millisecond
 
 type commandLeaderObservationTestHookKey struct{}
 
@@ -389,7 +389,90 @@ func retryCommandLeaderObservation(ctx context.Context, pid int, stableHandle bo
 	}
 }
 
+func waitPIDFDReady(ctx context.Context, pidfd int) (bool, error) {
+	if pidfd < 0 {
+		return false, nil
+	}
+	wfd, err := unix.Eventfd(0, unix.EFD_CLOEXEC|unix.EFD_NONBLOCK)
+	if err != nil {
+		return false, nil
+	}
+	stopWake := make(chan struct{})
+	wakeDone := make(chan struct{})
+	if ctx.Done() != nil {
+		go func() {
+			defer close(wakeDone)
+			select {
+			case <-ctx.Done():
+				var one [8]byte
+				one[0] = 1
+				_, _ = unix.Write(wfd, one[:])
+			case <-stopWake:
+			}
+		}()
+	} else {
+		close(wakeDone)
+	}
+	defer func() {
+		close(stopWake)
+		<-wakeDone
+		_ = unix.Close(wfd)
+	}()
+
+	pfds := []unix.PollFd{
+		{Fd: int32(pidfd), Events: unix.POLLIN},
+		{Fd: int32(wfd), Events: unix.POLLIN},
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return true, err
+		}
+		_, pollErr := unix.Poll(pfds, -1)
+		if pollErr != nil {
+			if errors.Is(pollErr, syscall.EINTR) {
+				continue
+			}
+			return false, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return true, err
+		}
+		if pfds[0].Revents&(unix.POLLERR|unix.POLLNVAL) != 0 {
+			return false, nil
+		}
+		if pfds[0].Revents&unix.POLLIN != 0 {
+			return true, nil
+		}
+	}
+}
+
 func waitCommandLeaderExit(ctx context.Context, process *os.Process) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := observeCommandExitWithRetry(ctx, process); err != errCommandLeaderRunning {
+		return err
+	}
+	if _, hasHook := ctx.Value(commandLeaderObservationTestHookKey{}).(func(int) error); !hasHook {
+		var (
+			waited  bool
+			waitErr error
+		)
+		handleErr := process.WithHandle(func(handle uintptr) {
+			waited, waitErr = waitPIDFDReady(ctx, int(handle))
+		})
+		if handleErr == nil && waited {
+			if waitErr != nil {
+				return waitErr
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := observeCommandExitWithRetry(ctx, process); err != errCommandLeaderRunning {
+				return err
+			}
+		}
+	}
 	ticker := time.NewTicker(commandGroupPollInterval)
 	defer ticker.Stop()
 	for {
@@ -426,10 +509,20 @@ func groupSignalFoundOnlyZombies(int) bool {
 // already been reparented by the time the command leader exits.
 // A quiet result requires a complete, valid census containing the unreaped
 // leader in its expected group. Missing evidence must not authorize replay.
+func readDirUnsorted(path string) ([]os.DirEntry, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := f.ReadDir(-1)
+	_ = f.Close()
+	return entries, err
+}
+
 func commandGroupHasLiveMembers(pgid int) (bool, error) {
-	const maxBirthRaceImmediateRetries = 4
+	const maxBirthRaceImmediateRetries = 12
 	inspector := commandGroupInspector{
-		readDir: os.ReadDir,
+		readDir: readDirUnsorted,
 		readFile: func(path string) ([]byte, error) {
 			if strings.HasPrefix(path, "/proc/") && strings.HasSuffix(path, "/stat") && path != "/proc/stat" {
 				commandGroupProcStatOpens.Add(1)
@@ -473,7 +566,11 @@ func inspectCommandGroup(pgid int, inspector commandGroupInspector) (bool, error
 	}
 	leaderSeen, alive := false, false
 	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
+		name := entry.Name()
+		if len(name) == 0 || name[0] < '1' || name[0] > '9' {
+			continue
+		}
+		pid, err := strconv.Atoi(name)
 		if err != nil || pid <= 0 || !entry.IsDir() {
 			continue
 		}
@@ -540,19 +637,19 @@ func inspectCommandGroup(pgid int, inspector commandGroupInspector) (bool, error
 	if alive {
 		return true, nil
 	}
-	mountAfter, err := readCommandProcfsVisibility(inspector.readFile)
-	if err != nil {
-		return false, err
-	}
-	if mountBefore != mountAfter {
-		return false, errCommandGroupMountRace
-	}
 	birthsAfter, err := readCommandProcessBirths(inspector.readFile)
 	if err != nil {
 		return false, err
 	}
 	if birthsBefore != birthsAfter {
 		return false, errCommandGroupBirthRace
+	}
+	mountAfter, err := readCommandProcfsVisibility(inspector.readFile)
+	if err != nil {
+		return false, err
+	}
+	if mountBefore != mountAfter {
+		return false, errCommandGroupMountRace
 	}
 	return false, nil
 }

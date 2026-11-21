@@ -50,6 +50,8 @@ import (
 var (
 	errServeTestAgentSpawnDisabled = errors.New("agent spawning disabled in serve unit tests")
 
+	defaultServeTestTmuxTmpDir string
+
 	deadMailURLOnce sync.Once
 	deadMailBaseURL string
 
@@ -57,6 +59,21 @@ var (
 	serveSchemaSnapshotBytes []byte
 	serveSchemaBootstrapErr  error
 )
+
+func TestMain(m *testing.M) {
+	socketRoot, err := os.MkdirTemp("", "ntmt")
+	if err == nil {
+		defaultServeTestTmuxTmpDir = socketRoot
+		_ = os.Setenv("TMUX", "")
+		_ = os.Setenv("TMUX_PANE", "")
+		_ = os.Setenv("TMUX_TMPDIR", socketRoot)
+	}
+	code := m.Run()
+	if socketRoot != "" {
+		_ = os.RemoveAll(socketRoot)
+	}
+	os.Exit(code)
+}
 
 type sqliteConnSerializer interface {
 	Serialize() ([]byte, error)
@@ -191,20 +208,20 @@ func setupTestServer(t *testing.T) (*Server, *state.Store) {
 
 	// Handler tests must never inherit a developer's live tmux server. Tests
 	// that need real tmux own their lifecycle in the E2E suite instead.
-	t.Setenv("TMUX", "")
-	t.Setenv("TMUX_PANE", "")
-	// Deliberately NOT t.TempDir(): that path embeds the full test name, and
-	// tmux appends "/default" to build a unix socket path, which is capped near
-	// 104 bytes. A long test name pushed it over the limit, so tmux failed to
-	// connect at all and handlers reported INTERNAL_ERROR instead of the
-	// SESSION_NOT_FOUND their tests assert. A short fixed prefix keeps the
-	// socket path bounded while staying per-test isolated.
-	socketRoot, err := os.MkdirTemp("", "ntmt")
-	if err != nil {
-		t.Fatalf("create tmux socket root: %v", err)
+	// TestMain establishes an isolated empty TMUX_TMPDIR for the package once;
+	// only touch process env via t.Setenv when a serial test modified it so
+	// parallel setupTestServer tests can run concurrently without panicking.
+	if os.Getenv("TMUX") != "" || os.Getenv("TMUX_PANE") != "" ||
+		defaultServeTestTmuxTmpDir == "" || os.Getenv("TMUX_TMPDIR") != defaultServeTestTmuxTmpDir {
+		t.Setenv("TMUX", "")
+		t.Setenv("TMUX_PANE", "")
+		socketRoot, err := os.MkdirTemp("", "ntmt")
+		if err != nil {
+			t.Fatalf("create tmux socket root: %v", err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(socketRoot) })
+		t.Setenv("TMUX_TMPDIR", socketRoot)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(socketRoot) })
-	t.Setenv("TMUX_TMPDIR", socketRoot)
 
 	// Most serve tests only exercise handler logic and do not need a file-backed
 	// database. Use an isolated in-memory store bootstrapped from the once-built
@@ -278,6 +295,7 @@ func TestSetupTestServerIsolatesTMUXAndAgentSpawn(t *testing.T) {
 }
 
 func TestSetupTestServerConsolidatedSchemaEquivalenceAndSpeedup(t *testing.T) {
+	t.Parallel()
 	// 1. Verify exact schema & _migrations parity against live state.Open(":memory:") + Migrate()
 	incumbent, err := state.Open(":memory:")
 	if err != nil {
@@ -354,6 +372,7 @@ func TestSetupTestServerConsolidatedSchemaEquivalenceAndSpeedup(t *testing.T) {
 }
 
 func TestHandleAgentWaitV1ReturnsTimeoutObservation(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	srv.waitAgents = func(_ context.Context, opts robot.WaitOptions) (*robot.WaitResponse, int) {
 		return &robot.WaitResponse{
@@ -395,6 +414,7 @@ func TestHandleAgentWaitV1ReturnsTimeoutObservation(t *testing.T) {
 }
 
 func TestRobotErrorHTTPStatus(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		code string
 		want int
@@ -522,6 +542,7 @@ func newMockAgentMailMCPClient(
 }
 
 func TestNew(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{})
 	if srv == nil {
 		t.Fatal("New returned nil")
@@ -532,6 +553,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestNewWithCustomPort(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{Port: 8080})
 	if srv.port != 8080 {
 		t.Errorf("Port = %d, want 8080", srv.port)
@@ -539,6 +561,7 @@ func TestNewWithCustomPort(t *testing.T) {
 }
 
 func TestResolveProjectDir(t *testing.T) {
+	t.Parallel()
 	project := t.TempDir()
 	want, err := filepath.EvalSymlinks(project)
 	if err != nil {
@@ -573,6 +596,7 @@ func TestResolveProjectDir(t *testing.T) {
 }
 
 func TestServerProjectDirRejectsInvalidStartupPaths(t *testing.T) {
+	t.Parallel()
 	file := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(file, []byte("not a directory"), 0600); err != nil {
 		t.Fatal(err)
@@ -830,12 +854,14 @@ func TestPatchConfigResetsProjectDirToStartupValue(t *testing.T) {
 }
 
 func TestValidateConfigDefaults(t *testing.T) {
+	t.Parallel()
 	if err := ValidateConfig(Config{}); err != nil {
 		t.Fatalf("ValidateConfig default should succeed, got %v", err)
 	}
 }
 
 func TestValidateConfigRejectsExternalLocalAuth(t *testing.T) {
+	t.Parallel()
 	cfg := Config{
 		Host: "0.0.0.0",
 		Auth: AuthConfig{Mode: AuthModeLocal},
@@ -846,6 +872,7 @@ func TestValidateConfigRejectsExternalLocalAuth(t *testing.T) {
 }
 
 func TestValidateConfigAllowsExternalWithAuth(t *testing.T) {
+	t.Parallel()
 	cfg := Config{
 		Host: "0.0.0.0",
 		Auth: AuthConfig{Mode: AuthModeAPIKey, APIKey: "test-key"},
@@ -856,6 +883,7 @@ func TestValidateConfigAllowsExternalWithAuth(t *testing.T) {
 }
 
 func TestValidateConfigPublicBaseURL(t *testing.T) {
+	t.Parallel()
 	cfg := Config{
 		PublicBaseURL: "https://ntm.example.com",
 	}
@@ -870,6 +898,7 @@ func TestValidateConfigPublicBaseURL(t *testing.T) {
 }
 
 func TestHandleGetMessage_NotImplemented(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){})
 
@@ -902,6 +931,7 @@ func TestHandleGetMessage_NotImplemented(t *testing.T) {
 }
 
 func TestHandleMailInbox_SanitizesDisclosureFields(t *testing.T) {
+	t.Parallel()
 
 	secret := strings.Repeat("s", 20)
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
@@ -965,6 +995,7 @@ func TestHandleMailInbox_SanitizesDisclosureFields(t *testing.T) {
 }
 
 func TestHandleGetMessage_SanitizesDisclosureFields(t *testing.T) {
+	t.Parallel()
 
 	secret := strings.Repeat("s", 20)
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
@@ -1028,6 +1059,7 @@ func TestHandleGetMessage_SanitizesDisclosureFields(t *testing.T) {
 }
 
 func TestHandleReplyMessage_MessageNotFound(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"reply_message": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -1061,6 +1093,7 @@ func TestHandleReplyMessage_MessageNotFound(t *testing.T) {
 }
 
 func TestHandleSendMessage_ContactBlocked(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"send_message": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -1094,6 +1127,7 @@ func TestHandleSendMessage_ContactBlocked(t *testing.T) {
 }
 
 func TestHandleReplyMessage_ContactBlocked(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"reply_message": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -1130,6 +1164,7 @@ func TestHandleReplyMessage_ContactBlocked(t *testing.T) {
 }
 
 func TestHandleReservePaths_ConflictReturnsStructured409(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"file_reservation_paths": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -1183,6 +1218,7 @@ func TestHandleReservePaths_ConflictReturnsStructured409(t *testing.T) {
 }
 
 func TestHandleGetReservation_NotImplemented(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){})
 
@@ -1212,6 +1248,7 @@ func TestHandleGetReservation_NotImplemented(t *testing.T) {
 }
 
 func TestHandleGetReservation_NotFound(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"list_file_reservations": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -1245,6 +1282,7 @@ func TestHandleGetReservation_NotFound(t *testing.T) {
 }
 
 func TestHandleRenewReservation_ReturnsRenewedReservations(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"renew_file_reservations": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -1299,6 +1337,7 @@ func TestHandleRenewReservation_ReturnsRenewedReservations(t *testing.T) {
 }
 
 func TestHandleReleaseReservations_ReturnsReleaseCount(t *testing.T) {
+	t.Parallel()
 
 	releasedAt := "2026-03-23T02:03:04Z"
 	releasedTime, err := time.Parse(time.RFC3339, releasedAt)
@@ -1345,6 +1384,7 @@ func TestHandleReleaseReservations_ReturnsReleaseCount(t *testing.T) {
 }
 
 func TestHandleReleaseReservationByID_NotFoundOnZeroRelease(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"release_file_reservations": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -1378,6 +1418,7 @@ func TestHandleReleaseReservationByID_NotFoundOnZeroRelease(t *testing.T) {
 }
 
 func TestHandleMarkMessageRead_AgentNotFound(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"mark_message_read": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -1411,6 +1452,7 @@ func TestHandleMarkMessageRead_AgentNotFound(t *testing.T) {
 }
 
 func TestHandleMarkMessageRead_ReturnsReadMetadata(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"mark_message_read": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -1456,6 +1498,7 @@ func TestHandleMarkMessageRead_ReturnsReadMetadata(t *testing.T) {
 }
 
 func TestHandleMarkMessageRead_DefaultsMessageIDWhenToolReturnsNull(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"mark_message_read": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -1496,6 +1539,7 @@ func TestHandleMarkMessageRead_DefaultsMessageIDWhenToolReturnsNull(t *testing.T
 }
 
 func TestHandleAckMessage_ReturnsAckMetadata(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"acknowledge_message": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -1543,6 +1587,7 @@ func TestHandleAckMessage_ReturnsAckMetadata(t *testing.T) {
 }
 
 func TestHandleAckMessage_DefaultsMessageIDWhenToolReturnsNull(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"acknowledge_message": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -1583,6 +1628,7 @@ func TestHandleAckMessage_DefaultsMessageIDWhenToolReturnsNull(t *testing.T) {
 }
 
 func TestHandleSearchMessages_NotImplemented(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){})
 
@@ -1609,6 +1655,7 @@ func TestHandleSearchMessages_NotImplemented(t *testing.T) {
 }
 
 func TestHandleMailInbox_InvalidSinceTS(t *testing.T) {
+	t.Parallel()
 
 	srv, _ := setupTestServer(t)
 	srv.projectDir = t.TempDir()
@@ -1625,6 +1672,7 @@ func TestHandleMailInbox_InvalidSinceTS(t *testing.T) {
 }
 
 func TestHandleMailInbox_InvalidLimit(t *testing.T) {
+	t.Parallel()
 
 	srv, _ := setupTestServer(t)
 	srv.projectDir = t.TempDir()
@@ -1641,6 +1689,7 @@ func TestHandleMailInbox_InvalidLimit(t *testing.T) {
 }
 
 func TestHandleMailInbox_InvalidUrgentOnly(t *testing.T) {
+	t.Parallel()
 
 	srv, _ := setupTestServer(t)
 	srv.projectDir = t.TempDir()
@@ -1657,6 +1706,7 @@ func TestHandleMailInbox_InvalidUrgentOnly(t *testing.T) {
 }
 
 func TestHandleMailInbox_InvalidIncludeBodies(t *testing.T) {
+	t.Parallel()
 
 	srv, _ := setupTestServer(t)
 	srv.projectDir = t.TempDir()
@@ -1673,6 +1723,7 @@ func TestHandleMailInbox_InvalidIncludeBodies(t *testing.T) {
 }
 
 func TestHandleSearchMessages_InvalidLimit(t *testing.T) {
+	t.Parallel()
 
 	srv, _ := setupTestServer(t)
 	srv.projectDir = t.TempDir()
@@ -1689,6 +1740,7 @@ func TestHandleSearchMessages_InvalidLimit(t *testing.T) {
 }
 
 func TestHandleThreadSummary_InvalidLLMMode(t *testing.T) {
+	t.Parallel()
 
 	srv, _ := setupTestServer(t)
 	srv.projectDir = t.TempDir()
@@ -1708,6 +1760,7 @@ func TestHandleThreadSummary_InvalidLLMMode(t *testing.T) {
 }
 
 func TestHandleThreadSummary_InvalidIncludeExamples(t *testing.T) {
+	t.Parallel()
 
 	srv, _ := setupTestServer(t)
 	srv.projectDir = t.TempDir()
@@ -1727,6 +1780,7 @@ func TestHandleThreadSummary_InvalidIncludeExamples(t *testing.T) {
 }
 
 func TestHandleThreadSummary_ForwardsExplicitLLMModeFalse(t *testing.T) {
+	t.Parallel()
 
 	var receivedArgs map[string]interface{}
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
@@ -1764,6 +1818,7 @@ func TestHandleThreadSummary_ForwardsExplicitLLMModeFalse(t *testing.T) {
 }
 
 func TestHandleThreadSummary_OmitsIncludeExamplesWhenUnset(t *testing.T) {
+	t.Parallel()
 
 	var receivedArgs map[string]interface{}
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
@@ -1799,6 +1854,7 @@ func TestHandleThreadSummary_OmitsIncludeExamplesWhenUnset(t *testing.T) {
 }
 
 func TestHandleThreadSummary_ReturnsExamplesWhenRequested(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"summarize_thread": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -1851,6 +1907,7 @@ func TestHandleThreadSummary_ReturnsExamplesWhenRequested(t *testing.T) {
 }
 
 func TestHandleMarkMessageRead_DoesNotPublishEventWhenReadFalse(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	srv.mailClient = newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"mark_message_read": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -1881,6 +1938,7 @@ func TestHandleMarkMessageRead_DoesNotPublishEventWhenReadFalse(t *testing.T) {
 }
 
 func TestHandleAckMessage_DoesNotPublishEventWhenAckFalse(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	srv.mailClient = newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"acknowledge_message": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -1911,6 +1969,7 @@ func TestHandleAckMessage_DoesNotPublishEventWhenAckFalse(t *testing.T) {
 }
 
 func TestHandleListMailProjects_NotImplemented(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){})
 
@@ -1937,6 +1996,7 @@ func TestHandleListMailProjects_NotImplemented(t *testing.T) {
 }
 
 func TestHandleCreateMailAgent_InvalidRequest(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"register_agent": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -1970,6 +2030,7 @@ func TestHandleCreateMailAgent_InvalidRequest(t *testing.T) {
 }
 
 func TestHandleCreateMailAgent_TransientBusy(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"register_agent": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -2003,6 +2064,7 @@ func TestHandleCreateMailAgent_TransientBusy(t *testing.T) {
 }
 
 func TestHandleMailInbox_AgentNotFound(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"fetch_inbox": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -2036,6 +2098,7 @@ func TestHandleMailInbox_AgentNotFound(t *testing.T) {
 }
 
 func TestHandleMailInbox_DoesNotEmitMailReceivedEvent(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"fetch_inbox": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -2064,6 +2127,7 @@ func TestHandleMailInbox_DoesNotEmitMailReceivedEvent(t *testing.T) {
 }
 
 func TestHandleRequestContact_ReturnsLinkAndExpiry(t *testing.T) {
+	t.Parallel()
 
 	expiresAt := "2026-03-22T12:34:56Z"
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
@@ -2113,6 +2177,7 @@ func TestHandleRequestContact_ReturnsLinkAndExpiry(t *testing.T) {
 }
 
 func TestHandleRequestContact_NotImplemented(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){})
 
@@ -2139,6 +2204,7 @@ func TestHandleRequestContact_NotImplemented(t *testing.T) {
 }
 
 func TestHandleRequestContact_AgentNotFound(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"request_contact": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -2172,6 +2238,7 @@ func TestHandleRequestContact_AgentNotFound(t *testing.T) {
 }
 
 func TestHandleRespondContact_NotImplemented(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){})
 
@@ -2198,6 +2265,7 @@ func TestHandleRespondContact_NotImplemented(t *testing.T) {
 }
 
 func TestHandleRespondContact_ReturnsStatus(t *testing.T) {
+	t.Parallel()
 
 	expiresAt := "2026-03-23T00:00:00Z"
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
@@ -2247,6 +2315,7 @@ func TestHandleRespondContact_ReturnsStatus(t *testing.T) {
 }
 
 func TestHandleRespondContact_NotFound(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"respond_contact": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -2447,6 +2516,7 @@ func TestHandleForceReleaseReservation_PolicyGate(t *testing.T) {
 }
 
 func TestHandleRenewReservation_NotFoundOnZeroRenew(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"renew_file_reservations": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -2480,6 +2550,7 @@ func TestHandleRenewReservation_NotFoundOnZeroRenew(t *testing.T) {
 }
 
 func TestHandleSetContactPolicy_ReturnsMCPResultFields(t *testing.T) {
+	t.Parallel()
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"set_contact_policy": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -2516,6 +2587,7 @@ func TestHandleSetContactPolicy_ReturnsMCPResultFields(t *testing.T) {
 }
 
 func TestParseAuthMode(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		raw     string
 		expect  AuthMode
@@ -2550,6 +2622,7 @@ func TestParseAuthMode(t *testing.T) {
 }
 
 func TestDefaultLocalOrigins(t *testing.T) {
+	t.Parallel()
 	origins := defaultLocalOrigins()
 	if len(origins) == 0 {
 		t.Fatal("expected defaultLocalOrigins to return entries")
@@ -2577,6 +2650,7 @@ func TestDefaultLocalOrigins(t *testing.T) {
 }
 
 func TestHealthEndpoint(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -2602,6 +2676,7 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestHealthEndpointMethodNotAllowed(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/health", nil)
@@ -2615,6 +2690,7 @@ func TestHealthEndpointMethodNotAllowed(t *testing.T) {
 }
 
 func TestSessionsEndpoint(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
@@ -3168,6 +3244,7 @@ func TestHandleBeadsSync(t *testing.T) {
 }
 
 func TestSessionsEndpointNoStore(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
@@ -3181,6 +3258,7 @@ func TestSessionsEndpointNoStore(t *testing.T) {
 }
 
 func TestSessionEndpointNotFound(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/nonexistent", nil)
@@ -3194,6 +3272,7 @@ func TestSessionEndpointNotFound(t *testing.T) {
 }
 
 func TestSessionEndpointMissingID(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/", nil)
@@ -3207,6 +3286,7 @@ func TestSessionEndpointMissingID(t *testing.T) {
 }
 
 func TestRobotStatusEndpoint(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/robot/status", nil)
@@ -3229,6 +3309,7 @@ func TestRobotStatusEndpoint(t *testing.T) {
 }
 
 func TestKernelCommandsEndpoint(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/kernel/commands", nil)
@@ -3273,6 +3354,7 @@ func TestKernelCommandsEndpoint(t *testing.T) {
 }
 
 func TestRobotHealthEndpoint(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/robot/health", nil)
@@ -3286,6 +3368,7 @@ func TestRobotHealthEndpoint(t *testing.T) {
 }
 
 func TestSessionEventsEndpoint(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	// Publish an event
@@ -3318,6 +3401,7 @@ func TestSessionEventsEndpoint(t *testing.T) {
 }
 
 func TestSSEClientManagement(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	ch := make(chan events.BusEvent, 10)
@@ -3343,6 +3427,7 @@ func TestSSEClientManagement(t *testing.T) {
 }
 
 func TestBroadcastEvent(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	ch := make(chan events.BusEvent, 10)
@@ -3368,6 +3453,7 @@ func TestBroadcastEvent(t *testing.T) {
 }
 
 func TestEventStreamSSE(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	// Create a request with a cancelable context
@@ -3459,6 +3545,7 @@ func newRedactionTestAttentionFeed(t *testing.T) *robot.AttentionFeed {
 }
 
 func TestSSEFrameRedactionModesPreserveExactJSONAndSource(t *testing.T) {
+	t.Parallel()
 	provider := "sk-" + strings.Repeat("x", 48)
 	token := strings.Repeat("q", 32)
 	for _, mode := range []redaction.Mode{redaction.ModeOff, redaction.ModeWarn, redaction.ModeRedact, redaction.ModeBlock} {
@@ -3547,6 +3634,7 @@ func TestSSEFrameRefusesUnsafeOutputWithoutPartialWritesOrSecretDiagnostics(t *t
 }
 
 func TestEventStreamSSERedactsMetadataAndRefusesSensitiveRouting(t *testing.T) {
+	t.Parallel()
 	secret := "sk-" + strings.Repeat("y", 48)
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		for _, sensitiveType := range []bool{false, true} {
@@ -3646,8 +3734,15 @@ func TestAttentionStreamSSERedactsReplayLiveAndUpdatedPolicy(t *testing.T) {
 }
 
 func TestAttentionStreamSSEProtectsHeartbeatDiagnostics(t *testing.T) {
+	t.Parallel()
 	s, store := setupTestServer(t)
-	newRedactionTestAttentionFeed(t)
+	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{
+		JournalSize:       16,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	})
+	t.Cleanup(feed.Stop)
+	s.attentionFeed = feed
 	secret := "sk-" + strings.Repeat("h", 48)
 	now := time.Now().UTC()
 	if err := store.UpsertSourceHealth(&state.SourceHealth{SourceName: "mail", Available: true, Healthy: false, Reason: "service unavailable", LastErrorCode: secret, LastError: secret, LastCheckAt: now, ConsecutiveFailures: 1}); err != nil {
@@ -3687,8 +3782,15 @@ func TestAttentionStreamSSEProtectsHeartbeatDiagnostics(t *testing.T) {
 }
 
 func TestAttentionStreamSSETerminatesOnUnsafeLiveFrame(t *testing.T) {
-	feed := newRedactionTestAttentionFeed(t)
+	t.Parallel()
+	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{
+		JournalSize:       16,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	})
+	t.Cleanup(feed.Stop)
 	s := New(Config{Redaction: &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeRedact}}})
+	s.attentionFeed = feed
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	rec := &sseTestRecorder{ResponseRecorder: httptest.NewRecorder()}
@@ -3711,6 +3813,7 @@ func TestAttentionStreamSSETerminatesOnUnsafeLiveFrame(t *testing.T) {
 }
 
 func TestAttentionSSEReplayRefusalPreservesLastDeliveredCursor(t *testing.T) {
+	t.Parallel()
 	const exactCursor int64 = 9007199254740993
 	s := &Server{redactionCfg: &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeBlock}}}
 	secret := "sk-" + strings.Repeat("r", 48)
@@ -4021,6 +4124,7 @@ func TestAttentionStreamSuppressesFeedHeartbeatEvents(t *testing.T) {
 }
 
 func TestAttentionStreamHeartbeatIncludesCounters(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{
@@ -4028,12 +4132,8 @@ func TestAttentionStreamHeartbeatIncludesCounters(t *testing.T) {
 		RetentionPeriod:   time.Hour,
 		HeartbeatInterval: 0,
 	})
-	oldFeed := robot.GetAttentionFeed()
-	robot.SetAttentionFeed(feed)
-	t.Cleanup(func() {
-		robot.SetAttentionFeed(oldFeed)
-		feed.Stop()
-	})
+	t.Cleanup(feed.Stop)
+	srv.attentionFeed = feed
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/attention/stream", nil).WithContext(ctx)
@@ -4079,6 +4179,7 @@ func TestAttentionStreamHeartbeatIncludesCounters(t *testing.T) {
 }
 
 func TestAttentionStreamHeartbeatIncludesSourceHealth(t *testing.T) {
+	t.Parallel()
 	srv, store := setupTestServer(t)
 
 	now := time.Now().UTC()
@@ -4125,12 +4226,8 @@ func TestAttentionStreamHeartbeatIncludesSourceHealth(t *testing.T) {
 		RetentionPeriod:   time.Hour,
 		HeartbeatInterval: 0,
 	})
-	oldFeed := robot.GetAttentionFeed()
-	robot.SetAttentionFeed(feed)
-	t.Cleanup(func() {
-		robot.SetAttentionFeed(oldFeed)
-		feed.Stop()
-	})
+	t.Cleanup(feed.Stop)
+	srv.attentionFeed = feed
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/attention/stream", nil).WithContext(ctx)
@@ -4171,6 +4268,7 @@ func TestAttentionStreamHeartbeatIncludesSourceHealth(t *testing.T) {
 }
 
 func TestAttentionStreamHeartbeatIncludesLastEventTimeAfterRealEvent(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{
@@ -4187,12 +4285,8 @@ func TestAttentionStreamHeartbeatIncludesLastEventTimeAfterRealEvent(t *testing.
 		Severity:      robot.SeverityWarning,
 		Summary:       "operator attention item",
 	})
-	oldFeed := robot.GetAttentionFeed()
-	robot.SetAttentionFeed(feed)
-	t.Cleanup(func() {
-		robot.SetAttentionFeed(oldFeed)
-		feed.Stop()
-	})
+	t.Cleanup(feed.Stop)
+	srv.attentionFeed = feed
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/attention/stream", nil).WithContext(ctx)
@@ -4231,11 +4325,6 @@ func TestAttentionStreamHeartbeatIncludesLastEventTimeAfterRealEvent(t *testing.
 
 func TestAttentionEventsAsOfIncludesHistoricalMetadata(t *testing.T) {
 	srv, store := setupTestServer(t)
-
-	robot.SetProjectionStore(store)
-	t.Cleanup(func() {
-		robot.SetProjectionStore(nil)
-	})
 
 	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{
 		JournalSize:       100,
@@ -4501,6 +4590,7 @@ func newAttentionStateRequest(method string, cursor int64, body string, requestI
 }
 
 func TestAttentionItemStateAcknowledgePersistsAudit(t *testing.T) {
+	t.Parallel()
 	srv, store := setupTestServer(t)
 	cursor := appendServeTestAttentionEvent(t, store, "operator attention ack")
 
@@ -4607,6 +4697,7 @@ func TestAttentionItemStateAcknowledgePersistsAudit(t *testing.T) {
 }
 
 func TestAttentionItemStateSnoozeRestoreClearsState(t *testing.T) {
+	t.Parallel()
 	srv, store := setupTestServer(t)
 	cursor := appendServeTestAttentionEvent(t, store, "operator attention snooze")
 
@@ -4666,6 +4757,7 @@ func TestAttentionItemStateSnoozeRestoreClearsState(t *testing.T) {
 }
 
 func TestAttentionItemStatePinAndEscalateSetFlags(t *testing.T) {
+	t.Parallel()
 	srv, store := setupTestServer(t)
 	cursor := appendServeTestAttentionEvent(t, store, "operator attention priority")
 
@@ -4719,6 +4811,7 @@ func TestAttentionItemStatePinAndEscalateSetFlags(t *testing.T) {
 }
 
 func TestCheckWSOriginAllowsConfiguredOrigin(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{
 		Auth: AuthConfig{
 			Mode:   AuthModeAPIKey,
@@ -4735,6 +4828,7 @@ func TestCheckWSOriginAllowsConfiguredOrigin(t *testing.T) {
 }
 
 func TestCheckWSOriginRejectsUnlistedOrigin(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{
 		Auth: AuthConfig{
 			Mode:   AuthModeAPIKey,
@@ -4960,6 +5054,7 @@ func newOIDCTestServer(jwksURL string) *Server {
 }
 
 func TestOIDCAlgorithmMatrixThroughRouter(t *testing.T) {
+	t.Parallel()
 	signers := oidcTestSigners(t)
 	var keys []jwk
 	for _, signer := range signers {
@@ -5039,6 +5134,7 @@ func TestOIDCAlgorithmMatrixThroughRouter(t *testing.T) {
 }
 
 func TestOIDCJWKPinningThroughRouter(t *testing.T) {
+	t.Parallel()
 	for _, signer := range oidcTestSigners(t) {
 		t.Run(signer.alg, func(t *testing.T) {
 			for _, scenario := range []string{"optional_metadata", "sign_and_verify", "encryption_key", "sign_only", "empty_key_ops", "mixed_key_ops", "duplicate_key_ops", "wrong_alg", "wrong_key_type", "wrong_curve"} {
@@ -5097,6 +5193,7 @@ func TestOIDCJWKPinningThroughRouter(t *testing.T) {
 }
 
 func TestOIDCRejectsAlgorithmConfusionAndCriticalHeaders(t *testing.T) {
+	t.Parallel()
 	signer := oidcTestSigners(t)[0]
 	signer.jwk.Alg = "" // key-type pinning must hold even without optional alg metadata
 	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -5128,6 +5225,7 @@ func TestOIDCRejectsAlgorithmConfusionAndCriticalHeaders(t *testing.T) {
 }
 
 func TestOIDCRejectsAmbiguousKeyIDs(t *testing.T) {
+	t.Parallel()
 	signers := oidcTestSigners(t)
 	for _, scenario := range []string{"missing_kid_multiple_keys", "duplicate_kid", "duplicate_anonymous", "anonymous_and_named", "anonymous_does_not_alias_default"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -5159,6 +5257,7 @@ func TestOIDCRejectsAmbiguousKeyIDs(t *testing.T) {
 }
 
 func TestOIDCRejectsInvalidSignatureEncodings(t *testing.T) {
+	t.Parallel()
 	signers := oidcTestSigners(t)
 	for _, index := range []int{1, 2, 3} {
 		signer := signers[index]
@@ -5192,6 +5291,7 @@ func TestOIDCRejectsInvalidSignatureEncodings(t *testing.T) {
 }
 
 func TestJWKSCacheConcurrentMissesAndRotation(t *testing.T) {
+	t.Parallel()
 	signer := oidcTestSigners(t)[4]
 	var response atomic.Value
 	response.Store(jwksPayload{Keys: []jwk{signer.jwk}})
@@ -5237,6 +5337,7 @@ func TestJWKSCacheConcurrentMissesAndRotation(t *testing.T) {
 }
 
 func TestJWKSCacheDoesNotReuseKeysAcrossURLs(t *testing.T) {
+	t.Parallel()
 	signer := oidcTestSigners(t)[4]
 	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(jwksPayload{Keys: []jwk{signer.jwk}})
@@ -5258,6 +5359,7 @@ func TestJWKSCacheDoesNotReuseKeysAcrossURLs(t *testing.T) {
 }
 
 func TestJWKSRejectsMalformedPublicKeys(t *testing.T) {
+	t.Parallel()
 	signers := oidcTestSigners(t)
 	for _, scenario := range []struct {
 		name   string
@@ -5290,6 +5392,7 @@ func TestJWKSRejectsMalformedPublicKeys(t *testing.T) {
 }
 
 func TestJWKSCacheExpiredKeysFailClosed(t *testing.T) {
+	t.Parallel()
 	signer := oidcTestSigners(t)[4]
 	var unavailable atomic.Bool
 	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -5317,6 +5420,7 @@ func TestJWKSCacheExpiredKeysFailClosed(t *testing.T) {
 }
 
 func TestJWKSCacheWaitRespectsCancellation(t *testing.T) {
+	t.Parallel()
 	signer := oidcTestSigners(t)[4]
 	started, release := make(chan struct{}), make(chan struct{})
 	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -5360,6 +5464,7 @@ func TestJWKSCacheWaitRespectsCancellation(t *testing.T) {
 // =============================================================================
 
 func TestHealthV1Endpoint(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
@@ -5388,6 +5493,7 @@ func TestHealthV1Endpoint(t *testing.T) {
 }
 
 func TestPerformDoctorCheckAPI_DaemonList(t *testing.T) {
+	t.Parallel()
 	report := performDoctorCheckAPIWithOptions(context.Background(), robot.DoctorOptions{})
 
 	daemonsAny, ok := report["daemons"]
@@ -5420,6 +5526,7 @@ func TestPerformDoctorCheckAPI_DaemonList(t *testing.T) {
 }
 
 func TestVersionV1Endpoint(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/version", nil)
@@ -5445,6 +5552,7 @@ func TestVersionV1Endpoint(t *testing.T) {
 }
 
 func TestCapabilitiesV1Endpoint(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/capabilities", nil)
@@ -5476,6 +5584,7 @@ func TestCapabilitiesV1Endpoint(t *testing.T) {
 }
 
 func TestSessionsV1Endpoint(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
@@ -5506,6 +5615,7 @@ func TestSessionsV1Endpoint(t *testing.T) {
 }
 
 func TestSessionsV1EndpointLargeSyntheticSetStableOrdering(t *testing.T) {
+	t.Parallel()
 	srv, store := setupTestServer(t)
 
 	const sessionCount = 500
@@ -5582,6 +5692,7 @@ func TestSessionsV1EndpointLargeSyntheticSetStableOrdering(t *testing.T) {
 // =============================================================================
 
 func TestListJobsEndpoint(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/", nil)
@@ -5612,6 +5723,7 @@ func TestListJobsEndpoint(t *testing.T) {
 }
 
 func TestCreateJobEndpoint(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	body := `{"type": "pipeline_run", "params": {"workflow_file": "missing.yaml", "session": "endpointjob1"}}`
@@ -5651,6 +5763,7 @@ func TestCreateJobEndpoint(t *testing.T) {
 }
 
 func TestCreateJobInvalidType(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	body := `{"type": "invalid"}`
@@ -5667,6 +5780,7 @@ func TestCreateJobInvalidType(t *testing.T) {
 }
 
 func TestGetJobEndpoint(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	// Create a job first
@@ -5692,6 +5806,7 @@ func TestGetJobEndpoint(t *testing.T) {
 }
 
 func TestGetJobNotFound(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/nonexistent", nil)
@@ -5705,6 +5820,7 @@ func TestGetJobNotFound(t *testing.T) {
 }
 
 func TestCancelJobEndpoint(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	// Create a job first
@@ -5731,6 +5847,7 @@ func TestCancelJobEndpoint(t *testing.T) {
 // =============================================================================
 
 func TestIdempotencyStore(t *testing.T) {
+	t.Parallel()
 	store := NewIdempotencyStore(time.Hour)
 
 	// Test set and get
@@ -5755,6 +5872,7 @@ func TestIdempotencyStore(t *testing.T) {
 }
 
 func TestIdempotencyMiddleware(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	// First request
@@ -5809,6 +5927,7 @@ func TestIdempotencyMiddleware(t *testing.T) {
 // =============================================================================
 
 func TestRecovererMiddleware(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{})
 
 	// Create a handler that panics
@@ -5847,6 +5966,7 @@ func TestRecovererMiddleware(t *testing.T) {
 // =============================================================================
 
 func TestWSHubRegisterClientAfterStop(t *testing.T) {
+	t.Parallel()
 	hub := NewWSHub()
 	hub.Stop()
 
@@ -5863,6 +5983,7 @@ func TestWSHubRegisterClientAfterStop(t *testing.T) {
 }
 
 func TestWSHubUnregisterClientAfterStopDoesNotBlock(t *testing.T) {
+	t.Parallel()
 	hub := NewWSHub()
 	hub.Stop()
 
@@ -5887,6 +6008,7 @@ func TestWSHubUnregisterClientAfterStopDoesNotBlock(t *testing.T) {
 }
 
 func TestTopicMatching(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		pattern string
 		topic   string
@@ -5918,6 +6040,7 @@ func TestTopicMatching(t *testing.T) {
 }
 
 func TestWSClientSubscription(t *testing.T) {
+	t.Parallel()
 	client := &WSClient{
 		id:     "test-client",
 		topics: make(map[string]struct{}),
@@ -5957,6 +6080,7 @@ func TestWSClientSubscription(t *testing.T) {
 }
 
 func TestIsValidTopic(t *testing.T) {
+	t.Parallel()
 	valid := []string{
 		"*",
 		"global",
@@ -6002,6 +6126,7 @@ func TestIsValidTopic(t *testing.T) {
 }
 
 func TestPipelineEventTypeFromProgressType(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		progressType string
@@ -6032,6 +6157,7 @@ func TestPipelineEventTypeFromProgressType(t *testing.T) {
 }
 
 func TestRunPipelineWithResult_InvalidWorkflowDoesNotPanic(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	// The workflow must live inside the server's project directory: workflow paths
@@ -6214,6 +6340,7 @@ func TestHandleCleanupPipelines_UsesServerProjectDir(t *testing.T) {
 }
 
 func TestApprovals_WebSocketEvents(t *testing.T) {
+	t.Parallel()
 	// WS approval events are sourced from durable transitions (bd-d2uxt), so
 	// the server needs a state store for its approval engine.
 	store, err := state.Open(":memory:")
@@ -6322,6 +6449,7 @@ func TestApprovals_WebSocketEvents(t *testing.T) {
 }
 
 func TestWSHubPublish(t *testing.T) {
+	t.Parallel()
 	hub := NewWSHub()
 	go hub.Run()
 	defer hub.Stop()
@@ -6352,6 +6480,7 @@ func TestWSHubPublish(t *testing.T) {
 // =============================================================================
 
 func TestWSHub_PaneOutputSequence(t *testing.T) {
+	t.Parallel()
 	hub := NewWSHub()
 	go hub.Run()
 	defer hub.Stop()
@@ -6381,6 +6510,7 @@ func TestWSHub_PaneOutputSequence(t *testing.T) {
 }
 
 func TestWSHub_TopicFiltering(t *testing.T) {
+	t.Parallel()
 	hub := NewWSHub()
 	go hub.Run()
 	defer hub.Stop()
@@ -6455,6 +6585,7 @@ doneSession:
 }
 
 func TestWSHub_ClientBufferFull(t *testing.T) {
+	t.Parallel()
 	hub := NewWSHub()
 	go hub.Run()
 	defer hub.Stop()
@@ -6506,6 +6637,7 @@ done:
 }
 
 func TestWSHub_GlobalWildcard(t *testing.T) {
+	t.Parallel()
 	hub := NewWSHub()
 	go hub.Run()
 	defer hub.Stop()
@@ -6553,6 +6685,7 @@ done:
 }
 
 func TestMatchTopic(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name    string
@@ -6583,6 +6716,7 @@ func TestMatchTopic(t *testing.T) {
 }
 
 func TestSanitizeRequestID(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -6612,6 +6746,7 @@ func TestSanitizeRequestID(t *testing.T) {
 }
 
 func TestIsLoopbackHost(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name string
@@ -6639,6 +6774,7 @@ func TestIsLoopbackHost(t *testing.T) {
 }
 
 func TestOriginAllowed(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name      string
@@ -6668,6 +6804,7 @@ func TestOriginAllowed(t *testing.T) {
 }
 
 func TestFormatAge(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name string
@@ -6691,6 +6828,7 @@ func TestFormatAge(t *testing.T) {
 }
 
 func TestAttentionHeartbeatInterval(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name      string
@@ -6752,6 +6890,7 @@ func TestAttentionHeartbeatInterval(t *testing.T) {
 }
 
 func TestClaimString(t *testing.T) {
+	t.Parallel()
 
 	claims := map[string]interface{}{
 		"iss":    "https://auth.example.com",
@@ -6782,6 +6921,7 @@ func TestClaimString(t *testing.T) {
 }
 
 func TestClaimInt64(t *testing.T) {
+	t.Parallel()
 
 	claims := map[string]interface{}{
 		"exp":             float64(1700000000),
@@ -6828,6 +6968,7 @@ func TestClaimInt64(t *testing.T) {
 }
 
 func TestClaimAudienceContains(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name     string
@@ -6854,6 +6995,7 @@ func TestClaimAudienceContains(t *testing.T) {
 }
 
 func TestExtractBearerToken(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name string
@@ -6884,6 +7026,7 @@ func TestExtractBearerToken(t *testing.T) {
 }
 
 func TestExtractAPIKey(t *testing.T) {
+	t.Parallel()
 
 	t.Run("from X-API-Key header", func(t *testing.T) {
 		r, _ := http.NewRequest("GET", "/", nil)
@@ -6923,6 +7066,7 @@ func TestExtractAPIKey(t *testing.T) {
 }
 
 func TestParseJWT(t *testing.T) {
+	t.Parallel()
 
 	// Build a valid JWT: header.payload.signature (base64url encoded)
 	headerB64 := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"key1"}`))
@@ -6976,6 +7120,7 @@ func TestParseJWT(t *testing.T) {
 
 // TestToJSONMap tests the toJSONMap function for converting values to maps via JSON round-trip.
 func TestToJSONMap(t *testing.T) {
+	t.Parallel()
 
 	t.Run("struct to map", func(t *testing.T) {
 		type sample struct {
@@ -7050,6 +7195,7 @@ func TestToJSONMap(t *testing.T) {
 
 // TestIsLoopbackHostExtended adds edge cases for isLoopbackHost.
 func TestIsLoopbackHostExtended(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name string
@@ -7083,6 +7229,7 @@ func TestIsLoopbackHostExtended(t *testing.T) {
 
 // TestOriginAllowedExtended adds edge cases for originAllowed.
 func TestOriginAllowedExtended(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name      string
@@ -7115,6 +7262,7 @@ func TestOriginAllowedExtended(t *testing.T) {
 
 // TestGenerateRequestID tests the generateRequestID function.
 func TestGenerateRequestID(t *testing.T) {
+	t.Parallel()
 
 	t.Run("returns non-empty string", func(t *testing.T) {
 		id := generateRequestID()
@@ -7150,6 +7298,7 @@ func TestGenerateRequestID(t *testing.T) {
 
 // TestRequestIDFromContext tests the requestIDFromContext function.
 func TestRequestIDFromContext(t *testing.T) {
+	t.Parallel()
 
 	t.Run("nil context returns empty", func(t *testing.T) {
 		id := requestIDFromContext(context.TODO())
@@ -7192,6 +7341,7 @@ func TestRequestIDFromContext(t *testing.T) {
 // 127.0.0.1 and subscribe to the attention journal, pane output, and mail. The
 // allowlist applies in every mode now.
 func TestCheckWSOrigin_LocalModeRejectsForeignOrigin(t *testing.T) {
+	t.Parallel()
 	srv := &Server{auth: AuthConfig{Mode: AuthModeLocal}}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Origin", "https://evil.com")
@@ -7201,6 +7351,7 @@ func TestCheckWSOrigin_LocalModeRejectsForeignOrigin(t *testing.T) {
 }
 
 func TestCheckWSOrigin_EmptyModeRejectsForeignOrigin(t *testing.T) {
+	t.Parallel()
 	srv := &Server{auth: AuthConfig{Mode: ""}}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Origin", "https://evil.com")
@@ -7213,6 +7364,7 @@ func TestCheckWSOrigin_EmptyModeRejectsForeignOrigin(t *testing.T) {
 // ports, so origin matching has to be port-insensitive on the hostname, exactly
 // as the CORS middleware already was.
 func TestCheckWSOrigin_LocalModeAllowsLocalhostWithPort(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []AuthMode{AuthModeLocal, ""} {
 		srv := &Server{auth: AuthConfig{Mode: mode}}
 		for _, origin := range []string{
@@ -7230,6 +7382,7 @@ func TestCheckWSOrigin_LocalModeAllowsLocalhostWithPort(t *testing.T) {
 }
 
 func TestCheckWSOrigin_NoOriginHeader(t *testing.T) {
+	t.Parallel()
 	srv := &Server{
 		auth:               AuthConfig{Mode: AuthModeAPIKey, APIKey: "key"},
 		corsAllowedOrigins: []string{"https://example.com"},
@@ -7242,6 +7395,7 @@ func TestCheckWSOrigin_NoOriginHeader(t *testing.T) {
 }
 
 func TestCheckWSOrigin_AllowedOrigin(t *testing.T) {
+	t.Parallel()
 	srv := &Server{
 		auth:               AuthConfig{Mode: AuthModeAPIKey, APIKey: "key"},
 		corsAllowedOrigins: []string{"https://example.com", "https://app.example.com:8080"},
@@ -7261,6 +7415,7 @@ func TestCheckWSOrigin_AllowedOrigin(t *testing.T) {
 }
 
 func TestCheckWSOrigin_RejectedOrigin(t *testing.T) {
+	t.Parallel()
 	srv := &Server{
 		auth:               AuthConfig{Mode: AuthModeAPIKey, APIKey: "key"},
 		corsAllowedOrigins: []string{"https://example.com"},
@@ -7273,6 +7428,7 @@ func TestCheckWSOrigin_RejectedOrigin(t *testing.T) {
 }
 
 func TestCheckWSOrigin_MalformedOrigin(t *testing.T) {
+	t.Parallel()
 	srv := &Server{
 		auth:               AuthConfig{Mode: AuthModeAPIKey, APIKey: "key"},
 		corsAllowedOrigins: []string{"https://example.com"},
@@ -7287,6 +7443,7 @@ func TestCheckWSOrigin_MalformedOrigin(t *testing.T) {
 }
 
 func TestCheckWSOrigin_MalformedAllowedOrigin(t *testing.T) {
+	t.Parallel()
 	srv := &Server{
 		auth:               AuthConfig{Mode: AuthModeAPIKey, APIKey: "key"},
 		corsAllowedOrigins: []string{"not-a-url", "https://good.com"},
@@ -7303,6 +7460,7 @@ func TestCheckWSOrigin_MalformedAllowedOrigin(t *testing.T) {
 // =============================================================================
 
 func TestExtractAuthClaims_NoClaims(t *testing.T) {
+	t.Parallel()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	claims := extractAuthClaims(req)
 	if len(claims) != 0 {
@@ -7311,6 +7469,7 @@ func TestExtractAuthClaims_NoClaims(t *testing.T) {
 }
 
 func TestExtractAuthClaims_WithClaims(t *testing.T) {
+	t.Parallel()
 	authData := map[string]interface{}{
 		"sub":   "user-123",
 		"email": "user@example.com",
@@ -7329,6 +7488,7 @@ func TestExtractAuthClaims_WithClaims(t *testing.T) {
 }
 
 func TestExtractAuthClaims_WrongType(t *testing.T) {
+	t.Parallel()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	ctx := context.WithValue(req.Context(), authContextKey, "not-a-map")
 	req = req.WithContext(ctx)
@@ -7344,6 +7504,7 @@ func TestExtractAuthClaims_WrongType(t *testing.T) {
 // =============================================================================
 
 func TestValidateConfig_APIKeyNoKey(t *testing.T) {
+	t.Parallel()
 	cfg := Config{
 		Auth: AuthConfig{Mode: AuthModeAPIKey}, // No APIKey
 	}
@@ -7354,6 +7515,7 @@ func TestValidateConfig_APIKeyNoKey(t *testing.T) {
 }
 
 func TestValidateConfig_OIDCMissingIssuer(t *testing.T) {
+	t.Parallel()
 	cfg := Config{
 		Host: "0.0.0.0",
 		Auth: AuthConfig{
@@ -7368,6 +7530,7 @@ func TestValidateConfig_OIDCMissingIssuer(t *testing.T) {
 }
 
 func TestValidateConfig_OIDCMissingJWKS(t *testing.T) {
+	t.Parallel()
 	cfg := Config{
 		Host: "0.0.0.0",
 		Auth: AuthConfig{
@@ -7382,6 +7545,7 @@ func TestValidateConfig_OIDCMissingJWKS(t *testing.T) {
 }
 
 func TestValidateConfig_MTLSMissing(t *testing.T) {
+	t.Parallel()
 	cfg := Config{
 		Host: "0.0.0.0",
 		Auth: AuthConfig{Mode: AuthModeMTLS},
@@ -7393,6 +7557,7 @@ func TestValidateConfig_MTLSMissing(t *testing.T) {
 }
 
 func TestValidateConfig_InvalidAuthMode(t *testing.T) {
+	t.Parallel()
 	cfg := Config{
 		Auth: AuthConfig{Mode: "bogus_mode"},
 	}
@@ -7407,6 +7572,7 @@ func TestValidateConfig_InvalidAuthMode(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCorsMiddlewareFunc_ForbiddenOrigin(t *testing.T) {
+	t.Parallel()
 	srv := &Server{corsAllowedOrigins: []string{"https://good.com"}}
 	handler := srv.corsMiddlewareFunc(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("next handler should not be called for forbidden origin")
@@ -7421,6 +7587,7 @@ func TestCorsMiddlewareFunc_ForbiddenOrigin(t *testing.T) {
 }
 
 func TestCorsMiddlewareFunc_AllowedOriginSetsHeaders(t *testing.T) {
+	t.Parallel()
 	srv := &Server{corsAllowedOrigins: []string{"https://good.com"}}
 	called := false
 	handler := srv.corsMiddlewareFunc(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -7442,6 +7609,7 @@ func TestCorsMiddlewareFunc_AllowedOriginSetsHeaders(t *testing.T) {
 }
 
 func TestCorsMiddlewareFunc_OptionsRequest(t *testing.T) {
+	t.Parallel()
 	srv := &Server{corsAllowedOrigins: []string{"https://good.com"}}
 	handler := srv.corsMiddlewareFunc(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("next handler should not be called on options")
@@ -7462,6 +7630,7 @@ func TestCorsMiddlewareFunc_OptionsRequest(t *testing.T) {
 }
 
 func TestCorsMiddlewareFunc_NoOriginPassesThrough(t *testing.T) {
+	t.Parallel()
 	srv := &Server{corsAllowedOrigins: []string{"https://good.com"}}
 	called := false
 	handler := srv.corsMiddlewareFunc(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -7481,6 +7650,7 @@ func TestCorsMiddlewareFunc_NoOriginPassesThrough(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAuthMiddlewareFunc_LocalMode(t *testing.T) {
+	t.Parallel()
 	srv := &Server{auth: AuthConfig{Mode: AuthModeLocal}}
 	called := false
 	handler := srv.authMiddlewareFunc(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -7495,6 +7665,7 @@ func TestAuthMiddlewareFunc_LocalMode(t *testing.T) {
 }
 
 func TestAuthMiddlewareFunc_EmptyMode(t *testing.T) {
+	t.Parallel()
 	srv := &Server{auth: AuthConfig{Mode: ""}}
 	called := false
 	handler := srv.authMiddlewareFunc(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -7509,6 +7680,7 @@ func TestAuthMiddlewareFunc_EmptyMode(t *testing.T) {
 }
 
 func TestAuthMiddlewareFunc_OptionsPassthrough(t *testing.T) {
+	t.Parallel()
 	srv := &Server{auth: AuthConfig{Mode: AuthModeAPIKey, APIKey: "secret"}}
 	called := false
 	handler := srv.authMiddlewareFunc(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -7523,6 +7695,7 @@ func TestAuthMiddlewareFunc_OptionsPassthrough(t *testing.T) {
 }
 
 func TestAuthMiddlewareFunc_FailedAuth(t *testing.T) {
+	t.Parallel()
 	srv := &Server{auth: AuthConfig{Mode: AuthModeAPIKey, APIKey: "secret"}}
 	handler := srv.authMiddlewareFunc(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("next handler should not be called on auth failure")
@@ -7537,6 +7710,7 @@ func TestAuthMiddlewareFunc_FailedAuth(t *testing.T) {
 }
 
 func TestAuthMiddlewareFunc_SuccessfulAuth(t *testing.T) {
+	t.Parallel()
 	srv := &Server{auth: AuthConfig{Mode: AuthModeAPIKey, APIKey: "secret"}}
 	called := false
 	handler := srv.authMiddlewareFunc(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -7556,6 +7730,7 @@ func TestAuthMiddlewareFunc_SuccessfulAuth(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAuthenticateRequest_UnsupportedMode(t *testing.T) {
+	t.Parallel()
 	srv := &Server{auth: AuthConfig{Mode: "foobar"}}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	_, err := srv.authenticateRequest(req)
@@ -7568,6 +7743,7 @@ func TestAuthenticateRequest_UnsupportedMode(t *testing.T) {
 }
 
 func TestAuthenticateRequest_APIKeyPath(t *testing.T) {
+	t.Parallel()
 	srv := &Server{auth: AuthConfig{Mode: AuthModeAPIKey, APIKey: "key123"}}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("X-API-Key", "key123")
@@ -7577,6 +7753,7 @@ func TestAuthenticateRequest_APIKeyPath(t *testing.T) {
 }
 
 func TestAuthenticateRequest_MTLSPath(t *testing.T) {
+	t.Parallel()
 	srv := &Server{auth: AuthConfig{Mode: AuthModeMTLS}}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.TLS = &tls.ConnectionState{
@@ -7592,6 +7769,7 @@ func TestAuthenticateRequest_MTLSPath(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAuthenticateAPIKey_InvalidKey(t *testing.T) {
+	t.Parallel()
 	srv := &Server{auth: AuthConfig{Mode: AuthModeAPIKey, APIKey: "correct-key"}}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("X-API-Key", "wrong-key")
@@ -7602,6 +7780,7 @@ func TestAuthenticateAPIKey_InvalidKey(t *testing.T) {
 }
 
 func TestAuthenticateAPIKey_MissingKey(t *testing.T) {
+	t.Parallel()
 	srv := &Server{auth: AuthConfig{Mode: AuthModeAPIKey, APIKey: "correct-key"}}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	err := srv.authenticateAPIKey(req)
@@ -7615,6 +7794,7 @@ func TestAuthenticateAPIKey_MissingKey(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseJWT_InvalidFormat(t *testing.T) {
+	t.Parallel()
 	_, _, _, _, err := parseJWT("not.a.valid.jwt.too.many.parts")
 	if err == nil || !strings.Contains(err.Error(), "invalid jwt format") {
 		t.Errorf("expected 'invalid jwt format' error, got: %v", err)
@@ -7622,6 +7802,7 @@ func TestParseJWT_InvalidFormat(t *testing.T) {
 }
 
 func TestParseJWT_BadHeaderBase64(t *testing.T) {
+	t.Parallel()
 	_, _, _, _, err := parseJWT("!!!bad-base64.eyJ0ZXN0IjoxfQ.sig")
 	if err == nil || !strings.Contains(err.Error(), "decode jwt header") {
 		t.Errorf("expected header decode error, got: %v", err)
@@ -7629,6 +7810,7 @@ func TestParseJWT_BadHeaderBase64(t *testing.T) {
 }
 
 func TestParseJWT_BadPayloadBase64(t *testing.T) {
+	t.Parallel()
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256"}`))
 	_, _, _, _, err := parseJWT(header + ".!!!bad.sig")
 	if err == nil || !strings.Contains(err.Error(), "decode jwt payload") {
@@ -7637,6 +7819,7 @@ func TestParseJWT_BadPayloadBase64(t *testing.T) {
 }
 
 func TestParseJWT_BadSignatureBase64(t *testing.T) {
+	t.Parallel()
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256"}`))
 	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"user"}`))
 	_, _, _, _, err := parseJWT(header + "." + payload + ".!!!bad")
@@ -7646,6 +7829,7 @@ func TestParseJWT_BadSignatureBase64(t *testing.T) {
 }
 
 func TestParseJWT_InvalidHeaderJSON(t *testing.T) {
+	t.Parallel()
 	header := base64.RawURLEncoding.EncodeToString([]byte(`not-json`))
 	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"user"}`))
 	sig := base64.RawURLEncoding.EncodeToString([]byte(`sig`))
@@ -7656,6 +7840,7 @@ func TestParseJWT_InvalidHeaderJSON(t *testing.T) {
 }
 
 func TestParseJWT_InvalidPayloadJSON(t *testing.T) {
+	t.Parallel()
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256"}`))
 	payload := base64.RawURLEncoding.EncodeToString([]byte(`not-json`))
 	sig := base64.RawURLEncoding.EncodeToString([]byte(`sig`))
@@ -7666,6 +7851,7 @@ func TestParseJWT_InvalidPayloadJSON(t *testing.T) {
 }
 
 func TestParseJWT_ValidToken(t *testing.T) {
+	t.Parallel()
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"key1"}`))
 	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"user-123","iss":"https://example.com"}`))
 	sig := base64.RawURLEncoding.EncodeToString([]byte(`fakesig`))
@@ -7695,6 +7881,7 @@ func TestParseJWT_ValidToken(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseRSAPublicKey_Valid(t *testing.T) {
+	t.Parallel()
 	// Generate a real RSA key and extract n/e
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -7715,6 +7902,7 @@ func TestParseRSAPublicKey_Valid(t *testing.T) {
 }
 
 func TestParseRSAPublicKey_BadN(t *testing.T) {
+	t.Parallel()
 	_, err := parseRSAPublicKey("!!!bad-base64", base64.RawURLEncoding.EncodeToString([]byte{1, 0, 1}))
 	if err == nil || !strings.Contains(err.Error(), "decode jwk n") {
 		t.Errorf("expected n decode error, got: %v", err)
@@ -7722,6 +7910,7 @@ func TestParseRSAPublicKey_BadN(t *testing.T) {
 }
 
 func TestParseRSAPublicKey_BadE(t *testing.T) {
+	t.Parallel()
 	nStr := base64.RawURLEncoding.EncodeToString([]byte{0x01})
 	_, err := parseRSAPublicKey(nStr, "!!!bad-base64")
 	if err == nil || !strings.Contains(err.Error(), "decode jwk e") {
@@ -7730,6 +7919,7 @@ func TestParseRSAPublicKey_BadE(t *testing.T) {
 }
 
 func TestParseRSAPublicKey_ZeroExponent(t *testing.T) {
+	t.Parallel()
 	nStr := base64.RawURLEncoding.EncodeToString([]byte{0x01})
 	eStr := base64.RawURLEncoding.EncodeToString([]byte{}) // empty = zero exponent
 	_, err := parseRSAPublicKey(nStr, eStr)
@@ -7743,6 +7933,7 @@ func TestParseRSAPublicKey_ZeroExponent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClaimInt64_JsonNumberError(t *testing.T) {
+	t.Parallel()
 	claims := map[string]interface{}{
 		"val": json.Number("not-a-number"),
 	}
@@ -7753,6 +7944,7 @@ func TestClaimInt64_JsonNumberError(t *testing.T) {
 }
 
 func TestClaimInt64_UnsupportedType(t *testing.T) {
+	t.Parallel()
 	claims := map[string]interface{}{
 		"val": "string-value",
 	}
@@ -7767,6 +7959,7 @@ func TestClaimInt64_UnsupportedType(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWriteSuccessResponse_NilData(t *testing.T) {
+	t.Parallel()
 	w := httptest.NewRecorder()
 	writeSuccessResponse(w, http.StatusOK, nil, "")
 	if w.Code != http.StatusOK {
@@ -7785,6 +7978,7 @@ func TestWriteSuccessResponse_NilData(t *testing.T) {
 }
 
 func TestWriteSuccessResponse_WithRequestID(t *testing.T) {
+	t.Parallel()
 	w := httptest.NewRecorder()
 	writeSuccessResponse(w, http.StatusCreated, map[string]interface{}{"foo": "bar"}, "req-123")
 	if w.Code != http.StatusCreated {
@@ -7807,6 +8001,7 @@ func TestWriteSuccessResponse_WithRequestID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWriteErrorResponse_WithHint(t *testing.T) {
+	t.Parallel()
 	w := httptest.NewRecorder()
 	details := map[string]interface{}{
 		"hint":  "try using a different key",
@@ -7826,6 +8021,7 @@ func TestWriteErrorResponse_WithHint(t *testing.T) {
 }
 
 func TestWriteErrorResponse_HintOnlyDetail(t *testing.T) {
+	t.Parallel()
 	w := httptest.NewRecorder()
 	details := map[string]interface{}{
 		"hint": "only hint, no other details",
@@ -7883,6 +8079,7 @@ func (f *fakeAttentionStreamFeed) emit(event robot.AttentionEvent) {
 }
 
 func TestPrepareAttentionStream_ReplayBoundaryPreservesLiveEvents(t *testing.T) {
+	t.Parallel()
 
 	liveEvent := robot.AttentionEvent{Cursor: 2, Summary: "live"}
 	feed := &fakeAttentionStreamFeed{
@@ -7926,6 +8123,7 @@ func TestPrepareAttentionStream_ReplayBoundaryPreservesLiveEvents(t *testing.T) 
 }
 
 func TestWriteAttentionReplay_AdvancesCursorToLastDeliveredEvent(t *testing.T) {
+	t.Parallel()
 
 	rec := httptest.NewRecorder()
 	events := []robot.AttentionEvent{
@@ -7954,6 +8152,7 @@ func TestWriteAttentionReplay_AdvancesCursorToLastDeliveredEvent(t *testing.T) {
 }
 
 func TestWriteAttentionReplay_SuppressesReplayHeartbeatEventsAndPreservesCursor(t *testing.T) {
+	t.Parallel()
 
 	rec := httptest.NewRecorder()
 	events := []robot.AttentionEvent{
@@ -7982,6 +8181,7 @@ func TestWriteAttentionReplay_SuppressesReplayHeartbeatEventsAndPreservesCursor(
 }
 
 func TestPrepareAttentionStream_CursorExpired(t *testing.T) {
+	t.Parallel()
 
 	feed := &fakeAttentionStreamFeed{
 		stats: robot.JournalStats{
@@ -8328,6 +8528,7 @@ func TestWSSubscribeRejectsExpiredAttentionCursor(t *testing.T) {
 }
 
 func TestWSAttentionSubscribeRollsBackCursorExpiredDuringReplay(t *testing.T) {
+	t.Parallel()
 	feed := &fakeAttentionStreamFeed{
 		stats: robot.JournalStats{
 			Count:           1,
@@ -8379,6 +8580,7 @@ func TestWSAttentionSubscribeRollsBackCursorExpiredDuringReplay(t *testing.T) {
 
 // TestPartitionAttentionTopics tests topic partitioning.
 func TestPartitionAttentionTopics(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name          string
@@ -8427,6 +8629,7 @@ func TestPartitionAttentionTopics(t *testing.T) {
 
 // TestIsAttentionTopic tests attention topic detection.
 func TestIsAttentionTopic(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		topic string

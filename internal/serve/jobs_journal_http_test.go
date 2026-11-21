@@ -59,6 +59,7 @@ func newJournalHTTPServer(t *testing.T, path string, configure ...func(*Server))
 }
 
 func TestJobJournalHTTPCompletedAndFailedJobsSurviveRestart(t *testing.T) {
+	t.Parallel()
 	for _, fails := range []bool{false, true} {
 		name := "completed"
 		if fails {
@@ -98,6 +99,7 @@ func TestJobJournalHTTPCompletedAndFailedJobsSurviveRestart(t *testing.T) {
 }
 
 func TestJobJournalHTTPCancellationRetainsLateEvidenceAcrossRestart(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.db")
 	srv, closeServer := newJournalHTTPServer(t, path)
 	started := make(chan struct{})
@@ -127,6 +129,7 @@ func TestJobJournalHTTPCancellationRetainsLateEvidenceAcrossRestart(t *testing.T
 }
 
 func TestJobJournalHTTPInterruptedWorkIsInspectableNotReplayed(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.db")
 	store, err := state.Open(path)
 	if err != nil {
@@ -149,6 +152,7 @@ func TestJobJournalHTTPInterruptedWorkIsInspectableNotReplayed(t *testing.T) {
 }
 
 func TestJobJournalHTTPRecoveryBoundsHistory(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.db")
 	store, err := state.Open(path)
 	if err != nil {
@@ -185,9 +189,7 @@ func TestJobJournalHTTPRecoveryBoundsHistory(t *testing.T) {
 			job.CreatedAt = base.Add(time.Hour).Format(time.RFC3339)
 			job.Status = JobStatusRunning
 		}
-		if err := journal.save(job); err != nil {
-			t.Fatal(err)
-		}
+		seedJobJournalFixture(t, journal.dir, job)
 	}
 	if err := journal.Close(); err != nil {
 		t.Fatal(err)
@@ -287,6 +289,7 @@ func TestJobJournalHTTPRecoveryBoundsHistory(t *testing.T) {
 }
 
 func TestJobJournalFailurePreventsExecution(t *testing.T) {
+	t.Parallel()
 	srv, _ := newJournalHTTPServer(t, filepath.Join(t.TempDir(), "state.db"))
 	var calls atomic.Int32
 	srv.spawnAgents = func(context.Context, robot.SpawnOptions) (*robot.SpawnOutput, error) {
@@ -305,6 +308,7 @@ func TestJobJournalFailurePreventsExecution(t *testing.T) {
 }
 
 func TestJobJournalHTTPLiveProgressSurvivesNilResultAndPanic(t *testing.T) {
+	t.Parallel()
 	for _, panics := range []bool{false, true} {
 		t.Run(map[bool]string{false: "nil-result", true: "panic"}[panics], func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "state.db")
@@ -370,6 +374,7 @@ func TestJobJournalHTTPLiveProgressSurvivesNilResultAndPanic(t *testing.T) {
 }
 
 func TestJobOperationHTTPProgressSurvivesOriginalJobEviction(t *testing.T) {
+	t.Parallel()
 	for _, panics := range []bool{false, true} {
 		t.Run(map[bool]string{false: "failed", true: "interrupted"}[panics], func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "state.db")
@@ -465,6 +470,7 @@ func awaitJobOutcomePublication(t *testing.T, srv *Server) {
 }
 
 func TestJobJournalHTTPFinalPublicationFailureRetainsExecutionEvidence(t *testing.T) {
+	t.Parallel()
 	for _, operationID := range []string{"", "terminal-once"} {
 		t.Run("operation="+operationID, func(t *testing.T) {
 			root := t.TempDir()
@@ -548,6 +554,7 @@ func TestJobJournalHTTPFinalPublicationFailureRetainsExecutionEvidence(t *testin
 }
 
 func TestJobJournalHTTPFinalPublicationFailurePreservesCancellation(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.db")
 	srv, closeServer := newJournalHTTPServer(t, path)
 	started, release := make(chan struct{}), make(chan struct{})

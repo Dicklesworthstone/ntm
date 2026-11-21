@@ -14,10 +14,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
-func init() {
-	rootCmd.AddCommand(newAttentionCmd())
-}
-
 // AttentionCLIItem represents a surfaced attention event annotated with its
 // durable operator state for `ntm attention list`.
 type AttentionCLIItem struct {

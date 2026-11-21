@@ -513,31 +513,37 @@ type InspectIncidentOutput struct {
 // InspectSessionOptions configures session inspection.
 type InspectSessionOptions struct {
 	Session string
+	Store   *state.Store `json:"-"`
 }
 
 // InspectAgentOptions configures agent inspection.
 type InspectAgentOptions struct {
 	AgentID string
+	Store   *state.Store `json:"-"`
 }
 
 // InspectWorkOptions configures work inspection.
 type InspectWorkOptions struct {
 	BeadID string
+	Store  *state.Store `json:"-"`
 }
 
 // InspectCoordinationOptions configures coordination inspection.
 type InspectCoordinationOptions struct {
 	AgentName string
+	Store     *state.Store `json:"-"`
 }
 
 // InspectQuotaOptions configures quota inspection.
 type InspectQuotaOptions struct {
 	QuotaID string
+	Store   *state.Store `json:"-"`
 }
 
 // InspectIncidentOptions configures incident inspection.
 type InspectIncidentOptions struct {
 	IncidentID string
+	Store      *state.Store `json:"-"`
 }
 
 // InspectPaneOutput represents detailed pane inspection
@@ -2033,7 +2039,7 @@ func GetInspectSession(opts InspectSessionOptions) (*InspectSessionOutput, error
 		return output, nil
 	}
 
-	store := currentProjectionStore()
+	store := opts.Store
 	if store == nil {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("runtime projection store unavailable"),
@@ -2108,7 +2114,7 @@ func GetInspectAgent(opts InspectAgentOptions) (*InspectAgentOutput, error) {
 		return output, nil
 	}
 
-	store := currentProjectionStore()
+	store := opts.Store
 	if store == nil {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("runtime projection store unavailable"),
@@ -2176,7 +2182,7 @@ func GetInspectWork(opts InspectWorkOptions) (*InspectWorkOutput, error) {
 		return output, nil
 	}
 
-	store := currentProjectionStore()
+	store := opts.Store
 	if store == nil {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("runtime projection store unavailable"),
@@ -2250,7 +2256,7 @@ func GetInspectCoordination(opts InspectCoordinationOptions) (*InspectCoordinati
 		return output, nil
 	}
 
-	store := currentProjectionStore()
+	store := opts.Store
 	if store == nil {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("runtime projection store unavailable"),
@@ -2335,7 +2341,7 @@ func GetInspectQuota(opts InspectQuotaOptions) (*InspectQuotaOutput, error) {
 		return output, nil
 	}
 
-	store := currentProjectionStore()
+	store := opts.Store
 	if store == nil {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("runtime projection store unavailable"),
@@ -2414,7 +2420,7 @@ func GetInspectIncident(opts InspectIncidentOptions) (*InspectIncidentOutput, er
 		return output, nil
 	}
 
-	store := currentProjectionStore()
+	store := opts.Store
 	if store == nil {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("runtime projection store unavailable"),
@@ -2476,8 +2482,8 @@ type IncidentResolveOutput struct {
 	Note           string `json:"note,omitempty"`
 }
 
-// ResolveIncident marks a store-backed incident resolved with an audit note.
-func ResolveIncident(incidentID, note string) (*IncidentResolveOutput, error) {
+// ResolveIncidentForStore marks a store-backed incident resolved with an audit note.
+func ResolveIncidentForStore(store *state.Store, incidentID, note string) (*IncidentResolveOutput, error) {
 	incidentID = strings.TrimSpace(incidentID)
 	output := &IncidentResolveOutput{
 		RobotResponse: NewRobotResponse(true),
@@ -2491,7 +2497,6 @@ func ResolveIncident(incidentID, note string) (*IncidentResolveOutput, error) {
 		)
 		return output, nil
 	}
-	store := currentProjectionStore()
 	if store == nil {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("runtime projection store unavailable"),
@@ -2530,15 +2535,6 @@ func ResolveIncident(incidentID, note string) (*IncidentResolveOutput, error) {
 	output.Status = string(state.IncidentStatusResolved)
 	output.Note = resolutionNote
 	return output, nil
-}
-
-// PrintIncidentResolve resolves an incident and prints the structured result.
-func PrintIncidentResolve(incidentID, note string) error {
-	output, err := ResolveIncident(incidentID, note)
-	if err != nil {
-		return err
-	}
-	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot incident-resolve failed")
 }
 
 func PrintInspectIncident(opts InspectIncidentOptions) error {
@@ -2702,6 +2698,7 @@ type MetricsOptions struct {
 	// DiskAttribution enables per-pane build-dir sizing (--disk-attribution).
 	// Off by default: it walks build dirs under each agent pane's cwd.
 	DiskAttribution bool
+	Store           *state.Store `json:"-"`
 }
 
 // metricsNow is the clock --robot-metrics measures against. Overridable for
@@ -2885,7 +2882,11 @@ func GetMetrics(opts MetricsOptions) (*MetricsOutput, error) {
 	// Disk trajectory: one sample per invocation, delta vs the previous
 	// persisted sample (ntm-1k9g). Fires the disk_trajectory alert when the
 	// projection lands within the configured horizon.
-	output.Disk = collectDiskSection()
+	var diskStore WatermarkStore
+	if opts.Store != nil {
+		diskStore = opts.Store
+	}
+	output.Disk = collectDiskSection(diskStore)
 	publishDiskTrajectoryFromMergedConfig(output.Disk, time.Now().UTC())
 
 	if opts.DiskAttribution {

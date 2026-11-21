@@ -72,6 +72,7 @@ var (
 )
 
 var robotStateStore *state.Store
+var robotRuntime *robot.Runtime
 var robotProcessExit error
 var jsonArgumentRoot *cobra.Command
 
@@ -1175,7 +1176,7 @@ func robotPersistenceRefreshesProjection(cmd *cobra.Command) bool {
 // 2.5-10s and ~60 subprocesses per call. Evidence, from an RTA call graph over
 // static calls and interface invokes starting at each Print function: the
 // static-metadata and tool-bridge surfaces (cass, jfp, ms, xf, slb, rch, caut,
-// ru, dcg, rano, giil, Agent Mail) never reach currentProjectionStore; send,
+// ru, dcg, rano, giil, Agent Mail) never reach the projection store; send,
 // interrupt, ack, tail, is-working and send-receipt reach the store only for
 // send-operation records and attention-event appends (the send guard hook
 // included). Lifecycle verbs inspect their targets after host admission and
@@ -1234,8 +1235,8 @@ func initializeRobotPersistence(ctx context.Context, refreshProjection bool) err
 		robot.DefaultAttentionFeedConfig(),
 		robot.WithAttentionStore(store),
 	))
-	robot.SetProjectionStore(store)
 	robotStateStore = store
+	robotRuntime = robot.NewRuntime(store, cfg)
 	collectStateGarbageOccasionally(store, state.DefaultPath()+".gc", robotStateGCInterval, time.Now())
 
 	if !refreshProjection {
@@ -1385,13 +1386,21 @@ func persistEmittedBusEvents(emitter *events.EventEmitter, bus *events.EventBus)
 	}
 }
 
+func currentRobotRuntime() *robot.Runtime {
+	if robotRuntime != nil {
+		return robotRuntime
+	}
+	return robot.NewRuntime(robotStateStore, cfg)
+}
+
 func closeRobotPersistence() {
 	if robotStateStore == nil {
+		robotRuntime = nil
 		return
 	}
 	_ = robotStateStore.Close()
 	robotStateStore = nil
-	robot.SetProjectionStore(nil)
+	robotRuntime = nil
 }
 
 func startCommandAudit(cmd *cobra.Command, args []string) {
@@ -1457,8 +1466,4 @@ func goPlatform() string {
 
 func init() {
 	initRootFlagsAndSubcommands()
-}
-
-func init() {
-	registerCoreVersionKernel()
 }

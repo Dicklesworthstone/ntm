@@ -66,6 +66,8 @@ func (c *sharedReadinessTmuxClient) Endpoint() string {
 	return c.endpoint
 }
 
+func (c *sharedReadinessTmuxClient) unwrapMockTmux() *MockTmuxClient { return c.MockTmuxClient }
+
 func (c *sharedReadinessTmuxClient) PrepareDelivery(ctx context.Context, pane tmux.Pane, agentType string) error {
 	c.preparations++
 	if c.beforePrepare != nil {
@@ -332,6 +334,7 @@ func TestAgentDeliveryPreflightCheckpointFailurePreservesUncertainty(t *testing.
 }
 
 func TestAgentDeliveryInitialReceiptFailurePreventsPreflight(t *testing.T) {
+	t.Parallel()
 	executor, ctx := checkpointTestExecutor(t)
 	if err := executor.persistState(); err != nil {
 		t.Fatal(err)
@@ -376,6 +379,8 @@ func submittingExecutor(t *testing.T, session string) (*Executor, *MockTmuxClien
 	t.Helper()
 	cfg := DefaultExecutorConfig(session)
 	cfg.ProgressInterval = 100 * time.Millisecond
+	cfg.IdleDebounce = 5 * time.Millisecond
+	cfg.IdlePollInterval = 5 * time.Millisecond
 	cfg.DefaultTimeout = 10 * time.Second
 	executor := NewExecutor(cfg)
 
@@ -411,6 +416,7 @@ func assertNotResent(t *testing.T, mock *MockTmuxClient) {
 // the prompt dispatch path: with wait: completion and a pane that reads idle,
 // an unsubmitted composer must fail the step instead of completing it.
 func TestAgentStepFailsWhenPromptStaysInComposer(t *testing.T) {
+	t.Parallel()
 	executor, mock := strandedExecutor(t, "stranded-prompt")
 
 	workflow := singleStepWorkflow("stranded-prompt-workflow", Step{
@@ -453,6 +459,7 @@ func (alwaysWorkingDetector) DetectAll(string) ([]status.AgentStatus, error) {
 // busy. Both were dropped when delivery moved to executeAgentDelivery, so
 // `ntm pipeline status` and the pipelines API showed the failure without why.
 func TestFailedAgentDeliveryRecordsPaneEvidence(t *testing.T) {
+	t.Parallel()
 	const evidence = "provider error: 529 overloaded"
 	tests := []struct {
 		name      string
@@ -479,6 +486,7 @@ func TestFailedAgentDeliveryRecordsPaneEvidence(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			executor, mock := tt.executor(t)
 			if err := mock.SetPaneOutput("%1", evidence); err != nil {
 				t.Fatalf("SetPaneOutput: %v", err)
@@ -510,6 +518,7 @@ func TestFailedAgentDeliveryRecordsPaneEvidence(t *testing.T) {
 // handed the exact payload that was pasted and the pane's real width, and run
 // once per send.
 func TestAgentStepVerifiesSubmissionBeforeWaiting(t *testing.T) {
+	t.Parallel()
 	executor, mock := submittingExecutor(t, "verify-before-wait")
 
 	const prompt = "investigate the failing check"
@@ -549,6 +558,7 @@ func TestAgentStepVerifiesSubmissionBeforeWaiting(t *testing.T) {
 // confirms and the step completes. The new gate must not turn quick answers
 // into false delivery failures.
 func TestFastCompletingStepStillCompletes(t *testing.T) {
+	t.Parallel()
 	executor, mock := submittingExecutor(t, "fast-completion")
 	mock.SetSubmissionVerifier(func(target, _, _ string) error {
 		return mock.AppendPaneOutput(target, "The answer is ready.\n")
@@ -636,8 +646,10 @@ func interruptedAgentDelivery(t *testing.T, template bool, agentTypes ...tmux.Ag
 }
 
 func TestAgentDeliveryResumeContinuesPromptAndTemplateWithoutSending(t *testing.T) {
+	t.Parallel()
 	for _, template := range []bool{false, true} {
 		t.Run(map[bool]string{false: "prompt", true: "template"}[template], func(t *testing.T) {
+			t.Parallel()
 			cfg, workflow, mock, prior := interruptedAgentDelivery(t, template)
 			if err := mock.AppendPaneOutput("%1", "NEW-ANSWER\n"); err != nil {
 				t.Fatal(err)
@@ -664,8 +676,10 @@ func TestAgentDeliveryResumeContinuesPromptAndTemplateWithoutSending(t *testing.
 }
 
 func TestPiAgentDeliveryResumeUsesSavedPromptIdentity(t *testing.T) {
+	t.Parallel()
 	for _, template := range []bool{false, true} {
 		t.Run(map[bool]string{false: "prompt", true: "template"}[template], func(t *testing.T) {
+			t.Parallel()
 			cfg, workflow, mock, prior := interruptedAgentDelivery(t, template, tmux.AgentType("pi"))
 			if prior.AgentDeliveries["work"].PromptEchoLength != len("do this task") {
 				t.Fatalf("receipt did not preserve bounded prompt identity: %+v", prior.AgentDeliveries["work"])
@@ -700,12 +714,14 @@ func TestPiAgentDeliveryResumeUsesSavedPromptIdentity(t *testing.T) {
 }
 
 func TestPiRenderedPromptEchoWaitsForActualAnswer(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, prompt, rendered string }{
 		{"formatting", "Review **changes**", "Review changes"},
 		{"bare references", "Review https://example.com/issue and contact reviewer@example.com.", "Review https://example.com/issue and contact reviewer@example.com."},
 		{"rendered references", "Review <https://example.com/issue> and contact [reviewer@example.com](mailto:reviewer@example.com).", "Review https://example.com/issue and contact reviewer@example.com."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			executor, mock := submittingExecutor(t, "pi-rendered-echo")
 			executor.config.ProjectDir = t.TempDir()
 			mock.AddPane("", tmux.Pane{ID: "%1", Index: 1, PID: 4141, Type: tmux.AgentType("pi"), Width: 100})
@@ -738,6 +754,7 @@ func TestPiRenderedPromptEchoWaitsForActualAnswer(t *testing.T) {
 }
 
 func TestPiRenderedPromptIdentitySurvivesTemplateResume(t *testing.T) {
+	t.Parallel()
 	executor, mock := submittingExecutor(t, "pi-rendered-resume")
 	executor.config.ProjectDir = t.TempDir()
 	mock.AddPane("", tmux.Pane{ID: "%1", Index: 1, PID: 4141, Type: tmux.AgentType("pi"), Width: 100})
@@ -785,6 +802,7 @@ func TestPiRenderedPromptIdentitySurvivesTemplateResume(t *testing.T) {
 }
 
 func TestPiUnsupportedPromptRefusesBeforeDispatch(t *testing.T) {
+	t.Parallel()
 	executor, mock := submittingExecutor(t, "pi-unsupported-prompt")
 	executor.config.ProjectDir = t.TempDir()
 	mock.AddPane("", tmux.Pane{ID: "%1", Index: 1, PID: 4141, Type: tmux.AgentType("pi"), Width: 100})
@@ -807,6 +825,7 @@ func TestPiUnsupportedPromptRefusesBeforeDispatch(t *testing.T) {
 }
 
 func TestPiAgentDeliveryRechecksFrameAfterFinalIdle(t *testing.T) {
+	t.Parallel()
 	executor, mock := submittingExecutor(t, "pi-final-idle")
 	executor.config.ProjectDir = t.TempDir()
 	mock.AddPane("", tmux.Pane{ID: "%1", Index: 1, PID: 4141, Type: tmux.AgentType("pi"), Width: 100})
@@ -853,6 +872,7 @@ func TestPiAgentDeliveryRechecksFrameAfterFinalIdle(t *testing.T) {
 }
 
 func TestAgentDeliveryUnknownOutcomeRequiresExplicitRestart(t *testing.T) {
+	t.Parallel()
 	executor, mock := strandedExecutor(t, "unknown-delivery")
 	executor.config.ProjectDir = t.TempDir()
 	workflow := singleStepWorkflow("unknown-delivery", Step{ID: "work", Pane: PaneSpec{Index: 1}, Prompt: "perform one mutation", Wait: WaitNone, OnError: ErrorActionRetry, RetryCount: 3, RetryDelay: Duration{Duration: time.Millisecond}})
@@ -887,8 +907,10 @@ func TestAgentDeliveryUnknownOutcomeRequiresExplicitRestart(t *testing.T) {
 }
 
 func TestAgentDeliveryResumeRejectsReplacedPaneOrMissingBoundary(t *testing.T) {
+	t.Parallel()
 	for _, replaced := range []bool{false, true} {
 		t.Run(map[bool]string{false: "lost boundary", true: "replaced process"}[replaced], func(t *testing.T) {
+			t.Parallel()
 			cfg, workflow, mock, prior := interruptedAgentDelivery(t, false)
 			var client TmuxClient = mock
 			if replaced {
@@ -920,6 +942,7 @@ func (c *replacedAgentPane) GetPanes(session string) ([]tmux.Pane, error) {
 }
 
 func TestAgentDeliveryCompletedOutputSurvivesMissingStepCheckpoint(t *testing.T) {
+	t.Parallel()
 	cfg, workflow, mock, prior := interruptedAgentDelivery(t, false)
 	if err := mock.AppendPaneOutput("%1", "NEW-ANSWER\n"); err != nil {
 		t.Fatal(err)
@@ -956,6 +979,7 @@ func TestAgentDeliveryCompletedOutputSurvivesMissingStepCheckpoint(t *testing.T)
 }
 
 func TestAgentDeliveryIdlePromptEchoIsNotACompletedResponse(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		agentType tmux.AgentType
@@ -966,9 +990,10 @@ func TestAgentDeliveryIdlePromptEchoIsNotACompletedResponse(t *testing.T) {
 		{"Codex composer and status", tmux.AgentCodex, "› complete this task\n\n› \n100% context left"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			executor, mock := submittingExecutor(t, "echo-only")
 			executor.config.ProjectDir = t.TempDir()
-			executor.config.DefaultTimeout = 2300 * time.Millisecond
+			executor.config.DefaultTimeout = 150 * time.Millisecond
 			mock.AddPane("", tmux.Pane{ID: "%1", Index: 1, Type: tc.agentType, Width: 100})
 			mock.SetSubmissionVerifier(func(target, _, _ string) error {
 				return mock.SetPaneOutput(target, tc.echo)
@@ -984,6 +1009,7 @@ func TestAgentDeliveryIdlePromptEchoIsNotACompletedResponse(t *testing.T) {
 }
 
 func TestAgentDeliveryAcceptsTranscriptAcrossComposerRedraw(t *testing.T) {
+	t.Parallel()
 	executor, mock := submittingExecutor(t, "composer-redraw")
 	executor.config.ProjectDir = t.TempDir()
 	mock.AddPane("", tmux.Pane{ID: "%1", Index: 1, PID: 4141, Type: tmux.AgentClaude, Width: 100})
@@ -1002,6 +1028,7 @@ func TestAgentDeliveryAcceptsTranscriptAcrossComposerRedraw(t *testing.T) {
 }
 
 func TestAgentDeliveryWaitNoneCompletesWithoutClaimingResponse(t *testing.T) {
+	t.Parallel()
 	executor, mock := submittingExecutor(t, "immediate-output")
 	executor.config.ProjectDir = t.TempDir()
 	mock.SetSubmissionVerifier(func(target, _, _ string) error {
@@ -1024,6 +1051,7 @@ func TestAgentDeliveryWaitNoneCompletesWithoutClaimingResponse(t *testing.T) {
 // TestTemplateStepFailsWhenPromptStaysInComposer covers the template dispatch
 // path, which pasted and waited exactly like the prompt path.
 func TestTemplateStepFailsWhenPromptStaysInComposer(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	templatePath := dir + "/repair.md"
 	writeFile(t, templatePath, "render this repair instruction")
@@ -1055,6 +1083,7 @@ func TestTemplateStepFailsWhenPromptStaysInComposer(t *testing.T) {
 // TestParallelSubStepFailsWhenPromptStaysInComposer covers the third dispatch
 // path, the inlined parallel sub-step executor.
 func TestParallelSubStepFailsWhenPromptStaysInComposer(t *testing.T) {
+	t.Parallel()
 	executor, _ := strandedExecutor(t, "stranded-parallel")
 
 	workflow := singleStepWorkflow("stranded-parallel-workflow", Step{
@@ -1090,6 +1119,7 @@ func TestParallelSubStepFailsWhenPromptStaysInComposer(t *testing.T) {
 // during verification must be reported as cancelled, not as a delivery
 // failure — the prompt's fate is unknown, not known-bad.
 func TestSubmissionVerificationCancellationIsCancelled(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("verify-cancel")
 	cfg.ProgressInterval = 100 * time.Millisecond
 	cfg.DefaultTimeout = 5 * time.Second
@@ -1136,15 +1166,16 @@ func (m *endpointIdentityTmuxClient) CapturePaneOutput(target string, lines int)
 }
 
 func TestAgentDeliveryResumeRejectsDifferentTmuxEndpoint(t *testing.T) {
+	t.Parallel()
 	cfg := DefaultExecutorConfig("same-session")
 	cfg.ProjectDir, cfg.RunID = t.TempDir(), GenerateRunID()
 	workflow := singleStepWorkflow("endpoint-identity", Step{
 		ID: "work", Pane: PaneSpec{Index: 1}, Prompt: "Work on the original machine",
 		Wait: WaitTime, Timeout: Duration{Duration: time.Second},
 	})
-	mock := NewMockTmuxClient(tmux.Pane{ID: "%17", Index: 1, PID: 2718, Type: tmux.AgentClaude, Width: 120})
+	mock := NewMockTmuxClient(tmux.Pane{ID: "%19017", Index: 1, PID: 2718, Type: tmux.AgentClaude, Width: 120})
 	t.Cleanup(mock.Reset)
-	if err := mock.SetPaneOutput("%17", "prior output\n"); err != nil {
+	if err := mock.SetPaneOutput("%19017", "prior output\n"); err != nil {
 		t.Fatal(err)
 	}
 	executor := NewExecutor(cfg)
@@ -1202,18 +1233,20 @@ func TestAgentDeliveryResumeRejectsDifferentTmuxEndpoint(t *testing.T) {
 	if other.captures != 0 || final.AgentDeliveries["work"] != receipt {
 		t.Fatalf("recovery observed the wrong machine or changed its receipt: captures=%d receipt=%+v", other.captures, final.AgentDeliveries["work"])
 	}
-	history, err := mock.PasteHistory("%17")
+	history, err := mock.PasteHistory("%19017")
 	if err != nil || len(history) != 1 || len(mock.VerificationHistory()) != 1 {
 		t.Fatalf("endpoint change repeated the original delivery: pastes=%+v verifications=%+v err=%v", history, mock.VerificationHistory(), err)
 	}
 }
 
 func TestSuccessHookAgentRecoveryKeepsOriginalPromptDeliveries(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("native command tail fixture requires a POSIX shell")
 	}
 	for _, uncertain := range []bool{false, true} {
 		t.Run(map[bool]string{false: "delivered observation cancelled", true: "unconfirmed submission"}[uncertain], func(t *testing.T) {
+			t.Parallel()
 			cfg := DefaultExecutorConfig("agent-hook-recovery")
 			cfg.ProjectDir, cfg.RunID = t.TempDir(), GenerateRunID()
 			cfg.DefaultTimeout, cfg.GlobalTimeout = 5*time.Second, 20*time.Second
@@ -1361,8 +1394,10 @@ func TestSuccessHookAgentRecoveryKeepsOriginalPromptDeliveries(t *testing.T) {
 // delivery executor. Its external effects are five distinct pane submissions,
 // so it also runs where native process-group supervision is unavailable.
 func TestSuccessHookPromptOnlyRecovery(t *testing.T) {
+	t.Parallel()
 	for _, shape := range []string{"command equivalent", "branch", "parallel", "foreach", "nested hook"} {
 		t.Run(shape, func(t *testing.T) {
+			t.Parallel()
 			cfg := DefaultExecutorConfig("prompt-hook-recovery")
 			cfg.ProjectDir, cfg.RunID = t.TempDir(), GenerateRunID()
 			cfg.DefaultTimeout, cfg.GlobalTimeout = time.Second, 10*time.Second

@@ -55,6 +55,17 @@ func main(){ c:=make(chan os.Signal,1);signal.Notify(c,os.Interrupt,syscall.SIGT
 	port := listener.Addr().(*net.TCPAddr).Port
 	_ = listener.Close()
 
+	origPoll := memoryServePollInterval
+	origHealth := memoryServeHealthInterval
+	origBackoff := memoryServeRestartBackoffMax
+	memoryServePollInterval = 15 * time.Millisecond
+	memoryServeHealthInterval = 50 * time.Millisecond
+	memoryServeRestartBackoffMax = 20 * time.Millisecond
+	t.Cleanup(func() {
+		memoryServePollInterval = origPoll
+		memoryServeHealthInterval = origHealth
+		memoryServeRestartBackoffMax = origBackoff
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	done := make(chan error, 1)

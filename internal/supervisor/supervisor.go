@@ -102,6 +102,7 @@ type Supervisor struct {
 	maxRestarts          int
 	restartBackoffMax    time.Duration
 	startupHealthTimeout time.Duration
+	startupDelay         time.Duration
 
 	healthCtx  context.Context
 	shutdownCh chan struct{}
@@ -119,6 +120,9 @@ type Config struct {
 	// with failing health probes before it is marked StateUnhealthy.
 	// Default: 30s.
 	StartupHealthTimeout time.Duration
+	// StartupDelay is the grace delay before the first health check probe.
+	// Default: 2s when zero.
+	StartupDelay time.Duration
 }
 
 // DefaultMaxRestarts is the default restart budget applied when
@@ -159,6 +163,9 @@ func New(cfg Config) (*Supervisor, error) {
 	if cfg.StartupHealthTimeout <= 0 {
 		cfg.StartupHealthTimeout = 30 * time.Second
 	}
+	if cfg.StartupDelay <= 0 {
+		cfg.StartupDelay = 2 * time.Second
+	}
 
 	// Ensure directories exist
 	dirs := []string{
@@ -190,6 +197,7 @@ func New(cfg Config) (*Supervisor, error) {
 		maxRestarts:          cfg.MaxRestarts,
 		restartBackoffMax:    cfg.RestartBackoffMax,
 		startupHealthTimeout: cfg.StartupHealthTimeout,
+		startupDelay:         cfg.StartupDelay,
 		healthCtx:            healthCtx,
 		shutdownCh:           shutdownCh,
 		cancel:               cancel,
@@ -598,7 +606,11 @@ func (s *Supervisor) monitorDaemon(d *ManagedDaemon) {
 	}
 	ticker := time.NewTicker(s.healthInterval)
 	defer ticker.Stop()
-	startupTimer := time.NewTimer(2 * time.Second)
+	startupDelay := s.startupDelay
+	if startupDelay <= 0 {
+		startupDelay = 2 * time.Second
+	}
+	startupTimer := time.NewTimer(startupDelay)
 	defer startupTimer.Stop()
 	select {
 	case <-ctx.Done():

@@ -164,7 +164,12 @@ func (e *Executor) acquirePaneLockCrossProcess(ctx context.Context, paneID strin
 	waitCtx, cancel := context.WithTimeout(ctx, e.paneLockWait())
 	defer cancel()
 
-	releaseFiles, err := AcquireSharedPaneLock(waitCtx, paneID, lockPath)
+	var releaseFiles func()
+	if mockClient := mockTmuxClientForLock(e.tmuxClient()); mockClient != nil {
+		releaseFiles, err = acquireMockServerPaneLock(waitCtx, mockClient, paneID, lockPath)
+	} else {
+		releaseFiles, err = AcquireSharedPaneLock(waitCtx, paneID, lockPath)
+	}
 	if err != nil {
 		releaseLocal()
 		// Distinguish "the caller cancelled" from "we waited out the budget";
@@ -181,6 +186,74 @@ func (e *Executor) acquirePaneLockCrossProcess(ctx context.Context, paneID strin
 	return func() {
 		releaseFiles()
 		releaseLocal()
+	}, nil
+}
+
+func mockTmuxClientForLock(client TmuxClient) *MockTmuxClient {
+	if mock, ok := client.(*MockTmuxClient); ok {
+		return mock
+	}
+	if wrapper, ok := client.(interface{ unwrapMockTmux() *MockTmuxClient }); ok {
+		return wrapper.unwrapMockTmux()
+	}
+	return nil
+}
+
+// acquireMockServerPaneLock enforces pane mutual exclusion across executors
+// sharing a MockTmuxClient (simulated server) plus any project lock file,
+// without serializing independent in-memory mock servers across parallel tests
+// on the user-wide pane-locks directory.
+func acquireMockServerPaneLock(ctx context.Context, mock *MockTmuxClient, paneID, legacyPath string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	mock.mu.Lock()
+	if mock.paneLocks == nil {
+		mock.paneLocks = make(map[string]chan struct{})
+	}
+	ch, ok := mock.paneLocks[paneID]
+	if !ok {
+		ch = make(chan struct{}, 1)
+		mock.paneLocks[paneID] = ch
+	}
+	mock.mu.Unlock()
+
+	select {
+	case ch <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		<-ch
+		return nil, err
+	}
+
+	var legacy *lockedFile
+	if legacyPath != "" {
+		var err error
+		legacy, err = openLockedFile(ctx, legacyPath)
+		if err != nil {
+			<-ch
+			return nil, fmt.Errorf("acquire project pane lock: %w", err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		if legacy != nil {
+			legacy.unlockAndClose()
+		}
+		<-ch
+		return nil, err
+	}
+	released := false
+	return func() {
+		if released {
+			return
+		}
+		released = true
+		if legacy != nil {
+			legacy.unlockAndClose()
+		}
+		<-ch
 	}, nil
 }
 

@@ -286,6 +286,7 @@ func deepEqual(a, b any) bool {
 // =============================================================================
 
 func TestParitySchemaOutput(t *testing.T) {
+	t.Parallel()
 	// robot.GetSchema() returns the schema data struct
 	robotOutput, err := robot.GetSchema("status")
 	if err != nil {
@@ -317,6 +318,7 @@ func TestParitySchemaOutput(t *testing.T) {
 
 // TestParitySchemaAllOutput verifies schema=all returns all schemas.
 func TestParitySchemaAllOutput(t *testing.T) {
+	t.Parallel()
 	robotOutput, err := robot.GetSchema("all")
 	if err != nil {
 		t.Fatalf("robot.GetSchema('all') failed: %v", err)
@@ -348,6 +350,7 @@ func TestParitySchemaAllOutput(t *testing.T) {
 // =============================================================================
 
 func TestParityHealthEndpoint(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	// Call REST handler
@@ -375,6 +378,7 @@ func TestParityHealthEndpoint(t *testing.T) {
 // =============================================================================
 
 func TestParitySessionsEndpoint(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	// Call REST handler
@@ -409,6 +413,7 @@ func TestParitySessionsEndpoint(t *testing.T) {
 // =============================================================================
 
 func TestParityRobotStatusEndpoint(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	// Call REST handler
@@ -436,8 +441,10 @@ func TestParityRobotStatusV1Endpoint(t *testing.T) {
 	srv, store := setupTestServer(t)
 	liveSessionID, _ := seedRobotAPIContractState(t, store, srv.eventBus)
 
-	robot.SetProjectionStore(store)
-	robotOutput, err := robot.GetStatusWithOptions(robot.PaginationOptions{})
+	robotOutput, err := robot.GetStatusWithOptions(robot.PaginationOptions{
+		Store:         store,
+		ExplicitStore: true,
+	})
 	if err != nil {
 		t.Fatalf("robot.GetStatusWithOptions failed: %v", err)
 	}
@@ -488,6 +495,7 @@ func TestParityRobotStatusV1Endpoint(t *testing.T) {
 // =============================================================================
 
 func TestParityVersionOutput(t *testing.T) {
+	t.Parallel()
 	// Get robot version output
 	robotOutput, err := robot.GetVersion()
 	if err != nil {
@@ -530,6 +538,7 @@ func TestParityVersionOutput(t *testing.T) {
 // =============================================================================
 
 func TestParityCapabilitiesOutput(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	robotOutput, err := robot.GetCapabilities()
@@ -753,6 +762,7 @@ func TestV1RobotAPIContractSmoke(t *testing.T) {
 // TestParityEnvelopeFieldsConsistent verifies all robot outputs have consistent
 // envelope fields (success, timestamp, version).
 func TestParityEnvelopeFieldsConsistent(t *testing.T) {
+	t.Parallel()
 	// List of robot Get* functions that return outputs
 	tests := []struct {
 		name string
@@ -766,6 +776,7 @@ func TestParityEnvelopeFieldsConsistent(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			output, err := tc.get()
 			if err != nil {
 				t.Fatalf("%s failed: %v", tc.name, err)
@@ -799,6 +810,7 @@ func TestParityEnvelopeFieldsConsistent(t *testing.T) {
 // =============================================================================
 
 func TestParityPaneOutputHandler(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	// Call pane output without session - should fail
@@ -822,6 +834,7 @@ func TestParityPaneOutputHandler(t *testing.T) {
 // =============================================================================
 
 func TestNormalizeRemovesVolatileFields(t *testing.T) {
+	t.Parallel()
 	input := `{
 		"success": true,
 		"timestamp": "2025-01-27T10:00:00Z",
@@ -889,6 +902,7 @@ func TestNormalizeRemovesVolatileFields(t *testing.T) {
 // =============================================================================
 
 func TestParitySchemaRegistryComplete(t *testing.T) {
+	t.Parallel()
 	// Get all registered schema types
 	allSchemas, err := robot.GetSchema("all")
 	if err != nil {
@@ -926,6 +940,7 @@ func TestParitySchemaRegistryComplete(t *testing.T) {
 // =============================================================================
 
 func TestParityErrorResponseFormat(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	tests := []struct {
@@ -953,6 +968,7 @@ func TestParityErrorResponseFormat(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest(tc.method, tc.path, nil)
 			rec := httptest.NewRecorder()
 			tc.handler(rec, req)

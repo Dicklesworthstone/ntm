@@ -81,6 +81,8 @@ interface KernelCommand {
   rest?: { method?: string; path?: string };
   safety_level?: string;
   idempotent?: boolean;
+  executable?: boolean;
+  catalog_only?: boolean;
 }
 
 interface KernelListResponse extends ApiEnvelope {

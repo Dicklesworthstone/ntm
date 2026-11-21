@@ -131,6 +131,7 @@ func TestForeachNativeFieldsRunUsesPerItemRequests(t *testing.T) {
 }
 
 func TestForeachNativeFieldsRunNestedBranches(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		source  string
@@ -200,6 +201,7 @@ steps:
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			workflow, err := ParseString(tc.source, "yaml")
 			if err != nil {
 				t.Fatal(err)
@@ -233,6 +235,7 @@ steps:
 }
 
 func TestForeachNativeFieldsRunOnFailure(t *testing.T) {
+	t.Parallel()
 	cfg := foreachNativeConfig(t)
 	for _, name := range []string{"alpha", "beta"} {
 		if err := os.WriteFile(filepath.Join(cfg.ProjectDir, "recover-"+name+".md"), []byte("Recover "+name+" <WORK>"), 0600); err != nil {

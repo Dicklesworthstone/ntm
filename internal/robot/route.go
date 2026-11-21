@@ -238,6 +238,7 @@ type RouteOptions struct {
 	Config         *config.Config // Optional: loaded routing configuration
 	NoPersist      bool           // Optional: preview only — never advance persisted routing state (e.g. send --dry-run)
 	Relax          bool           // Optional: relax constraints (include THINKING agents) when primary routing finds none
+	Store          *state.Store   `json:"-"` // Optional: explicit runtime projection store for relaxed routing ledger
 }
 
 // RouteOutput is the structured output for --robot-route.
@@ -505,6 +506,7 @@ func GetRoute(opts RouteOptions) (*RouteOutput, int) {
 			}
 		}
 		persistRelaxedRoutingDecision(
+			opts.Store,
 			opts.Session,
 			"robot.route",
 			opts.Strategy,
@@ -706,6 +708,7 @@ func GetRouteRecommendation(opts RouteOptions) (*RouteRecommendation, error) {
 			}
 		}
 		persistRelaxedRoutingDecision(
+			opts.Store,
 			opts.Session,
 			"robot.send_route",
 			opts.Strategy,
@@ -810,6 +813,7 @@ func clampUnitLoss(v float64) float64 {
 // assignment decisions are explainable via --robot-policy-decisions and
 // GET /api/v1/policy/decisions.
 func persistRelaxedRoutingDecision(
+	store *state.Store,
 	session string,
 	component string,
 	strategy StrategyName,
@@ -819,7 +823,6 @@ func persistRelaxedRoutingDecision(
 	relaxedScore float64,
 	selectedPaneID string,
 ) {
-	store := currentProjectionStore()
 	if store == nil {
 		opened, err := openRoutingStateStore()
 		if err != nil {

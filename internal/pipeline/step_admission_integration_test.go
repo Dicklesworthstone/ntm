@@ -90,6 +90,7 @@ func requireNoStepAdmissionEffect(t *testing.T, root, name string) {
 }
 
 func TestStepAdmissionExhaustionStopsContinueAndRetryBeforeChildResults(t *testing.T) {
+	t.Parallel()
 	for _, action := range []ErrorAction{ErrorActionContinue, ErrorActionRetry} {
 		t.Run(string(action), func(t *testing.T) {
 			cfg := stepAdmissionIntegrationConfig(t)
@@ -132,6 +133,7 @@ func TestStepAdmissionExhaustionStopsContinueAndRetryBeforeChildResults(t *testi
 }
 
 func TestStepAdmissionSettledRetryReusesRuntimeIdentity(t *testing.T) {
+	t.Parallel()
 	cfg := stepAdmissionIntegrationConfig(t)
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion, Name: "bounded-settled-retry",
@@ -156,6 +158,7 @@ func TestStepAdmissionSettledRetryReusesRuntimeIdentity(t *testing.T) {
 }
 
 func TestStepAdmissionParallelContinueKeepsUnfinishedContainerResumable(t *testing.T) {
+	t.Parallel()
 	cfg := stepAdmissionIntegrationConfig(t)
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion, Name: "bounded-parallel-continue",
@@ -212,6 +215,7 @@ func TestStepAdmissionParallelContinueKeepsUnfinishedContainerResumable(t *testi
 }
 
 func TestStepAdmissionForeachContinueKeepsUnfinishedRoundsResumable(t *testing.T) {
+	t.Parallel()
 	cfg := stepAdmissionIntegrationConfig(t)
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion, Name: "bounded-rounds-continue",
@@ -265,6 +269,7 @@ func TestStepAdmissionForeachContinueKeepsUnfinishedRoundsResumable(t *testing.T
 }
 
 func TestStepAdmissionLoopContinueKeepsUnfinishedIterationResumable(t *testing.T) {
+	t.Parallel()
 	cfg := stepAdmissionIntegrationConfig(t)
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion, Name: "bounded-loop-continue",
@@ -325,6 +330,7 @@ func TestStepAdmissionLoopContinueKeepsUnfinishedIterationResumable(t *testing.T
 }
 
 func TestStepAdmissionParallelContinuePreservesDeniedRecoveryFailure(t *testing.T) {
+	t.Parallel()
 	cfg := stepAdmissionIntegrationConfig(t)
 	if err := os.WriteFile(filepath.Join(cfg.ProjectDir, "recover.md"), []byte("Recover the original command failure."), 0o644); err != nil {
 		t.Fatal(err)
@@ -379,6 +385,7 @@ func TestStepAdmissionParallelContinuePreservesDeniedRecoveryFailure(t *testing.
 }
 
 func TestStepAdmissionPreCancelledReservationResumeImportsLegacyCleanupHistory(t *testing.T) {
+	t.Parallel()
 	cfg := stepAdmissionIntegrationConfig(t)
 	request := FileReservationPathsStep{ProjectKey: cfg.ProjectDir, AgentName: "BlueLake", Paths: StringOrList{"protected.go"}}
 	workflow := &Workflow{
@@ -493,6 +500,7 @@ func TestStepAdmissionPreCancelledReservationResumeImportsLegacyCleanupHistory(t
 }
 
 func TestStepAdmissionLoopAndRoundResumeChargesOnlyNewRuntimeIDs(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"loop_items", "expression_rounds"} {
 		t.Run(kind, func(t *testing.T) {
 			cfg := stepAdmissionIntegrationConfig(t)
@@ -574,6 +582,7 @@ func TestStepAdmissionLoopAndRoundResumeChargesOnlyNewRuntimeIDs(t *testing.T) {
 }
 
 func TestStepAdmissionOverridesPreserveUncertainExecutionFences(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"unfinished_command", "unresolved_selector"} {
 		t.Run(kind, func(t *testing.T) {
 			var cfg ExecutorConfig
@@ -607,6 +616,7 @@ func TestStepAdmissionOverridesPreserveUncertainExecutionFences(t *testing.T) {
 }
 
 func TestStepMaterializationNestedRefusalReleasesCapacityForFinalization(t *testing.T) {
+	t.Parallel()
 	cfg := stepAdmissionIntegrationConfig(t)
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion, Name: "bounded-nested-plans",
@@ -642,6 +652,7 @@ func TestStepMaterializationNestedRefusalReleasesCapacityForFinalization(t *test
 }
 
 func TestStepAdmissionFinalizationExhaustionPreservesLaterCleanupRoot(t *testing.T) {
+	t.Parallel()
 	for _, failure := range []string{"cancellation", "checkpoint"} {
 		t.Run(failure, func(t *testing.T) {
 			cfg := stepAdmissionIntegrationConfig(t)

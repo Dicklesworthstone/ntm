@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -422,10 +424,29 @@ func createSupportBundle(ctx context.Context, outputPath string, opts supportBun
 
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 
+	// 1 & 2. Collect versions.json and doctor.json concurrently (they are
+	// read-only external probes), then append them to the archive in their
+	// canonical deterministic order.
+	var (
+		versionsData *VersionsInfo
+		versionsErr  error
+		doctorReport *DoctorReport
+		probeWG      sync.WaitGroup
+	)
+	probeWG.Add(2)
+	go func() {
+		defer probeWG.Done()
+		versionsData, versionsErr = collectBundleVersions(ctx)
+	}()
+	go func() {
+		defer probeWG.Done()
+		doctorReport = performDoctorCheck(ctx)
+	}()
+	probeWG.Wait()
+
 	// 1. Add versions.json
-	versionsData, err := collectBundleVersions(ctx)
-	if err != nil {
-		manifest.AddError(fmt.Sprintf("collect versions: %v", err))
+	if versionsErr != nil {
+		manifest.AddError(fmt.Sprintf("collect versions: %v", versionsErr))
 	} else {
 		if entry, addErr := addJSONToBundle(zipWriter, "versions.json", versionsData, bundle.ContentTypeMetadata, nowStr); addErr != nil {
 			manifest.AddError(fmt.Sprintf("write versions.json: %v", addErr))
@@ -435,7 +456,6 @@ func createSupportBundle(ctx context.Context, outputPath string, opts supportBun
 	}
 
 	// 2. Add doctor.json
-	doctorReport := performDoctorCheck(ctx)
 	if entry, addErr := addJSONToBundle(zipWriter, "doctor.json", doctorReport, bundle.ContentTypeMetadata, nowStr); addErr != nil {
 		manifest.AddError(fmt.Sprintf("write doctor.json: %v", addErr))
 	} else {
@@ -554,32 +574,86 @@ func collectBundleVersions(ctx context.Context) (*VersionsInfo, error) {
 		Tools:    make(map[string]string),
 	}
 
-	// Get tmux version
-	if tmux.DefaultClient.IsInstalled() {
-		cmd := exec.CommandContext(ctx, tmux.BinaryPath(), "-V")
-		cmd.WaitDelay = 2 * time.Second
-		if out, err := cmd.Output(); err == nil {
-			versions.Tmux = strings.TrimSpace(string(out))
-		}
-	}
-
-	// Get tool versions (non-blocking)
-	toolChecks := []string{"bv", "br", "cm", "cass", "ubs", "dcg"}
-	for _, tool := range toolChecks {
-		if path, err := exec.LookPath(tool); err == nil {
-			cmd := exec.CommandContext(ctx, path, "--version")
-			cmd.WaitDelay = 2 * time.Second
-			cmd.Env = append(os.Environ(), "NO_COLOR=1")
-			if out, err := cmd.Output(); err == nil {
-				version := strings.TrimSpace(string(out))
-				// Take first line only
-				if idx := strings.Index(version, "\n"); idx > 0 {
-					version = version[:idx]
+	tmpRoot := filepath.Clean(os.TempDir())
+	probeFirstLine := func(binPath string, arg string, extraEnv ...string) (string, bool) {
+		var cacheKey depVersionCacheKey
+		cacheable := false
+		cleanPath := filepath.Clean(binPath)
+		if !strings.HasPrefix(cleanPath, tmpRoot+string(os.PathSeparator)) && cleanPath != tmpRoot {
+			if info, statErr := os.Stat(binPath); statErr == nil && info.Mode().IsRegular() {
+				cacheKey = depVersionCacheKey{
+					path:        cleanPath,
+					modUnix:     info.ModTime().UnixNano(),
+					size:        info.Size(),
+					versionArgs: "bundle:" + arg,
 				}
-				versions.Tools[tool] = version
+				cacheable = true
+				depVersionCacheMu.RLock()
+				cached, ok := depVersionCache[cacheKey]
+				depVersionCacheMu.RUnlock()
+				if ok {
+					return cached, cached != ""
+				}
 			}
 		}
+
+		cmd := exec.CommandContext(ctx, binPath, arg)
+		cmd.WaitDelay = 2 * time.Second
+		if len(extraEnv) > 0 {
+			cmd.Env = append(os.Environ(), extraEnv...)
+		}
+		out, err := cmd.Output()
+		if err != nil {
+			return "", false
+		}
+		version := strings.TrimSpace(string(out))
+		if idx := strings.Index(version, "\n"); idx > 0 {
+			version = version[:idx]
+		}
+		if cacheable {
+			depVersionCacheMu.Lock()
+			depVersionCache[cacheKey] = version
+			depVersionCacheMu.Unlock()
+		}
+		return version, true
 	}
+
+	toolChecks := []string{"bv", "br", "cm", "cass", "ubs", "dcg"}
+	var (
+		mu sync.Mutex
+		wg sync.WaitGroup
+	)
+
+	// Get tmux version concurrently with companion tool versions.
+	if tmux.DefaultClient.IsInstalled() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if v, ok := probeFirstLine(tmux.BinaryPath(), "-V"); ok {
+				mu.Lock()
+				versions.Tmux = v
+				mu.Unlock()
+			}
+		}()
+	}
+
+	for _, tool := range toolChecks {
+		tool := tool
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			path, err := exec.LookPath(tool)
+			if err != nil {
+				return
+			}
+			if v, ok := probeFirstLine(path, "--version", "NO_COLOR=1"); ok {
+				mu.Lock()
+				versions.Tools[tool] = v
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
 
 	return versions, nil
 }

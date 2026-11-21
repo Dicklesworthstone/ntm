@@ -27,7 +27,7 @@ import (
 func startMonitorCoordinatorHostForTest(t *testing.T, session, project string) func() {
 	t.Helper()
 	host := newMonitorCoordinatorHost(session, project)
-	host.pollEvery, host.reloadEvery, host.maintenanceEvery = 20*time.Millisecond, 150*time.Millisecond, 50*time.Millisecond
+	host.pollEvery, host.reloadEvery, host.maintenanceEvery = 10*time.Millisecond, 40*time.Millisecond, 20*time.Millisecond
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() {
@@ -327,7 +327,7 @@ func TestMonitorCoordinatorYieldsToForegroundCoordinatorRun(t *testing.T) {
 		t.Fatalf("status while paused = %+v", runtime)
 	}
 	paused := f.brCalls(t)
-	time.Sleep(10 * 50 * time.Millisecond)
+	time.Sleep(6 * 20 * time.Millisecond)
 	if after := f.brCalls(t); after != paused {
 		t.Fatalf("paused monitor coordinator kept maintaining: br calls %d -> %d", paused, after)
 	}

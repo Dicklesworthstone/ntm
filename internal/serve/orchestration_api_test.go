@@ -139,6 +139,7 @@ func TestPromptPreflightRESTEndpoint(t *testing.T) {
 }
 
 func TestAssignRouteQuotaAndUnifiedDoctorRESTEndpoints(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	router := srv.Router()
 

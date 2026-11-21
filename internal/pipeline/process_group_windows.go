@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const commandCancelGracePeriod = 5 * time.Second
+var commandCancelGracePeriod = 5 * time.Second
 
 type commandCleanupResult struct {
 	Err                 error

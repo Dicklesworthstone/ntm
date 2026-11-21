@@ -11,9 +11,11 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/sqliteutil"
 )
 
 //go:embed migrations/*.sql
@@ -278,6 +280,109 @@ func migrationsPending(ctx context.Context, db *sql.DB, files []string) bool {
 	return false
 }
 
+type consolidatedMigrationEntry struct {
+	version int
+	name    string
+}
+
+var (
+	consolidatedSchemaOnce    sync.Once
+	consolidatedSchemaDDL     string
+	consolidatedSchemaEntries []consolidatedMigrationEntry
+	consolidatedSchemaErr     error
+)
+
+// buildConsolidatedSchema applies all embedded migrations once against a private
+// in-memory SQLite database and extracts the resulting canonical DDL so fresh
+// databases avoid repeating dozens of incremental ALTER TABLE schema re-parses.
+func buildConsolidatedSchema(files []string) (string, []consolidatedMigrationEntry, error) {
+	consolidatedSchemaOnce.Do(func() {
+		memDB, err := sql.Open(sqliteutil.DriverName, sqliteutil.MemoryDSN("foreign_keys(1)"))
+		if err != nil {
+			consolidatedSchemaErr = err
+			return
+		}
+		defer memDB.Close()
+		memDB.SetMaxOpenConns(1)
+
+		ctx := context.Background()
+		conn, err := memDB.Conn(ctx)
+		if err != nil {
+			consolidatedSchemaErr = err
+			return
+		}
+		defer conn.Close()
+
+		if _, err := conn.ExecContext(ctx, `
+			CREATE TABLE IF NOT EXISTS _migrations (
+				version INTEGER PRIMARY KEY,
+				name TEXT NOT NULL,
+				applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+			)
+		`); err != nil {
+			consolidatedSchemaErr = err
+			return
+		}
+
+		entries := make([]consolidatedMigrationEntry, 0, len(files))
+		for _, filename := range files {
+			var version int
+			n, _ := fmt.Sscanf(filename, "%03d_", &version)
+			if n != 1 {
+				consolidatedSchemaErr = fmt.Errorf("parse migration version from %s: invalid format", filename)
+				return
+			}
+			content, err := ReadMigration(filename)
+			if err != nil {
+				consolidatedSchemaErr = err
+				return
+			}
+			if _, err := conn.ExecContext(ctx, content); err != nil {
+				consolidatedSchemaErr = fmt.Errorf("execute migration %s: %w", filename, err)
+				return
+			}
+			entries = append(entries, consolidatedMigrationEntry{version: version, name: filename})
+		}
+
+		rows, err := conn.QueryContext(ctx, `
+			SELECT sql FROM sqlite_master
+			WHERE name NOT LIKE 'sqlite_%' AND name != '_migrations' AND sql IS NOT NULL
+			ORDER BY CASE type
+				WHEN 'table' THEN 0
+				WHEN 'index' THEN 1
+				WHEN 'trigger' THEN 2
+				WHEN 'view' THEN 3
+				ELSE 4
+			END, rowid
+		`)
+		if err != nil {
+			consolidatedSchemaErr = err
+			return
+		}
+		defer rows.Close()
+
+		var stmts []string
+		for rows.Next() {
+			var ddl string
+			if err := rows.Scan(&ddl); err != nil {
+				consolidatedSchemaErr = err
+				return
+			}
+			ddl = strings.TrimSpace(ddl)
+			if ddl != "" {
+				stmts = append(stmts, ddl)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			consolidatedSchemaErr = err
+			return
+		}
+		consolidatedSchemaDDL = strings.Join(stmts, ";\n") + ";"
+		consolidatedSchemaEntries = entries
+	})
+	return consolidatedSchemaDDL, consolidatedSchemaEntries, consolidatedSchemaErr
+}
+
 // ApplyMigrations applies all pending migrations to the database.
 func ApplyMigrations(db *sql.DB) error {
 	// Get list of migration files
@@ -341,6 +446,36 @@ func ApplyMigrations(db *sql.DB) error {
 	}
 	if err := rows.Close(); err != nil {
 		return fmt.Errorf("close applied migrations: %w", err)
+	}
+
+	// Fresh-database fast path: when no migrations have been applied and no
+	// user tables exist yet, apply the once-built consolidated DDL directly to
+	// skip repeating ~22 ALTER TABLE schema re-parses per fresh database.
+	if len(applied) == 0 {
+		var existingObjects int
+		if err := conn.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM sqlite_master
+			WHERE name NOT LIKE 'sqlite_%' AND name != '_migrations'
+		`).Scan(&existingObjects); err == nil && existingObjects == 0 {
+			if ddl, entries, buildErr := buildConsolidatedSchema(files); buildErr == nil && ddl != "" {
+				if _, err := conn.ExecContext(ctx, ddl); err != nil {
+					return fmt.Errorf("execute consolidated schema: %w", err)
+				}
+				for _, entry := range entries {
+					if _, err := conn.ExecContext(ctx,
+						"INSERT INTO _migrations (version, name) VALUES (?, ?)",
+						entry.version, entry.name,
+					); err != nil {
+						return fmt.Errorf("record migration %s: %w", entry.name, err)
+					}
+				}
+				if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+					return fmt.Errorf("commit migrations: %w", err)
+				}
+				committed = true
+				return nil
+			}
+		}
 	}
 
 	// Apply pending migrations

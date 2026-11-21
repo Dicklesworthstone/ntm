@@ -222,6 +222,7 @@ func TestReadRestartEnvironmentRejectsUnsafeInputWithoutEcho(t *testing.T) {
 // a recording tmux executable. The fixture refuses actuation so a valid actual
 // request proves it got past preflight without needing a running agent or server.
 func TestRestartEnvironmentCLIRecoveryPreflight(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("recording tmux executable requires a POSIX shell")
 	}
@@ -372,6 +373,7 @@ esac
 // blocked at its confirmation prompt, then prove no stale recovery can mutate
 // a pane or deliver the original pane's environment to a replacement.
 func TestRespawnRevalidatesConfirmedRecovery(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("recording tmux executable requires a POSIX shell")
 	}

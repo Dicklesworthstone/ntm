@@ -136,13 +136,12 @@ func TestVerifyEncryptedExtensionRejectsPlaintext(t *testing.T) {
 	}
 }
 
-func TestEncryptArchiveFileInvalidKeysPreserveOutput(t *testing.T) {
+func TestWriteArchiveInvalidKeysPreserveOutput(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		key  []byte
 	}{
-		{name: "nil key"},
 		{name: "empty key", key: []byte{}},
 		{name: "malformed key", key: []byte("invalid")},
 	} {
@@ -153,8 +152,8 @@ func TestEncryptArchiveFileInvalidKeysPreserveOutput(t *testing.T) {
 			if err := os.WriteFile(path, existing, 0600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := EncryptArchiveFile(path, tc.key); err == nil {
-				t.Fatal("encryption API accepted an invalid key")
+			if _, err := WriteArchive(path, []byte("new archive"), tc.key, 0); err == nil {
+				t.Fatal("WriteArchive accepted an invalid encryption key")
 			}
 			actual, err := os.ReadFile(path)
 			if err != nil || !bytes.Equal(actual, existing) {

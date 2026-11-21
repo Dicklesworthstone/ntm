@@ -137,6 +137,7 @@ func TestPaneLockWaitsThenFailsTyped(t *testing.T) {
 // TestPaneLockHonorsCallerCancellation verifies an operator cancelling the run
 // is reported as cancelled, not as a busy pane.
 func TestPaneLockHonorsCallerCancellation(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	owner := newLockExecutor(dir, time.Minute)
 	waiter := newLockExecutor(dir, time.Minute)
@@ -166,6 +167,7 @@ func TestPaneLockHonorsCallerCancellation(t *testing.T) {
 // release must drop BOTH the file lock and the in-memory channel, or the same
 // executor deadlocks against itself on the next step.
 func TestPaneLockReleaseFreesInProcessLockToo(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	e := newLockExecutor(dir, 500*time.Millisecond)
 
@@ -182,6 +184,7 @@ func TestPaneLockReleaseFreesInProcessLockToo(t *testing.T) {
 // file lock cannot be taken, the in-process lock must be handed back, or the
 // pane stays wedged inside this process for the rest of the run.
 func TestPaneLockFailedAcquireReleasesLocalLock(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	owner := newLockExecutor(dir, 50*time.Millisecond)
 	waiter := newLockExecutor(dir, 50*time.Millisecond)
@@ -267,6 +270,7 @@ func TestPaneLockWithoutProjectDirIsExclusive(t *testing.T) {
 // synthetic pane id, so two previews of one project would otherwise serialize
 // on a single key and the second would fail as "pane busy".
 func TestPaneLockDryRunTakesNoFileLock(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	newDryRun := func() *Executor {
@@ -301,6 +305,7 @@ func TestPaneLockDryRunTakesNoFileLock(t *testing.T) {
 
 // TestPaneLockEmptyPaneIDIsNoop covers steps with no pane target.
 func TestPaneLockEmptyPaneIDIsNoop(t *testing.T) {
+	t.Parallel()
 	e := newLockExecutor(t.TempDir(), time.Second)
 	release, err := e.acquirePaneLockCrossProcess(context.Background(), "")
 	if err != nil {
@@ -312,6 +317,7 @@ func TestPaneLockEmptyPaneIDIsNoop(t *testing.T) {
 // TestPaneLockFileNameIsPathSafe verifies a pane identity cannot escape the
 // lock directory or collide across distinct panes.
 func TestPaneLockFileNameIsPathSafe(t *testing.T) {
+	t.Parallel()
 	hostile := []string{
 		"../../etc/passwd",
 		"..",
@@ -345,6 +351,7 @@ func TestPaneLockFileNameIsPathSafe(t *testing.T) {
 // /var vs /private/var on macOS). If they normalize differently they lock
 // different files and BOTH proceed, which looks exactly like no locking.
 func TestPaneLockRendezvousSurvivesPathSpelling(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	// A symlink to the same project, the shape macOS temp paths take.
@@ -391,6 +398,7 @@ func TestPaneLockRendezvousSurvivesPathSpelling(t *testing.T) {
 // TestPaneLockCreatesLockUnderProjectState verifies the lock file lands in the
 // project's pipeline state tree, where a second process will look for it.
 func TestPaneLockCreatesLockUnderProjectState(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	e := newLockExecutor(dir, time.Second)
 
@@ -412,6 +420,7 @@ func TestPaneLockCreatesLockUnderProjectState(t *testing.T) {
 
 // TestApplyPaneLockFailureClassifies pins the two operator-visible outcomes.
 func TestApplyPaneLockFailureClassifies(t *testing.T) {
+	t.Parallel()
 	t.Run("busy pane is typed and says nothing was sent", func(t *testing.T) {
 		var result StepResult
 		applyPaneLockFailure(&result, "%117", ErrPaneBusyOtherProcess)

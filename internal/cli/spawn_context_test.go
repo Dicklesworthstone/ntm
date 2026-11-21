@@ -53,6 +53,7 @@ func TestSpawnLifecycleComposableCancellationDoesNotEmit(t *testing.T) {
 }
 
 func TestNewSpawnContext(t *testing.T) {
+	t.Parallel()
 	ctx := NewSpawnContext(4)
 
 	if ctx.TotalAgents != 4 {
@@ -70,6 +71,7 @@ func TestNewSpawnContext(t *testing.T) {
 }
 
 func TestSpawnContextForAgent(t *testing.T) {
+	t.Parallel()
 	ctx := NewSpawnContext(3)
 
 	agentCtx := ctx.ForAgent(2, 5*time.Second)
@@ -89,6 +91,7 @@ func TestSpawnContextForAgent(t *testing.T) {
 }
 
 func TestAgentSpawnContextEnvVarPrefix(t *testing.T) {
+	t.Parallel()
 	ctx := NewSpawnContext(3)
 	agentCtx := ctx.ForAgent(1, 0)
 
@@ -115,6 +118,7 @@ func TestAgentSpawnContextEnvVarPrefix(t *testing.T) {
 }
 
 func TestAgentSpawnContextPromptAnnotation(t *testing.T) {
+	t.Parallel()
 	ctx := NewSpawnContext(4)
 	agentCtx := ctx.ForAgent(2, time.Second)
 
@@ -132,6 +136,7 @@ func TestAgentSpawnContextPromptAnnotation(t *testing.T) {
 }
 
 func TestAnnotatePrompt(t *testing.T) {
+	t.Parallel()
 	ctx := NewSpawnContext(2)
 	agentCtx := ctx.ForAgent(1, 0)
 
@@ -187,6 +192,7 @@ func TestAnnotatePrompt(t *testing.T) {
 }
 
 func TestAnnotatePromptPreservesOriginal(t *testing.T) {
+	t.Parallel()
 	ctx := NewSpawnContext(3)
 	agentCtx := ctx.ForAgent(2, time.Second)
 
@@ -202,6 +208,7 @@ func TestAnnotatePromptPreservesOriginal(t *testing.T) {
 }
 
 func TestGenerateBatchID(t *testing.T) {
+	t.Parallel()
 	id1 := generateBatchID()
 	id2 := generateBatchID()
 
@@ -221,6 +228,7 @@ func TestGenerateBatchID(t *testing.T) {
 }
 
 func TestSpawnContextFirstAndLastAgent(t *testing.T) {
+	t.Parallel()
 	ctx := NewSpawnContext(5)
 
 	// First agent
@@ -242,6 +250,7 @@ func TestSpawnContextFirstAndLastAgent(t *testing.T) {
 }
 
 func TestBuildSpawnPromptSequencePreservesContextOrdering(t *testing.T) {
+	t.Parallel()
 	t.Run("user prompt combines cass after recovery", func(t *testing.T) {
 		steps := buildSpawnPromptSequence("cass", "recovery", "user", 250*time.Millisecond)
 		if len(steps) != 2 {
@@ -358,7 +367,9 @@ esac
 	cfg.AgentMail.AutoRegister = false
 	cfg.Redaction.Mode = "redact"
 	jsonOutput = true
-	tmux.DefaultClient = tmux.NewClient("")
+	fastClient := tmux.NewClient("")
+	fastClient.MaxSendDelay = 2 * time.Millisecond
+	tmux.DefaultClient = fastClient
 	newSpawnSessionObserver = func() spawnSessionObserver {
 		now := time.Now()
 		panes := make([]statuspkg.PaneObservation, 0, 2)

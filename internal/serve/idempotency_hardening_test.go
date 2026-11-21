@@ -36,6 +36,7 @@ func idempotencyStoreLen(s *IdempotencyStore) int {
 // the same Idempotency-Key must execute the handler exactly once; the loser
 // waits and receives the replay.
 func TestIdempotencyConcurrentDuplicateSingleExecution(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 
 	var executions atomic.Int32
@@ -94,6 +95,7 @@ func TestIdempotencyConcurrentDuplicateSingleExecution(t *testing.T) {
 }
 
 func TestIdempotencyFlightRechecksCompletionAfterCacheMiss(t *testing.T) {
+	t.Parallel()
 	store := NewIdempotencyStore(time.Hour)
 	defer store.Stop()
 	const key, fingerprint = "completed-between-lookup-and-flight", "original-body"
@@ -136,6 +138,7 @@ func TestIdempotencyFlightRechecksCompletionAfterCacheMiss(t *testing.T) {
 }
 
 func TestIdempotencyOverflowRetainsTerminalResult(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name         string
 		status       int
@@ -147,6 +150,7 @@ func TestIdempotencyOverflowRetainsTerminalResult(t *testing.T) {
 		{"ordinary refusal remains retryable", http.StatusBadRequest, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			s := newWiringTestServer(t, nil)
 			executions := 0
 			payload := strings.Repeat("large operation result ", idempotencyMaxBodyBytes/len("large operation result ")+1)
@@ -380,6 +384,7 @@ func TestIdempotencyResponseCapturePreservesPolicyMutation(t *testing.T) {
 // TestIdempotencyStoreEviction: the cache must stay bounded, evicting the
 // least-recently-used entry once idempotencyMaxEntries is reached.
 func TestIdempotencyStoreEviction(t *testing.T) {
+	t.Parallel()
 	store := NewIdempotencyStore(time.Hour)
 	defer store.Stop()
 	store.maxEntries = 8
@@ -412,6 +417,7 @@ func TestIdempotencyStoreEviction(t *testing.T) {
 // TestIdempotencyStoreRejectsOversizedResponse: responses over the byte cap
 // are never cached.
 func TestIdempotencyStoreRejectsOversizedResponse(t *testing.T) {
+	t.Parallel()
 	store := NewIdempotencyStore(time.Hour)
 	defer store.Stop()
 	big := make([]byte, idempotencyMaxBodyBytes+1)
@@ -424,6 +430,7 @@ func TestIdempotencyStoreRejectsOversizedResponse(t *testing.T) {
 // TestIdempotencyBodyMismatchRejected: same key + different body must 422
 // instead of silently echoing the first response.
 func TestIdempotencyBodyMismatchRejected(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	var executions atomic.Int32
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -553,6 +560,7 @@ func (b *idempotencyErrorBody) Read(p []byte) (int, error) {
 func (b *idempotencyErrorBody) Close() error { return nil }
 
 func TestIdempotencyRejectsIncompleteOrOversizedRequests(t *testing.T) {
+	t.Parallel()
 	const acceptedBody = `{"operation":"accepted"}`
 	const partialBody = `{"operation":"unreadable"}`
 	const limit = 10 << 20
@@ -630,8 +638,10 @@ func TestIdempotencyRejectsIncompleteOrOversizedRequests(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			for _, cached := range []bool{false, true} {
 				t.Run(fmt.Sprintf("cached=%t", cached), func(t *testing.T) {
+					t.Parallel()
 					store := NewIdempotencyStore(time.Hour)
 					t.Cleanup(store.Stop)
 					s := &Server{idempotencyStore: store}
@@ -698,6 +708,7 @@ func TestIdempotencyRejectsIncompleteOrOversizedRequests(t *testing.T) {
 }
 
 func TestIdempotencyAcceptsAndPreservesMaximumRequestBody(t *testing.T) {
+	t.Parallel()
 	const input = `{"payload":"intact"}`
 	body := input + strings.Repeat(" ", (10<<20)-len(input))
 	store := NewIdempotencyStore(time.Hour)
@@ -727,6 +738,7 @@ func TestIdempotencyAcceptsAndPreservesMaximumRequestBody(t *testing.T) {
 // TestIdempotencyBodyPreservedForHandler: fingerprinting must not consume the
 // request body seen by the handler.
 func TestIdempotencyBodyPreservedForHandler(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	var seen string
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -747,6 +759,7 @@ func TestIdempotencyBodyPreservedForHandler(t *testing.T) {
 // TestResponseRecorderFlusherPassThrough: the recorder must forward Flush so
 // streaming mutating handlers keep working when a key is present.
 func TestResponseRecorderFlusherPassThrough(t *testing.T) {
+	t.Parallel()
 	rec := httptest.NewRecorder() // implements http.Flusher
 	rr := &responseRecorder{ResponseWriter: rec, statusCode: http.StatusOK}
 	if _, ok := interface{}(rr).(http.Flusher); !ok {
@@ -764,6 +777,7 @@ func TestResponseRecorderFlusherPassThrough(t *testing.T) {
 // TestResponseRecorderOverflowSkipsCaching: bodies over the cap stop buffering
 // and mark the response uncacheable.
 func TestResponseRecorderOverflowSkipsCaching(t *testing.T) {
+	t.Parallel()
 	rec := httptest.NewRecorder()
 	rr := &responseRecorder{ResponseWriter: rec, statusCode: http.StatusOK}
 	chunk := make([]byte, 512*1024)

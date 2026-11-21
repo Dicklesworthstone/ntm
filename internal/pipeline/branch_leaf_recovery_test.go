@@ -136,8 +136,10 @@ func TestBranchLeafRetryRetainsWhenDecision(t *testing.T) {
 }
 
 func TestBranchLeafUnfinishedResultsStillUseLifecycle(t *testing.T) {
+	t.Parallel()
 	for _, status := range []ExecutionStatus{StatusPending, StatusRunning, StatusFailed, StatusCancelled, StatusCompleted} {
 		t.Run(string(status), func(t *testing.T) {
+			t.Parallel()
 			step := Step{ID: "route", Branch: "chosen", Branches: map[string]interface{}{
 				"chosen": []Step{{ID: "work", Command: "printf ran > dispatched; printf recovered"}},
 			}}
@@ -159,6 +161,7 @@ func TestBranchLeafUnfinishedResultsStillUseLifecycle(t *testing.T) {
 }
 
 func TestBranchLeafRejectsMismatchedSavedIdentity(t *testing.T) {
+	t.Parallel()
 	step := Step{ID: "route", Branch: "chosen", Branches: map[string]interface{}{
 		"chosen": []Step{{ID: "work", Command: "printf unsafe > dispatched"}},
 	}}

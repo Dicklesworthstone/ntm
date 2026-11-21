@@ -109,9 +109,9 @@ func sessionPanePresentation(pane tmux.Pane, th theme.Theme, ic icons.IconSet) (
 		return string(th.Lavender), ic.AgentIcon(string(agentpkg.AgentTypeAntigravity))
 	case agentpkg.AgentTypeGrok:
 		return string(th.Pink), ic.AgentIcon(string(agentpkg.AgentTypeGrok))
-	case agentpkg.AgentTypeOmp:
-		// omp (Oh My Pi) gets the sky accent, matching the semantic palette.
-		return string(th.Sky), ic.AgentIcon(string(agentpkg.AgentTypeOmp))
+	case agentpkg.AgentTypeOmp, agentpkg.AgentTypePi:
+		// omp (Oh My Pi) and pi (Pi Agent) share the sky accent, matching the semantic palette.
+		return string(th.Sky), ic.AgentIcon(string(agentpkg.AgentType(pane.Type).Canonical()))
 	case agentpkg.AgentTypeOpencode:
 		return string(th.Opencode), ic.AgentIcon(string(agentpkg.AgentTypeOpencode))
 	case agentpkg.AgentTypeCursor:
@@ -129,7 +129,7 @@ func sessionPanePresentation(pane tmux.Pane, th theme.Theme, ic icons.IconSet) (
 	}
 }
 
-func init() {
+func registerSessionListKernel() {
 	kernel.MustRegister(kernel.Command{
 		Name:        "sessions.list",
 		Description: "List tmux sessions",

@@ -28967,6 +28967,9 @@
       "Command": {
         "type": "object",
         "properties": {
+          "catalog_only": {
+            "type": "boolean"
+          },
           "category": {
             "type": "string"
           },
@@ -28984,6 +28987,9 @@
             "items": {
               "$ref": "#/components/schemas/Example"
             }
+          },
+          "executable": {
+            "type": "boolean"
           },
           "idempotent": {
             "type": "boolean"
@@ -29005,7 +29011,9 @@
           }
         },
         "required": [
+          "catalog_only",
           "description",
+          "executable",
           "name"
         ]
       },

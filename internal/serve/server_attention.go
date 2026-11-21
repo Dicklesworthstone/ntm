@@ -327,6 +327,13 @@ func (s *Server) writeAttentionReplay(
 //   - session: filter by session name
 //   - actionability: filter by actionability level (comma-separated)
 //   - heartbeat: heartbeat interval in seconds (default adaptive, 0 to disable)
+func (s *Server) getAttentionFeed() *robot.AttentionFeed {
+	if s != nil && s.attentionFeed != nil {
+		return s.attentionFeed
+	}
+	return robot.GetAttentionFeed()
+}
+
 func (s *Server) handleAttentionStreamV1(w http.ResponseWriter, r *http.Request) {
 	// Parse query parameters
 	sinceCursor := int64(0)
@@ -355,7 +362,7 @@ func (s *Server) handleAttentionStreamV1(w http.ResponseWriter, r *http.Request)
 		heartbeatOverride = true
 	}
 
-	feed := robot.GetAttentionFeed()
+	feed := s.getAttentionFeed()
 	prepared, err := prepareAttentionStream(feed, sinceCursor, 100)
 	if err != nil {
 		var cursorErr *robot.CursorExpiredError
@@ -809,7 +816,7 @@ func (s *Server) handleAttentionDigestV1(w http.ResponseWriter, r *http.Request)
 		opts.Session = sessionFilter
 	}
 
-	feed := robot.GetAttentionFeed()
+	feed := s.getAttentionFeed()
 	stats := feed.Stats()
 
 	// Check for cursor expiration using the same boundary as the underlying journal.

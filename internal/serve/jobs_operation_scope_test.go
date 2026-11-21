@@ -27,6 +27,7 @@ func scopeOperationMetadata(t *testing.T, result map[string]interface{}) map[str
 // receipt must bind that admitted execution namespace separately, even after
 // the original operation failed or the original worker disappeared.
 func TestJobOperationProjectScope(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"pipeline_run", "pipeline_exec", "pipeline_resume", "swarm_spawn"} {
 		for _, outcome := range []string{"completed", "failed", "cancelled", "interrupted"} {
 			t.Run(kind+"/"+outcome, func(t *testing.T) {
@@ -118,6 +119,7 @@ func TestJobOperationProjectScope(t *testing.T) {
 }
 
 func TestJobOperationScopeCannotBeAddedOrDroppedOnReplay(t *testing.T) {
+	t.Parallel()
 	for _, drop := range []bool{false, true} {
 		name := "legacy receipt has no project proof"
 		if drop {
@@ -152,6 +154,7 @@ func TestJobOperationScopeCannotBeAddedOrDroppedOnReplay(t *testing.T) {
 }
 
 func TestJobOperationActiveScopeDoesNotLeakProgress(t *testing.T) {
+	t.Parallel()
 	dir, projectA, projectB := t.TempDir(), t.TempDir(), t.TempDir()
 	req := CreateJobRequest{Type: "swarm_spawn", executionProjectDir: projectA}
 	started, release := make(chan struct{}), make(chan struct{})
@@ -193,6 +196,7 @@ func TestJobOperationActiveScopeDoesNotLeakProgress(t *testing.T) {
 }
 
 func TestJobOperationScopeReceiptIsPrivate(t *testing.T) {
+	t.Parallel()
 	dir, project := t.TempDir(), filepath.Join(t.TempDir(), "private-project-name")
 	req := CreateJobRequest{Type: "pipeline_run", executionProjectDir: project}
 	if _, err := runJobOperation(context.Background(), dir, "private-scope", "first", req,
@@ -234,6 +238,7 @@ func TestJobOperationScopeCrashHelper(t *testing.T) {
 }
 
 func TestJobOperationScopeSurvivesProcessDeath(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	projectA, projectB := filepath.Join(dir, "project-a"), filepath.Join(dir, "project-b")
 	for _, project := range []string{projectA, projectB} {
@@ -277,6 +282,7 @@ func TestJobOperationScopeSurvivesProcessDeath(t *testing.T) {
 }
 
 func TestJobOperationScopeRejectsMalformedEvidence(t *testing.T) {
+	t.Parallel()
 	for _, binding := range []string{"not-a-hash", strings.Repeat("z", 64), strings.Repeat("a", 62)} {
 		t.Run(binding, func(t *testing.T) {
 			dir := t.TempDir()
@@ -319,6 +325,7 @@ func TestJobOperationScopeRejectsMalformedEvidence(t *testing.T) {
 }
 
 func TestJobOperationScopeRejectsUnresolvedDirectoryBeforeIntent(t *testing.T) {
+	t.Parallel()
 	for _, project := range []string{"relative/project", filepath.Join(t.TempDir(), "bad\x00name")} {
 		dir := t.TempDir()
 		req := CreateJobRequest{Type: "swarm_spawn", executionProjectDir: project}

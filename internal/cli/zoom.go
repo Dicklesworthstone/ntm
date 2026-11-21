@@ -25,7 +25,7 @@ type SessionZoomInput struct {
 	Pane    *int   `json:"pane,omitempty"`
 }
 
-func init() {
+func registerZoomKernel() {
 	kernel.MustRegister(kernel.Command{
 		Name:        "sessions.zoom",
 		Description: "Zoom a specific pane in a session",

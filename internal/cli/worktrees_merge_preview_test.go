@@ -122,6 +122,7 @@ func TestWorktreesMergeDryRunCommandPreservesPrimary(t *testing.T) {
 }
 
 func TestWorktreesMergeRejectsIgnoredOrIneffectiveControls(t *testing.T) {
+	t.Parallel()
 	sha := strings.Repeat("a", 40)
 	for _, args := range [][]string{
 		{"agent", "--force"},

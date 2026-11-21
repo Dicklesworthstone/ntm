@@ -66,6 +66,7 @@ func branchChildRead(t *testing.T, root, name, want string) {
 // processes, so neither in-memory variables nor a living original executor
 // can make recovery appear to work.
 func TestBranchChildRecoveryProcess(t *testing.T) {
+	t.Parallel()
 	if len(os.Args) < 4 || os.Args[len(os.Args)-3] != "--branch-child" {
 		return
 	}
@@ -105,6 +106,7 @@ func TestBranchChildRecoveryProcess(t *testing.T) {
 }
 
 func TestBranchChildRecoverySurvivesProcessExit(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	branchChildWrite(t, root, "choice", "a")
 	for _, mode := range []string{"first", "resume"} {
@@ -130,6 +132,7 @@ func TestBranchChildRecoverySurvivesProcessExit(t *testing.T) {
 }
 
 func TestBranchChildRecoveryRetainsConditionalCompletionAndTimestamps(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	_, workflow := branchChildFixture(root)
 	body := workflow.Steps[0].Branches["a"].([]Step)
@@ -161,6 +164,7 @@ func TestBranchChildRecoveryRetainsConditionalCompletionAndTimestamps(t *testing
 }
 
 func TestBranchChildRecoveryKeepsStableSkippedDecision(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	_, workflow := branchChildFixture(root)
 	workflow.Steps[0].Branches["a"] = []Step{
@@ -187,6 +191,7 @@ func TestBranchChildRecoveryKeepsStableSkippedDecision(t *testing.T) {
 }
 
 func TestBranchChildRecoveryParentRetryDoesNotReplayCompletedWork(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	cfg, workflow := branchChildFixture(root)
 	workflow.Steps[0].OnError, workflow.Steps[0].RetryCount = ErrorActionRetry, 1
@@ -207,6 +212,7 @@ func TestBranchChildRecoveryParentRetryDoesNotReplayCompletedWork(t *testing.T) 
 }
 
 func TestBranchChildRecoveryFinishesOnlyMissingHooks(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	_, workflow := branchChildFixture(root)
 	workflow.Steps[0].Branch = "a"
@@ -232,6 +238,7 @@ func TestBranchChildRecoveryFinishesOnlyMissingHooks(t *testing.T) {
 }
 
 func TestSuccessHookResumeKeepsRecoveredLegacyBranchBody(t *testing.T) {
+	t.Parallel()
 	for _, mutation := range []string{"none", "command_identity", "fallback_output"} {
 		t.Run(mutation, func(t *testing.T) {
 			root := t.TempDir()
@@ -340,6 +347,7 @@ func TestSuccessHookResumeKeepsRecoveredLegacyBranchBody(t *testing.T) {
 }
 
 func TestBranchChildRecoveryRefusesDamagedCompletion(t *testing.T) {
+	t.Parallel()
 	for _, damage := range []string{"missing_result", "changed_result", "foreign_alias", "changed_alias", "unknown_child", "foreign_scope"} {
 		t.Run(damage, func(t *testing.T) {
 			root := t.TempDir()
@@ -400,6 +408,7 @@ func TestBranchChildRecoveryRefusesDamagedCompletion(t *testing.T) {
 }
 
 func TestBranchChildRecoveryCopiesSavedOutputValues(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	_, workflow := branchChildFixture(root)
 	branchChildWrite(t, root, "choice", "a")
@@ -423,6 +432,7 @@ func TestBranchChildRecoveryCopiesSavedOutputValues(t *testing.T) {
 }
 
 func TestBranchChildRecoveryConcurrentBranchesKeepIndependentScope(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	cfg, workflow := branchChildFixture(root)
 	workflow.Steps = nil
@@ -469,6 +479,7 @@ func TestBranchChildRecoveryConcurrentBranchesKeepIndependentScope(t *testing.T)
 }
 
 func TestBranchChildRecoveryCheckpointFailureStopsNextChild(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	_, workflow := branchChildFixture(root)
 	workflow.Steps[0].Branch = "a"
@@ -488,6 +499,7 @@ func TestBranchChildRecoveryCheckpointFailureStopsNextChild(t *testing.T) {
 }
 
 func TestBranchChildRecoveryExplicitStateResetStartsNewDecision(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	_, workflow := branchChildFixture(root)
 	branchChildWrite(t, root, "choice", "a")
@@ -507,6 +519,7 @@ func TestBranchChildRecoveryExplicitStateResetStartsNewDecision(t *testing.T) {
 }
 
 func TestBranchChildRecoveryReceiptAndResultAreAtomic(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	_, workflow := branchChildFixture(root)
 	branchChildWrite(t, root, "choice", "a")
@@ -555,6 +568,7 @@ func TestBranchChildRecoveryReceiptAndResultAreAtomic(t *testing.T) {
 }
 
 func TestBranchChildRecoveryUnmarkedAggregateDoesNotGuess(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	_, workflow := branchChildFixture(root)
 	workflow.Steps[0].Branch = "a"
@@ -577,6 +591,7 @@ func TestBranchChildRecoveryUnmarkedAggregateDoesNotGuess(t *testing.T) {
 }
 
 func TestBranchChildRecoveryRejectsAuthoredIdentityCollision(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	_, workflow := branchChildFixture(root)
 	workflow.Steps[0].Branch = "a"
@@ -603,6 +618,7 @@ func TestBranchChildRecoveryRejectsAuthoredIdentityCollision(t *testing.T) {
 }
 
 func TestBranchChildCheckpointSerializationFailureFencesExecution(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	_, workflow := branchChildFixture(root)
 	workflow.Steps[0].Branch = "a"
@@ -646,6 +662,7 @@ func TestBranchChildCheckpointSerializationFailureFencesExecution(t *testing.T) 
 }
 
 func TestBranchChildCheckpointWaitNonePreservesAliasesButNotSettlement(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	_, workflow := branchChildFixture(root)
 	workflow.Steps[0].Branch = "a"
@@ -681,6 +698,7 @@ func TestBranchChildCheckpointWaitNonePreservesAliasesButNotSettlement(t *testin
 }
 
 func TestBranchChildCheckpointAggregateRoundTripRestoresOriginalShape(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	_, workflow := branchChildFixture(root)
 	workflow.Steps[0].Branch = "a"

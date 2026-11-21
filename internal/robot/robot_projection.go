@@ -57,7 +57,7 @@ func RefreshNormalizedProjection(ctx context.Context, store *state.Store, projec
 	)
 	go func() {
 		defer close(tmuxDone)
-		tmuxSnapshot, tmuxErr = collectNormalizedTmuxProjectionContext(ctx, resolvedProjectDir, normalizedProjectionStaleAfter)
+		tmuxSnapshot, tmuxErr = collectNormalizedTmuxProjectionContext(ctx, store, resolvedProjectDir, normalizedProjectionStaleAfter)
 	}()
 	signals, err := aggregator.Collect(ctx)
 	<-tmuxDone
@@ -112,11 +112,11 @@ func resolveNormalizedProjectDir(projectDir string) (string, error) {
 	return cwd, nil
 }
 
-func collectNormalizedTmuxProjection(projectDir string, staleAfter time.Duration) (*NormalizedSnapshot, error) {
-	return collectNormalizedTmuxProjectionContext(context.Background(), projectDir, staleAfter)
+func collectNormalizedTmuxProjection(store *state.Store, projectDir string, staleAfter time.Duration) (*NormalizedSnapshot, error) {
+	return collectNormalizedTmuxProjectionContext(context.Background(), store, projectDir, staleAfter)
 }
 
-func collectNormalizedTmuxProjectionContext(ctx context.Context, projectDir string, staleAfter time.Duration) (*NormalizedSnapshot, error) {
+func collectNormalizedTmuxProjectionContext(ctx context.Context, store *state.Store, projectDir string, staleAfter time.Duration) (*NormalizedSnapshot, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -245,7 +245,7 @@ func collectNormalizedTmuxProjectionContext(ctx context.Context, projectDir stri
 			}
 			// Context is enriched once below with attributed evidence, rather
 			// than estimating it here and discarding it during normalization.
-			enrichAgentStatus(&agent, sessions[i].Name, "", content)
+			enrichAgentStatus(store, &agent, sessions[i].Name, "", content)
 			enrichAgentContext(&agent, modelName, content, paneTranscripts[pane.ID])
 			if content != "" {
 				outputTails[pane.ID] = content

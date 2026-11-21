@@ -103,6 +103,7 @@ func TestSupportBundleEncryptionMissingKeyAndExplicitPlaintext(t *testing.T) {
 }
 
 func TestSupportBundleConfigNeverExportsEncryptionCredentials(t *testing.T) {
+	t.Parallel()
 	configuration := config.Default()
 	credential := strings.Repeat("42", 32)
 	configuration.Encryption.Keyring = map[string]string{"current": credential}

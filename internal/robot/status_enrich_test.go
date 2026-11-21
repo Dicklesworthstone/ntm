@@ -19,6 +19,7 @@ import (
 // ====================
 
 func TestDetectRateLimit(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		agentType    string
@@ -345,6 +346,7 @@ func TestGetProcessState_CurrentProcess(t *testing.T) {
 }
 
 func TestGetProcessState_NonExistentProcess(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "linux" {
 		t.Skip("Process state tests require Linux /proc filesystem")
 	}
@@ -368,6 +370,7 @@ func TestGetProcessState_NonExistentProcess(t *testing.T) {
 // ====================
 
 func TestGetProcessMemoryMB_CurrentProcess(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "linux" {
 		t.Skip("Memory tests require Linux /proc filesystem")
 	}
@@ -390,6 +393,7 @@ func TestGetProcessMemoryMB_CurrentProcess(t *testing.T) {
 }
 
 func TestGetProcessMemoryMB_NonExistentProcess(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "linux" {
 		t.Skip("Memory tests require Linux /proc filesystem")
 	}
@@ -411,6 +415,7 @@ func TestGetProcessMemoryMB_NonExistentProcess(t *testing.T) {
 // ====================
 
 func TestGetChildPID_NoChildren(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "linux" {
 		t.Skip("Child PID tests require Linux")
 	}
@@ -430,6 +435,7 @@ func TestGetChildPID_NoChildren(t *testing.T) {
 }
 
 func TestGetChildPID_NonExistentProcess(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "linux" {
 		t.Skip("Child PID tests require Linux")
 	}
@@ -455,6 +461,7 @@ func TestGetChildPID_NonExistentProcess(t *testing.T) {
 // ====================
 
 func TestRateLimitPatterns_Count(t *testing.T) {
+	t.Parallel()
 	t.Logf("Number of rate limit patterns: %d", len(rateLimitPatterns))
 
 	// We expect at least the documented patterns
@@ -471,6 +478,7 @@ func TestRateLimitPatterns_Count(t *testing.T) {
 // ====================
 
 func TestEnrichAgentStatus_WithMockedData(t *testing.T) {
+	t.Parallel()
 	// This test verifies the enrichment flow without requiring actual /proc access
 	// by testing the individual components
 
@@ -501,7 +509,7 @@ func TestEnrichAgentStatus_DetectsCodexSpecificRateLimit(t *testing.T) {
 		Type: "openai-codex",
 	}
 
-	enrichAgentStatus(agent, "test-session", "", "Error: insufficient_quota")
+	enrichAgentStatus(nil, agent, "test-session", "", "Error: insufficient_quota")
 
 	if !agent.RateLimitDetected {
 		t.Fatal("expected enrichAgentStatus to mark Codex-specific rate limit output")
@@ -516,6 +524,7 @@ func TestEnrichAgentStatus_DetectsCodexSpecificRateLimit(t *testing.T) {
 // ====================
 
 func TestDetectRateLimit_Fixtures(t *testing.T) {
+	t.Parallel()
 	// Create temp fixture directory
 	fixtureDir := filepath.Join(t.TempDir(), "fixtures")
 	if err := os.MkdirAll(fixtureDir, 0755); err != nil {
@@ -590,6 +599,7 @@ func containsIgnoreCase(s, substr string) bool {
 }
 
 func TestEnrichAgentContextPreservesAttributedReadings(t *testing.T) {
+	t.Parallel()
 	gauge := "╭── ⬢ Union Alpha > 🗑 omp-probe ▶─────7%─────────────────────────────────────────────────────────┃──────────262K───╮\n" +
 		"╰─                                                                                                                    ─╯\n"
 	cases := []struct {
@@ -626,6 +636,7 @@ func TestEnrichAgentContextPreservesAttributedReadings(t *testing.T) {
 }
 
 func TestEnrichAgentContextClearsAnEstimateWhenEvidenceDisappears(t *testing.T) {
+	t.Parallel()
 	agent := Agent{Type: "claude"}
 	enrichAgentContext(&agent, "claude-fable-5", "visible agent output provides an estimate", nil)
 	if percent := contextPercentForAgent(&agent); percent == nil || *percent <= 0 {
@@ -638,6 +649,7 @@ func TestEnrichAgentContextClearsAnEstimateWhenEvidenceDisappears(t *testing.T) 
 }
 
 func TestContextPercentForAgentRejectsInvalidNumbers(t *testing.T) {
+	t.Parallel()
 	for _, value := range []float64{-1, math.NaN(), math.Inf(1), math.Inf(-1)} {
 		agent := Agent{Type: "claude", ContextLimit: 200000, ContextPercent: value}
 		if got := contextPercentForAgent(&agent); got != nil {

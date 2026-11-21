@@ -91,6 +91,7 @@ func pingPongTemplate() *workflow.WorkflowTemplate {
 // The ping-pong loop must alternate dispatches red → green → red, driven by
 // agent_says observations, and stop at the transition budget.
 func TestWorkflowRunnerPingPongAlternates(t *testing.T) {
+	t.Parallel()
 	fake := newFakeWorkflowSession()
 	fake.onDispatch = func(pane, _ string) {
 		// Each fake agent "finishes its turn" as soon as it is prompted.
@@ -125,6 +126,7 @@ func TestWorkflowRunnerPingPongAlternates(t *testing.T) {
 }
 
 func TestWorkflowRunnerEndpointDriftCannotDispatchOrRestart(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"initial capture", "verdict capture", "fault observation", "before restart"} {
 		t.Run(scenario, func(t *testing.T) {
 			template := pingPongTemplate()
@@ -291,6 +293,7 @@ command = %q
 }
 
 func TestWorkflowRunnerRemoteOutputTriggersRemainAvailable(t *testing.T) {
+	t.Parallel()
 	fake := newFakeWorkflowSession()
 	fake.onDispatch = func(pane, _ string) {
 		if pane == "%1" {
@@ -325,6 +328,7 @@ func piWorkflowCapture(transcript, draft string, working bool) string {
 }
 
 func TestWorkflowRunnerPiRepaintAdvancesDurableStages(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"answer in first repaint", "blank then restored history", "echo then repaint", "Markdown echo then repaint", "partial composer with verdict draft"} {
 		t.Run(scenario, func(t *testing.T) {
 			fake := newFakeWorkflowSession()
@@ -407,6 +411,7 @@ func TestWorkflowRunnerPiRepaintAdvancesDurableStages(t *testing.T) {
 }
 
 func TestWorkflowRunnerPiIncompleteComposerBlocksInitialDelivery(t *testing.T) {
+	t.Parallel()
 	fake := newFakeWorkflowSession()
 	fake.outputs["%1"] = "old history\n" + strings.Repeat("─", 40) + "\nunsent draft"
 	fake.outputs["%2"] = piWorkflowCapture("other history", "", false)
@@ -419,6 +424,7 @@ func TestWorkflowRunnerPiIncompleteComposerBlocksInitialDelivery(t *testing.T) {
 }
 
 func TestWorkflowRunnerPiComposerVerdictCannotAdvance(t *testing.T) {
+	t.Parallel()
 	fake := newFakeWorkflowSession()
 	fake.outputs["%1"] = piWorkflowCapture("old transcript", "", false)
 	fake.outputs["%2"] = piWorkflowCapture("other history", "", false)
@@ -449,6 +455,7 @@ func TestWorkflowRunnerPiComposerVerdictCannotAdvance(t *testing.T) {
 }
 
 func TestWorkflowRunnerPiResumeUsesPreparedPromptReceipt(t *testing.T) {
+	t.Parallel()
 	template := pingPongTemplate()
 	template.Description = "Review **private source context** and run `tests`"
 	fake := newFakeWorkflowSession()
@@ -509,6 +516,7 @@ func TestWorkflowRunnerPiResumeUsesPreparedPromptReceipt(t *testing.T) {
 }
 
 func TestWorkflowRunnerPiRejectsReplacementAfterPartialResponse(t *testing.T) {
+	t.Parallel()
 	for _, agentType := range []string{"pi", "omp", "cod"} {
 		t.Run(agentType, func(t *testing.T) {
 			fake := newFakeWorkflowSession()
@@ -585,6 +593,7 @@ func TestWorkflowRunnerPiWorkingChromeRetainsActivity(t *testing.T) {
 
 // A flowless parallel workflow dispatches every role once and completes.
 func TestWorkflowRunnerParallelDispatchesAll(t *testing.T) {
+	t.Parallel()
 	tmpl := &workflow.WorkflowTemplate{
 		Name: "par-test",
 		Agents: []workflow.WorkflowAgent{
@@ -633,6 +642,7 @@ func reviewGateTemplate(mode string) *workflow.WorkflowTemplate {
 // approval_mode=all: one reviewer's verdict must NOT advance the gate; the
 // transition fires only after every reviewer has approved (Approve wiring).
 func TestWorkflowRunnerReviewGateRequiresAllApprovals(t *testing.T) {
+	t.Parallel()
 	fake := newFakeWorkflowSession()
 	var polls int
 	var pollMu sync.Mutex
@@ -683,6 +693,7 @@ func TestWorkflowRunnerReviewGateRequiresAllApprovals(t *testing.T) {
 // other than the conventional "reviewer" and whose target stage is not
 // terminal: one approver's verdict must not advance the gate in mode=all.
 func TestWorkflowRunnerReviewGateNonReviewerRoleNonTerminalTarget(t *testing.T) {
+	t.Parallel()
 	tmpl := &workflow.WorkflowTemplate{
 		Name: "rg-qa",
 		Agents: []workflow.WorkflowAgent{
@@ -745,6 +756,7 @@ func TestWorkflowRunnerReviewGateNonReviewerRoleNonTerminalTarget(t *testing.T) 
 // Pause and transition checkpoints share dispatchMu and r.mu, so callers
 // cannot interleave state writes even when invoked concurrently.
 func TestWorkflowRunnerPauseAndRecordTransitionAreRaceFree(t *testing.T) {
+	t.Parallel()
 	fake := newFakeWorkflowSession()
 	agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}}
 	runner, err := newWorkflowRunner(pingPongTemplate(), agents,
@@ -802,6 +814,7 @@ func (c *workflowManualCommitBarrier) AdvanceManual(ctx *workflow.TriggerContext
 }
 
 func TestWorkflowManualPauseAndTerminalCommitHaveOneWinner(t *testing.T) {
+	t.Parallel()
 	for _, terminalFirst := range []bool{true, false} {
 		t.Run(fmt.Sprintf("terminal-first=%t", terminalFirst), func(t *testing.T) {
 			opts := resumeWorkflowOptions(t)
@@ -899,6 +912,7 @@ func TestWorkflowManualPauseAndTerminalCommitHaveOneWinner(t *testing.T) {
 // A stage timeout with on_timeout=pause must stop the owner loop with the
 // "paused" reason, even when the polling interval exceeds the deadline.
 func TestWorkflowRunnerStageTimeoutPausesRun(t *testing.T) {
+	t.Parallel()
 	fake := newFakeWorkflowSession() // triggers never fire; stage stalls
 	agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}}
 	template := pingPongTemplate()
@@ -1018,12 +1032,14 @@ func TestWorkflowRunnerResumedDeadlineBoundsObservationAndCommands(t *testing.T)
 }
 
 func TestWorkflowRunnerPendingResumeDeadlineBoundsValidation(t *testing.T) {
+	t.Parallel()
 	for _, uncertainSend := range []bool{false, true} {
 		name := "pending validation"
 		if uncertainSend {
 			name = "uncertain send"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			opts := resumeWorkflowOptions(t)
 			opts.FireManual = false
 			template := resumeWorkflowTemplate()
@@ -1103,6 +1119,7 @@ func TestWorkflowRunnerPendingResumeDeadlineBoundsValidation(t *testing.T) {
 // Operator cancellation (parent context canceled) must not be labeled a
 // timeout.
 func TestWorkflowRunnerCancelIsNotTimeout(t *testing.T) {
+	t.Parallel()
 	fake := newFakeWorkflowSession()
 	agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}}
 	runner, err := newWorkflowRunner(pingPongTemplate(), agents,
@@ -1123,6 +1140,7 @@ func TestWorkflowRunnerCancelIsNotTimeout(t *testing.T) {
 
 // A run whose triggers never fire must classify the deadline as a timeout.
 func TestWorkflowRunnerTimesOut(t *testing.T) {
+	t.Parallel()
 	fake := newFakeWorkflowSession()
 	agents := []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}}
 	runner, err := newWorkflowRunner(pingPongTemplate(), agents,
@@ -1139,6 +1157,7 @@ func TestWorkflowRunnerTimesOut(t *testing.T) {
 }
 
 func TestWorkflowRunnerStageRoleResolution(t *testing.T) {
+	t.Parallel()
 	fake := newFakeWorkflowSession()
 	tmpl := reviewGateTemplate("any")
 	tmpl.Routing = map[string]string{"triage": "reviewer"}
@@ -1162,6 +1181,7 @@ func TestWorkflowRunnerStageRoleResolution(t *testing.T) {
 }
 
 func TestResolveWorkflowForRunBuiltinAndNotFound(t *testing.T) {
+	t.Parallel()
 	tmpl, err := resolveWorkflowForRun("red-green")
 	if err != nil || tmpl.Name != "red-green" {
 		t.Fatalf("builtin resolve failed: tmpl=%v err=%v", tmpl, err)
@@ -1181,6 +1201,7 @@ func TestResolveWorkflowForRunBuiltinAndNotFound(t *testing.T) {
 }
 
 func TestResolveWorkflowForRunFromPath(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	single := filepath.Join(dir, "single.toml")
 	if err := os.WriteFile(single, []byte(`
@@ -1263,6 +1284,7 @@ role = "worker"
 }
 
 func TestResolveWorkflowVars(t *testing.T) {
+	t.Parallel()
 	tmpl := &workflow.WorkflowTemplate{
 		Name: "v", Coordination: workflow.CoordParallel,
 		Agents: []workflow.WorkflowAgent{{Profile: "cc", Role: "worker"}},
@@ -1287,6 +1309,7 @@ func TestResolveWorkflowVars(t *testing.T) {
 }
 
 func TestAssignWorkflowPanes(t *testing.T) {
+	t.Parallel()
 	tmpl := pingPongTemplate()
 	panes := []tmux.Pane{
 		{ID: "%0", Index: 0, Type: tmux.AgentUser},
@@ -1306,6 +1329,7 @@ func TestAssignWorkflowPanes(t *testing.T) {
 }
 
 func TestWorkflowRunnerIgnoresVerdictsBeforeStageAndOnReentry(t *testing.T) {
+	t.Parallel()
 	for _, reenter := range []bool{false, true} {
 		t.Run(map[bool]string{false: "initial history", true: "second round"}[reenter], func(t *testing.T) {
 			fake := newFakeWorkflowSession()
@@ -1352,6 +1376,7 @@ func TestWorkflowRunnerIgnoresVerdictsBeforeStageAndOnReentry(t *testing.T) {
 }
 
 func TestWorkflowRunnerKeepsDifferentReviewVerdictsSeparate(t *testing.T) {
+	t.Parallel()
 	template := reviewGateTemplate("all")
 	template.Flow.Initial = "review"
 	template.Flow.Transitions = []workflow.Transition{
@@ -1392,6 +1417,7 @@ func TestWorkflowRunnerKeepsDifferentReviewVerdictsSeparate(t *testing.T) {
 }
 
 func TestWorkflowRunnerRefusesItsOwnVerdictPrompt(t *testing.T) {
+	t.Parallel()
 	fake := newFakeWorkflowSession()
 	runner, err := newWorkflowRunner(pingPongTemplate(), []workflow.CoordinatorAgent{{ID: "%1", Role: "red"}, {ID: "%2", Role: "green"}},
 		workflowRunOptions{Session: "s", Vars: map[string]string{"instructions": "Reply RED-HANDOFF after finishing"}}, fake.ports())
@@ -1405,6 +1431,7 @@ func TestWorkflowRunnerRefusesItsOwnVerdictPrompt(t *testing.T) {
 }
 
 func TestWorkflowRunnerPreservesReceiptsWhenOutputEvidenceFails(t *testing.T) {
+	t.Parallel()
 	for _, lostBoundary := range []bool{false, true} {
 		t.Run(map[bool]string{false: "capture failure", true: "screen replacement"}[lostBoundary], func(t *testing.T) {
 			fake := newFakeWorkflowSession()
@@ -1439,6 +1466,7 @@ func TestWorkflowRunnerPreservesReceiptsWhenOutputEvidenceFails(t *testing.T) {
 }
 
 func TestWorkflowObservationCannotApproveRetriedRound(t *testing.T) {
+	t.Parallel()
 	fake := newFakeWorkflowSession()
 	fake.onDispatch = func(pane, _ string) {
 		if len(fake.dispatchedPanes()) == 1 {
@@ -1479,6 +1507,7 @@ func TestWorkflowObservationCannotApproveRetriedRound(t *testing.T) {
 }
 
 func TestWorkflowRunnerDoesNotManufactureAnchorsByTrimmingEvidence(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		pattern string
@@ -1636,6 +1665,7 @@ func (f *fakeWorkflowAgents) wire(ports *workflowRunPorts, runner **workflowRunn
 func pingPongPIDs() map[string]int { return map[string]int{"%1": 1001, "%2": 1002} }
 
 func TestWorkflowRunnerSimultaneousFaultsCannotSkipUndeliveredStage(t *testing.T) {
+	t.Parallel()
 	template := resumeWorkflowTemplate()
 	template.ErrorHandling = &workflow.ErrorConfig{OnAgentCrash: workflow.ErrorActionSkipStage}
 	opts := resumeWorkflowOptions(t)
@@ -1669,6 +1699,7 @@ func TestWorkflowRunnerSimultaneousFaultsCannotSkipUndeliveredStage(t *testing.T
 // screen, the stage prompt is re-sent, and the relaunched agent's verdict
 // advances the workflow. The fault is reported and checkpointed.
 func TestWorkflowRunnerRestartsCrashedAgentAndResendsStage(t *testing.T) {
+	t.Parallel()
 	template := pingPongTemplate()
 	template.ErrorHandling = &workflow.ErrorConfig{OnAgentCrash: workflow.ErrorActionRestartAgent}
 	fake := newFakeWorkflowSession()
@@ -1739,6 +1770,7 @@ func TestWorkflowRunnerRestartsCrashedAgentAndResendsStage(t *testing.T) {
 // debounced: a one-poll blip on another pane is not raised, a persistent
 // error is raised once, and on_agent_error=pause persists the pause.
 func TestWorkflowRunnerAgentErrorRunsOnAgentErrorPolicy(t *testing.T) {
+	t.Parallel()
 	template := pingPongTemplate()
 	template.ErrorHandling = &workflow.ErrorConfig{OnAgentError: workflow.ErrorActionPause}
 	fake := newFakeWorkflowSession()
@@ -1793,6 +1825,7 @@ func TestWorkflowRunnerAgentErrorRunsOnAgentErrorPolicy(t *testing.T) {
 // A crash loop cannot restart forever: restart_agent runs at most
 // MaxAgentRestarts times per pane, and the next crash aborts the run.
 func TestWorkflowRunnerCrashLoopStopsAfterRestartBudget(t *testing.T) {
+	t.Parallel()
 	template := pingPongTemplate()
 	template.ErrorHandling = &workflow.ErrorConfig{OnAgentCrash: workflow.ErrorActionRestartAgent}
 	fake := newFakeWorkflowSession()
@@ -1835,6 +1868,7 @@ func TestWorkflowRunnerCrashLoopStopsAfterRestartBudget(t *testing.T) {
 // it is raised once per episode rather than on every poll: a pane that
 // recovers and crashes again is a new episode.
 func TestWorkflowRunnerAgentFaultWithoutPolicyNotifiesOncePerEpisode(t *testing.T) {
+	t.Parallel()
 	fake := newFakeWorkflowSession()
 	agents := newFakeWorkflowAgents(pingPongPIDs())
 	agents.onCheck = func(check int) {
@@ -1893,6 +1927,7 @@ func TestWorkflowRunnerAgentFaultWithoutPolicyNotifiesOncePerEpisode(t *testing.
 // A flowless parallel template has no poll loop: its agents are checked once
 // before the single dispatch, so a crashed agent is relaunched first.
 func TestWorkflowRunnerParallelRestartsCrashedAgentBeforeDispatch(t *testing.T) {
+	t.Parallel()
 	tmpl := &workflow.WorkflowTemplate{
 		Name: "par-restart",
 		Agents: []workflow.WorkflowAgent{
@@ -1935,6 +1970,7 @@ func TestWorkflowRunnerParallelRestartsCrashedAgentBeforeDispatch(t *testing.T) 
 // the design stage, so no prompt is re-sent to it) and on_agent_error=pause
 // pauses the run when the QA agent errors.
 func TestWorkflowRunnerBuiltinSpecialistTeamErrorPolicy(t *testing.T) {
+	t.Parallel()
 	template, err := resolveWorkflowForRun("specialist-team")
 	if err != nil {
 		t.Fatal(err)
@@ -1990,6 +2026,7 @@ func TestWorkflowRunnerBuiltinSpecialistTeamErrorPolicy(t *testing.T) {
 }
 
 func TestClassifyWorkflowAgentHealth(t *testing.T) {
+	t.Parallel()
 	alive := func(int) bool { return true }
 	exited := func(int) bool { return false }
 	fresh := status.FreshnessFresh
@@ -2049,6 +2086,7 @@ func TestClassifyWorkflowAgentHealth(t *testing.T) {
 }
 
 func TestWorkflowRestartOutcomeAcceptsOnlyVerifiedRelaunch(t *testing.T) {
+	t.Parallel()
 	ready := func() *robot.RestartPaneOutput {
 		return &robot.RestartPaneOutput{
 			RobotResponse:       robot.NewRobotResponse(true),
@@ -2247,6 +2285,7 @@ func TestHealthTreatsAgentRootPaneAsRunning(t *testing.T) {
 }
 
 func TestPiWorkflowVerdictExcludesEchoWithoutMovingRegexAnchors(t *testing.T) {
+	t.Parallel()
 	const prompt = "Inspect **this result** and report."
 	const visible = " Inspect this result\n and report."
 	raw := status.NormalizeAgentEcho(prompt)
@@ -2294,6 +2333,7 @@ func TestPiWorkflowVerdictExcludesEchoWithoutMovingRegexAnchors(t *testing.T) {
 }
 
 func TestWorkflowRunnerPiRefusesRenderedVerdictBeforeDispatch(t *testing.T) {
+	t.Parallel()
 	for _, prepared := range []bool{false, true} {
 		name := "initial goal"
 		if prepared {
@@ -2335,6 +2375,7 @@ func TestWorkflowRunnerPiRefusesRenderedVerdictBeforeDispatch(t *testing.T) {
 }
 
 func TestWorkflowRunnerPiUnsupportedPromptDoesNotSend(t *testing.T) {
+	t.Parallel()
 	template := pingPongTemplate()
 	template.Description = "Inspect the requested change.\n\n> Preserve quoted requirements."
 	fake := newFakeWorkflowSession()
@@ -2350,6 +2391,7 @@ func TestWorkflowRunnerPiUnsupportedPromptDoesNotSend(t *testing.T) {
 }
 
 func TestWorkflowRunnerPiLegacyReceiptRefusesResume(t *testing.T) {
+	t.Parallel()
 	template := pingPongTemplate()
 	template.Description = "Review **changes** and run `tests`"
 	fake := newFakeWorkflowSession()

@@ -20,7 +20,7 @@ type SessionViewInput struct {
 	Session string `json:"session"`
 }
 
-func init() {
+func registerViewKernel() {
 	kernel.MustRegister(kernel.Command{
 		Name:        "sessions.view",
 		Description: "Apply tiled layout to a session",

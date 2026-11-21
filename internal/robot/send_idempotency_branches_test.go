@@ -46,10 +46,7 @@ func installIdempotencyBranchStore(t *testing.T) *state.Store {
 		t.Fatalf("Migrate state store: %v", err)
 	}
 
-	oldStore := currentProjectionStore()
-	SetProjectionStore(store)
 	t.Cleanup(func() {
-		SetProjectionStore(oldStore)
 		_ = store.Close()
 	})
 	return store
@@ -168,6 +165,8 @@ func TestGetSendIdempotency_FreshClaimRecordsCompletedOutcome(t *testing.T) {
 		Message:        "echo ntm-idem-fresh-marker",
 		Pane:           paneID,
 		IdempotencyKey: opID,
+		Store:          store,
+		ExplicitStore:  true,
 	}
 	t.Logf("seeded row: none (fresh claim); op_id=%s target=%s", opID, targetKey)
 
@@ -221,7 +220,7 @@ func TestGetSendIdempotency_FreshClaimRecordsCompletedOutcome(t *testing.T) {
 		t.Fatalf("stored outcome = %+v, want successful delivery to %s", outcome, targetKey)
 	}
 
-	receipt, err := GetSendReceipt(opID)
+	receipt, err := GetSendReceiptForStore(store, opID)
 	if err != nil {
 		t.Fatalf("GetSendReceipt returned error: %v", err)
 	}
@@ -290,6 +289,8 @@ func TestGetSendIdempotency_ReplaysCompletedSuccessWithoutDispatch(t *testing.T)
 		Message:        "echo " + replayMarker,
 		Pane:           paneID,
 		IdempotencyKey: opID,
+		Store:          store,
+		ExplicitStore:  true,
 	}
 
 	// Sentinel values no real dispatch in this session could produce: they
@@ -360,6 +361,8 @@ func TestGetSendIdempotency_ReplaysCompletedFailureWithNewIDHint(t *testing.T) {
 		Message:        "echo ntm-idem-replay-failure",
 		Pane:           paneID,
 		IdempotencyKey: opID,
+		Store:          store,
+		ExplicitStore:  true,
 	}
 
 	seeded := seedCompletedSendOperation(t, store, opID, session, sendOperationBindingHash(opts), sendOperationOutcome{
@@ -414,6 +417,8 @@ func TestGetSendIdempotency_ConflictingBindingRejected(t *testing.T) {
 		Message:        "echo ntm-idem-conflict",
 		Pane:           paneID,
 		IdempotencyKey: opID,
+		Store:          store,
+		ExplicitStore:  true,
 	}
 
 	// A binding hash that cannot match sendOperationBindingHash(opts).
@@ -472,6 +477,8 @@ func TestGetSendIdempotency_FreshInProgressClaimReportsInProgress(t *testing.T) 
 		Message:        "echo ntm-idem-in-progress",
 		Pane:           paneID,
 		IdempotencyKey: opID,
+		Store:          store,
+		ExplicitStore:  true,
 	}
 
 	payloadSHA, payloadBytes := operationPayloadDigest(opts.Message)
@@ -538,6 +545,8 @@ func TestGetSendIdempotency_StaleInProgressClaimTakenOver(t *testing.T) {
 		Message:        "echo ntm-idem-stale-takeover",
 		Pane:           paneID,
 		IdempotencyKey: opID,
+		Store:          store,
+		ExplicitStore:  true,
 	}
 
 	staleCreatedAt := time.Now().UTC().Add(-(operationStaleClaimWindow + 10*time.Minute))
@@ -615,6 +624,8 @@ func TestGetSendIdempotency_PreflightFailureReleasesClaim(t *testing.T) {
 		Pane:           paneID,
 		IdempotencyKey: opID,
 		DelayMs:        -1, // rejected by Prepare, after the claim
+		Store:          store,
+		ExplicitStore:  true,
 	}
 	t.Logf("seeded row: none (fresh claim against pane %s with a negative delay)", paneID)
 
@@ -662,10 +673,6 @@ func TestGetSendIdempotency_NoProjectionStoreNotImplemented(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
 	installIdempotencyBranchFeed(t)
 	session, paneID := createIdempotencyBranchSession(t, "nostore")
-
-	oldStore := currentProjectionStore()
-	SetProjectionStore(nil)
-	t.Cleanup(func() { SetProjectionStore(oldStore) })
 
 	opID := fmt.Sprintf("op-nostore-%d", time.Now().UnixNano())
 	t.Logf("seeded row: none (projection store nil); op_id=%s", opID)

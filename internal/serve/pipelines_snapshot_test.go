@@ -21,6 +21,7 @@ import (
 // Exercises the production inline/file execution and resume surfaces. The
 // first command is deliberately non-idempotent: recovery must not repeat it.
 func TestPipelineSnapshotMakesInlineAndFileRunsResumable(t *testing.T) {
+	t.Parallel()
 	for _, fileBacked := range []bool{false, true} {
 		t.Run(fmt.Sprintf("file=%v", fileBacked), func(t *testing.T) {
 			dir := t.TempDir()
@@ -81,6 +82,7 @@ func TestPipelineSnapshotMakesInlineAndFileRunsResumable(t *testing.T) {
 }
 
 func TestPipelineResumeRejectsDamagedSnapshotWithoutCheckpointMutation(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	srv := &Server{projectDir: dir}
 	out := srv.execPipelineInline(context.Background(), &pipeline.Workflow{SchemaVersion: "2.0", Name: "damaged", Steps: []pipeline.Step{{ID: "fail", Command: "exit 1"}}}, "snapshot", nil, false)
@@ -113,6 +115,7 @@ func TestPipelineResumeRejectsDamagedSnapshotWithoutCheckpointMutation(t *testin
 }
 
 func TestPipelineSnapshotFailureDoesNotDispatchOrLeakBackgroundOwner(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	blocked := filepath.Join(dir, ".ntm", "pipelines")
 	if err := os.MkdirAll(blocked, 0700); err != nil {
@@ -139,6 +142,7 @@ func TestPipelineSnapshotFailureDoesNotDispatchOrLeakBackgroundOwner(t *testing.
 }
 
 func TestPipelineDryRunDoesNotPublishSnapshot(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "preview.yaml")
 	data, err := yaml.Marshal(&pipeline.Workflow{SchemaVersion: "2.0", Name: "preview", Steps: []pipeline.Step{{ID: "work", Command: "true"}}})
@@ -159,6 +163,7 @@ func TestPipelineDryRunDoesNotPublishSnapshot(t *testing.T) {
 }
 
 func TestPipelineResumeSnapshotSymlinkCannotBypassHashCheck(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	workflow := &pipeline.Workflow{SchemaVersion: "2.0", Name: "symlinked", Steps: []pipeline.Step{{ID: "work", Command: "true"}}}
 	data, err := yaml.Marshal(workflow)

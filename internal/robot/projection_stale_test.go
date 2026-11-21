@@ -49,6 +49,7 @@ func upsertProjectionSession(t *testing.T, store *state.Store, name string, stal
 }
 
 func TestProjectionSnapshotStaleRowsRefusesEmptyAnswer(t *testing.T) {
+	t.Parallel()
 	store := newProjectionTestStore(t)
 	// Every projection row has aged out.
 	upsertProjectionSession(t, store, "alpha", time.Now().UTC().Add(-time.Minute))
@@ -61,6 +62,7 @@ func TestProjectionSnapshotStaleRowsRefusesEmptyAnswer(t *testing.T) {
 }
 
 func TestProjectionSnapshotEmptyStoreWithLiveSessionsRefusesEmptyAnswer(t *testing.T) {
+	t.Parallel()
 	store := newProjectionTestStore(t)
 
 	live := []tmux.Session{{Name: "alpha"}, {Name: "beta"}}
@@ -71,6 +73,7 @@ func TestProjectionSnapshotEmptyStoreWithLiveSessionsRefusesEmptyAnswer(t *testi
 }
 
 func TestProjectionSnapshotGenuinelyIdleStaysAuthoritative(t *testing.T) {
+	t.Parallel()
 	store := newProjectionTestStore(t)
 
 	sessions, err := buildProjectionBackedSnapshotSessions(store, nil)
@@ -83,6 +86,7 @@ func TestProjectionSnapshotGenuinelyIdleStaysAuthoritative(t *testing.T) {
 }
 
 func TestProjectionSnapshotFreshRowsServed(t *testing.T) {
+	t.Parallel()
 	store := newProjectionTestStore(t)
 	upsertProjectionSession(t, store, "alpha", time.Now().UTC().Add(time.Hour))
 

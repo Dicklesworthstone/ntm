@@ -137,6 +137,7 @@ func (s mailAvailabilityDiagnosticStub) LastAvailabilityError() error {
 type legacyMailAvailabilityStub struct{}
 
 func TestAgentMailUnavailableErrorUsesOptionalDiagnostic(t *testing.T) {
+	t.Parallel()
 	reason := errors.New("health endpoint returned 503")
 	err := agentMailUnavailableError(
 		t.Context(),
@@ -153,6 +154,7 @@ func TestAgentMailUnavailableErrorUsesOptionalDiagnostic(t *testing.T) {
 }
 
 func TestAgentMailUnavailableErrorPreservesLegacyFallback(t *testing.T) {
+	t.Parallel()
 	const fallback = "agent mail server not available"
 	err := agentMailUnavailableError(t.Context(), legacyMailAvailabilityStub{}, fallback)
 	if err == nil || err.Error() != fallback {
@@ -161,6 +163,7 @@ func TestAgentMailUnavailableErrorPreservesLegacyFallback(t *testing.T) {
 }
 
 func TestAgentMailUnavailableErrorPrioritizesCallerCancellation(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
@@ -2441,6 +2444,7 @@ func TestRunMailSendOverseerUsesSessionProjectDir(t *testing.T) {
 }
 
 func TestRunMailMutationHelpersRejectMissingOrCanceledContext(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		run  func(*cobra.Command) error
@@ -2487,6 +2491,7 @@ func TestRunMailMutationHelpersRejectMissingOrCanceledContext(t *testing.T) {
 }
 
 func TestResolveAgentMailScopesPreservePreCanceledContext(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	for _, test := range []struct {
@@ -3067,6 +3072,7 @@ func TestRunRenewLocksUsesSessionProjectDir(t *testing.T) {
 // the reporting side: reservation verbs must name the probe's terminal error
 // in their JSON `error` instead of emitting a bare, misleading fixed string.
 func TestAgentMailUnavailableMessageSurfacesProbeReason(t *testing.T) {
+	t.Parallel()
 	reason := errors.New("liveness: context deadline exceeded")
 	got := agentMailUnavailableMessage(mailAvailabilityDiagnosticStub{err: reason})
 	want := "Agent Mail server unavailable: liveness: context deadline exceeded"
@@ -3083,6 +3089,7 @@ func TestAgentMailUnavailableMessageSurfacesProbeReason(t *testing.T) {
 }
 
 func TestAgentMailUnavailableCLIErrorWrapsProbeReason(t *testing.T) {
+	t.Parallel()
 	reason := errors.New("liveness: connection refused")
 	err := agentMailUnavailableCLIError(mailAvailabilityDiagnosticStub{err: reason})
 	if !errors.Is(err, reason) {

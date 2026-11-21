@@ -108,6 +108,7 @@ func TestJoinLifecycleDetail(t *testing.T) {
 }
 
 func TestKillProcessesGracefully_TermsCooperativeProcess(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("sleep", "60")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start sleep: %v", err)
@@ -123,7 +124,7 @@ func TestKillProcessesGracefully_TermsCooperativeProcess(t *testing.T) {
 	if !ok {
 		t.Fatalf("owned sleep process %d absent from initial snapshot", pid)
 	}
-	killed, err := killProcessesGracefully(t.Context(), map[int]process.SnapshotProcess{pid: original}, nil)
+	killed, err := killProcessesGracefully(t.Context(), map[int]process.SnapshotProcess{pid: original}, lifecycleTermGrace, lifecycleKillGrace, lifecycleReconcileTimeout, nil)
 	if err != nil {
 		t.Fatalf("kill owned cooperative process: %v", err)
 	}
@@ -205,7 +206,7 @@ func TestKillProcessesGracefullyRefusesWithoutFreshEvidence(t *testing.T) {
 			case "pane-guard-failure":
 				guard = func(context.Context) error { return errors.New("original pane replaced") }
 			}
-			killed, err := killProcessesGracefully(ctx, map[int]process.SnapshotProcess{pid: original}, guard)
+			killed, err := killProcessesGracefully(ctx, map[int]process.SnapshotProcess{pid: original}, lifecycleTermGrace, lifecycleKillGrace, lifecycleReconcileTimeout, guard)
 			t.Setenv("PATH", path)
 			if err == nil || len(killed) != 0 || !process.IsAlive(pid) {
 				t.Fatalf("unverified kill signaled its target: killed=%v err=%v alive=%t", killed, err, process.IsAlive(pid))
@@ -298,6 +299,7 @@ func TestLifecyclePaneResult_VerificationFailedIsDistinctFromDestroyed(t *testin
 }
 
 func TestLifecycleShellAdmissionAndExitEvidence(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("lifecycle transport fixture requires POSIX processes")
 	}
@@ -419,8 +421,12 @@ case "$1" in
   *) exit 57 ;;
 esac
 `
+	sem := make(chan struct{}, 16)
 	for _, tc := range cases {
 		t.Run(tc.verb+"/"+tc.mode+"/relaunch="+strconv.FormatBool(tc.relaunch), func(t *testing.T) {
+			t.Parallel()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			root := t.TempDir()
 			path := filepath.Join(root, "tmux")
 			if err := os.WriteFile(path, []byte(script), 0700); err != nil {
@@ -683,6 +689,16 @@ func TestLifecycleShellTransportHelper(t *testing.T) {
 		Session:  "session",
 		Relaunch: os.Getenv("NTM_LIFECYCLE_SHELL_TEST_RELAUNCH") == "true",
 	}
+	// Tighten exit/grace/poll windows inside the isolated subprocess transport
+	// fixture so every timeout, retry, and SIGTERM->SIGKILL escalation executes
+	// in full without sleeping multi-second production walls. Keep reconcile
+	// budget generous so /proc snapshots never time out under parallel load.
+	lifecycleExitTimeout = 500 * time.Millisecond
+	lifecyclePollInterval = 50 * time.Millisecond
+	lifecycleTermGrace = 250 * time.Millisecond
+	lifecycleKillGrace = 150 * time.Millisecond
+	lifecycleReconcileTimeout = 350 * time.Millisecond
+	tmux.DefaultClient.MaxSendDelay = 2 * time.Millisecond
 	if mode == "expected-pid" || mode == "expected-agent" {
 		opts.ExpectedPane = &tmux.Pane{ID: "%7", PID: shellPID, Type: tmux.AgentClaude}
 		if mode == "expected-pid" {
@@ -1050,7 +1066,7 @@ func TestExitCLI_DirectExecProtectionAndOptInFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Executable: %v", err)
 	}
-	directExecCmd := fmt.Sprintf("env NTM_MOCK_DIRECT_EXEC_AGENT=1 %s -test.run=^TestDirectExecMockAgentHelper$", tmux.ShellQuote(selfExe))
+	directExecCmd := fmt.Sprintf("env NTM_TEST_TMUX_ENV_OWNED=1 NTM_MOCK_DIRECT_EXEC_AGENT=1 TMPDIR=%s %s -test.run=^TestDirectExecMockAgentHelper$", tmux.ShellQuote(tmpDir), tmux.ShellQuote(selfExe))
 
 	waitForForegroundAgent := func(t *testing.T, session string) tmux.Pane {
 		t.Helper()
@@ -1103,7 +1119,7 @@ func TestExitCLI_DirectExecProtectionAndOptInFlags(t *testing.T) {
 			t.Fatalf("SetPaneAgentIdentityContext: %v", err)
 		}
 
-		out, err := GetExitCLI(t.Context(), LifecycleOptions{Session: session, RespawnShell: true})
+		out, err := GetExitCLI(t.Context(), LifecycleOptions{Session: session, RespawnShell: true, PollInterval: 30 * time.Millisecond})
 		if err != nil {
 			t.Fatalf("GetExitCLI --respawn-shell: %v", err)
 		}
@@ -1134,7 +1150,7 @@ func TestExitCLI_DirectExecProtectionAndOptInFlags(t *testing.T) {
 			t.Fatalf("SetPaneAgentIdentityContext: %v", err)
 		}
 
-		out, err := GetExitCLI(t.Context(), LifecycleOptions{Session: session, AllowPaneClose: true})
+		out, err := GetExitCLI(t.Context(), LifecycleOptions{Session: session, AllowPaneClose: true, PollInterval: 30 * time.Millisecond})
 		if err != nil {
 			t.Fatalf("GetExitCLI --allow-pane-close: %v", err)
 		}

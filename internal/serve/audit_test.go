@@ -14,6 +14,7 @@ import (
 )
 
 func TestAuditStore_Record(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	cfg := AuditStoreConfig{
 		DBPath:          filepath.Join(tmpDir, "audit.db"),
@@ -72,6 +73,7 @@ func TestAuditStore_Record(t *testing.T) {
 }
 
 func TestAuditStore_JSONLOnlySchedulesRetentionCleanup(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	jsonlPath := filepath.Join(tmpDir, "audit.jsonl")
 	store, err := NewAuditStore(AuditStoreConfig{
@@ -108,6 +110,7 @@ func TestAuditStore_JSONLOnlySchedulesRetentionCleanup(t *testing.T) {
 }
 
 func TestAuditStore_RecordCountsUnavailableConfiguredJSONLSink(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	store, err := NewAuditStore(AuditStoreConfig{
 		JSONLPath:       filepath.Join(tmpDir, "audit.jsonl"),
@@ -139,6 +142,7 @@ func TestAuditStore_RecordCountsUnavailableConfiguredJSONLSink(t *testing.T) {
 }
 
 func TestAuditStore_Retention(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	cfg := AuditStoreConfig{
 		DBPath:          filepath.Join(tmpDir, "audit.db"),
@@ -185,6 +189,7 @@ func TestAuditStore_Retention(t *testing.T) {
 }
 
 func TestInferAction(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		method string
 		want   AuditAction
@@ -208,6 +213,7 @@ func TestInferAction(t *testing.T) {
 }
 
 func TestInferResource(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		path string
 		want string
@@ -232,6 +238,7 @@ func TestInferResource(t *testing.T) {
 }
 
 func TestIsMutatingMethod(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		method string
 		want   bool
@@ -256,6 +263,7 @@ func TestIsMutatingMethod(t *testing.T) {
 }
 
 func TestSplitPath(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		path string
 		want []string
@@ -283,6 +291,7 @@ func TestSplitPath(t *testing.T) {
 }
 
 func TestDefaultAuditStoreConfig(t *testing.T) {
+	t.Parallel()
 	dataDir := "/tmp/test-data"
 	cfg := DefaultAuditStoreConfig(dataDir)
 
@@ -308,6 +317,7 @@ func TestDefaultAuditStoreConfig(t *testing.T) {
 }
 
 func TestSetAuditAction(t *testing.T) {
+	t.Parallel()
 	// Create a request with audit context
 	req := httptest.NewRequest("POST", "/api/v1/test", nil)
 
@@ -324,6 +334,7 @@ func TestSetAuditAction(t *testing.T) {
 }
 
 func TestSetAuditAction_NilContext(t *testing.T) {
+	t.Parallel()
 	// Create a request without audit context
 	req := httptest.NewRequest("GET", "/api/v1/test", nil)
 
@@ -333,6 +344,7 @@ func TestSetAuditAction_NilContext(t *testing.T) {
 }
 
 func TestNewAuditStore_DefaultRetentionValues(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	cfg := AuditStoreConfig{
 		DBPath:          filepath.Join(tmpDir, "audit.db"),
@@ -351,6 +363,7 @@ func TestNewAuditStore_DefaultRetentionValues(t *testing.T) {
 }
 
 func TestNewAuditStore_UsesSingleSQLiteConnection(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	store, err := NewAuditStore(AuditStoreConfig{
 		DBPath:          filepath.Join(tmpDir, "audit.db"),
@@ -373,6 +386,7 @@ func TestNewAuditStore_UsesSingleSQLiteConnection(t *testing.T) {
 }
 
 func TestNewAuditStore_DBOnly(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	cfg := AuditStoreConfig{
 		DBPath:          filepath.Join(tmpDir, "audit.db"),
@@ -425,6 +439,7 @@ func countAuditRows(t *testing.T, store *AuditStore) int {
 }
 
 func TestNewAuditStore_JSONLOnly(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	cfg := AuditStoreConfig{
 		JSONLPath:       filepath.Join(tmpDir, "audit.jsonl"),
@@ -468,6 +483,7 @@ func TestNewAuditStore_JSONLOnly(t *testing.T) {
 }
 
 func TestAuditStore_CleanupNilDB(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	cfg := AuditStoreConfig{
 		JSONLPath:       filepath.Join(tmpDir, "audit.jsonl"),
@@ -485,6 +501,7 @@ func TestAuditStore_CleanupNilDB(t *testing.T) {
 }
 
 func TestAuditStore_Close_DBOnly(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	cfg := AuditStoreConfig{
 		DBPath:          filepath.Join(tmpDir, "audit.db"),
@@ -503,6 +520,7 @@ func TestAuditStore_Close_DBOnly(t *testing.T) {
 }
 
 func TestAuditStore_Close_Idempotent(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	cfg := AuditStoreConfig{
 		DBPath:          filepath.Join(tmpDir, "audit.db"),
@@ -523,6 +541,7 @@ func TestAuditStore_Close_Idempotent(t *testing.T) {
 }
 
 func TestAuditContextFromRequest_NilContext(t *testing.T) {
+	t.Parallel()
 	req := httptest.NewRequest("GET", "/test", nil)
 
 	// Should return nil when no audit context is set
@@ -533,6 +552,7 @@ func TestAuditContextFromRequest_NilContext(t *testing.T) {
 }
 
 func TestAuditContextFromRequest_WithContext(t *testing.T) {
+	t.Parallel()
 	req := httptest.NewRequest("GET", "/test", nil)
 	expected := &AuditContext{
 		Resource:   "test",
@@ -554,6 +574,7 @@ func TestAuditContextFromRequest_WithContext(t *testing.T) {
 // rotated or truncated despite Retention being documented as "how long to keep
 // audit records".
 func TestAuditStore_RotatesAndPrunesJSONL(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	jsonlPath := filepath.Join(dir, "audit.jsonl")
 
@@ -631,6 +652,7 @@ func TestAuditStore_RotatesAndPrunesJSONL(t *testing.T) {
 
 // Unrelated files in the audit directory must not be deleted by pruning.
 func TestAuditStore_PruneLeavesUnrelatedFilesAlone(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	jsonlPath := filepath.Join(dir, "audit.jsonl")
 
@@ -660,6 +682,7 @@ func TestAuditStore_PruneLeavesUnrelatedFilesAlone(t *testing.T) {
 // one-second resolution, so a naive name would make os.Rename OVERWRITE the
 // earlier segment and destroy audit records.
 func TestRotatedSegmentPath_NeverCollides(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "audit.jsonl")
 	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
@@ -688,6 +711,7 @@ func TestRotatedSegmentPath_NeverCollides(t *testing.T) {
 // writer used to snapshot the file handle BEFORE taking appendMu, so a
 // rotation could close that handle underneath it and the record was lost.
 func TestAuditStore_ConcurrentWritesSurviveRotation(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	jsonlPath := filepath.Join(dir, "audit.jsonl")
 
@@ -770,6 +794,7 @@ func TestAuditStore_ConcurrentWritesSurviveRotation(t *testing.T) {
 // while holding both appendMu and mu, which would wedge every request that
 // records an audit entry, not just rotation.
 func TestRotatedSegmentPath_TerminatesWhenTheDirectoryIsUnreadable(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses directory permissions")
 	}
@@ -803,6 +828,7 @@ func TestRotatedSegmentPath_TerminatesWhenTheDirectoryIsUnreadable(t *testing.T)
 }
 
 func TestAuditStoreQueryFiltersPaginationAndMissingDB(t *testing.T) {
+	t.Parallel()
 	// 1. QueryAuditDBFile on non-existent DB returns non-nil empty slice without creating files.
 	missingDir := filepath.Join(t.TempDir(), "does-not-exist")
 	missingDB := filepath.Join(missingDir, "audit.db")

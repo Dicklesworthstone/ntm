@@ -18,8 +18,10 @@ import (
 )
 
 func TestJobOperationHTTPReplayAcrossServerRestart(t *testing.T) {
+	t.Parallel()
 	for _, fails := range []bool{false, true} {
 		t.Run(fmt.Sprintf("fails=%v", fails), func(t *testing.T) {
+			t.Parallel()
 			path := filepath.Join(t.TempDir(), "state.db")
 			srv, closeServer := newJournalHTTPServer(t, path)
 			var calls atomic.Int32
@@ -61,6 +63,7 @@ func TestJobOperationHTTPReplayAcrossServerRestart(t *testing.T) {
 }
 
 func TestJobOperationHTTPCancellationIsDurable(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.db")
 	srv, closeServer := newJournalHTTPServer(t, path)
 	started := make(chan struct{})
@@ -94,6 +97,7 @@ func TestJobOperationHTTPCancellationIsDurable(t *testing.T) {
 }
 
 func TestJobOperationHTTPRequiresDurabilityAndValidIdentity(t *testing.T) {
+	t.Parallel()
 	srv := NewHermeticServer("test")
 	defer srv.Stop()
 	var calls atomic.Int32
@@ -108,6 +112,7 @@ func TestJobOperationHTTPRequiresDurabilityAndValidIdentity(t *testing.T) {
 }
 
 func TestJobOperationHTTPKeepsStrictParametersForEveryJobType(t *testing.T) {
+	t.Parallel()
 	srv, _ := newJournalHTTPServer(t, filepath.Join(t.TempDir(), "state.db"))
 	for _, kind := range implementedJobTypes {
 		t.Run(kind, func(t *testing.T) {
@@ -127,6 +132,7 @@ func TestJobOperationHTTPKeepsStrictParametersForEveryJobType(t *testing.T) {
 }
 
 func TestJobSessionEnvelopeTargetsSpawnHTTP(t *testing.T) {
+	t.Parallel()
 	srv := NewHermeticServer("test")
 	defer srv.Stop()
 	opts := make(chan robot.SpawnOptions, 1)
@@ -155,6 +161,7 @@ func TestJobSessionEnvelopeTargetsSpawnHTTP(t *testing.T) {
 // "Session-aware execution"): the POST is rejected with 400 before a job,
 // receipt, or engine call exists, rather than locking the wrong session.
 func TestJobSessionConflictFailsBeforeEveryEngineHTTP(t *testing.T) {
+	t.Parallel()
 	srv := NewHermeticServer("test")
 	defer srv.Stop()
 	var calls atomic.Int32

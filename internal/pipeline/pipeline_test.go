@@ -164,7 +164,7 @@ func TestWaitForIdle_ContextCancellation(t *testing.T) {
 	cancel() // Cancel immediately
 
 	detector := status.NewDetector()
-	err = waitForIdle(ctx, detector, panes[0].ID)
+	err = waitForIdleWithInterval(ctx, detector, panes[0].ID, StageIdlePollInterval)
 	if err == nil {
 		t.Error("expected error from cancelled context")
 	}
@@ -189,7 +189,7 @@ func TestWaitForIdle_Timeout(t *testing.T) {
 	defer cancel()
 
 	detector := status.NewDetector()
-	err = waitForIdle(ctx, detector, panes[0].ID)
+	err = waitForIdleWithInterval(ctx, detector, panes[0].ID, StageIdlePollInterval)
 	// Should timeout since pane won't be in idle state
 	if err == nil {
 		t.Log("pane was already idle, test inconclusive but passes")
@@ -293,7 +293,7 @@ func TestWaitForIdle_InvalidPane(t *testing.T) {
 
 	detector := status.NewDetector()
 	// Pass an invalid pane ID - should eventually timeout
-	err := waitForIdle(ctx, detector, "%999")
+	err := waitForIdleWithInterval(ctx, detector, "%999", StageIdlePollInterval)
 	if err == nil {
 		t.Log("no error from invalid pane, may have returned idle state")
 	}

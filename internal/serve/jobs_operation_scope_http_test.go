@@ -17,6 +17,7 @@ import (
 // Exercise the actual POST/GET jobs surface, admission's project binding,
 // dispatch, and durable receipts; only the external agent launcher is replaced.
 func TestJobOperationHTTPProjectScopeAcrossRestart(t *testing.T) {
+	t.Parallel()
 	for _, workingDir := range []string{"", "child"} {
 		t.Run("working_dir="+workingDir, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "state.db")

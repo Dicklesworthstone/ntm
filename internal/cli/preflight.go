@@ -26,7 +26,7 @@ type PreflightInput struct {
 	Strict bool   `json:"strict,omitempty"`
 }
 
-func init() {
+func registerPreflightKernel() {
 	// Register preflight kernel command
 	kernel.MustRegister(kernel.Command{
 		Name:        "prompt.preflight",

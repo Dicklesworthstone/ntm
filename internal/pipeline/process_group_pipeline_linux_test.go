@@ -21,6 +21,7 @@ import (
 // external cancellation must keep exclusive ownership through descendant
 // cleanup, then allow another owner without any old command still executing.
 func TestControlledPipelineCancellationOwnsCommandDescendants(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	groupTestFile(t, root, "child.sh", `trap '' TERM
 printf ready > child.ready
@@ -197,6 +198,7 @@ exit 7
 func TestControlledPipelineObservationRetriesReconcileReceipts(t *testing.T) {
 	for _, phase := range []string{"live_child", "quiet_group"} {
 		t.Run(phase, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			groupTestFile(t, root, "child.sh", `printf '%s' "$$" > child.pid
 while [ ! -f release ]; do sleep 0.01; done
@@ -476,6 +478,7 @@ printf child-
 }
 
 func TestWaitNoneExplicitTimeoutWithUnknownSettlementRefusesReplay(t *testing.T) {
+	t.Parallel()
 	e := newCommandTestExecutor(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	fault := errors.New("injected unknown background timeout settlement")
@@ -622,6 +625,13 @@ func TestControlledPipelinePersistentObservationCancellationPreservesUncertainty
 }
 
 func TestControlledPipelineCensusOwnershipLossPreservesRecoveryEvidence(t *testing.T) {
+	oldDrain, oldRecovery := commandPipeDrainTimeout, commandSettlementRecoveryTimeout
+	commandPipeDrainTimeout = 250 * time.Millisecond
+	commandSettlementRecoveryTimeout = 350 * time.Millisecond
+	t.Cleanup(func() {
+		commandPipeDrainTimeout = oldDrain
+		commandSettlementRecoveryTimeout = oldRecovery
+	})
 	for _, background := range []bool{false, true} {
 		for _, ownershipErr := range []error{syscall.ECHILD, syscall.ESRCH} {
 			t.Run(fmt.Sprintf("background_%t/%v", background, ownershipErr), func(t *testing.T) {
@@ -746,6 +756,11 @@ printf complete > child.effect
 }
 
 func TestControlledPipelineLateSettlementRecoveryKeepsOwnershipAndReceipts(t *testing.T) {
+	// This test runs LoadState + AcquireRunControl + CleanupStates while late
+	// settlement recovery is actively paused, so give recovery generous budget.
+	oldRecovery := commandSettlementRecoveryTimeout
+	commandSettlementRecoveryTimeout = 1500 * time.Millisecond
+	t.Cleanup(func() { commandSettlementRecoveryTimeout = oldRecovery })
 	for _, background := range []bool{false, true} {
 		t.Run(fmt.Sprintf("background_%t", background), func(t *testing.T) {
 			root := t.TempDir()
@@ -885,6 +900,15 @@ func TestControlledPipelineLateSettlementRecoveryKeepsOwnershipAndReceipts(t *te
 }
 
 func TestControlledPipelineCancellationFaultsSettleReceiptAndResume(t *testing.T) {
+	oldGrace, oldDrain, oldRecovery := commandCancelGracePeriod, commandPipeDrainTimeout, commandSettlementRecoveryTimeout
+	commandCancelGracePeriod = 350 * time.Millisecond
+	commandPipeDrainTimeout = 300 * time.Millisecond
+	commandSettlementRecoveryTimeout = 450 * time.Millisecond
+	t.Cleanup(func() {
+		commandCancelGracePeriod = oldGrace
+		commandPipeDrainTimeout = oldDrain
+		commandSettlementRecoveryTimeout = oldRecovery
+	})
 	root := t.TempDir()
 	groupTestFile(t, root, "child.sh", `trap '' TERM
 printf '%s' "$$" > child.pid
@@ -1346,6 +1370,7 @@ func startPipelineReceiptChurn(t *testing.T, launches *atomic.Int32) {
 func TestControlledPipelineObservedBackgroundFailureSurvivesNormalShutdown(t *testing.T) {
 	for _, exitCode := range []int{0, 7} {
 		t.Run(fmt.Sprintf("exit_%d", exitCode), func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "observed-background-exit", Settings: DefaultWorkflowSettings(), Steps: []Step{
 				{ID: "sidecar", Wait: WaitNone, Command: fmt.Sprintf("printf 'once\\n' >> launches; printf diagnostic; exit %d", exitCode)},
@@ -1443,6 +1468,11 @@ func TestControlledPipelineObservedBackgroundFailureSurvivesNormalShutdown(t *te
 }
 
 func TestControlledPipelineFatalFailureJoinsSidecarsBeforePostHooks(t *testing.T) {
+	// Keep sidecar's TERM handler alive across the 200ms hold + RequestRunCancellation
+	// checkpoint write even under -race / slow disk; child-release exits it immediately after.
+	oldGrace := commandCancelGracePeriod
+	commandCancelGracePeriod = 2 * time.Second
+	t.Cleanup(func() { commandCancelGracePeriod = oldGrace })
 	for _, cancelDuringJoin := range []bool{false, true} {
 		name := "post_hooks"
 		if cancelDuringJoin {
@@ -1689,6 +1719,7 @@ func TestControlledPipelineNestedWaitNoneSurvivesContainerCompletion(t *testing.
 }
 
 func TestControlledPipelineNestedWaitNoneHonorsCancellationAndDeadlines(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, shape, stop string
 		wantStatus        ExecutionStatus
@@ -1852,9 +1883,11 @@ func TestControlledPipelineNestedWaitNoneUncertaintyRefusesReplay(t *testing.T) 
 }
 
 func TestControlledPipelineHandledObservationFailurePreservesRecovery(t *testing.T) {
+	t.Parallel()
 	requireCommandPIDFDObservation(t)
 	for _, selector := range []bool{false, true} {
 		t.Run(fmt.Sprintf("selector_%t", selector), func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			source := "printf '%s' \"$$\" > uncertain.pid; " +
 				"while [ ! -f source.release ]; do sleep 0.01; done; " +

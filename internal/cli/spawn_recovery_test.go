@@ -110,7 +110,9 @@ esac
 			cfg.SessionRecovery.Enabled = mode != "disabled"
 			cfg.SessionRecovery.AutoInjectOnSpawn = mode != "no-auto-inject"
 			jsonOutput = true
-			tmux.DefaultClient = tmux.NewClient("")
+			fastClient := tmux.NewClient("")
+			fastClient.MaxSendDelay = 2 * time.Millisecond
+			tmux.DefaultClient = fastClient
 			pane := tmux.Pane{ID: "%91", Index: 0, WindowIndex: 0, Title: session + "__cc_1", Type: tmux.AgentClaude, Command: "claude", PID: 4242}
 			now := time.Now()
 			observation := testSpawnSessionObservation(now, testSpawnPaneObservation(now, pane, statuspkg.StateIdle))
@@ -253,6 +255,7 @@ func TestBuildRecoveryContextRejectsLocalHandoffForRemoteTmux(t *testing.T) {
 }
 
 func TestRecoveryHandoffBudgetPreservesUTF8(t *testing.T) {
+	t.Parallel()
 	prompt := "Resume migration first\n" + strings.Repeat("界", recovery.MaxHandoffTokens*4)
 	bounded := truncateRecoveryHandoff(prompt, recovery.MaxHandoffTokens*4)
 	if !utf8.ValidString(bounded) || len(bounded) > recovery.MaxHandoffTokens*4 || !strings.HasPrefix(bounded, "Resume migration first") {
@@ -300,6 +303,7 @@ func (s *recoveryMailStub) ListReservations(_ context.Context, projectKey, agent
 }
 
 func TestRecoveryAgentCandidates_DeduplicatesSessionName(t *testing.T) {
+	t.Parallel()
 	candidates := recoveryAgentCandidates("session-1", "session-1")
 	if len(candidates) != 1 || candidates[0] != "session-1" {
 		t.Fatalf("expected only session name candidate, got %#v", candidates)
@@ -312,6 +316,7 @@ func TestRecoveryAgentCandidates_DeduplicatesSessionName(t *testing.T) {
 }
 
 func TestFetchRecoveryInbox_ReturnsEffectiveFallbackAgentName(t *testing.T) {
+	t.Parallel()
 	stub := &recoveryMailStub{
 		inboxByAgent: map[string][]agentmail.InboxMessage{
 			"session-1": {{Subject: "fallback worked"}},
@@ -337,6 +342,7 @@ func TestFetchRecoveryInbox_ReturnsEffectiveFallbackAgentName(t *testing.T) {
 }
 
 func TestFetchRecoveryInbox_FreshProjectAgentNotFoundIsNotAnError(t *testing.T) {
+	t.Parallel()
 	// Regression for #108: on a brand-new project with no registered
 	// agents, every candidate resolves to "agent not found" — which is
 	// the expected empty-inbox state. The caller should get (nil, "",
@@ -361,6 +367,7 @@ func TestFetchRecoveryInbox_FreshProjectAgentNotFoundIsNotAnError(t *testing.T) 
 }
 
 func TestFetchRecoveryInbox_RealFailuresStillPropagate(t *testing.T) {
+	t.Parallel()
 	// Make sure the #108 filter doesn't accidentally swallow real
 	// transport / auth / server errors that are not "agent not found".
 	stub := &recoveryMailStub{
@@ -379,6 +386,7 @@ func TestFetchRecoveryInbox_RealFailuresStillPropagate(t *testing.T) {
 }
 
 func TestIsRecoveryEmptyInboxError(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		err  error
@@ -422,6 +430,7 @@ func TestIsRecoveryEmptyInboxError(t *testing.T) {
 }
 
 func TestListRecoveryReservations_FollowsEffectiveFallbackAgentName(t *testing.T) {
+	t.Parallel()
 	stub := &recoveryMailStub{
 		resByAgent: map[string][]agentmail.FileReservation{
 			"session-1": {{PathPattern: "internal/cli/spawn.go"}},
@@ -538,6 +547,7 @@ func TestLoadRecoveryCheckpoint_InvalidLatestCheckpointReturnsError(t *testing.T
 // used by loadRecoveryCheckpoint to reject checkpoints from a different repo
 // when the same session name is used in two working directories (#131).
 func TestCheckpointWorkingDirMatches(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		checkpointDir string
@@ -569,6 +579,7 @@ func TestCheckpointWorkingDirMatches(t *testing.T) {
 // rejected when the checkpoint's pane_current_path was recorded through
 // one alias and the spawn dir was supplied via the other.
 func TestCheckpointWorkingDirMatches_ResolvesSymlinks(t *testing.T) {
+	t.Parallel()
 	real := t.TempDir()
 	link := filepath.Join(t.TempDir(), "alias")
 	if err := os.Symlink(real, link); err != nil {
@@ -636,6 +647,7 @@ func TestLoadRecoveryCheckpoint_RejectsCheckpointFromDifferentWorkingDir(t *test
 // NOTE: This test uses the current RecoveryContext struct fields. If the struct
 // changes (e.g., Sessions replaced with CMMemories), update these tests accordingly.
 func TestRecoveryContext_EstimateTokens(t *testing.T) {
+	t.Parallel()
 	t.Log("RECOVERY_TEST: TestRecoveryContext_EstimateTokens | Testing token estimation accuracy")
 
 	// Note: estimateRecoveryTokens adds 500 chars (~125 tokens) overhead for formatting
@@ -752,6 +764,7 @@ func TestRecoveryContext_EstimateTokens(t *testing.T) {
 
 // TestRecoveryContext_Truncate tests the truncation logic
 func TestRecoveryContext_Truncate(t *testing.T) {
+	t.Parallel()
 	t.Log("RECOVERY_TEST: TestRecoveryContext_Truncate | Testing token truncation behavior")
 
 	tests := []struct {
@@ -818,6 +831,7 @@ func TestRecoveryContext_Truncate(t *testing.T) {
 
 // TestRecoveryContext_FormatPrompt tests the prompt formatting
 func TestRecoveryContext_FormatPrompt(t *testing.T) {
+	t.Parallel()
 	t.Log("RECOVERY_TEST: TestRecoveryContext_FormatPrompt | Testing prompt formatting")
 
 	tests := []struct {
@@ -973,6 +987,7 @@ func TestRecoveryContext_FormatPrompt(t *testing.T) {
 
 // TestRecoveryContext_BuildWithDisabled tests that disabled config returns nil
 func TestRecoveryContext_BuildWithDisabled(t *testing.T) {
+	t.Parallel()
 	t.Log("RECOVERY_TEST: TestRecoveryContext_BuildWithDisabled | Testing disabled recovery")
 
 	ctx := context.Background()
@@ -1096,6 +1111,7 @@ func TestBuildRecoveryContext_CancellationStaysTerminal(t *testing.T) {
 }
 
 func TestSessionRecoveryConfig_GetTimeout(t *testing.T) {
+	t.Parallel()
 	if got := (config.SessionRecoveryConfig{}).GetTimeout(); got != 5*time.Second {
 		t.Fatalf("unset recovery timeout=%s, want 5s default", got)
 	}
@@ -1128,6 +1144,7 @@ func TestBuildRecoveryContext_OrdinaryBeadsFailureIsPartial(t *testing.T) {
 }
 
 func TestNewRecoverySpawnStatusExposesPartialSourceFailures(t *testing.T) {
+	t.Parallel()
 	if status := newRecoverySpawnStatus(false, nil); status != nil {
 		t.Fatalf("disabled recovery status=%+v, want nil", status)
 	}
@@ -1187,6 +1204,7 @@ func TestRecoveryContext_BuildGracefulDegradation(t *testing.T) {
 
 // TestRecoveryContext_TokenBudgetEnforced tests that token budget is enforced
 func TestRecoveryContext_TokenBudgetEnforced(t *testing.T) {
+	t.Parallel()
 	t.Log("RECOVERY_TEST: TestRecoveryContext_TokenBudgetEnforced | Testing token budget enforcement")
 
 	// Create a context that would exceed token budget
@@ -1238,6 +1256,7 @@ func TestRecoveryContext_TokenBudgetEnforced(t *testing.T) {
 
 // TestRecoveryCheckpoint_Structure tests the checkpoint structure
 func TestRecoveryCheckpoint_Structure(t *testing.T) {
+	t.Parallel()
 	t.Log("RECOVERY_TEST: TestRecoveryCheckpoint_Structure | Testing checkpoint data structure")
 
 	cp := &RecoveryCheckpoint{
@@ -1265,6 +1284,7 @@ func TestRecoveryCheckpoint_Structure(t *testing.T) {
 
 // TestRecoveryMessage_Structure tests the message structure
 func TestRecoveryMessage_Structure(t *testing.T) {
+	t.Parallel()
 	t.Log("RECOVERY_TEST: TestRecoveryMessage_Structure | Testing message data structure")
 
 	msg := &RecoveryMessage{
@@ -1292,6 +1312,7 @@ func TestRecoveryMessage_Structure(t *testing.T) {
 
 // TestRecoveryBead_Structure tests the bead structure
 func TestRecoveryBead_Structure(t *testing.T) {
+	t.Parallel()
 	t.Log("RECOVERY_TEST: TestRecoveryBead_Structure | Testing bead data structure")
 
 	bead := &RecoveryBead{
@@ -1339,6 +1360,7 @@ func TestLoadRecoveryCMMemoriesHonorsConfiguredLimits(t *testing.T) {
 
 // TestRecoveryCMRule_Structure tests the CM rule structure
 func TestRecoveryCMRule_Structure(t *testing.T) {
+	t.Parallel()
 	t.Log("RECOVERY_TEST: TestRecoveryCMRule_Structure | Testing CM rule data structure")
 
 	rule := &RecoveryCMRule{
@@ -1358,6 +1380,7 @@ func TestRecoveryCMRule_Structure(t *testing.T) {
 
 // TestRecoveryCMMemories_Structure tests the CM memories structure
 func TestRecoveryCMMemories_Structure(t *testing.T) {
+	t.Parallel()
 	t.Log("RECOVERY_TEST: TestRecoveryCMMemories_Structure | Testing CM memories data structure")
 
 	memories := &RecoveryCMMemories{

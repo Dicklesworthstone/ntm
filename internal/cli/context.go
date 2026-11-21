@@ -301,7 +301,7 @@ type ContextInjectResult struct {
 	Warnings      []string              `json:"warnings,omitempty"`
 }
 
-func init() {
+func registerContextSchemas() {
 	robot.MustRegisterSchemaCommand("context_inject", ContextInjectResult{})
 	robot.MustRegisterSchemaPagination("context_inject", robot.SchemaPaginationFlag{
 		Reason: "bounded: per-request injection echo (files/panes for one inject)",

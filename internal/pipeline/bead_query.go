@@ -102,6 +102,7 @@ func (e *Executor) executeBeadQuery(ctx context.Context, step *Step, workflow *W
 		ProjectDir: e.config.ProjectDir,
 		Limits:     e.limits,
 		RunBr:      e.config.BeadQueryRunBr,
+		BrBin:      e.config.brBin,
 	}
 	evaluationCtx, cancel := e.selectorEvaluationContext(ctx, step)
 	defer cancel()

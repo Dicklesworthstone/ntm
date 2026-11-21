@@ -18,6 +18,11 @@ var selectorPolicyKinds = []string{"branch", "models", "beads", "pairs", "debate
 // callback would skip the process ownership and stream capture under test.
 func selectorPolicyWorkflow(t *testing.T, kind, script string) (*Workflow, ExecutorConfig, string) {
 	t.Helper()
+	return selectorPolicyWorkflowWithPayload(t, kind, script, "")
+}
+
+func selectorPolicyWorkflowWithPayload(t *testing.T, kind, script, payloadOverride string) (*Workflow, ExecutorConfig, string) {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("requires POSIX process fixtures")
 	}
@@ -29,13 +34,18 @@ func selectorPolicyWorkflow(t *testing.T, kind, script string) (*Workflow, Execu
 	if kind == "br" || kind == "bead_query" {
 		output = `{"issues":[{"id":"bd-1"}]}`
 	}
-	t.Setenv("NTM_SELECTOR_POLICY_RESULT", output)
+	if payloadOverride != "" {
+		output = payloadOverride
+	}
+	if err := os.WriteFile(filepath.Join(root, "selector-policy-result"), []byte(output), 0600); err != nil {
+		t.Fatal(err)
+	}
 	name := "selector-source"
 	if kind == "br" || kind == "bead_query" {
 		name = "br"
-		t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
 	}
-	if err := os.WriteFile(filepath.Join(root, name), []byte("#!/bin/sh\nset -eu\n"+script+"\n"), 0700); err != nil {
+	scriptHeader := "#!/bin/sh\nset -eu\nNTM_SELECTOR_POLICY_RESULT=$(cat selector-policy-result)\nexport NTM_SELECTOR_POLICY_RESULT\n"
+	if err := os.WriteFile(filepath.Join(root, name), []byte(scriptHeader+script+"\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	body := []Step{{ID: "body", Command: "printf body > child-dispatched"}}
@@ -65,6 +75,9 @@ func selectorPolicyWorkflow(t *testing.T, kind, script string) (*Workflow, Execu
 	}}
 	cfg := DefaultExecutorConfig("selector-policy")
 	cfg.ProjectDir, cfg.RunID = root, "selector-policy-run"
+	if kind == "br" || kind == "bead_query" {
+		cfg.brBin = filepath.Join(root, "br")
+	}
 	return workflow, cfg, output
 }
 
@@ -78,10 +91,13 @@ func assertSelectorPolicyNoDispatch(t *testing.T, cfg ExecutorConfig) {
 }
 
 func TestSelectorPolicyNativeOutputLimits(t *testing.T) {
+	t.Parallel()
 	for _, kind := range selectorPolicyKinds {
 		for _, stream := range []string{"stdout", "stderr", "exact"} {
+			kind, stream := kind, stream
 			t.Run(kind+"/"+stream, func(t *testing.T) {
-				script := `printf '%s' "$NTM_SELECTOR_POLICY_RESULT"`
+				t.Parallel()
+				script := `cat selector-policy-result`
 				if stream == "stderr" {
 					script += "; printf noise >&2"
 				} else if stream == "exact" {
@@ -122,22 +138,25 @@ func TestSelectorPolicyNativeOutputLimits(t *testing.T) {
 }
 
 func TestSelectorPolicyNativeTimeoutsTerminateChildren(t *testing.T) {
+	t.Parallel()
 	const script = `trap 'wait; exit 0' TERM
 /bin/sh -c '
 trap "printf terminated > child-terminated; exit 0" TERM
 printf ready > child-ready
 while :; do sleep 30; done
 ' &
-printf '%s' "$NTM_SELECTOR_POLICY_RESULT"
+cat selector-policy-result
 wait`
 	for _, kind := range selectorPolicyKinds {
 		for _, timeoutSource := range []string{"default", "step"} {
+			kind, timeoutSource := kind, timeoutSource
 			t.Run(kind+"/"+timeoutSource, func(t *testing.T) {
+				t.Parallel()
 				workflow, cfg, _ := selectorPolicyWorkflow(t, kind, script)
-				cfg.DefaultTimeout = 300 * time.Millisecond
+				cfg.DefaultTimeout = 250 * time.Millisecond
 				if timeoutSource == "step" {
 					cfg.DefaultTimeout = 5 * time.Second
-					workflow.Steps[0].Timeout = Duration{Duration: 300 * time.Millisecond}
+					workflow.Steps[0].Timeout = Duration{Duration: 250 * time.Millisecond}
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 				defer cancel()
@@ -167,12 +186,15 @@ wait`
 }
 
 func TestSelectorPolicyDeadlineDoesNotBoundChildBody(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"branch", "beads"} {
+		kind := kind
 		t.Run(kind, func(t *testing.T) {
-			workflow, cfg, _ := selectorPolicyWorkflow(t, kind, `printf '%s' "$NTM_SELECTOR_POLICY_RESULT"`)
+			t.Parallel()
+			workflow, cfg, _ := selectorPolicyWorkflow(t, kind, `cat selector-policy-result`)
 			cfg.DefaultTimeout = 3 * time.Second
-			workflow.Steps[0].Timeout = Duration{Duration: time.Second}
-			body := []Step{{ID: "body", Command: "sleep 1.2; printf body > child-dispatched"}}
+			workflow.Steps[0].Timeout = Duration{Duration: 250 * time.Millisecond}
+			body := []Step{{ID: "body", Command: "sleep 0.38; printf body > child-dispatched"}}
 			if kind == "branch" {
 				workflow.Steps[0].Branches["chosen"] = body
 			} else {
@@ -192,9 +214,12 @@ func TestSelectorPolicyDeadlineDoesNotBoundChildBody(t *testing.T) {
 }
 
 func TestSelectorPolicyDryRunExecutesNoDynamicSource(t *testing.T) {
+	t.Parallel()
 	for _, kind := range selectorPolicyKinds {
+		kind := kind
 		t.Run(kind, func(t *testing.T) {
-			workflow, cfg, _ := selectorPolicyWorkflow(t, kind, `printf source > source-effect; printf '%s' "$NTM_SELECTOR_POLICY_RESULT"`)
+			t.Parallel()
+			workflow, cfg, _ := selectorPolicyWorkflow(t, kind, `printf source > source-effect; cat selector-policy-result`)
 			cfg.DryRun = true
 			state, err := RunControlledPipeline(context.Background(), workflow, nil, cfg, nil)
 			if err != nil || state == nil || state.Status != StatusCompleted {
@@ -212,9 +237,12 @@ func TestSelectorPolicyDryRunExecutesNoDynamicSource(t *testing.T) {
 }
 
 func TestSelectorPolicyInjectedBrAdmission(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"br", "bead_query"} {
 		for _, failure := range []string{"limit", "deadline"} {
+			kind, failure := kind, failure
 			t.Run(kind+"/"+failure, func(t *testing.T) {
+				t.Parallel()
 				workflow, cfg, output := selectorPolicyWorkflow(t, kind, "exit 99")
 				workflow.Steps[0].Timeout = Duration{Duration: 100 * time.Millisecond}
 				if failure == "limit" {
@@ -252,8 +280,11 @@ func TestSelectorPolicyInjectedBrAdmission(t *testing.T) {
 }
 
 func TestSelectorPolicyDryRunPreservesStaticForeach(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"items", "models"} {
+		kind := kind
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
 			workflow, cfg, _ := selectorPolicyWorkflow(t, "models", "exit 99")
 			cfg.DryRun = true
 			if kind == "items" {
@@ -277,6 +308,7 @@ func TestSelectorPolicyDryRunPreservesStaticForeach(t *testing.T) {
 }
 
 func TestResolveBeads_StructuredFormResolvesIDs(t *testing.T) {
+	t.Parallel()
 	const fixture = `{
   "issues": [
     {"id": "bd-h001", "title": "First", "description": "d1", "labels": ["hypothesis"], "status": "active"},
@@ -322,6 +354,7 @@ func TestResolveBeads_StructuredFormResolvesIDs(t *testing.T) {
 }
 
 func TestResolveBeads_ShellFormParsesLineDelimitedIDs(t *testing.T) {
+	t.Parallel()
 	r := &IterationSourceResolver{
 		RunShell: func(_ context.Context, cmd string) ([]byte, error) {
 			if !strings.Contains(cmd, "br list") {
@@ -342,6 +375,7 @@ func TestResolveBeads_ShellFormParsesLineDelimitedIDs(t *testing.T) {
 }
 
 func TestResolveBeads_ShellFormParsesJSONArray(t *testing.T) {
+	t.Parallel()
 	r := &IterationSourceResolver{
 		RunShell: func(_ context.Context, _ string) ([]byte, error) {
 			return []byte(`["bd-a","bd-b","bd-c"]`), nil
@@ -359,6 +393,7 @@ func TestResolveBeads_ShellFormParsesJSONArray(t *testing.T) {
 }
 
 func TestResolveBeads_ShellFormStripsQuotes(t *testing.T) {
+	t.Parallel()
 	// `jq '.issues[].id'` (without -r) emits quoted strings, one per line.
 	r := &IterationSourceResolver{
 		RunShell: func(_ context.Context, _ string) ([]byte, error) {
@@ -377,6 +412,7 @@ func TestResolveBeads_ShellFormStripsQuotes(t *testing.T) {
 }
 
 func TestResolveBeads_EmptyResultIsNotError(t *testing.T) {
+	t.Parallel()
 	cases := map[string]*IterationSourceResolver{
 		"shell": {
 			RunShell: func(context.Context, string) ([]byte, error) { return []byte(""), nil },
@@ -404,6 +440,7 @@ func TestResolveBeads_EmptyResultIsNotError(t *testing.T) {
 }
 
 func TestResolveBeads_EmptyExpressionShortCircuits(t *testing.T) {
+	t.Parallel()
 	r := &IterationSourceResolver{
 		RunShell: func(context.Context, string) ([]byte, error) {
 			t.Fatal("shell runner must not be called for empty expr")
@@ -424,6 +461,7 @@ func TestResolveBeads_EmptyExpressionShortCircuits(t *testing.T) {
 }
 
 func TestResolveBeads_ShellErrorPropagates(t *testing.T) {
+	t.Parallel()
 	want := errors.New("nonzero exit")
 	r := &IterationSourceResolver{
 		RunShell: func(context.Context, string) ([]byte, error) { return nil, want },
@@ -435,6 +473,7 @@ func TestResolveBeads_ShellErrorPropagates(t *testing.T) {
 }
 
 func TestResolveBeads_BrErrorPropagates(t *testing.T) {
+	t.Parallel()
 	want := errors.New("br: not found")
 	r := &IterationSourceResolver{
 		RunBr: func(context.Context, []string) ([]byte, error) { return nil, want },
@@ -446,6 +485,7 @@ func TestResolveBeads_BrErrorPropagates(t *testing.T) {
 }
 
 func TestResolveBeads_BrJSONParseError(t *testing.T) {
+	t.Parallel()
 	r := &IterationSourceResolver{
 		RunBr: func(context.Context, []string) ([]byte, error) { return []byte("not-json"), nil },
 	}
@@ -459,6 +499,7 @@ func TestResolveBeads_BrJSONParseError(t *testing.T) {
 }
 
 func TestParseStructuredBeadsQuery_Translations(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		expr string
@@ -505,6 +546,7 @@ func TestParseStructuredBeadsQuery_Translations(t *testing.T) {
 }
 
 func TestParseStructuredBeadsQuery_RejectsUnknownKeys(t *testing.T) {
+	t.Parallel()
 	_, err := parseStructuredBeadsQuery("foo:bar")
 	if err == nil {
 		t.Fatal("expected error for unknown key")
@@ -515,6 +557,7 @@ func TestParseStructuredBeadsQuery_RejectsUnknownKeys(t *testing.T) {
 }
 
 func TestParseStructuredBeadsQuery_RejectsEmptyValue(t *testing.T) {
+	t.Parallel()
 	_, err := parseStructuredBeadsQuery("status:")
 	if err == nil {
 		t.Fatal("expected error for empty value")
@@ -525,6 +568,7 @@ func TestParseStructuredBeadsQuery_RejectsEmptyValue(t *testing.T) {
 // hypothesis/debate/backlog iteration sets are not silently truncated to
 // br list's default page size.
 func TestParseStructuredBeadsQuery_AlwaysIncludesUnlimitedLimit(t *testing.T) {
+	t.Parallel()
 	cases := []string{
 		"hypothesis",
 		"hypothesis,state:active",
@@ -551,6 +595,7 @@ func TestParseStructuredBeadsQuery_AlwaysIncludesUnlimitedLimit(t *testing.T) {
 }
 
 func TestResolveItems_JSONArrayLiteral(t *testing.T) {
+	t.Parallel()
 	r := &IterationSourceResolver{}
 
 	got, err := r.ResolveItems(context.Background(), `["a", "b", "c"]`, nil)
@@ -564,6 +609,7 @@ func TestResolveItems_JSONArrayLiteral(t *testing.T) {
 }
 
 func TestResolveItems_NestedVarsReference(t *testing.T) {
+	t.Parallel()
 	// bd-8tlee: ${vars.group.files} must walk into a nested map so workflow
 	// authors can group iteration sources without flattening them out.
 	r := IterationSourceResolver{}
@@ -583,6 +629,7 @@ func TestResolveItems_NestedVarsReference(t *testing.T) {
 }
 
 func TestResolveItems_NestedMissingFieldErrors(t *testing.T) {
+	t.Parallel()
 	// bd-8tlee: a missing nested field should surface a clear error rather
 	// than returning the literal placeholder.
 	r := IterationSourceResolver{}
@@ -598,6 +645,7 @@ func TestResolveItems_NestedMissingFieldErrors(t *testing.T) {
 }
 
 func TestResolveItems_VarsListReference(t *testing.T) {
+	t.Parallel()
 	r := &IterationSourceResolver{}
 	vars := map[string]interface{}{
 		"list": []interface{}{"x", "y"},
@@ -614,6 +662,7 @@ func TestResolveItems_VarsListReference(t *testing.T) {
 }
 
 func TestResolveItems_UnknownVarsReferenceErrors(t *testing.T) {
+	t.Parallel()
 	r := &IterationSourceResolver{}
 
 	_, err := r.ResolveItems(context.Background(), "${vars.unknown}", map[string]interface{}{})
@@ -626,6 +675,7 @@ func TestResolveItems_UnknownVarsReferenceErrors(t *testing.T) {
 }
 
 func TestResolveItems_JSONArrayPreservesScalarTypes(t *testing.T) {
+	t.Parallel()
 	r := &IterationSourceResolver{}
 
 	got, err := r.ResolveItems(context.Background(), `[1, 2.5, true]`, nil)
@@ -639,6 +689,7 @@ func TestResolveItems_JSONArrayPreservesScalarTypes(t *testing.T) {
 }
 
 func TestResolveItems_DirectScalarReferenceBecomesSingleItem(t *testing.T) {
+	t.Parallel()
 	r := &IterationSourceResolver{}
 	vars := map[string]interface{}{
 		"session_id": "ntm-squad-001",
@@ -655,6 +706,7 @@ func TestResolveItems_DirectScalarReferenceBecomesSingleItem(t *testing.T) {
 }
 
 func TestResolveItems_VarsScalarReferenceErrors(t *testing.T) {
+	t.Parallel()
 	r := &IterationSourceResolver{}
 	vars := map[string]interface{}{
 		"name": "not-a-list",
@@ -670,6 +722,7 @@ func TestResolveItems_VarsScalarReferenceErrors(t *testing.T) {
 }
 
 func TestResolveModels_InlineList(t *testing.T) {
+	t.Parallel()
 	r := &IterationSourceResolver{}
 
 	got, err := r.ResolveModels(context.Background(), StringOrList{"cc", "cod"})
@@ -683,6 +736,7 @@ func TestResolveModels_InlineList(t *testing.T) {
 }
 
 func TestResolveModels_ShellForm(t *testing.T) {
+	t.Parallel()
 	r := &IterationSourceResolver{
 		RunShell: func(_ context.Context, cmd string) ([]byte, error) {
 			if cmd != `printf 'cc\ncod\ngmi\n'` {
@@ -703,6 +757,7 @@ func TestResolveModels_ShellForm(t *testing.T) {
 }
 
 func TestResolveModels_LiteralSlug(t *testing.T) {
+	t.Parallel()
 	r := &IterationSourceResolver{
 		RunShell: func(context.Context, string) ([]byte, error) {
 			t.Fatal("literal slug must not invoke shell")
@@ -721,6 +776,7 @@ func TestResolveModels_LiteralSlug(t *testing.T) {
 }
 
 func TestResolveModels_ShellErrorPropagates(t *testing.T) {
+	t.Parallel()
 	want := errors.New("model command failed")
 	r := &IterationSourceResolver{
 		RunShell: func(context.Context, string) ([]byte, error) { return nil, want },
@@ -733,6 +789,7 @@ func TestResolveModels_ShellErrorPropagates(t *testing.T) {
 }
 
 func TestResolvePairs_ParsesThreeWellFormedLines(t *testing.T) {
+	t.Parallel()
 	const stdout = `DEBATE-001|H-001|H-002|p1|p2
 DEBATE-002|H-003|H-004|p3|p4
 DEBATE-003|H-005|H-006|p5|p6
@@ -781,6 +838,7 @@ DEBATE-003|H-005|H-006|p5|p6
 }
 
 func TestResolvePairs_SkipsMalformedLines(t *testing.T) {
+	t.Parallel()
 	const stdout = `DEBATE-001|H-001|H-002|p1|p2
 this-line-has-no-pipes
 DEBATE-002|H-003|H-004|p3|p4
@@ -809,6 +867,7 @@ DEBATE-004|H-007|H-008|p7|p8
 }
 
 func TestResolvePairs_EmptyOutputZeroIterations(t *testing.T) {
+	t.Parallel()
 	r := &IterationSourceResolver{
 		RunShell: func(context.Context, string) ([]byte, error) { return []byte(""), nil },
 	}
@@ -822,6 +881,7 @@ func TestResolvePairs_EmptyOutputZeroIterations(t *testing.T) {
 }
 
 func TestResolvePairs_RequiresShellForm(t *testing.T) {
+	t.Parallel()
 	r := &IterationSourceResolver{}
 	_, err := r.ResolvePairs(context.Background(), "literal-not-shell")
 	if err == nil {
@@ -833,6 +893,7 @@ func TestResolvePairs_RequiresShellForm(t *testing.T) {
 }
 
 func TestResolvePairs_EmptyExpression(t *testing.T) {
+	t.Parallel()
 	r := &IterationSourceResolver{
 		RunShell: func(context.Context, string) ([]byte, error) {
 			t.Fatal("must not run shell on empty expr")
@@ -849,6 +910,7 @@ func TestResolvePairs_EmptyExpression(t *testing.T) {
 }
 
 func TestResolvePairs_ShellErrorPropagates(t *testing.T) {
+	t.Parallel()
 	want := errors.New("script blew up")
 	r := &IterationSourceResolver{
 		RunShell: func(context.Context, string) ([]byte, error) { return nil, want },
@@ -860,6 +922,7 @@ func TestResolvePairs_ShellErrorPropagates(t *testing.T) {
 }
 
 func TestResolveDebates_ParsesLineDelimitedIDs(t *testing.T) {
+	t.Parallel()
 	const stdout = `DEBATE-001
 DEBATE-002
 DEBATE-003
@@ -883,6 +946,7 @@ DEBATE-003
 }
 
 func TestResolveDebates_EmptyOutputZeroIterations(t *testing.T) {
+	t.Parallel()
 	r := &IterationSourceResolver{
 		RunShell: func(context.Context, string) ([]byte, error) { return []byte("\n  \n"), nil },
 	}
@@ -896,6 +960,7 @@ func TestResolveDebates_EmptyOutputZeroIterations(t *testing.T) {
 }
 
 func TestResolveDebates_ShellErrorPropagates(t *testing.T) {
+	t.Parallel()
 	want := errors.New("br missing")
 	r := &IterationSourceResolver{
 		RunShell: func(context.Context, string) ([]byte, error) { return nil, want },
@@ -907,6 +972,7 @@ func TestResolveDebates_ShellErrorPropagates(t *testing.T) {
 }
 
 func TestResolveDebates_RequiresShellForm(t *testing.T) {
+	t.Parallel()
 	r := &IterationSourceResolver{}
 	_, err := r.ResolveDebates(context.Background(), "DEBATE-001,DEBATE-002")
 	if err == nil {
@@ -918,6 +984,7 @@ func TestResolveDebates_RequiresShellForm(t *testing.T) {
 }
 
 func TestStripShellInvocation(t *testing.T) {
+	t.Parallel()
 	cases := map[string]struct {
 		in     string
 		want   string
@@ -942,6 +1009,7 @@ func TestStripShellInvocation(t *testing.T) {
 // foreground entry point. An injected result callback would miss the boundary
 // at which incomplete tracker output becomes actionable pipeline work.
 func TestControlledBeadSourcesRejectIncompleteResultsBeforeDispatch(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"bead_query", "br"} {
 		for _, tc := range []struct {
 			name    string
@@ -971,10 +1039,14 @@ func TestControlledBeadSourcesRejectIncompleteResultsBeforeDispatch(t *testing.T
 			{"reported failure", `{"issues":[{"id":"bd-one","status":"open"}],"success":false}`},
 			{"reported error", `{"issues":[{"id":"bd-one","status":"open"}],"error":{"code":"DATABASE_ERROR"}}`},
 		} {
+			kind, tc := kind, tc
 			t.Run(kind+"/"+tc.name, func(t *testing.T) {
-				script := "printf '%s\\n' \"$@\" > query-args\nprintf '%s' \"$NTM_SELECTOR_POLICY_RESULT\""
+				t.Parallel()
+				script := "printf '%s\\n' \"$@\" > query-args\ncat selector-policy-result"
 				workflow, cfg, _ := selectorPolicyWorkflow(t, kind, script)
-				t.Setenv("NTM_SELECTOR_POLICY_RESULT", tc.payload)
+				if err := os.WriteFile(filepath.Join(cfg.ProjectDir, "selector-policy-result"), []byte(tc.payload), 0600); err != nil {
+					t.Fatal(err)
+				}
 				wantErrorType := "foreach_source"
 				if kind == "bead_query" {
 					workflow.Steps[0].BeadQuery.Filter = "status==open"
@@ -1002,10 +1074,12 @@ func TestControlledBeadSourcesRejectIncompleteResultsBeforeDispatch(t *testing.T
 }
 
 func TestControlledBeadSourcesAcceptExplicitEmptyResults(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"bead_query", "br"} {
+		kind := kind
 		t.Run(kind, func(t *testing.T) {
-			workflow, cfg, _ := selectorPolicyWorkflow(t, kind, `printf '%s' "$NTM_SELECTOR_POLICY_RESULT"`)
-			t.Setenv("NTM_SELECTOR_POLICY_RESULT", `{"issues":[],"total":0,"limit":0,"offset":0,"has_more":false}`)
+			t.Parallel()
+			workflow, cfg, _ := selectorPolicyWorkflowWithPayload(t, kind, `cat selector-policy-result`, `{"issues":[],"total":0,"limit":0,"offset":0,"has_more":false}`)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			state, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)
@@ -1026,8 +1100,8 @@ func TestControlledBeadSourcesAcceptExplicitEmptyResults(t *testing.T) {
 }
 
 func TestControlledBeadQueryGroupedFilterDispatchesExactSelection(t *testing.T) {
-	workflow, cfg, _ := selectorPolicyWorkflow(t, "bead_query", `printf '%s' "$NTM_SELECTOR_POLICY_RESULT"`)
-	t.Setenv("NTM_SELECTOR_POLICY_RESULT", `{"issues":[
+	t.Parallel()
+	workflow, cfg, _ := selectorPolicyWorkflowWithPayload(t, "bead_query", `cat selector-policy-result`, `{"issues":[
 		{"id":"bd-source","labels":["api || (parser)"],"status":"open","priority":1,"issue_type":"feature"},
 		{"id":"bd-bug","labels":[],"status":"open","priority":1,"issue_type":"bug"},
 		{"id":"bd-closed","labels":["api || (parser)"],"status":"closed","priority":1,"issue_type":"bug"},
@@ -1056,8 +1130,8 @@ func TestControlledBeadQueryGroupedFilterDispatchesExactSelection(t *testing.T) 
 }
 
 func TestControlledStructuredBeadSourcePreservesCustomFields(t *testing.T) {
-	workflow, cfg, _ := selectorPolicyWorkflow(t, "br", `printf '%s' "$NTM_SELECTOR_POLICY_RESULT"`)
-	t.Setenv("NTM_SELECTOR_POLICY_RESULT", `{"issues":[
+	t.Parallel()
+	workflow, cfg, _ := selectorPolicyWorkflowWithPayload(t, "br", `cat selector-policy-result`, `{"issues":[
 		{"id":"bd-one","custom":{"owner":"Ada"}},
 		{"id":"bd-two","custom":{"owner":"Grace"}}
 	],"total":2,"limit":0,"offset":0,"has_more":false}`)
@@ -1080,17 +1154,19 @@ func TestControlledStructuredBeadSourcePreservesCustomFields(t *testing.T) {
 }
 
 func TestControlledBeadQueryInvalidFilterRefusesBeforeSubprocess(t *testing.T) {
+	t.Parallel()
 	for _, filter := range []string{
 		`status==open || unknown==value`,
 		`status==closed && priority==high`,
 		`status==open && (label==api`,
 	} {
+		filter := filter
 		t.Run(filter, func(t *testing.T) {
-			script := `printf queried > query-started; printf '%s' "$NTM_SELECTOR_POLICY_RESULT"`
-			workflow, cfg, _ := selectorPolicyWorkflow(t, "bead_query", script)
+			t.Parallel()
+			script := `printf queried > query-started; cat selector-policy-result`
+			workflow, cfg, _ := selectorPolicyWorkflowWithPayload(t, "bead_query", script, `{"issues":[]}`)
 			workflow.Vars = map[string]VarDef{"selection": {Type: VarTypeString, Default: filter}}
 			workflow.Steps[0].BeadQuery.Filter = "${vars.selection}"
-			t.Setenv("NTM_SELECTOR_POLICY_RESULT", `{"issues":[]}`)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			state, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)

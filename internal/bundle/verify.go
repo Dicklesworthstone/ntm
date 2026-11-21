@@ -77,19 +77,6 @@ func ActiveEncryptionConfig() *EncryptionConfig {
 	return cp
 }
 
-// EncryptArchiveFile wraps an archive file on disk in an NTMENC1 AES-256-GCM
-// envelope atomically with 0600 permissions and returns the encrypted byte size.
-func EncryptArchiveFile(bundlePath string, key []byte) (int64, error) {
-	if len(key) != encryption.KeySize {
-		return 0, fmt.Errorf("encrypt support bundle: invalid encryption key length (%d bytes, want %d)", len(key), encryption.KeySize)
-	}
-	raw, err := os.ReadFile(bundlePath)
-	if err != nil {
-		return 0, fmt.Errorf("read support bundle for encryption: %w", err)
-	}
-	return WriteArchive(bundlePath, raw, key, 0)
-}
-
 // maxVerifyEntryBytes bounds individual archive entry reads during verification.
 const maxVerifyEntryBytes = 256 * 1024 * 1024
 

@@ -90,6 +90,7 @@ func TestContextInjectCobraPackModes(t *testing.T) {
 }
 
 func TestContextPackInjectionFlagsReachableFromContextCommand(t *testing.T) {
+	t.Parallel()
 	cmd, _, err := newContextCmd().Find([]string{"inject"})
 	if err != nil {
 		t.Fatal(err)
@@ -348,7 +349,9 @@ func installContextMutationTMUX(t *testing.T, kind tmux.AgentType, afterWrite st
 	}
 
 	oldClient := tmux.DefaultClient
-	tmux.DefaultClient = tmux.NewClient("")
+	fastClient := tmux.NewClient("")
+	fastClient.MaxSendDelay = 2 * time.Millisecond
+	tmux.DefaultClient = fastClient
 	t.Cleanup(func() { tmux.DefaultClient = oldClient })
 	return dir, mutationsPath
 }

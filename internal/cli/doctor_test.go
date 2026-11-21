@@ -564,6 +564,7 @@ func TestKernelMapInputDecodingAndCanonicalRESTPaths(t *testing.T) {
 }
 
 func TestDoctor_RobotSubprocessExecution(t *testing.T) {
+	t.Parallel()
 	homeDir := t.TempDir()
 	configHome := t.TempDir()
 	dataHome := t.TempDir()

@@ -36,6 +36,7 @@ func TestSemanticCommandInheritsCancellation(t *testing.T) {
 }
 
 func TestSemanticCommandTimeoutAndInheritedPipes(t *testing.T) {
+	t.Parallel()
 	if _, err := os.Stat("/bin/sh"); err != nil {
 		t.Skip("subprocess fixture requires /bin/sh")
 	}

@@ -24,6 +24,7 @@ func TestControlledForegroundProcess(t *testing.T) {
 }
 
 func TestRobotForegroundPipelineHasExternalCancellation(t *testing.T) {
+	t.Parallel()
 	root := backgroundFixture(t, false)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -94,6 +95,7 @@ func TestRobotForegroundPipelineHasExternalCancellation(t *testing.T) {
 // kernel releases RunControl. Exercise the robot launcher and real detached
 // resume worker, so an in-memory guard or a lock-only fix cannot pass.
 func TestRobotPipelineCrashRequiresExplicitCommandReplay(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	command := "printf 'attempt\\n' >> attempts; i=0; while [ ! -f release ] && [ \"$i\" -lt 1000 ]; do i=$((i+1)); sleep 0.01; done; printf 'finished\\n' >> finished; printf recovered"
 	raw := fmt.Sprintf("schema_version: \"2.0\"\nname: command-crash\nsteps:\n  - id: command\n    command: %q\n", command)
@@ -204,8 +206,10 @@ func TestRobotPipelineCrashRequiresExplicitCommandReplay(t *testing.T) {
 }
 
 func TestControlledRunRejectsOwnedAndExistingIdentities(t *testing.T) {
+	t.Parallel()
 	for _, held := range []bool{true, false} {
 		t.Run(fmt.Sprintf("owned=%v", held), func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			cfg := DefaultExecutorConfig("controlled")
 			cfg.ProjectDir, cfg.RunID = root, "run-exclusive"
@@ -241,8 +245,10 @@ func TestControlledRunRejectsOwnedAndExistingIdentities(t *testing.T) {
 }
 
 func TestControlledRunReadOnlyPathsDoNotCreateArtifacts(t *testing.T) {
+	t.Parallel()
 	for _, dry := range []bool{true, false} {
 		t.Run(fmt.Sprintf("dry=%v", dry), func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			cfg := DefaultExecutorConfig("controlled")
 			cfg.ProjectDir, cfg.DryRun = root, dry

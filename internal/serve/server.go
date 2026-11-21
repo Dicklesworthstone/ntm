@@ -86,6 +86,7 @@ type Server struct {
 
 	// Pane output streaming
 	streamManager   *tmux.StreamManager
+	robotRuntime    *robot.Runtime
 	spawnAgents     func(context.Context, robot.SpawnOptions) (*robot.SpawnOutput, error)
 	sendAgents      func(robot.SendOptions) (*robot.SendOutput, error)
 	interruptAgents func(robot.InterruptOptions) (*robot.InterruptOutput, error)
@@ -134,6 +135,10 @@ type Server struct {
 
 	// Redaction configuration for REST API
 	redactionCfg *RedactionConfig
+
+	// attentionFeed optionally overrides the global robot.GetAttentionFeed() for
+	// isolated server instances (nil in production -> robot.GetAttentionFeed()).
+	attentionFeed *robot.AttentionFeed
 
 	// webUI is the embedded static dashboard; nil when not mounted.
 	webUI fs.FS
@@ -376,6 +381,7 @@ func New(cfg Config) *Server {
 		version:            cfg.Version,
 		eventBus:           cfg.EventBus,
 		stateStore:         cfg.StateStore,
+		robotRuntime:       robot.NewRuntime(cfg.StateStore, nil),
 		auth:               cfg.Auth,
 		auditStore:         cfg.AuditStore,
 		webUI:              cfg.WebUI,

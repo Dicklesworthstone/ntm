@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/config"
@@ -207,6 +208,7 @@ func TestSessionsCommandRestoresDurableSettingsAndNativeContext(t *testing.T) {
 // GH#251 phase 2: Grok Build relaunch is implemented, so launching restores
 // of saved grok panes now validate like topology-only restores.
 func TestValidateSessionsAutomatedRelaunchAcceptsGrok(t *testing.T) {
+	t.Parallel()
 	state := &session.SessionState{Panes: []session.PaneState{{Index: 1, AgentType: "grok"}}}
 
 	if err := validateSessionsAutomatedRelaunch(state, false); err != nil {
@@ -218,6 +220,7 @@ func TestValidateSessionsAutomatedRelaunchAcceptsGrok(t *testing.T) {
 }
 
 func TestSessionsRestoreOperationErrorIncludesAgentLaunchFailure(t *testing.T) {
+	t.Parallel()
 	launchErr := errors.New("agent relaunch failed")
 	if got := sessionsRestoreOperationError(launchErr, nil); !errors.Is(got, launchErr) {
 		t.Fatalf("restore operation error = %v, want launch error", got)
@@ -263,7 +266,9 @@ esac
 	}
 	t.Setenv("NTM_TMUX_BINARY", bin)
 	previousClient, previousCfg, previousJSON := tmux.DefaultClient, cfg, jsonOutput
-	tmux.DefaultClient, cfg, jsonOutput = tmux.NewClient(""), config.Default(), true
+	fastClient := tmux.NewClient("")
+	fastClient.MaxSendDelay = 2 * time.Millisecond
+	tmux.DefaultClient, cfg, jsonOutput = fastClient, config.Default(), true
 	t.Cleanup(func() { tmux.DefaultClient, cfg, jsonOutput = previousClient, previousCfg, previousJSON })
 	return logPath
 }

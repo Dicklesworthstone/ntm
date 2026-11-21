@@ -475,7 +475,7 @@ func TestBuildRecoveryContextPreservesTimedOutTransferReceipt(t *testing.T) {
 	settings := config.SessionRecoveryConfig{
 		Enabled: true, IncludeAgentMail: true, MaxRecoveryTokens: 3000, TimeoutSeconds: 2,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 	rc, err := buildRecoveryContext(ctx, session, project, settings)
 	if err != nil || rc == nil || rc.Error == nil || rc.Error.Code != "PARTIAL_RECOVERY" || !rc.Error.Recoverable || !errors.Is(ctx.Err(), context.DeadlineExceeded) {

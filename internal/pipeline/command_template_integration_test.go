@@ -12,6 +12,7 @@ import (
 )
 
 func TestIntegrationCommandAndTemplatePipeline(t *testing.T) {
+	t.Parallel()
 	projectDir := t.TempDir()
 	templatePath := filepath.Join(projectDir, "fixture-template.md")
 	if err := os.WriteFile(templatePath, []byte("Template dispatch says <PARAM>"), 0o644); err != nil {
@@ -121,6 +122,7 @@ func assertCompletedStepOutput(t *testing.T, state *ExecutionState, stepID strin
 // renders a fixture template whose params reference ${pane.X}; we verify
 // every pane received a distinct rendered dispatch carrying its own values.
 func TestIntegrationForeachPaneTemplateRendersPerPaneSubstitution(t *testing.T) {
+	t.Parallel()
 	projectDir := t.TempDir()
 	templatePath := filepath.Join(projectDir, "mo-onboarding.md")
 	body := "Onboarding <ROLE> on <MODEL> covering <DOMAIN>\n" +

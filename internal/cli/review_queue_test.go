@@ -197,6 +197,7 @@ func TestDetectIdleAgentsPreservesCanonicalGrokTypeForAdmission(t *testing.T) {
 // =============================================================================
 
 func TestAssignSuggestionsToAgents_RoundRobin(t *testing.T) {
+	t.Parallel()
 
 	suggestions := []ReviewSuggestion{
 		{Prompt: "review A", Source: "agent_work"},
@@ -227,6 +228,7 @@ func TestAssignSuggestionsToAgents_RoundRobin(t *testing.T) {
 }
 
 func TestAssignSuggestionsToAgents_EmptySuggestions(t *testing.T) {
+	t.Parallel()
 
 	agents := []IdleAgent{{Pane: 1, AgentType: "claude"}}
 	result := assignSuggestionsToAgents(nil, agents)
@@ -237,6 +239,7 @@ func TestAssignSuggestionsToAgents_EmptySuggestions(t *testing.T) {
 }
 
 func TestAssignSuggestionsToAgents_EmptyAgents(t *testing.T) {
+	t.Parallel()
 
 	suggestions := []ReviewSuggestion{{Prompt: "review A"}}
 	result := assignSuggestionsToAgents(suggestions, nil)
@@ -247,6 +250,7 @@ func TestAssignSuggestionsToAgents_EmptyAgents(t *testing.T) {
 }
 
 func TestAssignSuggestionsToAgents_SingleAgent(t *testing.T) {
+	t.Parallel()
 
 	suggestions := []ReviewSuggestion{
 		{Prompt: "A"},
@@ -277,6 +281,7 @@ func TestAssignSuggestionsToAgents_SingleAgent(t *testing.T) {
 // =============================================================================
 
 func TestAgentLabel_WithName(t *testing.T) {
+	t.Parallel()
 
 	a := IdleAgent{Pane: 1, AgentType: "claude", AgentName: "BlueLake"}
 	if got := agentLabel(a); got != "BlueLake" {
@@ -285,6 +290,7 @@ func TestAgentLabel_WithName(t *testing.T) {
 }
 
 func TestAgentLabel_WithoutName(t *testing.T) {
+	t.Parallel()
 
 	a := IdleAgent{Pane: 3, AgentType: "codex"}
 	if got := agentLabel(a); got != "codex_3" {
@@ -294,6 +300,7 @@ func TestAgentLabel_WithoutName(t *testing.T) {
 
 // GH#251 phase 2: review prompts now deliver to Grok Build panes too.
 func TestSendReviewPromptsAcceptsMixedGrokBatch(t *testing.T) {
+	t.Parallel()
 	suggestions := []ReviewSuggestion{
 		{Pane: 1, AgentType: "claude", Prompt: "review one"},
 		{Pane: 2, AgentType: " XAI_GROK_BUILD ", Prompt: "review two"},
@@ -318,6 +325,7 @@ func TestSendReviewPromptsAcceptsMixedGrokBatch(t *testing.T) {
 // =============================================================================
 
 func TestMatchesReviewQueueFilter(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		agentType string
@@ -353,6 +361,7 @@ func TestMatchesReviewQueueFilter(t *testing.T) {
 // =============================================================================
 
 func TestMinInt(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		a, b, want int
@@ -449,6 +458,7 @@ func TestGenerateReviewSuggestions_AgentWorkPromptFormat(t *testing.T) {
 // =============================================================================
 
 func TestReviewQueueResponse_EmptyState(t *testing.T) {
+	t.Parallel()
 
 	resp := ReviewQueueResponse{
 		Session:     "test",

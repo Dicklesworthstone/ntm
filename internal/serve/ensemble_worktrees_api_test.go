@@ -23,6 +23,7 @@ import (
 )
 
 func TestEnsembleAndWorktreesOpenAPIReflection(t *testing.T) {
+	t.Parallel()
 	spec, err := GenerateOpenAPISpecFromRouter("dev", "http://127.0.0.1:7337")
 	if err != nil {
 		t.Fatalf("GenerateOpenAPISpecFromRouter: %v", err)
@@ -633,6 +634,7 @@ func runGitTestCmd(t *testing.T, dir string, args ...string) {
 }
 
 func TestBackpressureAndSwarmLabRESTEndpoints(t *testing.T) {
+	t.Parallel()
 	srv := NewHermeticServer("dev")
 	t.Cleanup(srv.Stop)
 	router := srv.Router()
@@ -665,6 +667,7 @@ func TestBackpressureAndSwarmLabRESTEndpoints(t *testing.T) {
 	}
 
 	t.Run("GET /api/v1/health/backpressure includes live REST, SSE, and WebSocket surfaces", func(t *testing.T) {
+		t.Parallel()
 		rec, body := doJSON(http.MethodGet, "/api/v1/health/backpressure", nil)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("GET /api/v1/health/backpressure status=%d body=%v", rec.Code, body)
@@ -710,6 +713,7 @@ func TestBackpressureAndSwarmLabRESTEndpoints(t *testing.T) {
 	})
 
 	t.Run("GET /api/v1/swarm/lab/scenarios and POST /api/v1/swarm/lab/run", func(t *testing.T) {
+		t.Parallel()
 		listRec, listBody := doJSON(http.MethodGet, "/api/v1/swarm/lab/scenarios?gate=short", nil)
 		if listRec.Code != http.StatusOK {
 			t.Fatalf("GET /api/v1/swarm/lab/scenarios status=%d body=%v", listRec.Code, listBody)

@@ -132,6 +132,7 @@ func captureStdout(t *testing.T, f func() error) (string, error) {
 }
 
 func TestCaptureNormalizedTmuxPanesCancellationJoinsWorkers(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	started := make(chan string, 2)
 	var joined atomic.Int32
@@ -174,6 +175,7 @@ func TestCaptureNormalizedTmuxPanesCancellationJoinsWorkers(t *testing.T) {
 }
 
 func TestCaptureNormalizedTmuxPanesPreservesPerPaneErrors(t *testing.T) {
+	t.Parallel()
 	captured, err := captureNormalizedTmuxPanes(
 		context.Background(),
 		[]normalizedTmuxCaptureJob{{paneID: "%1"}},
@@ -194,6 +196,7 @@ func TestCaptureNormalizedTmuxPanesPreservesPerPaneErrors(t *testing.T) {
 }
 
 func TestApplyStatusTmuxCaptureFailuresMarksTmuxDegraded(t *testing.T) {
+	t.Parallel()
 	output := newStatusOutput(config.Default())
 	applyStatusTmuxCaptureFailures(output, []state.RuntimeAgent{{Pane: "%1", CaptureError: "pane unavailable"}})
 
@@ -302,6 +305,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestDetectAgentType(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		title    string
@@ -590,6 +594,7 @@ func TestGetMail_RejectedTokenIsPermissionDenied(t *testing.T) {
 // TestContains and TestToLower removed - helper functions were inlined/removed during refactoring
 
 func TestStripANSI(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string
@@ -615,6 +620,7 @@ func TestStripANSI(t *testing.T) {
 }
 
 func TestSplitLines(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string
@@ -646,6 +652,7 @@ func TestSplitLines(t *testing.T) {
 }
 
 func TestTruncateMessage(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string
@@ -842,11 +849,23 @@ func TestRobotCASSInsightsMatchesInstalledCass(t *testing.T) {
 		settled  bool
 	)
 	for attempt := 0; attempt < 4; attempt++ {
-		before := readDirectBuckets()
-		var err error
+		var (
+			before []cass.AggregationBucket
+			err    error
+		)
+		beforeDone := make(chan []cass.AggregationBucket, 1)
+		go func() {
+			beforeDone <- readDirectBuckets()
+		}()
 		out, err = GetCASSInsights("30d")
+		before = <-beforeDone
 		if err != nil || !out.Success || out.Period != "30d" {
 			t.Fatalf("GetCASSInsights = %+v, %v", out, err)
+		}
+		if bucketsEqual(before, out.Agents) {
+			expected = before
+			settled = true
+			break
 		}
 		after := readDirectBuckets()
 		if bucketsEqual(before, after) {
@@ -926,6 +945,7 @@ func TestRobotJFPReadsInstalledJFP(t *testing.T) {
 // ====================
 
 func TestAgentMarshal(t *testing.T) {
+	t.Parallel()
 	agent := Agent{
 		Type:     "claude",
 		Pane:     "%5",
@@ -957,6 +977,7 @@ func TestAgentMarshal(t *testing.T) {
 }
 
 func TestSessionInfoMarshal(t *testing.T) {
+	t.Parallel()
 	sess := SessionInfo{
 		Name:     "myproject",
 		Exists:   true,
@@ -987,6 +1008,7 @@ func TestSessionInfoMarshal(t *testing.T) {
 }
 
 func TestStatusOutputMarshal(t *testing.T) {
+	t.Parallel()
 	output := StatusOutput{
 		SchemaID:      defaultRobotSchemaID("status"),
 		SchemaVersion: statusSchemaVersion,
@@ -1026,6 +1048,7 @@ func TestStatusOutputMarshal(t *testing.T) {
 }
 
 func TestSendOutputMarshal(t *testing.T) {
+	t.Parallel()
 	output := SendOutput{
 		Session:        "myproject",
 		SentAt:         time.Now().UTC(),
@@ -1121,6 +1144,7 @@ func TestPrintVersion(t *testing.T) {
 }
 
 func TestPrintHelp(t *testing.T) {
+	t.Parallel()
 	output := RenderHelp()
 
 	// Verify help content contains expected sections
@@ -1149,6 +1173,7 @@ func TestPrintHelp(t *testing.T) {
 }
 
 func TestPrintHelpOperatorLoopGuardrails(t *testing.T) {
+	t.Parallel()
 	output := RenderHelp()
 
 	for _, want := range []string{
@@ -1164,6 +1189,7 @@ func TestPrintHelpOperatorLoopGuardrails(t *testing.T) {
 }
 
 func TestPrintHelp_AttentionLoopMatchesCapabilities(t *testing.T) {
+	t.Parallel()
 	output := RenderHelp()
 
 	if !strings.Contains(output, "Attention Feed (Operator Loop)") {
@@ -1201,6 +1227,7 @@ func TestPrintHelp_AttentionLoopMatchesCapabilities(t *testing.T) {
 }
 
 func TestPrintHelp_RegistryBackedCommandCatalog(t *testing.T) {
+	t.Parallel()
 	output := RenderHelp()
 
 	registry := GetRobotRegistry()
@@ -1220,6 +1247,7 @@ func TestPrintHelp_RegistryBackedCommandCatalog(t *testing.T) {
 }
 
 func TestPrintHelp_IncludesRequiredSecondaryFlags(t *testing.T) {
+	t.Parallel()
 	output := RenderHelp()
 
 	for _, want := range []string{
@@ -1234,6 +1262,7 @@ func TestPrintHelp_IncludesRequiredSecondaryFlags(t *testing.T) {
 }
 
 func TestPrintHelp_IncludesRestartSurfaces(t *testing.T) {
+	t.Parallel()
 	output := RenderHelp()
 
 	for _, want := range []string{
@@ -1247,6 +1276,7 @@ func TestPrintHelp_IncludesRestartSurfaces(t *testing.T) {
 }
 
 func TestPrintHelp_IncludesActivitySurface(t *testing.T) {
+	t.Parallel()
 	output := RenderHelp()
 
 	if !strings.Contains(output, "--robot-activity=SESSION") {
@@ -1255,6 +1285,7 @@ func TestPrintHelp_IncludesActivitySurface(t *testing.T) {
 }
 
 func TestGenerateSupportBundle_UsesBundleFlagNamesInValidationErrors(t *testing.T) {
+	t.Parallel()
 	outputPath := filepath.Join(t.TempDir(), "should-not-be-created.zip")
 	output, err := GenerateSupportBundle(SupportBundleOptions{
 		Format:     "rar",
@@ -1370,6 +1401,7 @@ func TestGenerateSupportBundle_PrivacySuppressedHintUsesAllowSecret(t *testing.T
 }
 
 func TestPrintHelp_UsesCurrentAttentionLoopFlags(t *testing.T) {
+	t.Parallel()
 	output := RenderHelp()
 
 	for _, want := range []string{
@@ -1394,6 +1426,7 @@ func TestPrintHelp_UsesCurrentAttentionLoopFlags(t *testing.T) {
 }
 
 func TestPrintHelp_MentionsExpandedWaitConditions(t *testing.T) {
+	t.Parallel()
 	output := RenderHelp()
 
 	for _, want := range []string{
@@ -1409,6 +1442,7 @@ func TestPrintHelp_MentionsExpandedWaitConditions(t *testing.T) {
 }
 
 func TestPrintHelp_UsesCurrentSharedModifierDescriptions(t *testing.T) {
+	t.Parallel()
 	output := RenderHelp()
 
 	for _, want := range []string{
@@ -1428,6 +1462,7 @@ func TestPrintHelp_UsesCurrentSharedModifierDescriptions(t *testing.T) {
 }
 
 func TestPrintHelp_CommandSectionsResolveAgainstRegistry(t *testing.T) {
+	t.Parallel()
 	registry := GetRobotRegistry()
 
 	for _, section := range robotHelpSections {
@@ -1446,6 +1481,7 @@ func TestPrintHelp_CommandSectionsResolveAgainstRegistry(t *testing.T) {
 }
 
 func TestPrintHelp_RendersConfiguredSectionTitles(t *testing.T) {
+	t.Parallel()
 	output := RenderHelp()
 
 	for _, section := range robotHelpSections {
@@ -1905,6 +1941,7 @@ func TestGetSnapshotIncludesReplayWindowMetadata(t *testing.T) {
 // ====================
 
 func TestAgentTypeString(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		input    tmux.AgentType
@@ -1933,6 +1970,7 @@ func TestAgentTypeString(t *testing.T) {
 }
 
 func TestModelNameForPane(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		pane tmux.Pane
@@ -2003,6 +2041,7 @@ func TestModelNameForPane(t *testing.T) {
 }
 
 func TestResolveAgentType(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input    string
 		expected string
@@ -2065,6 +2104,7 @@ func TestResolveAgentType(t *testing.T) {
 }
 
 func TestMatchesAgentTypeFilter(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		agentType string
@@ -2096,6 +2136,7 @@ func TestMatchesAgentTypeFilter(t *testing.T) {
 // ====================
 
 func TestPlanOutputStructure(t *testing.T) {
+	t.Parallel()
 	plan := PlanOutput{
 		GeneratedAt:    time.Now().UTC(),
 		Recommendation: "Create a session",
@@ -2137,6 +2178,7 @@ func TestPlanOutputStructure(t *testing.T) {
 // ====================
 
 func TestTailOutputStructure(t *testing.T) {
+	t.Parallel()
 	output := TailOutput{
 		Session:    "test",
 		CapturedAt: time.Now().UTC(),
@@ -2177,6 +2219,7 @@ func TestTailOutputStructure(t *testing.T) {
 // ====================
 
 func TestSnapshotOutputStructure(t *testing.T) {
+	t.Parallel()
 	output := SnapshotOutput{
 		SchemaID:                 defaultRobotSchemaID("snapshot"),
 		SchemaVersion:            snapshotSchemaVersion,
@@ -2469,6 +2512,7 @@ func TestPrintSendEmptySession(t *testing.T) {
 // ====================
 
 func TestSystemInfoMarshal(t *testing.T) {
+	t.Parallel()
 	info := SystemInfo{
 		Version:   "1.0.0",
 		Commit:    "abc123",
@@ -2490,6 +2534,7 @@ func TestSystemInfoMarshal(t *testing.T) {
 }
 
 func TestStatusSummaryMarshal(t *testing.T) {
+	t.Parallel()
 	summary := StatusSummary{
 		TotalSessions: 5,
 		TotalAgents:   10,
@@ -2525,6 +2570,7 @@ func TestStatusSummaryMarshal(t *testing.T) {
 }
 
 func TestBeadsSummaryMarshal(t *testing.T) {
+	t.Parallel()
 	summary := bv.BeadsSummary{
 		Open:       10,
 		InProgress: 3,
@@ -2551,6 +2597,7 @@ func TestBeadsSummaryMarshal(t *testing.T) {
 }
 
 func TestSnapshotAgentMarshal(t *testing.T) {
+	t.Parallel()
 	currentBead := "ntm-123"
 	agent := SnapshotAgent{
 		Pane:             "0.1",
@@ -2581,6 +2628,7 @@ func TestSnapshotAgentMarshal(t *testing.T) {
 }
 
 func TestSnapshotAgentMarshal_OmitsNilCurrentBead(t *testing.T) {
+	t.Parallel()
 	agent := SnapshotAgent{
 		Pane:             "0.1",
 		Type:             "claude",
@@ -2604,6 +2652,7 @@ func TestSnapshotAgentMarshal_OmitsNilCurrentBead(t *testing.T) {
 }
 
 func TestGraphBeadNodeMarshal_OmitsNilAssignedTo(t *testing.T) {
+	t.Parallel()
 	node := GraphBeadNode{
 		Status:    "open",
 		BlockedBy: []string{},
@@ -2625,6 +2674,7 @@ func TestGraphBeadNodeMarshal_OmitsNilAssignedTo(t *testing.T) {
 }
 
 func TestSendErrorMarshal(t *testing.T) {
+	t.Parallel()
 	err := SendError{
 		Pane:  "3",
 		Error: "pane not found",
@@ -2649,6 +2699,7 @@ func TestSendErrorMarshal(t *testing.T) {
 }
 
 func TestSnapshotSessionMarshal(t *testing.T) {
+	t.Parallel()
 	session := SnapshotSession{
 		Name:     "myproject",
 		Attached: true,
@@ -2677,6 +2728,7 @@ func TestSnapshotSessionMarshal(t *testing.T) {
 }
 
 func TestBeadActionMarshal(t *testing.T) {
+	t.Parallel()
 	action := BeadAction{
 		BeadID:    "ntm-123",
 		Title:     "Test bead",
@@ -2716,6 +2768,7 @@ func TestBeadActionMarshal(t *testing.T) {
 }
 
 func TestBeadActionMarshalWithBlockers(t *testing.T) {
+	t.Parallel()
 	action := BeadAction{
 		BeadID:    "ntm-456",
 		Title:     "Blocked bead",
@@ -2749,6 +2802,7 @@ func TestBeadActionMarshalWithBlockers(t *testing.T) {
 }
 
 func TestPlanOutputWithBeadActions(t *testing.T) {
+	t.Parallel()
 	plan := PlanOutput{
 		GeneratedAt:    time.Now().UTC(),
 		Recommendation: "Work on high-impact bead",
@@ -2780,6 +2834,7 @@ func TestPlanOutputWithBeadActions(t *testing.T) {
 }
 
 func TestGraphMetricsMarshal(t *testing.T) {
+	t.Parallel()
 	metrics := GraphMetrics{
 		TopBottlenecks: []BottleneckInfo{
 			{ID: "ntm-123", Title: "Test bead", Score: 25.5},
@@ -2815,6 +2870,7 @@ func TestGraphMetricsMarshal(t *testing.T) {
 }
 
 func TestStatusOutputWithGraphMetrics(t *testing.T) {
+	t.Parallel()
 	output := StatusOutput{
 		SchemaID:      defaultRobotSchemaID("status"),
 		SchemaVersion: statusSchemaVersion,
@@ -2890,10 +2946,7 @@ func TestGetStatusWithProjectionStoreUsesRuntimeProjection(t *testing.T) {
 		t.Fatalf("Migrate store: %v", err)
 	}
 
-	oldStore := currentProjectionStore()
-	SetProjectionStore(store)
 	t.Cleanup(func() {
-		SetProjectionStore(oldStore)
 		_ = store.Close()
 	})
 
@@ -3000,7 +3053,7 @@ func TestGetStatusWithProjectionStoreUsesRuntimeProjection(t *testing.T) {
 		return &adapters.WorkSection{Available: true, Summary: &adapters.WorkSummary{Ready: 0, InProgress: 2}}, nil
 	})
 
-	result, err := GetStatusWithOptions(PaginationOptions{})
+	result, err := GetStatusWithOptions(PaginationOptions{Store: store, ExplicitStore: true})
 	if err != nil {
 		t.Fatalf("GetStatusWithOptions: %v", err)
 	}
@@ -3054,11 +3107,6 @@ func TestGetStatusWithProjectionStoreUsesRuntimeProjection(t *testing.T) {
 
 func TestGetStatusWithOptionsRespectsDisabledAlertsConfig(t *testing.T) {
 	hermeticGlobalConfig(t)
-	oldStore := currentProjectionStore()
-	SetProjectionStore(nil)
-	t.Cleanup(func() {
-		SetProjectionStore(oldStore)
-	})
 
 	tracker := alerts.GetGlobalTracker()
 	clearAlertTracker(tracker)
@@ -3163,6 +3211,7 @@ func TestGetDashboardRespectsDisabledAlertsConfig(t *testing.T) {
 }
 
 func TestDashboardAgentTypeSkipsUserPane(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		pane   tmux.Pane
@@ -3257,6 +3306,7 @@ func TestGetAlertsDetailedRespectsDisabledAlertsConfig(t *testing.T) {
 }
 
 func TestBuildProjectionBackedSnapshotSessionsUsesRuntimeProjection(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
 	if err != nil {
@@ -3344,6 +3394,7 @@ func TestBuildProjectionBackedSnapshotSessionsUsesRuntimeProjection(t *testing.T
 }
 
 func TestBuildProjectionBackedSnapshotSessionsLargeSwarmStableOrdering(t *testing.T) {
+	t.Parallel()
 	store, err := state.Open(":memory:")
 	if err != nil {
 		t.Fatalf("Open store: %v", err)
@@ -3544,6 +3595,7 @@ func seedRuntimeProjectionLoadLab(t *testing.T, store *state.Store, sessionCount
 }
 
 func TestBuildProjectionAgentMailPaneMapUsesRuntimeProjection(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
 	if err != nil {
@@ -3594,6 +3646,7 @@ func TestBuildProjectionAgentMailPaneMapUsesRuntimeProjection(t *testing.T) {
 }
 
 func TestBeadsSummaryFromWork(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	claimedAt := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
 	work := &adapters.WorkSection{
@@ -3632,6 +3685,7 @@ func TestBeadsSummaryFromWork(t *testing.T) {
 }
 
 func TestApplySnapshotSourceHealth(t *testing.T) {
+	t.Parallel()
 	output := newSnapshotOutput(config.Default())
 	now := time.Now().UTC()
 
@@ -3655,6 +3709,7 @@ func TestApplySnapshotSourceHealth(t *testing.T) {
 }
 
 func TestSnapshotQuotaFromRuntime(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	reset := now.Add(30 * time.Minute)
 	section := snapshotQuotaFromRuntime([]state.RuntimeQuota{
@@ -3701,6 +3756,7 @@ func TestSnapshotQuotaFromRuntime(t *testing.T) {
 }
 
 func TestSnapshotCoordinationFromRuntime(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	summary := snapshotCoordinationFromRuntime([]state.RuntimeCoordination{
 		{
@@ -3740,6 +3796,7 @@ func TestSnapshotCoordinationFromRuntime(t *testing.T) {
 
 // The inspect view still renders one bead from its RuntimeWork row.
 func TestSnapshotWorkItemFromRuntime(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	claimed := now.Add(-5 * time.Minute)
 	item := snapshotWorkItemFromRuntime(state.RuntimeWork{
@@ -3991,6 +4048,7 @@ esac
 // still advertise a ready bead must not reach the snapshot, its beads summary
 // or its ready_work count once the verified read cannot vouch for them.
 func TestSnapshotNeverServesUnverifiedRuntimeWorkRows(t *testing.T) {
+	t.Parallel()
 	store := newProjectionTestStore(t)
 	now := time.Now().UTC()
 	if err := store.UpsertRuntimeWork(&state.RuntimeWork{
@@ -4062,6 +4120,7 @@ func TestVerifiedRobotWorkReportsOtherFailuresWithoutRetrying(t *testing.T) {
 // GH #283 field case (a): a blocked bead triage did not list arrives without
 // blocker IDs. Its row must still read back as blocked, not ready.
 func TestRuntimeWorkRowsKeepBlockedBeadsBlocked(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	rows := buildRuntimeWorkRows(&adapters.WorkSection{
 		Ready:   []adapters.WorkItem{{ID: "bd-ready"}},
@@ -4080,6 +4139,7 @@ func TestRuntimeWorkRowsKeepBlockedBeadsBlocked(t *testing.T) {
 }
 
 func TestSnapshotFinalizeBuildsSummary(t *testing.T) {
+	t.Parallel()
 	output := newSnapshotOutput(config.Default())
 	output.Sessions = []SnapshotSession{
 		{
@@ -4144,6 +4204,7 @@ func TestSnapshotFinalizeBuildsSummary(t *testing.T) {
 }
 
 func TestSnapshotIncidentsFromStore(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
 	if err != nil {
@@ -4198,6 +4259,7 @@ func TestSnapshotIncidentsFromStore(t *testing.T) {
 }
 
 func TestPersistNormalizedIncidents_AutoResolvesClearedPromotedIncidents(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
 	if err != nil {
@@ -4249,6 +4311,7 @@ func TestPersistNormalizedIncidents_AutoResolvesClearedPromotedIncidents(t *test
 // ====================
 
 func TestTerseStateString(t *testing.T) {
+	t.Parallel()
 	state := TerseState{
 		Session:           "myproject",
 		ActiveAgents:      2,
@@ -4275,6 +4338,7 @@ func TestTerseStateString(t *testing.T) {
 }
 
 func TestTerseStateStringNoSession(t *testing.T) {
+	t.Parallel()
 	state := TerseState{
 		Session:           "-",
 		ActiveAgents:      0,
@@ -4301,6 +4365,7 @@ func TestTerseStateStringNoSession(t *testing.T) {
 }
 
 func TestTerseStateMarshal(t *testing.T) {
+	t.Parallel()
 	state := TerseState{
 		Session:           "myproject",
 		ActiveAgents:      2,
@@ -4331,6 +4396,7 @@ func TestTerseStateMarshal(t *testing.T) {
 
 // TestTerseStateAttentionStates tests terse output for various attention states.
 func TestTerseStateAttentionStates(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name              string
 		attnAction        int
@@ -4385,6 +4451,7 @@ func TestTerseStateAttentionStates(t *testing.T) {
 // ====================
 
 func TestGetUsageLevel(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		pct      float64
 		expected string
@@ -4419,6 +4486,7 @@ func TestGetUsageLevel(t *testing.T) {
 // instead of gemini's 1M window. Unknown recorded models keep the family
 // limit of the title heuristic; known ones use their own.
 func TestContextPaneLimitKeepsFamilyLimitForUnknownLaunchModel(t *testing.T) {
+	t.Parallel()
 	agy := tmux.Pane{ID: "%1", Title: "flywheel__agy_1"}
 	if got, want := contextPaneLimit("Gemini 4 Neon (XHigh)", agy, "antigravity"), getContextLimit("gemini"); got != want {
 		t.Fatalf("agy pane limit = %d, want gemini family limit %d", got, want)
@@ -4456,6 +4524,7 @@ func TestContextPaneModelPrefersRecordedLaunchModel(t *testing.T) {
 }
 
 func TestDetectModel(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		agentType string
@@ -4495,6 +4564,7 @@ func TestDetectModel(t *testing.T) {
 }
 
 func TestGenerateContextHints(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		lowUsage   []string
@@ -4580,6 +4650,7 @@ func TestGenerateContextHints(t *testing.T) {
 }
 
 func TestContextOutputJSON(t *testing.T) {
+	t.Parallel()
 	output := ContextOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       "test-session",
@@ -4636,6 +4707,7 @@ func TestContextOutputJSON(t *testing.T) {
 // ====================
 
 func TestInferTaskType(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		bead     bv.BeadPreview
@@ -4664,6 +4736,7 @@ func TestInferTaskType(t *testing.T) {
 }
 
 func TestParsePriority(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string
@@ -4693,6 +4766,7 @@ func TestParsePriority(t *testing.T) {
 }
 
 func TestCalculateConfidence(t *testing.T) {
+	t.Parallel()
 	// Simple strategy confidence is the raw capability score with no strategy
 	// adjustments; every other strategy routes through internal/assign.
 	tests := []struct {
@@ -4734,6 +4808,7 @@ func TestCalculateConfidence(t *testing.T) {
 }
 
 func TestGenerateReasoning(t *testing.T) {
+	t.Parallel()
 	// Simple strategy reasoning names the sequential pairing and never
 	// mentions planner strategies.
 	tests := []struct {
@@ -4770,6 +4845,7 @@ func TestGenerateReasoning(t *testing.T) {
 }
 
 func TestGenerateAssignHints(t *testing.T) {
+	t.Parallel()
 	t.Run("no work available", func(t *testing.T) {
 		hints := generateAssignHints("test", nil, nil, nil, nil)
 		if hints.Summary != "No work available to assign" {
@@ -4822,6 +4898,7 @@ func TestGenerateAssignHints(t *testing.T) {
 }
 
 func TestAssignOutputJSON(t *testing.T) {
+	t.Parallel()
 	// Test JSON serialization round-trip
 	output := AssignOutput{
 		RobotResponse: NewRobotResponse(true),
@@ -4885,6 +4962,7 @@ func TestAssignOutputJSON(t *testing.T) {
 // ====================
 
 func TestParseAgentTypes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string
@@ -4925,6 +5003,7 @@ func TestParseAgentTypes(t *testing.T) {
 }
 
 func TestFormatTimeKey(t *testing.T) {
+	t.Parallel()
 	// Test date: December 16, 2025 (week 51)
 	testTime := time.Date(2025, 12, 16, 14, 30, 0, 0, time.UTC)
 
@@ -4950,6 +5029,7 @@ func TestFormatTimeKey(t *testing.T) {
 }
 
 func TestFormatPeriod(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		days     int
@@ -4972,6 +5052,7 @@ func TestFormatPeriod(t *testing.T) {
 }
 
 func TestFormatTokens(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		tokens   int
 		expected string
@@ -4999,6 +5080,7 @@ func TestFormatTokens(t *testing.T) {
 }
 
 func TestTokensOutputJSON(t *testing.T) {
+	t.Parallel()
 	output := TokensOutput{
 		RobotResponse:   NewRobotResponse(true),
 		Period:          "Last 7 days",
@@ -5045,6 +5127,7 @@ func TestTokensOutputJSON(t *testing.T) {
 }
 
 func TestParseSinceTime(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	tests := []struct {
 		name     string
@@ -5105,6 +5188,7 @@ func TestParseSinceTime(t *testing.T) {
 }
 
 func TestGenerateHistoryHints(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		output    HistoryOutput
@@ -5174,6 +5258,7 @@ func TestGenerateHistoryHints(t *testing.T) {
 }
 
 func TestGenerateHistoryHints_UsesCanonicalWorkingFlags(t *testing.T) {
+	t.Parallel()
 	hints := generateHistoryHints(HistoryOutput{Total: 3, Filtered: 3}, HistoryOptions{Session: "proj"})
 	if hints == nil {
 		t.Fatal("generateHistoryHints returned nil")
@@ -5192,6 +5277,7 @@ func TestGenerateHistoryHints_UsesCanonicalWorkingFlags(t *testing.T) {
 }
 
 func TestGenerateTokenHints(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		output    TokensOutput
@@ -5298,6 +5384,7 @@ func TestGenerateTokenHints(t *testing.T) {
 // ====================
 
 func TestPrintTriageOptions(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		opts  TriageOptions
@@ -5324,6 +5411,7 @@ func TestPrintTriageOptions(t *testing.T) {
 }
 
 func TestTriageOutputStructure(t *testing.T) {
+	t.Parallel()
 	// Test that TriageOutput JSON serializes correctly
 	output := TriageOutput{
 		GeneratedAt: time.Now().UTC(),
@@ -5410,6 +5498,7 @@ func TestPrintTriageWhenBvNotInstalled(t *testing.T) {
 // ====================
 
 func TestSplitLines_Accuracy(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string
@@ -5494,6 +5583,7 @@ func TestSplitLines_Accuracy(t *testing.T) {
 }
 
 func TestDetectAgentType_Accuracy(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		title    string
 		expected string
@@ -5542,6 +5632,7 @@ func TestDetectAgentType_Accuracy(t *testing.T) {
 }
 
 func TestDetermineState_Accuracy(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		output    string
@@ -5592,6 +5683,7 @@ func TestDetermineState_Accuracy(t *testing.T) {
 }
 
 func TestPaneOutput_Accuracy(t *testing.T) {
+	t.Parallel()
 	t.Run("all fields marshal correctly", func(t *testing.T) {
 		pane := PaneOutput{
 			Type:      "claude",
@@ -5658,6 +5750,7 @@ func TestPaneOutput_Accuracy(t *testing.T) {
 }
 
 func TestTailOutput_OutputAccuracy(t *testing.T) {
+	t.Parallel()
 	t.Run("captured_at timestamp format is RFC3339", func(t *testing.T) {
 		output := TailOutput{
 			Session:    "test",
@@ -5776,6 +5869,7 @@ func TestTailOutput_OutputAccuracy(t *testing.T) {
 }
 
 func TestTailTruncation_Accuracy(t *testing.T) {
+	t.Parallel()
 	t.Run("truncated flag logic", func(t *testing.T) {
 		// When we request N lines and get exactly N lines, truncated should be true
 		// because there may be more content we didn't capture
@@ -5804,6 +5898,7 @@ func TestTailTruncation_Accuracy(t *testing.T) {
 }
 
 func TestTailFilterMap_Accuracy(t *testing.T) {
+	t.Parallel()
 	t.Run("filter map accepts pane indices", func(t *testing.T) {
 		filterMap := make(map[string]bool)
 		paneFilter := []string{"0", "2", "5"}
@@ -5860,6 +5955,7 @@ func TestTailFilterMap_Accuracy(t *testing.T) {
 }
 
 func TestLinePreservation_Accuracy(t *testing.T) {
+	t.Parallel()
 	t.Run("unicode characters preserved", func(t *testing.T) {
 		input := "Hello 世界 🌍 émoji"
 		lines := splitLines(input)
@@ -5918,6 +6014,7 @@ func TestLinePreservation_Accuracy(t *testing.T) {
 }
 
 func TestGenerateTailHints_DeterministicOutput(t *testing.T) {
+	t.Parallel()
 	t.Run("idle agents sorted deterministically", func(t *testing.T) {
 		panes := map[string]PaneOutput{
 			"5": {State: "idle"},
@@ -5966,6 +6063,7 @@ func TestGenerateTailHints_DeterministicOutput(t *testing.T) {
 }
 
 func TestTranslateAgentTypeForStatus_Coverage(t *testing.T) {
+	t.Parallel()
 	// Test that the translation function handles various inputs
 	// Aliases, casing drift, and surrounding whitespace should all normalize cleanly.
 	tests := []struct {
@@ -6047,6 +6145,7 @@ func TestUpdateActivityLinesDelta(t *testing.T) {
 }
 
 func TestEnsureProjectWithRetryRetriesDatabaseLock(t *testing.T) {
+	t.Parallel()
 
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -6089,6 +6188,7 @@ func TestEnsureProjectWithRetryRetriesDatabaseLock(t *testing.T) {
 }
 
 func TestEnsureProjectWithRetryDoesNotRetryNonLockErrors(t *testing.T) {
+	t.Parallel()
 
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -6119,6 +6219,7 @@ func TestEnsureProjectWithRetryDoesNotRetryNonLockErrors(t *testing.T) {
 }
 
 func TestIsAgentMailDBLockError(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name string
@@ -6158,6 +6259,7 @@ func TestIsAgentMailDBLockError(t *testing.T) {
 }
 
 func TestGetInboxTallyIgnoresReadMessages(t *testing.T) {
+	t.Parallel()
 
 	readAt := &agentmail.FlexTime{Time: time.Now()}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -6471,6 +6573,7 @@ func TestBuildCorrelationGraphMailSummaryIgnoresReadMessagesForUnreadCounts(t *t
 // =============================================================================
 
 func TestBuildSnapshotAttentionSummary_NilFeed(t *testing.T) {
+	t.Parallel()
 	summary := buildSnapshotAttentionSummary(nil)
 	if summary != nil {
 		t.Error("expected nil summary for nil feed")
@@ -6478,6 +6581,7 @@ func TestBuildSnapshotAttentionSummary_NilFeed(t *testing.T) {
 }
 
 func TestBuildSnapshotAttentionSummary_EmptyFeedBasic(t *testing.T) {
+	t.Parallel()
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       100,
 		RetentionPeriod:   time.Hour,
@@ -6501,6 +6605,7 @@ func TestBuildSnapshotAttentionSummary_EmptyFeedBasic(t *testing.T) {
 }
 
 func TestBuildSnapshotAttentionSummary_WithEvents(t *testing.T) {
+	t.Parallel()
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       100,
 		RetentionPeriod:   time.Hour,
@@ -6563,6 +6668,7 @@ func TestBuildSnapshotAttentionSummary_WithEvents(t *testing.T) {
 }
 
 func TestBuildSnapshotAttentionSummary_TopItemsCapped(t *testing.T) {
+	t.Parallel()
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       100,
 		RetentionPeriod:   time.Hour,
@@ -6726,6 +6832,7 @@ func TestGetPaneAddresses(t *testing.T) {
 // indistinguishable from a genuinely empty delta. Deltas now come from the
 // durable attention feed.
 func TestGetSnapshotDelta_ReadsDurableAttentionFeed(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store, err := state.Open(filepath.Join(dir, "state.db"))
 	if err != nil {
@@ -6735,10 +6842,6 @@ func TestGetSnapshotDelta_ReadsDurableAttentionFeed(t *testing.T) {
 	if err := store.Migrate(); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-
-	prev := currentProjectionStore()
-	SetProjectionStore(store)
-	t.Cleanup(func() { SetProjectionStore(prev) })
 
 	now := time.Now().UTC()
 	expires := now.Add(time.Hour)
@@ -6758,7 +6861,7 @@ func TestGetSnapshotDelta_ReadsDurableAttentionFeed(t *testing.T) {
 		t.Fatalf("AppendAttentionEvent: %v", err)
 	}
 
-	output, err := GetSnapshotDelta(now.Add(-5 * time.Minute))
+	output, err := GetSnapshotDeltaForStore(store, now.Add(-5*time.Minute))
 	if err != nil {
 		t.Fatalf("GetSnapshotDelta: %v", err)
 	}
@@ -6778,7 +6881,7 @@ func TestGetSnapshotDelta_ReadsDurableAttentionFeed(t *testing.T) {
 
 	// A window that predates the event must be empty — proving the filter is
 	// real rather than the surface returning everything.
-	stale, err := GetSnapshotDelta(now.Add(5 * time.Minute))
+	stale, err := GetSnapshotDeltaForStore(store, now.Add(5*time.Minute))
 	if err != nil {
 		t.Fatalf("GetSnapshotDelta(future): %v", err)
 	}
@@ -6790,11 +6893,8 @@ func TestGetSnapshotDelta_ReadsDurableAttentionFeed(t *testing.T) {
 // Without a durable source the surface must say so instead of reporting an
 // empty delta as success.
 func TestGetSnapshotDelta_NoStoreIsHonest(t *testing.T) {
-	prev := currentProjectionStore()
-	SetProjectionStore(nil)
-	t.Cleanup(func() { SetProjectionStore(prev) })
-
-	output, err := GetSnapshotDelta(time.Now().Add(-time.Hour))
+	t.Parallel()
+	output, err := GetSnapshotDeltaForStore(nil, time.Now().Add(-time.Hour))
 	if err != nil {
 		t.Fatalf("GetSnapshotDelta: %v", err)
 	}
@@ -6824,6 +6924,7 @@ func TestAgentTypeStringPassesThroughRegisteredPlugins(t *testing.T) {
 }
 
 func TestAgentTypeStringBuiltinOmp(t *testing.T) {
+	t.Parallel()
 	if got := agentTypeString(tmux.AgentOmp); got != "omp" {
 		t.Fatalf("agentTypeString(omp) = %q, want omp without any plugin registration", got)
 	}
@@ -6843,6 +6944,7 @@ func TestAgentTypeStringBuiltinOmp(t *testing.T) {
 // the dialog classifier (paste limbo, selector overlay), the dialog key
 // adaptation, and the status-bar context gauge.
 func TestOmpRobotStateDialogsAndContext(t *testing.T) {
+	t.Parallel()
 	idle := readAgentFixture(t, "omp_nerd_idle_done.txt")
 	working := readAgentFixture(t, "omp_nerd_working.txt")
 	toolWorking := readAgentFixture(t, "omp_nerd_tool_working.txt")
@@ -7014,7 +7116,7 @@ esac
 			return nil, false
 		}
 	}
-	collected, err := collectNormalizedTmuxProjectionContext(context.Background(), dir, time.Hour)
+	collected, err := collectNormalizedTmuxProjectionContext(context.Background(), nil, dir, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7025,9 +7127,6 @@ esac
 	if err := persistNormalizedProjection(store, &adapters.AggregatedSignals{CollectedAt: collected.CollectedAt}, collected, time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	previousStore := currentProjectionStore()
-	SetProjectionStore(store)
-	t.Cleanup(func() { SetProjectionStore(previousStore) })
 
 	// A public snapshot must read the persisted measurements, even when
 	// neither live capture nor transcript attribution is available.
@@ -7045,7 +7144,7 @@ esac
 	})
 	cfg := config.Default()
 	cfg.Alerts.Enabled = false
-	snapshot, err := GetSnapshot(cfg)
+	snapshot, err := GetSnapshotWithOptions(cfg, PaginationOptions{Store: store, ExplicitStore: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7160,10 +7259,8 @@ func TestResolvePaneTranscriptsStopsAfterCancellation(t *testing.T) {
 }
 
 func TestGetSnapshotDeltaPreservesCanonicalEventPayloads(t *testing.T) {
+	t.Parallel()
 	store := newProjectionTestStore(t)
-	previous := currentProjectionStore()
-	SetProjectionStore(store)
-	t.Cleanup(func() { SetProjectionStore(previous) })
 	now := time.Now().UTC()
 	expires := now.Add(time.Hour)
 	stateCursor, err := store.AppendAttentionEvent(&state.StoredAttentionEvent{
@@ -7190,7 +7287,7 @@ func TestGetSnapshotDeltaPreservesCanonicalEventPayloads(t *testing.T) {
 		RequestID: "rotation-123", ReasonCode: "context_rotation_auto_confirm",
 	})
 
-	output, err := GetSnapshotDelta(now.Add(-time.Minute))
+	output, err := GetSnapshotDeltaForStore(store, now.Add(-time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7260,10 +7357,8 @@ func TestGetSnapshotDeltaPreservesCanonicalEventPayloads(t *testing.T) {
 }
 
 func TestGetSnapshotDeltaHandlesLegacyPayloadsAndReplayBounds(t *testing.T) {
+	t.Parallel()
 	store := newProjectionTestStore(t)
-	previous := currentProjectionStore()
-	SetProjectionStore(store)
-	t.Cleanup(func() { SetProjectionStore(previous) })
 	now := time.Now().UTC()
 	expires := now.Add(time.Hour)
 	expired := now.Add(-10 * time.Second)
@@ -7314,7 +7409,7 @@ func TestGetSnapshotDeltaHandlesLegacyPayloadsAndReplayBounds(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	output, err := GetSnapshotDelta(now.Add(-time.Minute))
+	output, err := GetSnapshotDeltaForStore(store, now.Add(-time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}

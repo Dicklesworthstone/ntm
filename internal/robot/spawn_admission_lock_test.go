@@ -35,6 +35,7 @@ func cappedSpawnConfig(limit int) *config.Config {
 }
 
 func TestNeedsSpawnAdmissionFence(t *testing.T) {
+	t.Parallel()
 	cfg := cappedSpawnConfig(1)
 	if needsSpawnAdmissionFence(SpawnOptions{DryRun: true}, cfg) || needsSpawnAdmissionFence(SpawnOptions{}, nil) {
 		t.Fatal("preview or unconfigured spawn acquired capacity")

@@ -128,8 +128,10 @@ func awaitBackgroundState(t *testing.T, root, id string, wanted ExecutionStatus)
 }
 
 func TestBackgroundPipelineSurvivesLauncherExit(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"launch", "robot-launch"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			root := backgroundFixture(t, false)
 			raw, err := backgroundHelper(t, mode, root, "run-survives")
 			if err != nil {
@@ -244,6 +246,7 @@ func TestPipelineHandledFailureDoesNotPersistFatalOutcome(t *testing.T) {
 }
 
 func TestBackgroundPipelineCanBeCanceledFromAnotherProcess(t *testing.T) {
+	t.Parallel()
 	root := backgroundFixture(t, false)
 	raw, err := backgroundHelper(t, "launch", root, "run-cancel")
 	if err != nil {
@@ -271,6 +274,7 @@ func TestBackgroundPipelineCanBeCanceledFromAnotherProcess(t *testing.T) {
 }
 
 func TestBackgroundPipelineRefusesDuplicateRunIdentity(t *testing.T) {
+	t.Parallel()
 	root := backgroundFixture(t, false)
 	raw, err := backgroundHelper(t, "launch", root, "run-once")
 	if err != nil {
@@ -297,6 +301,7 @@ func TestBackgroundPipelineRefusesDuplicateRunIdentity(t *testing.T) {
 }
 
 func TestBackgroundStartupFailureIsNotSuccess(t *testing.T) {
+	t.Parallel()
 	root := backgroundFixture(t, false)
 	raw, err := backgroundHelper(t, "launch-failure", root, "run-no-worker")
 	if err == nil {
@@ -340,8 +345,10 @@ func writeBackgroundRequestFixture(t *testing.T, root, id string) backgroundRequ
 }
 
 func TestBackgroundWorkerRequiresExplicitStartupAuthorization(t *testing.T) {
+	t.Parallel()
 	for _, payload := range []string{"", "wrong\n", strings.Repeat("a", 32)} {
 		t.Run(fmt.Sprintf("bytes-%d", len(payload)), func(t *testing.T) {
+			t.Parallel()
 			root := backgroundFixture(t, false)
 			writeBackgroundRequestFixture(t, root, "run-uncommitted")
 			err := RunBackgroundWorker(context.Background(), root, "run-uncommitted", io.NopCloser(strings.NewReader(payload)))
@@ -362,6 +369,7 @@ func TestBackgroundWorkerRequiresExplicitStartupAuthorization(t *testing.T) {
 }
 
 func TestBackgroundWorkerDeadlineClosesAuthorizationPipe(t *testing.T) {
+	t.Parallel()
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -378,6 +386,7 @@ func TestBackgroundWorkerDeadlineClosesAuthorizationPipe(t *testing.T) {
 }
 
 func TestBackgroundRequestAndLogPermissions(t *testing.T) {
+	t.Parallel()
 	root := backgroundFixture(t, false)
 	raw, err := backgroundHelper(t, "launch", root, "run-permissions")
 	if err != nil {
@@ -414,6 +423,7 @@ func TestBackgroundDryRunCreatesNoWorkerArtifacts(t *testing.T) {
 }
 
 func TestBackgroundTemplateResolutionPreservesSourcePrecedence(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	source := filepath.Join(root, "workflows")
 	if err := os.MkdirAll(source, 0700); err != nil {

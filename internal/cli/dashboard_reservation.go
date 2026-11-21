@@ -116,6 +116,10 @@ func (s dashboardReservationStartup) run(ctx context.Context, start func(context
 	<-ctx.Done()
 }
 
+// dashboardReservationRetryBase is the initial retry delay for startup probes
+// (overridable in tests; production default is 1s).
+var dashboardReservationRetryBase = time.Second
+
 func (s dashboardReservationStartup) waitUntilReady(ctx context.Context) bool {
 	if ctx == nil || s.probe == nil {
 		return false
@@ -125,7 +129,10 @@ func (s dashboardReservationStartup) waitUntilReady(ctx context.Context) bool {
 		wait = waitDashboardReservationRetry
 	}
 	const maxDelay = 30 * time.Second
-	delay := time.Second
+	delay := dashboardReservationRetryBase
+	if delay <= 0 {
+		delay = time.Second
+	}
 	for ctx.Err() == nil {
 		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		err := s.probe(probeCtx)

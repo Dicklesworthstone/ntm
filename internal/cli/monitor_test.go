@@ -60,11 +60,12 @@ func TestAccountRotationMonitorRealTmux(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("NTM_TMUX_BINARY", wrapper)
-	oldClient, oldRunner, oldPreflight := tmux.DefaultClient, newAccountRotationRunner, swarmPreflightAccountRotation
+	oldClient, oldRunner, oldPreflight, oldPoll := tmux.DefaultClient, newAccountRotationRunner, swarmPreflightAccountRotation, accountRotationPollIntervalOverride
 	tmux.DefaultClient = tmux.NewClient("")
+	accountRotationPollIntervalOverride = 25 * time.Millisecond
 	t.Cleanup(func() {
 		_, _ = tmux.DefaultClient.Run("kill-server")
-		tmux.DefaultClient, newAccountRotationRunner, swarmPreflightAccountRotation = oldClient, oldRunner, oldPreflight
+		tmux.DefaultClient, newAccountRotationRunner, swarmPreflightAccountRotation, accountRotationPollIntervalOverride = oldClient, oldRunner, oldPreflight, oldPoll
 	})
 	run := func(args ...string) string {
 		t.Helper()
@@ -139,8 +140,12 @@ func accountRotationMonitorFixture(t *testing.T) (*resilience.SpawnManifest, str
 			t.Fatal(err)
 		}
 	}
-	oldRunner := newAccountRotationRunner
-	t.Cleanup(func() { newAccountRotationRunner = oldRunner })
+	oldRunner, oldPoll := newAccountRotationRunner, accountRotationPollIntervalOverride
+	accountRotationPollIntervalOverride = 25 * time.Millisecond
+	t.Cleanup(func() {
+		newAccountRotationRunner = oldRunner
+		accountRotationPollIntervalOverride = oldPoll
+	})
 	manifest := &resilience.SpawnManifest{
 		Session: "cc_agents_1", SessionIdentity: "700:$1:1770000000", ProjectDir: project,
 		Agents: []resilience.AgentConfig{{PaneID: "%41", PaneIndex: 7, Type: "cc", ProjectDir: project}},
@@ -592,6 +597,7 @@ func TestPersistEmittedBusEventsStoresShortLivedCommandEvents(t *testing.T) {
 }
 
 func TestSummarizeMonitorRecoveryReportsDetectorCounts(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.ContextRotation.Recovery.Enabled = true
 	cfg.ContextRotation.Recovery.CooldownSeconds = 30

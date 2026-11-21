@@ -68,6 +68,7 @@ func TestPreflightJSONBlockedReturnsOneTerminalFailure(t *testing.T) {
 
 // TestPreflightTableDriven covers the core preflight scenarios with table-driven tests.
 func TestPreflightTableDriven(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		prompt        string
@@ -215,6 +216,7 @@ func TestPreflightTableDriven(t *testing.T) {
 
 // TestPreflightSecretDetection tests secret detection with synthetic fixtures.
 func TestPreflightSecretDetection(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		prompt       string
@@ -284,6 +286,7 @@ func TestPreflightSecretDetection(t *testing.T) {
 
 // TestPreflightOversizeWarning tests the oversize prompt warning threshold.
 func TestPreflightOversizeWarning(t *testing.T) {
+	t.Parallel()
 	// Create a prompt that exceeds the warning threshold (50KB default)
 	// but not the max threshold (100KB default)
 	largePrompt := strings.Repeat("This is test content. ", 3000) // ~66KB
@@ -312,6 +315,7 @@ func TestPreflightOversizeWarning(t *testing.T) {
 
 // TestPreflightHashStability verifies that preview hash is stable for identical inputs.
 func TestPreflightHashStability(t *testing.T) {
+	t.Parallel()
 	prompt := "Test prompt for hash stability verification"
 
 	// Run preflight multiple times
@@ -344,6 +348,7 @@ func TestPreflightHashStability(t *testing.T) {
 
 // TestPreflightResultStructure verifies the result structure matches robot output spec.
 func TestPreflightResultStructure(t *testing.T) {
+	t.Parallel()
 	result, err := runPreflight("Test prompt", false)
 	if err != nil {
 		t.Fatalf("runPreflight failed: %v", err)
@@ -394,6 +399,7 @@ func TestPreflightResultStructure(t *testing.T) {
 
 // TestLintPackageIntegration verifies the preflight uses the lint package correctly.
 func TestLintPackageIntegration(t *testing.T) {
+	t.Parallel()
 	// Test that lint package functions are being called
 	// by checking behavior that comes from the lint package
 
@@ -527,6 +533,7 @@ func TestRunPreflight_RespectsRedactionMode_Off(t *testing.T) {
 var _ = lint.DefaultRuleSet
 
 func TestPreflight_KernelMapInputAndRobotSubprocess(t *testing.T) {
+	t.Parallel()
 	// 1. Verify prompt.preflight kernel REST binding and map[string]any execution.
 	var cmdMeta kernel.Command
 	var ok bool

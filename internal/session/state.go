@@ -173,6 +173,7 @@ type AgentCommands struct {
 	Aider       string
 	Opencode    string
 	Omp         string
+	Pi          string
 	Ollama      string
 }
 

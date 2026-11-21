@@ -49,6 +49,7 @@ import (
 )
 
 func TestExecuteRootWithSignalsSecondSignalUsesDefault(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix signal semantics required")
 	}
@@ -166,6 +167,7 @@ func TestClassifyRobotExecuteErrorMapsMarkedInputToInvalidFlag(t *testing.T) {
 }
 
 func TestRobotInvocationFromArgsPrefersOperationOverGlobalModifiers(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		args        []string
@@ -950,6 +952,7 @@ func TestRunQuickUsesDefaultProjectsBaseWhenConfigNil(t *testing.T) {
 }
 
 func TestResolveMessageCommandScopeRejectsMissingOrCanceledContext(t *testing.T) {
+	t.Parallel()
 	t.Run("nil command", func(t *testing.T) {
 		_, _, err := resolveMessageCommandScope(nil)
 		if err == nil || !strings.Contains(err.Error(), "requires a command context") {
@@ -977,6 +980,7 @@ func TestResolveMessageCommandScopeRejectsMissingOrCanceledContext(t *testing.T)
 }
 
 func TestMessageSubcommandsRejectPreCanceledContextDirectly(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		cmd  func() *cobra.Command
@@ -2727,6 +2731,7 @@ func TestResolveResumeSourceProjectDirUsesHandoffSourceProject(t *testing.T) {
 }
 
 func TestProjectDirFromHandoffPathSupportsArchive(t *testing.T) {
+	t.Parallel()
 	projectDir := t.TempDir()
 	archivedPath := filepath.Join(projectDir, ".ntm", "handoffs", "mysession", ".archive", "2026-04-03-1200.yaml")
 
@@ -2740,6 +2745,7 @@ func TestProjectDirFromHandoffPathSupportsArchive(t *testing.T) {
 }
 
 func TestAddDataToBundleSanitizesArchivePath(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 
@@ -2767,12 +2773,14 @@ func TestAddDataToBundleSanitizesArchivePath(t *testing.T) {
 }
 
 func TestSupportBundleSessionPathRejectsTraversal(t *testing.T) {
+	t.Parallel()
 	if _, err := supportBundleSessionPath("../escape", "snapshot.json"); err == nil {
 		t.Fatal("expected unsafe session path error")
 	}
 }
 
 func TestAddDataToBundleRejectsUnsafeArchivePath(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	t.Cleanup(func() {
@@ -2787,6 +2795,7 @@ func TestAddDataToBundleRejectsUnsafeArchivePath(t *testing.T) {
 }
 
 func TestResolveReplaySessionRejectsInvalidSessionName(t *testing.T) {
+	t.Parallel()
 	_, err := resolveReplaySession("history-session", "../escape")
 	if err == nil {
 		t.Fatal("expected invalid session error")
@@ -2797,6 +2806,7 @@ func TestResolveReplaySessionRejectsInvalidSessionName(t *testing.T) {
 }
 
 func TestResolveReplaySessionRejectsEmptyHistorySession(t *testing.T) {
+	t.Parallel()
 	_, err := resolveReplaySession("", "")
 	if err == nil {
 		t.Fatal("expected empty session error")
@@ -3244,6 +3254,7 @@ func TestResolveRobotFormat_InvalidValueFallsBack(t *testing.T) {
 }
 
 func TestIsSessionMissingError(t *testing.T) {
+	t.Parallel()
 
 	cases := []struct {
 		name string
@@ -3335,6 +3346,7 @@ func TestAtomicRobotAssignmentReservationFlagsRegistered(t *testing.T) {
 }
 
 func TestParseRobotReservationPathsArgStrict(t *testing.T) {
+	t.Parallel()
 	paths, err := parseRobotReservationPathsArg("internal/robot/**, docs/**,internal/robot/**")
 	if err != nil {
 		t.Fatalf("parse paths: %v", err)
@@ -3739,6 +3751,7 @@ func TestCheckDepWithPathReturnsInstalledWithoutVersionWhenCommandIsSilent(t *te
 }
 
 func TestSanitizeDependencyVersion(t *testing.T) {
+	t.Parallel()
 	raw := "\x1b]0;spoofed title\a\x1b[31mgrok 0.2.89\x1b[0m\n\tbuild 8b63\u202e\x00"
 	if got, want := sanitizeDependencyVersion(raw), "grok 0.2.89 build 8b63"; got != want {
 		t.Fatalf("sanitizeDependencyVersion() = %q, want %q", got, want)
@@ -4929,6 +4942,7 @@ func TestUpgradeCmdHelp(t *testing.T) {
 
 // TestGetArchiveAssetName tests archive asset name generation
 func TestGetArchiveAssetName(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		version  string
 		wantPre  string
@@ -4955,6 +4969,7 @@ func TestGetArchiveAssetName(t *testing.T) {
 
 // TestVersionComparison tests the version comparison logic
 func TestVersionComparison(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		current   string
 		latest    string
@@ -4985,6 +5000,7 @@ func TestVersionComparison(t *testing.T) {
 
 // TestNormalizeVersion tests version normalization
 func TestNormalizeVersion(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input string
 		want  string
@@ -5009,6 +5025,7 @@ func TestNormalizeVersion(t *testing.T) {
 
 // TestFormatSize tests the size formatting function
 func TestFormatSize(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		bytes int64
 		want  string
@@ -5197,6 +5214,7 @@ func archiveFormatForOS(archive *goreleaserArchive, goos string) string {
 // See CONTRIBUTING.md "Release Infrastructure" section for full documentation
 // on the upgrade naming contract and how to safely make changes.
 func TestUpgradeAssetNamingContract(t *testing.T) {
+	t.Parallel()
 	cfg := loadGoReleaserConfig(t)
 	archive := findArchive(cfg, false)
 	if archive == nil {
@@ -5332,6 +5350,7 @@ func simulateGetArchiveAssetName(version, goos, goarch string) string {
 // TestUpgradeAssetNamingConsistency verifies the actual functions produce
 // consistent results with our test simulations on the current platform
 func TestUpgradeAssetNamingConsistency(t *testing.T) {
+	t.Parallel()
 	// The real functions use runtime.GOOS/GOARCH, so we test that the
 	// current platform produces expected patterns
 
@@ -6010,6 +6029,7 @@ func envWithOverrides(env []string, overrides ...string) []string {
 }
 
 func TestRobotStateCommandsWorkWithCGODisabledReleaseBuild(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping nested release build in short mode")
 	}
@@ -6067,6 +6087,7 @@ func TestRobotStateCommandsWorkWithCGODisabledReleaseBuild(t *testing.T) {
 }
 
 func TestRootDispatcherDoesNotExitProcess(t *testing.T) {
+	t.Parallel()
 	_, testFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("locate cli test source")
@@ -6325,6 +6346,7 @@ esac
 }
 
 func TestRobotProcessErrorContract(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping process-level robot contract integration in short mode")
 	}
@@ -6465,6 +6487,7 @@ func TestRobotProcessErrorContract(t *testing.T) {
 }
 
 func TestGlobalJSONProcessBoundaryOwnsExactlyOneDocument(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping process-level JSON contract integration in short mode")
 	}
@@ -6565,6 +6588,7 @@ func TestGlobalJSONProcessBoundaryOwnsExactlyOneDocument(t *testing.T) {
 }
 
 func TestGlobalJSONStartupEncryptionFailuresAreSingleDocuments(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping process-level JSON contract integration in short mode")
 	}
@@ -6628,6 +6652,7 @@ func TestGlobalJSONStartupEncryptionFailuresAreSingleDocuments(t *testing.T) {
 // persistence. Human invocations get the error on stderr and a non-zero exit
 // (docs/ENCRYPTION_SPEC.md, "Failure Modes").
 func TestStartupEncryptionFailureFailsClosedForHumans(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping process-level startup contract integration in short mode")
 	}
@@ -6667,6 +6692,7 @@ func TestStartupEncryptionFailureFailsClosedForHumans(t *testing.T) {
 }
 
 func TestConfigPathFromArgs(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		args []string
@@ -6889,6 +6915,7 @@ func TestPluginsListUsesGlobalConfigFlag(t *testing.T) {
 }
 
 func TestCommandPluginDiscoveryUsesGlobalConfigFlag(t *testing.T) {
+	t.Parallel()
 	root := repoRoot(t)
 	base := t.TempDir()
 	customPath := filepath.Join(base, "custom", "ntm.toml")
@@ -6919,6 +6946,7 @@ func TestCommandPluginDiscoveryUsesGlobalConfigFlag(t *testing.T) {
 }
 
 func TestSpawnAndAddPluginFlagsUseGlobalConfigFlag(t *testing.T) {
+	t.Parallel()
 	root := repoRoot(t)
 	base := t.TempDir()
 	customPath := filepath.Join(base, "custom", "ntm.toml")
@@ -6940,6 +6968,7 @@ func TestSpawnAndAddPluginFlagsUseGlobalConfigFlag(t *testing.T) {
 
 	for _, subcommand := range []string{"spawn", "add"} {
 		t.Run(subcommand, func(t *testing.T) {
+			t.Parallel()
 			stdout, stderr, code := runNTM(t, root, "--config", customPath, subcommand, "--help")
 			if code != 0 {
 				t.Fatalf("%s --help failed (code=%d): %s", subcommand, code, stderr)
@@ -6992,6 +7021,7 @@ func TestMultipleSubcommands(t *testing.T) {
 // `version --short`, so this test covers both the command contract and exact
 // normalized version matching.
 func TestVerifyUpgrade(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		expectedVersion string
@@ -7032,6 +7062,7 @@ func TestVerifyUpgrade(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if runtime.GOOS == "windows" {
 				t.Skip("upgrade verifier fixture requires a POSIX shell")
 			}
@@ -7062,6 +7093,7 @@ printf '%%s\n' %q
 
 // TestRestoreBackup tests the backup restoration logic
 func TestRestoreBackup(t *testing.T) {
+	t.Parallel()
 	// Create a temp directory for test files
 	tempDir, err := os.MkdirTemp("", "ntm-restore-test-*")
 	if err != nil {
@@ -7119,6 +7151,7 @@ func TestRestoreBackup(t *testing.T) {
 
 // TestVerifyChecksum tests the SHA256 checksum verification
 func TestVerifyChecksum(t *testing.T) {
+	t.Parallel()
 	// Create a temp directory for test files
 	tempDir, err := os.MkdirTemp("", "ntm-checksum-test-*")
 	if err != nil {
@@ -7256,6 +7289,7 @@ func installScriptTestPATH(t *testing.T, binDir string) string {
 }
 
 func TestInstallScriptChecksumSourcesEndToEnd(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("bash installer E2E requires a Unix host")
 	}
@@ -7399,6 +7433,7 @@ printf '%s\n' "$dir"
 	for _, downloader := range []string{"curl", "wget"} {
 		for _, test := range cases {
 			t.Run(downloader+"/"+test.name, func(t *testing.T) {
+				t.Parallel()
 				dir := t.TempDir()
 				assetPath := filepath.Join(dir, assetName)
 				writeInstallScriptArchive(t, assetPath)
@@ -7527,6 +7562,7 @@ printf '%s\n' "$dir"
 }
 
 func TestInstallScriptExecutionEntryPoints(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("bash installer contract requires a Unix host")
 	}
@@ -7551,6 +7587,7 @@ func TestInstallScriptExecutionEntryPoints(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			output, err := test.cmd.CombinedOutput()
 			if err == nil {
 				t.Fatalf("installer did not execute; output:\n%s", output)
@@ -7568,6 +7605,7 @@ func TestInstallScriptExecutionEntryPoints(t *testing.T) {
 
 // TestProgressWriter tests the download progress writer
 func TestProgressWriter(t *testing.T) {
+	t.Parallel()
 	t.Run("write updates downloaded count", func(t *testing.T) {
 		var buf bytes.Buffer
 		pw := &progressWriter{
@@ -7618,6 +7656,7 @@ func TestProgressWriter(t *testing.T) {
 
 // TestHasLegacyShellIntegration tests detection of legacy "ntm init" shell commands
 func TestHasLegacyShellIntegration(t *testing.T) {
+	t.Parallel()
 	tempDir, err := os.MkdirTemp("", "ntm-shell-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -7692,6 +7731,7 @@ eval "$(ntm shell bash)"
 
 // TestUpgradeShellRCFile tests the shell rc file upgrade function
 func TestUpgradeShellRCFile(t *testing.T) {
+	t.Parallel()
 	tempDir, err := os.MkdirTemp("", "ntm-upgrade-shell-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -8149,6 +8189,7 @@ func TestClassifyRobotExecuteErrorCuratedMisGuessHints(t *testing.T) {
 }
 
 func TestUnknownFlagFromError(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		errMsg string
 		want   string
@@ -8304,6 +8345,7 @@ func TestRobotHandoffFlagsRegistered(t *testing.T) {
 }
 
 func TestRobotHandoffInspectCreateAutoAndAllSubprocess(t *testing.T) {
+	t.Parallel()
 	tmpRoot := t.TempDir()
 	homeDir := filepath.Join(tmpRoot, "home")
 	configHome := filepath.Join(tmpRoot, "config")

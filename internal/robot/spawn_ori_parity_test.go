@@ -203,6 +203,7 @@ func TestRobotSpawnORI_CAAMIsolationConflictBeforeMutation(t *testing.T) {
 }
 
 func TestRobotSpawnORI_PersonaPromptCannotBeSilentlyDropped(t *testing.T) {
+	t.Parallel()
 	cfg := testSpawnConfig()
 	cfg.Agents.Codex = "custom-codex"
 	_, err := renderAgentCommandForSlot(cfg, SpawnOptions{Session: "persona-guard"}, "codex", 1, t.TempDir(), spawnLaunchModel{}, false, "reviewer", "/prepared/prompt")

@@ -196,7 +196,7 @@ type SessionKillInput struct {
 	Summarize bool     `json:"summarize,omitempty"` // Generate summary before killing
 }
 
-func init() {
+func registerSendInterruptKernel() {
 	// Register sessions.interrupt command
 	kernel.MustRegister(kernel.Command{
 		Name:        "sessions.interrupt",
@@ -3859,10 +3859,6 @@ var dcgCommandPrefixes = map[string]struct{}{
 // init makes robot sends (--robot-send, REST sends) apply the same dcg guard
 // as `ntm send`; the guard lives here because it reads the cli config global
 // and metrics collector, and robot cannot import cli without a cycle.
-func init() {
-	robot.SetSendCommandGuard(maybeBlockSendWithDCG)
-}
-
 func maybeBlockSendWithDCG(ctx context.Context, prompt, session string, panes []tmux.Pane) error {
 	if cfg == nil || !cfg.Integrations.DCG.Enabled {
 		return nil

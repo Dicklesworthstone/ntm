@@ -134,6 +134,7 @@ func TestGetSpawnRejectsCountOverflowBeforeAnyDependency(t *testing.T) {
 }
 
 func TestSpawnAdmissionAgentTypeAliasesConsumeConfiguredLimit(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		kind    string
 		aliases []tmux.AgentType

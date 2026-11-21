@@ -9,6 +9,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/robot/adapters"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
 // MarkdownOptions configures markdown output generation.
@@ -30,6 +31,9 @@ type MarkdownOptions struct {
 	// Session filters the sessions section to a specific session (empty = all).
 	// Project-wide sections such as work and alerts remain unfiltered.
 	Session string
+
+	// Store optionally binds snapshot rendering to an injected projection store.
+	Store *state.Store `json:"-"`
 }
 
 // DefaultMarkdownOptions returns sensible defaults for markdown output.
@@ -49,7 +53,10 @@ func PrintMarkdown(cfg *config.Config, opts MarkdownOptions) error {
 	if cfg == nil {
 		cfg = config.Default()
 	}
-	snapshot, err := GetSnapshot(cfg)
+	snapshot, err := GetSnapshotWithOptions(cfg, PaginationOptions{
+		Store:         opts.Store,
+		ExplicitStore: true,
+	})
 	if err != nil {
 		return err
 	}

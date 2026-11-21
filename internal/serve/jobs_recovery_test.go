@@ -93,6 +93,7 @@ func TestSwarmJobLaunchControlsHTTP(t *testing.T) {
 }
 
 func TestSwarmJobLaunchControlsRejectInvalidInputHTTP(t *testing.T) {
+	t.Parallel()
 	for _, extra := range []string{
 		`"ready_timeout":"0s"`, `"ready_timeout":"-1s"`, `"ready_timeout":"invalid"`,
 		`"ready_timeout":"999999999999999999999h"`, `"ready_timeout":10`,

@@ -30,6 +30,7 @@ import (
 // --- installed-script pins ---------------------------------------------------
 
 func TestInstallFallbackGuard_ScriptContainsRealCheck(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	hookPath := filepath.Join(dir, "hooks", "pre-commit")
 
@@ -75,6 +76,7 @@ func TestInstallFallbackGuard_ScriptContainsRealCheck(t *testing.T) {
 }
 
 func TestInstallFallbackGuard_QuotesProjectKey(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	hookPath := filepath.Join(dir, "pre-commit")
 
@@ -499,6 +501,7 @@ func TestRecordGuardDegradedEvent_PrunesPastRetention(t *testing.T) {
 
 // TestGuardTransportError pins the transport/application split (bd-2c0yh.2).
 func TestGuardTransportError(t *testing.T) {
+	t.Parallel()
 	if !guardTransportError(agentmail.ErrServerUnavailable) {
 		t.Error("ErrServerUnavailable must classify as transport")
 	}

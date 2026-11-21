@@ -260,7 +260,7 @@ func claimRobotOperation(req operationClaimRequest) operationClaimResult {
 		return operationClaimResult{Verdict: operationRefused, Response: resp, Info: info}
 	}
 
-	store := resolveProjectionStore(req.Store, req.ExplicitStore)
+	store := req.Store
 	if store == nil {
 		return refuse(NewErrorResponse(
 			fmt.Errorf("idempotent %s requires the runtime projection store", req.Kind),
@@ -459,9 +459,9 @@ type SendReceiptOutput struct {
 	InterruptOutcome *InterruptReceiptOutcome `json:"interrupt_outcome,omitempty"`
 }
 
-// GetSendReceipt returns the durable receipt for an operation ID, whichever
-// actuation (send or interrupt) claimed it.
-func GetSendReceipt(operationID string) (*SendReceiptOutput, error) {
+// GetSendReceiptForStore returns the durable receipt for an operation ID using
+// the explicitly injected projection store.
+func GetSendReceiptForStore(store *state.Store, operationID string) (*SendReceiptOutput, error) {
 	operationID = strings.TrimSpace(operationID)
 	output := &SendReceiptOutput{RobotResponse: NewRobotResponse(true)}
 	if operationID == "" {
@@ -473,7 +473,6 @@ func GetSendReceipt(operationID string) (*SendReceiptOutput, error) {
 		return output, nil
 	}
 
-	store := currentProjectionStore()
 	if store == nil {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("operation receipts require the runtime projection store"),
@@ -534,15 +533,6 @@ func GetSendReceipt(operationID string) (*SendReceiptOutput, error) {
 	return output, nil
 }
 
-// PrintSendReceipt handles the --robot-send-receipt command.
-func PrintSendReceipt(operationID string) error {
-	output, err := GetSendReceipt(operationID)
-	if err != nil {
-		return err
-	}
-	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot send-receipt failed")
-}
-
 // ActionStatusOutput is the unified request/operation inspection output for
 // --robot-action-status and --robot-wait-request (docs/robot-request-identity.md).
 type ActionStatusOutput struct {
@@ -586,14 +576,8 @@ type CancelRequestOutput struct {
 	Operation   *OperationInfo `json:"operation,omitempty"`
 }
 
-// GetActionStatus inspects any durable robot operation or wait handle by ID.
-func GetActionStatus(requestID string) (*ActionStatusOutput, error) {
-	return GetActionStatusWithStore(requestID, nil, false)
-}
-
 // GetActionStatusWithStore inspects a durable robot operation or wait handle
-// using an explicit store (for example from ntm serve) or the process
-// projection store when explicitStore is false.
+// using the explicitly injected state store.
 func GetActionStatusWithStore(requestID string, store *state.Store, explicitStore bool) (*ActionStatusOutput, error) {
 	requestID = strings.TrimSpace(requestID)
 	output := &ActionStatusOutput{
@@ -609,9 +593,7 @@ func GetActionStatusWithStore(requestID string, store *state.Store, explicitStor
 		return output, nil
 	}
 
-	if !explicitStore {
-		store = currentProjectionStore()
-	}
+	_ = explicitStore
 	if store == nil {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("request status inspection requires the runtime projection store"),
@@ -706,15 +688,6 @@ func GetActionStatusWithStore(requestID string, store *state.Store, explicitStor
 	return output, nil
 }
 
-// PrintActionStatus executes --robot-action-status.
-func PrintActionStatus(requestID string) error {
-	output, err := GetActionStatus(requestID)
-	if err != nil {
-		return err
-	}
-	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot action-status failed")
-}
-
 // GetWaitRequest blocks until a durable operation or wait handle reaches a
 // terminal state, or returns TIMEOUT when opts.Timeout elapses.
 func GetWaitRequest(ctx context.Context, opts WaitRequestOptions) (*ActionStatusOutput, error) {
@@ -777,16 +750,8 @@ func PrintWaitRequest(ctx context.Context, opts WaitRequestOptions) error {
 	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot wait-request failed")
 }
 
-// GetCancelRequest cancels a pre-dispatch durable operation claim or an active
-// --robot-wait handle, refusing safely if dispatch already crossed the pane
-// mutation boundary or the request is already terminal.
-func GetCancelRequest(requestID string) (*CancelRequestOutput, error) {
-	return GetCancelRequestWithStore(requestID, nil, false)
-}
-
 // GetCancelRequestWithStore cancels a pre-dispatch durable operation claim or
-// an active wait handle using an explicit store (for example from ntm serve)
-// or the process projection store when explicitStore is false.
+// an active wait handle using the explicitly injected state store.
 func GetCancelRequestWithStore(requestID string, store *state.Store, explicitStore bool) (*CancelRequestOutput, error) {
 	requestID = strings.TrimSpace(requestID)
 	output := &CancelRequestOutput{
@@ -802,9 +767,7 @@ func GetCancelRequestWithStore(requestID string, store *state.Store, explicitSto
 		return output, nil
 	}
 
-	if !explicitStore {
-		store = currentProjectionStore()
-	}
+	_ = explicitStore
 	if store == nil {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("request cancellation requires the runtime projection store"),
@@ -893,13 +856,4 @@ func GetCancelRequestWithStore(requestID string, store *state.Store, explicitSto
 		"Unknown request/operation ID; pass an --op-id from --robot-send/--robot-interrupt, a REST Idempotency-Key, or a wait_id from --robot-wait",
 	)
 	return output, nil
-}
-
-// PrintCancelRequest executes --robot-cancel-request.
-func PrintCancelRequest(requestID string) error {
-	output, err := GetCancelRequest(requestID)
-	if err != nil {
-		return err
-	}
-	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot cancel-request failed")
 }

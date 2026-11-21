@@ -146,7 +146,7 @@ var statDiskUsageFn = statDiskUsage
 // callers omit the section) when the filesystem cannot be statted. A nil
 // runtime store degrades to a sample-only section: usage is reported but no
 // delta can be computed or persisted.
-func collectDiskSection() *DiskSection {
+func collectDiskSection(store WatermarkStore) *DiskSection {
 	cwd, err := os.Getwd()
 	if err != nil {
 		slog.Debug("disk sample skipped: cannot resolve working directory", "error", err)
@@ -160,10 +160,6 @@ func collectDiskSection() *DiskSection {
 	if err != nil {
 		slog.Debug("disk sample skipped: statfs failed", "path", scope, "error", err)
 		return nil
-	}
-	var store WatermarkStore
-	if s := currentProjectionStore(); s != nil {
-		store = s
 	}
 	return computeDiskSection(store, scope, usage, time.Now().UTC())
 }
@@ -364,11 +360,15 @@ func publishDiskTrajectoryFromMergedConfig(disk *DiskSection, now time.Time) {
 // attachSnapshotDisk computes the disk section for a snapshot and fires the
 // trajectory alert before the snapshot drains alerts.GetActiveAlerts, so a
 // within-horizon projection appears in the same snapshot's alert sections.
-func attachSnapshotDisk(output *SnapshotOutput, cfg *config.Config) {
+func attachSnapshotDisk(output *SnapshotOutput, cfg *config.Config, store *state.Store) {
 	if output == nil {
 		return
 	}
-	output.Disk = collectDiskSection()
+	var wm WatermarkStore
+	if store != nil {
+		wm = store
+	}
+	output.Disk = collectDiskSection(wm)
 	horizon := 0.0
 	if cfg != nil {
 		horizon = cfg.Alerts.DiskFullHorizonHours

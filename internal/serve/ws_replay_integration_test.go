@@ -126,6 +126,7 @@ func frameSeq(t *testing.T, frame map[string]interface{}) int64 {
 // publish more while gone, reconnect with the cursor from the last frame, and
 // receive the gap exactly once (in order, marked replay) before live frames.
 func TestWSReplayIntegration_ReconnectWithCursor(t *testing.T) {
+	t.Parallel()
 	stateStore := newMigratedStateStore(t)
 	srv := New(Config{StateStore: stateStore})
 	defer srv.Stop()
@@ -255,6 +256,7 @@ func TestWSReplayIntegration_ReconnectWithCursor(t *testing.T) {
 }
 
 func TestWSReplayIntegration_ReconnectReplaysSparseMultipleTopics(t *testing.T) {
+	t.Parallel()
 	stateStore := newMigratedStateStore(t)
 	srv := New(Config{StateStore: stateStore})
 	defer srv.Stop()
@@ -340,6 +342,7 @@ func TestWSReplayIntegration_ReconnectReplaysSparseMultipleTopics(t *testing.T) 
 }
 
 func TestWSHub_ReplayIsCompleteOrReset(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		events     int
@@ -435,6 +438,7 @@ func TestWSHub_ReplayIsCompleteOrReset(t *testing.T) {
 }
 
 func TestWSHub_ReplayCompletionPrecedesQueuedLiveEvent(t *testing.T) {
+	t.Parallel()
 	store := NewWSEventStore(nil, WSEventStoreConfig{BufferSize: 8})
 	defer store.Stop()
 	const topic = "panes:replay-ack:0"
@@ -524,6 +528,7 @@ func TestWSHub_ReplayCompletionPrecedesQueuedLiveEvent(t *testing.T) {
 }
 
 func TestWSHub_ReplayFailedCompletionRetainsResetBarrier(t *testing.T) {
+	t.Parallel()
 	store := NewWSEventStore(nil, WSEventStoreConfig{BufferSize: 8})
 	defer store.Stop()
 	const topic = "panes:failed-replay-ack:0"
@@ -581,6 +586,7 @@ func TestWSHub_ReplayFailedCompletionRetainsResetBarrier(t *testing.T) {
 }
 
 func TestWSHub_ReplayOverflowResetSurvivesBackpressure(t *testing.T) {
+	t.Parallel()
 	store := NewWSEventStore(nil, WSEventStoreConfig{BufferSize: 8})
 	defer store.Stop()
 	const topic = "panes:replay-reset:0"
@@ -622,6 +628,7 @@ func TestWSHub_ReplayOverflowResetSurvivesBackpressure(t *testing.T) {
 }
 
 func TestWSHub_ReplayInvalidPayloadResetsBeforeDelivery(t *testing.T) {
+	t.Parallel()
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 	store := NewWSEventStore(db, WSEventStoreConfig{BufferSize: 8})
@@ -687,6 +694,7 @@ func queuedWSReplayFrame(t *testing.T, client *WSClient) map[string]interface{} 
 // resume request yields a stream.reset (replay unavailable) plus an ack
 // flagged reset — never a hang or an error close.
 func TestWSReplayIntegration_NoStateStore_StreamReset(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{}) // no StateStore: persistence disabled, logged once
 	defer srv.Stop()
 
@@ -728,6 +736,7 @@ func TestWSReplayIntegration_NoStateStore_StreamReset(t *testing.T) {
 }
 
 func TestWSReplayIntegration_PersistenceFailureResetsInsteadOfRewinding(t *testing.T) {
+	t.Parallel()
 	stateStore := newMigratedStateStore(t)
 	srv := New(Config{StateStore: stateStore})
 	defer srv.Stop()
@@ -768,6 +777,7 @@ func TestWSReplayIntegration_PersistenceFailureResetsInsteadOfRewinding(t *testi
 }
 
 func TestWSHub_PersistenceResetSurvivesBackpressure(t *testing.T) {
+	t.Parallel()
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 	store := NewWSEventStore(db, DefaultWSEventStoreConfig())
@@ -814,6 +824,7 @@ func TestWSHub_PersistenceResetSurvivesBackpressure(t *testing.T) {
 // that the client receives a pane.output.dropped frame describing the gap
 // once delivery succeeds again.
 func TestWSHub_SlowClientDropsRecordedAndReported(t *testing.T) {
+	t.Parallel()
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
@@ -918,6 +929,7 @@ func TestWSHub_SlowClientDropsRecordedAndReported(t *testing.T) {
 // older than RetentionSeconds (and dropped-event records older than 24h) from
 // the real migrated schema while keeping fresh rows replayable.
 func TestWSEventStore_RetentionPruning(t *testing.T) {
+	t.Parallel()
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 

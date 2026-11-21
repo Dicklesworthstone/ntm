@@ -545,6 +545,7 @@ func TestHandlePatchConfigV1(t *testing.T) {
 }
 
 func TestHandleRobotStatusV1(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/robot/status", nil)
 	rec := httptest.NewRecorder()
@@ -569,6 +570,7 @@ func TestHandleRobotHealthV1(t *testing.T) {
 }
 
 func TestHandleDoctorV1(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/doctor", nil)
 	rec := httptest.NewRecorder()
@@ -997,6 +999,7 @@ func TestHandleDeleteCheckpoint(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPerformDoctorCheckAPI(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	report := performDoctorCheckAPIWithOptions(ctx, robot.DoctorOptions{})
 

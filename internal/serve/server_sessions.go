@@ -148,6 +148,9 @@ func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request, ses
 
 // handleRobotStatus handles /api/robot/status - proxies to robot status.
 func (s *Server) robotPaginationOptions() robot.PaginationOptions {
+	if s.robotRuntime != nil {
+		return s.robotRuntime.PaginationOptions(0, 0)
+	}
 	return robot.PaginationOptions{
 		Store:         s.stateStore,
 		ExplicitStore: true,

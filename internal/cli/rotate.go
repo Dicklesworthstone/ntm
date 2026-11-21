@@ -526,6 +526,8 @@ func executeRestartRotation(ctx context.Context, session string, paneIdx int, pa
 // auth timeout and push operators to raw tmux. This path tries the graceful
 // exit choreography first, escalates to a process-tree kill, and relaunches —
 // each step bounded in seconds and verified via the lifecycle verbs.
+var forcedRotationLifecycleTuning func(*robot.LifecycleOptions)
+
 func executeForcedRotation(ctx context.Context, session string, paneIdx int, paneID, targetAccount string) error {
 	fmt.Printf("Forced rotation: session=%s pane=%d (%s)\n", session, paneIdx, paneID)
 
@@ -533,6 +535,9 @@ func executeForcedRotation(ctx context.Context, session string, paneIdx int, pan
 		Session:  session,
 		Panes:    []string{paneID},
 		Relaunch: true,
+	}
+	if forcedRotationLifecycleTuning != nil {
+		forcedRotationLifecycleTuning(&opts)
 	}
 	fmt.Println("Step 1/2: Graceful exit (double Ctrl+C), hard kill if the CLI is wedged...")
 	result, err := robot.GetExitCLI(ctx, opts)

@@ -32,12 +32,12 @@ func TestCLIReservationPortDiscoversDescriptionPaths(t *testing.T) {
 
 	stub := newMailStub(t, nil)
 	defer stub.Close()
-	port := &cliAtomicReservationPort{
-		manager: assignpkg.NewFileReservationManager(
+	port := newCLIAtomicReservationPort(
+		assignpkg.NewFileReservationManager(
 			agentmail.NewClient(agentmail.WithBaseURL(stub.server.URL+"/")), "/test/project",
 		),
-		projectDir: "/test/project",
-	}
+		"/test/project",
+	)
 	request := assignment.ReservationRequest{
 		BeadID: "ntm-336", BeadTitle: "Inventory modules and entry points", AgentName: "BlueLake", Target: "%42",
 	}

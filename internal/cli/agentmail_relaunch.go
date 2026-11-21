@@ -15,10 +15,6 @@ import (
 // relaunch flow also needs cli-only helpers (workspace project resolution,
 // the session-level registration) bound to the cli config global, and robot
 // cannot import cli without a cycle.
-func init() {
-	robot.SetRestartPaneIdentityHook(registerRelaunchedPanes)
-}
-
 // registerRelaunchedPanes re-runs the gated Agent Mail registration flow for
 // panes that were killed and relaunched. registerSpawnedAgents reuses prior
 // identities from the session agent registry (#69), rewrites the canonical and

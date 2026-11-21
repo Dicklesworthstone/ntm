@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const (
+var (
 	commandCancelGracePeriod = 5 * time.Second
 	commandPipeDrainTimeout  = time.Second
 	commandGroupPollInterval = 50 * time.Millisecond

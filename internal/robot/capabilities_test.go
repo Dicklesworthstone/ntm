@@ -92,6 +92,7 @@ func TestGetCapabilitiesWithOptionsUnknownExactFilter(t *testing.T) {
 }
 
 func TestCapabilitiesSerializedSizeBudgets(t *testing.T) {
+	t.Parallel()
 	full, err := GetCapabilities()
 	if err != nil {
 		t.Fatal(err)

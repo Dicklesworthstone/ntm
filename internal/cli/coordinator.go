@@ -25,7 +25,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
-func init() {
+func registerCoordinatorKernel() {
 	kernel.MustRegister(kernel.Command{
 		Name:        "sessions.coordinator",
 		Description: "Inspect coordinator agent states, runtime status, and active configuration for a session",

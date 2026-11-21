@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	processutil "github.com/shirou/gopsutil/v4/process"
@@ -185,11 +186,34 @@ func GetDoctor(ctx context.Context, opts DoctorOptions) (*DoctorOutput, error) {
 	}
 
 	safetyDefaults := BuildSafetyDefaults(cfg)
-	toolChecks := checkDoctorTools(ctx, opts.Verbose)
-	depChecks := CheckDoctorDependencies(ctx)
-	daemonChecks := checkDoctorDaemons(ctx, cfg)
-	configChecks, guardHook := checkDoctorConfiguration(opts.ConfigPath)
-	invariantChecks := checkDoctorInvariants(ctx, toolChecks)
+	var (
+		toolChecks      []DoctorToolCheck
+		depChecks       []DoctorDepCheck
+		daemonChecks    []DoctorDaemonCheck
+		configChecks    []DoctorConfigCheck
+		guardHook       *DoctorGuardHookCheck
+		invariantChecks []DoctorInvariantCheck
+	)
+	var wg sync.WaitGroup
+	wg.Add(4)
+	go func() {
+		defer wg.Done()
+		toolChecks = checkDoctorTools(ctx, opts.Verbose)
+		invariantChecks = checkDoctorInvariants(ctx, toolChecks)
+	}()
+	go func() {
+		defer wg.Done()
+		depChecks = CheckDoctorDependencies(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		daemonChecks = checkDoctorDaemons(ctx, cfg)
+	}()
+	go func() {
+		defer wg.Done()
+		configChecks, guardHook = checkDoctorConfiguration(opts.ConfigPath)
+	}()
+	wg.Wait()
 
 	contention := []DoctorContentionHolder{}
 	var contentionWarn string

@@ -16,6 +16,7 @@ import (
 )
 
 func TestIterationSourceCapturePreservesCompleteResults(t *testing.T) {
+	t.Parallel()
 	r := &IterationSourceResolver{ProjectDir: t.TempDir()}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -38,6 +39,7 @@ func TestIterationSourceCapturePreservesCompleteResults(t *testing.T) {
 }
 
 func TestIterationSourceCaptureRejectsOverflowBeforeParsing(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "oversized"), []byte(strings.Repeat("x", DefaultMaxCommandStdoutBytes+1)), 0600); err != nil {
 		t.Fatal(err)
@@ -45,6 +47,7 @@ func TestIterationSourceCaptureRejectsOverflowBeforeParsing(t *testing.T) {
 	r := &IterationSourceResolver{ProjectDir: root}
 	for _, source := range []string{"models", "beads", "pairs", "debates"} {
 		t.Run(source, func(t *testing.T) {
+			t.Parallel()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			var err error
@@ -112,6 +115,7 @@ func TestIterationSourceCaptureBoundsRealBrSubprocess(t *testing.T) {
 }
 
 func TestIterationSourceCaptureRejectsCancelledInjectedWork(t *testing.T) {
+	t.Parallel()
 	for _, br := range []bool{false, true} {
 		for _, before := range []bool{false, true} {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -145,6 +149,7 @@ func TestIterationSourceCaptureRejectsCancelledInjectedWork(t *testing.T) {
 }
 
 func TestIterationSourceCaptureRejectsOversizedInjectedWork(t *testing.T) {
+	t.Parallel()
 	data := []byte(strings.Repeat("x", DefaultMaxCommandStdoutBytes+1))
 	r := &IterationSourceResolver{
 		RunShell: func(context.Context, string) ([]byte, error) { return data, nil },
@@ -159,6 +164,7 @@ func TestIterationSourceCaptureRejectsOversizedInjectedWork(t *testing.T) {
 }
 
 func TestIterationSourceCaptureOwnsRedirectedDescendant(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "linux" {
 		t.Skip("unreaped-leader process ownership requires the Linux waiter")
 	}

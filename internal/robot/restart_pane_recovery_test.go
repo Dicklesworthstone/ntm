@@ -26,6 +26,7 @@ import (
 // isolated test process. This exercises the real respawn, PID confirmation,
 // metadata publication, command delivery, and readiness paths without a server.
 func TestGetRestartPaneNativeRecoveryBoundaries(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("recording tmux executable requires a POSIX shell")
 	}
@@ -38,6 +39,7 @@ func TestGetRestartPaneNativeRecoveryBoundaries(t *testing.T) {
 		"respawn-failure", "soft-respawn", "unverified-respawn", "metadata-failure", "delivery-failure",
 	} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			binary := filepath.Join(root, "tmux")
 			const script = `#!/bin/sh
@@ -123,6 +125,9 @@ func TestGetRestartPaneNativeRecoveryTransportHelper(t *testing.T) {
 	if root == "" {
 		return
 	}
+	restartPaneSettleDelay = 5 * time.Millisecond
+	restartPaneReadyPollInterval = 5 * time.Millisecond
+	tmux.DefaultClient.MaxSendDelay = 2 * time.Millisecond
 	mode := os.Getenv("NTM_NATIVE_RECOVERY_MODE")
 	t.Setenv("NTM_NATIVE_RECOVERY_NEW_PID", strconv.Itoa(os.Getpid()))
 	ctx, cancel := context.WithCancel(t.Context())
@@ -469,8 +474,18 @@ esac
 				}
 				t.Setenv("NTM_TMUX_BINARY", binary)
 				originalClient := tmux.DefaultClient
-				tmux.DefaultClient = tmux.NewClient("")
-				t.Cleanup(func() { tmux.DefaultClient = originalClient })
+				originalPoll := restartPaneReadyPollInterval
+				originalSettle := restartPaneSettleDelay
+				fastClient := tmux.NewClient("")
+				fastClient.MaxSendDelay = 2 * time.Millisecond
+				tmux.DefaultClient = fastClient
+				restartPaneReadyPollInterval = 5 * time.Millisecond
+				restartPaneSettleDelay = 5 * time.Millisecond
+				t.Cleanup(func() {
+					tmux.DefaultClient = originalClient
+					restartPaneReadyPollInterval = originalPoll
+					restartPaneSettleDelay = originalSettle
+				})
 				policy := config.Default()
 				policy.Redaction.Mode = test.mode
 				if test.badConfig != "" {
@@ -668,6 +683,7 @@ esac
 }
 
 func TestRestartReadinessRequiresStableForegroundEvidence(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name             string
 		observations     []int
@@ -684,6 +700,7 @@ func TestRestartReadinessRequiresStableForegroundEvidence(t *testing.T) {
 		{name: "capture failure resets evidence", observations: []int{71}, captureFailureAt: 2, wantReady: true, wantCaptures: 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			var observations, captures int
 			ready, err := waitForPaneAgentReadyWithContext(t.Context(), "%7", 100, "codex",
 				100*time.Millisecond, time.Millisecond,
@@ -715,6 +732,7 @@ func TestRestartReadinessRequiresStableForegroundEvidence(t *testing.T) {
 	}
 
 	t.Run("replacement during capture refuses readiness", func(t *testing.T) {
+		t.Parallel()
 		var observations, captures int
 		ready, err := waitForPaneAgentReadyWithContext(t.Context(), "%7", 100, "codex",
 			time.Second, time.Millisecond,
@@ -735,6 +753,7 @@ func TestRestartReadinessRequiresStableForegroundEvidence(t *testing.T) {
 	})
 
 	t.Run("unknown root is not optional", func(t *testing.T) {
+		t.Parallel()
 		ready, err := waitForPaneAgentReadyWithContext(t.Context(), "%7", 0, "codex",
 			time.Second, time.Millisecond,
 			func(context.Context, string) (string, error) {
@@ -752,6 +771,7 @@ func TestRestartReadinessRequiresStableForegroundEvidence(t *testing.T) {
 }
 
 func TestRestartReadinessRequiresCurrentCodexUI(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, kind, output string
 		want               bool
@@ -771,6 +791,7 @@ func TestRestartReadinessRequiresCurrentCodexUI(t *testing.T) {
 		{"other provider unchanged", "claude", "Claude Code v1.2.3\n", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			ready, err := waitForPaneAgentReadyWithContext(t.Context(), "%7", 100, tc.kind,
 				50*time.Millisecond, time.Millisecond,
 				func(context.Context, string) (string, error) { return tc.output, nil },
@@ -783,6 +804,7 @@ func TestRestartReadinessRequiresCurrentCodexUI(t *testing.T) {
 }
 
 func TestRestartPSForegroundRequiresMatchingTerminalAndRunningState(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, snapshot string
 		candidate      int
@@ -801,6 +823,7 @@ func TestRestartPSForegroundRequiresMatchingTerminalAndRunningState(t *testing.T
 		{"malformed", "unavailable\n", 20, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if got := restartPSForegroundMatches(tc.snapshot, 10, tc.candidate); got != tc.want {
 				t.Fatalf("foreground=%v, want %v", got, tc.want)
 			}

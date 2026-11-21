@@ -161,6 +161,7 @@ func activeReservation(id int, pattern, agent string, exclusive bool, now time.T
 }
 
 func TestBugsFindingFingerprint(t *testing.T) {
+	t.Parallel()
 	base := bugsWatchTestFinding("internal/foo.go", 42, scanner.SeverityCritical, "nil deref")
 	same := base
 	same.Column = 99 // column and suggestion are not part of identity
@@ -186,6 +187,7 @@ func TestBugsFindingFingerprint(t *testing.T) {
 }
 
 func TestBugsReservationHolderGlobMatching(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
 	projectKey := "/work/proj"
 	reservations := []agentmail.FileReservation{
@@ -227,6 +229,7 @@ func TestBugsReservationHolderGlobMatching(t *testing.T) {
 }
 
 func TestBugsWatchTickRoutesNewFindingToHolderAndDedupes(t *testing.T) {
+	t.Parallel()
 	store := newBugsWatchTestStore(t)
 	h := newBugsWatchHarness(t, store)
 	h.findings = []scanner.Finding{
@@ -299,6 +302,7 @@ func TestBugsWatchTickRoutesNewFindingToHolderAndDedupes(t *testing.T) {
 // defer every nudge forever. Here the fake clock advances while observe
 // runs, exactly as the wall clock does in production.
 func TestBugsWatchTickObservationDuringTickIsNotStale(t *testing.T) {
+	t.Parallel()
 	store := newBugsWatchTestStore(t)
 	h := newBugsWatchHarness(t, store)
 	h.findings = []scanner.Finding{
@@ -326,6 +330,7 @@ func TestBugsWatchTickObservationDuringTickIsNotStale(t *testing.T) {
 }
 
 func TestBugsWatchTickCooldownDefersThenDelivers(t *testing.T) {
+	t.Parallel()
 	store := newBugsWatchTestStore(t)
 	h := newBugsWatchHarness(t, store)
 	h.findings = []scanner.Finding{
@@ -371,6 +376,7 @@ func TestBugsWatchTickCooldownDefersThenDelivers(t *testing.T) {
 }
 
 func TestBugsWatchTickNeverNudgesWorkingPane(t *testing.T) {
+	t.Parallel()
 	store := newBugsWatchTestStore(t)
 	h := newBugsWatchHarness(t, store)
 	h.findings = []scanner.Finding{
@@ -403,6 +409,7 @@ func TestBugsWatchTickNeverNudgesWorkingPane(t *testing.T) {
 }
 
 func TestBugsWatchTickUnreservedFindingsBatchIntoDigest(t *testing.T) {
+	t.Parallel()
 	store := newBugsWatchTestStore(t)
 	h := newBugsWatchHarness(t, store)
 	h.findings = []scanner.Finding{
@@ -438,6 +445,7 @@ func TestBugsWatchTickUnreservedFindingsBatchIntoDigest(t *testing.T) {
 }
 
 func TestBugsWatchTickAgentMailDownLogsAndRetries(t *testing.T) {
+	t.Parallel()
 	store := newBugsWatchTestStore(t)
 	h := newBugsWatchHarness(t, store)
 	h.mailUp = false
@@ -473,6 +481,7 @@ func TestBugsWatchTickAgentMailDownLogsAndRetries(t *testing.T) {
 }
 
 func TestBugsWatchAttentionItemPersistsToStore(t *testing.T) {
+	t.Parallel()
 	store := newBugsWatchTestStore(t)
 	findings := []bugsWatchFinding{
 		{Finding: bugsWatchTestFinding("a.go", 1, scanner.SeverityCritical, "boom"), Fingerprint: "fp1"},
@@ -503,6 +512,7 @@ func TestBugsWatchAttentionItemPersistsToStore(t *testing.T) {
 // Scan call bugs.go makes) against a stub ubs binary that prints fixture
 // JSON, proving the watch engine consumes genuine UBS output end to end.
 func TestBugsWatchStubUBSBinary(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("stub ubs binary is a shell script")
 	}
@@ -561,6 +571,7 @@ func TestBugsWatchStubUBSBinary(t *testing.T) {
 // internal/agentmail/tools_httptest_test.go) and feeds the result through
 // the engine's routing.
 func TestBugsWatchFakeAgentMailReservations(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
 	reservations := []map[string]interface{}{
 		{
@@ -653,6 +664,7 @@ func TestBugsWatchFakeAgentMailReservations(t *testing.T) {
 }
 
 func TestBugsWatchPaneMappingFallsBackToDigestWhenHolderHasNoPane(t *testing.T) {
+	t.Parallel()
 	store := newBugsWatchTestStore(t)
 	h := newBugsWatchHarness(t, store)
 	h.findings = []scanner.Finding{

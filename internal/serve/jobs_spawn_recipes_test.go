@@ -324,6 +324,7 @@ func TestConfiguredSwarmJobEnforcesFleetLimitWithoutAssignment(t *testing.T) {
 }
 
 func TestAgentSpawnRESTAndSwarmJobForwardORIOptions(t *testing.T) {
+	t.Parallel()
 	srv := NewHermeticServer("spawn-ori-parity")
 	defer srv.Stop()
 

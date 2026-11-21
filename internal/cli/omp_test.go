@@ -335,11 +335,11 @@ func TestOmpAssignmentScoring(t *testing.T) {
 		"Investigate slow startup":          0.8,
 	} {
 		bead := bv.BeadPreview{Title: title}
-		got := calculateMatchConfidence("omp", bead, "balanced")
+		got := assign.CalculateMatchConfidence("omp", bead.Title, bead.Priority, "balanced")
 		if got != want {
-			t.Errorf("calculateMatchConfidence(omp, %q) = %.2f, want %.2f", title, got, want)
+			t.Errorf("CalculateMatchConfidence(omp, %q) = %.2f, want %.2f", title, got, want)
 		}
-		if unprofiled := calculateMatchConfidence("not-a-harness", bead, "balanced"); got == unprofiled {
+		if unprofiled := assign.CalculateMatchConfidence("not-a-harness", bead.Title, bead.Priority, "balanced"); got == unprofiled {
 			t.Errorf("omp scored like an unprofiled agent (%.2f) for %q", got, title)
 		}
 	}

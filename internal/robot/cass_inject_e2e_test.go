@@ -67,7 +67,9 @@ esac
 	}
 	t.Setenv("NTM_TMUX_BINARY", filepath.Join(root, "tmux"))
 	old := tmux.DefaultClient
-	tmux.DefaultClient = tmux.NewClient("")
+	fastClient := tmux.NewClient("")
+	fastClient.MaxSendDelay = 2 * time.Millisecond
+	tmux.DefaultClient = fastClient
 	t.Cleanup(func() { tmux.DefaultClient = old })
 	query, filter, inject := stubCassConfigs(filepath.Join(root, "cass"))
 	opts = SendOptions{Context: t.Context(), Session: "capacity", Pane: "%71", Message: "Investigate database transaction contention",

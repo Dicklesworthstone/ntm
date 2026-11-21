@@ -44,6 +44,7 @@ func assertBranchFileAbsent(t *testing.T, root, name string) {
 }
 
 func TestBranchLifecycleHonorsChildWhen(t *testing.T) {
+	t.Parallel()
 	cfg := branchLifecycleConfig(t)
 	workflow := branchLifecycleWorkflow(
 		Step{ID: "never", Command: "printf forbidden > forbidden", When: "false", OnSuccess: []Step{{ID: "hook", Command: "printf forbidden > hook"}}},
@@ -62,6 +63,7 @@ func TestBranchLifecycleHonorsChildWhen(t *testing.T) {
 }
 
 func TestBranchLifecycleRetriesAndFiresSuccessHookOnce(t *testing.T) {
+	t.Parallel()
 	for _, inherited := range []bool{false, true} {
 		t.Run(fmt.Sprintf("inherited=%v", inherited), func(t *testing.T) {
 			cfg := branchLifecycleConfig(t)
@@ -90,6 +92,7 @@ func TestBranchLifecycleRetriesAndFiresSuccessHookOnce(t *testing.T) {
 }
 
 func TestBranchLifecycleExhaustedRetryPreservesFailureAndStopsSequence(t *testing.T) {
+	t.Parallel()
 	cfg := branchLifecycleConfig(t)
 	workflow := branchLifecycleWorkflow(
 		Step{ID: "bad", Command: "printf x >> attempts; printf partial; exit 9", OnError: ErrorActionRetry, RetryCount: 2, RetryDelay: Duration{Duration: time.Millisecond}},
@@ -108,6 +111,7 @@ func TestBranchLifecycleExhaustedRetryPreservesFailureAndStopsSequence(t *testin
 }
 
 func TestBranchLifecyclePublishesLocalOutputsBeforeNextChild(t *testing.T) {
+	t.Parallel()
 	cfg := branchLifecycleConfig(t)
 	workflow := branchLifecycleWorkflow(
 		Step{ID: "producer", Command: "printf '{\"ok\":true}'", OutputVar: "payload", OutputParse: OutputParse{Type: "json"}},
@@ -128,6 +132,7 @@ func TestBranchLifecyclePublishesLocalOutputsBeforeNextChild(t *testing.T) {
 }
 
 func TestBranchLifecycleDoesNotLeakNewParsedOutput(t *testing.T) {
+	t.Parallel()
 	cfg := branchLifecycleConfig(t)
 	state, err := RunControlledPipeline(context.Background(), branchLifecycleWorkflow(
 		Step{ID: "producer", Command: "printf '{\"ok\":true}'", OutputVar: "local", OutputParse: OutputParse{Type: "json"}},
@@ -143,6 +148,7 @@ func TestBranchLifecycleDoesNotLeakNewParsedOutput(t *testing.T) {
 }
 
 func TestBranchLifecycleRejectsUnresolvedSelectorBeforeShellOrDefault(t *testing.T) {
+	t.Parallel()
 	for _, shell := range []bool{false, true} {
 		t.Run(fmt.Sprintf("shell=%v", shell), func(t *testing.T) {
 			cfg := branchLifecycleConfig(t)
@@ -166,6 +172,7 @@ func TestBranchLifecycleRejectsUnresolvedSelectorBeforeShellOrDefault(t *testing
 }
 
 func TestBranchLifecycleCheckpointsBeforeChildDispatch(t *testing.T) {
+	t.Parallel()
 	cfg := branchLifecycleConfig(t)
 	workflow := branchLifecycleWorkflow(Step{ID: "never", Command: "printf forbidden > forbidden"})
 	// The selector succeeds but makes the next checkpoint unwritable. The
@@ -179,6 +186,7 @@ func TestBranchLifecycleCheckpointsBeforeChildDispatch(t *testing.T) {
 }
 
 func TestBranchLifecycleCheckpointFailureStopsNextChild(t *testing.T) {
+	t.Parallel()
 	cfg := branchLifecycleConfig(t)
 	// Damage storage only after this child's launch journal is durable, so the
 	// fault deterministically hits the completion checkpoint.
@@ -203,6 +211,7 @@ type branchLifecycleOutcome struct {
 }
 
 func TestBranchLifecyclePersistsCompletedChildWhileNextChildRuns(t *testing.T) {
+	t.Parallel()
 	cfg := branchLifecycleConfig(t)
 	workflow := branchLifecycleWorkflow(
 		Step{ID: "first", Command: "printf completed", OutputVar: "first_output"},
@@ -253,6 +262,7 @@ func TestBranchLifecyclePersistsCompletedChildWhileNextChildRuns(t *testing.T) {
 }
 
 func TestBranchLifecycleScopeDoesNotUndoSiblingUpdates(t *testing.T) {
+	t.Parallel()
 	cfg := branchLifecycleConfig(t)
 	workflow := branchLifecycleWorkflow(Step{ID: "wait", Command: "printf ready > branch-ready; while [ ! -f release ]; do sleep 0.01; done"})
 	workflow.Steps = append(workflow.Steps, Step{ID: "sibling", Command: "while [ ! -f branch-ready ]; do sleep 0.01; done; printf newer", OutputVar: "outside"})
@@ -286,6 +296,7 @@ func TestBranchLifecycleScopeDoesNotUndoSiblingUpdates(t *testing.T) {
 }
 
 func TestBranchLifecycleScopeDoesNotResurrectUnrelatedDeletedKey(t *testing.T) {
+	t.Parallel()
 	state := &ExecutionState{Variables: map[string]interface{}{"owned": "old-local", "unrelated": "old-sibling"}}
 	snapshot := captureAllVariables(state.Variables)
 	state.Variables["owned"] = "new-local"
@@ -300,6 +311,7 @@ func TestBranchLifecycleScopeDoesNotResurrectUnrelatedDeletedKey(t *testing.T) {
 }
 
 func TestBranchLifecycleRuntimeRecoverySignalSurvivesScope(t *testing.T) {
+	t.Parallel()
 	cfg := branchLifecycleConfig(t)
 	workflow := branchLifecycleWorkflow(
 		Step{ID: "recover", Command: "exit 3", OnFailure: OnFailureSpec{Action: "fallback_to_ntm_inbox"}},
@@ -319,6 +331,7 @@ func TestBranchLifecycleRuntimeRecoverySignalSurvivesScope(t *testing.T) {
 }
 
 func TestBranchLifecycleDirectDispatchWithoutOuterGraph(t *testing.T) {
+	t.Parallel()
 	cfg := branchLifecycleConfig(t)
 	e := NewExecutor(cfg)
 	e.state = &ExecutionState{RunID: cfg.RunID, WorkflowID: "direct", Steps: make(map[string]StepResult), Variables: make(map[string]interface{})}

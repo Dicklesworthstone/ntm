@@ -185,9 +185,9 @@ func (p *PromptInjector) logger() *slog.Logger {
 // This method is exported to satisfy the ensemble.BasicInjector interface.
 func (p *PromptInjector) GetDelayForAgent(agentType string) time.Duration {
 	if p.UseAdaptiveDelay && p.RateLimitTracker != nil {
-		return p.RateLimitTracker.GetOptimalDelay(agentType)
+		return capSwarmDelay(p.TmuxClient, p.RateLimitTracker.GetOptimalDelay(agentType))
 	}
-	return p.StaggerDelay
+	return capSwarmDelay(p.TmuxClient, p.StaggerDelay)
 }
 
 // recordSuccess records a successful send to the rate limit tracker.
@@ -339,10 +339,11 @@ func (p *PromptInjector) sendToPane(ctx context.Context, sessionPane, agentType 
 		return fmt.Errorf("send prompt text: %w", err)
 	}
 	// Wait before sending Enter
+	enterDelay := capSwarmDelay(client, p.EnterDelay)
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-time.After(p.EnterDelay):
+	case <-time.After(enterDelay):
 	}
 	if err := validateLive(); err != nil {
 		return err
@@ -356,10 +357,11 @@ func (p *PromptInjector) sendToPane(ctx context.Context, sessionPane, agentType 
 	// AGENT QUIRK: Codex and some other agents need double-Enter
 	// The first Enter may not be recognized immediately
 	if aType.NeedsDoubleEnter() {
+		doubleEnterDelay := capSwarmDelay(client, p.DoubleEnterDelay)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(p.DoubleEnterDelay):
+		case <-time.After(doubleEnterDelay):
 		}
 		if err := validateLive(); err != nil {
 			return err
@@ -374,7 +376,11 @@ func (p *PromptInjector) sendToPane(ctx context.Context, sessionPane, agentType 
 
 // WaitForReady waits for the agent to show an idle prompt.
 func (p *PromptInjector) WaitForReady(ctx context.Context, target, agentType string) error {
-	ticker := time.NewTicker(250 * time.Millisecond)
+	pollInterval := capSwarmDelay(p.TmuxClient, 250*time.Millisecond)
+	if pollInterval <= 0 {
+		pollInterval = 250 * time.Millisecond
+	}
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -394,7 +400,12 @@ func (p *PromptInjector) WaitForReady(ctx context.Context, target, agentType str
 	}
 }
 
-// needsDoubleEnter is removed, now uses tmux.AgentType.NeedsDoubleEnter()
+func capSwarmDelay(client promptInjectionTmuxClient, delay time.Duration) time.Duration {
+	if tc, ok := client.(*tmux.Client); ok && tc != nil && tc.MaxSendDelay > 0 && delay > tc.MaxSendDelay {
+		return tc.MaxSendDelay
+	}
+	return delay
+}
 
 // InjectBatchWithContext sends prompts to multiple panes with staggering and context support.
 // All targets receive the same prompt. The operation can be cancelled via context.
@@ -437,7 +448,7 @@ func (p *PromptInjector) InjectBatchWithContext(ctx context.Context, targets []I
 
 		// Stagger sends (skip delay for first send)
 		if i > 0 {
-			delay := p.GetDelayForAgent(target.AgentType)
+			delay := capSwarmDelay(p.tmuxClient(), p.GetDelayForAgent(target.AgentType))
 			if delay > 0 {
 				p.logger().Debug("[PromptInjector] stagger_delay",
 					"pane", target.SessionPane,

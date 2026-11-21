@@ -19,9 +19,20 @@ import (
 
 const (
 	defaultCASSLimit          = 5
-	defaultCASSTimeout        = 3 * time.Second
 	generatorCommandWaitDelay = 250 * time.Millisecond
 )
+
+// defaultCASSTimeout bounds optional CASS enrichment during handoff generation.
+// Exported via DefaultCASSTimeout so CLI tests can verify timeout degradation
+// without sleeping the full 3s production budget.
+var DefaultCASSTimeout = 3 * time.Second
+
+func defaultCASSTimeoutValue() time.Duration {
+	if DefaultCASSTimeout <= 0 {
+		return 3 * time.Second
+	}
+	return DefaultCASSTimeout
+}
 
 type generatorCommandRunner func(context.Context, string, time.Duration, string, ...string) ([]byte, error)
 
@@ -970,7 +981,7 @@ func (g *Generator) enrichWithCASS(ctx context.Context, h *Handoff, opts Generat
 
 func resolveCASSTimeout(timeout time.Duration) time.Duration {
 	if timeout <= 0 {
-		return defaultCASSTimeout
+		return defaultCASSTimeoutValue()
 	}
 	return timeout
 }

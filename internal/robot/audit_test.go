@@ -65,6 +65,7 @@ func writeRobotAuditFixture(t *testing.T, dir, session string, count int) string
 }
 
 func TestAuditListShowSearchVerifyAndPagination(t *testing.T) {
+	t.Parallel()
 	auditDir := t.TempDir()
 
 	// 1. Empty directory list -> non-nil Logs & Entries
@@ -184,6 +185,7 @@ func TestAuditListShowSearchVerifyAndPagination(t *testing.T) {
 }
 
 func TestAuditSourcesErrorCasesAndSchemaRegistry(t *testing.T) {
+	t.Parallel()
 	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("state.Open: %v", err)
@@ -214,11 +216,7 @@ func TestAuditSourcesErrorCasesAndSchemaRegistry(t *testing.T) {
 		t.Fatalf("UpsertSourceHealth(beads): %v", err)
 	}
 
-	oldStore := currentProjectionStore()
-	SetProjectionStore(store)
-	t.Cleanup(func() { SetProjectionStore(oldStore) })
-
-	sourcesOut, err := GetAudit(context.Background(), AuditOptions{Sources: true})
+	sourcesOut, err := GetAudit(context.Background(), AuditOptions{Sources: true, Store: store})
 	if err != nil {
 		t.Fatalf("GetAudit(sources): %v", err)
 	}

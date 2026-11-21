@@ -16,6 +16,7 @@ import (
 )
 
 func TestEnsembleStopOutput_JSON(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	// Test JSON marshaling of stop output
@@ -47,6 +48,7 @@ func TestEnsembleStopOutput_JSON(t *testing.T) {
 }
 
 func TestRenderEnsembleStopOutput_Text(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	payload := ensembleStopOutput{
@@ -81,6 +83,7 @@ func TestRenderEnsembleStopOutput_Text(t *testing.T) {
 }
 
 func TestRenderEnsembleStopOutput_Quiet(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	payload := ensembleStopOutput{
@@ -107,6 +110,7 @@ func TestRenderEnsembleStopOutput_Quiet(t *testing.T) {
 }
 
 func TestRenderEnsembleStopOutput_Error(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	payload := ensembleStopOutput{
@@ -134,6 +138,7 @@ func TestRenderEnsembleStopOutput_Error(t *testing.T) {
 }
 
 func TestNewEnsembleStopCmd(t *testing.T) {
+	t.Parallel()
 	t.Logf("TEST: %s - starting", t.Name())
 
 	cmd := newEnsembleStopCmd()

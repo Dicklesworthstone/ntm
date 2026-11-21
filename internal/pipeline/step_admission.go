@@ -162,6 +162,128 @@ func (e *Executor) admitRuntimeIDs(ctx context.Context, ids []string) error {
 	})
 }
 
+type deferredAdmissionPersistKey struct{}
+
+type deferredAdmissionState struct {
+	admittedNew bool
+	pending     bool
+}
+
+func (e *Executor) canDeferAdmissionPersistForCommand(step *Step) bool {
+	if step == nil || step.Command == "" || step.When != "" || e.config.DryRun {
+		return false
+	}
+	if e.checkpointFailure() != nil {
+		return false
+	}
+	if e.graph != nil && e.graph.HasFailedDependency(step.ID) {
+		return false
+	}
+	if _, hasCmd := e.loadCommandExecution(step.ID); hasCmd {
+		return false
+	}
+	e.stateMu.RLock()
+	hasHook := e.state != nil && e.state.SuccessHooks != nil
+	if hasHook {
+		_, hasHook = e.state.SuccessHooks[step.ID]
+	}
+	e.stateMu.RUnlock()
+	return !hasHook
+}
+
+// admitStepAndMarkInFlight atomically admits a single runtime step ID and
+// records it in-flight under one durable checkpoint write (instead of two
+// back-to-back fsynced state writes with no intervening side effect). When
+// deferPersist is true, the caller guarantees a durable persistState before any
+// external side effect (such as saveCommandExecution(starting)) or on early
+// exit when admittedNew is true.
+func (e *Executor) admitStepAndMarkInFlight(ctx context.Context, step *Step, result *StepResult, deferPersist bool) (stopped bool, admittedNew bool, err error) {
+	if err := ctx.Err(); err != nil {
+		return false, false, err
+	}
+	e.stateMu.Lock()
+	if e.state == nil {
+		e.stateMu.Unlock()
+		return false, false, errors.New("runtime step admission requires execution state")
+	}
+	if e.stepAdmissionAttempt == nil {
+		e.stepAdmissionAttempt = &stepAdmissionAttempt{}
+	}
+	if !isFinalization(ctx) && e.stepAdmissionAttempt.failure != nil {
+		failure := e.stepAdmissionAttempt.failure
+		e.stateMu.Unlock()
+		return false, false, failure
+	}
+	if e.state.StepAdmissions == nil {
+		e.state.StepAdmissions = &StepAdmissionState{Version: 1, Work: make(map[string]bool), Finalization: make(map[string]bool)}
+	}
+	ledger := e.state.StepAdmissions
+	if ledger.Version != 1 {
+		e.stateMu.Unlock()
+		return false, false, fmt.Errorf("unsupported step admission version %d", ledger.Version)
+	}
+	if ledger.Work == nil {
+		ledger.Work = make(map[string]bool)
+	}
+	if ledger.Finalization == nil {
+		ledger.Finalization = make(map[string]bool)
+	}
+	entries, other := ledger.Work, ledger.Finalization
+	if isFinalization(ctx) {
+		entries, other = other, entries
+	}
+	id := step.ID
+	var admissionErr error
+	if id == "" || id != strings.TrimSpace(id) {
+		admissionErr = fmt.Errorf("invalid or duplicate runtime step admission %q", id)
+	} else if other[id] {
+		admissionErr = fmt.Errorf("runtime step %q belongs to a different execution phase", id)
+	} else if !entries[id] {
+		limit := e.limits.EffectiveLimits().MaxStepCountTotal
+		if len(entries) >= limit {
+			admissionErr = fmt.Errorf("%w: max_step_count_total=%d cannot admit additional runtime step %q; raise the attempt limit without resetting existing receipts", ErrStepCountLimit, limit, id)
+		}
+	}
+	if admissionErr != nil {
+		admissionErr = e.failStepAdmissionLocked(ctx, admissionErr)
+		e.stateMu.Unlock()
+		return false, false, admissionErr
+	}
+	admittedNew = !entries[id]
+	if admittedNew {
+		entries[id] = true
+	}
+	e.stateMu.Unlock()
+
+	if result != nil && e.stopBeforeDispatch(ctx, result) {
+		if admittedNew {
+			if pErr := e.persistState(); pErr != nil {
+				cleanup, _ := ctx.Value(checkpointCleanupKey{}).(bool)
+				if !cleanup {
+					return false, admittedNew, pErr
+				}
+			}
+		}
+		if result.Status == StatusCancelled {
+			result.SkipKind = SkipKindCancelledBeforeDispatch
+		}
+		return true, admittedNew, nil
+	}
+
+	e.markStepInFlight(step.ID, stepKind(step), -1)
+	if deferPersist {
+		return false, admittedNew, nil
+	}
+	if pErr := e.persistState(); pErr != nil && admittedNew {
+		cleanup, _ := ctx.Value(checkpointCleanupKey{}).(bool)
+		if !cleanup {
+			e.clearStepInFlight(step.ID)
+			return false, admittedNew, pErr
+		}
+	}
+	return false, admittedNew, nil
+}
+
 // The iterator may generate a large expansion, but stops at the first denied
 // identity. It must only enumerate IDs: stateMu stays held for atomic admission.
 func (e *Executor) admitRuntimeBatch(ctx context.Context, visit func(func(string) error) error) error {

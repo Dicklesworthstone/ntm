@@ -549,7 +549,7 @@ func TestRuneWidth_Empty(t *testing.T) {
 
 func TestCalculateMatchConfidence_ClaudeAnalysis(t *testing.T) {
 	bead := bv.BeadPreview{ID: "b1", Title: "Analyze performance bottleneck", Priority: "P1"}
-	got := calculateMatchConfidence("claude", bead, "balanced")
+	got := assign.CalculateMatchConfidence("claude", bead.Title, bead.Priority, "balanced")
 	if got < 0.8 {
 		t.Errorf("claude+analysis confidence = %.2f, want >= 0.8", got)
 	}
@@ -557,7 +557,7 @@ func TestCalculateMatchConfidence_ClaudeAnalysis(t *testing.T) {
 
 func TestCalculateMatchConfidence_CodexFeature(t *testing.T) {
 	bead := bv.BeadPreview{ID: "b2", Title: "Implement user login feature", Priority: "P1"}
-	got := calculateMatchConfidence("codex", bead, "balanced")
+	got := assign.CalculateMatchConfidence("codex", bead.Title, bead.Priority, "balanced")
 	if got < 0.8 {
 		t.Errorf("codex+feature confidence = %.2f, want >= 0.8", got)
 	}
@@ -565,7 +565,7 @@ func TestCalculateMatchConfidence_CodexFeature(t *testing.T) {
 
 func TestCalculateMatchConfidence_GeminiDocs(t *testing.T) {
 	bead := bv.BeadPreview{ID: "b3", Title: "Update documentation for API", Priority: "P2"}
-	got := calculateMatchConfidence("gemini", bead, "balanced")
+	got := assign.CalculateMatchConfidence("gemini", bead.Title, bead.Priority, "balanced")
 	if got < 0.8 {
 		t.Errorf("gemini+docs confidence = %.2f, want >= 0.8", got)
 	}
@@ -573,7 +573,7 @@ func TestCalculateMatchConfidence_GeminiDocs(t *testing.T) {
 
 func TestCalculateMatchConfidence_SpeedStrategy(t *testing.T) {
 	bead := bv.BeadPreview{ID: "b4", Title: "Generic task", Priority: "P2"}
-	got := calculateMatchConfidence("claude", bead, "speed")
+	got := assign.CalculateMatchConfidence("claude", bead.Title, bead.Priority, "speed")
 	if got < 0.7 {
 		t.Errorf("speed strategy confidence = %.2f, want >= 0.7", got)
 	}
@@ -581,7 +581,7 @@ func TestCalculateMatchConfidence_SpeedStrategy(t *testing.T) {
 
 func TestCalculateMatchConfidence_DependencyHighPriority(t *testing.T) {
 	bead := bv.BeadPreview{ID: "b5", Title: "Generic task", Priority: "P0"}
-	got := calculateMatchConfidence("claude", bead, "dependency")
+	got := assign.CalculateMatchConfidence("claude", bead.Title, bead.Priority, "dependency")
 	if got < 0.7 {
 		t.Errorf("dependency+P0 confidence = %.2f, want >= 0.7", got)
 	}
@@ -589,7 +589,7 @@ func TestCalculateMatchConfidence_DependencyHighPriority(t *testing.T) {
 
 func TestCalculateMatchConfidence_UnknownAgent(t *testing.T) {
 	bead := bv.BeadPreview{ID: "b6", Title: "Some task", Priority: "P2"}
-	got := calculateMatchConfidence("unknown_agent", bead, "balanced")
+	got := assign.CalculateMatchConfidence("unknown_agent", bead.Title, bead.Priority, "balanced")
 	if got < 0.5 || got > 0.8 {
 		t.Errorf("unknown agent confidence = %.2f, want ~0.7 (base)", got)
 	}
@@ -597,7 +597,7 @@ func TestCalculateMatchConfidence_UnknownAgent(t *testing.T) {
 
 func TestCalculateMatchConfidence_BugTask(t *testing.T) {
 	bead := bv.BeadPreview{ID: "b7", Title: "Fix broken login", Priority: "P1"}
-	got := calculateMatchConfidence("codex", bead, "balanced")
+	got := assign.CalculateMatchConfidence("codex", bead.Title, bead.Priority, "balanced")
 	if got < 0.7 {
 		t.Errorf("codex+bug confidence = %.2f, want >= 0.7", got)
 	}
@@ -605,7 +605,7 @@ func TestCalculateMatchConfidence_BugTask(t *testing.T) {
 
 func TestCalculateMatchConfidence_TestingTask(t *testing.T) {
 	bead := bv.BeadPreview{ID: "b8", Title: "Add test coverage", Priority: "P2"}
-	got := calculateMatchConfidence("claude", bead, "balanced")
+	got := assign.CalculateMatchConfidence("claude", bead.Title, bead.Priority, "balanced")
 	// "test" → testing, claude has no specific testing strength → base
 	if got < 0.5 {
 		t.Errorf("claude+testing confidence = %.2f, want >= 0.5", got)
@@ -620,47 +620,47 @@ func TestCalculateMatchConfidence_TestingTask(t *testing.T) {
 
 func TestBuildReasoning_ClaudeRefactor(t *testing.T) {
 	bead := bv.BeadPreview{ID: "r1", Title: "Refactor authentication module", Priority: "P0"}
-	got := buildReasoning("claude", bead, "balanced")
+	got := assign.BuildReasoning("claude", bead.Title, bead.Priority, "balanced")
 	if !strings.Contains(got, "Claude excels") {
-		t.Errorf("buildReasoning(claude+refactor) = %q, want Claude excels mention", got)
+		t.Errorf("BuildReasoning(claude+refactor) = %q, want Claude excels mention", got)
 	}
 	if !strings.Contains(got, "critical priority") {
-		t.Errorf("buildReasoning(P0) = %q, want critical priority", got)
+		t.Errorf("BuildReasoning(P0) = %q, want critical priority", got)
 	}
 }
 
 func TestBuildReasoning_CodexImplement(t *testing.T) {
 	bead := bv.BeadPreview{ID: "r2", Title: "Implement new feature", Priority: "P1"}
-	got := buildReasoning("codex", bead, "speed")
+	got := assign.BuildReasoning("codex", bead.Title, bead.Priority, "speed")
 	if !strings.Contains(got, "Codex excels") {
-		t.Errorf("buildReasoning(codex+implement) = %q, want Codex excels", got)
+		t.Errorf("BuildReasoning(codex+implement) = %q, want Codex excels", got)
 	}
 	if !strings.Contains(got, "speed") {
-		t.Errorf("buildReasoning(speed) = %q, want speed mention", got)
+		t.Errorf("BuildReasoning(speed) = %q, want speed mention", got)
 	}
 }
 
 func TestBuildReasoning_GeminiDoc(t *testing.T) {
 	bead := bv.BeadPreview{ID: "r3", Title: "Update docs", Priority: "P2"}
-	got := buildReasoning("gemini", bead, "quality")
+	got := assign.BuildReasoning("gemini", bead.Title, bead.Priority, "quality")
 	if !strings.Contains(got, "Gemini excels") {
-		t.Errorf("buildReasoning(gemini+doc) = %q, want Gemini excels", got)
+		t.Errorf("BuildReasoning(gemini+doc) = %q, want Gemini excels", got)
 	}
 }
 
 func TestBuildReasoning_NoMatch(t *testing.T) {
 	bead := bv.BeadPreview{ID: "r4", Title: "Generic task", Priority: "P3"}
-	got := buildReasoning("unknown", bead, "round_robin")
+	got := assign.BuildReasoning("unknown", bead.Title, bead.Priority, "round_robin")
 	if got != "available agent matched to available work" {
-		t.Errorf("buildReasoning(no match) = %q", got)
+		t.Errorf("BuildReasoning(no match) = %q", got)
 	}
 }
 
 func TestBuildReasoning_DependencyStrategy(t *testing.T) {
 	bead := bv.BeadPreview{ID: "r5", Title: "Generic work", Priority: "P2"}
-	got := buildReasoning("claude", bead, "dependency")
+	got := assign.BuildReasoning("claude", bead.Title, bead.Priority, "dependency")
 	if !strings.Contains(got, "unblocks") {
-		t.Errorf("buildReasoning(dependency) = %q, want unblocks mention", got)
+		t.Errorf("BuildReasoning(dependency) = %q, want unblocks mention", got)
 	}
 }
 

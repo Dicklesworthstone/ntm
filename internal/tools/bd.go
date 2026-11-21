@@ -4,9 +4,70 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 )
+
+type bdBinaryProbeKey struct {
+	path    string
+	modUnix int64
+	size    int64
+}
+
+var (
+	bdVersionCacheMu sync.RWMutex
+	bdVersionCache   = map[bdBinaryProbeKey]Version{}
+	bdDaemonCache    = map[bdBinaryProbeKey]bool{}
+)
+
+// bdBinaryCacheKey returns a cache key for installed executables outside the
+// temp directory so repeated Detect/Version/Capabilities/Health probes within
+// one process do not re-exec slow binaries multiple times per doctor/deps
+// check. Files under os.TempDir() (e.g., per-test stub scripts that inspect
+// env vars) are never cached.
+func bdBinaryCacheKey(binary string) (bdBinaryProbeKey, bool) {
+	cleanPath := filepath.Clean(binary)
+	tmpRoot := filepath.Clean(os.TempDir())
+	if strings.HasPrefix(cleanPath, tmpRoot+string(os.PathSeparator)) || cleanPath == tmpRoot {
+		return bdBinaryProbeKey{}, false
+	}
+	info, err := os.Stat(binary)
+	if err != nil || !info.Mode().IsRegular() {
+		return bdBinaryProbeKey{}, false
+	}
+	return bdBinaryProbeKey{
+		path:    cleanPath,
+		modUnix: info.ModTime().UnixNano(),
+		size:    info.Size(),
+	}, true
+}
+
+// cachedToolVersion looks up or populates the per-binary version cache for
+// installed binaries outside os.TempDir().
+func cachedToolVersion(binaryName string, fetch func(path string) (Version, error)) (Version, error) {
+	if path, err := exec.LookPath(binaryName); err == nil {
+		if key, cacheable := bdBinaryCacheKey(path); cacheable {
+			bdVersionCacheMu.RLock()
+			v, ok := bdVersionCache[key]
+			bdVersionCacheMu.RUnlock()
+			if ok {
+				return v, nil
+			}
+			v, err := fetch(path)
+			if err == nil {
+				bdVersionCacheMu.Lock()
+				bdVersionCache[key] = v
+				bdVersionCacheMu.Unlock()
+			}
+			return v, err
+		}
+	}
+	return fetch(binaryName)
+}
 
 // BDAdapter provides integration with the beads (bd) tool
 type BDAdapter struct {
@@ -40,6 +101,16 @@ func (a *BDAdapter) binaryCandidates() []string {
 }
 
 func (a *BDAdapter) versionFromBinary(ctx context.Context, binary string) (Version, error) {
+	key, cacheable := bdBinaryCacheKey(binary)
+	if cacheable {
+		bdVersionCacheMu.RLock()
+		v, ok := bdVersionCache[key]
+		bdVersionCacheMu.RUnlock()
+		if ok {
+			return v, nil
+		}
+	}
+
 	cmd := exec.CommandContext(ctx, binary, "--version")
 	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
@@ -49,7 +120,13 @@ func (a *BDAdapter) versionFromBinary(ctx context.Context, binary string) (Versi
 		return Version{}, fmt.Errorf("failed to get beads_rust version from %s: %w", binary, err)
 	}
 
-	return ParseStandardVersion(stdout.String())
+	v, err := ParseStandardVersion(stdout.String())
+	if err == nil && cacheable {
+		bdVersionCacheMu.Lock()
+		bdVersionCache[key] = v
+		bdVersionCacheMu.Unlock()
+	}
+	return v, err
 }
 
 func (a *BDAdapter) workingBinary(ctx context.Context, candidates []string) (string, Version, error) {
@@ -122,6 +199,16 @@ func (a *BDAdapter) Capabilities(ctx context.Context) ([]Capability, error) {
 }
 
 func (a *BDAdapter) supportsDaemonMode(ctx context.Context, binary string) bool {
+	key, cacheable := bdBinaryCacheKey(binary)
+	if cacheable {
+		bdVersionCacheMu.RLock()
+		supported, ok := bdDaemonCache[key]
+		bdVersionCacheMu.RUnlock()
+		if ok {
+			return supported
+		}
+	}
+
 	cmd := exec.CommandContext(ctx, binary, "help", "daemon")
 	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
@@ -129,19 +216,21 @@ func (a *BDAdapter) supportsDaemonMode(ctx context.Context, binary string) bool 
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
-		return false
+	supported := cmd.Run() == nil
+	if cacheable && ctx.Err() == nil {
+		bdVersionCacheMu.Lock()
+		bdDaemonCache[key] = supported
+		bdVersionCacheMu.Unlock()
 	}
-
-	return true
+	return supported
 }
 
 // Health checks if bd is functioning correctly
 func (a *BDAdapter) Health(ctx context.Context) (*HealthStatus, error) {
 	start := time.Now()
 
-	path, installed := a.Detect()
-	if !installed {
+	candidates := a.binaryCandidates()
+	if len(candidates) == 0 {
 		return &HealthStatus{
 			Healthy:     false,
 			Message:     "beads_rust (br) not installed",
@@ -149,8 +238,10 @@ func (a *BDAdapter) Health(ctx context.Context) (*HealthStatus, error) {
 		}, nil
 	}
 
-	// Try to get version as a health check
-	_, err := a.Version(ctx)
+	probeCtx, cancel := context.WithTimeout(ctx, a.Timeout())
+	defer cancel()
+
+	path, _, err := a.workingBinary(probeCtx, candidates)
 	latency := time.Since(start)
 
 	if err != nil {

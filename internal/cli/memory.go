@@ -61,6 +61,15 @@ command run the supervisor. This is the one obvious way to run cm by hand.`,
 // for transition reporting. Package-level so tests can tighten it.
 var memoryServePollInterval = 500 * time.Millisecond
 
+// memoryServeRestartBackoffMax, memoryServeHealthInterval, and
+// memoryServeStartupDelay override supervisor timing budgets when non-zero;
+// production leaves them zero for supervisor defaults.
+var (
+	memoryServeRestartBackoffMax time.Duration
+	memoryServeHealthInterval    time.Duration
+	memoryServeStartupDelay      time.Duration
+)
+
 // runMemoryServe supervises the cm daemon in the foreground until ctx is
 // cancelled (Ctrl-C) or the daemon reaches a terminal recovery failure.
 func runMemoryServe(ctx context.Context, out io.Writer, port int) error {
@@ -80,9 +89,12 @@ func runMemoryServe(ctx context.Context, out io.Writer, port int) error {
 
 	sessionID := fmt.Sprintf("memory-serve-%d", os.Getpid())
 	sup, err := supervisor.New(supervisor.Config{
-		SessionID:   sessionID,
-		ProjectDir:  dir,
-		MaxRestarts: supervisor.DefaultMaxRestarts,
+		SessionID:         sessionID,
+		ProjectDir:        dir,
+		HealthInterval:    memoryServeHealthInterval,
+		MaxRestarts:       supervisor.DefaultMaxRestarts,
+		RestartBackoffMax: memoryServeRestartBackoffMax,
+		StartupDelay:      memoryServeStartupDelay,
 	})
 	if err != nil {
 		return fmt.Errorf("initialize supervisor: %w", err)

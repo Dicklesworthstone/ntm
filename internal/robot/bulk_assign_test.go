@@ -219,6 +219,7 @@ func TestBulkAssignCorruptPreflight(t *testing.T) {
 }
 
 func TestGetBulkAssignRejectsInvalidStrategyBeforeExternalWork(t *testing.T) {
+	t.Parallel()
 	output, err := GetBulkAssign(t.Context(), BulkAssignOptions{Session: "proj", FromBV: true, Strategy: "fastest"})
 	if err != nil {
 		t.Fatalf("GetBulkAssign transport error: %v", err)
@@ -248,6 +249,7 @@ func assertBulkAssignRequiredCollections(t *testing.T, output *BulkAssignOutput)
 }
 
 func TestGetBulkAssignRejectsNegativeStaggerBeforeExternalWork(t *testing.T) {
+	t.Parallel()
 	listPanesCalled := false
 	deps := BulkAssignDependencies{
 		ListPanes: func(context.Context, string) ([]tmux.Pane, error) {
@@ -343,6 +345,7 @@ func TestBulkAssignMissingBVAndBRDependenciesAreTyped(t *testing.T) {
 }
 
 func TestBulkAssignImpactStrategySorting(t *testing.T) {
+	t.Parallel()
 	triage := mockTriage(nil, []bv.BlockerToClear{
 		{ID: "bd-1", Title: "A", UnblocksCount: 2, Actionable: true},
 		{ID: "bd-2", Title: "B", UnblocksCount: 5, Actionable: true},
@@ -366,6 +369,7 @@ func TestBulkAssignImpactStrategySorting(t *testing.T) {
 }
 
 func TestBulkAssignImpactStrategySkipsNonActionableBlockersBeforeAllocation(t *testing.T) {
+	t.Parallel()
 	triage := mockTriage(
 		[]bv.TriageRecommendation{{ID: "bd-ready", Title: "Ready fallback", Status: "ready", Priority: 1}},
 		[]bv.BlockerToClear{
@@ -388,6 +392,7 @@ func TestBulkAssignImpactStrategySkipsNonActionableBlockersBeforeAllocation(t *t
 }
 
 func TestBulkAssignReadyStrategyFilters(t *testing.T) {
+	t.Parallel()
 	recs := []bv.TriageRecommendation{
 		{ID: "bd-1", Title: "Open low", Status: "open", Priority: 2},
 		{ID: "bd-2", Title: "Blocked", Status: "blocked", Priority: 0},
@@ -412,6 +417,7 @@ func TestBulkAssignReadyStrategyFilters(t *testing.T) {
 }
 
 func TestBulkAssignStaleStrategy(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 1, 20, 1, 0, 0, 0, time.UTC)
 	inProgress := []bv.BeadInProgress{
 		{ID: "bd-1", Title: "Recent", UpdatedAt: now.Add(-2 * time.Hour)},
@@ -482,6 +488,7 @@ func TestBulkAssignStaleRecoveryPinsOwnedClaimIntentToOriginalPane(t *testing.T)
 }
 
 func TestBulkAssignBalancedStrategyMix(t *testing.T) {
+	t.Parallel()
 	triage := mockTriage(
 		[]bv.TriageRecommendation{
 			{ID: "bd-r1", Title: "Ready1", Status: "ready", Priority: 1},
@@ -513,6 +520,7 @@ func TestBulkAssignBalancedStrategyMix(t *testing.T) {
 }
 
 func TestBulkAssignMoreBeadsThanPanes(t *testing.T) {
+	t.Parallel()
 	panes := mockPanes("proj", []int{1, 2})
 	beads := []bulkBead{{ID: "bd-1"}, {ID: "bd-2"}, {ID: "bd-3"}}
 	plan := allocateBulkAssignBeads(panes, beads)
@@ -527,6 +535,7 @@ func TestBulkAssignMoreBeadsThanPanes(t *testing.T) {
 }
 
 func TestBulkAssignMorePanesThanBeads(t *testing.T) {
+	t.Parallel()
 	panes := mockPanes("proj", []int{1, 2, 3})
 	beads := []bulkBead{{ID: "bd-1"}}
 	plan := allocateBulkAssignBeads(panes, beads)
@@ -538,6 +547,7 @@ func TestBulkAssignMorePanesThanBeads(t *testing.T) {
 }
 
 func TestBulkAssignExactCounts(t *testing.T) {
+	t.Parallel()
 	panes := mockPanes("proj", []int{1, 2})
 	beads := []bulkBead{{ID: "bd-1"}, {ID: "bd-2"}}
 	plan := allocateBulkAssignBeads(panes, beads)
@@ -549,6 +559,7 @@ func TestBulkAssignExactCounts(t *testing.T) {
 }
 
 func TestBulkAssignTemplateSubstitution(t *testing.T) {
+	t.Parallel()
 	template := "{bead_id}:{bead_title}:{bead_type}:{bead_deps}:{session}:{pane}"
 	result := expandBulkAssignTemplate(template, "bd-1", "Title", "task", []string{"bd-2", "bd-3"}, "proj", "0.2")
 	expected := "bd-1:Title:task:bd-2, bd-3:proj:0.2"
@@ -560,6 +571,7 @@ func TestBulkAssignTemplateSubstitution(t *testing.T) {
 }
 
 func TestBulkAssignTemplateSubstitutionDefaults(t *testing.T) {
+	t.Parallel()
 	template := "{bead_id}:{bead_type}:{bead_deps}"
 	result := expandBulkAssignTemplate(template, "bd-1", "Title", "", nil, "proj", "0.2")
 	expected := "bd-1:unknown:none"
@@ -571,6 +583,7 @@ func TestBulkAssignTemplateSubstitutionDefaults(t *testing.T) {
 }
 
 func TestBulkAssignTemplateLoadingFromFile(t *testing.T) {
+	t.Parallel()
 	opts := BulkAssignOptions{PromptTemplatePath: "testdata/bulk_assign_template.txt"}
 	deps := bulkAssignDeps(nil)
 	deps.ReadFile = func(path string) ([]byte, error) {
@@ -592,6 +605,7 @@ func TestBulkAssignTemplateLoadingFromFile(t *testing.T) {
 // configured default file, which beats a configured inline default, which beats
 // the built-in const.
 func TestLoadBulkAssignTemplatePrecedence(t *testing.T) {
+	t.Parallel()
 	readers := func(byPath map[string]string) func(string) ([]byte, error) {
 		return func(path string) ([]byte, error) {
 			if content, ok := byPath[path]; ok {
@@ -668,6 +682,7 @@ func TestLoadBulkAssignTemplatePrecedence(t *testing.T) {
 // configured default file rather than silently falling back, so a misconfigured
 // path is visible to the operator.
 func TestLoadBulkAssignTemplateConfiguredFileError(t *testing.T) {
+	t.Parallel()
 	deps := bulkAssignDeps(nil)
 	deps.ReadFile = func(path string) ([]byte, error) {
 		return nil, fmt.Errorf("boom")
@@ -725,6 +740,7 @@ func TestBulkAssignSequentialDeliveryOrdering(t *testing.T) {
 }
 
 func TestPlanBulkAssignFromAllocationDeduplicatesPhysicalAliases(t *testing.T) {
+	t.Parallel()
 	panes := []bulkPane{
 		{Ref: tmux.PaneRef{ID: "%10", WindowIndex: 0, PaneIndex: 0}, AgentType: "codex", Title: "proj__cod_1"},
 		{Ref: tmux.PaneRef{ID: "%11", WindowIndex: 1, PaneIndex: 0}, AgentType: "claude", Title: "proj__cc_2"},
@@ -751,6 +767,7 @@ func TestPlanBulkAssignFromAllocationDeduplicatesPhysicalAliases(t *testing.T) {
 }
 
 func TestPlanBulkAssignFromAllocationRejectsConflictingPhysicalAliases(t *testing.T) {
+	t.Parallel()
 	panes := []bulkPane{
 		{Ref: tmux.PaneRef{ID: "%10", WindowIndex: 0, PaneIndex: 0}, AgentType: "codex", Title: "proj__cod_1"},
 		{Ref: tmux.PaneRef{ID: "%11", WindowIndex: 1, PaneIndex: 0}, AgentType: "claude", Title: "proj__cc_2"},
@@ -775,6 +792,7 @@ func TestPlanBulkAssignFromAllocationRejectsConflictingPhysicalAliases(t *testin
 }
 
 func TestBulkAssignAllocationSummaryUsesFilteredPaneCount(t *testing.T) {
+	t.Parallel()
 	panes := []bulkPane{
 		{Ref: tmux.PaneRef{ID: "%10", WindowIndex: 0, PaneIndex: 0}, AgentType: "codex", Title: "proj__cod_1"},
 		{Ref: tmux.PaneRef{ID: "%11", WindowIndex: 0, PaneIndex: 1}, AgentType: "claude", Title: "proj__cc_2"},
@@ -800,6 +818,7 @@ func TestBulkAssignAllocationSummaryUsesFilteredPaneCount(t *testing.T) {
 }
 
 func TestPlanBulkAssignFromAllocationRejectsDuplicateBeadAcrossPanes(t *testing.T) {
+	t.Parallel()
 	panes := []bulkPane{
 		{Ref: tmux.PaneRef{ID: "%10", WindowIndex: 0, PaneIndex: 0}, AgentType: "codex", Title: "proj__cod_1"},
 		{Ref: tmux.PaneRef{ID: "%11", WindowIndex: 0, PaneIndex: 1}, AgentType: "claude", Title: "proj__cc_2"},
@@ -936,6 +955,7 @@ func TestBulkAssignCancellationPropagatesToTriageDependency(t *testing.T) {
 }
 
 func TestBulkAssignCancellationPropagatesToLiveProjectLookup(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	started := make(chan struct{})
 	deps := BulkAssignDependencies{
@@ -1146,6 +1166,7 @@ func TestBulkAssignFailedDelivery(t *testing.T) {
 }
 
 func TestBulkAssignDryRunSkipsPromptSend(t *testing.T) {
+	t.Parallel()
 	panes := mockPanes("proj", []int{1})
 	beads := []bulkBead{{ID: "bd-1", Title: "Title1"}}
 	plan := allocateBulkAssignBeads(panes, beads)
@@ -1267,6 +1288,7 @@ func TestBulkAssignAtomicOrderAndDurableReplay(t *testing.T) {
 }
 
 func TestRobotAtomicEligibilityAuthorizationCapturesOperatorGateSnapshot(t *testing.T) {
+	t.Parallel()
 	projectDir := t.TempDir()
 	labels := []string{"release-snapshot"}
 	readCalls := 0
@@ -1386,6 +1408,7 @@ func TestBulkAssignStalePlanUsesGuardedStaleClaimer(t *testing.T) {
 }
 
 func TestRobotAtomicPaneDispatchRevalidatesFreshIdleBeforeActuation(t *testing.T) {
+	t.Parallel()
 	pane := tmux.Pane{ID: "%31", WindowIndex: 0, Index: 1, Type: tmux.AgentCodex}
 	tests := []struct {
 		name    string
@@ -1578,6 +1601,7 @@ func TestRobotAtomicPaneDispatchPreservesDurableRetrySafety(t *testing.T) {
 }
 
 func TestRobotAtomicPreflightBlocksSensitiveReservationPathBeforeTopologyLookup(t *testing.T) {
+	t.Parallel()
 	port := newRobotAtomicPaneDispatchPort(
 		"sensitive-path", nil, nil, redaction.DefaultConfig(), nil, nil,
 	)
@@ -1592,6 +1616,7 @@ func TestRobotAtomicPreflightBlocksSensitiveReservationPathBeforeTopologyLookup(
 }
 
 func TestBulkAssignDryRunSanitizesTitlesAndBlocksSensitiveReservationPaths(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-proj-FAKEtestkey1234567890123456789012345678901234"
 	deps := bulkAssignDeps(&BulkAssignDependencies{
 		LoadRedaction: func(string) (redaction.Config, error) { return redaction.DefaultConfig(), nil },
@@ -1631,6 +1656,7 @@ func TestBulkAssignDryRunSanitizesTitlesAndBlocksSensitiveReservationPaths(t *te
 }
 
 func TestRobotAtomicReplayMatchesRawIntentAgainstRedactedDurablePrompt(t *testing.T) {
+	t.Parallel()
 	store := assignment.NewStore("redacted-replay")
 	rawPrompt := "token=raw-secret"
 	store.Assignments["bd-redacted"] = &assignment.Assignment{
@@ -1931,6 +1957,7 @@ func TestBulkPendingRecoveryReusesValidReservationWithoutAgentMail(t *testing.T)
 }
 
 func TestBulkAtomicRuntimeSharesFreshObservationAcrossConcurrentAssignments(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	panes := []tmux.Pane{
 		{ID: "%1", WindowIndex: 0, Index: 0, Type: tmux.AgentCodex},
@@ -1984,6 +2011,7 @@ func TestBulkAtomicRuntimeSharesFreshObservationAcrossConcurrentAssignments(t *t
 }
 
 func TestApplyBulkAtomicExecutionResultKeepsDurableReceiptAuthoritativeAfterCancellation(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	output := &BulkAssignAssignment{
@@ -2013,6 +2041,7 @@ func TestApplyBulkAtomicExecutionResultKeepsDurableReceiptAuthoritativeAfterCanc
 }
 
 func TestBulkAssignFailureClassReportsAmbiguousDispatchTruthfully(t *testing.T) {
+	t.Parallel()
 	code, hint := bulkAssignFailureClass([]BulkAssignAssignment{{
 		Status: "failed", failureCause: assignment.ErrDispatchOutcomeUnknown,
 	}})
@@ -2065,6 +2094,7 @@ func TestBulkAssignClaimConflictNeverReservesOrDispatches(t *testing.T) {
 }
 
 func TestRobotAtomicClaimPortMapsAssignmentEligibilityRejection(t *testing.T) {
+	t.Parallel()
 	port := newRobotAtomicClaimPort(t.TempDir(), func(context.Context, string, string, string) (bv.BeadClaimResult, error) {
 		return bv.BeadClaimResult{}, &bv.AssignmentEligibilityError{
 			BeadID: "bd-gated", Status: "open", OperatorLabels: []string{"operator-gated"},
@@ -2109,6 +2139,7 @@ func TestBulkAssignDryRunHasNoAtomicOrPacingSideEffects(t *testing.T) {
 }
 
 func TestRobotAtomicIdempotencyKeyDoesNotReplayTerminalAssignment(t *testing.T) {
+	t.Parallel()
 	for _, status := range []assignment.AssignmentStatus{
 		assignment.StatusCompleted,
 		assignment.StatusFailed,
@@ -2197,6 +2228,7 @@ func TestBulkAssignTerminalGenerationRequiresReopenedBead(t *testing.T) {
 }
 
 func TestBulkAssignAllocationParsing(t *testing.T) {
+	t.Parallel()
 	allocation := `{"1":"bd-1","2":"bd-2"}`
 	parsed, err := parseBulkAssignAllocation(allocation)
 	if err != nil {
@@ -2210,6 +2242,7 @@ func TestBulkAssignAllocationParsing(t *testing.T) {
 }
 
 func TestBulkAssignAllocationInvalidJSON(t *testing.T) {
+	t.Parallel()
 	_, err := parseBulkAssignAllocation("not json")
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
@@ -2220,6 +2253,7 @@ func TestBulkAssignAllocationInvalidJSON(t *testing.T) {
 }
 
 func TestBulkAssignSkipPanesApplied(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Index: 1, Title: "proj__cc_1"},
 		{Index: 2, Title: "proj__cc_2"},
@@ -2244,6 +2278,7 @@ func TestBulkAssignSkipPanesApplied(t *testing.T) {
 }
 
 func TestBulkAssignEmptySession(t *testing.T) {
+	t.Parallel()
 	triage := mockTriage([]bv.TriageRecommendation{{ID: "bd-1", Title: "Test", Status: "ready", Priority: 1}}, nil)
 	plan := planBulkAssignFromBV(BulkAssignOptions{Strategy: "ready"}, BulkAssignDependencies{}, nil, triage, nil)
 
@@ -2258,6 +2293,7 @@ func TestBulkAssignEmptySession(t *testing.T) {
 }
 
 func TestBulkAssignControlPaneOnly(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{{Index: 0, Title: "proj__user_0"}}
 	filtered, err := filterBulkAssignPanes(panes, nil)
 	if err != nil {
@@ -2270,6 +2306,7 @@ func TestBulkAssignControlPaneOnly(t *testing.T) {
 }
 
 func TestBulkAssignFilterPrefersParsedPaneType(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{Index: 1, ID: "%1", Title: "scratch", Type: tmux.AgentClaude},
 		{Index: 2, ID: "%2", Title: "claude_notes", Type: tmux.AgentUser},
@@ -2288,6 +2325,7 @@ func TestBulkAssignFilterPrefersParsedPaneType(t *testing.T) {
 }
 
 func TestBulkAssignInvalidBeadIDInAllocation(t *testing.T) {
+	t.Parallel()
 	allocation := map[string]string{"1": "bd-missing"}
 	panes := mockPanes("proj", []int{1})
 	deps := BulkAssignDependencies{
@@ -2391,6 +2429,7 @@ func TestBulkAssignUsesAuthoritativeSessionProjectForBVPlanning(t *testing.T) {
 }
 
 func TestBulkAssignLoadsAuthoritativePolicyBeforeParsingPlanningAndMutation(t *testing.T) {
+	t.Parallel()
 	policyErr := errors.New("injected authoritative policy failure")
 	for _, test := range []struct {
 		name string
@@ -2589,6 +2628,7 @@ func TestBulkAssignMissingExplicitConfigIsInvalidFlagWithZeroSideEffects(t *test
 }
 
 func TestBulkAssignActionableVerificationFailureHasZeroMutation(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		err      error
@@ -2967,6 +3007,7 @@ func TestBulkAssignUsesAuthoritativeSessionProjectForActuation(t *testing.T) {
 }
 
 func TestRobotReservationPreflightFailuresGuaranteeNoLease(t *testing.T) {
+	t.Parallel()
 	runtime := &robotAgentMailReservationRuntime{
 		client: &fakeRobotReservationClient{}, projectKey: "/project", projectID: 7,
 		registered: map[string]agentmail.Agent{"KnownAgent": {Name: "KnownAgent", ProjectID: 7}},
@@ -2988,6 +3029,7 @@ func TestRobotReservationPreflightFailuresGuaranteeNoLease(t *testing.T) {
 }
 
 func TestRobotReservationPartialConflictPreservesLeaseHandles(t *testing.T) {
+	t.Parallel()
 	expiresAt := time.Now().UTC().Add(time.Hour)
 	client := &fakeRobotReservationClient{reserveResult: &agentmail.ReservationResult{
 		Granted: []agentmail.FileReservation{{
@@ -3013,6 +3055,7 @@ func TestRobotReservationPartialConflictPreservesLeaseHandles(t *testing.T) {
 }
 
 func TestRobotReservationRejectsMalformedGrantReceipts(t *testing.T) {
+	t.Parallel()
 	valid := agentmail.FileReservation{
 		ID: 42, PathPattern: "internal/robot/**", AgentName: "KnownAgent", ProjectID: 7, Exclusive: true,
 		Reason: "bead assignment: bd-malformed", ExpiresTS: agentmail.FlexTime{Time: time.Now().UTC().Add(time.Hour)},
@@ -3053,6 +3096,7 @@ func TestRobotReservationRejectsMalformedGrantReceipts(t *testing.T) {
 }
 
 func TestRobotReservationReconciliationDistinguishesAbsentPartialAndReserved(t *testing.T) {
+	t.Parallel()
 	base := agentmail.FileReservation{
 		ID: 51, PathPattern: "internal/robot/**", AgentName: "KnownAgent", ProjectID: 7,
 		Exclusive: true, Reason: "bead assignment: bd-reconcile",
@@ -3100,6 +3144,7 @@ func TestRobotReservationReconciliationDistinguishesAbsentPartialAndReserved(t *
 }
 
 func TestBulkAssignPaneListMapsMissingSessionAndTimeout(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		err  error
@@ -3130,6 +3175,7 @@ func TestBulkAssignPaneListMapsMissingSessionAndTimeout(t *testing.T) {
 }
 
 func TestBulkAssignLargeTriage(t *testing.T) {
+	t.Parallel()
 	var recs []bv.TriageRecommendation
 	for i := 0; i < 120; i++ {
 		recs = append(recs, bv.TriageRecommendation{
@@ -3154,6 +3200,7 @@ func TestBulkAssignLargeTriage(t *testing.T) {
 }
 
 func TestBulkAssignBVSelectionDeduplicatesOverlappingCandidateLists(t *testing.T) {
+	t.Parallel()
 	triage := mockTriage(
 		[]bv.TriageRecommendation{
 			{ID: "bd-overlap", Title: "Ready duplicate", Status: "ready", Priority: 1},
@@ -3181,6 +3228,7 @@ func TestBulkAssignBVSelectionDeduplicatesOverlappingCandidateLists(t *testing.T
 }
 
 func TestBulkAssignNewerInProgressSnapshotOverridesCachedTriageForEveryStrategy(t *testing.T) {
+	t.Parallel()
 	triage := mockTriage(
 		[]bv.TriageRecommendation{
 			{ID: "bd-overlap", Title: "Cached ready", Status: "ready", Priority: 0},
@@ -3218,6 +3266,7 @@ func TestBulkAssignNewerInProgressSnapshotOverridesCachedTriageForEveryStrategy(
 }
 
 func TestBulkAssignConcurrentSafety(t *testing.T) {
+	t.Parallel()
 	triage := mockTriage([]bv.TriageRecommendation{{ID: "bd-1", Title: "Test", Status: "ready", Priority: 1}}, nil)
 	inProgress := []bv.BeadInProgress{{ID: "bd-2", Title: "Stale", UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}}
 	candidates := buildBulkAssignCandidates(triage, inProgress)
@@ -3283,6 +3332,7 @@ func mockTmuxPanesForList(indices []int) []tmux.Pane {
 // GH#251 phase 2: grok now supports automated prompt delivery, so a mixed
 // claude+grok batch passes the batch-level preflight instead of failing closed.
 func TestValidateBulkAssignPromptDeliveryAcceptsMixedGrokBatch(t *testing.T) {
+	t.Parallel()
 	assignments := []BulkAssignAssignment{
 		{Pane: "0.1", AgentType: "claude", Status: "planned"},
 		{Pane: "0.2", AgentType: "grok-build", Status: "planned"},
@@ -3426,6 +3476,7 @@ var osReadFileImpl = func(path string) ([]byte, error) {
 // GH#251 phase 2: grok panes are deliverable, so the filter keeps them in the
 // plan alongside claude and codex (only non-agent panes are excluded).
 func TestFilterBulkAssignPanesIncludesGrokAgents(t *testing.T) {
+	t.Parallel()
 	panes := []tmux.Pane{
 		{ID: "%1", Index: 1, Title: "claude", Type: tmux.AgentClaude},
 		{ID: "%2", Index: 2, Title: "codex", Type: tmux.AgentCodex},
@@ -3521,6 +3572,7 @@ func setupResolverRepoWithWorktrees(t *testing.T, session string, n int) (base s
 // base checkout as the canonical project root instead of failing closed with
 // "panes span multiple project roots".
 func TestResolveLiveSessionProjectAcceptsLinkedWorktrees(t *testing.T) {
+	t.Parallel()
 	const session = "worktree-session"
 	base, worktrees := setupResolverRepoWithWorktrees(t, session, 3)
 
@@ -3547,6 +3599,7 @@ func TestResolveLiveSessionProjectAcceptsLinkedWorktrees(t *testing.T) {
 // sits in the base checkout, panes that are all linked worktrees of one repo
 // must resolve to that repo's base checkout, not an arbitrary worker worktree.
 func TestResolveLiveSessionProjectWorktreesOnlyResolveToBase(t *testing.T) {
+	t.Parallel()
 	const session = "worktree-only-session"
 	base, worktrees := setupResolverRepoWithWorktrees(t, session, 2)
 
@@ -3573,6 +3626,7 @@ func TestResolveLiveSessionProjectWorktreesOnlyResolveToBase(t *testing.T) {
 // unification must not weaken the genuine fail-closed case: two unrelated
 // real repositories have different git common directories and stay rejected.
 func TestResolveLiveSessionProjectRejectsDistinctRealRepos(t *testing.T) {
+	t.Parallel()
 	first, _ := setupResolverRepoWithWorktrees(t, "distinct-a", 0)
 	second, _ := setupResolverRepoWithWorktrees(t, "distinct-b", 0)
 

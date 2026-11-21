@@ -308,7 +308,3 @@ blockLoop:
 	fmt.Printf("\nApplied: %d, Skipped: %d\n", applied, skipped)
 	return nil
 }
-
-func init() {
-	// Note: This will be added to rootCmd in root.go's init()
-}

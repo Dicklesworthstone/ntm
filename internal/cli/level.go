@@ -420,8 +420,3 @@ func getUnlocksDescription(tier tiers.Tier) string {
 		return ""
 	}
 }
-
-func init() {
-	// Ensure level command appears in help - will be added in root.go
-	_ = os.Stdout // Silence unused import
-}

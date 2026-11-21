@@ -27,6 +27,7 @@ import (
 // process observation. Pane-preserving exit also needs host-local root-process
 // evidence, so it must refuse before consulting an unrelated local PID.
 func TestRemoteProcessOperationsCLIRefuseBeforePaneObservation(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("recording command fixture requires a POSIX shell")
 	}
@@ -765,6 +766,15 @@ fi
 	if err := os.WriteFile(filepath.Join(root, "original"), []byte(base64.StdEncoding.EncodeToString(record)), 0600); err != nil {
 		t.Fatal(err)
 	}
+	oldTuning := forcedRotationLifecycleTuning
+	forcedRotationLifecycleTuning = func(opts *robot.LifecycleOptions) {
+		opts.ExitTimeout = 350 * time.Millisecond
+		opts.PollInterval = 25 * time.Millisecond
+		opts.TermGrace = 250 * time.Millisecond
+		opts.KillGrace = 150 * time.Millisecond
+		opts.ReconcileTimeout = 350 * time.Millisecond
+	}
+	t.Cleanup(func() { forcedRotationLifecycleTuning = oldTuning })
 	err = executeForcedRotation(t.Context(), "session", 1, "%7", "")
 	if err == nil {
 		t.Fatal("fixture must finish with a refusal, not claim a rotation completed")

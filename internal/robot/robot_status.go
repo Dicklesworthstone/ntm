@@ -467,7 +467,7 @@ func buildLiveStatus(projectDir string, cfg *config.Config, opts PaginationOptio
 		return output, nil
 	}
 
-	snapshot, err := collectNormalizedTmuxProjection(resolvedProjectDir, normalizedProjectionStaleAfter)
+	snapshot, err := collectNormalizedTmuxProjection(opts.Store, resolvedProjectDir, normalizedProjectionStaleAfter)
 	if err != nil {
 		return output, nil
 	}
@@ -1041,11 +1041,6 @@ type TerseOutput struct {
 	AttentionHint string       `json:"attention_hint"` // Compact attention summary (e.g., "2!action 5?interesting")
 }
 
-// GetTerse retrieves ultra-compact single-line state for token-constrained scenarios.
-func GetTerse(cfg *config.Config) (*TerseOutput, error) {
-	return GetTerseForStore(currentProjectionStore(), cfg)
-}
-
 // GetTerseForStore returns compact state using an explicit projection store.
 func GetTerseForStore(store *state.Store, cfg *config.Config) (*TerseOutput, error) {
 	snapshot, err := GetSnapshotWithOptions(cfg, PaginationOptions{
@@ -1215,22 +1210,4 @@ func formatTerseLine(state TerseState, attentionHint string) string {
 		return line
 	}
 	return line + "|T:" + attentionHint
-}
-
-// PrintTerse outputs ultra-compact single-line state for token-constrained scenarios.
-// Output format: S:session|A:active/total|W:working|I:idle|E:errors|C:ctx%|B:Rn/In/Bn|M:mail|^:NaNi|!:
-// If the attention feed is unavailable, an additional |T:feed:unavail suffix is appended.
-// Multiple sessions are separated by semicolons.
-func PrintTerse(cfg *config.Config) error {
-	output, err := GetTerse(cfg)
-	if err != nil {
-		return err
-	}
-	if !output.Success {
-		return encodeTerminalRobotOutput(output, output.RobotResponse, "robot terse failed")
-	}
-
-	// Output all sessions separated by semicolons (preserving original format)
-	fmt.Println(strings.Join(output.TerseLines, ";"))
-	return nil
 }

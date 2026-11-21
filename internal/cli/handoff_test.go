@@ -25,6 +25,7 @@ import (
 )
 
 func TestOutputResumeCommandErrorOwnsSingleFailureEnvelope(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		err      error
@@ -62,6 +63,7 @@ func TestOutputResumeCommandErrorOwnsSingleFailureEnvelope(t *testing.T) {
 }
 
 func TestOutputResumeCommandErrorDoesNotDuplicateWrittenFailure(t *testing.T) {
+	t.Parallel()
 	var stdout bytes.Buffer
 	cmd := &cobra.Command{}
 	cmd.SetOut(&stdout)
@@ -205,6 +207,7 @@ func TestResumeSpawnOptionsPreservePluginModelsAndBuiltinCounts(t *testing.T) {
 }
 
 func TestFinalizeResumeActionReportsPartialDispatchFailure(t *testing.T) {
+	t.Parallel()
 	var stdout bytes.Buffer
 	cmd := &cobra.Command{}
 	cmd.SetOut(&stdout)
@@ -244,6 +247,7 @@ func TestFinalizeResumeActionReportsPartialDispatchFailure(t *testing.T) {
 }
 
 func TestNewHandoffCmd(t *testing.T) {
+	t.Parallel()
 	cmd := newHandoffCmd()
 	if cmd == nil {
 		t.Fatal("newHandoffCmd() returned nil")
@@ -257,6 +261,7 @@ func TestNewHandoffCmd(t *testing.T) {
 }
 
 func TestNewHandoffCreateCmd(t *testing.T) {
+	t.Parallel()
 	cmd := newHandoffCreateCmd()
 	if cmd == nil {
 		t.Fatal("newHandoffCreateCmd() returned nil")
@@ -278,6 +283,7 @@ func TestNewHandoffCreateCmd(t *testing.T) {
 }
 
 func TestNewHandoffListCmd(t *testing.T) {
+	t.Parallel()
 	cmd := newHandoffListCmd()
 	if cmd == nil {
 		t.Fatal("newHandoffListCmd() returned nil")
@@ -299,6 +305,7 @@ func TestNewHandoffListCmd(t *testing.T) {
 }
 
 func TestNewHandoffShowCmd(t *testing.T) {
+	t.Parallel()
 	cmd := newHandoffShowCmd()
 	if cmd == nil {
 		t.Fatal("newHandoffShowCmd() returned nil")
@@ -313,6 +320,7 @@ func TestNewHandoffShowCmd(t *testing.T) {
 }
 
 func TestNewHandoffLedgerCmd(t *testing.T) {
+	t.Parallel()
 	cmd := newHandoffLedgerCmd()
 	if cmd == nil {
 		t.Fatal("newHandoffLedgerCmd() returned nil")
@@ -326,6 +334,7 @@ func TestNewHandoffLedgerCmd(t *testing.T) {
 }
 
 func TestGenerateDescription(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		goal     string
 		expected string
@@ -437,6 +446,7 @@ func TestRunHandoffLedgerInvalidSession(t *testing.T) {
 }
 
 func TestTruncateForDisplay(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input    string
 		maxLen   int
@@ -461,6 +471,7 @@ func TestTruncateForDisplay(t *testing.T) {
 }
 
 func TestSplitAndTrim(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input    string
 		sep      string
@@ -639,8 +650,13 @@ exec "$NTM_HANDOFF_CASS_SLEEP" 30
 		t.Fatal(err)
 	}
 	oldJSONOutput, oldConfig := jsonOutput, cfg
+	oldCASSTimeout := handoff.DefaultCASSTimeout
 	jsonOutput, cfg = false, nil
-	t.Cleanup(func() { jsonOutput, cfg = oldJSONOutput, oldConfig })
+	handoff.DefaultCASSTimeout = 200 * time.Millisecond
+	t.Cleanup(func() {
+		jsonOutput, cfg = oldJSONOutput, oldConfig
+		handoff.DefaultCASSTimeout = oldCASSTimeout
+	})
 	ctx, cancel := context.WithTimeout(t.Context(), 12*time.Second)
 	defer cancel()
 	path := filepath.Join(projectDir, "handoff.yaml")
@@ -1699,6 +1715,10 @@ func TestRunHandoffCreateAutoDegradesOnSlowCASS(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Chdir(tmpDir)
+
+	oldCASSTimeout := handoff.DefaultCASSTimeout
+	handoff.DefaultCASSTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { handoff.DefaultCASSTimeout = oldCASSTimeout })
 
 	cmd := newHandoffCreateCmd()
 	var buf bytes.Buffer

@@ -13,6 +13,7 @@ import (
 
 // TestEnvelope_EnsembleModes verifies envelope compliance for --robot-ensemble-modes.
 func TestEnvelope_EnsembleModes(t *testing.T) {
+	t.Parallel()
 	t.Log("TEST: TestEnvelope_EnsembleModes - starting")
 
 	output, err := GetEnsembleModes(EnsembleModesOptions{})
@@ -66,6 +67,7 @@ func TestEnvelope_EnsembleModes(t *testing.T) {
 
 // TestEnvelope_EnsemblePresets verifies envelope compliance for --robot-ensemble-presets.
 func TestEnvelope_EnsemblePresets(t *testing.T) {
+	t.Parallel()
 	t.Log("TEST: TestEnvelope_EnsemblePresets - starting")
 
 	output, err := GetEnsemblePresets()
@@ -244,6 +246,7 @@ func TestGetEnsembleStopCaptureFailureLeavesSessionRunning(t *testing.T) {
 
 // TestEnvelope_EnsembleModesError verifies error envelope compliance.
 func TestEnvelope_EnsembleModesError(t *testing.T) {
+	t.Parallel()
 	t.Log("TEST: TestEnvelope_EnsembleModesError - starting")
 
 	// Modes with valid options should succeed
@@ -272,6 +275,7 @@ func TestEnvelope_EnsembleModesError(t *testing.T) {
 
 // TestEnvelope_EnvelopeJSONMarshaling verifies JSON output matches envelope spec.
 func TestEnvelope_EnvelopeJSONMarshaling(t *testing.T) {
+	t.Parallel()
 	t.Log("TEST: TestEnvelope_EnvelopeJSONMarshaling - starting")
 
 	output, _ := GetEnsembleModes(EnsembleModesOptions{})
@@ -310,6 +314,7 @@ func TestEnvelope_EnvelopeJSONMarshaling(t *testing.T) {
 
 // TestEnvelope_ModesTierCounts verifies tier breakdown is present.
 func TestEnvelope_ModesTierCounts(t *testing.T) {
+	t.Parallel()
 	t.Log("TEST: TestEnvelope_ModesTierCounts - starting")
 
 	output, _ := GetEnsembleModes(EnsembleModesOptions{Tier: "all"})
@@ -335,6 +340,7 @@ func TestEnvelope_ModesTierCounts(t *testing.T) {
 
 // TestEnvelope_PresetsTagsNotNil verifies preset tags array is never nil.
 func TestEnvelope_PresetsTagsNotNil(t *testing.T) {
+	t.Parallel()
 	t.Log("TEST: TestEnvelope_PresetsTagsNotNil - starting")
 
 	output, _ := GetEnsemblePresets()
@@ -354,6 +360,7 @@ func TestEnvelope_PresetsTagsNotNil(t *testing.T) {
 
 // TestEnvelope_SynthesizeAuditArrays verifies audit arrays in synthesize output.
 func TestEnvelope_SynthesizeAuditArrays(t *testing.T) {
+	t.Parallel()
 	t.Log("TEST: TestEnvelope_SynthesizeAuditArrays - starting")
 
 	// Create a properly initialized output (as the actual code does)
@@ -400,6 +407,7 @@ func TestEnvelope_SynthesizeAuditArrays(t *testing.T) {
 
 // TestEnvelope_ModesArrayFieldsNotNil verifies mode info arrays are never nil.
 func TestEnvelope_ModesArrayFieldsNotNil(t *testing.T) {
+	t.Parallel()
 	t.Log("TEST: TestEnvelope_ModesArrayFieldsNotNil - starting")
 
 	output, _ := GetEnsembleModes(EnsembleModesOptions{Tier: "all", Limit: 5})

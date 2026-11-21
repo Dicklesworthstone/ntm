@@ -187,6 +187,7 @@ func TestSwarmLabSubcommandsCLI(t *testing.T) {
 }
 
 func TestRootDispatcherBackpressureAndSwarmLab(t *testing.T) {
+	t.Parallel()
 	// --robot-backpressure end-to-end
 	bpRaw, bpCode := runRobotContractSubprocess(t, "--robot-backpressure", "--robot-format=json")
 	if bpCode != 0 {

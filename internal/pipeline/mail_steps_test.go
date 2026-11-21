@@ -16,6 +16,7 @@ import (
 )
 
 func TestMailSteps_ParseYAMLAndValidate(t *testing.T) {
+	t.Parallel()
 	content := `
 schema_version: "2.0"
 name: mail-steps
@@ -91,6 +92,7 @@ steps:
 }
 
 func TestMailSteps_ParseTOMLKnownFields(t *testing.T) {
+	t.Parallel()
 	content := `
 schema_version = "2.0"
 name = "mail-steps-toml"
@@ -121,6 +123,7 @@ ack_required = true
 }
 
 func TestMailSteps_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
 	step := Step{
 		ID: "reserve",
 		FileReservationPaths: &FileReservationPathsStep{
@@ -148,6 +151,7 @@ func TestMailSteps_JSONRoundTrip(t *testing.T) {
 }
 
 func TestMailSteps_ValidationConflicts(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		step    Step
@@ -175,6 +179,7 @@ func TestMailSteps_ValidationConflicts(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := Validate(&Workflow{
 				SchemaVersion: SchemaVersion,
 				Name:          "mail-step-conflict",
@@ -205,6 +210,7 @@ func validMailSendStep() *MailSendStep {
 }
 
 func TestMailSteps_ValidationRequiredFields(t *testing.T) {
+	t.Parallel()
 	// bd-vv7ij: each Agent Mail step kind must surface required-field
 	// errors at parse time. Before this fix, mail_send: {} validated
 	// successfully, file_reservation_paths with no paths validated, and
@@ -264,6 +270,7 @@ func TestMailSteps_ValidationRequiredFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := Validate(&Workflow{
 				SchemaVersion: SchemaVersion,
 				Name:          "mail-step-required",
@@ -283,6 +290,7 @@ func TestMailSteps_ValidationRequiredFields(t *testing.T) {
 }
 
 func TestMailSteps_ValidationAcceptsValid(t *testing.T) {
+	t.Parallel()
 	// bd-vv7ij: a fully populated step of each Agent Mail kind must remain
 	// valid after the new required-field checks land.
 	steps := []Step{
@@ -302,6 +310,7 @@ func TestMailSteps_ValidationAcceptsValid(t *testing.T) {
 }
 
 func TestExecuteMailStep_DispatchesThroughAgentMail(t *testing.T) {
+	t.Parallel()
 	type mailStepRequest struct {
 		name string
 		args map[string]interface{}
@@ -406,9 +415,9 @@ func TestExecuteMailStep_DispatchesThroughAgentMail(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
 
 	executor := newMailStepTestExecutor(t)
+	executor.config.AgentMailURL = server.URL + "/"
 	cases := []struct {
 		name   string
 		step   *Step
@@ -610,6 +619,7 @@ func TestExecutorRun_AgentMailStepsUseRuntimeFixture(t *testing.T) {
 }
 
 func TestExecutorRun_AgentMailDryRunDoesNotCallFixture(t *testing.T) {
+	t.Parallel()
 	var calledMu sync.Mutex
 	called := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -619,7 +629,6 @@ func TestExecutorRun_AgentMailDryRunDoesNotCallFixture(t *testing.T) {
 		http.Error(w, "dry-run should not call Agent Mail", http.StatusInternalServerError)
 	}))
 	defer server.Close()
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
 
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
@@ -635,6 +644,7 @@ func TestExecutorRun_AgentMailDryRunDoesNotCallFixture(t *testing.T) {
 
 	cfg := DefaultExecutorConfig("agent-mail-dry-run")
 	cfg.ProjectDir = t.TempDir()
+	cfg.AgentMailURL = server.URL + "/"
 	cfg.DryRun = true
 	executor := NewExecutor(cfg)
 	state, err := executor.Run(t.Context(), workflow, nil, nil)
@@ -657,9 +667,9 @@ func TestExecutorRun_AgentMailDryRunDoesNotCallFixture(t *testing.T) {
 }
 
 func TestExecutorRun_AgentMailStepErrorPath(t *testing.T) {
+	t.Parallel()
 	server, _ := newAgentMailRuntimeFixture(t, "send_message")
 	defer server.Close()
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
 
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
@@ -674,6 +684,7 @@ func TestExecutorRun_AgentMailStepErrorPath(t *testing.T) {
 
 	cfg := DefaultExecutorConfig("agent-mail-error")
 	cfg.ProjectDir = t.TempDir()
+	cfg.AgentMailURL = server.URL + "/"
 	executor := NewExecutor(cfg)
 	state, err := executor.Run(t.Context(), workflow, nil, nil)
 	if err == nil {
@@ -692,15 +703,15 @@ func TestExecutorRun_AgentMailStepErrorPath(t *testing.T) {
 }
 
 func TestMailSendJournalLostResponseDoesNotRetryOrResume(t *testing.T) {
+	t.Parallel()
 	server, counts := newMailSendJournalFixture(t, "lost")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "mail-lost-response", Steps: []Step{
 		{ID: "send", MailSend: validMailSendStep(), OnError: ErrorActionRetry, RetryCount: 2, RetryDelay: Duration{Duration: time.Millisecond}},
 	}}
 	cfg := DefaultExecutorConfig("mail-journal")
 	cfg.ProjectDir, cfg.RunID = t.TempDir(), "mail-lost-response"
+	cfg.AgentMailURL = server.URL + "/"
 	state, err := RunControlledPipeline(t.Context(), workflow, nil, cfg, nil)
 	if err == nil || state == nil || state.Status != StatusFailed {
 		t.Fatalf("lost response should fail the workflow: state=%+v err=%v", state, err)
@@ -742,15 +753,15 @@ func TestMailSendJournalLostResponseDoesNotRetryOrResume(t *testing.T) {
 }
 
 func TestMailSendJournalRestoresReceiptBeforeSchedulerCheckpoint(t *testing.T) {
+	t.Parallel()
 	server, requests := newAgentMailRuntimeFixture(t, "")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "mail-receipt-recovery", Steps: []Step{
 		{ID: "send", MailSend: validMailSendStep(), OutputVar: "sent", OutputParse: OutputParse{Type: "json"}},
 		{ID: "after", DependsOn: []string{"send"}, MailInboxCheck: &MailInboxCheckStep{ProjectKey: "/data/projects/ntm", AgentName: "${vars.sent_parsed.thread_id}"}},
 	}}
 	e := newMailStepTestExecutor(t)
+	e.config.AgentMailURL = server.URL + "/"
 	e.config.RunID = e.state.RunID
 	frozen, path, err := SnapshotWorkflow(t.Context(), e.config.ProjectDir, workflow, "")
 	if err != nil {
@@ -787,14 +798,15 @@ func TestMailSendJournalRestoresReceiptBeforeSchedulerCheckpoint(t *testing.T) {
 }
 
 func TestMailSendJournalCrashIntentAndLegacyStateRefuseReplay(t *testing.T) {
+	t.Parallel()
 	for _, journaled := range []bool{false, true} {
 		t.Run(map[bool]string{false: "legacy", true: "journaled"}[journaled], func(t *testing.T) {
+			t.Parallel()
 			server, counts := newMailSendJournalFixture(t)
 			t.Cleanup(server.Close)
-			t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-			t.Setenv("AGENT_MAIL_TOKEN", "")
 			workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "mail-crash", Steps: []Step{{ID: "send", MailSend: validMailSendStep()}}}
 			e := newMailStepTestExecutor(t)
+			e.config.AgentMailURL = server.URL + "/"
 			e.config.RunID = e.state.RunID
 			e.state.WorkflowID, e.state.Session = workflow.Name, e.config.Session
 			e.state.Status = StatusRunning
@@ -826,15 +838,15 @@ func TestMailSendJournalCrashIntentAndLegacyStateRefuseReplay(t *testing.T) {
 }
 
 func TestMailSendJournalDefinitiveRejectionAllowsRetry(t *testing.T) {
+	t.Parallel()
 	server, counts := newMailSendJournalFixture(t, "rejected")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "mail-rejection", Steps: []Step{
 		{ID: "send", MailSend: validMailSendStep(), OnError: ErrorActionRetry, RetryCount: 2, RetryDelay: Duration{Duration: time.Millisecond}},
 	}}
 	cfg := DefaultExecutorConfig("mail-journal")
 	cfg.ProjectDir, cfg.RunID = t.TempDir(), "mail-rejection"
+	cfg.AgentMailURL = server.URL + "/"
 	state, err := RunControlledPipeline(t.Context(), workflow, nil, cfg, nil)
 	if err != nil || state == nil || state.Status != StatusCompleted || state.Steps["send"].Attempts != 2 {
 		t.Fatalf("definitive refusal did not permit retry: state=%+v err=%v", state, err)
@@ -845,15 +857,15 @@ func TestMailSendJournalDefinitiveRejectionAllowsRetry(t *testing.T) {
 }
 
 func TestMailSendJournalParsingFailureNeverResends(t *testing.T) {
+	t.Parallel()
 	server, counts := newMailSendJournalFixture(t)
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	workflow := &Workflow{SchemaVersion: SchemaVersion, Name: "mail-parse-failure", Steps: []Step{
 		{ID: "send", MailSend: validMailSendStep(), OutputParse: OutputParse{Type: "regex", Pattern: "["}, OnError: ErrorActionRetry, RetryCount: 2, RetryDelay: Duration{Duration: time.Millisecond}},
 	}}
 	cfg := DefaultExecutorConfig("mail-journal")
 	cfg.ProjectDir, cfg.RunID = t.TempDir(), "mail-parse-failure"
+	cfg.AgentMailURL = server.URL + "/"
 	state, err := NewExecutor(cfg).Run(t.Context(), workflow, nil, nil)
 	if err == nil || state == nil || state.Steps["send"].Error == nil || state.Steps["send"].Error.Type != "output_parse" || state.Steps["send"].Attempts != 1 || state.MailSends["send"].Status != mailSendSent {
 		t.Fatalf("parsing failure lost delivery evidence: state=%+v err=%v", state, err)
@@ -952,14 +964,15 @@ func newMailSendJournalFixture(t *testing.T, replies ...string) (*httptest.Serve
 }
 
 func TestExecuteMailStep_DryRunDoesNotCallAgentMail(t *testing.T) {
+	t.Parallel()
 	called := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 	}))
 	defer server.Close()
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
 
 	executor := newMailStepTestExecutor(t)
+	executor.config.AgentMailURL = server.URL + "/"
 	executor.config.DryRun = true
 	result := executor.executeMailStep(context.Background(), &Step{
 		ID:       "notify",
@@ -1123,6 +1136,7 @@ func newMailStepTestExecutor(t *testing.T) *Executor {
 }
 
 func TestStep_HasMailStep_FalseWhenAbsent(t *testing.T) {
+	t.Parallel()
 	if (&Step{ID: "x", Command: "/bin/true"}).hasMailStep() {
 		t.Errorf("hasMailStep() returned true for command step")
 	}
@@ -1243,15 +1257,15 @@ func (l *reservationLedger) serveReadback(t *testing.T, w http.ResponseWriter, i
 }
 
 func TestReservationJournalLostAcquisitionCannotRetryOrResume(t *testing.T) {
+	t.Parallel()
 	server, fixture := newReservationJournalFixture(t, "lost_acquisition")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	workflow := reservationJournalWorkflow(false)
 	workflow.Steps[0].OnError, workflow.Steps[0].RetryCount = ErrorActionRetry, 2
 	workflow.Steps[0].RetryDelay = Duration{Duration: time.Millisecond}
 	cfg := DefaultExecutorConfig("reservation-journal")
 	cfg.ProjectDir, cfg.RunID = t.TempDir(), "lost-acquisition"
+	cfg.AgentMailURL = server.URL + "/"
 	state, err := RunControlledPipeline(t.Context(), workflow, nil, cfg, nil)
 	if err == nil || state == nil || state.Steps["reserve"].Attempts != 1 || state.ReservationSteps["reserve"].Status != reservationUncertain {
 		t.Fatalf("lost acquisition did not retain its replay barrier: state=%+v err=%v", state, err)
@@ -1265,18 +1279,19 @@ func TestReservationJournalLostAcquisitionCannotRetryOrResume(t *testing.T) {
 }
 
 func TestReservationJournalRetainsPartialAndUnverifiedGrants(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"partial", "unverified"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			server, fixture := newReservationJournalFixture(t, mode)
 			t.Cleanup(server.Close)
-			t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-			t.Setenv("AGENT_MAIL_TOKEN", "")
 			workflow := reservationJournalWorkflow(false)
 			workflow.Steps[0].FileReservationPaths.Paths = StringOrList{"a.go", "b.go"}
 			workflow.Steps[0].OnError, workflow.Steps[0].RetryCount = ErrorActionRetry, 2
 			workflow.Steps[0].RetryDelay = Duration{Duration: time.Millisecond}
 			cfg := DefaultExecutorConfig("reservation-journal")
 			cfg.ProjectDir, cfg.RunID = t.TempDir(), "partial-acquisition"
+			cfg.AgentMailURL = server.URL + "/"
 			state, err := RunControlledPipeline(t.Context(), workflow, nil, cfg, nil)
 			if err == nil || state == nil || len(state.ReservationSteps["reserve"].Granted) == 0 || fixture.count("file_reservation_paths") != 1 {
 				t.Fatalf("partial grant was discarded or reacquired: state=%+v err=%v", state, err)
@@ -1303,15 +1318,16 @@ func TestReservationJournalRetainsPartialAndUnverifiedGrants(t *testing.T) {
 }
 
 func TestReservationJournalResumeRejectsLostProtectionBeforeWork(t *testing.T) {
+	t.Parallel()
 	for _, change := range []string{"expired", "replacement", "owner", "mode", "reason", "created", "unavailable"} {
 		t.Run(change, func(t *testing.T) {
+			t.Parallel()
 			server, fixture := newReservationJournalFixture(t, "")
 			t.Cleanup(server.Close)
-			t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-			t.Setenv("AGENT_MAIL_TOKEN", "")
 			fixture.failInbox = true
 			cfg := DefaultExecutorConfig("reservation-journal")
 			cfg.ProjectDir, cfg.RunID = t.TempDir(), "protection-check"
+			cfg.AgentMailURL = server.URL + "/"
 			state, err := RunControlledPipeline(t.Context(), reservationJournalWorkflow(true), nil, cfg, nil)
 			if err == nil || state == nil || state.Steps["reserve"].Status != StatusCompleted {
 				t.Fatalf("initial protected workflow failed incorrectly: state=%+v err=%v", state, err)
@@ -1352,12 +1368,12 @@ func TestReservationJournalResumeRejectsLostProtectionBeforeWork(t *testing.T) {
 }
 
 func TestReservationJournalRestoresReceiptWithoutReacquiring(t *testing.T) {
+	t.Parallel()
 	server, fixture := newReservationJournalFixture(t, "")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	workflow := reservationJournalWorkflow(true)
 	e := newMailStepTestExecutor(t)
+	e.config.AgentMailURL = server.URL + "/"
 	e.config.RunID = e.state.RunID
 	frozen, path, err := SnapshotWorkflow(t.Context(), e.config.ProjectDir, workflow, "")
 	if err != nil {
@@ -1390,12 +1406,12 @@ func TestReservationJournalRestoresReceiptWithoutReacquiring(t *testing.T) {
 }
 
 func TestReservationJournalReleaseUsesOnlyRunOwnedIDs(t *testing.T) {
+	t.Parallel()
 	server, fixture := newReservationJournalFixture(t, "")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	workflow := reservationJournalWorkflow(false)
 	e := newMailStepTestExecutor(t)
+	e.config.AgentMailURL = server.URL + "/"
 	if result := e.executeMailStep(t.Context(), &workflow.Steps[0]); result.Status != StatusCompleted {
 		t.Fatalf("acquire: %+v", result)
 	}
@@ -1426,12 +1442,12 @@ func TestReservationJournalReleaseUsesOnlyRunOwnedIDs(t *testing.T) {
 }
 
 func TestReservationJournalStandaloneReleaseRetainsExplicitPaths(t *testing.T) {
+	t.Parallel()
 	server, fixture := newReservationJournalFixture(t, "")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	fixture.ledger.grant(999, "a.go", map[string]interface{}{"agent_name": "TealCrane", "exclusive": true, "reason": "external reservation"})
 	e := newMailStepTestExecutor(t)
+	e.config.AgentMailURL = server.URL + "/"
 	release := Step{ID: "release", FileReservationRelease: &FileReservationReleaseStep{ProjectKey: "/data/projects/ntm", AgentName: "TealCrane", Paths: StringOrList{"a.go"}}}
 	if result := e.executeMailStep(t.Context(), &release); result.Status != StatusCompleted {
 		t.Fatalf("explicit standalone release failed: %+v", result)
@@ -1443,16 +1459,16 @@ func TestReservationJournalStandaloneReleaseRetainsExplicitPaths(t *testing.T) {
 }
 
 func TestReservationJournalReleaseRecoversAfterLostReply(t *testing.T) {
+	t.Parallel()
 	server, fixture := newReservationJournalFixture(t, "lost_release")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	workflow := reservationJournalWorkflow(false)
 	workflow.Steps = append(workflow.Steps, Step{ID: "release", DependsOn: []string{"reserve"}, FileReservationRelease: &FileReservationReleaseStep{
 		ProjectKey: "/data/projects/ntm", AgentName: "TealCrane", Paths: StringOrList{"a.go"},
 	}})
 	cfg := DefaultExecutorConfig("reservation-journal")
 	cfg.ProjectDir, cfg.RunID = t.TempDir(), "release-recovery"
+	cfg.AgentMailURL = server.URL + "/"
 	state, err := RunControlledPipeline(t.Context(), workflow, nil, cfg, nil)
 	if err == nil || state == nil || state.ReservationSteps["release"].Status != reservationReleasing || len(state.ReservationSteps["release"].Granted) != 1 {
 		t.Fatalf("lost release did not retain exact-ID intent: state=%+v err=%v", state, err)
@@ -1470,13 +1486,13 @@ func TestReservationJournalReleaseRecoversAfterLostReply(t *testing.T) {
 }
 
 func TestReservationJournalResetCannotDiscardLiveLeases(t *testing.T) {
+	t.Parallel()
 	server, fixture := newReservationJournalFixture(t, "")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	fixture.failInbox = true
 	cfg := DefaultExecutorConfig("reservation-journal")
 	cfg.ProjectDir, cfg.RunID = t.TempDir(), "reset-protection"
+	cfg.AgentMailURL = server.URL + "/"
 	if _, err := RunControlledPipeline(t.Context(), reservationJournalWorkflow(true), nil, cfg, nil); err == nil {
 		t.Fatal("fixture should stop at the inbox gate")
 	}
@@ -1493,10 +1509,9 @@ func TestReservationJournalResetCannotDiscardLiveLeases(t *testing.T) {
 }
 
 func TestReservationJournalCancellationCleanupCannotResumeUnprotected(t *testing.T) {
+	t.Parallel()
 	server, fixture := newReservationJournalFixture(t, "")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	workflow := reservationJournalWorkflow(true)
 	workflow.Settings.OnCancel = []Step{{ID: "cancel-release", FileReservationRelease: &FileReservationReleaseStep{
 		ProjectKey: "/data/projects/ntm", AgentName: "TealCrane", Paths: StringOrList{"a.go"},
@@ -1506,6 +1521,7 @@ func TestReservationJournalCancellationCleanupCannotResumeUnprotected(t *testing
 	fixture.cancelInbox = cancel
 	cfg := DefaultExecutorConfig("reservation-journal")
 	cfg.ProjectDir, cfg.RunID = t.TempDir(), "cancelled-protection"
+	cfg.AgentMailURL = server.URL + "/"
 	state, err := RunControlledPipeline(ctx, workflow, nil, cfg, nil)
 	if err == nil || state == nil || state.Status != StatusCancelled || state.ReservationSteps["reserve"].Status != reservationReleased {
 		t.Fatalf("authored cancellation cleanup failed: state=%+v err=%v", state, err)
@@ -1523,10 +1539,9 @@ func TestReservationJournalCancellationCleanupCannotResumeUnprotected(t *testing
 }
 
 func TestReservationJournalCancelledResumeRetainsReceiptsForCleanup(t *testing.T) {
+	t.Parallel()
 	server, fixture := newReservationJournalFixture(t, "")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	fixture.failInbox = true
 	workflow := reservationJournalWorkflow(true)
 	workflow.Settings.OnCancel = []Step{{ID: "cancel-release", FileReservationRelease: &FileReservationReleaseStep{
@@ -1534,6 +1549,7 @@ func TestReservationJournalCancelledResumeRetainsReceiptsForCleanup(t *testing.T
 	}}}
 	cfg := DefaultExecutorConfig("reservation-journal")
 	cfg.ProjectDir, cfg.RunID = t.TempDir(), "cancelled-resume-cleanup"
+	cfg.AgentMailURL = server.URL + "/"
 	if _, err := RunControlledPipeline(t.Context(), workflow, nil, cfg, nil); err == nil {
 		t.Fatal("fixture should stop at the inbox gate while retaining its lease")
 	}
@@ -1560,10 +1576,9 @@ func TestReservationJournalCancelledResumeRetainsReceiptsForCleanup(t *testing.T
 }
 
 func TestReservationJournalForceIterationCannotRetainReleasedProtection(t *testing.T) {
+	t.Parallel()
 	server, fixture := newReservationJournalFixture(t, "")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	workflow := reservationJournalWorkflow(false)
 	workflow.Steps = append(workflow.Steps, Step{ID: "work", DependsOn: []string{"reserve"}, Loop: &LoopConfig{Times: 1, Steps: []Step{{
 		ID: "check", MailInboxCheck: &MailInboxCheckStep{ProjectKey: "/data/projects/ntm", AgentName: "TealCrane"},
@@ -1573,6 +1588,7 @@ func TestReservationJournalForceIterationCannotRetainReleasedProtection(t *testi
 	}}}
 	cfg := DefaultExecutorConfig("reservation-journal")
 	cfg.ProjectDir, cfg.RunID = t.TempDir(), "iteration-protection"
+	cfg.AgentMailURL = server.URL + "/"
 	state, err := RunControlledPipeline(t.Context(), workflow, nil, cfg, nil)
 	if err != nil || state == nil || state.Status != StatusCompleted || state.ReservationSteps["reserve"].Status != reservationReleased {
 		t.Fatalf("initial protected loop: state=%+v err=%v", state, err)
@@ -1586,8 +1602,10 @@ func TestReservationJournalForceIterationCannotRetainReleasedProtection(t *testi
 }
 
 func TestReservationJournalCleanupOnlyResumeToleratesAbsentIDs(t *testing.T) {
+	t.Parallel()
 	for _, phase := range []string{"main", "post_pipeline"} {
 		t.Run(phase, func(t *testing.T) {
+			t.Parallel()
 			testReservationCleanupOnlyResume(t, phase)
 		})
 	}
@@ -1597,8 +1615,6 @@ func testReservationCleanupOnlyResume(t *testing.T, phase string) {
 	t.Helper()
 	server, fixture := newReservationJournalFixture(t, "")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	workflow := reservationJournalWorkflow(false)
 	release := Step{ID: "finish-release", FileReservationRelease: &FileReservationReleaseStep{
 		ProjectKey: "/data/projects/ntm", AgentName: "TealCrane", Paths: StringOrList{"a.go"},
@@ -1610,6 +1626,7 @@ func testReservationCleanupOnlyResume(t *testing.T, phase string) {
 		workflow.PostPipelineSteps = []Step{release}
 	}
 	e := newMailStepTestExecutor(t)
+	e.config.AgentMailURL = server.URL + "/"
 	e.config.RunID = e.state.RunID
 	frozen, path, err := SnapshotWorkflow(t.Context(), e.config.ProjectDir, workflow, "")
 	if err != nil {
@@ -1642,16 +1659,16 @@ func testReservationCleanupOnlyResume(t *testing.T, phase string) {
 }
 
 func TestReservationJournalConflictingReleaseIdentityCannotHideLostLease(t *testing.T) {
+	t.Parallel()
 	server, fixture := newReservationJournalFixture(t, "lost_release")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	workflow := reservationJournalWorkflow(false)
 	workflow.Steps = append(workflow.Steps, Step{ID: "release", DependsOn: []string{"reserve"}, FileReservationRelease: &FileReservationReleaseStep{
 		ProjectKey: "/data/projects/ntm", AgentName: "TealCrane", Paths: StringOrList{"a.go"},
 	}})
 	cfg := DefaultExecutorConfig("reservation-journal")
 	cfg.ProjectDir, cfg.RunID = t.TempDir(), "conflicting-lease-history"
+	cfg.AgentMailURL = server.URL + "/"
 	if _, err := RunControlledPipeline(t.Context(), workflow, nil, cfg, nil); err == nil {
 		t.Fatal("fixture should stop after the lost release response")
 	}
@@ -1679,12 +1696,12 @@ func TestReservationJournalConflictingReleaseIdentityCannotHideLostLease(t *test
 }
 
 func TestReservationProtectionRenewsActiveWork(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"success", "lost_reply"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			server, fixture := newReservationJournalFixture(t, "")
 			t.Cleanup(server.Close)
-			t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-			t.Setenv("AGENT_MAIL_TOKEN", "")
 			fixture.renewMode = mode
 			fixture.ledger.grant(999, "other.go", map[string]interface{}{"agent_name": "TealCrane", "exclusive": true, "reason": "other run"})
 			workflow := reservationJournalWorkflow(true)
@@ -1692,6 +1709,7 @@ func TestReservationProtectionRenewsActiveWork(t *testing.T) {
 			workflow.PostPipelineSteps = []Step{reservationProtectionReleaseStep()}
 			cfg := DefaultExecutorConfig("reservation-heartbeat")
 			cfg.ProjectDir, cfg.RunID, cfg.GlobalTimeout = t.TempDir(), "heartbeat-"+mode, 30*time.Second
+			cfg.AgentMailURL = server.URL + "/"
 			executor := NewExecutor(cfg)
 			fixture.armRenewalDuringInbox(executor)
 			state, err := executor.Run(t.Context(), workflow, nil, nil)
@@ -1722,12 +1740,12 @@ func TestReservationProtectionRenewsActiveWork(t *testing.T) {
 }
 
 func TestReservationProtectionRefusesUnverifiedRenewal(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"false_success", "replacement", "unavailable"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			server, fixture := newReservationJournalFixture(t, "")
 			t.Cleanup(server.Close)
-			t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-			t.Setenv("AGENT_MAIL_TOKEN", "")
 			fixture.renewMode = mode
 			workflow := reservationJournalWorkflow(true)
 			workflow.Steps[0].FileReservationPaths.TTLSeconds = 60
@@ -1737,6 +1755,7 @@ func TestReservationProtectionRefusesUnverifiedRenewal(t *testing.T) {
 			workflow.PostPipelineSteps = []Step{{ID: "tail", MailInboxCheck: &MailInboxCheckStep{ProjectKey: "/data/projects/ntm", AgentName: "TealCrane"}}}
 			cfg := DefaultExecutorConfig("reservation-heartbeat")
 			cfg.ProjectDir, cfg.RunID, cfg.GlobalTimeout = t.TempDir(), "failed-renewal-"+mode, 30*time.Second
+			cfg.AgentMailURL = server.URL + "/"
 			executor := NewExecutor(cfg)
 			fixture.armRenewalDuringInbox(executor)
 			state, err := executor.Run(t.Context(), workflow, nil, nil)
@@ -1774,10 +1793,9 @@ func TestReservationProtectionRefusesUnverifiedRenewal(t *testing.T) {
 }
 
 func TestReservationProtectionChecksDispatchBetweenHeartbeats(t *testing.T) {
+	t.Parallel()
 	server, fixture := newReservationJournalFixture(t, "")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	fixture.inboxAction = func() {
 		fixture.ledger.mu.Lock()
 		fixture.ledger.rows[0]["agent"] = "OrangeFalcon"
@@ -1788,6 +1806,7 @@ func TestReservationProtectionChecksDispatchBetweenHeartbeats(t *testing.T) {
 	workflow.Settings.OnError = ErrorActionContinue
 	cfg := DefaultExecutorConfig("reservation-boundary")
 	cfg.ProjectDir, cfg.RunID = t.TempDir(), "boundary"
+	cfg.AgentMailURL = server.URL + "/"
 	state, err := RunControlledPipeline(t.Context(), workflow, nil, cfg, nil)
 	if err == nil || state == nil || state.Status != StatusFailed || fixture.count("fetch_inbox") != 1 || fixture.count("renew_file_reservations") != 0 {
 		t.Fatalf("next dispatch trusted stale ownership: state=%+v err=%v requests=%+v", state, err, fixture.requests())
@@ -1795,15 +1814,15 @@ func TestReservationProtectionChecksDispatchBetweenHeartbeats(t *testing.T) {
 }
 
 func TestReservationProtectionResumesRenewalWithoutReacquiring(t *testing.T) {
+	t.Parallel()
 	server, fixture := newReservationJournalFixture(t, "")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	fixture.failInbox = true
 	workflow := reservationJournalWorkflow(true)
 	workflow.Steps[0].FileReservationPaths.TTLSeconds = 60
 	cfg := DefaultExecutorConfig("reservation-resume")
 	cfg.ProjectDir, cfg.RunID, cfg.GlobalTimeout = t.TempDir(), "resume-renewal", 30*time.Second
+	cfg.AgentMailURL = server.URL + "/"
 	initial, err := RunControlledPipeline(t.Context(), workflow, nil, cfg, nil)
 	if err == nil || initial == nil || initial.ReservationSteps["reserve"].Status != reservationHeld {
 		t.Fatalf("initial attempt did not retain lease: state=%+v err=%v", initial, err)
@@ -1827,10 +1846,9 @@ func TestReservationProtectionResumesRenewalWithoutReacquiring(t *testing.T) {
 }
 
 func TestReservationProtectionSerializesExplicitRelease(t *testing.T) {
+	t.Parallel()
 	server, fixture := newReservationJournalFixture(t, "")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	finishRelease := make(chan struct{})
 	fixture.releaseWait, fixture.releaseStart = finishRelease, make(chan struct{})
 	workflow := reservationJournalWorkflow(false)
@@ -1840,6 +1858,7 @@ func TestReservationProtectionSerializesExplicitRelease(t *testing.T) {
 	workflow.Steps = append(workflow.Steps, release)
 	cfg := DefaultExecutorConfig("reservation-release")
 	cfg.ProjectDir, cfg.RunID, cfg.GlobalTimeout = t.TempDir(), "release-serialized", 30*time.Second
+	cfg.AgentMailURL = server.URL + "/"
 	executor := NewExecutor(cfg)
 	type outcome struct {
 		state *ExecutionState
@@ -1883,13 +1902,13 @@ func TestReservationProtectionSerializesExplicitRelease(t *testing.T) {
 }
 
 func TestReservationProtectionLateFailureStillRunsAuthoredCleanup(t *testing.T) {
+	t.Parallel()
 	server, fixture := newReservationJournalFixture(t, "")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	workflow := reservationJournalWorkflow(false)
 	workflow.Settings.OnCancel = []Step{reservationProtectionReleaseStep()}
 	e := newMailStepTestExecutor(t)
+	e.config.AgentMailURL = server.URL + "/"
 	e.graph = NewDependencyGraph(workflow)
 	if result := e.executeStep(t.Context(), &workflow.Steps[0], workflow); result.Status != StatusCompleted {
 		t.Fatalf("initial acquisition: %+v", result)
@@ -1913,13 +1932,13 @@ func TestReservationProtectionLateFailureStillRunsAuthoredCleanup(t *testing.T) 
 }
 
 func TestReservationProtectionReleaseHooksRecheckRemainingLeases(t *testing.T) {
+	t.Parallel()
 	server, fixture := newReservationJournalFixture(t, "")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	workflow := reservationJournalWorkflow(false)
 	workflow.Steps[0].FileReservationPaths.Paths = StringOrList{"a.go", "b.go"}
 	e := newMailStepTestExecutor(t)
+	e.config.AgentMailURL = server.URL + "/"
 	e.graph = NewDependencyGraph(workflow)
 	if result := e.executeStep(t.Context(), &workflow.Steps[0], workflow); result.Status != StatusCompleted {
 		t.Fatalf("initial acquisition: %+v", result)
@@ -1938,10 +1957,9 @@ func TestReservationProtectionReleaseHooksRecheckRemainingLeases(t *testing.T) {
 }
 
 func TestReservationProtectionCancelsAndJoinsActiveCommand(t *testing.T) {
+	t.Parallel()
 	server, fixture := newReservationJournalFixture(t, "")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	fixture.renewMode = "false_success"
 	workflow := reservationJournalWorkflow(false)
 	workflow.Steps[0].FileReservationPaths.TTLSeconds = 60
@@ -1949,6 +1967,7 @@ func TestReservationProtectionCancelsAndJoinsActiveCommand(t *testing.T) {
 	workflow.Settings.OnCancel = []Step{reservationProtectionReleaseStep()}
 	cfg := DefaultExecutorConfig("reservation-command")
 	cfg.ProjectDir, cfg.RunID, cfg.GlobalTimeout = t.TempDir(), "cancel-active-command", 30*time.Second
+	cfg.AgentMailURL = server.URL + "/"
 	executor := NewExecutor(cfg)
 	ctx := context.WithValue(t.Context(), commandStartedTestHookKey{}, func(int) {
 		fixture.makeRenewalDue()
@@ -1965,14 +1984,14 @@ func TestReservationProtectionCancelsAndJoinsActiveCommand(t *testing.T) {
 }
 
 func TestReservationProtectionChecksExpiryBeforePublishingSuccess(t *testing.T) {
+	t.Parallel()
 	server, fixture := newReservationJournalFixture(t, "")
 	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 	workflow := reservationJournalWorkflow(true)
 	workflow.Settings.OnCancel = []Step{reservationProtectionReleaseStep()}
 	cfg := DefaultExecutorConfig("reservation-final-check")
 	cfg.ProjectDir, cfg.RunID = t.TempDir(), "final-expiry"
+	cfg.AgentMailURL = server.URL + "/"
 	executor := NewExecutor(cfg)
 	fixture.beforeInbox = func() {
 		// The last operation is already admitted. Prevent a periodic tick

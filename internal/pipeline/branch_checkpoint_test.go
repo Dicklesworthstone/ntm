@@ -47,6 +47,7 @@ func decisionTestWrite(t *testing.T, root, name, value string) {
 }
 
 func TestBranchDecisionIsDurableBeforeChildDispatch(t *testing.T) {
+	t.Parallel()
 	step := decisionTestStep()
 	step.Branches["a"] = []Step{{ID: "work", Command: "grep -q 'branch_decision' .ntm/pipelines/run-branch-checkpoint.json && printf child > marker"}}
 	_, workflow, cfg := decisionTestExecutor(t, step)
@@ -70,6 +71,7 @@ func TestBranchDecisionIsDurableBeforeChildDispatch(t *testing.T) {
 }
 
 func TestBranchDecisionBinarySelectorKeepsRawDefaultAcrossResume(t *testing.T) {
+	t.Parallel()
 	raw := []byte{'x', 0, 0xff, 0xfe, '\n'}
 	step := Step{ID: "route", Branch: "$(printf x >> selections; cat choice)", Branches: map[string]interface{}{
 		"default": []Step{{ID: "work", Command: "printf x >> body-attempts; test -f release && printf original > marker"}},
@@ -148,6 +150,7 @@ func TestBranchDecisionBinarySelectorKeepsRawDefaultAcrossResume(t *testing.T) {
 }
 
 func TestBranchChildHashMatchesDurableJSONRepresentation(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	result := StepResult{
 		StepID: "route_fanout", Status: StatusCompleted, Output: "done",
@@ -191,6 +194,7 @@ func TestBranchChildHashMatchesDurableJSONRepresentation(t *testing.T) {
 }
 
 func TestBranchDecisionReusesSourceSuccessBeforeAdmissionCheckpoint(t *testing.T) {
+	t.Parallel()
 	step := decisionTestStep()
 	e, workflow, cfg := decisionTestExecutor(t, step)
 	decisionTestWrite(t, cfg.ProjectDir, "choice", "a")
@@ -233,6 +237,7 @@ func TestBranchDecisionReusesSourceSuccessBeforeAdmissionCheckpoint(t *testing.T
 }
 
 func TestBranchDecisionRestartFailedPreservesAdmittedSource(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"failed body", "unrelated failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			step := decisionTestStep()
@@ -297,6 +302,7 @@ func TestBranchDecisionRestartFailedPreservesAdmittedSource(t *testing.T) {
 }
 
 func TestBranchDecisionRestartFailedRefreshesUnadmittedSource(t *testing.T) {
+	t.Parallel()
 	step := decisionTestStep()
 	_, workflow, cfg := decisionTestExecutor(t, step)
 	decisionTestWrite(t, cfg.ProjectDir, "choice", "unknown")
@@ -346,6 +352,7 @@ func TestBranchDecisionRestartFailedRefreshesUnadmittedSource(t *testing.T) {
 }
 
 func TestBranchDecisionResumeDoesNotReevaluateChangedSelector(t *testing.T) {
+	t.Parallel()
 	_, workflow, cfg := decisionTestExecutor(t, decisionTestStep())
 	decisionTestWrite(t, cfg.ProjectDir, "choice", "a")
 	first, err := RunControlledPipeline(context.Background(), workflow, nil, cfg, nil)
@@ -384,6 +391,7 @@ func TestBranchDecisionResumeDoesNotReevaluateChangedSelector(t *testing.T) {
 }
 
 func TestBranchDecisionDefaultRetainsStableAnonymousIdentity(t *testing.T) {
+	t.Parallel()
 	step := Step{ID: "route", Branch: "$(printf x >> selections; cat choice)", Branches: map[string]interface{}{
 		"default": []Step{{Command: "true"}},
 	}}
@@ -410,6 +418,7 @@ func TestBranchDecisionDefaultRetainsStableAnonymousIdentity(t *testing.T) {
 }
 
 func TestBranchDecisionRejectsDefinitionChangesWithoutRewritingEvidence(t *testing.T) {
+	t.Parallel()
 	step := decisionTestStep()
 	e, _, cfg := decisionTestExecutor(t, step)
 	decisionTestWrite(t, cfg.ProjectDir, "choice", "a")
@@ -436,6 +445,7 @@ func TestBranchDecisionRejectsDefinitionChangesWithoutRewritingEvidence(t *testi
 }
 
 func TestBranchDecisionStorageFailurePreventsChildEffects(t *testing.T) {
+	t.Parallel()
 	step := Step{ID: "route", Branch: "a", Branches: map[string]interface{}{
 		"a": []Step{{ID: "work", Command: "printf unsafe > marker"}},
 	}}
@@ -456,6 +466,7 @@ func TestBranchDecisionStorageFailurePreventsChildEffects(t *testing.T) {
 }
 
 func TestBranchDecisionRejectsMalformedStateBeforeResumePrunesIt(t *testing.T) {
+	t.Parallel()
 	for _, damage := range []string{"status", "type", "version", "identity", "hash", "output", "timestamp"} {
 		t.Run(damage, func(t *testing.T) {
 			step := decisionTestStep()
@@ -502,6 +513,7 @@ func TestBranchDecisionRejectsMalformedStateBeforeResumePrunesIt(t *testing.T) {
 }
 
 func TestBranchDecisionRequiresChoiceEvidenceForLegacyChildWork(t *testing.T) {
+	t.Parallel()
 	for _, evidence := range []string{"result", "inflight", "command", "delivery", "foreach", "parallel"} {
 		t.Run(evidence, func(t *testing.T) {
 			step := decisionTestStep()
@@ -533,6 +545,7 @@ func TestBranchDecisionRequiresChoiceEvidenceForLegacyChildWork(t *testing.T) {
 }
 
 func TestBranchDecisionResolvesOnlyWithinItsActualRuntimeScope(t *testing.T) {
+	t.Parallel()
 	branch := Step{ID: "route", Branch: "a", Branches: map[string]interface{}{"a": []Step{{ID: "leaf", Command: "true"}}}}
 	workflow := &Workflow{Steps: []Step{
 		branch,
@@ -559,6 +572,7 @@ func TestBranchDecisionResolvesOnlyWithinItsActualRuntimeScope(t *testing.T) {
 }
 
 func TestBranchDecisionRejectsInvalidBodyBeforePublishing(t *testing.T) {
+	t.Parallel()
 	for i, body := range []interface{}{[]Step{}, []Step{{ID: "same", Command: "true"}, {ID: "same", Command: "true"}}, []Step{{ID: "route", Command: "true"}}} {
 		t.Run(fmt.Sprintf("case_%d", i), func(t *testing.T) {
 			step := Step{ID: "route", Branch: "a", Branches: map[string]interface{}{"a": body}}
@@ -574,6 +588,7 @@ func TestBranchDecisionRejectsInvalidBodyBeforePublishing(t *testing.T) {
 }
 
 func TestBranchDecisionDryRunDoesNotEvaluateOrWrite(t *testing.T) {
+	t.Parallel()
 	_, workflow, cfg := decisionTestExecutor(t, decisionTestStep())
 	cfg.DryRun = true
 	state, err := RunControlledPipeline(context.Background(), workflow, nil, cfg, nil)

@@ -117,9 +117,11 @@ func TestRedactionScanLimitRefusesApprovalBeforeStorage(t *testing.T) {
 }
 
 func TestRedactionScanLimitMetadataNeverUsesIncompleteResults(t *testing.T) {
+	t.Parallel()
 	padding := strings.Repeat("~", redaction.DefaultScanLimits().MaxCandidates+1)
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		t.Run(string(mode), func(t *testing.T) {
+			t.Parallel()
 			cfg := serveScanLimitConfig(mode)
 			requireServeScanLimit(t, padding, cfg)
 			s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: cfg})
@@ -165,9 +167,11 @@ func TestRedactionScanLimitMetadataNeverUsesIncompleteResults(t *testing.T) {
 }
 
 func TestRedactionScanLimitOmitsCachedLocationWithoutRepeatingOperation(t *testing.T) {
+	t.Parallel()
 	location := "/api/v1/jobs/created?label=" + strings.Repeat("~", redaction.DefaultScanLimits().MaxCandidates+1)
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		t.Run(string(mode), func(t *testing.T) {
+			t.Parallel()
 			cfg := serveScanLimitConfig(mode)
 			requireServeScanLimit(t, location, cfg)
 			s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeOff}})
@@ -213,6 +217,7 @@ func TestRedactionScanLimitOmitsCachedLocationWithoutRepeatingOperation(t *testi
 }
 
 func TestRedactionScanLimitWithholdsStreamingFrames(t *testing.T) {
+	t.Parallel()
 	padding := strings.Repeat("~", redaction.DefaultScanLimits().MaxCandidates+1)
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		t.Run(string(mode), func(t *testing.T) {
@@ -288,6 +293,7 @@ func newWiringTestServer(t *testing.T, rcfg *RedactionConfig) *Server {
 }
 
 func TestNewWiresRedactionIntoRESTMiddleware(t *testing.T) {
+	t.Parallel()
 	s := newWiringTestServer(t, &RedactionConfig{
 		Enabled: true,
 		Config:  redaction.Config{Mode: redaction.ModeRedact},
@@ -310,6 +316,7 @@ func TestNewWiresRedactionIntoRESTMiddleware(t *testing.T) {
 }
 
 func TestNewWiresRedactionIntoWSHub(t *testing.T) {
+	t.Parallel()
 	s := newWiringTestServer(t, &RedactionConfig{
 		Enabled: true,
 		Config:  redaction.Config{Mode: redaction.ModeRedact},
@@ -325,6 +332,7 @@ func TestNewWiresRedactionIntoWSHub(t *testing.T) {
 }
 
 func TestNewWithoutRedactionLeavesBothConsumersInert(t *testing.T) {
+	t.Parallel()
 	s := newWiringTestServer(t, nil)
 
 	if s.redactionCfg != nil {
@@ -339,6 +347,7 @@ func TestNewWithoutRedactionLeavesBothConsumersInert(t *testing.T) {
 // from under either consumer, and so the two consumers cannot alias each other
 // (the hazard bd-oekc2 fixed for the since-deleted setters in fa8045ea/0b0f0874).
 func TestNewDeepCopiesRedactionConfig(t *testing.T) {
+	t.Parallel()
 	caller := &RedactionConfig{
 		Enabled: true,
 		Config: redaction.Config{
@@ -803,6 +812,7 @@ func TestRedactionRouterPreservesApprovalStoreAndLogs(t *testing.T) {
 }
 
 func TestRedactionRouterRefusesSecretsBeforeAgentDispatch(t *testing.T) {
+	t.Parallel()
 	s := newWiringTestServer(t, &RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeRedact}})
 	var delivered []string
 	s.sendAgents = func(opts robot.SendOptions) (*robot.SendOutput, error) {
@@ -1155,10 +1165,12 @@ func TestRedactionRouterRejectsMalformedQueryBeforeStorage(t *testing.T) {
 }
 
 func TestRedactionRouterPreservesPermittedURLValues(t *testing.T) {
+	t.Parallel()
 	secret := "ghp_" + strings.Repeat("G", 36)
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		for _, policy := range []string{"ordinary", "allowlisted", "category disabled"} {
 			t.Run(string(mode)+"/"+policy, func(t *testing.T) {
+				t.Parallel()
 				cfg := redaction.Config{Mode: mode}
 				session := "ordinary-session"
 				if policy == "allowlisted" {
@@ -1203,8 +1215,10 @@ func (b *wiringAttentionMarshalBarrier) MarshalJSON() ([]byte, error) {
 }
 
 func TestWSRedactionAttentionFailureDuringReplayStopsSubscription(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []redaction.Mode{redaction.ModeRedact, redaction.ModeBlock} {
 		t.Run(string(mode), func(t *testing.T) {
+			t.Parallel()
 			hub := NewWSHub()
 			defer hub.Stop()
 			hub.setRedactionCfgForTest(&RedactionConfig{Enabled: true, Config: redaction.Config{
@@ -1274,6 +1288,7 @@ func TestWSRedactionAttentionFailureDuringReplayStopsSubscription(t *testing.T) 
 }
 
 func TestWSRedactionAttentionReplacementDiscardsPreparedOldEvent(t *testing.T) {
+	t.Parallel()
 	hub := NewWSHub()
 	defer hub.Stop()
 	hub.setRedactionCfgForTest(&RedactionConfig{Enabled: true, Config: redaction.Config{Mode: redaction.ModeRedact}})

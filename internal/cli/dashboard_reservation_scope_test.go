@@ -67,6 +67,9 @@ func TestDashboardReservationUsesTargetSettingsAndEnvironment(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			t.Setenv("AGENT_MAIL_URL", "")
 			t.Setenv("AGENT_MAIL_TOKEN", "")
+			oldRetry := dashboardReservationRetryBase
+			dashboardReservationRetryBase = 20 * time.Millisecond
+			t.Cleanup(func() { dashboardReservationRetryBase = oldRetry })
 			requests := make(chan string, 4)
 			server := dashboardScopeProbeServer(t, requests)
 			defer server.Close()
@@ -177,6 +180,9 @@ func TestDashboardReservationRetryKeepsItsSettingsSnapshot(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("AGENT_MAIL_URL", "")
 	t.Setenv("AGENT_MAIL_TOKEN", "")
+	oldRetry := dashboardReservationRetryBase
+	dashboardReservationRetryBase = 20 * time.Millisecond
+	t.Cleanup(func() { dashboardReservationRetryBase = oldRetry })
 	requests := make(chan string, 4)
 	server := dashboardScopeProbeServer(t, requests)
 	defer server.Close()
@@ -223,6 +229,9 @@ func TestDashboardReservationEmptyTokenDoesNotInheritProcessCredential(t *testin
 	t.Setenv("AGENT_MAIL_URL", "")
 	t.Setenv("AGENT_MAIL_TOKEN", "")
 	agentmail.UseConfiguredEndpoint("http://127.0.0.1:1/mcp/", "unrelated-process-token")
+	oldRetry := dashboardReservationRetryBase
+	dashboardReservationRetryBase = 20 * time.Millisecond
+	t.Cleanup(func() { dashboardReservationRetryBase = oldRetry })
 	requests := make(chan string, 4)
 	server := dashboardScopeProbeServer(t, requests)
 	defer server.Close()

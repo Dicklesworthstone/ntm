@@ -230,10 +230,15 @@ type OutputCollectorConfig struct {
 	MinOutputs int `json:"min_outputs"`
 }
 
+// DefaultOutputCollectorPollInterval is the default polling cadence for
+// OutputCollectorConfig. Declared as var so mock-pane tests can tune polling
+// without altering the 5s production default.
+var DefaultOutputCollectorPollInterval = 5 * time.Second
+
 // DefaultOutputCollectorConfig returns sensible defaults.
 func DefaultOutputCollectorConfig() OutputCollectorConfig {
 	return OutputCollectorConfig{
-		PollInterval: 5 * time.Second,
+		PollInterval: DefaultOutputCollectorPollInterval,
 		Timeout:      10 * time.Minute,
 		RequireAll:   false,
 		MinOutputs:   1,

@@ -15,6 +15,7 @@ import (
 // files through Run/ResumeWithOptions. They require the complete pipeline
 // package; a helper-only recovery harness is not a substitute for running them.
 func TestResumeForceReplayRunsCompletedLoopSuffix(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"loop_items", "foreach_rounds"} {
 		t.Run(kind, func(t *testing.T) {
 			project := t.TempDir()

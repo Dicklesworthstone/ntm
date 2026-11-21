@@ -444,6 +444,7 @@ printf ready
 }
 
 func TestCommandGroupFallbackSweepsOnlyItsGroup(t *testing.T) {
+	t.Parallel()
 	leader := fallbackTestStartProcess(t, 0)
 	member := fallbackTestStartProcess(t, leader.Process.Pid)
 	other := fallbackTestStartProcess(t, 0)
@@ -457,6 +458,7 @@ func TestCommandGroupFallbackSweepsOnlyItsGroup(t *testing.T) {
 }
 
 func TestCommandGroupFallbackUsesCallerNamespaceMembership(t *testing.T) {
+	t.Parallel()
 	leader := fallbackTestStartProcess(t, 0)
 	member := fallbackTestStartProcess(t, leader.Process.Pid)
 	other := fallbackTestStartProcess(t, 0)
@@ -491,6 +493,7 @@ func TestCommandGroupFallbackUsesCallerNamespaceMembership(t *testing.T) {
 }
 
 func TestCommandGroupFallbackMembershipRacesAndFailures(t *testing.T) {
+	t.Parallel()
 	type groupProbe struct {
 		group int
 		err   error
@@ -523,6 +526,7 @@ func TestCommandGroupFallbackMembershipRacesAndFailures(t *testing.T) {
 		{name: "independent membership failures retain both causes", probes: []groupProbe{{err: syscall.EACCES}}, otherGroupErr: syscall.EIO, wantCauses: []error{syscall.EACCES, syscall.EIO}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			proc := fstest.MapFS{
 				"1/stat":  {},
 				"42/stat": {},
@@ -605,6 +609,7 @@ func TestCommandGroupFallbackMembershipRacesAndFailures(t *testing.T) {
 }
 
 func TestCommandGroupFallbackRechecksMembershipAndClosesHandles(t *testing.T) {
+	t.Parallel()
 	leader := fallbackTestStartProcess(t, 0)
 	other := fallbackTestStartProcess(t, 0)
 	ops := systemCommandGroupFallbackOps()
@@ -712,6 +717,7 @@ func commandGroupTestStat(pid int, state string, group int, threads string) stri
 }
 
 func TestCommandGroupCensusNarrowsAndValidatesEvidence(t *testing.T) {
+	t.Parallel()
 	type process struct {
 		group    int
 		groupErr error
@@ -968,6 +974,7 @@ func TestCommandGroupCensusNarrowsAndValidatesEvidence(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			proc := fstest.MapFS{
 				"self/stat": {Data: []byte("not a numbered process directory")},
 				"uptime":    {Data: []byte("not a process directory")},
@@ -1049,6 +1056,7 @@ func TestCommandGroupCensusNarrowsAndValidatesEvidence(t *testing.T) {
 }
 
 func TestCommandGroupCensusRequiresStableBirthEvidence(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		before    string
@@ -1075,6 +1083,7 @@ func TestCommandGroupCensusRequiresStableBirthEvidence(t *testing.T) {
 		{name: "positive liveness needs no ending counter", before: "processes 123\n", after: "malformed", live: true, wantReads: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			proc := fstest.MapFS{
 				"42/stat": {Data: []byte(commandGroupTestStat(42, "Z", 42, "1"))},
 			}
@@ -1122,6 +1131,7 @@ func TestCommandGroupCensusRequiresStableBirthEvidence(t *testing.T) {
 }
 
 func TestCommandGroupCensusRequiresCompleteProcfsVisibility(t *testing.T) {
+	t.Parallel()
 	withOption := func(option string) string {
 		return strings.TrimSuffix(commandGroupTestMountInfo, "\n") + "," + option + "\n"
 	}
@@ -1168,6 +1178,7 @@ func TestCommandGroupCensusRequiresCompleteProcfsVisibility(t *testing.T) {
 		{name: "mount device changed during census", before: commandGroupTestMountInfo, after: strings.Replace(commandGroupTestMountInfo, "0:2", "0:3", 1), wantMountReads: 2, wantDirReads: 1, wantError: true, wantCause: errCommandGroupMountRace},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			proc := fstest.MapFS{
 				"42/stat": {Data: []byte(commandGroupTestStat(42, "Z", 42, "1"))},
 			}
@@ -1213,6 +1224,7 @@ func TestCommandGroupCensusRequiresCompleteProcfsVisibility(t *testing.T) {
 }
 
 func TestCommandGroupCensusRequiresMatchingPIDNamespace(t *testing.T) {
+	t.Parallel()
 	valid := commandGroupTestSelfStatus()
 	pid := strconv.Itoa(os.Getpid())
 	otherPID := strconv.Itoa(os.Getpid() + 1)
@@ -1246,6 +1258,7 @@ func TestCommandGroupCensusRequiresMatchingPIDNamespace(t *testing.T) {
 		}
 		for _, failAt := range observations {
 			t.Run(fmt.Sprintf("%s/observation_%d", tc.name, failAt), func(t *testing.T) {
+				t.Parallel()
 				// An unrelated ancestor-namespace zombie may have the same
 				// numeric PID and group as the locally owned leader. Even this
 				// apparently quiet record cannot prove settlement without a
@@ -1316,6 +1329,7 @@ func requireCommandPIDFDObservation(t *testing.T) {
 }
 
 func TestCommandLeaderObservationUsesOriginalHandle(t *testing.T) {
+	t.Parallel()
 	requireCommandPIDFDObservation(t)
 	leader := fallbackTestStartProcess(t, 0)
 	other := fallbackTestStartProcess(t, 0)
@@ -1349,9 +1363,11 @@ func TestCommandLeaderObservationUsesOriginalHandle(t *testing.T) {
 }
 
 func TestCommandLeaderObservationRecoveryBudgetStartsOnCancellation(t *testing.T) {
+	t.Parallel()
 	for _, deadline := range []bool{false, true} {
 		t.Run(fmt.Sprintf("deadline_%t", deadline), func(t *testing.T) {
-			const healthyWindow = 2 * commandLeaderObservationRetryTimeout
+			t.Parallel()
+			healthyWindow := 2 * commandLeaderObservationRetryTimeout
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			started := time.Now()
@@ -1386,6 +1402,7 @@ func TestCommandLeaderObservationRecoveryBudgetStartsOnCancellation(t *testing.T
 }
 
 func TestCommandLeaderObservationUnsupportedIdentityRemainsBounded(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		stable bool
@@ -1396,6 +1413,7 @@ func TestCommandLeaderObservationUnsupportedIdentityRemainsBounded(t *testing.T)
 		{name: "waitid unsupported", stable: true, cause: syscall.ENOSYS},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			started := time.Now()
 			err := retryCommandLeaderObservation(context.Background(), 42, tc.stable, func() error { return tc.cause })
 			if !errors.Is(err, tc.cause) {
@@ -1409,8 +1427,10 @@ func TestCommandLeaderObservationUnsupportedIdentityRemainsBounded(t *testing.T)
 }
 
 func TestCommandLeaderObservationLostIdentityEndsRetries(t *testing.T) {
+	t.Parallel()
 	for _, cause := range []error{syscall.ECHILD, syscall.ESRCH} {
 		t.Run(cause.Error(), func(t *testing.T) {
+			t.Parallel()
 			probes := 0
 			err := retryCommandLeaderObservation(context.Background(), 42, true, func() error {
 				probes++
@@ -1493,7 +1513,7 @@ printf complete
 			defer cancel()
 			calls, recovered := 0, false
 			var failedAt time.Time
-			const outage = commandLeaderObservationRetryTimeout + commandPipeDrainTimeout + 2*commandGroupPollInterval
+			outage := commandLeaderObservationRetryTimeout + commandPipeDrainTimeout + 2*commandGroupPollInterval
 			ctx = context.WithValue(ctx, commandLeaderObservationTestHookKey{}, func(pid int) error {
 				calls++
 				if calls >= failAt && !recovered {
@@ -1529,6 +1549,13 @@ printf complete
 }
 
 func TestCommandLeaderObservationRetriesRetainGroupCancellation(t *testing.T) {
+	oldDrain, oldRecovery := commandPipeDrainTimeout, commandSettlementRecoveryTimeout
+	commandPipeDrainTimeout = 300 * time.Millisecond
+	commandSettlementRecoveryTimeout = 400 * time.Millisecond
+	t.Cleanup(func() {
+		commandPipeDrainTimeout = oldDrain
+		commandSettlementRecoveryTimeout = oldRecovery
+	})
 	for _, failAt := range []int{1, 2} {
 		t.Run(fmt.Sprintf("probe_%d", failAt), func(t *testing.T) {
 			dir := t.TempDir()
@@ -1570,6 +1597,7 @@ while [ "$i" -lt 12 ]; do i=$((i+1)); sleep 1; done
 }
 
 func TestCommandLeaderObservationFailureCannotAuthorizeGroupCancellation(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	groupTestFile(t, dir, "child.sh", `printf '%s' "$$" > child.pid
 exec sleep 12
@@ -1618,6 +1646,7 @@ exec sleep 12
 }
 
 func TestCommandLeaderLostOwnershipCannotSignalOnCancellation(t *testing.T) {
+	t.Parallel()
 	for _, cause := range []error{syscall.ECHILD, syscall.ESRCH} {
 		for _, failAt := range []int{1, 2} {
 			t.Run(fmt.Sprintf("%v/probe_%d", cause, failAt), func(t *testing.T) {
@@ -1701,6 +1730,13 @@ printf natural > complete
 }
 
 func TestCommandOwnershipLossAfterGroupObservationRefusesSignalsAndSettlement(t *testing.T) {
+	oldDrain, oldRecovery := commandPipeDrainTimeout, commandSettlementRecoveryTimeout
+	commandPipeDrainTimeout = 400 * time.Millisecond
+	commandSettlementRecoveryTimeout = 500 * time.Millisecond
+	t.Cleanup(func() {
+		commandPipeDrainTimeout = oldDrain
+		commandSettlementRecoveryTimeout = oldRecovery
+	})
 	for _, tc := range []struct {
 		name            string
 		cancel          bool
@@ -1785,6 +1821,7 @@ printf natural
 }
 
 func TestCommandLeaderHandleCancellationPreservesGrace(t *testing.T) {
+	t.Parallel()
 	fault := errors.New("injected pidfd poll failure")
 	for _, tc := range []struct {
 		name       string
@@ -1807,6 +1844,7 @@ func TestCommandLeaderHandleCancellationPreservesGrace(t *testing.T) {
 		{name: "already exited", termErr: syscall.ESRCH},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			grace := 2 * commandGroupPollInterval
 			started := time.Now()
 			var sent []unix.Signal
@@ -1854,6 +1892,7 @@ func TestCommandLeaderHandleCancellationPreservesGrace(t *testing.T) {
 }
 
 func TestCommandLeaderObservationFailureRequiresStableCancellationHandle(t *testing.T) {
+	t.Parallel()
 	leader := fallbackTestStartProcess(t, 0)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -1869,8 +1908,10 @@ func TestCommandLeaderObservationFailureRequiresStableCancellationHandle(t *test
 }
 
 func TestCommandLeaderPersistentObservationFailurePreservesTermHandler(t *testing.T) {
+	t.Parallel()
 	for _, failAt := range []int{1, 2} {
 		t.Run(fmt.Sprintf("probe_%d", failAt), func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			cmd := exec.Command("/bin/sh", "-c", `trap 'sleep 0.15; printf handled > handled; printf finished; exit 0' TERM
 printf ready > ready
@@ -1924,6 +1965,13 @@ while :; do sleep 0.01; done
 }
 
 func TestCommandLeaderExitBeforeSignalProvenance(t *testing.T) {
+	oldDrain, oldRecovery := commandPipeDrainTimeout, commandSettlementRecoveryTimeout
+	commandPipeDrainTimeout = 250 * time.Millisecond
+	commandSettlementRecoveryTimeout = 350 * time.Millisecond
+	t.Cleanup(func() {
+		commandPipeDrainTimeout = oldDrain
+		commandSettlementRecoveryTimeout = oldRecovery
+	})
 	for _, phase := range []string{"initial", "later", "term_probe", "census", "term"} {
 		for _, outcome := range []struct {
 			name string

@@ -21,10 +21,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/worksource"
 )
 
-func init() {
-	rootCmd.AddCommand(newWorkSnapshotCmd())
-}
-
 // Work snapshots have an explicit query surface while legacy status/snapshot
 // row consumers are migrated. This command never reads readiness from those
 // rows: its only cache is a complete, source-bound candidate observation.

@@ -19,9 +19,14 @@ import (
 )
 
 func TestLifecycleRelaunchPreservesSavedLaunch(t *testing.T) {
+	t.Parallel()
+	sem := make(chan struct{}, 16)
 	for _, verb := range []string{"exit", "kill"} {
 		for _, mode := range []string{"saved", "shell-wrapper", "legacy", "corrupt", "batch-corrupt", "omitted-env", "changed-prompt", "metadata-failure", "metadata-race", "delivery-race", "enter-race", "shell-replaced", "shell-busy", "lookup-failure", "provider-changed", "service", "dead", "post-provider-changed", "post-service", "post-dead", "delivery-failure"} {
 			t.Run(verb+"/"+mode, func(t *testing.T) {
+				t.Parallel()
+				sem <- struct{}{}
+				defer func() { <-sem }()
 				root := t.TempDir()
 				path := filepath.Join(root, "tmux")
 				script := `#!/bin/sh
@@ -158,6 +163,12 @@ func TestLifecycleLaunchSpecTransportHelper(t *testing.T) {
 	if root == "" {
 		return
 	}
+	lifecycleExitTimeout = 1000 * time.Millisecond
+	lifecyclePollInterval = 40 * time.Millisecond
+	lifecycleTermGrace = 400 * time.Millisecond
+	lifecycleKillGrace = 200 * time.Millisecond
+	lifecycleReconcileTimeout = 1000 * time.Millisecond
+	tmux.DefaultClient.MaxSendDelay = 2 * time.Millisecond
 	mode, verb := os.Getenv("NTM_LIFECYCLE_SPEC_TEST_MODE"), os.Getenv("NTM_LIFECYCLE_SPEC_TEST_VERB")
 	fixture := startLifecycleShellProcess(t, root, "single", true)
 	t.Setenv("NTM_LIFECYCLE_SPEC_TEST_SHELL_PID", strconv.Itoa(fixture.PID))

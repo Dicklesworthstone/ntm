@@ -23,7 +23,7 @@ type SessionCreateInput struct {
 	Panes   int    `json:"panes,omitempty"`
 }
 
-func init() {
+func registerCreateKernel() {
 	kernel.MustRegister(kernel.Command{
 		Name:        "sessions.create",
 		Description: "Create a tmux session",

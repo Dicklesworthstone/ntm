@@ -195,6 +195,7 @@ type placeholderHit struct {
 }
 
 func TestNoNewPlaceholders(t *testing.T) {
+	t.Parallel()
 	t.Helper()
 
 	repoRoot := findRepoRoot(t)

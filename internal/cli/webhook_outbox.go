@@ -11,10 +11,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/webhook"
 )
 
-func init() {
-	rootCmd.AddCommand(newWebhookOutboxCmd())
-}
-
 func newWebhookOutboxCmd() *cobra.Command {
 	var project string
 	redactConfig := func() *redaction.Config {

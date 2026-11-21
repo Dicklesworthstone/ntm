@@ -42,6 +42,13 @@ func CommonDir(ctx context.Context, dir string) (string, error) {
 		if ctxErr := commandCtx.Err(); ctxErr != nil {
 			return "", ctxErr
 		}
+		// Only retry the legacy relative form when older git (<2.31) rejected
+		// --path-format; if git already reported "not a git repository", a
+		// second git subprocess on the same directory cannot succeed.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && strings.Contains(strings.ToLower(string(exitErr.Stderr)), "not a git repository") {
+			return "", err
+		}
 		// Older git (<2.31) lacks --path-format; retry with the relative form.
 		output, err = commonDirGitOutput(commandCtx, dir, "rev-parse", "--git-common-dir")
 		if err != nil {

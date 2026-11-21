@@ -124,6 +124,7 @@ func TestDashboardReservationStartupCancellation(t *testing.T) {
 }
 
 func TestDashboardReservationStartupRejectsLateProbeSuccess(t *testing.T) {
+	t.Parallel()
 	// The 2s probe budget expires independently of the still-live dashboard.
 	// A non-cooperative probe returning success after it expires cannot start
 	// the watcher. Follow it with a real successful retry.

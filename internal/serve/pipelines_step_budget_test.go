@@ -17,6 +17,7 @@ import (
 )
 
 func TestPipelineResumeStepBudgetsHTTPAndJobs(t *testing.T) {
+	t.Parallel()
 	for _, field := range []string{"max_step_count_total", "max_materialized_step_nodes"} {
 		for _, asJob := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/job=%t", field, asJob), func(t *testing.T) {

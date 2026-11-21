@@ -24,7 +24,9 @@ func workflowCommandTmuxFixture(t *testing.T, scenario string) (projectRoot, log
 	isolateIdentityDirs(t)
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	oldConfig, oldJSON, oldClient := cfg, jsonOutput, tmux.DefaultClient
-	cfg, jsonOutput, tmux.DefaultClient = config.Default(), true, tmux.NewClient("")
+	fastClient := tmux.NewClient("")
+	fastClient.MaxSendDelay = 2 * time.Millisecond
+	cfg, jsonOutput, tmux.DefaultClient = config.Default(), true, fastClient
 	cfg.AgentMail.Enabled = false
 	cfg.CASS.Context.Enabled = false
 	t.Cleanup(func() { cfg, jsonOutput, tmux.DefaultClient = oldConfig, oldJSON, oldClient })
@@ -401,6 +403,7 @@ func assertWorkflowTerminalJSONFailure(t *testing.T, stdout string, runErr error
 }
 
 func TestCoordinationIcon(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -426,6 +429,7 @@ func TestCoordinationIcon(t *testing.T) {
 }
 
 func TestFormatTrigger(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
 		name    string
@@ -500,6 +504,7 @@ func TestFormatTrigger(t *testing.T) {
 }
 
 func TestFormatTriggerContains(t *testing.T) {
+	t.Parallel()
 
 	// Test that output contains expected substrings for complex cases
 	tests := []struct {

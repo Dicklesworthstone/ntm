@@ -71,6 +71,7 @@ func parseNDJSONLines(t *testing.T, out string) []map[string]interface{} {
 // collection fails (nonexistent session): a success:false frame with an
 // error, agents, and summary — the stream is NEVER silent under --json.
 func TestActivityWatchNDJSONLoop_ErrorFramesNeverSilent(t *testing.T) {
+	t.Parallel()
 	session := fmt.Sprintf("ntm-ndjson-unit-%d", os.Getpid())
 	var buf bytes.Buffer
 
@@ -103,6 +104,7 @@ func TestActivityWatchNDJSONLoop_ErrorFramesNeverSilent(t *testing.T) {
 
 // The single-shot --json envelope and the NDJSON frames share one shape.
 func TestBuildActivityJSONEnvelope_Shape(t *testing.T) {
+	t.Parallel()
 	since := time.Now().Add(-90 * time.Second)
 	result := &activityResult{
 		Session:    "shape-session",
@@ -270,6 +272,7 @@ func TestRunExtract_CopyApplyUnderJSON_LoudUnsupportedCombination(t *testing.T) 
 // sends; agents registered via `ntm add` (agent_add events) must be counted
 // while agent_spawn events stay excluded (already covered by session_create).
 func TestAggregateStats_CharsSentEqualsPayloadAndAddCounted(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	cutoff := now.AddDate(0, 0, -30)
 
@@ -325,6 +328,7 @@ func TestAggregateStats_CharsSentEqualsPayloadAndAddCounted(t *testing.T) {
 
 // BuildAnalyticsSessionDetails counts add-registered agents into the session summary.
 func TestBuildSessionDetails_CountsAgentAdd(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	testEvents := []events.Event{
 		{Timestamp: now.Add(-2 * time.Hour), Type: events.EventSessionCreate, Session: "s", Data: map[string]interface{}{"claude_count": float64(2)}},

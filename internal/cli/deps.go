@@ -77,7 +77,7 @@ type DepsInput struct {
 	Verbose bool `json:"verbose,omitempty"`
 }
 
-func init() {
+func registerDepsKernel() {
 	kernel.MustRegister(kernel.Command{
 		Name:        "core.deps",
 		Description: "Check required dependencies and optional agent CLIs",
@@ -228,6 +228,23 @@ func builtinDepChecks() []depCheck {
 }
 
 func runDeps(verbose bool) error {
+	// In text mode we also display flywheel health details; start probing those
+	// concurrently with core.deps so both complete in one round-trip instead of
+	// probing flywheel tools twice back-to-back.
+	var (
+		flywheelInfoCh chan map[tools.ToolName]*tools.ToolInfo
+		flywheelCancel context.CancelFunc
+	)
+	if !IsJSONOutput() {
+		var fwCtx context.Context
+		fwCtx, flywheelCancel = context.WithTimeout(context.Background(), 10*time.Second)
+		defer flywheelCancel()
+		flywheelInfoCh = make(chan map[tools.ToolName]*tools.ToolInfo, 1)
+		go func() {
+			flywheelInfoCh <- probeFlywheelToolInfo(fwCtx)
+		}()
+	}
+
 	result, err := kernel.Run(context.Background(), "core.deps", DepsInput{Verbose: verbose})
 	if err != nil {
 		if IsJSONOutput() {
@@ -352,12 +369,12 @@ func runDeps(verbose bool) error {
 
 	// Services section
 	fmt.Printf("%sServices:%s\n\n", "\033[1m", "\033[0m")
-	checkAgentMail(t, verbose)
+	renderAgentMailStatus(t, depByName["Agent Mail"].Installed, verbose)
 	fmt.Println()
 
 	// Flywheel Tools section
 	fmt.Printf("%sFlywheel Tools:%s\n\n", "\033[1m", "\033[0m")
-	flywheelCount := checkFlywheelTools(t, verbose)
+	flywheelCount := renderFlywheelTools(t, <-flywheelInfoCh, verbose)
 	fmt.Println()
 
 	// Summary
@@ -402,31 +419,54 @@ func coerceDepsResponse(result any) (output.DepsResponse, error) {
 func buildDepsResponse() (output.DepsResponse, error) {
 	deps := defaultDepChecks()
 
-	// Collect all dependency statuses
-	var depResults []output.DependencyCheck
+	// Collect core dependency checks, Agent Mail liveness, and optional flywheel
+	// tools concurrently while preserving deterministic output order.
+	baseResults := make([]output.DependencyCheck, len(deps))
+	var (
+		agentMailAvailable bool
+		flywheelResults    []output.DependencyCheck
+		wg                 sync.WaitGroup
+	)
+	for i, dep := range deps {
+		wg.Add(1)
+		go func(idx int, dep depCheck) {
+			defer wg.Done()
+			status, version, path := checkDepWithPath(dep)
+			baseResults[idx] = output.DependencyCheck{
+				Name:      dep.Name,
+				Required:  dep.Required,
+				Installed: status == "found",
+				Version:   version,
+				Path:      path,
+				Category:  dep.Category,
+			}
+		}(i, dep)
+	}
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		agentMailAvailable = probeAgentMailAvailable(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		flywheelResults = flywheelDependencyChecks(ctx)
+	}()
+	wg.Wait()
+
 	missingRequired := false
-
-	for _, dep := range deps {
-		status, version, path := checkDepWithPath(dep)
-		installed := status == "found"
-
-		if !installed && dep.Required {
+	for _, r := range baseResults {
+		if !r.Installed && r.Required {
 			missingRequired = true
+			break
 		}
-
-		depResults = append(depResults, output.DependencyCheck{
-			Name:      dep.Name,
-			Required:  dep.Required,
-			Installed: installed,
-			Version:   version,
-			Path:      path,
-			Category:  dep.Category,
-		})
 	}
 
-	// Add Agent Mail as a service check
-	client := newAgentMailClient("")
-	agentMailAvailable := client.IsAvailable()
+	depResults := make([]output.DependencyCheck, 0, len(baseResults)+1+len(flywheelResults))
+	depResults = append(depResults, baseResults...)
 	depResults = append(depResults, output.DependencyCheck{
 		Name:      "Agent Mail",
 		Required:  false,
@@ -434,12 +474,7 @@ func buildDepsResponse() (output.DepsResponse, error) {
 		Path:      agentmail.DefaultBaseURL,
 		Category:  "Services",
 	})
-
-	// Optional flywheel tools, so `ntm deps --json` reports the same tools
-	// as the text output and the README's Requirements list (#352).
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	depResults = append(depResults, flywheelDependencyChecks(ctx)...)
+	depResults = append(depResults, flywheelResults...)
 
 	return output.DepsResponse{
 		TimestampedResponse: output.NewTimestamped(),
@@ -448,11 +483,21 @@ func buildDepsResponse() (output.DepsResponse, error) {
 	}, nil
 }
 
-// checkAgentMail checks Agent Mail server availability
-func checkAgentMail(t theme.Theme, verbose bool) {
+// probeAgentMailAvailable checks Agent Mail availability via the single-shot
+// liveness endpoint so a down server resolves immediately instead of spending
+// the full mutating-verb retry budget, escalating to IsAvailableContext only
+// when the liveness route cannot decide.
+func probeAgentMailAvailable(ctx context.Context) bool {
 	client := newAgentMailClient("")
+	if available, decided := client.QuickAvailable(ctx); decided {
+		return available
+	}
+	return client.IsAvailableContext(ctx)
+}
 
-	if client.IsAvailable() {
+// renderAgentMailStatus displays Agent Mail server availability from the core.deps probe.
+func renderAgentMailStatus(t theme.Theme, available, verbose bool) {
+	if available {
 		fmt.Printf("  %s✓%s %-15s", colorize(t.Success), "\033[0m", "Agent Mail")
 		if verbose {
 			fmt.Printf(" %srunning (%s)%s", "\033[2m", agentmail.DefaultBaseURL, "\033[0m")
@@ -467,12 +512,8 @@ func checkAgentMail(t theme.Theme, verbose bool) {
 	}
 }
 
-// checkFlywheelTools checks and displays flywheel ecosystem tools (bv, bd, caam, etc.)
-func checkFlywheelTools(t theme.Theme, verbose bool) int {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	infoMap := probeFlywheelToolInfo(ctx)
+// renderFlywheelTools displays flywheel ecosystem tools (bv, bd, caam, etc.)
+func renderFlywheelTools(t theme.Theme, infoMap map[tools.ToolName]*tools.ToolInfo, verbose bool) int {
 	installedCount := 0
 
 	for _, toolName := range flywheelDepTools {
@@ -622,6 +663,18 @@ func flywheelDependencyChecks(ctx context.Context) []output.DependencyCheck {
 	return rows
 }
 
+type depVersionCacheKey struct {
+	path        string
+	modUnix     int64
+	size        int64
+	versionArgs string
+}
+
+var (
+	depVersionCacheMu sync.RWMutex
+	depVersionCache   = map[depVersionCacheKey]string{}
+)
+
 // checkDepWithPath checks if a dependency is installed and returns its status, version, and path
 func checkDepWithPath(dep depCheck) (status string, version string, path string) {
 	// Check if command exists
@@ -634,6 +687,28 @@ func checkDepWithPath(dep depCheck) (status string, version string, path string)
 
 	// Get version if possible
 	if len(dep.VersionArgs) > 0 {
+		var cacheKey depVersionCacheKey
+		cacheable := false
+		tmpRoot := filepath.Clean(os.TempDir())
+		cleanPath := filepath.Clean(foundPath)
+		if !strings.HasPrefix(cleanPath, tmpRoot+string(os.PathSeparator)) && cleanPath != tmpRoot {
+			if info, statErr := os.Stat(foundPath); statErr == nil && info.Mode().IsRegular() {
+				cacheKey = depVersionCacheKey{
+					path:        cleanPath,
+					modUnix:     info.ModTime().UnixNano(),
+					size:        info.Size(),
+					versionArgs: strings.Join(dep.VersionArgs, "\x00"),
+				}
+				cacheable = true
+				depVersionCacheMu.RLock()
+				cached, ok := depVersionCache[cacheKey]
+				depVersionCacheMu.RUnlock()
+				if ok {
+					return "found", cached, path
+				}
+			}
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), depVersionTimeout)
 		defer cancel()
 
@@ -644,6 +719,11 @@ func checkDepWithPath(dep depCheck) (status string, version string, path string)
 		// Some commands print version info but exit non-zero (or get killed on timeout).
 		// Return any output we got, otherwise fall back to "installed".
 		if s := sanitizeDependencyVersion(string(out)); s != "" {
+			if cacheable {
+				depVersionCacheMu.Lock()
+				depVersionCache[cacheKey] = s
+				depVersionCacheMu.Unlock()
+			}
 			return "found", s, path
 		}
 		_ = err

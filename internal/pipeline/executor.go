@@ -137,10 +137,14 @@ type ExecutorConfig struct {
 	DefaultTimeout   time.Duration // Default step timeout (default: 5m)
 	GlobalTimeout    time.Duration // Maximum workflow runtime (default: 30m)
 	ProgressInterval time.Duration // Interval for progress updates (default: 1s)
+	IdleDebounce     time.Duration // Optional initial wait before idle polling (0 uses 2s default)
+	IdlePollInterval time.Duration // Optional idle poll tick override (0 uses ProgressInterval)
 	DryRun           bool          // If true, validate but don't execute
 	Verbose          bool          // Enable verbose logging
 	RunID            string        // Optional: pre-generated run ID (if empty, one is generated)
+	AgentMailURL     string        // Optional: override Agent Mail base URL (empty uses default/env)
 	BeadQueryRunBr   func(ctx context.Context, args []string) ([]byte, error)
+	brBin            string // Optional: override br executable path while preserving real subprocess capture
 
 	// PaneLockWait bounds how long a dispatch waits for ANOTHER ntm process to
 	// release the target pane before failing the step as not-dispatched
@@ -737,7 +741,7 @@ func (e *Executor) runOnCancelSteps(workflow *Workflow) {
 
 		cleanupCtx := context.WithValue(finalizationContext(context.Background()), checkpointCleanupKey{}, true)
 		stepCtx, stepCancel := context.WithTimeout(cleanupCtx, cleanupTimeout)
-		result := e.executeStep(stepCtx, &step, &cleanupWorkflow)
+		result := e.executeStep(withCallerPersistsSettledCommand(stepCtx, step.ID), &step, &cleanupWorkflow)
 		stepCancel()
 		if !e.runtimeIDAdmitted(step.ID) {
 			continue
@@ -1010,7 +1014,7 @@ scheduler:
 			inFlight[stepID] = true
 			dispatched++
 			go func(s *Step) {
-				result := e.executeStep(stepCtx, s, workflow)
+				result := e.executeStep(withCallerPersistsSettledCommand(stepCtx, s.ID), s, workflow)
 				done <- stepDone{stepID: s.ID, step: s, result: result}
 			}(step)
 		}
@@ -1082,11 +1086,14 @@ func (e *Executor) resumeSuccessHookStep(ctx context.Context, step *Step, workfl
 	return result, true
 }
 
+type callerPersistsSettledCommandKey struct{}
+
+func withCallerPersistsSettledCommand(ctx context.Context, stepID string) context.Context {
+	return context.WithValue(ctx, callerPersistsSettledCommandKey{}, stepID)
+}
+
 // executeStep runs a single step with retry logic
 func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workflow) StepResult {
-	if err := e.admitRuntimeIDs(ctx, []string{step.ID}); err != nil {
-		return stepAdmissionResult(step, err)
-	}
 	// Releasing an already-expired lease is valid cleanup. Its own identity
 	// check owns admission. Reset this marker for every child so success or
 	// recovery hooks cannot inherit a release parent's exemption.
@@ -1097,16 +1104,23 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 		StartedAt: time.Now(),
 		Attempts:  0,
 	}
-	if e.stopBeforeDispatch(ctx, &result) {
-		if result.Status == StatusCancelled {
-			// No kind executor has run. Preserve that affirmative evidence
-			// without weakening resume's independent launch-receipt checks.
-			result.SkipKind = SkipKindCancelledBeforeDispatch
-		}
+	deferPersist := e.canDeferAdmissionPersistForCommand(step)
+	stopped, admittedNew, err := e.admitStepAndMarkInFlight(ctx, step, &result, deferPersist)
+	if err != nil {
+		return stepAdmissionResult(step, err)
+	}
+	if stopped {
 		return result
 	}
-	e.markStepInFlight(step.ID, stepKind(step), -1)
-	e.persistState()
+	if deferPersist {
+		deferred := &deferredAdmissionState{admittedNew: admittedNew, pending: true}
+		ctx = context.WithValue(ctx, deferredAdmissionPersistKey{}, deferred)
+		defer func() {
+			if deferred.pending && deferred.admittedNew {
+				_ = e.persistState()
+			}
+		}()
+	}
 	defer e.clearStepInFlight(step.ID)
 	if e.stopBeforeDispatch(ctx, &result) {
 		if result.Status == StatusCancelled {
@@ -1615,6 +1629,9 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 			Version: commandExecutionVersion, StepID: step.ID, StepHash: stepHash,
 			Status: commandExecutionSettled, StartedAt: result.StartedAt, SettledAt: time.Now(), Result: result,
 		}
+		if deferred, _ := ctx.Value(deferredAdmissionPersistKey{}).(*deferredAdmissionState); deferred != nil {
+			deferred.pending = false
+		}
 		if err := e.saveCommandExecution(record); err != nil {
 			result.Error = stepRuntimeError(step, StepKindCommand, "checkpoint", err.Error(), "restore durable storage before recovering the failed command", "")
 		}
@@ -1793,6 +1810,9 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		StartedAt:       result.StartedAt,
 	}
 	if journalCommand {
+		if deferred, _ := ctx.Value(deferredAdmissionPersistKey{}).(*deferredAdmissionState); deferred != nil {
+			deferred.pending = false
+		}
 		if err := e.saveCommandExecution(record); err != nil {
 			result.Status, result.FinishedAt = StatusFailed, time.Now()
 			result.Error = stepRuntimeError(step, StepKindCommand, "checkpoint", err.Error(), "restore durable storage before retrying", "")
@@ -1816,6 +1836,15 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 			// actual failure without leaving a misleading running receipt or
 			// granting the replay permission carried only by settled receipts.
 			record.Status, record.SettledAt = commandExecutionUnresolved, time.Time{}
+		}
+		// When the direct caller (finishStep, runPostPipelineSteps,
+		// runOnCancelSteps) is guaranteed to persist state immediately after
+		// executeStep returns with no intervening OnSuccess hooks, fold the
+		// settled command receipt and step result into that single atomic
+		// checkpoint write.
+		if callerStep, _ := ctx.Value(callerPersistsSettledCommandKey{}).(string); commandSettled && result.Status == StatusCompleted && len(step.OnSuccess) == 0 && callerStep == step.ID {
+			_ = e.recordCommandExecutionInMemory(record)
+			return
 		}
 		// A failed save stops the workflow through its sticky checkpoint error,
 		// while retaining the actual command outcome in the returned state.
@@ -3612,7 +3641,6 @@ func (e *Executor) evaluateConditionCtx(ctx context.Context, condition string) (
 	if overrides := roundOverridesFromCtx(ctx); overrides != nil {
 		sub.SetLocalOverrides(overrides)
 	}
-	condition = e.substituteRuntimeVariables(condition)
 	return EvaluateCondition(condition, sub)
 }
 
@@ -3687,12 +3715,23 @@ func submissionFailureMessage(err error) string {
 // idleness is meaningful evidence of completion for a prompt that is actually
 // running, and meaningless for one still sitting in the composer (ntm#320).
 func (e *Executor) waitForIdle(ctx context.Context, paneID string, timeout time.Duration, evidence ...func() (bool, error)) error {
-	ticker := time.NewTicker(e.config.ProgressInterval)
+	pollInterval := e.config.IdlePollInterval
+	if pollInterval <= 0 {
+		pollInterval = e.config.ProgressInterval
+		if StageIdlePollInterval > 0 && (pollInterval <= 0 || StageIdlePollInterval < pollInterval) {
+			pollInterval = StageIdlePollInterval
+		}
+	}
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
-	debounce := time.NewTimer(2 * time.Second)
+	debounceDuration := e.config.IdleDebounce
+	if debounceDuration <= 0 {
+		debounceDuration = DefaultIdleDebounce
+	}
+	debounce := time.NewTimer(debounceDuration)
 	defer debounce.Stop()
 
 	// Initial debounce to let agent start working

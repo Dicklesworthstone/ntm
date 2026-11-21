@@ -357,6 +357,8 @@ type accountRotationRunner interface {
 	Close() error
 }
 
+var accountRotationPollIntervalOverride time.Duration
+
 var newAccountRotationRunner = func(session string, options coordinator.AccountFailoverOptions) (accountRotationRunner, error) {
 	return coordinator.NewAccountFailoverMonitor(session, options)
 }
@@ -435,6 +437,9 @@ func runAccountRotationMonitor(ctx context.Context, manifest *resilience.SpawnMa
 	interval := time.Duration(options.PollSeconds) * time.Second
 	if interval < time.Second {
 		interval = 5 * time.Second
+	}
+	if accountRotationPollIntervalOverride > 0 {
+		interval = accountRotationPollIntervalOverride
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

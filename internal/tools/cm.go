@@ -39,19 +39,21 @@ func (a *CMAdapter) Detect() (string, bool) {
 
 // Version returns the installed cm version
 func (a *CMAdapter) Version(ctx context.Context) (Version, error) {
-	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
-	defer cancel()
+	return cachedToolVersion(a.BinaryName(), func(bin string) (Version, error) {
+		ctx, cancel := context.WithTimeout(ctx, a.Timeout())
+		defer cancel()
 
-	cmd := exec.CommandContext(ctx, a.BinaryName(), "--version")
-	cmd.WaitDelay = time.Second
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
+		cmd := exec.CommandContext(ctx, bin, "--version")
+		cmd.WaitDelay = time.Second
+		var stdout bytes.Buffer
+		cmd.Stdout = &stdout
 
-	if err := cmd.Run(); err != nil {
-		return Version{}, fmt.Errorf("failed to get cm version: %w", err)
-	}
+		if err := cmd.Run(); err != nil {
+			return Version{}, fmt.Errorf("failed to get cm version: %w", err)
+		}
 
-	return ParseStandardVersion(stdout.String())
+		return ParseStandardVersion(stdout.String())
+	})
 }
 
 // Capabilities returns cm capabilities

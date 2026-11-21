@@ -41,15 +41,11 @@ import (
 //     identity) are NEVER cleared or masked into StatusCompleted by Resume() or
 //     on_failure fallback handlers.
 func TestPipelineCrashRecoveryModelCheck(t *testing.T) {
+	t.Parallel()
 	totalSchedules := 500
 	if testing.Short() {
 		totalSchedules = 100
 	}
-
-	server, fixture := newReservationJournalFixture(t, "")
-	t.Cleanup(server.Close)
-	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
-	t.Setenv("AGENT_MAIL_TOKEN", "")
 
 	baseDir := t.TempDir()
 
@@ -69,37 +65,87 @@ func TestPipelineCrashRecoveryModelCheck(t *testing.T) {
 		i4Schedules int
 	)
 
+	// Partition schedules deterministically while preserving exact per-seed RNG
+	// sequences: all I1, I2, and I3 seeds run concurrently across a bounded worker
+	// pool (each worker owns its own httptest Agent Mail fixture via
+	// ExecutorConfig.AgentMailURL, with zero process-global env mutation),
+	// overlapping with SQLite-serialized I4 seeds. Every seed executes the exact
+	// same DAG, fault schedule, and invariant checks.
+	type parallelJob struct {
+		kind     int // 1 = I1, 2 = I2, 3 = I3
+		useLease bool
+		seed     int64
+		rng      *rand.Rand
+	}
+	type serialJob struct {
+		seed int64
+		rng  *rand.Rand
+	}
+	var (
+		parJobs []parallelJob
+		serJobs []serialJob
+	)
 	for seed := int64(1); seed <= int64(totalSchedules); seed++ {
 		rng := rand.New(rand.NewSource(seed))
 		mode := rng.Intn(10)
 		switch {
 		case mode < 4:
-			// 40% (~200 schedules): Multi-crash + multi-Resume() over randomized
-			// 3..8-step DAGs combining Foreach, Branch, FileReservation, OnSuccess,
-			// plus shell command side effects on every 5th seed -> verifies I1.
 			i1Schedules++
-			runModelCheckCrashResumeI1(t, rng, seed, baseDir, fixture)
+			useLease := rng.Intn(2) == 1
+			parJobs = append(parJobs, parallelJob{kind: 1, useLease: useLease, seed: seed, rng: rng})
 		case mode < 7:
-			// 30% (~150 schedules): External Agent Mail lease revocation mid-DAG
-			// or between partial FileReservationRelease(globA) and OnSuccess hook
-			// requiring globB -> verifies I2 (and I1 prefix at-most-once).
 			i2Schedules++
-			runModelCheckLeaseRevocationI2(t, rng, seed, baseDir, fixture)
+			parJobs = append(parJobs, parallelJob{kind: 2, seed: seed, rng: rng})
 		case mode < 9:
-			// 20% (~100 schedules): Tampered AgentDelivery / CommandExecution
-			// receipt & parent identity hashes (including OnFailure fallback with
-			// suppress_failure=true) -> verifies I3 monotonic integrity failure.
 			i3Schedules++
-			runModelCheckTamperedReceiptsI3(t, rng, seed, baseDir)
+			parJobs = append(parJobs, parallelJob{kind: 3, seed: seed, rng: rng})
 		default:
-			// 10% (~50 schedules): Concurrent duplicate --op-id retries with
-			// identical vs mutated payload bindings -> verifies I4 idempotency
-			// determinism & exact-once dispatch ownership.
 			i4Schedules++
-			runModelCheckIdempotencyDeterminismI4(t, rng, seed, idemStore)
+			serJobs = append(serJobs, serialJob{seed: seed, rng: rng})
 		}
-		server.CloseClientConnections()
 	}
+
+	jobCh := make(chan parallelJob, len(parJobs))
+	for _, job := range parJobs {
+		jobCh <- job
+	}
+	close(jobCh)
+
+	var parWG sync.WaitGroup
+	workers := 16
+	if len(parJobs) < workers {
+		workers = len(parJobs)
+	}
+	for w := 0; w < workers; w++ {
+		server, fixture := newReservationJournalFixture(t, "")
+		mailURL := server.URL + "/"
+		parWG.Add(1)
+		go func() {
+			defer parWG.Done()
+			defer server.Close()
+			for job := range jobCh {
+				switch job.kind {
+				case 1:
+					if job.useLease {
+						runModelCheckCrashResumeI1(t, job.rng, job.seed, baseDir, fixture, mailURL, true)
+						server.CloseClientConnections()
+					} else {
+						runModelCheckCrashResumeI1(t, job.rng, job.seed, baseDir, nil, "", false)
+					}
+				case 2:
+					runModelCheckLeaseRevocationI2(t, job.rng, job.seed, baseDir, fixture, mailURL)
+					server.CloseClientConnections()
+				case 3:
+					runModelCheckTamperedReceiptsI3(t, job.rng, job.seed, baseDir)
+				}
+			}
+		}()
+	}
+
+	for _, job := range serJobs {
+		runModelCheckIdempotencyDeterminismI4(t, job.rng, job.seed, idemStore)
+	}
+	parWG.Wait()
 
 	t.Logf("modelcheck summary: total_schedules=%d i1_crash_resume=%d i2_lease_revocation=%d i3_tampered_receipts=%d i4_idempotency=%d",
 		totalSchedules, i1Schedules, i2Schedules, i3Schedules, i4Schedules)
@@ -153,16 +199,20 @@ func runModelCheckCrashResumeI1(
 	seed int64,
 	baseDir string,
 	fixture *reservationJournalFixture,
+	mailURL string,
+	useLease bool,
 ) {
 	t.Helper()
-	resetSharedMailFixture(fixture)
+	if useLease && fixture != nil {
+		resetSharedMailFixture(fixture)
+	}
 
 	projDir := filepath.Join(baseDir, fmt.Sprintf("i1-seed-%d", seed))
 	if err := os.MkdirAll(projDir, 0o700); err != nil {
-		t.Fatalf("[seed=%d] mkdir: %v", seed, err)
+		t.Errorf("[seed=%d] mkdir: %v", seed, err)
+		return
 	}
 
-	useLease := rng.Intn(2) == 1
 	useForeach := rng.Intn(2) == 1
 	useBranch := rng.Intn(2) == 1
 	useHook := rng.Intn(2) == 1
@@ -330,18 +380,21 @@ func runModelCheckCrashResumeI1(
 	}
 	frozen, wfPath, err := SnapshotWorkflow(context.Background(), projDir, workflow)
 	if err != nil {
-		t.Fatalf("[seed=%d] SnapshotWorkflow: %v", seed, err)
+		t.Errorf("[seed=%d] SnapshotWorkflow: %v", seed, err)
+		return
 	}
 
 	cfg := DefaultExecutorConfig("mc-session")
 	cfg.ProjectDir = projDir
 	cfg.RunID = fmt.Sprintf("mc-run-%d", seed)
 	cfg.WorkflowFile = wfPath
+	cfg.AgentMailURL = mailURL
 	cfg.DefaultTimeout = 5 * time.Second
 	cfg.GlobalTimeout = 15 * time.Second
 
+	paneID := fmt.Sprintf("%%%d", 17000+seed)
 	client := NewMockTmuxClient(tmux.Pane{
-		ID:       "%17",
+		ID:       paneID,
 		PID:      4242,
 		Index:    1,
 		NTMIndex: 1,
@@ -349,9 +402,10 @@ func runModelCheckCrashResumeI1(
 		Command:  "claude",
 		Width:    120,
 	})
-	t.Cleanup(client.Reset)
-	if err := client.SetPaneOutput("%17", "READY\n"); err != nil {
-		t.Fatalf("[seed=%d] SetPaneOutput: %v", seed, err)
+	defer client.Reset()
+	if err := client.SetPaneOutput(paneID, "READY\n"); err != nil {
+		t.Errorf("[seed=%d] SetPaneOutput: %v", seed, err)
+		return
 	}
 
 	// Alternate between between-step crashes (triggered on step_complete progress
@@ -425,13 +479,15 @@ func runModelCheckCrashResumeI1(
 	for attempt := 1; attempt <= 5 && (state == nil || state.Status != StatusCompleted); attempt++ {
 		prior, loadErr := LoadState(projDir, cfg.RunID)
 		if loadErr != nil {
-			t.Fatalf("[seed=%d attempt=%d] LoadState after crash (runErr=%v): %v", seed, attempt, runErr, loadErr)
+			t.Errorf("[seed=%d attempt=%d] LoadState after crash (runErr=%v): %v", seed, attempt, runErr, loadErr)
+			return
 		}
 		// I1 intermediate check: no effect token may ever exceed count 1!
-		pastes, _ := client.PasteHistory("%17")
+		pastes, _ := client.PasteHistory(paneID)
 		for tok, cnt := range extractEffectTokens(pastes) {
 			if cnt > 1 {
-				t.Fatalf("[seed=%d attempt=%d] I1 VIOLATION mid-resume: effect %q executed %d times", seed, attempt, tok, cnt)
+				t.Errorf("[seed=%d attempt=%d] I1 VIOLATION mid-resume: effect %q executed %d times", seed, attempt, tok, cnt)
+				return
 			}
 		}
 
@@ -446,20 +502,24 @@ func runModelCheckCrashResumeI1(
 			probeExec := NewExecutor(cfg)
 			probeExec.SetTmuxClient(client)
 			if probeState, probeErr := probeExec.Resume(context.Background(), frozen, prior, nil); probeErr == nil || (probeState != nil && probeState.Status == StatusCompleted) {
-				t.Fatalf("[seed=%d attempt=%d] I3 VIOLATION: ordinary Resume() bypassed uncertain sending fence on %q!", seed, attempt, stepID)
+				t.Errorf("[seed=%d attempt=%d] I3 VIOLATION: ordinary Resume() bypassed uncertain sending fence on %q!", seed, attempt, stepID)
+				return
 			}
 			entry, err := agentDeliveryRecoveryEntry(prior, rec)
 			if err != nil {
-				t.Fatalf("[seed=%d attempt=%d] agentDeliveryRecoveryEntry(%q): %v", seed, attempt, stepID, err)
+				t.Errorf("[seed=%d attempt=%d] agentDeliveryRecoveryEntry(%q): %v", seed, attempt, stepID, err)
+				return
 			}
 			accExec := NewExecutor(cfg)
 			accExec.SetTmuxClient(client)
 			if _, err := accExec.acceptAgentDeliveryContext(context.Background(), stepID, entry.ReceiptToken, "modelcheck attested pane echo"); err != nil {
-				t.Fatalf("[seed=%d attempt=%d] acceptAgentDeliveryContext(%q): %v", seed, attempt, stepID, err)
+				t.Errorf("[seed=%d attempt=%d] acceptAgentDeliveryContext(%q): %v", seed, attempt, stepID, err)
+				return
 			}
 			prior, loadErr = LoadState(projDir, cfg.RunID)
 			if loadErr != nil {
-				t.Fatalf("[seed=%d attempt=%d] reload after acceptance: %v", seed, attempt, loadErr)
+				t.Errorf("[seed=%d attempt=%d] reload after acceptance: %v", seed, attempt, loadErr)
+				return
 			}
 		}
 
@@ -477,32 +537,38 @@ func runModelCheckCrashResumeI1(
 	}
 
 	if runErr != nil || state == nil || state.Status != StatusCompleted {
-		t.Fatalf("[seed=%d] I1/Liveness VIOLATION: pipeline did not converge to completed: state=%+v err=%v", seed, state, runErr)
+		t.Errorf("[seed=%d] I1/Liveness VIOLATION: pipeline did not converge to completed: state=%+v err=%v", seed, state, runErr)
+		return
 	}
 
-	pastes, err := client.PasteHistory("%17")
+	pastes, err := client.PasteHistory(paneID)
 	if err != nil {
-		t.Fatalf("[seed=%d] PasteHistory: %v", seed, err)
+		t.Errorf("[seed=%d] PasteHistory: %v", seed, err)
+		return
 	}
 	gotEffects := extractEffectTokens(pastes)
 	for _, wantTok := range expectedSelected {
 		if got := gotEffects[wantTok]; got != 1 {
-			t.Fatalf("[seed=%d] I1 VIOLATION: selected effect %q executed %d times, want 1 (all=%v)", seed, wantTok, got, gotEffects)
+			t.Errorf("[seed=%d] I1 VIOLATION: selected effect %q executed %d times, want 1 (all=%v)", seed, wantTok, got, gotEffects)
+			return
 		}
 	}
 	for _, forbidTok := range forbiddenBranch {
 		if got := gotEffects[forbidTok]; got != 0 {
-			t.Fatalf("[seed=%d] I1 VIOLATION: unselected branch effect %q executed %d times, want 0", seed, forbidTok, got)
+			t.Errorf("[seed=%d] I1 VIOLATION: unselected branch effect %q executed %d times, want 0", seed, forbidTok, got)
+			return
 		}
 	}
 	if useShellStep {
 		raw, err := os.ReadFile(shellEffectFile)
 		if err != nil {
-			t.Fatalf("[seed=%d] read shell_effects.log: %v", seed, err)
+			t.Errorf("[seed=%d] read shell_effects.log: %v", seed, err)
+			return
 		}
 		lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
 		if len(lines) != 1 || lines[0] != fmt.Sprintf("shell-committed-%d", seed) {
-			t.Fatalf("[seed=%d] I1 VIOLATION on shell step: lines=%q, want 1 exact line", seed, lines)
+			t.Errorf("[seed=%d] I1 VIOLATION on shell step: lines=%q, want 1 exact line", seed, lines)
+			return
 		}
 	}
 }
@@ -513,17 +579,20 @@ func runModelCheckLeaseRevocationI2(
 	seed int64,
 	baseDir string,
 	fixture *reservationJournalFixture,
+	mailURL string,
 ) {
 	t.Helper()
 	resetSharedMailFixture(fixture)
 
 	projDir := filepath.Join(baseDir, fmt.Sprintf("i2-seed-%d", seed))
 	if err := os.MkdirAll(projDir, 0o700); err != nil {
-		t.Fatalf("[seed=%d] mkdir: %v", seed, err)
+		t.Errorf("[seed=%d] mkdir: %v", seed, err)
+		return
 	}
 
+	paneID := fmt.Sprintf("%%%d", 17000+seed)
 	client := NewMockTmuxClient(tmux.Pane{
-		ID:       "%17",
+		ID:       paneID,
 		PID:      5151,
 		Index:    1,
 		NTMIndex: 1,
@@ -531,8 +600,8 @@ func runModelCheckLeaseRevocationI2(
 		Command:  "claude",
 		Width:    120,
 	})
-	t.Cleanup(client.Reset)
-	_ = client.SetPaneOutput("%17", "READY\n")
+	defer client.Reset()
+	_ = client.SetPaneOutput(paneID, "READY\n")
 
 	variant := rng.Intn(2)
 	if variant == 0 {
@@ -593,20 +662,24 @@ func runModelCheckLeaseRevocationI2(
 		cfg := DefaultExecutorConfig("mc-i2")
 		cfg.ProjectDir = projDir
 		cfg.RunID = fmt.Sprintf("mc-i2a-%d", seed)
+		cfg.AgentMailURL = mailURL
 		exec := NewExecutor(cfg)
 		exec.SetTmuxClient(client)
 
 		state, err := exec.Run(context.Background(), workflow, nil, nil)
 		if err == nil || state == nil || state.Status != StatusFailed || !strings.Contains(err.Error(), "reservation protection") {
-			t.Fatalf("[seed=%d] I2 VIOLATION: revoked lease did not fail closed: state=%+v err=%v", seed, state, err)
+			t.Errorf("[seed=%d] I2 VIOLATION: revoked lease did not fail closed: state=%+v err=%v", seed, state, err)
+			return
 		}
-		pastes, _ := client.PasteHistory("%17")
+		pastes, _ := client.PasteHistory(paneID)
 		effects := extractEffectTokens(pastes)
 		if effects[guardedToken] != 0 {
-			t.Fatalf("[seed=%d] I2 VIOLATION: guarded step executed %d times under revoked lease!", seed, effects[guardedToken])
+			t.Errorf("[seed=%d] I2 VIOLATION: guarded step executed %d times under revoked lease!", seed, effects[guardedToken])
+			return
 		}
 		if effects[prefixToken] > 1 {
-			t.Fatalf("[seed=%d] I1 VIOLATION: prefix step executed %d times", seed, effects[prefixToken])
+			t.Errorf("[seed=%d] I1 VIOLATION: prefix step executed %d times", seed, effects[prefixToken])
+			return
 		}
 		return
 	}
@@ -661,16 +734,19 @@ func runModelCheckLeaseRevocationI2(
 	cfg := DefaultExecutorConfig("mc-i2b")
 	cfg.ProjectDir = projDir
 	cfg.RunID = fmt.Sprintf("mc-i2b-%d", seed)
+	cfg.AgentMailURL = mailURL
 	exec := NewExecutor(cfg)
 	exec.SetTmuxClient(client)
 
 	state, err := exec.Run(context.Background(), workflow, nil, nil)
 	if err == nil || state == nil || state.Status != StatusFailed || !strings.Contains(err.Error(), "reservation protection") {
-		t.Fatalf("[seed=%d] I2 VIOLATION (partial release hook): state=%+v err=%v", seed, state, err)
+		t.Errorf("[seed=%d] I2 VIOLATION (partial release hook): state=%+v err=%v", seed, state, err)
+		return
 	}
-	pastes, _ := client.PasteHistory("%17")
+	pastes, _ := client.PasteHistory(paneID)
 	if got := extractEffectTokens(pastes)[hookToken]; got != 0 {
-		t.Fatalf("[seed=%d] I2 VIOLATION: OnSuccess hook executed %d times after remaining lease b.go was revoked", seed, got)
+		t.Errorf("[seed=%d] I2 VIOLATION: OnSuccess hook executed %d times after remaining lease b.go was revoked", seed, got)
+		return
 	}
 }
 
@@ -683,7 +759,8 @@ func runModelCheckTamperedReceiptsI3(
 	t.Helper()
 	projDir := filepath.Join(baseDir, fmt.Sprintf("i3-seed-%d", seed))
 	if err := os.MkdirAll(projDir, 0o700); err != nil {
-		t.Fatalf("[seed=%d] mkdir: %v", seed, err)
+		t.Errorf("[seed=%d] mkdir: %v", seed, err)
+		return
 	}
 
 	tamperKind := rng.Intn(5)
@@ -692,7 +769,8 @@ func runModelCheckTamperedReceiptsI3(
 		// suppress_failure=true: executeOnFailureRecovery MUST NOT mask the
 		// parent receipt identity violation into StatusCompleted!
 		if err := os.WriteFile(filepath.Join(projDir, "recover.md"), []byte("RECOVER"), 0o600); err != nil {
-			t.Fatalf("[seed=%d] write recover.md: %v", seed, err)
+			t.Errorf("[seed=%d] write recover.md: %v", seed, err)
+			return
 		}
 		step := Step{
 			ID:      "work",
@@ -773,7 +851,8 @@ func runModelCheckTamperedReceiptsI3(
 		}
 		res := guard.executeOnFailureRecovery(context.Background(), &workflow.Steps[0], workflow, failed)
 		if res.Status == StatusCompleted || res.Error == nil {
-			t.Fatalf("[seed=%d] I3 VIOLATION: suppress_failure fallback masked corrupt parent receipt identity into %+v", seed, res)
+			t.Errorf("[seed=%d] I3 VIOLATION: suppress_failure fallback masked corrupt parent receipt identity into %+v", seed, res)
+			return
 		}
 		return
 	}
@@ -804,7 +883,8 @@ func runModelCheckTamperedReceiptsI3(
 	}
 	frozen, wfPath, err := SnapshotWorkflow(context.Background(), projDir, workflow)
 	if err != nil {
-		t.Fatalf("[seed=%d] SnapshotWorkflow: %v", seed, err)
+		t.Errorf("[seed=%d] SnapshotWorkflow: %v", seed, err)
+		return
 	}
 
 	cfg := DefaultExecutorConfig("mc-i3")
@@ -814,8 +894,9 @@ func runModelCheckTamperedReceiptsI3(
 	cfg.DefaultTimeout = time.Second
 	cfg.GlobalTimeout = 5 * time.Second
 
+	paneID := fmt.Sprintf("%%%d", 17000+seed)
 	client := NewMockTmuxClient(tmux.Pane{
-		ID:       "%17",
+		ID:       paneID,
 		PID:      7777,
 		Index:    1,
 		NTMIndex: 1,
@@ -823,8 +904,8 @@ func runModelCheckTamperedReceiptsI3(
 		Command:  "claude",
 		Width:    120,
 	})
-	t.Cleanup(client.Reset)
-	_ = client.SetPaneOutput("%17", "BOUNDARY\n")
+	defer client.Reset()
+	_ = client.SetPaneOutput(paneID, "BOUNDARY\n")
 	client.SetSubmissionVerifier(func(_, _, _ string) error {
 		return errors.New("interrupted submission verification")
 	})
@@ -833,30 +914,35 @@ func runModelCheckTamperedReceiptsI3(
 	exec1.SetTmuxClient(client)
 	initial, runErr := exec1.Run(context.Background(), frozen, nil, nil)
 	if runErr == nil || initial == nil || initial.Status != StatusFailed {
-		t.Fatalf("[seed=%d] expected uncertain failure, got state=%+v err=%v", seed, initial, runErr)
+		t.Errorf("[seed=%d] expected uncertain failure, got state=%+v err=%v", seed, initial, runErr)
+		return
 	}
 
 	loaded, err := LoadState(projDir, cfg.RunID)
 	if err != nil {
-		t.Fatalf("[seed=%d] LoadState: %v", seed, err)
+		t.Errorf("[seed=%d] LoadState: %v", seed, err)
+		return
 	}
 	rec := loaded.AgentDeliveries["agent_step"]
-	_ = client.SetPaneOutput("%17", rec.BeforeOutput+"\nAGENT-REPLY\n")
+	_ = client.SetPaneOutput(paneID, rec.BeforeOutput+"\nAGENT-REPLY\n")
 
 	entry, err := agentDeliveryRecoveryEntry(loaded, rec)
 	if err != nil {
-		t.Fatalf("[seed=%d] agentDeliveryRecoveryEntry: %v", seed, err)
+		t.Errorf("[seed=%d] agentDeliveryRecoveryEntry: %v", seed, err)
+		return
 	}
 
 	acceptExec := NewExecutor(cfg)
 	acceptExec.SetTmuxClient(client)
 	if _, err := acceptExec.acceptAgentDeliveryContext(context.Background(), "agent_step", entry.ReceiptToken, "verified reply in pane"); err != nil {
-		t.Fatalf("[seed=%d] acceptAgentDeliveryContext: %v", seed, err)
+		t.Errorf("[seed=%d] acceptAgentDeliveryContext: %v", seed, err)
+		return
 	}
 
 	tampered, err := LoadState(projDir, cfg.RunID)
 	if err != nil {
-		t.Fatalf("[seed=%d] LoadState post-accept: %v", seed, err)
+		t.Errorf("[seed=%d] LoadState post-accept: %v", seed, err)
+		return
 	}
 	tRec := tampered.AgentDeliveries["agent_step"]
 	switch tamperKind {
@@ -871,7 +957,8 @@ func runModelCheckTamperedReceiptsI3(
 	}
 	tampered.AgentDeliveries["agent_step"] = tRec
 	if err := SaveState(projDir, tampered); err != nil {
-		t.Fatalf("[seed=%d] SaveState tampered: %v", seed, err)
+		t.Errorf("[seed=%d] SaveState tampered: %v", seed, err)
+		return
 	}
 
 	client.SetSubmissionVerifier(nil)
@@ -879,13 +966,15 @@ func runModelCheckTamperedReceiptsI3(
 	resExec.SetTmuxClient(client)
 	resState, resErr := resExec.Resume(context.Background(), frozen, tampered, nil)
 	if resErr == nil || (resState != nil && resState.Status == StatusCompleted) {
-		t.Fatalf("[seed=%d tamper=%d] I3 VIOLATION: Resume() accepted tampered receipt! state=%+v err=%v", seed, tamperKind, resState, resErr)
+		t.Errorf("[seed=%d tamper=%d] I3 VIOLATION: Resume() accepted tampered receipt! state=%+v err=%v", seed, tamperKind, resState, resErr)
+		return
 	}
 
-	pastes, _ := client.PasteHistory("%17")
+	pastes, _ := client.PasteHistory(paneID)
 	downstreamTok := fmt.Sprintf("s%d_downstream_must_not_run", seed)
 	if got := extractEffectTokens(pastes)[downstreamTok]; got != 0 {
-		t.Fatalf("[seed=%d tamper=%d] I3 VIOLATION: downstream step executed %d times after receipt tamper", seed, tamperKind, got)
+		t.Errorf("[seed=%d tamper=%d] I3 VIOLATION: downstream step executed %d times after receipt tamper", seed, tamperKind, got)
+		return
 	}
 }
 

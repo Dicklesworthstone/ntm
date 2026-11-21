@@ -125,6 +125,7 @@ func TestScale11HarnessParityAndKernelHandler(t *testing.T) {
 }
 
 func TestRobotSwarmOpsFlagsAndDispatch(t *testing.T) {
+	t.Parallel()
 	for _, schemaType := range []string{"scale", "rebalance", "review_queue", "coordinator", "webhook_outbox"} {
 		schemaOut, err := robot.GetSchema(schemaType)
 		if err != nil {

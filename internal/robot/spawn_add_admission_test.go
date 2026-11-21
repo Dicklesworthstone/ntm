@@ -64,6 +64,7 @@ func TestAdditionAdmissionCanonicalCountsAndPaneIncrement(t *testing.T) {
 }
 
 func TestAdditionAdmissionSharedBudgetIncludesOtherTypes(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"cursor", "windsurf", "aider", "ollama", "custom-agent"} {
 		t.Run(kind, func(t *testing.T) {
 			cfg := additionAdmissionConfig(2, map[string]int{"claude": 10})
@@ -148,6 +149,7 @@ func TestAdditionAdmissionDisabledDoesNotObserveOrLock(t *testing.T) {
 }
 
 func TestAdditionAdmissionOwnershipAndInventoryFailures(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"busy", "unavailable", "nil-release", "owned-error", "inventory-error", "inventory-cancel", "nil-inventory", "cancel-after-read", "panic"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
