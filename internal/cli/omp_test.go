@@ -12,6 +12,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/session"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
@@ -99,8 +100,8 @@ func TestOmpSpawnCommandTemplate(t *testing.T) {
 			return s, err
 		},
 		"restore": func() (string, error) {
-			s, typ, ok := agentTemplateAndType("omp")
-			if !ok || typ != AgentTypeOmp {
+			s, typ, ok := session.RestoreAgentTemplate(cfg, "omp")
+			if !ok || typ != string(AgentTypeOmp) {
 				t.Fatalf("agentTemplateAndType(omp) = (%q, %q, %v)", s, typ, ok)
 			}
 			return s, nil

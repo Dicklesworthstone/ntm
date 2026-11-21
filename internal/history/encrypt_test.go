@@ -46,15 +46,57 @@ func TestSetEncryptionConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("enabled without key disables", func(t *testing.T) {
+	t.Run("enabled without key refuses plaintext", func(t *testing.T) {
 		SetEncryptionConfig(&EncryptionConfig{
 			Enabled:    true,
 			EncryptKey: nil,
 		})
-		if encryptionEnabledForTest() {
-			t.Error("expected disabled when no key")
+		if !encryptionEnabledForTest() {
+			t.Error("missing key must preserve the enabled policy")
+		}
+		if data, err := encryptJSONLine([]byte(`{"prompt":"private"}`)); !encryption.IsKind(err, encryption.ErrInvalidKey) || len(data) != 0 {
+			t.Fatalf("missing key must refuse persistence: bytes=%d error=%v", len(data), err)
 		}
 	})
+}
+
+func TestHistoryEncryptionUnavailableWriteKey(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  []byte
+	}{
+		{name: "missing"},
+		{name: "empty", key: []byte{}},
+		{name: "invalid", key: []byte("invalid-key")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_DATA_HOME", t.TempDir())
+			readKey := testKey(t)
+			SetEncryptionConfig(&EncryptionConfig{Enabled: true, EncryptKey: readKey, DecryptKeys: [][]byte{readKey}})
+			t.Cleanup(func() { SetEncryptionConfig(nil) })
+			if err := Append(&HistoryEntry{ID: "existing", Prompt: "existing encrypted history", Timestamp: time.Now(), Source: SourceCLI}); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(StoragePath())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			SetEncryptionConfig(&EncryptionConfig{Enabled: true, EncryptKey: tc.key, DecryptKeys: [][]byte{readKey}})
+			err = Append(&HistoryEntry{ID: "refused", Prompt: "private history must not become plaintext", Timestamp: time.Now(), Source: SourceCLI})
+			if !encryption.IsKind(err, encryption.ErrInvalidKey) {
+				t.Fatalf("Append must reject unavailable write key: %v", err)
+			}
+			after, err := os.ReadFile(StoragePath())
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("failed append changed existing encrypted history: %v", err)
+			}
+			entries, err := ReadAll()
+			if err != nil || len(entries) != 1 || entries[0].ID != "existing" {
+				t.Fatalf("read keyring must remain usable without a write key: entries=%+v error=%v", entries, err)
+			}
+		})
+	}
 }
 
 func TestEncryptedHistoryRoundTrip(t *testing.T) {

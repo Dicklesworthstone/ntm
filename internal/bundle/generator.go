@@ -3,14 +3,18 @@ package bundle
 import (
 	"archive/tar"
 	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/encryption"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 )
 
@@ -46,8 +50,13 @@ type GeneratorConfig struct {
 	// Encrypt wraps the final bundle archive in an NTMENC1 AES-256-GCM envelope.
 	Encrypt bool
 
-	// EncryptKey overrides the process-wide bundle encryption key when set.
+	// EncryptKey requires encryption and overrides the selected key when non-nil.
+	// Invalid explicit keys fail closed instead of falling back to another key.
 	EncryptKey []byte
+
+	// Encryption overrides process-wide policy for callers such as HTTP handlers
+	// that load the operator-selected configuration for each request.
+	Encryption *EncryptionConfig
 }
 
 // GeneratorResult contains the outcome of bundle generation.
@@ -277,41 +286,43 @@ func (g *Generator) Generate() (*GeneratorResult, error) {
 		return nil, fmt.Errorf("validate manifest: %w", err)
 	}
 
-	// Generate the archive
+	// Keep the archive in memory until it is complete. Encrypted bundles never
+	// leave a plaintext temporary archive on disk.
+	var archive bytes.Buffer
 	switch g.config.Format {
 	case FormatZip:
-		if err := g.generateZip(manifest); err != nil {
+		if err := g.generateZip(&archive, manifest); err != nil {
 			return nil, err
 		}
 	case FormatTarGz:
-		if err := g.generateTarGz(manifest); err != nil {
+		if err := g.generateTarGz(&archive, manifest); err != nil {
 			return nil, err
 		}
 	default:
 		return nil, fmt.Errorf("unsupported format: %s", g.config.Format)
 	}
 
-	encCfg := ActiveEncryptionConfig()
-	shouldEncrypt := g.config.Encrypt || (encCfg != nil && encCfg.Enabled)
+	encCfg := g.config.Encryption
+	if encCfg == nil {
+		encCfg = ActiveEncryptionConfig()
+	}
+	shouldEncrypt := g.config.Encrypt || g.config.EncryptKey != nil || (encCfg != nil && encCfg.Enabled)
+	var key []byte
 	if shouldEncrypt {
-		key := g.config.EncryptKey
-		if len(key) == 0 && encCfg != nil {
+		key = g.config.EncryptKey
+		if key == nil && encCfg != nil {
 			key = encCfg.EncryptKey
 		}
 		if len(key) == 0 {
-			_ = os.Remove(g.config.OutputPath)
 			return nil, fmt.Errorf("support bundle encryption requested, but no encryption key is configured")
 		}
-		encSize, encErr := EncryptArchiveFile(g.config.OutputPath, key)
-		if encErr != nil {
-			_ = os.Remove(g.config.OutputPath)
-			return nil, encErr
-		}
-		result.Encrypted = true
-		result.TotalSize = encSize
-	} else if info, err := os.Stat(g.config.OutputPath); err == nil {
-		result.TotalSize = info.Size()
 	}
+	size, err := WriteArchive(g.config.OutputPath, archive.Bytes(), key, g.config.MaxSizeBytes)
+	if err != nil {
+		return nil, err
+	}
+	result.TotalSize = size
+	result.Encrypted = shouldEncrypt
 
 	result.FileCount = manifest.FileCount()
 	result.Manifest = manifest
@@ -321,18 +332,8 @@ func (g *Generator) Generate() (*GeneratorResult, error) {
 }
 
 // generateZip creates a zip archive.
-func (g *Generator) generateZip(manifest *Manifest) (err error) {
-	f, err := os.Create(g.config.OutputPath)
-	if err != nil {
-		return fmt.Errorf("create zip: %w", err)
-	}
-	defer func() {
-		if closeErr := f.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("close zip file: %w", closeErr)
-		}
-	}()
-
-	w := zip.NewWriter(f)
+func (g *Generator) generateZip(dst io.Writer, manifest *Manifest) (err error) {
+	w := zip.NewWriter(dst)
 	defer func() {
 		if closeErr := w.Close(); err == nil && closeErr != nil {
 			err = fmt.Errorf("close zip writer: %w", closeErr)
@@ -368,18 +369,8 @@ func (g *Generator) generateZip(manifest *Manifest) (err error) {
 }
 
 // generateTarGz creates a tar.gz archive.
-func (g *Generator) generateTarGz(manifest *Manifest) (err error) {
-	f, err := os.Create(g.config.OutputPath)
-	if err != nil {
-		return fmt.Errorf("create tar.gz: %w", err)
-	}
-	defer func() {
-		if closeErr := f.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("close tar.gz file: %w", closeErr)
-		}
-	}()
-
-	gw := gzip.NewWriter(f)
+func (g *Generator) generateTarGz(dst io.Writer, manifest *Manifest) (err error) {
+	gw := gzip.NewWriter(dst)
 	defer func() {
 		if closeErr := gw.Close(); err == nil && closeErr != nil {
 			err = fmt.Errorf("close gzip writer: %w", closeErr)
@@ -415,6 +406,55 @@ func (g *Generator) generateTarGz(manifest *Manifest) (err error) {
 	}
 
 	return nil
+}
+
+// WriteArchive publishes a complete support archive atomically with private
+// permissions. Encryption and size validation happen before touching the output,
+// so failures preserve an existing bundle and never expose partial plaintext.
+func WriteArchive(outputPath string, archive, encryptKey []byte, maxSize int64) (int64, error) {
+	if strings.TrimSpace(outputPath) == "" {
+		return 0, fmt.Errorf("bundle output path is required")
+	}
+	if maxSize > 0 && int64(len(archive)) > maxSize {
+		return 0, fmt.Errorf("bundle size %d exceeds limit %d", len(archive), maxSize)
+	}
+	data := archive
+	if encryptKey != nil {
+		var err error
+		data, err = encryption.EncryptArtifact(encryptKey, archive)
+		if err != nil {
+			return 0, fmt.Errorf("encrypt support bundle: %w", err)
+		}
+	}
+	if maxSize > 0 && int64(len(data)) > maxSize {
+		return 0, fmt.Errorf("bundle size %d exceeds limit %d", len(data), maxSize)
+	}
+	dir := filepath.Dir(outputPath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return 0, fmt.Errorf("create bundle directory: %w", err)
+	}
+	f, err := os.CreateTemp(dir, ".ntm-bundle-*")
+	if err != nil {
+		return 0, fmt.Errorf("create bundle temporary file: %w", err)
+	}
+	temporary := f.Name()
+	defer func() {
+		_ = f.Close()
+		_ = os.Remove(temporary)
+	}()
+	if _, err := f.Write(data); err != nil {
+		return 0, fmt.Errorf("write bundle: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return 0, fmt.Errorf("sync bundle: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return 0, fmt.Errorf("close bundle: %w", err)
+	}
+	if err := os.Rename(temporary, outputPath); err != nil {
+		return 0, fmt.Errorf("publish bundle: %w", err)
+	}
+	return int64(len(data)), nil
 }
 
 // writeTarEntry writes a single entry to a tar archive.

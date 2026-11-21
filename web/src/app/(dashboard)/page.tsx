@@ -14,6 +14,7 @@ import { SystemDiagnosticsToolbar } from "@/components/overview/SystemDiagnostic
 import { WorkspaceConfigPanel } from "@/components/overview/WorkspaceConfigPanel";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { mapDecisionToPressureLevel, type PressureLevel } from "@/lib/backpressure";
 import {
   formatApiErrorMessage,
   typedGet,
@@ -239,27 +240,6 @@ function doctorStatusBadgeClass(status: string): string {
   }
 }
 
-type PressureLevel = "normal" | "elevated" | "critical" | "overload";
-
-function mapDecisionToPressure(decision?: string): PressureLevel {
-  const normalized = (decision || "").trim().toLowerCase();
-  switch (normalized) {
-    case "degrade":
-    case "overload":
-      return "overload";
-    case "defer":
-    case "critical":
-    case "warning":
-      return "critical";
-    case "coalesce":
-    case "elevated":
-    case "watch":
-      return "elevated";
-    default:
-      return "normal";
-  }
-}
-
 function pressurePillClass(level: PressureLevel): string {
   switch (level) {
     case "overload":
@@ -357,7 +337,7 @@ export default function SessionsPage() {
   }, [filter, sessionList]);
 
   const bpDecision = backpressureQuery.data?.backpressure?.decision;
-  const bpLevel = mapDecisionToPressure(bpDecision);
+  const bpLevel = mapDecisionToPressureLevel(bpDecision);
   const bpOverloadedBuckets =
     backpressureQuery.data?.heatmap?.buckets?.length ??
     backpressureQuery.data?.backpressure?.heatmap?.buckets?.length ??

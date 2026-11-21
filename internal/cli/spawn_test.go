@@ -127,7 +127,7 @@ func TestCaptureAgentLaunchSpecPreservesPreparedPersonaAndExcludesEnvironmentVal
 	if err := os.WriteFile(tokenPath, []byte("token-value-not-persisted"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SHALLOW_PROFILE", "creation-profile")
+	t.Setenv("SHALLOW_PROFILE", "")
 	promptPath := filepath.Join(t.TempDir(), "prepared.md")
 	prompt := []byte("You are the architect.\nProject: /work/rendered-project\n")
 	if err := os.WriteFile(promptPath, prompt, 0600); err != nil {
@@ -140,7 +140,7 @@ func TestCaptureAgentLaunchSpecPreservesPreparedPersonaAndExcludesEnvironmentVal
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.Command != command || spec.Model != "custom/model" || spec.Persona != "architect" || spec.ReasoningEffort != "high" || spec.CAAMProfile != "creation-profile" {
+	if spec.Command != command || spec.Model != "custom/model" || spec.Persona != "architect" || spec.ReasoningEffort != "high" || spec.CAAMProfile != "" {
 		t.Fatalf("resolved launch settings lost: %+v", spec)
 	}
 	wantDigest := fmt.Sprintf("%x", sha256.Sum256(prompt))
@@ -170,6 +170,10 @@ func TestCaptureAgentLaunchSpecPreservesPreparedPersonaAndExcludesEnvironmentVal
 	cfg.Agents.ClaudeTokenFile = tokenPath
 	if _, err := captureAgentLaunchSpec(AgentTypeClaude, command, "", "", "architect", "", filepath.Join(t.TempDir(), "missing.md")); err == nil {
 		t.Fatal("missing prepared persona prompt accepted")
+	}
+	t.Setenv("SHALLOW_PROFILE", "creation-profile")
+	if _, err := captureAgentLaunchSpec(AgentTypeClaude, command, "", "", "architect", "", promptPath); !errors.Is(err, resilience.ErrCAAMClaudeIsolationConflict) {
+		t.Fatalf("captured contradictory account and isolation settings: %v", err)
 	}
 }
 

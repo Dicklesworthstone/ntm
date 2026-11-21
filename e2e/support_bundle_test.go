@@ -8,12 +8,16 @@ package e2e
 import (
 	"archive/zip"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/bundle"
+	"github.com/Dicklesworthstone/ntm/internal/encryption"
 )
 
 // SupportBundleTestSuite manages E2E tests for support-bundle functionality.
@@ -138,6 +142,137 @@ type SupportBundleOutput struct {
 	PrivacyMode       bool                    `json:"privacy_mode,omitempty"`
 	PrivacySessions   []string                `json:"privacy_sessions,omitempty"`
 	ContentSuppressed bool                    `json:"content_suppressed,omitempty"`
+	Encrypted         bool                    `json:"encrypted"`
+}
+
+// TestSupportBundle_Encryption exercises the real root startup policy and every
+// new export operation, including unavailable keys and ciphertext tampering.
+func TestSupportBundle_Encryption(t *testing.T) {
+	suite := NewSupportBundleTestSuite(t, "encryption")
+	configPath := filepath.Join(suite.tempDir, "encryption.toml")
+	if err := os.WriteFile(configPath, []byte("[encryption]\nenabled = true\nkey_source = \"env\"\nkey_env = \"NTM_BUNDLE_E2E_KEY\"\nkey_format = \"hex\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NTM_BUNDLE_E2E_KEY", "")
+	output := filepath.Join(suite.tempDir, "diagnostics.zip")
+	run := func(extra ...string) (string, error) {
+		args := append([]string{"--config", configPath, "support-bundle", "--json"}, extra...)
+		stdout, stderr, err := suite.runNTM(args...)
+		suite.logger.LogJSON("operation", map[string]any{"args": args, "stdout": stdout, "stderr": stderr, "success": err == nil})
+		return stdout, err
+	}
+	stdout, err := run("--include-events=false", "-o", output)
+	var failed map[string]any
+	if json.Unmarshal([]byte(stdout), &failed) != nil || err == nil || failed["success"] != false {
+		t.Fatalf("missing key did not fail with JSON: stdout=%s err=%v", stdout, err)
+	}
+	if _, err := os.Stat(output + ".enc"); !os.IsNotExist(err) {
+		t.Fatalf("failed export left an artifact: %v", err)
+	}
+	stdout, err = run("--allow-plaintext", "--include-events=false", "-o", output)
+	var plain SupportBundleOutput
+	if json.Unmarshal([]byte(stdout), &plain) != nil || err != nil || !plain.Success || plain.Encrypted {
+		t.Fatalf("explicit plaintext override failed: stdout=%s err=%v", stdout, err)
+	}
+	// Persistent overrides before the subcommand must have the same export
+	// semantics as support-bundle's local flags after it.
+	stdout, stderr, err := suite.runNTM("--config", configPath, "--allow-plaintext", "support-bundle", "--json", "--include-events=false", "-o", output)
+	suite.logger.LogJSON("operation", map[string]any{"override_position": "before-command", "stdout": stdout, "stderr": stderr, "success": err == nil})
+	if json.Unmarshal([]byte(stdout), &plain) != nil || err != nil || !plain.Success || plain.Encrypted {
+		t.Fatalf("persistent plaintext override failed: stdout=%s stderr=%s err=%v", stdout, stderr, err)
+	}
+	t.Setenv("NTM_BUNDLE_E2E_KEY", strings.Repeat("4a", 32))
+	stdout, err = run("--encrypt", "--include-events=false", "-o", output)
+	var encrypted SupportBundleOutput
+	if json.Unmarshal([]byte(stdout), &encrypted) != nil || err != nil || !encrypted.Success || !encrypted.Encrypted {
+		t.Fatalf("encrypted export failed: stdout=%s err=%v", stdout, err)
+	}
+	data, err := os.ReadFile(encrypted.Path)
+	if err != nil || !encryption.IsEncryptedArtifact(data) {
+		t.Fatalf("missing AEAD artifact: %v", err)
+	}
+	if _, err := run("--verify", encrypted.Path); err != nil {
+		t.Fatalf("encrypted verification failed: %v", err)
+	}
+	decrypted := filepath.Join(suite.tempDir, "decrypted.zip")
+	if _, err := run("--decrypt", encrypted.Path, "-o", decrypted); err != nil {
+		t.Fatalf("decryption failed: %v", err)
+	}
+	verified, err := bundle.Verify(decrypted)
+	if err != nil || !verified.Valid {
+		t.Fatalf("decrypted manifest invalid: result=%+v error=%v", verified, err)
+	}
+	data[len(data)-1] ^= 1
+	if err := os.WriteFile(encrypted.Path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, err = run("--verify", encrypted.Path)
+	if json.Unmarshal([]byte(stdout), &failed) != nil || err == nil || failed["success"] != false {
+		t.Fatalf("tampered archive was accepted: stdout=%s err=%v", stdout, err)
+	}
+}
+
+func TestSupportBundle_InvalidEncryptionPolicyFailsClosed(t *testing.T) {
+	suite := NewSupportBundleTestSuite(t, "invalid-encryption-policy")
+	for _, policy := range []string{"invalid-global", "missing-global", "invalid-project"} {
+		t.Run(policy, func(t *testing.T) {
+			project := t.TempDir()
+			configPath := filepath.Join(project, "selected.toml")
+			if policy != "missing-global" {
+				content := "[encryption]\nenabled = false\n"
+				if policy == "invalid-global" {
+					content = "[encryption\nenabled = true\n"
+				}
+				if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if policy == "invalid-project" {
+				if err := os.MkdirAll(filepath.Join(project, ".ntm"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(project, ".ntm", "config.toml"), []byte("[project\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, surface := range []string{"human", "json", "robot"} {
+				t.Run(surface, func(t *testing.T) {
+					output := filepath.Join(project, surface+".zip")
+					args := []string{"--config", configPath, "support-bundle", "--include-events=false", "-o", output}
+					if surface == "json" {
+						args = append(args, "--json")
+					} else if surface == "robot" {
+						args = []string{"--config", configPath, "--robot-support-bundle", "--bundle-output", output}
+					}
+					cmd := exec.Command("ntm", args...)
+					cmd.Dir = project
+					cmd.Env = append(os.Environ(), "HOME="+suite.tempDir, "XDG_CONFIG_HOME="+filepath.Join(suite.tempDir, ".config"))
+					var stdout, stderr strings.Builder
+					cmd.Stdout, cmd.Stderr = &stdout, &stderr
+					err := cmd.Run()
+					suite.logger.LogJSON("invalid policy", map[string]any{"policy": policy, "surface": surface, "args": args, "stdout": stdout.String(), "stderr": stderr.String(), "failed": err != nil})
+					if err == nil {
+						t.Fatal("invalid policy authorized a bundle export")
+					}
+					if surface == "human" {
+						if !strings.Contains(stderr.String(), "cannot load support bundle encryption policy") {
+							t.Fatalf("unexpected human error: %s", stderr.String())
+						}
+					} else {
+						var response map[string]any
+						if json.Unmarshal([]byte(stdout.String()), &response) != nil || response["success"] != false || !strings.Contains(fmt.Sprint(response["error"]), "config load failed") {
+							t.Fatalf("expected one configuration-error document, got stdout=%s stderr=%s", stdout.String(), stderr.String())
+						}
+					}
+					for _, path := range []string{output, output + ".enc"} {
+						if _, err := os.Stat(path); !os.IsNotExist(err) {
+							t.Fatalf("invalid policy produced %s: %v", path, err)
+						}
+					}
+				})
+			}
+		})
+	}
 }
 
 // BundleRedactionSummary provides aggregate redaction statistics for the bundle.

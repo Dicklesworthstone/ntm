@@ -592,6 +592,7 @@ type SpawnedAgent struct {
 	Type                string `json:"type"`
 	Variant             string `json:"variant,omitempty"`
 	Persona             string `json:"persona,omitempty"`
+	CAAMProfile         string `json:"caam_profile,omitempty"`
 	PersonaPromptSource string `json:"persona_prompt_source,omitempty"`
 	WorktreePath        string `json:"worktree_path,omitempty"`
 	Title               string `json:"title"`
@@ -1195,11 +1196,20 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			Pinned: pinned,
 		})
 	}
+	if err := session.ValidateCAAMSeatCompatibility(cfg, seatCandidates); err != nil {
+		output.Error = err.Error()
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, "Use Claude isolation outside inherited CAAM profiles and automatic seat selection, or disable agents.claude_isolate_credentials")
+		return output, nil
+	}
 	var seatPlan *session.CAAMSeatPlan
 	if deps.CAAMSeatResolver != nil {
 		seatPlan = session.PlanCAAMSeatsWithResolver(ctx, cfg, dir, seatCandidates, deps.CAAMSeatResolver)
 	} else {
 		seatPlan = session.PlanCAAMSeats(ctx, cfg, dir, seatCandidates)
+	}
+	if err := ctx.Err(); err != nil {
+		setSpawnCancellation(output, err)
+		return output, nil
 	}
 
 	// Preflight isolated worktrees before hooks or session creation (ORI parity with CLI spawn).
@@ -1255,21 +1265,24 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			}
 			pane := fmt.Sprintf("0.%d", paneIdx)
 			personaName := ""
+			caamProfile := ""
 			if p := opts.slotPersonas[spawnRecipeKey{agentType: req.agentType, number: req.number}]; p != nil {
 				personaName = p.Name
 			} else if seat, ok := seatPlan.Seat(reqIdx); ok {
 				personaName = seat.Persona
+				caamProfile = seat.Profile
 			}
 			title := fmt.Sprintf("%s__%s_%d", opts.Session, agentTypeShort(req.agentType), req.number)
 			if personaName != "" {
 				title = tmux.FormatPaneName(opts.Session, agentTypeShort(req.agentType), req.number, personaName)
 			}
 			output.WouldCreate = append(output.WouldCreate, SpawnedAgent{
-				Pane:    pane,
-				Name:    dryRunNameMap.AssignNew(req.agentType, pane),
-				Type:    req.agentType,
-				Persona: personaName,
-				Title:   title,
+				Pane:        pane,
+				Name:        dryRunNameMap.AssignNew(req.agentType, pane),
+				Type:        req.agentType,
+				Persona:     personaName,
+				CAAMProfile: caamProfile,
+				Title:       title,
 			})
 			paneIdx++
 		}
@@ -1561,6 +1574,7 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		// or CAAM-selected seat persona via the shared ORI spawn engine.
 		personaName := ""
 		systemPromptFile := ""
+		caamProfile := ""
 		modelRequested := strings.TrimSpace(model.ModelAlias) != ""
 		var activePersona *persona.Persona
 		if pinned := opts.slotPersonas[key]; pinned != nil {
@@ -1568,6 +1582,7 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			activePersona = pinned
 		} else if seat, ok := seatPlan.Seat(i); ok {
 			personaName = seat.Persona
+			caamProfile = seat.Profile
 			if seat.Registered != nil {
 				activePersona = seat.Registered
 			} else if seat.TypeMismatch {
@@ -1642,8 +1657,18 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			command = agentsession.PinPiLaunchSession(command)
 		}
 		var claudeCredIsolated *bool
+		var claudeLaunchEnv *swarm.ClaudeLaunchEnv
+		claudeTokenFile := ""
 		if request.agentType == "claude" && cfg != nil && cfg.Agents.ClaudeIsolateCredentials {
-			claudeEnv, isoErr := swarm.ProvisionClaudeIsolation(cfg, dir, opts.Session, request.number)
+			// Pin the token reference used by both the live launch and replay.
+			// Runtime credential assignments must never become the saved command.
+			isolationConfig := *cfg
+			tokenFile, isoErr := swarm.ResolveClaudeSetupTokenFile(cfg.Agents.ClaudeTokenFile)
+			var claudeEnv swarm.ClaudeLaunchEnv
+			if isoErr == nil {
+				isolationConfig.Agents.ClaudeTokenFile = tokenFile
+				claudeEnv, isoErr = swarm.ProvisionClaudeIsolation(&isolationConfig, dir, opts.Session, request.number)
+			}
 			if isoErr != nil {
 				failed := SpawnedAgent{
 					Pane:   fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index),
@@ -1657,7 +1682,8 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 				launchErrors = append(launchErrors, fmt.Errorf("%s agent %d: %w", request.agentType, request.number, isoErr))
 				continue
 			}
-			command = claudeEnv.ApplyToCommand(command)
+			claudeLaunchEnv = &claudeEnv
+			claudeTokenFile = tokenFile
 			if isolated, checkErr := swarm.NewClaudeConfigProvisioner(dir).CredentialIsolated(opts.Session, strconv.Itoa(request.number)); checkErr == nil {
 				claudeCredIsolated = &isolated
 			}
@@ -1716,11 +1742,19 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			output.AgentMail = identity.Status()
 		}
 		launchCtx := context.WithValue(ctx, spawnLaunchModelContextKey{}, model)
-		if personaName != "" || systemPromptFile != "" || agentMailProject != "" {
+		if personaName != "" || systemPromptFile != "" || agentMailProject != "" || caamProfile != "" || claudeLaunchEnv != nil {
+			caamBinary := ""
+			if cfg != nil {
+				caamBinary = cfg.Integrations.CAAM.BinaryPath
+			}
 			launchCtx = context.WithValue(launchCtx, spawnLaunchPersonaContextKey{}, spawnLaunchPersona{
 				personaName:      personaName,
 				systemPromptFile: systemPromptFile,
 				agentMailProject: agentMailProject,
+				caamProfile:      caamProfile,
+				caamBinary:       caamBinary,
+				claudeLaunchEnv:  claudeLaunchEnv,
+				claudeTokenFile:  claudeTokenFile,
 			})
 		}
 		if len(environment) > 0 {
@@ -1744,6 +1778,7 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		if personaName != "" {
 			agent.Persona = personaName
 		}
+		agent.CAAMProfile = caamProfile
 		if systemPromptFile != "" {
 			agent.PersonaPromptSource = systemPromptFile
 		}
@@ -1953,12 +1988,17 @@ func startSpawnSessionMonitor(
 		if paneID == "" {
 			paneID = agent.Pane
 		}
+		binding := resilience.CaptureLaunchBinding(agent.Type)
+		if agent.CAAMProfile != "" {
+			binding = &resilience.LaunchBinding{Provider: agent.Type, Launcher: "caam", Identifier: agent.CAAMProfile}
+		}
 		agents = append(agents, resilience.AgentConfig{
-			PaneID:    paneID,
-			PaneIndex: paneIndex,
-			Type:      agent.Type,
-			Model:     agent.Variant,
-			Command:   commandsByPane[agent.Pane],
+			PaneID:        paneID,
+			PaneIndex:     paneIndex,
+			Type:          agent.Type,
+			Model:         agent.Variant,
+			Command:       commandsByPane[agent.Pane],
+			LaunchBinding: binding,
 		})
 	}
 
@@ -2066,6 +2106,7 @@ func launchAgentWithModel(ctx context.Context, pane tmux.Pane, sessionName, agen
 		Type:                agentType,
 		Variant:             model.ModelAlias,
 		Persona:             personaMeta.personaName,
+		CAAMProfile:         personaMeta.caamProfile,
 		PersonaPromptSource: personaMeta.systemPromptFile,
 		Title:               title,
 		Ready:               false,
@@ -2075,6 +2116,17 @@ func launchAgentWithModel(ctx context.Context, pane tmux.Pane, sessionName, agen
 		return agent, fmt.Errorf("launch canceled: %w", err)
 	}
 	environment, _ := ctx.Value(spawnPluginEnvironmentContextKey{}).(map[string]string)
+	if personaMeta.agentMailProject != "" {
+		// NTM's managed project key is reproducible from the durable envelope.
+		// Explicit plugin values have no managed field and remain private.
+		privateValues := make(map[string]string, len(environment))
+		for name, value := range environment {
+			if name != "AGENT_MAIL_PROJECT" {
+				privateValues[name] = value
+			}
+		}
+		environment = privateValues
+	}
 	var privateEnvironment *tmux.LaunchEnvironment
 	if len(environment) > 0 {
 		var err error
@@ -2117,7 +2169,22 @@ func launchAgentWithModel(ctx context.Context, pane tmux.Pane, sessionName, agen
 		return agent, fmt.Errorf("invalid command: %w", err)
 	}
 
-	cmd, err := tmux.BuildPaneCommand(dir, safeCommand)
+	liveCommand := safeCommand
+	if personaMeta.claudeLaunchEnv != nil {
+		liveCommand = personaMeta.claudeLaunchEnv.ApplyToCommand(liveCommand)
+	}
+	if personaMeta.agentMailProject != "" {
+		liveCommand = "AGENT_MAIL_PROJECT=" + tmux.ShellQuote(personaMeta.agentMailProject) + " " + liveCommand
+	}
+	if personaMeta.caamProfile != "" {
+		seat := session.CAAMSeatDecision{Provider: session.CAAMSeatProviderForAgentType(agentType), Profile: personaMeta.caamProfile}
+		liveCommand, err = seat.LaunchCommand(personaMeta.caamBinary, liveCommand)
+		if err != nil {
+			agent.Error = fmt.Sprintf("binding selected CAAM account: %v", err)
+			return agent, err
+		}
+	}
+	cmd, err := tmux.BuildPaneCommand(dir, liveCommand)
 	if err != nil {
 		agent.Error = fmt.Sprintf("building command: %v", err)
 		agent.StartupMs = time.Since(startTime).Milliseconds()
@@ -2129,22 +2196,36 @@ func launchAgentWithModel(ctx context.Context, pane tmux.Pane, sessionName, agen
 		return agent, fmt.Errorf("launch canceled: %w", err)
 	}
 	launchSpec := tmux.AgentLaunchSpec{
-		Version:          tmux.AgentLaunchSpecVersion,
-		AgentType:        tmux.AgentType(agentType).Canonical(),
-		Command:          safeCommand,
-		Model:            model.Model,
-		ModelAlias:       model.ModelAlias,
-		Persona:          personaMeta.personaName,
-		ReasoningEffort:  model.ReasoningEffort,
-		SystemPromptFile: personaMeta.systemPromptFile,
-		AgentMailProject: personaMeta.agentMailProject,
+		Version:                  tmux.AgentLaunchSpecVersion,
+		AgentType:                tmux.AgentType(agentType).Canonical(),
+		Command:                  safeCommand,
+		Model:                    model.Model,
+		ModelAlias:               model.ModelAlias,
+		Persona:                  personaMeta.personaName,
+		ReasoningEffort:          model.ReasoningEffort,
+		SystemPromptFile:         personaMeta.systemPromptFile,
+		AgentMailProject:         personaMeta.agentMailProject,
+		CAAMProfile:              personaMeta.caamProfile,
+		ClaudeIsolateCredentials: personaMeta.claudeLaunchEnv != nil,
+		ClaudeTokenFile:          personaMeta.claudeTokenFile,
+	}
+	launchSpec.SystemPromptSHA256, err = session.PersonaPromptSHA256(personaMeta.systemPromptFile)
+	if err != nil {
+		agent.Error = fmt.Sprintf("recording persona prompt: %v", err)
+		return agent, err
 	}
 	for name := range environment {
 		launchSpec.OmittedEnv = append(launchSpec.OmittedEnv, name)
 	}
 	sort.Strings(launchSpec.OmittedEnv)
-	if binding := resilience.CaptureLaunchBinding(agentType); binding != nil {
-		launchSpec.CAAMProfile = binding.Identifier
+	if launchSpec.CAAMProfile == "" {
+		if binding := resilience.CaptureLaunchBinding(agentType); binding != nil {
+			launchSpec.CAAMProfile = binding.Identifier
+		}
+	}
+	if launchSpec.CAAMProfile != "" && launchSpec.ClaudeIsolateCredentials {
+		agent.Error = resilience.ErrCAAMClaudeIsolationConflict.Error()
+		return agent, resilience.ErrCAAMClaudeIsolationConflict
 	}
 	if err := tmux.SetPaneLaunchSpecContext(ctx, pane.ID, launchSpec); err != nil {
 		agent.Error = fmt.Sprintf("recording launch specification: %v", err)
@@ -2547,7 +2628,7 @@ func renderAgentCommandForSlot(
 	}
 	rendered, err := config.GenerateAgentCommand(cmdTemplate, vars)
 	if err != nil {
-		if modelRequested || model.ReasoningEffort != "" {
+		if modelRequested || model.ReasoningEffort != "" || systemPromptFile != "" {
 			return "", fmt.Errorf("rendering %s launch command: %w", agentType, err)
 		}
 		return "", nil

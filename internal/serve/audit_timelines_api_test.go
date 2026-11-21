@@ -16,8 +16,59 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/audit"
+	"github.com/Dicklesworthstone/ntm/internal/encryption"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 )
+
+func TestSupportBundleRESTHonorsSelectedEncryptionPolicy(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("NTM_HTTP_BUNDLE_KEY", "")
+	policyPath := filepath.Join(dir, "selected.toml")
+	policy := "[encryption]\nenabled = true\nkey_source = \"env\"\nkey_env = \"NTM_HTTP_BUNDLE_KEY\"\nkey_format = \"hex\"\n"
+	if err := os.WriteFile(policyPath, []byte(policy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	srv, _ := setupTestServer(t)
+	if err := srv.ConfigureSpawnPolicy(policyPath, true); err != nil {
+		t.Fatal(err)
+	}
+	router := srv.Router()
+	request := map[string]any{"session": "missing-bundle-fixture", "format": "zip"}
+	rec, payload := doServeJSONRequest(t, router, http.MethodPost, "/api/v1/support-bundle", request)
+	if rec.Code != http.StatusInternalServerError || payload["data"] != nil {
+		t.Fatalf("missing key downgraded HTTP bundle: code=%d payload=%v", rec.Code, payload)
+	}
+	t.Setenv("NTM_HTTP_BUNDLE_KEY", strings.Repeat("51", encryption.KeySize))
+	rec, payload = doServeJSONRequest(t, router, http.MethodPost, "/api/v1/support-bundle", request)
+	if rec.Code != http.StatusOK || payload["encrypted"] != true || payload["content_type"] != "application/octet-stream" {
+		t.Fatalf("HTTP encryption policy ignored: code=%d payload=%v", rec.Code, payload)
+	}
+	filename, _ := payload["filename"].(string)
+	if !strings.HasSuffix(filename, ".zip.enc") {
+		t.Fatalf("encrypted filename missing suffix: %q", filename)
+	}
+	encoded, _ := payload["data"].(string)
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || !encryption.IsEncryptedArtifact(data) {
+		t.Fatalf("HTTP body is not an encrypted artifact: %v", err)
+	}
+	plain, err := encryption.DecryptArtifactWithKeyring([][]byte{bytes.Repeat([]byte{0x51}, encryption.KeySize)}, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := zip.NewReader(bytes.NewReader(plain), int64(len(plain)))
+	if err != nil || len(archive.File) == 0 {
+		t.Fatalf("decrypted HTTP archive invalid: %v", err)
+	}
+	if err := os.WriteFile(policyPath, []byte("[encryption"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rec, payload = doServeJSONRequest(t, router, http.MethodPost, "/api/v1/support-bundle", request)
+	if rec.Code != http.StatusInternalServerError || payload["data"] != nil {
+		t.Fatalf("unreadable policy downgraded HTTP bundle: code=%d payload=%v", rec.Code, payload)
+	}
+}
 
 func writeServedAuditJSONLFixture(t *testing.T, dir, session string, count int) string {
 	t.Helper()

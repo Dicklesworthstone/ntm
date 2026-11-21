@@ -10,11 +10,14 @@
  *   - GET  /api/v1/saved-sessions/{name}
  *   - POST /api/v1/saved-sessions/{name}/archive
  *   - POST /api/v1/saved-sessions/{name}/unarchive
+ *   - POST /api/v1/saved-sessions/{name}/restore
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  ApiError,
+  apiRequestSignal,
   formatApiErrorMessage,
   typedGet,
   typedPost,
@@ -32,6 +35,41 @@ export type SavedSessionStatePayload = NonNullable<
 export type SavedSessionPaneItem = NonNullable<
   SavedSessionStatePayload["panes"]
 >[number];
+
+type RestoreMode = "topology" | "launch" | "resume";
+type SavedSessionRestoreOutcome = Pick<
+  components["schemas"]["SavedSessionRestoreEnvelopeResponse"],
+  "session" | "resume"
+>;
+
+interface RestoreAttempt {
+  savedName: string;
+  key: string;
+  payload: {
+    target_name?: string;
+    force: boolean;
+    mode: RestoreMode;
+    native: boolean;
+  };
+}
+
+function RestoreOutcome({ outcome }: { outcome: SavedSessionRestoreOutcome | null }) {
+  if (!outcome?.resume) return null;
+  return (
+    <div className="rounded-md border border-gray-200 dark:border-gray-700 p-3 text-xs space-y-2">
+      <p className="font-medium text-gray-900 dark:text-white">
+        Session {outcome.session}: {outcome.resume.resumed} resumed,
+        {" "}{outcome.resume.launched} started, {outcome.resume.skipped} skipped,
+        {" "}{outcome.resume.failed} failed.
+      </p>
+      {(outcome.resume.panes ?? []).filter((pane) => pane.error).map((pane) => (
+        <p key={`${pane.window_index}:${pane.index}`} className="text-red-700 dark:text-red-300">
+          Pane {pane.window_index}:{pane.index} ({pane.agent_type}): {pane.error}
+        </p>
+      ))}
+    </div>
+  );
+}
 
 const HARNESS_LABELS: Array<{
   key: keyof SavedSessionStatePayload["agents"];
@@ -62,11 +100,26 @@ export function SavedSessionsAndResumePanel({
   const [captureSession, setCaptureSession] = useState(sessionId);
   const [captureName, setCaptureName] = useState("");
   const [overwrite, setOverwrite] = useState(true);
-  const [restoreTarget, setRestoreTarget] = useState<string | null>(null);
-  const [restoreTargetName, setRestoreTargetName] = useState("");
-  const [restoreForce, setRestoreForce] = useState(false);
-  const [restoreLaunch, setRestoreLaunch] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [restoreDraft, setRestoreDraft] = useState<{
+    savedName: string;
+    targetName: string;
+    mode: RestoreMode;
+    force: boolean;
+    native: boolean;
+  } | null>(null);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [restoreResult, setRestoreResult] = useState<SavedSessionRestoreOutcome | null>(null);
+  const restoreAttemptRef = useRef<RestoreAttempt | null>(null);
+  const restoreDialogRef = useRef<HTMLDialogElement | null>(null);
+  const restoreTitleId = useId();
+
+  useEffect(() => {
+    const dialog = restoreDialogRef.current;
+    if (!dialog) return;
+    if (restoreDraft && !dialog.open) dialog.showModal();
+    if (!restoreDraft && dialog.open) dialog.close();
+  }, [restoreDraft]);
 
   useEffect(() => {
     if (sessionId) {
@@ -138,32 +191,80 @@ export function SavedSessionsAndResumePanel({
   });
 
   const restoreMutation = useMutation({
-    mutationFn: (payload: {
-      name: string;
-      target_name?: string;
-      force: boolean;
-      launch: boolean;
-    }) =>
+    mutationFn: (attempt: RestoreAttempt) =>
       typedPost("/api/v1/saved-sessions/{name}/restore", {
-        params: { path: { name: payload.name } },
-        body: {
-          ...(payload.target_name ? { target_name: payload.target_name } : {}),
-          force: payload.force,
-          launch: payload.launch,
-        },
+        params: { path: { name: attempt.savedName } },
+        headers: { "Idempotency-Key": attempt.key },
+        body: attempt.payload,
+        // The recovery handler allows two minutes for a multi-agent launch.
+        signal: apiRequestSignal(135_000),
       }),
-    onSuccess: (res, vars) => {
-      setFeedback(
-        `Restored saved session "${vars.name}" into tmux session "${res.session || vars.target_name || vars.name}".`
-      );
-      setRestoreTarget(null);
-      setRestoreTargetName("");
-      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    retry: false,
+    onSuccess: (res, attempt) => {
+      setRestoreResult(res);
+      setRestoreError(null);
+      setRestoreDraft(null);
+      const action = attempt.payload.mode === "topology"
+        ? "Pane layout restored; agents have not been started."
+        : attempt.payload.mode === "launch"
+          ? "Fresh agent launch completed."
+          : "Agent resume completed.";
+      setFeedback(`Restored session "${res.session}". ${action}`);
     },
     onError: (err) => {
-      setFeedback(`Restore failed: ${formatApiErrorMessage(err)}`);
+      setRestoreError(formatApiErrorMessage(err));
+      if (err instanceof ApiError && err.details && typeof err.details === "object") {
+        const partial = (err.details as { details?: SavedSessionRestoreOutcome }).details;
+        if (partial?.resume) setRestoreResult(partial);
+      }
+    },
+    onSettled: (res, _, attempt) => {
+      // A failed launch or lost response can still leave restored panes behind.
+      const targetName = res?.session || attempt.payload.target_name;
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      void queryClient.invalidateQueries({
+        queryKey: targetName ? ["session-panes", targetName] : ["session-panes"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["saved-session-detail", attempt.savedName],
+      });
     },
   });
+
+  function openRestore(savedName: string, targetName = "") {
+    restoreAttemptRef.current = null;
+    setFeedback(null);
+    setRestoreError(null);
+    setRestoreResult(null);
+    setRestoreDraft({ savedName, targetName, mode: "topology", force: false, native: false });
+  }
+
+  function confirmRestore() {
+    if (!restoreDraft || restoreMutation.isPending) return;
+    const targetName = restoreDraft.targetName.trim();
+    const payload: RestoreAttempt["payload"] = {
+      ...(targetName ? { target_name: targetName } : {}),
+      force: restoreDraft.force,
+      mode: restoreDraft.mode,
+      native: restoreDraft.mode === "resume" && restoreDraft.native,
+    };
+    const previous = restoreAttemptRef.current;
+    const attempt = previous && previous.savedName === restoreDraft.savedName &&
+      JSON.stringify(previous.payload) === JSON.stringify(payload)
+      ? previous
+      : {
+          savedName: restoreDraft.savedName,
+          payload,
+          key: `saved-restore-${typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+            ? crypto.randomUUID()
+            : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`}`,
+        };
+    // Preserve the operation key if the operator retries after a lost response.
+    restoreAttemptRef.current = attempt;
+    setRestoreError(null);
+    setRestoreResult(null);
+    restoreMutation.mutate(attempt);
+  }
 
   const sessions = listQuery.data?.sessions ?? [];
   const detailState = detailQuery.data?.state;
@@ -176,10 +277,10 @@ export function SavedSessionsAndResumePanel({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-base font-semibold text-gray-900 dark:text-white">
-            Saved Sessions &amp; casr Resume Readiness
+            Saved Sessions &amp; Resume
           </h2>
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            Capture live tmux topologies, inspect 11-harness counts &amp; per-pane resume bindings, and manage active vs. archived snapshots.
+            Capture sessions, inspect saved agents, and restore layouts or resume work.
           </p>
         </div>
 
@@ -269,15 +370,21 @@ export function SavedSessionsAndResumePanel({
       </div>
 
       {feedback && (
-        <div className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/30 px-3 py-2 text-xs text-blue-800 dark:text-blue-200">
+        <div role="status" className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/30 px-3 py-2 text-xs text-blue-800 dark:text-blue-200">
           {feedback}
         </div>
       )}
+
+      {!restoreDraft && <RestoreOutcome outcome={restoreResult} />}
 
       {/* Saved Sessions Table */}
       {listQuery.isLoading ? (
         <p className="text-xs text-gray-500 dark:text-gray-400">
           Loading saved session snapshots…
+        </p>
+      ) : listQuery.isError ? (
+        <p role="alert" className="text-xs text-red-700 dark:text-red-300">
+          Could not load saved sessions: {formatApiErrorMessage(listQuery.error)}
         </p>
       ) : sessions.length === 0 ? (
         <p className="text-xs text-gray-500 dark:text-gray-400">
@@ -321,11 +428,11 @@ export function SavedSessionsAndResumePanel({
                     </button>
                     <button
                       type="button"
-                      onClick={() => {
-                        setRestoreTarget(item.name);
-                        setRestoreTargetName("");
-                      }}
-                      className="rounded border border-blue-300 dark:border-blue-700 px-2.5 py-1 text-xs font-medium text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-950/30"
+                      disabled={restoreMutation.isPending}
+                      onClick={() => openRestore(
+                        item.name, selectedName === item.name ? detailState?.name : undefined
+                      )}
+                      className="rounded border border-blue-300 dark:border-blue-700 disabled:opacity-50 px-2.5 py-1 text-xs font-medium text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-950/30"
                     >
                       Restore
                     </button>
@@ -354,73 +461,104 @@ export function SavedSessionsAndResumePanel({
         </div>
       )}
 
-      {/* Restore Confirmation Drawer */}
-      {restoreTarget && (
-        <div
-          data-testid="saved-session-restore-confirm"
-          className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-950/30 p-4 space-y-3"
-        >
-          <div className="flex items-center justify-between gap-2">
-            <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
-              Confirm Restore: <span className="font-mono">{restoreTarget}</span>
-            </h3>
-            <button
-              type="button"
-              onClick={() => setRestoreTarget(null)}
-              className="text-xs text-gray-500 hover:text-gray-800 dark:hover:text-gray-200"
-            >
-              Cancel
-            </button>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
-            <input
-              type="text"
-              aria-label="Restore Target Session Name"
-              value={restoreTargetName}
-              onChange={(e) => setRestoreTargetName(e.target.value)}
-              placeholder="Target session name (optional)"
-              className="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-2.5 py-1.5 text-xs font-mono text-gray-900 dark:text-white"
-            />
-            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
-              <input
-                type="checkbox"
-                checked={restoreForce}
-                onChange={(e) => setRestoreForce(e.target.checked)}
-              />
-              Force replace existing session
-            </label>
-            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
-              <input
-                type="checkbox"
-                checked={restoreLaunch}
-                onChange={(e) => setRestoreLaunch(e.target.checked)}
-              />
-              Launch / resume agents
-            </label>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              disabled={restoreMutation.isPending}
-              onClick={() =>
-                restoreMutation.mutate({
-                  name: restoreTarget,
-                  ...(restoreTargetName.trim()
-                    ? { target_name: restoreTargetName.trim() }
-                    : {}),
-                  force: restoreForce,
-                  launch: restoreLaunch,
-                })
-              }
-              className="rounded bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-3 py-1.5 text-xs font-medium text-white"
-            >
-              {restoreMutation.isPending ? "Restoring…" : "Confirm Restore"}
-            </button>
-          </div>
-        </div>
-      )}
+      <dialog
+        ref={restoreDialogRef}
+        data-testid="saved-session-restore-confirm"
+        aria-labelledby={restoreTitleId}
+        onCancel={(event) => {
+          event.preventDefault();
+          if (!restoreMutation.isPending) setRestoreDraft(null);
+        }}
+        className="m-auto max-h-[85vh] w-[min(92vw,32rem)] overflow-y-auto rounded-xl border border-gray-200 bg-white p-5 text-gray-900 shadow-2xl backdrop:bg-gray-950/60 dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+      >
+        {restoreDraft && (
+          <form onSubmit={(event) => { event.preventDefault(); confirmRestore(); }} className="space-y-4">
+            <h3 id={restoreTitleId} className="text-base font-semibold">Restore saved session</h3>
+            <p className="text-sm text-gray-600 dark:text-gray-300">
+              Restore snapshot <strong>{restoreDraft.savedName}</strong> into a tmux session.
+            </p>
+            <fieldset disabled={restoreMutation.isPending} className="space-y-4 disabled:opacity-60">
+              <label className="block text-sm font-medium">
+                Target session name (optional)
+                <input
+                  aria-label="Target session name"
+                  value={restoreDraft.targetName}
+                  onChange={(event) => setRestoreDraft({ ...restoreDraft, targetName: event.target.value })}
+                  placeholder="Saved session name"
+                  className="mt-1 w-full rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-950 px-3 py-2 font-mono"
+                />
+              </label>
+              <p className="text-xs text-gray-600 dark:text-gray-400">
+                Leave blank to use the session name recorded in the snapshot.
+              </p>
+              <label className="block text-sm font-medium">
+                Restore mode
+                <select
+                  value={restoreDraft.mode}
+                  onChange={(event) => setRestoreDraft({ ...restoreDraft, mode: event.target.value as RestoreMode, native: false })}
+                  className="mt-1 w-full rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-950 px-3 py-2"
+                >
+                  <option value="topology">Layout only</option>
+                  <option value="launch">Start fresh agents</option>
+                  <option value="resume">Resume saved agents</option>
+                </select>
+              </label>
+              <p className="text-xs text-gray-600 dark:text-gray-400">
+                {restoreDraft.mode === "topology"
+                  ? "Restore panes and layout without starting agent processes."
+                  : restoreDraft.mode === "launch"
+                    ? "Start new agent conversations using the saved configuration."
+                    : "Continue saved conversations where bindings are available; other agent panes start fresh."}
+              </p>
+              {restoreDraft.mode === "resume" && (
+                <label className="flex items-start gap-2 text-sm">
+                  <input type="checkbox" checked={restoreDraft.native}
+                    onChange={(event) => setRestoreDraft({ ...restoreDraft, native: event.target.checked })} />
+                  Use native resume commands (bypass casr)
+                </label>
+              )}
+              <label className="flex items-start gap-2 text-sm">
+                <input type="checkbox" checked={restoreDraft.force}
+                  onChange={(event) => setRestoreDraft({ ...restoreDraft, force: event.target.checked })} />
+                Replace an existing target session
+              </label>
+              {restoreDraft.force && (
+                <p className="rounded-md bg-amber-50 dark:bg-amber-950/30 p-3 text-sm text-amber-900 dark:text-amber-200">
+                  This will stop {restoreDraft.targetName.trim()
+                    ? `the running session "${restoreDraft.targetName.trim()}"`
+                    : "the running session with the name recorded in this snapshot"}
+                  {" "}and its processes before restoring. Unsaved work in those processes may be lost.
+                </p>
+              )}
+            </fieldset>
+            {restoreError && (
+              <p role="alert" className="text-sm text-red-700 dark:text-red-300">
+                Restore failed: {restoreError} Check the session before changing options;
+                retrying unchanged options reuses the same request.
+              </p>
+            )}
+            <RestoreOutcome outcome={restoreResult} />
+            <div className="flex justify-end gap-3">
+              <button type="button" disabled={restoreMutation.isPending}
+                onClick={() => setRestoreDraft(null)}
+                className="rounded-md border border-gray-300 dark:border-gray-700 px-3 py-2 text-sm disabled:opacity-50">
+                Cancel
+              </button>
+              <button type="submit" disabled={restoreMutation.isPending}
+                className="rounded-md bg-blue-600 hover:bg-blue-700 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
+                {restoreMutation.isPending ? "Restoring…" : restoreError ? "Retry Restore" : "Confirm Restore"}
+              </button>
+            </div>
+          </form>
+        )}
+      </dialog>
 
       {/* Detailed Snapshot & Resume Binding Inspection */}
+      {selectedName && detailQuery.isError && (
+        <p role="alert" className="text-xs text-red-700 dark:text-red-300">
+          Could not inspect snapshot: {formatApiErrorMessage(detailQuery.error)}
+        </p>
+      )}
       {selectedName && detailState && (
         <div
           data-testid="saved-session-detail-card"
@@ -439,6 +577,14 @@ export function SavedSessionsAndResumePanel({
                 / {detailState.panes?.length ?? 0}
               </p>
             </div>
+            <button
+              type="button"
+              disabled={restoreMutation.isPending}
+              onClick={() => openRestore(selectedName, detailState.name)}
+              className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-3 py-1.5 text-xs font-medium text-white"
+            >
+              Restore Session
+            </button>
           </div>
 
           <div className="flex flex-wrap gap-1.5">

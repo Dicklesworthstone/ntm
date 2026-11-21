@@ -11951,6 +11951,7 @@ export interface components {
         SavedSessionRestoreEnvelopeResponse: {
             action: string;
             launch: boolean;
+            mode: string;
             name: string;
             request_id?: string;
             resume?: components["schemas"]["ResumeResult"];
@@ -11962,6 +11963,7 @@ export interface components {
         SavedSessionRestoreRequest: {
             force?: boolean;
             launch?: boolean;
+            mode?: string;
             native?: boolean;
             target_name?: string;
         };
@@ -13416,6 +13418,8 @@ export interface components {
         SpawnedAgent: {
             /** @description Agent mail name */
             agent_mail_name?: string;
+            /** @description C a a m profile */
+            caam_profile?: string;
             /** @description Credential isolated */
             credential_isolated?: boolean;
             /** @description Error */
@@ -13810,6 +13814,7 @@ export interface components {
             content_suppressed: boolean;
             content_type: string;
             data: string;
+            encrypted: boolean;
             file_count: number;
             filename: string;
             format: string;

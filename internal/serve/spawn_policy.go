@@ -36,6 +36,9 @@ func (s *Server) ConfigureSpawnPolicy(globalPath string, requireGlobal bool) err
 		return s.spawnWithPolicy(ctx, opts, selected, requireGlobal,
 			config.LoadAssignmentPolicyStrict, robot.GetSpawn)
 	}
+	s.recoveryConfig = func(project string) (*config.Config, error) {
+		return config.LoadAssignmentPolicyStrict(project, selected, requireGlobal)
+	}
 	return nil
 }
 

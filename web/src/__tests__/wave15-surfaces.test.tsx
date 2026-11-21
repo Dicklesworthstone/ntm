@@ -12,6 +12,25 @@ import { SavedSessionsAndResumePanel } from "../components/sessions/SavedSession
 import { AgentMappingAndBadgesPanel } from "../components/agents/AgentMappingAndBadgesPanel";
 import { WorkflowsSequencesAndTemplatesPanel } from "../components/pipelines/WorkflowsSequencesAndTemplatesPanel";
 
+const dialogShowModal = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "showModal");
+const dialogClose = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "close");
+
+beforeEach(() => {
+  // JSDOM does not implement the browser's modal dialog lifecycle. Model its
+  // open/closed state while exercising the real controls and HTTP client.
+  Object.defineProperties(HTMLDialogElement.prototype, {
+    showModal: { configurable: true, value: function (this: HTMLDialogElement) { this.open = true; } },
+    close: { configurable: true, value: function (this: HTMLDialogElement) { this.open = false; } },
+  });
+});
+
+afterEach(() => {
+  for (const [name, descriptor] of [["showModal", dialogShowModal], ["close", dialogClose]] as const) {
+    if (descriptor) Object.defineProperty(HTMLDialogElement.prototype, name, descriptor);
+    else Reflect.deleteProperty(HTMLDialogElement.prototype, name);
+  }
+});
+
 function renderWithClient(ui: React.ReactElement) {
   const qc = new QueryClient({
     defaultOptions: {
@@ -19,7 +38,7 @@ function renderWithClient(ui: React.ReactElement) {
       mutations: { retry: false },
     },
   });
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+  return { ...render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>), qc };
 }
 
 describe("Wave 15 Web Cockpit Surfaces", () => {
@@ -149,6 +168,7 @@ describe("Wave 15 Web Cockpit Surfaces", () => {
         )
       ).toBe(true)
     );
+    await screen.findByText(/Restored session "ntm_live"/);
 
     fireEvent.click(screen.getByRole("button", { name: "Capture Snapshot" }));
     await waitFor(() =>
@@ -449,5 +469,208 @@ describe("Wave 15 Web Cockpit Surfaces", () => {
         calls.some((c) => c.method === "POST" && c.path === "/api/v1/workflows/ntm_live/stop")
       ).toBe(true)
     );
+  });
+});
+
+describe("Saved session restore controls", () => {
+  const originalFetch = globalThis.fetch;
+  type RestoreCall = { body: Record<string, unknown>; key: string | null };
+  let restoreCalls: RestoreCall[];
+  let replyToRestore: (call: RestoreCall) => Promise<Response>;
+
+  function json(data: unknown, status = 200) {
+    return new Response(JSON.stringify(data), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    restoreCalls = [];
+    replyToRestore = async ({ body }) => json({
+      success: true,
+      action: "restore",
+      name: "daily-snapshot",
+      session: body.target_name || "project",
+      mode: body.mode,
+      launch: body.mode !== "topology",
+    });
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), "http://127.0.0.1:7337");
+      if (url.pathname === "/api/v1/saved-sessions") {
+        return json({ success: true, sessions: [{
+          name: "daily-snapshot", saved_at: "2026-11-20T12:00:00Z", cwd: "/project",
+          agents: 2, file_path: "/snapshots/daily.json", file_size: 1024,
+        }] });
+      }
+      if (url.pathname === "/api/v1/saved-sessions/daily-snapshot") {
+        return json({ success: true, resumable_panes: 1, state: {
+          name: "project", saved_at: "2026-11-20T12:00:00Z", cwd: "/project",
+          layout: "tiled", agents: { cc: 1 }, panes: [{
+            title: "project__cc_1", index: 1, agent_type: "cc", session_id: "saved-uuid",
+          }],
+        } });
+      }
+      if (url.pathname === "/api/v1/saved-sessions/daily-snapshot/restore" && init?.method === "POST") {
+        const call = {
+          body: JSON.parse(String(init.body)),
+          key: new Headers(init.headers).get("Idempotency-Key"),
+        };
+        restoreCalls.push(call);
+        return replyToRestore(call);
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url.pathname}`);
+    }) as typeof fetch;
+  });
+
+  afterEach(() => {
+    cleanup();
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  async function openRestore() {
+    const rendered = renderWithClient(<SavedSessionsAndResumePanel sessionId="" />);
+    await screen.findByText("daily-snapshot");
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Restore Session" }));
+    await screen.findByRole("dialog", { name: "Restore saved session" });
+    return rendered;
+  }
+
+  it("requires confirmation and defaults to restoring only the saved layout", async () => {
+    const { qc } = await openRestore();
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+    expect(restoreCalls).toHaveLength(0);
+    expect(screen.getByLabelText("Target session name")).toHaveValue("project");
+    expect(screen.getByLabelText("Restore mode")).toHaveValue("topology");
+    expect(screen.getByLabelText("Replace an existing target session")).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(restoreCalls).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Restore Session" }));
+    fireEvent.change(screen.getByLabelText("Target session name"), { target: { value: " restored " } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Restore" }));
+    await screen.findByText(/Restored session "restored"\. Pane layout restored/);
+    expect(restoreCalls).toHaveLength(1);
+    expect(restoreCalls[0].body).toEqual({
+      target_name: "restored", force: false, mode: "topology", native: false,
+    });
+    expect(restoreCalls[0].key).toMatch(/^saved-restore-.+/);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["sessions"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["session-panes", "restored"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["saved-session-detail", "daily-snapshot"] });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("restores directly from the list using the snapshot's recorded name when target is blank", async () => {
+    const { qc } = renderWithClient(<SavedSessionsAndResumePanel sessionId="" />);
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+    await screen.findByText("daily-snapshot");
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    await screen.findByRole("dialog", { name: "Restore saved session" });
+    expect(screen.getByLabelText("Target session name")).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("Target session name"), { target: { value: "  " } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Restore" }));
+    await screen.findByText(/Restored session "project"/);
+    expect(restoreCalls[0].body).toEqual({ force: false, mode: "topology", native: false });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["session-panes", "project"] });
+  });
+
+  it.each(["launch", "resume"])("supports %s with explicit replacement consent", async (mode) => {
+    await openRestore();
+    fireEvent.change(screen.getByLabelText("Restore mode"), { target: { value: mode } });
+    if (mode === "resume") {
+      fireEvent.click(screen.getByLabelText("Use native resume commands (bypass casr)"));
+    } else {
+      expect(screen.queryByLabelText("Use native resume commands (bypass casr)")).not.toBeInTheDocument();
+    }
+    fireEvent.click(screen.getByLabelText("Replace an existing target session"));
+    expect(screen.getByText(/This will stop the running session "project"/)).toBeInTheDocument();
+    expect(restoreCalls).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Restore" }));
+    await screen.findByText(/Restored session "project"/);
+    expect(restoreCalls[0].body).toEqual({
+      target_name: "project", force: true, mode, native: mode === "resume",
+    });
+  });
+
+  it("clears native resume when switching to fresh launch", async () => {
+    await openRestore();
+    fireEvent.change(screen.getByLabelText("Restore mode"), { target: { value: "resume" } });
+    fireEvent.click(screen.getByLabelText("Use native resume commands (bypass casr)"));
+    fireEvent.change(screen.getByLabelText("Restore mode"), { target: { value: "launch" } });
+    fireEvent.change(screen.getByLabelText("Target session name"), { target: { value: "fresh" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Restore" }));
+    await screen.findByText(/Restored session "fresh"/);
+    expect(restoreCalls[0].body).toEqual({
+      target_name: "fresh", force: false, mode: "launch", native: false,
+    });
+  });
+
+  it("keeps one key for unchanged retries and starts a new attempt after changes or reopening", async () => {
+    replyToRestore = async () => { throw new TypeError("Connection lost"); };
+    await openRestore();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Restore" }));
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "Retry Restore" }));
+    await waitFor(() => expect(restoreCalls).toHaveLength(2));
+    await screen.findByRole("button", { name: "Retry Restore" });
+    expect(restoreCalls[1].key).toBe(restoreCalls[0].key);
+    expect(restoreCalls[1].body).toEqual(restoreCalls[0].body);
+
+    fireEvent.change(screen.getByLabelText("Target session name"), { target: { value: "another" } });
+    fireEvent.click(screen.getByRole("button", { name: "Retry Restore" }));
+    await waitFor(() => expect(restoreCalls).toHaveLength(3));
+    expect(restoreCalls[2].key).not.toBe(restoreCalls[0].key);
+    expect(restoreCalls[2].body.target_name).toBe("another");
+    expect(screen.queryByText(/Restored session/)).not.toBeInTheDocument();
+
+    await screen.findByRole("button", { name: "Retry Restore" });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restore Session" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Restore" }));
+    await waitFor(() => expect(restoreCalls).toHaveLength(4));
+    expect(restoreCalls[3].key).not.toBe(restoreCalls[0].key);
+    expect(restoreCalls[3].body).toEqual(restoreCalls[0].body);
+  });
+
+  it("renders a successful restore with no agent outcomes when panes is null", async () => {
+    replyToRestore = async ({ body }) => json({
+      success: true, action: "restore", name: "daily-snapshot", session: body.target_name,
+      mode: "launch", launch: true,
+      resume: { session: body.target_name, resumed: 0, launched: 0, skipped: 0, failed: 0, panes: null },
+    });
+    await openRestore();
+    fireEvent.change(screen.getByLabelText("Restore mode"), { target: { value: "launch" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Restore" }));
+    await screen.findByText(/Restored session "project"/);
+    expect(screen.getByText(/0 resumed, 0 started, 0 skipped, 0 failed/)).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("reports partial agent failures and refreshes sessions even when restoration fails", async () => {
+    replyToRestore = async () => json({
+      success: false, error: "One agent could not resume", error_code: "RESTORE_FAILED",
+      details: {
+        session: "project", name: "daily-snapshot", mode: "resume",
+        resume: { session: "project", resumed: 1, launched: 0, skipped: 1, failed: 1, panes: [
+          { index: 2, window_index: 0, agent_type: "cod", action: "failed", error: "Codex unavailable" },
+        ] },
+      },
+    }, 500);
+    const { qc } = await openRestore();
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+    fireEvent.change(screen.getByLabelText("Restore mode"), { target: { value: "resume" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Restore" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("One agent could not resume");
+    expect(screen.queryByText(/Restored session/)).not.toBeInTheDocument();
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["sessions"] });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByText(/1 resumed, 0 started, 1 skipped, 1 failed/)).toBeInTheDocument();
+    expect(screen.getByText(/Pane 0:2 \(cod\): Codex unavailable/)).toBeInTheDocument();
   });
 });

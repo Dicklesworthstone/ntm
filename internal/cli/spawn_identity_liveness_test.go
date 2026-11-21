@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/spawnidentity"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -318,24 +320,62 @@ func TestSpawnIdentityCoordinator_WorktreePanePublishesUnderBothKeys(t *testing.
 // AGENT_MAIL_PROJECT=<session dir>, unless a plugin env var or --pane-env
 // already sets it.
 func TestSpawnWorktreeInjectsAgentMailProject(t *testing.T) {
-	// The launch loop needs a real tmux session to drive, so assert
-	// structurally (same technique as TestSpawnPublishesIdentityBeforeLaunch):
-	// the injection and the --pane-env override check must both live inside
-	// the spawn lifecycle function.
-	fset, fn := spawnFuncDecl(t, "spawnSessionLogicContextWithOutput")
-	src, err := os.ReadFile(fset.Position(fn.Pos()).Filename)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := string(src[fset.Position(fn.Pos()).Offset:fset.Position(fn.End()).Offset])
-	if !strings.Contains(body, `envVars["AGENT_MAIL_PROJECT"] = dir`) {
-		t.Fatal("spawn must inject AGENT_MAIL_PROJECT=<session dir> into worktree pane commands (ntm#257)")
-	}
-	if !strings.Contains(body, `opts.PaneEnv["AGENT_MAIL_PROJECT"]`) {
-		t.Fatal("spawn must defer to an explicit --pane-env AGENT_MAIL_PROJECT value")
-	}
-	if !strings.Contains(body, `PaneDir:`) {
-		t.Fatal("spawn must hand the pane's launch directory to PrepareAgent so worktree identities publish under both keys")
+	projectDir := filepath.Join(t.TempDir(), "session project")
+	for _, tc := range []struct {
+		name         string
+		pluginEnv    map[string]string
+		paneEnv      map[string]string
+		want         map[string]string
+		wantInjected bool
+	}{
+		{
+			name: "default session project",
+			want: map[string]string{"AGENT_MAIL_PROJECT": projectDir}, wantInjected: true,
+		},
+		{
+			name:      "preserves unrelated plugin environment",
+			pluginEnv: map[string]string{"KEEP": "plugin value"},
+			want:      map[string]string{"KEEP": "plugin value", "AGENT_MAIL_PROJECT": projectDir}, wantInjected: true,
+		},
+		{
+			name:      "plugin project override",
+			pluginEnv: map[string]string{"AGENT_MAIL_PROJECT": "/plugin/project", "KEEP": "plugin value"},
+			want:      map[string]string{"AGENT_MAIL_PROJECT": "/plugin/project", "KEEP": "plugin value"},
+		},
+		{
+			name:      "empty plugin project suppresses default",
+			pluginEnv: map[string]string{"AGENT_MAIL_PROJECT": ""},
+			want:      map[string]string{"AGENT_MAIL_PROJECT": ""},
+		},
+		{
+			name:      "pane project override",
+			pluginEnv: map[string]string{"KEEP": "plugin value"},
+			paneEnv:   map[string]string{"AGENT_MAIL_PROJECT": "/operator/project"},
+			want:      map[string]string{"KEEP": "plugin value"},
+		},
+		{
+			name:      "empty pane project suppresses default",
+			pluginEnv: map[string]string{"KEEP": "plugin value"},
+			paneEnv:   map[string]string{"AGENT_MAIL_PROJECT": ""},
+			want:      map[string]string{"KEEP": "plugin value"},
+		},
+		{
+			name:      "both explicit environments remain authoritative",
+			pluginEnv: map[string]string{"AGENT_MAIL_PROJECT": "/plugin/project"},
+			paneEnv:   map[string]string{"AGENT_MAIL_PROJECT": "/operator/project"},
+			want:      map[string]string{"AGENT_MAIL_PROJECT": "/plugin/project"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pluginBefore, paneBefore := maps.Clone(tc.pluginEnv), maps.Clone(tc.paneEnv)
+			got, injected := session.ApplyWorktreeAgentMailProjectEnv(tc.pluginEnv, tc.paneEnv, projectDir)
+			if !maps.Equal(got, tc.want) || injected != tc.wantInjected {
+				t.Fatalf("worktree environment = %v, injected=%v; want %v, injected=%v", got, injected, tc.want, tc.wantInjected)
+			}
+			if !maps.Equal(tc.pluginEnv, pluginBefore) || !maps.Equal(tc.paneEnv, paneBefore) {
+				t.Fatal("worktree planning mutated the explicit launch environments")
+			}
+		})
 	}
 }
 

@@ -12,7 +12,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/session"
-	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/workflow"
 )
 
@@ -29,8 +28,10 @@ type SavedSessionSaveRequest struct {
 type SavedSessionRestoreRequest struct {
 	TargetName string `json:"target_name,omitempty"`
 	Force      bool   `json:"force,omitempty"`
-	Launch     bool   `json:"launch,omitempty"`
-	Native     bool   `json:"native,omitempty"`
+	Mode       string `json:"mode,omitempty"` // topology, launch, or resume
+	// Launch retains the legacy meaning: resume agents. New clients use Mode.
+	Launch bool `json:"launch,omitempty"`
+	Native bool `json:"native,omitempty"`
 }
 
 // SavedSessionRestoreEnvelopeResponse is the REST JSON envelope for POST /api/v1/saved-sessions/{name}/restore.
@@ -40,6 +41,7 @@ type SavedSessionRestoreEnvelopeResponse struct {
 	Name    string                `json:"name"`
 	Session string                `json:"session"`
 	Launch  bool                  `json:"launch"`
+	Mode    string                `json:"mode"`
 	State   *session.SessionState `json:"state,omitempty"`
 	Resume  *session.ResumeResult `json:"resume,omitempty"`
 }
@@ -334,99 +336,6 @@ func (s *Server) handleSavedSessionsUnarchiveV1(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeRobotEnvelopeOrError(w, out, out.RobotResponse, "saved-sessions unarchive", reqID)
-}
-
-// handleSavedSessionsRestoreV1 handles POST /api/v1/saved-sessions/{name}/restore.
-func (s *Server) handleSavedSessionsRestoreV1(w http.ResponseWriter, r *http.Request) {
-	reqID := requestIDFromContext(r.Context())
-	name, err := validateSafeWorktreeIdentifier("name", chi.URLParam(r, "name"))
-	if err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil, reqID)
-		return
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxServePersistenceBodyBytes)
-	var req SavedSessionRestoreRequest
-	if err := decodeOptionalJSONBody(r, &req); err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body: "+err.Error(), nil, reqID)
-		return
-	}
-	savedState, err := session.Load(name)
-	if err != nil {
-		lower := strings.ToLower(err.Error())
-		if strings.Contains(lower, "not found") || strings.Contains(lower, "no such file") || strings.Contains(lower, "no saved session") {
-			writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound, err.Error(), nil, reqID)
-			return
-		}
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
-		return
-	}
-	targetName := strings.TrimSpace(req.TargetName)
-	if targetName == "" {
-		targetName = savedState.Name
-	}
-	if err := tmux.ValidateSessionName(targetName); err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid target_name: "+err.Error(), nil, reqID)
-		return
-	}
-
-	var resumeRes *session.ResumeResult
-	if req.Launch {
-		cfg := s.loadEnsembleConfig(savedState.WorkDir)
-		cmds := session.AgentCommands{}
-		if cfg != nil {
-			cmds = session.AgentCommands{
-				Claude:      cfg.Agents.Claude,
-				Codex:       cfg.Agents.Codex,
-				Gemini:      cfg.Agents.Gemini,
-				Antigravity: cfg.Agents.Antigravity,
-				Grok:        cfg.Agents.Grok,
-				Cursor:      cfg.Agents.Cursor,
-				Windsurf:    cfg.Agents.Windsurf,
-				Aider:       cfg.Agents.Aider,
-				Opencode:    cfg.Agents.Opencode,
-				Omp:         cfg.Agents.Omp,
-				Ollama:      cfg.Agents.Ollama,
-			}
-		}
-		resumeRes, err = session.ResumeContext(r.Context(), savedState, cmds, session.ResumeOptions{
-			Name:       targetName,
-			Force:      req.Force,
-			PreferCASR: !req.Native,
-			Config:     cfg,
-		})
-	} else {
-		err = session.RestoreContext(r.Context(), savedState, session.RestoreOptions{
-			Name:  targetName,
-			Force: req.Force,
-		})
-	}
-	if err != nil {
-		lower := strings.ToLower(err.Error())
-		switch {
-		case strings.Contains(lower, "already exists"):
-			writeErrorResponse(w, http.StatusConflict, ErrCodeConflict, err.Error(), nil, reqID)
-		case strings.Contains(lower, "invalid") || strings.Contains(lower, "missing"):
-			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil, reqID)
-		default:
-			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
-		}
-		return
-	}
-
-	resp := SavedSessionRestoreEnvelopeResponse{
-		Action:  "restore",
-		Name:    name,
-		Session: targetName,
-		Launch:  req.Launch,
-		State:   savedState,
-		Resume:  resumeRes,
-	}
-	data, err := toJSONMap(resp)
-	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to serialize saved-sessions restore response", nil, reqID)
-		return
-	}
-	writeSuccessResponse(w, http.StatusOK, data, reqID)
 }
 
 // handleSessionMappingV1 handles GET /api/v1/sessions/{id}/mapping.

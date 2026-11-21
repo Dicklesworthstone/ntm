@@ -24,11 +24,12 @@ type EncryptionConfig struct {
 }
 
 // SetEncryptionConfig sets the global encryption config for history writes/reads.
-// Pass nil to disable encryption.
+// Pass nil to disable encryption. An enabled policy without a usable write key
+// rejects writes while retaining any supplied keys for reading existing entries.
 func SetEncryptionConfig(cfg *EncryptionConfig) {
 	encryptMu.Lock()
 	defer encryptMu.Unlock()
-	if cfg != nil && cfg.Enabled && len(cfg.EncryptKey) > 0 {
+	if cfg != nil && cfg.Enabled {
 		encryptionEnabled = true
 		encryptKey = make([]byte, len(cfg.EncryptKey))
 		copy(encryptKey, cfg.EncryptKey)
@@ -52,9 +53,10 @@ func encryptJSONLine(data []byte) ([]byte, error) {
 	key := encryptKey
 	encryptMu.RUnlock()
 
-	if !enabled || key == nil {
+	if !enabled {
 		return data, nil
 	}
+	// A missing key must never turn an enabled policy into plaintext persistence.
 	return encryption.EncryptLine(key, data)
 }
 

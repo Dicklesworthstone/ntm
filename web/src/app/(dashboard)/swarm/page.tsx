@@ -14,6 +14,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { SwarmOrchestrationWorkbench } from "@/components/swarm/SwarmOrchestrationWorkbench";
 import { SwarmScaleRebalanceReviewPanel } from "@/components/swarm/SwarmScaleRebalanceReviewPanel";
+import { mapDecisionToPressureLevel, type PressureLevel } from "@/lib/backpressure";
 import {
   apiFetch,
   formatApiErrorMessage,
@@ -30,33 +31,12 @@ type SyntheticExperimentScenario =
 type SyntheticExperimentArtifact =
   components["schemas"]["SyntheticExperimentArtifact"];
 
-export type PressureLevel = "normal" | "elevated" | "critical" | "overload";
-
 function createIdempotencyKey(prefix: string): string {
   const randomPart =
     typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   return `${prefix}-${randomPart}`;
-}
-
-export function mapDecisionToPressureLevel(decision?: string): PressureLevel {
-  const normalized = (decision || "").trim().toLowerCase();
-  switch (normalized) {
-    case "degrade":
-    case "overload":
-      return "overload";
-    case "defer":
-    case "critical":
-    case "warning":
-      return "critical";
-    case "coalesce":
-    case "elevated":
-    case "watch":
-      return "elevated";
-    default:
-      return "normal";
-  }
 }
 
 function pressureBadgeClass(level: PressureLevel): string {

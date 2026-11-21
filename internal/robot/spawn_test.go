@@ -21,9 +21,13 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
+	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/pressure"
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
+	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tools"
 	"github.com/Dicklesworthstone/ntm/internal/worksource"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
@@ -344,8 +348,11 @@ func TestGetSpawnGrokUsesConfiguredDefaultModelWithFakeLifecycle(t *testing.T) {
 }
 
 func TestGetSpawnPersistsLaunchSpecBeforeCommandDelivery(t *testing.T) {
-	for _, fail := range []string{"", "metadata-failure"} {
+	for _, fail := range []string{"", "metadata-failure", "selected-seat", "selected-seat-plain", "worktree", "claude-isolated"} {
 		t.Run(fail, func(t *testing.T) {
+			if fail == "claude-isolated" && (runtime.GOOS == "darwin" || runtime.GOOS == "windows") {
+				t.Skip("file-backed Claude credential isolation requires Linux config dir storage")
+			}
 			root := t.TempDir()
 			path := filepath.Join(root, "tmux")
 			script := `#!/bin/sh
@@ -355,7 +362,9 @@ case "$1" in
   list-panes)
     command=''
     if [ -f "$NTM_SPAWN_SPEC_TEST_ROOT/launched" ]; then command='node'; fi
-    printf '%%17_NTM_SEP_0_NTM_SEP_wrapper title_NTM_SEP_%s_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_cod_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$command"
+    kind=cod
+    if [ "$NTM_SPAWN_SPEC_TEST_FAIL" = 'claude-isolated' ]; then kind=cc; fi
+    printf '%%17_NTM_SEP_0_NTM_SEP_wrapper title_NTM_SEP_%s_NTM_SEP_80_NTM_SEP_24_NTM_SEP_1_NTM_SEP_0_NTM_SEP_0_NTM_SEP_%s_NTM_SEP__NTM_SEP__NTM_SEP_0\n' "$command" "$kind"
     ;;
   set-option)
     if [ "${5:-}" = '@ntm_agent_launch' ]; then
@@ -368,9 +377,33 @@ case "$1" in
     [ "$5" = '%17' ] && [ "$6" = '@ntm_agent_launch' ] || exit 65
     cat "$NTM_SPAWN_SPEC_TEST_ROOT/spec"
     ;;
+  load-buffer)
+    [ "$#" = 4 ] && [ "$2" = '-b' ] && [ "$4" = '-' ] || exit 68
+    [ -f "$NTM_SPAWN_SPEC_TEST_ROOT/spec" ] || exit 66
+    cat > "$NTM_SPAWN_SPEC_TEST_ROOT/buffer-$3"
+    ;;
+  paste-buffer)
+    [ "$#" = 7 ] && [ "$2" = '-p' ] && [ "$3" = '-d' ] && [ "$4" = '-b' ] && [ "$6" = '-t' ] && [ "$7" = '%17' ] || exit 69
+    [ -f "$NTM_SPAWN_SPEC_TEST_ROOT/spec" ] && [ ! -f "$NTM_SPAWN_SPEC_TEST_ROOT/consumed-$5" ] || exit 66
+    cat "$NTM_SPAWN_SPEC_TEST_ROOT/buffer-$5" >> "$NTM_SPAWN_SPEC_TEST_ROOT/delivered"
+    cat "$NTM_SPAWN_SPEC_TEST_ROOT/buffer-$5" >> "$NTM_SPAWN_SPEC_TEST_ROOT/sent"
+    : > "$NTM_SPAWN_SPEC_TEST_ROOT/consumed-$5"
+    ;;
+  delete-buffer)
+    [ "$#" = 3 ] && [ "$2" = '-b' ] || exit 70
+    : > "$NTM_SPAWN_SPEC_TEST_ROOT/consumed-$3"
+    ;;
   send-keys)
     [ -f "$NTM_SPAWN_SPEC_TEST_ROOT/spec" ] || exit 66
-    if [ "${4:-}" = 'Enter' ]; then : > "$NTM_SPAWN_SPEC_TEST_ROOT/launched"; fi
+    [ "$2" = '-t' ] && [ "$3" = '%17' ] || exit 71
+    printf '%s\n' "$@" >> "$NTM_SPAWN_SPEC_TEST_ROOT/sent"
+    if [ "${4:-}" = 'Enter' ]; then
+      [ "$#" = 4 ] && [ -f "$NTM_SPAWN_SPEC_TEST_ROOT/delivered" ] || exit 72
+      : > "$NTM_SPAWN_SPEC_TEST_ROOT/launched"
+    else
+      [ "$#" = 6 ] && [ "$4" = '-l' ] && [ "$5" = '--' ] || exit 73
+      printf '%s' "$6" >> "$NTM_SPAWN_SPEC_TEST_ROOT/delivered"
+    fi
     ;;
   select-pane) ;;
   *) exit 67 ;;
@@ -401,11 +434,81 @@ func TestGetSpawnLaunchSpecTransportHelper(t *testing.T) {
 	deps.LaunchAgent = launchAgent
 	cfg := testSpawnConfig()
 	cfg.Agents.Codex = `codex --model {{shellQuote .Model}} --effort {{shellQuote .ReasoningEffort}} --custom 'literal;flag'`
-	out, err := GetSpawn(t.Context(), SpawnOptions{
+	mode := os.Getenv("NTM_SPAWN_SPEC_TEST_FAIL")
+	preparedClaudeSettings := ""
+	opts := SpawnOptions{
 		Session: "saved-launch", CodCount: 1, CodModel: "pinned/model", CodReasoningEffort: "high",
 		NoUserPane: true, WorkingDir: root, LifecycleDeps: deps,
-	}, cfg)
-	if os.Getenv("NTM_SPAWN_SPEC_TEST_FAIL") != "" {
+	}
+	if mode == "selected-seat" || mode == "selected-seat-plain" {
+		cfg.Integrations.CAAM.SeatSelection = true
+		// Default commands also omit PersonaName. Binding must still select
+		// the account while preserving an explicit model and persona prompt.
+		if mode == "selected-seat" {
+			cfg.Agents.Codex += `{{if .SystemPromptFile}} --prompt {{shellQuote .SystemPromptFile}}{{end}}`
+			writeSpawnSeatPersona(t, root)
+		}
+		deps.CAAMSeatResolver = &stubRobotCAAMResolver{seats: map[string]*tools.CAAMRankedProfile{
+			"codex": {Provider: "codex", Profile: "spend-me"},
+		}}
+	}
+	if mode == "worktree" {
+		for _, args := range [][]string{
+			{"init", "-b", "main"},
+			{"-c", "user.name=ntm-test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "worktree fixture"},
+		} {
+			cmd := exec.CommandContext(t.Context(), "git", append([]string{"-C", root}, args...)...)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("prepare worktree fixture: %v\n%s", err, output)
+			}
+		}
+		opts.UseWorktrees, opts.WorktreeName = true, "saved-codex"
+	}
+	if mode == "claude-isolated" {
+		home := filepath.Join(root, "home")
+		if err := os.MkdirAll(filepath.Join(home, ".claude"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("HOME", home)
+		t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+		t.Setenv("SHALLOW_PROFILE", "")
+		cfg.Agents.ClaudeIsolateCredentials = true
+		cfg.Agents.ClaudeTokenFile = filepath.Join(root, "setup-token")
+		if err := os.WriteFile(cfg.Agents.ClaudeTokenFile, []byte("private-setup-token-fixture"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cfg.Agents.Claude = `claude --model {{shellQuote .Model}} --custom 'literal;flag'`
+		opts.CodCount, opts.CCCount, opts.CCModel = 0, 1, "pinned/model"
+		preparedClaudeSettings = policy.ClaudeAgentLaunchSettings(cfg).Settings
+		var hookSettings struct {
+			Hooks struct {
+				PreToolUse []struct {
+					Matcher string
+					Hooks   []struct {
+						Type    string
+						Command string
+						Timeout int
+					}
+				}
+			}
+		}
+		if err := json.Unmarshal([]byte(preparedClaudeSettings), &hookSettings); err != nil {
+			t.Fatalf("default Claude safety hooks are not valid settings: %v", err)
+		}
+		hasPolicyHook := false
+		for _, entry := range hookSettings.Hooks.PreToolUse {
+			for _, hook := range entry.Hooks {
+				if entry.Matcher == "Bash" && hook.Type == "command" && strings.HasSuffix(hook.Command, " safety claude-hook") && hook.Timeout == policy.ClaudeHookTimeoutSeconds {
+					hasPolicyHook = true
+				}
+			}
+		}
+		if !hasPolicyHook {
+			t.Fatalf("isolated Claude fixture lost the required safety hook: %s", preparedClaudeSettings)
+		}
+	}
+	out, err := GetSpawn(t.Context(), opts, cfg)
+	if mode == "metadata-failure" {
 		if err != nil || out.Success || !strings.Contains(out.Error, "recording launch specification") {
 			t.Fatalf("metadata failure should refuse launch: output=%+v err=%v", out, err)
 		}
@@ -423,11 +526,98 @@ func TestGetSpawnLaunchSpecTransportHelper(t *testing.T) {
 		t.Fatalf("persisted specification=(%+v,%v)", spec, err)
 	}
 	want := `codex --model 'pinned/model' --effort 'high' --custom 'literal;flag'`
-	if spec.Command != want || spec.CAAMProfile != "creation-profile" || spec.AgentType != tmux.AgentCodex {
+	profile := "creation-profile"
+	agentType := tmux.AgentCodex
+	if mode == "selected-seat" || mode == "selected-seat-plain" {
+		profile = "spend-me"
+	}
+	if mode == "selected-seat" {
+		want += " --prompt " + config.ShellQuote(spec.SystemPromptFile)
+		if spec.Persona != "codex-spend-me" || spec.SystemPromptFile == "" || len(spec.SystemPromptSHA256) != 64 {
+			t.Fatalf("selected seat lost immutable persona metadata: %+v", spec)
+		}
+	}
+	if mode == "claude-isolated" {
+		want = `claude --model 'pinned/model' --custom 'literal;flag' --settings ` + tmux.ShellQuote(preparedClaudeSettings)
+		profile, agentType = "", tmux.AgentClaude
+	}
+	if spec.Command != want || spec.CAAMProfile != profile || spec.AgentType != agentType {
 		t.Fatalf("persisted launch=%+v, want exact rendered command and original profile", spec)
 	}
-	if err := spec.ValidateReplay(tmux.AgentCodex); err != nil {
+	if err := spec.ValidateReplay(agentType); err != nil {
 		t.Fatalf("normal spawned agent must be recoverable: %v", err)
+	}
+	if profile == "spend-me" {
+		sent, err := os.ReadFile(filepath.Join(root, "sent"))
+		prefix := tmux.ShellQuote("caam") + " shallow-spawn --tool 'codex' 'spend-me' -- /bin/sh -c "
+		if err != nil || !strings.Contains(string(sent), prefix) || strings.Contains(spec.Command, "shallow-spawn") {
+			t.Fatalf("live binding or persisted inner command is wrong: sent=%q spec=%+v err=%v", sent, spec, err)
+		}
+		// Replay must verify the actual prompt digest and retain the selected
+		// account despite the process's inherited creation-profile identity.
+		cfg.Integrations.CAAM.BinaryPath = "/bin/true"
+		plan, err := resilience.PreflightAgentLaunchSpec(t.Context(), cfg, *spec, root)
+		if err != nil {
+			t.Fatalf("newly spawned selected persona is not replayable: %v", err)
+		}
+		preview, err := plan.Preview(t.Context(), root, "restored-seat", 0)
+		if err != nil || !strings.Contains(preview, "--tool 'codex' 'spend-me'") || strings.Contains(preview, "creation-profile") {
+			t.Fatalf("replay changed selected account: %q (%v)", preview, err)
+		}
+	}
+	if mode == "worktree" {
+		if spec.AgentMailProject != root || len(spec.OmittedEnv) != 0 {
+			t.Fatalf("managed project cannot require missing private environment: %+v", spec)
+		}
+		sent, err := os.ReadFile(filepath.Join(root, "sent"))
+		projectPrefix := "AGENT_MAIL_PROJECT=" + tmux.ShellQuote(root)
+		if err != nil || !strings.Contains(string(sent), projectPrefix) {
+			t.Fatalf("live worktree command lost project identity: %q (%v)", sent, err)
+		}
+		cfg.Integrations.CAAM.BinaryPath = "/bin/true"
+		plan, err := resilience.PreflightAgentLaunchSpec(t.Context(), cfg, *spec, out.Agents[0].WorktreePath)
+		if err != nil {
+			t.Fatalf("worktree launch metadata cannot be replayed: %v", err)
+		}
+		preview, err := plan.Preview(t.Context(), out.Agents[0].WorktreePath, "restored-worktree", 0)
+		if err != nil || !strings.Contains(preview, "AGENT_MAIL_PROJECT=") || !strings.Contains(preview, root) {
+			t.Fatalf("worktree replay lost project identity: %q (%v)", preview, err)
+		}
+	}
+	if mode == "claude-isolated" {
+		if !spec.ClaudeIsolateCredentials || spec.ClaudeTokenFile != cfg.Agents.ClaudeTokenFile {
+			t.Fatalf("isolated Claude launch lost its saved policy: %+v", spec)
+		}
+		provisioner := swarm.NewClaudeConfigProvisioner(root)
+		originalConfig := provisioner.ConfigPath("saved-launch", "1")
+		sent, err := os.ReadFile(filepath.Join(root, "sent"))
+		if err != nil || !strings.Contains(string(sent), originalConfig) || !strings.Contains(string(sent), "CLAUDE_CODE_OAUTH_TOKEN=") || strings.Contains(string(sent), "private-setup-token-fixture") {
+			t.Fatalf("live isolation command is missing or exposes its token: %q (%v)", sent, err)
+		}
+		delivered, err := os.ReadFile(filepath.Join(root, "delivered"))
+		wantDelivered := "cd " + tmux.ShellQuote(root) + ` && CLAUDE_CODE_OAUTH_TOKEN="$(/bin/cat ` + tmux.ShellQuote(spec.ClaudeTokenFile) + `)" CLAUDE_CONFIG_DIR=` + tmux.ShellQuote(originalConfig) + " " + want
+		if err != nil || string(delivered) != wantDelivered {
+			t.Fatalf("buffer transport changed isolated launch command: got=%q want=%q error=%v", delivered, wantDelivered, err)
+		}
+		calls, err := os.ReadFile(filepath.Join(root, "calls"))
+		if err != nil || !strings.Contains(string(calls), "load-buffer\npaste-buffer\nsend-keys\n") {
+			t.Fatalf("isolated command did not use canonical buffer transport: %q (%v)", calls, err)
+		}
+		// Current defaults may change after a save; the recorded token reference
+		// and isolation policy must still govern this replay.
+		cfg.Agents.ClaudeIsolateCredentials = false
+		cfg.Agents.ClaudeTokenFile = filepath.Join(root, "missing-current-token")
+		plan, err := resilience.PreflightAgentLaunchSpec(t.Context(), cfg, *spec, root)
+		if err != nil {
+			t.Fatalf("isolated Claude launch is not replayable: %v", err)
+		}
+		replayed, err := plan.Prepare(t.Context(), root, "restored-isolation", 0)
+		if err != nil || !strings.Contains(replayed, provisioner.ConfigPath("restored-isolation", "0")) || strings.Contains(replayed, originalConfig) || !strings.Contains(replayed, spec.ClaudeTokenFile) {
+			t.Fatalf("replay reused the old pane credentials: %q (%v)", replayed, err)
+		}
+		if isolated, err := provisioner.CredentialIsolated("restored-isolation", "0"); err != nil || !isolated {
+			t.Fatalf("replayed Claude credentials were not provisioned: isolated=%t error=%v", isolated, err)
+		}
 	}
 }
 
@@ -3131,8 +3321,10 @@ func TestGetSpawnClaudeIsolationReportsCredentialIsolated(t *testing.T) {
 	panes := []tmux.Pane{{ID: "%1", WindowIndex: 0, Index: 0}}
 	deps := testSpawnLifecycleDependencies(panes)
 	var gotCommand string
-	deps.LaunchAgent = func(_ context.Context, _ tmux.Pane, session, agentType string, number int, _, command string) (SpawnedAgent, error) {
+	var gotMetadata spawnLaunchPersona
+	deps.LaunchAgent = func(ctx context.Context, _ tmux.Pane, session, agentType string, number int, _, command string) (SpawnedAgent, error) {
 		gotCommand = command
+		gotMetadata = spawnLaunchPersonaFromContext(ctx)
 		return SpawnedAgent{Pane: "0.0", Type: agentType, Title: fmt.Sprintf("%s__cc_%d", session, number)}, nil
 	}
 
@@ -3145,8 +3337,11 @@ func TestGetSpawnClaudeIsolationReportsCredentialIsolated(t *testing.T) {
 	if err != nil || !out.Success {
 		t.Fatalf("GetSpawn output=%+v err=%v", out, err)
 	}
-	if !strings.Contains(gotCommand, "CLAUDE_CONFIG_DIR=") {
-		t.Fatalf("expected CLAUDE_CONFIG_DIR in launch command, got %q", gotCommand)
+	if strings.Contains(gotCommand, "CLAUDE_CONFIG_DIR=") || gotMetadata.claudeLaunchEnv == nil {
+		t.Fatalf("expected clean command plus prepared isolation metadata, got command=%q metadata=%+v", gotCommand, gotMetadata)
+	}
+	if !strings.Contains(gotMetadata.claudeLaunchEnv.ApplyToCommand(gotCommand), "CLAUDE_CONFIG_DIR=") {
+		t.Fatal("prepared live launch lost Claude credential isolation")
 	}
 	if len(out.Agents) != 1 || out.Agents[0].CredentialIsolated == nil || !*out.Agents[0].CredentialIsolated {
 		t.Fatalf("expected credential_isolated=true on spawned Claude agent, got %+v", out.Agents)

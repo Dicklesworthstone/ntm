@@ -13,6 +13,211 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 )
 
+func TestGeneratorEncryptedArchiveRoundTripAndTamper(t *testing.T) {
+	t.Parallel()
+	key := bytes.Repeat([]byte{0x35}, encryption.KeySize)
+	oldKey := bytes.Repeat([]byte{0x71}, encryption.KeySize)
+	for _, format := range []Format{FormatZip, FormatTarGz} {
+		t.Run(string(format), func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "support"+format.Extension()+".enc")
+			gen := NewGenerator(GeneratorConfig{
+				OutputPath: path, Format: format, NTMVersion: "test",
+				EncryptKey: key, MaxSizeBytes: 1 << 20,
+				RedactionConfig: redaction.Config{Mode: redaction.ModeOff},
+			})
+			content := []byte("private diagnostic payload that must round trip")
+			if err := gen.AddFile("diagnostic.txt", content, ContentTypeMetadata, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			result, err := gen.Generate()
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !result.Encrypted || !encryption.IsEncryptedArtifact(data) || bytes.Contains(data, content) {
+				t.Fatalf("archive was not encrypted: result=%+v", result)
+			}
+			if result.TotalSize != int64(len(data)) {
+				t.Fatalf("reported size %d, actual %d", result.TotalSize, len(data))
+			}
+			info, err := os.Stat(path)
+			if err != nil || info.Mode().Perm() != 0600 {
+				t.Fatalf("archive permissions: info=%v error=%v", info, err)
+			}
+			for _, keys := range [][][]byte{nil, {oldKey}} {
+				if _, err := Verify(path, keys...); err == nil {
+					t.Fatal("verification accepted a missing or wrong key")
+				}
+			}
+			verified, err := Verify(path, oldKey, key)
+			if err != nil || !verified.Valid || !verified.Encrypted {
+				t.Fatalf("rotated keyring verification: result=%+v error=%v", verified, err)
+			}
+			plaintextPath := filepath.Join(dir, "decrypted"+format.Extension())
+			if _, err := Decrypt(path, plaintextPath, oldKey, key); err != nil {
+				t.Fatal(err)
+			}
+			plainData, err := os.ReadFile(plaintextPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entries, err := readArchiveEntries(plainData, format)
+			if err != nil || !bytes.Equal(entries["diagnostic.txt"], content) {
+				t.Fatalf("decrypted payload mismatch: entries=%v error=%v", entries, err)
+			}
+			plainVerified, err := Verify(plaintextPath)
+			if err != nil || !plainVerified.Valid || plainVerified.Encrypted {
+				t.Fatalf("plaintext verification: result=%+v error=%v", plainVerified, err)
+			}
+			data[len(data)-1] ^= 1
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Verify(path, key); err == nil {
+				t.Fatal("tampered ciphertext passed verification")
+			}
+			if _, err := Decrypt(path, plaintextPath, key); err == nil {
+				t.Fatal("tampered ciphertext was exported")
+			}
+			preserved, err := os.ReadFile(plaintextPath)
+			if err != nil || !bytes.Equal(preserved, plainData) {
+				t.Fatalf("failed decrypt changed existing output: %v", err)
+			}
+		})
+	}
+}
+
+func TestWriteArchiveFailuresPreserveExistingOutput(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		key   []byte
+		limit int64
+	}{
+		{name: "invalid key", key: []byte("invalid")},
+		{name: "plaintext size", limit: 3},
+		{name: "ciphertext overhead", key: bytes.Repeat([]byte{1}, encryption.KeySize), limit: 10},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "existing.zip")
+			existing := []byte("existing bundle must survive")
+			if err := os.WriteFile(path, existing, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := WriteArchive(path, []byte("payload"), test.key, test.limit); err == nil {
+				t.Fatal("expected failure")
+			}
+			actual, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(actual, existing) {
+				t.Fatalf("existing file changed: %q, %v", actual, err)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil || len(entries) != 1 {
+				t.Fatalf("unexpected temporary artifacts: %v, %v", entries, err)
+			}
+		})
+	}
+}
+
+func TestVerifyEncryptedExtensionRejectsPlaintext(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "support.zip.enc")
+	gen := NewGenerator(GeneratorConfig{OutputPath: path, Format: FormatZip, NTMVersion: "test", RedactionConfig: redaction.Config{Mode: redaction.ModeOff}})
+	if _, err := gen.Generate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(path); err == nil || !strings.Contains(err.Error(), "authenticated artifact header") {
+		t.Fatalf("plaintext accepted as encrypted: %v", err)
+	}
+}
+
+func TestEncryptArchiveFileInvalidKeysPreserveOutput(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		key  []byte
+	}{
+		{name: "nil key"},
+		{name: "empty key", key: []byte{}},
+		{name: "malformed key", key: []byte("invalid")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "existing.zip")
+			existing := []byte("existing archive must survive an invalid encryption request")
+			if err := os.WriteFile(path, existing, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := EncryptArchiveFile(path, tc.key); err == nil {
+				t.Fatal("encryption API accepted an invalid key")
+			}
+			actual, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(actual, existing) {
+				t.Fatalf("failed encryption changed existing output: %q, %v", actual, err)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil || len(entries) != 1 {
+				t.Fatalf("failed encryption left temporary artifacts: %v, %v", entries, err)
+			}
+		})
+	}
+}
+
+func TestGeneratorSelectedPolicyOverridesProcessPolicy(t *testing.T) {
+	previous := ActiveEncryptionConfig()
+	t.Cleanup(func() { SetEncryptionConfig(previous) })
+	globalKey := bytes.Repeat([]byte{0x12}, encryption.KeySize)
+	selectedKey := bytes.Repeat([]byte{0x34}, encryption.KeySize)
+	SetEncryptionConfig(&EncryptionConfig{Enabled: true, EncryptKey: globalKey, DecryptKeys: [][]byte{globalKey}})
+
+	for _, tc := range []struct {
+		name     string
+		policy   *EncryptionConfig
+		explicit []byte
+		wantKey  []byte
+		wantErr  bool
+	}{
+		{name: "implicit process policy", wantKey: globalKey},
+		{name: "selected plaintext policy", policy: &EncryptionConfig{}},
+		{name: "selected encryption key", policy: &EncryptionConfig{Enabled: true, EncryptKey: selectedKey}, wantKey: selectedKey},
+		{name: "selected policy missing key", policy: &EncryptionConfig{Enabled: true}, wantErr: true},
+		{name: "invalid explicit key", explicit: []byte("invalid"), wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "selected.zip")
+			gen := NewGenerator(GeneratorConfig{
+				OutputPath: path, Format: FormatZip, NTMVersion: "test",
+				Encryption: tc.policy, EncryptKey: tc.explicit,
+			})
+			result, err := gen.Generate()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("invalid selected key fell back to the process key")
+				}
+				if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+					t.Fatalf("failed generation published an archive: %v", statErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Encrypted != (tc.wantKey != nil) {
+				t.Fatalf("encrypted = %v for selected policy", result.Encrypted)
+			}
+			verified, err := Verify(path, tc.wantKey)
+			if err != nil || !verified.Valid {
+				t.Fatalf("archive did not follow the selected policy: result=%+v error=%v", verified, err)
+			}
+		})
+	}
+}
+
 func TestNewGenerator(t *testing.T) {
 	config := GeneratorConfig{
 		Session:    "test-session",

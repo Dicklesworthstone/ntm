@@ -2,8 +2,10 @@ package session
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -17,6 +19,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/gemini"
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 	"github.com/Dicklesworthstone/ntm/internal/worktrees"
 )
@@ -89,6 +92,37 @@ type CAAMSeatDecision struct {
 	Reason       string
 }
 
+// LaunchCommand binds the entire live shell command to the selected account.
+// PersonaName is template input, not an account boundary: default templates
+// must honor selection even when they never mention that field. Persist the
+// inner command and Profile separately so recovery does not nest wrappers.
+func (d CAAMSeatDecision) LaunchCommand(binary, command string) (string, error) {
+	if d.Skip {
+		return "", fmt.Errorf("CAAM seat refused: %s", d.Reason)
+	}
+	return resilience.BindLaunchCommand(d.Provider, binary, &resilience.LaunchBinding{
+		Provider: d.Provider, Launcher: "caam", Identifier: d.Profile,
+	}, command)
+}
+
+// ValidateCAAMSeatCompatibility rejects Claude isolation when it would override
+// an automatically selected or inherited account. Explicit persona pins retain
+// their isolation policy only outside an inherited profile. Run before hooks or
+// worktree/session mutations, including when automatic selection is disabled.
+func ValidateCAAMSeatCompatibility(cfg *config.Config, candidates []CAAMSeatCandidate) error {
+	if cfg == nil || !cfg.Agents.ClaudeIsolateCredentials {
+		return nil
+	}
+	inherited := resilience.CaptureLaunchBinding("claude") != nil
+	for _, candidate := range candidates {
+		bound := inherited || CAAMSeatSelectionEnabled(cfg) && !candidate.Pinned
+		if bound && CAAMSeatProviderForAgentType(candidate.Type) == "claude" {
+			return resilience.ErrCAAMClaudeIsolationConflict
+		}
+	}
+	return nil
+}
+
 // CAAMSeatSkip reports one pane that CAAM seat selection declined to launch,
 // and why (ntm#319). Shared across CLI, Robot, REST, and swarm_spawn JSON
 // envelopes so every surface emits an identical schema.
@@ -140,7 +174,15 @@ func PlanCAAMSeats(
 	projectDir string,
 	candidates []CAAMSeatCandidate,
 ) *CAAMSeatPlan {
-	return PlanCAAMSeatsWithResolver(ctx, cfg, projectDir, candidates, tools.NewCAAMAdapter())
+	if !CAAMSeatSelectionEnabled(cfg) {
+		return nil
+	}
+	binary := strings.TrimSpace(cfg.Integrations.CAAM.BinaryPath)
+	if binary == "" {
+		binary = "caam"
+	}
+	resolver := &tools.CAAMAdapter{BaseAdapter: tools.NewBaseAdapter(tools.ToolCAAM, binary)}
+	return PlanCAAMSeatsWithResolver(ctx, cfg, projectDir, candidates, resolver)
 }
 
 // PlanCAAMSeatsWithResolver resolves the seat every unpinned, CAAM-backed pane
@@ -184,6 +226,10 @@ func PlanCAAMSeatsWithResolver(
 
 	byProvider := make(map[string]CAAMSeatDecision, len(ordered))
 	for _, provider := range ordered {
+		if err := ValidateCAAMSeatCompatibility(cfg, []CAAMSeatCandidate{{Type: provider}}); err != nil {
+			byProvider[provider] = CAAMSeatDecision{Provider: provider, Skip: true, Reason: err.Error()}
+			continue
+		}
 		decision := resolveCAAMSeat(ctx, resolver, registry, provider)
 		byProvider[provider] = decision
 		if decision.Skip {
@@ -697,6 +743,33 @@ func PrepareRequiredPersonaSystemPrompt(p *persona.Persona, projectDir string) (
 		return "", fmt.Errorf("prepare system prompt for persona %s: %w", p.Name, err)
 	}
 	return promptFile, nil
+}
+
+// PersonaPromptSHA256 freezes the prepared prompt's identity for launch replay.
+// Both CLI and automated launches use the same bounded, regular-file check.
+func PersonaPromptSHA256(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open prepared persona prompt: %w", err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return "", errors.New("prepared persona prompt must be a readable regular file")
+	}
+	hash := sha256.New()
+	const maxPromptBytes = 1 << 20
+	count, err := io.Copy(hash, io.LimitReader(file, maxPromptBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read prepared persona prompt: %w", err)
+	}
+	if count > maxPromptBytes {
+		return "", errors.New("prepared persona prompt exceeds launch metadata verification limit")
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
 }
 
 // ============================================================================

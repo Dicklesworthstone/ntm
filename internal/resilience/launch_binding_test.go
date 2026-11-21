@@ -634,11 +634,32 @@ func TestAgentLaunchSpecCancellationPreventsProvisioning(t *testing.T) {
 	}
 }
 
+func TestAgentLaunchSpecPreflightRejectsConflictingCAAMIsolation(t *testing.T) {
+	projectDir := t.TempDir()
+	spec := tmux.AgentLaunchSpec{
+		Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentClaude, Command: "claude",
+		ClaudeIsolateCredentials: true, CAAMProfile: "selected-account",
+		ClaudeTokenFile: filepath.Join(t.TempDir(), "host-token-must-not-be-read"),
+	}
+	checks := 0
+	plan, err := preflightAgentLaunchSpec(t.Context(), nil, spec, projectDir, func() error {
+		checks++
+		return nil
+	})
+	if !errors.Is(err, ErrCAAMClaudeIsolationConflict) || plan != nil || checks != 0 {
+		t.Fatalf("conflicting saved credentials reached provisioning: plan=%+v error=%v checks=%d", plan, err, checks)
+	}
+	entries, readErr := os.ReadDir(projectDir)
+	if readErr != nil || len(entries) != 0 {
+		t.Fatalf("failed account preflight provisioned files: %v, %v", entries, readErr)
+	}
+}
+
 func TestAgentLaunchSpecPreflightRejectsNonIsolableCredentialStore(t *testing.T) {
 	projectDir := t.TempDir()
 	spec := tmux.AgentLaunchSpec{
 		Version: tmux.AgentLaunchSpecVersion, AgentType: tmux.AgentClaude, Command: "claude",
-		ClaudeIsolateCredentials: true, CAAMProfile: "profile-must-not-be-resolved",
+		ClaudeIsolateCredentials: true,
 	}
 	checks := 0
 	_, err := preflightAgentLaunchSpec(context.Background(), nil, spec, projectDir, func() error {
